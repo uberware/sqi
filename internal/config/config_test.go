@@ -2669,6 +2669,23 @@ func TestRedactDSN(t *testing.T) {
 		{"postgres://sqi:p@ss/word@db/sqi", "word"},
 		{"postgres://sqi:p@ss?word@db/sqi", "word"},
 		{"postgres://sqi:1@2#3@db/sqi", "2#3"},
+		// pgx reads a URL the way libpq does, not as RFC 3986. A "#" does not
+		// start a fragment there, so it can sit inside a query password or hide
+		// a query altogether.
+		{"postgres://sqi@db/sqi?password=XQ#YR", "YR"},
+		{"postgres://sqi@db/sqi#x?password=hunter2", "hunter2"},
+		{"postgres://sqi@db/sqi?sslpassword=XQ#YR", "YR"},
+		// pgx percent-decodes query keys, so an encoded name is still a password.
+		{"postgres://sqi@db/sqi?pass%77ord=hunter2", "hunter2"},
+		{"postgres://sqi@db/sqi?%70assword=hunter2", "hunter2"},
+		{"postgres://sqi@db/sqi?ssl%70assword=hunter2", "hunter2"},
+		{"postgres://sqi@db/sqi?sslmode=disable&pass%77ord=hunter2", "hunter2"},
+		{"postgres://sqi@db/sqi?application_name=x;pass%77ord=hunter2", "hunter2"},
+		// pgx trims spaces around a key, so a padded name is still a password.
+		{"postgres://sqi@db/sqi?password =hunter2", "hunter2"},
+		// An upper-case key is not a password to pgx, but the regex still
+		// redacts it, which is the safe side.
+		{"postgres://sqi@db/sqi?PASSWORD=hunter2", "hunter2"},
 		// The client key's passphrase is a secret too, as is a query password
 		// url.Values would drop for its semicolon.
 		{"host=db sslpassword=hunter2 dbname=sqi", "hunter2"},
@@ -2701,6 +2718,11 @@ func TestRedactDSN_KeepsEverythingElse(t *testing.T) {
 		// indistinguishable from a truncated authority.
 		{"postgres://sqi:123#ss@db/sqi", "postgres://<redacted>"},
 		{"postgres://sqi:p@ss#word@db/sqi", "postgres://<redacted>"},
+		{"postgres://sqi@db/sqi?pass%77ord=hunter2", "postgres://<redacted>"},
+		{"postgres://sqi@db/sqi?password=XQ#YR", "postgres://<redacted>"},
+		// A literal key is redacted in place, not failed closed.
+		{"postgres://sqi@db/sqi?sslmode=disable&password=hunter2", "postgres://sqi@db/sqi?sslmode=disable&password=redacted"},
+		{"postgres://sqi@db/sqi?sslmode=require&application_name=x", "postgres://sqi@db/sqi?sslmode=require&application_name=x"},
 		{"postgres://sqi:hunter2%zz@db/sqi", "postgres://<redacted>"},
 		{"postgres://db/sqi?application_name=a@b", "postgres://<redacted>"},
 	}

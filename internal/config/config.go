@@ -257,13 +257,13 @@ var queryPassword = regexp.MustCompile(`(?i)((?:^|&)(?:ssl)?password=)[^&]+`)
 // DSN form. A DSN without a password is returned unchanged.
 //
 // It fails closed: a URL-form DSN whose password cannot be reliably located,
-// because [url.Parse] refuses it or because its authority is ambiguous (see
-// [ambiguousAuthority]), is reduced to its scheme and a placeholder rather than
-// returned as it came.
+// because [url.Parse] refuses it or because [urlDSNAmbiguous] says that Go's
+// reading of it and the PostgreSQL driver's can differ, is reduced to its scheme
+// and a placeholder rather than returned as it came.
 func RedactDSN(dsn string) string {
 	if scheme, ok := dsnURLScheme(dsn); ok {
 		u, err := url.Parse(dsn)
-		if err != nil || ambiguousAuthority(u, dsn) {
+		if err != nil || urlDSNAmbiguous(u, dsn) {
 			return scheme + "://" + redactedPassword
 		}
 		changed := false
@@ -281,6 +281,45 @@ func RedactDSN(dsn string) string {
 		return u.String()
 	}
 	return kvPassword.ReplaceAllString(dsn, "${1}"+redactedPassword)
+}
+
+// urlDSNAmbiguous reports whether a URL-form DSN that [url.Parse] accepted may
+// still be read differently by the driver (pgx follows libpq's URI parser, not
+// RFC 3986), which would leave [RedactDSN] redacting the wrong span:
+//
+//   - A "#" is a fragment to Go, so everything after it is out of the query,
+//     but to pgx it is ordinary text: `?password=XQ#YR` has the password XQ#YR,
+//     and `/db#x?password=hunter2` still has a query. So any "#" is refused.
+//   - The authority is ambiguous (see [ambiguousAuthority]).
+//   - A query key is spelled so the regex cannot see it (see
+//     [obscuredPasswordKey]).
+func urlDSNAmbiguous(u *url.URL, dsn string) bool {
+	return strings.Contains(dsn, "#") || ambiguousAuthority(u, dsn) || obscuredPasswordKey(dsn)
+}
+
+// obscuredPasswordKey reports whether the DSN's query has a password or
+// sslpassword key that [queryPassword] cannot match, because the key is
+// percent-encoded (pgx decodes keys: `pass%77ord=x` is a password) or padded
+// with spaces (pgx trims them). The query is split on "&" as pgx does and on
+// ";" as net/url once did, which only widens the net.
+func obscuredPasswordKey(dsn string) bool {
+	_, query, found := strings.Cut(dsn, "?")
+	if !found {
+		return false
+	}
+	pairs := strings.FieldsFunc(query, func(r rune) bool { return r == '&' || r == ';' })
+	for _, pair := range pairs {
+		rawKey, _, _ := strings.Cut(pair, "=")
+		key := rawKey
+		if decoded, err := url.PathUnescape(rawKey); err == nil {
+			key = decoded
+		}
+		name := strings.ToLower(strings.Trim(key, " "))
+		if (name == "password" || name == "sslpassword") && !strings.EqualFold(rawKey, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // ambiguousAuthority reports whether a URL-form DSN that parsed cannot be
