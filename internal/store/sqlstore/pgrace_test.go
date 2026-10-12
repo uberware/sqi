@@ -369,14 +369,18 @@ func TestPGRace_G1_AReportedTaskIsNeverReaped(t *testing.T) {
 		a := storetest.Lease(t, st, leaseReq(w.Tasks[0], w.Workers[0]))
 		var started bool
 		var reaped []store.Task
+		var reapErr error
 		var wg sync.WaitGroup
 		wg.Go(func() {
 			started, _ = st.StartTaskAttempt(t.Context(), a.ID, w.Tasks[0], "sess", time.Now()) //nolint:errcheck // asserted through started
 		})
 		wg.Go(func() {
-			reaped, _ = st.ReclaimStaleAssignedTasks(t.Context(), time.Now().Add(time.Hour)) //nolint:errcheck // asserted through reaped
+			reaped, reapErr = st.ReclaimStaleAssignedTasks(t.Context(), time.Now().Add(time.Hour))
 		})
 		wg.Wait()
+		if reapErr != nil {
+			t.Fatalf("iteration %d: the reaper failed, so the test checked nothing: %v", i, reapErr)
+		}
 		if started && slices.ContainsFunc(reaped, func(x store.Task) bool { return x.ID == w.Tasks[0] }) {
 			t.Fatalf("iteration %d: the task was reported running and also reaped", i)
 		}
@@ -394,6 +398,7 @@ func TestPGRace_G3_ReaperReturnsExactlyWhatItReset(t *testing.T) {
 		attempts[id] = storetest.Lease(t, st, leaseReq(id, "w1"))
 	}
 	var reaped []store.Task
+	var reapErr error
 	var wg sync.WaitGroup
 	for i, id := range w.Tasks {
 		if i%2 == 0 {
@@ -407,12 +412,27 @@ func TestPGRace_G3_ReaperReturnsExactlyWhatItReset(t *testing.T) {
 		})
 	}
 	wg.Go(func() {
-		reaped, _ = st.ReclaimStaleAssignedTasks(t.Context(), time.Now().Add(time.Hour)) //nolint:errcheck // checked below
+		reaped, reapErr = st.ReclaimStaleAssignedTasks(t.Context(), time.Now().Add(time.Hour))
 	})
 	wg.Wait()
+	if reapErr != nil {
+		t.Fatalf("the reaper failed, so the test checked nothing: %v", reapErr)
+	}
+	// The even-numbered tasks are never completed, so the reaper must return
+	// at least those; an empty result would pass the loop below vacuously.
+	if len(reaped) < len(w.Tasks)/2 {
+		t.Fatalf("the reaper returned %d tasks, want at least %d (the ones nobody completed)", len(reaped), len(w.Tasks)/2)
+	}
 	for _, r := range reaped {
 		if got := mustTask(t, st, r.ID); got.Status != store.TaskStatusReady {
 			t.Errorf("reaper returned %s, which is %s now; it returned a task it did not reset", r.ID, got.Status)
+		}
+		at, err := st.GetTaskAttempt(t.Context(), attempts[r.ID].ID)
+		if err != nil {
+			t.Fatalf("GetTaskAttempt for %s: %v", r.ID, err)
+		}
+		if at.Status != store.AttemptStatusFailed {
+			t.Errorf("reaper returned %s, but its attempt is %s, not failed: the task was reset without failing its attempt", r.ID, at.Status)
 		}
 	}
 }
