@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -322,6 +323,97 @@ func TestPGRace_G8_NoDemotionUnderALease(t *testing.T) {
 	}
 	if job.Status != store.JobStatusRunning || len(demoted) != 0 {
 		t.Fatalf("job %s demoted to %s (sweep returned %v) while its lease was in flight", job.ID, job.Status, demoted)
+	}
+}
+
+// TestPGRace_G12_ReaperAndCompletionDoNotDeadlock: the reaper writes a task
+// then its attempt; a completion writes the attempt then the task. Without the
+// reaper taking the job row first they deadlock, and PostgreSQL aborts one,
+// which the store then retries. With it, neither waits on the other's row.
+func TestPGRace_G12_ReaperAndCompletionDoNotDeadlock(t *testing.T) {
+	st, p := pgRace(t)
+	w := seedWorld(t, st, 1, "w1")
+	a1 := storetest.Lease(t, st, leaseReq(w.Tasks[0], "w1"))
+	p.atStatement(sqlstore.SQLIsLatestAttempt) // the completion has closed a1, holds its row
+	before := st.TxRetries()
+	cerr, rerr, _ := interleave(t, p,
+		func() error {
+			_, err := st.CompleteTaskAttempt(t.Context(), store.AttemptCompletion{
+				AttemptID: a1.ID, TaskID: w.Tasks[0], TaskStatus: store.TaskStatusSucceeded,
+				AttemptStatus: store.AttemptStatusSucceeded, EndedAt: time.Now(),
+			})
+			return err
+		},
+		func() error {
+			_, err := st.ReclaimStaleAssignedTasks(t.Context(), time.Now().Add(time.Hour))
+			return err
+		})
+	assertPausedAt(t, p, sqlstore.SQLIsLatestAttempt)
+	if cerr != nil || rerr != nil {
+		t.Fatalf("completion err %v, reap err %v", cerr, rerr)
+	}
+	if n := st.TxRetries() - before; n != 0 {
+		t.Fatalf("%d transaction retries: the reaper and the completion deadlocked", n)
+	}
+	if got := mustTask(t, st, w.Tasks[0]); got.Status != store.TaskStatusSucceeded {
+		t.Fatalf("task = %s, want succeeded: the reaper must skip a task its worker completed", got.Status)
+	}
+}
+
+// TestPGRace_G1_AReportedTaskIsNeverReaped hammers the reaper against running
+// reports: a task its worker reported running is never returned to ready.
+func TestPGRace_G1_AReportedTaskIsNeverReaped(t *testing.T) {
+	st := storetest.Postgres(t)
+	for i := range 50 {
+		w := seedWorld(t, st, 1, fmt.Sprintf("w%d", i))
+		a := storetest.Lease(t, st, leaseReq(w.Tasks[0], w.Workers[0]))
+		var started bool
+		var reaped []store.Task
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			started, _ = st.StartTaskAttempt(t.Context(), a.ID, w.Tasks[0], "sess", time.Now()) //nolint:errcheck // asserted through started
+		})
+		wg.Go(func() {
+			reaped, _ = st.ReclaimStaleAssignedTasks(t.Context(), time.Now().Add(time.Hour)) //nolint:errcheck // asserted through reaped
+		})
+		wg.Wait()
+		if started && slices.ContainsFunc(reaped, func(x store.Task) bool { return x.ID == w.Tasks[0] }) {
+			t.Fatalf("iteration %d: the task was reported running and also reaped", i)
+		}
+	}
+}
+
+// TestPGRace_G3_ReaperReturnsExactlyWhatItReset: under concurrent completions,
+// every task the reaper returns is one it reset (ready, its attempt failed),
+// and none it returns was completed.
+func TestPGRace_G3_ReaperReturnsExactlyWhatItReset(t *testing.T) {
+	st := storetest.Postgres(t)
+	w := seedWorld(t, st, 20, "w1")
+	attempts := map[string]store.TaskAttempt{}
+	for _, id := range w.Tasks {
+		attempts[id] = storetest.Lease(t, st, leaseReq(id, "w1"))
+	}
+	var reaped []store.Task
+	var wg sync.WaitGroup
+	for i, id := range w.Tasks {
+		if i%2 == 0 {
+			continue
+		}
+		wg.Go(func() {
+			_, _ = st.CompleteTaskAttempt(t.Context(), store.AttemptCompletion{ //nolint:errcheck // outcome checked below
+				AttemptID: attempts[id].ID, TaskID: id, TaskStatus: store.TaskStatusSucceeded,
+				AttemptStatus: store.AttemptStatusSucceeded, EndedAt: time.Now(),
+			})
+		})
+	}
+	wg.Go(func() {
+		reaped, _ = st.ReclaimStaleAssignedTasks(t.Context(), time.Now().Add(time.Hour)) //nolint:errcheck // checked below
+	})
+	wg.Wait()
+	for _, r := range reaped {
+		if got := mustTask(t, st, r.ID); got.Status != store.TaskStatusReady {
+			t.Errorf("reaper returned %s, which is %s now; it returned a task it did not reset", r.ID, got.Status)
+		}
 	}
 }
 

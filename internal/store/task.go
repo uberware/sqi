@@ -298,7 +298,8 @@ type TaskStore interface {
 	// afterwards: a task leased again after this call keeps its new attempt and
 	// claims. Returns exactly the tasks this call reclaimed (invariant I2), as
 	// they are after the reset: [TaskStatusReady] with an empty
-	// assigned_worker_id.
+	// assigned_worker_id. An implementation may commit in batches; on error,
+	// the result lists the tasks already reclaimed.
 	//
 	// Statement order: the tasks are reset first, then their attempts are
 	// closed, then their claims released. A Postgres implementation must take

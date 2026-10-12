@@ -190,7 +190,7 @@ var concatAllowed = []string{
 	`s.d.CIEqual("username")`, // store.go prepareAll: Dialect method, literal column
 	`s.d.CIEqual("name")`,     // store.go prepareAll (products): Dialect method, literal column
 	`strings.TrimSuffix(strings.Repeat("?,", len(deps)), ",")`, // finalize.go: only "?" and ","
-	"placeholders",         // job.go expiredJobsQuery, task.go RetryTasks: strings.Repeat("?,", n) trimmed, only "?" and ","
+	"placeholders",         // job.go expiredJobsQuery, task.go RetryTasks and reclaimStaleBatch: strings.Repeat("?,", n) trimmed, only ? marks and ","
 	"string(placeholders)", // task.go ListTasks: a byte slice that only receives ',' and '?'
 	"inSuffix",             // task.go RetryTasks: "" or a literal around a "?" list
 	"query",                // job.go DeleteTerminalJobsBefore: expiredJobsQuery output, two literals around a "?" list

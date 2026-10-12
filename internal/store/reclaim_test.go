@@ -135,3 +135,39 @@ func TestReclaimStaleAssignedTasks_ReleasesLeakedClaimOfClosedAttempt(t *testing
 		})
 	}
 }
+
+// TestReclaimStaleAssignedTasks_ReclaimsAcrossBatches: a PostgreSQL-shaped
+// store resets the stale assignments a batch of 500 at a time; more than one
+// batch's worth are all reclaimed, each exactly once, with its attempt closed.
+func TestReclaimStaleAssignedTasks_ReclaimsAcrossBatches(t *testing.T) {
+	const n = 501 // one past the SQL store's reclaim batch
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			statuses := make([]store.TaskStatus, n)
+			for i := range statuses {
+				statuses[i] = store.TaskStatusAssigned
+			}
+			g := seedGraph(t, st, graphOpts{}, stepSpec{name: "a", status: store.StepStatusReady, tasks: statuses})
+
+			got, err := st.ReclaimStaleAssignedTasks(t.Context(), time.Now().UTC().Add(time.Minute))
+			if err != nil || len(got) != n {
+				t.Fatalf("ReclaimStaleAssignedTasks = (%d tasks, %v), want %d", len(got), err, n)
+			}
+			seen := make(map[string]bool, n)
+			for _, r := range got {
+				if seen[r.ID] {
+					t.Fatalf("task %s returned twice", r.ID)
+				}
+				seen[r.ID] = true
+			}
+			for _, task := range g.Tasks["a"] {
+				if !seen[task.ID] {
+					t.Fatalf("task %s was not reclaimed", task.ID)
+				}
+				if a := mustAttempt(t, st, g.Attempts[task.ID].ID); a.Status != store.AttemptStatusFailed {
+					t.Fatalf("attempt of task %s = %q, want failed", task.ID, a.Status)
+				}
+			}
+		})
+	}
+}

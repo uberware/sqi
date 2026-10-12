@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -93,13 +94,20 @@ SET    status = 'ready', assigned_worker_id = NULL, assigned_at = NULL, updated_
 WHERE assigned_worker_id = ?
   AND status IN ('assigned', 'running')`
 
-	// sqlReclaimStaleAssignedTasks returns tasks stuck in 'assigned' past the
-	// cutoff to ready, and RETURNING hands back exactly the rows this statement
-	// changed, as they are after the reset (invariant I2). Only 'assigned'
-	// (never 'running') so an in-progress task is never disturbed by the timer.
-	// Its binds are updated_at, then cutoff.
-	sqlReclaimStaleAssignedTasks = sqlReclaimTaskSet + `
+	// sqlStaleAssignedCandidates lists the stale assignments and their jobs,
+	// unlocked: the reaper locks the jobs and then resets each candidate under
+	// sqlReclaimStaleAssignedSuffix's re-check. Only 'assigned' (never
+	// 'running'), so an in-progress task is never disturbed by the timer.
+	sqlStaleAssignedCandidates = `
+SELECT id, job_id FROM tasks
 WHERE  status = 'assigned' AND assigned_at IS NOT NULL AND assigned_at < ?
+ORDER BY id`
+
+	// sqlReclaimStaleAssignedSuffix follows "WHERE id IN (…)": the candidates are
+	// reset only if still stale and assigned, re-checked against the committed
+	// row, and RETURNING hands back exactly the rows changed (I2). Binds: cutoff.
+	sqlReclaimStaleAssignedSuffix = `
+  AND  status = 'assigned' AND assigned_at IS NOT NULL AND assigned_at < ?
 RETURNING ` + taskCols
 
 	// Counts tasks in 'assigned' or 'running' state for per-queue policy.
@@ -442,51 +450,113 @@ func (s *Store) SetTaskUnschedulableReason(ctx context.Context, id, reason strin
 	return false, nil // no longer ready: a guarded no-op
 }
 
+// reclaimBatch bounds how many candidates one transaction resets, keeping
+// the IN list and the locks one transaction holds small.
+const reclaimBatch = 500
+
 // ReclaimStaleAssignedTasks implements [store.TaskStore].
 //
-// One transaction returns the stale assignments to ready, then closes each
-// reclaimed task's running attempts as failed and releases those attempts'
-// claims (invariant I3). The returned set is the UPDATE's RETURNING set, so it
-// is exactly the tasks this call reset (invariant I2); the scheduler never has
-// to look an attempt up after the fact, so it cannot close the new attempt of a
-// task that has been leased again in between.
+// It lists the stale assignments unlocked, then, a batch at a time, locks the
+// batch's job rows sorted by id and resets the batch with a re-guarded UPDATE
+// … RETURNING, then closes each reset task's running attempts and releases
+// their claims (I3). The returned set is the RETURNING set: exactly what was
+// reset (I2), so the scheduler never has to look an attempt up after the fact
+// and cannot close the new attempt of a task leased again in between. Each
+// batch is its own committed transaction, so on error the result lists the
+// tasks earlier batches already reclaimed.
 //
-// Statement order: the tasks are reset first and only then are their
-// attempts closed and their claims released, the order CancelJobExecution uses.
-// The writer this order guards against is the worker's own report on a stale
-// assigned task. On Postgres the UPDATE takes each task's row lock, so a running
-// or terminal report already holding the row is waited for, and the UPDATE then
-// re-checks status = 'assigned' against the committed row and skips a task the
-// report moved on. Closing attempts first would let a report move the task
-// (assigned to running, say) after its attempt was already closed as failed. A
-// LeaseTask is not a competitor here: it moves a ready row, which this UPDATE's
-// predicate does not match, and the task it leaves assigned is not stale.
-//
-// Anchors: none are taken, deliberately. A PostgreSQL store must take them
-// BEFORE the UPDATE, and without locking any task row first: read the candidate
-// task IDs and their job IDs UNLOCKED, take the job-row anchors sorted by id,
-// then run the UPDATE re-guarded as WHERE id IN (candidates) AND status =
-// 'assigned' AND assigned_at < cutoff RETURNING. Locking the task rows first
-// (SELECT ... FOR UPDATE on tasks) or anchoring after the UPDATE ... RETURNING
-// both take a task row before its job row, and every job-level operation locks
-// the job row before its tasks, so the two orders can deadlock. The anchors are
-// also what orders the reaper against CompleteTaskAttempt, which writes the
-// attempt row before the task row, the reverse of this function: both under the
-// same job-row lock, they cannot interleave.
+// Order: no task row is locked before its job row (every job-level operation
+// locks the job first, so the reverse would deadlock), and the job lock is what
+// orders the reaper against CompleteTaskAttempt, which writes the attempt
+// before the task, the reverse of the reaper. Within the transaction the tasks
+// are reset before their attempts are closed, so a worker's report already
+// holding a task row is waited for and the re-check then skips the task it
+// moved; closing attempts first would let a report move the task (assigned to
+// running, say) after its attempt was already closed as failed. A LeaseTask is
+// not a competitor: it moves a ready row, which the re-check does not match,
+// and the task it leaves assigned is not stale.
 func (s *Store) ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time) ([]store.Task, error) {
+	cutoffText := TimeText(cutoff.UTC())
+	cands, err := s.staleAssignedCandidates(ctx, cutoffText)
+	if err != nil {
+		return nil, err
+	}
+	var reclaimed []store.Task
+	for batch := range slices.Chunk(cands, reclaimBatch) {
+		got, err := s.reclaimStaleBatch(ctx, batch, cutoffText)
+		if err != nil {
+			return reclaimed, err
+		}
+		reclaimed = append(reclaimed, got...)
+	}
+	return reclaimed, nil
+}
+
+// staleCandidate is a stale assignment the reaper will re-check under its job
+// row's lock.
+type staleCandidate struct{ taskID, jobID string }
+
+// staleAssignedCandidates lists, in task id order, the stale assignments and
+// their jobs, unlocked. The read goes through the write pool so that it sees
+// this store's own committed writes. Correctness does not rest on how fresh the
+// list is: each candidate is reset only under its job's lock and the UPDATE's
+// re-check, so a stale entry is skipped and a missing one is found by the next
+// sweep.
+func (s *Store) staleAssignedCandidates(ctx context.Context, cutoffText string) ([]staleCandidate, error) {
+	rows, err := s.w.QueryContext(ctx, sqlStaleAssignedCandidates, cutoffText)
+	if err != nil {
+		return nil, fmt.Errorf("store: list stale assigned tasks: %w", mapErr(err))
+	}
+	defer rows.Close()
+	var out []staleCandidate
+	for rows.Next() {
+		var c staleCandidate
+		if err := rows.Scan(&c.taskID, &c.jobID); err != nil {
+			return nil, fmt.Errorf("store: scan stale assigned task: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, mapErr(classifyErr(s.d, rows.Err()))
+}
+
+// reclaimStaleBatch resets one batch of candidates in one transaction: their
+// job rows locked sorted by id, then the re-guarded reset, then each reset
+// task's attempts and claims. Server time stamps updated_at, ended_at and
+// released_at alike.
+func (s *Store) reclaimStaleBatch(ctx context.Context, batch []staleCandidate, cutoffText string) ([]store.Task, error) {
+	jobIDs := make([]string, 0, len(batch))
+	args := make([]any, 0, len(batch)+2)
+	nowText := TimeText(time.Now().UTC())
+	args = append(args, nowText) // sqlReclaimTaskSet's updated_at
+	for _, c := range batch {
+		jobIDs = append(jobIDs, c.jobID)
+		args = append(args, c.taskID)
+	}
+	args = append(args, cutoffText)
+	slices.Sort(jobIDs)
+	jobIDs = slices.Compact(jobIDs)
+	anchors := make([]Anchor, 0, len(jobIDs))
+	for _, id := range jobIDs {
+		anchors = append(anchors, jobAnchor(id))
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",")
+	// placeholders holds only "?" marks; every value is bound.
+	query := sqlReclaimTaskSet + ` WHERE id IN (` + placeholders + `)` + sqlReclaimStaleAssignedSuffix
+
 	var reclaimed []store.Task
 	err := s.inTx(ctx, "reclaim stale assigned tasks", func(tx *dbTx) (txOutcome, error) {
-		// Order: the tasks, then each one's attempts and claims. Server time stamps
-		// updated_at, ended_at and released_at alike.
-		nowText := TimeText(time.Now().UTC())
+		reclaimed = nil
+		if err := tx.lockAnchors(ctx, anchors...); err != nil {
+			return txRollback, err
+		}
 		var err error
-		reclaimed, err = queryTasksTx(ctx, tx, sqlReclaimStaleAssignedTasks, nowText, TimeText(cutoff.UTC()))
+		reclaimed, err = queryTasksTx(ctx, tx, query, args...)
 		if err != nil {
 			return txRollback, fmt.Errorf("store: reclaim stale assigned tasks: %w", err)
 		}
 		if len(reclaimed) == 0 {
 			reclaimed = nil
-			return txRollback, nil // nothing was stale; the rollback ends the empty transaction
+			return txRollback, nil // every candidate moved on; the rollback ends the transaction
 		}
 		for _, t := range reclaimed {
 			if err := closeTaskAttemptsTx(ctx, tx, t.ID, store.AttemptStatusFailed, "", nowText); err != nil {
