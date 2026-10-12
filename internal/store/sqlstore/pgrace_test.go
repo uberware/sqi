@@ -622,20 +622,20 @@ func TestPGRace_G7_RetentionRetriesALogThatRaced(t *testing.T) {
 	}
 }
 
-// anchorRecorder is the PostgreSQL dialect with the job anchors a store takes
-// recorded in order.
+// anchorRecorder is the PostgreSQL dialect with the job anchors each
+// transaction takes recorded in order, keyed by transaction.
 type anchorRecorder struct {
 	sqlstore.Dialect
 
 	mu   *sync.Mutex
-	jobs *[]string
+	jobs map[*sql.Tx][]string
 }
 
 func (d anchorRecorder) LockAnchors(ctx context.Context, tx *sql.Tx, anchors ...sqlstore.Anchor) error {
 	d.mu.Lock()
 	for _, a := range anchors {
 		if a.Table == "jobs" {
-			*d.jobs = append(*d.jobs, a.ID)
+			d.jobs[tx] = append(d.jobs[tx], a.ID)
 		}
 	}
 	d.mu.Unlock()
@@ -644,12 +644,15 @@ func (d anchorRecorder) LockAnchors(ctx context.Context, tx *sql.Tx, anchors ...
 
 // TestPGRace_RetentionLocksItsCandidatesInIDOrder: the sweep holds every lock
 // until its one commit, so it must take the job anchors in id order whatever
-// order its SELECT returned them in (insertion order here, with no ORDER BY).
+// order its SELECT returned them in (heap order here, with no ORDER BY).
+//
+// The order is checked per transaction: under SQI_TEST_PG_FORCE_TX_RETRY=1 the
+// sweep runs twice, the rehearsal rolled back, and each run must be sorted.
 func TestPGRace_RetentionLocksItsCandidatesInIDOrder(t *testing.T) {
 	var mu sync.Mutex
-	var locked []string
+	locked := map[*sql.Tx][]string{}
 	opts := postgres.DefaultOptions()
-	opts.WrapDialect = func(d sqlstore.Dialect) sqlstore.Dialect { return anchorRecorder{Dialect: d, mu: &mu, jobs: &locked} }
+	opts.WrapDialect = func(d sqlstore.Dialect) sqlstore.Dialect { return anchorRecorder{Dialect: d, mu: &mu, jobs: locked} }
 	st := storetest.PostgresWith(t, opts)
 	farm, queue := seedFarmQueueRace(t, st)
 	ids := []string{"job-c", "job-a", "job-d", "job-b"}
@@ -659,8 +662,13 @@ func TestPGRace_RetentionLocksItsCandidatesInIDOrder(t *testing.T) {
 			Task(id+"-t", "step-"+id, store.TaskStatusSucceeded).
 			Submit(t, st)
 	}
+	// The test proves the sort only if the sweep's SELECT, which has no ORDER
+	// BY, would hand the jobs back unsorted without it.
+	if heap := heapOrderOfJobs(t, st); slices.IsSorted(heap) {
+		t.Fatalf("a SELECT without ORDER BY returned %v, already in id order: this test would pass without the sort", heap)
+	}
 	mu.Lock()
-	locked = nil
+	clear(locked)
 	mu.Unlock()
 	deleted, err := st.DeleteTerminalJobsBefore(t.Context(), time.Now().Add(time.Hour), true)
 	if err != nil {
@@ -671,12 +679,50 @@ func TestPGRace_RetentionLocksItsCandidatesInIDOrder(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if want := []string{"job-a", "job-b", "job-c", "job-d"}; !slices.Equal(locked, want) {
-		t.Fatalf("job anchors taken in the order %v, want %v", locked, want)
+	if len(locked) == 0 {
+		t.Fatal("no transaction took a job anchor: the recorder saw nothing")
+	}
+	want := []string{"job-a", "job-b", "job-c", "job-d"}
+	for _, got := range locked {
+		if !slices.Equal(got, want) {
+			t.Errorf("a sweep transaction took the job anchors in the order %v, want %v", got, want)
+		}
 	}
 	if got := idsOf(deleted); !slices.IsSorted(got) {
 		t.Fatalf("purged jobs reported in the order %v, want id order", got)
 	}
+}
+
+// heapOrderOfJobs returns the job ids of the terminal jobs as a plain SELECT
+// without ORDER BY yields them, on a separate connection.
+func heapOrderOfJobs(t *testing.T, st *postgres.Store) []string {
+	t.Helper()
+	raw, err := sql.Open("pgx", st.DSNForTest())
+	if err != nil {
+		t.Fatalf("open a separate connection: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := raw.Close(); err != nil {
+			t.Errorf("close the separate connection: %v", err)
+		}
+	})
+	rows, err := raw.QueryContext(t.Context(), `SELECT id FROM jobs WHERE status IN ('completed', 'canceled', 'failed')`)
+	if err != nil {
+		t.Fatalf("select job ids: %v", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan job id: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read job ids: %v", err)
+	}
+	return ids
 }
 
 func idsOf(ds []store.DeletedJob) []string {
