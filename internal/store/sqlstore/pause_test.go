@@ -5,6 +5,7 @@ package sqlstore_test
 import (
 	"context"
 	"database/sql"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -32,6 +33,7 @@ type pause struct {
 	stmt    string
 	table   string
 	id      string
+	what    string // the point the pause fired at, for matched
 	hit     chan struct{}
 	release chan struct{}
 	once    sync.Once
@@ -53,12 +55,16 @@ func (p *pause) atAnchor(table, id string) {
 	p.table, p.id, p.armed = table, id, true
 }
 
-// maybe blocks the caller if cond holds and the pause is armed and unfired.
-func (p *pause) maybe(cond func(*pause) bool) {
+// maybe blocks the caller if the pause is armed and unfired and match reports
+// a hit. match also names the point (the query text, or the anchor), which
+// matched returns.
+func (p *pause) maybe(match func(*pause) (what string, hit bool)) {
 	p.mu.Lock()
-	fire := p.armed && !p.fired && cond(p)
-	if fire {
-		p.fired = true
+	fire := false
+	if p.armed && !p.fired {
+		if what, hit := match(p); hit {
+			fire, p.fired, p.what = true, true, what
+		}
 	}
 	p.mu.Unlock()
 	if fire {
@@ -70,13 +76,14 @@ func (p *pause) maybe(cond func(*pause) bool) {
 // resume lets the paused transaction go on. Safe to call more than once.
 func (p *pause) resume() { p.once.Do(func() { close(p.release) }) }
 
-func (p *pause) waitHit(t *testing.T) {
-	t.Helper()
-	select {
-	case <-p.hit:
-	case <-time.After(10 * time.Second):
-		t.Fatal("pause point never reached: the operation did not run the armed statement or anchor dynamically")
-	}
+// matched returns the point the pause fired at: the full text of the statement,
+// or "anchor <table>/<id>"; "" until it fires. A race test asserts on it to
+// prove it parked at the statement it meant, not at another statement that
+// merely contains the armed text.
+func (p *pause) matched() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.what
 }
 
 // pauseDialect is the PostgreSQL dialect with the pause hooked in.
@@ -87,18 +94,18 @@ type pauseDialect struct {
 }
 
 func (d pauseDialect) Rebind(q string) string {
-	d.p.maybe(func(p *pause) bool { return p.stmt != "" && strings.Contains(q, p.stmt) })
+	d.p.maybe(func(p *pause) (string, bool) { return q, p.stmt != "" && strings.Contains(q, p.stmt) })
 	return d.Dialect.Rebind(q)
 }
 
 func (d pauseDialect) LockAnchors(ctx context.Context, tx *sql.Tx, anchors ...sqlstore.Anchor) error {
-	d.p.maybe(func(p *pause) bool {
+	d.p.maybe(func(p *pause) (string, bool) {
 		for _, a := range anchors {
 			if p.table != "" && a.Table == p.table && a.ID == p.id {
-				return true
+				return "anchor " + a.Table + "/" + a.ID, true
 			}
 		}
-		return false
+		return "", false
 	})
 	return d.Dialect.LockAnchors(ctx, tx, anchors...)
 }
@@ -106,8 +113,16 @@ func (d pauseDialect) LockAnchors(ctx context.Context, tx *sql.Tx, anchors ...sq
 // pgRace opens a PostgreSQL store with a pause hook (skipped without
 // PostgreSQL). The pause is released when the test ends, so a failed test
 // never leaves a transaction parked.
+//
+// It skips under SQI_TEST_PG_FORCE_TX_RETRY=1. PostgresWith then rehearses
+// every transaction once and rolls the rehearsal back, so the one-shot pause
+// would fire in the rehearsal and the run that commits would never meet the
+// forced interleaving: the test would pass without testing anything.
 func pgRace(t *testing.T) (*postgres.Store, *pause) {
 	t.Helper()
+	if os.Getenv("SQI_TEST_PG_FORCE_TX_RETRY") == "1" {
+		t.Skip("a forced interleaving cannot survive a rehearsed transaction: the pause would fire in the rolled-back run")
+	}
 	p := newPause()
 	opts := postgres.DefaultOptions()
 	opts.WrapDialect = func(d sqlstore.Dialect) sqlstore.Dialect { return pauseDialect{Dialect: d, p: p} }
@@ -121,28 +136,46 @@ func pgRace(t *testing.T) (*postgres.Store, *pause) {
 // it is waiting on a lock the paused transaction holds), resumes paused, and
 // waits for both. competitorWaited reports whether competitor was still
 // running when paused resumed, that is, whether a lock made it wait.
+//
+// It fails the test at once if paused finishes without reaching the armed
+// point (reporting paused's error), if the point is not reached within 10s,
+// or if either operation is still running 30s after the resume.
 func interleave(t *testing.T, p *pause, paused, competitor func() error) (pausedErr, competitorErr error, competitorWaited bool) {
 	t.Helper()
 	const settle = 750 * time.Millisecond
 	pdone := make(chan error, 1)
 	go func() { pdone <- paused() }()
-	p.waitHit(t)
+	select {
+	case <-p.hit:
+	case err := <-pdone:
+		t.Fatalf("paused operation finished without reaching the pause point: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("pause point never reached: the operation did not run the armed statement or anchor dynamically")
+	}
 	cdone := make(chan error, 1)
 	go func() { cdone <- competitor() }()
 	select {
 	case competitorErr = <-cdone:
 		p.resume()
-		return <-pdone, competitorErr, false
+		return finish(t, pdone, "paused operation"), competitorErr, false
 	case <-time.After(settle):
 	}
 	p.resume()
-	pausedErr = <-pdone
+	pausedErr = finish(t, pdone, "paused operation")
+	return pausedErr, finish(t, cdone, "competitor"), true
+}
+
+// finish waits for an operation interleave started, failing the test if it is
+// still running 30s after the paused transaction resumed.
+func finish(t *testing.T, done <-chan error, name string) error {
+	t.Helper()
 	select {
-	case competitorErr = <-cdone:
+	case err := <-done:
+		return err
 	case <-time.After(30 * time.Second):
-		t.Fatal("competitor still blocked 30s after the paused transaction resumed")
+		t.Fatalf("%s still blocked 30s after the paused transaction resumed", name)
+		return nil
 	}
-	return pausedErr, competitorErr, true
 }
 
 // TestPause_HoldsATransactionAtTheArmedStatement proves the hook works before
@@ -158,32 +191,47 @@ func TestPause_HoldsATransactionAtTheArmedStatement(t *testing.T) {
 	if firstErr != nil || secondErr != nil {
 		t.Fatalf("cancels: first %v, second %v", firstErr, secondErr)
 	}
+	if got := p.matched(); !strings.Contains(got, sqlstore.SQLCancelJobTasks) {
+		t.Fatalf("paused at %q, want the task UPDATE", got)
+	}
 	if !waited {
 		t.Fatal("the second cancel did not wait for the first's job-row lock")
 	}
 }
 
 // TestPause_StopsBeforeTheArmedAnchorIsLocked proves an anchor point fires
-// before the lock is taken: a cancel paused at its job anchor holds nothing
-// yet, so a lease of the job's task (which does not anchor the job) goes
-// through without waiting, and the resumed cancel then cancels the task the
-// lease assigned.
+// before the lock is taken: while a cancel is parked at its job anchor, a
+// separate connection can lock the job row FOR UPDATE NOWAIT (which fails with
+// lock_not_available if the cancel already holds it), and the resumed cancel
+// then takes the lock and cancels the job's leased task.
 func TestPause_StopsBeforeTheArmedAnchorIsLocked(t *testing.T) {
 	st, p := pgRace(t)
 	w := seedWorld(t, st, 1, "w1")
+	storetest.Lease(t, st, leaseReq(w.Tasks[0], "w1"))
+	raw, err := sql.Open("pgx", st.DSNForTest())
+	if err != nil {
+		t.Fatalf("open a separate connection: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := raw.Close(); err != nil {
+			t.Errorf("close the separate connection: %v", err)
+		}
+	})
 	p.atAnchor("jobs", w.JobID)
-	var lease store.LeaseResult
-	cancelErr, leaseErr, waited := interleave(t, p,
+	cancelErr, lockErr, waited := interleave(t, p,
 		func() error { _, err := st.CancelJobExecution(t.Context(), w.JobID, "cancel", time.Now()); return err },
-		func() (err error) { lease, err = st.LeaseTask(t.Context(), leaseReq(w.Tasks[0], "w1")); return err })
-	if cancelErr != nil || leaseErr != nil {
-		t.Fatalf("cancel %v, lease %v", cancelErr, leaseErr)
+		func() error {
+			var one int
+			return raw.QueryRowContext(t.Context(), `SELECT 1 FROM jobs WHERE id = $1 FOR UPDATE NOWAIT`, w.JobID).Scan(&one)
+		})
+	if cancelErr != nil {
+		t.Fatalf("cancel: %v", cancelErr)
 	}
-	if waited {
-		t.Fatal("the lease waited: the anchor pause fired after the job row was locked")
+	if lockErr != nil || waited {
+		t.Fatalf("job row not free while the cancel was parked at its anchor (err %v, waited %v): the pause fired after the lock", lockErr, waited)
 	}
-	if lease.Outcome != store.LeaseLeased {
-		t.Fatalf("lease outcome = %v, want leased", lease.Outcome)
+	if got, want := p.matched(), "anchor jobs/"+w.JobID; got != want {
+		t.Fatalf("paused at %q, want %q", got, want)
 	}
 	task, err := st.GetTask(t.Context(), w.Tasks[0])
 	if err != nil {
