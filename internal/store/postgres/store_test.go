@@ -6,8 +6,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -95,6 +97,66 @@ func TestTimestampColumns_RejectAnyOtherForm(t *testing.T) {
 func TestPing(t *testing.T) {
 	if err := storetest.Postgres(t).Ping(t.Context()); err != nil {
 		t.Fatalf("Ping: %v", err)
+	}
+}
+
+// TestPostgres_PingWhileLargeSubmission: readiness answers within the health
+// budget while a 50,000-task submission holds a write connection.
+func TestPostgres_PingWhileLargeSubmission(t *testing.T) {
+	st := storetest.Postgres(t)
+	farm, err := st.CreateFarm(t.Context(), store.Farm{ID: "f", Name: "f"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue, err := st.CreateQueue(t.Context(), store.Queue{ID: "q", FarmID: farm.ID, Name: "q"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := storetest.NewJob("big", farm.ID, queue.ID).Step("big-s", store.StepStatusReady)
+	for i := range 50_000 {
+		seed.Task(fmt.Sprintf("big-%d", i), "big-s", store.TaskStatusReady)
+	}
+
+	// The submission runs off the test goroutine, so it reports through a
+	// channel rather than failing the test itself (FailNow is for the test's
+	// own goroutine).
+	submitted := make(chan error, 1)
+	go func() {
+		_, err := st.CreateJobSubmission(t.Context(), seed.Sub)
+		submitted <- err
+	}()
+	var (
+		pings   int
+		slowest time.Duration
+	)
+	for {
+		select {
+		case err := <-submitted:
+			if err != nil {
+				t.Fatalf("CreateJobSubmission: %v", err)
+			}
+			if pings == 0 {
+				t.Fatal("the submission finished before the first ping; the measurement saw nothing")
+			}
+			t.Logf("%d pings during the submission, slowest %s", pings, slowest)
+			if counts, err := st.CountTasksByJob(t.Context(), "big"); err != nil || counts[store.TaskStatusReady] != 50_000 {
+				t.Errorf("after the submission the job has %v tasks (err %v), want 50000 ready", counts, err)
+			}
+			return
+		default:
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		start := time.Now()
+		err := st.Ping(ctx)
+		cancel()
+		elapsed := time.Since(start)
+		if err != nil {
+			<-submitted // let the submission end before the store closes beneath it
+			t.Fatalf("Ping during submission failed after %s: %v", elapsed, err)
+		}
+		slowest = max(slowest, elapsed)
+		pings++
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
