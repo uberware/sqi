@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/auth/oidc"
+	"github.com/uberware/sqi/internal/pgdsn"
 )
 
 // Config is the complete runtime configuration for sqi-server.
@@ -176,10 +177,23 @@ const (
 	MaxNATSAuthJoinTokenTTL = 24 * time.Hour
 )
 
-// StoreConfig controls the embedded SQLite state store.
+// The store drivers.
+const (
+	StoreDriverSQLite   = "sqlite"
+	StoreDriverPostgres = "postgres"
+)
+
+// StoreConfig controls the state store: the embedded SQLite database (the
+// default) or an external PostgreSQL server.
 type StoreConfig struct {
+	// Driver selects the store: "sqlite" (the default, embedded) or
+	// "postgres" (an external PostgreSQL 16 or later).
+	// Env: SQI_STORE_DRIVER
+	Driver string `yaml:"driver"`
+
 	// SQLitePath is the path to the SQLite database file.
 	// Created at startup if it does not exist.
+	// Ignored when Driver is postgres.
 	// Env: SQI_STORE_SQLITE_PATH
 	SQLitePath string `yaml:"sqlite_path"`
 
@@ -190,8 +204,38 @@ type StoreConfig struct {
 	// TRUNCATE checkpoint runs only on clean shutdown.
 	// Must be > 0. Set to a large value (e.g. "24h") to effectively disable
 	// periodic checkpointing (a final checkpoint always runs on shutdown).
+	// Ignored when Driver is postgres.
 	// Env: SQI_STORE_CHECKPOINT_INTERVAL
 	CheckpointInterval time.Duration `yaml:"checkpoint_interval"`
+
+	// Postgres configures the PostgreSQL store. Used only when Driver is
+	// postgres.
+	Postgres PostgresStoreConfig `yaml:"postgres"`
+}
+
+// PostgresStoreConfig configures the PostgreSQL store.
+type PostgresStoreConfig struct {
+	// DSN is the connection string, in URL (postgres://user:pass@host/db) or
+	// keyword/value (host=… dbname=…) form. Its password is redacted in YAML
+	// output.
+	// Env: SQI_STORE_POSTGRES_DSN
+	DSN string `yaml:"dsn"`
+
+	// MaxConns is the write pool's size; one connection holds the
+	// single-server lock. 2–1000.
+	// Env: SQI_STORE_POSTGRES_MAX_CONNS
+	MaxConns int `yaml:"max_conns"`
+}
+
+// MarshalYAML redacts the DSN's password so it never appears in YAML output
+// (e.g. `sqi-server config print`), as [LDAPConfig.MarshalYAML] does the bind
+// password. It does not affect unmarshaling or the loaded value. Round-tripping
+// a redacted dump is intentionally not supported — redaction wins.
+func (p PostgresStoreConfig) MarshalYAML() (any, error) {
+	type plain PostgresStoreConfig
+	out := plain(p)
+	out.DSN = pgdsn.Redact(out.DSN)
+	return out, nil
 }
 
 // LogConfig controls structured log output.
@@ -816,8 +860,10 @@ func DefaultConfig() Config {
 			},
 		},
 		Store: StoreConfig{
+			Driver:             StoreDriverSQLite,
 			SQLitePath:         "sqi.db",
 			CheckpointInterval: 5 * time.Minute,
+			Postgres:           PostgresStoreConfig{MaxConns: 16},
 		},
 		Log: LogConfig{
 			Level:      "info",

@@ -3,10 +3,33 @@
 Deployment artifacts for `sqi`:
 
 - `deploy/docker/` — Dockerfiles for the server and worker images.
-- `deploy/docker-compose.yml` — user-facing all-in-one stack (server + worker).
+- `deploy/docker-compose.yml` — user-facing all-in-one stack (server + worker),
+  state in embedded SQLite.
+- `deploy/docker-compose.postgres.yml` — the same stack with its state store on
+  a PostgreSQL 18 container (see below).
 - `deploy/docker-compose.smoke.yml` — minimal stack used by CI smoke tests.
 - `deploy/systemd/` — sample unit files for bare-metal Linux worker installs.
 - `deploy/config/` — pointer to the canonical example configs under `config/`.
+
+## PostgreSQL
+
+`deploy/docker-compose.postgres.yml` runs PostgreSQL 18 beside the server and
+worker and sets `store.driver: postgres`, so the server creates its schema
+there on first start:
+
+```sh
+export SQI_POSTGRES_PASSWORD='choose-a-strong-password'
+docker compose -f deploy/docker-compose.postgres.yml up -d --build
+```
+
+The password is required; it sets the database role's password and reaches the
+server as `PGPASSWORD`, so the DSN in the file carries none. `--build` builds
+the images from this checkout, because PostgreSQL support is not yet in a
+published release (the latest is `v0.3.0`); once a release includes it, pin
+its tag in the file and drop `--build`. Backups use `pg_dump` inside the database
+container (the commands are in the file's header). To use an existing
+PostgreSQL server instead of the container, see
+[`docs/operations.md`](../docs/operations.md#running-on-postgresql).
 
 ## TLS
 

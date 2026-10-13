@@ -24,8 +24,16 @@ type Dialect interface {
 	BindBool(b bool) any
 	// CIEqual returns "<col> = ?" compared case-insensitively.
 	CIEqual(col string) string
-	// CILike returns "<col> LIKE ?" matched case-insensitively.
+	// CILike returns "<col> LIKE ?" matched case-insensitively, in the dialect's
+	// own form (PostgreSQL: "<col> ILIKE ? ESCAPE ''"). Like CIEqual it may carry
+	// only the column, a "?" and literals.
 	CILike(col string) string
+	// ForUpdate returns the clause that makes a SELECT lock the rows it reads
+	// until the transaction ends (PostgreSQL: " FOR UPDATE"), or "" where the
+	// database takes no row locks (SQLite, whose single write connection
+	// serializes every writer). A statement that exists only to take those
+	// locks is not run when it is "".
+	ForUpdate() string
 }
 
 // ErrClass is what a driver error means to the store.
@@ -44,10 +52,17 @@ const (
 type LockMode int
 
 // LockUpdate excludes other writers of the row; LockShare only keeps the row
-// from changing (an upstream job a dependent waits on).
+// from changing (an upstream job a dependent waits on). LockNoKeyUpdate
+// (PostgreSQL's FOR NO KEY UPDATE) excludes other writers too: it conflicts
+// with itself, with LockUpdate and LockShare, and with an UPDATE or DELETE of
+// the row. It does not conflict with the FOR KEY SHARE lock a foreign-key
+// check takes on a referenced row, so inserting a row that references the
+// anchor (a job referencing its queue and farm, a claim referencing its pool)
+// does not wait for it, nor it for the insert. SQLite ignores every mode.
 const (
 	LockUpdate LockMode = iota
 	LockShare
+	LockNoKeyUpdate
 )
 
 // Anchor is a row a transaction locks before it writes, per the anchor-row
@@ -158,15 +173,18 @@ func newDBPool(db *sql.DB, d Dialect) *dbPool {
 }
 
 // dbTx runs statements in a transaction through the dialect. tx is the raw
-// transaction, for Stmt and the anchor locks.
+// transaction, for Stmt and the anchor locks. order is where it stands in the
+// global lock order ([lockOrder]); a dbTx is built for each run of a
+// transaction, so it never outlives one.
 type dbTx struct {
 	dbConn
 
-	tx *sql.Tx
+	tx    *sql.Tx
+	order lockOrder
 }
 
 func newDBTx(tx *sql.Tx, d Dialect) *dbTx {
-	return &dbTx{dbConn: dbConn{q: tx, d: d}, tx: tx}
+	return &dbTx{dbConn: dbConn{q: tx, d: d}, tx: tx, order: newLockOrder()}
 }
 
 // Stmt returns stmt bound to this transaction.
@@ -175,7 +193,11 @@ func (t *dbTx) Stmt(ctx context.Context, stmt *dbStmt) *dbStmt {
 }
 
 // lockAnchors locks each anchor row, in the order given, in this transaction.
+// Anchors out of the global lock order are refused ([lockOrder.check]).
 func (t *dbTx) lockAnchors(ctx context.Context, anchors ...Anchor) error {
+	if err := t.order.check(anchors); err != nil {
+		return err
+	}
 	return t.d.LockAnchors(ctx, t.tx, anchors...)
 }
 

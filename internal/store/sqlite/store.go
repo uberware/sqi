@@ -48,9 +48,8 @@
 // anchor rows via Dialect.LockAnchors, which the SQLite dialect leaves a
 // no-op because the one write connection already serializes every write
 // transaction. A store with concurrent writers must lock those rows instead,
-// and the anchors alone do not suffice there: ReclaimStaleAssignedTasks and
-// DemoteStalledJobs name none, and docs/architecture.md lists the gaps the
-// anchor table leaves open.
+// and the anchors alone do not suffice there: docs/architecture.md lists the
+// gaps the anchor table leaves open.
 // Single-row writes carry their own precondition in their WHERE clause on
 // either kind of store.
 //
@@ -59,9 +58,10 @@
 //
 // # Migrations
 //
-// When [Options.AutoMigrate] is true (the default), [Open] calls goose.Up
-// against the embedded migration FS before returning. Set AutoMigrate to false
-// in HA deployments where migrations are applied explicitly with
+// When [Options.AutoMigrate] is true (the default), [Open] applies every
+// pending migration through a goose provider over the embedded SQLite
+// migration set ([migrations.NewProvider]) before returning. Set AutoMigrate
+// to false in HA deployments where migrations are applied explicitly with
 // "sqi-server migrate up" before rolling out new server instances.
 package sqlite
 
@@ -72,7 +72,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite" // register the "sqlite" driver
 
 	"github.com/uberware/sqi/internal/store"
@@ -100,8 +99,8 @@ var _ store.Store = (*Store)(nil)
 
 // Options configures [Open].
 type Options struct {
-	// AutoMigrate controls whether Open runs goose.Up to apply any pending
-	// migrations before returning. Default: true.
+	// AutoMigrate controls whether Open applies any pending migrations (via
+	// [migrations.NewProvider]) before returning. Default: true.
 	//
 	// Set to false in HA deployments where migrations are applied explicitly
 	// via "sqi-server migrate up" before starting new server instances.
@@ -158,12 +157,12 @@ func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 	}
 
 	if opts.AutoMigrate {
-		goose.SetBaseFS(migrations.FS)
-		if err = goose.SetDialect("sqlite3"); err != nil {
+		p, err := migrations.NewProvider(db, "sqlite")
+		if err != nil {
 			_ = db.Close()
-			return nil, fmt.Errorf("sqlite: set goose dialect: %w", err)
+			return nil, fmt.Errorf("sqlite: migrations: %w", err)
 		}
-		if err = goose.Up(db, "."); err != nil {
+		if _, err := p.Up(ctx); err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("sqlite: migrate up: %w", err)
 		}

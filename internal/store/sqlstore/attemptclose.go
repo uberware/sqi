@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -139,36 +140,30 @@ func closeAttemptAndReleaseTx(ctx context.Context, tx *dbTx, c store.AttemptComp
 // move the task. The claims are released before the task row is touched, and
 // the release commits even when the task move is refused, so a canceled task's
 // late report still frees its pool slots. The latest-attempt check runs after
-// the release and before the task move. Here the single write connection makes
-// the check and the move one step. On Postgres it does not: a LeaseTask
-// committing between the check and the compare-and-set's read would make a
-// superseded report look current, and LeaseTask does not take the job row, so a
-// PostgreSQL store must lock the task row (FOR UPDATE, after the job anchor)
-// before the check, so that a lease in flight is waited for and its attempt is
-// seen.
+// the release and before the task move. The job anchor makes the two one step:
+// LeaseTask holds the task's job row FOR SHARE, so a lease in flight is waited
+// for and its attempt is seen by the check, and a later lease waits for this
+// commit. No lease can add a newer attempt between the check and the
+// compare-and-set's read (which would make a superseded report look current),
+// so no task-row lock is needed. On SQLite the single write connection gives
+// the same.
 func (s *Store) CompleteTaskAttempt(ctx context.Context, c store.AttemptCompletion) (store.CompletionResult, error) {
-	var result store.CompletionResult
-	err := s.inTx(ctx, "complete task attempt", func(tx *dbTx) (txOutcome, error) {
+	return inTxValue(ctx, s, "complete task attempt", func(tx *dbTx) (store.CompletionResult, txOutcome, error) {
 		if err := lockTaskJobTx(ctx, tx, c.TaskID); err != nil {
-			return txRollback, err // no such task => ErrNotFound
+			return store.CompletionResult{}, txRollback, err // no such task => ErrNotFound
 		}
 		// Server time stamps the claims' released_at and the task row's updated_at:
 		// c.EndedAt comes from the worker's clock and belongs to the attempt only.
 		now := time.Now().UTC()
 		if err := closeAttemptAndReleaseTx(ctx, tx, c, TimeText(c.EndedAt.UTC()), TimeText(now)); err != nil {
-			return txRollback, err
+			return store.CompletionResult{}, txRollback, err
 		}
-		var err error
-		result, err = applyCompletionTx(ctx, tx, c, now)
+		result, err := applyCompletionTx(ctx, tx, c, now)
 		if err != nil {
-			return txRollback, err
+			return store.CompletionResult{}, txRollback, err
 		}
-		return txCommit, nil
+		return result, txCommit, nil
 	})
-	if err != nil {
-		return store.CompletionResult{}, err
-	}
-	return result, nil
 }
 
 // applyCompletionTx is the task half of [Store.CompleteTaskAttempt], run after
@@ -243,25 +238,30 @@ SET    status = 'canceled', updated_at = ?, unschedulable_reason = '',
        failure_reason = CASE WHEN failure_reason = '' THEN ? ELSE failure_reason END
 WHERE  id = ? AND status IN ('pending', 'ready', 'assigned', 'running')`
 
-	// sqlCloseTaskRunningAttempts closes a task's running attempts with the
-	// given status. An empty message leaves the stored one, so a close that has
-	// nothing to say never blanks what the attempt already recorded.
-	sqlCloseTaskRunningAttempts = `
+	// sqlCloseTasksRunningAttempts closes the running attempts of the tasks
+	// whose ids complete its IN list with the given status. An empty message
+	// leaves the stored one, so a close that has nothing to say never blanks
+	// what the attempt already recorded. Binds: status, ended_at, message, then
+	// the task ids.
+	sqlCloseTasksRunningAttempts = `
 UPDATE task_attempts SET status = ?, ended_at = ?, message = COALESCE(NULLIF(?, ''), message)
-WHERE  task_id = ? AND status = 'running'`
+WHERE  status = 'running' AND task_id IN (`
 
-	sqlReleaseClosedTaskClaims = `
+	// sqlReleaseClosedTasksClaims releases the claims of every attempt that is
+	// no longer running of the tasks whose ids complete its IN list. Binds:
+	// released_at, then the task ids.
+	sqlReleaseClosedTasksClaims = `
 UPDATE usage_claims SET released_at = ?
 WHERE  released_at IS NULL
-  AND  task_attempt_id IN (SELECT id FROM task_attempts WHERE task_id = ? AND status != 'running')`
+  AND  task_attempt_id IN (SELECT id FROM task_attempts WHERE status != 'running' AND task_id IN (`
 )
 
 // closeTaskAttemptsTx is invariant I3 for one task inside an open transaction:
 // it closes the task's running attempts with status and message, then releases
-// the claims of every attempt of the task that is no longer running. The
-// release is by attempt status, so a claim is never released while its attempt
-// is open, and it also repairs a claim an earlier close left on a finished
-// attempt. A non-empty message is recorded over the attempt's own; an empty one
+// the claims of every attempt of the task that is no longer running. It is
+// [closeTasksAttemptsTx] for one task. The release is by attempt status, so a
+// claim is never released while its attempt is open, and it also repairs a
+// claim an earlier close left on a finished attempt. A non-empty message is recorded over the attempt's own; an empty one
 // leaves it.
 //
 // Callers run it AFTER writing the task row in the same transaction (a cancel to
@@ -276,13 +276,47 @@ WHERE  released_at IS NULL
 // until commit and then opens a new attempt of its own, which this close never
 // sees.
 func closeTaskAttemptsTx(ctx context.Context, tx *dbTx, taskID string, status store.AttemptStatus, message, nowText string) error {
-	if _, err := tx.ExecContext(ctx, sqlCloseTaskRunningAttempts, string(status), nowText, message, taskID); err != nil {
-		return fmt.Errorf("store: close attempts of task %s: %w", taskID, mapErr(err))
+	return closeTasksAttemptsTx(ctx, tx, []string{taskID}, status, message, nowText)
+}
+
+// closeTasksAttemptsTx is [closeTaskAttemptsTx] for every task in taskIDs, in
+// two statements whatever their number, under the same rule: the caller has
+// written each task's row in this transaction first. It does nothing for no
+// tasks.
+func closeTasksAttemptsTx(
+	ctx context.Context, tx *dbTx, taskIDs []string, status store.AttemptStatus, message, nowText string,
+) error {
+	if len(taskIDs) == 0 {
+		return nil
 	}
-	if _, err := tx.ExecContext(ctx, sqlReleaseClosedTaskClaims, nowText, taskID); err != nil {
-		return fmt.Errorf("store: release claims of task %s: %w", taskID, mapErr(err))
+	placeholders := qmarks(len(taskIDs))
+	ids := make([]any, len(taskIDs))
+	for i, id := range taskIDs {
+		ids[i] = id
+	}
+	what := "task " + taskIDs[0]
+	if len(taskIDs) > 1 {
+		what = fmt.Sprintf("%d tasks", len(taskIDs))
+	}
+	// placeholders holds only "?" marks; every value is bound.
+	closeArgs := slices.Concat([]any{string(status), nowText, message}, ids)
+	if _, err := tx.ExecContext(ctx, sqlCloseTasksRunningAttempts+placeholders+`)`, closeArgs...); err != nil {
+		return fmt.Errorf("store: close attempts of %s: %w", what, mapErr(err))
+	}
+	releaseArgs := slices.Concat([]any{nowText}, ids)
+	if _, err := tx.ExecContext(ctx, sqlReleaseClosedTasksClaims+placeholders+`))`, releaseArgs...); err != nil {
+		return fmt.Errorf("store: release claims of %s: %w", what, mapErr(err))
 	}
 	return nil
+}
+
+// taskIDs returns the ids of tasks, in order.
+func taskIDs(tasks []store.Task) []string {
+	ids := make([]string, len(tasks))
+	for i, t := range tasks {
+		ids[i] = t.ID
+	}
+	return ids
 }
 
 // CancelJobExecution implements [store.TaskStore].
@@ -293,60 +327,53 @@ func closeTaskAttemptsTx(ctx context.Context, tx *dbTx, taskID string, status st
 // then are their attempts closed and their claims released. The job's steps are
 // finalized after that, and the job row itself is canceled last, under the same
 // guard as [Store.CancelJobStatus], so a job cancel is one write: no stop or
-// failed second write can leave a job live with all of its work canceled. A
-// LeaseTask that holds one of the tasks is therefore waited for by the task
-// UPDATE (whose predicate matches the task both as ready and as assigned), and
-// the attempt and claims it committed are seen by the two statements after it.
-// Closing attempts first would miss an attempt a lease created in between.
+// failed second write can leave a job live with all of its work canceled. The
+// task UPDATE's predicate matches a task both as ready and as assigned, and the
+// attempts and claims are closed only after it, so whatever any writer
+// committed to a task before the UPDATE is seen by the two statements after it.
+// Closing attempts first would miss an attempt created in between.
 //
-// The anchor does not make the reported set exact on Postgres. LeaseTask does
-// not take the job row, so a lease that commits between the SELECT and the task
-// UPDATE is canceled, and its attempt and claims closed, but it is not in the
-// returned set and its worker gets no cancel signal. A PostgreSQL store must
-// close that: either LeaseTask also anchors the job row, or the set comes from
-// the UPDATE itself. None of it can arise here, where the single write
-// connection serializes the lease against this whole transaction.
+// The anchor also makes the reported set exact. LeaseTask holds the job row FOR
+// SHARE, so no lease commits between the SELECT and the task UPDATE: a lease in
+// flight is waited for and its task is reported as assigned; a later lease
+// waits for this commit, finds the job canceled and is Lost. Every task the
+// UPDATE takes out of flight is in the returned set, so its worker can be sent
+// a cancel signal. On SQLite the single write connection gives the same.
 func (s *Store) CancelJobExecution(ctx context.Context, jobID, reason string, now time.Time) ([]store.Task, error) {
-	var active []store.Task
-	err := s.inTx(ctx, "cancel job execution", func(tx *dbTx) (txOutcome, error) {
+	return inTxValue(ctx, s, "cancel job execution", func(tx *dbTx) ([]store.Task, txOutcome, error) {
 		// Order: anchor, then the SELECT of the active set, then tasks, attempts,
 		// claims, steps, and the job row last. See the doc comment for why tasks
 		// come first.
 		if err := tx.lockAnchors(ctx, jobAnchor(jobID)); err != nil {
-			return txRollback, err
+			return nil, txRollback, err
 		}
-		var err error
-		active, err = queryTasksTx(ctx, tx, sqlSelectActiveJobTasks, jobID)
+		active, err := queryTasksTx(ctx, tx, sqlSelectActiveJobTasks, jobID)
 		if err != nil {
-			return txRollback, fmt.Errorf("store: select active tasks of job %s: %w", jobID, err)
+			return nil, txRollback, fmt.Errorf("store: select active tasks of job %s: %w", jobID, err)
 		}
 		nowText := TimeText(now.UTC())
 		if _, err := tx.ExecContext(ctx, sqlCancelJobTasks, nowText, reason, jobID); err != nil {
-			return txRollback, fmt.Errorf("store: cancel tasks of job %s: %w", jobID, mapErr(err))
+			return nil, txRollback, fmt.Errorf("store: cancel tasks of job %s: %w", jobID, mapErr(err))
 		}
 		if _, err := tx.ExecContext(ctx, sqlCancelJobAttempts, nowText, jobID); err != nil {
-			return txRollback, fmt.Errorf("store: close attempts of job %s: %w", jobID, mapErr(err))
+			return nil, txRollback, fmt.Errorf("store: close attempts of job %s: %w", jobID, mapErr(err))
 		}
 		if _, err := tx.ExecContext(ctx, sqlReleaseClosedJobClaims, nowText, jobID); err != nil {
-			return txRollback, fmt.Errorf("store: release claims of job %s: %w", jobID, mapErr(err))
+			return nil, txRollback, fmt.Errorf("store: release claims of job %s: %w", jobID, mapErr(err))
 		}
 		// Then the steps: the step write touches only steps, which no lease or
 		// report writes, so it adds no lock-order inversion.
 		if _, err := tx.ExecContext(ctx, sqlCancelJobFinalizeSteps, nowText, jobID); err != nil {
-			return txRollback, fmt.Errorf("store: finalize steps of job %s: %w", jobID, mapErr(err))
+			return nil, txRollback, fmt.Errorf("store: finalize steps of job %s: %w", jobID, mapErr(err))
 		}
 		// Then the job row, last: CancelJobStatus's own guarded statement, so a
 		// completed, failed or already canceled job is left exactly as it is. The
 		// anchor already holds this row, so the write adds no lock.
 		if _, err := tx.ExecContext(ctx, sqlCancelJobStatus, nowText, nowText, jobID); err != nil {
-			return txRollback, fmt.Errorf("store: cancel job %s: %w", jobID, mapErr(err))
+			return nil, txRollback, fmt.Errorf("store: cancel job %s: %w", jobID, mapErr(err))
 		}
-		return txCommit, nil
+		return active, txCommit, nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	return active, nil
 }
 
 // CancelTaskExecution implements [store.TaskStore].
@@ -357,52 +384,46 @@ func (s *Store) CancelJobExecution(ctx context.Context, jobID, reason string, no
 // is closed and its claims released. The task row is read after the lock rather
 // than before it, so on Postgres the returned prior task is current against
 // every job-anchored writer. The "already terminal" answer comes from the
-// guarded UPDATE itself, so it is exact on any store. The prior task is NOT
-// protected against a LeaseTask, which does not take the job row: on Postgres a
-// lease that commits between the read and the UPDATE is canceled while prior
-// still shows the task ready with no worker, so no cancel signal reaches that
-// worker. That is CancelJobExecution's gap, and both close the same way.
+// guarded UPDATE itself, so it is exact on any store. The prior task is current
+// against LeaseTask too, which holds the job row FOR SHARE: no lease commits
+// between the read and the UPDATE, so a task leased just before the anchor is
+// read as assigned to its worker, and a lease that waited for this commit finds
+// the task canceled and is Lost.
 func (s *Store) CancelTaskExecution(ctx context.Context, taskID, reason string, now time.Time) (store.Task, bool, error) {
-	var (
+	type result struct {
 		prior    store.Task
 		canceled bool
-	)
-	err := s.inTx(ctx, "cancel task execution", func(tx *dbTx) (txOutcome, error) {
-		canceled = false
+	}
+	r, err := inTxValue(ctx, s, "cancel task execution", func(tx *dbTx) (result, txOutcome, error) {
 		// Order: the task's job id, the anchor on that job row, the task as it is
 		// under the anchor, then task, attempt, claims. See the doc comment.
 		if err := lockTaskJobTx(ctx, tx, taskID); err != nil {
-			return txRollback, err // no such task => ErrNotFound
+			return result{}, txRollback, err // no such task => ErrNotFound
 		}
-		var err error
-		prior, err = scanTask(tx.QueryRowContext(ctx, sqlGetTask, taskID))
+		prior, err := scanTask(tx.QueryRowContext(ctx, sqlGetTask, taskID))
 		if err != nil {
-			return txRollback, mapErr(err)
+			return result{}, txRollback, mapErr(err)
 		}
 		nowText := TimeText(now.UTC())
 		res, err := tx.ExecContext(ctx, sqlCancelOneTask, nowText, reason, taskID)
 		if err != nil {
-			return txRollback, fmt.Errorf("store: cancel task %s: %w", taskID, mapErr(err))
+			return result{}, txRollback, fmt.Errorf("store: cancel task %s: %w", taskID, mapErr(err))
 		}
 		n, err := res.RowsAffected()
 		if err != nil {
-			return txRollback, fmt.Errorf("store: cancel task %s: %w", taskID, mapErr(err))
+			return result{}, txRollback, fmt.Errorf("store: cancel task %s: %w", taskID, mapErr(err))
 		}
 		if n == 0 {
 			// Already terminal: nothing was written, and the rollback leaves the
 			// attempts and claims for whatever closed the task.
-			return txRollback, nil
+			return result{prior: prior}, txRollback, nil
 		}
 		if err := closeTaskAttemptsTx(ctx, tx, taskID, store.AttemptStatusCanceled, "", nowText); err != nil {
-			return txRollback, err
+			return result{}, txRollback, err
 		}
-		canceled = true
-		return txCommit, nil
+		return result{prior: prior, canceled: true}, txCommit, nil
 	})
-	if err != nil {
-		return store.Task{}, false, err
-	}
-	return prior, canceled, nil
+	return r.prior, r.canceled, err
 }
 
 const (
@@ -472,62 +493,58 @@ func (s *Store) OfflineWorker(ctx context.Context, id, instanceID string, now ti
 // re-checks its predicate against the committed row), and the attempt and claims
 // that report committed are seen by the statements after it. Closing attempts
 // first would let a report move the task (assigned to running, say) after its
-// attempt was already closed as failed. A LeaseTask still in flight is NOT waited
-// for: it is moving a ready row, which the reclaim's predicate does not match in
-// the version its snapshot sees, so the UPDATE skips that row. The gap that
-// leaves is the one described next (LeaseTask does not anchor the worker); until
-// a PostgreSQL store closes it, the stale-assignment reaper recovers a task a
-// lease hands a worker that has already gone offline.
+// attempt was already closed as failed.
 //
-// What a PostgreSQL store must do. The marking UPDATE takes the worker row lock
-// itself, so the worker anchor is already first. The in-flight job IDs are read
-// UNLOCKED, after the worker row is held and before any task row is touched, and
-// the job rows are locked sorted before the reclaim UPDATE; a task row locked
-// before its job row is the inversion every job-level operation would deadlock
-// on. That read is only a candidate set: a task leased to this worker after it
-// has an unanchored job row, because LeaseTask does not take the worker row.
-// It must either have LeaseTask take the worker row FOR SHARE, or re-read the
-// set once the worker row is held and repeat until it is stable. None of that
-// arises on SQLite: its single write connection serializes every writer, so
-// the set read below cannot change before the reclaim, and its LockAnchors
-// does nothing.
+// Against LeaseTask, the worker anchor orders the two: LeaseTask holds the
+// worker row FOR SHARE until it commits. A lease in flight is waited for, and
+// its task is in the in-flight set read after the lock and is reclaimed. A
+// later lease waits for this commit and then proceeds, because LeaseTask
+// refuses only a disabled worker, not an offline one: the sweep can take a
+// live worker offline and nothing brings it back online (see "Known gaps" in
+// docs/architecture.md). Such a task is served if the worker is alive and
+// recovered by the stale-assignment reaper if not. The anchor guarantees only
+// that this transition reclaims every task assigned to the worker when it
+// commits.
+//
+// The in-flight job IDs are read UNLOCKED, after the worker row is held and
+// before any task row is touched, and the job rows are locked sorted before the
+// reclaim UPDATE; a task row locked before its job row is the inversion every
+// job-level operation would deadlock on. No lease can add a task for this
+// worker while its row is held, so that read is the complete set. On SQLite
+// the single write connection serializes every writer and LockAnchors does
+// nothing.
 func (s *Store) offlineWorker(ctx context.Context, id string, now time.Time, markSQL string, markArgs ...any) ([]store.Task, bool, error) {
-	var (
+	type result struct {
 		reclaimed []store.Task
 		offline   bool
-	)
-	err := s.inTx(ctx, "offline worker", func(tx *dbTx) (txOutcome, error) {
-		reclaimed, offline = nil, false
+	}
+	r, err := inTxValue(ctx, s, "offline worker", func(tx *dbTx) (result, txOutcome, error) {
 		// Order: the worker row, then the guarded mark, then the job rows, then the
 		// tasks, attempts and claims. See the doc comment.
 		if err := tx.lockAnchors(ctx, workerAnchor(id)); err != nil {
-			return txRollback, err
+			return result{}, txRollback, err
 		}
 		res, err := tx.ExecContext(ctx, markSQL, markArgs...)
 		if err != nil {
-			return txRollback, fmt.Errorf("store: mark worker %s offline: %w", id, mapErr(err))
+			return result{}, txRollback, fmt.Errorf("store: mark worker %s offline: %w", id, mapErr(err))
 		}
 		n, err := res.RowsAffected()
 		if err != nil {
-			return txRollback, fmt.Errorf("store: mark worker %s offline: %w", id, mapErr(err))
+			return result{}, txRollback, fmt.Errorf("store: mark worker %s offline: %w", id, mapErr(err))
 		}
 		if n == 0 {
 			// The guard did not match (unknown worker, not online, a fresh
 			// heartbeat, or another process's instance ID): nothing was
 			// written and the rollback ends the transaction.
-			return txRollback, nil
+			return result{}, txRollback, nil
 		}
-		reclaimed, err = reclaimWorkerTasksTx(ctx, tx, id, store.FailureReasonWorkerOffline, now)
+		reclaimed, err := reclaimWorkerTasksTx(ctx, tx, id, store.FailureReasonWorkerOffline, now)
 		if err != nil {
-			return txRollback, err
+			return result{}, txRollback, err
 		}
-		offline = true
-		return txCommit, nil
+		return result{reclaimed: reclaimed, offline: true}, txCommit, nil
 	})
-	if err != nil {
-		return nil, false, err
-	}
-	return reclaimed, offline, nil
+	return r.reclaimed, r.offline, err
 }
 
 // reclaimWorkerTasksTx reclaims the worker's assigned and running tasks inside
@@ -548,10 +565,8 @@ func reclaimWorkerTasksTx(ctx context.Context, tx *dbTx, workerID, message strin
 	if err != nil {
 		return nil, fmt.Errorf("store: reclaim tasks of worker %s: %w", workerID, err)
 	}
-	for _, t := range reclaimed {
-		if err := closeTaskAttemptsTx(ctx, tx, t.ID, store.AttemptStatusFailed, message, nowText); err != nil {
-			return nil, err
-		}
+	if err := closeTasksAttemptsTx(ctx, tx, taskIDs(reclaimed), store.AttemptStatusFailed, message, nowText); err != nil {
+		return nil, err
 	}
 	return reclaimed, nil
 }

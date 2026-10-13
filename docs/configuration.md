@@ -421,7 +421,50 @@ there is no TLS handshake.
 
 ---
 
-## `store` — SQLite state store
+## `store` — State store (SQLite or PostgreSQL)
+
+The state store holds every job, task, worker, farm, queue, usage pool,
+account and audit entry. It is embedded SQLite by default, or an external
+PostgreSQL server (16 or later) when `store.driver` is `postgres`. Running on
+PostgreSQL — creating the database, the DSN, backups and the one-server rule —
+is covered in [Running on PostgreSQL](operations.md#running-on-postgresql).
+
+### `store.driver`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `"sqlite"` |
+| **Env var** | `SQI_STORE_DRIVER` |
+
+Which store to use: `sqlite` (embedded, a single file) or `postgres` (an
+external PostgreSQL 16 or later). Any other value fails validation at
+start-up.
+
+```yaml
+store:
+  driver: postgres
+  postgres:
+    dsn: "postgres://sqi@db.example.com:5432/sqi?sslmode=verify-full"
+```
+
+On `postgres`, `store.sqlite_path` and `store.checkpoint_interval` are
+ignored, and the server logs a start-up warning for each one set explicitly
+in the config file or the environment (`store.sqlite_path is ignored when
+store.driver is postgres`).
+
+> **The `migrate`, `backup` and `worker` subcommands choose their store from
+> the same configuration, and take flags that override it.** Highest priority
+> first: an explicit `--dsn` (a PostgreSQL database), then an explicit `--db`
+> (a SQLite file), then `store.driver` from the resolved configuration (the
+> root `-c/--config` file and `SQI_STORE_DRIVER`), with `store.postgres.dsn`
+> for PostgreSQL and the [`store.sqlite_path`](#storesqlite_path) layering
+> for SQLite. A `store.driver` other than `sqlite` or `postgres` is an error.
+> Without `-c`, a configuration that fails to load is normally a warning and
+> the command falls back to SQLite; when `SQI_STORE_DRIVER` names anything
+> but `sqlite`, it is an error instead.
+
+---
 
 ### `store.sqlite_path`
 
@@ -433,7 +476,7 @@ there is no TLS handshake.
 
 Path to the SQLite database file. Created at startup if it does not exist.
 Schema migrations run automatically at startup. For production, use an absolute
-path on a local SSD.
+path on a local SSD. Ignored when `store.driver` is `postgres`.
 
 ```yaml
 store:
@@ -478,11 +521,82 @@ every tick. `PASSIVE` never waits: it moves what it can and the next tick
 takes the rest. Shutdown can afford to wait once; a timer cannot.
 
 Set to a large value (e.g. `"24h"`) to disable periodic checkpointing while
-keeping the shutdown checkpoint. Must be `> 0`.
+keeping the shutdown checkpoint. Must be `> 0`. Ignored when `store.driver` is
+`postgres`.
 
 ```yaml
 store:
   checkpoint_interval: "10m"
+```
+
+---
+
+### `store.postgres.dsn`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` |
+| **Env var** | `SQI_STORE_POSTGRES_DSN` |
+
+The PostgreSQL connection string. Required when `store.driver` is `postgres`
+(an empty one fails validation); unused otherwise. It may be a URL or a
+keyword/value string:
+
+```yaml
+store:
+  postgres:
+    # URL form
+    dsn: "postgres://sqi:secret@db.example.com:5432/sqi?sslmode=verify-full"
+    # keyword/value form
+    # dsn: "host=db.example.com port=5432 user=sqi password=secret dbname=sqi sslmode=verify-full"
+```
+
+Set `sslmode` explicitly. `verify-full` is the one that checks the server's
+certificate and host name; the driver's default, `prefer`, falls back to an
+unencrypted connection without saying so. The password may also come from
+`PGPASSWORD` or a password file, as with any libpq client, which keeps it out
+of the configuration altogether.
+
+The password is never printed: `sqi-server config print` and the server's
+start-up log replace `password` (and `sslpassword`) with `redacted` in a URL
+and `<redacted>` in a keyword/value DSN. A keyword/value DSN is parsed the way
+the driver parses it, so it may print with different spacing or quoting but
+the same settings; one that cannot be parsed prints as `<redacted>`. A URL the
+redaction cannot read exactly as the driver does prints as its scheme and a
+placeholder (`postgres://<redacted>`) and nothing more. That covers a URL with
+more than one `@`, or an `@` that does not end the user name (one in a query
+value, say); any `#`; any `;` in the query; a `password` key that is
+percent-encoded or padded with spaces; a query pair without `=`; or a query
+value holding a second `=`. **In a URL, percent-encode any `@` or `#` (in the
+password too) and any `;` or `=` inside a query value** (`%40`, `%23`, `%3B`,
+`%3D`); otherwise `config print` hides the whole DSN and
+[`sqi-server backup`](operations.md#backing-up-postgresql) refuses it.
+
+---
+
+### `store.postgres.max_conns`
+
+| | |
+|---|---|
+| **Type** | `int` |
+| **Default** | `16` |
+| **Env var** | `SQI_STORE_POSTGRES_MAX_CONNS` |
+
+The size of the server's write connection pool, from 2 to 1000; a value
+outside that range fails validation. One of these connections is held for the
+server's whole life by its [single-server
+lock](operations.md#one-server-per-database), so the default leaves 15 for
+writes. The server also opens a read pool of 4 connections, so it can hold up
+to `max_conns + 4` connections in all: keep that within the PostgreSQL
+server's `max_connections`, alongside everything else that connects to it.
+Unused when `store.driver` is `sqlite`, whose write pool is always a single
+connection.
+
+```yaml
+store:
+  postgres:
+    max_conns: 32
 ```
 
 ---
@@ -2095,8 +2209,11 @@ for the detector schema reference.
 | `nats.auth.join_token_ttl` | duration | `1h` | `SQI_NATS_AUTH_JOIN_TOKEN_TTL` | — |
 | `nats.auth.join_token_single_use` | bool | `true` | `SQI_NATS_AUTH_JOIN_TOKEN_SINGLE_USE` | — |
 | `nats.auth.enrollment_endpoint_enabled` | bool | `true` | `SQI_NATS_AUTH_ENROLLMENT_ENDPOINT_ENABLED` | — |
+| `store.driver` | string | `sqlite` | `SQI_STORE_DRIVER` | — |
 | `store.sqlite_path` | string | `sqi.db` | `SQI_STORE_SQLITE_PATH` | — |
 | `store.checkpoint_interval` | duration | `5m` | `SQI_STORE_CHECKPOINT_INTERVAL` | — |
+| `store.postgres.dsn` | string | `""` | `SQI_STORE_POSTGRES_DSN` | — |
+| `store.postgres.max_conns` | int | `16` | `SQI_STORE_POSTGRES_MAX_CONNS` | — |
 | `log.level` | string | `info` | `SQI_LOG_LEVEL` | `--log-level` |
 | `log.format` | string | `json` | `SQI_LOG_FORMAT` | `--log-format` |
 | `log.file` | string | `""` | `SQI_LOG_FILE` | — |

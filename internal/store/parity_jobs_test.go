@@ -473,3 +473,37 @@ func TestParity_ListDependents(t *testing.T) {
 		})
 	}
 }
+
+// TestParity_SearchBackslashTerm pins that a search term holding a backslash,
+// a percent sign or an underscore matches the same jobs on every backend.
+// SQLite's LIKE has no escape character; PostgreSQL's ILIKE treats backslash
+// as one unless given an empty ESCAPE clause, which would make a Windows path
+// match nothing.
+func TestParity_SearchBackslashTerm(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			farm, queue := seedFarmQueue(t, st)
+			seedJobRow(t, st, "j-path", farm.ID, queue.ID, `render C:\shows\ep01`)
+			seedJobRow(t, st, "j-pct", farm.ID, queue.ID, "100% done_now")
+			seedJobRow(t, st, "j-other", farm.ID, queue.ID, "other")
+			for term, want := range map[string][]string{
+				`C:\shows`: {"j-path"},
+				`100%`:     {"j-pct"},
+				`done_now`: {"j-pct"},
+			} {
+				page, err := st.ListJobs(t.Context(), store.ListJobsOptions{Search: term, Pagination: store.Pagination{Limit: 10}})
+				if err != nil {
+					t.Fatalf("ListJobs(%q): %v", term, err)
+				}
+				var got []string
+				for _, j := range page.Items {
+					got = append(got, j.ID)
+				}
+				slices.Sort(got)
+				if !slices.Equal(got, want) {
+					t.Errorf("Search %q = %v, want %v", term, got, want)
+				}
+			}
+		})
+	}
+}

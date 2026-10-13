@@ -11,7 +11,9 @@ import (
 
 	"github.com/uberware/sqi/internal/auth/jointoken"
 	"github.com/uberware/sqi/internal/brokerauth"
+	"github.com/uberware/sqi/internal/store/postgres"
 	"github.com/uberware/sqi/internal/store/sqlite"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // createTestDB creates and migrates a SQLite database at path. The worker
@@ -524,5 +526,37 @@ func TestWorkerCmd_Enroll_InvalidWorkerID(t *testing.T) {
 				t.Errorf("worker id %q: a credential was recorded anyway:\n%s", tc.workerID, out)
 			}
 		})
+	}
+}
+
+// TestWorkerCmd_Postgres_TokenIssue issues a join token through the CLI into a
+// PostgreSQL store and reads it back by its hash.
+func TestWorkerCmd_Postgres_TokenIssue(t *testing.T) {
+	dsn := storetest.PostgresDSN(t)
+	prepareRoot([]string{"worker", "token", "issue", "--dsn", dsn, "--name", "ci-runner"})
+	out := captureStdout(t, func() {
+		if err := Execute(); err != nil {
+			t.Fatalf("worker token issue: %v", err)
+		}
+	})
+	st, err := postgres.Open(context.Background(), dsn, postgres.Options{MaxConns: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	got, err := st.GetWorkerJoinTokenByHash(context.Background(), jointoken.Hash(strings.TrimSpace(out)))
+	if err != nil || got.Name != "ci-runner" {
+		t.Fatalf("stored token = %+v, %v", got, err)
+	}
+}
+
+// TestWorkerCmd_Postgres_UnmigratedDatabaseIsAnError checks that a worker
+// command refuses a PostgreSQL database with no schema, naming the remedy.
+func TestWorkerCmd_Postgres_UnmigratedDatabaseIsAnError(t *testing.T) {
+	dsn := storetest.PostgresEmptyDSN(t)
+	prepareRoot([]string{"worker", "token", "issue", "--dsn", dsn, "--name", "x"})
+	err := Execute()
+	if err == nil || !strings.Contains(err.Error(), "has no schema") || !strings.Contains(err.Error(), "migrate up") {
+		t.Fatalf("worker command on an unmigrated database = %v", err)
 	}
 }

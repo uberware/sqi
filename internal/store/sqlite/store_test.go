@@ -1813,6 +1813,9 @@ func TestComputeLocationCRUD_Parity(t *testing.T) {
 		},
 		"fake": func(_ *testing.T) store.Store { return fake.New() },
 	}
+	if storetest.PostgresEnabled() {
+		backends["postgres"] = func(t *testing.T) store.Store { return storetest.Postgres(t) }
+	}
 
 	for name, mk := range backends {
 		t.Run(name, func(t *testing.T) {

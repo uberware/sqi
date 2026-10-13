@@ -132,6 +132,9 @@ func TestRequeueTaskForRetry_GuardsOnTheLatestAttempt(t *testing.T) {
 			if ok, err := st.RequeueTaskForRetry(ctx, task.ID, fresh.ID, now, now); err != nil || !ok {
 				t.Fatalf("requeue on the latest attempt = (%v, %v), want (true, nil)", ok, err)
 			}
+			if ok, err := st.RequeueTaskForRetry(ctx, "no-such-task", fresh.ID, now, now); err != nil || ok {
+				t.Fatalf("requeue of a missing task = (%v, %v), want (false, nil)", ok, err)
+			}
 		})
 	}
 }

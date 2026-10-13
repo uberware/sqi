@@ -17,19 +17,26 @@ RETURNING id, name, title, description, readme, category, version, source, templ
 
 	sqlGetProductByName = `
 SELECT id, name, title, description, readme, category, version, source, template, format, origin_ref, origin_fingerprint, created_at, updated_at
-FROM products WHERE name = ?`
+FROM products WHERE ` // + Dialect.CIEqual("name"), appended in prepareAll
 
+	// sqlListProducts orders by lower(name) and then name: products.name is
+	// COLLATE NOCASE on SQLite and COLLATE "C" on PostgreSQL, and lower() folds
+	// ASCII only on both, exactly as NOCASE does.
 	sqlListProducts = `
 SELECT id, name, title, description, readme, category, version, source, template, format, origin_ref, origin_fingerprint, created_at, updated_at
-FROM products ORDER BY name`
+FROM products ORDER BY lower(name), name`
 
-	sqlUpdateProduct = `
+	// sqlUpdateProductHead and sqlUpdateProductTail sandwich
+	// Dialect.CIEqual("name"), joined in prepareAll: a product is addressed by
+	// its name ignoring case on every backend.
+	sqlUpdateProductHead = `
 UPDATE products
 SET title = ?, description = ?, readme = ?, category = ?, version = ?, template = ?, format = ?, origin_ref = ?, origin_fingerprint = ?, updated_at = ?
-WHERE name = ?
+WHERE `
+	sqlUpdateProductTail = `
 RETURNING id, name, title, description, readme, category, version, source, template, format, origin_ref, origin_fingerprint, created_at, updated_at`
 
-	sqlDeleteProduct = `DELETE FROM products WHERE name = ?`
+	sqlDeleteProduct = `DELETE FROM products WHERE ` // + Dialect.CIEqual("name"), appended in prepareAll
 )
 
 func scanProduct(row scanner) (store.Product, error) {

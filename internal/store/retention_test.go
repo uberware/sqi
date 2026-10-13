@@ -57,10 +57,38 @@ func TestCreateJobSubmission_UnsatisfiableUpstream(t *testing.T) {
 	}
 }
 
+// TestCreateJobSubmission_UnsatisfiableUpstreamBeforeConflict pins which
+// error a submission that breaks two rules gets: an unsatisfiable upstream is
+// reported ahead of a task ID that collides with a stored task, on every
+// backend. SQL checks its upstreams before it inserts a step or a task, as the
+// fake does, so a doomed submission also fails before writing them.
+func TestCreateJobSubmission_UnsatisfiableUpstreamBeforeConflict(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			upstream := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusFailed},
+				stepSpec{name: "a", status: store.StepStatusFailed, tasks: []store.TaskStatus{store.TaskStatusFailed}})
+			jobID, stepID := uuid.NewString(), uuid.NewString()
+			_, err := st.CreateJobSubmission(t.Context(), store.JobSubmission{
+				Job: store.Job{
+					ID: jobID, FarmID: upstream.Farm.ID, QueueID: upstream.Queue.ID,
+					Name: "dep", Status: store.JobStatusBlocked, TemplateFormat: store.TemplateFormatJSON,
+				},
+				DependsOn: []string{upstream.Job.ID},
+				Steps:     []store.Step{{ID: stepID, JobID: jobID, Name: "s", Status: store.StepStatusPending}},
+				Tasks: []store.Task{{
+					ID: upstream.Tasks["a"][0].ID, JobID: jobID, StepID: stepID, Name: "t", Status: store.TaskStatusPending,
+				}},
+			})
+			assertDependencyError(t, err, upstream.Job.ID, store.JobStatusFailed)
+			assertSubmissionLeftNothing(t, st, jobID, upstream.Job.ID)
+		})
+	}
+}
+
 // assertDependencyError checks that err carries the typed
 // [store.DependencyUnsatisfiableError] naming the upstream and why: its
 // status, or empty when the upstream no longer exists. The submitter words its
-// 422 from these two fields, so both backends must fill them in.
+// 422 from these two fields, so every backend must fill them in.
 func assertDependencyError(t *testing.T, err error, upstreamID string, status store.JobStatus) {
 	t.Helper()
 	dep, ok := errors.AsType[*store.DependencyUnsatisfiableError](err)

@@ -5,7 +5,7 @@
 // responder in the correct dependency order.
 //
 // The server owns these components, started and stopped in dependency order:
-//   - store (SQLite)
+//   - store (SQLite, or PostgreSQL when store.driver says so)
 //   - bus (NATS JetStream)
 //   - scheduler
 //   - httpServer (chi router) — REST + WebSocket + UI routes
@@ -37,11 +37,12 @@ import (
 	"github.com/uberware/sqi/internal/health"
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/openjd"
+	"github.com/uberware/sqi/internal/pgdsn"
 	"github.com/uberware/sqi/internal/presetlib"
 	"github.com/uberware/sqi/internal/product"
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/store"
-	"github.com/uberware/sqi/internal/store/sqlite"
+	"github.com/uberware/sqi/internal/store/backend"
 	"github.com/uberware/sqi/internal/tlsutil"
 	"github.com/uberware/sqi/internal/version"
 	"github.com/uberware/sqi/internal/ws"
@@ -128,6 +129,16 @@ type Config struct {
 	// CheckpointInterval is how often the background WAL checkpointer runs.
 	// See internal/config.StoreConfig.CheckpointInterval for semantics.
 	CheckpointInterval time.Duration // default 5m
+
+	// StoreDriver is "sqlite" (default) or "postgres". An empty value means
+	// sqlite.
+	StoreDriver string
+
+	// PostgresDSN and PostgresMaxConns configure the PostgreSQL store. They
+	// are used only when StoreDriver is "postgres", in which case SQLitePath
+	// and CheckpointInterval are not.
+	PostgresDSN      string
+	PostgresMaxConns int // default 16
 
 	// Scheduler holds tuning parameters for the assignment loop, worker
 	// registry, and heartbeat sweep. Zero values use scheduler.DefaultConfig().
@@ -243,6 +254,8 @@ func DefaultConfig() Config {
 		NATSMaxStoreMB:        1024,
 		SQLitePath:            "sqi.db",
 		CheckpointInterval:    5 * time.Minute,
+		StoreDriver:           backend.DriverSQLite,
+		PostgresMaxConns:      16,
 		Scheduler:             scheduler.DefaultConfig(),
 		DiscoveryEnabled:      true,
 		DiscoveryInstanceName: "sqi-server",
@@ -589,12 +602,18 @@ func (s *Server) Health() *health.Registry {
 // A nil return value means the server started and shut down without errors.
 // Startup failures return immediately with a non-nil error.
 func (s *Server) Run(ctx context.Context) error {
-	s.logger.InfoContext(
-		ctx, "sqi-server starting",
+	driver := backend.Name(s.cfg.StoreDriver)
+	attrs := []any{
 		slog.String("http_addr", s.cfg.HTTPAddr),
 		slog.String("nats_addr", s.cfg.NATSAddr),
-		slog.String("sqlite_path", s.cfg.SQLitePath),
-	)
+		slog.String("store_driver", driver),
+	}
+	if driver == backend.DriverSQLite {
+		// The path means nothing on another driver, and the DSN is logged
+		// (redacted) when the store opens.
+		attrs = append(attrs, slog.String("sqlite_path", s.cfg.SQLitePath))
+	}
+	s.logger.InfoContext(ctx, "sqi-server starting", attrs...)
 
 	if err := s.start(ctx); err != nil {
 		return fmt.Errorf("startup failed: %w", err)
@@ -609,28 +628,49 @@ func (s *Server) Run(ctx context.Context) error {
 	return s.shutdown()
 }
 
-// start brings up all components in dependency order.
-// Each block is a stub that will be replaced as the corresponding tasks land.
-func (s *Server) start(ctx context.Context) error {
-	// ── Store (SQLite) ─────────────────────────────────────────────────────
-	st, err := sqlite.Open(ctx, s.cfg.SQLitePath, sqlite.DefaultOptions())
+// openStore opens the configured state store, registers it as a readiness
+// dependency under its driver's name, and, on SQLite, starts the WAL
+// checkpointer.
+func (s *Server) openStore(ctx context.Context) error {
+	st, err := backend.Open(ctx, backend.Options{
+		Driver: s.cfg.StoreDriver, SQLitePath: s.cfg.SQLitePath,
+		PostgresDSN: s.cfg.PostgresDSN, MaxConns: s.cfg.PostgresMaxConns,
+		AutoMigrate: true, ServerLock: true, Logger: s.logger,
+	})
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
 	s.store = st
-	s.logger.InfoContext(ctx, "store: sqlite open", slog.String("path", s.cfg.SQLitePath))
+	driver := backend.Name(s.cfg.StoreDriver)
+	if driver == backend.DriverPostgres {
+		s.logger.InfoContext(ctx, "store: postgres open", slog.String("dsn", pgdsn.Redact(s.cfg.PostgresDSN)))
+	} else {
+		s.logger.InfoContext(ctx, "store: sqlite open", slog.String("path", s.cfg.SQLitePath))
+	}
 
-	// Register SQLite as a readiness dependency so /readyz reflects its health.
-	s.health.Register("sqlite", health.CheckerFunc(st.Ping))
+	// Register the store as a readiness dependency under its driver's name, so
+	// /readyz reports it as "sqlite" or "postgres".
+	s.health.Register(driver, health.CheckerFunc(st.Ping))
 
-	// Start the background WAL checkpointer. It exits when ctx is canceled,
-	// running one final checkpoint before returning so the WAL is fully flushed
-	// before store.Close is called in shutdown.
-	st.StartCheckpointer(ctx, s.cfg.CheckpointInterval, s.logger)
-	s.logger.InfoContext(
-		ctx, "store: wal checkpointer started",
-		slog.Duration("interval", s.cfg.CheckpointInterval),
-	)
+	// SQLite only: start the background WAL checkpointer. It exits when ctx is
+	// canceled, running one final checkpoint before returning so the WAL is
+	// fully flushed before store.Close is called in shutdown.
+	if cp, ok := st.(backend.Checkpointer); ok {
+		cp.StartCheckpointer(ctx, s.cfg.CheckpointInterval, s.logger)
+		s.logger.InfoContext(
+			ctx, "store: wal checkpointer started",
+			slog.Duration("interval", s.cfg.CheckpointInterval),
+		)
+	}
+	return nil
+}
+
+// start brings up all components in dependency order.
+func (s *Server) start(ctx context.Context) error {
+	// ── Store (SQLite or PostgreSQL) ───────────────────────────────────────
+	if err := s.openStore(ctx); err != nil {
+		return err
+	}
 
 	// Reap expired sessions (no-op when auth is disabled).
 	s.startSessionSweeper(ctx)
@@ -666,7 +706,7 @@ func (s *Server) start(ctx context.Context) error {
 	// ── WebSocket hub ────────────────────────────────────────
 	// The hub bridges scheduler events to subscribed WebSocket clients.
 	// It is created before the scheduler so it can be passed as the notifier.
-	s.wsHub = newWSHub(s.logger, st, s.cfg.AuthEnabled)
+	s.wsHub = newWSHub(s.logger, s.store, s.cfg.AuthEnabled)
 	s.logger.InfoContext(ctx, "ws: hub created")
 
 	// Wire the diagnostic buffer's notifier to the hub now that the hub exists,

@@ -289,7 +289,8 @@ type JobStore interface {
 	// ready queue with no worker to pick it up, leaving the job spuriously marked
 	// running. Jobs whose tasks are all terminal are left untouched so the
 	// completion logic can finalize them to completed/failed. StartedAt is
-	// preserved (the job did start). Returns the IDs of the demoted jobs.
+	// preserved (the job did start). Returns the IDs of the demoted jobs; on
+	// error, the result lists the jobs already demoted.
 	DemoteStalledJobs(ctx context.Context, now time.Time) ([]string, error)
 
 	// DeleteJob hard-deletes a job and every row that belongs to it, in one
@@ -304,15 +305,15 @@ type JobStore interface {
 	//
 	// The job's anchor row is locked first, which serializes the cascade
 	// against the other job-anchored writers (cancel, retry, finalize,
-	// completion, retention). It does NOT by itself stop a concurrent log
-	// append ([TaskLogStore.CreateTaskLog]) or a lease ([TaskStore.LeaseTask])
-	// from inserting a child row mid-cascade, because neither takes the job
-	// anchor: on a store without a single writer such an insert can land after
-	// its table was cleared and make a later DELETE in the cascade fail on a
-	// foreign key. A PostgreSQL store must therefore retry the cascade
-	// itself, inside DeleteJob, on a foreign-key or deadlock error; the REST
-	// handler that calls it does not retry. The SQLite store cannot produce
-	// either, because its single write connection serializes every writer.
+	// completion, retention) and against leases, which hold it FOR SHARE. A
+	// concurrent log append ([TaskLogStore.CreateTaskLog]) takes no anchor;
+	// on a store without a single writer the SQL store also locks the job's
+	// tasks that have attempts, so such an append waits for the delete and
+	// then fails on its foreign key instead of inserting a child row
+	// mid-cascade. As a backstop the store retries the cascade itself, inside
+	// DeleteJob, on a foreign-key or deadlock error; the REST handler that
+	// calls it does not retry. SQLite cannot produce either error, because
+	// its single write connection serializes every writer.
 	DeleteJob(ctx context.Context, id string) error
 
 	// DeleteTerminalJobsBefore hard-deletes terminal jobs whose completion time
@@ -325,7 +326,8 @@ type JobStore interface {
 	// Each job is re-checked against that eligibility rule, under its anchor
 	// lock, immediately before its cascade starts. A job that a concurrent
 	// retry has made live since the eligibility read is skipped: it is neither
-	// deleted nor included in the returned summary.
+	// deleted nor included in the returned summary. Each job is deleted in its
+	// own transaction, so on error the result lists the jobs already deleted.
 	DeleteTerminalJobsBefore(ctx context.Context, cutoff time.Time, includeFailed bool) ([]DeletedJob, error)
 
 	// ParkJob transitions a job to [JobStatusPaused] and records reason in

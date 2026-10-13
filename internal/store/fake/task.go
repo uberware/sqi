@@ -188,7 +188,8 @@ func filterTask(t store.Task, opts store.ListTasksOptions) bool {
 
 // cmpTask returns a comparison value for two tasks by the given sort field and
 // direction. An empty field defaults to [store.TaskSortByCreatedAt]; an empty
-// direction defaults to ascending.
+// direction defaults to ascending. Rows that tie on the field compare by ID
+// ascending, as the SQL stores order them.
 func cmpTask(a, b store.Task, field store.TaskSortField, dir store.SortDir) int {
 	var n int
 	switch field {
@@ -201,10 +202,7 @@ func cmpTask(a, b store.Task, field store.TaskSortField, dir store.SortDir) int 
 	default: // TaskSortByCreatedAt
 		n = a.CreatedAt.Compare(b.CreatedAt)
 	}
-	if dir == store.SortDesc {
-		return -n
-	}
-	return n
+	return withIDTieBreak(n, dir, a.ID, b.ID)
 }
 
 // CountActiveTasksInQueue returns the number of tasks in 'assigned' or

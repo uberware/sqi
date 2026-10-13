@@ -5,11 +5,13 @@ package sqlstore
 import (
 	"context"
 	"database/sql"
+
+	"github.com/uberware/sqi/internal/store"
 )
 
-// Exported for the tests in package sqlstore_test, which open SQLite stores
-// through internal/store/sqlite (importing it from package sqlstore would be
-// an import cycle).
+// Exported for the tests in package sqlstore_test, which open SQLite and
+// PostgreSQL stores through internal/store/sqlite and internal/store/postgres
+// (importing either from package sqlstore would be an import cycle).
 
 // Aliases for the unexported types the tests name.
 type (
@@ -32,17 +34,29 @@ const (
 	SQLExpiredJobByID = sqlExpiredJobByID
 	SQLFinalizeStep   = sqlFinalizeStep
 	SQLListStuckSteps = sqlListStuckSteps
+
+	SQLCancelJobTasks         = sqlCancelJobTasks
+	SQLNextAttemptNumber      = sqlNextAttemptNumber
+	SQLWorkerInFlightJobIDs   = sqlWorkerInFlightJobIDs
+	SQLSelectTaskStatus       = sqlSelectTaskStatus
+	SQLIsLatestAttempt        = sqlIsLatestAttempt
+	SQLInsertClaim            = sqlInsertClaim
+	SQLDeleteJobAttempts      = sqlDeleteJobAttempts
+	SQLRetryTasksPrefix       = sqlRetryTasksPrefix
+	SQLDeleteUserKeepingAdmin = sqlDeleteUserKeepingAdmin
+	SQLFinalizeJob            = sqlFinalizeJob
+	SQLReclaimTaskSet         = sqlReclaimTaskSet
+	SQLInsertTasksHead        = sqlInsertTasksHead
 )
 
 var (
-	MapErr              = mapErr
-	ClassifyErr         = classifyErr
-	TextToTime          = textToTime
-	CasWriteTaskStatus  = casWriteTaskStatus
-	CasTaskStatusTx     = casTaskStatusTx
-	ExpiredJobsQuery    = expiredJobsQuery
-	SelectExpiredJobsTx = selectExpiredJobsTx
-	PurgeExpiredJobTx   = purgeExpiredJobTx
+	MapErr             = mapErr
+	ClassifyErr        = classifyErr
+	TextToTime         = textToTime
+	CasWriteTaskStatus = casWriteTaskStatus
+	CasTaskStatusTx    = casTaskStatusTx
+	ExpiredJobsQuery   = expiredJobsQuery
+	PurgeExpiredJobTx  = purgeExpiredJobTx
 )
 
 // WriteDB and ReadDB return the store's write and read pools.
@@ -69,3 +83,8 @@ var SearchClause = searchClause
 
 // StmtCount is the number of statements the store prepared.
 func (s *Store) StmtCount() int { return len(s.stmts) }
+
+// SelectExpiredJobs runs the retention eligibility SELECT inside tx.
+func SelectExpiredJobs(ctx context.Context, tx *DBTx, query string, args []any) ([]store.DeletedJob, error) {
+	return selectExpiredJobs(ctx, &tx.dbConn, query, args)
+}

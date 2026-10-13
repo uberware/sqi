@@ -29,9 +29,12 @@ FROM users WHERE ` // + Dialect.CIEqual("username"), appended in prepareAll
 SELECT id, username, display_name, password_hash, role, auth_source, external_id, disabled, created_at, updated_at
 FROM users WHERE auth_source = ? AND external_id = ? AND external_id != ''`
 
+	// sqlListUsers orders by lower(username) and then username: the column is
+	// COLLATE NOCASE on SQLite and COLLATE "C" on PostgreSQL, and lower() folds
+	// ASCII only on both, exactly as NOCASE does.
 	sqlListUsers = `
 SELECT id, username, display_name, password_hash, role, auth_source, external_id, disabled, created_at, updated_at
-FROM users ORDER BY username`
+FROM users ORDER BY lower(username), username`
 
 	// sqlUpdateUserHead is the write that plain and guarded updates share, so a
 	// future column lands in both or in neither; its placeholders are bound by
@@ -196,38 +199,39 @@ func (s *Store) SetUserDisplayName(ctx context.Context, id, displayName string) 
 // UpdateUserKeepingAdmin implements [store.UserStore]. The guard is in the
 // UPDATE's WHERE clause, so the refusal and the write are one statement.
 func (s *Store) UpdateUserKeepingAdmin(ctx context.Context, u store.User) (store.User, error) {
-	var out store.User
-	err := s.withAdminAnchors(ctx, func(tx *dbTx) error {
+	return withAdminAnchors(ctx, s, func(tx *dbTx) (store.User, error) {
 		// The guard's own two placeholders carry the NEW role and disabled values.
 		args := append(updateUserArgs(u, TimeText(time.Now().UTC())), u.Role, u.Disabled)
 		row := tx.QueryRowContext(ctx, sqlUpdateUserKeepingAdmin, args...)
-		var err error
-		out, err = scanUser(row)
+		out, err := scanUser(row)
 		if errors.Is(err, sql.ErrNoRows) {
-			return userMissingOrLastAdmin(ctx, tx, u.ID)
+			return store.User{}, userMissingOrLastAdmin(ctx, tx, u.ID)
 		}
-		return mapErr(err)
+		if err != nil {
+			return store.User{}, mapErr(err)
+		}
+		return out, nil
 	})
-	return out, err
 }
 
 // DeleteUser implements [store.UserStore]. The guard is in the DELETE's WHERE
 // clause, so the refusal and the write are one statement.
 func (s *Store) DeleteUser(ctx context.Context, id string) error {
-	return s.withAdminAnchors(ctx, func(tx *dbTx) error {
+	_, err := withAdminAnchors(ctx, s, func(tx *dbTx) (struct{}, error) {
 		res, err := tx.ExecContext(ctx, sqlDeleteUserKeepingAdmin, id)
 		if err != nil {
-			return mapErr(err)
+			return struct{}{}, mapErr(err)
 		}
 		n, err := res.RowsAffected()
 		if err != nil {
-			return err
+			return struct{}{}, err
 		}
 		if n == 1 {
-			return nil
+			return struct{}{}, nil
 		}
-		return userMissingOrLastAdmin(ctx, tx, id)
+		return struct{}{}, userMissingOrLastAdmin(ctx, tx, id)
 	})
+	return err
 }
 
 // withAdminAnchors runs fn in a write transaction after taking the anchor
@@ -241,18 +245,24 @@ func (s *Store) DeleteUser(ctx context.Context, id string) error {
 // On SQLite LockAnchors does nothing and the single write connection provides
 // the serialization; the guard in the statement is what makes the answer right.
 // The admin set is read before its rows are locked, so on Postgres an
-// account made an enabled admin in between is not anchored; re-read the set
-// under the locks (and repeat until it is stable) or lock a wider range.
-func (s *Store) withAdminAnchors(ctx context.Context, fn func(*dbTx) error) error {
-	return s.inTx(ctx, "admin-guarded user write", func(tx *dbTx) (txOutcome, error) {
+// account made an enabled admin in between is not anchored. That is safe: the
+// guard re-counts the enabled admins in the statement, after the locks, and a
+// promotion only adds admins, so it cannot make the guard pass wrongly.
+//
+// fn's value is returned through [inTxValue], so a failed run leaves nothing
+// behind.
+func withAdminAnchors[T any](ctx context.Context, s *Store, fn func(*dbTx) (T, error)) (T, error) {
+	return inTxValue(ctx, s, "admin-guarded user write", func(tx *dbTx) (T, txOutcome, error) {
+		var zero T
 		anchors, err := liveAdminAnchorsTx(ctx, tx)
 		if err != nil {
-			return txRollback, err
+			return zero, txRollback, err
 		}
 		if err := tx.lockAnchors(ctx, anchors...); err != nil {
-			return txRollback, err
+			return zero, txRollback, err
 		}
-		return txCommit, fn(tx)
+		v, err := fn(tx)
+		return v, txCommit, err
 	})
 }
 

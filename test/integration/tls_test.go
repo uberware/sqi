@@ -31,6 +31,7 @@ import (
 	"github.com/uberware/sqi/internal/certgen"
 	"github.com/uberware/sqi/internal/config"
 	"github.com/uberware/sqi/internal/server"
+	"github.com/uberware/sqi/internal/store/backend"
 )
 
 // tlsMaterial generates a farm CA and a loopback server certificate into a
@@ -120,12 +121,12 @@ func tlsClient(t *testing.T, dir string) *http.Client {
 
 // startTLSServer boots a full sqi-server with HTTPS, broker TLS, broker auth
 // and the REST enrollment endpoint all enabled, against certificates in dir.
-func startTLSServer(t *testing.T, dbPath, dir string) *testServer {
+func startTLSServer(t *testing.T, so backend.Options, dir string) *testServer {
 	t.Helper()
 	certFile := filepath.Join(dir, "server.crt")
 	keyFile := filepath.Join(dir, "server.key")
 
-	ts := startBrokerAuthServer(t, dbPath, func(cfg *server.Config) {
+	ts := startBrokerAuthServer(t, so, func(cfg *server.Config) {
 		cfg.HTTPTLS = config.TLSConfig{Enabled: true, CertFile: certFile, KeyFile: keyFile}
 		cfg.NATSTLS = config.NATSTLSConfig{Enabled: true, CertFile: certFile, KeyFile: keyFile}
 		cfg.NATSAuthEnrollmentEndpointEnabled = true
@@ -137,9 +138,9 @@ func startTLSServer(t *testing.T, dbPath, dir string) *testServer {
 
 func TestTLSEndToEnd(t *testing.T) {
 	dir := tlsMaterial(t)
-	dbPath := filepath.Join(t.TempDir(), "sqi.db")
-	joinToken := seedJoinToken(t, dbPath, "tls-e2e")
-	ts := startTLSServer(t, dbPath, dir)
+	so := storeFor(t, filepath.Join(t.TempDir(), "sqi.db"))
+	joinToken := seedJoinToken(t, so, "tls-e2e")
+	ts := startTLSServer(t, so, dir)
 
 	// The API really is HTTPS, verified against the farm CA.
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
@@ -184,9 +185,9 @@ func TestTLSEndToEnd(t *testing.T) {
 
 func TestTLSWorkerWithoutCAIsRefused(t *testing.T) {
 	dir := tlsMaterial(t)
-	dbPath := filepath.Join(t.TempDir(), "sqi.db")
-	joinToken := seedJoinToken(t, dbPath, "tls-nocert")
-	ts := startTLSServer(t, dbPath, dir)
+	so := storeFor(t, filepath.Join(t.TempDir(), "sqi.db"))
+	joinToken := seedJoinToken(t, so, "tls-nocert")
+	ts := startTLSServer(t, so, dir)
 
 	farmID, queueID := seedFarmAndQueue(t, ts)
 	// No CA configured anywhere: the worker can neither verify the server's
@@ -214,14 +215,14 @@ func TestTLSWorkerWithoutCAIsRefused(t *testing.T) {
 func TestTLSMutualAuthEndToEnd(t *testing.T) {
 	dir, clientCert, clientKey := tlsMaterialWithClient(t, "render-01")
 
-	dbPath := filepath.Join(t.TempDir(), "sqi.db")
-	joinToken := seedJoinToken(t, dbPath, "mtls-e2e")
+	so := storeFor(t, filepath.Join(t.TempDir(), "sqi.db"))
+	joinToken := seedJoinToken(t, so, "mtls-e2e")
 
 	certFile := filepath.Join(dir, "server.crt")
 	keyFile := filepath.Join(dir, "server.key")
 	caFile := filepath.Join(dir, "ca.crt")
 
-	ts := startBrokerAuthServer(t, dbPath, func(cfg *server.Config) {
+	ts := startBrokerAuthServer(t, so, func(cfg *server.Config) {
 		cfg.HTTPTLS = config.TLSConfig{Enabled: true, CertFile: certFile, KeyFile: keyFile}
 		cfg.NATSTLS = config.NATSTLSConfig{
 			Enabled: true, CertFile: certFile, KeyFile: keyFile,
@@ -253,14 +254,14 @@ func TestTLSMutualAuthEndToEnd(t *testing.T) {
 // the test above.
 func TestTLSMutualAuthRefusesWorkerWithoutCertificate(t *testing.T) {
 	dir := tlsMaterial(t)
-	dbPath := filepath.Join(t.TempDir(), "sqi.db")
-	joinToken := seedJoinToken(t, dbPath, "mtls-negative")
+	so := storeFor(t, filepath.Join(t.TempDir(), "sqi.db"))
+	joinToken := seedJoinToken(t, so, "mtls-negative")
 
 	certFile := filepath.Join(dir, "server.crt")
 	keyFile := filepath.Join(dir, "server.key")
 	caFile := filepath.Join(dir, "ca.crt")
 
-	ts := startBrokerAuthServer(t, dbPath, func(cfg *server.Config) {
+	ts := startBrokerAuthServer(t, so, func(cfg *server.Config) {
 		cfg.HTTPTLS = config.TLSConfig{Enabled: true, CertFile: certFile, KeyFile: keyFile}
 		cfg.NATSTLS = config.NATSTLSConfig{
 			Enabled: true, CertFile: certFile, KeyFile: keyFile, ClientCAFile: caFile,
@@ -316,13 +317,13 @@ func TestTLSMutualAuthWithIssuedCertificate(t *testing.T) {
 		t.Fatalf("WriteLeaf: %v", err)
 	}
 
-	dbPath := filepath.Join(t.TempDir(), "sqi.db")
-	joinToken := seedJoinToken(t, dbPath, "mtls-day2")
+	so := storeFor(t, filepath.Join(t.TempDir(), "sqi.db"))
+	joinToken := seedJoinToken(t, so, "mtls-day2")
 	certFile := filepath.Join(dir, "server.crt")
 	keyFile := filepath.Join(dir, "server.key")
 	caFile := filepath.Join(dir, "ca.crt")
 
-	ts := startBrokerAuthServer(t, dbPath, func(cfg *server.Config) {
+	ts := startBrokerAuthServer(t, so, func(cfg *server.Config) {
 		cfg.HTTPTLS = config.TLSConfig{Enabled: true, CertFile: certFile, KeyFile: keyFile}
 		cfg.NATSTLS = config.NATSTLSConfig{
 			Enabled: true, CertFile: certFile, KeyFile: keyFile, ClientCAFile: caFile,

@@ -224,6 +224,10 @@ func (h *farmHandler) deleteFarm(w http.ResponseWriter, r *http.Request) {
 			writeProblem(w, r, http.StatusNotFound, "farm not found")
 			return
 		}
+		if errors.Is(err, store.ErrConflict) {
+			writeProblem(w, r, http.StatusConflict, "farm is still in use by queues, jobs or workers")
+			return
+		}
 		h.logger.ErrorContext(ctx, "farms: delete failed", slog.String("id", id), slog.Any("error", err))
 		writeProblem(w, r, http.StatusInternalServerError, "failed to delete farm")
 		return

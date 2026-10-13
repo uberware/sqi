@@ -58,7 +58,7 @@ from sqi_client import SqiClient
 
 with SqiClient("http://localhost:8080") as sqi:
     print(sqi.ping())   # True if /healthz is OK
-    print(sqi.ready())  # True if /readyz is OK (SQLite + NATS reachable)
+    print(sqi.ready())  # True if /readyz is OK (the store, sqlite or postgres, and NATS reachable)
 ```
 
 Constructor options:

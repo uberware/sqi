@@ -859,7 +859,7 @@ resume without missing events. (A client may also send an application-level
 | Endpoint | Description |
 |---|---|
 | `GET /healthz` | Liveness — returns `200 OK` if the process is alive |
-| `GET /readyz` | Readiness — returns `200 OK` only when SQLite and NATS are reachable |
+| `GET /readyz` | Readiness — returns `200 OK` only when the store (`sqlite` or `postgres`, the check named after `store.driver`) and NATS are reachable |
 | `GET /metrics` | Prometheus metrics (text format) |
 | `GET /api/v1/openapi.yaml` | OpenAPI 3.1 specification |
 

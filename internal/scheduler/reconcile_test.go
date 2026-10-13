@@ -13,8 +13,9 @@ package scheduler
 //
 // The scenario tests start the scheduler through Run, not by calling the
 // method, so they also pin where the repair sits: it must have finished before
-// the scheduler begins accepting leases. Every test runs over both backends,
-// so the fake cannot drift from the store it stands in for.
+// the scheduler begins accepting leases. Every test runs over every backend
+// (the fake, SQLite, and PostgreSQL when configured), so the fake cannot
+// drift from the stores it stands in for.
 
 import (
 	"context"

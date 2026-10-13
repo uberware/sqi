@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -397,10 +398,8 @@ func TestJob_BlockedStatusAndDependencyTable(t *testing.T) {
 // TestJob_ListDependentsAndBlocked exercises a submission's dependency edges,
 // ListDependents, ListBlockedJobs, and GetJob's DependsOn population together.
 func TestJob_ListDependentsAndBlocked(t *testing.T) {
-	// Not t.Parallel(): sqlite.Open calls goose.SetBaseFS/SetDialect, which
-	// mutate package-level goose state; running concurrently with another
-	// parallel Open (e.g. TestJob_BlockedStatusAndDependencyTable in this
-	// same file) trips the race detector on that pre-existing global state.
+	// Not t.Parallel(), though nothing requires that: sqlite.Open migrates
+	// through its own goose provider and touches no package-level goose state.
 	ctx := context.Background()
 	st := openTestStoreWB(t)
 
@@ -566,9 +565,9 @@ func TestStore_PurgeExpiredJobTx_SkipsAJobRevivedAfterTheSelect(t *testing.T) {
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
 	dtx := st.WrapTx(tx)
 
-	candidates, err := sqlstore.SelectExpiredJobsTx(ctx, dtx, query, args)
+	candidates, err := sqlstore.SelectExpiredJobs(ctx, dtx, query, args)
 	if err != nil {
-		t.Fatalf("selectExpiredJobsTx: %v", err)
+		t.Fatalf("selectExpiredJobs: %v", err)
 	}
 	if got := deletedJobIDs(candidates); !slices.Equal(got, []string{"revived", "untouched"}) {
 		t.Fatalf("candidates = %v, want both jobs", got)
@@ -614,5 +613,23 @@ func TestStore_PurgeExpiredJobTx_SkipsAJobRevivedAfterTheSelect(t *testing.T) {
 	}
 	if _, err := st.GetJob(ctx, "untouched"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("GetJob(untouched) = %v, want ErrNotFound", err)
+	}
+}
+
+// TestDeleteJob_SQLiteRunsNoRowLock pins that the lock DeleteJob takes on a
+// PostgreSQL store's logged tasks costs SQLite nothing: its dialect has no
+// FOR UPDATE, so the locking SELECT is not run.
+func TestDeleteJob_SQLiteRunsNoRowLock(t *testing.T) {
+	base := openTestStoreWB(t)
+	job := seedJobWithChildren(t, base, "dj")
+	d := &recordingDialect{Dialect: base.Dialect()}
+	st := withDialect(t, base, d)
+	if err := st.DeleteJob(t.Context(), job.ID); err != nil {
+		t.Fatalf("DeleteJob: %v", err)
+	}
+	for _, q := range d.queries {
+		if strings.HasPrefix(strings.TrimSpace(q), "SELECT 1 FROM tasks") || strings.Contains(q, "FOR UPDATE") {
+			t.Errorf("SQLite DeleteJob ran a row lock: %q", q)
+		}
 	}
 }

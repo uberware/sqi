@@ -7,6 +7,9 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -155,6 +158,54 @@ func TestBrokerStartInvalidAddr(t *testing.T) {
 				t.Fatal("Start with invalid addr: want error, got nil")
 			}
 		})
+	}
+}
+
+// TestBrokerStart_ReportsAPortInUse pins that a broker whose port is already
+// taken fails promptly with the listen error, instead of waiting out the
+// readiness timeout and reporting only that it never became ready.
+func TestBrokerStart_ReportsAPortInUse(t *testing.T) {
+	taken, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taken.Close()
+
+	b := New(BrokerConfig{Addr: taken.Addr().String(), DataDir: t.TempDir() + "/nats"}, slog.New(slog.DiscardHandler))
+	start := time.Now()
+	err = b.Start(context.Background())
+	if err == nil {
+		b.Shutdown()
+		t.Fatal("Start on a port in use: want an error, got nil")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("Start took %s to fail; want it to fail as soon as the listen fails", elapsed)
+	}
+	if !strings.Contains(err.Error(), "listening") {
+		t.Errorf("Start error = %q; want the listen failure named", err)
+	}
+}
+
+// TestBrokerStart_ReportsAnUnusableDataDir pins the same for JetStream: a store
+// directory it cannot create fails Start promptly, naming JetStream.
+func TestBrokerStart_ReportsAnUnusableDataDir(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b := New(BrokerConfig{Addr: net.JoinHostPort("127.0.0.1", itoa(freePort(t))), DataDir: filepath.Join(file, "nats")},
+		slog.New(slog.DiscardHandler))
+	start := time.Now()
+	err := b.Start(context.Background())
+	if err == nil {
+		b.Shutdown()
+		t.Fatal("Start with an unusable data dir: want an error, got nil")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("Start took %s to fail; want it to fail as soon as JetStream does", elapsed)
+	}
+	if !strings.Contains(err.Error(), "JetStream") {
+		t.Errorf("Start error = %q; want the JetStream failure named", err)
 	}
 }
 

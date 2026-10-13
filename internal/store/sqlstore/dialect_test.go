@@ -39,11 +39,11 @@ func (d *recordingDialect) LockAnchors(ctx context.Context, tx *sql.Tx, anchors 
 }
 
 // withDialect returns a store over base's pools whose statements run through
-// d. It is closed by t.Cleanup before base, which closes the pools again (a
-// no-op).
-func withDialect(t *testing.T, base *sqlite.Store, d sqlstore.Dialect) *sqlstore.Store {
+// d, built with opts. It is closed by t.Cleanup before base, which closes the
+// pools again (a no-op).
+func withDialect(t *testing.T, base *sqlite.Store, d sqlstore.Dialect, opts ...sqlstore.Option) *sqlstore.Store {
 	t.Helper()
-	s, err := sqlstore.New(t.Context(), base.WriteDB(), base.ReadDB(), d)
+	s, err := sqlstore.New(t.Context(), base.WriteDB(), base.ReadDB(), d, opts...)
 	if err != nil {
 		t.Fatalf("sqlstore.New: %v", err)
 	}

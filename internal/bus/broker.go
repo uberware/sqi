@@ -230,13 +230,15 @@ func (b *Broker) Start(ctx context.Context) error {
 		return fmt.Errorf("bus: create nats server: %w", err)
 	}
 
+	nl := newNATSLogger(b.logger)
+	ns.SetLoggerV2(nl, false, false, false)
+
 	// Start is non-blocking; the server accepts connections asynchronously.
 	ns.Start()
 
-	// Wait up to 10 s for the server to be ready to accept connections.
-	if !ns.ReadyForConnections(10 * time.Second) {
+	if err := waitForNATS(ctx, ns, nl, 10*time.Second); err != nil {
 		ns.Shutdown()
-		return errors.New("bus: nats server did not become ready within 10s")
+		return err
 	}
 
 	// Commit every field the other methods read, in one critical section, so
@@ -287,6 +289,29 @@ func (b *Broker) Start(ctx context.Context) error {
 		slog.String("streams", StreamTask+","+StreamLogs+","+StreamWorker+","+StreamCancel),
 	)
 	return nil
+}
+
+// waitForNATS waits up to timeout for ns to accept connections. It fails as
+// soon as the server reports a fatal error (a port in use, a JetStream store it
+// cannot open), naming it, or when ctx ends.
+func waitForNATS(ctx context.Context, ns *natsserver.Server, nl *natsLogger, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		select {
+		case err := <-nl.fatal:
+			return fmt.Errorf("bus: start nats server: %w", err)
+		case <-ctx.Done():
+			return fmt.Errorf("bus: start nats server: %w", ctx.Err())
+		default:
+		}
+		// Each call polls for up to 50 ms.
+		if ns.ReadyForConnections(50 * time.Millisecond) {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("bus: nats server did not become ready within %s", timeout)
+		}
+	}
 }
 
 // Shutdown drains the admin connection and stops the embedded NATS server,

@@ -197,8 +197,9 @@ func workerBindArgs(w store.Worker, now string) ([]any, error) {
 // RegisterWorker implements [store.WorkerStore].
 //
 // Anchor: the worker row, then (on a restart) the reclaim's job rows, the same
-// order as offlineWorker, and sharing the gap it leaves on PostgreSQL
-// (LeaseTask does not anchor the worker row).
+// order as offlineWorker. A restart's reclaim is ordered against leases the way
+// offlineWorker is: LeaseTask holds the worker row FOR SHARE, so a lease in
+// flight is waited for and its task reclaimed.
 func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.Worker, []store.Task, error) {
 	now := time.Now().UTC()
 	args, err := workerBindArgs(worker, TimeText(now))
@@ -207,37 +208,34 @@ func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.
 	}
 	args = append(args, worker.InstanceID)
 
-	var (
-		out       store.Worker
+	type result struct {
+		worker    store.Worker
 		reclaimed []store.Task
-	)
-	err = s.inTx(ctx, "register worker", func(tx *dbTx) (txOutcome, error) {
-		reclaimed = nil
+	}
+	r, err := inTxValue(ctx, s, "register worker", func(tx *dbTx) (result, txOutcome, error) {
 		if err := tx.lockAnchors(ctx, workerAnchor(worker.ID)); err != nil {
-			return txRollback, err
+			return result{}, txRollback, err
 		}
 		var prior string
 		err := tx.QueryRowContext(ctx, `SELECT instance_id FROM workers WHERE id = ?`, worker.ID).Scan(&prior)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return txRollback, fmt.Errorf("store: read worker %s instance: %w", worker.ID, mapErr(err))
+			return result{}, txRollback, fmt.Errorf("store: read worker %s instance: %w", worker.ID, mapErr(err))
 		}
 		upsert := tx.Stmt(ctx, s.stmtUpsertWorker)
 		defer upsert.Close()
-		out, err = scanWorker(upsert.QueryRowContext(ctx, args...))
+		var out result
+		out.worker, err = scanWorker(upsert.QueryRowContext(ctx, args...))
 		if err != nil {
-			return txRollback, mapErr(err)
+			return result{}, txRollback, mapErr(err)
 		}
 		if prior != "" && worker.InstanceID != "" && prior != worker.InstanceID {
-			if reclaimed, err = reclaimWorkerTasksTx(ctx, tx, worker.ID, store.FailureReasonWorkerRestarted, now); err != nil {
-				return txRollback, err
+			if out.reclaimed, err = reclaimWorkerTasksTx(ctx, tx, worker.ID, store.FailureReasonWorkerRestarted, now); err != nil {
+				return result{}, txRollback, err
 			}
 		}
-		return txCommit, nil
+		return out, txCommit, nil
 	})
-	if err != nil {
-		return store.Worker{}, nil, err
-	}
-	return out, reclaimed, nil
+	return r.worker, r.reclaimed, err
 }
 
 // GetWorker implements [store.WorkerStore].
@@ -302,9 +300,10 @@ func (s *Store) ListWorkers(ctx context.Context, opts store.ListWorkersOptions) 
 	dir := sortDirKeyword(opts.SortDir)
 
 	// col comes from workerSortColumns (hard-coded allow-list); dir is "ASC" or
-	// "DESC" from sortDirKeyword; where uses only ? placeholders for user values.
+	// "DESC" from sortDirKeyword; orderByClause renders both, with an id
+	// tie-break; where uses only ? placeholders for user values.
 	q := `SELECT ` + workerCols + ` FROM workers` + where +
-		` ORDER BY ` + col + ` ` + dir +
+		orderByClause(col, dir, opts.SortBy == store.WorkerSortByLastHeartbeatAt) +
 		` LIMIT ? OFFSET ?`
 	rows, err := s.r.QueryContext(ctx, q, append(args, opts.Pagination.Limit, opts.Pagination.Offset)...)
 	if err != nil {

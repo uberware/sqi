@@ -378,6 +378,21 @@ func TestDeleteFarm_Success(t *testing.T) {
 	}
 }
 
+func TestDeleteFarm_StillInUse(t *testing.T) {
+	st := fake.New()
+	defer st.Close()
+	farm := seedFarm(t, st)
+	if _, err := st.CreateQueue(t.Context(), store.Queue{ID: "q1", FarmID: farm.ID, Name: "q"}); err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
+	r := newFarmRouter(st)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, newReq(t, http.MethodDelete, "/api/v1/farms/"+farm.ID, nil))
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("want 409, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
 // TestFarmRetryOverrides_Rejected asserts create/update validate the retry
 // override bounds at the API boundary (max_attempts >= 1, delay >= 0,
 // failure_limit >= 0) instead of storing values the scheduler would silently

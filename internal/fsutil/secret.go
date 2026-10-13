@@ -3,6 +3,7 @@
 package fsutil
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -72,6 +73,23 @@ func WriteSecret(path string, data []byte) error {
 	}
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("fsutil: close secret %s: %w", path, err)
+	}
+	return nil
+}
+
+// CreateSecretExclusive creates an empty file at path, restricted to the
+// writing user as [WriteSecret] restricts one, for a caller whose content is
+// then written by something else into the file it names (a database backup
+// written by SQLite's VACUUM INTO or by pg_dump). The restriction is in place
+// before the first byte lands. It fails with an error matching [fs.ErrExist]
+// when path already exists, so it never replaces, or widens, a file.
+func CreateSecretExclusive(path string) error {
+	f, err := createSecretExclusive(path)
+	if err != nil {
+		return fmt.Errorf("fsutil: create secret %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return errors.Join(fmt.Errorf("fsutil: close secret %s: %w", path, err), os.Remove(path))
 	}
 	return nil
 }

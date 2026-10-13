@@ -399,8 +399,7 @@ func (s *Store) CancelJobStatus(_ context.Context, id string) error {
 // Each candidate is re-checked against the full eligibility predicate
 // immediately before it is deleted, and skipped (not deleted, not reported)
 // if it no longer matches. The whole sweep holds s.mu, so here the re-check can
-// never skip, exactly as on SQLite; it is kept so the two backends run the same
-// steps.
+// never skip; it is kept so the fake runs the same steps as the SQL store.
 func (s *Store) DeleteTerminalJobsBefore(
 	_ context.Context, cutoff time.Time, includeFailed bool,
 ) ([]store.DeletedJob, error) {
@@ -616,7 +615,8 @@ func filterJob(j store.Job, opts store.ListJobsOptions) bool {
 
 // cmpJob returns a comparison value for two jobs by the given sort field and
 // direction. An empty field defaults to [store.JobSortByCreatedAt]; an empty
-// direction defaults to ascending.
+// direction defaults to ascending. Rows that tie on the field compare by ID
+// ascending, as the SQL stores order them.
 func cmpJob(a, b store.Job, field store.JobSortField, dir store.SortDir) int {
 	var n int
 	switch field {
@@ -631,8 +631,5 @@ func cmpJob(a, b store.Job, field store.JobSortField, dir store.SortDir) int {
 	default: // JobSortByCreatedAt
 		n = a.CreatedAt.Compare(b.CreatedAt)
 	}
-	if dir == store.SortDesc {
-		return -n
-	}
-	return n
+	return withIDTieBreak(n, dir, a.ID, b.ID)
 }

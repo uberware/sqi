@@ -100,7 +100,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 // serve loads configuration, builds the logger and runs the server until ctx
 // is canceled.
 func serve(ctx context.Context, overrides config.FlagOverrides) error {
-	cfg, err := config.Load(persistentFlags.ConfigFile, overrides)
+	cfg, src, err := config.LoadWithSources(persistentFlags.ConfigFile, overrides)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
@@ -138,6 +138,8 @@ func serve(ctx context.Context, overrides config.FlagOverrides) error {
 		return fmt.Errorf("init logger: %w", err)
 	}
 
+	warnIgnoredStoreKeys(ctx, logger, cfg, src)
+
 	// ── Run ───────────────────────────────────────────────────────────────────
 	// Map the layered config into the scheduler's tuning parameters. Other
 	// scheduler fields keep their normalized defaults.
@@ -157,6 +159,34 @@ func serve(ctx context.Context, overrides config.FlagOverrides) error {
 		return err
 	}
 	return nil
+}
+
+// ignoredStoreKeys names the SQLite-only store keys (store.sqlite_path,
+// store.checkpoint_interval) that the operator set although store.driver is
+// postgres, where they do nothing. It is empty on the SQLite driver, and for a
+// key nobody set: src records what the config file or environment decided, so
+// a value that only equals its default is not reported.
+func ignoredStoreKeys(cfg config.Config, src config.Sources) []string {
+	if cfg.Store.Driver != config.StoreDriverPostgres {
+		return nil
+	}
+	var keys []string
+	if src.StoreSQLitePath {
+		keys = append(keys, "store.sqlite_path")
+	}
+	if src.StoreCheckpointInterval {
+		keys = append(keys, "store.checkpoint_interval")
+	}
+	return keys
+}
+
+// warnIgnoredStoreKeys logs one warning per [ignoredStoreKeys] entry, so an
+// operator who moved to PostgreSQL and left the SQLite settings in place is
+// told they have no effect.
+func warnIgnoredStoreKeys(ctx context.Context, logger *slog.Logger, cfg config.Config, src config.Sources) {
+	for _, key := range ignoredStoreKeys(cfg, src) {
+		logger.WarnContext(ctx, key+" is ignored when store.driver is postgres")
+	}
 }
 
 // serverConfig maps the layered [config.Config] the CLI loaded onto the
@@ -184,6 +214,9 @@ func serverConfig(cfg config.Config, schedCfg scheduler.Config) server.Config {
 		SQLitePath:                        cfg.Store.SQLitePath,
 		EnablePprof:                       cfg.HTTP.EnablePprof,
 		CheckpointInterval:                cfg.Store.CheckpointInterval,
+		StoreDriver:                       cfg.Store.Driver,
+		PostgresDSN:                       cfg.Store.Postgres.DSN,
+		PostgresMaxConns:                  cfg.Store.Postgres.MaxConns,
 		DiscoveryEnabled:                  cfg.Discovery.Enabled,
 		DiscoveryInstanceName:             cfg.Discovery.InstanceName,
 		EnforceOpenJDLimits:               cfg.OpenJD.EnforceLimits,

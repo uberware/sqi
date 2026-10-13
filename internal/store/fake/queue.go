@@ -142,7 +142,8 @@ func filterQueue(q store.Queue, opts store.ListQueuesOptions) bool {
 
 // cmpQueue returns a comparison value for two queues by the given sort field
 // and direction. An empty field defaults to [store.QueueSortByName]; an empty
-// direction defaults to ascending.
+// direction defaults to ascending. Rows that tie on the field compare by ID
+// ascending, as the SQL stores order them.
 func cmpQueue(a, b store.Queue, field store.QueueSortField, dir store.SortDir) int {
 	var n int
 	switch field {
@@ -153,8 +154,5 @@ func cmpQueue(a, b store.Queue, field store.QueueSortField, dir store.SortDir) i
 	default: // QueueSortByName
 		n = cmp.Compare(a.Name, b.Name)
 	}
-	if dir == store.SortDesc {
-		return -n
-	}
-	return n
+	return withIDTieBreak(n, dir, a.ID, b.ID)
 }

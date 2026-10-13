@@ -10,8 +10,8 @@ package scheduler
 // that point and the guarded store operation the scheduler calls there, so the
 // test fails against the race and pins the guarded operation.
 //
-// Every test runs over both backends, the fake and a real SQLite database, so
-// the fake cannot drift from the store it stands in for.
+// Every test runs over every backend (the fake, SQLite, and PostgreSQL when
+// configured), so the fake cannot drift from the stores it stands in for.
 
 import (
 	"context"
@@ -32,9 +32,9 @@ import (
 	"github.com/uberware/sqi/internal/ws"
 )
 
-// raceBackends returns a fresh store for each backend the race tests run over,
-// keyed by the subtest name. The SQLite store lives in a temp directory
-// and is closed when the test ends.
+// raceBackends returns a fresh store for every backend (the fake, SQLite, and
+// PostgreSQL when configured), keyed by the subtest name. The SQL stores are
+// closed when the test ends, after the end-of-test I3 check.
 func raceBackends(t *testing.T) map[string]store.Store {
 	t.Helper()
 	sq, err := sqlite.Open(t.Context(), t.TempDir()+"/test.db", sqlite.DefaultOptions())
@@ -47,7 +47,13 @@ func raceBackends(t *testing.T) map[string]store.Store {
 		}
 	})
 	checkClaimsAtEnd(t, sq)
-	return map[string]store.Store{"fake": newCheckedFake(t), "sqlite": sq}
+	out := map[string]store.Store{"fake": newCheckedFake(t), "sqlite": sq}
+	if storetest.PostgresEnabled() {
+		pg := storetest.Postgres(t) // registers its Close first, so the check below runs before it
+		checkClaimsAtEnd(t, pg)
+		out["postgres"] = pg
+	}
+	return out
 }
 
 // once runs fn the first time it is called and never again.

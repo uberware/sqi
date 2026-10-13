@@ -5,8 +5,9 @@ package sqlstore
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
-	"strings"
+	"slices"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -17,13 +18,26 @@ const taskCols = `
 	assigned_worker_id, assigned_at, created_at, updated_at, required_cores,
 	unschedulable_reason, failed_attempts, retry_after, failure_reason`
 
+// taskInsertColumns is how many values one task's insert binds: the "?" count
+// of [sqlTaskRowPlaceholders].
+const taskInsertColumns = 15
+
 const (
-	sqlInsertTask = `
+	// sqlInsertTask is one row's insert; it is the three parts below joined, so
+	// the batched insert (insertTasksBatchedTx) and this one cannot name
+	// different columns.
+	sqlInsertTask = sqlInsertTasksHead + sqlTaskRowPlaceholders + sqlInsertTasksTail
+
+	sqlInsertTasksHead = `
 INSERT INTO tasks (
 	id, job_id, step_id, name, parameters, status,
 	assigned_worker_id, assigned_at, created_at, updated_at, required_cores,
 	unschedulable_reason, failed_attempts, retry_after, failure_reason)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES `
+	// sqlTaskRowPlaceholders is one task's VALUES row: one "?" per column of
+	// sqlInsertTasksHead.
+	sqlTaskRowPlaceholders = `(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	sqlInsertTasksTail     = `
 RETURNING ` + taskCols
 
 	sqlGetTask = `SELECT ` + taskCols + ` FROM tasks WHERE id = ?`
@@ -93,13 +107,20 @@ SET    status = 'ready', assigned_worker_id = NULL, assigned_at = NULL, updated_
 WHERE assigned_worker_id = ?
   AND status IN ('assigned', 'running')`
 
-	// sqlReclaimStaleAssignedTasks returns tasks stuck in 'assigned' past the
-	// cutoff to ready, and RETURNING hands back exactly the rows this statement
-	// changed, as they are after the reset (invariant I2). Only 'assigned'
-	// (never 'running') so an in-progress task is never disturbed by the timer.
-	// Its binds are updated_at, then cutoff.
-	sqlReclaimStaleAssignedTasks = sqlReclaimTaskSet + `
+	// sqlStaleAssignedCandidates lists the stale assignments and their jobs,
+	// unlocked: the reaper locks the jobs and then resets each candidate under
+	// sqlReclaimStaleAssignedSuffix's re-check. Only 'assigned' (never
+	// 'running'), so an in-progress task is never disturbed by the timer.
+	sqlStaleAssignedCandidates = `
+SELECT id, job_id FROM tasks
 WHERE  status = 'assigned' AND assigned_at IS NOT NULL AND assigned_at < ?
+ORDER BY id`
+
+	// sqlReclaimStaleAssignedSuffix follows "WHERE id IN (…)": the candidates are
+	// reset only if still stale and assigned, re-checked against the committed
+	// row, and RETURNING hands back exactly the rows changed (I2). Binds: cutoff.
+	sqlReclaimStaleAssignedSuffix = `
+  AND  status = 'assigned' AND assigned_at IS NOT NULL AND assigned_at < ?
 RETURNING ` + taskCols
 
 	// Counts tasks in 'assigned' or 'running' state for per-queue policy.
@@ -391,9 +412,10 @@ func (s *Store) ListTasks(ctx context.Context, opts store.ListTasksOptions) (sto
 	dir := sortDirKeyword(opts.SortDir)
 
 	// col comes from taskSortColumns (hard-coded allow-list); dir is "ASC" or
-	// "DESC" from sortDirKeyword; where uses only ? placeholders for user values.
+	// "DESC" from sortDirKeyword; orderByClause renders both, with an id
+	// tie-break; where uses only ? placeholders for user values.
 	q := `SELECT ` + taskCols + ` FROM tasks` + where +
-		` ORDER BY ` + col + ` ` + dir +
+		orderByClause(col, dir, false) +
 		` LIMIT ? OFFSET ?`
 	rows, err := s.r.QueryContext(ctx, q, append(args, opts.Pagination.Limit, opts.Pagination.Offset)...)
 	if err != nil {
@@ -441,63 +463,114 @@ func (s *Store) SetTaskUnschedulableReason(ctx context.Context, id, reason strin
 	return false, nil // no longer ready: a guarded no-op
 }
 
+// reclaimBatch bounds how many candidates one transaction resets, keeping
+// the IN list and the locks one transaction holds small.
+const reclaimBatch = 500
+
 // ReclaimStaleAssignedTasks implements [store.TaskStore].
 //
-// One transaction returns the stale assignments to ready, then closes each
-// reclaimed task's running attempts as failed and releases those attempts'
-// claims (invariant I3). The returned set is the UPDATE's RETURNING set, so it
-// is exactly the tasks this call reset (invariant I2); the scheduler never has
-// to look an attempt up after the fact, so it cannot close the new attempt of a
-// task that has been leased again in between.
+// It lists the stale assignments unlocked, then, a batch at a time, locks the
+// batch's job rows sorted by id and resets the batch with a re-guarded UPDATE
+// … RETURNING, then closes each reset task's running attempts and releases
+// their claims (I3). The returned set is the RETURNING set: exactly what was
+// reset (I2), so the scheduler never has to look an attempt up after the fact
+// and cannot close the new attempt of a task leased again in between. Each
+// batch commits on its own, so on error the result lists the tasks earlier
+// batches reclaimed.
 //
-// Statement order: the tasks are reset first and only then are their
-// attempts closed and their claims released, the order CancelJobExecution uses.
-// The writer this order guards against is the worker's own report on a stale
-// assigned task. On Postgres the UPDATE takes each task's row lock, so a running
-// or terminal report already holding the row is waited for, and the UPDATE then
-// re-checks status = 'assigned' against the committed row and skips a task the
-// report moved on. Closing attempts first would let a report move the task
-// (assigned to running, say) after its attempt was already closed as failed. A
-// LeaseTask is not a competitor here: it moves a ready row, which this UPDATE's
-// predicate does not match, and the task it leaves assigned is not stale.
-//
-// Anchors: none are taken, deliberately. A PostgreSQL store must take them
-// BEFORE the UPDATE, and without locking any task row first: read the candidate
-// task IDs and their job IDs UNLOCKED, take the job-row anchors sorted by id,
-// then run the UPDATE re-guarded as WHERE id IN (candidates) AND status =
-// 'assigned' AND assigned_at < cutoff RETURNING. Locking the task rows first
-// (SELECT ... FOR UPDATE on tasks) or anchoring after the UPDATE ... RETURNING
-// both take a task row before its job row, and every job-level operation locks
-// the job row before its tasks, so the two orders can deadlock. The anchors are
-// also what orders the reaper against CompleteTaskAttempt, which writes the
-// attempt row before the task row, the reverse of this function: both under the
-// same job-row lock, they cannot interleave.
+// Order: no task row is locked before its job row (every job-level operation
+// locks the job first, so the reverse would deadlock), and the job lock is what
+// orders the reaper against CompleteTaskAttempt, which writes the attempt
+// before the task, the reverse of the reaper. Within the transaction the tasks
+// are reset before their attempts are closed, so a worker's report already
+// holding a task row is waited for and the re-check then skips the task it
+// moved; closing attempts first would let a report move the task (assigned to
+// running, say) after its attempt was already closed as failed. A LeaseTask is
+// not a competitor: it moves a ready row, which the re-check does not match,
+// and the task it leaves assigned is not stale.
 func (s *Store) ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time) ([]store.Task, error) {
-	var reclaimed []store.Task
-	err := s.inTx(ctx, "reclaim stale assigned tasks", func(tx *dbTx) (txOutcome, error) {
-		// Order: the tasks, then each one's attempts and claims. Server time stamps
-		// updated_at, ended_at and released_at alike.
-		nowText := TimeText(time.Now().UTC())
-		var err error
-		reclaimed, err = queryTasksTx(ctx, tx, sqlReclaimStaleAssignedTasks, nowText, TimeText(cutoff.UTC()))
-		if err != nil {
-			return txRollback, fmt.Errorf("store: reclaim stale assigned tasks: %w", err)
-		}
-		if len(reclaimed) == 0 {
-			reclaimed = nil
-			return txRollback, nil // nothing was stale; the rollback ends the empty transaction
-		}
-		for _, t := range reclaimed {
-			if err := closeTaskAttemptsTx(ctx, tx, t.ID, store.AttemptStatusFailed, "", nowText); err != nil {
-				return txRollback, err
-			}
-		}
-		return txCommit, nil
-	})
+	cutoffText := TimeText(cutoff.UTC())
+	cands, err := s.staleAssignedCandidates(ctx, cutoffText)
 	if err != nil {
 		return nil, err
 	}
+	var reclaimed []store.Task
+	for batch := range slices.Chunk(cands, reclaimBatch) {
+		got, err := s.reclaimStaleBatch(ctx, batch, cutoffText)
+		if err != nil {
+			return reclaimed, err
+		}
+		reclaimed = append(reclaimed, got...)
+	}
 	return reclaimed, nil
+}
+
+// staleCandidate is a stale assignment the reaper will re-check under its job
+// row's lock.
+type staleCandidate struct{ taskID, jobID string }
+
+// staleAssignedCandidates lists, in task id order, the stale assignments and
+// their jobs, unlocked. The read goes through the write pool so that it sees
+// this store's own committed writes. The list need not be fresh: each
+// candidate is reset only under its job's lock and the UPDATE's re-check, so a
+// stale entry is skipped and a missing one is found by the next sweep.
+func (s *Store) staleAssignedCandidates(ctx context.Context, cutoffText string) ([]staleCandidate, error) {
+	rows, err := s.w.QueryContext(ctx, sqlStaleAssignedCandidates, cutoffText)
+	if err != nil {
+		return nil, fmt.Errorf("store: list stale assigned tasks: %w", mapErr(err))
+	}
+	defer rows.Close()
+	var out []staleCandidate
+	for rows.Next() {
+		var c staleCandidate
+		if err := rows.Scan(&c.taskID, &c.jobID); err != nil {
+			return nil, fmt.Errorf("store: scan stale assigned task: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, mapErr(classifyErr(s.d, rows.Err()))
+}
+
+// reclaimStaleBatch resets one batch of candidates in one transaction: their
+// job rows locked sorted by id, then the re-guarded reset, then each reset
+// task's attempts and claims. Server time stamps updated_at, ended_at and
+// released_at alike.
+func (s *Store) reclaimStaleBatch(ctx context.Context, batch []staleCandidate, cutoffText string) ([]store.Task, error) {
+	jobIDs := make([]string, 0, len(batch))
+	args := make([]any, 0, len(batch)+2)
+	nowText := TimeText(time.Now().UTC())
+	args = append(args, nowText) // sqlReclaimTaskSet's updated_at
+	for _, c := range batch {
+		jobIDs = append(jobIDs, c.jobID)
+		args = append(args, c.taskID)
+	}
+	args = append(args, cutoffText)
+	slices.Sort(jobIDs)
+	jobIDs = slices.Compact(jobIDs)
+	anchors := make([]Anchor, 0, len(jobIDs))
+	for _, id := range jobIDs {
+		anchors = append(anchors, jobAnchor(id))
+	}
+	placeholders := qmarks(len(batch))
+	// placeholders holds only "?" marks; every value is bound.
+	query := sqlReclaimTaskSet + ` WHERE id IN (` + placeholders + `)` + sqlReclaimStaleAssignedSuffix
+
+	return inTxValue(ctx, s, "reclaim stale assigned tasks", func(tx *dbTx) ([]store.Task, txOutcome, error) {
+		if err := tx.lockAnchors(ctx, anchors...); err != nil {
+			return nil, txRollback, err
+		}
+		reclaimed, err := queryTasksTx(ctx, tx, query, args...)
+		if err != nil {
+			return nil, txRollback, fmt.Errorf("store: reclaim stale assigned tasks: %w", err)
+		}
+		if len(reclaimed) == 0 {
+			return nil, txRollback, nil // every candidate moved on; the rollback ends the transaction
+		}
+		if err := closeTasksAttemptsTx(ctx, tx, taskIDs(reclaimed), store.AttemptStatusFailed, "", nowText); err != nil {
+			return nil, txRollback, err
+		}
+		return reclaimed, txCommit, nil
+	})
 }
 
 // ListReadyTasks implements [store.TaskStore].
@@ -568,45 +641,38 @@ func (s *Store) RetryTasks(ctx context.Context, jobID string, taskIDs []string, 
 		if len(taskIDs) == 0 {
 			return nil, nil
 		}
-		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(taskIDs)), ",")
+		placeholders := qmarks(len(taskIDs))
 		inSuffix = " AND id IN (" + placeholders + ")"
 		for _, id := range taskIDs {
 			idArgs = append(idArgs, id)
 		}
 	}
 
-	var revived []store.Task
-	err := s.inTx(ctx, "retry tasks", func(tx *dbTx) (txOutcome, error) {
+	return inTxValue(ctx, s, "retry tasks", func(tx *dbTx) ([]store.Task, txOutcome, error) {
 		// The anchor is the job row, taken first. The revive UPDATE ... RETURNING
 		// is the returned set (I2), so there is no SELECT for a concurrent writer to
 		// slip in behind.
 		if err := tx.lockAnchors(ctx, jobAnchor(jobID)); err != nil {
-			return txRollback, err
+			return nil, txRollback, err
 		}
 
 		updArgs := append([]any{nowText, jobID}, idArgs...)
-		var err error
-		revived, err = queryTasksTx(ctx, tx, sqlRetryTasksPrefix+inSuffix+sqlRetryTasksReturning, updArgs...)
+		revived, err := queryTasksTx(ctx, tx, sqlRetryTasksPrefix+inSuffix+sqlRetryTasksReturning, updArgs...)
 		if err != nil {
-			return txRollback, fmt.Errorf("store: retry tasks for job %s: %w", jobID, err)
+			return nil, txRollback, fmt.Errorf("store: retry tasks for job %s: %w", jobID, err)
 		}
 		if len(revived) == 0 {
-			revived = nil
-			return txCommit, nil
+			return nil, txCommit, nil
 		}
 
 		if _, err = tx.ExecContext(ctx, sqlRetryResetSteps, nowText, jobID); err != nil {
-			return txRollback, fmt.Errorf("store: reset steps for job %s: %w", jobID, mapErr(err))
+			return nil, txRollback, fmt.Errorf("store: reset steps for job %s: %w", jobID, mapErr(err))
 		}
 		if _, err = tx.ExecContext(ctx, sqlRetryResetJob, nowText, jobID); err != nil {
-			return txRollback, fmt.Errorf("store: reset job %s: %w", jobID, mapErr(err))
+			return nil, txRollback, fmt.Errorf("store: reset job %s: %w", jobID, mapErr(err))
 		}
-		return txCommit, nil
+		return revived, txCommit, nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	return revived, nil
 }
 
 // CountTasksByJob implements [store.TaskStore].
@@ -698,67 +764,80 @@ func (s *Store) RecordTaskFailure(
 ) (taskFailed, jobFailed int, firstClose bool, err error) {
 	nowText := TimeText(now.UTC())
 
-	err = s.inTx(ctx, "record task failure", func(tx *dbTx) (txOutcome, error) {
-		taskFailed, jobFailed, firstClose = 0, 0, false
+	type result struct {
+		taskFailed, jobFailed int
+		firstClose            bool
+	}
+	r, err := inTxValue(ctx, s, "record task failure", func(tx *dbTx) (result, txOutcome, error) {
+		var out result
 		if err := lockTaskJobTx(ctx, tx, taskID); err != nil {
-			return txRollback, err // no such task => ErrNotFound
+			return result{}, txRollback, err // no such task => ErrNotFound
 		}
 
 		res, err := tx.ExecContext(ctx, sqlCloseAttemptAsFailed, nowText, nullInt(exitCode), sessionID, message, attemptID)
 		if err != nil {
-			return txRollback, mapErr(err)
+			return result{}, txRollback, mapErr(err)
 		}
 		closed, err := res.RowsAffected()
 		if err != nil {
-			return txRollback, err
+			return result{}, txRollback, err
 		}
 		// Invariant I3: a closed attempt holds no claims. Released unconditionally,
 		// so a redelivery is also safe; the UPDATE is a no-op when nothing is active.
 		// released_at is server time, not the caller's now (a worker-reported time).
 		if _, err = tx.ExecContext(ctx, sqlReleaseAttemptClaims, TimeText(time.Now().UTC()), attemptID); err != nil {
-			return txRollback, mapErr(err)
+			return result{}, txRollback, mapErr(err)
 		}
 
 		if closed == 0 {
 			// Redelivery (or unknown attempt): the attempt is already terminal, so
 			// do NOT re-count. Return the current counters so the caller's decision
 			// is identical to the first delivery. No matching task ⇒ ErrNotFound.
-			if err = tx.QueryRowContext(ctx, sqlReadFailureCounts, taskID).Scan(&taskFailed, &jobFailed); err != nil {
-				return txRollback, mapErr(err)
+			if err = tx.QueryRowContext(ctx, sqlReadFailureCounts, taskID).Scan(&out.taskFailed, &out.jobFailed); err != nil {
+				return result{}, txRollback, mapErr(err)
 			}
-			return txCommit, nil
+			return out, txCommit, nil
 		}
 
 		// First close of this attempt: count the failure exactly once.
 		var jobID string
-		if err = tx.QueryRowContext(ctx, sqlRecordTaskFailure, nowText, taskID).Scan(&taskFailed, &jobID); err != nil {
-			return txRollback, mapErr(err)
+		if err = tx.QueryRowContext(ctx, sqlRecordTaskFailure, nowText, taskID).Scan(&out.taskFailed, &jobID); err != nil {
+			return result{}, txRollback, mapErr(err)
 		}
-		if err = tx.QueryRowContext(ctx, sqlIncrementJobFailure, nowText, jobID).Scan(&jobFailed); err != nil {
-			return txRollback, mapErr(err)
+		if err = tx.QueryRowContext(ctx, sqlIncrementJobFailure, nowText, jobID).Scan(&out.jobFailed); err != nil {
+			return result{}, txRollback, mapErr(err)
 		}
-		firstClose = true
-		return txCommit, nil
+		out.firstClose = true
+		return out, txCommit, nil
 	})
-	if err != nil {
-		return 0, 0, false, err
-	}
-	return taskFailed, jobFailed, firstClose, nil
+	return r.taskFailed, r.jobFailed, r.firstClose, err
 }
 
 // RequeueTaskForRetry implements [store.TaskStore]. Zero rows (task missing,
 // no longer assigned/running, or attemptID not the task's latest attempt) is a
-// legitimate no-op reported as false — NOT an error, so a stale redelivery
+// legitimate no-op reported as false: NOT an error, so a stale redelivery
 // never naks into a redelivery loop.
+//
+// Anchor: the task's job row, so the latest-attempt check in the guard cannot
+// be overtaken by a lease committing a new attempt (a lease holds the job row
+// shared).
 func (s *Store) RequeueTaskForRetry(ctx context.Context, taskID, attemptID string, retryAfter, now time.Time) (bool, error) {
-	res, err := s.w.ExecContext(ctx, sqlRequeueTaskForRetry,
-		TimeText(retryAfter.UTC()), TimeText(now.UTC()), taskID, attemptID, taskID, taskID)
-	if err != nil {
-		return false, mapErr(err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, err
-	}
-	return n > 0, nil
+	return inTxValue(ctx, s, "requeue task for retry", func(tx *dbTx) (bool, txOutcome, error) {
+		if err := lockTaskJobTx(ctx, tx, taskID); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return false, txRollback, nil // missing task: a no-op, not an error
+			}
+			return false, txRollback, err
+		}
+		res, err := tx.ExecContext(ctx, sqlRequeueTaskForRetry,
+			TimeText(retryAfter.UTC()), TimeText(now.UTC()), taskID, attemptID, taskID, taskID)
+		if err != nil {
+			return false, txRollback, mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return false, txRollback, err
+		}
+		return n > 0, txCommit, nil
+	})
 }

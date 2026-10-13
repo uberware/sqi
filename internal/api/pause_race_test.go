@@ -13,11 +13,12 @@ import (
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/store/sqlite"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
-// seedBackends returns a fresh store for each backend the race tests run
-// over (the fake and SQLite), keyed by subtest name. The SQLite store lives in a temp
-// directory and is closed when the test ends.
+// seedBackends returns a fresh store for every backend (the fake, SQLite, and
+// PostgreSQL when configured), keyed by subtest name. The SQL stores are
+// closed when the test ends.
 func seedBackends(t *testing.T) map[string]store.Store {
 	t.Helper()
 	sq, err := sqlite.Open(t.Context(), t.TempDir()+"/test.db", sqlite.DefaultOptions())
@@ -29,7 +30,11 @@ func seedBackends(t *testing.T) map[string]store.Store {
 			t.Errorf("close sqlite store: %v", err)
 		}
 	})
-	return map[string]store.Store{"fake": fake.New(), "sqlite": sq}
+	out := map[string]store.Store{"fake": fake.New(), "sqlite": sq}
+	if storetest.PostgresEnabled() {
+		out["postgres"] = storetest.Postgres(t)
+	}
+	return out
 }
 
 // completeDuringPatchStore runs hook between the handler's status read and its

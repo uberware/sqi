@@ -186,8 +186,8 @@ func TestSubSecond_StaleAssignment(t *testing.T) {
 	}
 }
 
-// TestListStaleWorkers_SkipsANeverHeartbeatedWorker checks that both backends
-// treat a worker with no recorded heartbeat as not stale, as SQLite's NULL
+// TestListStaleWorkers_SkipsANeverHeartbeatedWorker checks that every backend
+// treats a worker with no recorded heartbeat as not stale, as SQLite's NULL
 // comparison does. The scheduler stamps a heartbeat at registration, so this
 // state occurs only in tests.
 func TestListStaleWorkers_SkipsANeverHeartbeatedWorker(t *testing.T) {

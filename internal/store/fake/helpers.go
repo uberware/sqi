@@ -3,6 +3,7 @@
 package fake
 
 import (
+	"cmp"
 	"maps"
 
 	"github.com/uberware/sqi/internal/store"
@@ -50,4 +51,16 @@ func copySlice[T any](s []T) []T {
 	result := make([]T, len(s))
 	copy(result, s)
 	return result
+}
+
+// withIDTieBreak applies dir to n, a comparison on a list's sort field, and
+// breaks a tie by ID ascending, as the SQL stores order their lists.
+func withIDTieBreak(n int, dir store.SortDir, aID, bID string) int {
+	if dir == store.SortDesc {
+		n = -n
+	}
+	if n == 0 {
+		return cmp.Compare(aID, bID)
+	}
+	return n
 }

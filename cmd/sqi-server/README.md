@@ -2,8 +2,9 @@
 
 `sqi-server` is the control plane for a `sqi` render farm. A single binary runs
 the job scheduler, REST API, WebSocket gateway, embedded NATS JetStream broker,
-and embedded SQLite state store. Workers connect to it over NATS; clients
-interact with it over HTTP and WebSocket.
+and the state store: embedded SQLite by default, or an external PostgreSQL
+database. Workers connect to it over NATS; clients interact with it over HTTP
+and WebSocket.
 
 ---
 
@@ -15,7 +16,7 @@ interact with it over HTTP and WebSocket.
 | **REST API** | `/api/v1/…` endpoints for job submission, status queries, worker management, and system configuration. |
 | **WebSocket gateway** | `/api/v1/ws` endpoint for real-time push of job, task, worker, and log events to subscribed clients. |
 | **Embedded NATS** | In-process JetStream broker used for work assignment, status reporting, log streaming, and worker heartbeats. |
-| **SQLite store** | Single-file database holding all durable state — jobs, tasks, workers, farms, queues, usage pools, and audit log. |
+| **State store** | The database holding all durable state — jobs, tasks, workers, farms, queues, usage pools, and audit log: an embedded SQLite file by default, or PostgreSQL 16 or later with `store.driver: postgres` (see [Running on PostgreSQL](../../docs/operations.md#running-on-postgresql)). |
 | **Web UI host** | Serves the embedded SPA at the root (`/`, with SPA fallback for extensionless paths; the legacy `/ui/*` prefix still resolves) and the OpenAPI spec at `/api/v1/openapi.yaml`. |
 | **mDNS responder** | Advertises `_sqi._tcp` on the local network so workers and the CLI can discover the server without manual address configuration. |
 
@@ -70,7 +71,9 @@ shell) — see [`docs/operations.md`](../../docs/operations.md#windows-service).
 The `service` command exists only in Windows builds.
 
 The first time the server starts it creates the SQLite database and runs
-all pending migrations automatically. No manual schema setup is required.
+all pending migrations automatically. No manual schema setup is required. On
+PostgreSQL the database must exist already, and the server creates the schema
+in it.
 
 See [`config/sqi-server.example.yaml`](../../config/sqi-server.example.yaml)
 for a fully commented configuration file, and
@@ -97,6 +100,7 @@ sleep 1
 ```sh
 curl -sf http://localhost:8080/healthz   # expects: {"status":"ok"}
 curl -sf http://localhost:8080/readyz    # expects: {"status":"ok","checks":{"nats":"ok","sqlite":"ok"}}
+                                         # (the store's check is "postgres" with store.driver: postgres)
 ```
 
 **3. Submit a minimal OpenJD job**
@@ -158,7 +162,9 @@ kill $SERVER_PID
 ## Database migrations
 
 Schema migrations are embedded in the binary and applied automatically at
-startup. To manage migrations manually:
+startup. To manage migrations manually (each subcommand takes `--db` for a
+SQLite file or `--dsn` for a PostgreSQL database, and otherwise uses the
+configured store):
 
 ```sh
 # Show current migration status
@@ -172,7 +178,16 @@ startup. To manage migrations manually:
 ```
 
 Migration SQL files live in
-[`internal/store/migrations/`](../../internal/store/migrations/).
+[`internal/store/migrations/`](../../internal/store/migrations/) (SQLite) and
+[`internal/store/migrations/postgres/`](../../internal/store/migrations/postgres/)
+(PostgreSQL, starting at `00037_baseline.sql`). On PostgreSQL, `migrate down`
+stops at `00037`: rolling the baseline back would drop the whole schema and its
+data, so it is refused (drop and recreate the database to start over).
+
+Leave the password out of `--dsn`, since the process list shows a command
+line, and supply it through `PGPASSWORD` or a password file instead. A
+PostgreSQL deployment in Docker Compose is in
+[`deploy/docker-compose.postgres.yml`](../../deploy/docker-compose.postgres.yml).
 
 ---
 
@@ -193,7 +208,7 @@ internal/
 ├── openjd/            OpenJD (jobtemplate-2023-09) parser, validator, parameter-space expansion.
 ├── scheduler/         Assignment loop, worker registry, heartbeat sweep, retry/failure policy.
 ├── server/            HTTP server wiring — router, middleware stack, boot sequence.
-├── store/             Store interface, SQLite implementation, migration runner, task state machine.
+├── store/             Store interface, shared SQL layer, SQLite and PostgreSQL stores, migrations, task state machine.
 ├── ui/                Embedded web/dist assets, SPA fallback handler.
 ├── version/           Build metadata (version, commit, build date, Go version).
 ├── worker/            Worker wire protocol handlers and log ingestion.

@@ -33,8 +33,12 @@ override order:
 
   built-in defaults → config file → SQI_* environment variables → CLI flags
 
-The YAML output is a valid config file — you can redirect it to a file and
-use it as a starting point for customisation.`,
+Secrets are redacted: the bootstrap admin password, the LDAP bind password,
+the OIDC client secret and the PostgreSQL DSN's password print as
+placeholders when set, and a DSN whose password cannot be located reliably is
+reduced to a placeholder. Redirected to a file, the output is a
+starting point for a config file, not a working one, until those values are
+put back (or supplied through SQI_* environment variables instead).`,
 	RunE: runConfigPrint,
 }
 

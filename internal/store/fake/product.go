@@ -60,8 +60,10 @@ func (s *Store) UpdateProduct(_ context.Context, p store.Product) (store.Product
 		if !strings.EqualFold(existing.Name, p.Name) {
 			continue
 		}
-		// id, created_at and source are server-owned and immutable on update.
+		// id, created_at and source are server-owned and immutable on update,
+		// and the name matched case-insensitively keeps its stored spelling.
 		p.ID = existing.ID
+		p.Name = existing.Name
 		p.CreatedAt = existing.CreatedAt
 		p.Source = existing.Source
 		s.products[id] = p

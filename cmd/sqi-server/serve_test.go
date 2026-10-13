@@ -3,7 +3,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,6 +86,9 @@ func TestServerConfig_CarriesTheRestOfTheConfig(t *testing.T) {
 	cfg.Auth.Session.CookieName = "cookie-under-test"
 	cfg.PresetLibrary.URL = "https://presets.example/index.json"
 	cfg.OpenJD.EnforceLimits = false
+	cfg.Store.Driver = config.StoreDriverPostgres
+	cfg.Store.Postgres.DSN = "postgres://u@db.example/sqi"
+	cfg.Store.Postgres.MaxConns = 23
 
 	got := serverConfig(cfg, scheduler.Config{FarmID: "farm-42"})
 
@@ -95,6 +100,15 @@ func TestServerConfig_CarriesTheRestOfTheConfig(t *testing.T) {
 	}
 	if got.SQLitePath != "/tmp/does-not-need-to-exist.db" {
 		t.Errorf("SQLitePath = %q, want the configured path", got.SQLitePath)
+	}
+	if got.StoreDriver != "postgres" {
+		t.Errorf("StoreDriver = %q, want the configured postgres", got.StoreDriver)
+	}
+	if got.PostgresDSN != "postgres://u@db.example/sqi" {
+		t.Errorf("PostgresDSN = %q, want the configured DSN", got.PostgresDSN)
+	}
+	if got.PostgresMaxConns != 23 {
+		t.Errorf("PostgresMaxConns = %d, want the configured 23", got.PostgresMaxConns)
 	}
 	if !got.AuthEnabled {
 		t.Error("AuthEnabled = false, want the configured true")
@@ -194,5 +208,71 @@ func TestServe_ConfigErrorReturnedThroughRun(t *testing.T) {
 	err := serve(context.Background(), config.FlagOverrides{})
 	if err == nil || !strings.Contains(err.Error(), "log.file") {
 		t.Fatalf("serve = %v, want a configuration error naming log.file", err)
+	}
+}
+
+// TestIgnoredStoreKeys pins which explicitly set SQLite-only keys are reported
+// as ignored. They are reported only on the postgres driver, and only when the
+// operator set them: a value that merely equals the default is not a choice
+// (config.Sources exists to tell the two apart).
+func TestIgnoredStoreKeys(t *testing.T) {
+	tests := []struct {
+		name   string
+		driver string
+		src    config.Sources
+		want   []string
+	}{
+		{"sqlite ignores nothing", "sqlite", config.Sources{StoreSQLitePath: true, StoreCheckpointInterval: true}, nil},
+		{"empty driver is sqlite", "", config.Sources{StoreSQLitePath: true}, nil},
+		{"postgres, nothing set", "postgres", config.Sources{}, nil},
+		{"postgres, sqlite_path set", "postgres", config.Sources{StoreSQLitePath: true}, []string{"store.sqlite_path"}},
+		{
+			"postgres, checkpoint_interval set", "postgres",
+			config.Sources{StoreCheckpointInterval: true},
+			[]string{"store.checkpoint_interval"},
+		},
+		{
+			"postgres, both set", "postgres",
+			config.Sources{StoreSQLitePath: true, StoreCheckpointInterval: true},
+			[]string{"store.sqlite_path", "store.checkpoint_interval"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.Store.Driver = tc.driver
+			got := ignoredStoreKeys(cfg, tc.src)
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Errorf("ignoredStoreKeys = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWarnIgnoredStoreKeys drives the logging half: each ignored key is a
+// warning that names the key and the driver, and a clean configuration logs
+// nothing.
+func TestWarnIgnoredStoreKeys(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	cfg := config.DefaultConfig()
+	cfg.Store.Driver = config.StoreDriverPostgres
+	warnIgnoredStoreKeys(context.Background(), logger, cfg, config.Sources{})
+	if buf.Len() != 0 {
+		t.Fatalf("a configuration that sets no SQLite key logged: %s", buf.String())
+	}
+
+	warnIgnoredStoreKeys(context.Background(), logger, cfg,
+		config.Sources{StoreSQLitePath: true, StoreCheckpointInterval: true})
+	out := buf.String()
+	for _, want := range []string{
+		"level=WARN",
+		"store.sqlite_path is ignored when store.driver is postgres",
+		"store.checkpoint_interval is ignored when store.driver is postgres",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log output lacks %q:\n%s", want, out)
+		}
 	}
 }

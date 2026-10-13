@@ -161,25 +161,19 @@ func (s *Store) MarkWorkerJoinTokenUsed(ctx context.Context, id string, at time.
 // is NOT consumed, and remains redeemable by a later, non-conflicting
 // request.
 func (s *Store) RedeemWorkerJoinToken(ctx context.Context, hash string, now time.Time, cred store.WorkerCredential) (store.WorkerCredential, error) {
-	var out store.WorkerCredential
-	err := s.inTx(ctx, "redeem worker join token", func(tx *dbTx) (txOutcome, error) {
+	return inTxValue(ctx, s, "redeem worker join token", func(tx *dbTx) (store.WorkerCredential, txOutcome, error) {
 		nowText := TimeText(now)
 		tokRow := tx.QueryRowContext(ctx, sqlConsumeWorkerJoinToken, nowText, hash, nowText)
 		if _, err := scanWorkerJoinToken(tokRow); err != nil {
-			return txRollback, mapErr(err)
+			return store.WorkerCredential{}, txRollback, mapErr(err)
 		}
 
 		credRow := tx.QueryRowContext(ctx, sqlInsertWorkerCredential, cred.ID, cred.WorkerID, cred.PublicKey, cred.Name,
 			TimeText(cred.EnrolledAt), nullTimeToText(cred.LastSeenAt), nullTimeToText(cred.RevokedAt))
-		var err error
-		out, err = scanWorkerCredential(credRow)
+		out, err := scanWorkerCredential(credRow)
 		if err != nil {
-			return txRollback, mapErr(err)
+			return store.WorkerCredential{}, txRollback, mapErr(err)
 		}
-		return txCommit, nil
+		return out, txCommit, nil
 	})
-	if err != nil {
-		return store.WorkerCredential{}, err
-	}
-	return out, nil
 }

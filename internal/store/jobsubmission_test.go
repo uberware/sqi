@@ -82,7 +82,7 @@ func TestJobStore_CreateJobSubmission_WritesEverything(t *testing.T) {
 			// The rows come back with the store's timestamps, not the caller's
 			// zero values. A non-zero check alone would pass on a value a
 			// century off, or on a CreatedAt stamped without its UpdatedAt, so
-			// both backends are held to "now, and the same on both fields".
+			// every backend is held to "now, and the same on both fields".
 			assertFreshTimestamps(t, "job "+out.Job.ID, out.Job.CreatedAt, out.Job.UpdatedAt)
 			for _, s := range out.Steps {
 				assertFreshTimestamps(t, "step "+s.ID, s.CreatedAt, s.UpdatedAt)
@@ -117,7 +117,7 @@ func TestJobStore_CreateJobSubmission_WritesEverything(t *testing.T) {
 // steps.
 //
 // The induced failure is a duplicate step name, which violates the (JobID,
-// Name) uniqueness both backends enforce on steps.
+// Name) uniqueness every backend enforces on steps.
 // It fires on the SECOND step, so the job row and the first step have already
 // been written inside the transaction when it hits.
 //

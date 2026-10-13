@@ -1,0 +1,114 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# sqi with its state store on PostgreSQL: one PostgreSQL 18 server, one
+# sqi-server and one sqi-worker.
+#
+# Quick start:
+#   export SQI_POSTGRES_PASSWORD='choose-a-strong-password'
+#   docker compose -f deploy/docker-compose.postgres.yml up -d --build
+#   open http://localhost:8080        # web UI
+#   docker compose -f deploy/docker-compose.postgres.yml down      # stop (keeps data)
+#   docker compose -f deploy/docker-compose.postgres.yml down -v   # stop and wipe data
+#
+# SQI_POSTGRES_PASSWORD is required (compose refuses to start without it); a
+# `.env` file next to where you run `docker compose` works too. It sets the
+# database role's password and reaches sqi-server as PGPASSWORD, so the DSN
+# below carries no password.
+#
+# Images: no published release includes PostgreSQL support yet (the latest is
+# v0.3.0), so `--build` builds both images from this checkout (the web UI is
+# embedded from web/dist, so run `make build` first for the full UI). Once a
+# release includes it, pin its tag on the two sqi services and drop `--build`.
+#
+# The server creates the schema itself on first start (store.driver: postgres
+# migrates on open). One sqi-server per database: a second one sharing it is
+# refused (see docs/operations.md, "Running on PostgreSQL").
+#
+# Backup and restore use the PostgreSQL client tools inside the database
+# container (the sqi-server image does not ship pg_dump):
+#   docker compose -f deploy/docker-compose.postgres.yml exec -T postgres \
+#     pg_dump -U sqi --format=custom --no-owner sqi > sqi-$(date +%Y%m%d).dump
+#   docker compose -f deploy/docker-compose.postgres.yml exec -T postgres \
+#     createdb -U sqi sqi_restored
+#   docker compose -f deploy/docker-compose.postgres.yml exec -T postgres \
+#     pg_restore -U sqi --dbname=sqi_restored --no-owner < sqi-YYYYMMDD.dump
+#
+# The database is reachable only on the compose network. To use an existing
+# PostgreSQL server instead, delete the postgres service and its depends_on,
+# and point SQI_STORE_POSTGRES_DSN at it (with sslmode=verify-full off a
+# trusted network).
+
+services:
+  postgres:
+    image: postgres:18.6
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sqi
+      POSTGRES_DB: sqi
+      POSTGRES_PASSWORD: ${SQI_POSTGRES_PASSWORD:?set SQI_POSTGRES_PASSWORD to the database password}
+    volumes:
+      # PostgreSQL 18 images keep their data in a versioned directory under
+      # /var/lib/postgresql, so the volume mounts the parent.
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      # Over TCP: on first boot the image runs a temporary, socket-only server
+      # that a socket probe would mistake for the real one.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U sqi -d sqi"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  sqi-server:
+    image: ghcr.io/uberware/sqi/sqi-server:latest
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080" # REST API + web UI
+      - "4222:4222" # embedded NATS (workers connect here)
+    restart: unless-stopped
+    environment:
+      # Bind NATS to all interfaces so the worker container can reach it.
+      SQI_NATS_ADDR: "0.0.0.0:4222"
+      SQI_NATS_DATA_DIR: "/var/lib/sqi-server/nats"
+      # The state store: PostgreSQL. The DSN names no password; the driver
+      # reads it from PGPASSWORD. sslmode=disable is for the private compose
+      # network only.
+      SQI_STORE_DRIVER: "postgres"
+      SQI_STORE_POSTGRES_DSN: "host=postgres port=5432 user=sqi dbname=sqi sslmode=disable"
+      PGPASSWORD: ${SQI_POSTGRES_PASSWORD:?set SQI_POSTGRES_PASSWORD to the database password}
+      # mDNS is unreliable inside Docker networks; the worker uses an explicit URL.
+      SQI_DISCOVERY_ENABLED: "false"
+    volumes:
+      # Only NATS keeps data on disk here; the state lives in PostgreSQL.
+      - server-data:/var/lib/sqi-server
+
+  sqi-worker:
+    image: ghcr.io/uberware/sqi/sqi-worker:latest
+    build:
+      context: ..
+      dockerfile: deploy/docker/worker/Dockerfile
+    depends_on:
+      - sqi-server
+    restart: unless-stopped
+    environment:
+      SQI_WORKER_NATS_URL: "nats://sqi-server:4222"
+      SQI_WORKER_DISCOVERY_ENABLE_MDNS: "false"
+      SQI_WORKER_DATA_DIR: "/var/lib/sqi-worker"
+    volumes:
+      - worker-data:/var/lib/sqi-worker
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:9091/readyz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  postgres-data:
+  server-data:
+  worker-data:

@@ -1245,15 +1245,20 @@ func (s *Scheduler) runHeartbeatSweep(ctx context.Context) {
 // though nothing is in flight; this returns such jobs to 'pending' so their
 // status reflects reality until a worker picks the work back up. Self-healing
 // and idempotent: a job with work still in flight, or already terminal, is
-// untouched.
+// untouched. A sweep that fails part-way still returns the jobs it had already
+// demoted (each demotion is its own committed transaction), so those are
+// announced before the error is handled: they are pending now and no later
+// sweep will list them again.
 func (s *Scheduler) demoteStalledJobs(ctx context.Context) {
 	demoted, err := s.store.DemoteStalledJobs(ctx, time.Now().UTC())
-	if err != nil {
-		if !errors.Is(err, context.Canceled) {
-			s.logger.WarnContext(ctx, "scheduler: demote stalled jobs failed", slog.Any("error", err))
-		}
-		return
+	s.announceDemoted(ctx, demoted)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		s.logger.WarnContext(ctx, "scheduler: demote stalled jobs failed", slog.Any("error", err))
 	}
+}
+
+// announceDemoted logs and fans out a pending JobEvent for each demoted job.
+func (s *Scheduler) announceDemoted(ctx context.Context, demoted []string) {
 	now := time.Now().UTC()
 	for _, jobID := range demoted {
 		s.logger.InfoContext(
@@ -1277,16 +1282,22 @@ func (s *Scheduler) demoteStalledJobs(ctx context.Context) {
 // attempt and releases its usage-pool claims inside the same transaction that
 // returns the task to ready (invariant I3), and reports exactly the tasks it
 // reclaimed, so a task that is leased again right afterwards keeps its new
-// attempt and claims.
+// attempt and claims. A reap that fails part-way still returns the tasks it had
+// already reclaimed (the store commits them a batch at a time), so those are
+// announced before the error is handled: they are ready now and no later reap
+// will list them again.
 func (s *Scheduler) reapStaleAssignedTasks(ctx context.Context) {
 	cutoff := time.Now().UTC().Add(-s.cfg.AssignedTaskTimeout)
 	reclaimed, err := s.store.ReclaimStaleAssignedTasks(ctx, cutoff)
-	if err != nil {
-		if !errors.Is(err, context.Canceled) {
-			s.logger.WarnContext(ctx, "scheduler: reclaim stale assigned tasks failed", slog.Any("error", err))
-		}
-		return
+	s.announceReaped(ctx, reclaimed)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		s.logger.WarnContext(ctx, "scheduler: reclaim stale assigned tasks failed", slog.Any("error", err))
 	}
+}
+
+// announceReaped logs the reap and fans out a ready TaskEvent for each
+// reclaimed task, waking the lease waiters on its queue.
+func (s *Scheduler) announceReaped(ctx context.Context, reclaimed []store.Task) {
 	if len(reclaimed) == 0 {
 		return
 	}
@@ -1437,12 +1448,11 @@ func (s *Scheduler) sweepRetiredJobs(ctx context.Context) {
 		return
 	}
 	cutoff := time.Now().UTC().Add(-s.cfg.JobRetention)
+	// On error, removed still lists the jobs deleted before it: they are gone
+	// and are announced like any others.
 	removed, err := s.store.DeleteTerminalJobsBefore(ctx, cutoff, s.cfg.JobRetentionIncludeFailed)
-	if err != nil {
-		if !errors.Is(err, context.Canceled) {
-			s.logger.WarnContext(ctx, "scheduler: job retention sweep failed", slog.Any("error", err))
-		}
-		return
+	if err != nil && !errors.Is(err, context.Canceled) {
+		s.logger.WarnContext(ctx, "scheduler: job retention sweep failed", slog.Any("error", err))
 	}
 	if len(removed) == 0 {
 		return

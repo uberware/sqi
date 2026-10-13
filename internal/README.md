@@ -37,17 +37,18 @@ expression leaves `internal/openjd/expr` and `internal/openjd/intrange` exist.
 | `internal/diag` | Bounded in-memory ring buffer of diagnostic (operational) log records from the server and connected workers |
 | `internal/discovery` | mDNS responder that advertises the running server on the local network |
 | `internal/fsutil` | Filesystem helpers shared across packages (AppleDouble sidecar filtering) |
-| `internal/health` | Liveness (`/healthz`, no checkers, always 200) and readiness (`/readyz`, runs the registered `sqlite` and `nats` checkers concurrently under a 5 s deadline; 503 `degraded` on any failure) |
+| `internal/health` | Liveness (`/healthz`, no checkers, always 200) and readiness (`/readyz`, runs the registered store checker (`sqlite` or `postgres`, named after `store.driver`) and the `nats` checker concurrently under a 5 s deadline; 503 `degraded` on any failure) |
 | `internal/log` | `slog`-based structured logging setup and helpers |
 | `internal/metrics` | Prometheus metric definitions and registration |
 | `internal/middleware` | `net/http` middleware (request logging, recovery, etc.) |
 | `internal/openjd` | OpenJD template parsing, validation, parameter-space expansion, path mapping |
+| `internal/pgdsn` | Reads PostgreSQL connection strings the way the driver does, to redact them (`config print`, logs) and to strip the password before a DSN reaches `pg_dump`'s command line |
 | `internal/presetgen` | Generates the shipped preset catalog artifacts from the reference preset definitions |
 | `internal/presetlib` | Fetches and caches the remote preset index; verifies SHA-256 on install |
 | `internal/product` | Product catalog: embedded built-ins overlaid on stored custom/installed products |
 | `internal/scheduler` | Lease handler and scheduling policy, worker registry, heartbeat/retention/unschedulable sweeps, cross-job dependency reconcile, and the server-side NATS consumers for task status, task logs, and worker diagnostics |
 | `internal/server` | Component lifecycle: starting and stopping the server's subsystems |
-| `internal/store` | Storage interface, SQLite-backed implementation, migrations, domain types, fake |
+| `internal/store` | Storage interface, domain types, the shared SQL implementation (`sqlstore`) with its SQLite and PostgreSQL databases (`sqlite`, `postgres`), the factory that opens the configured one (`backend`), one migration set per backend, and the fake |
 | `internal/ui` | Serves the embedded web UI bundle with single-page-application fallback routing |
 | `internal/version` | Build-time metadata injected by the release toolchain |
 | `internal/worker` | `sqi-worker` agent internals (see subpackages below) |

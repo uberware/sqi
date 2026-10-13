@@ -88,7 +88,7 @@ func TestPoolFor_RoutesEveryPreparedStatement(t *testing.T) {
 		"sqlUpsertWorker":               sqlUpsertWorker,               // INSERT ... RETURNING
 		"sqlInsertAPIKey":               sqlInsertAPIKey,               // INSERT ... RETURNING
 		"sqlUpdateComputeLoc":           sqlUpdateComputeLoc,           // UPDATE ... RETURNING
-		"sqlDemoteStalledJobs":          sqlDemoteStalledJobs,          // UPDATE ... RETURNING
+		"sqlDemoteStalledJob":           sqlDemoteStalledJob,           // UPDATE ... RETURNING
 		"sqlTransitionStepPendingTasks": sqlTransitionStepPendingTasks, // UPDATE ... RETURNING
 		"sqlLeaseTaskGuarded":           sqlLeaseTaskGuarded,
 		"sqlRetryTasksPrefix":           sqlRetryTasksPrefix,

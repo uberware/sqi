@@ -3,7 +3,7 @@
 package store_test
 
 // Parity test: ListJobs' Owner filter must compare case-insensitively on
-// both backends. SQLite does this via an explicit `COLLATE NOCASE` on the
+// every backend. SQLite does this via an explicit `COLLATE NOCASE` on the
 // comparison (the `owner` column itself carries no collation — see
 // internal/store/migrations/00001_placeholder.sql); the fake store mirrors
 // it with strings.EqualFold. See internal/api/jobscope.go's scopeFilter,

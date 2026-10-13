@@ -79,7 +79,8 @@ func removeContainerOnCleanup(t *testing.T, name string) {
 // ── Server ────────────────────────────────────────────────────────────────────
 
 // startAuthServer boots a full auth-enabled sqi-server on httpAddr, with the
-// SQLite file named dbName inside a per-test temp dir, and mutate applied to
+// SQLite file named dbName inside a per-test temp dir (or a fresh PostgreSQL
+// database under SQI_TEST_STORE_DRIVER=postgres), and mutate applied to
 // the configuration — which is where the caller wires its own auth backend.
 //
 // Self-contained rather than an option on startServer: that harness is untagged
@@ -90,6 +91,7 @@ func startAuthServer(t *testing.T, httpAddr, dbName string, mutate func(*server.
 
 	natsAddr := fmt.Sprintf("127.0.0.1:%d", freePort(t))
 	tmpDir := t.TempDir()
+	so := storeFor(t, tmpDir+"/"+dbName)
 
 	cfg := server.Config{
 		HTTPAddr:           httpAddr,
@@ -97,7 +99,6 @@ func startAuthServer(t *testing.T, httpAddr, dbName string, mutate func(*server.
 		NATSAddr:           natsAddr,
 		NATSDataDir:        tmpDir + "/nats",
 		NATSMaxStoreMB:     64,
-		SQLitePath:         tmpDir + "/" + dbName,
 		CheckpointInterval: time.Minute,
 		Scheduler: scheduler.Config{
 			AssignInterval:         100 * time.Millisecond,
@@ -113,6 +114,7 @@ func startAuthServer(t *testing.T, httpAddr, dbName string, mutate func(*server.
 		AuthCookieName:   "sqi_session",
 		AuthCookieSecure: "false",
 	}
+	applyStore(&cfg, so)
 	if mutate != nil {
 		mutate(&cfg)
 	}
@@ -131,7 +133,7 @@ func startAuthServer(t *testing.T, httpAddr, dbName string, mutate func(*server.
 	case <-time.After(200 * time.Millisecond):
 	}
 
-	ts := &testServer{HTTPAddr: httpAddr, NATSAddr: natsAddr, cancel: cancel, done: done}
+	ts := &testServer{HTTPAddr: httpAddr, NATSAddr: natsAddr, Store: so, DBPath: so.SQLitePath, cancel: cancel, done: done}
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -141,10 +143,10 @@ func startAuthServer(t *testing.T, httpAddr, dbName string, mutate func(*server.
 	})
 
 	if !waitForTCP(t, httpAddr, 20*time.Second) {
-		t.Fatal("HTTP server did not start listening")
+		t.Fatalf("HTTP server did not start listening on %s (NATS %s)", httpAddr, natsAddr)
 	}
 	if !waitForReadyz(t, httpAddr, 30*time.Second) {
-		t.Fatal("server did not become ready")
+		t.Fatalf("server did not become ready (HTTP %s, NATS %s)", httpAddr, natsAddr)
 	}
 	return ts
 }

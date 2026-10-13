@@ -11,7 +11,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/store"
-	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/store/storetest"
 )
 
@@ -393,7 +392,7 @@ func seedPoolWithID(t *testing.T, st store.Store, prefix string, maxConcurrent i
 }
 
 // TestLeaseTask_PoolsVisitedInIDOrder pins that pools are checked in pool-ID
-// order, whatever order the request lists them in, so both backends report
+// order, whatever order the request lists them in, so every backend reports
 // the same full pool, and that a pool found full after an earlier pool's claim
 // was written leaves that earlier claim unwritten too.
 func TestLeaseTask_PoolsVisitedInIDOrder(t *testing.T) {
@@ -450,17 +449,42 @@ func TestLeaseTask_SamePoolTwice(t *testing.T) {
 	}
 }
 
-// TestLeaseTask_MissingFarmIsLost pins the fake against SQLite, whose lease
-// joins the farm row: a task whose farm row is gone is Lost there. SQLite
-// itself cannot reach this state, because jobs.farm_id and queues.farm_id are
-// foreign keys, so DeleteFarm refuses while anything references the farm; the
-// fake enforces no foreign keys, so only the fake is exercised.
-func TestLeaseTask_MissingFarmIsLost(t *testing.T) {
-	st := fake.New()
-	g := seedStepA(t, st, graphOpts{}, store.TaskStatusReady)
-	if err := st.DeleteFarm(t.Context(), g.Farm.ID); err != nil {
-		t.Fatalf("DeleteFarm: %v", err)
+// TestLeaseTask_RefusedForADisabledWorker: a lease for a disabled worker is
+// Lost and writes nothing. An offline worker is not refused (the heartbeat
+// sweep can take a live worker offline and nothing brings it back online, so
+// refusing it would starve it; see "Known gaps" in docs/architecture.md), and
+// neither is a worker with no row (the store does not require registration;
+// the scheduler does).
+func TestLeaseTask_RefusedForADisabledWorker(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			g := seedStepA(t, st, graphOpts{}, store.TaskStatusReady, store.TaskStatusReady, store.TaskStatusReady)
+			now := time.Now().UTC()
+			for _, w := range []store.Worker{
+				{ID: "w-dis", FarmID: g.Farm.ID, Hostname: "dis", Status: store.WorkerStatusOnline, LastHeartbeatAt: &now},
+				{ID: "w-off", FarmID: g.Farm.ID, Hostname: "off", Status: store.WorkerStatusOffline},
+			} {
+				if _, _, err := st.RegisterWorker(t.Context(), w); err != nil {
+					t.Fatalf("RegisterWorker: %v", err)
+				}
+			}
+			if _, err := st.SetWorkerDisabled(t.Context(), "w-dis", true); err != nil {
+				t.Fatalf("SetWorkerDisabled: %v", err)
+			}
+			req := leaseReq(g.Tasks["a"][0])
+			req.WorkerID = "w-dis"
+			mustLease(t, st, req, store.LeaseLost)
+			assertNothingWritten(t, st, g.Tasks["a"][0])
+
+			for i, worker := range []string{"w-off", "never-registered"} {
+				task := g.Tasks["a"][i+1]
+				req := leaseReq(task)
+				req.WorkerID = worker
+				mustLease(t, st, req, store.LeaseLeased)
+				if got := mustTask(t, st, task.ID); got.Status != store.TaskStatusAssigned || got.AssignedWorkerID != worker {
+					t.Fatalf("task = %s on %q, want assigned on %s", got.Status, got.AssignedWorkerID, worker)
+				}
+			}
+		})
 	}
-	mustLease(t, st, leaseReq(g.Tasks["a"][0]), store.LeaseLost)
-	assertNothingWritten(t, st, g.Tasks["a"][0])
 }

@@ -59,6 +59,12 @@ gateway, TLS broker) against certificates from `sqi-server tls init`. The plain
 run always goes first, so a failure before the `MODE 2/3` banner means the
 default path failed, the most serious of the three.
 
+A fourth mode, with the server's state store on PostgreSQL, runs last and only
+when `SQI_SMOKE_POSTGRES_DSN` names an empty, disposable PostgreSQL database
+(the run creates a farm, and farm names are unique). The banners then count to
+4 and the final line reads `IN ALL FOUR MODES`. CI runs it in the
+`postgres-integration` job; the three platform runs below do not need it.
+
 ### A.1 Linux / macOS
 
 ```sh
@@ -136,7 +142,8 @@ SQI_SERVER_BIN=bin/sqi-server.exe SQI_WORKER_BIN=bin/sqi-worker.exe \
 Each of the three modes asserts all of the following, so a full pass means every
 one of them held on the default path, with broker auth on, and with TLS on:
 
-- `GET /readyz` returned ready (SQLite + NATS up).
+- `GET /readyz` returned ready (the store, `sqlite` or `postgres`, and NATS
+  up).
 - The worker appears online in `GET /api/v1/workers`.
 - The job reached `completed`.
 - The sentinel string is present in `GET /api/v1/tasks/{id}/logs` (REST) **and**

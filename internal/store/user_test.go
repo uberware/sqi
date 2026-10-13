@@ -13,8 +13,11 @@ import (
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/store/sqlite"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
+// newStores returns a fresh store for every backend (the fake, SQLite, and
+// PostgreSQL when configured), keyed by subtest name.
 func newStores(t *testing.T) map[string]store.Store {
 	t.Helper()
 	db := t.TempDir() + "/test.db"
@@ -23,7 +26,11 @@ func newStores(t *testing.T) map[string]store.Store {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = sq.Close() })
-	return map[string]store.Store{"sqlite": sq, "fake": fake.New()}
+	out := map[string]store.Store{"sqlite": sq, "fake": fake.New()}
+	if storetest.PostgresEnabled() {
+		out["postgres"] = storetest.Postgres(t)
+	}
+	return out
 }
 
 func mkUser(role string) store.User {
@@ -110,11 +117,11 @@ func TestUserStore_CRUD(t *testing.T) {
 }
 
 // TestUserStore_ListUsers verifies ListUsers returns users ordered
-// case-insensitively by username — matching SQLite's `ORDER BY username`
-// over the `username` column, which is declared COLLATE NOCASE (see
-// sqlListUsers in internal/store/sqlstore/user.go). The fake store must sort
-// the same way; a case-sensitive ASCII sort would put "Zeta" before "bob"
-// (since 'Z' < 'b' in ASCII), diverging from SQLite.
+// case-insensitively by username, as the SQL stores order them (`ORDER BY
+// lower(username), username`, see sqlListUsers in
+// internal/store/sqlstore/user.go). The fake store must sort the same way; a
+// case-sensitive ASCII sort would put "Zeta" before "bob" (since 'Z' < 'b' in
+// ASCII), diverging from the SQL stores.
 func TestUserStore_ListUsers(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {

@@ -44,7 +44,7 @@ type FarmStore interface {
 	UpdateFarm(ctx context.Context, farm Farm) (Farm, error)
 
 	// DeleteFarm removes a farm by ID. Returns [ErrNotFound] if it does not
-	// exist. The caller is responsible for ensuring no queues or workers
-	// reference the farm before deleting it.
+	// exist, or [ErrConflict] while a queue, job or worker still references
+	// the farm.
 	DeleteFarm(ctx context.Context, id string) error
 }

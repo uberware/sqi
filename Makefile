@@ -68,6 +68,9 @@ endif
 # real-ffmpeg Tier-2 cases untagged, under -race, in one package.
 TEST_TIMEOUT ?= 20m
 
+# PostgreSQL major version for `make test-postgres` (16 or 18; CI runs both).
+PG_VERSION ?= 18
+
 COVERAGE_OUT := coverage.out
 # Raise in 5-point increments as new test suites land.
 # 2026-06-13: measured 74.5% (race); gate set ~5 points below for headroom
@@ -308,6 +311,10 @@ test-preset-harness: ## Run the whole preset validation harness (tiers 1-3 + reg
 .PHONY: test-ldap
 test-ldap: ## Run the LDAP tests against a real directory in a container (needs Docker)
 	go test $(TEST_FLAGS) -tags integration -run 'TestLDAP_' -v -timeout 15m ./test/integration/
+
+.PHONY: test-postgres
+test-postgres: ## Run the PostgreSQL-backed tests against a throwaway server in Docker (PG_VERSION=16|18)
+	TEST_FLAGS="$(TEST_FLAGS)" PG_VERSION=$(PG_VERSION) bash scripts/test-postgres.sh
 
 .PHONY: test-oidc
 test-oidc: ## Run the SSO tests against a real Keycloak in a container (needs Docker)

@@ -17,7 +17,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
+	"sync/atomic"
 
 	"github.com/uberware/sqi/internal/store"
 )
@@ -37,6 +39,17 @@ type Store struct {
 	// raw pool may alias w's (an in-memory SQLite database has only one pool).
 	r     *dbPool
 	stmts []*dbStmt // all prepared statements; closed by Close
+
+	// retries counts transaction re-runs after an ErrClassRetry error.
+	retries atomic.Int64
+	// forceRetry makes inTx run every function once and roll it back before
+	// the real run: a test mode that checks each function is safe to re-run.
+	forceRetry bool
+	// log receives retry diagnostics; slog.Default() when nil.
+	log *slog.Logger
+	// taskInsertBatch is how many tasks CreateJobSubmission inserts per
+	// statement; below 2 it inserts them one row per statement ([WithTaskInsertBatch]).
+	taskInsertBatch int
 
 	// ── farms ────────────────────────────────────────────────────────────
 	stmtInsertFarm *dbStmt
@@ -160,14 +173,53 @@ type Store struct {
 	stmtMarkWorkerJoinTokenUsed     *dbStmt
 }
 
+// Option configures [New].
+type Option func(*Store)
+
+// WithForcedRetry makes every transaction run its function twice, the first
+// run rolled back, as if the database had aborted it for a concurrent writer.
+// Tests only: it exposes a function that keeps state from a failed run.
+func WithForcedRetry() Option { return func(s *Store) { s.forceRetry = true } }
+
+// WithTaskInsertBatch makes CreateJobSubmission insert a submission's tasks
+// rows at a time, several per statement, instead of one statement per task.
+// Without it (or below 2) the statements are the single-row ones.
+//
+// It is an option rather than a Dialect method the store looks for on its
+// dialect, because a wrapped dialect (the tests wrap one to check lock order
+// and to pause a transaction) embeds the [Dialect] interface and so does not
+// carry a method outside it: the batched path would silently turn off under
+// every wrapper.
+func WithTaskInsertBatch(rows int) Option {
+	return func(s *Store) { s.taskInsertBatch = min(rows, maxTaskInsertBatch) }
+}
+
+// maxTaskInsertBatch caps [WithTaskInsertBatch]: a statement binds
+// taskInsertColumns values per task, and both PostgreSQL (65535) and SQLite
+// (32766) refuse a statement with more parameters than their limit.
+const maxTaskInsertBatch = 2000
+
+// WithLogger sets the logger retry diagnostics go to.
+func WithLogger(l *slog.Logger) Option { return func(s *Store) { s.log = l } }
+
+// TxRetries reports how many times a transaction was run again after the
+// database aborted it for a concurrent writer.
+func (s *Store) TxRetries() int64 { return s.retries.Load() }
+
 // New builds a Store over open write and read pools for dialect d and
 // prepares its statements. read may be write. Close releases the pools; on
 // error New closes them itself.
-func New(ctx context.Context, write, read *sql.DB, d Dialect) (*Store, error) {
+func New(ctx context.Context, write, read *sql.DB, d Dialect, opts ...Option) (*Store, error) {
 	s := &Store{
 		d: d,
 		w: newDBPool(write, d),
 		r: newDBPool(read, d),
+	}
+	for _, o := range opts {
+		o(s)
+	}
+	if s.log == nil {
+		s.log = slog.Default()
 	}
 	if err := s.prepareAll(ctx); err != nil {
 		_ = s.Close()
@@ -360,16 +412,16 @@ func (s *Store) prepareAll(ctx context.Context) error {
 	if s.stmtInsertProduct, err = s.prepare(ctx, sqlInsertProduct); err != nil {
 		return err
 	}
-	if s.stmtGetProductByName, err = s.prepare(ctx, sqlGetProductByName); err != nil {
+	if s.stmtGetProductByName, err = s.prepare(ctx, sqlGetProductByName+s.d.CIEqual("name")); err != nil {
 		return err
 	}
 	if s.stmtListProducts, err = s.prepare(ctx, sqlListProducts); err != nil {
 		return err
 	}
-	if s.stmtUpdateProduct, err = s.prepare(ctx, sqlUpdateProduct); err != nil {
+	if s.stmtUpdateProduct, err = s.prepare(ctx, sqlUpdateProductHead+s.d.CIEqual("name")+sqlUpdateProductTail); err != nil {
 		return err
 	}
-	if s.stmtDeleteProduct, err = s.prepare(ctx, sqlDeleteProduct); err != nil {
+	if s.stmtDeleteProduct, err = s.prepare(ctx, sqlDeleteProduct+s.d.CIEqual("name")); err != nil {
 		return err
 	}
 
