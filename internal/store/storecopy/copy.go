@@ -20,7 +20,9 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -41,7 +43,7 @@ import (
 // Options says what to copy where.
 type Options struct {
 	SQLitePath  string // the source; never written
-	PostgresDSN string // the target; empty, or migrated by sqi and holding no rows
+	PostgresDSN string // the target; empty, or migrated by sqi with no rows in its tables
 	Logger      *slog.Logger
 }
 
@@ -71,7 +73,7 @@ const (
 // Copy checks every precondition of the copy (H5 design §7.2), then copies
 // every table in one PostgreSQL transaction and verifies it before
 // committing. Any failure after the preconditions rolls the transaction back,
-// leaving the target with no rows.
+// committing no sqi rows (a schema Copy migrated into an empty target stays).
 func Copy(ctx context.Context, o Options) (Result, error) {
 	start := time.Now()
 	if o.Logger == nil {
@@ -134,15 +136,23 @@ func requireExistingFile(path string) error {
 	return nil
 }
 
-// openSource opens the SQLite database read-only (query_only refuses every
-// write on the connection) and checks it is intact and at this binary's
-// schema version.
+// openSource opens the SQLite database read-only and checks it is intact and
+// at this binary's schema version.
+//
+// Read-only means the file is opened read-only (a mode=ro URI), not merely a
+// connection that refuses SQL writes: SQLite writes the database file on its
+// own account too — closing the last connection to a WAL database checkpoints
+// the WAL into it, and opening one with a hot rollback journal rolls the
+// journal back — and a crashed server leaves exactly such a database. A
+// read-only connection reads the WAL's committed rows without moving them. It
+// may create the -shm wal-index beside a WAL that has none (an index of the
+// WAL, never data); a database it cannot read without writing is refused.
 func openSource(ctx context.Context, path string) (*sql.DB, error) {
-	sep := "?"
-	if strings.Contains(path, "?") {
-		sep = "&"
+	dsn, err := readOnlyDSN(path)
+	if err != nil {
+		return nil, fmt.Errorf("store copy: source %s: %w", path, err)
 	}
-	db, err := sql.Open("sqlite", fmt.Sprintf("%s%s_pragma=busy_timeout(%d)&_pragma=query_only(1)", path, sep, busyTimeoutMS))
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("store copy: open %s: %w", path, err)
 	}
@@ -153,10 +163,31 @@ func openSource(ctx context.Context, path string) (*sql.DB, error) {
 	return db, nil
 }
 
+// readOnlyDSN is a file: URI opening path read-only. The path is made
+// absolute and percent-escaped by url.URL, so a "?", "#", "%" or space in it
+// stays part of the name (unescaped, "?" would start the query and open or
+// create a truncated name), and a Windows drive path becomes file:///C:/...,
+// the form SQLite reads as that drive.
+func readOnlyDSN(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	p := filepath.ToSlash(abs)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	u := url.URL{Scheme: "file", Path: p, RawQuery: fmt.Sprintf("mode=ro&_pragma=busy_timeout(%d)", busyTimeoutMS)}
+	return u.String(), nil
+}
+
 func checkSource(ctx context.Context, db *sql.DB, path string) error {
 	var ok string
 	if err := db.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&ok); err != nil {
-		return fmt.Errorf("store copy: %s is not a readable SQLite database: %w", path, err)
+		return fmt.Errorf("store copy: %s cannot be read read-only: %w; it is not a SQLite database, or it needs "+
+			"recovery a read-only reader cannot do (a crashed server's hot journal, or a -wal file whose directory "+
+			"store copy cannot create the -shm index in): start sqi-server on it once and stop it cleanly, or "+
+			"copy from a \"sqi-server backup\" of it, then run store copy again", path, err)
 	}
 	if ok != "ok" {
 		return fmt.Errorf("store copy: %s failed SQLite's integrity check (%s); restore it from a backup first", path, ok)
@@ -226,7 +257,8 @@ func prepareTarget(ctx context.Context, db *sql.DB) error {
 	case v > maxV:
 		return fmt.Errorf("store copy: the PostgreSQL database: %w", migrations.CheckVersion("postgres", v))
 	case v < maxV:
-		return fmt.Errorf("store copy: the PostgreSQL database is at schema %d, not %d; use an empty database", v, maxV)
+		return fmt.Errorf("store copy: the PostgreSQL database is at schema %d, not %d; use an empty database "+
+			"(if an earlier store copy's migration of it stopped partway, drop and recreate the database)", v, maxV)
 	}
 	return nil
 }
@@ -404,7 +436,7 @@ func rowsPerInsert(ncols int) int {
 // fails the copy tests rather than copying values approximately.
 func kindOf(typ string) (kind, error) {
 	switch typ {
-	case "text", "character varying", "character":
+	case "text", "character varying":
 		return kindText, nil
 	case "bigint", "integer", "smallint":
 		return kindInt, nil
@@ -431,13 +463,13 @@ func copyAll(ctx context.Context, src, dst *sql.DB, plans []*tablePlan, log *slo
 	for _, p := range plans {
 		n, err := copyAndVerify(ctx, srcTx, dstTx, p)
 		if err != nil {
-			return fmt.Errorf("%w; nothing was committed, and the PostgreSQL database holds no rows", err)
+			return fmt.Errorf("%w; no sqi rows were committed (a schema store copy created stays, empty)", err)
 		}
 		res.Tables = append(res.Tables, TableResult{Table: p.name, Rows: n})
 		log.InfoContext(ctx, "store copy: copied table", slog.String("table", p.name), slog.Int64("rows", n))
 	}
 	if err := dstTx.Commit(); err != nil {
-		return fmt.Errorf("store copy: commit: %w; the PostgreSQL database holds no rows", err)
+		return fmt.Errorf("store copy: commit: %w; no sqi rows were committed (a schema store copy created stays, empty)", err)
 	}
 	return nil
 }

@@ -25,7 +25,9 @@ var storeCopyCmd = &cobra.Command{
 	Short: "Copy a SQLite state store into an empty PostgreSQL database",
 	Long: `Copy every row of a SQLite state store into an empty PostgreSQL database, with
 the server stopped, then verify each table by row count and digest before
-committing. A failure leaves the PostgreSQL database with no rows.
+committing. The SQLite database is opened read-only: neither it nor its WAL is
+written. A failure commits no sqi rows; a schema the command migrated into an
+empty database stays.
 
 --from defaults to store.sqlite_path, and --to to store.postgres.dsn, so with
 store.driver set to postgres and the DSN configured, "sqi-server store copy" needs

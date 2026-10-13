@@ -9,10 +9,12 @@ import (
 	"strings"
 	"testing"
 
+	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 
 	"github.com/uberware/sqi/internal/store/migrations"
 	"github.com/uberware/sqi/internal/store/schemainfo"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // migratedSQLite returns a fresh SQLite database migrated to the newest schema.
@@ -133,5 +135,44 @@ func TestInsertOrder_RefusesAnUnknownReference(t *testing.T) {
 	_, err := schemainfo.InsertOrder(map[string]schemainfo.Table{"a": {Name: "a", References: []string{"gone"}}})
 	if err == nil || !strings.Contains(err.Error(), "gone") {
 		t.Fatalf("InsertOrder with a dangling reference = %v, want it named", err)
+	}
+}
+
+// TestPostgres_ReadsAMixedCaseSchema reads tables from a current schema whose
+// name needs quoting as an identifier: the name current_schema() returns must
+// be compared as a name, not re-parsed as an identifier (which folds case).
+func TestPostgres_ReadsAMixedCaseSchema(t *testing.T) {
+	if !storetest.PostgresEnabled() {
+		t.Skip("PostgreSQL not configured: set SQI_TEST_POSTGRES_DSN, or run make test-postgres")
+	}
+	db, err := sql.Open("pgx", storetest.PostgresEmptyDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	db.SetMaxOpenConns(1) // the search_path below is per session
+	for _, q := range []string{
+		`CREATE SCHEMA "Farm"`,
+		`CREATE TABLE "Farm".parent (id text PRIMARY KEY)`,
+		`CREATE TABLE "Farm".child (id text PRIMARY KEY, parent_id text REFERENCES "Farm".parent (id))`,
+		`CREATE TABLE public.elsewhere (id text PRIMARY KEY)`,
+		`SET search_path TO "Farm"`,
+	} {
+		if _, err := db.ExecContext(t.Context(), q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	info, err := schemainfo.Postgres(t.Context(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := slices.Sorted(maps.Keys(info)); !slices.Equal(got, []string{"child", "parent"}) {
+		t.Fatalf("tables = %v, want [child parent] from schema \"Farm\"", got)
+	}
+	if got := info["child"].References; !slices.Equal(got, []string{"parent"}) {
+		t.Errorf("child references = %v", got)
+	}
+	if got := info["child"].PrimaryKey; !slices.Equal(got, []string{"id"}) {
+		t.Errorf("child primary key = %v", got)
 	}
 }

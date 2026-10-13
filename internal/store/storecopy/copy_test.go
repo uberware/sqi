@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -101,6 +103,69 @@ func TestStoreCopy_RefusesAMissingSource(t *testing.T) {
 	}
 }
 
+// TestStoreCopy_NeverWritesASourceWithAPendingWAL copies the database a
+// crashed server leaves: committed rows that exist only in its -wal file. The
+// copy must carry those rows, and must leave the database file and the WAL
+// byte for byte as it found them — a read-write connection would checkpoint
+// the WAL into the database file when it closed.
+func TestStoreCopy_NeverWritesASourceWithAPendingWAL(t *testing.T) {
+	skipWithoutPostgres(t)
+	dir := t.TempDir()
+	live := filepath.Join(dir, "live.db")
+	seedEveryTable(t, live)
+	w, err := sql.Open("sqlite", live+"?_pragma=wal_autocheckpoint(0)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SetMaxOpenConns(1)
+	if _, err := w.ExecContext(t.Context(), `INSERT INTO farms (id, name, created_at, updated_at)
+		VALUES ('farm-wal', 'only in the WAL', '2026-10-13T00:00:00.000000000Z', '2026-10-13T00:00:00.000000000Z')`); err != nil {
+		t.Fatal(err)
+	}
+	// Copied while the writer is open, as a crash would leave them. The name
+	// carries characters a file: URI must escape.
+	src := filepath.Join(dir, "crashed #1 %.db")
+	copyFile(t, live, src)
+	copyFile(t, live+"-wal", src+"-wal")
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(src + "-wal"); err != nil || fi.Size() == 0 {
+		t.Fatalf("the source has no pending WAL to protect: %v, %v", fi, err)
+	}
+	dbBefore, walBefore := fileHash(t, src), fileHash(t, src+"-wal")
+	dst := storetest.PostgresEmptyDSN(t)
+
+	if _, err := storecopy.Copy(t.Context(), storecopy.Options{SQLitePath: src, PostgresDSN: dst}); err != nil {
+		t.Fatal(err)
+	}
+	if got := fileHash(t, src); got != dbBefore {
+		t.Error("the copy rewrote the source database file (a WAL checkpoint): store copy must never write it")
+	}
+	if _, err := os.Stat(src + "-wal"); err != nil {
+		t.Fatalf("the copy removed the source's WAL: %v", err)
+	}
+	if got := fileHash(t, src+"-wal"); got != walBefore {
+		t.Error("the copy changed the source's WAL")
+	}
+	var name string
+	if err := openPG(t, dst).QueryRowContext(t.Context(), `SELECT name FROM farms WHERE id = 'farm-wal'`).Scan(&name); err != nil {
+		t.Fatalf("the row that exists only in the WAL was not copied: %v", err)
+	}
+	assertRowsEqual(t, src, dst)
+}
+
+func copyFile(t *testing.T, from, to string) {
+	t.Helper()
+	b, err := os.ReadFile(from)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(to, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestStoreCopy_RefusesANonEmptyTarget(t *testing.T) {
 	skipWithoutPostgres(t)
 	src := t.TempDir() + "/sqi.db"
@@ -174,8 +239,9 @@ func TestStoreCopy_RefusesATargetAtAnotherVersion(t *testing.T) {
 		dst := storetest.PostgresDSN(t)
 		execPG(t, dst, `DELETE FROM goose_db_version WHERE version_id = 38`)
 		_, err := storecopy.Copy(t.Context(), storecopy.Options{SQLitePath: src, PostgresDSN: dst})
-		if err == nil || !strings.Contains(err.Error(), "use an empty database") {
-			t.Fatalf("Copy into a schema-37 target = %v, want a refusal", err)
+		if err == nil || !strings.Contains(err.Error(), "use an empty database") ||
+			!strings.Contains(err.Error(), "drop and recreate") {
+			t.Fatalf("Copy into a schema-37 target = %v, want a refusal saying what to do", err)
 		}
 	})
 }
@@ -283,7 +349,7 @@ func TestStoreCopy_RefusesANonBooleanInABooleanColumn(t *testing.T) {
 	if err == nil {
 		t.Fatal("Copy of paused = 2 succeeded")
 	}
-	for _, want := range []string{"queues", "queue-1", "paused", "nothing was committed"} {
+	for _, want := range []string{"queues", "queue-1", "paused", "no sqi rows were committed"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not name %q", err, want)
 		}
@@ -305,7 +371,7 @@ func TestStoreCopy_NamesTheRowAndColumnPostgreSQLRefuses(t *testing.T) {
 	if err == nil {
 		t.Fatal("Copy of a malformed timestamp succeeded")
 	}
-	for _, want := range []string{"tasks", "task-0700", "created_at", "nothing was committed"} {
+	for _, want := range []string{"tasks", "task-0700", "created_at", "no sqi rows were committed"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not name %q", err, want)
 		}
@@ -698,9 +764,19 @@ func openPG(t *testing.T, dsn string) *sql.DB {
 	return db
 }
 
+// openSQLite opens the database at path read-only (a mode=ro URI), so that
+// reading it in a test cannot checkpoint its WAL into it either.
 func openSQLite(t *testing.T, path string) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", path+"?_pragma=query_only(1)")
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.ToSlash(abs)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	db, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: p, RawQuery: "mode=ro"}).String())
 	if err != nil {
 		t.Fatal(err)
 	}

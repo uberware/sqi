@@ -99,7 +99,8 @@ func sqliteTable(ctx context.Context, db *sql.DB, name string) (Table, error) {
 // privilege on and so could hide a table from the copier.
 func Postgres(ctx context.Context, db *sql.DB) (map[string]Table, error) {
 	names, err := strs(ctx, db, `SELECT c.relname FROM pg_class c
-		WHERE c.relnamespace = to_regnamespace(current_schema()) AND c.relkind IN ('r', 'p')
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = current_schema() AND c.relkind IN ('r', 'p')
 		  AND NOT c.relispartition AND c.relname <> $1`, skipGoose)
 	if err != nil {
 		return nil, err
@@ -116,7 +117,9 @@ func Postgres(ctx context.Context, db *sql.DB) (map[string]Table, error) {
 }
 
 // relation is the WHERE clause naming one table of current_schema() as c.
-const relation = `c.relnamespace = to_regnamespace(current_schema()) AND c.relname = $1`
+// current_schema() is a name, compared as one: to_regnamespace would re-parse
+// it as an identifier and fold a mixed-case name to lower case.
+const relation = `c.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = current_schema()) AND c.relname = $1`
 
 func postgresTable(ctx context.Context, db *sql.DB, name string) (Table, error) {
 	t := Table{Name: name}
