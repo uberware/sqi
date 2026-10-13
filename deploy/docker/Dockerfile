@@ -66,6 +66,14 @@ LABEL org.opencontainers.image.title="sqi-server" \
 # --chown matches the nonroot UID/GID (65532) used by distroless:nonroot.
 COPY --from=builder --chown=65532:65532 /out/sqi-server /usr/local/bin/sqi-server
 
+# The data directory the compose files mount a volume on (SQLite file, NATS
+# JetStream store). It must exist in the image and belong to nonroot: Docker
+# creates a named volume's mount point root-owned when the image lacks the
+# path, and the server (UID 65532) then cannot create its database or NATS
+# store. distroless has no shell to mkdir with, so the base image's empty,
+# nonroot-owned home directory is copied into place.
+COPY --from=gcr.io/distroless/static-debian12:nonroot --chown=65532:65532 /home/nonroot /var/lib/sqi-server
+
 # sqi-server listens on 8080 by default (configurable via SQI_HTTP_ADDR).
 EXPOSE 8080
 
