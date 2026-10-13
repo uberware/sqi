@@ -179,8 +179,48 @@ type testServer struct {
 	// Prefer Store, which names the right database on either driver.
 	DBPath string
 
+	// NATSDir is the embedded NATS server's JetStream data directory. Set by
+	// [bootServer]; a test that restores a backup moves it aside or swaps it.
+	NATSDir string
+
+	// cfg is the configuration the server was booted with, so
+	// [restartServer] can start another on the same ports, store and NATS
+	// directory. Set by [bootServer]; a test may edit it (to point the next
+	// start at another database, say) between [testServer.Stop] and the
+	// restart.
+	cfg server.Config
+
 	cancel context.CancelFunc
 	done   chan error
+
+	stopOnce sync.Once
+	stopErr  error
+}
+
+// Stop shuts the server down and waits for it to finish, so another can start
+// on the same ports, store and NATS directory. It fails the test when the
+// server does not stop within 15 s or stops with an error: a runbook that
+// stops the server needs a clean stop. Safe to call more than once, and with
+// the cleanup that also stops it.
+func (ts *testServer) Stop(t *testing.T) {
+	t.Helper()
+	if err := ts.stop(); err != nil {
+		t.Fatalf("stop server (HTTP %s, NATS %s): %v", ts.HTTPAddr, ts.NATSAddr, err)
+	}
+}
+
+// stop cancels the server and waits for Run to return, once; later calls
+// return the first call's result.
+func (ts *testServer) stop() error {
+	ts.stopOnce.Do(func() {
+		ts.cancel()
+		select {
+		case ts.stopErr = <-ts.done:
+		case <-time.After(15 * time.Second):
+			ts.stopErr = errors.New("server did not stop within 15s after context cancel")
+		}
+	})
+	return ts.stopErr
 }
 
 // startServer boots a full sqi-server on the store storeFor picks (a temp
@@ -192,6 +232,15 @@ type testServer struct {
 //
 // The server is stopped automatically via t.Cleanup.
 func startServer(t *testing.T) *testServer {
+	t.Helper()
+	return startServerWith(t, nil)
+}
+
+// startServerWith is [startServer] with mutate, when non-nil, applied to the
+// configuration before the server boots. A mutate that points the server at
+// another store (with [applyStore]) is honored: the returned server's Store
+// describes the store it actually opened.
+func startServerWith(t *testing.T, mutate func(*server.Config)) *testServer {
 	t.Helper()
 
 	httpPort := freePort(t)
@@ -231,6 +280,56 @@ func startServer(t *testing.T) *testServer {
 		DiscoveryEnabled: false,
 	}
 	applyStore(&cfg, so)
+	if mutate != nil {
+		mutate(&cfg)
+		so = storeOf(cfg, so)
+	}
+	return bootServer(t, cfg, so)
+}
+
+// storeOf returns the store cfg names, keeping prev's PostgreSQL pool size
+// when cfg sets none.
+func storeOf(cfg server.Config, prev backend.Options) backend.Options {
+	o := backend.Options{
+		Driver:      backend.Name(cfg.StoreDriver),
+		SQLitePath:  cfg.SQLitePath,
+		PostgresDSN: cfg.PostgresDSN,
+		MaxConns:    cfg.PostgresMaxConns,
+	}
+	if o.MaxConns == 0 {
+		o.MaxConns = prev.MaxConns
+	}
+	return o
+}
+
+// restartServer boots a new server with ts's configuration: the same ports,
+// store and NATS directory. Stop ts first. Edit ts.cfg and ts.Store together
+// beforehand to start it on another database.
+func restartServer(t *testing.T, ts *testServer) *testServer {
+	t.Helper()
+	next := bootServer(t, ts.cfg, ts.Store)
+	next.Scheme, next.Client = ts.Scheme, ts.Client
+	return next
+}
+
+// bootServer runs a server with cfg, on store so (which must be the store cfg
+// names), and waits until it is ready; see [startServer]. The server is
+// stopped automatically via t.Cleanup.
+func bootServer(t *testing.T, cfg server.Config, so backend.Options) *testServer {
+	t.Helper()
+	ts, err := tryBootServer(t, cfg, so)
+	if err != nil {
+		t.Fatalf("startServer: HTTP %s, NATS %s: %v", cfg.HTTPAddr, cfg.NATSAddr, err)
+	}
+	return ts
+}
+
+// tryBootServer is [bootServer] returning, instead of failing the test on, a
+// server that exits during startup (a port in use, a store error) or never
+// becomes ready; that server has stopped by the time it returns. The error
+// wraps the server's own, so errors.Is sees through it.
+func tryBootServer(t *testing.T, cfg server.Config, so backend.Options) (*testServer, error) {
+	t.Helper()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelWarn, // suppress info noise in test output
@@ -244,40 +343,39 @@ func startServer(t *testing.T) *testServer {
 		done <- srv.Run(ctx)
 	}()
 
+	ts := &testServer{
+		HTTPAddr: cfg.HTTPAddr,
+		NATSAddr: cfg.NATSAddr,
+		Store:    so,
+		DBPath:   so.SQLitePath,
+		NATSDir:  cfg.NATSDataDir,
+		cfg:      cfg,
+		cancel:   cancel,
+		done:     done,
+	}
+
 	// Wait until the HTTP server is ready to accept connections, failing with
 	// the server's own error if it exits first (a port in use, a store error).
-	if err := waitForServerTCP(done, httpAddr, 10*time.Second); err != nil {
-		cancel()
-		t.Fatalf("startServer: HTTP %s, NATS %s: %v", httpAddr, natsAddr, err)
+	if err := waitForServerTCP(done, cfg.HTTPAddr, 10*time.Second); err != nil {
+		_ = ts.stop() //nolint:errcheck // the startup error is the one to report
+		return nil, err
 	}
 
 	// Poll /readyz (which gates on NATS and the store being healthy) rather than
 	// sleeping a fixed duration.  This ensures JetStream streams are fully
 	// provisioned before the test starts publishing.
-	if !waitForReadyz(t, httpAddr, 10*time.Second) {
-		cancel()
-		t.Fatalf("startServer: server did not become ready (/readyz) within 10s (HTTP %s, NATS %s)", httpAddr, natsAddr)
-	}
-
-	ts := &testServer{
-		HTTPAddr: httpAddr,
-		NATSAddr: natsAddr,
-		Store:    so,
-		DBPath:   so.SQLitePath,
-		cancel:   cancel,
-		done:     done,
+	if !waitForReadyz(t, cfg.HTTPAddr, 10*time.Second) {
+		_ = ts.stop() //nolint:errcheck // not becoming ready is the error to report
+		return nil, errors.New("server did not become ready (/readyz) within 10s")
 	}
 
 	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(15 * time.Second):
-			t.Logf("warning: server did not stop within 15s after context cancel")
+		if err := ts.stop(); err != nil {
+			t.Logf("warning: stopping server: %v", err)
 		}
 	})
 
-	return ts
+	return ts, nil
 }
 
 // clientFor returns the HTTP client to use against ts: its own when it has one
