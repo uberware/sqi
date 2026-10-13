@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/migrations"
+	"github.com/uberware/sqi/internal/store/postgres"
 	"github.com/uberware/sqi/internal/store/sqlite"
 	"github.com/uberware/sqi/internal/store/storetest"
 )
@@ -349,6 +351,21 @@ func TestRootCmd_SubcommandTree(t *testing.T) {
 			name:    "restore --help exits cleanly",
 			args:    []string{"restore", "--help"},
 			wantErr: false,
+		},
+		{
+			name:    "bare store exits cleanly (prints usage)",
+			args:    []string{"store"},
+			wantErr: false,
+		},
+		{
+			name:    "store copy --help exits cleanly",
+			args:    []string{"store", "copy", "--help"},
+			wantErr: false,
+		},
+		{
+			name:    "store copy takes no arguments",
+			args:    []string{"store", "copy", "extra"},
+			wantErr: true,
 		},
 	}
 
@@ -918,5 +935,125 @@ func TestRestoreCmd_RefusesAnEmptyNATSDataDir(t *testing.T) {
 	}
 	if _, err := os.Stat(natsDir); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestRootCmd_StoreSubcommands verifies "store" offers copy.
+func TestRootCmd_StoreSubcommands(t *testing.T) {
+	var got []string
+	for _, c := range storeCmd.Commands() {
+		got = append(got, c.Name())
+	}
+	if want := []string{"copy"}; !slices.Equal(got, want) {
+		t.Errorf("store subcommands = %v; want %v", got, want)
+	}
+	if !slices.Contains(rootCmd.Commands(), storeCmd) {
+		t.Error("store is not registered on the root command")
+	}
+}
+
+// storeCopyFixture migrates a SQLite database holding one farm.
+func storeCopyFixture(t *testing.T) string {
+	t.Helper()
+	db := filepath.Join(t.TempDir(), "sqi.db")
+	st, err := sqlite.Open(t.Context(), db, sqlite.DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateFarm(t.Context(), store.Farm{ID: "farm-copy", Name: "copied"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return db
+}
+
+// TestStoreCopyCmd_RequiresATarget verifies store copy with no DSN from any
+// layer refuses, naming every way to give one.
+func TestStoreCopyCmd_RequiresATarget(t *testing.T) {
+	isolateConfigDiscovery(t)
+	unsetStoreSQLitePathEnv(t)
+	t.Setenv("SQI_STORE_POSTGRES_DSN", "")
+	db := storeCopyFixture(t)
+
+	prepareRoot([]string{"store", "copy", "--from", db})
+	err := Execute()
+	if err == nil || !strings.Contains(err.Error(), "no PostgreSQL DSN") {
+		t.Fatalf("store copy without a DSN = %v, want a refusal", err)
+	}
+
+	prepareRoot([]string{"store", "copy", "--from", db, "--to", ""})
+	if err := Execute(); err == nil || !strings.Contains(err.Error(), "--to is empty") {
+		t.Fatalf("store copy --to \"\" = %v, want a refusal", err)
+	}
+}
+
+// TestStoreCopyCmd_RefusesWhileAServerHoldsTheSource verifies the command
+// does not read a database a server is using. The source's lock is taken
+// before the target is contacted, so no PostgreSQL is needed.
+func TestStoreCopyCmd_RefusesWhileAServerHoldsTheSource(t *testing.T) {
+	isolateConfigDiscovery(t)
+	db := storeCopyFixture(t)
+	srv, err := sqlite.Open(t.Context(), db, sqlite.Options{ServerLock: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+
+	prepareRoot([]string{"store", "copy", "--from", db, "--to", "postgres://127.0.0.1:1/none?connect_timeout=1"})
+	if err := Execute(); !errors.Is(err, sqlite.ErrServerLockHeld) {
+		t.Fatalf("store copy beside a server = %v, want ErrServerLockHeld", err)
+	}
+}
+
+// TestStoreCopyCmd_UnloadableConfig verifies store copy does not fall back to
+// built-in defaults for a configuration that failed to load: it would copy
+// from, or into, a database the operator did not name.
+func TestStoreCopyCmd_UnloadableConfig(t *testing.T) {
+	isolateConfigDiscovery(t)
+	unsetStoreSQLitePathEnv(t)
+	t.Setenv("SQI_SCHEDULER_TICK_INTERVAL", "not-a-duration")
+	db := storeCopyFixture(t)
+	for _, args := range [][]string{
+		{"store", "copy"},
+		{"store", "copy", "--from", db},
+		{"store", "copy", "--to", "postgres://127.0.0.1:1/none"},
+	} {
+		prepareRoot(args)
+		var runErr error
+		_ = captureStderr(t, func() { runErr = Execute() })
+		if runErr == nil || !strings.Contains(runErr.Error(), "could not load configuration") ||
+			!strings.Contains(runErr.Error(), "--from and --to") {
+			t.Fatalf("%v = %v, want a refusal naming the config problem", args, runErr)
+		}
+	}
+}
+
+// TestStoreCopyCmd_CopiesIntoPostgres runs the command end to end into an
+// empty PostgreSQL database and opens a store on the copy.
+func TestStoreCopyCmd_CopiesIntoPostgres(t *testing.T) {
+	isolateConfigDiscovery(t)
+	db := storeCopyFixture(t)
+	dsn := storetest.PostgresEmptyDSN(t)
+
+	prepareRoot([]string{"store", "copy", "--from", db, "--to", dsn})
+	var runErr error
+	out := captureStdout(t, func() { runErr = Execute() })
+	if runErr != nil {
+		t.Fatalf("store copy: %v", runErr)
+	}
+	for _, want := range []string{"farms", "1 rows", "copied and verified", "set store.driver: postgres"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("store copy output missing %q\ngot:\n%s", want, out)
+		}
+	}
+	st, err := postgres.Open(t.Context(), dsn, postgres.Options{MaxConns: 2})
+	if err != nil {
+		t.Fatalf("open the copy: %v", err)
+	}
+	defer st.Close()
+	if f, err := st.GetFarm(t.Context(), "farm-copy"); err != nil || f.Name != "copied" {
+		t.Fatalf("farm in the copy = %+v, %v", f, err)
 	}
 }

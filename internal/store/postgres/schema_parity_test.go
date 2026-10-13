@@ -14,6 +14,7 @@ import (
 
 	"github.com/uberware/sqi/internal/store/migrations"
 	"github.com/uberware/sqi/internal/store/postgres"
+	"github.com/uberware/sqi/internal/store/schemainfo"
 	"github.com/uberware/sqi/internal/store/storetest"
 )
 
@@ -85,6 +86,55 @@ func TestSchemaParity(t *testing.T) {
 			t.Errorf("%s foreign keys differ:\n sqlite   %v\n postgres %v", tbl, a, b)
 		}
 	}
+
+	// The copier (storecopy) reads the schema through schemainfo; it must see
+	// what this test's independent queries see, on both backends.
+	for name, db := range map[string]*sql.DB{"sqlite": lite, "postgres": pg} {
+		var info map[string]schemainfo.Table
+		var err error
+		want := ls
+		if name == "sqlite" {
+			info, err = schemainfo.SQLite(t.Context(), db)
+		} else {
+			info, err = schemainfo.Postgres(t.Context(), db)
+			want = ps
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a, b := slices.Sorted(maps.Keys(info)), slices.Sorted(maps.Keys(want.Columns)); !slices.Equal(a, b) {
+			t.Fatalf("%s: schemainfo tables %v, parity tables %v", name, a, b)
+		}
+		for tbl, ti := range info {
+			var got []string
+			for _, c := range ti.Columns {
+				got = append(got, c.Name)
+			}
+			var exp []string
+			for _, c := range want.Columns[tbl] {
+				exp = append(exp, c.Name)
+			}
+			if !slices.Equal(got, exp) {
+				t.Errorf("%s.%s: schemainfo columns %v, parity columns %v", name, tbl, got, exp)
+			}
+			if a, b := ti.References, referencedTables(want.FKs[tbl], tbl); !slices.Equal(a, b) {
+				t.Errorf("%s.%s: schemainfo references %v, parity foreign keys point at %v", name, tbl, a, b)
+			}
+		}
+	}
+}
+
+// referencedTables is the sorted set of tables fks point at, without self.
+func referencedTables(fks []foreignKey, self string) []string {
+	var out []string
+	for _, f := range fks {
+		parent, _, _ := strings.Cut(f.To, ".")
+		if parent != self && !slices.Contains(out, parent) {
+			out = append(out, parent)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 func postgresVersion(t *testing.T, db *sql.DB) (int64, error) {
