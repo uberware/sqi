@@ -212,9 +212,13 @@ func TestRestore_ReportsAMissingNATSDirByAbsolutePath(t *testing.T) {
 }
 
 // Review focus 3: once the live database is moved aside, any failure must say
-// where it went.
+// where it went: every file, since a database and its -wal are one database
+// only together, and where the verified staged copy was left.
 func TestRestoreSQLite_FailureAfterMoveAsideNamesThePreviousDatabase(t *testing.T) {
 	_, db, natsDir, backup, _ := liveFarm(t)
+	if err := os.WriteFile(db+"-wal", []byte("wal"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	restore.SetRenameForTest(t, func(from, to string) error {
 		if strings.HasSuffix(from, ".restore-tmp") {
 			return errors.New("injected")
@@ -222,11 +226,45 @@ func TestRestoreSQLite_FailureAfterMoveAsideNamesThePreviousDatabase(t *testing.
 		return os.Rename(from, to)
 	})
 	_, err := restore.Run(t.Context(), opts(db, natsDir, backup))
-	if err == nil || !strings.Contains(err.Error(), db+stamp) {
-		t.Fatalf("err = %v; want it to name where the previous database is", err)
+	if err == nil {
+		t.Fatal("Run with a failing rename = nil, want an error")
+	}
+	for _, want := range []string{db + stamp, db + "-wal" + stamp, "back together", db + ".restore-tmp"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v; want it to name %q", err, want)
+		}
 	}
 	if _, err := os.Stat(natsDir); err != nil {
 		t.Fatal("NATS dir moved although the restore failed")
+	}
+}
+
+// A failure after the fence says the backup is in place and fenced, where the
+// previous database went, and how to finish.
+func TestRestoreSQLite_NATSFailureAfterTheFenceSaysWhatStateItLeft(t *testing.T) {
+	_, db, natsDir, backup, taskID := liveFarm(t)
+	restore.SetRenameForTest(t, func(from, to string) error {
+		if from == natsDir {
+			return errors.New("injected")
+		}
+		return os.Rename(from, to)
+	})
+	_, err := restore.Run(t.Context(), opts(db, natsDir, backup))
+	if err == nil {
+		t.Fatal("Run with a failing NATS rename = nil, want an error")
+	}
+	for _, want := range []string{"injected", "restored and fenced", "restore --in-place", db + stamp, "back together"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v; want it to contain %q", err, want)
+		}
+	}
+	st, err := sqlite.Open(t.Context(), db, sqlite.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if task, err := st.GetTask(t.Context(), taskID); err != nil || task.Status != store.TaskStatusReady {
+		t.Fatalf("task = %+v, %v; want ready (the fence ran)", task, err)
 	}
 }
 
@@ -253,13 +291,22 @@ func TestRestore_InPlaceFencesTheConfiguredDatabase(t *testing.T) {
 
 func TestRestore_NeedsExactlyOneOfBackupAndInPlace(t *testing.T) {
 	_, db, natsDir, backup, _ := liveFarm(t)
-	for _, o := range []restore.Options{opts(db, natsDir, ""), func() restore.Options {
-		o := opts(db, natsDir, backup)
-		o.InPlace = true
-		return o
-	}(), opts("", natsDir, backup)} {
-		if _, err := restore.Run(t.Context(), o); err == nil {
-			t.Fatalf("Run(%+v) = nil, want an error", o)
-		}
+	both := opts(db, natsDir, backup)
+	both.InPlace = true
+	neither := opts(db, natsDir, "")
+	for _, tc := range []struct {
+		name string
+		o    restore.Options
+		want string
+	}{
+		{"neither", neither, "give a backup file, or --in-place, not both"},
+		{"both", both, "give a backup file, or --in-place, not both"},
+		{"empty SQLite path", opts("", natsDir, backup), "SQLite database path is empty"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := restore.Run(t.Context(), tc.o); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Run = %v, want an error containing %q", err, tc.want)
+			}
+		})
 	}
 }

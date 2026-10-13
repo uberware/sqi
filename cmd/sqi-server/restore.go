@@ -70,17 +70,28 @@ func runRestore(cmd *cobra.Command, args []string) error {
 	if restoreFlags.InPlace == (backup != "") {
 		return errors.New("give a backup file, or --in-place, not both")
 	}
+	explicitNATS := flagChanged(cmd, "nats-data-dir")
+	if explicitNATS && restoreFlags.NATSDataDir == "" {
+		return errors.New("--nats-data-dir is empty; restore must move the JetStream directory aside, " +
+			"so name it (or omit the flag to use nats.data_dir)")
+	}
+	c, err := loadCLIConfig()
+	if err != nil {
+		return err
+	}
+	if err := requireRestoreConfig(cmd, c, explicitNATS); err != nil {
+		return err
+	}
 	tgt, err := resolveStoreTarget(cmd, restoreFlags.DBPath, restoreFlags.DSN)
 	if err != nil {
 		return err
 	}
 	natsDir := restoreFlags.NATSDataDir
-	if !flagChanged(cmd, "nats-data-dir") {
-		c, err := loadCLIConfig()
-		if err != nil {
-			return err
-		}
+	if !explicitNATS {
 		natsDir = c.cfg.NATS.DataDir
+	}
+	if natsDir == "" {
+		return errors.New("nats.data_dir is empty; set it, or pass --nats-data-dir")
 	}
 	res, err := restore.Run(cmd.Context(), restore.Options{
 		Driver: tgt.Driver, SQLitePath: tgt.SQLitePath, PostgresDSN: tgt.DSN,
@@ -91,6 +102,25 @@ func runRestore(cmd *cobra.Command, args []string) error {
 	}
 	printRestoreSummary(os.Stdout, res)
 	return nil
+}
+
+// requireRestoreConfig refuses a configuration that failed to load (a broken
+// discovered file, or an SQI_* variable that does not parse) unless the
+// operator named both the store and the NATS directory. The other CLI commands
+// fall back to the built-in defaults there, but restore renames and replaces
+// files: a guessed default would restore into, and quarantine, the wrong
+// places and report success, as serve would refuse to start on the same
+// configuration.
+func requireRestoreConfig(cmd *cobra.Command, c cliConfig, explicitNATS bool) error {
+	if c.loadErr == nil {
+		return nil
+	}
+	if (flagChanged(cmd, "db") || flagChanged(cmd, "dsn")) && explicitNATS {
+		return nil
+	}
+	return fmt.Errorf("could not load configuration: %w; restore will not guess the store or nats.data_dir "+
+		"from built-in defaults: fix the configuration, or pass both the store (--db or --dsn) and --nats-data-dir",
+		c.loadErr)
 }
 
 // printRestoreSummary tells the operator what restore did and where the

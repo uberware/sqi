@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/uberware/sqi/internal/store/backend"
@@ -121,23 +122,31 @@ func requireInPlace(o Options) error {
 	return nil
 }
 
+// notFenced is the state a failure before the fence completes leaves.
+const notFenced = "the database in place is not fenced, so do not start a server on it: " +
+	"fix the cause and run \"sqi-server restore --in-place\" to finish"
+
 // finish migrates the database now in place, fences it, and moves the NATS
-// directory aside, filling in res.
+// directory aside, filling in res. Each failure says what state it left.
 func finish(ctx context.Context, o Options, bo backend.Options, now time.Time, stamp string, res *Result) error {
 	bo.AutoMigrate = true // the version guard runs inside Open
 	st, err := backend.Open(ctx, bo)
 	if err != nil {
-		return fmt.Errorf("restore: open the restored database: %w", err)
+		return fmt.Errorf("restore: open the restored database: %w; %s", err, notFenced)
 	}
 	defer st.Close()
 	if res.Version, err = migrations.MaxVersion(backend.Name(o.Driver)); err != nil {
-		return err
+		return fmt.Errorf("%w; %s", err, notFenced)
 	}
 	if res.Fenced, err = Fence(ctx, st, now); err != nil {
-		return err
+		return fmt.Errorf("%w; %s", err, notFenced)
 	}
-	res.NATSDir, res.NATSMovedTo, err = quarantineNATS(o.NATSDataDir, stamp)
-	return err
+	if res.NATSDir, res.NATSMovedTo, err = quarantineNATS(o.NATSDataDir, stamp); err != nil {
+		return fmt.Errorf("%w; the database in place is restored and fenced, but the NATS data directory "+
+			"was not moved aside: move it aside by hand, or run \"sqi-server restore --in-place\", "+
+			"before starting a server", err)
+	}
+	return nil
 }
 
 // moveAside renames p to p.pre-restore-<stamp> and returns the new name. It
@@ -155,10 +164,13 @@ func moveAside(p, stamp string) (string, error) {
 	return to, nil
 }
 
-// previousAt appends where the previous database went to an error message.
+// previousAt appends where the previous database went to an error message:
+// every file moved aside, since a database and its -wal/-shm files are one
+// database only together.
 func previousAt(moved []string) string {
 	if len(moved) == 0 {
 		return ""
 	}
-	return fmt.Sprintf(" (the previous database is at %s)", moved[0])
+	return fmt.Sprintf(" (the previous database was moved aside as %s; to go back to it, "+
+		"rename all of these back together)", strings.Join(moved, ", "))
 }

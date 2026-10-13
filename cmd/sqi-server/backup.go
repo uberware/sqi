@@ -33,8 +33,11 @@ must not already exist.
 
 SQLite: the backup is produced with SQLite's VACUUM INTO statement, which
 snapshots the live database without taking an exclusive lock. The result is
-an ordinary SQLite database file; restore it by stopping the server and
-putting the file in place of store.sqlite_path.
+an ordinary SQLite database file. Restore it with "sqi-server restore FILE"
+while the server is stopped: it checks the backup, moves the live database
+(and its -wal/-shm files) aside, puts the backup in place, migrates it,
+returns tasks that were in flight to ready, and moves nats.data_dir aside.
+Copying the file over store.sqlite_path by hand skips those steps.
 
 PostgreSQL: the backup runs "pg_dump --format=custom" against the database,
 so the PostgreSQL client tools must be on PATH, at a major version no older
@@ -52,6 +55,7 @@ creates one.
 
 Examples:
   sqi-server backup --db sqi.db --out sqi-backup-$(date +%Y%m%d).db
+  sqi-server restore sqi-backup-20261012.db --db sqi.db
   sqi-server backup --dsn postgres://sqi@db.example.com/sqi --out sqi-$(date +%Y%m%d).dump
   pg_restore --dbname postgres://sqi@db.example.com/sqi_restored sqi-20261012.dump`,
 	RunE: runBackup,

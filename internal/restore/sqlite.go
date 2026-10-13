@@ -44,7 +44,8 @@ func placeSQLite(ctx context.Context, o Options, stamp string) (version int64, m
 		moved = append(moved, to)
 	}
 	if err := rename(staging, o.SQLitePath); err != nil {
-		return version, moved, fmt.Errorf("restore: put the backup in place: %w%s", err, previousAt(moved))
+		return version, moved, fmt.Errorf("restore: put the backup in place: %w; the verified copy of the backup "+
+			"is at %s%s", err, staging, previousAt(moved))
 	}
 	return version, moved, nil
 }

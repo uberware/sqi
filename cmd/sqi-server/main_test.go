@@ -769,12 +769,12 @@ func TestCLI_RefusesANewerSchema(t *testing.T) {
 	}
 }
 
-// TestRestoreCmd_SQLite restores a SQLite backup holding a running task
-// through the CLI, and checks the summary names the fence and where the
-// previous database and the NATS directory went.
-func TestRestoreCmd_SQLite(t *testing.T) {
+// restoreFixture makes a migrated SQLite at dir/sqi.db holding one running
+// task, a backup of it at dir/backup.db, and a NATS directory at dir/nats.
+func restoreFixture(t *testing.T) (db, backup, natsDir string) {
+	t.Helper()
 	dir := t.TempDir()
-	db := filepath.Join(dir, "sqi.db")
+	db = filepath.Join(dir, "sqi.db")
 	st, err := sqlite.Open(t.Context(), db, sqlite.DefaultOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -789,17 +789,25 @@ func TestRestoreCmd_SQLite(t *testing.T) {
 		Step("s1", store.StepStatusReady).
 		Task("t1", "s1", store.TaskStatusRunning).
 		SubmitLeasing(t, st, "w1")
-	backup := filepath.Join(dir, "backup.db")
+	backup = filepath.Join(dir, "backup.db")
 	if err := st.Backup(t.Context(), backup); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
-	natsDir := filepath.Join(dir, "nats")
+	natsDir = filepath.Join(dir, "nats")
 	if err := os.MkdirAll(natsDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	return db, backup, natsDir
+}
+
+// TestRestoreCmd_SQLite restores a SQLite backup holding a running task
+// through the CLI, and checks the summary names the fence and where the
+// previous database and the NATS directory went.
+func TestRestoreCmd_SQLite(t *testing.T) {
+	db, backup, natsDir := restoreFixture(t)
 
 	prepareRoot([]string{"restore", backup, "--db", db, "--nats-data-dir", natsDir})
 	var runErr error
@@ -828,4 +836,87 @@ func TestRestoreCmd_SQLite(t *testing.T) {
 			t.Fatalf("restore with a backup and --in-place = %v, want a usage error", err)
 		}
 	})
+}
+
+// TestRestoreCmd_UnloadableConfig verifies restore does not fall back to the
+// built-in defaults when the configuration fails to load without -c, as the
+// other CLI commands do: it would restore into, and quarantine, the wrong
+// places. Naming both the store and the NATS directory is the way through.
+func TestRestoreCmd_UnloadableConfig(t *testing.T) {
+	breakages := map[string]func(t *testing.T){
+		"unparseable SQI_ variable": func(t *testing.T) {
+			t.Setenv("SQI_SCHEDULER_TICK_INTERVAL", "not-a-duration")
+		},
+		"malformed discovered config file": func(t *testing.T) {
+			if err := os.MkdirAll("config", 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join("config", "sqi-server.yaml"), []byte("store: ["), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, breakConfig := range breakages {
+		t.Run(name, func(t *testing.T) {
+			unsetStoreSQLitePathEnv(t)
+			isolateConfigDiscovery(t)
+			breakConfig(t)
+			db, backup, natsDir := restoreFixture(t)
+			// What the built-in defaults would name, relative to the working
+			// directory: neither may be touched.
+			if err := os.MkdirAll(filepath.Join("data", "nats"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+
+			for _, args := range [][]string{
+				{"restore", backup},
+				{"restore", backup, "--db", db},
+				{"restore", backup, "--nats-data-dir", natsDir},
+			} {
+				prepareRoot(args)
+				var runErr error
+				_ = captureStderr(t, func() { _ = captureStdout(t, func() { runErr = Execute() }) })
+				if runErr == nil || !strings.Contains(runErr.Error(), "could not load configuration") ||
+					!strings.Contains(runErr.Error(), "--nats-data-dir") {
+					t.Fatalf("%v = %v, want a refusal naming the config problem", args, runErr)
+				}
+			}
+			for _, p := range []string{filepath.Join("data", "nats"), natsDir, db} {
+				if _, err := os.Stat(p); err != nil {
+					t.Fatalf("%s moved although restore refused: %v", p, err)
+				}
+			}
+			if _, err := os.Stat("sqi.db"); err == nil {
+				t.Fatal("restore created the default database although it refused")
+			}
+
+			prepareRoot([]string{"restore", backup, "--db", db, "--nats-data-dir", natsDir})
+			var runErr error
+			var out string
+			_ = captureStderr(t, func() { out = captureStdout(t, func() { runErr = Execute() }) })
+			if runErr != nil || !strings.Contains(out, "fenced 1 attempt(s)") {
+				t.Fatalf("restore with both explicit = %v; stdout:\n%s", runErr, out)
+			}
+			if _, err := os.Stat(filepath.Join("data", "nats")); err != nil {
+				t.Fatalf("the default NATS directory moved: %v", err)
+			}
+		})
+	}
+}
+
+// TestRestoreCmd_RefusesAnEmptyNATSDataDir verifies an explicit empty
+// --nats-data-dir is refused rather than silently skipping the quarantine.
+func TestRestoreCmd_RefusesAnEmptyNATSDataDir(t *testing.T) {
+	db, backup, natsDir := restoreFixture(t)
+	prepareRoot([]string{"restore", backup, "--db", db, "--nats-data-dir", ""})
+	err := Execute()
+	if err == nil || !strings.Contains(err.Error(), "--nats-data-dir is empty") {
+		t.Fatalf("restore --nats-data-dir \"\" = %v, want a refusal", err)
+	}
+	if _, err := os.Stat(db + ".restore-tmp"); err == nil {
+		t.Fatal("restore staged a copy although it refused")
+	}
+	if _, err := os.Stat(natsDir); err != nil {
+		t.Fatal(err)
+	}
 }
