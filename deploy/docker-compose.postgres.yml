@@ -22,16 +22,45 @@
 #
 # The server creates the schema itself on first start (store.driver: postgres
 # migrates on open). One sqi-server per database: a second one sharing it is
-# refused (see docs/operations.md, "Running on PostgreSQL").
+# refused (see docs/operations.md, "One server per database").
 #
-# Backup and restore use the PostgreSQL client tools inside the database
-# container (the sqi-server image does not ship pg_dump):
+# Backup runs pg_dump inside the database container (the sqi-server image does
+# not ship the PostgreSQL client tools), while everything keeps running:
 #   docker compose -f deploy/docker-compose.postgres.yml exec -T postgres \
 #     pg_dump -U sqi --format=custom --no-owner sqi > sqi-$(date +%Y%m%d).dump
+#
+# Restore is "sqi-server restore", which needs pg_restore, so it runs in a
+# one-off container of the postgres service with the sqi-server binary (copied
+# out of its image) and the server's data volume mounted, so that it also moves
+# the server's NATS directory aside. Stop the server, keep the current database
+# as sqi_pre_restore (or dropdb it), create an empty one, restore, start:
+#   docker compose -f deploy/docker-compose.postgres.yml stop sqi-server
 #   docker compose -f deploy/docker-compose.postgres.yml exec -T postgres \
-#     createdb -U sqi sqi_restored
+#     psql -U sqi -d postgres -c 'ALTER DATABASE sqi RENAME TO sqi_pre_restore'
 #   docker compose -f deploy/docker-compose.postgres.yml exec -T postgres \
-#     pg_restore -U sqi --dbname=sqi_restored --no-owner < sqi-YYYYMMDD.dump
+#     createdb -U sqi sqi
+#   id=$(docker create ghcr.io/uberware/sqi/sqi-server:latest) &&
+#     docker cp "$id":/usr/local/bin/sqi-server ./sqi-server-linux && docker rm "$id"
+#   docker compose -f deploy/docker-compose.postgres.yml run --rm --no-deps \
+#     -v "$PWD/sqi-server-linux:/usr/local/bin/sqi-server:ro" \
+#     -v "$PWD/sqi-YYYYMMDD.dump:/backup.dump:ro" \
+#     -v deploy_server-data:/var/lib/sqi-server \
+#     -e PGPASSWORD="$SQI_POSTGRES_PASSWORD" \
+#     --entrypoint sqi-server postgres \
+#     restore /backup.dump --nats-data-dir /var/lib/sqi-server/nats \
+#     --dsn "host=postgres port=5432 user=sqi dbname=sqi sslmode=disable"
+#   docker compose -f deploy/docker-compose.postgres.yml start sqi-server
+# "deploy_server-data" is the server-data volume under the default project
+# name (the directory holding this file); `docker volume ls` shows yours. Name
+# it in full: a bare "server-data" there would create a new, empty volume.
+# SQI_POSTGRES_PASSWORD must be set in the shell for -e PGPASSWORD, even if you
+# keep it in a .env file. Once the farm is healthy, drop the old database and
+# the NATS directory restore moved aside:
+#   docker compose -f deploy/docker-compose.postgres.yml exec -T postgres \
+#     dropdb -U sqi sqi_pre_restore
+#   docker run --rm -v deploy_server-data:/d postgres:18.6 \
+#     sh -c 'rm -r /d/nats.pre-restore-*'
+# What restore does and what runs again: docs/operations.md, "Restore".
 #
 # The database is reachable only on the compose network. To use an existing
 # PostgreSQL server instead, delete the postgres service and its depends_on,

@@ -254,9 +254,12 @@ scheduler:
   # for this long (a lost completion report, a restored database). The task
   # runs again. 0 disables; otherwise at least heartbeat_timeout. When this
   # key is left unset the default is 2m, or heartbeat_timeout if that is
-  # longer.
+  # longer. It is commented out here so that copying this file keeps that
+  # default: uncommented, the value is used exactly as given, and raising
+  # heartbeat_timeout above it fails validation at start-up.
+  # See docs/operations.md, "Reconciliation".
   # Type: duration   Env: SQI_SCHEDULER_RECONCILE_GRACE
-  reconcile_grace: "2m"
+  # reconcile_grace: "2m"
 
   # Farm-wide default number of genuine attempts a task may make before it
   # goes terminal-failed. Farm/queue/job retry-policy overrides win over this

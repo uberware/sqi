@@ -86,10 +86,14 @@ main()
        1. Load and validate configuration (config.Load + config.Validate)
        2. Initialize slog structured logger
        3. Open the store named by store.driver through internal/store/backend
-          and run its pending migrations. On PostgreSQL, first take the
-          single-server advisory lock (startup fails if another server holds
-          it). Register the store as the "sqlite" or "postgres" readiness
-          checker, named after the driver (Store.Ping, read pool)
+          and run its pending migrations. First take the single-server lock
+          (SQLite: the <sqlite_path>.lock file; PostgreSQL: an advisory lock),
+          and startup fails if another server holds it. Then the version
+          guard: a database whose schema version is above the newest
+          migration this binary carries is refused (migrations.ErrSchemaTooNew,
+          naming both versions) before anything is migrated. Register the
+          store as the "sqlite" or "postgres" readiness checker, named after
+          the driver (Store.Ping, read pool)
        4. SQLite only: start the background WAL checkpointer
           (store.checkpoint_interval)
        5. Start the expired-session sweeper (no-op when auth is disabled)
@@ -125,8 +129,9 @@ main()
             c. Stop Scheduler
             d. Drain NATS in-flight messages, flush JetStream
             e. Close NATS server
-            f. Close the store. SQLite: final WAL checkpoint in TRUNCATE mode
-               (checkpointer goroutine, on context cancel), then both pools.
+            f. Close the store. SQLite: wait for the checkpointer goroutine's
+               final WAL checkpoint in TRUNCATE mode (bounded by the shutdown
+               deadline), then close both pools, then release the lock file.
                PostgreSQL: release the advisory lock, then both pools
 ```
 
@@ -390,6 +395,29 @@ for the operator-facing view and
 [`scheduler.unschedulable_grace`](configuration.md#schedulerunschedulable_grace)
 for the config knob.
 
+**Attempt reconciliation.** On the same tick, after the stale-assignment
+reaper, `reconcileAttempts` (`internal/scheduler/attemptreconcile.go`) reclaims
+attempts a live worker has stopped reporting. Every heartbeat from a current
+worker carries `attempts_reported: true` and `active_attempt_ids`, the attempts
+its process holds from lease decode until the task's goroutine exits (an
+additive protocol field, so no `ProtocolVersion` bump; an older worker sends
+neither and is never reconciled, and one holding nothing sends
+`attempts_reported: true` with no IDs, which is a report like any other).
+The heartbeat handler records each report in an in-memory, per-process
+`reconciler`, unless the worker's timestamp is more than
+`scheduler.heartbeat_timeout` from its receipt. The sweep lists the store's
+open attempts created before `now − reconcile_grace`
+(`store.ListOpenAttempts`) and reclaims one through `store.ReclaimTaskAttempt`
+when its worker's latest report is fresh, omits it, and has omitted it for at
+least `scheduler.reconcile_grace`, measured on the server's clock from the
+later of the attempt's creation and the last report that named it. Nothing is
+reclaimed during the first `reconcile_grace` after the scheduler starts. A
+reclaim counts in `sqi_scheduler_tasks_reconciled_total`. If the status
+consumer falls more than the grace behind, a finished task can be reclaimed
+before its report is read; the report then names a closed attempt and is
+discarded, so the cost is a re-run, never a lost or doubled result. See
+[Reconciliation](operations.md#reconciliation).
+
 ### 4. Worker execution
 
 ```
@@ -449,6 +477,7 @@ scheduler for the paths that have none:
 | Worker reclaimed (heartbeat timeout or graceful deregister) | `"worker went offline"` | `store.OfflineStaleWorker` / `store.OfflineWorker` — set on the **attempt** `message` only; reclaim is not a task failure, so `tasks.failure_reason` is left untouched |
 | Worker restarted (a new process registers under the same worker ID) | `"worker restarted"` | `store.RegisterWorker`, in the registration's own transaction — attempt `message` only, as above |
 | Worker shut down (a `failed` report whose message is `worker_shutdown`) | `"worker shut down"` | `store.ReclaimTaskAttempt` — attempt `message` only, as above |
+| Restore fence or attempt reconciliation (an attempt a restored database records as running, or one its live worker stopped reporting) | `"worker shut down"` | `store.ReclaimTaskAttempt`, called by `restore.Fence` and `Scheduler.reconcileAttempts` — attempt `message` only, as above |
 | Cascade-canceled (an upstream step failed or was canceled, or a blocked job's upstream job failed, was canceled or was deleted) | `"canceled: upstream step failed"` | stamped inside the same UPDATE that cancels the tasks: `store.CancelPendingStep` (called by `openjd.CancelDependents`) for a step, `store.CancelBlockedJob` for a blocked job |
 | User-initiated cancel | `"canceled by user"` | stamped inside the UPDATE that cancels the tasks: `store.CancelJobExecution` for `CancelJob`, `store.CancelTaskExecution` for `CancelTask` |
 
@@ -515,6 +544,15 @@ NATS consumer (internal/scheduler/logingest.go)
   │     persisted as the chunk's pagination cursor for the logs REST endpoint
   └─ notifier.NotifyLog(task_id, chunk)      ← triggers WebSocket fanout for live tail
 ```
+
+Ingest is idempotent per chunk. `task_logs` is unique on `(attempt_id,
+worker_seq)` (migration `00038`, which first deleted existing duplicates,
+keeping the row received first), so a redelivered chunk inserts nothing:
+`CreateTaskLog` returns `store.ErrConflict` and the consumer acks it. A
+foreign-key failure (a chunk for an attempt that no longer exists) returns
+the same error and is acked too, since redelivery cannot cure it. Chunks for a
+closed attempt are stored on it like any other, which is where a ghost run's
+output lands after a restore.
 
 ### 7. Real-time delivery to clients
 
@@ -836,7 +874,15 @@ PostgreSQL's is `internal/store/migrations/postgres/*.sql`, which starts at
 so version N is the same schema on both. Every later schema change ships as a
 pair of files with the same version, and `TestSchemaParity` fails when the two
 backends' newest versions, tables, columns (names, order, types and
-nullability), indexes or foreign keys differ.
+nullability), indexes or foreign keys differ. The newest pair is
+`00038_task_logs_unique_seq`. Migrations are forward-only: there is no
+`migrate down`, and a binary refuses a database whose version is above the
+newest migration it embeds (`migrations.CheckVersion` against
+`migrations.MaxVersion`, run in `sqlite.Open` and `postgres.Open` whether or
+not they migrate, and by `migrate up`, `restore` and `store copy`). `backup`
+does not check, so it can back up a database a newer binary migrated; rolling
+back means restoring the backup taken before the upgrade with the older
+binary.
 
 ### Two backends
 
@@ -891,20 +937,32 @@ The PostgreSQL schema is SQLite's, with these differences:
   `00037`) fix rows older releases wrote; a PostgreSQL database starts empty
   at `00037` and has none to fix.
 
-**One server per database.** At start-up the server takes the PostgreSQL
-advisory lock `0x7371692d73727672` (the bytes spell `sqi-srvr`) with
-`pg_try_advisory_lock`, on a connection it takes out of the write pool and
-holds for its whole life, so `max_conns: 16` leaves 15 connections for work.
-If another server holds the lock, start-up fails:
+**One server per database.** On SQLite the server takes an exclusive,
+non-blocking OS lock (`internal/fslock`: `flock` on POSIX, `LockFileEx` on
+Windows) on `<sqlite_path>.lock` before it opens the database, and releases it
+in `Close`. The file is created owner-only and never deleted; the OS drops the
+lock when the process exits, so a crash leaves nothing stale. A second holder
+fails with `another sqi-server is using <path> (lock file <path>.lock is held);
+stop it first`. On a network filesystem the lock is only as good as that
+filesystem's lock emulation.
+
+On PostgreSQL the server takes the advisory lock `0x7371692d73727672` (the
+bytes spell `sqi-srvr`) with `pg_try_advisory_lock`, on a connection it takes
+out of the write pool and holds for its whole life, so `max_conns: 16` leaves
+15 connections for work. If another server holds the lock, start-up fails:
 
 ```
 another sqi-server is already using this database (PostgreSQL advisory lock 0x7371692d73727672 is held); running more than one server on one database is not supported yet; stop it first
 ```
 
 Advisory locks are per database, so servers on different databases of one
-PostgreSQL cluster do not collide. The CLIs (`migrate`, `backup`, `worker`)
-do not take the lock: a backup or a worker-credential change against a running
-server is legitimate. The server pings the lock's connection every 30 s. If
+PostgreSQL cluster do not collide. On both backends, `migrate up`, `restore`
+and `store copy` take the same lock (`store copy` the SQLite lock on its
+source and the advisory lock on its target), hold it for their whole run, and
+open the store without taking it again, so they refuse to run beside a
+server. `migrate status`, `backup` and the `worker` credential commands do
+not: a backup or a worker-credential change against a running server is
+legitimate. The server pings the lock's connection every 30 s. If
 that connection is lost, so is the lock: the server logs it at Error and keeps
 running, because exiting would turn a network blip into an outage. In that
 window a second server could start on the same database. Running more than
@@ -1214,12 +1272,11 @@ Upgrading from v0.3.0 changes the following behaviour.
   422 message as one that fails the pre-check (`openjd: submit: depends_on job
   "<id>" already terminated unsuccessfully (<status>)` or `openjd: submit:
   depends_on job "<id>" not found`).
-- `sqi-server migrate up`, `down` and `status` print to stdout, in a new
-  format. `up` prints one line per migration applied
+- `sqi-server migrate up` and `status` print to stdout, in a new format.
+  `up` prints one line per migration applied
   (`OK    up 00037_fixed_width_timestamps.sql (1.2s)`), or `no pending
-  migrations`; `down` prints one line for the migration it rolled back.
-  `status` prints one line per migration file: the time it was applied (UTC,
-  RFC 3339) or `pending`, then the file name. v0.3.0 printed goose's own log
+  migrations`. `status` prints one line per migration file: the time it was
+  applied (UTC, RFC 3339) or `pending`, then the file name. v0.3.0 printed goose's own log
   lines to stderr, so a script that read them must change. The server's
   start-up migration prints nothing.
 - Deleting a farm that a queue, job or worker still references, or a usage
@@ -1234,6 +1291,19 @@ Upgrading from v0.3.0 changes the following behaviour.
   the batches it already committed: those tasks are `ready` again, and the
   scheduler announces them (a ready event each, and the warning log line)
   before it logs the error.
+- **Schema changes are forward-only.** `migrate down` is gone; a binary
+  older than the database refuses to start on it, and the way back is
+  restoring the pre-upgrade backup (see [Rollback](operations.md#rollback),
+  which also covers going back to v0.3.0, a release with no version check and
+  no `restore`). A SQLite server now creates and locks `<sqlite_path>.lock`
+  beside its database, and `migrate up`, `restore` and `store copy` refuse to
+  run while a server holds it.
+- **Attempt reconciliation is on by default** (`scheduler.reconcile_grace`:
+  2 minutes, or `heartbeat_timeout` if that is longer, unless set): a task a
+  live worker of this release has stopped reporting for that long is handed
+  back and runs again. Set `0` to keep the old behaviour.
+- A redelivered log chunk is stored once (migration `00038` removes existing
+  duplicates on the first start after upgrade).
 - Stalled-job demotion (a `running` job with tasks waiting but none assigned
   or running returns to `pending`) demotes each job in its own transaction,
   re-checking under the job row's lock that it is still stalled (one statement
@@ -1262,12 +1332,11 @@ server and run `sqi-server migrate up` first, which prints one line per applied
 migration to stdout, `OK    up 00037_fixed_width_timestamps.sql (<duration>)`
 for this one.
 
-An earlier release reads the new form. After a downgrade it writes the old form
-again, and upgrading again does not re-run `00037`. While `00037` is the newest
-applied migration, stopping the server and running `sqi-server migrate down`
-then `sqi-server migrate up` re-runs it. That applies to SQLite only: on
-PostgreSQL, `00037` is the baseline that creates the whole schema, and
-`sqi-server migrate down` refuses to roll it back.
+There is no downgrade in place: `migrate down` is gone, and a binary older
+than the database refuses to start on it. Rolling back means restoring the
+backup taken before the upgrade with the older binary (see
+[Rollback](operations.md#rollback)). A backup taken before upgrading from
+v0.3.0 predates `00037`, so upgrading again runs `00037` again.
 
 **Upgrade repair.** A v0.3.0 database can hold damage these invariants
 prevent, which the code changes alone do not undo, so it is repaired in four
@@ -1314,6 +1383,26 @@ parts:
     leaves a `pending` step that nothing else would release. A `blocked` job is
     excluded because its steps wait on another job, not on their own upstream
     steps.
+
+Neither pass touches in-flight attempts, and a server restarting on its own
+database and its own JetStream directory needs no such repair: reports that
+reached the stream before it stopped are still there, and attempt
+reconciliation recovers a task whose report a worker could not deliver. A
+database that was put back (a backup, point-in-time recovery, a snapshot) is
+different. It records as
+running the attempts that were running when it was taken, and the JetStream
+directory beside it belongs to another moment. `sqi-server restore`
+(`internal/restore`) therefore **fences** before any server starts: with the
+single-server lock held, it lists every open attempt (`store.ListOpenAttempts`
+with a far-future cutoff), reclaims each through `store.ReclaimTaskAttempt`
+(task back to `ready`, attempt closed as `worker shut down`, claims released,
+no retry used), fails if any is still open afterwards, and renames
+`nats.data_dir` to `<dir>.pre-restore-<time>`. Workers still running a fenced
+task become ghost runs: their status reports name a closed attempt and are
+discarded, and their log chunks land on that closed attempt. A database
+restored without the fence is recovered by attempt reconciliation instead
+(see the heartbeat sweep above), within `scheduler.reconcile_grace` once a
+worker's heartbeats show it no longer holds the attempt.
 
 ### Known gaps
 

@@ -101,10 +101,9 @@ func TestMigration00037_RewritesEveryStoredForm(t *testing.T) {
 }
 
 // TestMigration00037_DownUpNormalizesRowsAnOlderBinaryWrote covers re-running
-// 00037 over rows an older release wrote after a downgrade: the trimmed
-// timestamps it writes into a database already at version 37 or later are
-// normalized when the database is rewound to 36 and migrated up again. (The
-// CLI has no `migrate down` any more; rewinding is a test-only operation.)
+// 00037 over trimmed timestamps, the form releases before 00037 write, in a
+// database already at version 37 or later: rewound to 36 with goose's library
+// API and migrated up again, the rows come out normalized.
 func TestMigration00037_DownUpNormalizesRowsAnOlderBinaryWrote(t *testing.T) {
 	path, s, _ := openSeedable(t)
 	farm, err := s.CreateFarm(t.Context(), store.Farm{ID: uuid.NewString(), Name: uuid.NewString()})
@@ -115,7 +114,7 @@ func TestMigration00037_DownUpNormalizesRowsAnOlderBinaryWrote(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 	db := openRaw(t, path)
-	// What an older release writes after a downgrade.
+	// The trimmed form a release before 00037 writes.
 	if _, err := db.ExecContext(t.Context(),
 		`UPDATE farms SET created_at = '2026-10-10T12:00:05.5Z' WHERE id = ?`, farm.ID); err != nil {
 		t.Fatalf("plant: %v", err)

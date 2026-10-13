@@ -512,7 +512,10 @@ limit.
 Logs are returned as a paginated list of timestamped chunks. Advance the
 cursor using `after_nats_seq` from each response.
 
-After a restore that replaced the JetStream directory, late chunks of an attempt the restore closed can carry lower values than chunks already read; a full read (`after_nats_seq=0`) shows them.
+After a restore that replaced the JetStream directory, late chunks of an
+attempt the restore closed can carry lower values than chunks already read; a
+full read (`after_nats_seq=0`) shows them (see
+[What runs again](operations.md#what-runs-again)).
 
 | Parameter | Default | Description |
 |---|---|---|

@@ -289,7 +289,7 @@ before Phase 3. See [docs/auth.md](docs/auth.md) for the model and setup.
 
 ### Phase 4: Production Hardening (v0.4 — beta)
 
-- PostgreSQL state store option — **implemented, not yet released**: `store.driver: postgres` (PostgreSQL 16 or later), one `sqi-server` per database, a `pg_dump` backup and a Docker Compose example; no SQLite → PostgreSQL data migration yet. See [Running on PostgreSQL](docs/operations.md#running-on-postgresql).
+- PostgreSQL state store option — **implemented, not yet released**: `store.driver: postgres` (PostgreSQL 16 or later), one `sqi-server` per database, a `pg_dump` backup and a Docker Compose example; an existing SQLite farm moves onto it with `sqi-server store copy`. See [Running on PostgreSQL](docs/operations.md#running-on-postgresql) and [Moving to PostgreSQL](docs/operations.md#moving-to-postgresql).
 - Scheduler HA (leader election, warm standby)
 - Distributed NATS cluster
 - Worker auto-scaling hooks (AWS, GCP, Azure)

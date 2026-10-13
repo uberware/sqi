@@ -244,7 +244,8 @@ sqi-server service uninstall  # stops it, then removes it; config, database and 
 ```
 
 `Get-Service sqi-server`, `Start-Service`, `Stop-Service` and `services.msc` work
-too. To upgrade, `service stop`, replace `sqi-server.exe`, and `service start`.
+too. To upgrade, `service stop`, take a backup, replace `sqi-server.exe`, and
+`service start`: see [Upgrade](#upgrade).
 A service that stopped because of an error shows
 `exit codes: 1066 (service-specific 1)` in `service status`, and its reason is
 the last `"service exited with error"` line in the log — or, when the log
@@ -252,13 +253,15 @@ directory could not be used, in `sqi-server.trace.log` beside the configuration
 file (the fallback is described under
 [Logs](worker-deployment.md#logs) in the worker guide). Both are best effort.
 
-> **`migrate`, `backup` and `worker` run from a console use the *shell's*
-> working directory, not the service's.** With the default relative
-> `store.sqlite_path`, `sqi-server migrate up --config C:\ProgramData\sqi\sqi-server.yaml`
-> looks for `sqi.db` in the directory the shell is in — an elevated PowerShell
-> usually starts in `C:\Windows\System32` — and would *create* a new, empty
-> database there, while `backup` and `worker` would report `no database at …`.
-> Either set an absolute `store.sqlite_path` in the configuration file, or
+> **`migrate`, `backup`, `restore`, `store copy` and `worker` run from a
+> console use the *shell's* working directory, not the service's.** With the
+> default relative `store.sqlite_path` and `nats.data_dir`,
+> `sqi-server migrate up --config C:\ProgramData\sqi\sqi-server.yaml` looks for
+> `sqi.db` in the directory the shell is in — an elevated PowerShell usually starts in
+> `C:\Windows\System32` — and would *create* a new, empty database there, while
+> `backup` and `worker` would report `no database at …`. `restore` would put the
+> backup in `C:\Windows\System32` and leave the server's own database and NATS
+> directory untouched. Either set absolute paths in the configuration file, or
 > `Set-Location C:\ProgramData\sqi` first.
 
 The server's logs can carry job and environment detail, and every sqi service on
@@ -280,92 +283,238 @@ you give `--name`, like `sc.exe`.
 
 ## Upgrade
 
-`sqi-server` upgrades are zero-downtime when using a process supervisor: new
-migrations are applied before the HTTP listener accepts traffic, so a rolling
-restart is safe. On PostgreSQL the new server cannot start until the old one
-has stopped (see [One server per database](#one-server-per-database)), so stop
-the old one first.
+Schema migrations are forward-only. A new `sqi-server` applies its migrations
+when it starts, and from then on an older binary refuses the database (see
+[Rollback](#rollback)), so the only way back is the backup you take first.
+Upgrading is a stop and a start, not a rolling restart: two servers cannot
+share one database (see [One server per database](#one-server-per-database)),
+and on one host they cannot share its ports either.
 
-### Steps
+Workers do not need to stop: they reconnect when the server is back. A report
+a worker could not deliver while the server was down is recovered by
+[reconciliation](#reconciliation), at the cost of running that task again.
 
-1. Download (or build) the new binary.
-2. Replace the binary on disk.
-3. Restart the service — migrations apply automatically:
+Run the CLI commands as the account the server runs as (`sqi` in the systemd
+unit above). On SQLite the files they create are readable by their owner only,
+so a database or lock file created by `root` is one a server running as `sqi`
+cannot open. On PostgreSQL, give that account the password the way the server
+gets it (the configured DSN, or its `~/.pgpass`): `sudo` does not pass
+`PGPASSWORD` through.
 
-```sh
-sudo systemctl restart sqi-server
-```
-
-If you prefer to run migrations explicitly before restarting:
-
-```sh
-# With the server stopped
-sqi-server migrate up --config /etc/sqi/sqi-server.yaml
-# Then restart
-sudo systemctl start sqi-server
-```
-
-### Rolling back
-
-Downgrades require a `migrate down` to the schema version of the older binary:
+### Steps (Linux, systemd)
 
 ```sh
-# Stop the new binary first
+# 1. Stop the server.
 sudo systemctl stop sqi-server
 
-# Roll back one migration step
-sqi-server migrate down --config /etc/sqi/sqi-server.yaml
+# 2. Back the database up. This is the backup a rollback restores.
+#    (On PostgreSQL the command is the same; name the file .dump.)
+sudo -u sqi sqi-server backup --config /etc/sqi/sqi-server.yaml \
+  --out /backups/sqi/pre-upgrade-$(date +%Y%m%d-%H%M%S).db
 
-# Restore the old binary, then start
+# 3. Keep the old binary, and install the new one.
+sudo cp /usr/local/bin/sqi-server /usr/local/bin/sqi-server.old
+sudo install -m 0755 ./sqi-server /usr/local/bin/sqi-server
+
+# 4. Start it. Pending migrations run before it accepts requests.
 sudo systemctl start sqi-server
 ```
 
-Always take a backup before upgrading (see [Backup and restore](#backup-and-restore)).
+To watch the migrations run, or to run them before the start, put this between
+steps 3 and 4. It prints one line per migration it applies (or `no pending
+migrations`), and it takes the [single-server lock](#one-server-per-database),
+so it refuses to run while a server uses the database:
 
-> **On PostgreSQL, `migrate down` stops at `00037`.** That migration is the
-> baseline that creates the whole schema, and rolling it back would drop every
-> table and its data, so it is refused. To start over, drop and recreate the
-> database. `sqi-server migrate status` shows the applied version.
+```sh
+sudo -u sqi sqi-server migrate up --config /etc/sqi/sqi-server.yaml
+```
+
+Taking the backup with the server stopped, rather than online, means the
+backup is exactly the database the old binary last wrote: nothing finished
+between the backup and the upgrade can be lost by a rollback.
+
+### Steps (Windows service)
+
+From an elevated PowerShell. `Set-Location` matters with the default relative
+`store.sqlite_path`: see the note under [Windows service](#windows-service).
+
+```powershell
+sqi-server service stop
+Set-Location C:\ProgramData\sqi
+sqi-server backup --config C:\ProgramData\sqi\sqi-server.yaml `
+  --out "D:\backups\sqi\pre-upgrade-$(Get-Date -Format yyyyMMdd-HHmmss).db"
+Copy-Item "C:\Program Files\sqi\sqi-server.exe" "C:\Program Files\sqi\sqi-server.exe.old"
+# Replace C:\Program Files\sqi\sqi-server.exe with the new binary, then:
+sqi-server service start
+```
+
+The backup directory must already exist; `backup` creates only the file.
+
+The backup and the rollback below are executed by
+`TestUpgrade_OlderBinaryRefused`, which simulates the newer binary by recording
+a schema version above the one it was built with.
 
 ---
 
-## Backup and restore
+## Rollback
 
-This section covers the default SQLite store. On PostgreSQL, `sqi-server
-backup` runs `pg_dump` instead: see [Backing up
-PostgreSQL](#backing-up-postgresql).
+There is no `migrate down`. The database records the newest migration applied
+to it, and a binary whose newest migration is older refuses to start on it:
 
-### Online backup with `sqi-server backup`
+```
+startup failed: open store: sqlite: database schema is version 39, newer than this sqi-server (38); this binary is older than the data: run the newer binary, or roll back by restoring the pre-upgrade backup (see docs/operations.md, Rollback)
+```
 
-`sqi-server backup` uses SQLite's `VACUUM INTO` to snapshot the database while
-the server is running. The backup is a fully checkpointed, self-contained
-`.db` file — workers do not need to be paused.
+The first number is the database's schema version, the second the newest
+migration this binary carries (on PostgreSQL the prefix is `postgres:`).
+Nothing was changed: the binary stopped before touching the data. `migrate
+up`, `restore` (given a backup newer than the binary), `store copy` and the
+`worker` credential commands refuse the same database with the same message.
+`backup` does not: it never opens the store, so it can back up a database
+newer than itself.
+
+To go back to the older release, restore the backup taken before the upgrade,
+with the **older** binary:
+
+```sh
+sudo systemctl stop sqi-server
+
+# Keep what the newer release wrote, in case you go forward again later.
+sudo -u sqi sqi-server backup --config /etc/sqi/sqi-server.yaml \
+  --out /backups/sqi/before-rollback-$(date +%Y%m%d-%H%M%S).db
+
+# Put the old binary back, then restore the pre-upgrade backup with it.
+sudo install -m 0755 /usr/local/bin/sqi-server.old /usr/local/bin/sqi-server
+sudo -u sqi sqi-server restore --config /etc/sqi/sqi-server.yaml \
+  /backups/sqi/pre-upgrade-20261013-020000.db
+
+sudo systemctl start sqi-server
+```
+
+On Windows, the same with `service stop`, `Set-Location
+C:\ProgramData\sqi`, `sqi-server.exe.old` copied back over `sqi-server.exe`,
+`restore`, and `service start`. Everything the farm did after the
+pre-upgrade backup is gone, and the tasks that backup caught in flight run
+again; [Restore](#restore) says exactly what that means. Executed by
+`TestUpgrade_OlderBinaryRefused`.
+
+### Rolling back to v0.3.0 or earlier
+
+Releases before `restore` existed have neither the `restore` command nor the
+version check: v0.3.0 starts on a newer database without complaint and runs
+against a schema it does not know. They support only SQLite, so put the
+pre-upgrade backup in place by hand, with the server stopped. This procedure is
+not executed by a test.
+
+```sh
+sudo systemctl stop sqi-server
+cd /var/lib/sqi     # the directory holding store.sqlite_path and nats.data_dir
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+for f in sqi.db sqi.db-wal sqi.db-shm; do
+  [ -e "$f" ] && sudo -u sqi mv "$f" "$f.pre-restore-$stamp"
+done
+sudo -u sqi mv nats "nats.pre-restore-$stamp"
+sudo -u sqi cp /backups/sqi/pre-upgrade-20261013-020000.db sqi.db
+sudo install -m 0755 /usr/local/bin/sqi-server.old /usr/local/bin/sqi-server
+```
+
+Then stop every worker before you start the old server. Without `restore`
+nothing closes the attempts the backup recorded as running, and v0.3.0 has
+no [reconciliation](#reconciliation): a task whose worker stays online stays
+`running`. With the workers stopped, start the server and wait until the web
+UI or `GET /api/v1/workers` shows them offline (about
+`scheduler.heartbeat_timeout`, 30 s by default); taking them offline returns
+their tasks to `ready`. Then start the workers again.
+
+---
+
+## Backup
+
+`sqi-server backup` makes a consistent copy of the state store while the
+server keeps running, on both backends. Workers do not need to pause. It
+backs up the **database only**; [What a backup leaves
+out](#what-a-backup-leaves-out) says why that is enough.
+
+```sh
+# The store the configuration names (store.driver, store.sqlite_path or
+# store.postgres.dsn):
+sqi-server backup --config /etc/sqi/sqi-server.yaml \
+  --out /backups/sqi/sqi-$(date +%Y%m%d-%H%M%S).db
+
+# Or name the store explicitly:
+sqi-server backup --db /data/sqi.db --out /backups/sqi/sqi-$(date +%Y%m%d-%H%M%S).db
+sqi-server backup --dsn "postgres://sqi@db.example.com:5432/sqi?sslmode=verify-full" \
+  --out /backups/sqi/sqi-$(date +%Y%m%d-%H%M%S).dump
+```
+
+```powershell
+Set-Location C:\ProgramData\sqi
+sqi-server backup --config C:\ProgramData\sqi\sqi-server.yaml `
+  --out "D:\backups\sqi\sqi-$(Get-Date -Format yyyyMMdd-HHmmss).db"
+```
+
+The store is chosen as described under
+[`store.driver`](configuration.md#storedriver): `--dsn` selects PostgreSQL,
+`--db` a SQLite file, and otherwise the configured driver decides. For SQLite
+the path then resolves through the same config layer the server uses (the root
+`-c/--config` file and `SQI_STORE_SQLITE_PATH`, i.e. `store.sqlite_path`),
+falling back to the legacy `SQI_SQLITE_PATH` environment variable and then to
+`sqi.db` in the working directory.
+
+The file given to `--out` must not exist: use a timestamped name, as above.
+The backup holds password, API-key and session-token hashes, so the command
+creates the file itself, readable and writable by its owner only (mode `0600`
+on Linux and macOS; on Windows an ACL granting only the owner, `SYSTEM` and
+`Administrators`), before any data is written, and removes it if the backup
+fails. It exits non-zero if the source database does not exist or has no sqi
+schema; it never creates one. It takes no lock and does not check the schema
+version, so it also backs up a database a newer `sqi-server` migrated: the
+backup to take before a [rollback](#rollback).
+
+### Backing up SQLite
+
+The backup is SQLite's `VACUUM INTO`: one fully checkpointed, self-contained
+`.db` file, taken from a snapshot while the server keeps writing. The command
+opens the source without applying migrations (SQLite still opens it
+read-write and may create `-wal`/`-shm` sidecar files). Restore it with
+[`sqi-server restore`](#restore), not by copying it over the live database.
+
+### Backing up PostgreSQL
+
+`sqi-server backup` on PostgreSQL runs `pg_dump`, which takes one consistent
+snapshot while the server keeps running:
 
 ```sh
 sqi-server backup \
-  --db /data/sqi.db \
-  --out /backups/sqi/sqi-$(date +%Y%m%d-%H%M%S).db
+  --dsn "postgres://sqi@db.example.com:5432/sqi?sslmode=verify-full" \
+  --out /backups/sqi/sqi-$(date +%Y%m%d-%H%M%S).dump
 ```
 
-`--db` is optional: omitted, the store is chosen as described under
-[`store.driver`](configuration.md#storedriver) (a `--dsn`, or `store.driver:
-postgres`, selects PostgreSQL). For SQLite the source path then resolves
-through the same config layer the server uses (the root `-c/--config` file and
-`SQI_STORE_SQLITE_PATH`, i.e. `store.sqlite_path`), falling back to the
-legacy `SQI_SQLITE_PATH` environment variable and then to `sqi.db` in the
-working directory. Passing `--db` explicitly, as in the example above,
-always wins.
-
-The command opens the source database without applying migrations (SQLite
-still opens it read-write and may create `-wal`/`-shm` sidecar files) and
-writes an identical clean copy to the destination path. It exits non-zero if
-the source database does not exist (it never creates one) or if the
-destination file already exists — use a timestamped filename or a fresh
-directory each time. The copy holds password, API-key and session-token
-hashes, so the command creates the destination itself, readable and
-writable by its owner only (mode `0600` on Linux and macOS; on Windows an ACL
-granting only the owner, `SYSTEM` and `Administrators`), before any data is
-written, and removes it if the copy fails.
+- **`pg_dump` must be on `PATH`** where the command runs, at least the
+  server's major version; an older one is refused with both versions named. It
+  should be the **same** major version as the server: a newer `pg_dump` writes
+  settings into the archive (`SET transaction_timeout`, for one) that an older
+  server rejects when the archive is restored into it. The `sqi-server`
+  container image does not include `pg_dump`, so run the backup from a host
+  that has the PostgreSQL client tools.
+- The archive is `pg_dump --format=custom --no-owner --no-password`. It is
+  created owner-only, as for SQLite, and removed if `pg_dump` fails.
+- **The password never reaches `pg_dump`'s command line**, which any local
+  user can read from the process list. `pg_dump` gets the DSN with the password
+  removed, and the password, as the driver resolves it (from the DSN,
+  `PGPASSWORD` or a password file), in `PGPASSWORD` in its environment. For the
+  same reason the command refuses a DSN that sets `sslpassword` (a client key's
+  passphrase), and refuses to run while `PGSSLPASSWORD` is set: `pg_dump` reads
+  the passphrase from no environment variable, only from its command line. Use
+  an unencrypted client key for backups. It also refuses a URL DSN whose
+  password it cannot locate reliably (see
+  [`store.postgres.dsn`](configuration.md#storepostgresdsn)).
+- **Settings only the Go driver understands break `pg_dump`.** The DSN is
+  handed to `pg_dump`, which reads it with libpq. Keys that `pgx` accepts and
+  libpq does not (`statement_cache_capacity`, `default_query_exec_mode`, the
+  `database` alias for `dbname`, or a server runtime parameter given as a bare
+  key) make `pg_dump` fail with a libpq error such as `invalid connection
+  option`. Back up with a DSN that leaves them out.
 
 ### Automated daily backup (cron)
 
@@ -378,39 +527,382 @@ written, and removes it if the copy fails.
 
 This keeps 30 days of daily backups and rotates older files automatically.
 
-### Backup alongside NATS data
+### What a backup leaves out
 
-The SQLite database holds all persistent job and task state. The NATS
-JetStream data directory (`nats.data_dir`) holds in-flight messages; it does
-not need to be backed up — workers re-register on reconnection and
-`sqi-server` requeues any unacknowledged work on startup.
+- **The NATS data directory (`nats.data_dir`).** JetStream holds only messages
+  the server has not finished with: status reports, log chunks and worker
+  registrations in transit (the log stream also keeps chunks for 96 h after
+  they are stored, but nothing reads them back). Everything durable is in the
+  database. A JetStream directory is also never correct beside a database from
+  another moment: an older one replays reports for attempts the database has
+  already closed or never saw, a newer one holds reports the database will
+  never get. So it is not backed up; `restore` moves it aside instead and
+  makes the database safe without it (see [Restore](#restore)).
+- **Files.** The configuration file, TLS material (`sqi-server tls init`
+  output), worker credential files on the workers, and log files are yours to
+  back up.
 
-If you want to preserve in-flight state across a complete host failure, back up
-the NATS data directory at the same time:
+The backup half of every runbook here is executed by the restore tests named
+under [Restore](#restore); `make smoke` runs `sqi-server backup` and
+`sqi-server restore` against a SQLite farm.
+
+---
+
+## Restore
+
+`sqi-server restore BACKUP` puts a backup made by `sqi-server backup` in
+place of the state store, with the server stopped, and makes the farm safe to
+resume from it. In order, it:
+
+1. takes the [single-server lock](#one-server-per-database), and refuses if a
+   server (or another `restore`, `store copy` or `migrate up`) holds it;
+2. checks the backup: an intact sqi backup no newer than this binary. SQLite:
+   the backup is first copied to `<store.sqlite_path>.restore-tmp`, and that
+   copy is checked (`PRAGMA integrity_check` and the schema version), so the
+   backup file itself is never opened. PostgreSQL: the archive's schema version
+   is read with `pg_restore` without connecting to any database;
+3. puts it in place. SQLite: the live database and whichever of its `-wal`
+   and `-shm` files exist are renamed to `<name>.pre-restore-<UTC time>`, and
+   the checked copy is renamed into place (a missing live database is fine:
+   restoring onto a new host). PostgreSQL: the configured database must be
+   empty, and the archive is loaded with `pg_restore --no-owner
+   --single-transaction --exit-on-error`, so a failed load leaves it empty;
+4. applies any newer migrations, as `serve` would;
+5. **fences**: every attempt the restored database still records as running
+   is closed as failed (`worker shut down`) and its task goes back to `ready`,
+   without using a retry or counting toward the job's failure limit;
+6. renames `nats.data_dir` to `<dir>.pre-restore-<UTC time>` (the same time
+   as step 3).
+
+Nothing is deleted. Each step must succeed before the next, and a failure says
+what state it left (see [When restore stops partway](#when-restore-stops-partway)).
+
+**Which store and which NATS directory.** `restore` chooses the store as
+`backup` does (`--db`, `--dsn`, `store.driver`; see [Backup](#backup)) and
+reads `nats.data_dir` from the same configuration the server reads (`--config`,
+`SQI_*` variables); `--nats-data-dir` overrides it. Relative paths resolve
+from the current directory, as the server resolves them, so run it from the
+directory the server runs in, with the server's configuration. If the
+configuration cannot be loaded, `restore` refuses rather than fall back to the
+built-in defaults, unless you name both the store (`--db` or `--dsn`) and
+`--nats-data-dir`; an empty `--nats-data-dir` is refused too.
+
+### Restoring SQLite
 
 ```sh
-tar -czf /backups/nats/nats-$(date +%Y%m%d).tar.gz /data/nats
+sudo systemctl stop sqi-server
+sudo -u sqi sqi-server restore --config /etc/sqi/sqi-server.yaml \
+  /backups/sqi/sqi-20261013-020000.db
+sudo systemctl start sqi-server
 ```
 
-### Restore
+```powershell
+sqi-server service stop
+Set-Location C:\ProgramData\sqi
+sqi-server restore --config C:\ProgramData\sqi\sqi-server.yaml D:\backups\sqi\sqi-20261013-020000.db
+sqi-server service start
+```
 
-To restore from a backup:
+Run it as the account the server runs as. The restored file is created
+owner-only, so one restored by `root` cannot be opened by a server running as
+`sqi`. On Windows the file grants its owner, `SYSTEM` and `Administrators`,
+which a LocalSystem service can read; a service installed with `--user` needs
+access granted to its account
+(`icacls C:\ProgramData\sqi\sqi.db /grant "DOMAIN\name:M"`).
 
-1. Stop `sqi-server`.
-2. Replace the live database with the backup file:
-   ```sh
-   sudo systemctl stop sqi-server
-   cp /backups/sqi/sqi-20260115.db /data/sqi.db
-   ```
-3. Optionally clear the NATS data directory (stale messages from after the
-   backup timestamp will be replayed or discarded on reconnect):
-   ```sh
-   rm -rf /data/nats
-   ```
-4. Restart the server — migrations will run if the backup is from an older schema version:
-   ```sh
-   sudo systemctl start sqi-server
-   ```
+`restore` prints what it did:
+
+```
+restored a schema-38 backup; schema is now 38
+previous database file moved to /var/lib/sqi/sqi.db.pre-restore-20261013T143216Z
+fenced 1 attempt(s): their tasks are ready again
+NATS data directory moved to /var/lib/sqi/nats.pre-restore-20261013T143216Z
+```
+
+There is one `previous database file` line for each file moved: a server that
+did not stop cleanly, or a `store copy`, can also leave `sqi.db-wal` and
+`sqi.db-shm`, which move with it. `no NATS data directory at <dir>; nothing to
+move` means there was none at that path: if you expected one, check that
+`nats.data_dir` and the directory you ran from are the server's.
+
+Executed by `TestBackupRestore_FarmResumes`, which backs up a farm while tasks
+run, lets it move on, restores, and checks that no attempt is left open, that
+every task runs to the end, and that a ghost run's late report changes
+nothing; and by the restore round trip in `make smoke`.
+
+### Restoring PostgreSQL
+
+`restore` loads the archive only into an **empty** database (no tables at all
+in its search path, sqi's or anyone's). sqi never drops a database: that needs
+privileges it may not have, and it is your decision. Keep the current database
+under another name, or drop it, then create an empty one owned by the role in
+the DSN:
+
+```sh
+sudo systemctl stop sqi-server
+
+# Keep the current database aside...
+psql -h db.example.com -U postgres -d postgres \
+  -c 'ALTER DATABASE sqi RENAME TO sqi_pre_restore_20261013'
+# ...or discard it:
+#   dropdb -h db.example.com -U postgres sqi
+createdb -h db.example.com -U postgres -O sqi sqi
+
+sudo -u sqi sqi-server restore --config /etc/sqi/sqi-server.yaml \
+  /backups/sqi/sqi-20261013-030000.dump
+sudo systemctl start sqi-server
+```
+
+```
+restored a schema-38 backup; schema is now 38
+fenced 0 attempt(s): their tasks are ready again
+NATS data directory moved to /var/lib/sqi/nats.pre-restore-20261013T143307Z
+```
+
+A database that is not empty is refused before anything is loaded:
+
+```
+Error: restore: restore needs an empty database, and this one has 21 tables (api_keys, ...); drop and recreate it, then run restore again
+```
+
+The check lists tables through `information_schema`, which shows only tables
+the role can access; use a database that holds nothing but sqi's.
+
+- `pg_restore` must be on `PATH`, at least the server's major version, as
+  `pg_dump` must be for [backup](#backing-up-postgresql); the password reaches
+  it the same way, never on its command line.
+- **Run `restore` on the server's host**, with the server's configuration, so
+  that it moves the right `nats.data_dir`. If you run it from another host
+  (one with the PostgreSQL client tools, say), move the server's
+  `nats.data_dir` aside by hand before you start the server, or run
+  `sqi-server restore --in-place` on the server's host afterwards.
+
+Executed by `TestPostgres_RestoreRoundTrip` and, on PostgreSQL 16 and 18, by
+`TestBackupRestore_FarmResumes` in `make test-postgres`.
+
+### Restoring in Docker Compose
+
+The `sqi-server` image does not include `pg_restore`, so with
+[`deploy/docker-compose.postgres.yml`](https://github.com/uberware/sqi/blob/main/deploy/docker-compose.postgres.yml)
+`restore` runs in a one-off container of the `postgres` service, with the
+server's binary and its data volume mounted into it. The file's header has the
+commands, which were checked by hand against that file (they are not run in
+CI).
+
+### After point-in-time recovery or a snapshot: `--in-place`
+
+A database put back by other means (PostgreSQL point-in-time recovery, a
+volume or filesystem snapshot, a `pg_restore` of your own) has the same
+problem a backup has: it records as running the attempts that were running
+at that moment. Before you start a server on it, run:
+
+```sh
+sudo -u sqi sqi-server restore --in-place --config /etc/sqi/sqi-server.yaml
+```
+
+```
+fenced 1 attempt(s): their tasks are ready again
+NATS data directory moved to /var/lib/sqi/nats.pre-restore-20261013T143953Z
+```
+
+`--in-place` takes the lock, migrates, fences and moves the NATS directory
+aside (steps 1 and 4 to 6 above); it loads nothing. It refuses a SQLite path with no
+database and a PostgreSQL database with no sqi schema, since there would be
+nothing to fence.
+
+### What runs again
+
+The restored farm is the farm at the moment of the backup:
+
+- **Work done after the backup runs again.** A task that finished after the
+  backup is back as the backup recorded it, and runs again. A task the backup
+  caught running is handed back by the fence and runs again, on any worker.
+- **Ghost runs are ignored.** A worker that is still running a fenced task
+  when the server comes back reports into an attempt that is now closed; its
+  status reports are discarded and its log output stays on that closed
+  attempt. Reports about attempts the backup never saw are discarded too. The
+  server logs these as `scheduler: task status rejected by state machine —
+  discarding` and `scheduler: task.status for unknown attempt — discarding`,
+  which is expected after a restore.
+- **Everything written after the backup is gone**: jobs submitted since, and
+  accounts, API keys, sessions, products and worker broker credentials created
+  since. With broker authentication on, a worker enrolled after the backup
+  must enroll again.
+- Jobs the retention sweep deleted after the backup reappear, and are deleted
+  again when they qualify.
+- A log client already paging a fenced attempt can miss a ghost run's late
+  chunks: their `after_nats_seq` cursor values restart below the ones it has
+  read (see [Tail task logs](api.md#tail-task-logs-polling)).
+
+### Cleaning up
+
+`restore` keeps everything it replaced. Once the farm is healthy, remove the
+copies; the old database holds password and token hashes, so do not leave it
+lying about:
+
+```sh
+sudo rm /var/lib/sqi/sqi.db*.pre-restore-*
+sudo rm -r /var/lib/sqi/nats.pre-restore-*
+dropdb -h db.example.com -U postgres sqi_pre_restore_20261013   # PostgreSQL, if you kept it
+```
+
+```powershell
+Remove-Item C:\ProgramData\sqi\sqi.db*.pre-restore-*
+Remove-Item -Recurse C:\ProgramData\sqi\data\nats.pre-restore-*
+```
+
+### When restore stops partway
+
+- **Before anything moved** (the lock is held, the backup is not an sqi
+  backup, is damaged or is newer than the binary, the PostgreSQL database is
+  not empty): nothing changed. Fix the cause and run it again. A
+  `<name>.pre-restore-<time>` name that already exists is refused rather
+  than overwritten.
+- **After the live SQLite database moved aside**: the error lists every file
+  it moved. A database and its `-wal`/`-shm` files are one database only
+  together, so to go back, remove the restored `sqi.db` and rename **all** of
+  them back. If only the final rename failed, the checked copy of the backup
+  is still at `<store.sqlite_path>.restore-tmp`.
+- **After the backup was in place but before the fence finished**: the
+  message ends `the database in place is not fenced, so do not start a server
+  on it: fix the cause and run "sqi-server restore --in-place" to finish`.
+- **After the fence, when the NATS directory could not be moved**: the
+  database is restored and fenced; move the directory aside by hand, or run
+  `sqi-server restore --in-place`, before starting a server.
+
+---
+
+## Reconciliation
+
+A server can believe a task is running on a live worker that is no longer
+running it: its completion report was lost with a JetStream directory, the
+database was restored by hand, or the worker dropped the task. The worker is
+healthy, so the offline sweep never reclaims it, and before this release such a
+task stayed `running` for good.
+
+Each worker of this release lists, in every heartbeat, the attempts it holds,
+from the moment it receives them until their final status is sent. On every
+heartbeat-sweep tick the server reclaims an open attempt when the worker's
+latest heartbeat is current, does not list it, and has not listed it for
+[`scheduler.reconcile_grace`](configuration.md#schedulerreconcile_grace)
+(measured from the later of the attempt's creation and the last heartbeat
+that listed it). Reclaiming is what a worker shutdown does: the task returns to
+`ready`, the attempt closes as failed (`worker shut down`), and no retry or
+failure is counted. The server logs a Warn, `scheduler: reclaimed an attempt
+its worker no longer reports`, with the worker, task, attempt and how long it
+was open, and counts it in `sqi_scheduler_tasks_reconciled_total`.
+
+- **On by default.** Left unset, `reconcile_grace` is 2 minutes, or
+  `scheduler.heartbeat_timeout` when that is longer. `0` turns
+  reconciliation off; any other value below `heartbeat_timeout` is refused at
+  start-up.
+- **Nothing is reclaimed during the first `reconcile_grace` after the server
+  starts**, while heartbeats rebuild what each worker holds and any queued
+  reports are processed.
+- **The cost of a mistake is a re-run, never a lost result.** If the server
+  processes status reports more than `reconcile_grace` behind (a badly
+  overloaded server), a task that has finished can be reclaimed before its
+  report is read; the late report is then discarded as belonging to a closed
+  attempt, and the task runs again. If
+  `sqi_scheduler_tasks_reconciled_total` rises while no worker was lost or
+  restored, raise `reconcile_grace`.
+- **Heartbeats with a skewed clock are ignored.** A heartbeat whose worker
+  timestamp is more than `heartbeat_timeout` from the moment it arrives does
+  not count (the server warns once until it recovers: `scheduler: worker
+  heartbeat delayed or skewed`), so that worker's tasks are not reconciled until its clock or its
+  delivery recovers. Keep worker clocks synchronized.
+- **Older workers are never reconciled.** Workers from v0.3.0 and earlier send
+  no attempt list. They are still covered by the offline sweep and by
+  `restore`'s fence. A worker of this release holding nothing sends an empty
+  list, which counts.
+
+Executed by `TestRestore_MixedAgeNATSDir` (a database restored by hand beside a
+newer NATS directory is recovered by reconciliation, and a replayed older one
+duplicates no log row) and, for the late-report case, by
+`TestReconcileAttempts_LateTerminalReportIsDiscarded`.
+
+Log chunks can be delivered to the server more than once (after a restart,
+JetStream can deliver chunks the server already stored). Each is stored once:
+a chunk is identified by its attempt and the worker's sequence number.
+
+---
+
+## One server per database
+
+Only one `sqi-server` may use a database at a time, on either backend. The
+same guard keeps the commands that rewrite the database (`migrate up`,
+`restore`, `store copy`) from running beside a server:
+
+| Takes the lock | Does not |
+|---|---|
+| `serve`, `migrate up`, `restore`, `store copy` (both its SQLite source and its PostgreSQL target) | `migrate status`, `backup`, `worker token issue`, `worker enroll`, `worker revoke`, `worker list` |
+
+A backup or a worker-credential change against a running server is
+legitimate, so those work while it runs.
+
+A consequence for upgrades and supervisors: **no overlapping restarts.** Stop
+the old server before starting the new one. A supervisor that starts the
+replacement first (a rolling update with surge) sees it refused until the old
+one exits. `systemctl restart` stops first and is fine.
+
+### SQLite: the lock file
+
+The server takes an exclusive operating-system lock (`flock` on Linux and
+macOS, `LockFileEx` on Windows) on `<store.sqlite_path>.lock`, for example
+`sqi.db.lock`, created owner-only beside the database. A second server, or one
+of the commands above, fails at once:
+
+```
+startup failed: open store: another sqi-server is using sqi.db (lock file sqi.db.lock is held); stop it first: fslock: lock is held
+```
+
+The lock, not the file, is the guard. The operating system drops it when the
+process exits however it exits, so a crashed server leaves nothing stale, and
+the file stays on disk for good. **Never delete it**: that frees nothing, and a
+process opening it at that moment would lock a file the next one cannot see. To
+find the holder on Linux, `sudo fuser -v /var/lib/sqi/sqi.db.lock`.
+
+SQLite on a network filesystem is not supported, and the lock is only as good
+as that filesystem's locking (NFS and SMB emulate it with varying fidelity).
+
+### PostgreSQL: the advisory lock
+
+At start-up the server takes the PostgreSQL advisory lock
+`0x7371692d73727672` and holds it until it stops. A second server started on
+the same database exits at once, logging `sqi-server exited with error` with
+this error:
+
+```
+startup failed: open store: another sqi-server is already using this database (PostgreSQL advisory lock 0x7371692d73727672 is held); running more than one server on one database is not supported yet; stop it first
+```
+
+Another server, or one that has not finished stopping, holds the lock on this
+database. Every connection a server opens carries `application_name`
+`sqi-server`, unless the DSN sets its own. To find the holder whatever it is
+called, look for the connection holding the
+advisory lock (its key's two 32-bit halves are `1936812333` and
+`1936881266`) on the database in question:
+
+```sql
+SELECT a.pid, a.application_name, a.client_addr, a.backend_start
+FROM   pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+WHERE  l.locktype = 'advisory' AND l.granted
+  AND  l.classid = 1936812333 AND l.objid = 1936881266
+  AND  l.database = (SELECT oid FROM pg_database WHERE datname = 'sqi');
+```
+
+**The lock goes with its connection.** If the connection holding it drops
+(a network failure, the PostgreSQL server restarting, an administrator
+terminating the backend), the server logs `store: lost the PostgreSQL server
+lock's connection; another sqi-server could now start on this database` at
+Error within about 30–35 s (it pings that connection every 30 s, with a 5 s
+timeout), and keeps running. Nothing then stops a second
+server starting on the same database. Restart the server to take the lock
+again.
+
+Advisory locks belong to one database, so servers on different databases of
+the same PostgreSQL cluster do not collide. Running several servers against
+one database, for high availability, is not supported yet.
 
 ---
 
@@ -441,9 +933,10 @@ the server as `PGPASSWORD`, so the DSN in the file carries none. The server
 creates the schema on first start. `--build` builds the images from your
 checkout, since PostgreSQL support is not yet in a published release (the
 latest is `v0.3.0`); once a release includes it, pin that tag in the file and
-drop `--build`. The file's header has the `pg_dump` and `pg_restore` commands
-to back the database up from inside its container. The rest of this section
-covers an external PostgreSQL server you run yourself.
+drop `--build`. The file's header has the commands to back the database up
+from inside its container and to restore it with `sqi-server restore` (see
+[Restoring in Docker Compose](#restoring-in-docker-compose)). The rest of this
+section covers an external PostgreSQL server you run yourself.
 
 ### Creating the database
 
@@ -496,9 +989,10 @@ To create it beforehand, or to see each migration as it is applied, run:
 sqi-server migrate up --dsn "postgres://sqi@db.example.com:5432/sqi?sslmode=verify-full"
 ```
 
-`migrate`, `backup` and `worker` all take `--dsn`, which overrides
-`store.postgres.dsn`; run with the server's `--config` instead, they use the
-configured driver and DSN. `backup` and `worker` never create a schema:
+`migrate`, `backup`, `restore` and `worker` all take `--dsn`, which overrides
+`store.postgres.dsn` (`store copy` takes `--to`); run with the server's
+`--config` instead, they use the configured driver and DSN. `backup` and
+`worker` never create a schema:
 against an empty database they fail with `the database at <dsn> has no
 schema; run "sqi-server migrate up" first`.
 
@@ -510,118 +1004,168 @@ in the process list for as long as the command runs. Supply it through
 carries no password.
 
 The PostgreSQL migrations start at `00037_baseline.sql`, which creates the
-whole schema; `migrate down` refuses to roll it back (see
-[Rolling back](#rolling-back)).
+whole schema. As on SQLite, they are forward-only (see [Rollback](#rollback)).
 
 Once the server is up, `/readyz` reports the store's check as `postgres`
-(`{"status":"ok","checks":{"nats":"ok","postgres":"ok"}}`), where a SQLite
+(`{"status":"ok","checks":{"nats":{"status":"ok"},"postgres":{"status":"ok"}}}`), where a SQLite
 server reports `sqlite`.
 
-### One server per database
-
-Only one `sqi-server` may use a database at a time. At start-up the server
-takes the PostgreSQL advisory lock `0x7371692d73727672` and holds it until it
-stops. A second server started on the same database exits at once, logging
-`sqi-server exited with error` with this error:
-
-```
-startup failed: open store: another sqi-server is already using this database (PostgreSQL advisory lock 0x7371692d73727672 is held); running more than one server on one database is not supported yet; stop it first
-```
-
-Another server, or one that has not finished stopping, holds the lock on this
-database. Every connection a server opens carries `application_name`
-`sqi-server`, unless the DSN sets its own. To find the holder whatever it is
-called, look for the connection holding the
-advisory lock (its key's two 32-bit halves are `1936812333` and
-`1936881266`) on the database in question:
-
-```sql
-SELECT a.pid, a.application_name, a.client_addr, a.backend_start
-FROM   pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
-WHERE  l.locktype = 'advisory' AND l.granted
-  AND  l.classid = 1936812333 AND l.objid = 1936881266
-  AND  l.database = (SELECT oid FROM pg_database WHERE datname = 'sqi');
-```
-
-Two consequences:
-
-- **No overlapping restarts.** Stop the old server before starting the new
-  one. A supervisor that starts the replacement first (a rolling update with
-  surge) sees it refused until the old one exits. `systemctl restart` stops
-  first and is fine.
-- **The lock goes with its connection.** If the connection holding it drops
-  (a network failure, the PostgreSQL server restarting, an administrator
-  terminating the backend), the server logs `store: lost the PostgreSQL server
-  lock's connection; another sqi-server could now start on this database` at
-  Error within about 30–35 s (it pings that connection every 30 s, with a 5 s
-  timeout), and keeps running. Nothing then stops a second
-  server starting on the same database. Restart the server to take the lock
-  again.
-
-Advisory locks belong to one database, so servers on different databases of
-the same PostgreSQL cluster do not collide. `migrate`, `backup` and `worker`
-do not take the lock and work while the server runs. Running several servers
-against one database, for high availability, is not supported yet.
-
-**Connections.** The lock holds one connection of the write pool for the
-server's life, so `store.postgres.max_conns` (default 16) leaves
-`max_conns - 1` for writes. The server also opens a read pool of 4, so it can
-use up to `max_conns + 4` connections. Each `migrate`, `backup` or `worker`
+**Connections.** The [advisory lock](#postgresql-the-advisory-lock) holds one
+connection of the write pool for the server's life, so
+`store.postgres.max_conns` (default 16) leaves `max_conns - 1` for writes. The
+server also opens a read pool of 4, so it can use up to `max_conns + 4`
+connections. Each `migrate`, `backup`, `restore`, `store copy` or `worker`
 command opens a few more while it runs.
 
-### Backing up PostgreSQL
+---
 
-`sqi-server backup` on PostgreSQL runs `pg_dump`, which takes one consistent
-snapshot while the server keeps running:
+## Moving to PostgreSQL
 
-```sh
-sqi-server backup \
-  --dsn "postgres://sqi@db.example.com:5432/sqi?sslmode=verify-full" \
-  --out /backups/sqi/sqi-$(date +%Y%m%d-%H%M%S).dump
+`sqi-server store copy` moves a farm from its SQLite file into an empty
+PostgreSQL database: every row of every table, verbatim, in one PostgreSQL
+transaction, with each table verified by row count and digest before it
+commits. It runs with the server stopped, and it never writes to the SQLite
+file, which stays as it was.
+
+**PostgreSQL → SQLite is not supported.** Once the farm has run on
+PostgreSQL, the way back to an earlier state is `backup` and `restore` on
+PostgreSQL.
+
+### Steps (Linux, systemd)
+
+1. Create an empty database and a role for the server, as in [Creating the
+   database](#creating-the-database).
+2. Stop the server, and bring the SQLite file to this binary's schema (`store
+   copy` refuses a file at an older version, and names this command):
+
+   ```sh
+   sudo systemctl stop sqi-server
+   sudo -u sqi sqi-server migrate up --db /var/lib/sqi/sqi.db
+   ```
+
+3. In the configuration, set `store.driver: postgres` and
+   [`store.postgres.dsn`](configuration.md#storepostgresdsn). Leave
+   `store.sqlite_path` set for now: `store copy` reads its source from it. Keep
+   `nats.data_dir` as it is.
+
+   ```yaml
+   nats:
+     data_dir: "/var/lib/sqi/nats"   # unchanged
+   store:
+     driver: postgres
+     sqlite_path: "/var/lib/sqi/sqi.db"   # the copy's source; remove it afterwards
+     postgres:
+       dsn: "postgres://sqi@db.example.com:5432/sqi?sslmode=verify-full"
+   ```
+
+4. Copy. With the configuration above it needs no flags; `--from` (a SQLite
+   file) and `--to` (a DSN) override it. Keep the password off the command
+   line: put it in the configured DSN, or in the `sqi` account's password file
+   (`~sqi/.pgpass`), since `sudo` does not pass `PGPASSWORD` through:
+
+   ```sh
+   sudo -u sqi sqi-server store copy --config /etc/sqi/sqi-server.yaml
+   ```
+
+   Each table is logged to stderr as it is copied; stdout gets the summary:
+
+   ```
+   audit_log              0 rows
+   compute_locations      0 rows
+   farms                  1 rows
+   products               0 rows
+   queues                 1 rows
+   jobs                   1 rows
+   job_dependencies       0 rows
+   steps                  1 rows
+   storage_locations      0 rows
+   tasks                  8 rows
+   task_attempts          9 rows
+   task_logs              8 rows
+   usage_pools            0 rows
+   usage_claims           0 rows
+   users                  0 rows
+   api_keys               0 rows
+   sessions               0 rows
+   worker_credentials     0 rows
+   worker_join_tokens     0 rows
+   workers                1 rows
+   copied and verified 30 rows in 145ms; set store.driver: postgres and start the server
+   ```
+
+5. Start the server. `/readyz` now reports the store's check as `postgres`.
+   Remove `store.sqlite_path` from the configuration (the server warns that it
+   is ignored), and keep the SQLite file until you no longer want the option
+   of going back to it.
+
+   ```sh
+   sudo systemctl start sqi-server
+   ```
+
+**If `nats.data_dir` changes** (the server moves to another host or into a
+container, or you start it with an empty directory), run `sqi-server restore
+--in-place` with the new configuration before starting it. The copy is exact,
+so a server that keeps its NATS directory continues every task that was in
+flight; one that does not would wait for reports that are not there.
+`--in-place` fences those tasks so they run again (see [After point-in-time
+recovery or a snapshot](#after-point-in-time-recovery-or-a-snapshot---in-place)).
+
+**Going back to SQLite** before anything has run on PostgreSQL is setting
+`store.driver: sqlite` again: the SQLite file was never written. Once the farm
+has run on PostgreSQL, that work exists only there.
+
+On Windows, the same steps from an elevated PowerShell:
+
+```powershell
+sqi-server service stop
+Set-Location C:\ProgramData\sqi
+sqi-server migrate up --db C:\ProgramData\sqi\sqi.db
+# Edit C:\ProgramData\sqi\sqi-server.yaml as in step 3, then:
+$env:PGPASSWORD = '<the sqi role password>'
+sqi-server store copy --config C:\ProgramData\sqi\sqi-server.yaml
+Remove-Item Env:PGPASSWORD
+sqi-server service start
 ```
 
-- **`pg_dump` must be on `PATH`** where the command runs, at least the
-  server's major version; an older one is refused with both versions named. It
-  should be the **same** major version as the server: a newer `pg_dump` writes
-  settings into the archive (`SET transaction_timeout`, for one) that an older
-  server rejects when the archive is restored into it. The `sqi-server`
-  container image does not include `pg_dump`, so run the backup from a host
-  that has the PostgreSQL client tools.
-- The archive is `pg_dump --format=custom --no-owner --no-password`. The file
-  given to `--out` must not exist; the command creates it itself, readable and
-  writable by its owner only (as for SQLite: mode `0600`, or on Windows an ACL
-  granting only the owner, `SYSTEM` and `Administrators`), and removes it if
-  `pg_dump` fails.
-- **The password never reaches `pg_dump`'s command line**, which any local
-  user can read from the process list. `pg_dump` gets the DSN with the password
-  removed, and the password, as the driver resolves it (from the DSN,
-  `PGPASSWORD` or a password file), in `PGPASSWORD` in its environment. For the
-  same reason the command refuses a DSN that sets `sslpassword` (a client key's
-  passphrase), and refuses to run while `PGSSLPASSWORD` is set: `pg_dump` reads
-  the passphrase from no environment variable, only from its command line. Use
-  an unencrypted client key for backups. It also refuses a URL DSN whose
-  password it cannot locate reliably (see
-  [`store.postgres.dsn`](configuration.md#storepostgresdsn)).
-- **Settings only the Go driver understands break `pg_dump`.** The DSN is
-  handed to `pg_dump`, which reads it with libpq. Keys that `pgx` accepts and
-  libpq does not (`statement_cache_capacity`, `default_query_exec_mode`, the
-  `database` alias for `dbname`, or a server runtime parameter given as a bare
-  key) make `pg_dump` fail with a libpq error such as `invalid connection
-  option`. Back up with a DSN that leaves them out.
+Executed by `TestStoreCopy_SQLiteToPostgres`, which copies a farm with rows in
+every table, compares the two databases and finishes its jobs on PostgreSQL.
 
-**Restore** is standard `pg_restore` into an empty database, with the server
-stopped:
+### What `store copy` checks
 
-```sh
-createdb -O sqi sqi_restored
-pg_restore --no-owner --dbname "postgres://sqi@db.example.com:5432/sqi_restored" \
-  /backups/sqi/sqi-20261012-020000.dump
-```
+Everything is checked before a row moves, and each refusal names its fix:
 
-Then point `store.postgres.dsn` at the restored database and start the server.
-A tested, step-by-step restore procedure, and moving an existing SQLite farm
-onto PostgreSQL, are not yet documented; both are planned production-hardening
-work (see the [roadmap](roadmap.md)).
+- **The source.** It takes the SQLite lock file, so it refuses while a server
+  uses the file. It opens the file read-only, which may leave an empty `-wal`
+  and a `-shm` index beside it; neither holds data. The file must pass SQLite's
+  integrity check and be at this binary's schema version. A file that needs
+  recovery a read-only reader cannot do (a crashed server's hot journal, or a
+  `-wal` whose directory the command cannot write the `-shm` index into) is
+  refused: start `sqi-server` on it once and stop it cleanly, or copy from a
+  `sqi-server backup` of it.
+- **The target.** It takes the PostgreSQL advisory lock, so it refuses while a
+  server uses the database. An empty database is migrated by the command; one
+  already migrated to this version must have no rows in any table; anything
+  else is refused, as is a database holding tables sqi does not own:
+
+  ```
+  Error: store copy: the PostgreSQL database is not empty (farms has 1 rows); use an empty database
+  ```
+
+- **The shape.** Both databases must have the same tables with the same
+  columns; any difference is named.
+
+During the copy, a value PostgreSQL will not take (text that is not valid
+UTF-8 or holds a NUL byte, a timestamp not in the stored form, a row whose
+foreign key points at a missing row) aborts it, naming the table, the row's
+primary key and, where it can, the column. **A failure commits no sqi rows.**
+A schema the command migrated into an empty database stays, still empty, so
+`store copy` can be run again once the cause is fixed; a migration that itself
+failed partway needs the database dropped and created again.
+
+**How long it takes.** Measured on a 12-vCPU WSL2 host with PostgreSQL 18 in
+Docker on tmpfs: a small farm (1,232 rows) 0.21 s, 100,000 tasks (a 25 MB
+SQLite file) 4.8 s, and 1,000,000 tasks (245 MB) 46.8 s, all of it one
+PostgreSQL transaction.
 
 ---
 
@@ -830,6 +1374,7 @@ described in [Writing to a file](#writing-to-a-file).
 | `sqi_usage_active_claims` | gauge | `pool` | Active usage-pool claims by pool |
 | `sqi_scheduler_task_retries_total` | counter | `queue` | Tasks re-queued by automatic retry, by queue |
 | `sqi_scheduler_jobs_autoparked_total` | counter | `queue` | Jobs auto-parked at their failure limit, by queue |
+| `sqi_scheduler_tasks_reconciled_total` | counter | — | Attempts reclaimed because their live worker stopped reporting them (see [Reconciliation](#reconciliation)) |
 
 > **Five of these are registered but not yet populated**, so they emit no
 > samples at all — a Prometheus `*Vec` with no children produces no series, and
@@ -897,9 +1442,10 @@ groups:
 4. Stop the scheduler.
 5. Drain and flush the embedded NATS JetStream (in-flight messages are
    acknowledged or requeued), then shut down the broker.
-6. SQLite: run a final WAL checkpoint in TRUNCATE mode. PostgreSQL: release
-   the single-server advisory lock.
-7. Close both store connection pools (write and read).
+6. SQLite: wait for the final WAL checkpoint, in TRUNCATE mode, to finish.
+7. Close the store: both connection pools (write and read) and the
+   [single-server lock](#one-server-per-database) (SQLite's lock file,
+   PostgreSQL's advisory lock).
 8. Exit with code 0.
 
 The server imposes its own **30 s** internal drain deadline
