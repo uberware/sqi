@@ -62,12 +62,17 @@ func (s *Store) checkpoint(ctx context.Context, mode string) (walPages, checkpoi
 // checkpoint before returning so the WAL is fully flushed before the store
 // is closed.
 //
+// The returned channel closes after the final checkpoint; the server waits on
+// it before closing the store.
+//
 // Errors are logged but do not stop the loop; transient checkpoint failures
 // are not fatal. The caller does not need to wrap this in a goroutine — it
 // manages its own.
-func (s *Store) StartCheckpointer(ctx context.Context, interval time.Duration, logger *slog.Logger) {
+func (s *Store) StartCheckpointer(ctx context.Context, interval time.Duration, logger *slog.Logger) <-chan struct{} {
+	done := make(chan struct{})
 	//nolint:gosec // G118: the goroutine uses ctx for normal ticks; context.Background is intentional for the shutdown checkpoint so it isn't rejected by the already-canceled ctx.
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
@@ -103,4 +108,5 @@ func (s *Store) StartCheckpointer(ctx context.Context, interval time.Duration, l
 			}
 		}
 	}()
+	return done
 }

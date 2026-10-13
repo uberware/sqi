@@ -292,6 +292,10 @@ type Server struct {
 	wsHub     *ws.Hub              // WebSocket fan-out hub
 	discovery *discovery.Responder // mDNS advertisement
 
+	// checkpointDone closes after the SQLite WAL checkpointer's final TRUNCATE;
+	// nil on a backend with no checkpointer.
+	checkpointDone <-chan struct{}
+
 	// brokerReloadMu serializes every "read the active worker-credential set
 	// from the store, then reload it into the broker" span — see
 	// reloadBrokerCredentials. Both a revocation and an enrollment trigger
@@ -656,7 +660,7 @@ func (s *Server) openStore(ctx context.Context) error {
 	// canceled, running one final checkpoint before returning so the WAL is
 	// fully flushed before store.Close is called in shutdown.
 	if cp, ok := st.(backend.Checkpointer); ok {
-		cp.StartCheckpointer(ctx, s.cfg.CheckpointInterval, s.logger)
+		s.checkpointDone = cp.StartCheckpointer(ctx, s.cfg.CheckpointInterval, s.logger)
 		s.logger.InfoContext(
 			ctx, "store: wal checkpointer started",
 			slog.Duration("interval", s.cfg.CheckpointInterval),
@@ -1133,6 +1137,15 @@ func (s *Server) shutdown() error {
 	}
 	if s.broker != nil {
 		s.broker.Shutdown()
+	}
+
+	// SQLite: let the checkpointer's final TRUNCATE finish before the store
+	// closes under it, bounded by the shutdown budget.
+	if s.checkpointDone != nil {
+		select {
+		case <-s.checkpointDone:
+		case <-ctx.Done():
+		}
 	}
 
 	// ── Store ─────────────────────────────────────────────────────────────

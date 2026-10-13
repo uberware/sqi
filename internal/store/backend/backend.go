@@ -48,7 +48,7 @@ type Backend interface {
 // Checkpointer is implemented by a backend with a write-ahead log to fold back
 // (SQLite).
 type Checkpointer interface {
-	StartCheckpointer(ctx context.Context, interval time.Duration, logger *slog.Logger)
+	StartCheckpointer(ctx context.Context, interval time.Duration, logger *slog.Logger) <-chan struct{}
 }
 
 // Open opens the store o names.

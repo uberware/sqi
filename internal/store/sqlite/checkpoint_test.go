@@ -4,10 +4,13 @@ package sqlite
 
 import (
 	"context"
+	"log/slog"
+	"os"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/sqlstore"
 )
 
@@ -97,5 +100,33 @@ func seedCheckpointRows(t *testing.T, ctx context.Context, st *Store) {
 		); err != nil {
 			t.Fatalf("seed farm %d: %v", i, err)
 		}
+	}
+}
+
+// TestStartCheckpointer_DoneClosesAfterTheFinalTruncate pins the contract the
+// server's shutdown relies on: the returned channel closes only once the final
+// TRUNCATE has run, so closing the store after it cannot race the checkpoint.
+func TestStartCheckpointer_DoneClosesAfterTheFinalTruncate(t *testing.T) {
+	path := t.TempDir() + "/test.db"
+	st, err := Open(t.Context(), path, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	// Write something so the WAL is non-empty.
+	if _, err := st.CreateFarm(t.Context(), store.Farm{ID: "f1", Name: "f1"}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := st.StartCheckpointer(ctx, time.Hour, slog.New(slog.DiscardHandler))
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("checkpointer did not finish after cancel")
+	}
+	fi, err := os.Stat(path + "-wal")
+	if err == nil && fi.Size() != 0 {
+		t.Fatalf("WAL is %d bytes after the final checkpoint, want 0", fi.Size())
 	}
 }
