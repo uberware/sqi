@@ -46,6 +46,15 @@ type TaskAttempt struct {
 	CreatedAt time.Time
 }
 
+// OpenAttempt is an attempt a worker may still be executing: running, its
+// task's latest, while the task is assigned or running.
+type OpenAttempt struct {
+	AttemptID string
+	TaskID    string
+	WorkerID  string
+	CreatedAt time.Time
+}
+
 // TaskAttemptStore is the persistence interface for [TaskAttempt] records.
 type TaskAttemptStore interface {
 	// GetTaskAttempt returns the attempt with the given ID, or [ErrNotFound].
@@ -61,4 +70,10 @@ type TaskAttemptStore interface {
 	// ListTaskAttempts returns all attempts for the given task, ordered by
 	// AttemptNumber ascending.
 	ListTaskAttempts(ctx context.Context, taskID string) ([]TaskAttempt, error)
+
+	// ListOpenAttempts returns every open attempt (see [OpenAttempt]) created
+	// strictly before createdBefore, ordered by CreatedAt then AttemptID. It
+	// reads; the fence and reconciliation act through ReclaimTaskAttempt, which
+	// re-checks openness under the job's anchor.
+	ListOpenAttempts(ctx context.Context, createdBefore time.Time) ([]OpenAttempt, error)
 }
