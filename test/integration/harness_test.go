@@ -244,20 +244,11 @@ func startServer(t *testing.T) *testServer {
 		done <- srv.Run(ctx)
 	}()
 
-	// Detect early startup failure (e.g. port conflict, store error) before
-	// spending time polling TCP.
-	select {
-	case err := <-done:
+	// Wait until the HTTP server is ready to accept connections, failing with
+	// the server's own error if it exits first (a port in use, a store error).
+	if err := waitForServerTCP(done, httpAddr, 10*time.Second); err != nil {
 		cancel()
-		t.Fatalf("startServer: server exited during startup: %v", err)
-	case <-time.After(50 * time.Millisecond):
-		// Still running — proceed to TCP wait.
-	}
-
-	// Wait until the HTTP server is ready to accept connections.
-	if !waitForTCP(t, httpAddr, 10*time.Second) {
-		cancel()
-		t.Fatalf("startServer: HTTP server did not come up on %s (NATS %s) within 10s", httpAddr, natsAddr)
+		t.Fatalf("startServer: HTTP %s, NATS %s: %v", httpAddr, natsAddr, err)
 	}
 
 	// Poll /readyz (which gates on NATS and the store being healthy) rather than
@@ -313,6 +304,30 @@ func waitForTCP(tb testing.TB, addr string, timeout time.Duration) bool {
 		time.Sleep(100 * time.Millisecond)
 	}
 	return false
+}
+
+// waitForServerTCP polls addr until it accepts a TCP connection. It returns the
+// server's error if the server, whose Run result arrives on done, exits first,
+// and an error naming the timeout if neither happens in time. A value read from
+// done is put back, so the caller's cleanup still sees the server stop.
+func waitForServerTCP(done chan error, addr string, timeout time.Duration) error {
+	dialer := &net.Dialer{Timeout: 200 * time.Millisecond}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-done:
+			done <- err
+			return fmt.Errorf("server exited during startup: %w", err)
+		default:
+		}
+		conn, err := dialer.DialContext(context.Background(), "tcp", addr)
+		if err == nil {
+			conn.Close()
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("HTTP server did not come up within %s", timeout)
 }
 
 // waitForReadyz polls GET /readyz until it returns 200 or timeout elapses.
