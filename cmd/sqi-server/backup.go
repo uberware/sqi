@@ -89,11 +89,11 @@ func runBackup(cmd *cobra.Command, _ []string) error {
 
 	logger.InfoContext(ctx, "backup: opening source database",
 		slog.String("driver", backend.Name(tgt.Driver)), slog.String("src", src))
-	st, err := openExistingStore(ctx, tgt)
-	if err != nil {
+	// backup never opens the store, so it works on a schema newer than this
+	// binary: the backup taken before a rollback.
+	if err := requireExistingStore(ctx, tgt); err != nil {
 		return err
 	}
-	defer st.Close()
 
 	start := time.Now()
 	logger.InfoContext(
@@ -102,7 +102,9 @@ func runBackup(cmd *cobra.Command, _ []string) error {
 		slog.String("dst", backupFlags.OutPath),
 	)
 
-	if err := st.Backup(ctx, backupFlags.OutPath); err != nil {
+	if err := backend.Backup(ctx, backend.Options{
+		Driver: tgt.Driver, SQLitePath: tgt.SQLitePath, PostgresDSN: tgt.DSN, Logger: logger,
+	}, backupFlags.OutPath); err != nil {
 		return err
 	}
 

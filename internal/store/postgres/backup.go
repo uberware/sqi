@@ -5,6 +5,7 @@ package postgres
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -29,11 +30,30 @@ import (
 // which any local user can read from the process list: see
 // [pgDumpInvocation].
 func (s *Store) Backup(ctx context.Context, out string) error {
+	return backup(ctx, s.rdb, s.dsn, out, s.log)
+}
+
+// BackupDSN backs up the database dsn names without opening the store, so it
+// works on a schema this binary is too old for.
+func BackupDSN(ctx context.Context, dsn, out string, log *slog.Logger) error {
+	if log == nil {
+		log = slog.Default()
+	}
+	db, err := openPool(dsn, 1)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	return backup(ctx, db, dsn, out, log)
+}
+
+// backup is Backup's body over any connection to the database.
+func backup(ctx context.Context, db *sql.DB, dsn, out string, log *slog.Logger) error {
 	pgDump, err := preflight(out)
 	if err != nil {
 		return err
 	}
-	args, env, err := pgDumpInvocation(s.dsn, out)
+	args, env, err := pgDumpInvocation(dsn, out)
 	if err != nil {
 		return err
 	}
@@ -46,7 +66,7 @@ func (s *Store) Backup(ctx context.Context, out string) error {
 		return err
 	}
 	var serverNum string
-	if err := s.rdb.QueryRowContext(ctx, `SHOW server_version_num`).Scan(&serverNum); err != nil {
+	if err := db.QueryRowContext(ctx, `SHOW server_version_num`).Scan(&serverNum); err != nil {
 		return fmt.Errorf("postgres: read server version: %w", err)
 	}
 	n, err := strconv.Atoi(serverNum)
@@ -56,7 +76,7 @@ func (s *Store) Backup(ctx context.Context, out string) error {
 	if err := checkPgDumpVersion(dumpMajor, n); err != nil {
 		return err
 	}
-	return runPgDump(ctx, s.log, pgDump, args, env, out)
+	return runPgDump(ctx, log, pgDump, args, env, out)
 }
 
 // runPgDump creates out exclusively, so a file that appeared after preflight

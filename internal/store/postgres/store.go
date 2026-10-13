@@ -98,6 +98,9 @@ func Open(ctx context.Context, dsn string, opts Options) (*Store, error) {
 			return fail(err)
 		}
 	}
+	if err := checkSchemaVersion(ctx, db); err != nil {
+		return fail(err)
+	}
 	if opts.AutoMigrate {
 		if err := migrateUp(ctx, db); err != nil {
 			return fail(err)
@@ -113,6 +116,18 @@ func Open(ctx context.Context, dsn string, opts Options) (*Store, error) {
 		return fail(err)
 	}
 	return s, nil
+}
+
+// checkSchemaVersion refuses a database a newer sqi-server migrated.
+func checkSchemaVersion(ctx context.Context, db *sql.DB) error {
+	v, err := SchemaVersion(ctx, db)
+	if err != nil {
+		return err
+	}
+	if err := migrations.CheckVersion("postgres", v); err != nil {
+		return fmt.Errorf("postgres: %w", err)
+	}
+	return nil
 }
 
 // migrateUp applies every pending migration.

@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"database/sql"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/uberware/sqi/internal/store/migrations"
 	"github.com/uberware/sqi/internal/store/sqlite"
 	"github.com/uberware/sqi/internal/store/storetest"
 )
@@ -681,5 +683,52 @@ func TestMigrateUp_RefusesWhileAServerHoldsTheLock(t *testing.T) {
 	err = Execute()
 	if err == nil || !strings.Contains(err.Error(), "stop it first") {
 		t.Fatalf("migrate up beside a server = %v, want a lock refusal", err)
+	}
+}
+
+// TestCLI_RefusesANewerSchema verifies that a database migrated by a newer
+// sqi-server is refused by the commands that would write to it, while backup,
+// which never opens the store, still works: it is the safety net taken before
+// a rollback.
+func TestCLI_RefusesANewerSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.db")
+	createTestDB(t, path)
+	maxV, err := migrations.MaxVersion("sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(),
+		`INSERT INTO goose_db_version (version_id, is_applied) VALUES (?, 1)`, maxV+1); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{
+		{"migrate", "up", "--db", path},
+		{"worker", "list", "--db", path},
+	} {
+		prepareRoot(args)
+		var runErr error
+		_ = captureStdout(t, func() { runErr = Execute() })
+		if runErr == nil || !strings.Contains(runErr.Error(), "newer than this sqi-server") {
+			t.Errorf("%v = %v, want a newer-schema refusal", args, runErr)
+		}
+	}
+
+	out := filepath.Join(t.TempDir(), "backup.db")
+	prepareRoot([]string{"backup", "--db", path, "--out", out})
+	var runErr error
+	_ = captureStdout(t, func() { runErr = Execute() })
+	if runErr != nil {
+		t.Fatalf("backup of a newer schema: %v", runErr)
+	}
+	if _, err := os.Stat(out); err != nil {
+		t.Errorf("no backup file: %v", err)
 	}
 }

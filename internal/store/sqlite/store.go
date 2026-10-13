@@ -191,6 +191,19 @@ func open(ctx context.Context, path string, opts Options) (*Store, error) {
 		}
 	}
 
+	// Refuse a database a newer sqi-server migrated: before AutoMigrate, which
+	// would otherwise run against a schema it does not understand, and whether
+	// or not AutoMigrate is set. Open releases the server lock on this error.
+	v, err := SchemaVersion(ctx, db)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := migrations.CheckVersion("sqlite", v); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("sqlite: %w", err)
+	}
+
 	if opts.AutoMigrate {
 		p, err := migrations.NewProvider(db, "sqlite")
 		if err != nil {

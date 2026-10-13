@@ -255,15 +255,30 @@ func requireMigratedPostgres(ctx context.Context, dsn string) error {
 	return nil
 }
 
+// requireExistingStore checks that tgt names a database that exists and
+// carries a schema, without opening the store. These commands write into an
+// existing schema; they never create one.
+func requireExistingStore(ctx context.Context, tgt storeTarget) error {
+	if tgt.Driver == backend.DriverPostgres {
+		return requireMigratedPostgres(ctx, tgt.DSN)
+	}
+	if tgt.SQLitePath == "" {
+		return errors.New("database path is empty; use --db, set store.sqlite_path, or set SQI_STORE_SQLITE_PATH")
+	}
+	if err := requireExistingDB(tgt.SQLitePath); err != nil {
+		return err
+	}
+	return requireMigratedDB(tgt.SQLitePath)
+}
+
 // openExistingStore opens tgt's store without migrating it, after checking it
-// exists and has a schema. These commands write into an existing schema; they
-// never create one.
+// exists and has a schema (requireExistingStore). The store's own Open refuses
+// a schema newer than this binary.
 func openExistingStore(ctx context.Context, tgt storeTarget) (backend.Backend, error) {
-	switch tgt.Driver {
-	case backend.DriverPostgres:
-		if err := requireMigratedPostgres(ctx, tgt.DSN); err != nil {
-			return nil, err
-		}
+	if err := requireExistingStore(ctx, tgt); err != nil {
+		return nil, err
+	}
+	if tgt.Driver == backend.DriverPostgres {
 		st, err := backend.Open(ctx, backend.Options{
 			Driver: backend.DriverPostgres, PostgresDSN: tgt.DSN, MaxConns: 2, AutoMigrate: false,
 		})
@@ -271,20 +286,10 @@ func openExistingStore(ctx context.Context, tgt storeTarget) (backend.Backend, e
 			return nil, fmt.Errorf("open %s: %w", pgdsn.Redact(tgt.DSN), err)
 		}
 		return st, nil
-	default:
-		if tgt.SQLitePath == "" {
-			return nil, errors.New("database path is empty; use --db, set store.sqlite_path, or set SQI_STORE_SQLITE_PATH")
-		}
-		if err := requireExistingDB(tgt.SQLitePath); err != nil {
-			return nil, err
-		}
-		if err := requireMigratedDB(tgt.SQLitePath); err != nil {
-			return nil, err
-		}
-		st, err := backend.Open(ctx, backend.Options{SQLitePath: tgt.SQLitePath, AutoMigrate: false})
-		if err != nil {
-			return nil, fmt.Errorf("open database: %w", err)
-		}
-		return st, nil
 	}
+	st, err := backend.Open(ctx, backend.Options{SQLitePath: tgt.SQLitePath, AutoMigrate: false})
+	if err != nil {
+		return nil, fmt.Errorf("open database: %w", err)
+	}
+	return st, nil
 }

@@ -95,6 +95,19 @@ func LockStore(ctx context.Context, o Options) (func() error, error) {
 	}
 }
 
+// Backup writes a backup of the store o names to out, which must not exist.
+// It never opens the store, so it works whatever the schema version.
+func Backup(ctx context.Context, o Options, out string) error {
+	switch o.Driver {
+	case "", DriverSQLite:
+		return sqlite.BackupPath(ctx, o.SQLitePath, out)
+	case DriverPostgres:
+		return postgres.BackupDSN(ctx, o.PostgresDSN, out, o.Logger)
+	default:
+		return fmt.Errorf("store: unknown driver %q (want sqlite or postgres)", o.Driver)
+	}
+}
+
 // Name is the driver's name as the health checker and logs report it.
 func Name(driver string) string {
 	if driver == "" {

@@ -306,3 +306,36 @@ func TestLockDatabase_ExcludesAServerAndIsReleasable(t *testing.T) {
 	}
 	_ = st.Close()
 }
+
+func TestOpen_RefusesANewerSchema(t *testing.T) {
+	dsn := storetest.PostgresDSN(t) // fresh, migrated
+	db := openRaw(t, dsn)
+	maxV, err := migrations.MaxVersion("postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(),
+		`INSERT INTO goose_db_version (version_id, is_applied) VALUES ($1, true)`, maxV+1); err != nil {
+		t.Fatal(err)
+	}
+	for _, auto := range []bool{true, false} {
+		_, err := postgres.Open(t.Context(), dsn, postgres.Options{MaxConns: 2, AutoMigrate: auto, ServerLock: true})
+		if !errors.Is(err, migrations.ErrSchemaTooNew) {
+			t.Fatalf("Open(AutoMigrate=%v) = %v, want ErrSchemaTooNew", auto, err)
+		}
+	}
+	// A refused Open must have released the server lock it took.
+	lock, err := postgres.LockDatabase(t.Context(), dsn, nil)
+	if err != nil {
+		t.Fatalf("lock still held after a refused Open: %v", err)
+	}
+	if err := lock.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	out := t.TempDir() + "/b.dump"
+	storetest.RequirePostgresTool(t, "pg_dump")
+	if err := postgres.BackupDSN(t.Context(), dsn, out, nil); err != nil {
+		t.Fatalf("BackupDSN on a newer schema: %v", err)
+	}
+}

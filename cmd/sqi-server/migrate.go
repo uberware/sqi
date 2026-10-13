@@ -67,11 +67,20 @@ var migrateUpCmd = &cobra.Command{
 		}
 		defer func() { _ = release() }() //nolint:errcheck // releasing on exit; the OS drops it anyway
 
-		p, db, _, err := openMigrator(cmd)
+		p, db, driver, err := openMigrator(cmd)
 		if err != nil {
 			return err
 		}
 		defer db.Close()
+
+		// A schema a newer sqi-server wrote is not this binary's to migrate.
+		cur, err := p.GetDBVersion(cmd.Context())
+		if err != nil {
+			return fmt.Errorf("migrate up: read schema version: %w", err)
+		}
+		if err := migrations.CheckVersion(driver, cur); err != nil {
+			return fmt.Errorf("migrate up: %w", err)
+		}
 
 		results, err := p.Up(cmd.Context())
 		if err != nil {
