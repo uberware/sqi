@@ -231,3 +231,34 @@ func TestRegisterMsg_InstanceIDWireKey(t *testing.T) {
 		t.Errorf("marshaled RegisterMsg without an instance ID = %s, want no \"instance_id\" key", empty)
 	}
 }
+
+// TestHeartbeatMsg_AttemptFieldsWireKeys pins the wire keys of the held-attempt
+// fields and that a heartbeat from a worker that predates them carries neither
+// (both are omitempty, so ProtocolVersion needs no bump).
+func TestHeartbeatMsg_AttemptFieldsWireKeys(t *testing.T) {
+	data, err := json.Marshal(protocol.HeartbeatMsg{AttemptsReported: true, ActiveAttemptIDs: []string{"a1", "a2"}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if m["attempts_reported"] != true {
+		t.Errorf("attempts_reported = %v, want true", m["attempts_reported"])
+	}
+	ids, _ := m["active_attempt_ids"].([]any) //nolint:errcheck // a failed assertion leaves ids nil and fails below
+	if len(ids) != 2 || ids[0] != "a1" || ids[1] != "a2" {
+		t.Errorf("active_attempt_ids = %v, want [a1 a2]", m["active_attempt_ids"])
+	}
+
+	old, err := json.Marshal(protocol.HeartbeatMsg{})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, key := range []string{"attempts_reported", "active_attempt_ids"} {
+		if strings.Contains(string(old), key) {
+			t.Errorf("zero heartbeat %s contains %q, want it omitted", old, key)
+		}
+	}
+}

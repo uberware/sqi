@@ -1768,3 +1768,100 @@ func TestExecutor_Dispatch_stageLocallyFailsWithoutStagingDefaults(t *testing.T)
 		t.Errorf("message = %q; want it to mention staging", last.Message)
 	}
 }
+
+// ── Held attempts ─────────────────────────────────────────────────────────────
+
+// waitForNoAttempts polls until exec holds no attempt or the deadline elapses.
+func waitForNoAttempts(exec *executor.Executor, timeout time.Duration) []string {
+	deadline := time.Now().Add(timeout)
+	for len(exec.ActiveAttemptIDs()) != 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	return exec.ActiveAttemptIDs()
+}
+
+// TestExecutor_ActiveAttemptIDs_FromHoldUntilTheTaskEnds verifies that an
+// attempt is reported from the moment the lease loop holds it, before Dispatch,
+// and stops being reported once its task goroutine has exited.
+func TestExecutor_ActiveAttemptIDs_FromHoldUntilTheTaskEnds(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess test uses Unix-style exec")
+	}
+	exec, nc, _ := newTestExecutor(t, nil)
+	msg := makeAssign("exit", map[string]string{"SQI_TEST_EXIT_CODE": "0"})
+	msg.AttemptID = "attempt-held"
+
+	exec.Hold(msg.AttemptID) // the lease loop holds a batch before dispatching
+	if ids := exec.ActiveAttemptIDs(); !slices.Equal(ids, []string{"attempt-held"}) {
+		t.Fatalf("after Hold = %v", ids)
+	}
+	if err := exec.Dispatch(context.Background(), msg); err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, nc, 2, 10*time.Second)
+	if ids := waitForNoAttempts(exec, 5*time.Second); len(ids) != 0 {
+		t.Fatalf("after the task ended = %v, want none", ids)
+	}
+}
+
+// TestExecutor_ActiveAttemptIDs_DispatchAloneHolds verifies that Dispatch holds
+// its own attempt, so a caller that never calls Hold is still reported while
+// the task runs, and that Hold is idempotent.
+func TestExecutor_ActiveAttemptIDs_DispatchAloneHolds(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess test uses Unix-style exec")
+	}
+	exec, nc, _ := newTestExecutor(t, nil)
+	msg := makeAssign("sleep", map[string]string{"SQI_TEST_SLEEP": "30s"})
+	msg.AttemptID = "attempt-sleeper"
+
+	if err := exec.Dispatch(context.Background(), msg); err != nil {
+		t.Fatal(err)
+	}
+	exec.Hold(msg.AttemptID)
+	waitForStatus(t, nc, 1, 10*time.Second) // running
+	if ids := exec.ActiveAttemptIDs(); !slices.Equal(ids, []string{"attempt-sleeper"}) {
+		t.Fatalf("while running = %v, want [attempt-sleeper]", ids)
+	}
+
+	if !exec.Cancel(msg.TaskID) {
+		t.Fatal("Cancel: task not found")
+	}
+	if ids := waitForNoAttempts(exec, 10*time.Second); len(ids) != 0 {
+		t.Fatalf("after cancel = %v, want none", ids)
+	}
+}
+
+// TestExecutor_ActiveAttemptIDs_PreExecFailureReleases verifies that an
+// attempt whose Dispatch fails before any task runs (here a run-as-user
+// credential the provider cannot resolve) is not reported as held once
+// Dispatch has returned, and that its failure was published.
+func TestExecutor_ActiveAttemptIDs_PreExecFailureReleases(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("run-as-user isolation and its POSIX ancestor-traversability rules are Unix-specific")
+	}
+	parent := newCredentialFailureSessionRoot(t)
+	nc := &stubNATS{}
+	logger := slog.New(slog.DiscardHandler)
+	mgr := session.NewManager(filepath.Join(parent, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, logger)
+	exec := executor.New(status.New(nc, status.Config{WorkerID: "test-worker"}, logger), mgr, metrics.New(), nil, executor.Config{}, logger)
+
+	msg := makeAssign("stdout", nil)
+	msg.AttemptID = "attempt-doomed"
+	msg.Isolation = &protocol.IsolationSpec{User: "render-svc"}
+
+	exec.Hold(msg.AttemptID) // as the lease loop does
+	if ids := exec.ActiveAttemptIDs(); !slices.Equal(ids, []string{"attempt-doomed"}) {
+		t.Fatalf("after Hold = %v", ids)
+	}
+	if err := exec.Dispatch(context.Background(), msg); err == nil {
+		t.Fatal("Dispatch: want error, got nil")
+	}
+
+	if ids := exec.ActiveAttemptIDs(); len(ids) != 0 {
+		t.Errorf("after the failed Dispatch = %v, want none", ids)
+	}
+	if statuses := nc.statuses(); len(statuses) != 2 || statuses[1] != "failed" {
+		t.Errorf("statuses = %v, want [running failed]", statuses)
+	}
+}

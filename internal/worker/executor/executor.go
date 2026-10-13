@@ -14,7 +14,8 @@
 // Executor implements both [pull.TaskDispatcher] and [pull.StateSource] so it
 // can be wired directly into the pull loop.  It also satisfies
 // [heartbeat.StateSource] by exposing [Executor.ActiveTaskCount],
-// [Executor.ActiveTaskIDs], and [Executor.LastAssignmentAt].
+// [Executor.ActiveTaskIDs], and [Executor.LastAssignmentAt], and
+// [heartbeat.AttemptSource] by exposing [Executor.ActiveAttemptIDs].
 //
 // # Concurrency
 //
@@ -40,6 +41,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -250,6 +253,14 @@ type Executor struct {
 	activeTasks      map[string]*taskRun
 	lastAssignmentAt *time.Time
 
+	// held is the set of attempt IDs this worker process holds: added by Hold
+	// (the lease loop, as soon as a batch is decoded) or Dispatch, removed when
+	// the task goroutine exits after publishing its terminal status, or when
+	// Dispatch fails before a goroutine exists. The heartbeat reports it so the
+	// server can tell an attempt a live worker lost track of from one still in
+	// flight. Protected by mu.
+	held map[string]struct{}
+
 	// cancelReg, if non-nil, is notified when tasks start and end so it can
 	// subscribe to per-task cancel NATS messages.
 	// Protected by mu; set via SetCancelRegistrar before any Dispatch calls.
@@ -310,6 +321,7 @@ func New(
 		stager: staging.New(cfg.StagingScratchDir, cfg.StagingSyncCommand, cfg.StagingDefaults, logger,
 			staging.WithIsolationCapable(cfg.StagingIsolationCapable)),
 		activeTasks: make(map[string]*taskRun),
+		held:        make(map[string]struct{}),
 		execCtx:     execCtx,
 		execCancel:  execCancel,
 	}
@@ -335,6 +347,11 @@ func New(
 // reason. The returned error is preserved so the lease loop's own logging is
 // unchanged.
 func (e *Executor) Dispatch(ctx context.Context, msg *protocol.AssignMsg) error {
+	// Idempotent: the lease loop normally held the whole batch already. From
+	// here every return that does not start runTask must release the attempt;
+	// runTask releases it on the paths that do.
+	e.Hold(msg.AttemptID)
+
 	// Create the session.
 	sess, err := e.sessionMgr.Create(ctx, msg)
 	if err != nil {
@@ -346,6 +363,10 @@ func (e *Executor) Dispatch(ctx context.Context, msg *protocol.AssignMsg) error 
 			slog.Any("error", wrapped),
 		)
 		e.publishPreExecFailure(msg, "", wrapped.Error())
+		// Release only after the failure is published: a heartbeat that stops
+		// reporting the attempt before its terminal status lands would invite
+		// the server to reclaim an attempt this worker is still failing.
+		e.release(msg.AttemptID)
 		return wrapped
 	}
 
@@ -368,6 +389,31 @@ func (e *Executor) Dispatch(ctx context.Context, msg *protocol.AssignMsg) error 
 	go e.runTask(ctx, msg, sess, run) //nolint:gosec // G118: ctx used only for logging; e.execCtx governs task lifetime
 
 	return nil
+}
+
+// Hold records attemptID as held by this worker from now until its task ends
+// (or Dispatch fails before running it). The lease loop holds a whole batch
+// before dispatching any of it, so an attempt waiting behind another's session
+// setup is still reported. Idempotent.
+func (e *Executor) Hold(attemptID string) {
+	e.mu.Lock()
+	e.held[attemptID] = struct{}{}
+	e.mu.Unlock()
+}
+
+// release drops attemptID from the held set.
+func (e *Executor) release(attemptID string) {
+	e.mu.Lock()
+	delete(e.held, attemptID)
+	e.mu.Unlock()
+}
+
+// ActiveAttemptIDs returns a sorted snapshot of the held attempts.
+// Implements [heartbeat.AttemptSource].
+func (e *Executor) ActiveAttemptIDs() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return slices.Sorted(maps.Keys(e.held))
 }
 
 // ── pull.StateSource / heartbeat.StateSource ──────────────────────────────────
