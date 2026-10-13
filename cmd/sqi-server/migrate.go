@@ -59,6 +59,14 @@ var migrateUpCmd = &cobra.Command{
 	Short: "Apply all pending migrations",
 	Long:  `Apply every migration that has not yet been run against the target database.`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
+		// Migrating beside a running server would race its own AutoMigrate and
+		// change the schema under it, so take the single-server lock first.
+		release, err := lockMigrateTarget(cmd)
+		if err != nil {
+			return fmt.Errorf("migrate up: %w", err)
+		}
+		defer func() { _ = release() }() //nolint:errcheck // releasing on exit; the OS drops it anyway
+
 		p, db, _, err := openMigrator(cmd)
 		if err != nil {
 			return err
@@ -140,6 +148,21 @@ func init() {
 	addStoreFlags(migrateCmd.PersistentFlags(), &migrateDBPath, &migrateDSN, "path to SQLite database file")
 
 	migrateCmd.AddCommand(migrateUpCmd, migrateDownCmd, migrateStatusCmd)
+}
+
+// lockMigrateTarget takes the single-server lock on the store migrate targets.
+// An empty SQLite path is left to openMigrator to refuse with its usual message.
+func lockMigrateTarget(cmd *cobra.Command) (func() error, error) {
+	tgt, err := resolveStoreTarget(cmd, migrateDBPath, migrateDSN)
+	if err != nil {
+		return nil, err
+	}
+	if tgt.Driver != backend.DriverPostgres && tgt.SQLitePath == "" {
+		return func() error { return nil }, nil
+	}
+	return backend.LockStore(cmd.Context(), backend.Options{
+		Driver: tgt.Driver, SQLitePath: tgt.SQLitePath, PostgresDSN: tgt.DSN,
+	})
 }
 
 // refuseBaselineRollback refuses a down migration from the oldest migration p

@@ -33,7 +33,7 @@ type Options struct {
 	// leave it false because they write into an existing schema and must
 	// never create one; migrate drives goose itself.
 	AutoMigrate bool
-	ServerLock  bool // PostgreSQL only: take the single-server lock
+	ServerLock  bool // take the single-server lock (both drivers)
 	Logger      *slog.Logger
 }
 
@@ -55,7 +55,7 @@ type Checkpointer interface {
 func Open(ctx context.Context, o Options) (Backend, error) {
 	switch o.Driver {
 	case "", DriverSQLite:
-		st, err := sqlite.Open(ctx, o.SQLitePath, sqlite.Options{AutoMigrate: o.AutoMigrate})
+		st, err := sqlite.Open(ctx, o.SQLitePath, sqlite.Options{AutoMigrate: o.AutoMigrate, ServerLock: o.ServerLock})
 		if err != nil {
 			return nil, err
 		}
@@ -68,6 +68,28 @@ func Open(ctx context.Context, o Options) (Backend, error) {
 			return nil, err
 		}
 		return st, nil
+	default:
+		return nil, fmt.Errorf("store: unknown driver %q (want sqlite or postgres)", o.Driver)
+	}
+}
+
+// LockStore takes the single-server lock on the store o names and returns its
+// release. Commands that must not run beside a server (restore, store copy,
+// migrate up) call it; they then open the store with ServerLock false.
+func LockStore(ctx context.Context, o Options) (func() error, error) {
+	switch o.Driver {
+	case "", DriverSQLite:
+		l, err := sqlite.AcquireLock(o.SQLitePath)
+		if err != nil {
+			return nil, err
+		}
+		return l.Release, nil
+	case DriverPostgres:
+		l, err := postgres.LockDatabase(ctx, o.PostgresDSN, o.Logger)
+		if err != nil {
+			return nil, err
+		}
+		return l.Release, nil
 	default:
 		return nil, fmt.Errorf("store: unknown driver %q (want sqlite or postgres)", o.Driver)
 	}

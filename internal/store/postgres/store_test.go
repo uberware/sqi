@@ -282,3 +282,27 @@ func openRaw(t *testing.T, dsn string) *sql.DB {
 	}
 	return db
 }
+
+func TestLockDatabase_ExcludesAServerAndIsReleasable(t *testing.T) {
+	dsn := storetest.PostgresDSN(t)
+	lock, err := postgres.LockDatabase(t.Context(), dsn, nil)
+	if err != nil {
+		t.Fatalf("LockDatabase: %v", err)
+	}
+	opts := postgres.DefaultOptions()
+	opts.ServerLock = true
+	if _, err := postgres.Open(t.Context(), dsn, opts); !errors.Is(err, postgres.ErrServerLockHeld) {
+		t.Fatalf("server Open beside a held DatabaseLock = %v, want ErrServerLockHeld", err)
+	}
+	if _, err := postgres.LockDatabase(t.Context(), dsn, nil); !errors.Is(err, postgres.ErrServerLockHeld) {
+		t.Fatalf("second LockDatabase = %v, want ErrServerLockHeld", err)
+	}
+	if err := lock.Release(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := postgres.Open(t.Context(), dsn, opts)
+	if err != nil {
+		t.Fatalf("server Open after Release: %v", err)
+	}
+	_ = st.Close()
+}

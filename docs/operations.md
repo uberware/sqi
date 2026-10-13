@@ -525,7 +525,7 @@ stops. A second server started on the same database exits at once, logging
 `sqi-server exited with error` with this error:
 
 ```
-startup failed: open store: another sqi-server is already using this database (PostgreSQL advisory lock 0x7371692d73727672 is held); running more than one server on one database is not supported yet
+startup failed: open store: another sqi-server is already using this database (PostgreSQL advisory lock 0x7371692d73727672 is held); running more than one server on one database is not supported yet; stop it first
 ```
 
 Another server, or one that has not finished stopping, holds the lock on this

@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/uberware/sqi/internal/store/sqlite"
 	"github.com/uberware/sqi/internal/store/storetest"
 )
 
@@ -663,5 +664,22 @@ func TestBackupCmd_Postgres(t *testing.T) {
 	}
 	if fi, err := os.Stat(out); err != nil || fi.Size() == 0 {
 		t.Fatalf("backup archive: %v, %v", fi, err)
+	}
+}
+
+// TestMigrateUp_RefusesWhileAServerHoldsTheLock verifies migrate up takes the
+// single-server lock and so refuses to run beside a server.
+func TestMigrateUp_RefusesWhileAServerHoldsTheLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.db")
+	srv, err := sqlite.Open(t.Context(), path, sqlite.Options{AutoMigrate: true, ServerLock: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+
+	prepareRoot([]string{"migrate", "up", "--db", path})
+	err = Execute()
+	if err == nil || !strings.Contains(err.Error(), "stop it first") {
+		t.Fatalf("migrate up beside a server = %v, want a lock refusal", err)
 	}
 }

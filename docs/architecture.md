@@ -898,7 +898,7 @@ holds for its whole life, so `max_conns: 16` leaves 15 connections for work.
 If another server holds the lock, start-up fails:
 
 ```
-another sqi-server is already using this database (PostgreSQL advisory lock 0x7371692d73727672 is held); running more than one server on one database is not supported yet
+another sqi-server is already using this database (PostgreSQL advisory lock 0x7371692d73727672 is held); running more than one server on one database is not supported yet; stop it first
 ```
 
 Advisory locks are per database, so servers on different databases of one
