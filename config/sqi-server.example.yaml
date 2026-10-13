@@ -125,8 +125,16 @@ nats:
     # Type: bool   Env: SQI_NATS_AUTH_ENROLLMENT_ENDPOINT_ENABLED
     enrollment_endpoint_enabled: true
 
-# ── SQLite state store ────────────────────────────────────────────────────────
+# ── State store (SQLite or PostgreSQL) ────────────────────────────────────────
 store:
+  # Which store holds the server's state: "sqlite" (embedded, one file; the
+  # settings below it) or "postgres" (an external PostgreSQL 16 or later; the
+  # postgres block). On postgres, sqlite_path and checkpoint_interval are
+  # ignored. See docs/operations.md, "Running on PostgreSQL".
+  # Accepted: sqlite | postgres
+  # Type: string   Env: SQI_STORE_DRIVER
+  driver: "sqlite"
+
   # Path to the SQLite database file. Created at startup if it does not exist.
   # For production, use an absolute path on a local SSD.
   # Type: string   Env: SQI_STORE_SQLITE_PATH
@@ -142,6 +150,23 @@ store:
   # Must be > 0.
   # Type: duration   Env: SQI_STORE_CHECKPOINT_INTERVAL
   checkpoint_interval: "5m"
+
+  # PostgreSQL, used when driver is "postgres". The database must exist; the
+  # server creates the schema in it on first start. One sqi-server per database.
+  # postgres:
+  #   # Connection string, URL or keyword/value form. Required on postgres. Set
+  #   # sslmode explicitly (verify-full checks the server's certificate). Leave
+  #   # the password out and supply it through PGPASSWORD or a password file;
+  #   # `sqi-server config print` and the logs redact it if present.
+  #   # Type: string   Env: SQI_STORE_POSTGRES_DSN
+  #   dsn: "postgres://sqi@db.example.com:5432/sqi?sslmode=verify-full"
+  #
+  #   # Size of the write connection pool, 2-1000. One connection is held for
+  #   # the server's life by its single-server lock, and a read pool of 4 more
+  #   # is opened beside it, so the server uses up to max_conns + 4.
+  #   # Default: 16
+  #   # Type: int   Env: SQI_STORE_POSTGRES_MAX_CONNS
+  #   max_conns: 16
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 log:

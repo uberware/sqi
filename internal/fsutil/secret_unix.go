@@ -32,7 +32,19 @@ import (
 // open, so at the moment of the fchmod a pre-existing permissive file holds no
 // bytes, and the caller's first write lands in a file already narrowed.
 func createSecret(path string) (*os.File, error) {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, SecretFileMode.Perm())
+	return openSecret(path, os.O_TRUNC)
+}
+
+// createSecretExclusive is [createSecret] for a path that must not exist yet:
+// it fails with an error matching fs.ErrExist rather than truncating.
+func createSecretExclusive(path string) (*os.File, error) {
+	return openSecret(path, os.O_EXCL)
+}
+
+// openSecret creates path at [SecretFileMode] with the extra open flag (O_TRUNC
+// or O_EXCL), then restricts the descriptor.
+func openSecret(path string, flag int) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|flag|syscall.O_NOFOLLOW, SecretFileMode.Perm())
 	if err != nil {
 		return nil, err
 	}

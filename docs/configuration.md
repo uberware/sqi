@@ -27,8 +27,7 @@ sqi-server config print
 
 A commented example file is at
 [`config/sqi-server.example.yaml`](https://github.com/uberware/sqi/blob/main/config/sqi-server.example.yaml)
-(it does not yet include the `auth` block, `http.cors_origins` or the
-PostgreSQL store keys, `store.driver` and `store.postgres.*` — see those
+(it does not yet include the `auth` block or `http.cors_origins` — see those
 sections below).
 
 Duration values use Go syntax: `30s`, `1m30s`, `500ms`, `2h`, etc.
@@ -450,22 +449,20 @@ store:
 ```
 
 On `postgres`, `store.sqlite_path` and `store.checkpoint_interval` are
-ignored. If either is set explicitly, in the config file or the environment,
-the server logs a warning at start-up naming it (`store.sqlite_path is ignored
-when store.driver is postgres`).
+ignored, and the server logs a start-up warning for each one set explicitly
+in the config file or the environment (`store.sqlite_path is ignored when
+store.driver is postgres`).
 
 > **The `migrate`, `backup` and `worker` subcommands choose their store from
 > the same configuration, and take flags that override it.** Highest priority
-> first: an explicit `--dsn` (a PostgreSQL
-> database), then an explicit `--db` (a SQLite file), then `store.driver` from
-> the resolved configuration (the root `-c/--config` file and
-> `SQI_STORE_DRIVER`), with `store.postgres.dsn` for PostgreSQL and the
-> [`store.sqlite_path`](#storesqlite_path) layering for SQLite. A
-> `store.driver` other than `sqlite` or `postgres` is an error, never a
-> fallback to SQLite. So is a configuration that fails to load while
-> `SQI_STORE_DRIVER` names anything but `sqlite`: without `-c`, these commands
-> otherwise warn about a configuration that fails to load and carry on with
-> SQLite, which would then be the wrong store.
+> first: an explicit `--dsn` (a PostgreSQL database), then an explicit `--db`
+> (a SQLite file), then `store.driver` from the resolved configuration (the
+> root `-c/--config` file and `SQI_STORE_DRIVER`), with `store.postgres.dsn`
+> for PostgreSQL and the [`store.sqlite_path`](#storesqlite_path) layering
+> for SQLite. A `store.driver` other than `sqlite` or `postgres` is an error.
+> Without `-c`, a configuration that fails to load is normally a warning and
+> the command falls back to SQLite; when `SQI_STORE_DRIVER` names anything
+> but `sqlite`, it is an error instead.
 
 ---
 
@@ -525,7 +522,7 @@ takes the rest. Shutdown can afford to wait once; a timer cannot.
 
 Set to a large value (e.g. `"24h"`) to disable periodic checkpointing while
 keeping the shutdown checkpoint. Must be `> 0`. Ignored when `store.driver` is
-`postgres`, which has no WAL file of its own to fold back.
+`postgres`.
 
 ```yaml
 store:
@@ -562,20 +559,18 @@ unencrypted connection without saying so. The password may also come from
 of the configuration altogether.
 
 The password is never printed: `sqi-server config print` and the server's
-start-up log show the DSN with its `password` (and `sslpassword`) replaced by
-`redacted` (URL form) or `<redacted>` (keyword/value form). The redaction
-fails closed. A URL it cannot read the way the driver reads it prints as its
-scheme and a placeholder, `postgres://<redacted>`, and nothing more: one with
-more than one `@`, or a single `@` that does not end a user name (one in a
-query value, say), any `#`, any `;` in its query, a `password` key that is
-percent-encoded or padded with spaces, a query pair without `=`, or a query
-value holding a second `=`.
-A keyword/value DSN is parsed the way the driver parses it, so `config print`
-may show it with different spacing or quoting but the same settings, and one
-it cannot parse prints as `<redacted>`. **In a URL, percent-encode any `@` or
-`#` (in the password too) and any `;` or `=` inside a query value** (`%40`,
-`%23`, `%3B`, `%3D`). The driver may well read the unencoded URL as intended,
-but `config print` hides all of it, and
+start-up log replace `password` (and `sslpassword`) with `redacted` in a URL
+and `<redacted>` in a keyword/value DSN. A keyword/value DSN is parsed the way
+the driver parses it, so it may print with different spacing or quoting but
+the same settings; one that cannot be parsed prints as `<redacted>`. A URL the
+redaction cannot read exactly as the driver does prints as its scheme and a
+placeholder (`postgres://<redacted>`) and nothing more. That covers a URL with
+more than one `@`, or an `@` that does not end the user name (one in a query
+value, say); any `#`; any `;` in the query; a `password` key that is
+percent-encoded or padded with spaces; a query pair without `=`; or a query
+value holding a second `=`. **In a URL, percent-encode any `@` or `#` (in the
+password too) and any `;` or `=` inside a query value** (`%40`, `%23`, `%3B`,
+`%3D`); otherwise `config print` hides the whole DSN and
 [`sqi-server backup`](operations.md#backing-up-postgresql) refuses it.
 
 ---
@@ -2323,9 +2318,8 @@ discovery:
 
 - [`config/sqi-server.example.yaml`](https://github.com/uberware/sqi/blob/main/config/sqi-server.example.yaml) —
   Commented example covering the HTTP, NATS, store, log, scheduler, discovery,
-  OpenJD, diagnostics and preset-library sections. The `http.cors_origins` key,
-  the PostgreSQL store keys and the whole `auth` block are documented in this
-  reference only.
+  OpenJD, diagnostics and preset-library sections. The `http.cors_origins` key
+  and the whole `auth` block are documented in this reference only.
 - [`docs/architecture.md`](architecture.md) — Component layout and how configuration values are consumed.
 - [`docs/operations.md`](operations.md) — Install, upgrade, backup, and log rotation.
 - [`docs/observability.md`](observability.md) — In-UI diagnostics, REST/WS log API, and external log wiring.

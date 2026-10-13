@@ -99,9 +99,6 @@ UPDATE jobs SET status = 'pending', updated_at = ?
 WHERE  id = ? AND ` + sqlStalledJobPredicate + `
 RETURNING id`
 
-	// Job-deletion cascade. Each statement scopes to one job via job_id (or a
-	// task subquery for grandchild tables). Run inside a single transaction in
-	// this exact order so enforced foreign keys never block a delete.
 	// sqlLockJobLoggedTasks selects each of a job's tasks that has an attempt:
 	// every task a log line can reference. With the dialect's ForUpdate clause
 	// appended it locks them (see lockJobLoggedTasksTx).
@@ -109,6 +106,9 @@ RETURNING id`
 SELECT 1 FROM tasks t
 WHERE t.job_id = ? AND EXISTS (SELECT 1 FROM task_attempts ta WHERE ta.task_id = t.id)`
 
+	// Job-deletion cascade. Each statement scopes to one job via job_id (or a
+	// task subquery for grandchild tables). Run inside a single transaction in
+	// this exact order so enforced foreign keys never block a delete.
 	sqlDeleteJobCheckouts = `
 DELETE FROM usage_claims
 WHERE task_attempt_id IN (
@@ -278,53 +278,47 @@ func scanJob(row scanner) (store.Job, error) {
 // [rowClock] — see insertTasksTx for why sharing one timestamp across the batch
 // would be a behavior change, not an optimization.
 func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission) (store.JobSubmission, error) {
-	var out store.JobSubmission
-	err := s.inTx(ctx, "create job submission", func(tx *dbTx) (txOutcome, error) {
+	return inTxValue(ctx, s, "create job submission", func(tx *dbTx) (store.JobSubmission, txOutcome, error) {
 		now := TimeText(time.Now().UTC())
 
 		// DependsOn is cloned rather than aliased so a caller mutating the returned
 		// slice cannot reach back into its own input, matching the fake.
-		out = store.JobSubmission{DependsOn: slices.Clone(sub.DependsOn)}
+		out := store.JobSubmission{DependsOn: slices.Clone(sub.DependsOn)}
 		var err error
 		if out.Job, err = insertJobTx(ctx, tx, sub.Job, now); err != nil {
-			return txRollback, err
+			return store.JobSubmission{}, txRollback, err
 		}
 		for _, up := range sub.DependsOn {
 			if _, err := tx.ExecContext(ctx, sqlInsertJobDependency, sub.Job.ID, up, now); err != nil {
-				return txRollback, fmt.Errorf("store: create job dependency %s->%s: %w", sub.Job.ID, up, mapErr(err))
+				return store.JobSubmission{}, txRollback, fmt.Errorf("store: create job dependency %s->%s: %w", sub.Job.ID, up, mapErr(err))
 			}
 		}
-		// A first, unlocked read of the upstreams fails a doomed submission
-		// before it inserts a step or task, where the fake checks too, so a
-		// submission that is both unsatisfiable and conflicting is refused with
-		// the same error on every backend. It takes no lock: the locked check
-		// below is the one that holds.
+		// A first, unlocked check of the upstreams fails a doomed submission
+		// before any step or task insert, at the point the fake checks, so a
+		// submission that is both unsatisfiable and conflicting gets the same
+		// error on every backend. The locked check below is the one that holds.
 		if err := checkUpstreamsTx(ctx, tx, sub.DependsOn, false); err != nil {
-			return txRollback, err
+			return store.JobSubmission{}, txRollback, err
 		}
 		var clock rowClock
 		if out.Steps, err = insertStepsTx(ctx, tx, &clock, sub.Steps); err != nil {
-			return txRollback, err
+			return store.JobSubmission{}, txRollback, err
 		}
 		if out.Tasks, err = insertTasksTx(ctx, tx, &clock, sub.Tasks, s.taskInsertBatch); err != nil {
-			return txRollback, err
+			return store.JobSubmission{}, txRollback, err
 		}
-		// The upstreams are checked again last, locked, after every insert and
-		// just before the commit. job_dependencies has no foreign key on depends_on_job_id,
-		// so the edges to a missing or doomed upstream are harmless until then,
-		// and an unsatisfiable one rolls the whole submission back. Checking last
-		// keeps the upstream rows' share locks (PostgreSQL) to the window between
-		// this check and the commit: a large submission still inserting its
-		// tasks makes no writer on an upstream job wait.
+		// The upstreams are checked again, locked, after every insert and just
+		// before the commit. job_dependencies has no foreign key on
+		// depends_on_job_id, so an edge to a missing or doomed upstream is
+		// harmless until then, and an unsatisfiable one rolls the whole
+		// submission back. Checking last holds the upstream rows' share locks
+		// (PostgreSQL) only until the commit, so a large submission still
+		// inserting its tasks makes no writer on an upstream job wait.
 		if err := checkUpstreamsTx(ctx, tx, sub.DependsOn, true); err != nil {
-			return txRollback, err
+			return store.JobSubmission{}, txRollback, err
 		}
-		return txCommit, nil
+		return out, txCommit, nil
 	})
-	if err != nil {
-		return store.JobSubmission{}, err
-	}
-	return out, nil
 }
 
 // checkUpstreamsTx re-checks, inside the submission's transaction, that every
@@ -333,11 +327,11 @@ func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission
 // [store.ErrDependencyUnsatisfiable]) naming the first upstream (in ID order)
 // that does not qualify and why. The other direction, where an upstream completes
 // after the submitter's read, is left to sweepBlockedJobs, which releases the
-// job within one sweep tick. A PostgreSQL store locks each upstream row FOR
-// SHARE here, in ID order so two submissions naming the same upstreams cannot
-// deadlock, when lock is set. CreateJobSubmission calls it locked last, so
-// those locks are held only from here to the commit, and unlocked before its
-// first step insert, to fail a doomed submission early.
+// job within one sweep tick. When lock is set, each upstream row is locked FOR
+// SHARE (PostgreSQL), in ID order so two submissions naming the same upstreams
+// cannot deadlock. CreateJobSubmission calls it unlocked before its first step
+// insert, to fail a doomed submission early, and locked last, so the locks are
+// held only until the commit.
 func checkUpstreamsTx(ctx context.Context, tx *dbTx, upstreams []string, lock bool) error {
 	ids := slices.Clone(upstreams)
 	slices.Sort(ids)
@@ -436,44 +430,22 @@ func insertStepsTx(ctx context.Context, tx *dbTx, clock *rowClock, steps []store
 // insertTasksTx inserts every task inside tx, stamping each row with its own
 // time from clock, later than every row stamped before it.
 //
-// The per-row stamp is deliberate. Two consumers depend on tasks within one
-// step having DISTINCT created_at values:
+// Tasks within one step must have DISTINCT created_at values, increasing in
+// expansion order:
 //
-//   - sqlListReadyTasks (task.go) ends its ORDER BY with "t.created_at ASC",
-//     documented there as the stable tiebreaker within a step. One shared
-//     timestamp makes that clause inert and frames dispatch in query-planner
-//     order rather than expansion order.
-//   - ListTasks (task.go) orders by a single column with LIMIT/OFFSET and no
-//     secondary key. SQLite's ORDER BY with LIMIT is a partial sort, so equal
-//     keys make page boundaries unstable: the same task can appear on two
-//     pages while another is omitted.
+//   - sqlListReadyTasks (task.go) ends its ORDER BY with "t.created_at ASC" as
+//     the tiebreaker within a step. One shared timestamp would make that clause
+//     inert, and frames would dispatch in query-planner order.
+//   - ListTasks (task.go) sorts by created_at by default, with an id
+//     tie-break. Task IDs are random, so on equal stamps frames would list in
+//     a stable but random order rather than expansion order.
 //
-// A UUID tiebreaker in the SQL would be deterministic but would order frames
-// randomly rather than in expansion order, which is a different behavior
-// change wearing the same clothes. Stamping per row is what preserves the
-// behavior submission has always had.
-//
-// With batchRows above 1 ([WithTaskInsertBatch]) the tasks go in that many to a
-// statement; otherwise one statement each, as it always has.
+// The tasks go in batchRows to a statement ([WithTaskInsertBatch]); below 2,
+// one statement each.
 func insertTasksTx(
 	ctx context.Context, tx *dbTx, clock *rowClock, tasks []store.Task, batchRows int,
 ) ([]store.Task, error) {
-	if batchRows > 1 {
-		return insertTasksBatchedTx(ctx, tx, clock, tasks, batchRows)
-	}
-	out := make([]store.Task, 0, len(tasks))
-	for _, task := range tasks {
-		args, err := taskInsertArgs(task, clock.next())
-		if err != nil {
-			return nil, err
-		}
-		stored, err := scanTask(tx.QueryRowContext(ctx, sqlInsertTask, args...))
-		if err != nil {
-			return nil, mapErr(err)
-		}
-		out = append(out, stored)
-	}
-	return out, nil
+	return insertTasksBatchedTx(ctx, tx, clock, tasks, max(batchRows, 1))
 }
 
 // taskInsertArgs returns the values of one task's insert, in the column order
@@ -529,14 +501,10 @@ func insertTasksBatchedTx(
 // taskBatchRows returns how many of the left tasks the next statement inserts:
 // a full batch while one is left, then the largest power of two that fits.
 //
-// Every distinct row count is a distinct SQL text, and pgx prepares each text
-// it has not seen as a named statement on its connection (up to 512 of them,
-// each binding up to batchRows*taskInsertColumns parameters). Cutting the
-// remainder into plain chunks would let a long-lived connection collect one
-// statement per remainder size, up to batchRows-1 of them; powers of two hold
-// the batched path to at most 1+log2(batchRows) shapes (10 at 500 rows) for at
-// most that many statements per submission. Inserting the remainder a row at a
-// time would hold it to two shapes, but at up to batchRows-1 round trips.
+// Every distinct row count is a distinct SQL text, and pgx caches a prepared
+// statement per text on each connection. Powers of two hold the batched path
+// to at most 1+log2(batchRows) shapes, where a remainder of any size would let
+// a long-lived connection collect up to batchRows-1 of them.
 func taskBatchRows(left, batchRows int) int {
 	if left >= batchRows {
 		return batchRows
@@ -547,22 +515,9 @@ func taskBatchRows(left, batchRows int) int {
 // runInsertTasks inserts chunk's tasks with one statement, whose values are
 // args, and returns them as the database stored them, in chunk's order.
 func runInsertTasks(ctx context.Context, tx *dbTx, chunk []store.Task, args []any) ([]store.Task, error) {
-	rs, err := tx.QueryContext(ctx, sqlInsertTasksHead+taskRowsValues(len(chunk))+sqlInsertTasksTail, args...)
+	stored, err := queryTasksTx(ctx, tx, sqlInsertTasksHead+taskRowsValues(len(chunk))+sqlInsertTasksTail, args...)
 	if err != nil {
-		return nil, mapErr(err)
-	}
-	defer rs.Close()
-
-	stored := make([]store.Task, 0, len(chunk))
-	for rs.Next() {
-		t, err := scanTask(rs)
-		if err != nil {
-			return nil, mapErr(classifyErr(tx.d, err))
-		}
-		stored = append(stored, t)
-	}
-	if err := rs.Err(); err != nil {
-		return nil, mapErr(classifyErr(tx.d, err))
+		return nil, err
 	}
 	if len(stored) != len(chunk) {
 		return nil, fmt.Errorf("store: insert tasks: %d rows returned for %d inserted", len(stored), len(chunk))
@@ -628,13 +583,13 @@ func (s *Store) GetJob(ctx context.Context, id string) (store.Job, error) {
 // ListJobDependencyIDs implements [store.JobStore]. It returns the upstream
 // job IDs jobID waits on, ordered by upstream job ID.
 func (s *Store) ListJobDependencyIDs(ctx context.Context, jobID string) ([]string, error) {
-	return s.queryIDs(ctx, sqlListJobDependencyIDs, jobID)
+	return queryIDs(ctx, &s.r.dbConn, sqlListJobDependencyIDs, jobID)
 }
 
 // ListDependents implements [store.JobStore]. It returns the IDs of jobs
 // waiting on upstreamJobID, ordered by dependent job ID.
 func (s *Store) ListDependents(ctx context.Context, upstreamJobID string) ([]string, error) {
-	return s.queryIDs(ctx, sqlListDependents, upstreamJobID)
+	return queryIDs(ctx, &s.r.dbConn, sqlListDependents, upstreamJobID)
 }
 
 // ListBlockedJobs implements [store.JobStore]. It returns every job currently
@@ -657,9 +612,9 @@ func (s *Store) ListBlockedJobs(ctx context.Context) ([]store.Job, error) {
 	return jobs, rows.Err()
 }
 
-// queryIDs runs a single-column string query and returns the values.
-func (s *Store) queryIDs(ctx context.Context, query string, args ...any) ([]string, error) {
-	rows, err := s.r.QueryContext(ctx, query, args...)
+// queryIDs runs a single-column string query on c and returns the values.
+func queryIDs(ctx context.Context, c *dbConn, query string, args ...any) ([]string, error) {
+	rows, err := c.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: query ids: %w", mapErr(err))
 	}
@@ -673,7 +628,8 @@ func (s *Store) queryIDs(ctx context.Context, query string, args ...any) ([]stri
 		}
 		ids = append(ids, id)
 	}
-	return ids, rows.Err()
+	// rows.Err is not a wrapper's error: classify it as queryTasksTx does.
+	return ids, mapErr(classifyErr(c.d, rows.Err()))
 }
 
 // jobSortColumns maps [store.JobSortField] values to their safe, hard-coded
@@ -826,12 +782,10 @@ func (s *Store) CancelJobStatus(ctx context.Context, id string) error {
 // transaction: the job row locked, the stalled predicate checked again under
 // the lock, then the write. A lease holds the job row shared, so a lease in
 // flight is waited for and the re-check sees the task it assigned; a job that
-// is no longer stalled is left alone. On SQLite the re-check is a redundant
-// re-read.
+// is no longer stalled is left alone.
 //
 // The returned IDs are in id order, the order the candidates are locked in. On
-// error, the result lists the jobs already demoted: each demotion is its own
-// committed transaction.
+// error, the result lists the jobs already demoted.
 func (s *Store) DemoteStalledJobs(ctx context.Context, now time.Time) ([]string, error) {
 	candidates, err := s.stalledJobCandidates(ctx)
 	if err != nil {
@@ -840,22 +794,19 @@ func (s *Store) DemoteStalledJobs(ctx context.Context, now time.Time) ([]string,
 	nowText := TimeText(now.UTC())
 	var demoted []string
 	for _, id := range candidates {
-		var got bool
-		err := s.inTx(ctx, "demote stalled job", func(tx *dbTx) (txOutcome, error) {
-			got = false
+		got, err := inTxValue(ctx, s, "demote stalled job", func(tx *dbTx) (bool, txOutcome, error) {
 			if err := tx.lockAnchors(ctx, jobAnchor(id)); err != nil {
-				return txRollback, err
+				return false, txRollback, err
 			}
 			var out string
 			err := tx.QueryRowContext(ctx, sqlDemoteStalledJob, nowText, id).Scan(&out)
 			if errors.Is(err, sql.ErrNoRows) {
-				return txRollback, nil
+				return false, txRollback, nil
 			}
 			if err != nil {
-				return txRollback, fmt.Errorf("store: demote job %s: %w", id, mapErr(err))
+				return false, txRollback, fmt.Errorf("store: demote job %s: %w", id, mapErr(err))
 			}
-			got = true
-			return txCommit, nil
+			return true, txCommit, nil
 		})
 		if err != nil {
 			return demoted, err
@@ -869,42 +820,26 @@ func (s *Store) DemoteStalledJobs(ctx context.Context, now time.Time) ([]string,
 
 // stalledJobCandidates lists, in id order, the jobs the stall sweep will
 // re-check. The read goes through the write pool so that it sees this store's
-// own committed writes. Correctness does not rest on how fresh the list is:
-// every job in it is locked and re-checked before it is demoted, so a stale
-// entry is skipped and a missing one is found by the next sweep.
+// own committed writes. The list need not be fresh: every job in it is locked
+// and re-checked before it is demoted, so a stale entry is skipped and a
+// missing one is found by the next sweep.
 func (s *Store) stalledJobCandidates(ctx context.Context) ([]string, error) {
-	rows, err := s.w.QueryContext(ctx, sqlStalledJobCandidates)
-	if err != nil {
-		return nil, fmt.Errorf("store: list stalled jobs: %w", mapErr(err))
-	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("store: scan stalled job id: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	// rows.Err is not a wrapper's error: classify it as queryTasksTx does.
-	return ids, mapErr(classifyErr(s.d, rows.Err()))
+	return queryIDs(ctx, &s.w.dbConn, sqlStalledJobCandidates)
 }
 
-// DeleteTerminalJobsBefore implements [store.JobStore]. It selects the eligible
-// job IDs first, then deletes each via the shared cascade, all inside one
-// transaction so a partially-applied sweep can never leave orphaned child rows.
+// DeleteTerminalJobsBefore implements [store.JobStore]. It lists the eligible
+// jobs unlocked, in id order, then deletes each in its own transaction: the
+// job's anchor, a re-check of the eligibility predicate under it, then the
+// shared cascade. Each cascade is atomic, so no job is left half-deleted, and
+// the sweep never holds more than one job's locks, or the SQLite write
+// connection for more than one job's cascade. On error, the result lists the
+// jobs already deleted.
 //
-// The SELECT is a snapshot, and a retry can revive one of its jobs before
-// that job's turn comes. So each job takes its own job anchor and is then
-// re-checked against the full eligibility predicate (terminal status, cutoff,
-// no live dependent) immediately before its cascade starts; a job that no
-// longer matches is skipped, neither deleted nor reported. On SQLite the
-// single write connection means the snapshot cannot go stale, so the re-check
-// never skips; it is a PostgreSQL store's guard, where the job-row lock is
-// what makes it sound. The sweep holds every lock it takes until its one
-// commit, so the candidates are sorted by id before they are anchored: the
-// SELECT has no ORDER BY, and an unsorted sweep could take two jobs' locks in
-// the opposite order to another writer that locks several jobs in id order.
+// The list is a snapshot, and a retry can revive one of its jobs before that
+// job's turn comes. So each job is re-checked against the full eligibility
+// predicate (terminal status, cutoff, no live dependent) under its anchor,
+// immediately before its cascade starts; a job that no longer matches is
+// skipped, neither deleted nor reported.
 func (s *Store) DeleteTerminalJobsBefore(
 	ctx context.Context, cutoff time.Time, includeFailed bool,
 ) ([]store.DeletedJob, error) {
@@ -913,29 +848,28 @@ func (s *Store) DeleteTerminalJobsBefore(
 	// constant and the id is bound.
 	recheck := query + sqlExpiredJobByID
 
-	var deleted []store.DeletedJob
-	err := s.inTx(ctx, "delete terminal jobs", func(tx *dbTx) (txOutcome, error) {
-		candidates, err := selectExpiredJobsTx(ctx, tx, query, args)
-		if err != nil {
-			return txRollback, err
-		}
-		// Lock in id order, so the sweep's locks follow the global order every
-		// other job-anchored writer uses.
-		slices.SortFunc(candidates, func(a, b store.DeletedJob) int { return cmp.Compare(a.ID, b.ID) })
-		deleted = candidates[:0]
-		for _, d := range candidates {
-			purged, err := purgeExpiredJobTx(ctx, tx, recheck, args, d.ID)
-			if err != nil {
-				return txRollback, err
-			}
-			if purged {
-				deleted = append(deleted, d)
-			}
-		}
-		return txCommit, nil
-	})
+	// Read through the write pool so the list sees this store's own committed
+	// writes, as stalledJobCandidates does.
+	candidates, err := selectExpiredJobs(ctx, &s.w.dbConn, query, args)
 	if err != nil {
 		return nil, err
+	}
+	slices.SortFunc(candidates, func(a, b store.DeletedJob) int { return cmp.Compare(a.ID, b.ID) })
+	var deleted []store.DeletedJob
+	for _, d := range candidates {
+		purged, err := inTxValue(ctx, s, "delete terminal job", func(tx *dbTx) (bool, txOutcome, error) {
+			purged, err := purgeExpiredJobTx(ctx, tx, recheck, args, d.ID)
+			if err != nil || !purged {
+				return false, txRollback, err
+			}
+			return true, txCommit, nil
+		})
+		if err != nil {
+			return deleted, err
+		}
+		if purged {
+			deleted = append(deleted, d)
+		}
 	}
 	return deleted, nil
 }
@@ -947,15 +881,15 @@ func expiredJobsQuery(cutoff time.Time, includeFailed bool) (query string, args 
 	if includeFailed {
 		statuses = append(statuses, string(store.JobStatusFailed))
 	}
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(statuses)), ",")
+	placeholders := qmarks(len(statuses))
 	// placeholders is "?,?[,?]" — only ? marks; status values are bound.
 	query = sqlSelectExpiredJobsPrefix + placeholders + sqlSelectExpiredJobsSuffix
 	return query, slices.Concat(statuses, []any{TimeText(cutoff.UTC())})
 }
 
-// selectExpiredJobsTx runs the retention eligibility SELECT inside tx.
-func selectExpiredJobsTx(ctx context.Context, tx *dbTx, query string, args []any) ([]store.DeletedJob, error) {
-	rows, err := tx.QueryContext(ctx, query, args...)
+// selectExpiredJobs runs the retention eligibility SELECT on c.
+func selectExpiredJobs(ctx context.Context, c *dbConn, query string, args []any) ([]store.DeletedJob, error) {
+	rows, err := c.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -975,12 +909,11 @@ func selectExpiredJobsTx(ctx context.Context, tx *dbTx, query string, args []any
 // eligible for retention and, if so, runs the cascade. It reports whether the
 // job was deleted. The anchor comes first so that, once the re-check passes, no
 // other job-anchored writer can change the job's status before the final
-// DELETE; the re-check comes before any child row is touched because the sweep
-// is one transaction and a half-purged job cannot be skipped after the fact. As
-// for [Store.DeleteJob], the job's logged tasks are locked before the cascade
-// ([lockJobLoggedTasksTx]), so a log append waits for the sweep instead of
-// landing mid-cascade, and the cascade's foreign-key error stays retryable
-// ([cascadeErr]) as a backstop.
+// DELETE; the re-check comes before any child row is touched, so a skipped job
+// is never half-purged. As for [Store.DeleteJob], the job's logged tasks are
+// locked before the cascade ([lockJobLoggedTasksTx]), so a log append waits for
+// the sweep instead of landing mid-cascade, and the cascade's foreign-key error
+// stays retryable ([cascadeErr]) as a backstop.
 func purgeExpiredJobTx(ctx context.Context, tx *dbTx, recheck string, args []any, id string) (bool, error) {
 	if err := tx.lockAnchors(ctx, jobAnchor(id)); err != nil {
 		return false, err
@@ -994,18 +927,34 @@ func purgeExpiredJobTx(ctx context.Context, tx *dbTx, recheck string, args []any
 	if err != nil {
 		return false, mapErr(err)
 	}
-	if err := lockJobLoggedTasksTx(ctx, tx, id); err != nil {
+	if _, err := deleteJobCascadeTx(ctx, tx, id); err != nil {
 		return false, err
+	}
+	return true, nil
+}
+
+// deleteJobCascadeTx deletes job id and every row that hangs off it (claims,
+// logs, attempts, tasks, steps, dependency edges, then the job row) and
+// returns how many job rows it deleted. The caller holds the job's anchor. The
+// job's logged tasks are locked first ([lockJobLoggedTasksTx]), and a
+// foreign-key error in the cascade is retryable ([cascadeErr]).
+func deleteJobCascadeTx(ctx context.Context, tx *dbTx, id string) (int64, error) {
+	if err := lockJobLoggedTasksTx(ctx, tx, id); err != nil {
+		return 0, err
 	}
 	for _, q := range []string{
 		sqlDeleteJobCheckouts, sqlDeleteJobTaskLogs, sqlDeleteJobAttempts,
-		sqlDeleteJobTasks, sqlDeleteJobSteps, sqlDeleteJobDependencies, sqlDeleteJobRow,
+		sqlDeleteJobTasks, sqlDeleteJobSteps, sqlDeleteJobDependencies,
 	} {
 		if _, err := tx.ExecContext(ctx, q, id); err != nil {
-			return false, mapErr(cascadeErr(err))
+			return 0, mapErr(cascadeErr(err))
 		}
 	}
-	return true, nil
+	res, err := tx.ExecContext(ctx, sqlDeleteJobRow, id)
+	if err != nil {
+		return 0, mapErr(cascadeErr(err))
+	}
+	return res.RowsAffected()
 }
 
 // lockJobLoggedTasksTx locks, until the commit, every task of job id that a
@@ -1014,16 +963,16 @@ func purgeExpiredJobTx(ctx context.Context, tx *dbTx, recheck string, args []any
 // takes FOR KEY SHARE on the line's task row, which FOR UPDATE excludes: an
 // append from here on waits for the delete and then fails on that foreign key,
 // and one already past the check commits before the lock is granted, so the
-// cascade's own DELETE of the logs removes it. Either way no log row lands
-// mid-cascade, and the cascade does not have to run again.
+// cascade's DELETE of the logs removes it. Either way no log row lands
+// mid-cascade.
 //
 // It locks the task rows, not the attempt rows, because a log insert checks
 // its task_id foreign key before its attempt_id one (the triggers fire in
-// creation order). Holding the attempts would let an insert hold its task's
+// creation order). Locking the attempts would let an insert hold its task's
 // FOR KEY SHARE while it waits on the attempt, and the cascade's DELETE of the
 // tasks would then wait on the insert: a deadlock. No new attempt can appear
-// meanwhile: a lease holds the job row, which the caller has locked. On SQLite
-// it does nothing (the dialect's ForUpdate is "").
+// meanwhile, because a lease holds the job row, which the caller has locked.
+// On SQLite it does nothing (the dialect's ForUpdate is "").
 func lockJobLoggedTasksTx(ctx context.Context, tx *dbTx, id string) error {
 	forUpdate := tx.d.ForUpdate()
 	if forUpdate == "" {
@@ -1037,11 +986,10 @@ func lockJobLoggedTasksTx(ctx context.Context, tx *dbTx, id string) error {
 
 // cascadeErr reclassifies a foreign-key violation inside a job's delete
 // cascade as retryable. [lockJobLoggedTasksTx] keeps a log line from landing
-// mid-cascade; this is the backstop for a child row inserted after its table
-// was cleared all the same, which makes a later DELETE in the cascade fail on
-// its foreign key: running the cascade again deletes the new row too, and inTx
-// does that for a retryable error. SQLite's single writer never produces the
-// error.
+// mid-cascade; this is the backstop for any child row inserted after its table
+// was cleared, which makes a later DELETE in the cascade fail on its foreign
+// key. inTx runs a retryable transaction again, and the new run deletes the
+// new row too. SQLite's single writer never produces the error.
 func cascadeErr(err error) error {
 	if errClass(err) == ErrClassConflict {
 		return &classifiedError{class: ErrClassRetry, err: err}
@@ -1059,39 +1007,16 @@ func cascadeErr(err error) error {
 // (CreateTaskLog, no transaction, no anchor) is held off by the lock on the
 // job's logged tasks taken next ([lockJobLoggedTasksTx]): it waits for the
 // delete instead of inserting a child row after its table was cleared. As a
-// backstop the store still retries the cascade (claims, logs, attempts, tasks,
-// steps, dependency edges, then the job row) if a DELETE in it fails on a
-// foreign key: such a violation is reclassified as retryable ([cascadeErr]),
-// and the next run, which starts by clearing the logs again, deletes the new
-// row too. A deadlock is already retryable. SQLite cannot produce either
-// error: its single write connection serializes every writer.
+// backstop the cascade (claims, logs, attempts, tasks, steps, dependency
+// edges, then the job row) is retried if a DELETE in it fails on a foreign key
+// ([cascadeErr]) or deadlocks. SQLite cannot produce either error: its single
+// write connection serializes every writer.
 func (s *Store) DeleteJob(ctx context.Context, id string) error {
 	return s.inTx(ctx, "delete job", func(tx *dbTx) (txOutcome, error) {
 		if err := tx.lockAnchors(ctx, jobAnchor(id)); err != nil {
 			return txRollback, err
 		}
-		if err := lockJobLoggedTasksTx(ctx, tx, id); err != nil {
-			return txRollback, err
-		}
-
-		for _, q := range []string{
-			sqlDeleteJobCheckouts,
-			sqlDeleteJobTaskLogs,
-			sqlDeleteJobAttempts,
-			sqlDeleteJobTasks,
-			sqlDeleteJobSteps,
-			sqlDeleteJobDependencies,
-		} {
-			if _, err := tx.ExecContext(ctx, q, id); err != nil {
-				return txRollback, mapErr(cascadeErr(err))
-			}
-		}
-
-		res, err := tx.ExecContext(ctx, sqlDeleteJobRow, id)
-		if err != nil {
-			return txRollback, mapErr(cascadeErr(err))
-		}
-		n, err := res.RowsAffected()
+		n, err := deleteJobCascadeTx(ctx, tx, id)
 		if err != nil {
 			return txRollback, err
 		}

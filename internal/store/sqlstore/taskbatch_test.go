@@ -90,10 +90,9 @@ func TestCreateJobSubmission_BatchedTasksMatchSingleRow(t *testing.T) {
 			if err != nil {
 				t.Fatalf("batched: %v", err)
 			}
-			// Not vacuous: the batched store really sent n tasks three to a
-			// statement, and the other one a statement each.
-			// Three to a statement leaves a remainder of 1 or 2, each a power
-			// of two and so one statement (taskBatchRows).
+			// The batched store sent n tasks three to a statement and the other
+			// one a statement each. A remainder of 1 or 2 is a power of two, so
+			// it goes in one statement (taskBatchRows).
 			if got, want := taskInserts(batchedStmts), (n+2)/3; got != want {
 				t.Errorf("batched store sent %d task INSERTs, want %d", got, want)
 			}

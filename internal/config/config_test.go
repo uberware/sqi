@@ -13,7 +13,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/uberware/sqi/internal/config"
-	"github.com/uberware/sqi/internal/pgdsn"
 )
 
 // ── DefaultConfig ─────────────────────────────────────────────────────────────
@@ -2636,23 +2635,6 @@ func TestValidate_StoreDriver(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("driver %q: an empty sqlite_path was accepted", driver)
-		}
-	}
-}
-
-// TestRedactDSN_DelegatesToPgdsn pins config.RedactDSN to pgdsn.Redact, where
-// the redaction rules and their tests live.
-func TestRedactDSN_DelegatesToPgdsn(t *testing.T) {
-	for _, dsn := range []string{
-		"",
-		"postgres://sqi:hunter2@db:5432/sqi?sslmode=require",
-		"postgres://sqi:p@ss#word@db/sqi",
-		"host=db password='p@ss word' dbname=sqi",
-		"host=db password='hunter2 dbname=sqi",
-		"host=db dbname=sqi",
-	} {
-		if got, want := config.RedactDSN(dsn), pgdsn.Redact(dsn); got != want {
-			t.Errorf("config.RedactDSN(%q) = %q, pgdsn.Redact = %q", dsn, got, want)
 		}
 	}
 }

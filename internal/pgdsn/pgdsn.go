@@ -92,18 +92,25 @@ func redactKeywordValueDSN(dsn string) string {
 	if !slices.ContainsFunc(pairs, func(p kvPair) bool { return isPasswordKey(p.key) }) {
 		return dsn
 	}
+	for i, p := range pairs {
+		if isPasswordKey(p.key) {
+			pairs[i].value = redactedPassword
+		}
+	}
+	return joinKeywordValue(pairs)
+}
+
+// joinKeywordValue renders pairs as a keyword/value DSN, each value quoted as
+// it needs to be.
+func joinKeywordValue(pairs []kvPair) string {
 	var b strings.Builder
 	for i, p := range pairs {
 		if i > 0 {
 			b.WriteByte(' ')
 		}
-		value := p.value
-		if isPasswordKey(p.key) {
-			value = redactedPassword
-		}
 		b.WriteString(p.key)
 		b.WriteByte('=')
-		b.WriteString(quoteKeywordValue(value))
+		b.WriteString(quoteKeywordValue(p.value))
 	}
 	return b.String()
 }
@@ -254,7 +261,7 @@ func urlDSNAmbiguous(u *url.URL, dsn string) bool {
 // "=". Either lets one reading of the query see a password key that another
 // does not: pgx and libpq split on "&" alone, so `?a=x;password=y` is one pair
 // (a) and `?;password=y` a runtime parameter named ";password", while a reader
-// that also splits on ";" (net/url once did) sees a plain password key; and
+// that also splits on ";" sees a plain password key; and
 // pgx and libpq reject `?a=b=password=y`, which a reader splitting a pair at
 // its last "=" reads as a password. Refusing both leaves every reading of the
 // query the same: one key, then one value, per "&" pair. A ";" in a value
@@ -299,7 +306,7 @@ func obscuredPasswordKey(dsn string) bool {
 			key = decoded
 		}
 		name := strings.ToLower(strings.Trim(key, " "))
-		if (name == "password" || name == "sslpassword") && !strings.EqualFold(rawKey, name) {
+		if isPasswordKey(name) && !strings.EqualFold(rawKey, name) {
 			return true
 		}
 	}

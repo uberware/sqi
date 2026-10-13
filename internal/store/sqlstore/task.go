@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -476,8 +475,8 @@ const reclaimBatch = 500
 // their claims (I3). The returned set is the RETURNING set: exactly what was
 // reset (I2), so the scheduler never has to look an attempt up after the fact
 // and cannot close the new attempt of a task leased again in between. Each
-// batch is its own committed transaction, so on error the result lists the
-// tasks earlier batches already reclaimed.
+// batch commits on its own, so on error the result lists the tasks earlier
+// batches reclaimed.
 //
 // Order: no task row is locked before its job row (every job-level operation
 // locks the job first, so the reverse would deadlock), and the job lock is what
@@ -512,10 +511,9 @@ type staleCandidate struct{ taskID, jobID string }
 
 // staleAssignedCandidates lists, in task id order, the stale assignments and
 // their jobs, unlocked. The read goes through the write pool so that it sees
-// this store's own committed writes. Correctness does not rest on how fresh the
-// list is: each candidate is reset only under its job's lock and the UPDATE's
-// re-check, so a stale entry is skipped and a missing one is found by the next
-// sweep.
+// this store's own committed writes. The list need not be fresh: each
+// candidate is reset only under its job's lock and the UPDATE's re-check, so a
+// stale entry is skipped and a missing one is found by the next sweep.
 func (s *Store) staleAssignedCandidates(ctx context.Context, cutoffText string) ([]staleCandidate, error) {
 	rows, err := s.w.QueryContext(ctx, sqlStaleAssignedCandidates, cutoffText)
 	if err != nil {
@@ -553,36 +551,26 @@ func (s *Store) reclaimStaleBatch(ctx context.Context, batch []staleCandidate, c
 	for _, id := range jobIDs {
 		anchors = append(anchors, jobAnchor(id))
 	}
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",")
+	placeholders := qmarks(len(batch))
 	// placeholders holds only "?" marks; every value is bound.
 	query := sqlReclaimTaskSet + ` WHERE id IN (` + placeholders + `)` + sqlReclaimStaleAssignedSuffix
 
-	var reclaimed []store.Task
-	err := s.inTx(ctx, "reclaim stale assigned tasks", func(tx *dbTx) (txOutcome, error) {
-		reclaimed = nil
+	return inTxValue(ctx, s, "reclaim stale assigned tasks", func(tx *dbTx) ([]store.Task, txOutcome, error) {
 		if err := tx.lockAnchors(ctx, anchors...); err != nil {
-			return txRollback, err
+			return nil, txRollback, err
 		}
-		var err error
-		reclaimed, err = queryTasksTx(ctx, tx, query, args...)
+		reclaimed, err := queryTasksTx(ctx, tx, query, args...)
 		if err != nil {
-			return txRollback, fmt.Errorf("store: reclaim stale assigned tasks: %w", err)
+			return nil, txRollback, fmt.Errorf("store: reclaim stale assigned tasks: %w", err)
 		}
 		if len(reclaimed) == 0 {
-			reclaimed = nil
-			return txRollback, nil // every candidate moved on; the rollback ends the transaction
+			return nil, txRollback, nil // every candidate moved on; the rollback ends the transaction
 		}
-		for _, t := range reclaimed {
-			if err := closeTaskAttemptsTx(ctx, tx, t.ID, store.AttemptStatusFailed, "", nowText); err != nil {
-				return txRollback, err
-			}
+		if err := closeTasksAttemptsTx(ctx, tx, taskIDs(reclaimed), store.AttemptStatusFailed, "", nowText); err != nil {
+			return nil, txRollback, err
 		}
-		return txCommit, nil
+		return reclaimed, txCommit, nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	return reclaimed, nil
 }
 
 // ListReadyTasks implements [store.TaskStore].
@@ -653,45 +641,38 @@ func (s *Store) RetryTasks(ctx context.Context, jobID string, taskIDs []string, 
 		if len(taskIDs) == 0 {
 			return nil, nil
 		}
-		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(taskIDs)), ",")
+		placeholders := qmarks(len(taskIDs))
 		inSuffix = " AND id IN (" + placeholders + ")"
 		for _, id := range taskIDs {
 			idArgs = append(idArgs, id)
 		}
 	}
 
-	var revived []store.Task
-	err := s.inTx(ctx, "retry tasks", func(tx *dbTx) (txOutcome, error) {
+	return inTxValue(ctx, s, "retry tasks", func(tx *dbTx) ([]store.Task, txOutcome, error) {
 		// The anchor is the job row, taken first. The revive UPDATE ... RETURNING
 		// is the returned set (I2), so there is no SELECT for a concurrent writer to
 		// slip in behind.
 		if err := tx.lockAnchors(ctx, jobAnchor(jobID)); err != nil {
-			return txRollback, err
+			return nil, txRollback, err
 		}
 
 		updArgs := append([]any{nowText, jobID}, idArgs...)
-		var err error
-		revived, err = queryTasksTx(ctx, tx, sqlRetryTasksPrefix+inSuffix+sqlRetryTasksReturning, updArgs...)
+		revived, err := queryTasksTx(ctx, tx, sqlRetryTasksPrefix+inSuffix+sqlRetryTasksReturning, updArgs...)
 		if err != nil {
-			return txRollback, fmt.Errorf("store: retry tasks for job %s: %w", jobID, err)
+			return nil, txRollback, fmt.Errorf("store: retry tasks for job %s: %w", jobID, err)
 		}
 		if len(revived) == 0 {
-			revived = nil
-			return txCommit, nil
+			return nil, txCommit, nil
 		}
 
 		if _, err = tx.ExecContext(ctx, sqlRetryResetSteps, nowText, jobID); err != nil {
-			return txRollback, fmt.Errorf("store: reset steps for job %s: %w", jobID, mapErr(err))
+			return nil, txRollback, fmt.Errorf("store: reset steps for job %s: %w", jobID, mapErr(err))
 		}
 		if _, err = tx.ExecContext(ctx, sqlRetryResetJob, nowText, jobID); err != nil {
-			return txRollback, fmt.Errorf("store: reset job %s: %w", jobID, mapErr(err))
+			return nil, txRollback, fmt.Errorf("store: reset job %s: %w", jobID, mapErr(err))
 		}
-		return txCommit, nil
+		return revived, txCommit, nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	return revived, nil
 }
 
 // CountTasksByJob implements [store.TaskStore].
@@ -783,52 +764,53 @@ func (s *Store) RecordTaskFailure(
 ) (taskFailed, jobFailed int, firstClose bool, err error) {
 	nowText := TimeText(now.UTC())
 
-	err = s.inTx(ctx, "record task failure", func(tx *dbTx) (txOutcome, error) {
-		taskFailed, jobFailed, firstClose = 0, 0, false
+	type result struct {
+		taskFailed, jobFailed int
+		firstClose            bool
+	}
+	r, err := inTxValue(ctx, s, "record task failure", func(tx *dbTx) (result, txOutcome, error) {
+		var out result
 		if err := lockTaskJobTx(ctx, tx, taskID); err != nil {
-			return txRollback, err // no such task => ErrNotFound
+			return result{}, txRollback, err // no such task => ErrNotFound
 		}
 
 		res, err := tx.ExecContext(ctx, sqlCloseAttemptAsFailed, nowText, nullInt(exitCode), sessionID, message, attemptID)
 		if err != nil {
-			return txRollback, mapErr(err)
+			return result{}, txRollback, mapErr(err)
 		}
 		closed, err := res.RowsAffected()
 		if err != nil {
-			return txRollback, err
+			return result{}, txRollback, err
 		}
 		// Invariant I3: a closed attempt holds no claims. Released unconditionally,
 		// so a redelivery is also safe; the UPDATE is a no-op when nothing is active.
 		// released_at is server time, not the caller's now (a worker-reported time).
 		if _, err = tx.ExecContext(ctx, sqlReleaseAttemptClaims, TimeText(time.Now().UTC()), attemptID); err != nil {
-			return txRollback, mapErr(err)
+			return result{}, txRollback, mapErr(err)
 		}
 
 		if closed == 0 {
 			// Redelivery (or unknown attempt): the attempt is already terminal, so
 			// do NOT re-count. Return the current counters so the caller's decision
 			// is identical to the first delivery. No matching task ⇒ ErrNotFound.
-			if err = tx.QueryRowContext(ctx, sqlReadFailureCounts, taskID).Scan(&taskFailed, &jobFailed); err != nil {
-				return txRollback, mapErr(err)
+			if err = tx.QueryRowContext(ctx, sqlReadFailureCounts, taskID).Scan(&out.taskFailed, &out.jobFailed); err != nil {
+				return result{}, txRollback, mapErr(err)
 			}
-			return txCommit, nil
+			return out, txCommit, nil
 		}
 
 		// First close of this attempt: count the failure exactly once.
 		var jobID string
-		if err = tx.QueryRowContext(ctx, sqlRecordTaskFailure, nowText, taskID).Scan(&taskFailed, &jobID); err != nil {
-			return txRollback, mapErr(err)
+		if err = tx.QueryRowContext(ctx, sqlRecordTaskFailure, nowText, taskID).Scan(&out.taskFailed, &jobID); err != nil {
+			return result{}, txRollback, mapErr(err)
 		}
-		if err = tx.QueryRowContext(ctx, sqlIncrementJobFailure, nowText, jobID).Scan(&jobFailed); err != nil {
-			return txRollback, mapErr(err)
+		if err = tx.QueryRowContext(ctx, sqlIncrementJobFailure, nowText, jobID).Scan(&out.jobFailed); err != nil {
+			return result{}, txRollback, mapErr(err)
 		}
-		firstClose = true
-		return txCommit, nil
+		out.firstClose = true
+		return out, txCommit, nil
 	})
-	if err != nil {
-		return 0, 0, false, err
-	}
-	return taskFailed, jobFailed, firstClose, nil
+	return r.taskFailed, r.jobFailed, r.firstClose, err
 }
 
 // RequeueTaskForRetry implements [store.TaskStore]. Zero rows (task missing,
@@ -840,31 +822,22 @@ func (s *Store) RecordTaskFailure(
 // be overtaken by a lease committing a new attempt (a lease holds the job row
 // shared).
 func (s *Store) RequeueTaskForRetry(ctx context.Context, taskID, attemptID string, retryAfter, now time.Time) (bool, error) {
-	var requeued bool
-	err := s.inTx(ctx, "requeue task for retry", func(tx *dbTx) (txOutcome, error) {
-		requeued = false
+	return inTxValue(ctx, s, "requeue task for retry", func(tx *dbTx) (bool, txOutcome, error) {
 		if err := lockTaskJobTx(ctx, tx, taskID); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
-				return txRollback, nil // missing task: a no-op, not an error
+				return false, txRollback, nil // missing task: a no-op, not an error
 			}
-			return txRollback, err
+			return false, txRollback, err
 		}
 		res, err := tx.ExecContext(ctx, sqlRequeueTaskForRetry,
 			TimeText(retryAfter.UTC()), TimeText(now.UTC()), taskID, attemptID, taskID, taskID)
 		if err != nil {
-			return txRollback, mapErr(err)
+			return false, txRollback, mapErr(err)
 		}
 		n, err := res.RowsAffected()
 		if err != nil {
-			return txRollback, err
+			return false, txRollback, err
 		}
-		requeued = n > 0
-		return txCommit, nil
+		return n > 0, txCommit, nil
 	})
-	if err != nil {
-		// requeued is set before the commit, so a failed commit leaves it true
-		// for a write that did not land.
-		return false, err
-	}
-	return requeued, nil
 }

@@ -21,22 +21,10 @@ import (
 	"github.com/uberware/sqi/internal/store/storetest"
 )
 
-// requirePgRestore skips the test without the PostgreSQL client tools, or
-// fails it when SQI_TEST_REQUIRE_POSTGRES=1: a skip verifies nothing.
-func requirePgRestore(t *testing.T) {
-	t.Helper()
-	if _, err := exec.LookPath("pg_restore"); err != nil {
-		if os.Getenv("SQI_TEST_REQUIRE_POSTGRES") == "1" {
-			t.Fatal("pg_restore not on PATH; install the PostgreSQL client tools")
-		}
-		t.Skip("pg_restore not on PATH")
-	}
-}
-
 // TestPostgres_BackupRestoreRoundTrip backs a database up with Backup,
 // restores it into an empty database with pg_restore, and reads a row back.
 func TestPostgres_BackupRestoreRoundTrip(t *testing.T) {
-	requirePgRestore(t)
+	storetest.RequirePostgresTool(t, "pg_restore")
 	src := storetest.Postgres(t)
 	if _, err := src.CreateFarm(t.Context(), store.Farm{ID: "farm-backup", Name: "kept"}); err != nil {
 		t.Fatal(err)
@@ -73,7 +61,7 @@ func TestPostgres_BackupRestoreRoundTrip(t *testing.T) {
 // DSN can carry it, so the real pg_dump (libpq) reads the DSN the password was
 // taken out of, and authenticates with the password from PGPASSWORD alone.
 func TestPostgres_BackupDSNForms(t *testing.T) {
-	requirePgRestore(t)
+	storetest.RequirePostgresTool(t, "pg_restore")
 	t.Setenv("PGPASSWORD", "")
 	t.Setenv("PGPASSFILE", filepath.Join(t.TempDir(), "no-pgpass"))
 	base := storetest.PostgresDSN(t)
@@ -93,8 +81,9 @@ func TestPostgres_BackupDSNForms(t *testing.T) {
 		"keyword/value": fmt.Sprintf("host=%s port=%d user=%s password='%s' dbname=%s sslmode=disable application_name='sqi backup'",
 			cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.Database),
 	}
-	// Without PGPASSWORD the same password-free DSN must fail, or the passes
-	// below would not show that PGPASSWORD is what authenticated.
+	// Report whether the password-free DSN fails without PGPASSWORD: if the
+	// server accepts it, the passes below do not show that PGPASSWORD is what
+	// authenticated.
 	rest, ok := pgdsn.WithoutPassword(forms["url userinfo"])
 	if !ok {
 		t.Fatal("WithoutPassword refused the test DSN")

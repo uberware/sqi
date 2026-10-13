@@ -107,8 +107,8 @@ func TestWithoutPassword_RefusesWhereRedactFailsClosed(t *testing.T) {
 	}
 }
 
-// TestWithoutPassword_NoSecretSurvives runs every DSN known to have leaked a
-// secret through a parser other than pgx's: each is refused or loses it.
+// TestWithoutPassword_NoSecretSurvives runs every DSN in secretDSNs: each is
+// refused or loses its secret.
 func TestWithoutPassword_NoSecretSurvives(t *testing.T) {
 	for _, tc := range secretDSNs {
 		got, ok := pgdsn.WithoutPassword(tc.in)

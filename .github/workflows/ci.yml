@@ -759,9 +759,8 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # Pulled explicitly so an image-registry problem fails here, with a clear
-      # message, rather than inside the test where it would surface as a skip
-      # and leave this job green without having verified anything.
+      # Pulled explicitly so a registry problem fails here with a clear
+      # message, not inside the test run as a skip.
       - name: Pull OpenLDAP image
         run: docker pull osixia/openldap:1.5.0
 
@@ -805,9 +804,8 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # Pulled explicitly so an image-registry problem fails here, with a clear
-      # message, rather than inside the test where it would surface as a skip
-      # and leave this job green without having verified anything.
+      # Pulled explicitly so a registry problem fails here with a clear
+      # message, not inside the test run as a skip.
       #
       # Keep this tag in step with keycloakImage in test/integration/oidc_test.go:
       # the test scrapes Keycloak's login form, so the exact tag matters.
@@ -894,35 +892,29 @@ jobs:
 
   # ── State store on PostgreSQL ────────────────────────────────────────────────
   # Runs everything that needs a real PostgreSQL: the shared SQL layer's
-  # concurrency races, schema parity against the SQLite migrations, the
+  # concurrency races, schema parity with the SQLite migrations, the
   # atomic-submission and readiness tests, the pg_dump backup round trip, the
   # scheduler stress test, and the whole integration suite with the server's
-  # state store on PostgreSQL. SQLite is no evidence for any of it: its single
-  # write connection serializes what PostgreSQL runs concurrently, so a
-  # lock-order or isolation mistake passes every SQLite run and shows up only
-  # here.
+  # state store on PostgreSQL. SQLite cannot stand in: its single write
+  # connection serializes what PostgreSQL runs concurrently, so lock-order and
+  # isolation mistakes show up only here.
   #
-  # Both ends of the supported range, 16 (the oldest) and 18 (the newest we
-  # test). They are not interchangeable: pg_dump must be at least the server's
-  # major version, and lock and planner behavior move between majors. Only the
-  # 18 leg also runs the smoke test (below): that adds a Node build and a
-  # second container, and what it checks, the shipped binaries booting on
-  # PostgreSQL, does not differ between the two.
+  # Runs on 16 (the oldest supported major) and 18 (the newest tested): pg_dump
+  # must be at least the server's major version, and lock and planner behavior
+  # differ between majors. Only the 18 leg runs the smoke test (below); what it
+  # checks, the shipped binaries booting on PostgreSQL, does not depend on the
+  # major.
   #
-  # Docker is preinstalled on the ubuntu runners, and scripts/test-postgres.sh
-  # starts its own throwaway container. The image tags are pinned patch
-  # releases. The matrix is what CI runs: it pulls each image and passes the
-  # same one to the script (SQI_TEST_POSTGRES_IMAGE), so the image pulled is the
-  # image tested. The script keeps the same pins as its default for local runs;
-  # change them in both places.
+  # scripts/test-postgres.sh starts its own throwaway container. The matrix
+  # pulls each pinned image and passes it to the script
+  # (SQI_TEST_POSTGRES_IMAGE), so the image pulled is the image tested. The
+  # script's defaults for local runs carry the same pins; change both.
   #
-  # `make test-postgres` exits 0 with a message when Docker is unavailable, and
-  # every PostgreSQL test skips when it has no DSN, so a bare green here could
-  # mean nothing ran. This job therefore does not trust the target's exit code:
-  # it captures the output and fails unless the suite reached its last line,
-  # the named tests passed, and no PostgreSQL subtest was skipped. It asserts
-  # by name rather than by count because a count stays green when a test is
-  # renamed away or quietly stops running.
+  # `make test-postgres` exits 0 when Docker is unavailable, and every
+  # PostgreSQL test skips without a DSN, so the job does not trust the exit
+  # code: it fails unless the suite reached its last line, each named test
+  # passed, and no PostgreSQL subtest was skipped. It asserts by name because
+  # a count stays green when a test is renamed or stops running.
   postgres-integration:
     name: PostgreSQL integration (${{ matrix.pg }})
     runs-on: ubuntu-latest
@@ -946,17 +938,23 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # Pulled explicitly so an image-registry problem fails here, with a clear
-      # message, rather than inside the test where it would surface as a skip
-      # and leave this job green without having verified anything.
+      # Pulled explicitly so a registry problem fails here with a clear
+      # message, not inside the test run as a skip.
       - name: Pull PostgreSQL image
         run: docker pull ${{ matrix.image }}
 
-      # The backup test shells out to pg_dump and refuses one older than the
-      # server. The runner image ships its own PostgreSQL client, which is not
-      # necessarily the matrix major, so install the matching one from PGDG and
+      # The backup test runs pg_dump and restores its archive into the server,
+      # so the client must match the server's major version. The runner's own
+      # PostgreSQL client may not, so install the matrix major from PGDG and
       # put it first on PATH.
-      - name: Install PostgreSQL ${{ matrix.pg }} client tools
+      #
+      # ffmpeg: test-postgres.sh's last phase runs the whole ./test/integration/
+      # package (all but the LDAP, OIDC and isolation tests), and
+      # presets/validation-tiers.yaml requires the ffmpeg presets' tier-2 cases
+      # on linux, so TestZZPresetTierRegistrySatisfied fails without ffmpeg. The
+      # install matches the test and integration-tests jobs; the version line
+      # fails here if it did not install.
+      - name: Install PostgreSQL ${{ matrix.pg }} client tools and ffmpeg
         run: |
           sudo install -d /usr/share/postgresql-common/pgdg
           sudo curl -fsSo /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
@@ -964,37 +962,22 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/pgdg.list
           sudo apt-get update
           sudo apt-get install -y postgresql-client-${{ matrix.pg }}
-          echo "/usr/lib/postgresql/${{ matrix.pg }}/bin" >> "$GITHUB_PATH"
-
-      # test-postgres.sh's last phase runs the whole ./test/integration/ package
-      # on PostgreSQL, preset tier tests included (only the LDAP, OIDC and
-      # isolation tests are skipped by name). presets/validation-tiers.yaml marks
-      # the ffmpeg presets' tier-2 cases required on linux, so
-      # TestZZPresetTierRegistrySatisfied turns the real-ffmpeg cases' skip into
-      # a failure on a runner without ffmpeg, and a stock ubuntu runner has none.
-      # The same step as the test and integration-tests jobs; the version line
-      # makes a missing install fail here, loudly.
-      - name: Install ffmpeg (the registry's tier-2 claims require it)
-        run: |
-          sudo apt-get update
           sudo apt-get install -y --no-install-recommends ffmpeg
+          echo "/usr/lib/postgresql/${{ matrix.pg }}/bin" >> "$GITHUB_PATH"
           ffmpeg -version | head -1
 
-      # Does not trust a bare exit 0: a missing Docker or DSN would skip every
-      # PostgreSQL test. Asserts the suite ran to its last line, that each named
-      # test passed, that `/postgres` subtests really ran (a PASS line for at
-      # least one), and that none was skipped, both over the whole run and
-      # within the forced-retry phase.
+      # Asserts the suite ran to its last line, each named test passed, at
+      # least one `/postgres` subtest passed and none was skipped, over the
+      # whole run and again within the forced-retry phase.
       #
-      # The pattern's trailing space matters twice. It keeps a name from
-      # matching a longer one that shares its prefix, and it makes a parent
-      # test's own `--- PASS: Name (0.1s)` line the match. That line means no
-      # subtest failed; it does NOT mean none was skipped (a parent passes with
-      # skipped subtests too), which is why the `/postgres` skip check below
-      # exists.
+      # The trailing space in the PASS pattern keeps a name from matching a
+      # longer one with the same prefix. A parent test's PASS line means no
+      # subtest failed, not that none was skipped, hence the separate
+      # `/postgres` skip check.
       #
-      # G7 is listed twice on purpose: the race it describes has two call
-      # sites (DeleteJob and retention), each with its own test.
+      # TestPGRace_G7_DeleteJobHoldsOffALogThatRaced and
+      # TestPGRace_G7_RetentionHoldsOffALogThatRaced cover the same race at
+      # its two call sites.
       - name: Run PostgreSQL tests
         run: |
           set +e
@@ -1040,17 +1023,16 @@ jobs:
             echo "::error::a PostgreSQL subtest was skipped"
             missing=1
           fi
-          # No skip is not the same as ran: a build that collected no
-          # three-way tests at all would also have none to skip.
+          # No skip is not the same as ran: a run that collected no
+          # /postgres subtests would have none to skip either.
           pg_passes=$(grep -c -E -- '--- PASS: .*/postgres' pg-output.log || true)
           if [ "$pg_passes" -lt 1 ]; then
             echo "::error::no /postgres subtest passed; the PostgreSQL backend was not exercised"
             missing=1
           fi
-          # The forced-retry phase (every transaction rehearsed once, store
-          # packages only) is checked on its own: its /postgres subtests must
-          # have run there too. The race tests skip in it by design, and they
-          # are top-level tests, so they match neither pattern.
+          # The forced-retry phase (store packages only, every transaction
+          # retried once) is checked on its own. The race tests skip in it, but
+          # they are top-level tests, so they match neither pattern.
           sed -n '/^== BEGIN FORCED-RETRY PHASE$/,/^== END FORCED-RETRY PHASE$/p' pg-output.log > pg-retry.log
           if ! grep -q '^== END FORCED-RETRY PHASE$' pg-retry.log; then
             echo "::error::the forced-retry phase did not run to its end"
@@ -1100,16 +1082,15 @@ jobs:
         if: ${{ matrix.pg == '18' }}
         run: python -m pip install --upgrade pip websockets
 
-      # A second container, separate from the one `make test-postgres` started
-      # and removed: the smoke run needs an empty database of its own (it
-      # creates a uniquely-named farm). scripts/smoke.sh runs its three SQLite
-      # modes and then, because SQI_SMOKE_POSTGRES_DSN is set, a fourth with the
+      # A fresh container, since the smoke run needs an empty database (it
+      # creates a uniquely named farm). With SQI_SMOKE_POSTGRES_DSN set,
+      # scripts/smoke.sh runs its three SQLite modes and then a fourth with the
       # state store on PostgreSQL.
       #
-      # The readiness probe goes over TCP (-h 127.0.0.1), not the default Unix
-      # socket: on first boot the image runs a temporary server that listens on
-      # the socket only, which the socket probe would mistake for the real one.
-      # Docker chooses the host port, read back with `docker port`.
+      # The readiness probe uses TCP (-h 127.0.0.1): on first boot the image
+      # runs a temporary server on the Unix socket only, which a socket probe
+      # would mistake for the real one. Docker picks the host port, read back
+      # with `docker port`.
       - name: End-to-end smoke with the server on PostgreSQL
         if: ${{ matrix.pg == '18' }}
         run: |
@@ -1149,8 +1130,7 @@ jobs:
           set -e
 
           # Assert each mode reported a pass by name, as cross-platform-runtime
-          # does, so a regression that dropped the PostgreSQL mode (or any
-          # other) cannot leave this job green.
+          # does, so a dropped mode cannot leave this job green.
           missing=0
           for mode in noauth brokerauth tls postgres; do
             if ! grep -q "SMOKE TEST PASSED (mode=$mode)" smoke-pg.log; then

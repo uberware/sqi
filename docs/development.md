@@ -452,11 +452,13 @@ tests` and exits 0, and without `SQI_TEST_POSTGRES_DSN` every PostgreSQL test
 skips. A skip verifies nothing.** Confirm the run with `--- PASS` lines for
 `/postgres` subtests and the final `POSTGRES TESTS PASSED` line. CI's
 `postgres-integration` job runs the target on PostgreSQL 16 and 18. It fails
-when Docker is unavailable, when any of its named tests (G1–G12, the schema
-parity, atomic-submission, readiness and backup round-trip tests, the
-PostgreSQL stress test and the EXPR end-to-end job) does not pass, when any
-`/postgres` subtest is skipped, and when none passed at all. The 18 leg also
-runs `make smoke` with the server on PostgreSQL.
+when Docker is unavailable, when any of its named tests (the
+`TestPGRace_G1_…` to `TestPGRace_G12_…` race tests, the schema parity,
+atomic-submission, readiness and backup round-trip tests, the PostgreSQL
+stress test and the EXPR end-to-end job) does not pass, when any `/postgres`
+subtest is skipped, and when none passed at all, over the whole run or within
+the forced-retry pass. The 18 leg also runs `make smoke` with the server on
+PostgreSQL.
 
 A local `PG_VERSION=16` run needs a PostgreSQL 16 `pg_dump` and `pg_restore`
 **first on `PATH`**. The backup round trip restores a dump into the test
@@ -469,10 +471,9 @@ the scheduler's `raceBackends` and the API's `seedBackends` return the fake
 and SQLite always, plus PostgreSQL when `SQI_TEST_POSTGRES_DSN` is set (or
 `SQI_TEST_REQUIRE_POSTGRES=1`), keyed by subtest name (`.../fake`,
 `.../sqlite`, `.../postgres`). A test written over one of them needs no change
-to run on PostgreSQL. Every PostgreSQL store a test opens through
-`storetest.Postgres` also checks the [lock
-order](architecture.md#lock-order): a transaction that locks anchor rows out of
-order fails the test.
+to run on PostgreSQL. Both SQL stores refuse a transaction that locks anchor
+rows out of the [lock order](architecture.md#lock-order), so an inversion fails
+the test on SQLite as well.
 
 **Concurrency tests force their interleaving.** A race that a single writer
 cannot produce is tested on PostgreSQL with the pause hook in
@@ -480,17 +481,18 @@ cannot produce is tested on PostgreSQL with the pause hook in
 whose dialect parks the first transaction that reaches an armed point:
 `p.atStatement(sql)` arms the first dynamic statement whose text contains
 `sql` (a prepared statement was rebound when it was prepared and never fires),
-and `p.atAnchor(table, id)` arms the lock of one anchor row. `interleave(t, p,
-paused, competitor)` runs `paused` until it parks, runs `competitor`, resumes
-`paused` (after up to 750 ms, if `competitor` is still blocked on a lock), and
-reports both errors and whether `competitor` had to wait. The race tests are
-`TestPGRace_*` in `internal/store/sqlstore/pgrace_test.go`; G1 to G12 are the
-named ones CI asserts. To add one:
+and `p.atAnchor(table, id)` arms the lock of one anchor row, before the lock
+is taken. `interleave(t, p, paused, competitor)` runs `paused` until it parks,
+runs `competitor` until it either finishes or shows in `pg_stat_activity` as
+waiting on a lock, then resumes `paused`, and reports both errors and whether
+`competitor` had to wait. The race tests are `TestPGRace_*` in
+`internal/store/sqlstore/pgrace_test.go`; CI asserts the
+`TestPGRace_G<n>_…` ones by name. To add one:
 
-1. Write the test first and run it against the code **without** the fix. It
-   must go red, every run, for the reason it names. Assert on `p.matched()` as
-   well, so it is known to have parked at the statement it meant, not at
-   another that merely contains the armed text.
+1. Write the test first and run it against the code **without** the fix: it
+   must fail on every run, for the reason it names. Also assert on
+   `p.matched()`, so the test checks that it parked at the statement it meant,
+   not at another that contains the armed text.
 2. Make the fix, and run it green.
 
 The hook runs on PostgreSQL only, so these tests skip without a DSN, and

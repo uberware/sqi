@@ -23,9 +23,7 @@ const (
 // maxTxAttempts bounds how many times inTx runs fn for a transaction the
 // database aborted for a concurrent writer (ErrClassRetry), the first run
 // included. SQLite's single write connection never produces one; PostgreSQL
-// does under contention, and five tries with a jittered pause between them
-// rides out a burst of conflicting writers without turning a persistent
-// failure into a long stall.
+// does under contention (a deadlock, a serialization failure).
 const maxTxAttempts = 5
 
 // inTx runs fn in a transaction on the write pool and commits it when fn
@@ -58,6 +56,26 @@ func (s *Store) inTx(ctx context.Context, op string, fn func(tx *dbTx) (txOutcom
 			return err
 		}
 	}
+}
+
+// inTxValue is [Store.inTx] for a transaction that produces a value: fn
+// returns it with its outcome. The value returned is the one from the run that
+// ended the transaction, committed or rolled back by fn's choice, and the zero
+// value with any error. A run the database aborted, a rehearsal, or a commit
+// that failed leaves nothing behind, so fn need not reset state from an
+// earlier run.
+func inTxValue[T any](ctx context.Context, s *Store, op string, fn func(tx *dbTx) (T, txOutcome, error)) (T, error) {
+	var out T
+	err := s.inTx(ctx, op, func(tx *dbTx) (txOutcome, error) {
+		v, outcome, err := fn(tx)
+		out = v
+		return outcome, err
+	})
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	return out, nil
 }
 
 func (s *Store) runTx(ctx context.Context, op string, fn func(tx *dbTx) (txOutcome, error)) error {

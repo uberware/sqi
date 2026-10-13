@@ -43,7 +43,7 @@ type Store struct {
 	// retries counts transaction re-runs after an ErrClassRetry error.
 	retries atomic.Int64
 	// forceRetry makes inTx run every function once and roll it back before
-	// the real run: a test mode that proves each function is safe to re-run.
+	// the real run: a test mode that checks each function is safe to re-run.
 	forceRetry bool
 	// log receives retry diagnostics; slog.Default() when nil.
 	log *slog.Logger
@@ -178,7 +178,7 @@ type Option func(*Store)
 
 // WithForcedRetry makes every transaction run its function twice, the first
 // run rolled back, as if the database had aborted it for a concurrent writer.
-// Tests only: it proves each function keeps no state from a failed run.
+// Tests only: it exposes a function that keeps state from a failed run.
 func WithForcedRetry() Option { return func(s *Store) { s.forceRetry = true } }
 
 // WithTaskInsertBatch makes CreateJobSubmission insert a submission's tasks

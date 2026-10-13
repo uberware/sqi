@@ -22,11 +22,11 @@ func TestDefaultConfig_StoreIsSQLite(t *testing.T) {
 }
 
 // TestServer_ReadyzNamesTheStoreDriver boots a real server on each store
-// driver and reads /readyz. SQLite must keep reporting its checker as
-// "sqlite", exactly as before this driver existed; PostgreSQL reports
-// "postgres" and no "sqlite". It is also the one place the server's own start-up
-// path (backend.Open, the readiness registration, the optional checkpointer) is
-// driven on PostgreSQL, rather than the store alone.
+// driver and reads /readyz. SQLite reports its checker as "sqlite" and no
+// "postgres"; PostgreSQL reports "postgres" and no "sqlite". It is also the one
+// place the server's own start-up path (backend.Open, the readiness
+// registration, the optional checkpointer) is driven on PostgreSQL, rather than
+// the store alone.
 func TestServer_ReadyzNamesTheStoreDriver(t *testing.T) {
 	tests := []struct {
 		name      string

@@ -16,7 +16,6 @@ package scheduler
 import (
 	"context"
 	"log/slog"
-	"os"
 	"slices"
 	"sync"
 	"testing"
@@ -49,7 +48,7 @@ func raceBackends(t *testing.T) map[string]store.Store {
 	})
 	checkClaimsAtEnd(t, sq)
 	out := map[string]store.Store{"fake": newCheckedFake(t), "sqlite": sq}
-	if os.Getenv("SQI_TEST_POSTGRES_DSN") != "" || os.Getenv("SQI_TEST_REQUIRE_POSTGRES") == "1" {
+	if storetest.PostgresEnabled() {
 		pg := storetest.Postgres(t) // registers its Close first, so the check below runs before it
 		checkClaimsAtEnd(t, pg)
 		out["postgres"] = pg

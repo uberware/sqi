@@ -208,37 +208,34 @@ func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.
 	}
 	args = append(args, worker.InstanceID)
 
-	var (
-		out       store.Worker
+	type result struct {
+		worker    store.Worker
 		reclaimed []store.Task
-	)
-	err = s.inTx(ctx, "register worker", func(tx *dbTx) (txOutcome, error) {
-		reclaimed = nil
+	}
+	r, err := inTxValue(ctx, s, "register worker", func(tx *dbTx) (result, txOutcome, error) {
 		if err := tx.lockAnchors(ctx, workerAnchor(worker.ID)); err != nil {
-			return txRollback, err
+			return result{}, txRollback, err
 		}
 		var prior string
 		err := tx.QueryRowContext(ctx, `SELECT instance_id FROM workers WHERE id = ?`, worker.ID).Scan(&prior)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return txRollback, fmt.Errorf("store: read worker %s instance: %w", worker.ID, mapErr(err))
+			return result{}, txRollback, fmt.Errorf("store: read worker %s instance: %w", worker.ID, mapErr(err))
 		}
 		upsert := tx.Stmt(ctx, s.stmtUpsertWorker)
 		defer upsert.Close()
-		out, err = scanWorker(upsert.QueryRowContext(ctx, args...))
+		var out result
+		out.worker, err = scanWorker(upsert.QueryRowContext(ctx, args...))
 		if err != nil {
-			return txRollback, mapErr(err)
+			return result{}, txRollback, mapErr(err)
 		}
 		if prior != "" && worker.InstanceID != "" && prior != worker.InstanceID {
-			if reclaimed, err = reclaimWorkerTasksTx(ctx, tx, worker.ID, store.FailureReasonWorkerRestarted, now); err != nil {
-				return txRollback, err
+			if out.reclaimed, err = reclaimWorkerTasksTx(ctx, tx, worker.ID, store.FailureReasonWorkerRestarted, now); err != nil {
+				return result{}, txRollback, err
 			}
 		}
-		return txCommit, nil
+		return out, txCommit, nil
 	})
-	if err != nil {
-		return store.Worker{}, nil, err
-	}
-	return out, reclaimed, nil
+	return r.worker, r.reclaimed, err
 }
 
 // GetWorker implements [store.WorkerStore].

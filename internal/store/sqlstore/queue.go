@@ -176,8 +176,7 @@ func (s *Store) ListQueues(ctx context.Context, opts store.ListQueuesOptions) (s
 func (s *Store) UpdateQueue(ctx context.Context, queue store.Queue) (store.Queue, error) {
 	now := TimeText(time.Now().UTC())
 
-	var out store.Queue
-	err := s.inTx(ctx, "update queue", func(tx *dbTx) (txOutcome, error) {
+	return inTxValue(ctx, s, "update queue", func(tx *dbTx) (store.Queue, txOutcome, error) {
 		txStmt := tx.Stmt(ctx, s.stmtUpdateQueue)
 		defer txStmt.Close()
 
@@ -188,20 +187,15 @@ func (s *Store) UpdateQueue(ctx context.Context, queue store.Queue) (store.Queue
 			queue.PreserveRunAsUser, nullStrPtr(queue.RunAsUser),
 			queue.PreserveRunAsGroup, nullStrPtr(queue.RunAsGroup),
 			now, queue.ID)
-		var err error
-		out, err = scanQueue(row)
+		out, err := scanQueue(row)
 		if err != nil {
-			return txRollback, mapErr(err)
+			return store.Queue{}, txRollback, mapErr(err)
 		}
 		if !store.RunAsComboValid(out.RunAsUser, out.RunAsGroup) {
-			return txRollback, store.ErrRunAsGroupWithoutUser
+			return store.Queue{}, txRollback, store.ErrRunAsGroupWithoutUser
 		}
-		return txCommit, nil
+		return out, txCommit, nil
 	})
-	if err != nil {
-		return store.Queue{}, err
-	}
-	return out, nil
 }
 
 // DeleteQueue implements [store.QueueStore].

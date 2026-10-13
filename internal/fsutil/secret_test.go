@@ -3,6 +3,8 @@
 package fsutil_test
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -145,5 +147,32 @@ func TestMkdirSecret_ExistingDirIsLeftAlone(t *testing.T) {
 		if perm := info.Mode().Perm(); perm != 0o755 {
 			t.Errorf("mode = %o, want 755 — an existing directory must not be re-permissioned", perm)
 		}
+	}
+}
+
+// TestCreateSecretExclusive_IsRestrictedAndRefusesAnExistingFile pins both
+// halves of the contract a backup relies on: the empty file it creates is
+// restricted before anything writes into it, and an existing file is refused
+// rather than replaced.
+func TestCreateSecretExclusive_IsRestrictedAndRefusesAnExistingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sqi-backup.db")
+	if err := fsutil.CreateSecretExclusive(path); err != nil {
+		t.Fatalf("CreateSecretExclusive: %v", err)
+	}
+	if info, err := os.Stat(path); err != nil || info.Size() != 0 {
+		t.Fatalf("created file: %v, %v; want an empty file", info, err)
+	}
+	if restricted, err := fsutil.IsRestricted(path); err != nil || !restricted {
+		t.Fatalf("IsRestricted = %v, %v; want a restricted file", restricted, err)
+	}
+
+	if err := os.WriteFile(path, []byte("kept"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsutil.CreateSecretExclusive(path); !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("CreateSecretExclusive over an existing file = %v; want fs.ErrExist", err)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "kept" {
+		t.Fatalf("existing file = %q, %v; want it untouched", got, err)
 	}
 }

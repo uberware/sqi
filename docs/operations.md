@@ -322,9 +322,10 @@ sudo systemctl start sqi-server
 
 Always take a backup before upgrading (see [Backup and restore](#backup-and-restore)).
 
-> **On PostgreSQL, never roll back past `00037`.** It is the baseline that
-> creates the whole PostgreSQL schema, and `migrate down` from it drops every
-> table and its data. `sqi-server migrate status` shows the applied version.
+> **On PostgreSQL, `migrate down` stops at `00037`.** That migration is the
+> baseline that creates the whole schema, and rolling it back would drop every
+> table and its data, so it is refused. To start over, drop and recreate the
+> database. `sqi-server migrate status` shows the applied version.
 
 ---
 
@@ -360,7 +361,11 @@ still opens it read-write and may create `-wal`/`-shm` sidecar files) and
 writes an identical clean copy to the destination path. It exits non-zero if
 the source database does not exist (it never creates one) or if the
 destination file already exists — use a timestamped filename or a fresh
-directory each time.
+directory each time. The copy holds password, API-key and session-token
+hashes, so the command creates the destination itself, readable and
+writable by its owner only (mode `0600` on Linux and macOS; on Windows an ACL
+granting only the owner, `SYSTEM` and `Administrators`), before any data is
+written, and removes it if the copy fails.
 
 ### Automated daily backup (cron)
 
@@ -420,12 +425,32 @@ described under [Two backends](architecture.md#two-backends).
 **PostgreSQL 16 or later is required.** CI runs the PostgreSQL-backed test
 packages and the integration suite against 16 and 18.
 
+### Docker Compose
+
+[`deploy/docker-compose.postgres.yml`](https://github.com/uberware/sqi/blob/main/deploy/docker-compose.postgres.yml)
+runs a PostgreSQL 18 container beside the server and a worker, with the
+server's store on it:
+
+```sh
+export SQI_POSTGRES_PASSWORD='choose-a-strong-password'
+docker compose -f deploy/docker-compose.postgres.yml up -d --build
+```
+
+The password is required. It sets the database role's password and reaches
+the server as `PGPASSWORD`, so the DSN in the file carries none. The server
+creates the schema on first start. `--build` builds the images from your
+checkout, since PostgreSQL support is not yet in a published release (the
+latest is `v0.3.0`); once a release includes it, pin that tag in the file and
+drop `--build`. The file's header has the `pg_dump` and `pg_restore` commands
+to back the database up from inside its container. The rest of this section
+covers an external PostgreSQL server you run yourself.
+
 ### Creating the database
 
 Create an empty database and a role for `sqi-server`. The role runs the
 migrations, so it must be able to create tables, indexes and a domain in the
 database's `public` schema. The simplest way is to make it the database's
-owner (since PostgreSQL 15 an ordinary role no longer has `CREATE` on
+owner (from PostgreSQL 15 on, an ordinary role does not have `CREATE` on
 `public` by default):
 
 ```sql
@@ -477,10 +502,16 @@ configured driver and DSN. `backup` and `worker` never create a schema:
 against an empty database they fail with `the database at <dsn> has no
 schema; run "sqi-server migrate up" first`.
 
-> **Never run `sqi-server migrate down` on a PostgreSQL database at version
-> `00037`.** The PostgreSQL migrations start at `00037_baseline.sql`, which
-> creates the whole schema, so rolling it back drops every table and all the
-> data in them. Check the version first with `sqi-server migrate status`.
+Leave the password out of `--dsn`: a command line is visible to any local user
+in the process list for as long as the command runs. Supply it through
+`PGPASSWORD`, a password file (`~/.pgpass`, or
+`%APPDATA%\postgresql\pgpass.conf` on Windows), or the config file's
+`store.postgres.dsn` instead; the driver reads the first two when the DSN
+carries no password.
+
+The PostgreSQL migrations start at `00037_baseline.sql`, which creates the
+whole schema; `migrate down` refuses to roll it back (see
+[Rolling back](#rolling-back)).
 
 Once the server is up, `/readyz` reports the store's check as `postgres`
 (`{"status":"ok","checks":{"nats":"ok","postgres":"ok"}}`), where a SQLite
@@ -497,10 +528,10 @@ stops. A second server started on the same database exits at once, logging
 startup failed: open store: another sqi-server is already using this database (PostgreSQL advisory lock 0x7371692d73727672 is held); running more than one server on one database is not supported yet
 ```
 
-That error means what it says: another server, or one that has not finished
-stopping, is connected to this database. Every connection a server opens
-carries `application_name` `sqi-server`, unless the DSN sets its own. To find
-the holder whatever it is called, look for the connection holding the
+Another server, or one that has not finished stopping, holds the lock on this
+database. Every connection a server opens carries `application_name`
+`sqi-server`, unless the DSN sets its own. To find the holder whatever it is
+called, look for the connection holding the
 advisory lock (its key's two 32-bit halves are `1936812333` and
 `1936881266`) on the database in question:
 
@@ -558,7 +589,9 @@ sqi-server backup \
   that has the PostgreSQL client tools.
 - The archive is `pg_dump --format=custom --no-owner --no-password`. The file
   given to `--out` must not exist; the command creates it itself, readable and
-  writable by its owner only (mode `0600`), and removes it if `pg_dump` fails.
+  writable by its owner only (as for SQLite: mode `0600`, or on Windows an ACL
+  granting only the owner, `SYSTEM` and `Administrators`), and removes it if
+  `pg_dump` fails.
 - **The password never reaches `pg_dump`'s command line**, which any local
   user can read from the process list. `pg_dump` gets the DSN with the password
   removed, and the password, as the driver resolves it (from the DSN,

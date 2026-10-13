@@ -11,6 +11,7 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib" // register "pgx" driver
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	_ "modernc.org/sqlite" // register "sqlite" driver
 
 	"github.com/uberware/sqi/internal/config"
@@ -47,36 +48,62 @@ import (
 // stderr and resolution falls through to the legacy env var and default as
 // if the config layer had decided nothing.
 func resolveDBPath(explicit string, explicitChanged bool) (string, error) {
+	c, err := loadCLIConfig()
+	if err != nil {
+		return "", err
+	}
+	return c.dbPath(explicit, explicitChanged), nil
+}
+
+// cliConfig is the configuration a CLI command resolves its store from, loaded
+// once by [loadCLIConfig]. When loading failed without an explicit -c, cfg is
+// the built-in default, src is empty and loadErr holds the failure, which the
+// lenient fallbacks report.
+type cliConfig struct {
+	cfg     config.Config
+	src     config.Sources
+	loadErr error
+}
+
+// loadCLIConfig loads the configuration for a CLI command. A failure is an
+// error only when -c was passed explicitly (see [resolveDBPath]).
+func loadCLIConfig() (cliConfig, error) {
 	cfg, src, err := config.LoadWithSources(persistentFlags.ConfigFile, config.FlagOverrides{})
 	if err != nil {
 		if persistentFlags.ConfigFile != "" {
-			return "", fmt.Errorf("load config: %w", err)
+			return cliConfig{}, fmt.Errorf("load config: %w", err)
 		}
+		return cliConfig{cfg: config.DefaultConfig(), loadErr: err}, nil
+	}
+	return cliConfig{cfg: cfg, src: src}, nil
+}
+
+// dbPath applies [resolveDBPath]'s precedence to c.
+func (c cliConfig) dbPath(explicit string, explicitChanged bool) string {
+	if c.loadErr != nil {
 		fmt.Fprintf(
 			os.Stderr,
 			"warning: could not load configuration (%v); falling back to SQI_SQLITE_PATH or the built-in default\n",
-			err,
+			c.loadErr,
 		)
-		cfg = config.DefaultConfig()
-		src = config.Sources{}
 	}
 
 	if explicitChanged {
-		return explicit, nil
+		return explicit
 	}
 
-	if src.StoreSQLitePath {
-		return cfg.Store.SQLitePath, nil
+	if c.src.StoreSQLitePath {
+		return c.cfg.Store.SQLitePath
 	}
 
 	if legacy := envOr("SQI_SQLITE_PATH", ""); legacy != "" {
 		fmt.Fprintln(os.Stderr,
 			"warning: SQI_SQLITE_PATH is deprecated; set SQI_STORE_SQLITE_PATH instead, "+
 				"which is the variable sqi-server itself reads")
-		return legacy, nil
+		return legacy
 	}
 
-	return cfg.Store.SQLitePath, nil
+	return c.cfg.Store.SQLitePath
 }
 
 // requireExistingDB stats path and returns an actionable error naming it and
@@ -142,46 +169,38 @@ type storeTarget struct{ Driver, SQLitePath, DSN string }
 // SQLite is then the wrong store, not a safe default. A driver the server
 // would reject is an error, never SQLite.
 func resolveStoreTarget(cmd *cobra.Command, dbFlag, dsnFlag string) (storeTarget, error) {
+	if flagChanged(cmd, "dsn") && dsnFlag == "" {
+		return storeTarget{}, errors.New("--dsn is empty")
+	}
+	c, err := loadCLIConfig()
+	if err != nil {
+		return storeTarget{}, err
+	}
 	if flagChanged(cmd, "dsn") {
-		if dsnFlag == "" {
-			return storeTarget{}, errors.New("--dsn is empty")
-		}
-		if persistentFlags.ConfigFile != "" {
-			if _, _, err := config.LoadWithSources(persistentFlags.ConfigFile, config.FlagOverrides{}); err != nil {
-				return storeTarget{}, fmt.Errorf("load config: %w", err)
-			}
-		}
 		return storeTarget{Driver: backend.DriverPostgres, DSN: dsnFlag}, nil
 	}
 	if !flagChanged(cmd, "db") {
-		tgt, decided, err := configuredStoreTarget()
+		tgt, decided, err := c.configuredStoreTarget()
 		if err != nil || decided {
 			return tgt, err
 		}
 	}
-	path, err := resolveDBPath(dbFlag, flagChanged(cmd, "db"))
-	if err != nil {
-		return storeTarget{}, err
-	}
-	return storeTarget{Driver: backend.DriverSQLite, SQLitePath: path}, nil
+	return storeTarget{Driver: backend.DriverSQLite, SQLitePath: c.dbPath(dbFlag, flagChanged(cmd, "db"))}, nil
 }
 
 // configuredStoreTarget resolves the store from configuration alone. It
 // reports decided only for PostgreSQL; SQLite (and the lenient fallback after
 // a failed load without -c) is left to resolveDBPath's layering.
-func configuredStoreTarget() (tgt storeTarget, decided bool, err error) {
-	cfg, _, err := config.LoadWithSources(persistentFlags.ConfigFile, config.FlagOverrides{})
-	if err != nil {
-		if persistentFlags.ConfigFile != "" {
-			return storeTarget{}, false, fmt.Errorf("load config: %w", err)
-		}
+func (c cliConfig) configuredStoreTarget() (tgt storeTarget, decided bool, err error) {
+	if c.loadErr != nil {
 		if d := os.Getenv("SQI_STORE_DRIVER"); d != "" && d != config.StoreDriverSQLite {
 			return storeTarget{}, false, fmt.Errorf(
-				"load config: %w (SQI_STORE_DRIVER is %q, so falling back to SQLite would use the wrong store)", err, d,
+				"load config: %w (SQI_STORE_DRIVER is %q, so falling back to SQLite would use the wrong store)", c.loadErr, d,
 			)
 		}
 		return storeTarget{}, false, nil
 	}
+	cfg := c.cfg
 	switch cfg.Store.Driver {
 	case "", config.StoreDriverSQLite:
 		return storeTarget{}, false, nil
@@ -196,6 +215,16 @@ func configuredStoreTarget() (tgt storeTarget, decided bool, err error) {
 			"store.driver must be sqlite or postgres, got %q; set SQI_STORE_DRIVER or store.driver", cfg.Store.Driver,
 		)
 	}
+}
+
+// addStoreFlags registers the --db and --dsn flags that [resolveStoreTarget]
+// reads, on fs. dbWhat is the start of --db's help text.
+func addStoreFlags(fs *pflag.FlagSet, db, dsn *string, dbWhat string) {
+	fs.StringVar(db, "db", "sqi.db", dbWhat+
+		" (defaults to store.sqlite_path from config, then the deprecated SQI_SQLITE_PATH, then \"sqi.db\")")
+	fs.StringVar(dsn, "dsn", "",
+		"PostgreSQL connection string (defaults to store.postgres.dsn when store.driver is postgres); "+
+			"leave the password out, since the process list shows it, and supply it via PGPASSWORD or a password file")
 }
 
 // flagChanged reports whether the operator passed the flag name to cmd. A nil

@@ -19,9 +19,8 @@ import (
 
 // pause stops the first transaction that reaches a chosen point, until the
 // test resumes it. A race test arms it, starts the operation that should be
-// caught mid-transaction, runs the competing operation, then resumes: the
-// interleaving is forced, so the test goes red without its fix every time,
-// not when the scheduler happens to cooperate.
+// caught mid-transaction, runs the competing operation, then resumes, so the
+// interleaving happens on every run rather than when the scheduler allows it.
 //
 // A statement point fires in Rebind, which runs just before a dynamic
 // statement executes (prepared statements were rebound at prepare and never
@@ -79,8 +78,8 @@ func (p *pause) resume() { p.once.Do(func() { close(p.release) }) }
 
 // matched returns the point the pause fired at: the full text of the statement,
 // or "anchor <table>/<id>"; "" until it fires. A race test asserts on it to
-// prove it parked at the statement it meant, not at another statement that
-// merely contains the armed text.
+// check that it parked at the statement it meant, not at another statement
+// that merely contains the armed text.
 func (p *pause) matched() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -118,7 +117,7 @@ func (d pauseDialect) LockAnchors(ctx context.Context, tx *sql.Tx, anchors ...sq
 // It skips under SQI_TEST_PG_FORCE_TX_RETRY=1. PostgresWith then rehearses
 // every transaction once and rolls the rehearsal back, so the one-shot pause
 // would fire in the rehearsal and the run that commits would never meet the
-// forced interleaving: the test would pass without testing anything.
+// forced interleaving.
 func pgRace(t *testing.T) (*postgres.Store, *pause) {
 	t.Helper()
 	if os.Getenv("SQI_TEST_PG_FORCE_TX_RETRY") == "1" {
@@ -222,8 +221,8 @@ func finish(t *testing.T, done <-chan error, name string) error {
 	}
 }
 
-// TestPause_HoldsATransactionAtTheArmedStatement proves the hook works before
-// any race test relies on it: a cancel paused at its task UPDATE holds the job
+// TestPause_HoldsATransactionAtTheArmedStatement pins the statement hook that
+// the race tests rely on: a cancel paused at its task UPDATE holds the job
 // row, so a second cancel of the same job waits for it.
 func TestPause_HoldsATransactionAtTheArmedStatement(t *testing.T) {
 	st, p := pgRace(t)
@@ -243,7 +242,7 @@ func TestPause_HoldsATransactionAtTheArmedStatement(t *testing.T) {
 	}
 }
 
-// TestPause_StopsBeforeTheArmedAnchorIsLocked proves an anchor point fires
+// TestPause_StopsBeforeTheArmedAnchorIsLocked pins that an anchor point fires
 // before the lock is taken: while a cancel is parked at its job anchor, a
 // separate connection can lock the job row FOR UPDATE NOWAIT (which fails with
 // lock_not_available if the cancel already holds it), and the resumed cancel
@@ -286,7 +285,7 @@ func TestPause_StopsBeforeTheArmedAnchorIsLocked(t *testing.T) {
 	}
 }
 
-// TestPause_ASlowCompetitorHasNotWaited proves interleave reads "waited" from
+// TestPause_ASlowCompetitorHasNotWaited pins that interleave reads "waited" from
 // the database, not from a timer: a competitor that takes longer than any
 // settle time but waits on no lock (as a loaded runner can make one) is
 // reported as not having waited.

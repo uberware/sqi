@@ -15,8 +15,9 @@ import (
 // TestCreateJobSubmission_ConcurrentObserverSeesWholeJobs: while submitters
 // write jobs (three steps of 50 tasks, every second one blocked on the one
 // before), an observer polling throughout never sees a job missing a step or a
-// task, nor a blocked job without its dependency edge. SQLite gets this from its
-// single writer; PostgreSQL must get it from the one transaction.
+// task, nor a blocked job without its dependency edge. Every backend writes a
+// submission atomically (one transaction on the SQL stores), so a job becomes
+// visible whole.
 func TestCreateJobSubmission_ConcurrentObserverSeesWholeJobs(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {

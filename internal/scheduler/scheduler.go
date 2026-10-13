@@ -1448,12 +1448,11 @@ func (s *Scheduler) sweepRetiredJobs(ctx context.Context) {
 		return
 	}
 	cutoff := time.Now().UTC().Add(-s.cfg.JobRetention)
+	// On error, removed still lists the jobs deleted before it: they are gone
+	// and are announced like any others.
 	removed, err := s.store.DeleteTerminalJobsBefore(ctx, cutoff, s.cfg.JobRetentionIncludeFailed)
-	if err != nil {
-		if !errors.Is(err, context.Canceled) {
-			s.logger.WarnContext(ctx, "scheduler: job retention sweep failed", slog.Any("error", err))
-		}
-		return
+	if err != nil && !errors.Is(err, context.Canceled) {
+		s.logger.WarnContext(ctx, "scheduler: job retention sweep failed", slog.Any("error", err))
 	}
 	if len(removed) == 0 {
 		return

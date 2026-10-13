@@ -6,7 +6,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -32,7 +31,7 @@ func seedBackends(t *testing.T) map[string]store.Store {
 		}
 	})
 	out := map[string]store.Store{"fake": fake.New(), "sqlite": sq}
-	if os.Getenv("SQI_TEST_POSTGRES_DSN") != "" || os.Getenv("SQI_TEST_REQUIRE_POSTGRES") == "1" {
+	if storetest.PostgresEnabled() {
 		out["postgres"] = storetest.Postgres(t)
 	}
 	return out

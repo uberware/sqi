@@ -12,17 +12,14 @@ import (
 	"io/fs"
 	"net/url"
 	"os"
-	"runtime"
-	"strings"
+	"os/exec"
 	"sync"
 	"testing"
-	"weak"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // registers "pgx"
 
 	"github.com/uberware/sqi/internal/store/migrations"
 	"github.com/uberware/sqi/internal/store/postgres"
-	"github.com/uberware/sqi/internal/store/sqlstore"
 )
 
 // PostgresDSN returns the DSN of a fresh, migrated database, dropped when the
@@ -33,11 +30,32 @@ import (
 //
 // Each database is cloned from a template migrated once per schema; the
 // template's name carries a hash of the migration files, so a changed schema
-// gets a new template. Creation is serialized across test processes with an
-// advisory lock, because go test runs packages in parallel processes.
+// gets a new template. Building the template is serialized across test
+// processes with an advisory lock, because go test runs packages in parallel
+// processes; cloning it is not.
 func PostgresDSN(t testing.TB) string {
 	t.Helper()
 	return postgresDatabase(t, true)
+}
+
+// PostgresEnabled reports whether a store matrix should include PostgreSQL:
+// when SQI_TEST_POSTGRES_DSN is set, or when SQI_TEST_REQUIRE_POSTGRES=1 makes
+// its absence a failure (which [PostgresDSN] then reports).
+func PostgresEnabled() bool {
+	return os.Getenv("SQI_TEST_POSTGRES_DSN") != "" || os.Getenv("SQI_TEST_REQUIRE_POSTGRES") == "1"
+}
+
+// RequirePostgresTool skips the test when the PostgreSQL client tool name
+// (pg_dump, pg_restore) is not on PATH, or fails it when
+// SQI_TEST_REQUIRE_POSTGRES=1: a skip verifies nothing.
+func RequirePostgresTool(t testing.TB, name string) {
+	t.Helper()
+	if _, err := exec.LookPath(name); err != nil {
+		if os.Getenv("SQI_TEST_REQUIRE_POSTGRES") == "1" {
+			t.Fatalf("%s not on PATH; install the PostgreSQL client tools", name)
+		}
+		t.Skipf("%s not on PATH", name)
+	}
 }
 
 // PostgresEmptyDSN is [PostgresDSN] for an empty database: created with a
@@ -50,8 +68,11 @@ func PostgresEmptyDSN(t testing.TB) string {
 }
 
 // postgresDatabase creates a database for the test, cloned from the migrated
-// template when migrated is set and empty otherwise, under the advisory lock
-// that serializes creation across test processes, and returns its DSN.
+// template when migrated is set and empty otherwise, and returns its DSN. Only
+// finding or building the template is serialized across test processes (an
+// advisory lock): cloning a finished template needs no lock, since CREATE
+// DATABASE takes a shared lock on its template and copies of one template run
+// side by side.
 func postgresDatabase(t testing.TB, migrated bool) string {
 	t.Helper()
 	admin := os.Getenv("SQI_TEST_POSTGRES_DSN")
@@ -62,11 +83,58 @@ func postgresDatabase(t testing.TB, migrated bool) string {
 		t.Skip("PostgreSQL not configured: set SQI_TEST_POSTGRES_DSN, or run make test-postgres")
 	}
 	ctx := context.Background()
+	db := adminDB(t, admin)
+
+	name := "sqi_t_" + randomHex(t, 8)
+	var err error
+	if migrated {
+		tmpl := migratedTemplate(ctx, t, db, admin)
+		// WAL_LOG (the default since PostgreSQL 15) copies the small template
+		// through the WAL; FILE_COPY would force a checkpoint for every clone.
+		_, err = db.ExecContext(ctx, `CREATE DATABASE `+name+` TEMPLATE `+tmpl+` STRATEGY WAL_LOG`)
+	} else {
+		_, err = db.ExecContext(ctx, `CREATE DATABASE `+name)
+	}
+	if err != nil {
+		t.Fatalf("create test database: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := db.ExecContext(context.Background(), `DROP DATABASE `+name+` WITH (FORCE)`); err != nil {
+			t.Errorf("drop %s: %v", name, err)
+		}
+	})
+	return withDatabase(t, admin, name)
+}
+
+// adminPools holds one admin pool per admin DSN for the life of the test
+// process, so a test's database is created and dropped without opening a
+// connection of its own each time.
+var (
+	adminPoolsMu sync.Mutex
+	adminPools   = map[string]*sql.DB{}
+)
+
+// adminDB returns the process's admin pool for admin.
+func adminDB(t testing.TB, admin string) *sql.DB {
+	t.Helper()
+	adminPoolsMu.Lock()
+	defer adminPoolsMu.Unlock()
+	if db, ok := adminPools[admin]; ok {
+		return db
+	}
 	db, err := sql.Open("pgx", admin)
 	if err != nil {
 		t.Fatalf("open admin connection: %v", err)
 	}
-	defer db.Close()
+	adminPools[admin] = db
+	return db
+}
+
+// migratedTemplate returns the name of the template database migrated to the
+// current schema, creating it if this schema has none yet, under the advisory
+// lock that serializes template creation across test processes.
+func migratedTemplate(ctx context.Context, t testing.TB, db *sql.DB, admin string) string {
+	t.Helper()
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		t.Fatalf("admin connection: %v", err)
@@ -77,35 +145,6 @@ func postgresDatabase(t testing.TB, migrated bool) string {
 	}
 	defer conn.ExecContext(ctx, `SELECT pg_advisory_unlock(7371692)`) //nolint:errcheck // released with the connection anyway
 
-	name := "sqi_t_" + randomHex(t, 8)
-	if migrated {
-		tmpl := migratedTemplate(ctx, t, conn, admin)
-		_, err = conn.ExecContext(ctx, `CREATE DATABASE `+name+` TEMPLATE `+tmpl+` STRATEGY FILE_COPY`)
-	} else {
-		_, err = conn.ExecContext(ctx, `CREATE DATABASE `+name)
-	}
-	if err != nil {
-		t.Fatalf("create test database: %v", err)
-	}
-	t.Cleanup(func() {
-		d, err := sql.Open("pgx", admin)
-		if err != nil {
-			t.Errorf("drop %s: %v", name, err)
-			return
-		}
-		defer d.Close()
-		if _, err := d.ExecContext(context.Background(), `DROP DATABASE `+name+` WITH (FORCE)`); err != nil {
-			t.Errorf("drop %s: %v", name, err)
-		}
-	})
-	return withDatabase(t, admin, name)
-}
-
-// migratedTemplate returns the name of the template database migrated to the
-// current schema, creating it if this schema has none yet. The caller holds
-// the creation lock.
-func migratedTemplate(ctx context.Context, t testing.TB, conn *sql.Conn, admin string) string {
-	t.Helper()
 	tmpl := "sqi_tmpl_" + schemaHash(t)
 	var exists bool
 	if err := conn.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)`, tmpl).Scan(&exists); err != nil {
@@ -144,18 +183,6 @@ func PostgresWith(t testing.TB, opts postgres.Options) *postgres.Store {
 	if os.Getenv("SQI_TEST_PG_FORCE_TX_RETRY") == "1" {
 		opts.ForceTxRetry = true
 	}
-	// The lock-order checker sits beneath any wrapper the caller supplied, so
-	// every transaction of every PostgreSQL test store is checked.
-	check := newLockOrderDialect(t, nil)
-	outer := opts.WrapDialect
-	opts.WrapDialect = func(d sqlstore.Dialect) sqlstore.Dialect {
-		check.Dialect = d
-		var out sqlstore.Dialect = check
-		if outer != nil {
-			out = outer(out)
-		}
-		return out
-	}
 	st, err := postgres.Open(context.Background(), dsn, opts)
 	if err != nil {
 		t.Fatalf("postgres.Open: %v", err)
@@ -166,73 +193,6 @@ func PostgresWith(t testing.TB, opts postgres.Options) *postgres.Store {
 		}
 	})
 	return st
-}
-
-// lockRank is each anchor table's place in the global lock order
-// (docs/architecture.md, "Anchor rows").
-var lockRank = map[string]int{"workers": 0, "jobs": 1, "queues": 2, "farms": 3, "usage_pools": 4, "users": 5}
-
-// lockOrderDialect fails the test when a transaction takes an anchor out of
-// the global lock order: a table ranked below one this transaction already
-// locked, or rows of one table and mode out of id order within one call.
-// (ReleaseBlockedJob and CancelBlockedJob lock their job exclusively, then its
-// upstream jobs shared: the two modes are checked separately.)
-//
-// It remembers, per transaction, the rank of the last table locked. It never
-// sees a commit or a rollback, so the entry cannot be dropped when its
-// transaction ends; it is keyed by a weak pointer to the *sql.Tx instead, and
-// dropped by a cleanup once that transaction is garbage. A strong key would
-// keep every transaction of a long test alive, and clearing an entry on some
-// other signal (such as a new transaction's first anchor) would either drop a
-// live transaction's rank, missing an inversion, or never fire.
-type lockOrderDialect struct {
-	sqlstore.Dialect
-
-	t    testing.TB
-	mu   sync.Mutex
-	last map[weak.Pointer[sql.Tx]]int
-}
-
-// newLockOrderDialect returns a lockOrderDialect over d reporting to t.
-func newLockOrderDialect(t testing.TB, d sqlstore.Dialect) *lockOrderDialect {
-	return &lockOrderDialect{Dialect: d, t: t, last: map[weak.Pointer[sql.Tx]]int{}}
-}
-
-// tracked returns how many transactions d holds a rank for.
-func (d *lockOrderDialect) tracked() int {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return len(d.last)
-}
-
-func (d *lockOrderDialect) LockAnchors(ctx context.Context, tx *sql.Tx, anchors ...sqlstore.Anchor) error {
-	key := weak.Make(tx)
-	d.mu.Lock()
-	prev, seen := d.last[key]
-	if !seen {
-		runtime.AddCleanup(tx, d.forget, key)
-	}
-	var before *sqlstore.Anchor // the anchor before a in this call
-	for _, a := range anchors {
-		r := lockRank[a.Table]
-		if seen && r < prev {
-			d.t.Errorf("lock order: %s locked after a higher-ranked row in the same transaction: %v", a.Table, anchors)
-		}
-		if before != nil && before.Table == a.Table && before.Mode == a.Mode && before.ID > a.ID {
-			d.t.Errorf("lock order: %s rows not in id order: %v", a.Table, anchors)
-		}
-		prev, seen, before = r, true, &a
-	}
-	d.last[key] = prev
-	d.mu.Unlock()
-	return d.Dialect.LockAnchors(ctx, tx, anchors...)
-}
-
-// forget drops a transaction's rank once the transaction is garbage.
-func (d *lockOrderDialect) forget(key weak.Pointer[sql.Tx]) {
-	d.mu.Lock()
-	delete(d.last, key)
-	d.mu.Unlock()
 }
 
 // withDatabase returns dsn (URL form) pointed at database name.
@@ -263,7 +223,7 @@ func schemaHash(t testing.TB) string {
 	if err != nil {
 		t.Fatalf("hash migrations: %v", err)
 	}
-	return strings.ToLower(hex.EncodeToString(h.Sum(nil))[:12])
+	return hex.EncodeToString(h.Sum(nil))[:12]
 }
 
 func randomHex(t testing.TB, n int) string {

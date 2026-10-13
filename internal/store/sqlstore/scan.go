@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -178,6 +179,12 @@ func (b *dbBool) Scan(src any) error {
 }
 
 // ── Null helpers ──────────────────────────────────────────────────────────────
+
+// qmarks returns n "?" placeholders joined by commas, for an IN list whose
+// values are all bound.
+func qmarks(n int) string {
+	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
+}
 
 // nullString wraps s as a sql.NullString; empty string → invalid (NULL).
 func nullString(s string) sql.NullString {

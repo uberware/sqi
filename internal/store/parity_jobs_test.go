@@ -475,9 +475,10 @@ func TestParity_ListDependents(t *testing.T) {
 }
 
 // TestParity_SearchBackslashTerm pins that a search term holding a backslash,
-// a percent sign or an underscore matches the same jobs on every backend. SQLite's LIKE has
-// no escape character; PostgreSQL's ILIKE treats backslash as one unless told
-// an empty ESCAPE clause, which would make a Windows path match nothing.
+// a percent sign or an underscore matches the same jobs on every backend.
+// SQLite's LIKE has no escape character; PostgreSQL's ILIKE treats backslash
+// as one unless given an empty ESCAPE clause, which would make a Windows path
+// match nothing.
 func TestParity_SearchBackslashTerm(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {

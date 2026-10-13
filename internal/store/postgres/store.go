@@ -157,15 +157,13 @@ func openPool(dsn string, maxConns int) (*sql.DB, error) {
 	db := stdlib.OpenDB(*cfg)
 	db.SetMaxOpenConns(maxConns)
 	db.SetMaxIdleConns(maxConns)
-	// pgx prepares every distinct statement text as a named server-side
-	// statement on its connection and keeps up to 512 of them, so a connection
-	// that lives for the server's whole life holds every shape it has ever
-	// run. Recycling connections bounds that, and the memory the server
-	// process behind each one has grown, whatever the statements are.
-	// database/sql recycles only connections back in the pool: the server
-	// lock's *sql.Conn is checked out for the store's life, so it is never
-	// closed under the lock it holds (the cleaner and putConn see only free
-	// connections).
+	// pgx prepares each distinct statement text as a named server-side
+	// statement and keeps up to 512 per connection, so a connection that lived
+	// as long as the server would hold every statement it ever ran. Recycling
+	// connections bounds that, and the memory of the PostgreSQL backend process
+	// behind each one. database/sql recycles only idle connections in the
+	// pool, so the server lock's *sql.Conn, checked out for the store's life,
+	// is never closed under the lock it holds.
 	db.SetConnMaxLifetime(connMaxLifetime)
 	db.SetConnMaxIdleTime(connMaxIdleTime)
 	return db, nil
@@ -196,23 +194,23 @@ func (s *Store) Close() error {
 		return nil
 	}
 	s.closed = true
-	var errs []error
-	if s.lock != nil {
-		errs = append(errs, s.lock.release())
-		s.lock = nil
+	return errors.Join(s.releaseLock(), s.Store.Close())
+}
+
+// releaseLock releases the server lock, if held. Safe to call more than once.
+func (s *Store) releaseLock() error {
+	if s.lock == nil {
+		return nil
 	}
-	errs = append(errs, s.Store.Close())
-	return errors.Join(errs...)
+	err := s.lock.release()
+	s.lock = nil
+	return err
 }
 
 // closePools undoes a failed Open: it releases the server lock, if taken, and
 // closes whichever pools Open still owns.
 func (s *Store) closePools() error {
-	var errs []error
-	if s.lock != nil {
-		errs = append(errs, s.lock.release())
-		s.lock = nil
-	}
+	errs := []error{s.releaseLock()}
 	if s.rdb != nil {
 		errs = append(errs, s.rdb.Close())
 	}

@@ -234,14 +234,9 @@ type PostgresStoreConfig struct {
 func (p PostgresStoreConfig) MarshalYAML() (any, error) {
 	type plain PostgresStoreConfig
 	out := plain(p)
-	out.DSN = RedactDSN(out.DSN)
+	out.DSN = pgdsn.Redact(out.DSN)
 	return out, nil
 }
-
-// RedactDSN returns dsn with its password (and sslpassword) replaced by a
-// placeholder, failing closed where the password cannot be reliably located.
-// It is [pgdsn.Redact], which documents the rules.
-func RedactDSN(dsn string) string { return pgdsn.Redact(dsn) }
 
 // LogConfig controls structured log output.
 type LogConfig struct {

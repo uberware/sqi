@@ -60,8 +60,8 @@
 //
 // When [Options.AutoMigrate] is true (the default), [Open] applies every
 // pending migration through a goose provider over the embedded SQLite
-// migration set ([migrations.NewProvider]) before returning. Set AutoMigrate to false
-// in HA deployments where migrations are applied explicitly with
+// migration set ([migrations.NewProvider]) before returning. Set AutoMigrate
+// to false in HA deployments where migrations are applied explicitly with
 // "sqi-server migrate up" before rolling out new server instances.
 package sqlite
 

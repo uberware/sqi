@@ -450,11 +450,11 @@ func TestLeaseTask_SamePoolTwice(t *testing.T) {
 }
 
 // TestLeaseTask_RefusedForADisabledWorker: a lease for a disabled worker is
-// Lost and writes nothing. An offline worker is not refused (ruling R10: the
-// heartbeat sweep can take a live worker offline and nothing brings it back
-// online, so refusing it would starve it; see "Known gaps" in
-// docs/architecture.md), and neither is a worker with no row (the store does
-// not require registration; the scheduler does).
+// Lost and writes nothing. An offline worker is not refused (the heartbeat
+// sweep can take a live worker offline and nothing brings it back online, so
+// refusing it would starve it; see "Known gaps" in docs/architecture.md), and
+// neither is a worker with no row (the store does not require registration;
+// the scheduler does).
 func TestLeaseTask_RefusedForADisabledWorker(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {

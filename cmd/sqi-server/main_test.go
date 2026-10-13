@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -119,8 +118,7 @@ func resetFlagsChanged(cmd *cobra.Command) {
 // default, recursing into every subcommand. Changed is not the only sticky
 // state: the variable a flag writes keeps an earlier test's value too, so
 // "worker token issue" without --ttl would otherwise run with whatever --ttl
-// the last test passed (an out-of-range one, say), and a later --dsn-less
-// command would carry a stale DSN were it ever consulted without Changed.
+// the last test passed.
 //
 // The root command's persistent flags (-c/--config and the serve overrides)
 // are left alone: tests set persistentFlags directly (withConfigFile) before
@@ -625,15 +623,38 @@ func TestMigrateCmd_Postgres_UpThenStatus(t *testing.T) {
 	}
 }
 
+// TestMigrateCmd_Postgres_DownRefusesTheBaseline pins that `migrate down` on
+// PostgreSQL never rolls back the baseline, whose Down drops every table: the
+// command fails and the schema stays applied.
+func TestMigrateCmd_Postgres_DownRefusesTheBaseline(t *testing.T) {
+	dsn := storetest.PostgresEmptyDSN(t)
+	prepareRoot([]string{"migrate", "up", "--dsn", dsn})
+	_ = captureStdout(t, func() {
+		if err := Execute(); err != nil {
+			t.Fatalf("migrate up: %v", err)
+		}
+	})
+	prepareRoot([]string{"migrate", "down", "--dsn", dsn})
+	_ = captureStdout(t, func() {
+		if err := Execute(); err == nil || !strings.Contains(err.Error(), "baseline") {
+			t.Fatalf("migrate down from the baseline = %v; want a refusal naming the baseline", err)
+		}
+	})
+	prepareRoot([]string{"migrate", "status", "--dsn", dsn})
+	out := captureStdout(t, func() {
+		if err := Execute(); err != nil {
+			t.Fatalf("migrate status: %v", err)
+		}
+	})
+	if strings.Contains(out, "pending") {
+		t.Fatalf("migrate status after a refused down:\n%s", out)
+	}
+}
+
 // TestBackupCmd_Postgres backs up a migrated PostgreSQL database through the
 // CLI with pg_dump.
 func TestBackupCmd_Postgres(t *testing.T) {
-	if _, err := exec.LookPath("pg_dump"); err != nil {
-		if os.Getenv("SQI_TEST_REQUIRE_POSTGRES") == "1" {
-			t.Fatal("pg_dump not on PATH")
-		}
-		t.Skip("pg_dump not on PATH")
-	}
+	storetest.RequirePostgresTool(t, "pg_dump")
 	dsn := storetest.PostgresDSN(t)
 	out := filepath.Join(t.TempDir(), "sqi.dump")
 	prepareRoot([]string{"backup", "--dsn", dsn, "--out", out})

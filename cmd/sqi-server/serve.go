@@ -182,7 +182,7 @@ func ignoredStoreKeys(cfg config.Config, src config.Sources) []string {
 
 // warnIgnoredStoreKeys logs one warning per [ignoredStoreKeys] entry, so an
 // operator who moved to PostgreSQL and left the SQLite settings in place is
-// told they have no effect rather than left to wonder.
+// told they have no effect.
 func warnIgnoredStoreKeys(ctx context.Context, logger *slog.Logger, cfg config.Config, src config.Sources) {
 	for _, key := range ignoredStoreKeys(cfg, src) {
 		logger.WarnContext(ctx, key+" is ignored when store.driver is postgres")

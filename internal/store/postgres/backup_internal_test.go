@@ -69,8 +69,8 @@ func isolatePGEnv(t *testing.T) {
 }
 
 // TestPgDumpInvocation_NoPasswordInArgv builds pg_dump's argument list for
-// DSNs carrying a password, in both forms and in every spelling known to have
-// leaked through a parser other than pgx's, and checks that the password is
+// DSNs carrying a password, in both forms and in keyword/value spellings that
+// a parser other than pgx's can misread, and checks that the password is
 // handed over through PGPASSWORD and never appears among the arguments.
 func TestPgDumpInvocation_NoPasswordInArgv(t *testing.T) {
 	isolatePGEnv(t)
@@ -82,7 +82,7 @@ func TestPgDumpInvocation_NoPasswordInArgv(t *testing.T) {
 		{"host=db password='p@ss word' dbname=sqi sslmode=verify-full", "p@ss word", "p@ss word"},
 		{"postgresql://sqi:p%40ss@db/sqi", "p@ss", "p%40ss"},
 		{"postgres://sqi:hunter2@h1:5432,h2:5432/sqi", "hunter2", "hunter2"},
-		// The keyword/value spellings a regex leaked.
+		// Keyword/value spellings a regular expression misreads.
 		{"host=db password='ab\\\ncd'", "ab\ncd", "cd"},
 		{"host=db password=hun\\\nter2", "hun\nter2", "ter2"},
 		{"host=db password\v=hunter2", "hunter2", "hunter2"},

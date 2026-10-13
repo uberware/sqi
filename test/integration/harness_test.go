@@ -185,8 +185,8 @@ type testServer struct {
 
 // startServer boots a full sqi-server on the store storeFor picks (a temp
 // SQLite file, or a fresh PostgreSQL database under
-// SQI_TEST_STORE_DRIVER=postgres), a temp NATS data
-// directory, and scheduler tuned for fast test cycles.  It blocks until the
+// SQI_TEST_STORE_DRIVER=postgres), a temp NATS data directory, and scheduler
+// tuned for fast test cycles.  It blocks until the
 // HTTP server is accepting connections and /readyz returns 200 (verifying NATS
 // is up and streams are provisioned), then returns a *testServer.
 //

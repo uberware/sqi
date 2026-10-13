@@ -86,23 +86,16 @@ func keywordValueWithoutSecrets(dsn string) (rest string, sslPassword, ok bool) 
 	if !ok {
 		return "", false, false
 	}
-	var b strings.Builder
-	removed := false
+	kept := pairs[:0]
 	for _, p := range pairs {
 		if isPasswordKey(p.key) {
-			removed = true
 			sslPassword = sslPassword || (strings.EqualFold(p.key, "sslpassword") && p.value != "")
 			continue
 		}
-		if b.Len() > 0 {
-			b.WriteByte(' ')
-		}
-		b.WriteString(p.key)
-		b.WriteByte('=')
-		b.WriteString(quoteKeywordValue(p.value))
+		kept = append(kept, p)
 	}
-	if !removed {
+	if len(kept) == len(pairs) {
 		return dsn, false, true
 	}
-	return b.String(), sslPassword, true
+	return joinKeywordValue(kept), sslPassword, true
 }

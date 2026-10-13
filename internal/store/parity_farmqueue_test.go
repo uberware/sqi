@@ -416,7 +416,8 @@ func TestParity_DeleteQueue(t *testing.T) {
 }
 
 // TestParity_DeleteFarmStillReferenced pins that a farm a queue still names is
-// not deleted: SQLite refuses on the foreign key, and the fake must agree.
+// not deleted: the SQL stores refuse on the foreign key, and the fake must
+// agree.
 func TestParity_DeleteFarmStillReferenced(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {

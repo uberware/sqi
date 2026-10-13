@@ -202,13 +202,7 @@ func cmpTask(a, b store.Task, field store.TaskSortField, dir store.SortDir) int 
 	default: // TaskSortByCreatedAt
 		n = a.CreatedAt.Compare(b.CreatedAt)
 	}
-	if dir == store.SortDesc {
-		n = -n
-	}
-	if n == 0 {
-		return cmp.Compare(a.ID, b.ID)
-	}
-	return n
+	return withIDTieBreak(n, dir, a.ID, b.ID)
 }
 
 // CountActiveTasksInQueue returns the number of tasks in 'assigned' or

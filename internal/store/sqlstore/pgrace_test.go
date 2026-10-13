@@ -120,9 +120,8 @@ func TestPGRace_G4_CancelReportsALeaseThatRaced(t *testing.T) {
 // row's shared lock serializes the two: an offline transition never commits
 // while a lease to its worker is in flight, so it reclaims every task assigned
 // to the worker when it commits. A lease that waits for the transition then
-// lands on the offline worker, which is the documented behavior (ruling R10:
-// the lease refuses only a disabled worker; see "Known gaps" in
-// docs/architecture.md).
+// lands on the offline worker: the lease refuses only a disabled worker (see
+// "Known gaps" in docs/architecture.md).
 func TestPGRace_G9_OfflineReclaimsEveryTaskALeaseCommitted(t *testing.T) {
 	t.Run("lease first", func(t *testing.T) {
 		st, p := pgRace(t)
@@ -172,7 +171,7 @@ func TestPGRace_G9_OfflineReclaimsEveryTaskALeaseCommitted(t *testing.T) {
 			t.Fatalf("reclaimed task status = %s, want ready", got.Status)
 		}
 		if lease.Outcome != store.LeaseLeased {
-			t.Fatalf("lease outcome = %s, want leased: an offline worker is not refused (R10)", lease.Outcome)
+			t.Fatalf("lease outcome = %s, want leased: an offline worker is not refused", lease.Outcome)
 		}
 		if got := mustTask(t, st, w.Tasks[1]); got.Status != store.TaskStatusAssigned || got.AssignedWorkerID != "w1" {
 			t.Fatalf("leased task = %s on %q, want assigned on w1", got.Status, got.AssignedWorkerID)
@@ -292,6 +291,35 @@ func TestPGRace_LeaseRefusesAJobMovedBeforeItsLock(t *testing.T) {
 	}
 	if lease.Outcome == store.LeaseLeased {
 		t.Fatalf("lease landed in queue %s past its cap of 1: it was decided against the queue read before the job moved", full.ID)
+	}
+	if got := mustTask(t, st, w.Tasks[0]); got.Status != store.TaskStatusReady {
+		t.Fatalf("task status = %s, want ready (the refused lease writes nothing)", got.Status)
+	}
+}
+
+// TestPGRace_LeaseRefusesAWorkerDisabledBeforeItsLock: a worker disabled after
+// the lease's scope read but before it locks the worker row is refused. The
+// disabled check is part of the guarded task write, which runs under that
+// lock, so it sees the committed disable rather than the row as it was.
+func TestPGRace_LeaseRefusesAWorkerDisabledBeforeItsLock(t *testing.T) {
+	st, p := pgRace(t)
+	w := seedWorld(t, st, 1, "w1")
+	p.atAnchor("workers", "w1") // after the scope read, before the worker lock
+	var lease store.LeaseResult
+	lerr, derr, _ := interleave(t, p,
+		func() (err error) { lease, err = st.LeaseTask(t.Context(), leaseReq(w.Tasks[0], "w1")); return },
+		func() error {
+			_, err := st.SetWorkerDisabled(t.Context(), "w1", true)
+			return err
+		})
+	if got, want := p.matched(), "anchor workers/w1"; got != want {
+		t.Fatalf("paused at %q, want %q", got, want)
+	}
+	if lerr != nil || derr != nil {
+		t.Fatalf("lease err %v, disable err %v", lerr, derr)
+	}
+	if lease.Outcome != store.LeaseLost {
+		t.Fatalf("lease outcome = %s, want lost: a worker disabled before the lock was leased to", lease.Outcome)
 	}
 	if got := mustTask(t, st, w.Tasks[0]); got.Status != store.TaskStatusReady {
 		t.Fatalf("task status = %s, want ready (the refused lease writes nothing)", got.Status)
@@ -639,12 +667,14 @@ func assertLogHeldOff(t *testing.T, st *postgres.Store, before int64, waited boo
 }
 
 // anchorRecorder is the PostgreSQL dialect with the job anchors each
-// transaction takes recorded in order, keyed by transaction.
+// transaction takes recorded, keyed by transaction, and every job anchor in
+// the order it was taken.
 type anchorRecorder struct {
 	sqlstore.Dialect
 
-	mu   *sync.Mutex
-	jobs map[*sql.Tx][]string
+	mu    *sync.Mutex
+	jobs  map[*sql.Tx][]string
+	order *[]string
 }
 
 func (d anchorRecorder) LockAnchors(ctx context.Context, tx *sql.Tx, anchors ...sqlstore.Anchor) error {
@@ -652,23 +682,30 @@ func (d anchorRecorder) LockAnchors(ctx context.Context, tx *sql.Tx, anchors ...
 	for _, a := range anchors {
 		if a.Table == "jobs" {
 			d.jobs[tx] = append(d.jobs[tx], a.ID)
+			*d.order = append(*d.order, a.ID)
 		}
 	}
 	d.mu.Unlock()
 	return d.Dialect.LockAnchors(ctx, tx, anchors...)
 }
 
-// TestPGRace_RetentionLocksItsCandidatesInIDOrder: the sweep holds every lock
-// until its one commit, so it must take the job anchors in id order whatever
-// order its SELECT returned them in (heap order here, with no ORDER BY).
+// TestPGRace_RetentionLocksOneJobPerTransaction: the sweep deletes each job in
+// its own transaction, so no transaction holds more than one job's lock, and
+// it takes the jobs in id order whatever order its SELECT returned them in
+// (heap order here, with no ORDER BY), so its reported result is in id order.
 //
-// The order is checked per transaction: under SQI_TEST_PG_FORCE_TX_RETRY=1 the
-// sweep runs twice, the rehearsal rolled back, and each run must be sorted.
-func TestPGRace_RetentionLocksItsCandidatesInIDOrder(t *testing.T) {
-	var mu sync.Mutex
+// Under SQI_TEST_PG_FORCE_TX_RETRY=1 each job's transaction runs twice, the
+// rehearsal rolled back: each still locks one job.
+func TestPGRace_RetentionLocksOneJobPerTransaction(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		order []string
+	)
 	locked := map[*sql.Tx][]string{}
 	opts := postgres.DefaultOptions()
-	opts.WrapDialect = func(d sqlstore.Dialect) sqlstore.Dialect { return anchorRecorder{Dialect: d, mu: &mu, jobs: locked} }
+	opts.WrapDialect = func(d sqlstore.Dialect) sqlstore.Dialect {
+		return anchorRecorder{Dialect: d, mu: &mu, jobs: locked, order: &order}
+	}
 	st := storetest.PostgresWith(t, opts)
 	farm, queue := seedFarmQueueRace(t, st)
 	ids := []string{"job-c", "job-a", "job-d", "job-b"}
@@ -678,13 +715,14 @@ func TestPGRace_RetentionLocksItsCandidatesInIDOrder(t *testing.T) {
 			Task(id+"-t", "step-"+id, store.TaskStatusSucceeded).
 			Submit(t, st)
 	}
-	// The test proves the sort only if the sweep's SELECT, which has no ORDER
-	// BY, would hand the jobs back unsorted without it.
+	// The sort is exercised only if the sweep's SELECT, which has no ORDER BY,
+	// would hand the jobs back unsorted without it.
 	if heap := heapOrderOfJobs(t, st); slices.IsSorted(heap) {
 		t.Fatalf("a SELECT without ORDER BY returned %v, already in id order: this test would pass without the sort", heap)
 	}
 	mu.Lock()
 	clear(locked)
+	order = nil
 	mu.Unlock()
 	deleted, err := st.DeleteTerminalJobsBefore(t.Context(), time.Now().Add(time.Hour), true)
 	if err != nil {
@@ -698,11 +736,13 @@ func TestPGRace_RetentionLocksItsCandidatesInIDOrder(t *testing.T) {
 	if len(locked) == 0 {
 		t.Fatal("no transaction took a job anchor: the recorder saw nothing")
 	}
-	want := []string{"job-a", "job-b", "job-c", "job-d"}
 	for _, got := range locked {
-		if !slices.Equal(got, want) {
-			t.Errorf("a sweep transaction took the job anchors in the order %v, want %v", got, want)
+		if len(got) != 1 {
+			t.Errorf("a sweep transaction took the job anchors %v, want exactly one", got)
 		}
+	}
+	if !slices.IsSorted(order) {
+		t.Errorf("the sweep took the job anchors in the order %v, want id order", order)
 	}
 	if got := idsOf(deleted); !slices.IsSorted(got) {
 		t.Fatalf("purged jobs reported in the order %v, want id order", got)
@@ -830,18 +870,13 @@ func TestPGRace_G5_RetryAndCancelSerialize(t *testing.T) {
 // enabled admins at once refuses one of them.
 //
 // The guard counts the other enabled admins inside the DELETE, and under READ
-// COMMITTED a statement reads its snapshot when it starts. Parking one delete
-// before its statement therefore proves nothing: the other delete would finish
-// first and the parked one would count a fresh snapshot, so it would refuse
-// even with no anchors. The race needs both snapshots taken before either
-// commit, so the test makes the second delete hold its snapshot while the
-// first one runs: admin-b has a session, whose row a separate connection
-// holds, and the cascade that removes it stalls the second delete after its
-// guard has counted two admins. Without the admin anchors the second delete
-// has counted (and removed admin-b) when the first one, parked at its DELETE,
-// resumes, counts admin-b still alive and removes admin-a: no admin is left.
-// With them the second delete waits for the first one's locks and, when it
-// finally runs, counts one admin and is refused.
+// COMMITTED a statement takes its snapshot when it starts, so the race needs
+// both deletes to take their snapshots before either commits. Admin-a's delete
+// is parked before its DELETE; admin-b has a session whose row a separate
+// connection holds, so admin-b's delete stalls in its cascade after its guard
+// has counted two admins. Without the admin anchors both deletes then succeed
+// and no admin is left. With them admin-b's delete waits for admin-a's locks,
+// counts one admin and is refused.
 func TestPGRace_G10_TwoAdminDeletionsLeaveOneAdmin(t *testing.T) {
 	st, p := pgRace(t)
 	for _, id := range []string{"admin-a", "admin-b"} {
@@ -909,8 +944,8 @@ func TestPGRace_G10_TwoAdminDeletionsLeaveOneAdmin(t *testing.T) {
 // depends_on takes its upstream job rows FOR SHARE only for the dependency
 // re-check at the end of its transaction. While it is still inserting its
 // tasks, a writer that locks an upstream job exclusively (here a worker's
-// completion of an upstream task) must not wait for it: a 1M-task submission
-// takes tens of seconds to insert.
+// completion of an upstream task) must not wait for it, since a large
+// submission can spend a long time inserting.
 func TestPGRace_SubmissionDoesNotHoldItsUpstreamWhileInserting(t *testing.T) {
 	st, p := pgRace(t)
 	up := seedWorld(t, st, 1, "w1")

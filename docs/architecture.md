@@ -212,52 +212,32 @@ transaction instead of through N gaps. `GET /healthz` (liveness) registers no
 checkers and is not affected.
 
 **On PostgreSQL a submission holds one connection of the write pool**
-(`store.postgres.max_conns`), so other writers run on the rest. Writers on an
-upstream job wait for it, briefly; administrative writes to its own queue or
-farm row wait for all of it (below). A submission with
-`depends_on` reads its upstream jobs once without locking them, before it
-inserts a step or a task, so a submission naming a failed, canceled or missing
-upstream fails before doing that work (on both backends). It re-checks them
-last, after every insert, and holds their rows `FOR SHARE` from that check to
-its commit. In that short window a
-writer that locks an upstream job row exclusively (a completion, a cancel, a
-retry or a reap of one of its tasks, a finalize, a delete) waits for the
-commit. While the submission is still inserting, nothing on the upstream waits
+(`store.postgres.max_conns`), and other writers run on the rest. A submission
+with `depends_on` reads its upstream jobs once, unlocked, before it inserts a
+step or a task, so one naming a failed, canceled or missing upstream fails
+before doing that work (on both backends). It checks them again after the last
+insert and holds their rows `FOR SHARE` from that check to its commit. A writer
+that locks an upstream job row exclusively (a completion, cancel, retry or reap
+of one of its tasks, a finalize, a delete) waits only for that short window,
+not for the inserts
 (`TestPGRace_SubmissionDoesNotHoldItsUpstreamWhileInserting`). A submission
 without `depends_on` locks no other job's row.
 
-Leases into the submission's own queue and farm do not wait either. The new
-job row's foreign keys make PostgreSQL hold `FOR KEY SHARE` on its queue and
-farm rows from the job's insert to the commit, and a lease anchors a capped
-queue or farm `FOR NO KEY UPDATE`, which does not conflict with it
-(`TestPGRace_SubmissionDoesNotBlockLeasesOnItsQueue`). With `FOR UPDATE`
-every lease on a capped queue or farm would wait for the whole submission:
-33 s at 1,000,000 tasks on the host below. What does wait for the whole
-submission is a write that takes `FOR UPDATE` on that queue or farm row, which
-conflicts with `FOR KEY SHARE`: deleting the queue or the farm, and renaming
-either (or moving the queue to another farm), since those columns are in a
-unique index and an `UPDATE` that changes a uniquely indexed column locks the
-row `FOR UPDATE`. An update that leaves them unchanged does not wait. Those are rare administrative actions, and
-they wait until the submission commits or rolls back.
+Leases into the submission's own queue and farm do not wait for it. The new
+job row's foreign keys hold `FOR KEY SHARE` on its queue and farm rows until
+the commit, and a lease locks a capped queue or farm `FOR NO KEY UPDATE`, which
+does not conflict with that
+(`TestPGRace_SubmissionDoesNotBlockLeasesOnItsQueue`). A write that takes
+`FOR UPDATE` on the queue or farm row does wait for the whole submission:
+deleting the queue or the farm, renaming either, or moving the queue to another
+farm (those columns are in a unique index, and an `UPDATE` that changes a
+uniquely indexed column locks the row `FOR UPDATE`). An update that leaves
+those columns unchanged does not wait.
 
-`Ping`
-uses a separate four-connection read pool, as on SQLite, and
-`TestPostgres_PingWhileLargeSubmission` pins that it answers within the
-health budget during a 50,000-task submission. The store inserts a PostgreSQL
-submission's tasks 500 rows to a statement (SQLite keeps one row per
-statement). Measured on one host (WSL2 on a 12-thread Windows 11 machine,
-PostgreSQL 18.6 in Docker on tmpfs over loopback, SQLite on the WSL ext4 disk,
-one job, one step, N ready tasks, `TestSubmissionWriteTimes`):
-
-| tasks | SQLite | PostgreSQL, one row per `INSERT` | PostgreSQL, 500 rows per `INSERT` (shipped) |
-|---|---|---|---|
-| 50,000 | 4.6 s | 16.6 s | 1.7 s |
-| 75,000 | 7.1 s | 25.0 s | 2.6 s |
-| 1,000,000 | 1m37.9 s | 6m02 s | 33.3 s |
-
-The SQLite column is slower than the M-series figures above because it is a
-different host. tmpfs removes PostgreSQL's fsync cost, so a server on a real
-disk is slower than this column.
+`Ping` uses a separate four-connection read pool, as on SQLite, so readiness
+answers during a large submission (`TestPostgres_PingWhileLargeSubmission`
+submits 50,000 tasks). A PostgreSQL submission inserts its tasks 500 rows per
+statement; SQLite inserts one row per statement.
 
 **Every multi-row rule is one store operation.** Every rule
 that spans more than one row (a usage claim exists only while its attempt is
@@ -267,8 +247,8 @@ connection provides the serialization those operations rely on, and the
 anchor-lock hook most of them call (`Dialect.LockAnchors`) is a no-op in the
 SQLite dialect. On PostgreSQL the same operations take row locks on their
 anchor rows instead: [Store invariants](#store-invariants) lists each
-operation's anchors, the global lock order, and the few races the anchors
-leave open by design.
+operation's anchors, the global lock order, and the races the anchors leave
+open.
 
 **Cross-job dependencies (`depends_on`).** A submission — raw `POST /api/v1/jobs`
 or `POST /api/v1/products/{name}/jobs`, from the REST API, the web UI, or the
@@ -829,9 +809,9 @@ in the first place.
 implements it: every store method's SQL lives there, written once with `?`
 placeholders. A `Dialect` supplies what differs between databases:
 placeholder rewriting (`Rebind`), error classes (`Classify`), anchor locking
-(`LockAnchors`, with `LockUpdate` or `LockShare` per anchor), time and boolean
-binding (`BindTime`, `BindBool`), and case-insensitive matching (`CIEqual`,
-`CILike`). Two packages open a database and supply its dialect:
+(`LockAnchors`, with a `LockMode` per anchor, and `ForUpdate` for other row
+locks), time and boolean binding (`BindTime`, `BindBool`), and
+case-insensitive matching (`CIEqual`, `CILike`). Two packages open a database and supply its dialect:
 
 - `internal/store/sqlite` opens SQLite (the write and read pools, PRAGMAs,
   migrations) and holds what only SQLite has: WAL checkpointing, and backup
@@ -881,9 +861,11 @@ there because:
   a jittered 5–50 ms pause between them. Each retry is logged at Debug with the
   operation and the error, which carries the SQLSTATE. When the attempts run
   out, the caller gets the error as it gets any store error (an HTTP 500, or a
-  Nak). Every transaction body is written to be re-run: `make test-postgres`
-  runs the store packages a second time with every transaction rehearsed once
-  and rolled back (`SQI_TEST_PG_FORCE_TX_RETRY=1`).
+  Nak). Every transaction body must be safe to re-run: one that produces a
+  value returns it through `inTxValue` rather than setting a variable outside
+  the body. `make test-postgres` checks this by running the store packages a
+  second time with every transaction rehearsed once and rolled back
+  (`SQI_TEST_PG_FORCE_TX_RETRY=1`).
 
 The PostgreSQL schema is SQLite's, with these differences:
 
@@ -996,17 +978,19 @@ A missing anchor row locks nothing and is not an error: the operation's own
 guarded statements decide what its absence means.
 
 **On SQLite the dialect's `LockAnchors` is a no-op, and I3–I5 hold because the
-single write connection serializes every write transaction. On PostgreSQL the
-dialect locks each anchor row with `SELECT 1 FROM <table> WHERE id = $1 FOR
-UPDATE` (`LockUpdate`), `FOR SHARE` (`LockShare`) or `FOR NO KEY UPDATE`
-(`LockNoKeyUpdate`), in the order given.** Job, worker and user anchors are
-`FOR UPDATE` unless marked shared. Queue, farm and usage-pool anchors (the
-lease's capacity anchors, the only ones on those tables) are `FOR NO KEY
-UPDATE`: it conflicts with itself, so two leases on one capped row still
-serialize, and with an `UPDATE` or `DELETE` of the row, so a cap change waits
-for a lease in flight, but not with the `FOR KEY SHARE` lock a foreign-key
-check takes, so inserting a job into the queue and farm never waits for a
-lease, nor a lease for it. The anchors each operation takes:
+single write connection serializes every write transaction.** On PostgreSQL
+the dialect locks the rows in the order given, with one `SELECT 1 FROM <table>
+WHERE id … ORDER BY id FOR …` per run of anchors on one table in one mode:
+`FOR UPDATE` (`LockUpdate`), `FOR SHARE` (`LockShare`) or `FOR NO KEY UPDATE`
+(`LockNoKeyUpdate`). Job, worker and user anchors are `LockUpdate` unless
+marked shared. Queue, farm and usage-pool anchors, which only the lease takes,
+are `LockNoKeyUpdate`. That mode conflicts with itself and with an `UPDATE` or
+`DELETE` of the row, so two leases on one capped row serialize (which makes
+I5's count and write atomic; `TestPGRace_G2_PoolCapHoldsUnderConcurrentLeases`
+covers pools) and a cap change waits for a lease in flight. It does not
+conflict with the `FOR KEY SHARE` lock a foreign-key check takes, so inserting
+a job into the queue and farm and leasing from them never wait for each other.
+The anchors each operation takes:
 
 | Operation | Anchor rows, in lock order | Notes |
 |---|---|---|
@@ -1020,8 +1004,8 @@ lease, nor a lease for it. The anchors each operation takes:
 | `ReleaseStep`, `CancelPendingStep` | the step's job row | |
 | `ReleaseBlockedJob`, `CancelBlockedJob` | the job row, then each upstream job row sorted by id, shared | |
 | `CreateJobSubmission` (dependency re-check) | each upstream job row, sorted by id, shared | |
-| `DeleteJob` | the job row, then (not an anchor) each of the job's tasks that has an attempt, `FOR UPDATE` | The task locks hold off a log append, whose foreign-key check takes `FOR KEY SHARE` on its task row; see [What the anchors leave open](#what-the-anchors-leave-open). As a backstop the cascade is still retried on a foreign-key violation (`23503`) or a deadlock (`40P01`). |
-| `DeleteTerminalJobsBefore` (retention) | each candidate's job row, candidates sorted by id, each taken just before that job's eligibility re-check, then that job's tasks as for `DeleteJob` | Every lock is held to the sweep's one commit. A job that no longer qualifies under its lock (a retry revived it) is skipped. The cascade is retried as for `DeleteJob`. |
+| `DeleteJob` | the job row, then (not an anchor) each of the job's tasks that has an attempt, `FOR UPDATE` | The task locks hold off a log append, whose foreign-key check takes `FOR KEY SHARE` on its task row; see [What the anchors leave open](#what-the-anchors-leave-open). As a backstop the cascade is retried on a foreign-key violation (`23503`) or a deadlock (`40P01`). |
+| `DeleteTerminalJobsBefore` (retention) | each candidate's job row, one job per transaction, candidates sorted by id, then that job's tasks as for `DeleteJob` | The candidates are read unlocked; each job is deleted only if its eligibility, re-checked under its lock, still holds. A job that no longer qualifies (a retry revived it) is skipped. The cascade is retried as for `DeleteJob`. On an error the result lists the jobs already deleted. |
 | `ReclaimStaleAssignedTasks` | per batch of up to 500 candidates, the batch's job rows sorted by id, taken **before** the `UPDATE` | The candidates are read unlocked, then each batch runs `UPDATE … RETURNING` re-guarded on the candidate ids, `status = 'assigned'` and the cutoff, so no task row is locked before its job row. Each batch commits on its own; on an error the result lists the tasks earlier batches reclaimed. |
 | `DemoteStalledJobs` | each candidate's job row, one job per transaction, in id order | The candidates are read unlocked; each job is demoted only if the stalled predicate, re-run under its lock, still holds. A lease in flight holds the job row shared, so it is waited for and the task it assigned is seen. On an error the result lists the jobs already demoted. |
 | `OfflineStaleWorker`, `OfflineWorker` | the worker row, then the job row of each of the worker's assigned or running tasks, sorted by id | A lease holds the worker row shared, so the offline transition waits for a lease in flight and reclaims what it committed. |
@@ -1037,38 +1021,33 @@ Every operation takes the anchors it needs in one global order:
 
 Rows of one table are locked in id order, and a table is never locked after a
 table later in the list, so two transactions whose anchors overlap take them in
-the same order and do not deadlock on them. The one deliberate exception is
-the blocked-job operations: `ReleaseBlockedJob` and `CancelBlockedJob` lock
-their own job exclusively first, then its upstream jobs shared, and their own
-job can sort after an upstream. Such a transaction can therefore deadlock with
-another that locks the same jobs in id order. PostgreSQL detects the deadlock
-and aborts one of the two with `40P01`, which the store retries like any
-aborted transaction (see [Two backends](#two-backends)); the same holds for
-locks PostgreSQL takes implicitly, outside this order (the row an `UPDATE`
-writes, the referenced row a foreign key checks). Every PostgreSQL test store
-checks the anchor order: `storetest.Postgres`
-wraps the dialect in a checker that fails the test when a transaction locks a
-table out of order, or rows of one table and mode out of id order within one
-call.
+the same order and do not deadlock on them. The one exception is the
+blocked-job operations: `ReleaseBlockedJob` and `CancelBlockedJob` lock their
+own job exclusively first, then its upstream jobs shared, and their own job can
+sort after an upstream, so such a transaction can deadlock with another that
+locks the same jobs in id order. PostgreSQL detects the deadlock and aborts one
+of the two with `40P01`, which the store retries like any aborted transaction
+(see [Two backends](#two-backends)). The same holds for locks PostgreSQL takes
+implicitly, outside this order (the row an `UPDATE` writes, the referenced row
+a foreign key checks).
 
-**The lease takes the worker and job rows shared.** Leases among themselves
-never wait on each other for those rows, so concurrent leases of one job, or
-for one worker, stay parallel. Every operation that holds either row `FOR
-UPDATE` waits for a lease in flight, and the lease waits for it: a cancel, a
-completion or any other job-anchored writer on the same job, and an offline or
-restart reclaim of the same worker. That is what makes the cancel's reported
-set exact, the latest-attempt checks sound, the offline reclaim complete and
-demotion safe. The cost is that completions and other job-row writers serialize
-briefly with leases on the same job (they already serialized among themselves
-on that row), a write to a worker row, such as a heartbeat, waits briefly for
-that worker's lease in flight, and a share lock taken on a row another
-transaction also share-locks costs PostgreSQL multixact bookkeeping.
+The store enforces the anchor order on both backends: a transaction that locks
+a table out of order, or rows of one table and mode out of id order, is
+refused before the lock is taken (`lockOrder.check` in
+`internal/store/sqlstore/anchor.go`), so an inversion fails the SQLite tests
+too. Task rows locked outside the anchors (a delete's `lockJobLoggedTasksTx`,
+the row a lease's `UPDATE` writes) are not part of this check.
 
-**The lease's capacity anchors are `FOR NO KEY UPDATE`.** Leases on the same
-capped queue, farm or pool still wait for each other, which is what makes I5's
-count and write atomic (G2 pins it for pools), and a cap change waits for a
-lease in flight. A submission into the queue and farm does not make them wait,
-because its job row's foreign-key locks are `FOR KEY SHARE`.
+**The lease takes the worker and job rows shared.** Concurrent leases of one
+job, or for one worker, do not wait on each other for those rows. Every
+operation that holds either row `FOR UPDATE` and a lease in flight wait for
+each other: a cancel, a completion or any other job-anchored writer on the same
+job, and an offline or restart reclaim of the same worker. That makes the
+cancel's reported set exact, the latest-attempt checks sound, the offline
+reclaim complete and demotion safe. The cost: job-row writers serialize briefly
+with leases on the same job, a write to a worker row (such as a heartbeat)
+waits briefly for that worker's lease in flight, and a row share-locked by more
+than one transaction costs PostgreSQL multixact bookkeeping.
 
 ### Statement order
 
@@ -1100,48 +1079,43 @@ when it is not), so the claims are freed even when the task move is refused.
 The two orders coexist only because these
 operations lock the task's job row first, so they cannot interleave on the same
 job; the reaper locks its candidates' job rows too, before its `UPDATE`.
-`LeaseTask` writes its
-task row before any count, so that row lock orders it against a cancel of the
-same task and every count after it includes the task itself; it inserts the
-attempt before the claims that reference it.
+`LeaseTask` writes its task row before any count, so that row lock orders it
+against a cancel of the same task and every count after it includes the task
+itself; it inserts the attempt before the claims that reference it.
 
 ### What the anchors leave open
 
 None of the following can happen on SQLite, where the single write connection
-serializes every writer. On PostgreSQL they are left open on purpose:
+serializes every writer. On PostgreSQL they remain open:
 
-- **A log line that races a job delete is dropped.** `CreateTaskLog` runs
-  without a transaction and takes no anchor. `DeleteJob` and retention
-  therefore lock, after the job row, each of the job's tasks that has an
-  attempt `FOR UPDATE` before the cascade (claims, logs, attempts, tasks,
-  steps, dependency edges, then the job row). A log insert's foreign-key check
-  takes `FOR KEY SHARE` on its task row, so an append arriving from then on
-  waits for the delete and, once it commits, fails on that foreign key; one
-  already past the check commits first and the cascade deletes its row
-  (`TestPGRace_G7_DeleteJobHoldsOffALogThatRaced`). The task rows are locked
-  rather than the attempt rows because an insert checks its task before its
-  attempt: holding the attempts would let it hold its task while waiting, and
-  the cascade's delete of the tasks would then deadlock with it. As a
-  backstop both operations still retry the cascade on a foreign-key violation
-  (`23503`) or a deadlock (`40P01`), within the same 5-attempt bound as any
-  retry; inside those two operations a `23503` is retried rather than reported
-  as `store.ErrConflict`. The log line itself, which belongs to a job being
-  deleted, is lost either way. The log ingest consumer logs the failed insert
-  at Warn and Naks the message, and discards the redelivery once it finds no
-  attempt.
+- **A log line that races a job delete is lost.** `CreateTaskLog` runs
+  without a transaction and takes no anchor. `DeleteJob` and retention lock,
+  after the job row, each of the job's tasks that has an attempt `FOR UPDATE`
+  before the cascade (claims, logs, attempts, tasks, steps, dependency edges,
+  then the job row). A log insert's foreign-key check takes `FOR KEY SHARE` on
+  its task row, so an append arriving after that waits for the delete and then
+  fails on the foreign key; one already past the check commits first and the
+  cascade deletes its row (`TestPGRace_G7_DeleteJobHoldsOffALogThatRaced`). The
+  task rows are locked rather than the attempt rows because an insert checks
+  its task before its attempt: holding the attempts would let an insert hold
+  its task while waiting, and the cascade's delete of the tasks would deadlock
+  with it. As a backstop both operations retry the cascade on a foreign-key
+  violation (`23503`) or a deadlock (`40P01`), within the usual 5-attempt
+  bound; inside them a `23503` is retried rather than reported as
+  `store.ErrConflict`. The log ingest consumer logs the failed insert at Warn,
+  Naks the message, and discards the redelivery once it finds no attempt.
 - **A queue or farm read as uncapped stays unanchored.** The lease locks the
   queue and farm rows only when the scope read found a cap. A cap set
-  concurrently on one read as uncapped orders after the lease, exactly as if
-  the lease had committed first. Setting a cap never evicts running work, so
-  this is not a violation of I5.
-- **The single-server lock can be lost.** If the connection holding the
-  advisory lock drops, the lock goes with it. The server logs that at Error and
-  keeps running, and a second server could then start on the same database.
+  concurrently on one read as uncapped orders after the lease, as if the lease
+  had committed first. Setting a cap never evicts running work, so this does
+  not violate I5.
 - **One server per database.** The anchors make concurrent *transactions*
   safe, not concurrent *servers*: each scheduler keeps in-memory state (its
-  parked lease requests and its caches) that assumes it is the only one. The advisory lock refuses a second server; running several
-  (scheduler high availability, on the [roadmap](roadmap.md)) is not
-  supported yet.
+  parked lease requests and its caches) that assumes it is the only one. The
+  advisory lock refuses a second server, but if the connection holding it
+  drops, the lock goes with it: the server logs that at Error and keeps
+  running, and a second server could then start on the same database (see
+  [Two backends](#two-backends)).
 
 ### What changed for operators
 
@@ -1241,30 +1215,30 @@ Upgrading from v0.3.0 changes the following behaviour.
   "<id>" already terminated unsuccessfully (<status>)` or `openjd: submit:
   depends_on job "<id>" not found`).
 - `sqi-server migrate up`, `down` and `status` print to stdout, in a new
-  format. `up` and `down` print one line per migration applied or rolled back
+  format. `up` prints one line per migration applied
   (`OK    up 00037_fixed_width_timestamps.sql (1.2s)`), or `no pending
-  migrations`. `status` prints one line per migration file: the time it was
-  applied (UTC, RFC 3339) or `pending`, then the file name. v0.3.0 printed
-  goose's own log lines to stderr, so a script that read them must change. The
-  server's start-up migration prints nothing.
+  migrations`; `down` prints one line for the migration it rolled back.
+  `status` prints one line per migration file: the time it was applied (UTC,
+  RFC 3339) or `pending`, then the file name. v0.3.0 printed goose's own log
+  lines to stderr, so a script that read them must change. The server's
+  start-up migration prints nothing.
 - Deleting a farm that a queue, job or worker still references, or a usage
   pool that any claim (released or not) still references, is refused with 409
   instead of failing with 500.
 - A lease is refused, writing nothing, when the worker was disabled after the
   scheduler chose it: the store re-checks the flag inside the lease's
-  transaction. Before, a task leased in that window went to the disabled
-  worker anyway.
-- The stale-assignment reaper commits a batch of at most 500 tasks at a time,
-  each batch its own transaction, where it used to reclaim every stale task in
-  one. A sweep that fails part-way therefore keeps the batches it already
-  committed: those tasks are `ready` again, and the scheduler announces them
-  (a ready event each, and the warning log line) before it logs the error.
-  Before, a failure rolled the whole sweep back and the next sweep retried it.
+  transaction. In v0.3.0 a task leased in that window went to the disabled
+  worker.
+- The stale-assignment reaper commits at most 500 tasks per transaction (one
+  transaction for the whole sweep in v0.3.0). A sweep that fails part-way keeps
+  the batches it already committed: those tasks are `ready` again, and the
+  scheduler announces them (a ready event each, and the warning log line)
+  before it logs the error.
 - Stalled-job demotion (a `running` job with tasks waiting but none assigned
   or running returns to `pending`) demotes each job in its own transaction,
-  re-checking under the job row's lock that it is still stalled, where it used
-  to be one statement. A sweep that fails part-way keeps, and announces, the
-  jobs it already demoted.
+  re-checking under the job row's lock that it is still stalled (one statement
+  in v0.3.0). A sweep that fails part-way keeps, and announces, the jobs it
+  already demoted.
 
 Timestamp values are unchanged from v0.3.0, though the writes that stamp them
 moved. A released claim's `released_at` is always server time. A terminal report
@@ -1291,9 +1265,9 @@ for this one.
 An earlier release reads the new form. After a downgrade it writes the old form
 again, and upgrading again does not re-run `00037`. While `00037` is the newest
 applied migration, stopping the server and running `sqi-server migrate down`
-then `sqi-server migrate up` re-runs it. **That is SQLite only.** On
-PostgreSQL, `00037` is the baseline that creates the whole schema, and its
-`migrate down` drops every table and all their data.
+then `sqi-server migrate up` re-runs it. That applies to SQLite only: on
+PostgreSQL, `00037` is the baseline that creates the whole schema, and
+`sqi-server migrate down` refuses to roll it back.
 
 **Upgrade repair.** A v0.3.0 database can hold damage these invariants
 prevent, which the code changes alone do not undo, so it is repaired in four

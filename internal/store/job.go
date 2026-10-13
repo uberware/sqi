@@ -310,7 +310,7 @@ type JobStore interface {
 	// on a store without a single writer the SQL store also locks the job's
 	// tasks that have attempts, so such an append waits for the delete and
 	// then fails on its foreign key instead of inserting a child row
-	// mid-cascade. As a backstop it still retries the cascade itself, inside
+	// mid-cascade. As a backstop the store retries the cascade itself, inside
 	// DeleteJob, on a foreign-key or deadlock error; the REST handler that
 	// calls it does not retry. SQLite cannot produce either error, because
 	// its single write connection serializes every writer.
@@ -326,7 +326,8 @@ type JobStore interface {
 	// Each job is re-checked against that eligibility rule, under its anchor
 	// lock, immediately before its cascade starts. A job that a concurrent
 	// retry has made live since the eligibility read is skipped: it is neither
-	// deleted nor included in the returned summary.
+	// deleted nor included in the returned summary. Each job is deleted in its
+	// own transaction, so on error the result lists the jobs already deleted.
 	DeleteTerminalJobsBefore(ctx context.Context, cutoff time.Time, includeFailed bool) ([]DeletedJob, error)
 
 	// ParkJob transitions a job to [JobStatusPaused] and records reason in

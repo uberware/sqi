@@ -27,12 +27,11 @@ type Options struct {
 	SQLitePath  string
 	PostgresDSN string
 	MaxConns    int // PostgreSQL write pool size
-	// AutoMigrate applies pending migrations before Open returns. It is
-	// false unless a caller sets it: the zero Options never migrates, unlike
-	// sqlite.DefaultOptions and postgres.DefaultOptions, which both migrate.
-	// The server sets it; the backup and worker CLIs leave it false on
-	// purpose (they write into an existing schema and must never create one),
-	// and migrate drives goose itself.
+	// AutoMigrate applies pending migrations before Open returns. The zero
+	// Options never migrates, unlike sqlite.DefaultOptions and
+	// postgres.DefaultOptions. The server sets it; the backup and worker CLIs
+	// leave it false because they write into an existing schema and must
+	// never create one; migrate drives goose itself.
 	AutoMigrate bool
 	ServerLock  bool // PostgreSQL only: take the single-server lock
 	Logger      *slog.Logger

@@ -136,9 +136,9 @@ func TestReclaimStaleAssignedTasks_ReleasesLeakedClaimOfClosedAttempt(t *testing
 	}
 }
 
-// TestReclaimStaleAssignedTasks_ReclaimsAcrossBatches: a PostgreSQL-shaped
-// store resets the stale assignments a batch of 500 at a time; more than one
-// batch's worth are all reclaimed, each exactly once, with its attempt closed.
+// TestReclaimStaleAssignedTasks_ReclaimsAcrossBatches: the SQL stores reset
+// the stale assignments a batch of 500 at a time; more than one batch's worth
+// are all reclaimed, each exactly once, with its attempt closed.
 func TestReclaimStaleAssignedTasks_ReclaimsAcrossBatches(t *testing.T) {
 	const n = 501 // one past the SQL store's reclaim batch
 	for name, st := range newStores(t) {

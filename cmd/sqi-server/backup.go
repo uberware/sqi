@@ -58,16 +58,7 @@ Examples:
 }
 
 func init() {
-	backupCmd.Flags().StringVar(
-		&backupFlags.DBPath,
-		"db", "sqi.db",
-		"path to source SQLite database file (defaults to store.sqlite_path from config, then the deprecated SQI_SQLITE_PATH, then \"sqi.db\")",
-	)
-	backupCmd.Flags().StringVar(
-		&backupFlags.DSN,
-		"dsn", "",
-		"PostgreSQL connection string (defaults to store.postgres.dsn when store.driver is postgres)",
-	)
+	addStoreFlags(backupCmd.Flags(), &backupFlags.DBPath, &backupFlags.DSN, "path to source SQLite database file")
 	backupCmd.Flags().StringVar(
 		&backupFlags.OutPath,
 		"out", "",

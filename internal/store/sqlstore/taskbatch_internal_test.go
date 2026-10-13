@@ -10,7 +10,7 @@ import (
 )
 
 // TestSQLInsertTask_IsUnchanged pins the single-row insert byte for byte: it is
-// built from the parts the batched insert shares, and SQLite still runs it.
+// built from the parts the batched insert shares, and SQLite runs it.
 func TestSQLInsertTask_IsUnchanged(t *testing.T) {
 	const want = `
 INSERT INTO tasks (

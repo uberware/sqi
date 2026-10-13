@@ -59,7 +59,7 @@ var migrateUpCmd = &cobra.Command{
 	Short: "Apply all pending migrations",
 	Long:  `Apply every migration that has not yet been run against the target database.`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		p, db, err := openMigrator(cmd)
+		p, db, _, err := openMigrator(cmd)
 		if err != nil {
 			return err
 		}
@@ -82,14 +82,23 @@ var migrateUpCmd = &cobra.Command{
 var migrateDownCmd = &cobra.Command{
 	Use:   "down",
 	Short: "Roll back the last applied migration",
-	Long:  `Roll back exactly one migration — the most recently applied one.`,
+	Long: `Roll back exactly one migration — the most recently applied one.
+
+On PostgreSQL the first migration, 00037, is the baseline that creates the
+whole schema: rolling it back would drop every table and its data, and there
+is no earlier schema to return to, so it is refused.`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		p, db, err := openMigrator(cmd)
+		p, db, driver, err := openMigrator(cmd)
 		if err != nil {
 			return err
 		}
 		defer db.Close()
 
+		if driver == backend.DriverPostgres {
+			if err := refuseBaselineRollback(cmd.Context(), p); err != nil {
+				return err
+			}
+		}
 		r, err := p.Down(cmd.Context())
 		if err != nil {
 			return fmt.Errorf("migrate down: %w", err)
@@ -105,7 +114,7 @@ var migrateStatusCmd = &cobra.Command{
 	Long: `List every migration file with its current state: the time it was
 applied (UTC, RFC 3339), or "pending".`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		p, db, err := openMigrator(cmd)
+		p, db, _, err := openMigrator(cmd)
 		if err != nil {
 			return err
 		}
@@ -128,43 +137,54 @@ applied (UTC, RFC 3339), or "pending".`,
 
 func init() {
 	// --db and --dsn on the parent so all three subcommands inherit them.
-	migrateCmd.PersistentFlags().StringVar(
-		&migrateDBPath,
-		"db", "sqi.db",
-		"path to SQLite database file (defaults to store.sqlite_path from config, then the deprecated SQI_SQLITE_PATH, then \"sqi.db\")",
-	)
-	migrateCmd.PersistentFlags().StringVar(
-		&migrateDSN,
-		"dsn", "",
-		"PostgreSQL connection string (defaults to store.postgres.dsn when store.driver is postgres)",
-	)
+	addStoreFlags(migrateCmd.PersistentFlags(), &migrateDBPath, &migrateDSN, "path to SQLite database file")
 
 	migrateCmd.AddCommand(migrateUpCmd, migrateDownCmd, migrateStatusCmd)
 }
 
-// openMigrator opens the target database and returns a goose provider for it.
-// SQLite gets the store's pragmas first, and its file is created if missing
-// (that is migrate's job); PostgreSQL must already exist.
-func openMigrator(cmd *cobra.Command) (*goose.Provider, *sql.DB, error) {
+// refuseBaselineRollback refuses a down migration from the oldest migration p
+// knows: on PostgreSQL that is the baseline, which creates the whole schema,
+// so rolling it back would drop every table and its data.
+func refuseBaselineRollback(ctx context.Context, p *goose.Provider) error {
+	sources := p.ListSources()
+	if len(sources) == 0 {
+		return nil
+	}
+	current, err := p.GetDBVersion(ctx)
+	if err != nil {
+		return fmt.Errorf("migrate down: read schema version: %w", err)
+	}
+	if current == sources[0].Version {
+		return fmt.Errorf("migrate down: %05d is the PostgreSQL baseline, which creates the whole schema; "+
+			"rolling it back would drop every table and its data, so it is refused "+
+			"(to start over, drop and recreate the database)", current)
+	}
+	return nil
+}
+
+// openMigrator opens the target database and returns a goose provider for it,
+// and the driver it chose. SQLite gets the store's pragmas first, and its file
+// is created if missing (that is migrate's job); PostgreSQL must already exist.
+func openMigrator(cmd *cobra.Command) (*goose.Provider, *sql.DB, string, error) {
 	tgt, err := resolveStoreTarget(cmd, migrateDBPath, migrateDSN)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 	var db *sql.DB
 	driver := tgt.Driver
 	if driver == backend.DriverPostgres {
 		if db, err = sql.Open("pgx", tgt.DSN); err != nil {
-			return nil, nil, fmt.Errorf("open %s: %w", pgdsn.Redact(tgt.DSN), err)
+			return nil, nil, "", fmt.Errorf("open %s: %w", pgdsn.Redact(tgt.DSN), err)
 		}
 	} else if db, err = openMigrateDB(tgt.SQLitePath); err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 	p, err := migrations.NewProvider(db, driver)
 	if err != nil {
 		_ = db.Close()
-		return nil, nil, err
+		return nil, nil, "", err
 	}
-	return p, db, nil
+	return p, db, driver, nil
 }
 
 // openMigrateDB opens the SQLite database at path (creating the file when it

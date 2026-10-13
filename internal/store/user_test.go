@@ -5,7 +5,6 @@ package store_test
 import (
 	"context"
 	"errors"
-	"os"
 	"testing"
 	"time"
 
@@ -28,7 +27,7 @@ func newStores(t *testing.T) map[string]store.Store {
 	}
 	t.Cleanup(func() { _ = sq.Close() })
 	out := map[string]store.Store{"sqlite": sq, "fake": fake.New()}
-	if os.Getenv("SQI_TEST_POSTGRES_DSN") != "" || os.Getenv("SQI_TEST_REQUIRE_POSTGRES") == "1" {
+	if storetest.PostgresEnabled() {
 		out["postgres"] = storetest.Postgres(t)
 	}
 	return out
@@ -118,11 +117,11 @@ func TestUserStore_CRUD(t *testing.T) {
 }
 
 // TestUserStore_ListUsers verifies ListUsers returns users ordered
-// case-insensitively by username — matching SQLite's ordering
-// over the `username` column, which is declared COLLATE NOCASE (see
-// sqlListUsers in internal/store/sqlstore/user.go). The fake store must sort
-// the same way; a case-sensitive ASCII sort would put "Zeta" before "bob"
-// (since 'Z' < 'b' in ASCII), diverging from SQLite.
+// case-insensitively by username, as the SQL stores order them (`ORDER BY
+// lower(username), username`, see sqlListUsers in
+// internal/store/sqlstore/user.go). The fake store must sort the same way; a
+// case-sensitive ASCII sort would put "Zeta" before "bob" (since 'Z' < 'b' in
+// ASCII), diverging from the SQL stores.
 func TestUserStore_ListUsers(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {

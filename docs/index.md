@@ -71,7 +71,7 @@ See the [Quickstart](quickstart.md) for a full walkthrough (binary or Docker Com
 
 **Distributed (production mode)**
 
-A planned configuration (Phase 4) for high availability: a standalone NATS message broker and PostgreSQL for durable state, with workers connecting to the broker directly. The same binaries will support this mode; PostgreSQL, the HA scheduler, and Kubernetes manifests are not yet implemented. Today, deployment uses the single-binary or Docker Compose simple mode above.
+A planned configuration (Phase 4) for high availability: a standalone NATS message broker and PostgreSQL for durable state, with workers connecting to the broker directly. So far only the PostgreSQL state store is implemented (unreleased; set `store.driver: postgres`, see [Running on PostgreSQL](operations.md#running-on-postgresql)). A standalone broker, the HA scheduler and Kubernetes manifests are not yet implemented, and one `sqi-server`, with its embedded broker, runs per database.
 
 Both modes run the same software. The difference is configuration.
 

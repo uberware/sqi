@@ -165,9 +165,9 @@ func TestInTx_RetryBackoffStopsWithTheContext(t *testing.T) {
 	}
 }
 
-// TestInTx_ForcedRetryRunsEveryFunctionTwice checks the test mode that proves
-// each function is safe to re-run: the first run's writes are rolled back and
-// the second is the real one.
+// TestInTx_ForcedRetryRunsEveryFunctionTwice checks the test mode that runs
+// each function twice to exercise re-running it: the first run's writes are
+// rolled back and the second is the real one.
 func TestInTx_ForcedRetryRunsEveryFunctionTwice(t *testing.T) {
 	base := openTestStoreWB(t)
 	s := withDialect(t, base, base.Dialect(), sqlstore.WithForcedRetry())

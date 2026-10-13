@@ -276,11 +276,5 @@ func cmpWorker(a, b store.Worker, field store.WorkerSortField, dir store.SortDir
 	default: // WorkerSortByHostname
 		n = cmp.Compare(a.Hostname, b.Hostname)
 	}
-	if dir == store.SortDesc {
-		n = -n
-	}
-	if n == 0 {
-		return cmp.Compare(a.ID, b.ID)
-	}
-	return n
+	return withIDTieBreak(n, dir, a.ID, b.ID)
 }

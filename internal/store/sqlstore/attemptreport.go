@@ -64,18 +64,16 @@ func lockTaskJobTx(ctx context.Context, tx *dbTx, taskID string) error {
 
 // StartTaskAttempt implements [store.TaskStore].
 func (s *Store) StartTaskAttempt(ctx context.Context, attemptID, taskID, sessionID string, now time.Time) (bool, error) {
-	var started bool
-	err := s.inTx(ctx, "start task attempt", func(tx *dbTx) (txOutcome, error) {
-		started = false
+	return inTxValue(ctx, s, "start task attempt", func(tx *dbTx) (bool, txOutcome, error) {
 		if err := lockTaskJobTx(ctx, tx, taskID); err != nil {
-			return txRollback, err
+			return false, txRollback, err
 		}
 		live, current, err := liveAttemptTx(ctx, tx, attemptID, taskID)
 		if err != nil {
-			return txRollback, err
+			return false, txRollback, err
 		}
 		if !live {
-			return txCommit, nil
+			return false, txCommit, nil
 		}
 		if current == store.TaskStatusAssigned {
 			// On SQLite, under the job anchor and the single write
@@ -85,24 +83,19 @@ func (s *Store) StartTaskAttempt(ctx context.Context, attemptID, taskID, session
 			// report is then stale.
 			moved, err := casWriteTaskStatus(ctx, tx, taskID, store.TaskStatusAssigned, store.TaskStatusRunning, now)
 			if err != nil {
-				return txRollback, err
+				return false, txRollback, err
 			}
 			if !moved {
-				return txRollback, nil // the rollback discards nothing: no write landed
+				return false, txRollback, nil // the rollback discards nothing: no write landed
 			}
 		}
 		if sessionID != "" {
 			if _, err := tx.ExecContext(ctx, sqlSetRunningAttemptSession, sessionID, attemptID); err != nil {
-				return txRollback, fmt.Errorf("store: record session of attempt %s: %w", attemptID, mapErr(err))
+				return false, txRollback, fmt.Errorf("store: record session of attempt %s: %w", attemptID, mapErr(err))
 			}
 		}
-		started = true
-		return txCommit, nil
+		return true, txCommit, nil
 	})
-	if err != nil {
-		return false, err
-	}
-	return started, nil
 }
 
 // sqlReclaimOneTask returns one in-flight task to ready. Binds: updated_at, id.
@@ -119,31 +112,24 @@ WHERE  id = ? AND status IN ('assigned', 'running')`
 // lock is needed for the latest-attempt check: a lease holds the job row FOR
 // SHARE, so none commits between the check and the write.
 func (s *Store) ReclaimTaskAttempt(ctx context.Context, attemptID, taskID string, now time.Time) (bool, error) {
-	var reclaimed bool
-	err := s.inTx(ctx, "reclaim task attempt", func(tx *dbTx) (txOutcome, error) {
-		reclaimed = false
+	return inTxValue(ctx, s, "reclaim task attempt", func(tx *dbTx) (bool, txOutcome, error) {
 		if err := lockTaskJobTx(ctx, tx, taskID); err != nil {
-			return txRollback, err
+			return false, txRollback, err
 		}
 		live, _, err := liveAttemptTx(ctx, tx, attemptID, taskID)
 		if err != nil {
-			return txRollback, err
+			return false, txRollback, err
 		}
 		if !live {
-			return txCommit, nil
+			return false, txCommit, nil
 		}
 		nowText := TimeText(now.UTC())
 		if _, err := tx.ExecContext(ctx, sqlReclaimOneTask, nowText, taskID); err != nil {
-			return txRollback, fmt.Errorf("store: reclaim task %s: %w", taskID, mapErr(err))
+			return false, txRollback, fmt.Errorf("store: reclaim task %s: %w", taskID, mapErr(err))
 		}
 		if err := closeTaskAttemptsTx(ctx, tx, taskID, store.AttemptStatusFailed, store.FailureReasonWorkerShutdown, nowText); err != nil {
-			return txRollback, err
+			return false, txRollback, err
 		}
-		reclaimed = true
-		return txCommit, nil
+		return true, txCommit, nil
 	})
-	if err != nil {
-		return false, err
-	}
-	return reclaimed, nil
 }

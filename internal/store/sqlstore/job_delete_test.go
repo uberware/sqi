@@ -398,11 +398,8 @@ func TestJob_BlockedStatusAndDependencyTable(t *testing.T) {
 // TestJob_ListDependentsAndBlocked exercises a submission's dependency edges,
 // ListDependents, ListBlockedJobs, and GetJob's DependsOn population together.
 func TestJob_ListDependentsAndBlocked(t *testing.T) {
-	// Not t.Parallel(): these tests were serialized when sqlite.Open mutated
-	// goose's package-level state (SetBaseFS/SetDialect), which tripped the
-	// race detector under a parallel Open. Open now migrates through its own
-	// goose provider and no longer touches that state, so the serialization is
-	// a leftover; it is kept as it is.
+	// Not t.Parallel(), though nothing requires that: sqlite.Open migrates
+	// through its own goose provider and touches no package-level goose state.
 	ctx := context.Background()
 	st := openTestStoreWB(t)
 
@@ -568,9 +565,9 @@ func TestStore_PurgeExpiredJobTx_SkipsAJobRevivedAfterTheSelect(t *testing.T) {
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
 	dtx := st.WrapTx(tx)
 
-	candidates, err := sqlstore.SelectExpiredJobsTx(ctx, dtx, query, args)
+	candidates, err := sqlstore.SelectExpiredJobs(ctx, dtx, query, args)
 	if err != nil {
-		t.Fatalf("selectExpiredJobsTx: %v", err)
+		t.Fatalf("selectExpiredJobs: %v", err)
 	}
 	if got := deletedJobIDs(candidates); !slices.Equal(got, []string{"revived", "untouched"}) {
 		t.Fatalf("candidates = %v, want both jobs", got)
@@ -621,8 +618,7 @@ func TestStore_PurgeExpiredJobTx_SkipsAJobRevivedAfterTheSelect(t *testing.T) {
 
 // TestDeleteJob_SQLiteRunsNoRowLock pins that the lock DeleteJob takes on a
 // PostgreSQL store's logged tasks costs SQLite nothing: its dialect has no
-// FOR UPDATE, so the locking SELECT is not run and the cascade's SQL is what it
-// was.
+// FOR UPDATE, so the locking SELECT is not run.
 func TestDeleteJob_SQLiteRunsNoRowLock(t *testing.T) {
 	base := openTestStoreWB(t)
 	job := seedJobWithChildren(t, base, "dj")

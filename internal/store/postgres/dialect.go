@@ -67,8 +67,8 @@ func (pgDialect) Classify(err error) sqlstore.ErrClass {
 
 // taskInsertBatchRows is how many tasks a submission inserts per statement. A
 // task per statement costs a round trip each, which dominates a large
-// submission (design spec §8.5); 500 rows bind 7,500 parameters, well inside
-// PostgreSQL's 65,535 per statement.
+// submission; 500 rows bind 7,500 parameters, well inside PostgreSQL's 65,535
+// per statement.
 const taskInsertBatchRows = 500
 
 // anchorTables are the tables an anchor may name. lockSQL interpolates the
@@ -77,8 +77,9 @@ var anchorTables = map[string]bool{
 	"jobs": true, "queues": true, "farms": true, "usage_pools": true, "workers": true, "users": true,
 }
 
-// lockSQL returns the statement that locks one anchor row.
-func lockSQL(a sqlstore.Anchor) (string, error) {
+// lockSQL returns the statement that locks a's row or, with many set, the rows
+// of a's table and mode whose ids are in the array bound to $1, in id order.
+func lockSQL(a sqlstore.Anchor, many bool) (string, error) {
 	if !anchorTables[a.Table] {
 		return "", fmt.Errorf("postgres: anchor table %q is not allowed", a.Table)
 	}
@@ -89,43 +90,66 @@ func lockSQL(a sqlstore.Anchor) (string, error) {
 	case sqlstore.LockNoKeyUpdate:
 		mode = "FOR NO KEY UPDATE"
 	}
+	if many {
+		return "SELECT 1 FROM " + a.Table + " WHERE id = ANY($1) ORDER BY id " + mode, nil
+	}
 	return "SELECT 1 FROM " + a.Table + " WHERE id = $1 " + mode, nil
 }
 
 // LockAnchors locks each anchor row in the order given. A row that does not
 // exist locks nothing and is not an error: the operation's own guarded
 // statements decide what its absence means, as they do on SQLite.
+//
+// A run of consecutive anchors on one table in one mode is locked by one
+// statement rather than one per row: the store passes such a run in id order
+// (the global lock order), and the statement's ORDER BY id feeds its lock step,
+// so the rows are locked in that same order, in one round trip.
 func (pgDialect) LockAnchors(ctx context.Context, tx *sql.Tx, anchors ...sqlstore.Anchor) error {
-	for _, a := range anchors {
-		if err := lockRow(ctx, tx, a); err != nil {
+	for len(anchors) > 0 {
+		n := 1
+		for n < len(anchors) && anchors[n].Table == anchors[0].Table && anchors[n].Mode == anchors[0].Mode {
+			n++
+		}
+		if err := lockRows(ctx, tx, anchors[:n]); err != nil {
 			return err
 		}
+		anchors = anchors[n:]
 	}
 	return nil
 }
 
-// lockRow locks one anchor row. A lock wait that ends in a deadlock surfaces
-// from the query, from reading the result, or from closing it, so all three
-// are checked; each is wrapped with %w, so the *pgconn.PgError stays reachable
-// for Classify.
-func lockRow(ctx context.Context, tx *sql.Tx, a sqlstore.Anchor) (err error) {
-	q, err := lockSQL(a)
+// lockRows locks run, anchors on one table in one mode, with one statement. A
+// lock wait that ends in a deadlock surfaces from the query, from reading the
+// result, or from closing it, so all three are checked; each is wrapped with
+// %w, so the *pgconn.PgError stays reachable for Classify.
+func lockRows(ctx context.Context, tx *sql.Tx, run []sqlstore.Anchor) (err error) {
+	a := run[0]
+	q, err := lockSQL(a, len(run) > 1)
 	if err != nil {
 		return err
 	}
-	rows, err := tx.QueryContext(ctx, q, a.ID)
+	var arg any = a.ID
+	what := a.ID
+	if len(run) > 1 {
+		ids := make([]string, len(run))
+		for i, r := range run {
+			ids[i] = r.ID
+		}
+		arg, what = ids, strings.Join(ids, ",")
+	}
+	rows, err := tx.QueryContext(ctx, q, arg)
 	if err != nil {
-		return fmt.Errorf("postgres: lock %s %s: %w", a.Table, a.ID, err)
+		return fmt.Errorf("postgres: lock %s %s: %w", a.Table, what, err)
 	}
 	defer func() {
 		if cerr := rows.Close(); cerr != nil && err == nil {
-			err = fmt.Errorf("postgres: lock %s %s: %w", a.Table, a.ID, cerr)
+			err = fmt.Errorf("postgres: lock %s %s: %w", a.Table, what, cerr)
 		}
 	}()
-	for rows.Next() { // id is unique: at most the one row, locked once fetched
+	for rows.Next() { // each row is locked once fetched
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("postgres: lock %s %s: %w", a.Table, a.ID, err)
+		return fmt.Errorf("postgres: lock %s %s: %w", a.Table, what, err)
 	}
 	return nil
 }

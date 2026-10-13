@@ -602,12 +602,13 @@ func (s *Server) Health() *health.Registry {
 // A nil return value means the server started and shut down without errors.
 // Startup failures return immediately with a non-nil error.
 func (s *Server) Run(ctx context.Context) error {
+	driver := backend.Name(s.cfg.StoreDriver)
 	attrs := []any{
 		slog.String("http_addr", s.cfg.HTTPAddr),
 		slog.String("nats_addr", s.cfg.NATSAddr),
-		slog.String("store_driver", backend.Name(s.cfg.StoreDriver)),
+		slog.String("store_driver", driver),
 	}
-	if backend.Name(s.cfg.StoreDriver) == backend.DriverSQLite {
+	if driver == backend.DriverSQLite {
 		// The path means nothing on another driver, and the DSN is logged
 		// (redacted) when the store opens.
 		attrs = append(attrs, slog.String("sqlite_path", s.cfg.SQLitePath))
@@ -648,7 +649,7 @@ func (s *Server) openStore(ctx context.Context) error {
 	}
 
 	// Register the store as a readiness dependency under its driver's name, so
-	// /readyz reports "sqlite" as it always has, or "postgres".
+	// /readyz reports it as "sqlite" or "postgres".
 	s.health.Register(driver, health.CheckerFunc(st.Ping))
 
 	// SQLite only: start the background WAL checkpointer. It exits when ctx is
@@ -665,7 +666,6 @@ func (s *Server) openStore(ctx context.Context) error {
 }
 
 // start brings up all components in dependency order.
-// Each block is a stub that will be replaced as the corresponding tasks land.
 func (s *Server) start(ctx context.Context) error {
 	// ── Store (SQLite or PostgreSQL) ───────────────────────────────────────
 	if err := s.openStore(ctx); err != nil {

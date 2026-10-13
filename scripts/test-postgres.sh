@@ -10,16 +10,16 @@
 # CI passes its matrix image through it, so the image CI pulled is the image
 # the suite ran on.
 #
-# A local PG_VERSION=16 run needs a PG 16 pg_dump and pg_restore FIRST on PATH:
+# A local PG_VERSION=16 run needs a PG 16 pg_dump and pg_restore first on PATH:
 # TestPostgres_BackupRestoreRoundTrip restores a dump into the server, and a
 # newer client's dump carries settings (e.g. SET transaction_timeout) that an
 # older server rejects. CI installs the matching client for each leg.
 set -euo pipefail
 
 PG_VERSION="${PG_VERSION:-18}"
-# Default pinned patch tags, used when SQI_TEST_POSTGRES_IMAGE is unset. Keep
-# in step with the matrix images of the postgres-integration job in
-# .github/workflows/ci.yml, which pulls (and passes) them.
+# Pinned patch tags, used when SQI_TEST_POSTGRES_IMAGE is unset. Keep in step
+# with the matrix images of the postgres-integration job in
+# .github/workflows/ci.yml.
 case "$PG_VERSION" in
   16) IMAGE="postgres:16.15" ;;
   18) IMAGE="postgres:18.6" ;;
@@ -34,8 +34,7 @@ if [ -z "${SQI_TEST_POSTGRES_DSN:-}" ]; then
     echo "docker unavailable — skipping PostgreSQL tests"
     exit 0
   fi
-  # Docker picks the host port (-p 127.0.0.1::5432) and it is read back below,
-  # so there is no free-port probe to race and no python3 dependency.
+  # Docker picks the host port (-p 127.0.0.1::5432); it is read back below.
   NAME="sqi-pg-test-$$"
   docker run -d --rm --name "$NAME" --tmpfs /var/lib/postgresql \
     -e POSTGRES_PASSWORD=sqi -p 127.0.0.1::5432 "$IMAGE" >/dev/null

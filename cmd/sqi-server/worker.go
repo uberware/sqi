@@ -34,8 +34,8 @@ var workerFlags struct {
 // broker. That is deliberate: broker authentication (nats.auth.enabled) is
 // independent of the user-facing auth.enabled gate, and the REST enrollment
 // endpoints only exist when auth.enabled is on (otherwise there would be no
-// RBAC in front of them). This CLI is what makes credential minting available regardless
-// — an operator with a shell on the server host is already trusted.
+// RBAC in front of them). This CLI is what makes credential minting available
+// regardless — an operator with a shell on the server host is already trusted.
 var workerCmd = &cobra.Command{
 	Use:   "worker",
 	Short: "Manage worker broker credentials and enrollment",
@@ -133,16 +133,7 @@ var workerListCmd = &cobra.Command{
 }
 
 func init() {
-	workerCmd.PersistentFlags().StringVar(
-		&workerFlags.DBPath,
-		"db", "sqi.db",
-		"path to SQLite database file (defaults to store.sqlite_path from config, then the deprecated SQI_SQLITE_PATH, then \"sqi.db\")",
-	)
-	workerCmd.PersistentFlags().StringVar(
-		&workerFlags.DSN,
-		"dsn", "",
-		"PostgreSQL connection string (defaults to store.postgres.dsn when store.driver is postgres)",
-	)
+	addStoreFlags(workerCmd.PersistentFlags(), &workerFlags.DBPath, &workerFlags.DSN, "path to SQLite database file")
 
 	workerTokenIssueCmd.Flags().DurationVar(
 		&workerTokenIssueFlags.TTL,

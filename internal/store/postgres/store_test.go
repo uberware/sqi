@@ -219,6 +219,12 @@ func TestLockAnchors_LocksExistingRowsOnly(t *testing.T) {
 			wantUpdate: true, wantShare: true, wantKeyShare: true,
 		},
 		{
+			// A run of one table and mode is locked by one statement.
+			name:       "a run of rows, one missing",
+			anchors:    []sqlstore.Anchor{farm, {Table: "farms", ID: "g-missing", Mode: sqlstore.LockUpdate}},
+			wantUpdate: true, wantShare: true, wantKeyShare: true,
+		},
+		{
 			name:    "disallowed table",
 			anchors: []sqlstore.Anchor{{Table: "tasks", ID: "f", Mode: sqlstore.LockUpdate}},
 			wantErr: "not allowed",

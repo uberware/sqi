@@ -59,11 +59,11 @@ func loadPackage(t *testing.T) (*token.FileSet, []*ast.File, *types.Info) {
 // placeholder-looking character in either place would be corrupted on
 // PostgreSQL.
 //
-// It is a scanner, not a regular expression: a pattern such as
-// `'[^']*\?[^']*'` also matches from the closing quote of one literal to the
-// opening quote of the next, so it flags every statement that has a
-// placeholder between two literals. A doubled quote inside a literal is an
-// escaped quote and keeps the scanner in the literal.
+// It is a scanner rather than a regular expression because a pattern such as
+// `'[^']*\?[^']*'` would also match from the closing quote of one literal to
+// the opening quote of the next, flagging a placeholder between two literals.
+// A doubled quote inside a literal is an escaped quote and keeps the scanner
+// in the literal.
 func misplacedQuestion(sql string) bool {
 	const (
 		code = iota
@@ -162,7 +162,7 @@ func TestSQLConstants_NoQuestionMarkInLiteralsOrComments(t *testing.T) {
 						continue
 					}
 					if misplacedQuestion(constant.StringVal(c.Val())) {
-						t.Errorf("%s has a ? inside a quoted literal or a -- comment; Rebind would rewrite it", name.Name)
+						t.Errorf("%s has a ? inside a quoted literal or a comment; Rebind would rewrite it", name.Name)
 					}
 				}
 			}
@@ -189,12 +189,12 @@ var concatAllowed = []string{
 	`s.d.CIEqual("owner")`,    // job.go: Dialect method, literal column
 	`s.d.CIEqual("username")`, // store.go prepareAll: Dialect method, literal column
 	`s.d.CIEqual("name")`,     // store.go prepareAll (products): Dialect method, literal column
-	`strings.TrimSuffix(strings.Repeat("?,", len(deps)), ",")`, // finalize.go: only "?" and ","
-	"placeholders",         // job.go expiredJobsQuery, task.go RetryTasks and reclaimStaleBatch: strings.Repeat("?,", n) trimmed, only ? marks and ","
-	"string(placeholders)", // task.go ListTasks: a byte slice that only receives ',' and '?'
-	"inSuffix",             // task.go RetryTasks: "" or a literal around a "?" list
-	"query",                // job.go DeleteTerminalJobsBefore: expiredJobsQuery output, two literals around a "?" list
-	"frag",                 // job.go ListJobs, worker.go ListWorkers: searchClause (search.go) output, literals and Dialect.CILike over literal column lists (each renders as the column, a "?" and literals only: `col LIKE ?` on SQLite, `col ILIKE ? ESCAPE ''` on PostgreSQL), "?" for each term, which is bound
+	"qmarks(len(deps))",       // finalize.go: scan.go qmarks, only "?" and ","
+	"placeholders",            // job.go expiredJobsQuery, task.go RetryTasks and reclaimStaleBatch, attemptclose.go closeTasksAttemptsTx: scan.go qmarks output, only ? marks and ","
+	"string(placeholders)",    // task.go ListTasks: a byte slice that only receives ',' and '?'
+	"inSuffix",                // task.go RetryTasks: "" or a literal around a "?" list
+	"query",                   // job.go DeleteTerminalJobsBefore: expiredJobsQuery output, two literals around a "?" list
+	"frag",                    // job.go ListJobs, worker.go ListWorkers: searchClause (search.go) output, literals and Dialect.CILike over literal column lists (each renders as the column, a "?" and literals only: `col LIKE ?` on SQLite, `col ILIKE ? ESCAPE ''` on PostgreSQL), "?" for each term, which is bound
 
 	// job.go runInsertTasks: taskRowsValues is one constant "(?, …)" row per
 	// task joined by ",", only "?" marks, parentheses, commas and spaces; its

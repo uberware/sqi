@@ -321,8 +321,9 @@ func (s *Store) reclaimWorkerTasksLocked(workerID, message string, now time.Time
 }
 
 // reclaimToReadyLocked is the shared reclaim block of the reaper and the offline
-// transitions, the fake's counterpart of SQLite's one reset statement
-// (sqlReclaimStaleAssignedSuffix / sqlReclaimWorkerTasks, both RETURNING). It
+// transitions, the fake's counterpart of the SQL store's reset statements
+// (sqlReclaimStaleAssignedSuffix / sqlReclaimWorkerTasksReturning, both
+// RETURNING). It
 // returns every task match accepts to [store.TaskStatusReady] with its worker
 // and assignment time cleared and its unschedulable reason emptied, then closes
 // those tasks' running attempts as failed with message and releases the claims of

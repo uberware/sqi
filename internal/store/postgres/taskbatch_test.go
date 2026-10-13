@@ -48,13 +48,13 @@ func (d *taskInsertCounter) distinct() int {
 	return len(d.texts)
 }
 
-// runsPerTx is how many times the store runs each transaction's body:
-// twice under SQI_TEST_PG_FORCE_TX_RETRY=1, where storetest.PostgresWith
-// rehearses every transaction once (rolled back) before the run that counts,
-// once otherwise. The counter sees the statements of every run, and Rebind is
-// not told which transaction a statement belongs to, so the tests expect the
-// per-run count times this rather than count per transaction. Each run of CreateJobSubmission
-// issues the same statements, the rehearsal included.
+// runsPerTx is how many times the store runs each transaction's body: twice
+// under SQI_TEST_PG_FORCE_TX_RETRY=1, where storetest.PostgresWith rehearses
+// every transaction once (rolled back) before the run that counts, once
+// otherwise. The counter sees the statements of every run and Rebind is not
+// told which transaction a statement belongs to, so the tests expect the
+// per-run count times this. Each run of CreateJobSubmission, the rehearsal
+// included, issues the same statements.
 func runsPerTx() int64 {
 	if os.Getenv("SQI_TEST_PG_FORCE_TX_RETRY") == "1" {
 		return 2
@@ -96,8 +96,8 @@ func batchSeedNamed(name string, n int) *storetest.JobSeed {
 
 // TestCreateJobSubmission_InsertsTasksInBatches: 1,201 tasks go in as six
 // statements (500 and 500, then the remainder of 201 as 128, 64, 8 and 1
-// rows), come back in the order they were given,
-// each stamped strictly later than the one before, and all are stored.
+// rows), come back in the order they were given, each stamped strictly later
+// than the one before, and all are stored.
 func TestCreateJobSubmission_InsertsTasksInBatches(t *testing.T) {
 	st, count := batchStore(t)
 	const n = 1201

@@ -154,11 +154,5 @@ func cmpQueue(a, b store.Queue, field store.QueueSortField, dir store.SortDir) i
 	default: // QueueSortByName
 		n = cmp.Compare(a.Name, b.Name)
 	}
-	if dir == store.SortDesc {
-		n = -n
-	}
-	if n == 0 {
-		return cmp.Compare(a.ID, b.ID)
-	}
-	return n
+	return withIDTieBreak(n, dir, a.ID, b.ID)
 }

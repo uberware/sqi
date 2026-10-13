@@ -17,8 +17,8 @@ import (
 )
 
 // secretDSNs carry a secret each, with a part of it that must not survive
-// [pgdsn.Redact] or [pgdsn.WithoutPassword]: the plain forms, and every form
-// that has been found to leak through a DSN parser that is not pgx's own.
+// [pgdsn.Redact] or [pgdsn.WithoutPassword]: the plain forms, and forms a
+// DSN parser that reads differently from pgx would leak.
 var secretDSNs = []struct{ in, secret string }{
 	{"postgres://sqi:hunter2@db:5432/sqi?sslmode=require", "hunter2"},
 	{"postgresql://sqi:p%40ss@db/sqi", "p%40ss"},
@@ -70,10 +70,10 @@ var secretDSNs = []struct{ in, secret string }{
 	{"host=db sslpassword=hunter2 dbname=sqi", "hunter2"},
 	{"postgres://sqi@db/sqi?sslpassword=hunter2&sslmode=require", "hunter2"},
 	{"postgres://sqi@db/sqi?sslmode=require&password=hun;ter2", "hun;ter2"},
-	// pgx reads keyword/value text with its own rules, which no regex
-	// mirrored: a backslash escapes any byte (a line feed included), "\v"
-	// is whitespace, whitespace may follow "=" and precede a quote, and
-	// "password=" inside another key's value is not a key at all.
+	// pgx reads keyword/value text with its own rules: a backslash escapes
+	// any byte (a line feed included), "\v" is whitespace, whitespace may
+	// follow "=" and precede a quote, and "password=" inside another key's
+	// value is not a key at all.
 	{"host=db password='ab\\\ncd'", "cd"},
 	{"host=db password=hun\\\nter2", "ter2"},
 	{"host=db password\v=hunter2", "hunter2"},
@@ -179,7 +179,7 @@ func isolatePGEnv(t *testing.T) {
 // keywordValueDSNs are keyword/value DSNs pgx accepts, each with a password or
 // some other setting a careless rewrite would get wrong.
 var keywordValueDSNs = []string{
-	// The inputs the regex used to leak.
+	// Inputs that depend on pgx's own keyword/value rules (escapes, spacing).
 	"host=db password='ab\\\ncd'",
 	"host=db password=hun\\\nter2",
 	"host=db password\v=hunter2",

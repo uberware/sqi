@@ -49,20 +49,26 @@ func TestClassify(t *testing.T) {
 }
 
 func TestLockSQL(t *testing.T) {
-	q, err := lockSQL(sqlstore.Anchor{Table: "jobs", ID: "j", Mode: sqlstore.LockUpdate})
+	q, err := lockSQL(sqlstore.Anchor{Table: "jobs", ID: "j", Mode: sqlstore.LockUpdate}, false)
 	if err != nil || q != "SELECT 1 FROM jobs WHERE id = $1 FOR UPDATE" {
 		t.Fatalf("update: %q, %v", q, err)
 	}
-	q, err = lockSQL(sqlstore.Anchor{Table: "workers", ID: "w", Mode: sqlstore.LockShare})
+	q, err = lockSQL(sqlstore.Anchor{Table: "workers", ID: "w", Mode: sqlstore.LockShare}, false)
 	if err != nil || q != "SELECT 1 FROM workers WHERE id = $1 FOR SHARE" {
 		t.Fatalf("share: %q, %v", q, err)
 	}
-	q, err = lockSQL(sqlstore.Anchor{Table: "queues", ID: "q", Mode: sqlstore.LockNoKeyUpdate})
+	q, err = lockSQL(sqlstore.Anchor{Table: "queues", ID: "q", Mode: sqlstore.LockNoKeyUpdate}, false)
 	if err != nil || q != "SELECT 1 FROM queues WHERE id = $1 FOR NO KEY UPDATE" {
 		t.Fatalf("no key update: %q, %v", q, err)
 	}
-	if _, err := lockSQL(sqlstore.Anchor{Table: "tasks; DROP TABLE jobs", ID: "x"}); err == nil {
-		t.Fatal("lockSQL accepted a table outside the allow-list")
+	q, err = lockSQL(sqlstore.Anchor{Table: "jobs", ID: "j", Mode: sqlstore.LockUpdate}, true)
+	if err != nil || q != "SELECT 1 FROM jobs WHERE id = ANY($1) ORDER BY id FOR UPDATE" {
+		t.Fatalf("many: %q, %v", q, err)
+	}
+	for _, many := range []bool{false, true} {
+		if _, err := lockSQL(sqlstore.Anchor{Table: "tasks; DROP TABLE jobs", ID: "x"}, many); err == nil {
+			t.Fatal("lockSQL accepted a table outside the allow-list")
+		}
 	}
 }
 

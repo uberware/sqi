@@ -7,7 +7,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -101,94 +100,80 @@ ORDER BY j.id`
 
 // FinalizeStep implements [store.StepStore].
 //
-// Anchor: the step's job row. The current status, used only to report an
-// already-terminal step, is read under the anchor, so it is current against
-// every job-anchored writer.
+// Anchor: the step's job row. When the finalize writes nothing, the current
+// status is read under the anchor to report an already-terminal step, so it is
+// current against every job-anchored writer.
 func (s *Store) FinalizeStep(ctx context.Context, id string, now time.Time) (store.StepStatus, bool, error) {
-	// terminal is the already-terminal status the no-op branch reports. It is
-	// returned even when that branch's commit fails.
-	var (
-		status, terminal store.StepStatus
-		finalized        bool
-	)
-	err := s.inTx(ctx, "finalize step", func(tx *dbTx) (txOutcome, error) {
-		status, terminal, finalized = "", "", false
+	type result struct {
+		status    store.StepStatus
+		finalized bool
+	}
+	r, err := inTxValue(ctx, s, "finalize step", func(tx *dbTx) (result, txOutcome, error) {
 		var jobID string
 		if err := tx.QueryRowContext(ctx, `SELECT job_id FROM steps WHERE id = ?`, id).Scan(&jobID); err != nil {
-			return txRollback, mapErr(err)
+			return result{}, txRollback, mapErr(err)
 		}
 		if err := tx.lockAnchors(ctx, jobAnchor(jobID)); err != nil {
-			return txRollback, err
-		}
-		var current string
-		if err := tx.QueryRowContext(ctx, `SELECT status FROM steps WHERE id = ?`, id).Scan(&current); err != nil {
-			return txRollback, mapErr(err)
+			return result{}, txRollback, err
 		}
 		var written string
 		err := tx.QueryRowContext(ctx, sqlFinalizeStep, TimeText(now.UTC()), id).Scan(&written)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			// Not finalized now: either a task is still in flight, or the step was
-			// already terminal before this call.
-			if store.StepStatus(current).IsTerminal() {
-				terminal = store.StepStatus(current)
-				status = terminal
+			// already terminal before this call. Nothing was written, so the
+			// transaction rolls back and no commit can fail.
+			var current string
+			if err := tx.QueryRowContext(ctx, `SELECT status FROM steps WHERE id = ?`, id).Scan(&current); err != nil {
+				return result{}, txRollback, mapErr(err)
 			}
-			return txCommit, nil
+			if store.StepStatus(current).IsTerminal() {
+				return result{status: store.StepStatus(current)}, txRollback, nil
+			}
+			return result{}, txRollback, nil
 		case err != nil:
-			return txRollback, fmt.Errorf("store: finalize step %s: %w", id, mapErr(err))
+			return result{}, txRollback, fmt.Errorf("store: finalize step %s: %w", id, mapErr(err))
 		}
-		status, finalized = store.StepStatus(written), true
-		return txCommit, nil
+		return result{status: store.StepStatus(written), finalized: true}, txCommit, nil
 	})
-	if err != nil {
-		return terminal, false, err
-	}
-	return status, finalized, nil
+	return r.status, r.finalized, err
 }
 
 // FinalizeJob implements [store.JobStore].
 //
-// Anchor: the job row. As in [Store.FinalizeStep], the current status, used
-// only to report an already-terminal job, is read under the anchor, so it is
-// current against every job-anchored writer.
+// Anchor: the job row. As in [Store.FinalizeStep], the current status is read
+// under the anchor, only when the finalize writes nothing.
 func (s *Store) FinalizeJob(ctx context.Context, id string, now time.Time) (store.JobStatus, bool, error) {
-	// terminal is as in [Store.FinalizeStep].
-	var (
-		status, terminal store.JobStatus
-		finalized        bool
-	)
-	err := s.inTx(ctx, "finalize job", func(tx *dbTx) (txOutcome, error) {
-		status, terminal, finalized = "", "", false
-		// The lock on a missing job locks nothing, so the SELECT after it
-		// returns sql.ErrNoRows, which mapErr turns into ErrNotFound.
+	type result struct {
+		status    store.JobStatus
+		finalized bool
+	}
+	r, err := inTxValue(ctx, s, "finalize job", func(tx *dbTx) (result, txOutcome, error) {
 		if err := tx.lockAnchors(ctx, jobAnchor(id)); err != nil {
-			return txRollback, err
-		}
-		var current string
-		if err := tx.QueryRowContext(ctx, `SELECT status FROM jobs WHERE id = ?`, id).Scan(&current); err != nil {
-			return txRollback, mapErr(err)
+			return result{}, txRollback, err
 		}
 		nowText := TimeText(now.UTC())
 		var written string
 		err := tx.QueryRowContext(ctx, sqlFinalizeJob, nowText, nowText, id).Scan(&written)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
-			if store.JobStatus(current).IsTerminal() {
-				terminal = store.JobStatus(current)
-				status = terminal
+			// As in FinalizeStep, nothing was written. A missing job reaches
+			// here too (its lock locked nothing), and this SELECT's
+			// sql.ErrNoRows maps to ErrNotFound.
+			var current string
+			if err := tx.QueryRowContext(ctx, `SELECT status FROM jobs WHERE id = ?`, id).Scan(&current); err != nil {
+				return result{}, txRollback, mapErr(err)
 			}
-			return txCommit, nil
+			if store.JobStatus(current).IsTerminal() {
+				return result{status: store.JobStatus(current)}, txRollback, nil
+			}
+			return result{}, txRollback, nil
 		case err != nil:
-			return txRollback, fmt.Errorf("store: finalize job %s: %w", id, mapErr(err))
+			return result{}, txRollback, fmt.Errorf("store: finalize job %s: %w", id, mapErr(err))
 		}
-		status, finalized = store.JobStatus(written), true
-		return txCommit, nil
+		return result{status: store.JobStatus(written), finalized: true}, txCommit, nil
 	})
-	if err != nil {
-		return terminal, false, err
-	}
-	return status, finalized, nil
+	return r.status, r.finalized, err
 }
 
 // ListStuckSteps implements [store.StepStore].
@@ -255,51 +240,46 @@ func (s *Store) CancelPendingStep(ctx context.Context, id, reason string, now ti
 func (s *Store) movePendingStep(
 	ctx context.Context, id string, stepTo store.StepStatus, taskTo store.TaskStatus, reason string, now time.Time,
 ) (bool, []store.Task, error) {
-	var (
+	type result struct {
 		moved bool
 		tasks []store.Task
-	)
-	err := s.inTx(ctx, "move pending step", func(tx *dbTx) (txOutcome, error) {
-		moved, tasks = false, nil
+	}
+	r, err := inTxValue(ctx, s, "move pending step", func(tx *dbTx) (result, txOutcome, error) {
 		var jobID, dependsOnJSON string
 		if err := tx.QueryRowContext(ctx, `SELECT job_id, depends_on FROM steps WHERE id = ?`, id).Scan(&jobID, &dependsOnJSON); err != nil {
-			return txRollback, mapErr(err)
+			return result{}, txRollback, mapErr(err)
 		}
 		if err := tx.lockAnchors(ctx, jobAnchor(jobID)); err != nil {
-			return txRollback, err
+			return result{}, txRollback, err
 		}
 		if stepTo == store.StepStatusCanceled {
 			failed, err := anyUpstreamUnsuccessfulTx(ctx, tx, jobID, dependsOnJSON)
 			if err != nil {
-				return txRollback, fmt.Errorf("store: upstreams of step %s: %w", id, err)
+				return result{}, txRollback, fmt.Errorf("store: upstreams of step %s: %w", id, err)
 			}
 			if !failed {
-				return txRollback, nil
+				return result{}, txRollback, nil
 			}
 		}
 		nowText := TimeText(now.UTC())
 		res, err := tx.ExecContext(ctx, sqlGuardStepPending, string(stepTo), nowText, id)
 		if err != nil {
-			return txRollback, fmt.Errorf("store: move pending step %s: %w", id, mapErr(err))
+			return result{}, txRollback, fmt.Errorf("store: move pending step %s: %w", id, mapErr(err))
 		}
 		n, err := res.RowsAffected()
 		if err != nil {
-			return txRollback, fmt.Errorf("store: move pending step %s: %w", id, mapErr(err))
+			return result{}, txRollback, fmt.Errorf("store: move pending step %s: %w", id, mapErr(err))
 		}
 		if n == 0 {
-			return txRollback, nil
+			return result{}, txRollback, nil
 		}
-		tasks, err = queryTasksTx(ctx, tx, sqlTransitionStepPendingTasks, string(taskTo), nowText, reason, id)
+		tasks, err := queryTasksTx(ctx, tx, sqlTransitionStepPendingTasks, string(taskTo), nowText, reason, id)
 		if err != nil {
-			return txRollback, fmt.Errorf("store: move pending tasks of step %s: %w", id, err)
+			return result{}, txRollback, fmt.Errorf("store: move pending tasks of step %s: %w", id, err)
 		}
-		moved = true
-		return txCommit, nil
+		return result{moved: true, tasks: tasks}, txCommit, nil
 	})
-	if err != nil {
-		return false, nil, err
-	}
-	return moved, tasks, nil
+	return r.moved, r.tasks, err
 }
 
 // anyUpstreamUnsuccessfulTx reports whether any step named in dependsOnJSON (a
@@ -318,7 +298,7 @@ func anyUpstreamUnsuccessfulTx(ctx context.Context, tx *dbTx, jobID, dependsOnJS
 		args = append(args, d)
 	}
 	query := `SELECT EXISTS (SELECT 1 FROM steps WHERE job_id = ? AND status IN ('failed', 'canceled') AND name IN (` +
-		strings.TrimSuffix(strings.Repeat("?,", len(deps)), ",") + `))`
+		qmarks(len(deps)) + `))`
 	var failed bool
 	if err := tx.QueryRowContext(ctx, query, args...).Scan(&failed); err != nil {
 		return false, mapErr(err)
@@ -385,31 +365,24 @@ RETURNING ` + taskCols
 // those FOR SHARE, so a concurrent finalize of an upstream is ordered against
 // this release). The write is one guarded UPDATE; see [sqlReleaseBlockedJob].
 func (s *Store) ReleaseBlockedJob(ctx context.Context, id string, now time.Time) (bool, error) {
-	var released bool
-	err := s.inTx(ctx, "release blocked job", func(tx *dbTx) (txOutcome, error) {
-		released = false
+	return inTxValue(ctx, s, "release blocked job", func(tx *dbTx) (bool, txOutcome, error) {
 		anchors, err := blockedJobAnchorsTx(ctx, tx, id)
 		if err != nil {
-			return txRollback, err
+			return false, txRollback, err
 		}
 		if err := tx.lockAnchors(ctx, anchors...); err != nil {
-			return txRollback, err
+			return false, txRollback, err
 		}
 		res, err := tx.ExecContext(ctx, sqlReleaseBlockedJob, TimeText(now.UTC()), id)
 		if err != nil {
-			return txRollback, fmt.Errorf("store: release blocked job %s: %w", id, mapErr(err))
+			return false, txRollback, fmt.Errorf("store: release blocked job %s: %w", id, mapErr(err))
 		}
 		n, err := res.RowsAffected()
 		if err != nil {
-			return txRollback, fmt.Errorf("store: release blocked job %s: %w", id, err)
+			return false, txRollback, fmt.Errorf("store: release blocked job %s: %w", id, err)
 		}
-		released = n == 1
-		return txCommit, nil
+		return n == 1, txCommit, nil
 	})
-	if err != nil {
-		return false, err
-	}
-	return released, nil
 }
 
 // CancelBlockedJob implements [store.JobStore].
@@ -419,45 +392,40 @@ func (s *Store) ReleaseBlockedJob(ctx context.Context, id string, now time.Time)
 // all, otherwise its open steps and pending tasks follow in the same
 // transaction so a canceled job is never observed with live children.
 func (s *Store) CancelBlockedJob(ctx context.Context, id, reason string, now time.Time) (bool, []store.Task, error) {
-	var (
+	type result struct {
 		canceled bool
 		tasks    []store.Task
-	)
-	err := s.inTx(ctx, "cancel blocked job", func(tx *dbTx) (txOutcome, error) {
-		canceled, tasks = false, nil
+	}
+	r, err := inTxValue(ctx, s, "cancel blocked job", func(tx *dbTx) (result, txOutcome, error) {
 		anchors, err := blockedJobAnchorsTx(ctx, tx, id)
 		if err != nil {
-			return txRollback, err
+			return result{}, txRollback, err
 		}
 		if err := tx.lockAnchors(ctx, anchors...); err != nil {
-			return txRollback, err
+			return result{}, txRollback, err
 		}
 		nowText := TimeText(now.UTC())
 		res, err := tx.ExecContext(ctx, sqlCancelBlockedJobRow, nowText, nowText, id)
 		if err != nil {
-			return txRollback, fmt.Errorf("store: cancel blocked job %s: %w", id, mapErr(err))
+			return result{}, txRollback, fmt.Errorf("store: cancel blocked job %s: %w", id, mapErr(err))
 		}
 		n, err := res.RowsAffected()
 		if err != nil {
-			return txRollback, fmt.Errorf("store: cancel blocked job %s: %w", id, err)
+			return result{}, txRollback, fmt.Errorf("store: cancel blocked job %s: %w", id, err)
 		}
 		if n == 0 {
-			return txRollback, nil
+			return result{}, txRollback, nil
 		}
 		if _, err := tx.ExecContext(ctx, sqlCancelJobOpenSteps, nowText, id); err != nil {
-			return txRollback, fmt.Errorf("store: cancel steps of blocked job %s: %w", id, mapErr(err))
+			return result{}, txRollback, fmt.Errorf("store: cancel steps of blocked job %s: %w", id, mapErr(err))
 		}
-		tasks, err = queryTasksTx(ctx, tx, sqlCancelJobPendingTasks, nowText, reason, id)
+		tasks, err := queryTasksTx(ctx, tx, sqlCancelJobPendingTasks, nowText, reason, id)
 		if err != nil {
-			return txRollback, fmt.Errorf("store: cancel tasks of blocked job %s: %w", id, err)
+			return result{}, txRollback, fmt.Errorf("store: cancel tasks of blocked job %s: %w", id, err)
 		}
-		canceled = true
-		return txCommit, nil
+		return result{canceled: true, tasks: tasks}, txCommit, nil
 	})
-	if err != nil {
-		return false, nil, err
-	}
-	return canceled, tasks, nil
+	return r.canceled, r.tasks, err
 }
 
 // blockedJobAnchorsTx returns the anchor list for a blocked-job operation: the

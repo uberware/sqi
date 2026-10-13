@@ -180,8 +180,14 @@ configured store):
 Migration SQL files live in
 [`internal/store/migrations/`](../../internal/store/migrations/) (SQLite) and
 [`internal/store/migrations/postgres/`](../../internal/store/migrations/postgres/)
-(PostgreSQL, starting at `00037_baseline.sql`). On PostgreSQL, never run
-`migrate down` at version `00037`: it drops the whole schema and its data.
+(PostgreSQL, starting at `00037_baseline.sql`). On PostgreSQL, `migrate down`
+stops at `00037`: rolling the baseline back would drop the whole schema and its
+data, so it is refused (drop and recreate the database to start over).
+
+Leave the password out of `--dsn`, since the process list shows a command
+line, and supply it through `PGPASSWORD` or a password file instead. A
+PostgreSQL deployment in Docker Compose is in
+[`deploy/docker-compose.postgres.yml`](../../deploy/docker-compose.postgres.yml).
 
 ---
 

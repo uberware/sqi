@@ -50,7 +50,7 @@ func acquireServerLock(ctx context.Context, db *sql.DB, log *slog.Logger) (*serv
 
 // watch pings the lock's connection every 30 s. A failed ping means the
 // session, and with it the lock, is gone: it is logged, not fatal. Exiting
-// would turn a network blip into an outage, and failover is H7's.
+// would turn a network blip into an outage, and the server does not fail over.
 func (l *serverLock) watch(ctx context.Context, log *slog.Logger) {
 	defer close(l.done)
 	t := time.NewTicker(30 * time.Second)

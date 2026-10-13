@@ -111,6 +111,19 @@ func applyProtectedDACL(h windows.Handle, acl *windows.ACL) error {
 // WriteSecret replaces an existing file; combined with the reparse flag, an
 // attacker-planted link is truncated in place rather than written through.
 func createSecret(path string) (*os.File, error) {
+	return openSecret(path, windows.CREATE_ALWAYS)
+}
+
+// createSecretExclusive is [createSecret] for a path that must not exist yet:
+// CREATE_NEW fails with ERROR_FILE_EXISTS, which matches fs.ErrExist, rather
+// than truncating.
+func createSecretExclusive(path string) (*os.File, error) {
+	return openSecret(path, windows.CREATE_NEW)
+}
+
+// openSecret creates path with the given creation disposition, WRITE_DAC
+// requested on the create, and the restricted DACL applied before it returns.
+func openSecret(path string, disposition uint32) (*os.File, error) {
 	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return nil, fmt.Errorf("encode path: %w", err)
@@ -120,7 +133,7 @@ func createSecret(path string) (*os.File, error) {
 		windows.GENERIC_WRITE|windows.WRITE_DAC|windows.READ_CONTROL,
 		0, // no sharing: nothing else reads a key while it is being written
 		nil,
-		windows.CREATE_ALWAYS,
+		disposition,
 		windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OPEN_REPARSE_POINT,
 		0,
 	)

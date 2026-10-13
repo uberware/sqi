@@ -10,7 +10,7 @@
 -- Every text column is COLLATE "C" so ordering is byte order, as SQLite's
 -- BINARY is, whatever the database's locale. Timestamps are the store's
 -- 30-character UTC text (YYYY-MM-DDTHH:MM:SS.nnnnnnnnnZ), held in the ts
--- domain, whose CHECK keeps the fixed width text order relies on.
+-- domain, whose CHECK enforces the fixed width that text ordering relies on.
 
 CREATE DOMAIN ts AS TEXT COLLATE "C"
     CHECK (VALUE ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{9}Z$');

@@ -173,15 +173,18 @@ func newDBPool(db *sql.DB, d Dialect) *dbPool {
 }
 
 // dbTx runs statements in a transaction through the dialect. tx is the raw
-// transaction, for Stmt and the anchor locks.
+// transaction, for Stmt and the anchor locks. order is where it stands in the
+// global lock order ([lockOrder]); a dbTx is built for each run of a
+// transaction, so it never outlives one.
 type dbTx struct {
 	dbConn
 
-	tx *sql.Tx
+	tx    *sql.Tx
+	order lockOrder
 }
 
 func newDBTx(tx *sql.Tx, d Dialect) *dbTx {
-	return &dbTx{dbConn: dbConn{q: tx, d: d}, tx: tx}
+	return &dbTx{dbConn: dbConn{q: tx, d: d}, tx: tx, order: newLockOrder()}
 }
 
 // Stmt returns stmt bound to this transaction.
@@ -190,7 +193,11 @@ func (t *dbTx) Stmt(ctx context.Context, stmt *dbStmt) *dbStmt {
 }
 
 // lockAnchors locks each anchor row, in the order given, in this transaction.
+// Anchors out of the global lock order are refused ([lockOrder.check]).
 func (t *dbTx) lockAnchors(ctx context.Context, anchors ...Anchor) error {
+	if err := t.order.check(anchors); err != nil {
+		return err
+	}
 	return t.d.LockAnchors(ctx, t.tx, anchors...)
 }
 

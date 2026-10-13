@@ -14,8 +14,8 @@ import (
 )
 
 // TestSubmissionWriteTimes measures one CreateJobSubmission at 50k, 75k and 1M
-// tasks on SQLite and PostgreSQL. Opt-in (SQI_TEST_PERF=1): it takes minutes
-// and asserts nothing; the numbers are recorded in the design spec (§8.5).
+// tasks on SQLite and PostgreSQL and logs each duration. Opt-in
+// (SQI_TEST_PERF=1): it takes minutes and asserts nothing.
 func TestSubmissionWriteTimes(t *testing.T) {
 	if os.Getenv("SQI_TEST_PERF") != "1" {
 		t.Skip("set SQI_TEST_PERF=1 to measure")

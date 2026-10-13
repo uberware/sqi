@@ -36,7 +36,7 @@ func (s *Store) LeaseTask(_ context.Context, req store.LeaseRequest) (store.Leas
 	if !ok || !s.leasableLocked(t, req) {
 		return store.LeaseResult{Outcome: store.LeaseLost}, nil
 	}
-	// The worker re-check (see the SQL store's sqlLeaseWorkerRefuses): a
+	// The worker re-check (see the SQL store's sqlLeaseTaskGuarded): a
 	// disabled worker is refused; an offline or unknown one is not.
 	if w, ok := s.workers[req.WorkerID]; ok && w.Disabled {
 		return store.LeaseResult{Outcome: store.LeaseLost}, nil
