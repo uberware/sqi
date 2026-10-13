@@ -75,7 +75,7 @@ func Run(ctx context.Context, o Options) (Result, error) {
 
 	var res Result
 	if o.InPlace {
-		err = requireInPlace(o)
+		err = requireInPlace(ctx, o)
 	} else {
 		res.BackupVersion, res.MovedAside, err = place(ctx, o, stamp)
 	}
@@ -110,11 +110,12 @@ func place(ctx context.Context, o Options, stamp string) (version int64, moved [
 	return placeSQLite(ctx, o, stamp)
 }
 
-// requireInPlace refuses --in-place on a SQLite database that is not there:
-// opening it would create, and migrate, an empty one.
-func requireInPlace(o Options) error {
+// requireInPlace refuses --in-place on a database that is not there (SQLite)
+// or has no sqi schema (PostgreSQL): opening it would create, and migrate, an
+// empty one.
+func requireInPlace(ctx context.Context, o Options) error {
 	if backend.Name(o.Driver) == backend.DriverPostgres {
-		return nil
+		return requireInPlacePostgres(ctx, o)
 	}
 	if _, err := os.Stat(o.SQLitePath); err != nil {
 		return fmt.Errorf("restore: --in-place needs the database at %s: %w", o.SQLitePath, err)
