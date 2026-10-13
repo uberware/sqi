@@ -25,6 +25,14 @@ import (
 // PostgreSQL, and the server starts on PostgreSQL with the same NATS directory
 // and carries on — including the attempt that was running when it stopped.
 //
+// It compares the two databases independently of the copy's own digest, but
+// only coarsely: the same set of tables, the same row count per table (plain
+// SELECT count(*)), and the same status for every job and task as each store
+// reports them. The farm it runs fills 8 of the 20 tables. Value-by-value
+// equality over every table, each one seeded, is
+// internal/store/storecopy's TestStoreCopy_CopiesEveryRowVerbatim
+// (assertRowsEqual).
+//
 // It needs SQLite as the source and a PostgreSQL target, so it ignores
 // SQI_TEST_STORE_DRIVER and runs whenever PostgreSQL is configured.
 func TestStoreCopy_SQLiteToPostgres(t *testing.T) {

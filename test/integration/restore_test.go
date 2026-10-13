@@ -13,7 +13,8 @@ package integration
 // worker ID, exactly as a farm's workers ride out a server restore. Whatever
 // it was running when the server stopped becomes a ghost run whose late
 // reports reach a database that no longer expects them — which is the case the
-// restore fence and the discard of superseded reports exist for.
+// restore fence and the discard of superseded reports exist for, and which
+// TestBackupRestore_FarmResumes asserts.
 
 import (
 	"context"
@@ -25,6 +26,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -36,6 +38,7 @@ import (
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/restore"
 	"github.com/uberware/sqi/internal/server"
+	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/backend"
 	"github.com/uberware/sqi/internal/store/migrations"
 	"github.com/uberware/sqi/internal/store/postgres"
@@ -70,32 +73,87 @@ const sleepJobTasks = 6
 // (internal/bus, taskLogsConsumerName).
 const logsConsumer = "sqi-task-logs-srv"
 
+// ghostJob's first task outlives a server restore: it is running when the
+// backup is taken, still running when the server stops, and finishes on the
+// restored server, so its worker's terminal report names an attempt the fence
+// has already closed. The second task is short.
+const ghostJob = `specificationVersion: jobtemplate-2023-09
+name: restore-ghost
+steps:
+  - name: work
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: N
+          type: INT
+          range: "1-2"
+    script:
+      actions:
+        onRun:
+          command: /bin/sh
+          args: ['-c', 'if [ {{Task.Param.N}} -eq 1 ]; then sleep 20; else sleep 1; fi; printf "done %s\n" {{Task.Param.N}}']
+`
+
+// quickJob is one short task.
+const quickJob = `specificationVersion: jobtemplate-2023-09
+name: restore-farm
+steps:
+  - name: work
+    script:
+      actions:
+        onRun:
+          command: /bin/sh
+          args: ['-c', 'sleep 3; printf "done %s\n" farm']
+`
+
 // TestBackupRestore_FarmResumes is the restore runbook, executed: back up
-// while tasks run, let the farm move on, stop, restore, start; every task of
-// every job finishes, none is stranded, and retention deletes none of them.
+// while tasks run, let the farm move on, stop, restore, start. It asserts:
 //
-// Reconciliation is off, so the restore fence alone must recover the attempts
-// the backup caught running: with the fence disabled, job A's tasks stay
-// running forever under a worker that is alive and no longer runs them.
+//   - right after the restore, before any server runs (design §5.5's first
+//     property): no attempt is open, and every task of the resurrected
+//     non-terminal jobs is ready, pending or succeeded, none assigned or
+//     running;
+//   - after the restart: every job and task is terminal and every attempt is
+//     closed; the resurrected jobs complete; a job submitted after the backup
+//     is gone;
+//   - per task, the last attempt succeeded and every earlier one was closed
+//     failed with the worker-shutdown reason the fence records;
+//   - a ghost run really reported into the restored farm: the worker finished
+//     job A's first task, whose attempt the fence had closed, on the restored
+//     server (its output is stored on that attempt), and that attempt is still
+//     failed, so its late "succeeded" report was discarded and the re-run's
+//     result is the one recorded.
+//
+// Reconciliation is off, so the fence alone recovers the attempts the backup
+// caught running. Two workers on two queues: one runs ghostJob, the other the
+// short jobs that let the farm move on while ghostJob's first task runs.
 func TestBackupRestore_FarmResumes(t *testing.T) {
 	ts := startServerWith(t, func(c *server.Config) { c.Scheduler.ReconcileGrace = 0 })
 	requireBackupTools(t, ts.Store)
-	farmID, queueID := seedFarmAndQueue(t, ts)
-	startRestartableWorker(t, ts, farmID, queueID)
+	farmID, ghostQueue := seedFarmAndQueue(t, ts)
+	farmQueue := addQueue(t, ts, farmID, "Farm Queue")
+	startRestartableWorker(t, ts, farmID, ghostQueue)
+	startRestartableWorker(t, ts, farmID, farmQueue)
+	waitOnlineWorkers(t, ts, farmID, 2)
 
-	jobA := submitJobCustomYAML(t, ts, farmID, queueID, sleepJob)
-	pollTaskStatus(t, ts, firstTaskID(t, ts, jobA), []string{"running"}, 30*time.Second)
+	jobA := submitJobCustomYAML(t, ts, farmID, ghostQueue, ghostJob)
+	jobC := submitJobCustomYAML(t, ts, farmID, farmQueue, quickJob)
+	ghostTask := taskWithParam(t, ts, jobA, "N", "1")
+	pollTaskStatus(t, ts, ghostTask, []string{"running"}, 30*time.Second)
+	pollTaskStatus(t, ts, firstTaskID(t, ts, jobC), []string{"running"}, 30*time.Second)
 
 	backup := filepath.Join(t.TempDir(), "backup")
 	if err := backend.Backup(t.Context(), ts.Store, backup); err != nil {
 		t.Fatalf("backup: %v", err)
 	}
-	// The farm moves on after the backup: job A finishes, job B is submitted
-	// and is running when the server stops, so its ghost runs report into a
-	// database that has never heard of it.
-	waitJobCompleted(t, ts, jobA, 2*time.Minute)
-	jobB := submitJobCustomYAML(t, ts, farmID, queueID, sleepJob)
+	// The farm moves on after the backup: job C finishes, and job B is
+	// submitted and is running when the server stops, so its ghost run
+	// reports into a database that has never heard of it.
+	waitJobCompleted(t, ts, jobC, time.Minute)
+	jobB := submitJobCustomYAML(t, ts, farmID, farmQueue, quickJob)
 	pollTaskStatus(t, ts, firstTaskID(t, ts, jobB), []string{"running"}, 30*time.Second)
+	if got := getTaskDetail(t, ts, ghostTask).Status; got != "running" {
+		t.Fatalf("job A's first task is %q at the stop, want running: the ghost run this test needs did not happen", got)
+	}
 
 	ts.Stop(t)
 	if ts.Store.Driver == backend.DriverPostgres {
@@ -109,32 +167,42 @@ func TestBackupRestore_FarmResumes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restore: %v", err)
 	}
-	if res.Fenced == 0 {
-		t.Fatal("the backup caught running tasks, so the fence must have reclaimed some")
-	}
 	if res.NATSMovedTo == "" {
 		t.Fatalf("restore left the NATS directory %s in place; the runbook moves it aside", ts.NATSDir)
 	}
 	t.Logf("restore fenced %d attempts and moved the NATS directory to %s", res.Fenced, res.NATSMovedTo)
+	assertRestoredFenced(t, ts.Store, jobA, jobC)
 	ts = restartServer(t, ts)
 
-	// Job A is back as the backup recorded it (part-done) and runs to the end;
+	// Jobs A and C are back as the backup recorded them and run to the end;
 	// job B never existed in the backup.
 	waitJobCompleted(t, ts, jobA, 3*time.Minute)
+	waitJobCompleted(t, ts, jobC, 2*time.Minute)
 	if code := getStatusCode(t, ts, "/api/v1/jobs/"+jobB); code != http.StatusNotFound {
 		t.Fatalf("job B after restore: HTTP %d, want 404 (submitted after the backup)", code)
 	}
 	assertNoInFlightTasks(t, ts)
-	// Each fenced attempt's task ran again under a new attempt.
-	if got, want := attemptCount(t, ts, jobA), sleepJobTasks+res.Fenced; got < want {
-		t.Fatalf("job A has %d attempts, want at least %d (%d tasks, %d fenced and run again)",
-			got, want, sleepJobTasks, res.Fenced)
+	rerun := assertRerunHistory(t, ts, jobA, jobC)
+	if !rerun[ghostTask] {
+		t.Fatalf("job A's first task has a single attempt; the fence should have closed its first and it should have run again")
 	}
+	if len(rerun) < res.Fenced {
+		t.Fatalf("%d tasks ran again, want at least the %d the fence reclaimed", len(rerun), res.Fenced)
+	}
+	assertGhostRunReported(t, ts, ghostTask, "done 1")
+	// Not asserted: that no "invalid transition" was logged. The harness
+	// boots the server without a diagnostics buffer (server.New(cfg, logger,
+	// nil)), so /api/v1/diagnostics/logs is off; the attempt history above is
+	// what shows the ghost's report changed nothing.
 }
 
 // TestRestore_MixedAgeNATSDir restores the database by hand — no restore
 // command, so no fence and no NATS quarantine — beside a NATS directory of a
-// different age, and starts the server on the pair.
+// different age, and starts the server on the pair. It asserts that no log
+// row is duplicated (older) and that reconciliation recovers what the
+// database still records as running (newer). It does not assert that stale
+// status reports are discarded: TestBackupRestore_FarmResumes' attempt
+// history and the scheduler's unit tests cover that.
 func TestRestore_MixedAgeNATSDir(t *testing.T) {
 	reconcile := func(c *server.Config) {
 		c.Scheduler.ReconcileGrace = 40 * time.Second
@@ -440,8 +508,179 @@ func getStatusCode(t *testing.T, ts *testServer, path string) int {
 
 // taskSummary is the subset of a task the runbook assertions read.
 type taskSummary struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
+	ID         string            `json:"id"`
+	Status     string            `json:"status"`
+	Parameters map[string]string `json:"parameters"`
+}
+
+// taskWithParam returns the ID of jobID's task whose parameter name is value.
+func taskWithParam(t *testing.T, ts *testServer, jobID, name, value string) string {
+	t.Helper()
+	tasks := jobTasks(t, ts, jobID)
+	for _, task := range tasks {
+		if task.Parameters[name] == value {
+			return task.ID
+		}
+	}
+	t.Fatalf("job %s has no task with %s=%s: %+v", jobID, name, value, tasks)
+	return ""
+}
+
+// addQueue creates another queue in farmID and returns its ID.
+func addQueue(t *testing.T, ts *testServer, farmID, name string) string {
+	t.Helper()
+	body := fmt.Sprintf(`{"farm_id":%q,"name":%q}`, farmID, name)
+	var resp struct {
+		ID string `json:"id"`
+	}
+	mustDoJSONClient(t, clientFor(ts), http.MethodPost, apiURL(ts, "/api/v1/queues"), []byte(body),
+		"application/json", http.StatusCreated, &resp)
+	if resp.ID == "" {
+		t.Fatal("addQueue: server returned an empty queue ID")
+	}
+	return resp.ID
+}
+
+// waitOnlineWorkers waits until farmID has at least n online workers:
+// startRealWorker returns as soon as any worker in the farm is online.
+func waitOnlineWorkers(t *testing.T, ts *testServer, farmID string, n int) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		var resp struct {
+			Items []struct {
+				FarmID string `json:"farm_id"`
+				Status string `json:"status"`
+			} `json:"items"`
+		}
+		mustDoJSONClient(t, clientFor(ts), http.MethodGet, apiURL(ts, "/api/v1/workers"), nil, "", http.StatusOK, &resp)
+		online := 0
+		for _, w := range resp.Items {
+			if w.FarmID == farmID && w.Status == "online" {
+				online++
+			}
+		}
+		if online >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d of %d workers online in farm %s after 30s", online, n, farmID)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+// assertRestoredFenced checks design §5.5's first property on the restored
+// database before any server starts on it: no attempt is open, and every task
+// of the given (resurrected, non-terminal) jobs is ready, pending or
+// succeeded — none is left assigned or running.
+func assertRestoredFenced(t *testing.T, so backend.Options, jobIDs ...string) {
+	t.Helper()
+	o := so
+	o.MaxConns = 2
+	st, err := backend.Open(t.Context(), o)
+	if err != nil {
+		t.Fatalf("open the restored store: %v", err)
+	}
+	defer st.Close()
+	open, err := st.ListOpenAttempts(t.Context(), time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("list open attempts: %v", err)
+	}
+	if len(open) != 0 {
+		t.Errorf("the restored database has %d open attempts (first %+v), want none", len(open), open[0])
+	}
+	settled := map[store.TaskStatus]bool{
+		store.TaskStatusReady: true, store.TaskStatusPending: true, store.TaskStatusSucceeded: true,
+	}
+	for _, jobID := range jobIDs {
+		job, err := st.GetJob(t.Context(), jobID)
+		if err != nil {
+			t.Fatalf("restored job %s: %v", jobID, err)
+		}
+		if job.Status.IsTerminal() {
+			t.Errorf("restored job %s is %q; the backup caught it running", jobID, job.Status)
+		}
+		tasks, err := st.ListTasks(t.Context(), store.ListTasksOptions{
+			JobID: jobID, Pagination: store.Pagination{Limit: store.MaxLimit},
+		})
+		if err != nil {
+			t.Fatalf("restored tasks of job %s: %v", jobID, err)
+		}
+		for _, task := range tasks.Items {
+			if !settled[task.Status] {
+				t.Errorf("restored job %s task %s is %q, want ready, pending or succeeded", jobID, task.ID, task.Status)
+			}
+		}
+	}
+}
+
+// assertRerunHistory checks every task of the given jobs: its last attempt
+// succeeded, and every earlier one was closed failed with the worker-shutdown
+// reason the fence (ReclaimTaskAttempt) records. It returns the tasks that
+// ran more than once.
+func assertRerunHistory(t *testing.T, ts *testServer, jobIDs ...string) map[string]bool {
+	t.Helper()
+	rerun := map[string]bool{}
+	for _, jobID := range jobIDs {
+		for _, task := range jobTasks(t, ts, jobID) {
+			attempts := taskAttempts(t, ts, task.ID)
+			slices.SortFunc(attempts, func(a, b attemptSummary) int { return a.AttemptNumber - b.AttemptNumber })
+			if len(attempts) == 0 {
+				t.Errorf("job %s task %s has no attempts", jobID, task.ID)
+				continue
+			}
+			history := make([]string, len(attempts))
+			for i, a := range attempts {
+				history[i] = fmt.Sprintf("#%d %s %q", a.AttemptNumber, a.Status, a.Message)
+			}
+			t.Logf("job %s task %s attempts: %s", jobID, task.ID, strings.Join(history, ", "))
+			if last := attempts[len(attempts)-1]; last.Status != "succeeded" {
+				t.Errorf("job %s task %s: last attempt %d is %q, want succeeded", jobID, task.ID, last.AttemptNumber, last.Status)
+			}
+			for _, a := range attempts[:len(attempts)-1] {
+				rerun[task.ID] = true
+				if a.Status != "failed" || a.Message != store.FailureReasonWorkerShutdown {
+					t.Errorf("job %s task %s: attempt %d is %q (%q), want failed (%q): closed by the fence and never "+
+						"changed by its worker's late report", jobID, task.ID, a.AttemptNumber, a.Status, a.Message,
+						store.FailureReasonWorkerShutdown)
+				}
+			}
+		}
+	}
+	return rerun
+}
+
+// assertGhostRunReported checks that the worker finished taskID's first
+// attempt on the restored server: that attempt's log, as the restored store
+// holds it, contains want. Its output and its terminal report are published
+// together when the run ends, so this shows the late report really reached
+// the server whose fence had closed the attempt.
+func assertGhostRunReported(t *testing.T, ts *testServer, taskID, want string) {
+	t.Helper()
+	st := openTestStore(t, ts.Store)
+	attempts, err := st.ListTaskAttempts(t.Context(), taskID)
+	if err != nil || len(attempts) == 0 {
+		t.Fatalf("attempts of task %s: %v (%d)", taskID, err, len(attempts))
+	}
+	first := slices.MinFunc(attempts, func(a, b store.TaskAttempt) int { return a.AttemptNumber - b.AttemptNumber })
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		logs, err := st.ListTaskLogs(t.Context(), first.ID, 0, 1000)
+		if err != nil {
+			t.Fatalf("logs of attempt %s: %v", first.ID, err)
+		}
+		for _, l := range logs {
+			if strings.Contains(l.Data, want) {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("attempt %d of task %s has no %q in its log after 60s: the ghost run never reported to the restored server",
+				first.AttemptNumber, taskID, want)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 }
 
 // jobTasks returns every task of jobID.
@@ -457,8 +696,10 @@ func jobTasks(t *testing.T, ts *testServer, jobID string) []taskSummary {
 
 // attemptSummary is the subset of a task attempt the runbook assertions read.
 type attemptSummary struct {
-	Status  string     `json:"status"`
-	EndedAt *time.Time `json:"ended_at"`
+	AttemptNumber int        `json:"attempt_number"`
+	Status        string     `json:"status"`
+	Message       string     `json:"message"`
+	EndedAt       *time.Time `json:"ended_at"`
 }
 
 // taskAttempts returns every attempt of taskID.
@@ -472,20 +713,9 @@ func taskAttempts(t *testing.T, ts *testServer, taskID string) []attemptSummary 
 	return resp.Items
 }
 
-// attemptCount returns how many attempts jobID's tasks have, in all.
-func attemptCount(t *testing.T, ts *testServer, jobID string) int {
-	t.Helper()
-	n := 0
-	for _, task := range jobTasks(t, ts, jobID) {
-		n += len(taskAttempts(t, ts, task.ID))
-	}
-	return n
-}
-
-// assertNoInFlightTasks asserts that every job is terminal, every task of
-// every job is terminal and every attempt is closed: nothing is stranded
-// assigned or running, and nothing is left that retention (which deletes only
-// terminal jobs) could neither delete nor advance.
+// assertNoInFlightTasks asserts that every job the server lists is terminal,
+// every task of every job is terminal and every attempt is closed: nothing is
+// stranded assigned or running.
 func assertNoInFlightTasks(t *testing.T, ts *testServer) {
 	t.Helper()
 	var jobs struct {

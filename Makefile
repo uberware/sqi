@@ -208,10 +208,11 @@ test-cover-html: test-cover ## Open HTML coverage report in the browser
 	go tool cover -html=$(COVERAGE_OUT)
 
 .PHONY: test-integration
-# INTEGRATION_TEST_FLAGS is empty by default so a local run gets go test's
-# ordinary defaults; CI sets it to add a timeout sized for the suite's own
-# LDAP/Keycloak containers without changing what a local run does.
-INTEGRATION_TEST_FLAGS ?=
+# INTEGRATION_TEST_FLAGS defaults to a 20 m timeout: test/integration alone
+# takes about 7 minutes (the backup/restore runbooks wait out a reconcile
+# grace), too close to go test's 10 m default. CI overrides it with its own
+# timeout, sized for the suite's LDAP/Keycloak containers.
+INTEGRATION_TEST_FLAGS ?= -timeout 20m
 test-integration: ## Run integration tests (tagged 'integration')
 	go test $(TEST_FLAGS) -tags integration -v $(INTEGRATION_TEST_FLAGS) ./test/...
 
