@@ -477,7 +477,7 @@ scheduler for the paths that have none:
 | Worker reclaimed (heartbeat timeout or graceful deregister) | `"worker went offline"` | `store.OfflineStaleWorker` / `store.OfflineWorker` — set on the **attempt** `message` only; reclaim is not a task failure, so `tasks.failure_reason` is left untouched |
 | Worker restarted (a new process registers under the same worker ID) | `"worker restarted"` | `store.RegisterWorker`, in the registration's own transaction — attempt `message` only, as above |
 | Worker shut down (a `failed` report whose message is `worker_shutdown`) | `"worker shut down"` | `store.ReclaimTaskAttempt` — attempt `message` only, as above |
-| Restore fence or attempt reconciliation (an attempt a restored database records as running, or one its live worker stopped reporting) | `"worker shut down"` | `store.ReclaimTaskAttempt`, called by `restore.Fence` and `Scheduler.reconcileAttempts` — attempt `message` only, as above |
+| Restore fence or attempt reconciliation (an attempt a restored database records as open, its task assigned or running, or one its live worker stopped reporting) | `"worker shut down"` | `store.ReclaimTaskAttempt`, called by `restore.Fence` and `Scheduler.reconcileAttempts` — attempt `message` only, as above |
 | Cascade-canceled (an upstream step failed or was canceled, or a blocked job's upstream job failed, was canceled or was deleted) | `"canceled: upstream step failed"` | stamped inside the same UPDATE that cancels the tasks: `store.CancelPendingStep` (called by `openjd.CancelDependents`) for a step, `store.CancelBlockedJob` for a blocked job |
 | User-initiated cancel | `"canceled by user"` | stamped inside the UPDATE that cancels the tasks: `store.CancelJobExecution` for `CancelJob`, `store.CancelTaskExecution` for `CancelTask` |
 
@@ -1389,9 +1389,9 @@ database and its own JetStream directory needs no such repair: reports that
 reached the stream before it stopped are still there, and attempt
 reconciliation recovers a task whose report a worker could not deliver. A
 database that was put back (a backup, point-in-time recovery, a snapshot) is
-different. It records as
-running the attempts that were running when it was taken, and the JetStream
-directory beside it belongs to another moment. `sqi-server restore`
+different. It records as open the attempts that were in flight (assigned or
+running) when it was taken, and the JetStream directory beside it belongs to
+another moment. `sqi-server restore`
 (`internal/restore`) therefore **fences** before any server starts: with the
 single-server lock held, it lists every open attempt (`store.ListOpenAttempts`
 with a far-future cutoff), reclaims each through `store.ReclaimTaskAttempt`

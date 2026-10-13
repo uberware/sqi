@@ -41,8 +41,10 @@ Copying the file over store.sqlite_path by hand skips those steps.
 
 PostgreSQL: the backup runs "pg_dump --format=custom" against the database,
 so the PostgreSQL client tools must be on PATH, at a major version no older
-than the server's. Restore the archive into an empty database with
-pg_restore.
+than the server's. Restore it with "sqi-server restore FILE" while the server
+is stopped, into an empty database (drop or rename the old one and create it
+again first): it checks the archive, loads it with pg_restore, migrates it,
+returns tasks that were in flight to ready, and moves nats.data_dir aside.
 
 The store is chosen as follows: --dsn names a PostgreSQL database; --db names
 a SQLite file; otherwise store.driver from the resolved configuration (the
@@ -57,7 +59,7 @@ Examples:
   sqi-server backup --db sqi.db --out sqi-backup-$(date +%Y%m%d).db
   sqi-server restore sqi-backup-20261012.db --db sqi.db
   sqi-server backup --dsn postgres://sqi@db.example.com/sqi --out sqi-$(date +%Y%m%d).dump
-  pg_restore --dbname postgres://sqi@db.example.com/sqi_restored sqi-20261012.dump`,
+  sqi-server restore sqi-20261012.dump --dsn postgres://sqi@db.example.com/sqi`,
 	RunE: runBackup,
 }
 

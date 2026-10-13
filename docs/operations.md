@@ -290,9 +290,12 @@ Upgrading is a stop and a start, not a rolling restart: two servers cannot
 share one database (see [One server per database](#one-server-per-database)),
 and on one host they cannot share its ports either.
 
-Workers do not need to stop: they reconnect when the server is back. A report
-a worker could not deliver while the server was down is recovered by
-[reconciliation](#reconciliation), at the cost of running that task again.
+Workers do not need to stop: they reconnect when the server is back. On a
+worker of this release, a report it could not deliver while the server was
+down is recovered by [reconciliation](#reconciliation), at the cost of running
+that task again. Workers from v0.3.0 and earlier send no attempt list and are
+never reconciled: a task whose report such a worker lost stays `running` until
+that worker goes offline.
 
 Run the CLI commands as the account the server runs as (`sqi` in the systemd
 unit above). On SQLite the files they create are readable by their owner only,
@@ -307,10 +310,11 @@ gets it (the configured DSN, or its `~/.pgpass`): `sudo` does not pass
 # 1. Stop the server.
 sudo systemctl stop sqi-server
 
-# 2. Back the database up. This is the backup a rollback restores.
-#    (On PostgreSQL the command is the same; name the file .dump.)
-sudo -u sqi sqi-server backup --config /etc/sqi/sqi-server.yaml \
+# 2. Back the database up with the binary still installed. This is the backup
+#    a rollback restores. Name the database file with --db (see below).
+sudo -u sqi sqi-server backup --db /var/lib/sqi/sqi.db \
   --out /backups/sqi/pre-upgrade-$(date +%Y%m%d-%H%M%S).db
+ls -l /var/lib/sqi/sqi.db /backups/sqi/pre-upgrade-*.db   # check it (see below)
 
 # 3. Keep the old binary, and install the new one.
 sudo cp /usr/local/bin/sqi-server /usr/local/bin/sqi-server.old
@@ -319,6 +323,23 @@ sudo install -m 0755 ./sqi-server /usr/local/bin/sqi-server
 # 4. Start it. Pending migrations run before it accepts requests.
 sudo systemctl start sqi-server
 ```
+
+**Name the database with `--db` in step 2.** The binary that takes this
+backup is the one you are upgrading from, and the `backup` of v0.3.0 and
+earlier reads only `--db`, defaulting to `$SQI_SQLITE_PATH` or `sqi.db` in the
+current directory: it accepts `--config` but ignores it, and `sudo` drops
+`SQI_SQLITE_PATH`. Run without `--db` from a directory with no database,
+v0.3.0's `backup` creates an empty `sqi.db` there and fails (`open source
+database: ... no such table: farms`); run from a directory that holds some
+other sqi database, it backs that one up without complaint. So check the
+result: the backup should be close to the live file's size (`VACUUM INTO`
+compacts it, so it can be smaller), and any sqi database, even one with no
+jobs, is several hundred kilobytes (385 KB for an empty farm at schema 38).
+Do not check it with `sqi-server migrate status --db`: that opens the file
+read-write and rewrites it. On PostgreSQL the old binary is at least the
+release that added PostgreSQL support, whose `backup` reads `--config` and
+`--dsn`, so `sqi-server backup --config /etc/sqi/sqi-server.yaml --out
+/backups/sqi/pre-upgrade-<time>.dump` is right there.
 
 To watch the migrations run, or to run them before the start, put this between
 steps 3 and 4. It prints one line per migration it applies (or `no pending
@@ -341,18 +362,21 @@ From an elevated PowerShell. `Set-Location` matters with the default relative
 ```powershell
 sqi-server service stop
 Set-Location C:\ProgramData\sqi
-sqi-server backup --config C:\ProgramData\sqi\sqi-server.yaml `
+sqi-server backup --db C:\ProgramData\sqi\sqi.db `
   --out "D:\backups\sqi\pre-upgrade-$(Get-Date -Format yyyyMMdd-HHmmss).db"
+Get-ChildItem C:\ProgramData\sqi\sqi.db, D:\backups\sqi\pre-upgrade-*.db   # compare sizes
 Copy-Item "C:\Program Files\sqi\sqi-server.exe" "C:\Program Files\sqi\sqi-server.exe.old"
 # Replace C:\Program Files\sqi\sqi-server.exe with the new binary, then:
 sqi-server service start
 ```
 
 The backup directory must already exist; `backup` creates only the file.
+`--db` names the database for the same reason as on Linux.
 
-The backup and the rollback below are executed by
-`TestUpgrade_OlderBinaryRefused`, which simulates the newer binary by recording
-a schema version above the one it was built with.
+The rollback below (restoring a pre-upgrade backup with the older binary, and
+a clean start on it) is executed by `TestUpgrade_OlderBinaryRefused`, which
+simulates the newer binary by recording a schema version above the one it was
+built with; the backup steps above are not.
 
 ---
 
@@ -374,26 +398,37 @@ up`, `restore` (given a backup newer than the binary), `store copy` and the
 newer than itself.
 
 To go back to the older release, restore the backup taken before the upgrade,
-with the **older** binary:
+with the **older** binary. Do not start a server until the last step:
 
 ```sh
 sudo systemctl stop sqi-server
 
 # Keep what the newer release wrote, in case you go forward again later.
+# (This is still the newer binary, whose backup reads --config.)
 sudo -u sqi sqi-server backup --config /etc/sqi/sqi-server.yaml \
   --out /backups/sqi/before-rollback-$(date +%Y%m%d-%H%M%S).db
 
-# Put the old binary back, then restore the pre-upgrade backup with it.
+# Put the old binary back.
 sudo install -m 0755 /usr/local/bin/sqi-server.old /usr/local/bin/sqi-server
+
+# PostgreSQL only: restore loads into an empty database. Keep the newer one
+# aside (or dropdb it) and create an empty one, as under "Restoring PostgreSQL".
+psql -h db.example.com -U postgres -d postgres \
+  -c 'ALTER DATABASE sqi RENAME TO sqi_pre_rollback_20261013'
+createdb -h db.example.com -U postgres -O sqi sqi
+
+# Restore the pre-upgrade backup with the old binary.
 sudo -u sqi sqi-server restore --config /etc/sqi/sqi-server.yaml \
-  /backups/sqi/pre-upgrade-20261013-020000.db
+  /backups/sqi/pre-upgrade-20261013-020000.db   # .dump on PostgreSQL
 
 sudo systemctl start sqi-server
 ```
 
-On Windows, the same with `service stop`, `Set-Location
-C:\ProgramData\sqi`, `sqi-server.exe.old` copied back over `sqi-server.exe`,
-`restore`, and `service start`. Everything the farm did after the
+On SQLite there is nothing to prepare: `restore` moves the newer database
+aside itself. On Windows, the same with `service stop`, `Set-Location
+C:\ProgramData\sqi`, the backup, `sqi-server.exe.old` copied back over
+`sqi-server.exe`, (on PostgreSQL) the empty database, `restore`, and
+`service start`. Everything the farm did after the
 pre-upgrade backup is gone, and the tasks that backup caught in flight run
 again; [Restore](#restore) says exactly what that means. Executed by
 `TestUpgrade_OlderBinaryRefused`.
@@ -408,18 +443,19 @@ not executed by a test.
 
 ```sh
 sudo systemctl stop sqi-server
-cd /var/lib/sqi     # the directory holding store.sqlite_path and nats.data_dir
+# store.sqlite_path is /var/lib/sqi/sqi.db and nats.data_dir /var/lib/sqi/nats
+# here; every step runs as the service account, which owns that directory.
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
-for f in sqi.db sqi.db-wal sqi.db-shm; do
-  [ -e "$f" ] && sudo -u sqi mv "$f" "$f.pre-restore-$stamp"
+for f in /var/lib/sqi/sqi.db /var/lib/sqi/sqi.db-wal /var/lib/sqi/sqi.db-shm /var/lib/sqi/nats; do
+  if sudo -u sqi test -e "$f"; then sudo -u sqi mv "$f" "$f.pre-restore-$stamp"; fi
 done
-sudo -u sqi mv nats "nats.pre-restore-$stamp"
-sudo -u sqi cp /backups/sqi/pre-upgrade-20261013-020000.db sqi.db
+sudo -u sqi cp /backups/sqi/pre-upgrade-20261013-020000.db /var/lib/sqi/sqi.db
 sudo install -m 0755 /usr/local/bin/sqi-server.old /usr/local/bin/sqi-server
 ```
 
 Then stop every worker before you start the old server. Without `restore`
-nothing closes the attempts the backup recorded as running, and v0.3.0 has
+nothing closes the attempts the backup recorded as open (tasks assigned or
+running), and v0.3.0 has
 no [reconciliation](#reconciliation): a task whose worker stays online stays
 `running`. With the workers stopped, start the server and wait until the web
 UI or `GET /api/v1/workers` shows them offline (about
@@ -568,9 +604,10 @@ resume from it. In order, it:
    empty, and the archive is loaded with `pg_restore --no-owner
    --single-transaction --exit-on-error`, so a failed load leaves it empty;
 4. applies any newer migrations, as `serve` would;
-5. **fences**: every attempt the restored database still records as running
-   is closed as failed (`worker shut down`) and its task goes back to `ready`,
-   without using a retry or counting toward the job's failure limit;
+5. **fences**: every attempt the restored database still records as open
+   (its task assigned or running) is closed as failed (`worker shut down`) and
+   its task goes back to `ready`, without using a retry or counting toward the
+   job's failure limit;
 6. renames `nats.data_dir` to `<dir>.pre-restore-<UTC time>` (the same time
    as step 3).
 
@@ -693,8 +730,8 @@ CI).
 
 A database put back by other means (PostgreSQL point-in-time recovery, a
 volume or filesystem snapshot, a `pg_restore` of your own) has the same
-problem a backup has: it records as running the attempts that were running
-at that moment. Before you start a server on it, run:
+problem a backup has: it records as open the attempts that were in flight
+(assigned or running) at that moment. Before you start a server on it, run:
 
 ```sh
 sudo -u sqi sqi-server restore --in-place --config /etc/sqi/sqi-server.yaml
@@ -716,14 +753,18 @@ The restored farm is the farm at the moment of the backup:
 
 - **Work done after the backup runs again.** A task that finished after the
   backup is back as the backup recorded it, and runs again. A task the backup
-  caught running is handed back by the fence and runs again, on any worker.
+  caught in flight (assigned or running) is handed back by the fence and runs
+  again, on any worker.
 - **Ghost runs are ignored.** A worker that is still running a fenced task
   when the server comes back reports into an attempt that is now closed; its
   status reports are discarded and its log output stays on that closed
   attempt. Reports about attempts the backup never saw are discarded too. The
-  server logs these as `scheduler: task status rejected by state machine —
-  discarding` and `scheduler: task.status for unknown attempt — discarding`,
-  which is expected after a restore.
+  server logs these, which is expected after a restore; for example, at Warn,
+  `scheduler: task status rejected by state machine — discarding`,
+  `scheduler: task.status for unknown attempt — discarding` and
+  `scheduler: task.logs for unknown attempt — discarding`, and at Info,
+  `scheduler: stale running report — discarding` and
+  `scheduler: stale failure report — discarding`.
 - **Everything written after the backup is gone**: jobs submitted since, and
   accounts, API keys, sessions, products and worker broker credentials created
   since. With broker authentication on, a worker enrolled after the backup
@@ -755,14 +796,17 @@ Remove-Item -Recurse C:\ProgramData\sqi\data\nats.pre-restore-*
 
 - **Before anything moved** (the lock is held, the backup is not an sqi
   backup, is damaged or is newer than the binary, the PostgreSQL database is
-  not empty): nothing changed. Fix the cause and run it again. A
-  `<name>.pre-restore-<time>` name that already exists is refused rather
-  than overwritten.
+  not empty, or `<sqi.db>.pre-restore-<time>` already exists): nothing
+  changed. Fix the cause and run it again. An existing `.pre-restore-` name is
+  refused rather than overwritten.
 - **After the live SQLite database moved aside**: the error lists every file
-  it moved. A database and its `-wal`/`-shm` files are one database only
-  together, so to go back, remove the restored `sqi.db` and rename **all** of
-  them back. If only the final rename failed, the checked copy of the backup
-  is still at `<store.sqlite_path>.restore-tmp`.
+  it moved. The database file moves first, then `-wal`, then `-shm`, so a
+  failure moving a sidecar (including a `.pre-restore-` name that already
+  exists for it) comes after the database itself has moved. A database and its
+  `-wal`/`-shm` files are one database only together, so to go back, rename
+  **all** the moved files back (no restored `sqi.db` is in place yet in that
+  case; if one is, remove it first). If only the final rename failed, the
+  checked copy of the backup is still at `<store.sqlite_path>.restore-tmp`.
 - **After the backup was in place but before the fence finished**: the
   message ends `the database in place is not fenced, so do not start a server
   on it: fix the cause and run "sqi-server restore --in-place" to finish`.
@@ -774,8 +818,8 @@ Remove-Item -Recurse C:\ProgramData\sqi\data\nats.pre-restore-*
 
 ## Reconciliation
 
-A server can believe a task is running on a live worker that is no longer
-running it: its completion report was lost with a JetStream directory, the
+A server can believe a task is in flight (assigned or running) on a live
+worker that no longer holds it: its completion report was lost with a JetStream directory, the
 database was restored by hand, or the worker dropped the task. The worker is
 healthy, so the offline sweep never reclaims it, and before this release such a
 task stayed `running` for good.
