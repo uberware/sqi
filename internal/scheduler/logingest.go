@@ -195,11 +195,10 @@ func (s *Scheduler) handleLogChunk(msg jetstream.Msg) {
 		s.ackMsg(ctx, msg)
 		return
 	} else if err != nil {
-		// The cached owner may be stale: the attempt row can be deleted along
-		// with its job while a chunk is in flight (e.g. DELETE /jobs/{id} on
-		// an active job). Dropping the entry sends the redelivery through the
-		// store path above, which discards the chunk instead of failing this
-		// write again.
+		// A transient store failure (anything but ErrConflict, handled above, which
+		// covers both a duplicate chunk and a deleted attempt). Nak so the chunk
+		// is redelivered; the cached owner is evicted too, so the redelivery
+		// re-reads the attempt from the store rather than trusting the cache.
 		s.attemptCache.evict(m.AttemptID)
 		s.logger.WarnContext(
 			ctx, "scheduler: persist log chunk failed — will redeliver",

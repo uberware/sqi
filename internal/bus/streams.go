@@ -19,9 +19,10 @@ const (
 	// by the server-side status consumer.
 	StreamTask = "SQI_TASK"
 
-	// StreamLogs captures log chunks emitted by running tasks.  LimitsPolicy
-	// retains chunks so they can be served via the REST API even after the
-	// producing worker has moved on.
+	// StreamLogs captures log chunks emitted by running tasks.  The server
+	// persists each chunk to task_logs and acks it; REST and WebSocket read
+	// task_logs.  LimitsPolicy keeps the chunks for MaxAge (96 h) after ack as
+	// a delivery buffer, but nothing reads them back from the stream.
 	StreamLogs = "SQI_LOGS"
 
 	// StreamWorker captures worker-registration and worker-heartbeat messages.

@@ -536,9 +536,10 @@ func (s *fkEnforcingLogStore) CreateTaskLog(ctx context.Context, log store.TaskL
 // row underneath it, but nothing evicts the cache entry on that path (it is
 // a bulk write, not a terminal task-status message). The next chunk hits the
 // stale-but-identity-matching cache entry, so both ownership checks pass and
-// the write is attempted — and must fail. That failure has to evict the
-// entry so the redelivery takes the store path and discards the chunk
-// cleanly, rather than hitting the same stale entry and failing forever.
+// the write is attempted — and fails with the foreign-key error, which the
+// store reports as ErrConflict. That is acked (redelivery cannot recreate the
+// attempt), and the entry is evicted so the following chunk takes the store
+// path and is discarded cleanly, rather than hitting the same stale entry.
 func TestHandleLogChunk_CacheHit_DeletedAttempt_SelfHeals(t *testing.T) {
 	base := newCheckedFake(t)
 	st := &fkEnforcingLogStore{Store: base}
