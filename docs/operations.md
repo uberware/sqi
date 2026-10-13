@@ -595,13 +595,14 @@ resume from it. In order, it:
 2. checks the backup: an intact sqi backup no newer than this binary. SQLite:
    the backup is first copied to `<store.sqlite_path>.restore-tmp`, and that
    copy is checked (`PRAGMA integrity_check` and the schema version), so the
-   backup file itself is never opened. PostgreSQL: the archive's schema version
-   is read with `pg_restore` without connecting to any database;
+   backup file itself is never opened. PostgreSQL: `pg_restore` is checked
+   against the server's version, then the archive's schema version is read
+   with `pg_restore` without connecting to any database;
 3. puts it in place. SQLite: the live database and whichever of its `-wal`
    and `-shm` files exist are renamed to `<name>.pre-restore-<UTC time>`, and
    the checked copy is renamed into place (a missing live database is fine:
    restoring onto a new host). PostgreSQL: the configured database must be
-   empty, and the archive is loaded with `pg_restore --no-owner
+   empty, and the archive is loaded with `pg_restore --no-owner --no-acl
    --single-transaction --exit-on-error`, so a failed load leaves it empty;
 4. applies any newer migrations, as `serve` would;
 5. **fences**: every attempt the restored database still records as open
@@ -709,12 +710,17 @@ A database that is not empty is refused before anything is loaded:
 Error: restore: restore needs an empty database, and this one has 21 tables (api_keys, ...); drop and recreate it, then run restore again
 ```
 
-The check lists tables through `information_schema`, which shows only tables
-the role can access; use a database that holds nothing but sqi's.
+The check reads the system catalog (`pg_class`), so it counts every table in
+the search path, including ones the role has no privilege on.
 
 - `pg_restore` must be on `PATH`, at least the server's major version, as
   `pg_dump` must be for [backup](#backing-up-postgresql); the password reaches
-  it the same way, never on its command line.
+  it the same way, never on its command line. A missing or too old
+  `pg_restore` is reported as such, before the archive is read.
+- **Grants are not restored** (`--no-acl`), just as ownership is not: a
+  `GRANT` the source database gave another role (a reporting role, say) is
+  left out, so a role the new cluster lacks cannot fail the load. Re-apply such
+  grants after the restore.
 - **Run `restore` on the server's host**, with the server's configuration, so
   that it moves the right `nats.data_dir`. If you run it from another host
   (one with the PostgreSQL client tools, say), move the server's

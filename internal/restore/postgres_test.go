@@ -134,6 +134,24 @@ func TestRestorePostgres_RefusesAFileThatIsNotAnSQIBackup(t *testing.T) {
 	}
 }
 
+// A missing pg_restore is a tool problem: reporting it as "not an sqi backup"
+// would send the operator looking at a good backup.
+func TestRestorePostgres_AMissingPgRestoreIsNotABadBackup(t *testing.T) {
+	dst := storetest.PostgresEmptyDSN(t)
+	archive := filepath.Join(t.TempDir(), "sqi.dump")
+	if err := os.WriteFile(archive, []byte("PGDMP"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", t.TempDir())
+	_, err := restore.Run(t.Context(), pgOpts(dst, archive))
+	if err == nil || errors.Is(err, restore.ErrNotSQIBackup) || !strings.Contains(err.Error(), "pg_restore not found on PATH") {
+		t.Fatalf("Run without pg_restore = %v, want a missing-tool error that is not ErrNotSQIBackup", err)
+	}
+	if err := postgres.RequireEmptyDatabase(t.Context(), dst); err != nil {
+		t.Fatalf("the target was touched: %v", err)
+	}
+}
+
 func TestRestorePostgres_InPlaceFencesTheConfiguredDatabase(t *testing.T) {
 	dsn, st := pgFarm(t, false)
 	o := pgOpts(dsn, "")

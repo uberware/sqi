@@ -4,20 +4,30 @@ package restore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/uberware/sqi/internal/store/migrations"
 	"github.com/uberware/sqi/internal/store/postgres"
 )
 
-// placePostgres checks the archive (without connecting), requires an empty
-// target, and loads it. The single-server lock Run holds is an advisory lock on
-// its own connection; pg_restore runs in a separate session and is not blocked
-// by it.
+// placePostgres checks pg_restore against the server, checks the archive
+// (pg_restore reads it without connecting), requires an empty target, and
+// loads it. The single-server lock Run holds is an advisory lock on its own
+// connection; pg_restore runs in a separate session and is not blocked by it.
+//
+// Only an archive pg_restore cannot read is ErrNotSQIBackup: a missing or too
+// old pg_restore, or a canceled restore, says nothing about the backup.
 func placePostgres(ctx context.Context, o Options) (int64, error) {
+	if err := postgres.CheckRestoreTool(ctx, o.PostgresDSN); err != nil {
+		return 0, fmt.Errorf("restore: %w", err)
+	}
 	v, err := postgres.ArchiveSchemaVersion(ctx, o.Backup)
-	if err != nil {
+	if errors.Is(err, postgres.ErrUnreadableArchive) {
 		return 0, fmt.Errorf("%w: %w", ErrNotSQIBackup, err)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("restore: %w", err)
 	}
 	if v == 0 {
 		return 0, fmt.Errorf("%w: the archive has no sqi schema", ErrNotSQIBackup)
