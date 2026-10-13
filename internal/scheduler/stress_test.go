@@ -152,6 +152,10 @@ type stressCounts struct {
 	deregisterReclaims, deregistersIgnored atomic.Int64
 	restartReclaims                        atomic.Int64
 
+	// reconcileReclaims counts open attempts reclaimed by the reconciliation
+	// racer (ListOpenAttempts, then ReclaimTaskAttempt).
+	reconcileReclaims atomic.Int64
+
 	// reports counts applied reports by status; its keys are fixed up front,
 	// so concurrent readers of the map itself need no lock.
 	reports map[string]*atomic.Int64
@@ -203,7 +207,8 @@ type stressRun struct {
 // reaper, OfflineStaleWorker, RetryTasks (through RetryJob), worker reports,
 // and the report and reclaim paths (a report on an attempt already closed, a
 // worker-shutdown report, a graceful deregister from the current or a replaced
-// process, and a restart's re-registration) against one job with capped usage
+// process, a restart's re-registration, and reconciliation's reclaim of a
+// listed open attempt) against one job with capped usage
 // pools, on the real SQLite store. While they run, a monitor racing alongside
 // asserts on every snapshot it reads that invariant I3 holds, no pool is over
 // its cap, no task has two open attempts and no task out of flight has an open
@@ -325,6 +330,7 @@ func (r *stressRun) schedule() []stressRacer {
 		{4, 1, r.shutdownOne},
 		{4, 3, r.deregister},
 		{6, 5, r.restart},
+		{4, 2, r.reconcile},
 	}
 }
 
@@ -377,7 +383,9 @@ func (r *stressRun) run() int {
 //     every worker, and each racer looks for one in flight (shutdown) or takes
 //     a worker in turn (deregister, restart);
 //   - ignored deregisters: the restart racer gives each worker a new instance
-//     ID in turn, and every other deregister names the one before it.
+//     ID in turn, and every other deregister names the one before it;
+//   - reconciliation reclaims: the silent tasks hold their assignments until
+//     something takes them back, so an open attempt is nearly always listed.
 //
 // Not listed, because their counts are fixed by the schedule and so prove
 // nothing: the CancelTask, CancelJob and RetryJob calls (their effect is the
@@ -404,6 +412,7 @@ func (r *stressRun) missing() []string {
 		{"tasks reclaimed by a deregister", c.deregisterReclaims.Load()},
 		{"deregisters from a replaced process ignored", c.deregistersIgnored.Load()},
 		{"tasks reclaimed by a restart", c.restartReclaims.Load()},
+		{"tasks reclaimed by reconciliation", c.reconcileReclaims.Load()},
 	} {
 		if k.n == 0 {
 			out = append(out, k.name)
@@ -734,6 +743,25 @@ func (r *stressRun) restart(n int) {
 	r.counts.restartReclaims.Add(int64(len(reclaimed)))
 }
 
+// reconcile is the server's reconciliation write racing the rest: it lists the
+// open attempts, as the heartbeat sweep's reconcileAttempts does, and reclaims
+// one of them, picked by the round, as it does an attempt whose live worker has
+// stopped reporting it. Between the list and the reclaim the attempt may be
+// completed, failed, canceled, reaped or swept; ReclaimTaskAttempt re-checks
+// that it is still open under the job's anchor and reports false if not.
+func (r *stressRun) reconcile(n int) {
+	ctx := r.t.Context()
+	open, err := r.st.ListOpenAttempts(ctx, time.Now().UTC().Add(time.Second))
+	if !r.expect("ListOpenAttempts", err) || len(open) == 0 {
+		return
+	}
+	a := open[n%len(open)]
+	reclaimed, err := r.st.ReclaimTaskAttempt(ctx, a.AttemptID, a.TaskID, time.Now().UTC())
+	if r.expect("ReclaimTaskAttempt", err) && reclaimed {
+		r.counts.reconcileReclaims.Add(1)
+	}
+}
+
 // ── control ──────────────────────────────────────────────────────────────────
 
 // expect reports whether err is nil. Any error is unexpected: every outcome a
@@ -961,12 +989,12 @@ func (r *stressRun) logCounts(rounds int, elapsed time.Duration) {
 	r.t.Logf("stress run: %d rounds in %v: leases leased=%d lost=%d pool_full=%d other=%d; "+
 		"reports running=%d succeeded=%d failed=%d canceled=%d rejected=%d; "+
 		"cancels task=%d job=%d; reaped=%d; offline marked=%d reclaimed=%d; retries=%d revived=%d; "+
-		"stale reports=%d; reclaimed by shutdown=%d deregister=%d restart=%d; deregisters ignored=%d; snapshots=%d",
+		"stale reports=%d; reclaimed by shutdown=%d deregister=%d restart=%d reconcile=%d; deregisters ignored=%d; snapshots=%d",
 		rounds, elapsed.Round(time.Millisecond), c.leased.Load(), c.leaseLost.Load(), c.leasePoolFull.Load(), c.leaseOther.Load(),
 		c.reports["running"].Load(), c.reports["succeeded"].Load(), c.reports["failed"].Load(), c.reports["canceled"].Load(),
 		c.reportsRejected.Load(), c.taskCancels.Load(), c.jobCancels.Load(), c.reaped.Load(),
 		c.offlined.Load(), c.offlineReclaimed.Load(), c.retries.Load(), c.revived.Load(),
-		c.staleReports.Load(), c.shutdownReclaims.Load(), c.deregisterReclaims.Load(), c.restartReclaims.Load(),
+		c.staleReports.Load(), c.shutdownReclaims.Load(), c.deregisterReclaims.Load(), c.restartReclaims.Load(), c.reconcileReclaims.Load(),
 		c.deregistersIgnored.Load(), c.snapshots.Load())
 }
 

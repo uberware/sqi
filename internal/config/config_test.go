@@ -593,6 +593,51 @@ func TestValidate_UnschedulableGraceZeroAllowed(t *testing.T) {
 	}
 }
 
+// ── Scheduler: reconcile_grace ───────────────────────────────────────────────
+
+// TestReconcileGrace covers scheduler.reconcile_grace end to end through
+// Load and Validate: the 2m default, 0 (disabled) accepted, and any other value
+// below scheduler.heartbeat_timeout (30s by default) or negative rejected on
+// the reconcile_grace field.
+func TestReconcileGrace(t *testing.T) {
+	cases := []struct {
+		name        string
+		env         string // SQI_SCHEDULER_RECONCILE_GRACE; empty leaves it unset
+		want        time.Duration
+		wantInvalid bool
+	}{
+		{name: "default", want: 2 * time.Minute},
+		{name: "zero disables", env: "0", want: 0},
+		{name: "equal to heartbeat_timeout", env: "30s", want: 30 * time.Second},
+		{name: "below heartbeat_timeout", env: "10s", want: 10 * time.Second, wantInvalid: true},
+		{name: "negative", env: "-1s", want: -time.Second, wantInvalid: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			if tc.env != "" {
+				t.Setenv("SQI_SCHEDULER_RECONCILE_GRACE", tc.env)
+			}
+			cfg, err := config.Load("", config.FlagOverrides{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Scheduler.ReconcileGrace != tc.want {
+				t.Fatalf("reconcile_grace = %s, want %s", cfg.Scheduler.ReconcileGrace, tc.want)
+			}
+			var got *config.ValidationError
+			for _, e := range config.Validate(cfg) {
+				if e.Field == "scheduler.reconcile_grace" {
+					got = &e
+				}
+			}
+			if (got != nil) != tc.wantInvalid {
+				t.Fatalf("validation error on scheduler.reconcile_grace = %v, want invalid=%v", got, tc.wantInvalid)
+			}
+		})
+	}
+}
+
 // ── Scheduler: retry-policy defaults (server-level backstop) ─────────────────
 //
 // default_max_attempts / retry_delay / default_failure_limit are the

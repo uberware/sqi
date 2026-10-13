@@ -310,6 +310,14 @@ type SchedulerConfig struct {
 	// Default: 30s. Env: SQI_SCHEDULER_UNSCHEDULABLE_GRACE
 	UnschedulableGrace time.Duration `yaml:"unschedulable_grace"`
 
+	// ReconcileGrace is how long a live worker may go without reporting, in
+	// its heartbeats, an attempt it holds before the heartbeat sweep reclaims
+	// that attempt and the task runs again (a lost completion report, a
+	// restored database). 0 disables reconciliation; any other value must be
+	// at least HeartbeatTimeout. Default: 2m.
+	// Env: SQI_SCHEDULER_RECONCILE_GRACE
+	ReconcileGrace time.Duration `yaml:"reconcile_grace"`
+
 	// DefaultMaxAttempts is the server-level fallback for the farm-wide default
 	// number of attempts a task may make before going terminal-failed. It is the
 	// bottom tier of the layered retry policy (Server -> Farm -> Queue -> Job).
@@ -879,6 +887,7 @@ func DefaultConfig() Config {
 			JobRetention:              7 * 24 * time.Hour,
 			JobRetentionIncludeFailed: false,
 			UnschedulableGrace:        30 * time.Second,
+			ReconcileGrace:            2 * time.Minute,
 			DefaultMaxAttempts:        3,
 			RetryDelay:                30 * time.Second,
 			DefaultFailureLimit:       0,

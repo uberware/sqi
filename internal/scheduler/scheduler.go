@@ -109,6 +109,7 @@ func DefaultConfig() Config {
 		JobRetention:              7 * 24 * time.Hour,
 		JobRetentionIncludeFailed: false,
 		UnschedulableGrace:        30 * time.Second,
+		ReconcileGrace:            2 * time.Minute,
 		DefaultMaxAttempts:        3,
 		RetryDelay:                30 * time.Second,
 		DefaultFailureLimit:       0,
@@ -177,6 +178,14 @@ type Config struct {
 	// duration knobs above, this is NOT coerced up to the default in [New],
 	// since 0 is a legitimate "off" setting. Default: 30 s.
 	UnschedulableGrace time.Duration
+
+	// ReconcileGrace is how long a live worker may go without reporting an
+	// attempt it holds before the sweep reclaims that attempt (see
+	// attemptreconcile.go). 0 disables reconciliation — like
+	// UnschedulableGrace, it is NOT coerced up to the default in [New].
+	// Reports are trusted only from a worker clock within WorkerTimeout of the
+	// server's. Default: 2 m.
+	ReconcileGrace time.Duration
 
 	// DefaultMaxAttempts is the server-level fallback tier of the layered
 	// retry policy (Server -> Farm -> Queue -> Job): the farm-wide default
@@ -322,6 +331,15 @@ type Scheduler struct {
 	// instead of leaving fire-and-forget timers alive past [Run].
 	retryWakeMu     sync.Mutex
 	retryWakeTimers map[*time.Timer]struct{}
+
+	// reconciler remembers which attempts each live worker's heartbeats
+	// report, so the sweep can reclaim one a worker stopped reporting. Nil
+	// when Config.ReconcileGrace is 0 (reconciliation disabled).
+	reconciler *reconciler
+
+	// startedAt is when [Run] started; reconciliation holds off for the first
+	// ReconcileGrace after it, while live heartbeats rebuild the reconciler.
+	startedAt time.Time
 }
 
 // New creates a Scheduler. Call [Run] to start its goroutines.
@@ -366,6 +384,12 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 	if n == nil {
 		n = ws.NoopNotifier{}
 	}
+	var rec *reconciler
+	if cfg.ReconcileGrace > 0 {
+		// The skew bound is the heartbeat timeout: config validation keeps
+		// ReconcileGrace at least as long (scheduler.reconcile_grace).
+		rec = newReconciler(cfg.ReconcileGrace, cfg.WorkerTimeout)
+	}
 	return &Scheduler{
 		cfg:               cfg,
 		store:             st,
@@ -384,6 +408,7 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 		instanceRefusalWarnAfter: 30,
 		instanceRefusalWarnEvery: 5 * time.Minute,
 		retryWakeTimers:          make(map[*time.Timer]struct{}),
+		reconciler:               rec,
 		// ctx is overwritten with the derived cancellable context in Run.
 		// The background fallback ensures NATS callbacks can't nil-panic if
 		// somehow invoked before Run (e.g. in a partial test setup).
@@ -394,6 +419,7 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 // Run starts all scheduler goroutines and blocks until ctx is canceled.
 // It returns after all goroutines have exited cleanly.
 func (s *Scheduler) Run(ctx context.Context) error {
+	s.startedAt = time.Now().UTC()
 	ctx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
 	s.ctx = ctx
@@ -410,6 +436,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		slog.Duration("job_retention", s.cfg.JobRetention),
 		slog.Bool("job_retention_include_failed", s.cfg.JobRetentionIncludeFailed),
 		slog.Duration("unschedulable_grace", s.cfg.UnschedulableGrace),
+		slog.Duration("reconcile_grace", s.cfg.ReconcileGrace),
 	)
 
 	// ── Worker NATS consumer ────────────────────────────────
@@ -1148,7 +1175,8 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 // timestamp is used so clock skew on the worker side cannot cause false
 // timeouts.
 //
-// Only WorkerID and At are read, but the whole [protocol.HeartbeatMsg] is
+// WorkerID and At are read, and AttemptsReported/ActiveAttemptIDs feed the
+// reconciler (see attemptreconcile.go), but the whole [protocol.HeartbeatMsg] is
 // decoded: the fields this handler ignores (active task IDs and counts, uptime,
 // last-assignment time) are a liveness payload the server may grow into, and
 // decoding into a narrower local struct is how the version gate below stops
@@ -1202,12 +1230,24 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 		s.nakMsg(ctx, msg)
 		return
 	}
+	// Keyed on AttemptsReported, not on the list: a worker holding nothing
+	// sends an empty list, and that empty report is how the reconciler learns
+	// an attempt is no longer held. Older workers send neither field and are
+	// never reconciled.
+	if s.reconciler != nil && m.AttemptsReported {
+		if s.reconciler.record(m.WorkerID, at, time.Now().UTC(), m.ActiveAttemptIDs) {
+			s.logger.WarnContext(ctx, "scheduler: worker clock is more than heartbeat_timeout from the server's; "+
+				"its tasks are not reconciled until it is corrected",
+				slog.String("worker_id", m.WorkerID), slog.Time("worker_at", at))
+		}
+	}
 	s.ackMsg(ctx, msg)
 }
 
 // runHeartbeatSweep periodically finds workers whose last heartbeat is older
 // than WorkerTimeout, marks them offline, and reclaims their in-flight tasks.
 // On the same tick it reaps tasks stranded in 'assigned' on still-live workers,
+// reclaims attempts a live worker has stopped reporting ([reconcileAttempts]),
 // demotes stalled jobs, flags/clears ready tasks no online worker can satisfy
 // ([sweepUnschedulable]), re-evaluates cross-job dependencies for any job
 // stuck blocked ([sweepBlockedJobs] — the backstop for [Scheduler.ReconcileDependents]),
@@ -1225,6 +1265,9 @@ func (s *Scheduler) runHeartbeatSweep(ctx context.Context) {
 			s.sweepRetiredWorkers(ctx)
 			s.sweepRetiredJobs(ctx)
 			s.reapStaleAssignedTasks(ctx)
+			// Before the demotion, so a job left with nothing in flight by a
+			// reconciliation reclaim is demoted on the same tick.
+			s.reconcileAttempts(ctx, time.Now().UTC())
 			s.demoteStalledJobs(ctx)
 			s.sweepUnschedulable(ctx)
 			if err := s.sweepBlockedJobs(ctx); err != nil {

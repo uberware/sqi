@@ -250,6 +250,12 @@ scheduler:
   # Type: duration   Env: SQI_SCHEDULER_UNSCHEDULABLE_GRACE
   unschedulable_grace: "30s"
 
+  # Reclaim a task whose live worker has stopped reporting it in its heartbeats
+  # for this long (a lost completion report, a restored database). The task
+  # runs again. 0 disables; otherwise at least heartbeat_timeout.
+  # Type: duration   Env: SQI_SCHEDULER_RECONCILE_GRACE
+  reconcile_grace: "2m"
+
   # Farm-wide default number of genuine attempts a task may make before it
   # goes terminal-failed. Farm/queue/job retry-policy overrides win over this
   # default (Server -> Farm -> Queue -> Job precedence). Must be >= 1; 1

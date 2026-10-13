@@ -213,6 +213,7 @@ type fileConfig struct {
 		JobRetention              *string `yaml:"job_retention"`
 		JobRetentionIncludeFailed *bool   `yaml:"job_retention_include_failed"`
 		UnschedulableGrace        *string `yaml:"unschedulable_grace"`
+		ReconcileGrace            *string `yaml:"reconcile_grace"`
 		DefaultMaxAttempts        *int    `yaml:"default_max_attempts"`
 		RetryDelay                *string `yaml:"retry_delay"`
 		DefaultFailureLimit       *int    `yaml:"default_failure_limit"`
@@ -520,12 +521,25 @@ func mergeSchedulerFile(cfg *Config, fc fileConfig) {
 	if fc.Scheduler.JobRetentionIncludeFailed != nil {
 		cfg.Scheduler.JobRetentionIncludeFailed = *fc.Scheduler.JobRetentionIncludeFailed
 	}
+	mergeSchedulerGraceFile(cfg, fc)
+	mergeSchedulerRetryFile(cfg, fc)
+}
+
+// mergeSchedulerGraceFile overlays the sweep grace periods
+// (unschedulable_grace, reconcile_grace) from fc onto cfg. Split out of
+// [mergeSchedulerFile] to keep its cyclomatic complexity under the lint
+// threshold.
+func mergeSchedulerGraceFile(cfg *Config, fc fileConfig) {
 	if fc.Scheduler.UnschedulableGrace != nil {
 		if d, err := time.ParseDuration(*fc.Scheduler.UnschedulableGrace); err == nil {
 			cfg.Scheduler.UnschedulableGrace = d
 		}
 	}
-	mergeSchedulerRetryFile(cfg, fc)
+	if fc.Scheduler.ReconcileGrace != nil {
+		if d, err := time.ParseDuration(*fc.Scheduler.ReconcileGrace); err == nil {
+			cfg.Scheduler.ReconcileGrace = d
+		}
+	}
 }
 
 // mergeSchedulerRetryFile overlays the server-level retry-policy fields
@@ -828,6 +842,7 @@ func applyEnv(cfg *Config) error {
 	collect(setDuration(&cfg.Scheduler.JobRetention, "SQI_SCHEDULER_JOB_RETENTION"))
 	collect(setBool(&cfg.Scheduler.JobRetentionIncludeFailed, "SQI_SCHEDULER_JOB_RETENTION_INCLUDE_FAILED"))
 	collect(setDuration(&cfg.Scheduler.UnschedulableGrace, "SQI_SCHEDULER_UNSCHEDULABLE_GRACE"))
+	collect(setDuration(&cfg.Scheduler.ReconcileGrace, "SQI_SCHEDULER_RECONCILE_GRACE"))
 	collect(setInt(&cfg.Scheduler.DefaultMaxAttempts, "SQI_SCHEDULER_DEFAULT_MAX_ATTEMPTS"))
 	collect(setDuration(&cfg.Scheduler.RetryDelay, "SQI_SCHEDULER_RETRY_DELAY"))
 	collect(setInt(&cfg.Scheduler.DefaultFailureLimit, "SQI_SCHEDULER_DEFAULT_FAILURE_LIMIT"))
