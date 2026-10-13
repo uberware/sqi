@@ -986,7 +986,9 @@ jobs:
       # TestUpgrade_OlderBinaryRefused are the integration-phase tests run with
       # the server on PostgreSQL; TestStoreCopy_SQLiteToPostgres skips in the
       # SQLite integration job (no PostgreSQL configured), so only this job
-      # can assert it.
+      # can assert it. TestPostgres_OpenRefusesANewerSchema is named apart
+      # from the SQLite package's TestOpen_RefusesANewerSchema, whose PASS
+      # line would otherwise satisfy the check.
       - name: Run PostgreSQL tests
         run: |
           set +e
@@ -1023,6 +1025,10 @@ jobs:
             TestPostgres_RestoreRoundTrip
             TestPostgres_RestoreOfACorruptArchiveLeavesTheDatabaseEmpty
             TestPostgres_RequireMigratedDatabase
+            TestPostgres_OpenRefusesANewerSchema
+            TestPostgres_RestoreSkipsGrantsToAbsentRoles
+            TestPostgres_RequireEmptyDatabaseSeesTablesTheRoleCannotAccess
+            TestPostgres_ArchiveSchemaVersionReportsToolProblemsAsSuch
             TestPostgres_ReadsAMixedCaseSchema
             TestMigration00038_DedupesLogChunksOnPostgreSQL
             TestLockDatabase_ExcludesAServerAndIsReleasable
@@ -1033,6 +1039,7 @@ jobs:
             TestRestorePostgres_RefusesAFileThatIsNotAnSQIBackup
             TestRestorePostgres_InPlaceFencesTheConfiguredDatabase
             TestRestorePostgres_InPlaceRefusesAnEmptyDatabase
+            TestRestorePostgres_AMissingPgRestoreIsNotABadBackup
             TestStoreCopy_CopiesEveryRowVerbatim
             TestStoreCopy_NeverWritesASourceWithAPendingWAL
             TestStoreCopy_RefusesANonEmptyTarget

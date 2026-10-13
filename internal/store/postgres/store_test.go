@@ -308,7 +308,9 @@ func TestLockDatabase_ExcludesAServerAndIsReleasable(t *testing.T) {
 	_ = st.Close()
 }
 
-func TestOpen_RefusesANewerSchema(t *testing.T) {
+// Named apart from the SQLite package's TestOpen_RefusesANewerSchema, so CI's
+// by-name PASS check cannot be satisfied by the SQLite run.
+func TestPostgres_OpenRefusesANewerSchema(t *testing.T) {
 	dsn := storetest.PostgresDSN(t) // fresh, migrated
 	db := openRaw(t, dsn)
 	maxV, err := migrations.MaxVersion("postgres")
