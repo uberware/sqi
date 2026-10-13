@@ -20,7 +20,7 @@ import (
 	"github.com/uberware/sqi/internal/store/storetest"
 )
 
-func TestOpen_MigratesToTheBaselineAndReapplyIsANoop(t *testing.T) {
+func TestOpen_MigratesToTheLatestVersionAndReapplyIsANoop(t *testing.T) {
 	dsn := storetest.PostgresDSN(t)
 	for range 2 { // the second open finds nothing to apply
 		st, err := postgres.Open(t.Context(), dsn, postgres.DefaultOptions())
@@ -33,8 +33,8 @@ func TestOpen_MigratesToTheBaselineAndReapplyIsANoop(t *testing.T) {
 	}
 	db := openRaw(t, dsn)
 	v, err := postgres.SchemaVersion(t.Context(), db)
-	if err != nil || v != 37 {
-		t.Fatalf("SchemaVersion = %d, %v; want 37", v, err)
+	if err != nil || v != 38 {
+		t.Fatalf("SchemaVersion = %d, %v; want 38", v, err)
 	}
 }
 
@@ -44,11 +44,12 @@ func TestMigrations_DownThenUp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Down(t.Context()); err != nil {
-		t.Fatalf("Down: %v", err)
+	// Every migration down, the baseline last: the whole set is reversible.
+	if _, err := p.DownTo(t.Context(), 0); err != nil {
+		t.Fatalf("DownTo(0): %v", err)
 	}
 	if v, err := postgres.SchemaVersion(t.Context(), db); err != nil || v != 0 {
-		t.Fatalf("version after Down = %d, %v; want 0", v, err)
+		t.Fatalf("version after DownTo(0) = %d, %v; want 0", v, err)
 	}
 	if _, err := p.Up(t.Context()); err != nil {
 		t.Fatalf("Up: %v", err)

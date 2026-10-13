@@ -155,6 +155,49 @@ func TestHandleLogChunk_ValidStdout(t *testing.T) {
 	}
 }
 
+func TestHandleLogChunk_RedeliveryIsAckedAndStoredOnce(t *testing.T) {
+	st := newCheckedFake(t)
+	s := newLogTestScheduler(st)
+	s.ctx = t.Context()
+
+	_, taskID, attemptID := seedLogAttempt(t, st)
+	payload := msgJSON(t, protocol.LogChunkMsg{
+		TaskID:    taskID,
+		AttemptID: attemptID,
+		SeqNum:    1,
+		At:        time.Now().UTC(),
+		Stream:    "stdout",
+		Data:      "hello from worker",
+	})
+	subject := bus.TaskLogsSubject(logTestWorkerID, taskID)
+
+	// The same chunk delivered twice, as after a crash between the insert and
+	// the ack: a different JetStream sequence the second time.
+	first := &fakeJSMsg{subject: subject, natsSeq: 42, data: payload}
+	second := &fakeJSMsg{subject: subject, natsSeq: 77, data: payload}
+	s.handleLogChunk(first)
+	s.handleLogChunk(second)
+
+	for name, m := range map[string]*fakeJSMsg{"first": first, "redelivery": second} {
+		if !m.acked {
+			t.Errorf("%s delivery was not acked", name)
+		}
+		if m.nacked {
+			t.Errorf("%s delivery was nacked; a stored chunk must not loop forever", name)
+		}
+	}
+	logs, err := st.ListTaskLogs(t.Context(), attemptID, 0, 100)
+	if err != nil {
+		t.Fatalf("ListTaskLogs: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("got %d log rows after a redelivery, want 1", len(logs))
+	}
+	if logs[0].NATSSeq != 42 {
+		t.Errorf("NATSSeq = %d, want the first delivery's 42", logs[0].NATSSeq)
+	}
+}
+
 func TestHandleLogChunk_ValidStderr(t *testing.T) {
 	st := newCheckedFake(t)
 	s := newLogTestScheduler(st)
@@ -544,29 +587,30 @@ func TestHandleLogChunk_CacheHit_DeletedAttempt_SelfHeals(t *testing.T) {
 
 	// Second chunk: a cache HIT against the now-stale entry. Both identity
 	// checks pass (they check the cached, historical values), so the write
-	// is attempted and fails with the FK-style error.
+	// is attempted and fails with the FK-style error. The store reports that
+	// as ErrConflict, the same error a duplicate chunk gets, and neither is
+	// cured by redelivery: the chunk is acked, not nacked.
 	second := newChunk(2)
 	s.handleLogChunk(second)
-	if !second.nacked {
-		t.Fatal("expected the write against a deleted attempt to nak for redelivery")
+	if !second.acked {
+		t.Fatal("expected the write against a deleted attempt to be acked (discarded)")
 	}
-	if second.acked {
-		t.Error("second chunk should not be acked when the write fails")
+	if second.nacked {
+		t.Error("second chunk should not be nacked: redelivery cannot recreate the attempt")
 	}
 	if _, ok := s.attemptCache.get(attemptID); ok {
 		t.Fatal("expected the failed write to evict the stale cache entry")
 	}
 
-	// Redelivery: the cache is now empty, so this takes the store path,
+	// The next chunk: the cache is now empty, so this takes the store path,
 	// which correctly discards (acks) a chunk for a vanished attempt —
-	// self-healing, exactly like the pre-cache behavior, instead of nacking
-	// again and looping.
-	redelivery := newChunk(2)
+	// self-healing, exactly like the pre-cache behavior.
+	redelivery := newChunk(3)
 	s.handleLogChunk(redelivery)
 	if !redelivery.acked {
-		t.Error("expected the redelivery to be acked (discarded) once the cache entry is gone")
+		t.Error("expected the next chunk to be acked (discarded) once the cache entry is gone")
 	}
 	if redelivery.nacked {
-		t.Error("redelivery should not nak again — that would loop forever")
+		t.Error("the next chunk should not nak — that would loop forever")
 	}
 }

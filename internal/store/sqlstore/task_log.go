@@ -4,6 +4,8 @@ package sqlstore
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -15,6 +17,7 @@ const (
 	sqlInsertTaskLog = `
 INSERT INTO task_logs (id, task_id, attempt_id, worker_seq, nats_seq, at, received_at, stream, data)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (attempt_id, worker_seq) DO NOTHING
 RETURNING ` + logCols
 
 	// Forward-paging query: return chunks for an attempt with nats_seq > afterNATSSeq,
@@ -39,6 +42,10 @@ func (s *Store) CreateTaskLog(ctx context.Context, log store.TaskLog) (store.Tas
 		string(log.Stream), log.Data,
 	)
 	out, err := scanTaskLog(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		// ON CONFLICT DO NOTHING returns no row: this chunk is already stored.
+		return store.TaskLog{}, store.ErrConflict
+	}
 	return out, mapErr(err)
 }
 

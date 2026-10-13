@@ -14,15 +14,14 @@ package scheduler
 //       - NATS stream sequence number (NATSSeq, extracted from the JetStream
 //         message metadata) as the stable cursor for the log-tail REST endpoint
 //       - server-side ReceivedAt timestamp
-//  3. Acks the NATS message so it is removed from the SQI_LOGS WorkQueue
-//     stream.
+//  3. Acks the NATS message. A chunk already stored under the same attempt and
+//     SeqNum (a redelivery after a crash between insert and ack) is acked
+//     without being written again.
 //
-// The SQI_LOGS stream uses LimitsPolicy (not WorkQueuePolicy) so all messages
-// are retained for the configured MaxAge (96 h by default) even after ack.
-// This allows the REST log-tail endpoint to replay chunks from the NATS stream
-// directly without touching SQLite for the hot path — the SQLite rows are used
-// for durable persistence beyond the JetStream retention window and for sorted
-// paging.
+// The server persists each chunk to task_logs and acks it; REST and WebSocket
+// read task_logs. The SQI_LOGS stream uses LimitsPolicy, so it also keeps the
+// chunks for the configured MaxAge (96 h by default) after ack, but nothing
+// reads them back from there.
 
 import (
 	"context"
@@ -181,7 +180,21 @@ func (s *Scheduler) handleLogChunk(msg jetstream.Msg) {
 		Data:      m.Data,
 	}
 
-	if _, err := s.store.CreateTaskLog(ctx, log); err != nil {
+	if _, err := s.store.CreateTaskLog(ctx, log); errors.Is(err, store.ErrConflict) {
+		// ErrConflict means one of two things the store reports alike: the chunk
+		// is already stored (a redelivery), or its attempt row is gone (the
+		// foreign key failed). Neither is cured by redelivery, so ack. Evict
+		// the cached owner as well: if the attempt was deleted, the next chunk
+		// then takes the store path and is discarded as an unknown attempt.
+		s.attemptCache.evict(m.AttemptID)
+		s.logger.DebugContext(
+			ctx, "scheduler: task.logs chunk already stored or its attempt is gone — acking",
+			slog.String("attempt_id", m.AttemptID),
+			slog.Int64("seq_num", m.SeqNum),
+		)
+		s.ackMsg(ctx, msg)
+		return
+	} else if err != nil {
 		// The cached owner may be stale: the attempt row can be deleted along
 		// with its job while a chunk is in flight (e.g. DELETE /jobs/{id} on
 		// an active job). Dropping the entry sends the redelivery through the
