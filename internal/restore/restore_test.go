@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/uberware/sqi/internal/fsutil"
 	"github.com/uberware/sqi/internal/restore"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/backend"
@@ -286,6 +287,171 @@ func TestRestore_InPlaceFencesTheConfiguredDatabase(t *testing.T) {
 	defer st.Close()
 	if task, err := st.GetTask(t.Context(), taskID); err != nil || task.Status != store.TaskStatusReady {
 		t.Fatalf("task = %+v, %v; want ready", task, err)
+	}
+}
+
+// requireUntouched fails t unless the live database, its -wal and the NATS
+// directory are where they were and nothing was moved aside or staged.
+func requireUntouched(t *testing.T, db, natsDir string) {
+	t.Helper()
+	if _, err := os.Stat(db); err != nil {
+		t.Errorf("the live database is gone: %v", err)
+	}
+	if _, err := os.Stat(natsDir); err != nil {
+		t.Errorf("NATS dir moved although the restore was refused: %v", err)
+	}
+	for _, p := range []string{db + stamp, db + "-wal" + stamp, db + ".restore-tmp"} {
+		if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s exists although the restore was refused: %v", p, err)
+		}
+	}
+}
+
+// A backup's -wal holds committed writes its main file lacks; restore copies
+// only the main file, which still passes the integrity check, so it must refuse
+// rather than lose them.
+func TestRestoreSQLite_RefusesABackupWithAPendingWAL(t *testing.T) {
+	_, db, natsDir, backup, _ := liveFarm(t)
+	if err := os.WriteFile(backup+"-wal", []byte("frames"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := restore.Run(t.Context(), opts(db, natsDir, backup))
+	if err == nil {
+		t.Fatal("Run with a backup that has a non-empty -wal = nil, want a refusal")
+	}
+	for _, want := range []string{backup, "-wal", "would be lost", "sqi-server backup"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v; want it to contain %q", err, want)
+		}
+	}
+	requireUntouched(t, db, natsDir)
+}
+
+// An empty -wal beside a backup (a cleanly stopped server's) holds nothing, and
+// none at all is the usual case: both restore.
+func TestRestoreSQLite_AcceptsABackupWithAnEmptyOrNoWAL(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		wal  bool
+	}{{"no -wal", false}, {"empty -wal", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, db, natsDir, backup, _ := liveFarm(t)
+			if tc.wal {
+				if err := os.WriteFile(backup+"-wal", nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if res, err := restore.Run(t.Context(), opts(db, natsDir, backup)); err != nil || res.Fenced != 1 {
+				t.Fatalf("Run = %+v, %v", res, err)
+			}
+		})
+	}
+}
+
+// --in-place cannot tell a database's own -wal from one left by the database a
+// hand-placed copy replaced, and SQLite would apply either; so it refuses a
+// non-empty one, says what to do in each case, and moves nothing.
+func TestRestore_InPlaceRefusesAPendingWAL(t *testing.T) {
+	_, db, natsDir, _, _ := liveFarm(t)
+	if err := os.WriteFile(db+"-wal", []byte("frames"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	o := opts(db, natsDir, "")
+	o.InPlace = true
+	_, err := restore.Run(t.Context(), o)
+	if err == nil {
+		t.Fatal("--in-place with a non-empty -wal = nil, want a refusal")
+	}
+	for _, want := range []string{
+		"--in-place refuses", "move them aside", "sqi-server restore BACKUP",
+		"sqi-server migrate up", "stop it cleanly",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v; want it to contain %q", err, want)
+		}
+	}
+	requireUntouched(t, db, natsDir)
+	if b, err := os.ReadFile(db + "-wal"); err != nil || string(b) != "frames" {
+		t.Errorf("-wal after the refusal = %q, %v; want it untouched", b, err)
+	}
+}
+
+func TestRestore_InPlaceAcceptsAnEmptyWAL(t *testing.T) {
+	_, db, natsDir, _, _ := liveFarm(t)
+	if err := os.WriteFile(db+"-wal", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	o := opts(db, natsDir, "")
+	o.InPlace = true
+	if res, err := restore.Run(t.Context(), o); err != nil || res.Fenced != 1 {
+		t.Fatalf("--in-place with an empty -wal = %+v, %v", res, err)
+	}
+}
+
+// A database copied with its own -wal while its server ran (a crash, or a
+// snapshot) is refused, and the remedy the refusal names works: opening and
+// closing it once (what "sqi-server migrate up" does) folds the -wal in, and
+// --in-place then keeps the rows only the -wal held.
+func TestRestore_InPlaceAfterACheckpointKeepsTheWALsRows(t *testing.T) {
+	dir, db, natsDir, _, _ := liveFarm(t)
+	st, err := sqlite.Open(t.Context(), db, sqlite.DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateFarm(t.Context(), store.Farm{ID: "f-wal", Name: "only in the wal"}); err != nil {
+		t.Fatal(err)
+	}
+	snap := filepath.Join(dir, "snapshot.db")
+	for _, sfx := range []string{"", "-wal"} {
+		b, err := os.ReadFile(db + sfx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(snap+sfx, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	o := opts(snap, natsDir, "")
+	o.InPlace = true
+	if _, err := restore.Run(t.Context(), o); err == nil || !strings.Contains(err.Error(), "--in-place refuses") {
+		t.Fatalf("--in-place on a snapshot with its -wal = %v, want a refusal", err)
+	}
+
+	raw, err := sql.Open("sqlite", snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.PingContext(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := restore.Run(t.Context(), o); err != nil || res.Fenced != 1 {
+		t.Fatalf("--in-place after a checkpoint = %+v, %v", res, err)
+	}
+	got, err := sqlite.Open(t.Context(), snap, sqlite.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer got.Close()
+	if f, err := got.GetFarm(t.Context(), "f-wal"); err != nil || f.Name != "only in the wal" {
+		t.Fatalf("the -wal's row after the checkpoint = %+v, %v", f, err)
+	}
+}
+
+// The restored database holds password, API-key and session hashes, so it is
+// readable by its owner only, like the backup it came from.
+func TestRestoreSQLite_TheRestoredDatabaseIsOwnerOnly(t *testing.T) {
+	_, db, natsDir, backup, _ := liveFarm(t)
+	if _, err := restore.Run(t.Context(), opts(db, natsDir, backup)); err != nil {
+		t.Fatal(err)
+	}
+	if restricted, err := fsutil.IsRestricted(db); err != nil || !restricted {
+		t.Fatalf("IsRestricted(restored database) = %v, %v; want owner-only", restricted, err)
 	}
 }
 

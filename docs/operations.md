@@ -662,6 +662,13 @@ did not stop cleanly, or a `store copy`, can also leave `sqi.db-wal` and
 move` means there was none at that path: if you expected one, check that
 `nats.data_dir` and the directory you ran from are the server's.
 
+`restore` copies only the backup's database file, so it refuses a backup with
+a non-empty `-wal` file beside it (a live database's file, copied by hand): the
+writes in that `-wal` would be lost, and the copy would still pass the
+integrity check. Stop the server using it cleanly, which folds the `-wal` in,
+or restore a backup made by `sqi-server backup`, which never has one. An empty
+`-wal` is fine.
+
 Executed by `TestBackupRestore_FarmResumes`, which backs up a farm while tasks
 run, lets it move on, restores, and checks that no attempt is left open, that
 every task runs to the end, and that a ghost run's late report changes
@@ -746,6 +753,17 @@ NATS data directory moved to /var/lib/sqi/nats.pre-restore-20261013T143953Z
 aside (steps 1 and 4 to 6 above); it loads nothing. It refuses a SQLite path with no
 database and a PostgreSQL database with no sqi schema, since there would be
 nothing to fence.
+
+On SQLite it also refuses a database whose `-wal` file is not empty. Nothing
+ties a `-wal` to the database it was written for, and SQLite applies whatever
+`-wal` it finds, so a database copied by hand over one whose server stopped
+uncleanly would take that server's writes. If that is what happened, move the
+old `-wal` and `-shm` aside together with the old database, or use
+`sqi-server restore BACKUP`. If the `-wal` is this database's own (its server
+crashed, or a snapshot took them together), run `sqi-server migrate up` on it
+(or start the server and stop it cleanly once), which folds the `-wal` in, then
+run `--in-place` again. A cleanly stopped server leaves no `-wal`, or an empty
+one.
 
 ### What runs again
 

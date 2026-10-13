@@ -25,6 +25,9 @@ func placeSQLite(ctx context.Context, o Options, stamp string) (version int64, m
 	if err := refuseCollisions(o.Backup, o.SQLitePath, staging); err != nil {
 		return 0, nil, err
 	}
+	if err := refuseBackupWAL(o.Backup); err != nil {
+		return 0, nil, err
+	}
 	removeDB(staging) // a previous failed restore's leftovers are ours
 	if err := copySecret(o.Backup, staging); err != nil {
 		return 0, nil, err
@@ -63,6 +66,23 @@ func refuseCollisions(backup, live, staging string) error {
 		return err
 	} else if same {
 		return fmt.Errorf("restore: %s is restore's own staging file; copy the backup elsewhere first", backup)
+	}
+	return nil
+}
+
+// refuseBackupWAL refuses a backup with a non-empty -wal file: restore copies
+// only the database file, so the committed writes in the -wal would be lost,
+// and the copy would still pass the integrity check.
+func refuseBackupWAL(backup string) error {
+	n, err := walSize(backup)
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return fmt.Errorf("restore: %[1]s has a -wal file holding %[2]d bytes of writes that are not in %[1]s, "+
+			"and restore copies only the database file, so they would be lost: stop the server using %[1]s "+
+			"cleanly (which folds them in) and run restore again, or restore a backup made with "+
+			"\"sqi-server backup\", which never has a -wal file", backup, n)
 	}
 	return nil
 }
