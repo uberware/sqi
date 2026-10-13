@@ -104,6 +104,12 @@ type Sources struct {
 	// StoreCheckpointInterval is true when store.checkpoint_interval was set
 	// by the config file or by SQI_STORE_CHECKPOINT_INTERVAL.
 	StoreCheckpointInterval bool
+
+	// SchedulerReconcileGrace is true when scheduler.reconcile_grace was set
+	// by the config file or by SQI_SCHEDULER_RECONCILE_GRACE. When it was not,
+	// the loader resolves it to the larger of its default and
+	// scheduler.heartbeat_timeout (see [resolveReconcileGrace]).
+	SchedulerReconcileGrace bool
 }
 
 // LoadWithSources is [Load], additionally reporting which of a subset of
@@ -142,7 +148,26 @@ func LoadWithSources(filePath string, flags FlagOverrides) (Config, Sources, err
 	// ── Layer 4: CLI flag overrides ───────────────────────────────────────
 	applyFlags(&cfg, flags)
 
+	src.SchedulerReconcileGrace = resolveReconcileGrace(&cfg, fc)
+
 	return cfg, src, nil
+}
+
+// resolveReconcileGrace reports whether scheduler.reconcile_grace was set by
+// the config file or SQI_SCHEDULER_RECONCILE_GRACE and, when it was not,
+// raises it to scheduler.heartbeat_timeout if that is longer. Validation
+// requires a non-zero reconcile_grace of at least heartbeat_timeout, so
+// without this an operator who had raised heartbeat_timeout past the 2m
+// default, and never heard of reconcile_grace, would fail to start after
+// upgrading. An explicit value is left exactly as given, for validation to
+// judge. Called after every layer, so it sees the final heartbeat_timeout.
+func resolveReconcileGrace(cfg *Config, fc *fileConfig) bool {
+	explicit := strings.TrimSpace(os.Getenv("SQI_SCHEDULER_RECONCILE_GRACE")) != "" ||
+		(fc != nil && fc.Scheduler != nil && fc.Scheduler.ReconcileGrace != nil)
+	if !explicit && cfg.Scheduler.ReconcileGrace < cfg.Scheduler.HeartbeatTimeout {
+		cfg.Scheduler.ReconcileGrace = cfg.Scheduler.HeartbeatTimeout
+	}
+	return explicit
 }
 
 // ── File layer ────────────────────────────────────────────────────────────────

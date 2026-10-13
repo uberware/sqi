@@ -252,7 +252,9 @@ scheduler:
 
   # Reclaim a task whose live worker has stopped reporting it in its heartbeats
   # for this long (a lost completion report, a restored database). The task
-  # runs again. 0 disables; otherwise at least heartbeat_timeout.
+  # runs again. 0 disables; otherwise at least heartbeat_timeout. When this
+  # key is left unset the default is 2m, or heartbeat_timeout if that is
+  # longer.
   # Type: duration   Env: SQI_SCHEDULER_RECONCILE_GRACE
   reconcile_grace: "2m"
 

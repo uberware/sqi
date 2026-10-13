@@ -24,7 +24,7 @@ type reconciler struct {
 	skew     time.Duration // reports whose worker clock is further off are ignored
 	reports  map[string]workerReport
 	lastSeen map[string]time.Time // attempt ID → receive time of the last report naming it
-	warned   map[string]bool      // workers already warned about a skewed clock
+	warned   map[string]bool      // workers warned about a delayed or skewed heartbeat, until their next in-window one
 }
 
 type workerReport struct {
@@ -40,9 +40,11 @@ func newReconciler(grace, skew time.Duration) *reconciler {
 }
 
 // record notes one heartbeat's attempts. It ignores a report whose worker
-// clock is more than skew from the server's (a replayed old heartbeat, or a
-// badly skewed host) and returns true the first time that happens for a
-// worker, so the caller can warn once.
+// timestamp is more than skew from its receipt — a heartbeat delayed in
+// delivery (a JetStream replay, a consumer stalled behind a long write) or
+// sent from a badly skewed clock — and returns true the first time that
+// happens in an episode, so the caller can warn once per episode rather than
+// once per heartbeat. The next in-window report ends the episode.
 func (r *reconciler) record(workerID string, workerAt, receivedAt time.Time, attemptIDs []string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -51,6 +53,7 @@ func (r *reconciler) record(workerID string, workerAt, receivedAt time.Time, att
 		r.warned[workerID] = true
 		return first
 	}
+	delete(r.warned, workerID)
 	set := make(map[string]struct{}, len(attemptIDs))
 	for _, id := range attemptIDs {
 		set[id] = struct{}{}

@@ -596,34 +596,66 @@ func TestValidate_UnschedulableGraceZeroAllowed(t *testing.T) {
 // ── Scheduler: reconcile_grace ───────────────────────────────────────────────
 
 // TestReconcileGrace covers scheduler.reconcile_grace end to end through
-// Load and Validate: the 2m default, 0 (disabled) accepted, and any other value
-// below scheduler.heartbeat_timeout (30s by default) or negative rejected on
-// the reconcile_grace field.
+// LoadWithSources and Validate: the 2m default, 0 (disabled) accepted, and any
+// other explicit value below scheduler.heartbeat_timeout (30s by default) or
+// negative rejected on the reconcile_grace field. Left unset, it resolves to
+// heartbeat_timeout when that is longer than 2m, so a config that raised
+// heartbeat_timeout before reconcile_grace existed still validates; an explicit
+// value is never raised.
 func TestReconcileGrace(t *testing.T) {
 	cases := []struct {
-		name        string
-		env         string // SQI_SCHEDULER_RECONCILE_GRACE; empty leaves it unset
-		want        time.Duration
-		wantInvalid bool
+		name         string
+		env          string // SQI_SCHEDULER_RECONCILE_GRACE; empty leaves it unset
+		heartbeatEnv string // SQI_SCHEDULER_HEARTBEAT_TIMEOUT; empty leaves it unset
+		file         string // scheduler block of a config file; empty means no file
+		want         time.Duration
+		wantExplicit bool
+		wantInvalid  bool
 	}{
 		{name: "default", want: 2 * time.Minute},
-		{name: "zero disables", env: "0", want: 0},
-		{name: "equal to heartbeat_timeout", env: "30s", want: 30 * time.Second},
-		{name: "below heartbeat_timeout", env: "10s", want: 10 * time.Second, wantInvalid: true},
-		{name: "negative", env: "-1s", want: -time.Second, wantInvalid: true},
+		{name: "zero disables", env: "0", want: 0, wantExplicit: true},
+		{name: "equal to heartbeat_timeout", env: "30s", want: 30 * time.Second, wantExplicit: true},
+		{name: "below heartbeat_timeout", env: "10s", want: 10 * time.Second, wantExplicit: true, wantInvalid: true},
+		{name: "negative", env: "-1s", want: -time.Second, wantExplicit: true, wantInvalid: true},
+		{name: "unset follows a longer env heartbeat_timeout", heartbeatEnv: "5m", want: 5 * time.Minute},
+		{
+			name: "unset follows a longer file heartbeat_timeout", file: "scheduler:\n  heartbeat_timeout: 5m\n",
+			want: 5 * time.Minute,
+		},
+		{
+			name: "explicit env 2m below a 5m heartbeat_timeout is rejected", env: "2m", heartbeatEnv: "5m",
+			want: 2 * time.Minute, wantExplicit: true, wantInvalid: true,
+		},
+		{
+			name: "explicit file 2m below a 5m heartbeat_timeout is rejected",
+			file: "scheduler:\n  heartbeat_timeout: 5m\n  reconcile_grace: 2m\n",
+			want: 2 * time.Minute, wantExplicit: true, wantInvalid: true,
+		},
+		{name: "explicit zero stays zero under a 5m heartbeat_timeout", env: "0", heartbeatEnv: "5m", want: 0, wantExplicit: true},
+		{name: "unset under a shorter heartbeat_timeout keeps 2m", heartbeatEnv: "1m", want: 2 * time.Minute},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Chdir(t.TempDir())
-			if tc.env != "" {
-				t.Setenv("SQI_SCHEDULER_RECONCILE_GRACE", tc.env)
+			dir := t.TempDir()
+			t.Chdir(dir)
+			t.Setenv("SQI_SCHEDULER_RECONCILE_GRACE", tc.env)
+			t.Setenv("SQI_SCHEDULER_HEARTBEAT_TIMEOUT", tc.heartbeatEnv)
+			path := ""
+			if tc.file != "" {
+				path = filepath.Join(dir, "sqi-server.yaml")
+				if err := os.WriteFile(path, []byte(tc.file), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
-			cfg, err := config.Load("", config.FlagOverrides{})
+			cfg, src, err := config.LoadWithSources(path, config.FlagOverrides{})
 			if err != nil {
 				t.Fatal(err)
 			}
 			if cfg.Scheduler.ReconcileGrace != tc.want {
 				t.Fatalf("reconcile_grace = %s, want %s", cfg.Scheduler.ReconcileGrace, tc.want)
+			}
+			if src.SchedulerReconcileGrace != tc.wantExplicit {
+				t.Fatalf("Sources.SchedulerReconcileGrace = %v, want %v", src.SchedulerReconcileGrace, tc.wantExplicit)
 			}
 			var got *config.ValidationError
 			for _, e := range config.Validate(cfg) {
@@ -635,6 +667,14 @@ func TestReconcileGrace(t *testing.T) {
 				t.Fatalf("validation error on scheduler.reconcile_grace = %v, want invalid=%v", got, tc.wantInvalid)
 			}
 		})
+	}
+}
+
+// TestDefaultConfig_ReconcileGraceIsTwoMinutes pins that the heartbeat-timeout
+// adjustment lives in the loader: DefaultConfig itself always says 2m.
+func TestDefaultConfig_ReconcileGraceIsTwoMinutes(t *testing.T) {
+	if got := config.DefaultConfig().Scheduler.ReconcileGrace; got != 2*time.Minute {
+		t.Fatalf("DefaultConfig reconcile_grace = %s, want 2m", got)
 	}
 }
 

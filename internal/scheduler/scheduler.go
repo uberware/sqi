@@ -182,9 +182,10 @@ type Config struct {
 	// ReconcileGrace is how long a live worker may go without reporting an
 	// attempt it holds before the sweep reclaims that attempt (see
 	// attemptreconcile.go). 0 disables reconciliation — like
-	// UnschedulableGrace, it is NOT coerced up to the default in [New].
-	// Reports are trusted only from a worker clock within WorkerTimeout of the
-	// server's. Default: 2 m.
+	// UnschedulableGrace, it is NOT coerced up to the default in [New]; a
+	// positive value below WorkerTimeout is raised to WorkerTimeout there.
+	// Reports are trusted only when the worker's timestamp is within
+	// WorkerTimeout of their receipt. Default: 2 m.
 	ReconcileGrace time.Duration
 
 	// DefaultMaxAttempts is the server-level fallback tier of the layered
@@ -386,8 +387,11 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 	}
 	var rec *reconciler
 	if cfg.ReconcileGrace > 0 {
-		// The skew bound is the heartbeat timeout: config validation keeps
-		// ReconcileGrace at least as long (scheduler.reconcile_grace).
+		// The skew bound is the heartbeat timeout, and the reconciler's
+		// pruning needs grace >= skew. Config validation enforces that for
+		// scheduler.reconcile_grace; a caller building Config directly gets
+		// its grace raised to WorkerTimeout here. 0 stays 0: disabled.
+		cfg.ReconcileGrace = max(cfg.ReconcileGrace, cfg.WorkerTimeout)
 		rec = newReconciler(cfg.ReconcileGrace, cfg.WorkerTimeout)
 	}
 	return &Scheduler{
@@ -1236,8 +1240,9 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 	// never reconciled.
 	if s.reconciler != nil && m.AttemptsReported {
 		if s.reconciler.record(m.WorkerID, at, time.Now().UTC(), m.ActiveAttemptIDs) {
-			s.logger.WarnContext(ctx, "scheduler: worker clock is more than heartbeat_timeout from the server's; "+
-				"its tasks are not reconciled until it is corrected",
+			s.logger.WarnContext(ctx, "scheduler: worker heartbeat delayed or skewed: more than heartbeat_timeout "+
+				"between the worker's timestamp and its receipt; its tasks are not reconciled until its "+
+				"heartbeats arrive in time again",
 				slog.String("worker_id", m.WorkerID), slog.Time("worker_at", at))
 		}
 	}

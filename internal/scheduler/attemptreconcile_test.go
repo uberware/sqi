@@ -94,7 +94,12 @@ func TestReconciler_Due(t *testing.T) {
 	}
 }
 
-func TestReconciler_RecordReportsASkewedClockOnce(t *testing.T) {
+// TestReconciler_RecordWarnsOncePerSkewedEpisode pins that a delayed or
+// skewed heartbeat warns once per episode: the first out-of-window report
+// warns, later ones in the same episode do not, and an in-window report ends
+// the episode so the next out-of-window one warns again (a single delayed
+// heartbeat must not use up the worker's only warning).
+func TestReconciler_RecordWarnsOncePerSkewedEpisode(t *testing.T) {
 	r := newReconciler(2*time.Minute, 30*time.Second)
 	now := time.Now().UTC()
 	if !r.record("w1", now.Add(-time.Hour), now, nil) {
@@ -102,6 +107,53 @@ func TestReconciler_RecordReportsASkewedClockOnce(t *testing.T) {
 	}
 	if r.record("w1", now.Add(-time.Hour), now.Add(time.Second), nil) {
 		t.Fatal("a second skewed report from the same worker should not warn again")
+	}
+	if _, ok := r.reports["w1"]; ok {
+		t.Fatal("a skewed report must not be recorded")
+	}
+	in := now.Add(2 * time.Second)
+	if r.record("w1", in, in, nil) {
+		t.Fatal("an in-window report must not warn")
+	}
+	if !r.record("w1", now.Add(-time.Hour), now.Add(3*time.Second), nil) {
+		t.Fatal("a skewed report after an in-window one starts a new episode and should warn again")
+	}
+	if !r.record("w2", now.Add(-time.Hour), now, nil) {
+		t.Fatal("another worker's first skewed report should warn")
+	}
+}
+
+// TestNew_RaisesReconcileGraceToWorkerTimeout pins that New keeps the
+// reconciler's grace at least WorkerTimeout (its skew bound) for a caller that
+// builds Config directly, and leaves 0 (disabled) alone.
+func TestNew_RaisesReconcileGraceToWorkerTimeout(t *testing.T) {
+	cases := []struct {
+		name          string
+		grace, worker time.Duration
+		want          time.Duration
+	}{
+		{"below WorkerTimeout is raised", time.Minute, 5 * time.Minute, 5 * time.Minute},
+		{"equal is kept", 5 * time.Minute, 5 * time.Minute, 5 * time.Minute},
+		{"above is kept", 10 * time.Minute, 5 * time.Minute, 10 * time.Minute},
+		{"zero stays disabled", 0, 5 * time.Minute, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(Config{ReconcileGrace: tc.grace, WorkerTimeout: tc.worker}, newCheckedFake(t), &recordBus{},
+				metrics.New(), slog.New(slog.DiscardHandler), ws.NoopNotifier{}, nil)
+			if s.cfg.ReconcileGrace != tc.want {
+				t.Fatalf("cfg.ReconcileGrace = %s, want %s", s.cfg.ReconcileGrace, tc.want)
+			}
+			if tc.want == 0 {
+				if s.reconciler != nil {
+					t.Fatal("ReconcileGrace 0 must leave reconciliation disabled")
+				}
+				return
+			}
+			if s.reconciler == nil || s.reconciler.grace != tc.want || s.reconciler.skew != tc.worker {
+				t.Fatalf("reconciler = %+v, want grace %s skew %s", s.reconciler, tc.want, tc.worker)
+			}
+		})
 	}
 }
 

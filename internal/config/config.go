@@ -314,7 +314,9 @@ type SchedulerConfig struct {
 	// its heartbeats, an attempt it holds before the heartbeat sweep reclaims
 	// that attempt and the task runs again (a lost completion report, a
 	// restored database). 0 disables reconciliation; any other value must be
-	// at least HeartbeatTimeout. Default: 2m.
+	// at least HeartbeatTimeout. Default: 2m, or HeartbeatTimeout when that is
+	// longer and this key is set neither in the file nor in the environment
+	// (the loader resolves it; [DefaultConfig] itself always says 2m).
 	// Env: SQI_SCHEDULER_RECONCILE_GRACE
 	ReconcileGrace time.Duration `yaml:"reconcile_grace"`
 
