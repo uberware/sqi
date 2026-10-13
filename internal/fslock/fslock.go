@@ -29,7 +29,9 @@ type Lock struct {
 }
 
 // Acquire creates path if absent (owner-only) and locks it exclusively,
-// failing at once with [ErrHeld] when it is already locked.
+// failing at once with [ErrHeld] when it is already locked. The caller must
+// keep the returned *Lock reachable until Release: an unreachable Lock's file
+// is closed by its finalizer, which unlocks it.
 func Acquire(path string) (*Lock, error) {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {

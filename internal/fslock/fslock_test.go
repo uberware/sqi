@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -62,9 +63,15 @@ func TestAcquire_AKilledHolderLeavesNoStaleLock(t *testing.T) {
 		if err != nil {
 			os.Exit(3)
 		}
-		_ = l
+		// Collect now, so a Lock the child let go of is finalized (closing the
+		// file and dropping the lock) before the parent looks, not by chance
+		// later.
+		runtime.GC()
+		runtime.GC()
+		time.Sleep(200 * time.Millisecond) // finalizers run on their own goroutine
 		os.Stdout.WriteString("held\n")
 		time.Sleep(time.Hour)
+		runtime.KeepAlive(l) // the lock lives only as long as the *Lock does
 		return
 	}
 	path := filepath.Join(t.TempDir(), "sqi.db.lock")
