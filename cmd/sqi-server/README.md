@@ -172,17 +172,15 @@ configured store):
 
 # Apply all pending migrations
 ./bin/sqi-server migrate up
-
-# Roll back the most recent migration
-./bin/sqi-server migrate down
 ```
+
+Migrations are forward-only: there is no `migrate down`. To go back to an older
+`sqi-server`, restore the backup taken before the upgrade.
 
 Migration SQL files live in
 [`internal/store/migrations/`](../../internal/store/migrations/) (SQLite) and
 [`internal/store/migrations/postgres/`](../../internal/store/migrations/postgres/)
-(PostgreSQL, starting at `00037_baseline.sql`). On PostgreSQL, `migrate down`
-stops at `00037`: rolling the baseline back would drop the whole schema and its
-data, so it is refused (drop and recreate the database to start over).
+(PostgreSQL, starting at `00037_baseline.sql`).
 
 Leave the password out of `--dsn`, since the process list shows a command
 line, and supply it through `PGPASSWORD` or a password file instead. A

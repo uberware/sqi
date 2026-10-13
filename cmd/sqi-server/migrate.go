@@ -37,8 +37,10 @@ sqi-server state store.
 
 Subcommands:
   up      Apply all pending migrations.
-  down    Roll back the most recently applied migration.
   status  Show applied and pending migrations.
+
+Migrations are forward-only. There is no "migrate down": to go back to an older
+sqi-server, restore the backup taken before the upgrade (sqi-server restore).
 
 The store is chosen as follows: --dsn names a PostgreSQL database; --db names
 a SQLite file; otherwise store.driver from the resolved configuration (the
@@ -96,35 +98,6 @@ var migrateUpCmd = &cobra.Command{
 	},
 }
 
-var migrateDownCmd = &cobra.Command{
-	Use:   "down",
-	Short: "Roll back the last applied migration",
-	Long: `Roll back exactly one migration — the most recently applied one.
-
-On PostgreSQL the first migration, 00037, is the baseline that creates the
-whole schema: rolling it back would drop every table and its data, and there
-is no earlier schema to return to, so it is refused.`,
-	RunE: func(cmd *cobra.Command, _ []string) error {
-		p, db, driver, err := openMigrator(cmd)
-		if err != nil {
-			return err
-		}
-		defer db.Close()
-
-		if driver == backend.DriverPostgres {
-			if err := refuseBaselineRollback(cmd.Context(), p); err != nil {
-				return err
-			}
-		}
-		r, err := p.Down(cmd.Context())
-		if err != nil {
-			return fmt.Errorf("migrate down: %w", err)
-		}
-		fmt.Fprintln(os.Stdout, r)
-		return nil
-	},
-}
-
 var migrateStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show applied and pending migrations",
@@ -153,10 +126,10 @@ applied (UTC, RFC 3339), or "pending".`,
 }
 
 func init() {
-	// --db and --dsn on the parent so all three subcommands inherit them.
+	// --db and --dsn on the parent so both subcommands inherit them.
 	addStoreFlags(migrateCmd.PersistentFlags(), &migrateDBPath, &migrateDSN, "path to SQLite database file")
 
-	migrateCmd.AddCommand(migrateUpCmd, migrateDownCmd, migrateStatusCmd)
+	migrateCmd.AddCommand(migrateUpCmd, migrateStatusCmd)
 }
 
 // lockMigrateTarget takes the single-server lock on the store migrate targets.
@@ -172,26 +145,6 @@ func lockMigrateTarget(cmd *cobra.Command) (func() error, error) {
 	return backend.LockStore(cmd.Context(), backend.Options{
 		Driver: tgt.Driver, SQLitePath: tgt.SQLitePath, PostgresDSN: tgt.DSN,
 	})
-}
-
-// refuseBaselineRollback refuses a down migration from the oldest migration p
-// knows: on PostgreSQL that is the baseline, which creates the whole schema,
-// so rolling it back would drop every table and its data.
-func refuseBaselineRollback(ctx context.Context, p *goose.Provider) error {
-	sources := p.ListSources()
-	if len(sources) == 0 {
-		return nil
-	}
-	current, err := p.GetDBVersion(ctx)
-	if err != nil {
-		return fmt.Errorf("migrate down: read schema version: %w", err)
-	}
-	if current == sources[0].Version {
-		return fmt.Errorf("migrate down: %05d is the PostgreSQL baseline, which creates the whole schema; "+
-			"rolling it back would drop every table and its data, so it is refused "+
-			"(to start over, drop and recreate the database)", current)
-	}
-	return nil
 }
 
 // openMigrator opens the target database and returns a goose provider for it,

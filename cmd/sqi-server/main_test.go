@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -355,6 +357,62 @@ func TestRootCmd_SubcommandTree(t *testing.T) {
 	}
 }
 
+// TestRootCmd_MigrateSubcommands verifies migrations are forward-only: the
+// migrate command offers status and up, and no down.
+func TestRootCmd_MigrateSubcommands(t *testing.T) {
+	var got []string
+	for _, c := range migrateCmd.Commands() {
+		got = append(got, c.Name())
+	}
+	sort.Strings(got)
+	if want := []string{"status", "up"}; !slices.Equal(got, want) {
+		t.Errorf("migrate subcommands = %v; want %v", got, want)
+	}
+}
+
+// TestMigrateDown_IsGone verifies "migrate down" is removed (rollback is
+// restoring the pre-upgrade backup). Cobra prints usage for an unknown
+// subcommand of a command with no RunE and returns nil, so the assertion is on
+// the schema version rather than on the error.
+func TestMigrateDown_IsGone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.db")
+	prepareRoot([]string{"migrate", "up", "--db", path})
+	_ = captureStdout(t, func() {
+		if err := Execute(); err != nil {
+			t.Fatalf("migrate up: %v", err)
+		}
+	})
+	before := schemaVersionOf(t, path)
+	if before == 0 {
+		t.Fatal("migrate up left the schema at version 0")
+	}
+
+	prepareRoot([]string{"migrate", "down", "--db", path})
+	var downErr error
+	_ = captureStdout(t, func() { downErr = Execute() })
+	t.Logf("migrate down returned: %v", downErr)
+
+	if after := schemaVersionOf(t, path); after != before {
+		t.Fatalf("schema version %d -> %d after migrate down; it is removed", before, after)
+	}
+}
+
+// schemaVersionOf reads the highest applied goose version of the SQLite
+// database at path.
+func schemaVersionOf(t *testing.T, path string) int64 {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	v, err := sqlite.SchemaVersion(t.Context(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
 // TestVersionCmd verifies that the version subcommand prints the expected
 // output label keys.  Values vary by build; only label presence is checked.
 func TestVersionCmd(t *testing.T) {
@@ -623,34 +681,6 @@ func TestMigrateCmd_Postgres_UpThenStatus(t *testing.T) {
 	})
 	if !strings.Contains(out, "00037_baseline.sql") || strings.Contains(out, "pending") {
 		t.Fatalf("migrate status after up:\n%s", out)
-	}
-}
-
-// TestMigrateCmd_Postgres_DownRefusesTheBaseline pins that `migrate down` on
-// PostgreSQL never rolls back the baseline, whose Down drops every table: the
-// command fails and the schema stays applied.
-func TestMigrateCmd_Postgres_DownRefusesTheBaseline(t *testing.T) {
-	dsn := storetest.PostgresEmptyDSN(t)
-	prepareRoot([]string{"migrate", "up", "--dsn", dsn})
-	_ = captureStdout(t, func() {
-		if err := Execute(); err != nil {
-			t.Fatalf("migrate up: %v", err)
-		}
-	})
-	prepareRoot([]string{"migrate", "down", "--dsn", dsn})
-	_ = captureStdout(t, func() {
-		if err := Execute(); err == nil || !strings.Contains(err.Error(), "baseline") {
-			t.Fatalf("migrate down from the baseline = %v; want a refusal naming the baseline", err)
-		}
-	})
-	prepareRoot([]string{"migrate", "status", "--dsn", dsn})
-	out := captureStdout(t, func() {
-		if err := Execute(); err != nil {
-			t.Fatalf("migrate status: %v", err)
-		}
-	})
-	if strings.Contains(out, "pending") {
-		t.Fatalf("migrate status after a refused down:\n%s", out)
 	}
 }
 
