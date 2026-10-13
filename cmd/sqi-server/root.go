@@ -59,6 +59,7 @@ func init() {
 		migrateCmd,
 		configCmd,
 		backupCmd,
+		restoreCmd,
 		workerCmd,
 		tlsCmd,
 	)

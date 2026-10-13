@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/migrations"
 	"github.com/uberware/sqi/internal/store/sqlite"
 	"github.com/uberware/sqi/internal/store/storetest"
@@ -342,6 +343,11 @@ func TestRootCmd_SubcommandTree(t *testing.T) {
 		{
 			name:    "migrate --help exits cleanly",
 			args:    []string{"migrate", "--help"},
+			wantErr: false,
+		},
+		{
+			name:    "restore --help exits cleanly",
+			args:    []string{"restore", "--help"},
 			wantErr: false,
 		},
 	}
@@ -761,4 +767,65 @@ func TestCLI_RefusesANewerSchema(t *testing.T) {
 	if _, err := os.Stat(out); err != nil {
 		t.Errorf("no backup file: %v", err)
 	}
+}
+
+// TestRestoreCmd_SQLite restores a SQLite backup holding a running task
+// through the CLI, and checks the summary names the fence and where the
+// previous database and the NATS directory went.
+func TestRestoreCmd_SQLite(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "sqi.db")
+	st, err := sqlite.Open(t.Context(), db, sqlite.DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateFarm(t.Context(), store.Farm{ID: "f1", Name: "f"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateQueue(t.Context(), store.Queue{ID: "q1", FarmID: "f1", Name: "q"}); err != nil {
+		t.Fatal(err)
+	}
+	storetest.NewJob("j1", "f1", "q1").
+		Step("s1", store.StepStatusReady).
+		Task("t1", "s1", store.TaskStatusRunning).
+		SubmitLeasing(t, st, "w1")
+	backup := filepath.Join(dir, "backup.db")
+	if err := st.Backup(t.Context(), backup); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	natsDir := filepath.Join(dir, "nats")
+	if err := os.MkdirAll(natsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	prepareRoot([]string{"restore", backup, "--db", db, "--nats-data-dir", natsDir})
+	var runErr error
+	out := captureStdout(t, func() { runErr = Execute() })
+	if runErr != nil {
+		t.Fatalf("restore: %v", runErr)
+	}
+	for _, want := range []string{"fenced 1 attempt(s)", db + ".pre-restore-", natsDir + ".pre-restore-"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("restore summary missing %q\ngot:\n%s", want, out)
+		}
+	}
+
+	t.Run("neither a backup nor --in-place is an error", func(t *testing.T) {
+		prepareRoot([]string{"restore", "--db", db, "--nats-data-dir", natsDir})
+		err := Execute()
+		if err == nil || !strings.Contains(err.Error(), "give a backup file, or --in-place") {
+			t.Fatalf("restore with no backup = %v, want a usage error", err)
+		}
+	})
+
+	t.Run("both a backup and --in-place is an error", func(t *testing.T) {
+		prepareRoot([]string{"restore", backup, "--in-place", "--db", db, "--nats-data-dir", natsDir})
+		err := Execute()
+		if err == nil || !strings.Contains(err.Error(), "give a backup file, or --in-place") {
+			t.Fatalf("restore with a backup and --in-place = %v, want a usage error", err)
+		}
+	})
 }
