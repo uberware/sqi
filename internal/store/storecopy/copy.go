@@ -20,9 +20,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
-	"net/url"
 	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -65,9 +63,6 @@ const (
 	// maxBindParams is PostgreSQL's limit on one statement's parameters; a
 	// wide table gets fewer rows per INSERT so it stays below it.
 	maxBindParams = 65535
-	// busyTimeoutMS is how long a source read waits on a non-sqi process
-	// holding a SQLite write lock (the server lock excludes sqi's own).
-	busyTimeoutMS = 5000
 )
 
 // Copy checks every precondition of the copy (H5 design §7.2), then copies
@@ -163,22 +158,10 @@ func openSource(ctx context.Context, path string) (*sql.DB, error) {
 	return db, nil
 }
 
-// readOnlyDSN is a file: URI opening path read-only. The path is made
-// absolute and percent-escaped by url.URL, so a "?", "#", "%" or space in it
-// stays part of the name (unescaped, "?" would start the query and open or
-// create a truncated name), and a Windows drive path becomes file:///C:/...,
-// the form SQLite reads as that drive.
+// readOnlyDSN is a file: URI opening path read-only, escaped by
+// [sqlite.FileURI] so any character in the name stays part of it.
 func readOnlyDSN(path string) (string, error) {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
-	}
-	p := filepath.ToSlash(abs)
-	if !strings.HasPrefix(p, "/") {
-		p = "/" + p
-	}
-	u := url.URL{Scheme: "file", Path: p, RawQuery: fmt.Sprintf("mode=ro&_pragma=busy_timeout(%d)", busyTimeoutMS)}
-	return u.String(), nil
+	return sqlite.FileURI(path, true)
 }
 
 func checkSource(ctx context.Context, db *sql.DB, path string) error {

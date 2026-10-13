@@ -36,7 +36,11 @@ func (s *Store) Backup(ctx context.Context, destPath string) error {
 // works on a schema this binary is too old for — the backup taken before
 // rolling a binary back.
 func BackupPath(ctx context.Context, dbPath, destPath string) error {
-	db, err := sql.Open("sqlite", fmt.Sprintf("%s?_pragma=busy_timeout(%d)", dbPath, busyTimeoutMS))
+	dsn, err := FileURI(dbPath, false)
+	if err != nil {
+		return fmt.Errorf("sqlite backup: %s: %w", dbPath, err)
+	}
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return fmt.Errorf("sqlite backup: open %s: %w", dbPath, err)
 	}

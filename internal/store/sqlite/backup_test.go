@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -37,6 +38,58 @@ func TestBackup_CopyIsRestricted(t *testing.T) {
 	defer copied.Close()
 	if f, err := copied.GetFarm(t.Context(), "farm-backup"); err != nil || f.Name != "kept" {
 		t.Fatalf("GetFarm from the copy = %+v, %v", f, err)
+	}
+}
+
+// TestBackupPath_ReadsAPathWithURICharacters pins that BackupPath opens the
+// database its path names, whatever the name holds: unescaped, "?" would start
+// a DSN's query (opening, or creating, a truncated name) and "#" or "%" would
+// be read as URI syntax.
+func TestBackupPath_ReadsAPathWithURICharacters(t *testing.T) {
+	names := []string{"sqi #1.db", "100% sqi.db", "a b%20c.db"}
+	if runtime.GOOS != "windows" { // "?" cannot appear in a Windows file name
+		names = append(names, "sqi?mode=ro.db", "sqi?.db")
+	}
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			plain := filepath.Join(dir, "plain.db")
+			s, err := sqlite.Open(t.Context(), plain, sqlite.DefaultOptions())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.CreateFarm(t.Context(), store.Farm{ID: "farm-uri", Name: "kept"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			src := filepath.Join(dir, name)
+			if err := os.Rename(plain, src); err != nil {
+				t.Fatal(err)
+			}
+			out := filepath.Join(t.TempDir(), "backup.db")
+			if err := sqlite.BackupPath(t.Context(), src, out); err != nil {
+				t.Fatalf("BackupPath(%q): %v", name, err)
+			}
+			copied, err := sqlite.Open(t.Context(), out, sqlite.Options{})
+			if err != nil {
+				t.Fatalf("open the copy: %v", err)
+			}
+			defer copied.Close()
+			if f, err := copied.GetFarm(t.Context(), "farm-uri"); err != nil || f.Name != "kept" {
+				t.Fatalf("GetFarm from the copy of %q = %+v, %v", name, f, err)
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, e := range entries {
+				if !strings.HasPrefix(e.Name(), name) {
+					t.Errorf("BackupPath(%q) left %q beside it (a misread name)", name, e.Name())
+				}
+			}
+		})
 	}
 }
 
