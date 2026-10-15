@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"time"
 
@@ -103,15 +104,12 @@ var migrateStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show applied and pending migrations",
 	Long: `List every migration file with its current state: the time it was
-applied (UTC, RFC 3339), or "pending".`,
-	RunE: func(cmd *cobra.Command, _ []string) error {
-		p, db, _, err := openMigrator(cmd)
-		if err != nil {
-			return err
-		}
-		defer db.Close()
+applied (UTC, RFC 3339), or "pending".
 
-		statuses, err := p.Status(cmd.Context())
+On SQLite it only reads the database, so it is safe to run on a backup; a
+missing file lists every migration pending and is not created.`,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		statuses, err := migrationStatuses(cmd)
 		if err != nil {
 			return fmt.Errorf("migrate status: %w", err)
 		}
@@ -148,6 +146,71 @@ func lockMigrateTarget(cmd *cobra.Command) (func() error, error) {
 	})
 }
 
+// migrationStatuses lists every migration with its state. On SQLite it writes
+// nothing, so it is safe on a backup: goose's own Status creates its version
+// table, and opening the file the way migrate up does rewrites it. So a SQLite
+// file that is missing, or was never migrated, lists every migration pending
+// without being opened for writing, and any other is read over a read-only
+// connection.
+func migrationStatuses(cmd *cobra.Command) ([]*goose.MigrationStatus, error) {
+	tgt, err := resolveStoreTarget(cmd, migrateDBPath, migrateDSN)
+	if err != nil {
+		return nil, err
+	}
+	if tgt.Driver == backend.DriverPostgres {
+		p, db, _, err := openMigrator(cmd)
+		if err != nil {
+			return nil, err
+		}
+		defer db.Close()
+		return p.Status(cmd.Context())
+	}
+	if tgt.SQLitePath == "" {
+		return nil, errEmptySQLitePath
+	}
+
+	dsn := ":memory:" // never connected to: it only lets the provider list the migrations
+	if _, err := os.Stat(tgt.SQLitePath); errors.Is(err, fs.ErrNotExist) {
+		fmt.Fprintf(os.Stderr, "no database at %s yet: every migration is pending\n", tgt.SQLitePath)
+	} else if err != nil {
+		return nil, err
+	} else if dsn, err = sqlite.FileURI(tgt.SQLitePath, true); err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite %q: %w", tgt.SQLitePath, err)
+	}
+	defer db.Close()
+	p, err := migrations.NewProvider(db, "sqlite")
+	if err != nil {
+		return nil, err
+	}
+	v := int64(0)
+	if dsn != ":memory:" {
+		if v, err = sqlite.SchemaVersion(cmd.Context(), db); err != nil {
+			return nil, err
+		}
+	}
+	if v == 0 {
+		return allPending(p), nil
+	}
+	return p.Status(cmd.Context())
+}
+
+// allPending is every migration p knows, each pending.
+func allPending(p *goose.Provider) []*goose.MigrationStatus {
+	sources := p.ListSources()
+	out := make([]*goose.MigrationStatus, 0, len(sources))
+	for _, src := range sources {
+		out = append(out, &goose.MigrationStatus{Source: src, State: goose.StatePending})
+	}
+	return out
+}
+
+// errEmptySQLitePath is the refusal of an empty SQLite path.
+var errEmptySQLitePath = errors.New("database path is empty; use --db, set store.sqlite_path, or set SQI_STORE_SQLITE_PATH")
+
 // openMigrator opens the target database and returns a goose provider for it,
 // and the driver it chose. SQLite gets the store's pragmas first, and its file
 // is created if missing (that is migrate's job); PostgreSQL must already exist.
@@ -178,7 +241,7 @@ func openMigrator(cmd *cobra.Command) (*goose.Provider, *sql.DB, string, error) 
 // timeout the store uses.
 func openMigrateDB(path string) (*sql.DB, error) {
 	if path == "" {
-		return nil, errors.New("database path is empty; use --db, set store.sqlite_path, or set SQI_STORE_SQLITE_PATH")
+		return nil, errEmptySQLitePath
 	}
 
 	dsn, err := sqlite.DSN(path)

@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -738,6 +739,87 @@ func TestMigrateUp_RefusesWhileAServerHoldsTheLock(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "stop it first") {
 		t.Fatalf("migrate up beside a server = %v, want a lock refusal", err)
 	}
+}
+
+// TestMigrateStatus_WritesNothing verifies migrate status on SQLite leaves the
+// database file byte-for-byte as it was — it is safe to run on a backup — and
+// creates no file where there is none: an empty file and a missing one list
+// every migration pending.
+func TestMigrateStatus_WritesNothing(t *testing.T) {
+	sum := func(path string) string {
+		t.Helper()
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fmt.Sprintf("%x", sha256.Sum256(b))
+	}
+	status := func(path string) string {
+		t.Helper()
+		prepareRoot([]string{"migrate", "status", "--db", path})
+		var runErr error
+		out := captureStdout(t, func() { runErr = Execute() })
+		if runErr != nil {
+			t.Fatalf("migrate status --db %s: %v", path, runErr)
+		}
+		return out
+	}
+	allPending := func(t *testing.T, out string) {
+		t.Helper()
+		for l := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
+			if !strings.HasPrefix(l, "pending ") {
+				t.Errorf("migrate status line %q, want pending", l)
+			}
+		}
+	}
+
+	t.Run("a migrated database", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "sqi.db")
+		createTestDB(t, path)
+		before := sum(path)
+		out := status(path)
+		if strings.Contains(out, "pending") {
+			t.Errorf("migrate status on a migrated database lists pending migrations:\n%s", out)
+		}
+		if after := sum(path); after != before {
+			t.Errorf("migrate status changed the database file (sha256 %s -> %s)", before, after)
+		}
+	})
+	// A backup is what an operator checks with migrate status, and VACUUM
+	// INTO writes it in rollback-journal mode: opened the way migrate up opens
+	// a database, it would be switched to WAL, rewriting its header.
+	t.Run("a backup", func(t *testing.T) {
+		live := filepath.Join(t.TempDir(), "sqi.db")
+		createTestDB(t, live)
+		path := filepath.Join(t.TempDir(), "backup.db")
+		if err := sqlite.BackupPath(t.Context(), live, path); err != nil {
+			t.Fatal(err)
+		}
+		before := sum(path)
+		if out := status(path); strings.Contains(out, "pending") {
+			t.Errorf("migrate status on a backup lists pending migrations:\n%s", out)
+		}
+		if after := sum(path); after != before {
+			t.Errorf("migrate status changed the backup (sha256 %s -> %s)", before, after)
+		}
+	})
+	t.Run("an empty file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "empty.db")
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		allPending(t, status(path))
+		if fi, err := os.Stat(path); err != nil || fi.Size() != 0 {
+			t.Errorf("empty file after migrate status = %v, %v; want it still empty", fi, err)
+		}
+	})
+	t.Run("no file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "missing.db")
+		allPending(t, status(path))
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("migrate status created %s (err %v)", path, err)
+		}
+	})
 }
 
 // TestMigrateUp_FoldsInACrashedServersWAL backs the advice restore --in-place

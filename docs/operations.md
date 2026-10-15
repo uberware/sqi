@@ -335,8 +335,10 @@ other sqi database, it backs that one up without complaint. So check the
 result: the backup should be close to the live file's size (`VACUUM INTO`
 compacts it, so it can be smaller), and any sqi database, even one with no
 jobs, is several hundred kilobytes (385 KB for an empty farm at schema 38).
-Do not check it with `sqi-server migrate status --db`: that opens the file
-read-write and rewrites it. On PostgreSQL the old binary is at least the
+The new binary's `sqi-server migrate status --db <backup>` checks it
+without changing it: on SQLite, `migrate status` only reads the database.
+Do not run the *old* binary's `migrate status` on it: in v0.3.0 and earlier it
+opens the file read-write and rewrites it. On PostgreSQL the old binary is at least the
 release that added PostgreSQL support, whose `backup` reads `--config` and
 `--dsn`, so `sqi-server backup --config /etc/sqi/sqi-server.yaml --out
 /backups/sqi/pre-upgrade-<time>.dump` is right there.
