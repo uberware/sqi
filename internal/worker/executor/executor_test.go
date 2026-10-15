@@ -25,6 +25,7 @@ import (
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
 	"github.com/uberware/sqi/internal/worker/executor"
 	"github.com/uberware/sqi/internal/worker/fmtres"
+	"github.com/uberware/sqi/internal/worker/heartbeat"
 	"github.com/uberware/sqi/internal/worker/isolation"
 	"github.com/uberware/sqi/internal/worker/metrics"
 	"github.com/uberware/sqi/internal/worker/protocol"
@@ -177,6 +178,10 @@ func testBinary() string {
 type stubNATS struct {
 	mu   sync.Mutex
 	msgs []stubMsg
+
+	// onStatus, when set, is called with each task-status message as it is
+	// published, outside mu, before Publish returns.
+	onStatus func(protocol.TaskStatusMsg)
 }
 
 type stubMsg struct {
@@ -186,11 +191,16 @@ type stubMsg struct {
 
 func (s *stubNATS) Publish(subj string, data []byte) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	// Make a copy so the original slice remains unmodified.
 	cp := make([]byte, len(data))
 	copy(cp, data)
 	s.msgs = append(s.msgs, stubMsg{subj: subj, data: cp})
+	hook := s.onStatus
+	s.mu.Unlock()
+	var msg protocol.TaskStatusMsg
+	if hook != nil && json.Unmarshal(cp, &msg) == nil && msg.Type == protocol.TypeTaskStatus {
+		hook(msg)
+	}
 	return nil
 }
 
@@ -1818,10 +1828,13 @@ func TestExecutor_ActiveAttemptIDs_DispatchAloneHolds(t *testing.T) {
 	if err := exec.Dispatch(context.Background(), msg); err != nil {
 		t.Fatal(err)
 	}
-	exec.Hold(msg.AttemptID)
 	waitForStatus(t, nc, 1, 10*time.Second) // running
 	if ids := exec.ActiveAttemptIDs(); !slices.Equal(ids, []string{"attempt-sleeper"}) {
-		t.Fatalf("while running = %v, want [attempt-sleeper]", ids)
+		t.Fatalf("while running, never held by the caller = %v, want [attempt-sleeper]", ids)
+	}
+	exec.Hold(msg.AttemptID)
+	if ids := exec.ActiveAttemptIDs(); !slices.Equal(ids, []string{"attempt-sleeper"}) {
+		t.Fatalf("after a second Hold = %v, want [attempt-sleeper] once", ids)
 	}
 
 	if !exec.Cancel(msg.TaskID) {
@@ -1863,5 +1876,96 @@ func TestExecutor_ActiveAttemptIDs_PreExecFailureReleases(t *testing.T) {
 	}
 	if statuses := nc.statuses(); len(statuses) != 2 || statuses[1] != "failed" {
 		t.Errorf("statuses = %v, want [running failed]", statuses)
+	}
+}
+
+// The executor must satisfy heartbeat.AttemptSource: the heartbeat finds it by
+// a type assertion, so a drifted method set would silently stop the worker
+// reporting held attempts — and the server would stop reconciling it.
+var _ heartbeat.AttemptSource = (*executor.Executor)(nil)
+
+// TestExecutor_ReleasesAnAttemptOnlyAfterItsTerminalStatus verifies that an
+// attempt is still reported as held at the moment its terminal status is
+// published, on the run path and on the path where Dispatch fails before
+// anything runs: a heartbeat that stopped listing it before the status landed
+// would let the server reclaim an attempt this worker is still reporting.
+func TestExecutor_ReleasesAnAttemptOnlyAfterItsTerminalStatus(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess test uses Unix-style exec; run-as-user failure is Unix-specific")
+	}
+	// watch records, at each terminal publish, whether the attempt was held.
+	watch := func(nc *stubNATS, exec *executor.Executor, attemptID string) *atomicHeld {
+		h := &atomicHeld{}
+		nc.onStatus = func(m protocol.TaskStatusMsg) {
+			if m.Status == "succeeded" || m.Status == "failed" || m.Status == "canceled" {
+				h.record(slices.Contains(exec.ActiveAttemptIDs(), attemptID))
+			}
+		}
+		return h
+	}
+
+	t.Run("task ran", func(t *testing.T) {
+		exec, nc, _ := newTestExecutor(t, nil)
+		msg := makeAssign("stdout", nil)
+		msg.AttemptID = "attempt-ran"
+		held := watch(nc, exec, msg.AttemptID)
+		if err := exec.Dispatch(context.Background(), msg); err != nil {
+			t.Fatal(err)
+		}
+		if ids := waitForNoAttempts(exec, 10*time.Second); len(ids) != 0 {
+			t.Fatalf("after the task ended = %v, want none", ids)
+		}
+		held.require(t)
+	})
+
+	t.Run("dispatch failed before the task ran", func(t *testing.T) {
+		parent := newCredentialFailureSessionRoot(t)
+		nc := &stubNATS{}
+		logger := slog.New(slog.DiscardHandler)
+		mgr := session.NewManager(filepath.Join(parent, "sessions"), false, isolation.NewFake(nil),
+			workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, logger)
+		exec := executor.New(status.New(nc, status.Config{WorkerID: "test-worker"}, logger), mgr, metrics.New(), nil,
+			executor.Config{}, logger)
+		msg := makeAssign("stdout", nil)
+		msg.AttemptID = "attempt-doomed"
+		msg.Isolation = &protocol.IsolationSpec{User: "render-svc"}
+		held := watch(nc, exec, msg.AttemptID)
+		exec.Hold(msg.AttemptID)
+		if err := exec.Dispatch(context.Background(), msg); err == nil {
+			t.Fatal("Dispatch: want error, got nil")
+		}
+		if ids := exec.ActiveAttemptIDs(); len(ids) != 0 {
+			t.Fatalf("after the failed Dispatch = %v, want none", ids)
+		}
+		held.require(t)
+	})
+}
+
+// atomicHeld collects, across terminal publishes, whether the attempt was
+// held at each.
+type atomicHeld struct {
+	mu    sync.Mutex
+	seen  int
+	freed int
+}
+
+func (h *atomicHeld) record(held bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.seen++
+	if !held {
+		h.freed++
+	}
+}
+
+func (h *atomicHeld) require(t *testing.T) {
+	t.Helper()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.seen == 0 {
+		t.Fatal("no terminal status was published")
+	}
+	if h.freed != 0 {
+		t.Fatalf("the attempt was already released at %d of %d terminal publishes", h.freed, h.seen)
 	}
 }
