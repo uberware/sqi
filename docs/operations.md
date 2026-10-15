@@ -715,8 +715,15 @@ the search path, including ones the role has no privilege on.
 
 - `pg_restore` must be on `PATH`, at least the server's major version, as
   `pg_dump` must be for [backup](#backing-up-postgresql); the password reaches
-  it the same way, never on its command line. A missing or too old
-  `pg_restore` is reported as such, before the archive is read.
+  it the same way, never on its command line. A missing `pg_restore`, or one
+  older than the server, is reported as such before the archive is read. One
+  older than the `pg_dump` that wrote the archive cannot read its format, and
+  is reported as such when it first reads it, still before anything is
+  loaded.
+- If the load fails, the error shows `pg_restore`'s own messages but not the
+  server's detail lines, which can quote rows of the database (and so
+  password, API-key and session hashes); the count of lines left out is
+  shown instead. To see them, run `pg_restore` by hand.
 - **Grants are not restored** (`--no-acl`), just as ownership is not: a
   `GRANT` the source database gave another role (a reporting role, say) is
   left out, so a role the new cluster lacks cannot fail the load. Re-apply such

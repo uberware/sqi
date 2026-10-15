@@ -36,6 +36,10 @@ func ArchiveSchemaVersion(ctx context.Context, archive string) (int64, error) {
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, tool, "--data-only", "--table=goose_db_version", "--file=-", archive)
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	// Untranslated messages, so the "unsupported version" match below holds in
+	// any locale. Nothing else here depends on the locale: this run connects to
+	// no server, and the COPY data is the archive's bytes.
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
 	if err := cmd.Run(); err != nil {
 		msg := strings.TrimSpace(stderr.String())
 		switch {
@@ -198,10 +202,38 @@ func Restore(ctx context.Context, dsn, archive string, log *slog.Logger) error {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("postgres: pg_restore failed: %w: %s", err, strings.TrimSpace(stderr.String()))
+		return fmt.Errorf("postgres: pg_restore failed: %w: %s", err, withoutRowData(stderr.String()))
 	}
-	if msg := strings.TrimSpace(stderr.String()); msg != "" {
+	if msg := withoutRowData(stderr.String()); msg != "" {
 		log.WarnContext(ctx, "pg_restore wrote to stderr", "stderr", msg)
 	}
 	return nil
+}
+
+// withoutRowData keeps pg_restore's own lines from its stderr (a server error's
+// primary message is on one of them) and drops the rest: the continuation
+// lines of a message the server sent (DETAIL, CONTEXT, HINT), which quote row
+// values — a COPY's CONTEXT line quotes its failing
+// input line, a DETAIL quotes key values or the failing row — and the
+// database holds password, API-key and session hashes. A line is pg_restore's
+// when it starts with "pg_restore:", which no locale translates; the server's
+// lines are in its own lc_messages, so they are dropped by position, not by
+// matching their words.
+func withoutRowData(stderr string) string {
+	var kept []string
+	dropped := 0
+	for line := range strings.SplitSeq(strings.TrimSpace(stderr), "\n") {
+		line = strings.TrimRight(line, "\r")
+		switch {
+		case line == "":
+		case strings.HasPrefix(line, "pg_restore:"):
+			kept = append(kept, line)
+		default:
+			dropped++
+		}
+	}
+	if dropped > 0 {
+		kept = append(kept, fmt.Sprintf("(%d line(s) of server detail omitted: they can quote row data)", dropped))
+	}
+	return strings.Join(kept, "\n")
 }

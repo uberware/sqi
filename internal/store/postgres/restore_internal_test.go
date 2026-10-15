@@ -3,6 +3,10 @@
 package postgres
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -69,5 +73,69 @@ func TestFindTool_NamesTheTool(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	if _, err := findTool("pg_restore"); err == nil || !strings.Contains(err.Error(), "pg_restore not found on PATH") {
 		t.Fatalf("findTool(pg_restore) without it = %v", err)
+	}
+}
+
+// A failed load's stderr reaches the error and the log, so the server's
+// continuation lines, which quote row values, are dropped — whatever language
+// the server writes them in — and pg_restore's own lines are kept.
+func TestWithoutRowData(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"empty", "", ""},
+		{"own lines only", "pg_restore: warning: errors ignored on restore: 1\n",
+			"pg_restore: warning: errors ignored on restore: 1"},
+		{
+			"a COPY failure",
+			"pg_restore: error: COPY failed for table \"users\": ERROR:  duplicate key value violates unique constraint \"users_pkey\"\n" +
+				"DETAIL:  Key (id)=(u1) already exists.\n" +
+				"CONTEXT:  COPY users, line 1: \"u1\tadmin\t$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$aGFzaA\"\n" +
+				"pg_restore: detail: Command was: COPY public.users (id, username, password_hash) FROM stdin;\n",
+			"pg_restore: error: COPY failed for table \"users\": ERROR:  duplicate key value violates unique constraint \"users_pkey\"\n" +
+				"pg_restore: detail: Command was: COPY public.users (id, username, password_hash) FROM stdin;\n" +
+				"(2 line(s) of server detail omitted: they can quote row data)",
+		},
+		{
+			"a translated server message, CRLF",
+			"pg_restore: error: COPY failed for table \"users\": FEHLER:  doppelter Schlüsselwert\r\n" +
+				"DETAIL:  Schlüssel »(id)=(u1)« existiert bereits.\r\n",
+			"pg_restore: error: COPY failed for table \"users\": FEHLER:  doppelter Schlüsselwert\n" +
+				"(1 line(s) of server detail omitted: they can quote row data)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := withoutRowData(tc.in); got != tc.want {
+				t.Errorf("withoutRowData =\n%s\nwant\n%s", got, tc.want)
+			}
+		})
+	}
+}
+
+// The "unsupported version" match must hold whatever the operator's locale:
+// a pg_restore that would answer in German still reports a newer archive as a
+// tool problem, not as an unreadable archive. The fake pg_restore answers in
+// English only when LC_ALL=C, as a real one with a German catalog would.
+func TestArchiveSchemaVersion_MatchesTheToolErrorInAnyLocale(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake pg_restore is a POSIX shell script")
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"if [ \"$LC_ALL\" = C ]; then\n" +
+		"  echo 'pg_restore: error: unsupported version (1.99) in file header' >&2\n" +
+		"else\n" +
+		"  echo 'pg_restore: Fehler: nicht unterstützte Version (1.99) im Dateikopf' >&2\n" +
+		"fi\n" +
+		"exit 1\n"
+	if err := os.WriteFile(filepath.Join(dir, "pg_restore"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("LC_ALL", "de_DE.UTF-8")
+	t.Setenv("LANGUAGE", "de")
+
+	_, err := ArchiveSchemaVersion(t.Context(), filepath.Join(dir, "sqi.dump"))
+	if err == nil || errors.Is(err, ErrUnreadableArchive) || !strings.Contains(err.Error(), "newer pg_dump") {
+		t.Fatalf("ArchiveSchemaVersion under a German locale = %v, want a tool error naming a newer pg_dump", err)
 	}
 }
