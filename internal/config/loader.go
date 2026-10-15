@@ -200,7 +200,7 @@ type fileConfig struct {
 		MaxStoreMB *int    `yaml:"max_store_mb"`
 		Auth       *struct {
 			Enabled                   *bool   `yaml:"enabled"`
-			JoinTokenTTL              *string `yaml:"join_token_ttl"`
+			JoinTokenTTL              *fileDuration `yaml:"join_token_ttl"`
 			JoinTokenSingleUse        *bool   `yaml:"join_token_single_use"`
 			EnrollmentEndpointEnabled *bool   `yaml:"enrollment_endpoint_enabled"`
 		} `yaml:"auth"`
@@ -215,7 +215,7 @@ type fileConfig struct {
 	Store *struct {
 		Driver             *string `yaml:"driver"`
 		SQLitePath         *string `yaml:"sqlite_path"`
-		CheckpointInterval *string `yaml:"checkpoint_interval"`
+		CheckpointInterval *fileDuration `yaml:"checkpoint_interval"`
 		Postgres           *struct {
 			DSN      *string `yaml:"dsn"`
 			MaxConns *int    `yaml:"max_conns"`
@@ -231,16 +231,16 @@ type fileConfig struct {
 	} `yaml:"log"`
 
 	Scheduler *struct {
-		HeartbeatTimeout          *string `yaml:"heartbeat_timeout"`
-		TickInterval              *string `yaml:"tick_interval"`
+		HeartbeatTimeout          *fileDuration `yaml:"heartbeat_timeout"`
+		TickInterval              *fileDuration `yaml:"tick_interval"`
 		MaxTasksPerWorker         *int    `yaml:"max_tasks_per_worker"`
-		OfflineWorkerRetention    *string `yaml:"offline_worker_retention"`
-		JobRetention              *string `yaml:"job_retention"`
+		OfflineWorkerRetention    *fileDuration `yaml:"offline_worker_retention"`
+		JobRetention              *fileDuration `yaml:"job_retention"`
 		JobRetentionIncludeFailed *bool   `yaml:"job_retention_include_failed"`
-		UnschedulableGrace        *string `yaml:"unschedulable_grace"`
-		ReconcileGrace            *string `yaml:"reconcile_grace"`
+		UnschedulableGrace        *fileDuration `yaml:"unschedulable_grace"`
+		ReconcileGrace            *fileDuration `yaml:"reconcile_grace"`
 		DefaultMaxAttempts        *int    `yaml:"default_max_attempts"`
-		RetryDelay                *string `yaml:"retry_delay"`
+		RetryDelay                *fileDuration `yaml:"retry_delay"`
 		DefaultFailureLimit       *int    `yaml:"default_failure_limit"`
 	} `yaml:"scheduler"`
 
@@ -255,7 +255,7 @@ type fileConfig struct {
 		ExprMemoryLimit           *int64  `yaml:"expr_memory_limit"`
 		ExprTemplatePositions     *int64  `yaml:"expr_template_positions"`
 		ExprTemplateRetainedBytes *int64  `yaml:"expr_template_retained_bytes"`
-		ExprSubmissionDeadline    *string `yaml:"expr_submission_deadline"`
+		ExprSubmissionDeadline    *fileDuration `yaml:"expr_submission_deadline"`
 	} `yaml:"openjd"`
 
 	Diagnostics *struct {
@@ -270,7 +270,7 @@ type fileConfig struct {
 		Enabled          *bool `yaml:"enabled"`
 		ValidateJobOwner *bool `yaml:"validate_job_owner"`
 		Session          *struct {
-			TTL          *string `yaml:"ttl"`
+			TTL          *fileDuration `yaml:"ttl"`
 			CookieName   *string `yaml:"cookie_name"`
 			CookieSecure *string `yaml:"cookie_secure"`
 		} `yaml:"session"`
@@ -284,7 +284,7 @@ type fileConfig struct {
 			StartTLS        *bool              `yaml:"start_tls"`
 			TLSSkipVerify   *bool              `yaml:"tls_skip_verify"`
 			CAFile          *string            `yaml:"ca_file"`
-			Timeout         *string            `yaml:"timeout"`
+			Timeout         *fileDuration            `yaml:"timeout"`
 			BindDN          *string            `yaml:"bind_dn"`
 			BindPassword    *string            `yaml:"bind_password"`
 			BaseDN          *string            `yaml:"base_dn"`
@@ -450,7 +450,7 @@ func mergeNATSTLSFile(cfg *Config, t *struct {
 // threshold.
 func mergeNATSAuthFile(cfg *Config, a *struct {
 	Enabled                   *bool   `yaml:"enabled"`
-	JoinTokenTTL              *string `yaml:"join_token_ttl"`
+	JoinTokenTTL              *fileDuration `yaml:"join_token_ttl"`
 	JoinTokenSingleUse        *bool   `yaml:"join_token_single_use"`
 	EnrollmentEndpointEnabled *bool   `yaml:"enrollment_endpoint_enabled"`
 },
@@ -461,11 +461,7 @@ func mergeNATSAuthFile(cfg *Config, a *struct {
 	if a.Enabled != nil {
 		cfg.NATS.Auth.Enabled = *a.Enabled
 	}
-	if a.JoinTokenTTL != nil {
-		if d, err := time.ParseDuration(*a.JoinTokenTTL); err == nil {
-			cfg.NATS.Auth.JoinTokenTTL = d
-		}
-	}
+	setIfNotNilDuration(&cfg.NATS.Auth.JoinTokenTTL, a.JoinTokenTTL)
 	if a.JoinTokenSingleUse != nil {
 		cfg.NATS.Auth.JoinTokenSingleUse = *a.JoinTokenSingleUse
 	}
@@ -482,11 +478,7 @@ func mergeStoreFile(cfg *Config, fc fileConfig) {
 	if fc.Store.SQLitePath != nil {
 		cfg.Store.SQLitePath = *fc.Store.SQLitePath
 	}
-	if fc.Store.CheckpointInterval != nil {
-		if d, err := time.ParseDuration(*fc.Store.CheckpointInterval); err == nil {
-			cfg.Store.CheckpointInterval = d
-		}
-	}
+	setIfNotNilDuration(&cfg.Store.CheckpointInterval, fc.Store.CheckpointInterval)
 	if pg := fc.Store.Postgres; pg != nil {
 		setIfNotNilString(&cfg.Store.Postgres.DSN, pg.DSN)
 		if pg.MaxConns != nil {
@@ -520,29 +512,13 @@ func mergeSchedulerFile(cfg *Config, fc fileConfig) {
 	if fc.Scheduler == nil {
 		return
 	}
-	if fc.Scheduler.HeartbeatTimeout != nil {
-		if d, err := time.ParseDuration(*fc.Scheduler.HeartbeatTimeout); err == nil {
-			cfg.Scheduler.HeartbeatTimeout = d
-		}
-	}
-	if fc.Scheduler.TickInterval != nil {
-		if d, err := time.ParseDuration(*fc.Scheduler.TickInterval); err == nil {
-			cfg.Scheduler.TickInterval = d
-		}
-	}
+	setIfNotNilDuration(&cfg.Scheduler.HeartbeatTimeout, fc.Scheduler.HeartbeatTimeout)
+	setIfNotNilDuration(&cfg.Scheduler.TickInterval, fc.Scheduler.TickInterval)
 	if fc.Scheduler.MaxTasksPerWorker != nil {
 		cfg.Scheduler.MaxTasksPerWorker = *fc.Scheduler.MaxTasksPerWorker
 	}
-	if fc.Scheduler.OfflineWorkerRetention != nil {
-		if d, err := time.ParseDuration(*fc.Scheduler.OfflineWorkerRetention); err == nil {
-			cfg.Scheduler.OfflineWorkerRetention = d
-		}
-	}
-	if fc.Scheduler.JobRetention != nil {
-		if d, err := time.ParseDuration(*fc.Scheduler.JobRetention); err == nil {
-			cfg.Scheduler.JobRetention = d
-		}
-	}
+	setIfNotNilDuration(&cfg.Scheduler.OfflineWorkerRetention, fc.Scheduler.OfflineWorkerRetention)
+	setIfNotNilDuration(&cfg.Scheduler.JobRetention, fc.Scheduler.JobRetention)
 	if fc.Scheduler.JobRetentionIncludeFailed != nil {
 		cfg.Scheduler.JobRetentionIncludeFailed = *fc.Scheduler.JobRetentionIncludeFailed
 	}
@@ -555,16 +531,8 @@ func mergeSchedulerFile(cfg *Config, fc fileConfig) {
 // [mergeSchedulerFile] to keep its cyclomatic complexity under the lint
 // threshold.
 func mergeSchedulerGraceFile(cfg *Config, fc fileConfig) {
-	if fc.Scheduler.UnschedulableGrace != nil {
-		if d, err := time.ParseDuration(*fc.Scheduler.UnschedulableGrace); err == nil {
-			cfg.Scheduler.UnschedulableGrace = d
-		}
-	}
-	if fc.Scheduler.ReconcileGrace != nil {
-		if d, err := time.ParseDuration(*fc.Scheduler.ReconcileGrace); err == nil {
-			cfg.Scheduler.ReconcileGrace = d
-		}
-	}
+	setIfNotNilDuration(&cfg.Scheduler.UnschedulableGrace, fc.Scheduler.UnschedulableGrace)
+	setIfNotNilDuration(&cfg.Scheduler.ReconcileGrace, fc.Scheduler.ReconcileGrace)
 }
 
 // mergeSchedulerRetryFile overlays the server-level retry-policy fields
@@ -575,11 +543,7 @@ func mergeSchedulerRetryFile(cfg *Config, fc fileConfig) {
 	if fc.Scheduler.DefaultMaxAttempts != nil {
 		cfg.Scheduler.DefaultMaxAttempts = *fc.Scheduler.DefaultMaxAttempts
 	}
-	if fc.Scheduler.RetryDelay != nil {
-		if d, err := time.ParseDuration(*fc.Scheduler.RetryDelay); err == nil {
-			cfg.Scheduler.RetryDelay = d
-		}
-	}
+	setIfNotNilDuration(&cfg.Scheduler.RetryDelay, fc.Scheduler.RetryDelay)
 	if fc.Scheduler.DefaultFailureLimit != nil {
 		cfg.Scheduler.DefaultFailureLimit = *fc.Scheduler.DefaultFailureLimit
 	}
@@ -628,11 +592,7 @@ func mergeOpenJDFile(cfg *Config, fc fileConfig) {
 	// here, and documented as an operator-visible quirk in docs/configuration.md
 	// under openjd.expr_submission_deadline -- changing it means changing every
 	// duration key at once, not this one.
-	if fc.OpenJD.ExprSubmissionDeadline != nil {
-		if d, err := time.ParseDuration(*fc.OpenJD.ExprSubmissionDeadline); err == nil {
-			cfg.OpenJD.ExprSubmissionDeadline = d
-		}
-	}
+	setIfNotNilDuration(&cfg.OpenJD.ExprSubmissionDeadline, fc.OpenJD.ExprSubmissionDeadline)
 }
 
 func mergeDiagnosticsFile(cfg *Config, fc fileConfig) {
@@ -673,7 +633,7 @@ func mergeAuthFile(cfg *Config, fc fileConfig) {
 // Split out of [mergeAuthFile] to keep its cyclomatic complexity under the
 // lint threshold.
 func mergeAuthSessionFile(cfg *Config, s *struct {
-	TTL          *string `yaml:"ttl"`
+	TTL          *fileDuration `yaml:"ttl"`
 	CookieName   *string `yaml:"cookie_name"`
 	CookieSecure *string `yaml:"cookie_secure"`
 },
@@ -681,11 +641,7 @@ func mergeAuthSessionFile(cfg *Config, s *struct {
 	if s == nil {
 		return
 	}
-	if s.TTL != nil {
-		if d, err := time.ParseDuration(*s.TTL); err == nil {
-			cfg.Auth.Session.TTL = d
-		}
-	}
+	setIfNotNilDuration(&cfg.Auth.Session.TTL, s.TTL)
 	if s.CookieName != nil {
 		cfg.Auth.Session.CookieName = *s.CookieName
 	}
@@ -732,11 +688,7 @@ func mergeAuthLDAPFile(cfg *Config, fc fileConfig) {
 	setIfNotNilBool(&d.StartTLS, l.StartTLS)
 	setIfNotNilBool(&d.TLSSkipVerify, l.TLSSkipVerify)
 	setIfNotNilString(&d.CAFile, l.CAFile)
-	if l.Timeout != nil {
-		if v, err := time.ParseDuration(*l.Timeout); err == nil {
-			d.Timeout = v
-		}
-	}
+	setIfNotNilDuration(&d.Timeout, l.Timeout)
 	setIfNotNilString(&d.BindDN, l.BindDN)
 	setIfNotNilString(&d.BindPassword, l.BindPassword)
 	setIfNotNilString(&d.BaseDN, l.BaseDN)
@@ -810,6 +762,33 @@ func setIfNotNilString(dst, src *string) {
 func setIfNotNilBool(dst, src *bool) {
 	if src != nil {
 		*dst = *src
+	}
+}
+
+// fileDuration is a Go duration in the config file ("30s", "5m", "1h"). A value
+// that is not one fails the load, naming its line, as the environment layer's
+// [setDuration] does, rather than leaving the key at its default as if it were
+// absent: "5 sec" or a bare "30" is a typo, not a request for the default.
+type fileDuration time.Duration
+
+// UnmarshalYAML implements [yaml.Unmarshaler].
+func (d *fileDuration) UnmarshalYAML(n *yaml.Node) error {
+	var s string
+	if err := n.Decode(&s); err != nil {
+		return err
+	}
+	v, err := time.ParseDuration(strings.TrimSpace(s))
+	if err != nil {
+		return fmt.Errorf("line %d: invalid duration %q (want e.g. 30s, 5m, 1h)", n.Line, s)
+	}
+	*d = fileDuration(v)
+	return nil
+}
+
+// setIfNotNilDuration assigns *src to *dst when src is non-nil.
+func setIfNotNilDuration(dst *time.Duration, src *fileDuration) {
+	if src != nil {
+		*dst = time.Duration(*src)
 	}
 }
 

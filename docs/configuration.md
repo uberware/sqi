@@ -1577,16 +1577,13 @@ openjd:
   expr_submission_deadline: 5s
 ```
 
-> **A malformed duration in the config *file* is ignored, not rejected.**
-> `5 sec`, `5000` or `5 s` leaves the default `5s` in place and the server
-> starts. This is how every duration key in the file layer behaves — the value
-> is parsed with Go's `time.ParseDuration` and an unparseable one is skipped —
-> but it is worth stating here because the other four `openjd.expr_*` keys are
-> integers, so a typo in one of *those* fails YAML unmarshalling loudly. The
-> environment variable **does** report a parse error, so
-> `SQI_OPENJD_EXPR_SUBMISSION_DEADLINE=5 sec` fails at startup. Check the
-> effective value rather than assuming the file was read: an out-of-range value
-> is a startup failure, but an unparseable one is silence.
+> **A malformed duration fails at startup, in the file and the environment
+> alike.** `5 sec`, `5000` or `5 s` is not a Go duration, so
+> `expr_submission_deadline: 5 sec` fails the load naming its line, and
+> `SQI_OPENJD_EXPR_SUBMISSION_DEADLINE=5 sec` naming the variable. This holds
+> for every duration key in the server's configuration. (Releases up to and
+> including v0.3.0 skipped an unparseable value in the *file* and kept the
+> default.)
 
 ---
 

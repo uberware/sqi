@@ -2798,3 +2798,57 @@ func TestLoad_StorePostgresDSNSurvivesRedactedMarshal(t *testing.T) {
 		t.Fatalf("marshaled loaded config leaks the DSN password:\n%s", out)
 	}
 }
+
+// TestLoad_RejectsAMalformedFileDuration verifies that every duration key in
+// the config file fails the load on a value that is not a Go duration, naming
+// its line, as the environment layer does — rather than leaving the key at its
+// default as if it were absent. A valid value is still read.
+func TestLoad_RejectsAMalformedFileDuration(t *testing.T) {
+	keys := []struct{ block, key string }{
+		{"nats:\n  auth:\n", "join_token_ttl"},
+		{"store:\n", "checkpoint_interval"},
+		{"scheduler:\n", "heartbeat_timeout"},
+		{"scheduler:\n", "tick_interval"},
+		{"scheduler:\n", "offline_worker_retention"},
+		{"scheduler:\n", "job_retention"},
+		{"scheduler:\n", "unschedulable_grace"},
+		{"scheduler:\n", "reconcile_grace"},
+		{"scheduler:\n", "retry_delay"},
+		{"openjd:\n", "expr_submission_deadline"},
+		{"auth:\n  session:\n", "ttl"},
+		{"auth:\n  ldap:\n", "timeout"},
+	}
+	for _, k := range keys {
+		indent := strings.Repeat("  ", strings.Count(k.block, "\n"))
+		for _, value := range []string{"5 sec", "30"} {
+			t.Run(k.key+"="+value, func(t *testing.T) {
+				dir := t.TempDir()
+				t.Chdir(dir)
+				path := filepath.Join(dir, "sqi-server.yaml")
+				body := k.block + indent + k.key + ": " + value + "\n"
+				if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				_, err := config.Load(path, config.FlagOverrides{})
+				if err == nil || !strings.Contains(err.Error(), `invalid duration "`+value+`"`) ||
+					!strings.Contains(err.Error(), "line ") {
+					t.Fatalf("Load with %s: %s = %v, want an invalid-duration error naming the line", k.key, value, err)
+				}
+			})
+		}
+	}
+
+	dir := t.TempDir()
+	t.Chdir(dir)
+	path := filepath.Join(dir, "sqi-server.yaml")
+	if err := os.WriteFile(path, []byte("scheduler:\n  retry_delay: \" 45s \"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path, config.FlagOverrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Scheduler.RetryDelay != 45*time.Second {
+		t.Fatalf("retry_delay = %s, want 45s", cfg.Scheduler.RetryDelay)
+	}
+}
