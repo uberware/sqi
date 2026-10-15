@@ -125,21 +125,22 @@ func requireInPlace(ctx context.Context, o Options) error {
 		return err
 	}
 	if n > 0 {
-		return fmt.Errorf("restore: --in-place refuses %[1]s: its -wal file holds %[2]d bytes of writes not yet "+
-			"in the database file, and nothing ties a -wal file to the database it was written for, so SQLite "+
-			"would apply them to whatever database is at %[1]s. If you put this database in place by hand over "+
-			"one whose server stopped uncleanly, the -wal and -shm files are that old database's: move them aside "+
-			"together with it, or restore with \"sqi-server restore BACKUP\" instead. If they are this database's "+
-			"own (its server crashed, or a snapshot took them with it), let SQLite fold them in first: run "+
-			"\"sqi-server migrate up\" on it, or start the server on it and stop it cleanly once; then run "+
-			"--in-place again", o.SQLitePath, n)
+		return fmt.Errorf("restore: --in-place refuses %[1]s: its -wal file is not empty (%[2]d bytes), so it "+
+			"may hold writes not yet in the database file, and nothing ties a -wal file to the database it was "+
+			"written for, so SQLite would apply them to whatever database is at %[1]s. If you put this database "+
+			"in place by hand over one whose server stopped uncleanly, the -wal and -shm files are that old "+
+			"database's: move them aside together with it, or restore with \"sqi-server restore BACKUP\" instead. "+
+			"If they are this database's own (its server crashed, or a snapshot took them with it), let SQLite "+
+			"fold them in first with \"sqi-server migrate up\" (do not start a server on it: it would run "+
+			"unfenced), then run --in-place again", o.SQLitePath, n)
 	}
 	return nil
 }
 
 // walSize is the size of db's -wal file, 0 when there is none. A cleanly
-// stopped server leaves none, or an empty one; a non-empty one holds committed
-// writes not yet copied into the database file.
+// stopped server leaves none, or an empty one; a non-empty one may hold
+// committed writes not yet copied into the database file (or only frames
+// already checkpointed, which nothing short of reading it can tell apart).
 func walSize(db string) (int64, error) {
 	fi, err := os.Stat(db + "-wal")
 	if errors.Is(err, fs.ErrNotExist) {

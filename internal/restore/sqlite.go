@@ -71,7 +71,7 @@ func refuseCollisions(backup, live, staging string) error {
 }
 
 // refuseBackupWAL refuses a backup with a non-empty -wal file: restore copies
-// only the database file, so the committed writes in the -wal would be lost,
+// only the database file, so any committed writes in the -wal would be lost,
 // and the copy would still pass the integrity check.
 func refuseBackupWAL(backup string) error {
 	n, err := walSize(backup)
@@ -79,8 +79,9 @@ func refuseBackupWAL(backup string) error {
 		return err
 	}
 	if n > 0 {
-		return fmt.Errorf("restore: %[1]s has a -wal file holding %[2]d bytes of writes that are not in %[1]s, "+
-			"and restore copies only the database file, so they would be lost: stop the server using %[1]s "+
+		return fmt.Errorf("restore: %[1]s has a -wal file that is not empty (%[2]d bytes), so it may hold writes "+
+			"that are not in %[1]s, and restore copies only the database file, so they would be lost: stop the "+
+			"server using %[1]s "+
 			"cleanly (which folds them in) and run restore again, or restore a backup made with "+
 			"\"sqi-server backup\", which never has a -wal file", backup, n)
 	}

@@ -766,10 +766,13 @@ ties a `-wal` to the database it was written for, and SQLite applies whatever
 uncleanly would take that server's writes. If that is what happened, move the
 old `-wal` and `-shm` aside together with the old database, or use
 `sqi-server restore BACKUP`. If the `-wal` is this database's own (its server
-crashed, or a snapshot took them together), run `sqi-server migrate up` on it
-(or start the server and stop it cleanly once), which folds the `-wal` in, then
-run `--in-place` again. A cleanly stopped server leaves no `-wal`, or an empty
-one.
+crashed, or a snapshot took them together), run `sqi-server migrate up` on it,
+which folds the `-wal` in, then run `--in-place` again. Do not start a server
+on it instead: that would fold the `-wal` in too, but the server would run
+unfenced. A cleanly stopped server leaves no `-wal`, or an empty one. A
+non-empty `-wal` may hold nothing the database file lacks (frames already
+copied in but not yet truncated away), but nothing short of reading it can
+tell, so `--in-place` refuses it either way.
 
 ### What runs again
 

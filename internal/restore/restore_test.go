@@ -364,11 +364,16 @@ func TestRestore_InPlaceRefusesAPendingWAL(t *testing.T) {
 	}
 	for _, want := range []string{
 		"--in-place refuses", "move them aside", "sqi-server restore BACKUP",
-		"sqi-server migrate up", "stop it cleanly",
+		"sqi-server migrate up", "do not start a server on it",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("err = %v; want it to contain %q", err, want)
 		}
+	}
+	// Starting a server would fold the -wal in too, but run unfenced: the
+	// refusal must not offer it as a way out.
+	if strings.Contains(err.Error(), "start the server") {
+		t.Errorf("err = %v; it must not suggest starting the server before --in-place", err)
 	}
 	requireUntouched(t, db, natsDir)
 	if b, err := os.ReadFile(db + "-wal"); err != nil || string(b) != "frames" {

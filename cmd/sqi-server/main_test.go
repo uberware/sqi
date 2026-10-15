@@ -739,6 +739,65 @@ func TestMigrateUp_RefusesWhileAServerHoldsTheLock(t *testing.T) {
 	}
 }
 
+// TestMigrateUp_FoldsInACrashedServersWAL backs the advice restore --in-place
+// gives for a database whose own -wal is not empty (its server crashed, or a
+// snapshot took them together): "sqi-server migrate up" folds the -wal into
+// the database file, so --in-place can then run, without a server ever
+// starting on the database unfenced.
+func TestMigrateUp_FoldsInACrashedServersWAL(t *testing.T) {
+	live := filepath.Join(t.TempDir(), "live.db")
+	st, err := sqlite.Open(t.Context(), live, sqlite.DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if _, err := st.CreateFarm(t.Context(), store.Farm{ID: "f1", Name: "after-the-crash"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A snapshot of a running server: the database file and its -wal, taken
+	// while the store is still open, so the farm is only in the -wal.
+	path := filepath.Join(t.TempDir(), "sqi.db")
+	for _, suffix := range []string{"", "-wal"} {
+		b, err := os.ReadFile(live + suffix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path+suffix, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if fi, err := os.Stat(path + "-wal"); err != nil || fi.Size() == 0 {
+		t.Fatalf("snapshot -wal = %v, %v; the test needs a non-empty one", fi, err)
+	}
+
+	prepareRoot([]string{"migrate", "up", "--db", path})
+	var runErr error
+	_ = captureStdout(t, func() { runErr = Execute() })
+	if runErr != nil {
+		t.Fatalf("migrate up: %v", runErr)
+	}
+
+	if fi, err := os.Stat(path + "-wal"); err == nil && fi.Size() > 0 {
+		t.Fatalf("-wal after migrate up is %d bytes, want it folded in (absent or empty)", fi.Size())
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	// Read the database file alone: with no -wal, the farm must be in it.
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var name string
+	if err := db.QueryRowContext(t.Context(), `SELECT name FROM farms WHERE id = 'f1'`).Scan(&name); err != nil {
+		t.Fatalf("farm written before the crash, after migrate up: %v", err)
+	}
+	if name != "after-the-crash" {
+		t.Errorf("farm name = %q, want %q", name, "after-the-crash")
+	}
+}
+
 // TestCLI_RefusesANewerSchema verifies that a database migrated by a newer
 // sqi-server is refused by the commands that would write to it, while backup,
 // which never opens the store, still works: it is the safety net taken before
