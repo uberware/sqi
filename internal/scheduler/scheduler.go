@@ -1266,25 +1266,30 @@ func (s *Scheduler) runHeartbeatSweep(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.sweepStaleWorkers(ctx)
-			s.sweepRetiredWorkers(ctx)
-			s.sweepRetiredJobs(ctx)
-			s.reapStaleAssignedTasks(ctx)
-			// Before the demotion, so a job left with nothing in flight by a
-			// reconciliation reclaim is demoted on the same tick.
-			s.reconcileAttempts(ctx, time.Now().UTC())
-			s.demoteStalledJobs(ctx)
-			s.sweepUnschedulable(ctx)
-			if err := s.sweepBlockedJobs(ctx); err != nil {
-				s.logger.ErrorContext(ctx, "scheduler: sweep blocked jobs failed", slog.Any("error", err))
-			}
-			// Refresh instrumentation gauges on the same tick so Prometheus
-			// reflects current farm state without a dedicated metrics loop.
-			s.refreshQueueDepthGauge(ctx)
-			s.refreshIdleWorkerGauge(ctx)
-			s.refreshUsageClaimGauge(ctx)
+			s.sweepOnce(ctx)
 		}
 	}
+}
+
+// sweepOnce is one tick of [runHeartbeatSweep].
+func (s *Scheduler) sweepOnce(ctx context.Context) {
+	s.sweepStaleWorkers(ctx)
+	s.sweepRetiredWorkers(ctx)
+	s.sweepRetiredJobs(ctx)
+	s.reapStaleAssignedTasks(ctx)
+	// Before the demotion, so a job left with nothing in flight by a
+	// reconciliation reclaim is demoted on the same tick.
+	s.reconcileAttempts(ctx, time.Now().UTC())
+	s.demoteStalledJobs(ctx)
+	s.sweepUnschedulable(ctx)
+	if err := s.sweepBlockedJobs(ctx); err != nil {
+		s.logger.ErrorContext(ctx, "scheduler: sweep blocked jobs failed", slog.Any("error", err))
+	}
+	// Refresh instrumentation gauges on the same tick so Prometheus
+	// reflects current farm state without a dedicated metrics loop.
+	s.refreshQueueDepthGauge(ctx)
+	s.refreshIdleWorkerGauge(ctx)
+	s.refreshUsageClaimGauge(ctx)
 }
 
 // demoteStalledJobs reconciles the JobStatusRunning invariant after a sweep or

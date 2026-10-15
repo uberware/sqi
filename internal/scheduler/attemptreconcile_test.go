@@ -389,3 +389,151 @@ func TestReconcileAttempts_DisabledAtZero(t *testing.T) {
 		t.Fatalf("open attempts = %v, want %s still open", open, attempt.ID)
 	}
 }
+
+// TestReconciler_DueBoundaries pins the two inequalities due decides on: an
+// attempt unreported for exactly grace is reclaimed and one nanosecond less is
+// kept, and a report exactly skew old still counts as fresh while one a
+// nanosecond older does not.
+func TestReconciler_DueBoundaries(t *testing.T) {
+	const grace, skew = 2 * time.Minute, 30 * time.Second
+	t0 := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	open := []store.OpenAttempt{{AttemptID: "a1", TaskID: "t1", WorkerID: "w1", CreatedAt: t0}}
+	cases := []struct {
+		name     string
+		reportAt time.Time // a report from w1 omitting a1, received (and sent) then
+		now      time.Time
+		want     bool
+	}{
+		{"unreported for exactly grace → reclaimed", t0.Add(grace), t0.Add(grace), true},
+		{"a nanosecond short of grace → kept", t0.Add(grace - time.Nanosecond), t0.Add(grace - time.Nanosecond), false},
+		{"report exactly skew old → still fresh", t0.Add(grace), t0.Add(grace + skew), true},
+		{"report a nanosecond past skew → stale, kept", t0.Add(grace), t0.Add(grace + skew + time.Nanosecond), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newReconciler(grace, skew)
+			r.record("w1", tc.reportAt, tc.reportAt, nil)
+			if got := r.due(open, tc.now); (len(got) == 1) != tc.want {
+				t.Fatalf("due = %v, want reclaim=%v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestReconciler_PrunesOldStateWithoutChangingADecision pins that due forgets
+// reports and sightings older than 2×grace, keeps newer ones, and that the
+// forgetting cannot flip a decision: an attempt last seen more than 2×grace
+// ago is due whether its sighting is kept or replaced by its creation time.
+func TestReconciler_PrunesOldStateWithoutChangingADecision(t *testing.T) {
+	const grace, skew = time.Minute, 30 * time.Second
+	t0 := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	r := newReconciler(grace, skew)
+	r.record("gone", t0, t0, []string{"old"})                                          // will be 2×grace+1s old
+	r.record("w1", t0, t0, []string{"a1"})                                             // a1's last sighting, likewise
+	r.record("w2", t0.Add(31*time.Second), t0.Add(31*time.Second), []string{"recent"}) // 90s old: past grace, inside 2×grace
+
+	now := t0.Add(2*grace + time.Second)
+	r.record("w1", now, now, nil) // w1 fresh, no longer naming a1
+	open := []store.OpenAttempt{{AttemptID: "a1", TaskID: "t1", WorkerID: "w1", CreatedAt: t0.Add(-time.Hour)}}
+	if got := r.due(open, now); len(got) != 1 {
+		t.Fatalf("first due = %v, want a1 reclaimed", got)
+	}
+	if _, ok := r.reports["gone"]; ok {
+		t.Error("a report older than 2×grace was kept")
+	}
+	if _, ok := r.lastSeen["old"]; ok {
+		t.Error("a sighting older than 2×grace was kept")
+	}
+	if _, ok := r.lastSeen["a1"]; ok {
+		t.Error("a1's sighting, older than 2×grace, was kept")
+	}
+	if _, ok := r.reports["w2"]; !ok {
+		t.Error("a report inside 2×grace was pruned")
+	}
+	if _, ok := r.lastSeen["recent"]; !ok {
+		t.Error("a sighting inside 2×grace was pruned")
+	}
+	if got := r.due(open, now); len(got) != 1 {
+		t.Fatalf("due after pruning = %v, want a1 still reclaimed: pruning must not change a decision", got)
+	}
+}
+
+// TestReclaimUnreportedAttempt_LostRace pins the path where the attempt closes
+// between the sweep listing it and the reclaim (its terminal report landed
+// first): nothing is reclaimed or counted, the task keeps its result, and the
+// attempt still leaves the attempt-owner cache, since it is closed either way.
+func TestReclaimUnreportedAttempt_LostRace(t *testing.T) {
+	st, attempt := seedReconcileAttempt(t)
+	s := newMetricsScheduler(st, &recordBus{}, "f1")
+	s.ctx = t.Context()
+	armReconciler(s, attempt.CreatedAt)
+
+	zero := 0
+	done := &fakeJSMsg{
+		subject: bus.TaskStatusSubject(reconcileWorker, "j1"),
+		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			Version: protocol.ProtocolVersion, Type: protocol.TypeTaskStatus,
+			TaskID: "t1", AttemptID: attempt.ID, JobID: "j1", WorkerID: reconcileWorker,
+			Status: "succeeded", ExitCode: &zero, At: time.Now().UTC(),
+		}),
+	}
+	s.handleTaskStatusMessage(done)
+	if !done.acked {
+		t.Fatal("fixture: the terminal report was not acked")
+	}
+	s.attemptCache.put(attempt.ID, attempt.WorkerID, attempt.TaskID)
+
+	s.reclaimUnreportedAttempt(t.Context(), store.OpenAttempt{
+		AttemptID: attempt.ID, TaskID: "t1", WorkerID: reconcileWorker, CreatedAt: attempt.CreatedAt,
+	}, time.Now().UTC())
+
+	if got := mustTaskOf(t, st, "t1").Status; got != store.TaskStatusSucceeded {
+		t.Fatalf("task = %s, want succeeded: the reclaim lost the race and must change nothing", got)
+	}
+	if a := mustAttemptOf(t, st, attempt.ID); a.Status != store.AttemptStatusSucceeded {
+		t.Fatalf("attempt = %s, want succeeded", a.Status)
+	}
+	if got := reconciledTotal(t, s); got != 0 {
+		t.Fatalf("sqi_scheduler_tasks_reconciled_total = %v, want 0", got)
+	}
+	if _, ok := s.attemptCache.get(attempt.ID); ok {
+		t.Fatal("the closed attempt is still in the attempt-owner cache")
+	}
+}
+
+// TestSweepOnce_DemotesAJobAReconcileReclaimLeftIdle pins the sweep order: the
+// reconciler runs before the stalled-job demotion, so a job whose only
+// in-flight task it reclaims is back to pending on the same tick, not left
+// "running" with nothing running until the next one.
+func TestSweepOnce_DemotesAJobAReconcileReclaimLeftIdle(t *testing.T) {
+	st, attempt := seedReconcileAttempt(t)
+	s := newMetricsScheduler(st, &recordBus{}, "f1")
+	s.ctx = t.Context()
+	// The job goes running as in production, on its first running task.
+	s.maybePromoteJobRunning(t.Context(), "j1")
+	if job, err := st.GetJob(t.Context(), "j1"); err != nil || job.Status != store.JobStatusRunning {
+		t.Fatalf("fixture: job = %s, %v; want running", job.Status, err)
+	}
+	// A grace short enough that the attempt, created just now, is past it on
+	// sweepOnce's own clock; startedAt long ago so the startup hold is over.
+	const grace = time.Millisecond
+	s.cfg.ReconcileGrace = grace
+	s.reconciler = newReconciler(grace, 30*time.Second)
+	s.startedAt = attempt.CreatedAt.Add(-time.Hour)
+	time.Sleep(5 * grace)
+	now := time.Now().UTC()
+	s.reconciler.record(reconcileWorker, now, now, nil)
+
+	s.sweepOnce(t.Context())
+
+	if got := mustTaskOf(t, st, "t1").Status; got != store.TaskStatusReady {
+		t.Fatalf("task = %s, want ready (reclaimed)", got)
+	}
+	job, err := st.GetJob(t.Context(), "j1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != store.JobStatusPending {
+		t.Fatalf("job = %s after one sweep, want pending: the demotion must see the reclaim", job.Status)
+	}
+}
