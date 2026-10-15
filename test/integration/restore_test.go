@@ -119,9 +119,9 @@ steps:
 //     failed with the worker-shutdown reason the fence records;
 //   - a ghost run really reported into the restored farm: the worker finished
 //     job A's first task, whose attempt the fence had closed, on the restored
-//     server (its output is stored on that attempt), and that attempt is still
-//     failed, so its late "succeeded" report was discarded and the re-run's
-//     result is the one recorded.
+//     server (its output is stored on that attempt), the restored server
+//     logged that it discarded the attempt's late "succeeded" report, and that
+//     attempt is still failed, so the re-run's result is the one recorded.
 //
 // Reconciliation is off, so the fence alone recovers the attempts the backup
 // caught running. Two workers on two queues: one runs ghostJob, the other the
@@ -190,10 +190,6 @@ func TestBackupRestore_FarmResumes(t *testing.T) {
 		t.Fatalf("%d tasks ran again, want at least the %d the fence reclaimed", len(rerun), res.Fenced)
 	}
 	assertGhostRunReported(t, ts, ghostTask, "done 1")
-	// Not asserted: that no "invalid transition" was logged. The harness
-	// boots the server without a diagnostics buffer (server.New(cfg, logger,
-	// nil)), so /api/v1/diagnostics/logs is off; the attempt history above is
-	// what shows the ghost's report changed nothing.
 }
 
 // TestRestore_MixedAgeNATSDir restores the database by hand — no restore
@@ -201,8 +197,8 @@ func TestBackupRestore_FarmResumes(t *testing.T) {
 // different age, and starts the server on the pair. It asserts that no log
 // row is duplicated (older) and that reconciliation recovers what the
 // database still records as running (newer). It does not assert that stale
-// status reports are discarded: TestBackupRestore_FarmResumes' attempt
-// history and the scheduler's unit tests cover that.
+// status reports are discarded: TestBackupRestore_FarmResumes' ghost-run
+// assertion and the scheduler's unit tests cover that.
 func TestRestore_MixedAgeNATSDir(t *testing.T) {
 	reconcile := func(c *server.Config) {
 		c.Scheduler.ReconcileGrace = 40 * time.Second
@@ -653,11 +649,27 @@ func assertRerunHistory(t *testing.T, ts *testServer, jobIDs ...string) map[stri
 	return rerun
 }
 
+// ghostDiscardMsg is what the scheduler logs (internal/scheduler,
+// handleTaskStatusMessage) when it acks away a terminal report the store
+// refused: the ghost's "succeeded" names an attempt the fence closed, whose
+// task is either back in ready (not in flight) or re-leased under a newer
+// attempt, and CompleteTaskAttempt refuses both.
+const ghostDiscardMsg = "scheduler: task status rejected by state machine — discarding"
+
 // assertGhostRunReported checks that the worker finished taskID's first
-// attempt on the restored server: that attempt's log, as the restored store
-// holds it, contains want. Its output and its terminal report are published
-// together when the run ends, so this shows the late report really reached
-// the server whose fence had closed the attempt.
+// attempt on the restored server, and that the restored server received and
+// discarded its terminal report:
+//
+//   - the attempt's log, as the restored store holds it, contains want, so the
+//     run's output reached the server whose fence had closed the attempt;
+//   - the restored server logged ghostDiscardMsg for that attempt and status
+//     "succeeded", so its terminal status report reached the server too, and
+//     was refused rather than applied.
+//
+// The two are separate messages on separate streams (SQI_LOGS, SQI_STATUS),
+// so the chunk alone does not show the status arrived. A report that was
+// applied instead would log "scheduler: task terminal" and not the discard
+// line; assertRerunHistory separately shows the attempt was left failed.
 func assertGhostRunReported(t *testing.T, ts *testServer, taskID, want string) {
 	t.Helper()
 	st := openTestStore(t, ts.Store)
@@ -666,20 +678,22 @@ func assertGhostRunReported(t *testing.T, ts *testServer, taskID, want string) {
 		t.Fatalf("attempts of task %s: %v (%d)", taskID, err, len(attempts))
 	}
 	first := slices.MinFunc(attempts, func(a, b store.TaskAttempt) int { return a.AttemptNumber - b.AttemptNumber })
+	discard := map[string]string{"attempt_id": first.ID, "status": "succeeded"}
 	deadline := time.Now().Add(60 * time.Second)
 	for {
 		logs, err := st.ListTaskLogs(t.Context(), first.ID, 0, 1000)
 		if err != nil {
 			t.Fatalf("logs of attempt %s: %v", first.ID, err)
 		}
-		for _, l := range logs {
-			if strings.Contains(l.Data, want) {
-				return
-			}
+		chunk := slices.ContainsFunc(logs, func(l store.TaskLog) bool { return strings.Contains(l.Data, want) })
+		discarded := ts.Logs.has(ghostDiscardMsg, discard)
+		if chunk && discarded {
+			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("attempt %d of task %s has no %q in its log after 60s: the ghost run never reported to the restored server",
-				first.AttemptNumber, taskID, want)
+			t.Fatalf("after 60s, attempt %d (%s) of task %s: %q in its log = %v, its \"succeeded\" report discarded "+
+				"(%q logged) = %v; want both: the ghost run must report its output and its status to the restored server",
+				first.AttemptNumber, first.ID, taskID, want, chunk, ghostDiscardMsg, discarded)
 		}
 		time.Sleep(500 * time.Millisecond)
 	}

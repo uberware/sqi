@@ -32,6 +32,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -183,6 +184,12 @@ type testServer struct {
 	// [bootServer]; a test that restores a backup moves it aside or swaps it.
 	NATSDir string
 
+	// Logs holds every record this server logged at Warn or above (what the
+	// harness also prints to stderr), so a test can assert on what the server
+	// said. The harness boots the server without a diagnostics buffer, so
+	// /api/v1/diagnostics/logs is off; this is the in-process equivalent.
+	Logs *logCapture
+
 	// cfg is the configuration the server was booted with, so
 	// [restartServer] can start another on the same ports, store and NATS
 	// directory. Set by [bootServer]; a test may edit it (to point the next
@@ -193,13 +200,25 @@ type testServer struct {
 	cancel context.CancelFunc
 	done   chan error
 
+	// chain is every server booted on this server's ports, store and NATS
+	// directory, this one and its [restartServer] successors; the cleanup
+	// registered by the first stops them all.
+	chain *serverChain
+
 	stopOnce sync.Once
 	stopErr  error
 }
 
+// stopWait bounds how long [testServer.stop] waits for Run to return. Run
+// itself gives its shutdown up to [server.ShutdownTimeout]; a shorter wait
+// here would give up on a server that is still shutting down and still holds
+// its ports, store and NATS directory, so the next start on them (a restart,
+// a restore moving the NATS directory aside) would race it.
+const stopWait = server.ShutdownTimeout + 5*time.Second
+
 // Stop shuts the server down and waits for it to finish, so another can start
 // on the same ports, store and NATS directory. It fails the test when the
-// server does not stop within 15 s or stops with an error: a runbook that
+// server does not stop within stopWait or stops with an error: a runbook that
 // stops the server needs a clean stop. Safe to call more than once, and with
 // the cleanup that also stops it.
 func (ts *testServer) Stop(t *testing.T) {
@@ -216,11 +235,50 @@ func (ts *testServer) stop() error {
 		ts.cancel()
 		select {
 		case ts.stopErr = <-ts.done:
-		case <-time.After(15 * time.Second):
-			ts.stopErr = errors.New("server did not stop within 15s after context cancel")
+		case <-time.After(stopWait):
+			ts.stopErr = fmt.Errorf("server did not stop within %s after context cancel", stopWait)
 		}
 	})
 	return ts.stopErr
+}
+
+// serverChain is the servers booted one after another on the same ports,
+// store and NATS directory: a server and its [restartServer] successors.
+//
+// One cleanup, registered when the first boots, stops them all. Registering
+// one per restart instead would order them wrongly: t.Cleanup runs last in,
+// first out, so a restarted server's cleanup, registered after the workers a
+// test started against its predecessor, would stop the server first and leave
+// those workers to shut down against a broker that is gone: each logs
+// "natsclient: disconnected", its deregistration is never delivered and its
+// drain fails with "nats: connection reconnecting" (seen in the restore
+// tests' output before this chain existed), and a worker still running a
+// task — a failing test's — would publish that task's terminal status into a
+// reconnect buffer nothing will ever flush.
+type serverChain struct {
+	mu      sync.Mutex
+	servers []*testServer
+}
+
+// add records ts as the chain's newest server.
+func (c *serverChain) add(ts *testServer) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ts.chain = c
+	c.servers = append(c.servers, ts)
+}
+
+// stopAll stops every server in the chain, newest first; stopping one already
+// stopped is a no-op.
+func (c *serverChain) stopAll(t *testing.T) {
+	c.mu.Lock()
+	servers := slices.Clone(c.servers)
+	c.mu.Unlock()
+	for _, ts := range slices.Backward(servers) {
+		if err := ts.stop(); err != nil {
+			t.Logf("warning: stopping server (HTTP %s, NATS %s): %v", ts.HTTPAddr, ts.NATSAddr, err)
+		}
+	}
 }
 
 // startServer boots a full sqi-server on the store storeFor picks (a temp
@@ -305,9 +363,25 @@ func storeOf(cfg server.Config, prev backend.Options) backend.Options {
 // restartServer boots a new server with ts's configuration: the same ports,
 // store and NATS directory. Stop ts first. Edit ts.cfg and ts.Store together
 // beforehand to start it on another database.
+//
+// The new server joins ts's chain rather than registering a cleanup of its own,
+// so it is stopped where ts would have been: after the workers the test started
+// against ts (see [serverChain]).
 func restartServer(t *testing.T, ts *testServer) *testServer {
 	t.Helper()
-	next := bootServer(t, ts.cfg, ts.Store)
+	next, err := launchServer(t, ts.cfg, ts.Store)
+	if err != nil {
+		t.Fatalf("restartServer: HTTP %s, NATS %s: %v", ts.cfg.HTTPAddr, ts.cfg.NATSAddr, err)
+	}
+	if ts.chain != nil {
+		ts.chain.add(next)
+	} else {
+		// ts came from a constructor outside this file's chain; fall back to
+		// a cleanup of the new server's own.
+		chain := &serverChain{}
+		chain.add(next)
+		t.Cleanup(func() { chain.stopAll(t) })
+	}
 	next.Scheme, next.Client = ts.Scheme, ts.Client
 	return next
 }
@@ -330,10 +404,42 @@ func bootServer(t *testing.T, cfg server.Config, so backend.Options) *testServer
 // wraps the server's own, so errors.Is sees through it.
 func tryBootServer(t *testing.T, cfg server.Config, so backend.Options) (*testServer, error) {
 	t.Helper()
+	ts, err := launchServer(t, cfg, so)
+	if err != nil {
+		return nil, err
+	}
+	chain := &serverChain{}
+	chain.add(ts)
+	t.Cleanup(func() { chain.stopAll(t) })
+	return ts, nil
+}
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelWarn, // suppress info noise in test output
-	}))
+// launchServer is [tryBootServer] without the cleanup: the caller registers
+// one, or adds the server to a chain whose cleanup is already registered.
+func launchServer(t *testing.T, cfg server.Config, so backend.Options) (*testServer, error) {
+	t.Helper()
+
+	// A server that cannot bind its HTTP address does not fail: Run logs the
+	// error from its listener goroutine and carries on, and the startup below
+	// only times out ("HTTP server did not come up"), hiding the cause. So
+	// wait, bounded, until both addresses can be bound before booting. For a
+	// restart they belonged to a server that just stopped, and freePort's
+	// ports come from the same ephemeral range as the source ports of
+	// outgoing connections (a reconnecting worker, a database client), so
+	// while the server is down the OS may lend one out. Linux makes that rare
+	// (connect prefers even ports, bind(0) odd ones); other OSes draw both
+	// from one pool.
+	if err := waitAddrsBindable(10*time.Second, cfg.HTTPAddr, cfg.NATSAddr); err != nil {
+		return nil, err
+	}
+
+	logs := &logCapture{}
+	logger := slog.New(&captureHandler{
+		base: slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+			Level: slog.LevelWarn, // suppress info noise in test output
+		}),
+		logs: logs,
+	})
 
 	srv := server.New(cfg, logger, nil)
 
@@ -349,6 +455,7 @@ func tryBootServer(t *testing.T, cfg server.Config, so backend.Options) (*testSe
 		Store:    so,
 		DBPath:   so.SQLitePath,
 		NATSDir:  cfg.NATSDataDir,
+		Logs:     logs,
 		cfg:      cfg,
 		cancel:   cancel,
 		done:     done,
@@ -368,14 +475,32 @@ func tryBootServer(t *testing.T, cfg server.Config, so backend.Options) (*testSe
 		_ = ts.stop() //nolint:errcheck // not becoming ready is the error to report
 		return nil, errors.New("server did not become ready (/readyz) within 10s")
 	}
-
-	t.Cleanup(func() {
-		if err := ts.stop(); err != nil {
-			t.Logf("warning: stopping server: %v", err)
-		}
-	})
-
 	return ts, nil
+}
+
+// waitAddrsBindable waits until a TCP listener can be bound on every one of
+// addrs, releasing each at once, or fails after timeout with the last bind
+// error. Any bind error is retried, not only EADDRINUSE: Windows reports the
+// condition under an errno the syscall package does not name portably.
+func waitAddrsBindable(timeout time.Duration, addrs ...string) error {
+	deadline := time.Now().Add(timeout)
+	lc := &net.ListenConfig{}
+	for _, addr := range addrs {
+		for {
+			ln, err := lc.Listen(context.Background(), "tcp", addr)
+			if err == nil {
+				if err := ln.Close(); err != nil {
+					return fmt.Errorf("release %s: %w", addr, err)
+				}
+				break
+			}
+			if time.Now().After(deadline) {
+				return fmt.Errorf("address %s not bindable after %s: %w", addr, timeout, err)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	return nil
 }
 
 // clientFor returns the HTTP client to use against ts: its own when it has one
@@ -458,6 +583,84 @@ func waitForReadyzClient(tb testing.TB, client *http.Client, url string, timeout
 		time.Sleep(100 * time.Millisecond)
 	}
 	return false
+}
+
+// ── Server log capture ────────────────────────────────────────────────────────
+
+// capturedLog is one record a test server logged: its message and its
+// attributes (WithAttrs-accumulated and per-record), stringified. Groups are
+// not flattened in, as in internal/log's diagnostic sink.
+type capturedLog struct {
+	Msg   string
+	Attrs map[string]string
+}
+
+// logCapture keeps the records a test server logs. Safe for concurrent use.
+type logCapture struct {
+	mu   sync.Mutex
+	recs []capturedLog
+}
+
+// has reports whether any record so far has message msg and every attribute
+// in attrs, with the same value.
+func (c *logCapture) has(msg string, attrs map[string]string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, r := range c.recs {
+		if r.Msg != msg {
+			continue
+		}
+		match := true
+		for k, v := range attrs {
+			if r.Attrs[k] != v {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
+// captureHandler hands each record to base and also keeps it in logs, so the
+// capture sees exactly what base's level lets through.
+type captureHandler struct {
+	base  slog.Handler
+	logs  *logCapture
+	attrs []slog.Attr
+}
+
+func (h *captureHandler) Enabled(ctx context.Context, l slog.Level) bool {
+	return h.base.Enabled(ctx, l)
+}
+
+func (h *captureHandler) Handle(ctx context.Context, r slog.Record) error {
+	err := h.base.Handle(ctx, r)
+	attrs := make(map[string]string, len(h.attrs)+r.NumAttrs())
+	for _, a := range h.attrs {
+		attrs[a.Key] = a.Value.String()
+	}
+	r.Attrs(func(a slog.Attr) bool {
+		attrs[a.Key] = a.Value.String()
+		return true
+	})
+	h.logs.mu.Lock()
+	h.logs.recs = append(h.logs.recs, capturedLog{Msg: r.Message, Attrs: attrs})
+	h.logs.mu.Unlock()
+	return err
+}
+
+func (h *captureHandler) WithAttrs(as []slog.Attr) slog.Handler {
+	merged := make([]slog.Attr, 0, len(h.attrs)+len(as))
+	merged = append(merged, h.attrs...)
+	merged = append(merged, as...)
+	return &captureHandler{base: h.base.WithAttrs(as), logs: h.logs, attrs: merged}
+}
+
+func (h *captureHandler) WithGroup(name string) slog.Handler {
+	return &captureHandler{base: h.base.WithGroup(name), logs: h.logs, attrs: h.attrs}
 }
 
 // ── Mock worker ───────────────────────────────────────────────────────────────
