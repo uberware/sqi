@@ -199,10 +199,10 @@ type fileConfig struct {
 		DataDir    *string `yaml:"data_dir"`
 		MaxStoreMB *int    `yaml:"max_store_mb"`
 		Auth       *struct {
-			Enabled                   *bool   `yaml:"enabled"`
+			Enabled                   *bool         `yaml:"enabled"`
 			JoinTokenTTL              *fileDuration `yaml:"join_token_ttl"`
-			JoinTokenSingleUse        *bool   `yaml:"join_token_single_use"`
-			EnrollmentEndpointEnabled *bool   `yaml:"enrollment_endpoint_enabled"`
+			JoinTokenSingleUse        *bool         `yaml:"join_token_single_use"`
+			EnrollmentEndpointEnabled *bool         `yaml:"enrollment_endpoint_enabled"`
 		} `yaml:"auth"`
 		TLS *struct {
 			Enabled      *bool   `yaml:"enabled"`
@@ -213,8 +213,8 @@ type fileConfig struct {
 	} `yaml:"nats"`
 
 	Store *struct {
-		Driver             *string `yaml:"driver"`
-		SQLitePath         *string `yaml:"sqlite_path"`
+		Driver             *string       `yaml:"driver"`
+		SQLitePath         *string       `yaml:"sqlite_path"`
 		CheckpointInterval *fileDuration `yaml:"checkpoint_interval"`
 		Postgres           *struct {
 			DSN      *string `yaml:"dsn"`
@@ -233,15 +233,15 @@ type fileConfig struct {
 	Scheduler *struct {
 		HeartbeatTimeout          *fileDuration `yaml:"heartbeat_timeout"`
 		TickInterval              *fileDuration `yaml:"tick_interval"`
-		MaxTasksPerWorker         *int    `yaml:"max_tasks_per_worker"`
+		MaxTasksPerWorker         *int          `yaml:"max_tasks_per_worker"`
 		OfflineWorkerRetention    *fileDuration `yaml:"offline_worker_retention"`
 		JobRetention              *fileDuration `yaml:"job_retention"`
-		JobRetentionIncludeFailed *bool   `yaml:"job_retention_include_failed"`
+		JobRetentionIncludeFailed *bool         `yaml:"job_retention_include_failed"`
 		UnschedulableGrace        *fileDuration `yaml:"unschedulable_grace"`
 		ReconcileGrace            *fileDuration `yaml:"reconcile_grace"`
-		DefaultMaxAttempts        *int    `yaml:"default_max_attempts"`
+		DefaultMaxAttempts        *int          `yaml:"default_max_attempts"`
 		RetryDelay                *fileDuration `yaml:"retry_delay"`
-		DefaultFailureLimit       *int    `yaml:"default_failure_limit"`
+		DefaultFailureLimit       *int          `yaml:"default_failure_limit"`
 	} `yaml:"scheduler"`
 
 	Discovery *struct {
@@ -250,11 +250,11 @@ type fileConfig struct {
 	} `yaml:"discovery"`
 
 	OpenJD *struct {
-		EnforceLimits             *bool   `yaml:"enforce_limits"`
-		ExprOperationLimit        *int64  `yaml:"expr_operation_limit"`
-		ExprMemoryLimit           *int64  `yaml:"expr_memory_limit"`
-		ExprTemplatePositions     *int64  `yaml:"expr_template_positions"`
-		ExprTemplateRetainedBytes *int64  `yaml:"expr_template_retained_bytes"`
+		EnforceLimits             *bool         `yaml:"enforce_limits"`
+		ExprOperationLimit        *int64        `yaml:"expr_operation_limit"`
+		ExprMemoryLimit           *int64        `yaml:"expr_memory_limit"`
+		ExprTemplatePositions     *int64        `yaml:"expr_template_positions"`
+		ExprTemplateRetainedBytes *int64        `yaml:"expr_template_retained_bytes"`
 		ExprSubmissionDeadline    *fileDuration `yaml:"expr_submission_deadline"`
 	} `yaml:"openjd"`
 
@@ -271,8 +271,8 @@ type fileConfig struct {
 		ValidateJobOwner *bool `yaml:"validate_job_owner"`
 		Session          *struct {
 			TTL          *fileDuration `yaml:"ttl"`
-			CookieName   *string `yaml:"cookie_name"`
-			CookieSecure *string `yaml:"cookie_secure"`
+			CookieName   *string       `yaml:"cookie_name"`
+			CookieSecure *string       `yaml:"cookie_secure"`
 		} `yaml:"session"`
 		Bootstrap *struct {
 			Username *string `yaml:"username"`
@@ -284,7 +284,7 @@ type fileConfig struct {
 			StartTLS        *bool              `yaml:"start_tls"`
 			TLSSkipVerify   *bool              `yaml:"tls_skip_verify"`
 			CAFile          *string            `yaml:"ca_file"`
-			Timeout         *fileDuration            `yaml:"timeout"`
+			Timeout         *fileDuration      `yaml:"timeout"`
 			BindDN          *string            `yaml:"bind_dn"`
 			BindPassword    *string            `yaml:"bind_password"`
 			BaseDN          *string            `yaml:"base_dn"`
@@ -449,10 +449,10 @@ func mergeNATSTLSFile(cfg *Config, t *struct {
 // out of [mergeNATSFile] to keep its cyclomatic complexity under the lint
 // threshold.
 func mergeNATSAuthFile(cfg *Config, a *struct {
-	Enabled                   *bool   `yaml:"enabled"`
+	Enabled                   *bool         `yaml:"enabled"`
 	JoinTokenTTL              *fileDuration `yaml:"join_token_ttl"`
-	JoinTokenSingleUse        *bool   `yaml:"join_token_single_use"`
-	EnrollmentEndpointEnabled *bool   `yaml:"enrollment_endpoint_enabled"`
+	JoinTokenSingleUse        *bool         `yaml:"join_token_single_use"`
+	EnrollmentEndpointEnabled *bool         `yaml:"enrollment_endpoint_enabled"`
 },
 ) {
 	if a == nil {
@@ -634,8 +634,8 @@ func mergeAuthFile(cfg *Config, fc fileConfig) {
 // lint threshold.
 func mergeAuthSessionFile(cfg *Config, s *struct {
 	TTL          *fileDuration `yaml:"ttl"`
-	CookieName   *string `yaml:"cookie_name"`
-	CookieSecure *string `yaml:"cookie_secure"`
+	CookieName   *string       `yaml:"cookie_name"`
+	CookieSecure *string       `yaml:"cookie_secure"`
 },
 ) {
 	if s == nil {

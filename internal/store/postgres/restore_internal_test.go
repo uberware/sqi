@@ -82,8 +82,10 @@ func TestFindTool_NamesTheTool(t *testing.T) {
 func TestWithoutRowData(t *testing.T) {
 	cases := []struct{ name, in, want string }{
 		{"empty", "", ""},
-		{"own lines only", "pg_restore: warning: errors ignored on restore: 1\n",
-			"pg_restore: warning: errors ignored on restore: 1"},
+		{
+			"own lines only", "pg_restore: warning: errors ignored on restore: 1\n",
+			"pg_restore: warning: errors ignored on restore: 1",
+		},
 		{
 			"a COPY failure",
 			"pg_restore: error: COPY failed for table \"users\": ERROR:  duplicate key value violates unique constraint \"users_pkey\"\n" +
