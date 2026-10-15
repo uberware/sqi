@@ -239,12 +239,14 @@ func TestRestore_MixedAgeNATSDir(t *testing.T) {
 			t.Fatal(err)
 		}
 		copyDir(t, oldNATS, ts.NATSDir)
-		// Whether the copy alone replays anything depends on how much of the
-		// log consumer's ack state JetStream had written to disk when the
-		// server stopped (measured on Linux, it replayed all of job 1's chunks
-		// without this too). Dropping that state makes the replay certain: it models a
-		// directory whose consumer state is older than its stream, and the
-		// server recreates the consumer and delivers every chunk again.
+		// The copy alone replays nothing: a cleanly stopped server writes the
+		// log consumer's ack state with its stream, so the two agree (measured:
+		// after the restart the consumer's ack floor is its delivered sequence
+		// and it delivers no chunk). Dropping that state models a directory
+		// whose consumer state is older than its stream — a crashed server's —
+		// and the server recreates the consumer and delivers every chunk again.
+		// Without the drop, waitLogReplayDrained would still report job 1's
+		// chunks: a durable consumer keeps its delivered count across restarts.
 		dropConsumerState(t, ts.NATSDir, bus.StreamLogs, logsConsumer)
 		restoreByHand(t, ts, backup)
 		ts = restartServer(t, ts)
@@ -798,7 +800,9 @@ func waitJobLogs(t *testing.T, ts *testServer, jobID string) {
 
 // waitLogReplayDrained waits until the server's log consumer has nothing
 // pending or unacknowledged — every chunk it was delivered is stored or
-// discarded — and returns how many it has delivered since it was created.
+// discarded — and returns how many it has delivered since it was created. A
+// durable consumer's count survives a restart; only a recreated one starts
+// from zero, so the count is a replay count only after dropConsumerState.
 func waitLogReplayDrained(t *testing.T, ts *testServer) uint64 {
 	t.Helper()
 	nc, err := nats.Connect("nats://" + ts.NATSAddr)

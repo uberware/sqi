@@ -901,8 +901,10 @@ newer NATS directory is recovered by reconciliation, and a replayed older one
 duplicates no log row) and, for the late-report case, by
 `TestReconcileAttempts_LateTerminalReportIsDiscarded`.
 
-Log chunks can be delivered to the server more than once (after a restart,
-JetStream can deliver chunks the server already stored). Each is stored once:
+Log chunks can be delivered to the server more than once (after a crash, or
+an acknowledgement lost on its way back, JetStream delivers again chunks the
+server already stored; a clean stop records every acknowledgement, so the
+next start delivers none again). Each is stored once:
 a chunk is identified by its attempt and the worker's sequence number.
 
 ---
