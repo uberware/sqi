@@ -18,6 +18,7 @@ import (
 	"github.com/uberware/sqi/internal/pgdsn"
 	"github.com/uberware/sqi/internal/store/backend"
 	"github.com/uberware/sqi/internal/store/migrations"
+	"github.com/uberware/sqi/internal/store/sqlite"
 )
 
 // migrateDBPath is the SQLite file path used by all migrate subcommands.
@@ -180,7 +181,11 @@ func openMigrateDB(path string) (*sql.DB, error) {
 		return nil, errors.New("database path is empty; use --db, set store.sqlite_path, or set SQI_STORE_SQLITE_PATH")
 	}
 
-	db, err := sql.Open("sqlite", path)
+	dsn, err := sqlite.DSN(path)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite %q: %w", path, err)
+	}
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite %q: %w", path, err)
 	}

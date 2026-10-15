@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -479,5 +480,29 @@ func TestRestore_NeedsExactlyOneOfBackupAndInPlace(t *testing.T) {
 				t.Fatalf("Run = %v, want an error containing %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// Restore stages, inspects and opens the database it puts in place by name; a
+// "?" in that name must stay part of it.
+func TestRestoreSQLite_APathWithAQuestionMark(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip(`"?" cannot appear in a Windows file name`)
+	}
+	dir, _, natsDir, backup, taskID := liveFarm(t)
+	db := filepath.Join(dir, "sqi?mode=ro.db")
+	if _, err := restore.Run(t.Context(), opts(db, natsDir, backup)); err != nil {
+		t.Fatalf("restore to %s: %v", db, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sqi")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a database named for the text before the \"?\" exists (err %v)", err)
+	}
+	st, err := sqlite.Open(t.Context(), db, sqlite.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if task, err := st.GetTask(t.Context(), taskID); err != nil || task.Status != store.TaskStatusReady {
+		t.Fatalf("restored task = %+v, %v; want ready (fenced)", task, err)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -795,6 +796,39 @@ func TestMigrateUp_FoldsInACrashedServersWAL(t *testing.T) {
 	}
 	if name != "after-the-crash" {
 		t.Errorf("farm name = %q, want %q", name, "after-the-crash")
+	}
+}
+
+// TestCLI_APathWithAQuestionMark verifies that the commands opening a SQLite
+// file by its --db path keep a "?" in it as part of the name: handed to the
+// driver raw, it would start a query, and migrate up would create a database
+// named for the text before it.
+func TestCLI_APathWithAQuestionMark(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip(`"?" cannot appear in a Windows file name`)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sqi?mode=ro.db")
+	for _, args := range [][]string{
+		{"migrate", "up", "--db", path},
+		{"migrate", "status", "--db", path},
+		{"worker", "list", "--db", path},
+	} {
+		prepareRoot(args)
+		var runErr error
+		out := captureStdout(t, func() { runErr = Execute() })
+		if runErr != nil {
+			t.Fatalf("%v: %v", args, runErr)
+		}
+		if args[1] == "status" && strings.Contains(out, "pending") {
+			t.Errorf("migrate status after up lists pending migrations:\n%s", out)
+		}
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("no database at %s: %v", path, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sqi")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a database named for the text before the \"?\" exists (err %v)", err)
 	}
 }
 

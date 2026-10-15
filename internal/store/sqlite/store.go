@@ -168,7 +168,11 @@ func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 
 // open is Open without the server lock; Open releases the lock when it fails.
 func open(ctx context.Context, path string, opts Options) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	dsn, err := DSN(path)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: open %q: %w", path, err)
+	}
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: open %q: %w", path, err)
 	}
@@ -245,11 +249,17 @@ func openReadPool(path string, write *sql.DB) (*sql.DB, error) {
 	// DSN parameter is applied by the driver to every connection it opens.
 	// Nothing else needs re-applying: journal_mode=WAL is persistent in the
 	// file, and foreign_keys only constrains writes.
-	sep := "?"
-	if strings.Contains(path, "?") {
-		sep = "&"
+	dsn, err := DSN(path)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: open read pool %q: %w", path, err)
 	}
-	dsn := fmt.Sprintf("%s%s_pragma=busy_timeout(%d)", path, sep, busyTimeoutMS)
+	if dsn == path { // a FileURI already carries the busy_timeout
+		sep := "?"
+		if strings.Contains(path, "?") {
+			sep = "&"
+		}
+		dsn = fmt.Sprintf("%s%s_pragma=busy_timeout(%d)", path, sep, busyTimeoutMS)
+	}
 
 	rdb, err := sql.Open("sqlite", dsn)
 	if err != nil {

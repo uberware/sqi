@@ -91,7 +91,11 @@ func refuseBackupWAL(backup string) error {
 // inspectSQLite checks the staged copy is an intact sqi database no newer
 // than this binary, and returns its schema version.
 func inspectSQLite(ctx context.Context, path string) (int64, error) {
-	db, err := sql.Open("sqlite", path)
+	dsn, err := sqlite.DSN(path)
+	if err != nil {
+		return 0, fmt.Errorf("restore: open the backup: %w", err)
+	}
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return 0, fmt.Errorf("restore: open the backup: %w", err)
 	}

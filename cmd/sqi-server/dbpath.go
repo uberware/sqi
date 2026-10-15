@@ -18,6 +18,7 @@ import (
 	"github.com/uberware/sqi/internal/pgdsn"
 	"github.com/uberware/sqi/internal/store/backend"
 	"github.com/uberware/sqi/internal/store/postgres"
+	"github.com/uberware/sqi/internal/store/sqlite"
 )
 
 // resolveDBPath applies the database-path precedence shared by backup,
@@ -133,7 +134,11 @@ func requireExistingDB(path string) error {
 // against sqlite_master rather than through the store, so it runs before
 // any store method that would surface that error unremediated.
 func requireMigratedDB(path string) error {
-	db, err := sql.Open("sqlite", path)
+	dsn, err := sqlite.DSN(path)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
 	}
