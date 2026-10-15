@@ -3,15 +3,20 @@
 package storecopy
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	msqlite "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 
 	"github.com/uberware/sqi/internal/store/schemainfo"
 )
@@ -200,4 +205,89 @@ func hashFile(t *testing.T, path string) string {
 	}
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
+}
+
+// journalMagic opens every rollback journal header SQLite has synced.
+var journalMagic = []byte{0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7}
+
+// TestOpenSource_RefusesAHotJournalWithoutRollingItBack opens, through
+// openSource, what a server that crashed mid-transaction in rollback-journal
+// mode leaves behind: the database file and a hot -journal holding the
+// pre-transaction pages. Rolling that journal back writes the database file
+// and deletes the journal, which a read-only reader may not do, so the open
+// must fail with the operator's way out — and must leave both files exactly
+// as it found them, since store copy never writes its source. The fixture is
+// a copy taken while a writer's transaction is open and uncommitted, which is
+// byte for byte what a crash at that instant leaves. It needs no PostgreSQL.
+func TestOpenSource_RefusesAHotJournalWithoutRollingItBack(t *testing.T) {
+	ctx := t.Context()
+	live := filepath.Join(t.TempDir(), "live.db")
+	w, err := sql.Open("sqlite", live+"?_pragma=journal_mode(DELETE)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	conn, err := w.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	for _, q := range []string{
+		`CREATE TABLE x (v TEXT)`,
+		`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000)
+			INSERT INTO x SELECT printf('%0500d', i) FROM n`,
+		// Until the pager first writes the database file it leaves the
+		// journal's magic zeroed, and a journal starting with a zero byte is
+		// not hot (nothing needs undoing). A cache far smaller than the
+		// rewrite makes it spill mid-transaction: sync the journal, magic and
+		// all, then overwrite database pages — the state a crash must undo.
+		`PRAGMA cache_size = 10`,
+		`BEGIN IMMEDIATE`,
+		`UPDATE x SET v = v || ' rewritten'`,
+	} {
+		if _, err := conn.ExecContext(ctx, q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	src := filepath.Join(t.TempDir(), "crashed.db")
+	for _, s := range []string{"", "-journal"} {
+		b, err := os.ReadFile(live + s)
+		if err != nil {
+			t.Fatalf("the writer's open transaction left no %s: %v", live+s, err)
+		}
+		if s == "-journal" && !bytes.HasPrefix(b, journalMagic) {
+			t.Fatalf("the journal does not start with SQLite's magic (% x...): it is not hot", b[:min(len(b), 8)])
+		}
+		if err := os.WriteFile(src+s, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := conn.ExecContext(ctx, `ROLLBACK`); err != nil {
+		t.Fatal(err)
+	}
+
+	dbBefore, journalBefore := hashFile(t, src), hashFile(t, src+"-journal")
+	db, err := openSource(ctx, src)
+	if err == nil {
+		db.Close()
+		t.Fatal("openSource opened a database with a hot journal")
+	}
+	for _, want := range []string{
+		"cannot be read read-only",
+		"start sqi-server on it once and stop it cleanly",
+		`copy from a "sqi-server backup" of it`,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not say %q", err, want)
+		}
+	}
+	if se, ok := errors.AsType[*msqlite.Error](err); !ok || se.Code() != sqlite3.SQLITE_READONLY_ROLLBACK {
+		t.Errorf("error %q is not SQLite's SQLITE_READONLY_ROLLBACK: refused for some other reason than the hot journal", err)
+	}
+	if hashFile(t, src) != dbBefore {
+		t.Error("openSource rewrote the database file (a journal rollback)")
+	}
+	if hashFile(t, src+"-journal") != journalBefore {
+		t.Error("openSource changed or removed the hot journal")
+	}
 }
