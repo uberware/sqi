@@ -179,9 +179,10 @@ Migrations are forward-only: there is no `migrate down`. To go back to an older
 ([Rollback](../../docs/operations.md#rollback)). A binary older than the
 database refuses to start on it, naming both schema versions. `migrate up`
 takes the single-server lock, so it refuses to run while a server uses the
-database; `migrate status` does not. On SQLite `migrate status` only reads
-the database, so it is safe to run on a backup; a missing file lists every
-migration pending and is not created.
+database. `migrate status` takes no lock and writes nothing: a database never
+migrated lists every migration pending and stays empty (so a fresh PostgreSQL
+database can still take a restore), and on SQLite it only reads the file, so
+it is safe to run on a backup and does not create a missing one.
 
 Migration SQL files live in
 [`internal/store/migrations/`](../../internal/store/migrations/) (SQLite) and

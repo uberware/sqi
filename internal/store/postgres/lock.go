@@ -18,7 +18,7 @@ const ServerLockKey int64 = 0x7371692d73727672
 
 // ErrServerLockHeld means another sqi-server already holds the database.
 var ErrServerLockHeld = errors.New("another sqi-server is already using this database " +
-	"(PostgreSQL advisory lock 0x7371692d73727672 is held); running more than one server on one database is not supported yet; stop it first")
+	"(PostgreSQL advisory lock 0x7371692d73727672 is held); only one server can use a database, so stop the other one first")
 
 // serverLock holds the advisory lock on a connection taken out of the pool
 // for the store's life, and watches that connection.

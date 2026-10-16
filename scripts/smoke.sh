@@ -193,8 +193,8 @@ else
 fi
 
 # wait_ready polls /readyz until 200 (bounded), failing fast if the server
-# process in SERVER_PID exits early. Used for the first start and again for
-# the restart after the restore round trip, so the two waits cannot drift.
+# process in SERVER_PID exits early. Used for the first start and for the
+# restart after the restore round trip.
 wait_ready() {
   local ready=0 code
   for _ in $(seq 1 150); do
@@ -720,9 +720,10 @@ log "EXPR assertion PASSED: phase-3 resolved text found in task logs"
 #
 # Back the finished farm up, stop everything, restore the backup over the live
 # database and restart the server on the restored state. The job above has
-# completed, so it must still be completed afterwards. SQLite only: the
-# PostgreSQL restore needs pg_dump/pg_restore, which this script does not
-# provision (CI's postgres-integration job covers it).
+# completed, so it must still be completed afterwards. SQLite only: a
+# PostgreSQL round trip needs pg_dump and pg_restore, which this script does
+# not provision
+# (CI's postgres-integration job covers it).
 if [ "$mode" = "noauth" ]; then
   log "backup -> restore round trip (SQLite)"
   "$SERVER_BIN" backup --db "${TMP_DIR}/sqi.db" --out "${TMP_DIR}/smoke-backup.db" >/dev/null \

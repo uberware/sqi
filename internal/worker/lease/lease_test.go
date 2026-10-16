@@ -188,9 +188,9 @@ func (d *holdingDispatcher) Dispatch(_ context.Context, m *protocol.AssignMsg) e
 	return nil
 }
 
-// TestLoop_HoldsTheWholeBatchBeforeDispatchingAny pins that dispatch is
-// sequential, so an attempt waiting behind another's session setup is already
-// reported as held by the heartbeat: every Hold precedes the first Dispatch.
+// TestLoop_HoldsTheWholeBatchBeforeDispatchingAny pins that every Hold
+// precedes the first Dispatch: dispatch is sequential, so an attempt waiting
+// behind another's session setup must already be reported as held.
 func TestLoop_HoldsTheWholeBatchBeforeDispatchingAny(t *testing.T) {
 	var raws []json.RawMessage
 	for _, id := range []string{"a1", "a2"} {

@@ -22,19 +22,14 @@ import (
 	"github.com/uberware/sqi/internal/pgdsn"
 )
 
-// Backup writes a pg_dump custom-format archive of the database to out, which
-// must not exist. It runs the pg_dump found on PATH, which must be at least the
-// server's major version. Restore with pg_restore.
+// BackupDSN writes a pg_dump custom-format archive of the database dsn names to
+// out, which must not exist, without opening the store, so it works on a
+// schema this binary is too old for. It runs the pg_dump found on PATH, which
+// must be at least the server's major version. Restore with pg_restore.
 //
 // The password reaches pg_dump through PGPASSWORD, never its argument list,
 // which any local user can read from the process list: see
 // [pgDumpInvocation].
-func (s *Store) Backup(ctx context.Context, out string) error {
-	return backup(ctx, s.rdb, s.dsn, out, s.log)
-}
-
-// BackupDSN backs up the database dsn names without opening the store, so it
-// works on a schema this binary is too old for.
 func BackupDSN(ctx context.Context, dsn, out string, log *slog.Logger) error {
 	if log == nil {
 		log = slog.Default()
@@ -44,11 +39,6 @@ func BackupDSN(ctx context.Context, dsn, out string, log *slog.Logger) error {
 		return err
 	}
 	defer db.Close()
-	return backup(ctx, db, dsn, out, log)
-}
-
-// backup is Backup's body over any connection to the database.
-func backup(ctx context.Context, db *sql.DB, dsn, out string, log *slog.Logger) error {
 	pgDump, err := preflight(out)
 	if err != nil {
 		return err

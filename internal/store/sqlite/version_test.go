@@ -9,6 +9,7 @@ import (
 
 	"github.com/uberware/sqi/internal/store/migrations"
 	"github.com/uberware/sqi/internal/store/sqlite"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // bumpVersion migrates a SQLite file and records one more applied version than
@@ -25,15 +26,7 @@ func bumpVersion(t *testing.T, path string) int64 {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	maxV, err := migrations.MaxVersion("sqlite")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(),
-		`INSERT INTO goose_db_version (version_id, is_applied) VALUES (?, 1)`, maxV+1); err != nil {
-		t.Fatal(err)
-	}
-	return maxV + 1
+	return storetest.RecordNewerSchema(t, db, "sqlite")
 }
 
 func TestOpen_RefusesANewerSchema(t *testing.T) {

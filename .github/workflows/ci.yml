@@ -1024,7 +1024,7 @@ jobs:
             TestEXPRJobEndToEnd
             TestPostgres_RestoreRoundTrip
             TestPostgres_RestoreOfACorruptArchiveLeavesTheDatabaseEmpty
-            TestPostgres_RequireMigratedDatabase
+            TestPostgres_SchemaVersionDSN
             TestPostgres_OpenRefusesANewerSchema
             TestPostgres_RestoreSkipsGrantsToAbsentRoles
             TestPostgres_RequireEmptyDatabaseSeesTablesTheRoleCannotAccess
@@ -1039,6 +1039,7 @@ jobs:
             TestRestorePostgres_RefusesAFileThatIsNotAnSQIBackup
             TestRestorePostgres_InPlaceFencesTheConfiguredDatabase
             TestRestorePostgres_InPlaceRefusesAnEmptyDatabase
+            TestRestorePostgres_InPlaceRefusesANewerSchema
             TestRestorePostgres_AMissingPgRestoreIsNotABadBackup
             TestStoreCopy_CopiesEveryRowVerbatim
             TestStoreCopy_NeverWritesASourceWithAPendingWAL

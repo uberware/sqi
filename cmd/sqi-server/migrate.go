@@ -19,6 +19,7 @@ import (
 	"github.com/uberware/sqi/internal/pgdsn"
 	"github.com/uberware/sqi/internal/store/backend"
 	"github.com/uberware/sqi/internal/store/migrations"
+	"github.com/uberware/sqi/internal/store/postgres"
 	"github.com/uberware/sqi/internal/store/sqlite"
 )
 
@@ -63,26 +64,30 @@ var migrateUpCmd = &cobra.Command{
 	Short: "Apply all pending migrations",
 	Long:  `Apply every migration that has not yet been run against the target database.`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
+		tgt, err := resolveStoreTarget(cmd, migrateDBPath, migrateDSN)
+		if err != nil {
+			return fmt.Errorf("migrate up: %w", err)
+		}
 		// Migrating beside a running server would race its own AutoMigrate and
 		// change the schema under it, so take the single-server lock first.
-		release, err := lockMigrateTarget(cmd)
+		release, err := backend.LockStore(cmd.Context(), tgt.options())
 		if err != nil {
 			return fmt.Errorf("migrate up: %w", err)
 		}
 		defer func() { _ = release() }() //nolint:errcheck // releasing on exit; the OS drops it anyway
 
-		p, db, driver, err := openMigrator(cmd)
+		p, db, err := openMigrator(tgt)
 		if err != nil {
 			return err
 		}
 		defer db.Close()
 
-		// A schema a newer sqi-server wrote is not this binary's to migrate.
+		// Refuse a schema newer than this binary.
 		cur, err := p.GetDBVersion(cmd.Context())
 		if err != nil {
 			return fmt.Errorf("migrate up: read schema version: %w", err)
 		}
-		if err := migrations.CheckVersion(driver, cur); err != nil {
+		if err := migrations.CheckVersion(tgt.Driver, cur); err != nil {
 			return fmt.Errorf("migrate up: %w", err)
 		}
 
@@ -106,8 +111,9 @@ var migrateStatusCmd = &cobra.Command{
 	Long: `List every migration file with its current state: the time it was
 applied (UTC, RFC 3339), or "pending".
 
-On SQLite it only reads the database, so it is safe to run on a backup; a
-missing file lists every migration pending and is not created.`,
+It writes nothing: a database never migrated lists every migration pending
+and is left empty. On SQLite it only reads the file, so it is safe to run on a
+backup; a missing file lists every migration pending and is not created.`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		statuses, err := migrationStatuses(cmd)
 		if err != nil {
@@ -131,42 +137,31 @@ func init() {
 	migrateCmd.AddCommand(migrateUpCmd, migrateStatusCmd)
 }
 
-// lockMigrateTarget takes the single-server lock on the store migrate targets.
-// An empty SQLite path is left to openMigrator to refuse with its usual message.
-func lockMigrateTarget(cmd *cobra.Command) (func() error, error) {
-	tgt, err := resolveStoreTarget(cmd, migrateDBPath, migrateDSN)
-	if err != nil {
-		return nil, err
-	}
-	if tgt.Driver != backend.DriverPostgres && tgt.SQLitePath == "" {
-		return func() error { return nil }, nil
-	}
-	return backend.LockStore(cmd.Context(), backend.Options{
-		Driver: tgt.Driver, SQLitePath: tgt.SQLitePath, PostgresDSN: tgt.DSN,
-	})
-}
-
-// migrationStatuses lists every migration with its state. On SQLite it writes
-// nothing, so it is safe on a backup: goose's own Status creates its version
-// table, and opening the file the way migrate up does rewrites it. So a SQLite
-// file that is missing, or was never migrated, lists every migration pending
-// without being opened for writing, and any other is read over a read-only
-// connection.
+// migrationStatuses lists every migration with its state, writing nothing.
+// goose's Status creates its version table, so a database with no schema is
+// listed as all pending without calling it (on PostgreSQL that table would
+// make restore refuse the database as not empty). On SQLite a missing file is
+// not opened, and an existing one is read over a read-only connection, because
+// the read-write open migrate up uses rewrites the file.
 func migrationStatuses(cmd *cobra.Command) ([]*goose.MigrationStatus, error) {
 	tgt, err := resolveStoreTarget(cmd, migrateDBPath, migrateDSN)
 	if err != nil {
 		return nil, err
 	}
 	if tgt.Driver == backend.DriverPostgres {
-		p, db, _, err := openMigrator(cmd)
+		p, db, err := openMigrator(tgt)
 		if err != nil {
 			return nil, err
 		}
 		defer db.Close()
+		v, err := postgres.SchemaVersion(cmd.Context(), db)
+		if err != nil {
+			return nil, err
+		}
+		if v == 0 {
+			return allPending(p), nil
+		}
 		return p.Status(cmd.Context())
-	}
-	if tgt.SQLitePath == "" {
-		return nil, errEmptySQLitePath
 	}
 
 	dsn := ":memory:" // never connected to: it only lets the provider list the migrations
@@ -208,42 +203,31 @@ func allPending(p *goose.Provider) []*goose.MigrationStatus {
 	return out
 }
 
-// errEmptySQLitePath is the refusal of an empty SQLite path.
-var errEmptySQLitePath = errors.New("database path is empty; use --db, set store.sqlite_path, or set SQI_STORE_SQLITE_PATH")
-
-// openMigrator opens the target database and returns a goose provider for it,
-// and the driver it chose. SQLite gets the store's pragmas first, and its file
-// is created if missing (that is migrate's job); PostgreSQL must already exist.
-func openMigrator(cmd *cobra.Command) (*goose.Provider, *sql.DB, string, error) {
-	tgt, err := resolveStoreTarget(cmd, migrateDBPath, migrateDSN)
-	if err != nil {
-		return nil, nil, "", err
-	}
+// openMigrator opens tgt's database and returns a goose provider for it.
+// SQLite gets the store's pragmas first, and its file is created if missing
+// (that is migrate's job); PostgreSQL must already exist.
+func openMigrator(tgt storeTarget) (*goose.Provider, *sql.DB, error) {
 	var db *sql.DB
-	driver := tgt.Driver
-	if driver == backend.DriverPostgres {
+	var err error
+	if tgt.Driver == backend.DriverPostgres {
 		if db, err = sql.Open("pgx", tgt.DSN); err != nil {
-			return nil, nil, "", fmt.Errorf("open %s: %w", pgdsn.Redact(tgt.DSN), err)
+			return nil, nil, fmt.Errorf("open %s: %w", pgdsn.Redact(tgt.DSN), err)
 		}
 	} else if db, err = openMigrateDB(tgt.SQLitePath); err != nil {
-		return nil, nil, "", err
+		return nil, nil, err
 	}
-	p, err := migrations.NewProvider(db, driver)
+	p, err := migrations.NewProvider(db, tgt.Driver)
 	if err != nil {
 		_ = db.Close()
-		return nil, nil, "", err
+		return nil, nil, err
 	}
-	return p, db, driver, nil
+	return p, db, nil
 }
 
 // openMigrateDB opens the SQLite database at path (creating the file when it
 // is missing) and configures WAL mode, foreign-key enforcement and the busy
 // timeout the store uses.
 func openMigrateDB(path string) (*sql.DB, error) {
-	if path == "" {
-		return nil, errEmptySQLitePath
-	}
-
 	dsn, err := sqlite.DSN(path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite %q: %w", path, err)

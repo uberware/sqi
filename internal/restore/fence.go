@@ -21,7 +21,7 @@ var farFuture = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
 // returns to ready, the attempt closes as failed (worker shutdown), its claims
 // are released, and no retry or job failure is counted. It returns how many it
 // reclaimed. It must run with the single-server lock held, so nothing can open
-// an attempt meanwhile; an attempt still open afterwards is a bug.
+// an attempt meanwhile; it fails if any attempt is still open afterwards.
 func Fence(ctx context.Context, st store.Store, now time.Time) (int, error) {
 	open, err := st.ListOpenAttempts(ctx, farFuture)
 	if err != nil {

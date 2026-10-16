@@ -19,6 +19,7 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 
 	"github.com/uberware/sqi/internal/store/schemainfo"
+	"github.com/uberware/sqi/internal/store/sqlite"
 )
 
 func TestRowsPerInsert_StaysUnderTheBindParameterLimit(t *testing.T) {
@@ -187,12 +188,12 @@ func TestOpenSource_ReadsAPendingWALWithoutWritingIt(t *testing.T) {
 // sqi database.
 func openSourceDB(t *testing.T, path string) (*sql.DB, error) {
 	t.Helper()
-	dsn, err := readOnlyDSN(path)
+	dsn, err := sqlite.FileURI(path, true)
 	if err != nil {
 		return nil, err
 	}
 	if before, _, found := strings.Cut(dsn, "?mode=ro"); !found || strings.Contains(before, "?") {
-		t.Errorf("readOnlyDSN = %s: want a mode=ro URI with no unescaped '?' in the path", dsn)
+		t.Errorf("sqlite.FileURI = %s: want a mode=ro URI with no unescaped '?' in the path", dsn)
 	}
 	return sql.Open("sqlite", dsn)
 }

@@ -19,12 +19,17 @@ import (
 // API-key hashes and session tokens, is readable by its writer only, and is a
 // working database.
 func TestBackup_CopyIsRestricted(t *testing.T) {
-	s := openTestStore(t)
+	src := t.TempDir() + "/test.db"
+	s, err := sqlite.Open(t.Context(), src, sqlite.DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
 	if _, err := s.CreateFarm(t.Context(), store.Farm{ID: "farm-backup", Name: "kept"}); err != nil {
 		t.Fatal(err)
 	}
 	out := filepath.Join(t.TempDir(), "sqi-backup.db")
-	if err := s.Backup(t.Context(), out); err != nil {
+	if err := sqlite.BackupPath(t.Context(), src, out); err != nil {
 		t.Fatalf("Backup: %v", err)
 	}
 	if restricted, err := fsutil.IsRestricted(out); err != nil || !restricted {
@@ -96,12 +101,17 @@ func TestBackupPath_ReadsAPathWithURICharacters(t *testing.T) {
 // TestBackup_RefusesAnExistingDestination pins that a backup never replaces a
 // file, an empty one included, and leaves it as it was.
 func TestBackup_RefusesAnExistingDestination(t *testing.T) {
-	s := openTestStore(t)
+	src := t.TempDir() + "/test.db"
+	s, err := sqlite.Open(t.Context(), src, sqlite.DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
 	out := filepath.Join(t.TempDir(), "sqi-backup.db")
 	if err := os.WriteFile(out, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Backup(t.Context(), out); err == nil || !strings.Contains(err.Error(), "already exists") {
+	if err := sqlite.BackupPath(t.Context(), src, out); err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("Backup over an existing file = %v; want an already-exists error", err)
 	}
 	if info, err := os.Stat(out); err != nil || info.Size() != 0 {

@@ -13,9 +13,11 @@ import (
 	"github.com/uberware/sqi/internal/fsutil"
 )
 
-// Backup creates a consistent, online copy of the database at destPath using
-// SQLite's VACUUM INTO statement. The source database remains fully available
-// for reads and writes during the operation.
+// BackupPath creates a consistent, online copy of the database at dbPath in
+// destPath using SQLite's VACUUM INTO statement, without opening the store, so
+// it works on a schema this binary is too old for (the backup taken before
+// rolling a binary back). The source database remains fully available for
+// reads and writes during the operation.
 //
 // VACUUM INTO is the SQL-level equivalent of the SQLite C online backup API
 // (sqlite3_backup_*): it produces a clean, fully checkpointed snapshot of the
@@ -28,13 +30,6 @@ import (
 // restricted to the writing user ([fsutil.CreateSecretExclusive]), and VACUUM
 // INTO, which accepts an empty file, writes into it; left to SQLite, the file
 // would get the process's default permissions. On failure the file is removed.
-func (s *Store) Backup(ctx context.Context, destPath string) error {
-	return vacuumInto(ctx, s.db, destPath)
-}
-
-// BackupPath backs up the database at dbPath without opening the store, so it
-// works on a schema this binary is too old for — the backup taken before
-// rolling a binary back.
 func BackupPath(ctx context.Context, dbPath, destPath string) error {
 	dsn, err := FileURI(dbPath, false)
 	if err != nil {
@@ -46,11 +41,6 @@ func BackupPath(ctx context.Context, dbPath, destPath string) error {
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
-	return vacuumInto(ctx, db, destPath)
-}
-
-// vacuumInto is Backup's body over any connection to the database.
-func vacuumInto(ctx context.Context, db *sql.DB, destPath string) error {
 	if err := fsutil.CreateSecretExclusive(destPath); err != nil {
 		if errors.Is(err, fs.ErrExist) {
 			return fmt.Errorf("sqlite backup to %q: destination already exists", destPath)

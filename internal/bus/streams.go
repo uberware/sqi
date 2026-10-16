@@ -67,8 +67,8 @@ func streamDefs() []jetstream.StreamConfig {
 			// cursor.  LimitsPolicy keeps the chunks for MaxAge after ack, but
 			// nothing reads them back from the stream.
 			//
-			// MaxAge of 96 h balances storage cost against the window in which
-			// operators typically review task output.
+			// MaxAge of 96 h bounds the stream's disk use; a chunk the server
+			// has not acked within it is lost.
 			Name:        StreamLogs,
 			Description: "Log chunks emitted by running tasks, persisted to task_logs by the server.",
 			Subjects:    []string{SubjectTaskLogsPrefix + ".>"},

@@ -110,37 +110,20 @@ func place(ctx context.Context, o Options, stamp string) (version int64, moved [
 	return placeSQLite(ctx, o, stamp)
 }
 
-// requireInPlace refuses --in-place on a database that is not there (SQLite)
-// or has no sqi schema (PostgreSQL): opening it would create, and migrate, an
-// empty one.
+// requireInPlace refuses --in-place, before anything changes, on a database
+// that is missing or has no sqi schema (opening it would create, and migrate,
+// an empty one) or one newer than this binary.
 func requireInPlace(ctx context.Context, o Options) error {
 	if backend.Name(o.Driver) == backend.DriverPostgres {
 		return requireInPlacePostgres(ctx, o)
 	}
-	if _, err := os.Stat(o.SQLitePath); err != nil {
-		return fmt.Errorf("restore: --in-place needs the database at %s: %w", o.SQLitePath, err)
-	}
-	n, err := walSize(o.SQLitePath)
-	if err != nil {
-		return err
-	}
-	if n > 0 {
-		return fmt.Errorf("restore: --in-place refuses %[1]s: its -wal file is not empty (%[2]d bytes), so it "+
-			"may hold writes not yet in the database file, and nothing ties a -wal file to the database it was "+
-			"written for, so SQLite would apply them to whatever database is at %[1]s. If you put this database "+
-			"in place by hand over one whose server stopped uncleanly, the -wal and -shm files are that old "+
-			"database's: move them aside together with it, or restore with \"sqi-server restore BACKUP\" instead. "+
-			"If they are this database's own (its server crashed, or a snapshot took them with it), let SQLite "+
-			"fold them in first with \"sqi-server migrate up\" (do not start a server on it: it would run "+
-			"unfenced), then run --in-place again", o.SQLitePath, n)
-	}
-	return nil
+	return requireInPlaceSQLite(ctx, o)
 }
 
 // walSize is the size of db's -wal file, 0 when there is none. A cleanly
 // stopped server leaves none, or an empty one; a non-empty one may hold
-// committed writes not yet copied into the database file (or only frames
-// already checkpointed, which nothing short of reading it can tell apart).
+// committed writes not yet copied into the database file, and its size alone
+// cannot tell those from frames already checkpointed.
 func walSize(db string) (int64, error) {
 	fi, err := os.Stat(db + "-wal")
 	if errors.Is(err, fs.ErrNotExist) {

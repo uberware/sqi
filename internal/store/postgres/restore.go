@@ -129,26 +129,6 @@ WHERE  c.relkind IN ('r', 'p') AND n.nspname = ANY (current_schemas(false))`).Sc
 	return nil
 }
 
-// RequireMigratedDatabase fails unless the database dsn names already holds an
-// sqi schema (an applied goose version). It creates nothing: restore --in-place
-// uses it to refuse an empty database before anything could migrate one.
-func RequireMigratedDatabase(ctx context.Context, dsn string) error {
-	db, err := openPool(dsn, 1)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	v, err := SchemaVersion(ctx, db)
-	if err != nil {
-		return err
-	}
-	if v == 0 {
-		return errors.New("the database has no sqi schema, so there is nothing to restore in place; " +
-			"restore a backup into it instead")
-	}
-	return nil
-}
-
 // CheckRestoreTool finds pg_restore on PATH and refuses one older than the
 // server dsn names, so a restore can report a tool problem before it reads the
 // archive.
@@ -212,13 +192,12 @@ func Restore(ctx context.Context, dsn, archive string, log *slog.Logger) error {
 
 // withoutRowData keeps pg_restore's own lines from its stderr (a server error's
 // primary message is on one of them) and drops the rest: the continuation
-// lines of a message the server sent (DETAIL, CONTEXT, HINT), which quote row
-// values — a COPY's CONTEXT line quotes its failing
-// input line, a DETAIL quotes key values or the failing row — and the
-// database holds password, API-key and session hashes. A line is pg_restore's
-// when it starts with "pg_restore:", which no locale translates; the server's
-// lines are in its own lc_messages, so they are dropped by position, not by
-// matching their words.
+// lines of a server message (DETAIL, CONTEXT, HINT) can quote row values, such
+// as a COPY's failing input line or a key value, and the database holds
+// password, API-key and session hashes. A line is pg_restore's when it starts
+// with "pg_restore:", which no locale translates; server lines follow the
+// server's lc_messages, so they are dropped by position, not by matching
+// their words.
 func withoutRowData(stderr string) string {
 	var kept []string
 	dropped := 0

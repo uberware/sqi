@@ -79,11 +79,52 @@ func refuseBackupWAL(backup string) error {
 		return err
 	}
 	if n > 0 {
-		return fmt.Errorf("restore: %[1]s has a -wal file that is not empty (%[2]d bytes), so it may hold writes "+
-			"that are not in %[1]s, and restore copies only the database file, so they would be lost: stop the "+
-			"server using %[1]s "+
-			"cleanly (which folds them in) and run restore again, or restore a backup made with "+
-			"\"sqi-server backup\", which never has a -wal file", backup, n)
+		return fmt.Errorf("restore: %[1]s has a non-empty -wal file (%[2]d bytes) whose writes would be lost, "+
+			"because restore copies only the database file: stop the server using %[1]s cleanly, which folds "+
+			"the -wal in, and run restore again, or restore a backup made with \"sqi-server backup\"", backup, n)
+	}
+	return nil
+}
+
+// requireInPlaceSQLite refuses --in-place on a database that is not there,
+// has a -wal it might not belong to, has no sqi schema, or has one newer than
+// this binary. The schema is read over a read-only connection, so a refused
+// database is left as it was.
+func requireInPlaceSQLite(ctx context.Context, o Options) error {
+	if _, err := os.Stat(o.SQLitePath); err != nil {
+		return fmt.Errorf("restore: --in-place needs the database at %s: %w", o.SQLitePath, err)
+	}
+	n, err := walSize(o.SQLitePath)
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return fmt.Errorf("restore: --in-place refuses %[1]s: its -wal file is not empty (%[2]d bytes), and "+
+			"SQLite applies a -wal to whatever database is at %[1]s. If this database was put in place by hand "+
+			"over one whose server stopped uncleanly, the -wal and -shm are the old database's: move them aside "+
+			"with it, or use \"sqi-server restore BACKUP\". If they are this database's own (a crash, or a "+
+			"snapshot taken with them), fold them in with \"sqi-server migrate up\" (do not start a server on "+
+			"it: it would run unfenced), then run --in-place again", o.SQLitePath, n)
+	}
+	dsn, err := sqlite.FileURI(o.SQLitePath, true)
+	if err != nil {
+		return fmt.Errorf("restore: --in-place needs an existing sqi database: %w", err)
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return fmt.Errorf("restore: --in-place needs an existing sqi database: %w", err)
+	}
+	defer db.Close()
+	v, err := sqlite.SchemaVersion(ctx, db)
+	if err != nil {
+		return fmt.Errorf("restore: --in-place needs an existing sqi database: %w", err)
+	}
+	if v == 0 {
+		return fmt.Errorf("restore: --in-place needs an existing sqi database: %s has no sqi schema, so there "+
+			"is nothing to restore in place; restore a backup into it instead", o.SQLitePath)
+	}
+	if err := migrations.CheckVersion("sqlite", v); err != nil {
+		return fmt.Errorf("restore: %w", err)
 	}
 	return nil
 }

@@ -23,10 +23,7 @@ import (
 var ErrHeld = errors.New("fslock: lock is held")
 
 // Lock is a held lock. Release it exactly once.
-type Lock struct {
-	f    *os.File
-	path string
-}
+type Lock struct{ f *os.File }
 
 // Acquire creates path if absent (owner-only) and locks it exclusively,
 // failing at once with [ErrHeld] when it is already locked. The caller must
@@ -44,11 +41,8 @@ func Acquire(path string) (*Lock, error) {
 		}
 		return nil, fmt.Errorf("fslock: lock %s: %w", path, err)
 	}
-	return &Lock{f: f, path: path}, nil
+	return &Lock{f: f}, nil
 }
-
-// Path is the locked file.
-func (l *Lock) Path() string { return l.path }
 
 // Release unlocks and closes the file. The file stays on disk.
 func (l *Lock) Release() error {

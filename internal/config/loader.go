@@ -132,6 +132,9 @@ func LoadWithSources(filePath string, flags FlagOverrides) (Config, Sources, err
 		if fc.Store != nil && fc.Store.CheckpointInterval != nil {
 			src.StoreCheckpointInterval = true
 		}
+		if fc.Scheduler != nil && fc.Scheduler.ReconcileGrace != nil {
+			src.SchedulerReconcileGrace = true
+		}
 	}
 
 	// ── Layer 3: environment variables ───────────────────────────────────
@@ -144,30 +147,30 @@ func LoadWithSources(filePath string, flags FlagOverrides) (Config, Sources, err
 	if os.Getenv("SQI_STORE_CHECKPOINT_INTERVAL") != "" {
 		src.StoreCheckpointInterval = true
 	}
+	if strings.TrimSpace(os.Getenv("SQI_SCHEDULER_RECONCILE_GRACE")) != "" {
+		src.SchedulerReconcileGrace = true
+	}
 
 	// ── Layer 4: CLI flag overrides ───────────────────────────────────────
 	applyFlags(&cfg, flags)
 
-	src.SchedulerReconcileGrace = resolveReconcileGrace(&cfg, fc)
+	resolveReconcileGrace(&cfg, src.SchedulerReconcileGrace)
 
 	return cfg, src, nil
 }
 
-// resolveReconcileGrace reports whether scheduler.reconcile_grace was set by
-// the config file or SQI_SCHEDULER_RECONCILE_GRACE and, when it was not,
-// raises it to scheduler.heartbeat_timeout if that is longer. Validation
-// requires a non-zero reconcile_grace of at least heartbeat_timeout, so
-// without this an operator who had raised heartbeat_timeout past the 2m
-// default, and never heard of reconcile_grace, would fail to start after
-// upgrading. An explicit value is left exactly as given, for validation to
-// judge. Called after every layer, so it sees the final heartbeat_timeout.
-func resolveReconcileGrace(cfg *Config, fc *fileConfig) bool {
-	explicit := strings.TrimSpace(os.Getenv("SQI_SCHEDULER_RECONCILE_GRACE")) != "" ||
-		(fc != nil && fc.Scheduler != nil && fc.Scheduler.ReconcileGrace != nil)
+// resolveReconcileGrace raises scheduler.reconcile_grace to
+// scheduler.heartbeat_timeout when that is longer, unless the config file or
+// SQI_SCHEDULER_RECONCILE_GRACE set it (explicit). Validation requires
+// reconcile_grace to be 0 (disabled) or at least heartbeat_timeout, so a
+// heartbeat_timeout raised past the 2m default must not fail validation on a
+// key the operator never set. An explicit value is left as given, for
+// validation to judge. It runs after every layer, so it sees the final
+// heartbeat_timeout.
+func resolveReconcileGrace(cfg *Config, explicit bool) {
 	if !explicit && cfg.Scheduler.ReconcileGrace < cfg.Scheduler.HeartbeatTimeout {
 		cfg.Scheduler.ReconcileGrace = cfg.Scheduler.HeartbeatTimeout
 	}
-	return explicit
 }
 
 // ── File layer ────────────────────────────────────────────────────────────────
@@ -580,18 +583,6 @@ func mergeOpenJDFile(cfg *Config, fc fileConfig) {
 	if fc.OpenJD.ExprTemplateRetainedBytes != nil {
 		cfg.OpenJD.ExprTemplateRetainedBytes = *fc.OpenJD.ExprTemplateRetainedBytes
 	}
-	// A malformed duration leaves the default in place, matching every other
-	// duration this loader reads from a file (see mergeSchedulerFile). The
-	// default is in range, so an unparseable value cannot turn into a startup
-	// failure here -- the env layer, which reports its own parse errors, is
-	// where a typo is caught.
-	//
-	// This is the only one of the ten EXPR keys where that is reachable: the
-	// other nine are ints, so a typo fails YAML unmarshalling loudly. Kept for
-	// consistency with the loader's other durations rather than made an error
-	// here, and documented as an operator-visible quirk in docs/configuration.md
-	// under openjd.expr_submission_deadline -- changing it means changing every
-	// duration key at once, not this one.
 	setIfNotNilDuration(&cfg.OpenJD.ExprSubmissionDeadline, fc.OpenJD.ExprSubmissionDeadline)
 }
 
@@ -766,9 +757,9 @@ func setIfNotNilBool(dst, src *bool) {
 }
 
 // fileDuration is a Go duration in the config file ("30s", "5m", "1h"). A value
-// that is not one fails the load, naming its line, as the environment layer's
-// [setDuration] does, rather than leaving the key at its default as if it were
-// absent: "5 sec" or a bare "30" is a typo, not a request for the default.
+// that does not parse ("5 sec", a bare "30") fails the load, naming its line,
+// as the environment layer's [setDuration] does; it never falls back to the
+// default.
 type fileDuration time.Duration
 
 // UnmarshalYAML implements [yaml.Unmarshaler].

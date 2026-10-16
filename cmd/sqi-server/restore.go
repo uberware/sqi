@@ -82,7 +82,7 @@ func runRestore(cmd *cobra.Command, args []string) error {
 	if err := requireRestoreConfig(cmd, c, explicitNATS); err != nil {
 		return err
 	}
-	tgt, err := resolveStoreTarget(cmd, restoreFlags.DBPath, restoreFlags.DSN)
+	tgt, err := c.target(cmd, restoreFlags.DBPath, restoreFlags.DSN)
 	if err != nil {
 		return err
 	}
@@ -106,11 +106,10 @@ func runRestore(cmd *cobra.Command, args []string) error {
 
 // requireRestoreConfig refuses a configuration that failed to load (a broken
 // discovered file, or an SQI_* variable that does not parse) unless the
-// operator named both the store and the NATS directory. The other CLI commands
-// fall back to the built-in defaults there, but restore renames and replaces
-// files: a guessed default would restore into, and quarantine, the wrong
-// places and report success, as serve would refuse to start on the same
-// configuration.
+// operator named both the store and the NATS directory. Other CLI commands
+// fall back to built-in defaults there, but restore renames and replaces
+// files, so a guessed default would restore into, and quarantine, the wrong
+// places.
 func requireRestoreConfig(cmd *cobra.Command, c cliConfig, explicitNATS bool) error {
 	if c.loadErr == nil {
 		return nil

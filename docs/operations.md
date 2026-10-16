@@ -291,9 +291,9 @@ share one database (see [One server per database](#one-server-per-database)),
 and on one host they cannot share its ports either.
 
 Workers do not need to stop: they reconnect when the server is back. On a
-worker of this release, a report it could not deliver while the server was
-down is recovered by [reconciliation](#reconciliation), at the cost of running
-that task again. Workers from v0.3.0 and earlier send no attempt list and are
+current worker, a report it could not deliver while the server was down is
+recovered by [reconciliation](#reconciliation), at the cost of running that
+task again. Workers from v0.3.0 and earlier send no attempt list and are
 never reconciled: a task whose report such a worker lost stays `running` until
 that worker goes offline.
 
@@ -307,6 +307,11 @@ gets it (the configured DSN, or its `~/.pgpass`): `sudo` does not pass
 ### Steps (Linux, systemd)
 
 ```sh
+# 0. While the old server still runs, check that the new binary loads your
+#    configuration (see below). It prints nothing here, and fails naming the
+#    line and the value it cannot read.
+sudo -u sqi ./sqi-server config print --config /etc/sqi/sqi-server.yaml > /dev/null
+
 # 1. Stop the server.
 sudo systemctl stop sqi-server
 
@@ -324,24 +329,29 @@ sudo install -m 0755 ./sqi-server /usr/local/bin/sqi-server
 sudo systemctl start sqi-server
 ```
 
-**Name the database with `--db` in step 2.** The binary that takes this
-backup is the one you are upgrading from, and the `backup` of v0.3.0 and
-earlier reads only `--db`, defaulting to `$SQI_SQLITE_PATH` or `sqi.db` in the
-current directory: it accepts `--config` but ignores it, and `sudo` drops
-`SQI_SQLITE_PATH`. Run without `--db` from a directory with no database,
-v0.3.0's `backup` creates an empty `sqi.db` there and fails (`open source
-database: ... no such table: farms`); run from a directory that holds some
-other sqi database, it backs that one up without complaint. So check the
-result: the backup should be close to the live file's size (`VACUUM INTO`
-compacts it, so it can be smaller), and any sqi database, even one with no
-jobs, is several hundred kilobytes (385 KB for an empty farm at schema 38).
-The new binary's `sqi-server migrate status --db <backup>` checks it
-without changing it: on SQLite, `migrate status` only reads the database.
-Do not run the *old* binary's `migrate status` on it: in v0.3.0 and earlier it
-opens the file read-write and rewrites it. On PostgreSQL the old binary is at least the
-release that added PostgreSQL support, whose `backup` reads `--config` and
-`--dsn`, so `sqi-server backup --config /etc/sqi/sqi-server.yaml --out
-/backups/sqi/pre-upgrade-<time>.dump` is right there.
+**Check the configuration with the new binary first (step 0).** The server
+refuses to start on a malformed duration in the config file, such as
+`job_retention: 7d` (durations have no `d` unit: write `168h`); v0.3.0 and
+earlier ignored such a value and used the default. Step 0 finds it while the
+old server still runs, instead of in step 4, mid-upgrade.
+
+**Name the database with `--db` in step 2.** The backup is taken by the binary
+you are upgrading from, and the `backup` of v0.3.0 and earlier reads only
+`--db`: it accepts `--config` but ignores it, and otherwise uses
+`$SQI_SQLITE_PATH` (which `sudo` drops) or `sqi.db` in the current directory.
+Without `--db`, in a directory with no database it creates an empty `sqi.db`
+and fails (`open source database: ... no such table: farms`); in a directory
+that holds some other sqi database, it backs that one up without complaint. So
+check the result: the backup should be close to the live file's size (`VACUUM
+INTO` compacts it, so it can be smaller), and any sqi database, even one with
+no jobs, is several hundred kilobytes (385 KB for an empty farm at schema 38).
+The new binary's `sqi-server migrate status --db <backup>` checks it without
+changing it: on SQLite, `migrate status` only reads the database. Do not run
+the *old* binary's `migrate status` on it: in v0.3.0 and earlier it opens the
+file read-write and rewrites it. On PostgreSQL the old binary already supports
+PostgreSQL, and its `backup` reads `--config` and `--dsn`, so
+`sqi-server backup --config /etc/sqi/sqi-server.yaml --out
+/backups/sqi/pre-upgrade-<time>.dump` works.
 
 To watch the migrations run, or to run them before the start, put this between
 steps 3 and 4. It prints one line per migration it applies (or `no pending
@@ -352,9 +362,8 @@ so it refuses to run while a server uses the database:
 sudo -u sqi sqi-server migrate up --config /etc/sqi/sqi-server.yaml
 ```
 
-Taking the backup with the server stopped, rather than online, means the
-backup is exactly the database the old binary last wrote: nothing finished
-between the backup and the upgrade can be lost by a rollback.
+Take the backup with the server stopped, not online, so that it is exactly the
+database the old binary last wrote and a rollback loses nothing.
 
 ### Steps (Windows service)
 
@@ -375,10 +384,8 @@ sqi-server service start
 The backup directory must already exist; `backup` creates only the file.
 `--db` names the database for the same reason as on Linux.
 
-The rollback below (restoring a pre-upgrade backup with the older binary, and
-a clean start on it) is executed by `TestUpgrade_OlderBinaryRefused`, which
-simulates the newer binary by recording a schema version above the one it was
-built with; the backup steps above are not.
+The upgrade steps above are not executed by a test; the [rollback](#rollback)
+is.
 
 ---
 
@@ -432,16 +439,17 @@ C:\ProgramData\sqi`, the backup, `sqi-server.exe.old` copied back over
 `sqi-server.exe`, (on PostgreSQL) the empty database, `restore`, and
 `service start`. Everything the farm did after the
 pre-upgrade backup is gone, and the tasks that backup caught in flight run
-again; [Restore](#restore) says exactly what that means. Executed by
-`TestUpgrade_OlderBinaryRefused`.
+again; see [What runs again](#what-runs-again). Executed by
+`TestUpgrade_OlderBinaryRefused`, which stands in for the newer binary by
+recording a schema version above its own.
 
 ### Rolling back to v0.3.0 or earlier
 
-Releases before `restore` existed have neither the `restore` command nor the
-version check: v0.3.0 starts on a newer database without complaint and runs
-against a schema it does not know. They support only SQLite, so put the
-pre-upgrade backup in place by hand, with the server stopped. This procedure is
-not executed by a test.
+v0.3.0 and earlier have neither the `restore` command nor the schema version
+check: they start on a newer database without complaint and run against a
+schema they do not know. They support only SQLite, so put the pre-upgrade
+backup in place by hand, with the server stopped. This procedure is not
+executed by a test.
 
 ```sh
 sudo systemctl stop sqi-server
@@ -457,9 +465,8 @@ sudo install -m 0755 /usr/local/bin/sqi-server.old /usr/local/bin/sqi-server
 
 Then stop every worker before you start the old server. Without `restore`
 nothing closes the attempts the backup recorded as open (tasks assigned or
-running), and v0.3.0 has
-no [reconciliation](#reconciliation): a task whose worker stays online stays
-`running`. With the workers stopped, start the server and wait until the web
+running), and v0.3.0 has no [reconciliation](#reconciliation): a task whose
+worker stays online stays `running`. With the workers stopped, start the server and wait until the web
 UI or `GET /api/v1/workers` shows them offline (about
 `scheduler.heartbeat_timeout`, 30 s by default); taking them offline returns
 their tasks to `ready`. Then start the workers again.
@@ -745,8 +752,7 @@ The `sqi-server` image does not include `pg_restore`, so with
 [`deploy/docker-compose.postgres.yml`](https://github.com/uberware/sqi/blob/main/deploy/docker-compose.postgres.yml)
 `restore` runs in a one-off container of the `postgres` service, with the
 server's binary and its data volume mounted into it. The file's header has the
-commands, which were checked by hand against that file (they are not run in
-CI).
+commands; they are not executed by a test.
 
 ### After point-in-time recovery or a snapshot: `--in-place`
 
@@ -765,9 +771,10 @@ NATS data directory moved to /var/lib/sqi/nats.pre-restore-20261013T143953Z
 ```
 
 `--in-place` takes the lock, migrates, fences and moves the NATS directory
-aside (steps 1 and 4 to 6 above); it loads nothing. It refuses a SQLite path with no
-database and a PostgreSQL database with no sqi schema, since there would be
-nothing to fence.
+aside (steps 1 and 4 to 6 above); it loads nothing. It refuses a SQLite path
+with no database, and a database on either backend with no sqi schema (an
+empty file, or one sqi never migrated), and checks this before it changes
+anything.
 
 On SQLite it also refuses a database whose `-wal` file is not empty. Nothing
 ties a `-wal` to the database it was written for, and SQLite applies whatever
@@ -778,10 +785,9 @@ old `-wal` and `-shm` aside together with the old database, or use
 crashed, or a snapshot took them together), run `sqi-server migrate up` on it,
 which folds the `-wal` in, then run `--in-place` again. Do not start a server
 on it instead: that would fold the `-wal` in too, but the server would run
-unfenced. A cleanly stopped server leaves no `-wal`, or an empty one. A
-non-empty `-wal` may hold nothing the database file lacks (frames already
-copied in but not yet truncated away), but nothing short of reading it can
-tell, so `--in-place` refuses it either way.
+unfenced. A cleanly stopped server leaves no `-wal`, or an empty one;
+`--in-place` refuses any non-empty `-wal`, even one holding nothing the
+database file lacks.
 
 ### What runs again
 
@@ -801,6 +807,15 @@ The restored farm is the farm at the moment of the backup:
   `scheduler: task.logs for unknown attempt — discarding`, and at Info,
   `scheduler: stale running report — discarding` and
   `scheduler: stale failure report — discarding`.
+- **A ghost run still occupies its worker.** The fence closes the attempt in
+  the database, not the process: the worker runs the task to its end. The
+  scheduler counts a worker's busy cores from the database, so meanwhile it can
+  lease that worker more work than it has cores for, and the task's re-run on
+  another worker can write the same outputs at the same time. Where that
+  matters (long tasks, outputs written in place), stop the workers that were
+  running tasks before you start the restored server, and start them again
+  after: stopping `sqi-worker` ends its tasks once
+  `worker.shutdown_grace_period` runs out.
 - **Everything written after the backup is gone**: jobs submitted since, and
   accounts, API keys, sessions, products and worker broker credentials created
   since. With broker authentication on, a worker enrolled after the backup
@@ -855,13 +870,12 @@ Remove-Item -Recurse C:\ProgramData\sqi\data\nats.pre-restore-*
 ## Reconciliation
 
 A server can believe a task is in flight (assigned or running) on a live
-worker that no longer holds it: its completion report was lost with a JetStream directory, the
-database was restored by hand, or the worker dropped the task. The worker is
-healthy, so the offline sweep never reclaims it, and before this release such a
-task stayed `running` for good.
+worker that no longer holds it: its completion report was lost with a
+JetStream directory, the database was restored by hand, or the worker dropped
+the task. The worker is healthy, so the offline sweep never reclaims it.
 
-Each worker of this release lists, in every heartbeat, the attempts it holds,
-from the moment it receives them until their final status is sent. On every
+A worker lists, in every heartbeat, the attempts it holds, from the moment
+it receives them until their final status is sent. On every
 heartbeat-sweep tick the server reclaims an open attempt when the worker's
 latest heartbeat is current, does not list it, and has not listed it for
 [`scheduler.reconcile_grace`](configuration.md#schedulerreconcile_grace)
@@ -889,23 +903,20 @@ was open, and counts it in `sqi_scheduler_tasks_reconciled_total`.
 - **Heartbeats with a skewed clock are ignored.** A heartbeat whose worker
   timestamp is more than `heartbeat_timeout` from the moment it arrives does
   not count (the server warns once until it recovers: `scheduler: worker
-  heartbeat delayed or skewed`), so that worker's tasks are not reconciled until its clock or its
-  delivery recovers. Keep worker clocks synchronized.
-- **Older workers are never reconciled.** Workers from v0.3.0 and earlier send
-  no attempt list. They are still covered by the offline sweep and by
-  `restore`'s fence. A worker of this release holding nothing sends an empty
-  list, which counts.
+  heartbeat delayed or skewed`), so that worker's tasks are not reconciled
+  until its clock or its delivery recovers. Keep worker clocks synchronized.
+- **Workers from v0.3.0 and earlier are never reconciled.** They send no
+  attempt list, and are covered only by the offline sweep and by `restore`'s
+  fence. A current worker holding nothing sends an empty list, which counts.
 
 Executed by `TestRestore_MixedAgeNATSDir` (a database restored by hand beside a
 newer NATS directory is recovered by reconciliation, and a replayed older one
 duplicates no log row) and, for the late-report case, by
 `TestReconcileAttempts_LateTerminalReportIsDiscarded`.
 
-Log chunks can be delivered to the server more than once (after a crash, or
-an acknowledgement lost on its way back, JetStream delivers again chunks the
-server already stored; a clean stop records every acknowledgement, so the
-next start delivers none again). Each is stored once:
-a chunk is identified by its attempt and the worker's sequence number.
+JetStream can deliver a log chunk to the server more than once (after a crash,
+or when an acknowledgement is lost; not after a clean stop). Each chunk is
+stored once, identified by its attempt and the worker's sequence number.
 
 ---
 
@@ -919,8 +930,7 @@ same guard keeps the commands that rewrite the database (`migrate up`,
 |---|---|
 | `serve`, `migrate up`, `restore`, `store copy` (both its SQLite source and its PostgreSQL target) | `migrate status`, `backup`, `worker token issue`, `worker enroll`, `worker revoke`, `worker list` |
 
-A backup or a worker-credential change against a running server is
-legitimate, so those work while it runs.
+The commands in the right-hand column work while a server runs.
 
 A consequence for upgrades and supervisors: **no overlapping restarts.** Stop
 the old server before starting the new one. A supervisor that starts the
@@ -940,7 +950,7 @@ startup failed: open store: another sqi-server is using sqi.db (lock file sqi.db
 
 The lock, not the file, is the guard. The operating system drops it when the
 process exits however it exits, so a crashed server leaves nothing stale, and
-the file stays on disk for good. **Never delete it**: that frees nothing, and a
+the file stays on disk. **Never delete it**: that frees nothing, and a
 process opening it at that moment would lock a file the next one cannot see. To
 find the holder on Linux, `sudo fuser -v /var/lib/sqi/sqi.db.lock`.
 
@@ -955,7 +965,7 @@ the same database exits at once, logging `sqi-server exited with error` with
 this error:
 
 ```
-startup failed: open store: another sqi-server is already using this database (PostgreSQL advisory lock 0x7371692d73727672 is held); running more than one server on one database is not supported yet; stop it first
+startup failed: open store: another sqi-server is already using this database (PostgreSQL advisory lock 0x7371692d73727672 is held); only one server can use a database, so stop the other one first
 ```
 
 Another server, or one that has not finished stopping, holds the lock on this
@@ -984,7 +994,7 @@ again.
 
 Advisory locks belong to one database, so servers on different databases of
 the same PostgreSQL cluster do not collide. Running several servers against
-one database, for high availability, is not supported yet.
+one database, for high availability, is not supported.
 
 ---
 
@@ -1244,10 +1254,10 @@ A schema the command migrated into an empty database stays, still empty, so
 `store copy` can be run again once the cause is fixed; a migration that itself
 failed partway needs the database dropped and created again.
 
-**How long it takes.** Measured on a 12-vCPU WSL2 host with PostgreSQL 18 in
-Docker on tmpfs: a small farm (1,232 rows) 0.21 s, 100,000 tasks (a 25 MB
-SQLite file) 4.8 s, and 1,000,000 tasks (245 MB) 46.8 s, all of it one
-PostgreSQL transaction.
+**How long it takes.** As a sizing guide, on a 12-vCPU host with PostgreSQL
+on tmpfs: about 5 s for 100,000 tasks (a 25 MB SQLite file) and 47 s for
+1,000,000 tasks (245 MB), all of it one PostgreSQL transaction. The server
+stays stopped for that long.
 
 ---
 

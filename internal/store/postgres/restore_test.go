@@ -26,12 +26,12 @@ import (
 func TestPostgres_RestoreRoundTrip(t *testing.T) {
 	storetest.RequirePostgresTool(t, "pg_dump")
 	storetest.RequirePostgresTool(t, "pg_restore")
-	src := storetest.Postgres(t)
+	src, srcDSN := storetest.PostgresAndDSN(t)
 	if _, err := src.CreateFarm(t.Context(), store.Farm{ID: "farm-restore", Name: "kept"}); err != nil {
 		t.Fatal(err)
 	}
 	out := filepath.Join(t.TempDir(), "sqi.dump")
-	if err := src.Backup(t.Context(), out); err != nil {
+	if err := postgres.BackupDSN(t.Context(), srcDSN, out, nil); err != nil {
 		t.Fatal(err)
 	}
 	v, err := postgres.ArchiveSchemaVersion(t.Context(), out)
@@ -234,12 +234,15 @@ func TestArchiveSchemaVersion_AMissingToolIsNotAnUnreadableArchive(t *testing.T)
 	}
 }
 
-func TestPostgres_RequireMigratedDatabase(t *testing.T) {
-	if err := postgres.RequireMigratedDatabase(t.Context(), storetest.PostgresEmptyDSN(t)); err == nil ||
-		!strings.Contains(err.Error(), "no sqi schema") {
-		t.Fatalf("RequireMigratedDatabase(empty) = %v, want a refusal", err)
+func TestPostgres_SchemaVersionDSN(t *testing.T) {
+	if v, err := postgres.SchemaVersionDSN(t.Context(), storetest.PostgresEmptyDSN(t)); err != nil || v != 0 {
+		t.Fatalf("SchemaVersionDSN(empty) = %d, %v; want 0", v, err)
 	}
-	if err := postgres.RequireMigratedDatabase(t.Context(), storetest.PostgresDSN(t)); err != nil {
-		t.Fatalf("RequireMigratedDatabase(migrated) = %v", err)
+	maxV, err := migrations.MaxVersion("postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, err := postgres.SchemaVersionDSN(t.Context(), storetest.PostgresDSN(t)); err != nil || v != maxV {
+		t.Fatalf("SchemaVersionDSN(migrated) = %d, %v; want %d", v, err, maxV)
 	}
 }

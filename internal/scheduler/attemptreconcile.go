@@ -28,6 +28,7 @@ type reconciler struct {
 }
 
 type workerReport struct {
+	workerAt   time.Time // the worker's own timestamp, for ordering its reports
 	receivedAt time.Time
 	attempts   map[string]struct{}
 }
@@ -40,11 +41,18 @@ func newReconciler(grace, skew time.Duration) *reconciler {
 }
 
 // record notes one heartbeat's attempts. It ignores a report whose worker
-// timestamp is more than skew from its receipt — a heartbeat delayed in
-// delivery (a JetStream replay, a consumer stalled behind a long write) or
-// sent from a badly skewed clock — and returns true the first time that
-// happens in an episode, so the caller can warn once per episode rather than
-// once per heartbeat. The next in-window report ends the episode.
+// timestamp is more than skew from its receipt (a heartbeat delayed in
+// delivery, such as a JetStream replay or a consumer stalled behind a long
+// write, or one sent from a skewed clock) and returns true the first time that
+// happens in an episode, so the caller warns once per episode rather than once
+// per heartbeat. The next in-window report ends the episode.
+//
+// A report older, by the worker's own clock, than the one already recorded is
+// ignored, because a delayed heartbeat must not replace a newer one whose
+// attempts it may omit. An equal timestamp (a redelivery, or a report from the
+// same clock tick) is taken. After a worker's clock steps backwards, its
+// reports are ignored until the recorded one is pruned; until then that report
+// goes stale and due reclaims none of the worker's attempts.
 func (r *reconciler) record(workerID string, workerAt, receivedAt time.Time, attemptIDs []string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -54,12 +62,15 @@ func (r *reconciler) record(workerID string, workerAt, receivedAt time.Time, att
 		return first
 	}
 	delete(r.warned, workerID)
+	if prev, ok := r.reports[workerID]; ok && workerAt.Before(prev.workerAt) {
+		return false
+	}
 	set := make(map[string]struct{}, len(attemptIDs))
 	for _, id := range attemptIDs {
 		set[id] = struct{}{}
 		r.lastSeen[id] = receivedAt
 	}
-	r.reports[workerID] = workerReport{receivedAt: receivedAt, attempts: set}
+	r.reports[workerID] = workerReport{workerAt: workerAt, receivedAt: receivedAt, attempts: set}
 	return false
 }
 
@@ -130,34 +141,20 @@ func (s *Scheduler) reconcileAttempts(ctx context.Context, now time.Time) {
 }
 
 // reclaimUnreportedAttempt hands one unreported attempt's task back through
-// the same single-task reclaim, and the same follow-up, as a worker-shutdown
-// report (handleTaskShutdown): no retry consumed, no failure counted.
+// the same reclaim as a worker-shutdown report (handleTaskShutdown): no retry
+// consumed, no failure counted.
 func (s *Scheduler) reclaimUnreportedAttempt(ctx context.Context, a store.OpenAttempt, now time.Time) {
-	reclaimed, err := s.store.ReclaimTaskAttempt(ctx, a.AttemptID, a.TaskID, now)
-	if err != nil {
-		if !errors.Is(err, context.Canceled) {
-			s.logger.WarnContext(ctx, "scheduler: reclaim unreported attempt failed",
-				slog.String("attempt_id", a.AttemptID), slog.Any("error", err))
+	reclaimed, err := s.reclaimAttempt(ctx, a.AttemptID, a.TaskID, now)
+	if reclaimed {
+		if s.metrics != nil {
+			s.metrics.SchedulerTasksReconciled.Inc()
 		}
-		return
+		s.logger.WarnContext(ctx, "scheduler: reclaimed an attempt its worker no longer reports",
+			slog.String("worker_id", a.WorkerID), slog.String("task_id", a.TaskID),
+			slog.String("attempt_id", a.AttemptID), slog.Duration("open_for", now.Sub(a.CreatedAt)))
 	}
-	// Closed either way: by this reclaim, or meanwhile by its report, a cancel
-	// or the offline sweep. It can receive no further log chunk.
-	s.attemptCache.evict(a.AttemptID)
-	if !reclaimed {
-		return
+	if err != nil && !errors.Is(err, context.Canceled) {
+		s.logger.WarnContext(ctx, "scheduler: reclaim unreported attempt failed",
+			slog.String("task_id", a.TaskID), slog.String("attempt_id", a.AttemptID), slog.Any("error", err))
 	}
-	if s.metrics != nil {
-		s.metrics.SchedulerTasksReconciled.Inc()
-	}
-	s.logger.WarnContext(ctx, "scheduler: reclaimed an attempt its worker no longer reports",
-		slog.String("worker_id", a.WorkerID), slog.String("task_id", a.TaskID),
-		slog.String("attempt_id", a.AttemptID), slog.Duration("open_for", now.Sub(a.CreatedAt)))
-	task, err := s.store.GetTask(ctx, a.TaskID)
-	if err != nil {
-		s.logger.WarnContext(ctx, "scheduler: read reclaimed task failed",
-			slog.String("task_id", a.TaskID), slog.Any("error", err))
-		return
-	}
-	s.notifyTaskReclaimed(ctx, task, now)
 }

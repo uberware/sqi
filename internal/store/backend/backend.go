@@ -42,7 +42,6 @@ type Options struct {
 type Backend interface {
 	store.Store
 	Ping(ctx context.Context) error
-	Backup(ctx context.Context, out string) error
 }
 
 // Checkpointer is implemented by a backend with a write-ahead log to fold back

@@ -22,7 +22,6 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/uberware/sqi/internal/store"
-	"github.com/uberware/sqi/internal/store/migrations"
 	"github.com/uberware/sqi/internal/store/postgres"
 	"github.com/uberware/sqi/internal/store/sqlite"
 	"github.com/uberware/sqi/internal/store/storetest"
@@ -219,21 +218,6 @@ func TestExitOnErr_Nil(t *testing.T) {
 	})
 }
 
-// TestOpenMigrateDB_ErrorPaths verifies the validation guard and the success
-// path of openMigrateDB without needing goose migration files.
-func TestOpenMigrateDB_ErrorPaths(t *testing.T) {
-	t.Run("empty path returns validation error", func(t *testing.T) {
-		db, err := openMigrateDB("")
-		if err == nil {
-			db.Close()
-			t.Fatal("expected error for empty path, got nil")
-		}
-		if !strings.Contains(err.Error(), "empty") {
-			t.Errorf("error should mention 'empty'; got: %v", err)
-		}
-	})
-}
-
 // TestOpenMigrateDB_ValidPath verifies that openMigrateDB opens an SQLite
 // database and applies pragmas when given a real path.
 func TestOpenMigrateDB_ValidPath(t *testing.T) {
@@ -395,7 +379,7 @@ func TestRootCmd_MigrateSubcommands(t *testing.T) {
 	}
 }
 
-// TestMigrateDown_IsGone verifies "migrate down" is removed (rollback is
+// TestMigrateDown_IsGone verifies "migrate down" does not exist (rollback is
 // restoring the pre-upgrade backup). Cobra prints usage for an unknown
 // subcommand of a command with no RunE and returns nil, so the assertion is on
 // the schema version rather than on the error.
@@ -709,6 +693,31 @@ func TestMigrateCmd_Postgres_UpThenStatus(t *testing.T) {
 	}
 }
 
+// TestMigrateCmd_Postgres_StatusWritesNothing pins that migrate status on an
+// empty PostgreSQL database lists every migration pending and creates nothing:
+// goose's own Status would create its version table, and restore would then
+// refuse the database as not empty.
+func TestMigrateCmd_Postgres_StatusWritesNothing(t *testing.T) {
+	dsn := storetest.PostgresEmptyDSN(t)
+	prepareRoot([]string{"migrate", "status", "--dsn", dsn})
+	out := captureStdout(t, func() {
+		if err := Execute(); err != nil {
+			t.Fatalf("migrate status: %v", err)
+		}
+	})
+	if !strings.Contains(out, "00037_baseline.sql") {
+		t.Fatalf("migrate status on an empty database:\n%s", out)
+	}
+	for l := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
+		if !strings.HasPrefix(l, "pending") {
+			t.Errorf("migrate status line %q, want every migration pending", l)
+		}
+	}
+	if err := postgres.RequireEmptyDatabase(t.Context(), dsn); err != nil {
+		t.Fatalf("migrate status wrote to the database: %v", err)
+	}
+}
+
 // TestBackupCmd_Postgres backs up a migrated PostgreSQL database through the
 // CLI with pg_dump.
 func TestBackupCmd_Postgres(t *testing.T) {
@@ -822,11 +831,11 @@ func TestMigrateStatus_WritesNothing(t *testing.T) {
 	})
 }
 
-// TestMigrateUp_FoldsInACrashedServersWAL backs the advice restore --in-place
-// gives for a database whose own -wal is not empty (its server crashed, or a
-// snapshot took them together): "sqi-server migrate up" folds the -wal into
-// the database file, so --in-place can then run, without a server ever
-// starting on the database unfenced.
+// TestMigrateUp_FoldsInACrashedServersWAL verifies the advice restore
+// --in-place gives for a database with a non-empty -wal (its server crashed,
+// or a snapshot took them together): "sqi-server migrate up" folds the -wal
+// into the database file, so --in-place can then run without a server starting
+// on the database unfenced.
 func TestMigrateUp_FoldsInACrashedServersWAL(t *testing.T) {
 	live := filepath.Join(t.TempDir(), "live.db")
 	st, err := sqlite.Open(t.Context(), live, sqlite.DefaultOptions())
@@ -921,18 +930,11 @@ func TestCLI_APathWithAQuestionMark(t *testing.T) {
 func TestCLI_RefusesANewerSchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "test.db")
 	createTestDB(t, path)
-	maxV, err := migrations.MaxVersion("sqlite")
-	if err != nil {
-		t.Fatal(err)
-	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(t.Context(),
-		`INSERT INTO goose_db_version (version_id, is_applied) VALUES (?, 1)`, maxV+1); err != nil {
-		t.Fatal(err)
-	}
+	storetest.RecordNewerSchema(t, db, "sqlite")
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -982,7 +984,7 @@ func restoreFixture(t *testing.T) (db, backup, natsDir string) {
 		Task("t1", "s1", store.TaskStatusRunning).
 		SubmitLeasing(t, st, "w1")
 	backup = filepath.Join(dir, "backup.db")
-	if err := st.Backup(t.Context(), backup); err != nil {
+	if err := sqlite.BackupPath(t.Context(), db, backup); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.Close(); err != nil {
@@ -1030,10 +1032,11 @@ func TestRestoreCmd_SQLite(t *testing.T) {
 	})
 }
 
-// TestRestoreCmd_UnloadableConfig verifies restore does not fall back to the
-// built-in defaults when the configuration fails to load without -c, as the
-// other CLI commands do: it would restore into, and quarantine, the wrong
-// places. Naming both the store and the NATS directory is the way through.
+// TestRestoreCmd_UnloadableConfig verifies that, unlike the other CLI
+// commands, restore does not fall back to the built-in defaults when the
+// configuration fails to load without -c: it would restore into, and
+// quarantine, the wrong places. Naming both the store and the NATS directory
+// lets it run.
 func TestRestoreCmd_UnloadableConfig(t *testing.T) {
 	breakages := map[string]func(t *testing.T){
 		"unparseable SQI_ variable": func(t *testing.T) {

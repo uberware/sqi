@@ -19,45 +19,50 @@ import (
 // the other backend never produces, so it fails verification rather than
 // matching by accident.
 type digest struct {
-	h    hash.Hash
-	rows int64
+	h       hash.Hash
+	rows    int64
+	scratch [20]byte // formats an integer token without allocating
 }
 
 func newDigest() *digest { return &digest{h: sha256.New()} }
 
 func (d *digest) row(vals []any) {
 	d.rows++
-	d.write("R" + strconv.Itoa(len(vals)))
+	d.write('R', strconv.AppendInt(d.scratch[:0], int64(len(vals)), 10))
 	for _, v := range vals {
-		d.write(token(v))
+		d.value(v)
 	}
 }
 
-func token(v any) string {
+func (d *digest) value(v any) {
 	switch x := v.(type) {
 	case nil:
-		return "N"
+		d.write('N', nil)
 	case int64:
-		return "I" + strconv.FormatInt(x, 10)
+		d.write('I', strconv.AppendInt(d.scratch[:0], x, 10))
 	case bool:
 		if x {
-			return "I1"
+			d.write('I', []byte("1"))
+		} else {
+			d.write('I', []byte("0"))
 		}
-		return "I0"
 	case string:
-		return "S" + x
+		d.write('S', []byte(x))
 	case []byte:
-		return "S" + string(x)
+		d.write('S', x)
 	default:
-		return fmt.Sprintf("?%T:%v", v, v)
+		d.write('?', []byte(fmt.Sprintf("%T:%v", v, v)))
 	}
 }
 
-func (d *digest) write(tok string) {
-	var n [8]byte
-	binary.BigEndian.PutUint64(n[:], uint64(len(tok)))
+// write hashes one token: its length, its tag, then its body, straight into
+// the hash so a value is never concatenated with its tag first.
+func (d *digest) write(tag byte, body []byte) {
+	var n [9]byte
+	binary.BigEndian.PutUint64(n[:8], uint64(1+len(body)))
+	n[8] = tag
 	d.h.Write(n[:])
-	d.h.Write([]byte(tok))
+	d.h.Write(body)
 }
 
 // sum is the hash and the row count, for comparison and for messages.

@@ -316,7 +316,7 @@ type SchedulerConfig struct {
 	// restored database). 0 disables reconciliation; any other value must be
 	// at least HeartbeatTimeout. Default: 2m, or HeartbeatTimeout when that is
 	// longer and this key is set neither in the file nor in the environment
-	// (the loader resolves it; [DefaultConfig] itself always says 2m).
+	// (the loader applies that; [DefaultConfig] returns 2m).
 	// Env: SQI_SCHEDULER_RECONCILE_GRACE
 	ReconcileGrace time.Duration `yaml:"reconcile_grace"`
 

@@ -6,14 +6,14 @@ package integration
 
 // restore_test.go — the backup, restore and rollback runbooks of
 // docs/operations.md, executed against the real server code with a real
-// sqi-worker subprocess (H5 design §8.4).
+// sqi-worker subprocess.
 //
 // The worker is started once and outlives every server restart in a test: it
 // reconnects to the next server on the same NATS address under its stable
 // worker ID, exactly as a farm's workers ride out a server restore. Whatever
 // it was running when the server stopped becomes a ghost run whose late
-// reports reach a database that no longer expects them — which is the case the
-// restore fence and the discard of superseded reports exist for, and which
+// reports reach a database that no longer expects them: the case the restore
+// fence and the discard of superseded reports handle, and which
 // TestBackupRestore_FarmResumes asserts.
 
 import (
@@ -105,11 +105,12 @@ steps:
           args: ['-c', 'sleep 3; printf "done %s\n" farm']
 `
 
-// TestBackupRestore_FarmResumes is the restore runbook, executed: back up
-// while tasks run, let the farm move on, stop, restore, start. It asserts:
+// TestBackupRestore_FarmResumes executes the restore runbook in
+// docs/operations.md: back up while tasks run, let the farm move on, stop,
+// restore, start. It asserts:
 //
-//   - right after the restore, before any server runs (design §5.5's first
-//     property): no attempt is open, and every task of the resurrected
+//   - right after the restore, before any server runs: no attempt is open,
+//     and every task of the resurrected
 //     non-terminal jobs is ready, pending or succeeded, none assigned or
 //     running;
 //   - after the restart: every job and task is terminal and every attempt is
@@ -236,13 +237,13 @@ func TestRestore_MixedAgeNATSDir(t *testing.T) {
 		}
 		copyDir(t, oldNATS, ts.NATSDir)
 		// The copy alone replays nothing: a cleanly stopped server writes the
-		// log consumer's ack state with its stream, so the two agree (measured:
-		// after the restart the consumer's ack floor is its delivered sequence
-		// and it delivers no chunk). Dropping that state models a directory
-		// whose consumer state is older than its stream — a crashed server's —
-		// and the server recreates the consumer and delivers every chunk again.
-		// Without the drop, waitLogReplayDrained would still report job 1's
-		// chunks: a durable consumer keeps its delivered count across restarts.
+		// log consumer's ack state with its stream, so the two agree and the
+		// restarted consumer delivers no chunk. Dropping that state models a
+		// directory whose consumer state is older than its stream (a crashed
+		// server's): the server recreates the consumer and delivers every
+		// chunk again. Without the drop, waitLogReplayDrained would still count
+		// job 1's chunks: a durable consumer keeps its delivered count across
+		// restarts.
 		dropConsumerState(t, ts.NATSDir, bus.StreamLogs, logsConsumer)
 		restoreByHand(t, ts, backup)
 		ts = restartServer(t, ts)
@@ -305,10 +306,11 @@ func TestRestore_MixedAgeNATSDir(t *testing.T) {
 	})
 }
 
-// TestUpgrade_OlderBinaryRefused is the rollback runbook: a database a newer
-// sqi-server migrated is refused at start, and restoring the backup taken
-// before the upgrade brings the older server back up on the old data. It runs
-// a job with the mock worker, so it needs no POSIX shell and runs on Windows.
+// TestUpgrade_OlderBinaryRefused executes the rollback runbook in
+// docs/operations.md: a database a newer sqi-server migrated is refused at
+// start, and restoring the backup taken before the upgrade brings the older
+// server back up on the old data. It runs a job with the mock worker, so it
+// needs no POSIX shell and runs on Windows.
 func TestUpgrade_OlderBinaryRefused(t *testing.T) {
 	ts := startServer(t)
 	requireBackupTools(t, ts.Store)
@@ -322,19 +324,14 @@ func TestUpgrade_OlderBinaryRefused(t *testing.T) {
 	ts.Stop(t)
 
 	// A newer binary's migration.
-	driver := backend.Name(ts.Store.Driver)
-	maxV, err := migrations.MaxVersion(driver)
-	if err != nil {
-		t.Fatal(err)
-	}
-	addGooseVersion(t, ts.Store, maxV+1)
+	newer := addNewerSchema(t, ts.Store)
 
 	if _, err := tryBootServer(t, ts.cfg, ts.Store); !errors.Is(err, migrations.ErrSchemaTooNew) {
-		t.Fatalf("start on a schema-%d database = %v, want ErrSchemaTooNew", maxV+1, err)
+		t.Fatalf("start on a schema-%d database = %v, want ErrSchemaTooNew", newer, err)
 	} else {
 		var tooNew *migrations.SchemaTooNewError
-		if !errors.As(err, &tooNew) || tooNew.DBVersion != maxV+1 || tooNew.BinaryVersion != maxV {
-			t.Fatalf("start error = %v, want one naming database version %d and binary version %d", err, maxV+1, maxV)
+		if !errors.As(err, &tooNew) || tooNew.DBVersion != newer || tooNew.BinaryVersion != newer-1 {
+			t.Fatalf("start error = %v, want one naming database version %d and binary version %d", err, newer, newer-1)
 		}
 	}
 
@@ -420,23 +417,18 @@ func restoreByHand(t *testing.T, ts *testServer, backup string) {
 	copyFile(t, backup, ts.Store.SQLitePath)
 }
 
-// addGooseVersion records version as applied in so's goose table, as a newer
-// sqi-server's migration would.
-func addGooseVersion(t *testing.T, so backend.Options, version int64) {
+// addNewerSchema records in so's goose table the version a newer sqi-server's
+// migration would, and returns it.
+func addNewerSchema(t *testing.T, so backend.Options) int64 {
 	t.Helper()
-	db, q := openSQL(t, so), `INSERT INTO goose_db_version (version_id, is_applied) VALUES (?, 1)`
-	if so.Driver == backend.DriverPostgres {
-		q = `INSERT INTO goose_db_version (version_id, is_applied) VALUES ($1, true)`
-	}
-	_, err := db.ExecContext(t.Context(), q, version)
+	db := openSQL(t, so)
+	v := storetest.RecordNewerSchema(t, db, backend.Name(so.Driver))
 	// Closed now, not at cleanup: Windows cannot move an open file aside, and
 	// the rollback restore moves this database aside.
-	if cerr := db.Close(); err == nil {
-		err = cerr
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
 	}
-	if err != nil {
-		t.Fatalf("record schema version %d: %v", version, err)
-	}
+	return v
 }
 
 // openSQL opens a plain database/sql handle on so's database (the drivers are
@@ -568,8 +560,8 @@ func waitOnlineWorkers(t *testing.T, ts *testServer, farmID string, n int) {
 	}
 }
 
-// assertRestoredFenced checks design §5.5's first property on the restored
-// database before any server starts on it: no attempt is open, and every task
+// assertRestoredFenced checks the restored database before any server starts
+// on it: no attempt is open, and every task
 // of the given (resurrected, non-terminal) jobs is ready, pending or
 // succeeded — none is left assigned or running.
 func assertRestoredFenced(t *testing.T, so backend.Options, jobIDs ...string) {

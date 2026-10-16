@@ -399,10 +399,10 @@ for the config knob.
 reaper, `reconcileAttempts` (`internal/scheduler/attemptreconcile.go`) reclaims
 attempts a live worker has stopped reporting. Every heartbeat from a current
 worker carries `attempts_reported: true` and `active_attempt_ids`, the attempts
-its process holds from lease decode until the task's goroutine exits (an
-additive protocol field, so no `ProtocolVersion` bump; an older worker sends
-neither and is never reconciled, and one holding nothing sends
-`attempts_reported: true` with no IDs, which is a report like any other).
+its process holds from lease decode until the task's goroutine exits. The
+fields are additive, with no `ProtocolVersion` bump: an older worker sends
+neither and is never reconciled, and a worker holding nothing sends
+`attempts_reported: true` with no IDs, which is a report like any other.
 The heartbeat handler records each report in an in-memory, per-process
 `reconciler`, unless the worker's timestamp is more than
 `scheduler.heartbeat_timeout` from its receipt. The sweep lists the store's
@@ -546,8 +546,8 @@ NATS consumer (internal/scheduler/logingest.go)
 ```
 
 Ingest is idempotent per chunk. `task_logs` is unique on `(attempt_id,
-worker_seq)` (migration `00038`, which first deleted existing duplicates,
-keeping the row received first), so a redelivered chunk inserts nothing:
+worker_seq)` (migration `00038`, which removes existing duplicates, keeping
+the row received first), so a redelivered chunk inserts nothing:
 `CreateTaskLog` returns `store.ErrConflict` and the consumer acks it. A
 foreign-key failure (a chunk for an attempt that no longer exists) returns
 the same error and is acked too, since redelivery cannot cure it. Chunks for a
@@ -952,7 +952,7 @@ out of the write pool and holds for its whole life, so `max_conns: 16` leaves
 15 connections for work. If another server holds the lock, start-up fails:
 
 ```
-another sqi-server is already using this database (PostgreSQL advisory lock 0x7371692d73727672 is held); running more than one server on one database is not supported yet; stop it first
+another sqi-server is already using this database (PostgreSQL advisory lock 0x7371692d73727672 is held); only one server can use a database, so stop the other one first
 ```
 
 Advisory locks are per database, so servers on different databases of one
@@ -1291,17 +1291,18 @@ Upgrading from v0.3.0 changes the following behaviour.
   the batches it already committed: those tasks are `ready` again, and the
   scheduler announces them (a ready event each, and the warning log line)
   before it logs the error.
-- **Schema changes are forward-only.** `migrate down` is gone; a binary
+- Schema changes are forward-only. `migrate down` is gone; a binary
   older than the database refuses to start on it, and the way back is
   restoring the pre-upgrade backup (see [Rollback](operations.md#rollback),
   which also covers going back to v0.3.0, a release with no version check and
-  no `restore`). A SQLite server now creates and locks `<sqlite_path>.lock`
+  no `restore`). A SQLite server creates and locks `<sqlite_path>.lock`
   beside its database, and `migrate up`, `restore` and `store copy` refuse to
   run while a server holds it.
-- **Attempt reconciliation is on by default** (`scheduler.reconcile_grace`:
+- Attempt reconciliation is on by default (`scheduler.reconcile_grace`:
   2 minutes, or `heartbeat_timeout` if that is longer, unless set): a task a
-  live worker of this release has stopped reporting for that long is handed
-  back and runs again. Set `0` to keep the old behaviour.
+  live worker has stopped reporting for that long is handed back and runs
+  again. Workers of v0.3.0 and earlier report no attempts and are never
+  reconciled. Set `0` to turn it off.
 - A redelivered log chunk is stored once (migration `00038` removes existing
   duplicates on the first start after upgrade).
 - Stalled-job demotion (a `running` job with tasks waiting but none assigned
@@ -1384,15 +1385,14 @@ parts:
     excluded because its steps wait on another job, not on their own upstream
     steps.
 
-Neither pass touches in-flight attempts, and a server restarting on its own
-database and its own JetStream directory needs no such repair: reports that
-reached the stream before it stopped are still there, and attempt
-reconciliation recovers a task whose report a worker could not deliver. A
-database that was put back (a backup, point-in-time recovery, a snapshot) is
-different. It records as open the attempts that were in flight (assigned or
-running) when it was taken, and the JetStream directory beside it belongs to
-another moment. `sqi-server restore`
-(`internal/restore`) therefore **fences** before any server starts: with the
+Neither pass touches in-flight attempts. A server restarting on its own
+database and JetStream directory needs no such repair: reports that reached
+the stream before it stopped are still there, and attempt reconciliation
+recovers a task whose report a worker could not deliver. A database that was
+put back (a backup, point-in-time recovery, a snapshot) records as open the
+attempts that were in flight (assigned or running) when it was taken, and the
+JetStream directory beside it does not match it. `sqi-server restore`
+(`internal/restore`) therefore fences before any server starts: with the
 single-server lock held, it lists every open attempt (`store.ListOpenAttempts`
 with a far-future cutoff), reclaims each through `store.ReclaimTaskAttempt`
 (task back to `ready`, attempt closed as `worker shut down`, claims released,

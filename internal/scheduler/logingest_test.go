@@ -525,12 +525,12 @@ func (s *fkEnforcingLogStore) CreateTaskLog(ctx context.Context, log store.TaskL
 	return s.Store.CreateTaskLog(ctx, log)
 }
 
-// TestHandleLogChunk_CacheHit_DeletedAttempt_SelfHeals is the regression test
-// for the hazard on the cache-HIT path: a cache hit against an attempt whose
-// row has been deleted out from under it — e.g. DELETE /api/v1/jobs/{id} on
-// an ACTIVE job cancels its tasks and then runs DeleteJob, which removes the
-// task_attempts row, while a worker is still publishing chunks for the
-// window before its process notices — must not turn into a NAK loop.
+// TestHandleLogChunk_CacheHit_DeletedAttempt_SelfHeals pins that a cache hit
+// against an attempt whose row has been deleted out from under it — e.g.
+// DELETE /api/v1/jobs/{id} on an ACTIVE job cancels its tasks and then runs
+// DeleteJob, which removes the task_attempts row, while a worker is still
+// publishing chunks for the window before its process notices — does not turn
+// into a NAK loop.
 //
 // The first chunk populates the cache. Deleting the job removes the attempt
 // row underneath it, but nothing evicts the cache entry on that path (it is
@@ -604,8 +604,7 @@ func TestHandleLogChunk_CacheHit_DeletedAttempt_SelfHeals(t *testing.T) {
 	}
 
 	// The next chunk: the cache is now empty, so this takes the store path,
-	// which correctly discards (acks) a chunk for a vanished attempt —
-	// self-healing, exactly like the pre-cache behavior.
+	// which discards (acks) a chunk for a vanished attempt.
 	redelivery := newChunk(3)
 	s.handleLogChunk(redelivery)
 	if !redelivery.acked {

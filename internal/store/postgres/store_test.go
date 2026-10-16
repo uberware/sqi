@@ -313,14 +313,7 @@ func TestLockDatabase_ExcludesAServerAndIsReleasable(t *testing.T) {
 func TestPostgres_OpenRefusesANewerSchema(t *testing.T) {
 	dsn := storetest.PostgresDSN(t) // fresh, migrated
 	db := openRaw(t, dsn)
-	maxV, err := migrations.MaxVersion("postgres")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(),
-		`INSERT INTO goose_db_version (version_id, is_applied) VALUES ($1, true)`, maxV+1); err != nil {
-		t.Fatal(err)
-	}
+	storetest.RecordNewerSchema(t, db, "postgres")
 	for _, auto := range []bool{true, false} {
 		_, err := postgres.Open(t.Context(), dsn, postgres.Options{MaxConns: 2, AutoMigrate: auto, ServerLock: true})
 		if !errors.Is(err, migrations.ErrSchemaTooNew) {

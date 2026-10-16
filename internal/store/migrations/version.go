@@ -6,8 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"strconv"
 	"strings"
+
+	"github.com/pressly/goose/v3"
 )
 
 // ErrSchemaTooNew means the database was migrated by a newer sqi-server than
@@ -44,17 +45,12 @@ func MaxVersion(driver string) (int64, error) {
 	}
 	var maxV int64
 	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".sql") {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
 			continue
 		}
-		num, _, ok := strings.Cut(name, "_")
-		if !ok {
-			continue
-		}
-		v, err := strconv.ParseInt(num, 10, 64)
+		v, err := goose.NumericComponent(e.Name()) // goose's own reading of the name
 		if err != nil {
-			return 0, fmt.Errorf("migrations: %s: %w", name, err)
+			return 0, fmt.Errorf("migrations: %w", err)
 		}
 		maxV = max(maxV, v)
 	}

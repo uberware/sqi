@@ -599,9 +599,8 @@ func TestValidate_UnschedulableGraceZeroAllowed(t *testing.T) {
 // LoadWithSources and Validate: the 2m default, 0 (disabled) accepted, and any
 // other explicit value below scheduler.heartbeat_timeout (30s by default) or
 // negative rejected on the reconcile_grace field. Left unset, it resolves to
-// heartbeat_timeout when that is longer than 2m, so a config that raised
-// heartbeat_timeout before reconcile_grace existed still validates; an explicit
-// value is never raised.
+// heartbeat_timeout when that is longer than 2m, so a config that raises only
+// heartbeat_timeout still validates; an explicit value is never raised.
 func TestReconcileGrace(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -2801,8 +2800,8 @@ func TestLoad_StorePostgresDSNSurvivesRedactedMarshal(t *testing.T) {
 
 // TestLoad_RejectsAMalformedFileDuration verifies that every duration key in
 // the config file fails the load on a value that is not a Go duration, naming
-// its line, as the environment layer does — rather than leaving the key at its
-// default as if it were absent. A valid value is still read.
+// its line, as the environment layer does, instead of leaving the key at its
+// default. A valid value is still read.
 func TestLoad_RejectsAMalformedFileDuration(t *testing.T) {
 	keys := []struct{ block, key string }{
 		{"nats:\n  auth:\n", "join_token_ttl"},

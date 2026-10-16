@@ -94,6 +94,25 @@ func TestReconciler_Due(t *testing.T) {
 	}
 }
 
+// TestReconciler_LateOlderReportCannotReplaceANewerOne pins that a heartbeat
+// delivered after a newer one (a redelivery, or one held up in transit) does
+// not replace it. With grace equal to the skew bound and a worker clock running
+// ahead, the older report would otherwise pass the skew check, omit an attempt
+// the newer one named, and be stamped late enough to reclaim it.
+func TestReconciler_LateOlderReportCannotReplaceANewerOne(t *testing.T) {
+	const grace, skew, ahead = 30 * time.Second, 30 * time.Second, 20 * time.Second
+	t0 := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	r := newReconciler(grace, skew)
+	newer := t0.Add(3 * time.Minute)
+	r.record("w1", newer.Add(ahead), newer, []string{"a1"})
+	late := newer.Add(35 * time.Second)
+	r.record("w1", newer.Add(ahead-10*time.Second), late, nil) // sent before a1 was leased
+	open := store.OpenAttempt{AttemptID: "a1", TaskID: "t1", WorkerID: "w1", CreatedAt: newer.Add(-time.Second)}
+	if got := r.due([]store.OpenAttempt{open}, late); len(got) != 0 {
+		t.Fatalf("due = %v; the older report replaced the newer one that holds a1", got)
+	}
+}
+
 // TestReconciler_RecordWarnsOncePerSkewedEpisode pins that a delayed or
 // skewed heartbeat warns once per episode: the first out-of-window report
 // warns, later ones in the same episode do not, and an in-window report ends
@@ -314,7 +333,7 @@ func TestReconcileAttempts_HoldsDuringStartup(t *testing.T) {
 	}
 }
 
-// TestReconcileAttempts_LateTerminalReportIsDiscarded pins spec §6.5: when the
+// TestReconcileAttempts_LateTerminalReportIsDiscarded pins that when the
 // reconciler reclaims an attempt whose terminal report was only delayed (the
 // status consumer more than grace behind), the late report names a closed
 // attempt and is discarded, so the task runs again rather than recording a

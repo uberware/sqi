@@ -245,16 +245,14 @@ func (ts *testServer) stop() error {
 // serverChain is the servers booted one after another on the same ports,
 // store and NATS directory: a server and its [restartServer] successors.
 //
-// One cleanup, registered when the first boots, stops them all. Registering
-// one per restart instead would order them wrongly: t.Cleanup runs last in,
-// first out, so a restarted server's cleanup, registered after the workers a
-// test started against its predecessor, would stop the server first and leave
-// those workers to shut down against a broker that is gone: each logs
-// "natsclient: disconnected", its deregistration is never delivered and its
-// drain fails with "nats: connection reconnecting" (seen in the restore
-// tests' output before this chain existed), and a worker still running a
-// task — a failing test's — would publish that task's terminal status into a
-// reconnect buffer nothing will ever flush.
+// One cleanup, registered when the first boots, stops them all, so the
+// servers stop after every worker the test started against any of them.
+// t.Cleanup runs last in, first out: a cleanup registered per restart would
+// stop that server before the workers started against its predecessor, and
+// those workers would shut down against a broker that is gone — their
+// deregistration never delivered, their drain failing with "nats: connection
+// reconnecting", and a task's terminal status left in a reconnect buffer
+// nothing flushes.
 type serverChain struct {
 	mu      sync.Mutex
 	servers []*testServer
@@ -422,13 +420,12 @@ func launchServer(t *testing.T, cfg server.Config, so backend.Options) (*testSer
 	// A server that cannot bind its HTTP address does not fail: Run logs the
 	// error from its listener goroutine and carries on, and the startup below
 	// only times out ("HTTP server did not come up"), hiding the cause. So
-	// wait, bounded, until both addresses can be bound before booting. For a
-	// restart they belonged to a server that just stopped, and freePort's
-	// ports come from the same ephemeral range as the source ports of
-	// outgoing connections (a reconnecting worker, a database client), so
-	// while the server is down the OS may lend one out. Linux makes that rare
-	// (connect prefers even ports, bind(0) odd ones); other OSes draw both
-	// from one pool.
+	// wait, bounded, until both addresses can be bound before booting. On a
+	// restart the ports belonged to a server that just stopped, and freePort
+	// draws from the same ephemeral range as outgoing connections' source
+	// ports (a reconnecting worker, a database client), so the OS may lend one
+	// out while the server is down. Linux makes that rare (connect prefers
+	// even ports, bind(0) odd ones); other OSes draw both from one pool.
 	if err := waitAddrsBindable(10*time.Second, cfg.HTTPAddr, cfg.NATSAddr); err != nil {
 		return nil, err
 	}

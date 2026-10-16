@@ -1879,9 +1879,9 @@ func TestExecutor_ActiveAttemptIDs_PreExecFailureReleases(t *testing.T) {
 	}
 }
 
-// The executor must satisfy heartbeat.AttemptSource: the heartbeat finds it by
-// a type assertion, so a drifted method set would silently stop the worker
-// reporting held attempts — and the server would stop reconciling it.
+// The heartbeat finds the executor's attempts by a type assertion, so a
+// method-set change would silently stop the worker reporting held attempts;
+// this makes it a compile error instead.
 var _ heartbeat.AttemptSource = (*executor.Executor)(nil)
 
 // TestExecutor_ReleasesAnAttemptOnlyAfterItsTerminalStatus verifies that an

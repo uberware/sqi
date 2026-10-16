@@ -20,8 +20,8 @@ import (
 	"github.com/uberware/sqi/internal/store/storetest"
 )
 
-// TestStoreCopy_SQLiteToPostgres is the "moving to PostgreSQL" runbook,
-// executed: a farm runs on SQLite, the server stops, `store copy` moves it into
+// TestStoreCopy_SQLiteToPostgres executes the runbook in docs/operations.md,
+// "Moving to PostgreSQL": a farm runs on SQLite, the server stops, `store copy` moves it into
 // PostgreSQL, and the server starts on PostgreSQL with the same NATS directory
 // and carries on — including the attempt that was running when it stopped.
 //
@@ -50,7 +50,7 @@ func TestStoreCopy_SQLiteToPostgres(t *testing.T) {
 	waitJobCompleted(t, ts, finished, 2*time.Minute)
 	waitJobLogs(t, ts, finished)
 	// Running when the server stops: the copy is exact and the NATS directory
-	// is kept, so its attempt must carry on and its report land (design §7.4).
+	// is kept, so its attempt must carry on and its report land.
 	inFlight := submitJobCustomYAML(t, ts, farmID, queueID, sleepJob)
 	pollTaskStatus(t, ts, firstTaskID(t, ts, inFlight), []string{"running"}, 30*time.Second)
 	ts.Stop(t)

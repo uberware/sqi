@@ -23,11 +23,11 @@ import (
 	"github.com/uberware/sqi/internal/store/storetest"
 )
 
-// dedupeLogChunks plants the damage redelivery used to leave (one log chunk
-// stored several times under fresh row IDs) in a database rewound to 37, then
-// runs up. The copy received first survives (the lowest id on a tie), a chunk
-// stored once is untouched, and a further duplicate is refused with a unique
-// violation. It is the body shared by the SQLite and PostgreSQL tests.
+// dedupeLogChunks plants redelivered log chunks (one chunk stored several
+// times under fresh row IDs) in a database rewound to 37, then runs up. The
+// copy received first survives (the lowest id on a tie), a chunk stored once
+// is untouched, and a further duplicate is refused with a unique violation.
+// It is the body shared by the SQLite and PostgreSQL tests.
 func dedupeLogChunks(t *testing.T, db *sql.DB, taskID, attemptID string, up func(), isUnique func(error) bool) {
 	t.Helper()
 	insert := func(id string, workerSeq, natsSeq int, receivedAt string) error {
@@ -83,12 +83,11 @@ func TestMigration00038_DedupesLogChunksAndEnforcesUniqueness(t *testing.T) {
 		func(err error) bool { return strings.Contains(err.Error(), "UNIQUE constraint failed") })
 }
 
-// TestMigration00038_DeleteSearchesAnIndex pins the reason the migration builds
-// a plain (attempt_id, worker_seq) index before its DELETE: without one the
-// correlated lookup scans every chunk of the attempt for each row, quadratic in
-// the attempt's chunks (measured at 140 s for 200k rows). It plans the
-// migration's own DELETE, taken from the file, and requires the lookup to
-// SEARCH that index.
+// TestMigration00038_DeleteSearchesAnIndex pins that the migration's DELETE
+// looks duplicates up through the plain (attempt_id, worker_seq) index it
+// builds first; without it the correlated lookup is quadratic in an attempt's
+// chunks. It plans the migration's own DELETE, taken from the file, and
+// requires the lookup to SEARCH that index.
 func TestMigration00038_DeleteSearchesAnIndex(t *testing.T) {
 	path, s, _ := openSeedable(t)
 	if err := s.Close(); err != nil {

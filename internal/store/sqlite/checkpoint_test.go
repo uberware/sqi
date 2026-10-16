@@ -14,22 +14,11 @@ import (
 	"github.com/uberware/sqi/internal/store/sqlstore"
 )
 
-// TestCheckpoint_DoesNotBlockOnAReader is the reason [Store.Checkpoint] runs in
-// PASSIVE mode rather than TRUNCATE.
-//
-// Before reads moved to their own pool there was only one connection, so a
-// checkpoint never had a reader to wait for and TRUNCATE was free. Now a reader
-// holding a WAL snapshot makes TRUNCATE invoke SQLite's busy handler, which
-// waits out the ENTIRE busy_timeout (5s) on the write connection before giving
-// up — stalling job submission, lease grants and every task-status write, on a
-// five-minute timer, and still failing to truncate.
-//
-// That is the same multi-second write stall the separate read pool exists to
-// remove, reintroduced through the back door. PASSIVE never invokes the busy
-// handler: it transfers what it can and returns immediately.
-//
-// The assertion is deliberately far below busy_timeout. A regression to
-// TRUNCATE does not make this slow — it makes it take the full 5s.
+// TestCheckpoint_DoesNotBlockOnAReader pins that [Store.Checkpoint] returns at
+// once while a reader on the read pool holds a WAL snapshot. It runs in PASSIVE
+// mode: TRUNCATE would invoke SQLite's busy handler and hold the write
+// connection for the whole busy_timeout (5 s). The bound is far below
+// busy_timeout, so TRUNCATE fails it.
 func TestCheckpoint_DoesNotBlockOnAReader(t *testing.T) {
 	ctx := context.Background()
 	st := openFilePoolStore(t)

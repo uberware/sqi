@@ -235,6 +235,17 @@ func (s *Store) closePools() error {
 	return errors.Join(errs...)
 }
 
+// SchemaVersionDSN is [SchemaVersion] for the database dsn names, on a
+// connection of its own.
+func SchemaVersionDSN(ctx context.Context, dsn string) (int64, error) {
+	db, err := openPool(dsn, 1)
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+	return SchemaVersion(ctx, db)
+}
+
 // SchemaVersion returns the highest applied goose version, or 0 when the
 // database has never been migrated. It creates nothing.
 func SchemaVersion(ctx context.Context, db *sql.DB) (int64, error) {

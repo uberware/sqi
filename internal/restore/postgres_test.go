@@ -51,14 +51,7 @@ func pgFarm(t *testing.T, bump bool) (dsn string, st *postgres.Store) {
 			t.Fatal(err)
 		}
 		defer db.Close()
-		maxV, err := migrations.MaxVersion("postgres")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := db.ExecContext(t.Context(),
-			`INSERT INTO goose_db_version (version_id, is_applied) VALUES ($1, true)`, maxV+1); err != nil {
-			t.Fatal(err)
-		}
+		storetest.RecordNewerSchema(t, db, "postgres")
 	}
 	return dsn, st
 }
@@ -71,9 +64,9 @@ func pgOpts(dsn, backupFile string) restore.Options {
 }
 
 func TestRestorePostgres_FencesAndRefusesANonEmptyTarget(t *testing.T) {
-	_, src := pgFarm(t, false)
+	srcDSN, _ := pgFarm(t, false)
 	archive := filepath.Join(t.TempDir(), "sqi.dump")
-	if err := src.Backup(t.Context(), archive); err != nil {
+	if err := postgres.BackupDSN(t.Context(), srcDSN, archive, nil); err != nil {
 		t.Fatal(err)
 	}
 	dst := storetest.PostgresEmptyDSN(t)
@@ -105,9 +98,9 @@ func TestRestorePostgres_FencesAndRefusesANonEmptyTarget(t *testing.T) {
 }
 
 func TestRestorePostgres_RefusesANewerBackupWithoutTouchingTheTarget(t *testing.T) {
-	_, src := pgFarm(t, true)
+	srcDSN, _ := pgFarm(t, true)
 	archive := filepath.Join(t.TempDir(), "sqi.dump")
-	if err := src.Backup(t.Context(), archive); err != nil {
+	if err := postgres.BackupDSN(t.Context(), srcDSN, archive, nil); err != nil {
 		t.Fatal(err)
 	}
 	dst := storetest.PostgresEmptyDSN(t)
@@ -162,6 +155,21 @@ func TestRestorePostgres_InPlaceFencesTheConfiguredDatabase(t *testing.T) {
 	}
 	if task, err := st.GetTask(t.Context(), "t1"); err != nil || task.Status != store.TaskStatusReady {
 		t.Fatalf("task = %+v, %v; want ready", task, err)
+	}
+}
+
+// --in-place on a database a newer sqi-server migrated is refused up front,
+// with the schema error, and its open attempt is left as it was.
+func TestRestorePostgres_InPlaceRefusesANewerSchema(t *testing.T) {
+	dsn, st := pgFarm(t, true)
+	o := pgOpts(dsn, "")
+	o.InPlace = true
+	_, err := restore.Run(t.Context(), o)
+	if !errors.Is(err, migrations.ErrSchemaTooNew) || strings.Contains(err.Error(), "not fenced") {
+		t.Fatalf("--in-place on a newer schema = %v, want ErrSchemaTooNew refused before the fence", err)
+	}
+	if task, err := st.GetTask(t.Context(), "t1"); err != nil || task.Status != store.TaskStatusRunning {
+		t.Fatalf("task = %+v, %v; want it still running (not fenced)", task, err)
 	}
 }
 

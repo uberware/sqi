@@ -486,8 +486,8 @@ default source of [`sqi-server store copy`](operations.md#moving-to-postgresql).
 The server also creates `<sqlite_path>.lock` beside the database (for example
 `sqi.db.lock`) and holds an operating-system lock on it while it runs, so a
 second server on the same file is refused; `migrate up`, `restore` and
-`store copy` take it too. The file is never deleted and must not be: the lock,
-not the file, is the guard, and a crashed server leaves nothing stale. On a
+`store copy` take it too. Do not delete the file: the lock, not the file, is
+the guard, and a crashed server leaves nothing stale. On a
 network filesystem the lock is only as reliable as that filesystem's locking.
 See [One server per database](operations.md#one-server-per-database).
 
@@ -903,8 +903,7 @@ starts. Each reclaim is logged at Warn and counted in
 `0` disables reconciliation. Any other value must be at least
 `scheduler.heartbeat_timeout`, or start-up fails validation. When the key is
 set neither in the file nor in the environment, the default follows a raised
-`heartbeat_timeout`, so a configuration that only raised `heartbeat_timeout`
-keeps starting; set it explicitly and it is used exactly as given.
+`heartbeat_timeout`; set explicitly, it is used exactly as given.
 
 If the server falls more than `reconcile_grace` behind in processing status
 reports, a task that has already finished can be reclaimed and run again
@@ -1581,9 +1580,9 @@ openjd:
 > alike.** `5 sec`, `5000` or `5 s` is not a Go duration, so
 > `expr_submission_deadline: 5 sec` fails the load naming its line, and
 > `SQI_OPENJD_EXPR_SUBMISSION_DEADLINE=5 sec` naming the variable. This holds
-> for every duration key in the server's configuration. (Releases up to and
-> including v0.3.0 skipped an unparseable value in the *file* and kept the
-> default.)
+> for every duration key in the server's configuration. When upgrading from
+> v0.3.0 or earlier, which skipped an unparseable value in the *file* and kept
+> the default, a configuration file that started before can now fail to load.
 
 ---
 

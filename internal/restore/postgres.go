@@ -41,12 +41,20 @@ func placePostgres(ctx context.Context, o Options) (int64, error) {
 	return v, postgres.Restore(ctx, o.PostgresDSN, o.Backup, o.Logger)
 }
 
-// requireInPlacePostgres refuses --in-place on a database with no sqi schema:
-// opening it with AutoMigrate would create one and report a restore that
-// restored nothing.
+// requireInPlacePostgres refuses --in-place on a database with no sqi schema
+// (opening it with AutoMigrate would create one and report a restore that
+// restored nothing) or one newer than this binary.
 func requireInPlacePostgres(ctx context.Context, o Options) error {
-	if err := postgres.RequireMigratedDatabase(ctx, o.PostgresDSN); err != nil {
+	v, err := postgres.SchemaVersionDSN(ctx, o.PostgresDSN)
+	if err != nil {
 		return fmt.Errorf("restore: --in-place needs an existing sqi database: %w", err)
+	}
+	if v == 0 {
+		return errors.New("restore: --in-place needs an existing sqi database: the database has no sqi schema, " +
+			"so there is nothing to restore in place; restore a backup into it instead")
+	}
+	if err := migrations.CheckVersion("postgres", v); err != nil {
+		return fmt.Errorf("restore: %w", err)
 	}
 	return nil
 }

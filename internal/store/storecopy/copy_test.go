@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -297,8 +296,8 @@ func TestStoreCopy_RefusesWhileAServerHoldsTheTarget(t *testing.T) {
 	}
 }
 
-// Review focus 5: a table sqi does not own is refused by name, before anything
-// is written — the copy would otherwise leave it, and its rows, beside sqi's.
+// A table sqi does not own is refused by name, before anything is written;
+// the copy would otherwise leave it, and its rows, beside sqi's.
 func TestStoreCopy_RefusesAForeignTableInTheTarget(t *testing.T) {
 	skipWithoutPostgres(t)
 	src := t.TempDir() + "/sqi.db"
@@ -381,7 +380,7 @@ func TestStoreCopy_NamesTheRowAndColumnPostgreSQLRefuses(t *testing.T) {
 
 // TestStoreCopy_MeasureLargeCopy times a copy of a farm with
 // SQI_STORECOPY_MEASURE_TASKS tasks in one job. It asserts nothing beyond
-// success: the spec records the figure (H5 design §11, "Measured").
+// success and logs the seed and copy times.
 func TestStoreCopy_MeasureLargeCopy(t *testing.T) {
 	n, err := strconv.Atoi(os.Getenv("SQI_STORECOPY_MEASURE_TASKS"))
 	if err != nil || n <= 0 {
@@ -421,8 +420,8 @@ func TestStoreCopy_MeasureLargeCopy(t *testing.T) {
 
 // seedEveryTable creates a migrated SQLite database at path and fills every
 // table through production store writes, then fails unless every table
-// schemainfo lists holds a row: a future table without a seed fails here,
-// loudly, rather than going uncopied by the tests.
+// schemainfo lists holds a row, so a table without a seed fails here rather
+// than going uncopied by the tests.
 func seedEveryTable(t *testing.T, path string) {
 	t.Helper()
 	ctx := t.Context()
@@ -768,15 +767,11 @@ func openPG(t *testing.T, dsn string) *sql.DB {
 // reading it in a test cannot checkpoint its WAL into it either.
 func openSQLite(t *testing.T, path string) *sql.DB {
 	t.Helper()
-	abs, err := filepath.Abs(path)
+	dsn, err := sqlite.FileURI(path, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := filepath.ToSlash(abs)
-	if !strings.HasPrefix(p, "/") {
-		p = "/" + p
-	}
-	db, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: p, RawQuery: "mode=ro"}).String())
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

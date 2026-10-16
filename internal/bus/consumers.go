@@ -73,7 +73,7 @@ func (c *Client) ConsumeTaskStatus(ctx context.Context, handler jetstream.Messag
 //
 // Ack / redelivery policy:
 //   - AckWait 30 s — the server has 30 s to persist a log chunk to the store.
-//     The write path is a single INSERT so this window is very generous.
+//     The write is a single INSERT.
 //   - MaxDeliver 5 — allows for transient DB errors without re-filling the
 //     stream indefinitely.  After exhaustion the chunk is discarded; the
 //     stream is not read back by the API, so the gap stays.

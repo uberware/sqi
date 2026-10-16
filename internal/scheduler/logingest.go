@@ -180,26 +180,25 @@ func (s *Scheduler) handleLogChunk(msg jetstream.Msg) {
 		Data:      m.Data,
 	}
 
-	if _, err := s.store.CreateTaskLog(ctx, log); errors.Is(err, store.ErrConflict) {
-		// ErrConflict means one of two things the store reports alike: the chunk
-		// is already stored (a redelivery), or its attempt row is gone (the
-		// foreign key failed). Neither is cured by redelivery, so ack. Evict
-		// the cached owner as well: if the attempt was deleted, the next chunk
-		// then takes the store path and is discarded as an unknown attempt.
+	if _, err := s.store.CreateTaskLog(ctx, log); err != nil {
+		// Either way below, the next chunk re-reads the attempt from the store
+		// rather than trusting the cached owner.
 		s.attemptCache.evict(m.AttemptID)
-		s.logger.DebugContext(
-			ctx, "scheduler: task.logs chunk already stored or its attempt is gone — acking",
-			slog.String("attempt_id", m.AttemptID),
-			slog.Int64("seq_num", m.SeqNum),
-		)
-		s.ackMsg(ctx, msg)
-		return
-	} else if err != nil {
-		// A transient store failure (anything but ErrConflict, handled above, which
-		// covers both a duplicate chunk and a deleted attempt). Nak so the chunk
-		// is redelivered; the cached owner is evicted too, so the redelivery
-		// re-reads the attempt from the store rather than trusting the cache.
-		s.attemptCache.evict(m.AttemptID)
+		if errors.Is(err, store.ErrConflict) {
+			// ErrConflict means one of two things the store reports alike: the
+			// chunk is already stored (a redelivery), or its attempt row is gone
+			// (the foreign key failed). Neither is cured by redelivery, so ack.
+			// If the attempt was deleted, the next chunk takes the store path
+			// and is discarded as an unknown attempt.
+			s.logger.DebugContext(
+				ctx, "scheduler: task.logs chunk already stored or its attempt is gone — acking",
+				slog.String("attempt_id", m.AttemptID),
+				slog.Int64("seq_num", m.SeqNum),
+			)
+			s.ackMsg(ctx, msg)
+			return
+		}
+		// A transient store failure. Nak so the chunk is redelivered.
 		s.logger.WarnContext(
 			ctx, "scheduler: persist log chunk failed — will redeliver",
 			slog.String("task_id", m.TaskID),

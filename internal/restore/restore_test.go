@@ -3,6 +3,7 @@
 package restore_test
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -51,7 +52,7 @@ func liveFarm(t *testing.T) (dir, db, natsDir, backup, taskID string) {
 		SubmitLeasing(t, st, "w1")
 	taskID = "t1"
 	backup = filepath.Join(dir, "backup.db")
-	if err := st.Backup(t.Context(), backup); err != nil {
+	if err := sqlite.BackupPath(t.Context(), db, backup); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.Close(); err != nil {
@@ -80,14 +81,7 @@ func bumpFile(t *testing.T, path string) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	maxV, err := migrations.MaxVersion("sqlite")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(),
-		`INSERT INTO goose_db_version (version_id, is_applied) VALUES (?, 1)`, maxV+1); err != nil {
-		t.Fatal(err)
-	}
+	storetest.RecordNewerSchema(t, db, "sqlite")
 }
 
 func TestRestoreSQLite_PutsTheBackupInPlaceFencesAndQuarantines(t *testing.T) {
@@ -186,8 +180,8 @@ func TestRestoreSQLite_RefusesAFileThatIsNotAnSQIBackup(t *testing.T) {
 	}
 }
 
-// Review focus 1: naming the live database as the backup would move it aside
-// and then find nothing to put in its place.
+// Naming the live database as the backup is refused: restore would move it
+// aside and then find nothing to put in its place.
 func TestRestoreSQLite_RefusesTheLiveDatabaseAsBackup(t *testing.T) {
 	_, db, natsDir, _, _ := liveFarm(t)
 	_, err := restore.Run(t.Context(), opts(db, natsDir, db))
@@ -199,8 +193,8 @@ func TestRestoreSQLite_RefusesTheLiveDatabaseAsBackup(t *testing.T) {
 	}
 }
 
-// Review focus 2: an absent NATS directory is reported by the absolute path
-// looked at, so an operator can spot a wrong nats.data_dir.
+// An absent NATS directory is reported by the absolute path looked at, so an
+// operator can spot a wrong nats.data_dir.
 func TestRestore_ReportsAMissingNATSDirByAbsolutePath(t *testing.T) {
 	_, db, _, backup, _ := liveFarm(t)
 	missing := filepath.Join(t.TempDir(), "nowhere")
@@ -213,9 +207,9 @@ func TestRestore_ReportsAMissingNATSDirByAbsolutePath(t *testing.T) {
 	}
 }
 
-// Review focus 3: once the live database is moved aside, any failure must say
-// where it went: every file, since a database and its -wal are one database
-// only together, and where the verified staged copy was left.
+// Once the live database is moved aside, a failure names where every file
+// went, since a database and its -wal are one database only together, and
+// where the verified staged copy was left.
 func TestRestoreSQLite_FailureAfterMoveAsideNamesThePreviousDatabase(t *testing.T) {
 	_, db, natsDir, backup, _ := liveFarm(t)
 	if err := os.WriteFile(db+"-wal", []byte("wal"), 0o600); err != nil {
@@ -289,6 +283,23 @@ func TestRestore_InPlaceFencesTheConfiguredDatabase(t *testing.T) {
 	if task, err := st.GetTask(t.Context(), taskID); err != nil || task.Status != store.TaskStatusReady {
 		t.Fatalf("task = %+v, %v; want ready", task, err)
 	}
+}
+
+// --in-place on a database a newer sqi-server migrated is refused up front,
+// with the schema error and not advice to rerun --in-place, which cannot help.
+func TestRestore_InPlaceRefusesANewerSchema(t *testing.T) {
+	_, db, natsDir, _, _ := liveFarm(t)
+	bumpFile(t, db)
+	o := opts(db, natsDir, "")
+	o.InPlace = true
+	_, err := restore.Run(t.Context(), o)
+	if !errors.Is(err, migrations.ErrSchemaTooNew) {
+		t.Fatalf("--in-place on a newer schema = %v, want ErrSchemaTooNew", err)
+	}
+	if strings.Contains(err.Error(), "not fenced") {
+		t.Errorf("err = %v; it must not tell the operator to rerun --in-place, which cannot help", err)
+	}
+	requireUntouched(t, db, natsDir)
 }
 
 // requireUntouched fails t unless the live database, its -wal and the NATS
@@ -379,6 +390,55 @@ func TestRestore_InPlaceRefusesAPendingWAL(t *testing.T) {
 	requireUntouched(t, db, natsDir)
 	if b, err := os.ReadFile(db + "-wal"); err != nil || string(b) != "frames" {
 		t.Errorf("-wal after the refusal = %q, %v; want it untouched", b, err)
+	}
+}
+
+// --in-place on a SQLite file with no sqi schema must refuse, as it does on
+// PostgreSQL: opening it with AutoMigrate would create the schema and report a
+// restore that restored nothing, with the NATS directory moved aside.
+func TestRestore_InPlaceRefusesADatabaseWithNoSchema(t *testing.T) {
+	for name, seed := range map[string]string{
+		"empty file":     "",
+		"never migrated": "CREATE TABLE other (id INTEGER PRIMARY KEY)",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			db := filepath.Join(dir, "sqi.db")
+			if err := os.WriteFile(db, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if seed != "" {
+				raw, err := sql.Open("sqlite", db)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = raw.ExecContext(t.Context(), seed)
+				if cerr := raw.Close(); err == nil {
+					err = cerr
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := os.ReadFile(db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			natsDir := filepath.Join(dir, "nats")
+			if err := os.MkdirAll(natsDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			o := opts(db, natsDir, "")
+			o.InPlace = true
+			_, err = restore.Run(t.Context(), o)
+			if err == nil || !strings.Contains(err.Error(), "--in-place needs an existing sqi database") {
+				t.Fatalf("--in-place on a database with no schema = %v, want a refusal", err)
+			}
+			requireUntouched(t, db, natsDir)
+			if after, err := os.ReadFile(db); err != nil || !bytes.Equal(after, before) {
+				t.Errorf("the database changed although the restore was refused: %v", err)
+			}
+		})
 	}
 }
 

@@ -18,7 +18,7 @@ const (
 INSERT INTO task_logs (id, task_id, attempt_id, worker_seq, nats_seq, at, received_at, stream, data)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (attempt_id, worker_seq) DO NOTHING
-RETURNING ` + logCols
+RETURNING id`
 
 	// Forward-paging query: return chunks for an attempt with nats_seq > afterNATSSeq,
 	// ordered by nats_seq ascending.
@@ -33,20 +33,25 @@ LIMIT  ?`
 
 // CreateTaskLog implements [store.TaskLogStore].
 func (s *Store) CreateTaskLog(ctx context.Context, log store.TaskLog) (store.TaskLog, error) {
-	now := TimeText(time.Now().UTC())
-	row := s.stmtInsertTaskLog.QueryRowContext(
+	at, now := TimeText(log.At), TimeText(time.Now().UTC())
+	// RETURNING only the id: the row is the input plus received_at, and
+	// echoing data back would send every chunk's payload over the wire twice.
+	err := s.stmtInsertTaskLog.QueryRowContext(
 		ctx,
 		log.ID, log.TaskID, log.AttemptID,
 		log.SeqNum, log.NATSSeq,
-		TimeText(log.At), now,
+		at, now,
 		string(log.Stream), log.Data,
-	)
-	out, err := scanTaskLog(row)
+	).Scan(&log.ID)
 	if errors.Is(err, sql.ErrNoRows) {
 		// ON CONFLICT DO NOTHING returns no row: this chunk is already stored.
 		return store.TaskLog{}, store.ErrConflict
 	}
-	return out, mapErr(err)
+	if err != nil {
+		return store.TaskLog{}, mapErr(err)
+	}
+	log.At, log.ReceivedAt = mustTime(at), mustTime(now)
+	return log, nil
 }
 
 // ListTaskLogs implements [store.TaskLogStore].

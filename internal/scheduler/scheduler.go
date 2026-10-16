@@ -181,11 +181,11 @@ type Config struct {
 
 	// ReconcileGrace is how long a live worker may go without reporting an
 	// attempt it holds before the sweep reclaims that attempt (see
-	// attemptreconcile.go). 0 disables reconciliation — like
-	// UnschedulableGrace, it is NOT coerced up to the default in [New]; a
-	// positive value below WorkerTimeout is raised to WorkerTimeout there.
-	// Reports are trusted only when the worker's timestamp is within
-	// WorkerTimeout of their receipt. Default: 2 m.
+	// attemptreconcile.go). 0 disables reconciliation; like
+	// UnschedulableGrace, [New] does not coerce it up to the default, but it
+	// raises a positive value below WorkerTimeout to WorkerTimeout. Reports
+	// are trusted only when the worker's timestamp is within WorkerTimeout of
+	// their receipt. Default: 2 m.
 	ReconcileGrace time.Duration
 
 	// DefaultMaxAttempts is the server-level fallback tier of the layered
@@ -389,8 +389,8 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 	if cfg.ReconcileGrace > 0 {
 		// The skew bound is the heartbeat timeout, and the reconciler's
 		// pruning needs grace >= skew. Config validation enforces that for
-		// scheduler.reconcile_grace; a caller building Config directly gets
-		// its grace raised to WorkerTimeout here. 0 stays 0: disabled.
+		// scheduler.reconcile_grace; a Config built directly has its grace
+		// raised to WorkerTimeout here. 0 stays 0: disabled.
 		cfg.ReconcileGrace = max(cfg.ReconcileGrace, cfg.WorkerTimeout)
 		rec = newReconciler(cfg.ReconcileGrace, cfg.WorkerTimeout)
 	}
@@ -1179,9 +1179,9 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 // timestamp is used so clock skew on the worker side cannot cause false
 // timeouts.
 //
-// WorkerID and At are read, and AttemptsReported/ActiveAttemptIDs feed the
-// reconciler (see attemptreconcile.go), but the whole [protocol.HeartbeatMsg] is
-// decoded: the fields this handler ignores (active task IDs and counts, uptime,
+// The handler reads WorkerID and At and passes AttemptsReported and
+// ActiveAttemptIDs to the reconciler (see attemptreconcile.go), but decodes the
+// whole [protocol.HeartbeatMsg]: the fields this handler ignores (active task IDs and counts, uptime,
 // last-assignment time) are a liveness payload the server may grow into, and
 // decoding into a narrower local struct is how the version gate below stops
 // meaning anything — every field outside the local set drops regardless of what

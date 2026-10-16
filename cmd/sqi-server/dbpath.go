@@ -174,14 +174,21 @@ type storeTarget struct{ Driver, SQLitePath, DSN string }
 // SQLite is then the wrong store, not a safe default. A driver the server
 // would reject is an error, never SQLite.
 func resolveStoreTarget(cmd *cobra.Command, dbFlag, dsnFlag string) (storeTarget, error) {
-	if flagChanged(cmd, "dsn") && dsnFlag == "" {
-		return storeTarget{}, errors.New("--dsn is empty")
-	}
 	c, err := loadCLIConfig()
 	if err != nil {
 		return storeTarget{}, err
 	}
+	return c.target(cmd, dbFlag, dsnFlag)
+}
+
+// target is [resolveStoreTarget] on an already-loaded configuration, for a
+// command that reads other settings from it too. It refuses an empty SQLite
+// path.
+func (c cliConfig) target(cmd *cobra.Command, dbFlag, dsnFlag string) (storeTarget, error) {
 	if flagChanged(cmd, "dsn") {
+		if dsnFlag == "" {
+			return storeTarget{}, errors.New("--dsn is empty")
+		}
 		return storeTarget{Driver: backend.DriverPostgres, DSN: dsnFlag}, nil
 	}
 	if !flagChanged(cmd, "db") {
@@ -190,7 +197,19 @@ func resolveStoreTarget(cmd *cobra.Command, dbFlag, dsnFlag string) (storeTarget
 			return tgt, err
 		}
 	}
-	return storeTarget{Driver: backend.DriverSQLite, SQLitePath: c.dbPath(dbFlag, flagChanged(cmd, "db"))}, nil
+	path := c.dbPath(dbFlag, flagChanged(cmd, "db"))
+	if path == "" {
+		return storeTarget{}, errEmptySQLitePath
+	}
+	return storeTarget{Driver: backend.DriverSQLite, SQLitePath: path}, nil
+}
+
+// errEmptySQLitePath is returned when the resolved SQLite path is empty.
+var errEmptySQLitePath = errors.New("database path is empty; use --db, set store.sqlite_path, or set SQI_STORE_SQLITE_PATH")
+
+// options returns the [backend.Options] naming tgt's store.
+func (tgt storeTarget) options() backend.Options {
+	return backend.Options{Driver: tgt.Driver, SQLitePath: tgt.SQLitePath, PostgresDSN: tgt.DSN}
 }
 
 // configuredStoreTarget resolves the store from configuration alone. It
@@ -245,12 +264,7 @@ func flagChanged(cmd *cobra.Command, name string) bool {
 // requireMigratedPostgres fails, with the same advice as requireMigratedDB,
 // when the database has no schema.
 func requireMigratedPostgres(ctx context.Context, dsn string) error {
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		return fmt.Errorf("open %s: %w", pgdsn.Redact(dsn), err)
-	}
-	defer db.Close()
-	v, err := postgres.SchemaVersion(ctx, db)
+	v, err := postgres.SchemaVersionDSN(ctx, dsn)
 	if err != nil {
 		return fmt.Errorf("check schema at %s: %w", pgdsn.Redact(dsn), err)
 	}
@@ -266,9 +280,6 @@ func requireMigratedPostgres(ctx context.Context, dsn string) error {
 func requireExistingStore(ctx context.Context, tgt storeTarget) error {
 	if tgt.Driver == backend.DriverPostgres {
 		return requireMigratedPostgres(ctx, tgt.DSN)
-	}
-	if tgt.SQLitePath == "" {
-		return errors.New("database path is empty; use --db, set store.sqlite_path, or set SQI_STORE_SQLITE_PATH")
 	}
 	if err := requireExistingDB(tgt.SQLitePath); err != nil {
 		return err

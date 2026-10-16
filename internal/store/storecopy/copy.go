@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"os"
 	"slices"
 	"strconv"
@@ -58,17 +59,19 @@ type Result struct {
 }
 
 const (
-	// batchRows is the most rows one INSERT carries, as CreateJobSubmission.
+	// batchRows is the most rows one INSERT carries, as in CreateJobSubmission.
 	batchRows = 500
 	// maxBindParams is PostgreSQL's limit on one statement's parameters; a
 	// wide table gets fewer rows per INSERT so it stays below it.
 	maxBindParams = 65535
 )
 
-// Copy checks every precondition of the copy (H5 design §7.2), then copies
-// every table in one PostgreSQL transaction and verifies it before
-// committing. Any failure after the preconditions rolls the transaction back,
-// committing no sqi rows (a schema Copy migrated into an empty target stays).
+// Copy checks every precondition of the copy (both databases locked, the
+// source intact and at this binary's schema version, the target empty and of
+// the same shape), then copies every table in one PostgreSQL transaction and
+// verifies it before committing. Any failure after the preconditions rolls
+// the transaction back, committing no sqi rows (a schema Copy migrated into an
+// empty target stays).
 func Copy(ctx context.Context, o Options) (Result, error) {
 	start := time.Now()
 	if o.Logger == nil {
@@ -134,16 +137,16 @@ func requireExistingFile(path string) error {
 // openSource opens the SQLite database read-only and checks it is intact and
 // at this binary's schema version.
 //
-// Read-only means the file is opened read-only (a mode=ro URI), not merely a
-// connection that refuses SQL writes: SQLite writes the database file on its
-// own account too — closing the last connection to a WAL database checkpoints
-// the WAL into it, and opening one with a hot rollback journal rolls the
-// journal back — and a crashed server leaves exactly such a database. A
-// read-only connection reads the WAL's committed rows without moving them. It
-// may create the -shm wal-index beside a WAL that has none (an index of the
-// WAL, never data); a database it cannot read without writing is refused.
+// The file is opened read-only (a mode=ro URI), not through a connection that
+// merely refuses SQL writes, because SQLite writes the file on its own account:
+// closing the last connection to a WAL database checkpoints the WAL into it,
+// and opening one with a hot rollback journal rolls the journal back, and a
+// crashed server leaves such a database. A read-only connection reads the
+// WAL's committed rows without moving them. It may create the -shm wal-index
+// beside a WAL that has none (an index, never data); a database it cannot read
+// without writing is refused.
 func openSource(ctx context.Context, path string) (*sql.DB, error) {
-	dsn, err := readOnlyDSN(path)
+	dsn, err := sqlite.FileURI(path, true)
 	if err != nil {
 		return nil, fmt.Errorf("store copy: source %s: %w", path, err)
 	}
@@ -156,12 +159,6 @@ func openSource(ctx context.Context, path string) (*sql.DB, error) {
 		return nil, errors.Join(err, db.Close())
 	}
 	return db, nil
-}
-
-// readOnlyDSN is a file: URI opening path read-only, escaped by
-// [sqlite.FileURI] so any character in the name stays part of it.
-func readOnlyDSN(path string) (string, error) {
-	return sqlite.FileURI(path, true)
 }
 
 func checkSource(ctx context.Context, db *sql.DB, path string) error {
@@ -187,7 +184,7 @@ func checkSource(ctx context.Context, db *sql.DB, path string) error {
 	case v == 0:
 		return fmt.Errorf("store copy: %s has no sqi schema; it is not an sqi database", path)
 	case v > maxV:
-		return fmt.Errorf("store copy: the SQLite database: %w", migrations.CheckVersion("sqlite", v))
+		return fmt.Errorf("store copy: the SQLite database: %w", &migrations.SchemaTooNewError{DBVersion: v, BinaryVersion: maxV})
 	case v < maxV:
 		return fmt.Errorf("store copy: the SQLite database is at schema %d and this sqi-server is at %d; "+
 			"run \"sqi-server migrate up --db %s\" first", v, maxV, path)
@@ -228,7 +225,7 @@ func prepareTarget(ctx context.Context, db *sql.DB) error {
 		}
 		if len(tables) > 0 {
 			return fmt.Errorf("store copy: the PostgreSQL database has no sqi schema but holds tables sqi does not own (%s); "+
-				"use an empty database", strings.Join(sortedKeys(tables), ", "))
+				"use an empty database", strings.Join(slices.Sorted(maps.Keys(tables)), ", "))
 		}
 		p, err := migrations.NewProvider(db, "postgres")
 		if err != nil {
@@ -238,7 +235,7 @@ func prepareTarget(ctx context.Context, db *sql.DB) error {
 			return fmt.Errorf("store copy: migrate the PostgreSQL database: %w", err)
 		}
 	case v > maxV:
-		return fmt.Errorf("store copy: the PostgreSQL database: %w", migrations.CheckVersion("postgres", v))
+		return fmt.Errorf("store copy: the PostgreSQL database: %w", &migrations.SchemaTooNewError{DBVersion: v, BinaryVersion: maxV})
 	case v < maxV:
 		return fmt.Errorf("store copy: the PostgreSQL database is at schema %d, not %d; use an empty database "+
 			"(if an earlier store copy's migration of it stopped partway, drop and recreate the database)", v, maxV)
@@ -304,12 +301,12 @@ func plan(ctx context.Context, src, dst *sql.DB) ([]*tablePlan, error) {
 // not own in the target would otherwise sit beside the copy.
 func sameShape(src, dst map[string]schemainfo.Table) error {
 	var diffs []string
-	for _, n := range sortedKeys(dst) {
+	for _, n := range slices.Sorted(maps.Keys(dst)) {
 		if _, ok := src[n]; !ok {
 			diffs = append(diffs, "table "+n+" exists only in the PostgreSQL database")
 		}
 	}
-	for _, n := range sortedKeys(src) {
+	for _, n := range slices.Sorted(maps.Keys(src)) {
 		d, ok := dst[n]
 		if !ok {
 			diffs = append(diffs, "table "+n+" exists only in the SQLite database")
@@ -350,7 +347,7 @@ func columnDiffs(table string, src, dst []schemainfo.Column) []string {
 // requireEmpty refuses a target any of whose tables holds a row. sameShape
 // has already refused a table sqi does not own, so these are sqi's tables.
 func requireEmpty(ctx context.Context, db *sql.DB, info map[string]schemainfo.Table) error {
-	for _, n := range sortedKeys(info) {
+	for _, n := range slices.Sorted(maps.Keys(info)) {
 		var rows int64
 		q := `SELECT count(*) FROM ` + quoteIdent(n)
 		if err := db.QueryRowContext(ctx, q).Scan(&rows); err != nil {
@@ -415,8 +412,8 @@ func rowsPerInsert(ncols int) int {
 }
 
 // kindOf maps a target column's type to how its values are carried. A type
-// this package has not been taught is refused, so a migration that adds one
-// fails the copy tests rather than copying values approximately.
+// this package does not handle is refused, so a migration that adds one fails
+// the copy tests rather than copying values approximately.
 func kindOf(typ string) (kind, error) {
 	switch typ {
 	case "text", "character varying":
@@ -466,7 +463,7 @@ func copyAndVerify(ctx context.Context, srcTx, dstTx *sql.Tx, p *tablePlan) (int
 	if err != nil {
 		return 0, err
 	}
-	if n != dstN || srcSum != dstSum {
+	if srcSum != dstSum { // the digest covers the row count too
 		return 0, fmt.Errorf("store copy: %s did not verify (source %d rows, digest %s; copy %d rows, digest %s)",
 			p.name, n, srcSum, dstN, dstSum)
 	}
@@ -476,54 +473,54 @@ func copyAndVerify(ctx context.Context, srcTx, dstTx *sql.Tx, p *tablePlan) (int
 // copyTable streams the table from the source, in primary-key order, into
 // multi-row INSERTs, and returns the source's row count and digest.
 func copyTable(ctx context.Context, srcTx, dstTx *sql.Tx, p *tablePlan) (n int64, sum string, err error) {
-	rows, err := srcTx.QueryContext(ctx, p.srcSelect)
-	if err != nil {
-		return 0, "", fmt.Errorf("store copy: read %s: %w", p.name, err)
-	}
-	defer rows.Close()
-	d := newDigest()
 	w := &writer{tx: dstTx, p: p, rows: make([][]any, 0, p.perInsert)}
-	for rows.Next() {
-		vals, err := scanRow(rows, len(p.cols))
-		if err != nil {
-			return 0, "", fmt.Errorf("store copy: read %s: %w", p.name, err)
-		}
-		d.row(vals)
+	n, sum, err = digestRows(ctx, srcTx, p, p.srcSelect, "read", func(vals []any) error {
 		out, err := p.convert(vals)
 		if err != nil {
-			return 0, "", err
+			return err
 		}
-		if err := w.add(ctx, out); err != nil {
-			return 0, "", err
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return 0, "", fmt.Errorf("store copy: read %s: %w", p.name, err)
+		return w.add(ctx, out)
+	})
+	if err != nil {
+		return 0, "", err
 	}
 	if err := w.flush(ctx); err != nil {
 		return 0, "", err
 	}
-	return d.rows, d.sum(), nil
+	return n, sum, nil
 }
 
 // digestTable reads the table back from the target, in primary-key order,
 // and returns its row count and digest.
 func digestTable(ctx context.Context, tx *sql.Tx, p *tablePlan) (n int64, sum string, err error) {
-	rows, err := tx.QueryContext(ctx, p.dstSelect)
+	return digestRows(ctx, tx, p, p.dstSelect, "read back", nil)
+}
+
+// digestRows runs query, digests every row and hands it to each (when set),
+// and returns the row count and digest. verb names the read in errors.
+func digestRows(
+	ctx context.Context, tx *sql.Tx, p *tablePlan, query, verb string, each func([]any) error,
+) (n int64, sum string, err error) {
+	rows, err := tx.QueryContext(ctx, query)
 	if err != nil {
-		return 0, "", fmt.Errorf("store copy: read back %s: %w", p.name, err)
+		return 0, "", fmt.Errorf("store copy: %s %s: %w", verb, p.name, err)
 	}
 	defer rows.Close()
 	d := newDigest()
 	for rows.Next() {
 		vals, err := scanRow(rows, len(p.cols))
 		if err != nil {
-			return 0, "", fmt.Errorf("store copy: read back %s: %w", p.name, err)
+			return 0, "", fmt.Errorf("store copy: %s %s: %w", verb, p.name, err)
 		}
 		d.row(vals)
+		if each != nil {
+			if err := each(vals); err != nil {
+				return 0, "", err
+			}
+		}
 	}
 	if err := rows.Err(); err != nil {
-		return 0, "", fmt.Errorf("store copy: read back %s: %w", p.name, err)
+		return 0, "", fmt.Errorf("store copy: %s %s: %w", verb, p.name, err)
 	}
 	return d.rows, d.sum(), nil
 }
@@ -743,12 +740,3 @@ func (w *writer) domainRefuses(ctx context.Context, domain string, v any) bool {
 // quoteIdent double-quotes an identifier read from a catalog, doubling any
 // quote inside it, so it is always read as a name.
 func quoteIdent(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
-
-func sortedKeys[V any](m map[string]V) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	slices.Sort(out)
-	return out
-}
