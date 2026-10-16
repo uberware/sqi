@@ -4,11 +4,78 @@ package capabilities
 
 import (
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"testing"
 )
+
+// builtinDetector returns the built-in detector emitting tag.
+func builtinDetector(t *testing.T, tag string) Detector {
+	t.Helper()
+	ds, err := BuiltinDetectors()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range ds {
+		if d.Tag == tag {
+			return d
+		}
+	}
+	t.Fatalf("no built-in detector emits the %q tag", tag)
+	return Detector{}
+}
+
+// assertInstallsMatchGlobs fails for every vendor install path that no
+// path_glob check of d matches.
+//
+// It matches with path.Match on slash-normalized strings rather than calling
+// filepath.Glob, for two reasons: the install paths are absolute and do not
+// exist on a test runner, and a Windows pattern's backslashes are separators on
+// Windows but escape characters to filepath.Match everywhere else, so a
+// host-native match would silently test something different per platform.
+// path.Match on normalized input is the same per-component wildcard semantics
+// filepath.Glob applies, checked identically on every runner.
+func assertInstallsMatchGlobs(t *testing.T, d Detector, installs []string) {
+	t.Helper()
+	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
+	for _, install := range installs {
+		var matched bool
+		for _, c := range d.Checks {
+			if c.PathGlob == "" {
+				continue
+			}
+			ok, err := path.Match(norm(c.PathGlob), norm(install))
+			if err != nil {
+				t.Fatalf("bad pattern %q: %v", c.PathGlob, err)
+			}
+			if ok {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			t.Errorf("no check matches the vendor install path %s", install)
+		}
+	}
+}
+
+// assertWindowsGlobsGated fails for every backslash path_glob of d not gated to
+// os: windows. Backslashes are separators on Windows and escapes to
+// filepath.Match elsewhere, so an ungated Windows glob would be an
+// ErrBadPattern (silently no matches) on POSIX rather than the no-op it looks
+// like.
+func assertWindowsGlobsGated(t *testing.T, d Detector) {
+	t.Helper()
+	for i, c := range d.Checks {
+		if strings.Contains(c.PathGlob, `\`) && c.OS != "windows" {
+			t.Errorf("check %d has a backslash pattern %q but os = %q, want %q",
+				i, c.PathGlob, c.OS, "windows")
+		}
+	}
+}
 
 func TestBuiltinDetectors_LoadValidate(t *testing.T) {
 	ds, err := BuiltinDetectors()
@@ -110,18 +177,8 @@ func TestBuiltinDetectors_FFmpeg(t *testing.T) {
 // tool on every platform, installed by package managers and pipeline builds
 // alike, so it carries no install-location glob.
 func TestBuiltinDetectors_OIIOTool(t *testing.T) {
-	ds, err := BuiltinDetectors()
-	if err != nil {
-		t.Fatal(err)
+	d := builtinDetector(t, "oiiotool")
+	if len(d.Checks) != 1 || d.Checks[0].Exe != "oiiotool" {
+		t.Errorf("oiiotool detector checks = %+v, want exactly exe: oiiotool", d.Checks)
 	}
-	for _, d := range ds {
-		if d.Tag != "oiiotool" {
-			continue
-		}
-		if len(d.Checks) != 1 || d.Checks[0].Exe != "oiiotool" {
-			t.Errorf("oiiotool detector checks = %+v, want exactly exe: oiiotool", d.Checks)
-		}
-		return
-	}
-	t.Fatal("no built-in detector emits the oiiotool tag")
 }

@@ -88,12 +88,37 @@ func assertPartition(t *testing.T, axis string, spans [][2]int, size int) {
 	}
 }
 
+// assertRegionsPartition checks that the Render step's regions tile a
+// width x height image exactly: one task per tile, no region rendered twice, and
+// the column and row spans each covering their axis with no gap or overlap.
+func assertRegionsPartition(t *testing.T, render presettest.StepSnapshot, width, height, tilesX, tilesY int) {
+	t.Helper()
+	if want := tilesX * tilesY; len(render.Tasks) != want {
+		t.Fatalf("Render has %d tasks, want %d", len(render.Tasks), want)
+	}
+	xs := map[[2]int]bool{}
+	ys := map[[2]int]bool{}
+	regions := map[[4]int]bool{}
+	for _, task := range render.Tasks {
+		r := renderRegion(t, task)
+		xs[[2]int{r[0], r[2]}] = true
+		ys[[2]int{r[1], r[3]}] = true
+		regions[r] = true
+	}
+	if len(regions) != len(render.Tasks) {
+		t.Errorf("%d distinct regions across %d tasks: some region is rendered twice", len(regions), len(render.Tasks))
+	}
+	assertPartition(t, "x", slices.Collect(maps.Keys(xs)), width)
+	assertPartition(t, "y", slices.Collect(maps.Keys(ys)), height)
+}
+
 // TestArnoldKickTileRender_RegionsPartitionTheImage pins the region
 // arithmetic: at every resolution, divisible by the tile count or not, the
-// tiles cover every pixel exactly once.
+// tiles cover every pixel exactly once. The 16x16 maximum is covered by
+// TestArnoldKickTileRender_MaxTilesResolve.
 func TestArnoldKickTileRender_RegionsPartitionTheImage(t *testing.T) {
 	for _, tc := range []struct{ size, tiles int }{
-		{1, 1}, {7, 2}, {7, 7}, {1000, 3}, {1920, 16},
+		{1, 1}, {7, 2}, {7, 7}, {1000, 3},
 	} {
 		name := strconv.Itoa(tc.size) + "px-" + strconv.Itoa(tc.tiles) + "tiles"
 		t.Run(name, func(t *testing.T) {
@@ -104,29 +129,7 @@ func TestArnoldKickTileRender_RegionsPartitionTheImage(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Capture: %v", err)
 			}
-			render := tileStep(t, snap, "Render")
-			if want := tc.tiles * tc.tiles; len(render.Tasks) != want {
-				t.Fatalf("Render has %d tasks, want %d", len(render.Tasks), want)
-			}
-			xs := map[[2]int]bool{}
-			ys := map[[2]int]bool{}
-			pairs := map[[4]int]int{}
-			for _, task := range render.Tasks {
-				r := renderRegion(t, task)
-				xs[[2]int{r[0], r[2]}] = true
-				ys[[2]int{r[1], r[3]}] = true
-				pairs[r]++
-			}
-			for r, n := range pairs {
-				if n != 1 {
-					t.Errorf("region %v rendered by %d tasks, want 1", r, n)
-				}
-			}
-			if len(pairs) != tc.tiles*tc.tiles {
-				t.Errorf("%d distinct regions, want %d", len(pairs), tc.tiles*tc.tiles)
-			}
-			assertPartition(t, "x", slices.Collect(maps.Keys(xs)), tc.size)
-			assertPartition(t, "y", slices.Collect(maps.Keys(ys)), tc.size)
+			assertRegionsPartition(t, tileStep(t, snap, "Render"), tc.size, tc.size, tc.tiles, tc.tiles)
 		})
 	}
 }
@@ -157,7 +160,8 @@ func TestArnoldKickTileRender_RejectsMoreTilesThanPixels(t *testing.T) {
 
 // TestArnoldKickTileRender_MaxTilesResolve submits the largest grid the
 // parameters allow (16 x 16) and checks that both steps resolve under the
-// stock EXPR limits, with the assembly receiving every tile.
+// stock EXPR limits, that the 256 regions partition a non-square image, and
+// that the assembly receives every tile.
 func TestArnoldKickTileRender_MaxTilesResolve(t *testing.T) {
 	snap, err := captureTiles(t, map[string]string{
 		"Width": "1920", "Height": "1080", "TilesX": "16", "TilesY": "16",
@@ -165,9 +169,7 @@ func TestArnoldKickTileRender_MaxTilesResolve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Capture at 16x16: %v", err)
 	}
-	if n := len(tileStep(t, snap, "Render").Tasks); n != 256 {
-		t.Errorf("Render has %d tasks, want 256", n)
-	}
+	assertRegionsPartition(t, tileStep(t, snap, "Render"), 1920, 1080, 16, 16)
 	assemble := tileStep(t, snap, "Assemble")
 	if len(assemble.Tasks) != 1 {
 		t.Fatalf("Assemble has %d tasks, want 1", len(assemble.Tasks))

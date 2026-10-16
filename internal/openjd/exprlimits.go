@@ -179,11 +179,11 @@ type ExprLimits struct {
 // reference presets in presets/sqi/ -- the templates this repo itself ships --
 // are measured per dimension by binary search on every run, by
 // TestExprLimits_FloorsAcceptReferencePresets: at most 38 expression positions
-// and 512 retained let bytes template-wide, and 390 live bytes with 16
-// operations in any single evaluation. The live-byte maximum is set by
-// ffmpeg-segment-transcode-expr's slice arithmetic; the other three are set by
-// arnold-kick-tile-render, whose two steps carry the most expressions and the
-// largest let blocks of any preset (each per-file standalone renderer preset
+// and 512 retained let bytes template-wide, and 390 live bytes with 15
+// operations in any single evaluation. The two per-evaluation maxima are set by
+// ffmpeg-segment-transcode-expr's slice arithmetic; the two template-wide ones
+// by arnold-kick-tile-render, whose two steps carry the most expressions and
+// the largest let blocks of any preset (each per-file standalone renderer preset
 // retains 128 bytes for its scene-pattern binding; presets with no let block
 // floor that dimension at 1, which means "nothing measurable"). Every floor
 // below leaves at least 4x headroom over the worst of them (6x to 128x in
@@ -213,9 +213,9 @@ const (
 	// number, is what a request actually stops at.
 	//
 	// Floor: one order of magnitude below the default so tightening remains
-	// meaningful, and ~62x above what a reference preset's expressions
+	// meaningful, and ~67x above what a reference preset's expressions
 	// actually spend: the most expensive single evaluation in any of the
-	// twenty-two presets costs 16 operations (see the floors paragraph above).
+	// twenty-two presets costs 15 operations (see the floors paragraph above).
 	MinExprSubmissionOperations int64 = 1_000
 	MaxExprSubmissionOperations int64 = 100_000
 

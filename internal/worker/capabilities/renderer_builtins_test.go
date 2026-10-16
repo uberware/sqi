@@ -3,7 +3,6 @@
 package capabilities
 
 import (
-	"path"
 	"strings"
 	"testing"
 )
@@ -98,49 +97,12 @@ var rendererLayouts = []rendererLayout{
 	},
 }
 
-// builtinDetector returns the built-in detector emitting tag.
-func builtinDetector(t *testing.T, tag string) Detector {
-	t.Helper()
-	ds, err := BuiltinDetectors()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, d := range ds {
-		if d.Tag == tag {
-			return d
-		}
-	}
-	t.Fatalf("no built-in detector emits the %q tag", tag)
-	return Detector{}
-}
-
 // TestRendererDetectors_MatchVendorInstallLayout checks every documented
-// install path against the shipped globs, with path.Match on slash-normalized
-// strings for the reason TestMistikaDetectors_MatchVendorInstallLayout gives.
+// install path against the shipped globs.
 func TestRendererDetectors_MatchVendorInstallLayout(t *testing.T) {
-	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
 	for _, layout := range rendererLayouts {
 		t.Run(layout.tag, func(t *testing.T) {
-			d := builtinDetector(t, layout.tag)
-			for _, install := range layout.installs {
-				var matched bool
-				for _, c := range d.Checks {
-					if c.PathGlob == "" {
-						continue
-					}
-					ok, err := path.Match(norm(c.PathGlob), norm(install))
-					if err != nil {
-						t.Fatalf("bad pattern %q: %v", c.PathGlob, err)
-					}
-					if ok {
-						matched = true
-						break
-					}
-				}
-				if !matched {
-					t.Errorf("no check matches the vendor install path %s", install)
-				}
-			}
+			assertInstallsMatchGlobs(t, builtinDetector(t, layout.tag), layout.installs)
 		})
 	}
 }
@@ -162,18 +124,12 @@ func TestRendererDetectors_ProbePATHForTheCommand(t *testing.T) {
 	}
 }
 
-// TestRendererDetectors_WindowsCheckIsGated guards the backslash globs, which
-// are ErrBadPattern (silently no matches) on POSIX when ungated.
+// TestRendererDetectors_WindowsCheckIsGated guards the backslash globs (see
+// assertWindowsGlobsGated).
 func TestRendererDetectors_WindowsCheckIsGated(t *testing.T) {
 	for _, layout := range rendererLayouts {
 		t.Run(layout.tag, func(t *testing.T) {
-			d := builtinDetector(t, layout.tag)
-			for i, c := range d.Checks {
-				if strings.Contains(c.PathGlob, `\`) && c.OS != "windows" {
-					t.Errorf("check %d has a backslash pattern %q but os = %q, want %q",
-						i, c.PathGlob, c.OS, "windows")
-				}
-			}
+			assertWindowsGlobsGated(t, builtinDetector(t, layout.tag))
 		})
 	}
 }

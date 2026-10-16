@@ -3,7 +3,6 @@
 package capabilities
 
 import (
-	"path"
 	"strings"
 	"testing"
 )
@@ -59,32 +58,9 @@ var mistikaLayouts = []struct {
 	},
 }
 
-// mistikaDetector returns the built-in detector emitting tag.
-func mistikaDetector(t *testing.T, tag string) Detector {
-	t.Helper()
-	ds, err := BuiltinDetectors()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, d := range ds {
-		if d.Tag == tag {
-			return d
-		}
-	}
-	t.Fatalf("no built-in detector emits the %q tag", tag)
-	return Detector{}
-}
-
 // TestMistikaDetectors_MatchVendorInstallLayout is the substantive check: each
-// shipped glob must actually match the SGO install path Smedge looks for.
-//
-// It matches with path.Match on slash-normalized strings rather than calling
-// filepath.Glob, for two reasons: the install paths are absolute and do not
-// exist on a test runner, and the Windows pattern's backslashes are separators
-// on Windows but escape characters to filepath.Match everywhere else, so a
-// host-native match would silently test something different per platform.
-// path.Match on normalized input is the same per-component wildcard semantics
-// filepath.Glob applies, checked identically on every runner.
+// shipped glob must actually match the SGO install path Smedge looks for
+// (assertInstallsMatchGlobs says why it uses path.Match).
 //
 // This is what catches the subtle failure: the .psx files spell the macOS
 // bundle directory "Contents/MACOS", which works for Smedge only because macOS
@@ -92,26 +68,9 @@ func mistikaDetector(t *testing.T, tag string) Detector {
 // copying that spelling would produce a detector that never fires on a real
 // install while looking perfectly correct.
 func TestMistikaDetectors_MatchVendorInstallLayout(t *testing.T) {
-	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
 	for _, layout := range mistikaLayouts {
 		t.Run(layout.tag, func(t *testing.T) {
-			d := mistikaDetector(t, layout.tag)
-			for _, install := range layout.installs {
-				var matched bool
-				for _, c := range d.Checks {
-					ok, err := path.Match(norm(c.PathGlob), norm(install))
-					if err != nil {
-						t.Fatalf("bad pattern %q: %v", c.PathGlob, err)
-					}
-					if ok {
-						matched = true
-						break
-					}
-				}
-				if !matched {
-					t.Errorf("no check matches the vendor install path %s", install)
-				}
-			}
+			assertInstallsMatchGlobs(t, builtinDetector(t, layout.tag), layout.installs)
 		})
 	}
 }
@@ -125,7 +84,7 @@ func TestMistikaDetectors_MatchVendorInstallLayout(t *testing.T) {
 func TestMistikaDetectors_NoBareExeProbe(t *testing.T) {
 	for _, layout := range mistikaLayouts {
 		t.Run(layout.tag, func(t *testing.T) {
-			d := mistikaDetector(t, layout.tag)
+			d := builtinDetector(t, layout.tag)
 			if len(d.Checks) == 0 {
 				t.Fatal("no checks")
 			}
@@ -139,19 +98,11 @@ func TestMistikaDetectors_NoBareExeProbe(t *testing.T) {
 }
 
 // TestMistikaDetectors_WindowsCheckIsGated guards the one check whose pattern
-// is not portable: backslashes are separators on Windows and escapes to
-// filepath.Match elsewhere, so an ungated Windows glob would be an ErrBadPattern
-// (silently no matches) on POSIX rather than the no-op it looks like.
+// is not portable (see assertWindowsGlobsGated).
 func TestMistikaDetectors_WindowsCheckIsGated(t *testing.T) {
 	for _, layout := range mistikaLayouts {
 		t.Run(layout.tag, func(t *testing.T) {
-			d := mistikaDetector(t, layout.tag)
-			for i, c := range d.Checks {
-				if strings.Contains(c.PathGlob, `\`) && c.OS != "windows" {
-					t.Errorf("check %d has a backslash pattern %q but os = %q, want %q",
-						i, c.PathGlob, c.OS, "windows")
-				}
-			}
+			assertWindowsGlobsGated(t, builtinDetector(t, layout.tag))
 		})
 	}
 }
@@ -163,7 +114,7 @@ func TestMistikaDetectors_WindowsCheckIsGated(t *testing.T) {
 func TestMistikaDetectors_ExtractVersion(t *testing.T) {
 	for _, layout := range mistikaLayouts {
 		t.Run(layout.tag, func(t *testing.T) {
-			d := mistikaDetector(t, layout.tag)
+			d := builtinDetector(t, layout.tag)
 			if got := d.extractVersion(layout.versioned); got != layout.version {
 				t.Errorf("extractVersion(%q) = %q, want %q", layout.versioned, got, layout.version)
 			}
@@ -175,7 +126,7 @@ func TestMistikaDetectors_ExtractVersion(t *testing.T) {
 // worker whose glob hits must advertise the bare tag, and the versioned variant
 // when the install directory names a version.
 func TestMistikaDetectors_EvaluateEmitsTags(t *testing.T) {
-	d := mistikaDetector(t, "mistika")
+	d := builtinDetector(t, "mistika")
 	hit := "/home/mistika/SGO Apps/Mistika Ultima 10.10/bin/mistika"
 	env := fakeEnv{
 		goos:  "linux",

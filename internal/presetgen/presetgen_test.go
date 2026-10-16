@@ -22,10 +22,7 @@ func TestBuild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if len(got) != 22 {
-		t.Fatalf("got %d presets, want 22", len(got))
-	}
-	// Sorted by name.
+	// Every preset, sorted by name.
 	want := []string{
 		"3delight-render",
 		"arnold-kick-render",
@@ -50,10 +47,12 @@ func TestBuild(t *testing.T) {
 		"redshift-standalone-render",
 		"vray-standalone-render",
 	}
-	for i, w := range want {
-		if got[i].Entry.Name != w {
-			t.Fatalf("got[%d].Name = %q, want %q", i, got[i].Entry.Name, w)
-		}
+	names := make([]string, len(got))
+	for i, g := range got {
+		names[i] = g.Entry.Name
+	}
+	if !slices.Equal(names, want) {
+		t.Fatalf("published presets = %v, want %v", names, want)
 	}
 
 	// Looked up by name, not position: "arnold-..." and "3delight-..." sort

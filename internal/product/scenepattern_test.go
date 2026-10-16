@@ -7,13 +7,13 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
-	"gopkg.in/yaml.v3"
-
+	"github.com/uberware/sqi/internal/fsutil"
 	"github.com/uberware/sqi/internal/openjd"
-	"github.com/uberware/sqi/internal/product"
+	"github.com/uberware/sqi/internal/presettest"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 )
@@ -25,39 +25,66 @@ type perFilePreset struct {
 	name string
 	// extra holds any other job parameters the preset requires.
 	extra map[string]string
-	// goodTasks is the task count a valid pattern over Frames "1-2"
-	// expands to; zero means 2, one task per frame.
+	// goodTasks is the task count a valid pattern over Frames "1-2" expands to.
 	goodTasks int
 }
 
 // perFilePresets lists every preset that carries the shared scene-pattern
-// binding. A new per-file preset joins this list.
+// binding; TestPerFilePresets_ListIsComplete fails if one is missing.
 var perFilePresets = []perFilePreset{
-	{name: "arnold-kick-render"},
-	{name: "redshift-standalone-render"},
-	{name: "prman-render"},
+	{name: "arnold-kick-render", goodTasks: 2},
+	{name: "redshift-standalone-render", goodTasks: 2},
+	{name: "prman-render", goodTasks: 2},
 	// Two frames of the default 2x2 grid: 8 Render tasks and 2 Assemble.
 	{name: "arnold-kick-tile-render", extra: map[string]string{"OutputFile": "/mnt/out/beauty.####.exr"}, goodTasks: 10},
-	{name: "3delight-render"},
-	{name: "mantra-render"},
+	{name: "3delight-render", goodTasks: 2},
+	{name: "mantra-render", goodTasks: 2},
 }
 
 // badPatternMessage is the fragment every per-file preset's fail() message
 // carries.
 const badPatternMessage = "must contain exactly one run of #"
 
-func perFileTemplate(t *testing.T, name string) (string, store.Product) {
+// scenePadLine is the first line of the shared binding, by which
+// TestPerFilePresets_ListIsComplete recognizes a per-file preset.
+const scenePadLine = "pad = Param.SceneFile.name.count('#')"
+
+func perFileTemplate(t *testing.T, name string) string {
 	t.Helper()
-	path := filepath.Join("..", "..", "presets", "sqi", name+".yaml")
-	data, err := os.ReadFile(path)
+	tmpl, err := presettest.PresetTemplate(presettest.SourcePresets, name)
 	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
+		t.Fatal(err)
 	}
-	p, err := product.ParseDefinition(data, product.ValidateOptions{EnforceLimits: true})
+	return tmpl
+}
+
+// TestPerFilePresets_ListIsComplete keeps perFilePresets honest: every shipped
+// preset carrying the scene binding must be in it, or the identity and
+// rejection tests below would silently skip it.
+func TestPerFilePresets_ListIsComplete(t *testing.T) {
+	paths, err := fsutil.Glob(filepath.Join("..", "..", "presets", "sqi", "*.yaml"))
 	if err != nil {
-		t.Fatalf("ParseDefinition %s: %v", path, err)
+		t.Fatalf("glob: %v", err)
 	}
-	return p.Template, p
+	var found []string
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), scenePadLine) {
+			found = append(found, strings.TrimSuffix(filepath.Base(p), ".yaml"))
+		}
+	}
+	var listed []string
+	for _, pf := range perFilePresets {
+		listed = append(listed, pf.name)
+	}
+	slices.Sort(found)
+	slices.Sort(listed)
+	if !slices.Equal(found, listed) {
+		t.Errorf("presets carrying the scene binding = %v, perFilePresets lists %v", found, listed)
+	}
 }
 
 // TestPerFilePresets_RejectABadScenePattern pins the guard that keeps a
@@ -67,13 +94,13 @@ func perFileTemplate(t *testing.T, name string) (string, store.Product) {
 func TestPerFilePresets_RejectABadScenePattern(t *testing.T) {
 	for _, pf := range perFilePresets {
 		t.Run(pf.name, func(t *testing.T) {
-			tmpl, p := perFileTemplate(t, pf.name)
+			tmpl := perFileTemplate(t, pf.name)
 			submit := func(scene string) (*openjd.SubmitResult, error) {
 				params := map[string]string{"SceneFile": scene, "Frames": "1-2"}
 				maps.Copy(params, pf.extra)
 				st := fake.New()
 				farmID, queueID := seedFarmQueue(t, st)
-				return openjd.NewSubmitter(st).Submit(t.Context(), tmpl, p.Format, openjd.SubmitOptions{
+				return openjd.NewSubmitter(st).Submit(t.Context(), tmpl, store.TemplateFormatYAML, openjd.SubmitOptions{
 					FarmID: farmID, QueueID: queueID, Parameters: params,
 				})
 			}
@@ -96,12 +123,8 @@ func TestPerFilePresets_RejectABadScenePattern(t *testing.T) {
 				if err != nil {
 					t.Fatalf("a valid pattern was rejected: %v", err)
 				}
-				want := pf.goodTasks
-				if want == 0 {
-					want = 2
-				}
-				if len(res.Tasks) != want {
-					t.Errorf("expanded to %d tasks, want %d", len(res.Tasks), want)
+				if len(res.Tasks) != pf.goodTasks {
+					t.Errorf("expanded to %d tasks, want %d", len(res.Tasks), pf.goodTasks)
 				}
 			})
 		})
@@ -126,20 +149,15 @@ func TestPerFilePresets_ShareOneScenePatternBinding(t *testing.T) {
 // failing if any step that carries one lacks the other, or if no step does.
 func sceneBinding(t *testing.T, name string) string {
 	t.Helper()
-	tmpl, _ := perFileTemplate(t, name)
-	var doc struct {
-		Steps []struct {
-			Name   string `yaml:"name"`
-			Script struct {
-				Let []string `yaml:"let"`
-			} `yaml:"script"`
-		} `yaml:"steps"`
-	}
-	if err := yaml.Unmarshal([]byte(tmpl), &doc); err != nil {
-		t.Fatalf("decode %s template: %v", name, err)
+	tmpl, err := openjd.Parse([]byte(perFileTemplate(t, name)), openjd.FormatYAML)
+	if err != nil {
+		t.Fatalf("openjd.Parse %s: %v", name, err)
 	}
 	binding := ""
-	for _, s := range doc.Steps {
+	for _, s := range tmpl.Steps {
+		if s.Script == nil {
+			continue
+		}
 		var pad, scene string
 		for _, l := range s.Script.Let {
 			switch {
