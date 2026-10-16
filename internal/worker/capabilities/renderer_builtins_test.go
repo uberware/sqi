@@ -86,6 +86,16 @@ var rendererLayouts = []rendererLayout{
 			`C:\Program Files\3Delight\bin\renderdl.exe`,
 		},
 	},
+	{
+		tag: "mantra",
+		exe: "mantra",
+		installs: []string{
+			"/opt/hfs21.0.440/bin/mantra",
+			`C:\Program Files\Side Effects Software\Houdini 21.0.440\bin\mantra.exe`,
+		},
+		versioned: "/opt/hfs21.0.440/bin/mantra",
+		version:   "21.0",
+	},
 }
 
 // builtinDetector returns the built-in detector emitting tag.
@@ -195,7 +205,7 @@ func TestRendererDetectors_ExtractVersion(t *testing.T) {
 // Houdini version from the Linux and Windows install layouts, which spell it
 // differently (hfs21.0.440 against "Houdini 21.0.440").
 func TestRendererDetectors_HoudiniUtilitiesVersionOnEveryOS(t *testing.T) {
-	for _, tag := range []string{"husk"} {
+	for _, tag := range []string{"husk", "mantra"} {
 		t.Run(tag, func(t *testing.T) {
 			d := builtinDetector(t, tag)
 			for _, p := range []string{

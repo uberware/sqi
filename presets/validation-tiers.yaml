@@ -340,6 +340,24 @@ presets:
       case: TestPresetTier3/3delight-render/default
       required_on: [linux, darwin, windows]
 
+  - name: mantra-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, padding-and-step]
+      caveat: >-
+        argv derived from SideFX's batch-rendering page for Houdini 22.0
+        (mantra -f <file.ifd>, one IFD per command, with -V 2a for
+        line-per-update progress); -j is left out, so mantra uses every core.
+        Mantra still ships but SideFX has not supported it since the end of
+        2024, and the readme points to husk-usd-render. The goldens show the
+        shared scene-pattern substitution; a bad pattern is rejected at
+        submission. No Houdini installation has executed it, so licensing is
+        unverified.
+    tier3:
+      case: TestPresetTier3/mantra-render/default
+      required_on: [linux, darwin, windows]
+
   - name: ffmpeg-transcode
     source: presets/sqi
     tier: 2

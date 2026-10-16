@@ -132,6 +132,11 @@ func TestSQIReferencePresets(t *testing.T) {
 			params:     []string{"SceneFile", "Frames"},
 			extensions: []string{"EXPR"},
 		},
+		"mantra-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames"},
+			extensions: []string{"EXPR"},
+		},
 		"ffmpeg-transcode": {
 			category: "Transcoding",
 			params:   []string{"SourceFile", "OutputFile", "VideoCodec", "Quality", "AudioCodec"},

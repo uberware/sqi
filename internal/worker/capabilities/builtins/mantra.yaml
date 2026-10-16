@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# SideFX mantra, Houdini's legacy renderer, which
+# presets/sqi/mantra-render.yaml invokes by bare name. It installs beside husk
+# in $HFS/bin, so the layout below is husk.yaml's.
+#
+# This is its own tag rather than the houdini tag: the houdini detector keys on
+# hython and the Houdini application, and a worker can have either without
+# mantra resolvable on PATH. SideFX documents only that the utilities live in
+# $HFS/bin (sidefx.com/docs/houdini/ref/utils); the install roots below are the
+# standard ones -- /opt/hfs<version> on Linux, and on Windows
+# "C:\Program Files\Side Effects Software\Houdini <version>", which newer
+# builds spell with a space. The macOS framework path could not be confirmed
+# and is left to the PATH probe rather than guessed.
+tag: mantra
+checks:
+  - exe: mantra
+  - path_glob: "/opt/hfs*/bin/mantra"                                                    # linux
+  - path_glob: 'C:\Program Files\Side Effects Software\Houdini *\bin\mantra.exe'         # windows
+    os: windows
+version:
+  from: '(?:hfs|Houdini )(?P<v>[0-9]+\.[0-9]+)'

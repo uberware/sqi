@@ -39,6 +39,7 @@ var perFilePresets = []perFilePreset{
 	// Two frames of the default 2x2 grid: 8 Render tasks and 2 Assemble.
 	{name: "arnold-kick-tile-render", extra: map[string]string{"OutputFile": "/mnt/out/beauty.####.exr"}, goodTasks: 10},
 	{name: "3delight-render"},
+	{name: "mantra-render"},
 }
 
 // badPatternMessage is the fragment every per-file preset's fail() message
