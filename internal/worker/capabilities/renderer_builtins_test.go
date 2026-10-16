@@ -38,6 +38,14 @@ var rendererLayouts = []rendererLayout{
 			`C:\Program Files\Autodesk\Arnold\maya2026\bin\kick.exe`,
 		},
 	},
+	{
+		tag: "vray",
+		exe: "vray",
+		installs: []string{
+			"/usr/Chaos/V-Ray/Standalone_for_centos7/bin/vray",
+			`C:\Program Files\Chaos\V-Ray\Standalone for x64\bin\vray.exe`,
+		},
+	},
 }
 
 // builtinDetector returns the built-in detector emitting tag.

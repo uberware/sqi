@@ -206,6 +206,27 @@ presets:
       case: TestPresetTier3/arnold-kick-render/default
       required_on: [linux, darwin, windows]
 
+  - name: vray-standalone-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, multi-frame-chunk, stepped-range]
+      caveat: >-
+        argv derived from Chaos's V-Ray Standalone command-line options page
+        (-sceneFile, -frames=START-END with inclusive bounds, -display=0 for no
+        frame buffer, -autoClose=1 to exit when done, -progressUseColor=0 for
+        plain log output); -progressUseCR is left out because its 0/1 meaning
+        is undocumented. The goldens show the chunk bounds at the shipped one
+        frame per task, at a patched chunk size of 5 (-frames=1-5 then
+        -frames=6-10), and a stepped range reaching V-Ray as single-frame
+        tasks (-frames=1-1, 5-5, 9-9), so -frames never spans an excluded
+        frame. No V-Ray installation has executed it, so licensing and
+        whether the .vrscene's own output settings are what the user expects
+        are unverified.
+    tier3:
+      case: TestPresetTier3/vray-standalone-render/default
+      required_on: [linux, darwin, windows]
+
   - name: ffmpeg-transcode
     source: presets/sqi
     tier: 2

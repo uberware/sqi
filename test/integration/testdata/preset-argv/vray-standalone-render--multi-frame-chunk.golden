@@ -1,0 +1,34 @@
+preset: vray-standalone-render
+case:   multi-frame-chunk
+template modified: step "Render" chunks.defaultTaskCount=5
+params:
+  Frames=1-10
+  SceneFile=/mnt/show/seq010/shot0010/render/shot0010_lighting.vrscene
+
+step "Render" — 2 tasks
+
+task 1/2  name="Render[Frame=1-5,Frame.End=5,Frame.Start=1]"
+  task params:
+    Frame=1-5
+    Frame.End=5
+    Frame.Start=1
+  command: vray
+  args:
+    [0]  -sceneFile=/mnt/show/seq010/shot0010/render/shot0010_lighting.vrscene
+    [1]  -frames=1-5
+    [2]  -display=0
+    [3]  -autoClose=1
+    [4]  -progressUseColor=0
+
+task 2/2  name="Render[Frame=6-10,Frame.End=10,Frame.Start=6]"
+  task params:
+    Frame=6-10
+    Frame.End=10
+    Frame.Start=6
+  command: vray
+  args:
+    [0]  -sceneFile=/mnt/show/seq010/shot0010/render/shot0010_lighting.vrscene
+    [1]  -frames=6-10
+    [2]  -display=0
+    [3]  -autoClose=1
+    [4]  -progressUseColor=0
