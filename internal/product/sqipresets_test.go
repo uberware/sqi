@@ -107,6 +107,11 @@ func TestSQIReferencePresets(t *testing.T) {
 			params:     []string{"SceneFile", "Frames"},
 			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
 		},
+		"husk-usd-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames", "Renderer"},
+			extensions: []string{"TASK_CHUNKING", "EXPR"},
+		},
 		"ffmpeg-transcode": {
 			category: "Transcoding",
 			params:   []string{"SourceFile", "OutputFile", "VideoCodec", "Quality", "AudioCodec"},

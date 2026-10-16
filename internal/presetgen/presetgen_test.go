@@ -22,8 +22,8 @@ func TestBuild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if len(got) != 16 {
-		t.Fatalf("got %d presets, want 16", len(got))
+	if len(got) != 17 {
+		t.Fatalf("got %d presets, want 17", len(got))
 	}
 	// Sorted by name.
 	want := []string{
@@ -35,6 +35,7 @@ func TestBuild(t *testing.T) {
 		"ffmpeg-sequence-encode",
 		"ffmpeg-transcode",
 		"houdini-rop-render",
+		"husk-usd-render",
 		"maya-layer-render",
 		"maya-scene-render",
 		"mistika-boutique-render",

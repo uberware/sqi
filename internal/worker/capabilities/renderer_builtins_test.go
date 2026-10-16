@@ -46,6 +46,16 @@ var rendererLayouts = []rendererLayout{
 			`C:\Program Files\Chaos\V-Ray\Standalone for x64\bin\vray.exe`,
 		},
 	},
+	{
+		tag: "husk",
+		exe: "husk",
+		installs: []string{
+			"/opt/hfs21.0.440/bin/husk",
+			`C:\Program Files\Side Effects Software\Houdini 21.0.440\bin\husk.exe`,
+		},
+		versioned: "/opt/hfs21.0.440/bin/husk",
+		version:   "21.0",
+	},
 }
 
 // builtinDetector returns the built-in detector emitting tag.
@@ -145,6 +155,26 @@ func TestRendererDetectors_ExtractVersion(t *testing.T) {
 			}
 			if got := d.extractVersion(layout.versioned); got != layout.version {
 				t.Errorf("extractVersion(%q) = %q, want %q", layout.versioned, got, layout.version)
+			}
+		})
+	}
+}
+
+// TestRendererDetectors_HoudiniUtilitiesVersionOnEveryOS checks that the
+// detectors for the renderers Houdini installs in $HFS/bin extract the same
+// Houdini version from the Linux and Windows install layouts, which spell it
+// differently (hfs21.0.440 against "Houdini 21.0.440").
+func TestRendererDetectors_HoudiniUtilitiesVersionOnEveryOS(t *testing.T) {
+	for _, tag := range []string{"husk"} {
+		t.Run(tag, func(t *testing.T) {
+			d := builtinDetector(t, tag)
+			for _, p := range []string{
+				"/opt/hfs21.0.440/bin/" + tag,
+				`C:\Program Files\Side Effects Software\Houdini 21.0.440\bin\` + tag + ".exe",
+			} {
+				if got := d.extractVersion(p); got != "21.0" {
+					t.Errorf("extractVersion(%q) = %q, want %q", p, got, "21.0")
+				}
 			}
 		})
 	}

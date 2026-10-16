@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Husk USD Render. Each task passes husk its chunk's first frame and frame
+# count, computed with EXPR from the chunk itself. default leaves the Hydra
+# delegate empty, so no --renderer reaches husk; multi-frame-chunk patches the
+# chunk size to show start/count across an uneven tail; stepped-range shows a
+# stepped range splitting into one-frame chunks; renderer shows --renderer
+# passed when a delegate is named.
+cases:
+  - name: default
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/usd/shot0010_lighting.usd
+      Frames: "1-3"
+    expect_tasks: 3
+    expect_invocations:
+      husk: 3
+  - name: multi-frame-chunk
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/usd/shot0010_lighting.usd
+      Frames: "1-10"
+    template_patch:
+      step: Render
+      chunks_default_task_count: 4
+    expect_tasks: 3
+    expect_invocations:
+      husk: 3
+  - name: stepped-range
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/usd/shot0010_lighting.usd
+      Frames: "1-9:4"
+    expect_tasks: 3
+    expect_invocations:
+      husk: 3
+  - name: renderer
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/usd/shot0010_lighting.usd
+      Frames: "1"
+      Renderer: BRAY_HdKarmaXPU
+    expect_tasks: 1
+    expect_invocations:
+      husk: 1

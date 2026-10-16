@@ -227,6 +227,31 @@ presets:
       case: TestPresetTier3/vray-standalone-render/default
       required_on: [linux, darwin, windows]
 
+  - name: husk-usd-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, multi-frame-chunk, stepped-range, renderer]
+      caveat: >-
+        argv derived from SideFX's husk reference page for Houdini 22.0
+        (--renderer, --frame, --frame-count, --make-output-path, --no-mplay,
+        -V 2a for line-per-update progress, the USD stage as a positional
+        argument). The start frame and count are computed with EXPR from the
+        chunk (min and len of the chunk's range) rather than with
+        SQI_CHUNK_BOUNDS, whose .Start/.End do not resolve on an EXPR
+        range_expr; the goldens show them at one frame per task, across an
+        uneven tail at a patched chunk size of 4 (1/4, 5/4, 9/2), and over a
+        stepped range (each --frame-count 1). With the Hydra Delegate left
+        empty no --renderer is passed and husk falls back to the stage's
+        husk:delegate render setting; the renderer case shows the flag when a
+        delegate is named. SideFX's documentation does not list delegate
+        names, so BRAY_HdKarmaXPU in that case is a forum-sourced example, not
+        a verified default. No Houdini installation has executed it, so
+        licensing and the stage's render products are unverified.
+    tier3:
+      case: TestPresetTier3/husk-usd-render/default
+      required_on: [linux, darwin, windows]
+
   - name: ffmpeg-transcode
     source: presets/sqi
     tier: 2
