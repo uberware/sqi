@@ -324,6 +324,16 @@ type HeartbeatMsg struct {
 	// Empty when no tasks are running.
 	ActiveTaskIDs []string `json:"active_task_ids,omitempty"`
 
+	// AttemptsReported is true when ActiveAttemptIDs is authoritative. The
+	// server never reconciles a worker that sends neither field.
+	AttemptsReported bool `json:"attempts_reported,omitempty"`
+
+	// ActiveAttemptIDs lists every attempt this worker process holds, from the
+	// moment its lease reply is decoded until its task goroutine exits (after
+	// the terminal status is published). The server reclaims an attempt a
+	// live worker has stopped reporting (scheduler.reconcile_grace).
+	ActiveAttemptIDs []string `json:"active_attempt_ids,omitempty"`
+
 	// UptimeSeconds is the number of seconds the worker process has been
 	// running since it started. Useful for diagnosing workers that are
 	// restarting frequently.

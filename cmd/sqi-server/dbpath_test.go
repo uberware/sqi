@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -307,6 +308,15 @@ func TestResolveStoreTarget(t *testing.T) {
 	if err != nil || got.Driver != "sqlite" {
 		t.Fatalf("default = %+v, %v; want sqlite", got, err)
 	}
+
+	// Every command refuses an empty SQLite path, so resolution does.
+	if err := cmd.Flags().Set("db", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := resolveStoreTarget(cmd, "", ""); !errors.Is(err, errEmptySQLitePath) {
+		t.Fatalf("--db \"\" = %+v, %v; want errEmptySQLitePath", got, err)
+	}
+	cmd.Flags().Lookup("db").Changed = false
 
 	t.Setenv("SQI_STORE_DRIVER", "postgres")
 	if _, err := resolveStoreTarget(cmd, "sqi.db", ""); err == nil || !strings.Contains(err.Error(), "SQI_STORE_POSTGRES_DSN") {

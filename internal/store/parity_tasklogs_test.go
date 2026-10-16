@@ -3,6 +3,7 @@
 package store_test
 
 import (
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -93,6 +94,30 @@ func TestParity_ListTaskLogs(t *testing.T) {
 		t.Run(name+"/unknown attempt", func(t *testing.T) {
 			if got, err := st.ListTaskLogs(t.Context(), uuid.NewString(), 0, 10); err != nil || len(got) != 0 {
 				t.Fatalf("unknown attempt = (%v, %v), want none", natsSeqs(got), err)
+			}
+		})
+	}
+}
+
+func TestParity_CreateTaskLog_DuplicateChunkIsAConflict(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			g := seedStepA(t, st, graphOpts{}, store.TaskStatusReady)
+			a := storetest.Running(t, st, leaseReq(g.Tasks["a"][0]))
+			first := mkTaskLog(a, 1, "frame 1\n")
+			if _, err := st.CreateTaskLog(t.Context(), first); err != nil {
+				t.Fatal(err)
+			}
+			// A redelivery: same attempt and worker sequence, a new row ID
+			// (ingest mints one per delivery) and a different NATS sequence.
+			dup := mkTaskLog(a, 1, "frame 1\n")
+			dup.NATSSeq = 99
+			if _, err := st.CreateTaskLog(t.Context(), dup); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("duplicate CreateTaskLog = %v, want ErrConflict", err)
+			}
+			logs, err := st.ListTaskLogs(t.Context(), a.ID, 0, 10)
+			if err != nil || len(logs) != 1 || logs[0].ID != first.ID {
+				t.Fatalf("logs = %+v, %v; want only the first chunk", logs, err)
 			}
 		})
 	}

@@ -18,6 +18,11 @@ func (s *Store) CreateTaskLog(_ context.Context, log store.TaskLog) (store.TaskL
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	for _, l := range s.taskLogs {
+		if l.AttemptID == log.AttemptID && l.SeqNum == log.SeqNum {
+			return store.TaskLog{}, store.ErrConflict
+		}
+	}
 	s.taskLogs = append(s.taskLogs, log)
 	return log, nil
 }

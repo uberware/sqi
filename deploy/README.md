@@ -26,9 +26,15 @@ The password is required; it sets the database role's password and reaches the
 server as `PGPASSWORD`, so the DSN in the file carries none. `--build` builds
 the images from this checkout, because PostgreSQL support is not yet in a
 published release (the latest is `v0.3.0`); once a release includes it, pin
-its tag in the file and drop `--build`. Backups use `pg_dump` inside the database
-container (the commands are in the file's header). To use an existing
-PostgreSQL server instead of the container, see
+its tag in the file and drop `--build`.
+
+Backups run `pg_dump` inside the database container. Restores run
+`sqi-server restore` into an empty database (created with `createdb`), from a
+one-off container of the `postgres` service, because the `sqi-server` image
+has no `pg_restore`. The commands for both are in the file's header;
+[Restore](../docs/operations.md#restore) explains what a restore does and what
+runs again afterwards. To use an existing PostgreSQL server instead of the
+container, see
 [`docs/operations.md`](../docs/operations.md#running-on-postgresql).
 
 ## TLS

@@ -99,7 +99,7 @@ sleep 1
 
 ```sh
 curl -sf http://localhost:8080/healthz   # expects: {"status":"ok"}
-curl -sf http://localhost:8080/readyz    # expects: {"status":"ok","checks":{"nats":"ok","sqlite":"ok"}}
+curl -sf http://localhost:8080/readyz    # expects: {"status":"ok","checks":{"nats":{"status":"ok"},"sqlite":{"status":"ok"}}}
                                          # (the store's check is "postgres" with store.driver: postgres)
 ```
 
@@ -172,22 +172,72 @@ configured store):
 
 # Apply all pending migrations
 ./bin/sqi-server migrate up
-
-# Roll back the most recent migration
-./bin/sqi-server migrate down
 ```
+
+Migrations are forward-only: there is no `migrate down`. To go back to an older
+`sqi-server`, restore the backup taken before the upgrade
+([Rollback](../../docs/operations.md#rollback)). A binary older than the
+database refuses to start on it, naming both schema versions. `migrate up`
+takes the single-server lock, so it refuses to run while a server uses the
+database. `migrate status` takes no lock and writes nothing: a database never
+migrated lists every migration pending and stays empty (so a fresh PostgreSQL
+database can still take a restore), and on SQLite it only reads the file, so
+it is safe to run on a backup and does not create a missing one.
 
 Migration SQL files live in
 [`internal/store/migrations/`](../../internal/store/migrations/) (SQLite) and
 [`internal/store/migrations/postgres/`](../../internal/store/migrations/postgres/)
-(PostgreSQL, starting at `00037_baseline.sql`). On PostgreSQL, `migrate down`
-stops at `00037`: rolling the baseline back would drop the whole schema and its
-data, so it is refused (drop and recreate the database to start over).
+(PostgreSQL, starting at `00037_baseline.sql`).
 
 Leave the password out of `--dsn`, since the process list shows a command
 line, and supply it through `PGPASSWORD` or a password file instead. A
 PostgreSQL deployment in Docker Compose is in
 [`deploy/docker-compose.postgres.yml`](../../deploy/docker-compose.postgres.yml).
+
+---
+
+## Backup and restore
+
+```sh
+# Online backup of the configured store (server running or stopped)
+./bin/sqi-server backup --out sqi-backup-$(date +%Y%m%d).db
+
+# Restore it, with the server stopped
+./bin/sqi-server restore sqi-backup-20261013.db
+
+# Make a database restored by other means (point-in-time recovery, a snapshot)
+# safe to start a server on
+./bin/sqi-server restore --in-place
+```
+
+`restore` takes the single-server lock, checks the backup (an intact sqi
+backup no newer than the binary), puts it in place, applies any newer
+migrations, returns every task the backup recorded as assigned or running to
+`ready` (the fence: no retry is used), and renames `nats.data_dir` aside. On
+SQLite the live database and its `-wal`/`-shm` files are renamed to
+`<name>.pre-restore-<UTC time>`; on PostgreSQL the target database must be
+empty, and `pg_restore` must be on `PATH`. It chooses the store as `backup`
+does (`--db`, `--dsn`, `store.driver`), takes the NATS directory from
+`nats.data_dir` or `--nats-data-dir`, and deletes nothing. Work done after the
+backup runs again. The runbooks, including what to clean up afterwards, are
+in [Backup](../../docs/operations.md#backup) and
+[Restore](../../docs/operations.md#restore).
+
+## Moving a farm to PostgreSQL
+
+```sh
+# With the server stopped, the SQLite file at this binary's schema
+# (migrate up --db first), and an empty PostgreSQL database
+./bin/sqi-server store copy --from sqi.db --to "postgres://sqi@db.example.com/sqi?sslmode=verify-full"
+```
+
+`store copy` copies every row of the SQLite store into an empty PostgreSQL
+database in one transaction and verifies each table by row count and digest
+before committing. It opens the SQLite file read-only and takes the lock on
+both databases. `--from` defaults to `store.sqlite_path` and `--to` to
+`store.postgres.dsn`. Then set `store.driver: postgres` and start the server.
+PostgreSQL to SQLite is not supported. Step by step:
+[Moving to PostgreSQL](../../docs/operations.md#moving-to-postgresql).
 
 ---
 

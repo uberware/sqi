@@ -36,10 +36,10 @@ func TestBackup_PgDumpMissing(t *testing.T) {
 }
 
 func TestBackup_PgDumpTooOld(t *testing.T) {
-	if err := checkPgDumpVersion(16, 180002); err == nil || !strings.Contains(err.Error(), "older than the server") {
+	if err := checkToolVersion("pg_dump", 16, 180002); err == nil || !strings.Contains(err.Error(), "older than the server") {
 		t.Fatalf("pg_dump 16 against server 18 = %v", err)
 	}
-	if err := checkPgDumpVersion(18, 160004); err != nil {
+	if err := checkToolVersion("pg_dump", 18, 160004); err != nil {
 		t.Fatalf("pg_dump 18 against server 16 refused: %v", err)
 	}
 }
@@ -49,12 +49,12 @@ func TestParsePgDumpMajor(t *testing.T) {
 		"pg_dump (PostgreSQL) 16.4\n":                      16,
 		"pg_dump (PostgreSQL) 18.1 (Debian 18.1-1.pgdg)\n": 18,
 	} {
-		if got, err := parsePgDumpMajor(in); err != nil || got != want {
-			t.Errorf("parsePgDumpMajor(%q) = %d, %v; want %d", in, got, err, want)
+		if got, err := parseToolMajor(in); err != nil || got != want {
+			t.Errorf("parseToolMajor(%q) = %d, %v; want %d", in, got, err, want)
 		}
 	}
-	if _, err := parsePgDumpMajor("garbage"); err == nil {
-		t.Error("parsePgDumpMajor accepted garbage")
+	if _, err := parseToolMajor("garbage"); err == nil {
+		t.Error("parseToolMajor accepted garbage")
 	}
 }
 
@@ -136,8 +136,8 @@ func TestPgDumpInvocation_Refusals(t *testing.T) {
 	tests := []struct{ dsn, want string }{
 		{"host=db password='hunter2 dbname=sqi", "parse dsn"},
 		{"postgres://sqi:hunter2@db/sqi?password=ab&cd", "parse dsn"},
-		{"postgres://sqi:p@ss@db/sqi", "cannot pass this DSN to pg_dump safely"},
-		{"postgres://sqi@db/sqi?application_name=a@b&password=hunter2", "cannot pass this DSN to pg_dump safely"},
+		{"postgres://sqi:p@ss@db/sqi", "cannot pass this DSN to a PostgreSQL client tool safely"},
+		{"postgres://sqi@db/sqi?application_name=a@b&password=hunter2", "cannot pass this DSN to a PostgreSQL client tool safely"},
 		{"host=db sslpassword=hunter2 sslmode=disable", "sslpassword"},
 		{"postgres://sqi@db/sqi?sslpassword=hunter2&sslmode=disable", "sslpassword"},
 	}

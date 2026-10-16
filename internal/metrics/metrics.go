@@ -57,6 +57,10 @@ type Metrics struct {
 	// scheduler.
 	SchedulerTasksTotal *prometheus.CounterVec
 
+	// SchedulerTasksReconciled counts attempts reclaimed because their worker
+	// stopped reporting them (scheduler.reconcile_grace).
+	SchedulerTasksReconciled prometheus.Counter
+
 	// SchedulerAssignmentDuration records the wall-clock time spent in a
 	// single call to tryAssign, labeled by result:
 	//   - "assigned"  — a worker was found and the task was dispatched.
@@ -167,6 +171,15 @@ func New() *Metrics {
 			[]string{"queue", "status"},
 		),
 
+		SchedulerTasksReconciled: prometheus.NewCounter(
+			prometheus.CounterOpts{
+				Namespace: "sqi",
+				Subsystem: "scheduler",
+				Name:      "tasks_reconciled_total",
+				Help:      "Attempts reclaimed because their live worker no longer reported them.",
+			},
+		),
+
 		SchedulerAssignmentDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Namespace: "sqi",
@@ -265,6 +278,7 @@ func New() *Metrics {
 		m.HTTPRequestDuration,
 		m.SchedulerQueueDepth,
 		m.SchedulerTasksTotal,
+		m.SchedulerTasksReconciled,
 		m.SchedulerAssignmentDuration,
 		m.SchedulerIdleWorkers,
 		m.WorkersTotal,

@@ -104,6 +104,12 @@ type Sources struct {
 	// StoreCheckpointInterval is true when store.checkpoint_interval was set
 	// by the config file or by SQI_STORE_CHECKPOINT_INTERVAL.
 	StoreCheckpointInterval bool
+
+	// SchedulerReconcileGrace is true when scheduler.reconcile_grace was set
+	// by the config file or by SQI_SCHEDULER_RECONCILE_GRACE. When it was not,
+	// the loader resolves it to the larger of its default and
+	// scheduler.heartbeat_timeout (see [resolveReconcileGrace]).
+	SchedulerReconcileGrace bool
 }
 
 // LoadWithSources is [Load], additionally reporting which of a subset of
@@ -126,6 +132,9 @@ func LoadWithSources(filePath string, flags FlagOverrides) (Config, Sources, err
 		if fc.Store != nil && fc.Store.CheckpointInterval != nil {
 			src.StoreCheckpointInterval = true
 		}
+		if fc.Scheduler != nil && fc.Scheduler.ReconcileGrace != nil {
+			src.SchedulerReconcileGrace = true
+		}
 	}
 
 	// ── Layer 3: environment variables ───────────────────────────────────
@@ -138,11 +147,30 @@ func LoadWithSources(filePath string, flags FlagOverrides) (Config, Sources, err
 	if os.Getenv("SQI_STORE_CHECKPOINT_INTERVAL") != "" {
 		src.StoreCheckpointInterval = true
 	}
+	if strings.TrimSpace(os.Getenv("SQI_SCHEDULER_RECONCILE_GRACE")) != "" {
+		src.SchedulerReconcileGrace = true
+	}
 
 	// ── Layer 4: CLI flag overrides ───────────────────────────────────────
 	applyFlags(&cfg, flags)
 
+	resolveReconcileGrace(&cfg, src.SchedulerReconcileGrace)
+
 	return cfg, src, nil
+}
+
+// resolveReconcileGrace raises scheduler.reconcile_grace to
+// scheduler.heartbeat_timeout when that is longer, unless the config file or
+// SQI_SCHEDULER_RECONCILE_GRACE set it (explicit). Validation requires
+// reconcile_grace to be 0 (disabled) or at least heartbeat_timeout, so a
+// heartbeat_timeout raised past the 2m default must not fail validation on a
+// key the operator never set. An explicit value is left as given, for
+// validation to judge. It runs after every layer, so it sees the final
+// heartbeat_timeout.
+func resolveReconcileGrace(cfg *Config, explicit bool) {
+	if !explicit && cfg.Scheduler.ReconcileGrace < cfg.Scheduler.HeartbeatTimeout {
+		cfg.Scheduler.ReconcileGrace = cfg.Scheduler.HeartbeatTimeout
+	}
 }
 
 // ── File layer ────────────────────────────────────────────────────────────────
@@ -174,10 +202,10 @@ type fileConfig struct {
 		DataDir    *string `yaml:"data_dir"`
 		MaxStoreMB *int    `yaml:"max_store_mb"`
 		Auth       *struct {
-			Enabled                   *bool   `yaml:"enabled"`
-			JoinTokenTTL              *string `yaml:"join_token_ttl"`
-			JoinTokenSingleUse        *bool   `yaml:"join_token_single_use"`
-			EnrollmentEndpointEnabled *bool   `yaml:"enrollment_endpoint_enabled"`
+			Enabled                   *bool         `yaml:"enabled"`
+			JoinTokenTTL              *fileDuration `yaml:"join_token_ttl"`
+			JoinTokenSingleUse        *bool         `yaml:"join_token_single_use"`
+			EnrollmentEndpointEnabled *bool         `yaml:"enrollment_endpoint_enabled"`
 		} `yaml:"auth"`
 		TLS *struct {
 			Enabled      *bool   `yaml:"enabled"`
@@ -188,9 +216,9 @@ type fileConfig struct {
 	} `yaml:"nats"`
 
 	Store *struct {
-		Driver             *string `yaml:"driver"`
-		SQLitePath         *string `yaml:"sqlite_path"`
-		CheckpointInterval *string `yaml:"checkpoint_interval"`
+		Driver             *string       `yaml:"driver"`
+		SQLitePath         *string       `yaml:"sqlite_path"`
+		CheckpointInterval *fileDuration `yaml:"checkpoint_interval"`
 		Postgres           *struct {
 			DSN      *string `yaml:"dsn"`
 			MaxConns *int    `yaml:"max_conns"`
@@ -206,16 +234,17 @@ type fileConfig struct {
 	} `yaml:"log"`
 
 	Scheduler *struct {
-		HeartbeatTimeout          *string `yaml:"heartbeat_timeout"`
-		TickInterval              *string `yaml:"tick_interval"`
-		MaxTasksPerWorker         *int    `yaml:"max_tasks_per_worker"`
-		OfflineWorkerRetention    *string `yaml:"offline_worker_retention"`
-		JobRetention              *string `yaml:"job_retention"`
-		JobRetentionIncludeFailed *bool   `yaml:"job_retention_include_failed"`
-		UnschedulableGrace        *string `yaml:"unschedulable_grace"`
-		DefaultMaxAttempts        *int    `yaml:"default_max_attempts"`
-		RetryDelay                *string `yaml:"retry_delay"`
-		DefaultFailureLimit       *int    `yaml:"default_failure_limit"`
+		HeartbeatTimeout          *fileDuration `yaml:"heartbeat_timeout"`
+		TickInterval              *fileDuration `yaml:"tick_interval"`
+		MaxTasksPerWorker         *int          `yaml:"max_tasks_per_worker"`
+		OfflineWorkerRetention    *fileDuration `yaml:"offline_worker_retention"`
+		JobRetention              *fileDuration `yaml:"job_retention"`
+		JobRetentionIncludeFailed *bool         `yaml:"job_retention_include_failed"`
+		UnschedulableGrace        *fileDuration `yaml:"unschedulable_grace"`
+		ReconcileGrace            *fileDuration `yaml:"reconcile_grace"`
+		DefaultMaxAttempts        *int          `yaml:"default_max_attempts"`
+		RetryDelay                *fileDuration `yaml:"retry_delay"`
+		DefaultFailureLimit       *int          `yaml:"default_failure_limit"`
 	} `yaml:"scheduler"`
 
 	Discovery *struct {
@@ -224,12 +253,12 @@ type fileConfig struct {
 	} `yaml:"discovery"`
 
 	OpenJD *struct {
-		EnforceLimits             *bool   `yaml:"enforce_limits"`
-		ExprOperationLimit        *int64  `yaml:"expr_operation_limit"`
-		ExprMemoryLimit           *int64  `yaml:"expr_memory_limit"`
-		ExprTemplatePositions     *int64  `yaml:"expr_template_positions"`
-		ExprTemplateRetainedBytes *int64  `yaml:"expr_template_retained_bytes"`
-		ExprSubmissionDeadline    *string `yaml:"expr_submission_deadline"`
+		EnforceLimits             *bool         `yaml:"enforce_limits"`
+		ExprOperationLimit        *int64        `yaml:"expr_operation_limit"`
+		ExprMemoryLimit           *int64        `yaml:"expr_memory_limit"`
+		ExprTemplatePositions     *int64        `yaml:"expr_template_positions"`
+		ExprTemplateRetainedBytes *int64        `yaml:"expr_template_retained_bytes"`
+		ExprSubmissionDeadline    *fileDuration `yaml:"expr_submission_deadline"`
 	} `yaml:"openjd"`
 
 	Diagnostics *struct {
@@ -244,9 +273,9 @@ type fileConfig struct {
 		Enabled          *bool `yaml:"enabled"`
 		ValidateJobOwner *bool `yaml:"validate_job_owner"`
 		Session          *struct {
-			TTL          *string `yaml:"ttl"`
-			CookieName   *string `yaml:"cookie_name"`
-			CookieSecure *string `yaml:"cookie_secure"`
+			TTL          *fileDuration `yaml:"ttl"`
+			CookieName   *string       `yaml:"cookie_name"`
+			CookieSecure *string       `yaml:"cookie_secure"`
 		} `yaml:"session"`
 		Bootstrap *struct {
 			Username *string `yaml:"username"`
@@ -258,7 +287,7 @@ type fileConfig struct {
 			StartTLS        *bool              `yaml:"start_tls"`
 			TLSSkipVerify   *bool              `yaml:"tls_skip_verify"`
 			CAFile          *string            `yaml:"ca_file"`
-			Timeout         *string            `yaml:"timeout"`
+			Timeout         *fileDuration      `yaml:"timeout"`
 			BindDN          *string            `yaml:"bind_dn"`
 			BindPassword    *string            `yaml:"bind_password"`
 			BaseDN          *string            `yaml:"base_dn"`
@@ -423,10 +452,10 @@ func mergeNATSTLSFile(cfg *Config, t *struct {
 // out of [mergeNATSFile] to keep its cyclomatic complexity under the lint
 // threshold.
 func mergeNATSAuthFile(cfg *Config, a *struct {
-	Enabled                   *bool   `yaml:"enabled"`
-	JoinTokenTTL              *string `yaml:"join_token_ttl"`
-	JoinTokenSingleUse        *bool   `yaml:"join_token_single_use"`
-	EnrollmentEndpointEnabled *bool   `yaml:"enrollment_endpoint_enabled"`
+	Enabled                   *bool         `yaml:"enabled"`
+	JoinTokenTTL              *fileDuration `yaml:"join_token_ttl"`
+	JoinTokenSingleUse        *bool         `yaml:"join_token_single_use"`
+	EnrollmentEndpointEnabled *bool         `yaml:"enrollment_endpoint_enabled"`
 },
 ) {
 	if a == nil {
@@ -435,11 +464,7 @@ func mergeNATSAuthFile(cfg *Config, a *struct {
 	if a.Enabled != nil {
 		cfg.NATS.Auth.Enabled = *a.Enabled
 	}
-	if a.JoinTokenTTL != nil {
-		if d, err := time.ParseDuration(*a.JoinTokenTTL); err == nil {
-			cfg.NATS.Auth.JoinTokenTTL = d
-		}
-	}
+	setIfNotNilDuration(&cfg.NATS.Auth.JoinTokenTTL, a.JoinTokenTTL)
 	if a.JoinTokenSingleUse != nil {
 		cfg.NATS.Auth.JoinTokenSingleUse = *a.JoinTokenSingleUse
 	}
@@ -456,11 +481,7 @@ func mergeStoreFile(cfg *Config, fc fileConfig) {
 	if fc.Store.SQLitePath != nil {
 		cfg.Store.SQLitePath = *fc.Store.SQLitePath
 	}
-	if fc.Store.CheckpointInterval != nil {
-		if d, err := time.ParseDuration(*fc.Store.CheckpointInterval); err == nil {
-			cfg.Store.CheckpointInterval = d
-		}
-	}
+	setIfNotNilDuration(&cfg.Store.CheckpointInterval, fc.Store.CheckpointInterval)
 	if pg := fc.Store.Postgres; pg != nil {
 		setIfNotNilString(&cfg.Store.Postgres.DSN, pg.DSN)
 		if pg.MaxConns != nil {
@@ -494,38 +515,27 @@ func mergeSchedulerFile(cfg *Config, fc fileConfig) {
 	if fc.Scheduler == nil {
 		return
 	}
-	if fc.Scheduler.HeartbeatTimeout != nil {
-		if d, err := time.ParseDuration(*fc.Scheduler.HeartbeatTimeout); err == nil {
-			cfg.Scheduler.HeartbeatTimeout = d
-		}
-	}
-	if fc.Scheduler.TickInterval != nil {
-		if d, err := time.ParseDuration(*fc.Scheduler.TickInterval); err == nil {
-			cfg.Scheduler.TickInterval = d
-		}
-	}
+	setIfNotNilDuration(&cfg.Scheduler.HeartbeatTimeout, fc.Scheduler.HeartbeatTimeout)
+	setIfNotNilDuration(&cfg.Scheduler.TickInterval, fc.Scheduler.TickInterval)
 	if fc.Scheduler.MaxTasksPerWorker != nil {
 		cfg.Scheduler.MaxTasksPerWorker = *fc.Scheduler.MaxTasksPerWorker
 	}
-	if fc.Scheduler.OfflineWorkerRetention != nil {
-		if d, err := time.ParseDuration(*fc.Scheduler.OfflineWorkerRetention); err == nil {
-			cfg.Scheduler.OfflineWorkerRetention = d
-		}
-	}
-	if fc.Scheduler.JobRetention != nil {
-		if d, err := time.ParseDuration(*fc.Scheduler.JobRetention); err == nil {
-			cfg.Scheduler.JobRetention = d
-		}
-	}
+	setIfNotNilDuration(&cfg.Scheduler.OfflineWorkerRetention, fc.Scheduler.OfflineWorkerRetention)
+	setIfNotNilDuration(&cfg.Scheduler.JobRetention, fc.Scheduler.JobRetention)
 	if fc.Scheduler.JobRetentionIncludeFailed != nil {
 		cfg.Scheduler.JobRetentionIncludeFailed = *fc.Scheduler.JobRetentionIncludeFailed
 	}
-	if fc.Scheduler.UnschedulableGrace != nil {
-		if d, err := time.ParseDuration(*fc.Scheduler.UnschedulableGrace); err == nil {
-			cfg.Scheduler.UnschedulableGrace = d
-		}
-	}
+	mergeSchedulerGraceFile(cfg, fc)
 	mergeSchedulerRetryFile(cfg, fc)
+}
+
+// mergeSchedulerGraceFile overlays the sweep grace periods
+// (unschedulable_grace, reconcile_grace) from fc onto cfg. Split out of
+// [mergeSchedulerFile] to keep its cyclomatic complexity under the lint
+// threshold.
+func mergeSchedulerGraceFile(cfg *Config, fc fileConfig) {
+	setIfNotNilDuration(&cfg.Scheduler.UnschedulableGrace, fc.Scheduler.UnschedulableGrace)
+	setIfNotNilDuration(&cfg.Scheduler.ReconcileGrace, fc.Scheduler.ReconcileGrace)
 }
 
 // mergeSchedulerRetryFile overlays the server-level retry-policy fields
@@ -536,11 +546,7 @@ func mergeSchedulerRetryFile(cfg *Config, fc fileConfig) {
 	if fc.Scheduler.DefaultMaxAttempts != nil {
 		cfg.Scheduler.DefaultMaxAttempts = *fc.Scheduler.DefaultMaxAttempts
 	}
-	if fc.Scheduler.RetryDelay != nil {
-		if d, err := time.ParseDuration(*fc.Scheduler.RetryDelay); err == nil {
-			cfg.Scheduler.RetryDelay = d
-		}
-	}
+	setIfNotNilDuration(&cfg.Scheduler.RetryDelay, fc.Scheduler.RetryDelay)
 	if fc.Scheduler.DefaultFailureLimit != nil {
 		cfg.Scheduler.DefaultFailureLimit = *fc.Scheduler.DefaultFailureLimit
 	}
@@ -577,23 +583,7 @@ func mergeOpenJDFile(cfg *Config, fc fileConfig) {
 	if fc.OpenJD.ExprTemplateRetainedBytes != nil {
 		cfg.OpenJD.ExprTemplateRetainedBytes = *fc.OpenJD.ExprTemplateRetainedBytes
 	}
-	// A malformed duration leaves the default in place, matching every other
-	// duration this loader reads from a file (see mergeSchedulerFile). The
-	// default is in range, so an unparseable value cannot turn into a startup
-	// failure here -- the env layer, which reports its own parse errors, is
-	// where a typo is caught.
-	//
-	// This is the only one of the ten EXPR keys where that is reachable: the
-	// other nine are ints, so a typo fails YAML unmarshalling loudly. Kept for
-	// consistency with the loader's other durations rather than made an error
-	// here, and documented as an operator-visible quirk in docs/configuration.md
-	// under openjd.expr_submission_deadline -- changing it means changing every
-	// duration key at once, not this one.
-	if fc.OpenJD.ExprSubmissionDeadline != nil {
-		if d, err := time.ParseDuration(*fc.OpenJD.ExprSubmissionDeadline); err == nil {
-			cfg.OpenJD.ExprSubmissionDeadline = d
-		}
-	}
+	setIfNotNilDuration(&cfg.OpenJD.ExprSubmissionDeadline, fc.OpenJD.ExprSubmissionDeadline)
 }
 
 func mergeDiagnosticsFile(cfg *Config, fc fileConfig) {
@@ -634,19 +624,15 @@ func mergeAuthFile(cfg *Config, fc fileConfig) {
 // Split out of [mergeAuthFile] to keep its cyclomatic complexity under the
 // lint threshold.
 func mergeAuthSessionFile(cfg *Config, s *struct {
-	TTL          *string `yaml:"ttl"`
-	CookieName   *string `yaml:"cookie_name"`
-	CookieSecure *string `yaml:"cookie_secure"`
+	TTL          *fileDuration `yaml:"ttl"`
+	CookieName   *string       `yaml:"cookie_name"`
+	CookieSecure *string       `yaml:"cookie_secure"`
 },
 ) {
 	if s == nil {
 		return
 	}
-	if s.TTL != nil {
-		if d, err := time.ParseDuration(*s.TTL); err == nil {
-			cfg.Auth.Session.TTL = d
-		}
-	}
+	setIfNotNilDuration(&cfg.Auth.Session.TTL, s.TTL)
 	if s.CookieName != nil {
 		cfg.Auth.Session.CookieName = *s.CookieName
 	}
@@ -693,11 +679,7 @@ func mergeAuthLDAPFile(cfg *Config, fc fileConfig) {
 	setIfNotNilBool(&d.StartTLS, l.StartTLS)
 	setIfNotNilBool(&d.TLSSkipVerify, l.TLSSkipVerify)
 	setIfNotNilString(&d.CAFile, l.CAFile)
-	if l.Timeout != nil {
-		if v, err := time.ParseDuration(*l.Timeout); err == nil {
-			d.Timeout = v
-		}
-	}
+	setIfNotNilDuration(&d.Timeout, l.Timeout)
 	setIfNotNilString(&d.BindDN, l.BindDN)
 	setIfNotNilString(&d.BindPassword, l.BindPassword)
 	setIfNotNilString(&d.BaseDN, l.BaseDN)
@@ -774,6 +756,33 @@ func setIfNotNilBool(dst, src *bool) {
 	}
 }
 
+// fileDuration is a Go duration in the config file ("30s", "5m", "1h"). A value
+// that does not parse ("5 sec", a bare "30") fails the load, naming its line,
+// as the environment layer's [setDuration] does; it never falls back to the
+// default.
+type fileDuration time.Duration
+
+// UnmarshalYAML implements [yaml.Unmarshaler].
+func (d *fileDuration) UnmarshalYAML(n *yaml.Node) error {
+	var s string
+	if err := n.Decode(&s); err != nil {
+		return err
+	}
+	v, err := time.ParseDuration(strings.TrimSpace(s))
+	if err != nil {
+		return fmt.Errorf("line %d: invalid duration %q (want e.g. 30s, 5m, 1h)", n.Line, s)
+	}
+	*d = fileDuration(v)
+	return nil
+}
+
+// setIfNotNilDuration assigns *src to *dst when src is non-nil.
+func setIfNotNilDuration(dst *time.Duration, src *fileDuration) {
+	if src != nil {
+		*dst = time.Duration(*src)
+	}
+}
+
 // ── Environment variable layer ────────────────────────────────────────────────
 
 // applyEnv overlays SQI_* environment variables onto cfg. Typed helpers
@@ -828,6 +837,7 @@ func applyEnv(cfg *Config) error {
 	collect(setDuration(&cfg.Scheduler.JobRetention, "SQI_SCHEDULER_JOB_RETENTION"))
 	collect(setBool(&cfg.Scheduler.JobRetentionIncludeFailed, "SQI_SCHEDULER_JOB_RETENTION_INCLUDE_FAILED"))
 	collect(setDuration(&cfg.Scheduler.UnschedulableGrace, "SQI_SCHEDULER_UNSCHEDULABLE_GRACE"))
+	collect(setDuration(&cfg.Scheduler.ReconcileGrace, "SQI_SCHEDULER_RECONCILE_GRACE"))
 	collect(setInt(&cfg.Scheduler.DefaultMaxAttempts, "SQI_SCHEDULER_DEFAULT_MAX_ATTEMPTS"))
 	collect(setDuration(&cfg.Scheduler.RetryDelay, "SQI_SCHEDULER_RETRY_DELAY"))
 	collect(setInt(&cfg.Scheduler.DefaultFailureLimit, "SQI_SCHEDULER_DEFAULT_FAILURE_LIMIT"))

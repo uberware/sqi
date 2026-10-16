@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -18,12 +19,17 @@ import (
 // API-key hashes and session tokens, is readable by its writer only, and is a
 // working database.
 func TestBackup_CopyIsRestricted(t *testing.T) {
-	s := openTestStore(t)
+	src := t.TempDir() + "/test.db"
+	s, err := sqlite.Open(t.Context(), src, sqlite.DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
 	if _, err := s.CreateFarm(t.Context(), store.Farm{ID: "farm-backup", Name: "kept"}); err != nil {
 		t.Fatal(err)
 	}
 	out := filepath.Join(t.TempDir(), "sqi-backup.db")
-	if err := s.Backup(t.Context(), out); err != nil {
+	if err := sqlite.BackupPath(t.Context(), src, out); err != nil {
 		t.Fatalf("Backup: %v", err)
 	}
 	if restricted, err := fsutil.IsRestricted(out); err != nil || !restricted {
@@ -40,15 +46,72 @@ func TestBackup_CopyIsRestricted(t *testing.T) {
 	}
 }
 
+// TestBackupPath_ReadsAPathWithURICharacters pins that BackupPath opens the
+// database its path names, whatever the name holds: unescaped, "?" would start
+// a DSN's query (opening, or creating, a truncated name) and "#" or "%" would
+// be read as URI syntax.
+func TestBackupPath_ReadsAPathWithURICharacters(t *testing.T) {
+	names := []string{"sqi #1.db", "100% sqi.db", "a b%20c.db"}
+	if runtime.GOOS != "windows" { // "?" cannot appear in a Windows file name
+		names = append(names, "sqi?mode=ro.db", "sqi?.db")
+	}
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			plain := filepath.Join(dir, "plain.db")
+			s, err := sqlite.Open(t.Context(), plain, sqlite.DefaultOptions())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.CreateFarm(t.Context(), store.Farm{ID: "farm-uri", Name: "kept"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			src := filepath.Join(dir, name)
+			if err := os.Rename(plain, src); err != nil {
+				t.Fatal(err)
+			}
+			out := filepath.Join(t.TempDir(), "backup.db")
+			if err := sqlite.BackupPath(t.Context(), src, out); err != nil {
+				t.Fatalf("BackupPath(%q): %v", name, err)
+			}
+			copied, err := sqlite.Open(t.Context(), out, sqlite.Options{})
+			if err != nil {
+				t.Fatalf("open the copy: %v", err)
+			}
+			defer copied.Close()
+			if f, err := copied.GetFarm(t.Context(), "farm-uri"); err != nil || f.Name != "kept" {
+				t.Fatalf("GetFarm from the copy of %q = %+v, %v", name, f, err)
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, e := range entries {
+				if !strings.HasPrefix(e.Name(), name) {
+					t.Errorf("BackupPath(%q) left %q beside it (a misread name)", name, e.Name())
+				}
+			}
+		})
+	}
+}
+
 // TestBackup_RefusesAnExistingDestination pins that a backup never replaces a
 // file, an empty one included, and leaves it as it was.
 func TestBackup_RefusesAnExistingDestination(t *testing.T) {
-	s := openTestStore(t)
+	src := t.TempDir() + "/test.db"
+	s, err := sqlite.Open(t.Context(), src, sqlite.DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
 	out := filepath.Join(t.TempDir(), "sqi-backup.db")
 	if err := os.WriteFile(out, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Backup(t.Context(), out); err == nil || !strings.Contains(err.Error(), "already exists") {
+	if err := sqlite.BackupPath(t.Context(), src, out); err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("Backup over an existing file = %v; want an already-exists error", err)
 	}
 	if info, err := os.Stat(out); err != nil || info.Size() != 0 {

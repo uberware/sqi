@@ -40,6 +40,13 @@ type Dispatcher interface {
 	Dispatch(ctx context.Context, m *protocol.AssignMsg) error
 }
 
+// holder is implemented by a Dispatcher that tracks the attempts it holds (the
+// executor). The loop calls Hold for every attempt in a decoded batch before it
+// dispatches any of them.
+type holder interface {
+	Hold(attemptID string)
+}
+
 type request struct {
 	WorkerID   string `json:"worker_id"`
 	InstanceID string `json:"instance_id,omitempty"`
@@ -108,12 +115,23 @@ func (l *Loop) runQueue(ctx context.Context, queueID string) {
 			l.logger.WarnContext(ctx, "lease: malformed reply", slog.Any("error", err))
 			continue
 		}
+		batch := make([]*protocol.AssignMsg, 0, len(rep.Assignments))
 		for _, raw := range rep.Assignments {
 			m, err := decodeAssignment(raw)
 			if err != nil {
 				l.logger.WarnContext(ctx, "lease: malformed assignment", slog.Any("error", err))
 				continue
 			}
+			batch = append(batch, m)
+		}
+		// Hold the whole batch first: dispatch is sequential, and an attempt
+		// waiting behind another's session setup must already be reported.
+		if h, ok := l.dispatch.(holder); ok {
+			for _, m := range batch {
+				h.Hold(m.AttemptID)
+			}
+		}
+		for _, m := range batch {
 			if err := l.dispatch.Dispatch(ctx, m); err != nil {
 				l.logger.WarnContext(ctx, "lease: dispatch failed", slog.String("task_id", m.TaskID), slog.Any("error", err))
 			}

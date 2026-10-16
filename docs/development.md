@@ -1278,6 +1278,14 @@ type StateSource interface {
    }
    ```
 
+   To take part in the server's attempt reconciliation, also implement the
+   optional `heartbeat.AttemptSource` (`ActiveAttemptIDs() []string`) and
+   `Hold(attemptID string)`. The lease loop calls `Hold` for every assignment
+   in a batch before dispatching any of it; the attempt must stay reported until
+   its terminal status has been published (or `Dispatch` fails before running
+   it). A source without `AttemptSource` sends heartbeats without
+   `attempts_reported`, and the server never reconciles that worker's attempts.
+
 3. **Publish status messages** — inject `*status.Publisher` and call
    `Running`, `Terminal`, and (on shutdown) `ShutdownFailed`. Match the
    existing executor's publish points:

@@ -4,7 +4,7 @@
 
 📖 **[Documentation](https://uberware.github.io/sqi/)** — quickstart, architecture, configuration, and full reference.
 
-> **Status:** v0.3.0 (Phase 3) released — opt-in authentication and multi-user support: local accounts, API keys, RBAC, job-owner identity, LDAP/AD, OAuth2/OIDC SSO, and queue-scoped run-as-user task isolation on POSIX and Windows. Also in this release: the official OpenJD `EXPR` expression-language extension, and expanded reference presets (ffmpeg transcode, sequence-encode and segment-transcode; Mistika Boutique, VR and Workflows). Auth is **off by default**, so an existing deployment is unaffected until enabled. **Phase 4** (production hardening) is next. Contributions, feedback, and discussion welcome.
+> **Status:** v0.3.0 (Phase 3) released — opt-in authentication and multi-user support: local accounts, API keys, RBAC, job-owner identity, LDAP/AD, OAuth2/OIDC SSO, and queue-scoped run-as-user task isolation on POSIX and Windows. Also in this release: the official OpenJD `EXPR` expression-language extension, and expanded reference presets (ffmpeg transcode, sequence-encode and segment-transcode; Mistika Boutique, VR and Workflows). Auth is **off by default**, so an existing deployment is unaffected until enabled. **Phase 4** (production hardening) is in progress: the PostgreSQL state store and backup/restore are implemented, not yet released. Contributions, feedback, and discussion welcome.
 
 ---
 
@@ -20,7 +20,7 @@ The render farm management space is in an awkward moment. Legacy on-premises sys
 
 **Simple by default.** A single binary gets a working farm. Workers on other machines run a second binary and can find the server automatically. No external database, no message broker configuration, no cloud account required to get started.
 
-**Scalable when needed.** The same software that runs your five-machine studio farm can be deployed in a distributed, high-availability configuration with a separate database, message broker, and workers across multiple cloud providers. The upgrade path is configuration, not migration.
+**Scalable when needed.** The same software that runs your five-machine studio farm can be deployed in a distributed, high-availability configuration with a separate database, message broker, and workers across multiple cloud providers. The upgrade path is configuration, plus one command to copy an existing SQLite farm into PostgreSQL.
 
 **Not tied to any cloud provider.** Workers run on Linux, macOS, and Windows — bare metal, VMs, or containers. Cloud compute locations are supported across AWS, GCP, Azure, and any provider that can run a container or a binary. Your control plane runs where you want it.
 
@@ -75,13 +75,13 @@ See the [Quickstart](docs/quickstart.md) for a full walkthrough (binary or Docke
 
 A planned configuration (Phase 4) for high availability: a standalone NATS message broker and PostgreSQL for durable state, with workers connecting to the broker directly. So far only the PostgreSQL state store is implemented (unreleased; set `store.driver: postgres`, see [Running on PostgreSQL](docs/operations.md#running-on-postgresql) and [`deploy/docker-compose.postgres.yml`](deploy/docker-compose.postgres.yml)). A standalone broker, the HA scheduler and Kubernetes manifests are not yet implemented, and one `sqi-server`, with its embedded broker, runs per database.
 
-Both modes run the same software. The difference is configuration.
+Both modes run the same software. The difference is configuration; an existing SQLite farm moves to PostgreSQL with `sqi-server store copy` (see [Moving to PostgreSQL](docs/operations.md#moving-to-postgresql)).
 
 ---
 
 ## Status and roadmap
 
-`sqi` v0.1.0 delivered the Phase 1 core: scheduler, pull-based workers, OpenJD job execution, and a basic web UI, with a Python client and single-binary or Docker Compose deployment. v0.2.0 completes Phase 2 — products and presets as an authoring layer over OpenJD, the community preset-library integration, a product-driven submission form, additional path-translation modes, S3-compatible storage, compute locations, and in-application DCC submitters for Maya, Houdini, Nuke, and Blender. **Phase 3** — opt-in authentication and multi-user support: local accounts and API keys, role-based access control, an authenticated owner/submitter identity on jobs, LDAP/Active Directory, OAuth2/OIDC SSO, and queue-scoped run-as-user task isolation (tasks execute as a distinct, unprivileged OS account instead of the worker's own, on POSIX and Windows) — ships in v0.3.0, alongside the official OpenJD `EXPR` expression-language extension and expanded ffmpeg and Mistika reference presets. Auth is off by default, so an existing deployment is unaffected until enabled. Production-hardening features (Phase 4) follow.
+`sqi` v0.1.0 delivered the Phase 1 core: scheduler, pull-based workers, OpenJD job execution, and a basic web UI, with a Python client and single-binary or Docker Compose deployment. v0.2.0 completes Phase 2 — products and presets as an authoring layer over OpenJD, the community preset-library integration, a product-driven submission form, additional path-translation modes, S3-compatible storage, compute locations, and in-application DCC submitters for Maya, Houdini, Nuke, and Blender. **Phase 3** — opt-in authentication and multi-user support: local accounts and API keys, role-based access control, an authenticated owner/submitter identity on jobs, LDAP/Active Directory, OAuth2/OIDC SSO, and queue-scoped run-as-user task isolation (tasks execute as a distinct, unprivileged OS account instead of the worker's own, on POSIX and Windows) — ships in v0.3.0, alongside the official OpenJD `EXPR` expression-language extension and expanded ffmpeg and Mistika reference presets. Auth is off by default, so an existing deployment is unaffected until enabled. Production hardening (Phase 4) is in progress.
 
 This is a real project with a concrete development commitment, not a design document waiting for funding. Feedback on priorities is welcome — [open an issue](https://github.com/uberware/sqi/issues/new) or [start a discussion](https://github.com/uberware/sqi/discussions/new/choose).
 
