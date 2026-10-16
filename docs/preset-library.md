@@ -275,7 +275,10 @@ frame per task by default.
 up to 16 × 16 tiles, renders each as its own task, and pastes each frame's
 tiles into one image in a dependent Assemble step. Assembly waits for **every**
 tile of **every** frame, because OpenJD job templates have no per-task
-dependencies.
+dependencies. The assembly list is built at submission and its cost grows with
+the grid: 16 × 16 fits the default EXPR limits with wide margin, but a server
+whose `openjd.expr_memory_limit` is lowered to its 4,096-byte minimum accepts at
+most a 7 × 7 grid.
 
 **Redshift and GPUs.** `redshift-standalone-render` gates on the Redshift
 install, not on a detected GPU: sqi detects GPUs only on Linux hosts with

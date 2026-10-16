@@ -186,7 +186,7 @@ type ExprLimits struct {
 // the largest let blocks of any preset (each per-file standalone renderer preset
 // retains 128 bytes for its scene-pattern binding; presets with no let block
 // floor that dimension at 1, which means "nothing measurable"). Every floor
-// below leaves at least 4x headroom over the worst of them (6x to 128x in
+// below leaves at least 4x headroom over the worst of them (7x to 128x in
 // practice), so no operator can tighten a knob to a value that rejects sqi's
 // own templates.
 // TestExprLimits_FloorsAcceptReferencePresets re-measures that on every run

@@ -3,6 +3,8 @@
 package capabilities
 
 import (
+	"path"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -22,8 +24,9 @@ type rendererLayout struct {
 	exe string
 	// installs are vendor install paths some path_glob check must match.
 	installs []string
-	// versioned is a path carrying a version and version the version the
-	// detector must extract from it; both empty when no version is expected.
+	// versioned is an install path that carries a version, and version is the
+	// version the detector must extract from it. Both are empty when the
+	// detector extracts no version.
 	versioned string
 	version   string
 }
@@ -194,11 +197,78 @@ func TestRendererDetectors_RenderManReadsRMANTREE(t *testing.T) {
 // TestRendererDetectors_3DelightReadsDELIGHT checks the environment probe:
 // 3Delight's installers set DELIGHT to the install directory, which is how a
 // Linux worker (whose default install location is not documented) is tagged
-// when renderdl is not on PATH.
+// when renderdl is not on PATH. The value deliberately looks versioned: no
+// version is read from it, because 3Delight does not document what the
+// directory is called, so a version-like string in it is not trusted.
 func TestRendererDetectors_3DelightReadsDELIGHT(t *testing.T) {
 	d := builtinDetector(t, "3delight")
 	env := fakeEnv{goos: "linux", envs: map[string]string{"DELIGHT": "/opt/3delight-2.9.208/Linux-x86_64"}}
 	if got := strings.Join(d.Evaluate(env), ","); got != "3delight" {
 		t.Errorf("Evaluate = %q, want %q", got, "3delight")
+	}
+}
+
+// TestRendererDetectors_EvaluateOnEveryPlatform drives each detector through
+// the real Evaluate path on the platform each documented install belongs to:
+// the install's glob firing tags the worker (plus the versioned tag where one
+// is expected), a worker with nothing installed advertises nothing, the bare
+// command on PATH alone is enough, and a Windows-only glob stays silent on a
+// non-Windows worker even when the path would match.
+func TestRendererDetectors_EvaluateOnEveryPlatform(t *testing.T) {
+	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
+	goosOf := func(install string) string {
+		switch {
+		case strings.Contains(install, `\`):
+			return "windows"
+		case strings.HasPrefix(install, "/Applications/"):
+			return "darwin"
+		default:
+			return "linux"
+		}
+	}
+	for _, layout := range rendererLayouts {
+		t.Run(layout.tag, func(t *testing.T) {
+			d := builtinDetector(t, layout.tag)
+			for _, install := range layout.installs {
+				globs := map[string][]string{}
+				for _, c := range d.Checks {
+					if c.PathGlob == "" {
+						continue
+					}
+					ok, err := path.Match(norm(c.PathGlob), norm(install))
+					if err != nil {
+						t.Fatalf("bad pattern %q: %v", c.PathGlob, err)
+					}
+					if ok {
+						globs[c.PathGlob] = []string{install}
+					}
+				}
+				goos := goosOf(install)
+				want := []string{layout.tag}
+				if install == layout.versioned {
+					want = append(want, layout.tag+"-"+layout.version)
+				}
+				got := d.Evaluate(fakeEnv{goos: goos, globs: globs})
+				for _, w := range want {
+					if !slices.Contains(got, w) {
+						t.Errorf("%s install %s: Evaluate = %v, want it to include %q", goos, install, got, w)
+					}
+				}
+				if goos == "windows" {
+					if got := d.Evaluate(fakeEnv{goos: "linux", globs: globs}); len(got) != 0 {
+						t.Errorf("a Windows-only glob fired on linux for %s: %v", install, got)
+					}
+				}
+			}
+			for _, goos := range []string{"linux", "darwin", "windows"} {
+				if got := d.Evaluate(fakeEnv{goos: goos}); len(got) != 0 {
+					t.Errorf("%s worker with nothing installed advertised %v", goos, got)
+				}
+				onPath := fakeEnv{goos: goos, paths: map[string]string{layout.exe: "/usr/local/bin/" + layout.exe}}
+				if got := d.Evaluate(onPath); !slices.Contains(got, layout.tag) {
+					t.Errorf("%s worker with %s on PATH: Evaluate = %v, want %q", goos, layout.exe, got, layout.tag)
+				}
+			}
+		})
 	}
 }

@@ -315,7 +315,14 @@ presets:
         full-size pixels outside the region, the last tile pasted wins. A bad
         pattern, or more tiles than pixels in either direction, is rejected
         at submission. Assembly waits for the whole Render step, because
-        jobtemplate-2023-09 has no task-level dependencies.
+        jobtemplate-2023-09 has no task-level dependencies. The Assemble
+        step's tile list is built at submission, so its cost grows with the
+        grid: the largest grid, 16 x 16, measures 536 operations and 16,448
+        live bytes, well inside the stock server EXPR limits, but above the
+        configurable memory floor (openjd.expr_memory_limit at its 4,096-byte
+        minimum), where the largest square grid that still submits is 7 x 7,
+        whatever the output path's length. TestArnoldKickTileRender_GridCostAtTheLimits
+        pins both figures.
     tier3:
       case: TestPresetTier3/arnold-kick-tile-render/default
       required_on: [linux, darwin, windows]

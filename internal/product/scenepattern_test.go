@@ -192,9 +192,58 @@ func sceneBinding(t *testing.T, name string) string {
 // of its folders counts against the pattern.
 func TestPerFilePresets_BadPatternMessageNamesNoRenderer(t *testing.T) {
 	binding := sceneBinding(t, perFilePresets[0].name)
-	for _, want := range []string{"e.g. shot.####.<ext>", "in a Windows path, folders may not contain #"} {
+	for _, want := range []string{"e.g. shot.####.<ext>", windowsFolderNote} {
 		if !strings.Contains(binding, want) {
 			t.Errorf("scene binding's fail() message lacks %q:\n%s", want, binding)
 		}
+	}
+}
+
+// windowsFolderNote is the clause both pattern messages carry for the one case
+// the run-of-# rule cannot explain on its own.
+const windowsFolderNote = "in a Windows path, folders may not contain #"
+
+// TestArnoldKickTileRender_RejectsABadOutputPattern pins the tile preset's
+// second pattern: the Output File Pattern follows the same one-run rule as the
+// scene pattern, is rejected at submission the same way, and its message --
+// carried by both steps, byte-identical -- explains the same Windows-folder
+// case.
+func TestArnoldKickTileRender_RejectsABadOutputPattern(t *testing.T) {
+	const name = "arnold-kick-tile-render"
+	tmpl := perFileTemplate(t, name)
+	st := fake.New()
+	farmID, queueID := seedFarmQueue(t, st)
+	_, err := openjd.NewSubmitter(st).Submit(t.Context(), tmpl, store.TemplateFormatYAML, openjd.SubmitOptions{
+		FarmID: farmID, QueueID: queueID, Parameters: map[string]string{
+			"SceneFile": "/mnt/s/shot.####.ass", "OutputFile": "/mnt/out/beauty.exr", "Frames": "1",
+		},
+	})
+	if _, ok := errors.AsType[*openjd.SubmitValidationError](err); !ok {
+		t.Fatalf("an Output File Pattern with no # was not rejected at submission: %T %v", err, err)
+	}
+	if !strings.Contains(err.Error(), "Output File Pattern must contain exactly one run of #") {
+		t.Errorf("error does not name the output pattern rule: %v", err)
+	}
+
+	parsed, err := openjd.Parse([]byte(tmpl), openjd.FormatYAML)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outs []string
+	for _, s := range parsed.Steps {
+		if s.Script == nil {
+			continue
+		}
+		for _, l := range s.Script.Let {
+			if strings.HasPrefix(l, "out =") {
+				outs = append(outs, l)
+			}
+		}
+	}
+	if len(outs) != 2 || outs[0] != outs[1] {
+		t.Fatalf("want one identical out binding in each of the two steps, got %q", outs)
+	}
+	if !strings.Contains(outs[0], windowsFolderNote) {
+		t.Errorf("the out binding's fail() message lacks %q", windowsFolderNote)
 	}
 }

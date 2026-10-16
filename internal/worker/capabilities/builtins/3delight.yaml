@@ -10,7 +10,9 @@
 # on macOS. The Linux default could not be confirmed, so a Linux worker is
 # found by the PATH probe or by DELIGHT rather than by a guessed path.
 #
-# No version is extracted: none of these locations carries one.
+# No version is extracted: the documented locations carry none, and 3Delight does
+# not document what the directory DELIGHT names is called, so a version-like
+# string in its value is not trusted (TestRendererDetectors_3DelightReadsDELIGHT).
 tag: 3delight
 checks:
   - exe: renderdl

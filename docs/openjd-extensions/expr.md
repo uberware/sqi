@@ -794,7 +794,7 @@ Three properties of that surface:
    per-evaluation two set by `ffmpeg-segment-transcode-expr`, the template-wide
    two by `arnold-kick-tile-render`, and all four re-measured on every run by
    `TestExprLimits_FloorsAcceptReferencePresets`. Headroom is wide
-   throughout (6x to 128x). On the
+   throughout (7x to 128x). On the
    **worker**, tightening rejects work *after* the job was accepted, so the
    floors are sized well above what a preset happens to cost: the server's own
    **defaults** for the two per-evaluation dimensions, and 2,000 positions
