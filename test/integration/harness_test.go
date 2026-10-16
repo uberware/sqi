@@ -430,7 +430,7 @@ func launchServer(t *testing.T, cfg server.Config, so backend.Options) (*testSer
 		return nil, err
 	}
 
-	logs := &logCapture{}
+	logs := &logCapture{start: time.Now()}
 	logger := slog.New(&captureHandler{
 		base: slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 			Level: slog.LevelWarn, // suppress info noise in test output
@@ -460,7 +460,10 @@ func launchServer(t *testing.T, cfg server.Config, so backend.Options) (*testSer
 
 	// Wait until the HTTP server is ready to accept connections, failing with
 	// the server's own error if it exits first (a port in use, a store error).
+	// The diagnostics are read before the server is stopped: stopping unwinds
+	// the very goroutines whose stacks say what startup was blocked on.
 	if err := waitForServerTCP(done, cfg.HTTPAddr, 10*time.Second); err != nil {
+		err = fmt.Errorf("%w%s", err, startupDiagnostics(logs))
 		_ = ts.stop() //nolint:errcheck // the startup error is the one to report
 		return nil, err
 	}
@@ -469,8 +472,9 @@ func launchServer(t *testing.T, cfg server.Config, so backend.Options) (*testSer
 	// sleeping a fixed duration.  This ensures JetStream streams are fully
 	// provisioned before the test starts publishing.
 	if !waitForReadyz(t, cfg.HTTPAddr, 10*time.Second) {
+		err := errors.New("server did not become ready (/readyz) within 10s" + startupDiagnostics(logs))
 		_ = ts.stop() //nolint:errcheck // not becoming ready is the error to report
-		return nil, errors.New("server did not become ready (/readyz) within 10s")
+		return nil, err
 	}
 	return ts, nil
 }
@@ -594,8 +598,10 @@ type capturedLog struct {
 
 // logCapture keeps the records a test server logs. Safe for concurrent use.
 type logCapture struct {
-	mu   sync.Mutex
-	recs []capturedLog
+	mu    sync.Mutex
+	recs  []capturedLog
+	trail []string  // INFO-and-above records, timestamped; see startupdiag_test.go
+	start time.Time // when the logger was created
 }
 
 // has reports whether any record so far has message msg and every attribute
@@ -629,11 +635,19 @@ type captureHandler struct {
 	attrs []slog.Attr
 }
 
+// Enabled admits INFO and above even where base is quieter: those records feed
+// the startup trail a failed boot reports. Only records base also enables reach
+// base and logs.recs, so what tests assert on and what the test output shows are
+// unchanged.
 func (h *captureHandler) Enabled(ctx context.Context, l slog.Level) bool {
-	return h.base.Enabled(ctx, l)
+	return l >= slog.LevelInfo || h.base.Enabled(ctx, l)
 }
 
 func (h *captureHandler) Handle(ctx context.Context, r slog.Record) error {
+	h.logs.addTrail(trailLine(time.Since(h.logs.start), r, h.attrs))
+	if !h.base.Enabled(ctx, r.Level) {
+		return nil
+	}
 	err := h.base.Handle(ctx, r)
 	attrs := make(map[string]string, len(h.attrs)+r.NumAttrs())
 	for _, a := range h.attrs {
