@@ -178,6 +178,34 @@ presets:
       case: TestPresetTier3/nuke-script-render/default
       required_on: [linux, darwin, windows]
 
+  # The standalone renderers. Each renders an exported scene description
+  # without loading the application that wrote it. None has executed against a
+  # real renderer: every argv below is documentation-derived, and Tier 3 drives
+  # a stub through the real worker path.
+  - name: arnold-kick-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, padding-and-step]
+      caveat: >-
+        argv derived from kick's own help text (-i, -dw, -dp, -v); Autodesk's
+        current kick reference could not be read, so the flag set is the
+        conservative subset every Arnold release documents. The stdin and
+        crash-dialog flags (-nstdin/-nostdin, -nokeypress, -nocrashpopup) are
+        left out on purpose: their spelling changed across releases and kick
+        exits on a flag it does not recognise, while the worker already gives
+        kick a null stdin. The goldens show the scene-pattern substitution:
+        #### padding with 12345 written in full rather than truncated, and a
+        ###### run setting six-digit padding over a stepped range. A pattern
+        with no run of # or with two runs is rejected at submission
+        (TestPerFilePresets_RejectABadScenePattern), not rendered. No Arnold
+        installation has executed it, so licensing behaviour and whether the
+        exported .ass carries the output paths the user expects are
+        unverified.
+    tier3:
+      case: TestPresetTier3/arnold-kick-render/default
+      required_on: [linux, darwin, windows]
+
   - name: ffmpeg-transcode
     source: presets/sqi
     tier: 2

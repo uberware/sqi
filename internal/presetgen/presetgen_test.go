@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/uberware/sqi/internal/presetgen"
@@ -21,17 +22,26 @@ func TestBuild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if len(got) != 14 {
-		t.Fatalf("got %d presets, want 14", len(got))
+	if len(got) != 15 {
+		t.Fatalf("got %d presets, want 15", len(got))
 	}
 	// Sorted by name.
 	want := []string{
-		"blender-batch-render", "ffmpeg-segment-transcode-bash",
+		"arnold-kick-render",
+		"blender-batch-render",
+		"ffmpeg-segment-transcode-bash",
 		"ffmpeg-segment-transcode-expr",
-		"ffmpeg-segment-transcode-powershell", "ffmpeg-sequence-encode",
-		"ffmpeg-transcode", "houdini-rop-render", "maya-layer-render",
-		"maya-scene-render", "mistika-boutique-render", "mistika-vr-render",
-		"mistika-workflows-render", "nuke-script-render", "nuke-write-render",
+		"ffmpeg-segment-transcode-powershell",
+		"ffmpeg-sequence-encode",
+		"ffmpeg-transcode",
+		"houdini-rop-render",
+		"maya-layer-render",
+		"maya-scene-render",
+		"mistika-boutique-render",
+		"mistika-vr-render",
+		"mistika-workflows-render",
+		"nuke-script-render",
+		"nuke-write-render",
 	}
 	for i, w := range want {
 		if got[i].Entry.Name != w {
@@ -39,7 +49,13 @@ func TestBuild(t *testing.T) {
 		}
 	}
 
-	blender := got[0]
+	// Looked up by name, not position: "arnold-..." and "3delight-..." sort
+	// ahead of it.
+	i := slices.IndexFunc(got, func(p presetgen.Generated) bool { return p.Entry.Name == "blender-batch-render" })
+	if i < 0 {
+		t.Fatal("blender-batch-render not published")
+	}
+	blender := got[i]
 	if blender.Entry.Title != "Blender Batch Render" {
 		t.Errorf("title = %q, want Blender Batch Render", blender.Entry.Title)
 	}

@@ -1,0 +1,80 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: arnold-kick-render
+title: Arnold Kick Render
+description: >-
+  Renders exported Arnold scene files with kick, one frame per task.
+readme: |
+  # Arnold Kick Render
+
+  Renders a sequence of exported Arnold scene files (`.ass`) with `kick`,
+  Arnold's standalone renderer, so the farm never loads the application the
+  scene came from. Each task renders one frame.
+
+  ## Parameters
+
+  - **Scene File Pattern** - the path of the exported scene files, with the
+    frame number replaced by a run of `#` characters, e.g. `shot.####.ass`.
+    The files must be reachable from every worker that runs the job.
+  - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
+    `1-100:2` for every second frame.
+
+  ## How work is divided
+
+  Each frame is its own task. The task's frame number replaces the run of `#`
+  characters, padded with zeros to the run's length: frame 7 of
+  `shot.####.ass` is `shot.0007.ass`. A frame number longer than the run is
+  written in full, so frame 12345 of `shot.####.ass` is `shot.12345.ass`.
+
+  The pattern must contain exactly one run of `#` characters. A pattern with
+  none, or with the `#` characters split into more than one run, is rejected
+  when the job is submitted.
+
+  Output paths come from the scene files themselves, as the exporter wrote
+  them; this preset does not override them.
+
+  ## Requirements
+
+  - Workers tagged `attr.worker.tag.arnold = true`
+  - `kick` on the worker's `PATH`
+category: Rendering
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: Arnold Kick Render
+  extensions: [EXPR]
+  parameterDefinitions:
+    - name: SceneFile
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface:
+        control: CHOOSE_INPUT_FILE
+        label: Scene File Pattern
+        fileFilters:
+          - label: Arnold scene files
+            patterns: ["*.ass", "*.ass.gz"]
+        fileFilterDefault:
+          label: Arnold scene files
+          patterns: ["*.ass", "*.ass.gz"]
+    - name: Frames
+      type: STRING
+      userInterface: { control: LINE_EDIT, label: Frame Range }
+  steps:
+    - name: Render
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.arnold
+            anyOf: ["true"]
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Frame
+            type: INT
+            range: "{{Param.Frames}}"
+      script:
+        let:
+          - pad = Param.SceneFile.name.count('#')
+          - "scene = Param.SceneFile.parent / Param.SceneFile.name.replace('#' * pad, zfill(Task.Param.Frame, pad)) if pad > 0 and '#' * pad in Param.SceneFile.name else fail('Scene File Pattern must contain exactly one run of # characters marking the frame number, e.g. shot.####.ass')"
+        actions:
+          onRun:
+            command: kick
+            args: ["-i", "{{ scene }}", "-dw", "-dp", "-v", "2"]
