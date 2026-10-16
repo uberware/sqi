@@ -22,11 +22,12 @@ func TestBuild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if len(got) != 20 {
-		t.Fatalf("got %d presets, want 20", len(got))
+	if len(got) != 21 {
+		t.Fatalf("got %d presets, want 21", len(got))
 	}
 	// Sorted by name.
 	want := []string{
+		"3delight-render",
 		"arnold-kick-render",
 		"arnold-kick-tile-render",
 		"blender-batch-render",

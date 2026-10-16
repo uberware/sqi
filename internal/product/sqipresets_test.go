@@ -127,6 +127,11 @@ func TestSQIReferencePresets(t *testing.T) {
 			params:     []string{"SceneFile", "Frames", "OutputFile", "Width", "Height", "TilesX", "TilesY"},
 			extensions: []string{"EXPR"},
 		},
+		"3delight-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames"},
+			extensions: []string{"EXPR"},
+		},
 		"ffmpeg-transcode": {
 			category: "Transcoding",
 			params:   []string{"SourceFile", "OutputFile", "VideoCodec", "Quality", "AudioCodec"},

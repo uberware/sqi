@@ -320,6 +320,26 @@ presets:
       case: TestPresetTier3/arnold-kick-tile-render/default
       required_on: [linux, darwin, windows]
 
+  - name: 3delight-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, padding-and-step]
+      caveat: >-
+        argv derived from 3Delight's "Rendering NSI file" documentation
+        (renderdl -progress <file.nsi>). That page documents no frame-range
+        option and describes sequences as one .nsi file per frame, which
+        corrects the farm-tool survey's range classification -- taken from
+        Smedge's RIB-era renderdl -frames template -- so this preset uses the
+        per-file shape rather than chunk bounds. -t is left out, so renderdl
+        uses every core. The goldens show the shared scene-pattern
+        substitution; a bad pattern is rejected at submission. No 3Delight
+        installation has executed it, so licensing and the handling of a
+        separate .static.nsi file are unverified.
+    tier3:
+      case: TestPresetTier3/3delight-render/default
+      required_on: [linux, darwin, windows]
+
   - name: ffmpeg-transcode
     source: presets/sqi
     tier: 2

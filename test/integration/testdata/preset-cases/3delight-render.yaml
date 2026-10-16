@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# 3Delight Render. One task per frame, each rendering the .nsi file the frame
+# number names; padding-and-step shows the run length setting the padding over
+# a stepped range.
+cases:
+  - name: default
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/nsi/shot0010_beauty.####.nsi
+      Frames: "1-3"
+    expect_tasks: 3
+    expect_invocations:
+      renderdl: 3
+  - name: padding-and-step
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/nsi/shot0010_beauty.######.nsi
+      Frames: "1001-1009:4"
+    expect_tasks: 3
+    expect_invocations:
+      renderdl: 3

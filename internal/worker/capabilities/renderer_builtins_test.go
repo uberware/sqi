@@ -78,6 +78,14 @@ var rendererLayouts = []rendererLayout{
 		versioned: "/opt/pixar/RenderManProServer-27.2/bin/prman",
 		version:   "27.2",
 	},
+	{
+		tag: "3delight",
+		exe: "renderdl",
+		installs: []string{
+			"/Applications/3Delight/bin/renderdl",
+			`C:\Program Files\3Delight\bin\renderdl.exe`,
+		},
+	},
 }
 
 // builtinDetector returns the built-in detector emitting tag.
@@ -211,5 +219,17 @@ func TestRendererDetectors_RenderManReadsRMANTREE(t *testing.T) {
 	env := fakeEnv{goos: "linux", envs: map[string]string{"RMANTREE": "/opt/pixar/RenderManProServer-27.2"}}
 	if got := strings.Join(d.Evaluate(env), ","); got != "renderman,renderman-27.2" {
 		t.Errorf("Evaluate = %q, want %q", got, "renderman,renderman-27.2")
+	}
+}
+
+// TestRendererDetectors_3DelightReadsDELIGHT checks the environment probe:
+// 3Delight's installers set DELIGHT to the install directory, which is how a
+// Linux worker (whose default install location is not documented) is tagged
+// when renderdl is not on PATH.
+func TestRendererDetectors_3DelightReadsDELIGHT(t *testing.T) {
+	d := builtinDetector(t, "3delight")
+	env := fakeEnv{goos: "linux", envs: map[string]string{"DELIGHT": "/opt/3delight-2.9.208/Linux-x86_64"}}
+	if got := strings.Join(d.Evaluate(env), ","); got != "3delight" {
+		t.Errorf("Evaluate = %q, want %q", got, "3delight")
 	}
 }
