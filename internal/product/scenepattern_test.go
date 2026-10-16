@@ -166,3 +166,17 @@ func sceneBinding(t *testing.T, name string) string {
 	}
 	return binding
 }
+
+// TestPerFilePresets_BadPatternMessageNamesNoRenderer pins the shared fail()
+// message to a renderer-neutral example, since every per-file preset carries it,
+// and to the one case the rule cannot explain on its own: a backslash Windows
+// path is a single file name to the template's POSIX path engine, so a # in one
+// of its folders counts against the pattern.
+func TestPerFilePresets_BadPatternMessageNamesNoRenderer(t *testing.T) {
+	binding := sceneBinding(t, perFilePresets[0].name)
+	for _, want := range []string{"e.g. shot.####.<ext>", "in a Windows path, folders may not contain #"} {
+		if !strings.Contains(binding, want) {
+			t.Errorf("scene binding's fail() message lacks %q:\n%s", want, binding)
+		}
+	}
+}

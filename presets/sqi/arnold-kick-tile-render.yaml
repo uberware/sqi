@@ -125,7 +125,7 @@ template:
       script:
         let:
           - pad = Param.SceneFile.name.count('#')
-          - "scene = Param.SceneFile.parent / Param.SceneFile.name.replace('#' * pad, zfill(Task.Param.Frame, pad)) if pad > 0 and '#' * pad in Param.SceneFile.name else fail('Scene File Pattern must contain exactly one run of # characters marking the frame number, e.g. shot.####.ass')"
+          - "scene = Param.SceneFile.parent / Param.SceneFile.name.replace('#' * pad, zfill(Task.Param.Frame, pad)) if pad > 0 and '#' * pad in Param.SceneFile.name else fail('Scene File Pattern must contain exactly one run of # characters marking the frame number, e.g. shot.####.<ext> (in a Windows path, folders may not contain #)')"
           - opad = Param.OutputFile.name.count('#')
           - "out = Param.OutputFile.parent / Param.OutputFile.name.replace('#' * opad, zfill(Task.Param.Frame, opad)) if opad > 0 and '#' * opad in Param.OutputFile.name else fail('Output File Pattern must contain exactly one run of # characters marking the frame number, e.g. beauty.####.exr')"
           - tile = out.parent / (out.stem + '_tile_' + string(Task.Param.TileY) + '_' + string(Task.Param.TileX) + out.suffix)
