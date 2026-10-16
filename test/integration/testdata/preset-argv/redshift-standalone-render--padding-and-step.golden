@@ -1,0 +1,28 @@
+preset: redshift-standalone-render
+case:   padding-and-step
+params:
+  Frames=1001-1009:4
+  SceneFile=/mnt/show/seq010/shot0010/render/shot0010_beauty.######.rs
+
+step "Render" — 3 tasks
+
+task 1/3  name="Render[Frame=1001]"
+  task params:
+    Frame=1001
+  command: redshiftCmdLine
+  args:
+    [0]  /mnt/show/seq010/shot0010/render/shot0010_beauty.001001.rs
+
+task 2/3  name="Render[Frame=1005]"
+  task params:
+    Frame=1005
+  command: redshiftCmdLine
+  args:
+    [0]  /mnt/show/seq010/shot0010/render/shot0010_beauty.001005.rs
+
+task 3/3  name="Render[Frame=1009]"
+  task params:
+    Frame=1009
+  command: redshiftCmdLine
+  args:
+    [0]  /mnt/show/seq010/shot0010/render/shot0010_beauty.001009.rs

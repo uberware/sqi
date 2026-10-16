@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Redshift Standalone Render. One task per frame, each rendering the .rs file
+# the frame number names. windows-path shows a native C:\... pattern surviving
+# the substitution intact: the template's path engine is POSIX-flavoured, so
+# the whole backslash path is one file name whose parent is ".", and
+# "." / name reproduces it unchanged.
+cases:
+  - name: default
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/render/shot0010_beauty.####.rs
+      Frames: "1-3"
+    expect_tasks: 3
+    expect_invocations:
+      redshiftCmdLine: 3
+  - name: padding-and-step
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/render/shot0010_beauty.######.rs
+      Frames: "1001-1009:4"
+    expect_tasks: 3
+    expect_invocations:
+      redshiftCmdLine: 3
+  - name: windows-path
+    params:
+      SceneFile: 'C:\shows\seq010\shot0010\shot0010.####.rs'
+      Frames: "7"
+    expect_tasks: 1
+    expect_invocations:
+      redshiftCmdLine: 1

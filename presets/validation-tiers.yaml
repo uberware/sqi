@@ -252,6 +252,27 @@ presets:
       case: TestPresetTier3/husk-usd-render/default
       required_on: [linux, darwin, windows]
 
+  - name: redshift-standalone-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, padding-and-step, windows-path]
+      caveat: >-
+        argv derived from Maxon's redshiftCmdLine reference, which documents
+        one exported .rs file per frame and every other option as an override
+        (-oip, -gpu, -cachepath, ...), so the preset passes the scene file
+        alone. The goldens show the shared scene-pattern substitution, and the
+        windows-path case shows a native C:\... pattern reaching the renderer
+        intact. A bad pattern is rejected at submission. Scheduling gates on
+        the redshift install tag only, not on a detected GPU, because sqi's GPU
+        probe sees only NVIDIA on Linux while Redshift also renders on Windows
+        and on Apple Silicon; a host with no usable GPU is the operator's to
+        exclude (capabilities.disable). No Redshift installation has executed
+        it, so licensing, device selection and exit codes are unverified.
+    tier3:
+      case: TestPresetTier3/redshift-standalone-render/default
+      required_on: [linux, darwin, windows]
+
   - name: ffmpeg-transcode
     source: presets/sqi
     tier: 2

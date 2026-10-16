@@ -31,6 +31,7 @@ type perFilePreset struct {
 // binding. A new per-file preset joins this list.
 var perFilePresets = []perFilePreset{
 	{name: "arnold-kick-render"},
+	{name: "redshift-standalone-render"},
 }
 
 // badPatternMessage is the fragment every per-file preset's fail() message

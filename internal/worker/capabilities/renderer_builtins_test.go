@@ -56,6 +56,17 @@ var rendererLayouts = []rendererLayout{
 		versioned: "/opt/hfs21.0.440/bin/husk",
 		version:   "21.0",
 	},
+	{
+		tag: "redshift",
+		exe: "redshiftCmdLine",
+		installs: []string{
+			"/usr/redshift/bin/redshiftCmdLine",
+			"/Applications/Maxon Redshift 2026/bin/redshiftCmdLine",
+			`C:\Program Files\Maxon Redshift 2026\bin\redshiftCmdLine.exe`,
+		},
+		versioned: `C:\Program Files\Maxon Redshift 2026\bin\redshiftCmdLine.exe`,
+		version:   "2026",
+	},
 }
 
 // builtinDetector returns the built-in detector emitting tag.
