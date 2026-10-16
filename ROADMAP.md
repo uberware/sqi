@@ -1,6 +1,6 @@
 # `sqi` Roadmap and Technical Architecture
 
-> **Status:** v0.3.0 (Phase 3) released — opt-in authentication and multi-user support, including task isolation (run-as-user), plus the official OpenJD `EXPR` extension and expanded ffmpeg and Mistika reference presets. **Phase 4** (production hardening) is next. Details may change with requests, feedback, and discoveries as development progresses.
+> **Status:** v0.3.0 (Phase 3) released — opt-in authentication and multi-user support, including task isolation (run-as-user), plus the official OpenJD `EXPR` extension and expanded ffmpeg and Mistika reference presets. **Phase 4** (production hardening) is in progress: the PostgreSQL state store and backup/restore are implemented, not yet released. Details may change with requests, feedback, and discoveries as development progresses.
 
 This document provides technical detail on `sqi`'s architecture, core concepts, and development roadmap. For the vision and feature overview, see [README.md](README.md).
 
@@ -290,6 +290,7 @@ before Phase 3. See [docs/auth.md](docs/auth.md) for the model and setup.
 ### Phase 4: Production Hardening (v0.4 — beta)
 
 - PostgreSQL state store option — **implemented, not yet released**: `store.driver: postgres` (PostgreSQL 16 or later), one `sqi-server` per database, a `pg_dump` backup and a Docker Compose example; an existing SQLite farm moves onto it with `sqi-server store copy`. See [Running on PostgreSQL](docs/operations.md#running-on-postgresql) and [Moving to PostgreSQL](docs/operations.md#moving-to-postgresql).
+- Backup, restore and upgrade — **implemented, not yet released**: `sqi-server backup` and `sqi-server restore` on SQLite and PostgreSQL, with restore handing back the tasks the backup recorded in flight; forward-only schema migrations (a binary older than the database refuses to start, and rollback is restoring the pre-upgrade backup); one server per database, enforced by a lock; and reconciliation of tasks a live worker stops reporting. See [Upgrade](docs/operations.md#upgrade), [Rollback](docs/operations.md#rollback) and [Restore](docs/operations.md#restore).
 - Scheduler HA (leader election, warm standby)
 - Distributed NATS cluster
 - Worker auto-scaling hooks (AWS, GCP, Azure)

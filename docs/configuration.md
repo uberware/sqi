@@ -466,7 +466,8 @@ store.driver is postgres`).
 > for SQLite. A `store.driver` other than `sqlite` or `postgres` is an error.
 > Without `-c`, a configuration that fails to load is normally a warning and
 > the command falls back to SQLite; when `SQI_STORE_DRIVER` names anything
-> but `sqlite`, it is an error instead.
+> but `sqlite`, it is an error instead. `restore` and `store copy` never fall
+> back: they refuse unless every target is named on the command line.
 
 ---
 

@@ -852,8 +852,8 @@ locks), time and boolean binding (`BindTime`, `BindBool`), and
 case-insensitive matching (`CIEqual`, `CILike`). Two packages open a database and supply its dialect:
 
 - `internal/store/sqlite` opens SQLite (the write and read pools, PRAGMAs,
-  migrations) and holds what only SQLite has: WAL checkpointing, and backup
-  with `VACUUM INTO`.
+  migrations), takes the single-server lock file, runs WAL checkpointing, and
+  backs up with `VACUUM INTO`.
 - `internal/store/postgres` opens PostgreSQL (a write pool of
   `store.postgres.max_conns` connections and a read pool of four, both over
   `pgx`, with READ COMMITTED pinned on every connection), takes the

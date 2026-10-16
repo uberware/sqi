@@ -371,6 +371,9 @@ From an elevated PowerShell. `Set-Location` matters with the default relative
 `store.sqlite_path`: see the note under [Windows service](#windows-service).
 
 ```powershell
+# While the old server still runs, check that the new binary loads the
+# configuration (it fails naming the line and the value it cannot read):
+.\sqi-server.exe config print --config C:\ProgramData\sqi\sqi-server.yaml > $null
 sqi-server service stop
 Set-Location C:\ProgramData\sqi
 sqi-server backup --db C:\ProgramData\sqi\sqi.db `
