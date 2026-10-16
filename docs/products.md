@@ -290,7 +290,13 @@ configuration. `docker` has no built-in detector, so the `container` product
 above still needs the manual `capability_tags: ["docker=true"]` entry.
 Nonstandard install paths for Maya/Nuke/Houdini/Blender/Mistika, or an in-house tool
 not covered by a built-in detector, can add a manual tag or a [custom
-detector](worker-capabilities.md#writing-custom-detectors) instead.
+detector](worker-capabilities.md#writing-custom-detectors) instead. The
+standalone-renderer presets (kick, V-Ray, husk, Redshift, RenderMan, 3Delight,
+Mantra — see [Standalone renderer reference
+presets](preset-library.md#standalone-renderer-reference-presets)) gate the
+same way on their own tags (`arnold`, `vray`, `husk`, `redshift`, `renderman`,
+`3delight`, `mantra`, and `oiiotool` for the tile preset's assembly step), each
+of which also has a built-in detector.
 
 ---
 

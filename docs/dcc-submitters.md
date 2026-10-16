@@ -230,8 +230,11 @@ enforcement point, and the submitter must not break against an older server.
 
 sqi ships nine DCC reference products under `presets/sqi/`, published through
 the [preset library](preset-library.md) so `sqi-submitter` has something real
-to submit to out of the box (the directory holds fourteen products in total —
-the other five are `Transcoding`-category ffmpeg presets; see [Transcoding
+to submit to out of the box (the directory holds twenty-two products in total —
+eight standalone-renderer presets, which render exported scene files with no
+DCC loaded and have no in-application submitter, see [Standalone renderer
+reference presets](preset-library.md#standalone-renderer-reference-presets),
+and five `Transcoding`-category ffmpeg presets, see [Transcoding
 reference presets](preset-library.md#transcoding-reference-presets)). Install
 them from **Admin → Preset Library** in the web UI, or by hand via `POST
 /api/v1/products` (or **Admin → Products** in the web UI) if you're not using
