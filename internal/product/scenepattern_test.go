@@ -32,6 +32,7 @@ type perFilePreset struct {
 var perFilePresets = []perFilePreset{
 	{name: "arnold-kick-render"},
 	{name: "redshift-standalone-render"},
+	{name: "prman-render"},
 }
 
 // badPatternMessage is the fragment every per-file preset's fail() message

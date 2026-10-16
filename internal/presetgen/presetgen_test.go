@@ -22,8 +22,8 @@ func TestBuild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if len(got) != 18 {
-		t.Fatalf("got %d presets, want 18", len(got))
+	if len(got) != 19 {
+		t.Fatalf("got %d presets, want 19", len(got))
 	}
 	// Sorted by name.
 	want := []string{
@@ -43,6 +43,7 @@ func TestBuild(t *testing.T) {
 		"mistika-workflows-render",
 		"nuke-script-render",
 		"nuke-write-render",
+		"prman-render",
 		"redshift-standalone-render",
 		"vray-standalone-render",
 	}

@@ -67,6 +67,17 @@ var rendererLayouts = []rendererLayout{
 		versioned: `C:\Program Files\Maxon Redshift 2026\bin\redshiftCmdLine.exe`,
 		version:   "2026",
 	},
+	{
+		tag: "renderman",
+		exe: "prman",
+		installs: []string{
+			"/opt/pixar/RenderManProServer-27.2/bin/prman",
+			"/Applications/Pixar/RenderManProServer-27.2/bin/prman",
+			`C:\Program Files\Pixar\RenderManProServer-27.2\bin\prman.exe`,
+		},
+		versioned: "/opt/pixar/RenderManProServer-27.2/bin/prman",
+		version:   "27.2",
+	},
 }
 
 // builtinDetector returns the built-in detector emitting tag.
@@ -188,5 +199,17 @@ func TestRendererDetectors_HoudiniUtilitiesVersionOnEveryOS(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestRendererDetectors_RenderManReadsRMANTREE checks the environment probe:
+// RenderMan's installers point RMANTREE at the Pro Server install, which is how
+// a worker with RenderMan installed outside the default location is still
+// tagged, with the version read from the install directory's name.
+func TestRendererDetectors_RenderManReadsRMANTREE(t *testing.T) {
+	d := builtinDetector(t, "renderman")
+	env := fakeEnv{goos: "linux", envs: map[string]string{"RMANTREE": "/opt/pixar/RenderManProServer-27.2"}}
+	if got := strings.Join(d.Evaluate(env), ","); got != "renderman,renderman-27.2" {
+		t.Errorf("Evaluate = %q, want %q", got, "renderman,renderman-27.2")
 	}
 }

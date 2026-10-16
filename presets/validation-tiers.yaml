@@ -273,6 +273,26 @@ presets:
       case: TestPresetTier3/redshift-standalone-render/default
       required_on: [linux, darwin, windows]
 
+  - name: prman-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, padding-and-step]
+      caveat: >-
+        argv derived from Pixar's prman command-line documentation
+        (-Progress, the capitalised form that prints one progress line per
+        update for farm tools, and the RIB file as a positional argument). The
+        RenderMan 27 page could not be read directly (403), so the flags come
+        from its search excerpts and the older prman manual; -t and -cwd are
+        left out, so prman uses every core and the task's working directory.
+        The goldens show the shared scene-pattern substitution; a bad pattern
+        is rejected at submission. No RenderMan installation has executed it,
+        so licensing, and how RenderMan 27 chooses between RIS and XPU for a
+        command-line render, are unverified.
+    tier3:
+      case: TestPresetTier3/prman-render/default
+      required_on: [linux, darwin, windows]
+
   - name: ffmpeg-transcode
     source: presets/sqi
     tier: 2
