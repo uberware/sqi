@@ -104,3 +104,24 @@ func TestBuiltinDetectors_FFmpeg(t *testing.T) {
 		t.Fatal("no built-in detector emits the ffmpeg tag")
 	}
 }
+
+// TestBuiltinDetectors_OIIOTool pins the oiiotool detector's shape, which
+// arnold-kick-tile-render's assembly step gates on. Like ffmpeg it is a PATH
+// tool on every platform, installed by package managers and pipeline builds
+// alike, so it carries no install-location glob.
+func TestBuiltinDetectors_OIIOTool(t *testing.T) {
+	ds, err := BuiltinDetectors()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range ds {
+		if d.Tag != "oiiotool" {
+			continue
+		}
+		if len(d.Checks) != 1 || d.Checks[0].Exe != "oiiotool" {
+			t.Errorf("oiiotool detector checks = %+v, want exactly exe: oiiotool", d.Checks)
+		}
+		return
+	}
+	t.Fatal("no built-in detector emits the oiiotool tag")
+}

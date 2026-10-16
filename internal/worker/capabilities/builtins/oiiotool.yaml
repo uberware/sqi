@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# OpenImageIO's oiiotool, which presets/sqi/arnold-kick-tile-render.yaml's
+# Assemble step invokes by bare name. Like ffmpeg it is a PATH tool on every
+# platform, installed by package managers and pipeline builds alike, so the
+# PATH probe is the whole detector. Later image-processing presets reuse it.
+tag: oiiotool
+checks:
+  - exe: oiiotool

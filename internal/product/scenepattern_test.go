@@ -25,6 +25,9 @@ type perFilePreset struct {
 	name string
 	// extra holds any other job parameters the preset requires.
 	extra map[string]string
+	// goodTasks is the task count a valid pattern over Frames "1-2"
+	// expands to; zero means 2, one task per frame.
+	goodTasks int
 }
 
 // perFilePresets lists every preset that carries the shared scene-pattern
@@ -33,6 +36,8 @@ var perFilePresets = []perFilePreset{
 	{name: "arnold-kick-render"},
 	{name: "redshift-standalone-render"},
 	{name: "prman-render"},
+	// Two frames of the default 2x2 grid: 8 Render tasks and 2 Assemble.
+	{name: "arnold-kick-tile-render", extra: map[string]string{"OutputFile": "/mnt/out/beauty.####.exr"}, goodTasks: 10},
 }
 
 // badPatternMessage is the fragment every per-file preset's fail() message
@@ -89,8 +94,12 @@ func TestPerFilePresets_RejectABadScenePattern(t *testing.T) {
 				if err != nil {
 					t.Fatalf("a valid pattern was rejected: %v", err)
 				}
-				if len(res.Tasks) != 2 {
-					t.Errorf("expanded to %d tasks, want 2", len(res.Tasks))
+				want := pf.goodTasks
+				if want == 0 {
+					want = 2
+				}
+				if len(res.Tasks) != want {
+					t.Errorf("expanded to %d tasks, want %d", len(res.Tasks), want)
 				}
 			})
 		})

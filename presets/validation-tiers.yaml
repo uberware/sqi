@@ -293,6 +293,33 @@ presets:
       case: TestPresetTier3/prman-render/default
       required_on: [linux, darwin, windows]
 
+  - name: arnold-kick-tile-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, uneven]
+      caveat: >-
+        argv derived from kick's help text (-r for resolution, -rg minx miny
+        maxx maxy for the render region, -o for the output) and OpenImageIO's
+        oiiotool documentation (--paste:mergeroi=1:all=1 +0+0, which pastes
+        every image on the stack at its own data-window offset into one image
+        sized to their union). The goldens show every tile's region, its
+        output path and the generated assembly list; the uneven case shows a
+        width 3 does not divide split with no gap or overlap (0-332, 333-665,
+        666-999), which TestArnoldKickTileRender_RegionsPartitionTheImage
+        pins over further sizes. Three things are unverified without Arnold:
+        that -rg bounds are inclusive pixel coordinates (indirect evidence
+        only), that the y-origin is the top edge, and that kick writes a
+        region render as a full display window with a region-sized data
+        window -- the assumption --paste depends on; if kick instead writes
+        full-size pixels outside the region, the last tile pasted wins. A bad
+        pattern, or more tiles than pixels in either direction, is rejected
+        at submission. Assembly waits for the whole Render step, because
+        jobtemplate-2023-09 has no task-level dependencies.
+    tier3:
+      case: TestPresetTier3/arnold-kick-tile-render/default
+      required_on: [linux, darwin, windows]
+
   - name: ffmpeg-transcode
     source: presets/sqi
     tier: 2

@@ -1,0 +1,177 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: arnold-kick-tile-render
+title: Arnold Kick Tile Render
+description: >-
+  Renders each frame of exported Arnold scene files as a grid of kick render
+  regions, then assembles the tiles into one image with oiiotool.
+readme: |
+  # Arnold Kick Tile Render
+
+  Splits each frame of an exported Arnold scene (`.ass`) into a grid of tiles,
+  renders every tile as its own task with `kick`, Arnold's standalone
+  renderer, and then assembles each frame's tiles into one image with
+  `oiiotool`. Tiling spreads one very large or very slow frame across many
+  workers.
+
+  ## Parameters
+
+  - **Scene File Pattern** - the path of the exported scene files, with the
+    frame number replaced by a run of `#` characters, e.g. `shot.####.ass`.
+    The files must be reachable from every worker that runs the job.
+  - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
+    `1-100:2` for every second frame.
+  - **Output File Pattern** - where each assembled frame is written, with the
+    frame number replaced by a run of `#` characters, e.g. `beauty.####.exr`.
+  - **Width** and **Height** - the render resolution in pixels. They must match
+    the resolution the scene was exported with.
+  - **Tiles X** and **Tiles Y** - how many tiles each frame is split into
+    across and down, from 1 to 16 each. Neither may exceed the resolution in
+    its direction.
+
+  ## How work is divided
+
+  The job has two steps. **Render** runs one task per tile of every frame:
+  `kick` renders only that tile's region of the image and writes it beside
+  the output, named after the frame's output file with `_tile_<row>_<column>`
+  added before the extension, e.g. `beauty.0007_tile_0_1.exr`. The tiles
+  share the image between them exactly, with no gaps and no overlap, even when
+  the resolution does not divide evenly.
+
+  **Assemble** runs one task per frame and pastes that frame's tiles into the
+  finished image with `oiiotool`. It starts only once every Render task of
+  every frame has finished, because OpenJD job templates cannot make one
+  frame's assembly wait for only that frame's tiles. Tile files are left on
+  disk afterwards.
+
+  Both patterns must contain exactly one run of `#` characters, which is
+  replaced by the frame number padded with zeros to the run's length. A
+  pattern with none, or with the `#` characters split into more than one run,
+  is rejected when the job is submitted, as is a tile count larger than the
+  resolution.
+
+  ## Requirements
+
+  - Render: workers tagged `attr.worker.tag.arnold = true`, with `kick` on
+    `PATH`
+  - Assemble: workers tagged `attr.worker.tag.oiiotool = true`, with
+    `oiiotool` on `PATH`
+category: Rendering
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: Arnold Kick Tile Render
+  extensions: [EXPR]
+  parameterDefinitions:
+    - name: SceneFile
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface:
+        control: CHOOSE_INPUT_FILE
+        label: Scene File Pattern
+        fileFilters:
+          - label: Arnold scene files
+            patterns: ["*.ass", "*.ass.gz"]
+        fileFilterDefault:
+          label: Arnold scene files
+          patterns: ["*.ass", "*.ass.gz"]
+    - name: Frames
+      type: STRING
+      userInterface: { control: LINE_EDIT, label: Frame Range }
+    - name: OutputFile
+      type: PATH
+      objectType: FILE
+      dataFlow: OUT
+      userInterface: { control: CHOOSE_OUTPUT_FILE, label: Output File Pattern }
+    - name: Width
+      type: INT
+      minValue: 1
+      default: 1920
+      userInterface: { control: SPIN_BOX, label: Width }
+    - name: Height
+      type: INT
+      minValue: 1
+      default: 1080
+      userInterface: { control: SPIN_BOX, label: Height }
+    - name: TilesX
+      type: INT
+      minValue: 1
+      maxValue: 16
+      default: 2
+      userInterface: { control: SPIN_BOX, label: Tiles X }
+    - name: TilesY
+      type: INT
+      minValue: 1
+      maxValue: 16
+      default: 2
+      userInterface: { control: SPIN_BOX, label: Tiles Y }
+  steps:
+    - name: Render
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.arnold
+            anyOf: ["true"]
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Frame
+            type: INT
+            range: "{{Param.Frames}}"
+          - name: TileX
+            type: INT
+            range: "0-{{ Param.TilesX - 1 if Param.TilesX <= Param.Width else fail('Tiles X must not exceed Width') }}"
+          - name: TileY
+            type: INT
+            range: "0-{{ Param.TilesY - 1 if Param.TilesY <= Param.Height else fail('Tiles Y must not exceed Height') }}"
+      script:
+        let:
+          - pad = Param.SceneFile.name.count('#')
+          - "scene = Param.SceneFile.parent / Param.SceneFile.name.replace('#' * pad, zfill(Task.Param.Frame, pad)) if pad > 0 and '#' * pad in Param.SceneFile.name else fail('Scene File Pattern must contain exactly one run of # characters marking the frame number, e.g. shot.####.ass')"
+          - opad = Param.OutputFile.name.count('#')
+          - "out = Param.OutputFile.parent / Param.OutputFile.name.replace('#' * opad, zfill(Task.Param.Frame, opad)) if opad > 0 and '#' * opad in Param.OutputFile.name else fail('Output File Pattern must contain exactly one run of # characters marking the frame number, e.g. beauty.####.exr')"
+          - tile = out.parent / (out.stem + '_tile_' + string(Task.Param.TileY) + '_' + string(Task.Param.TileX) + out.suffix)
+        actions:
+          onRun:
+            command: kick
+            args:
+              - "-i"
+              - "{{ scene }}"
+              - "-r"
+              - "{{Param.Width}}"
+              - "{{Param.Height}}"
+              - "-rg"
+              - "{{ Task.Param.TileX * Param.Width // Param.TilesX }}"
+              - "{{ Task.Param.TileY * Param.Height // Param.TilesY }}"
+              - "{{ (Task.Param.TileX + 1) * Param.Width // Param.TilesX - 1 }}"
+              - "{{ (Task.Param.TileY + 1) * Param.Height // Param.TilesY - 1 }}"
+              - "-o"
+              - "{{ tile }}"
+              - "-dw"
+              - "-dp"
+              - "-v"
+              - "2"
+    - name: Assemble
+      dependencies:
+        - dependsOn: Render
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.oiiotool
+            anyOf: ["true"]
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Frame
+            type: INT
+            range: "{{Param.Frames}}"
+      script:
+        let:
+          - opad = Param.OutputFile.name.count('#')
+          - "out = Param.OutputFile.parent / Param.OutputFile.name.replace('#' * opad, zfill(Task.Param.Frame, opad)) if opad > 0 and '#' * opad in Param.OutputFile.name else fail('Output File Pattern must contain exactly one run of # characters marking the frame number, e.g. beauty.####.exr')"
+          - tiles = [string(out.parent / (out.stem + '_tile_' + string(i // Param.TilesX) + '_' + string(i % Param.TilesX) + out.suffix)) for i in range(Param.TilesX * Param.TilesY)]
+        actions:
+          onRun:
+            command: oiiotool
+            args:
+              - "{{ tiles }}"
+              - "--paste:mergeroi=1:all=1"
+              - "+0+0"
+              - "-o"
+              - "{{ out }}"
