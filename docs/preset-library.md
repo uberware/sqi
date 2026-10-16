@@ -259,9 +259,13 @@ tags](worker-capabilities.md#built-in-detectors)):
 frame. Those presets take a **Scene File Pattern** whose frame number is a run
 of `#` characters — `shot.####.ass` — and run one task per frame, replacing the
 run with the frame number padded to its length (`shot.0007.ass`; a longer frame
-number is written in full). A pattern with no run of `#`, or with more than
-one, is rejected at submission rather than rendering one file many times.
-Output paths come from the exported files themselves.
+number is written in full, and a negative frame keeps its sign inside the
+padding, so frame -2 of `shot.####.ass` is `shot.-002.ass`). A pattern with no
+run of `#`, or with more than one, is rejected at submission rather than
+rendering one file many times. Only the file name is checked, so a `#` in a
+directory of a `/`-separated path is fine; in a backslash-separated Windows
+path the whole path counts as the file name, so its directories must not
+contain `#`. Output paths come from the exported files themselves.
 
 **Frame range per task.** V-Ray and husk read the whole animation from one
 file, so they split the frame range into chunks like the DCC presets do, one
@@ -422,8 +426,8 @@ harmless no-op.
 Tier 3 runs on Windows exactly as it does on Linux and macOS — a real
 `sqi-server` and `sqi-worker`, wired together, executing every preset end to
 end against `test/stubproc` in place of the vendor executable — and CI runs
-it in a dedicated job (`preset-harness-windows`). Of the 21 entries in
-`presets/validation-tiers.yaml`, 16 require all three platforms
+it in a dedicated job (`preset-harness-windows`). Of the 29 entries in
+`presets/validation-tiers.yaml`, 24 require all three platforms
 (`tier3.required_on: [linux, darwin, windows]`), so a skip on Windows is a
 registry failure for every one of them, not a harmless no-op. The other 5 are
 gated to a narrower platform subset, because their Tier 3 case cannot run

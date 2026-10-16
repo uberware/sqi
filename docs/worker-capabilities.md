@@ -168,10 +168,11 @@ application under
 | `3delight` | `exe renderdl` (any OS); `env DELIGHT`; macOS `path_glob /Applications/3Delight/bin/renderdl`; Windows `path_glob C:\Program Files\3Delight\bin\renderdl.exe` | none |
 | `oiiotool` | `exe oiiotool` (any OS, if on `PATH`) — a PATH tool everywhere, like `ffmpeg` | none (presence only) |
 
-The three Mistika detectors are the only built-ins that probe Windows with a
-`path_glob` rather than a `registry` key — SGO installs under a versioned
-directory and registers no well-known key. They also deliberately carry **no
-`exe` check**: their binaries are `mistika`, `vr` and `workflows`, and a bare
+The three Mistika detectors and the seven standalone-renderer detectors
+(`arnold` through `3delight`) probe Windows with a `path_glob` rather than a
+`registry` key — each vendor installs under a known, often versioned,
+directory, and the path is what carries a version. The Mistika detectors also
+deliberately carry **no `exe` check**: their binaries are `mistika`, `vr` and `workflows`, and a bare
 `PATH` probe for the last two would tag workers that have no Mistika at all.
 Detection is therefore by install location only, while the presets still
 invoke the bare command — so the binary must also be on the worker's `PATH`

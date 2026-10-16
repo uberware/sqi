@@ -213,10 +213,10 @@ presets:
       cases: [default, multi-frame-chunk, stepped-range]
       caveat: >-
         argv derived from Chaos's V-Ray Standalone command-line options page
-        (-sceneFile, -frames=START-END with inclusive bounds, -display=0 for no
-        frame buffer, -autoClose=1 to exit when done, -progressUseColor=0 for
-        plain log output); -progressUseCR is left out because its 0/1 meaning
-        is undocumented. The goldens show the chunk bounds at the shipped one
+        and vray -h (-sceneFile, -frames=START-END with inclusive bounds,
+        -display=0 for no frame buffer, -autoClose=1 to exit when done, and
+        -progressUseColor=0 with -progressUseCR=0 for plain, newline-terminated
+        progress lines suited to a captured task log). The goldens show the chunk bounds at the shipped one
         frame per task, at a patched chunk size of 5 (-frames=1-5 then
         -frames=6-10), and a stepped range reaching V-Ray as single-frame
         tasks (-frames=1-1, 5-5, 9-9), so -frames never spans an excluded

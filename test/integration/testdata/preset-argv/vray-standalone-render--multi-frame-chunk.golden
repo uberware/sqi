@@ -19,6 +19,7 @@ task 1/2  name="Render[Frame=1-5,Frame.End=5,Frame.Start=1]"
     [2]  -display=0
     [3]  -autoClose=1
     [4]  -progressUseColor=0
+    [5]  -progressUseCR=0
 
 task 2/2  name="Render[Frame=6-10,Frame.End=10,Frame.Start=6]"
   task params:
@@ -32,3 +33,4 @@ task 2/2  name="Render[Frame=6-10,Frame.End=10,Frame.Start=6]"
     [2]  -display=0
     [3]  -autoClose=1
     [4]  -progressUseColor=0
+    [5]  -progressUseCR=0

@@ -81,3 +81,4 @@ template:
               - "-display=0"
               - "-autoClose=1"
               - "-progressUseColor=0"
+              - "-progressUseCR=0"
