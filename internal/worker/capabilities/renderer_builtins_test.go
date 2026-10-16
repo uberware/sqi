@@ -201,15 +201,18 @@ func TestRendererDetectors_ExtractVersion(t *testing.T) {
 }
 
 // TestRendererDetectors_HoudiniUtilitiesVersionOnEveryOS checks that the
-// detectors for the renderers Houdini installs in $HFS/bin extract the same
-// Houdini version from the Linux and Windows install layouts, which spell it
-// differently (hfs21.0.440 against "Houdini 21.0.440").
+// detectors for what Houdini installs in $HFS/bin extract the same Houdini
+// version from the Linux and Windows install layouts, which spell it
+// differently (hfs21.0.440 against "Houdini 21.0.440"). The houdini detector
+// is included because its exe: hython signal on Windows is a path inside that
+// spaced directory.
 func TestRendererDetectors_HoudiniUtilitiesVersionOnEveryOS(t *testing.T) {
-	for _, tag := range []string{"husk", "mantra"} {
+	for _, tag := range []string{"husk", "mantra", "houdini"} {
 		t.Run(tag, func(t *testing.T) {
 			d := builtinDetector(t, tag)
 			for _, p := range []string{
 				"/opt/hfs21.0.440/bin/" + tag,
+				"/Applications/Houdini/Houdini21.0.440/Frameworks/Houdini.framework",
 				`C:\Program Files\Side Effects Software\Houdini 21.0.440\bin\` + tag + ".exe",
 			} {
 				if got := d.extractVersion(p); got != "21.0" {

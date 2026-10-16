@@ -18,4 +18,4 @@ checks:
   - path_glob: 'C:\Program Files\Side Effects Software\Houdini *\bin\husk.exe'         # windows
     os: windows
 version:
-  from: '(?:hfs|Houdini )(?P<v>[0-9]+\.[0-9]+)'
+  from: '(?:hfs|Houdini ?)(?P<v>[0-9]+\.[0-9]+)'
