@@ -1698,7 +1698,12 @@ jobs:
             # only Linux job that asserts that wrapper's exit-status pin by
             # name.
             # preset-harness-windows asserts the Windows wrapper.
+            # The parent passes even when every subtest skips (newTier3Env
+            # skips on a host it cannot stage), so a leaf that can only have
+            # run is named too: the case the wrapper exists for, aerender
+            # logging an error and exiting 0, on a macOS variant.
             TestAfterEffectsPreset_WrapperFailsOnLoggedError
+            TestAfterEffectsPreset_WrapperFailsOnLoggedError/logged-error-exit-0/after-effects-render-macos
           )
           missing=0
           for name in "${expected[@]}"; do
@@ -1985,7 +1990,8 @@ jobs:
       # after a rename, or a registry that failed to load -- exits 0 having
       # asserted nothing. TestAfterEffectsPreset_WrapperFailsOnLoggedError is
       # the After Effects Windows wrapper's exit-status pin, which no registry
-      # case carries. A trailing space anchors each name:
+      # case carries; its leaf subtest is named too, because the parent passes
+      # even when every subtest skips. A trailing space anchors each name:
       # `go test -v` emits "--- PASS: <name> (0.01s)", so without it these are
       # prefix matches a future TestPresetTier3Xyz would satisfy on their behalf.
       # Only the ffmpeg name, a full test name nothing else extends, goes
@@ -2004,6 +2010,7 @@ jobs:
                       "TestFFmpegPreset_PowerShellSegmentTranscodeJoins" \
                       "TestScriptPowerShell_ExitStatus " \
                       "TestAfterEffectsPreset_WrapperFailsOnLoggedError " \
+                      "TestAfterEffectsPreset_WrapperFailsOnLoggedError/logged-error-exit-0/after-effects-render-windows " \
                       "TestPresetPythonSequence_LauncherContract "; do
             if ! grep -q -- "--- PASS: ${name}" preset-harness-windows.log; then
               echo "::error::${name} did not run to a PASS on windows"

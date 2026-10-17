@@ -33,6 +33,8 @@ readme: |
   file (a QuickTime or other container, as opposed to an image sequence) from
   several machines. If the item writes a movie, set Frames Per Task to at
   least the number of frames in the range, so the whole range is one task.
+  Enter the range with no step and no gaps, such as `1-240`: a stepped or
+  listed range always splits at each gap, whatever Frames Per Task says.
   The preset cannot see the output format, so nothing enforces this.
 
   ## Why aerender runs through a wrapper
@@ -43,6 +45,9 @@ readme: |
   streams its output to the task log unchanged, and fails the task when
   `aerender` exits non-zero or when any line of its output contains
   `aerender ERROR`, in any letter case.
+
+  A failure that neither makes `aerender` exit non-zero nor prints
+  `aerender ERROR` is still reported as a success.
 
   ## How work is divided
 

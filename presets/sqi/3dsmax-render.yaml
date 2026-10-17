@@ -40,8 +40,9 @@ readme: |
   - **Windows workers only.** 3ds Max does not run elsewhere, so the step
     requires `attr.worker.os.family` = `windows` as well as the tag.
   - Workers tagged `attr.worker.tag.3dsmax = true`
-  - `3dsmaxcmd` on the worker's `PATH`, or installed in Autodesk's default
-    location so the built-in detector finds it.
+  - `3dsmaxcmd` on the worker's `PATH`: add the install folder, for example
+    `C:\Program Files\Autodesk\3ds Max 2026`. The built-in detector tags a
+    default install, but tagging does not put the command on `PATH`.
   - A rendering session that may need a desktop. Whether `3dsmaxcmd` renders
     from a worker running as a service with no interactive session is
     unverified.

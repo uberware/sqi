@@ -215,6 +215,11 @@ before it can render, which is the most likely first-run failure. The
 Cinema 4D installed elsewhere needs the tag set by hand (see [built-in
 detectors](worker-capabilities.md#built-in-detectors)).
 
+For Cinema 4D, 3ds Max and After Effects alike, the built-in detector tags a worker
+from where the application is installed, but tagging does not put the command on the
+worker's `PATH`. The presets run the bare `Commandline`, `3dsmaxcmd` and `aerender`,
+so each must also be on the `PATH` for the job to run.
+
 **The After Effects wrapper.** `aerender` is reported to exit with status 0 when
 a render fails, so a task that trusted its exit status would report every failure
 as a success. All four After Effects presets therefore run `aerender` through a
@@ -222,23 +227,32 @@ small script embedded in the preset: PowerShell on Windows, POSIX `sh` on macOS.
 The wrapper streams `aerender`'s output to the task log unchanged and fails the
 task when `aerender` exits non-zero or when any line of its output contains
 `aerender ERROR`, matched without regard to letter case. That marker comes from
-user reports and has not been checked against a real failing render. This is why
-the presets come in Windows and macOS variants: the argument lists are identical,
-but the wrapper script is not, and the variant's `os.family` gate selects it.
+user reports and has not been checked against a real failing render, and a
+failure that neither makes `aerender` exit non-zero nor prints `aerender ERROR`
+is still reported as a success. This is why the presets come in Windows and macOS
+variants: the argument lists are identical, but the wrapper script is not, and the
+variant's `os.family` gate selects it.
+
+Each After Effects render node needs `aerender` on its `PATH`, `powershell`
+(Windows) or `sh` (macOS) on its `PATH`, and Adobe's render-only marker: an empty
+file named `ae_render_only_node.txt` in `C:\Users\Public\Documents\Adobe` on
+Windows or `/Users/Shared/Adobe` on macOS, which runs After Effects in its
+non-royalty-bearing, render-only mode.
 
 **A movie output must be one task.** After Effects cannot render one movie file
 (a QuickTime or other container, as opposed to an image sequence) from several
 machines. When the render-queue item writes a movie, set **Frames Per Task** to at
-least the number of frames in the range. The preset cannot see the output format,
-so nothing enforces this; the queue presets are unaffected because they are always
-one task.
+least the number of frames in the range, and enter the range with no step and no
+gaps, such as `1-240`: a stepped or listed range always splits at each gap. The
+preset cannot see the output format, so nothing enforces this; the queue presets
+are unaffected because they are always one task.
 
 **Houdini and Nuke chunking.** `houdini-rop-render` uses `NONCONTIGUOUS` chunks,
 so a task receives a flat comma list of single frames (`1,3,5,...`) and a stepped
 range such as `1-60:2` costs `ceil(n/chunk)` tasks rather than one task per
 frame. The embedded driver script renders each run of consecutive frames in a
-chunk with one `rop.render()` call, so an unstepped chunk is still one call and a
-stepped range is one call per frame. `nuke-write-render` and `nuke-script-render`
+chunk with one `rop.render()` call, so a run of consecutive frames is still one call
+and a stepped range is one call per frame. `nuke-write-render` and `nuke-script-render`
 stay `CONTIGUOUS`: Foundry documents no comma-list form of `-F`, so a stepped
 range there still costs one task per frame.
 

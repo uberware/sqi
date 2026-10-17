@@ -188,7 +188,10 @@ worker is handed render work it cannot do. It matches install locations only
 worker's `PATH` for the job to run. A Cinema 4D installed elsewhere is tagged by
 hand with `cinema4d=true` under `worker.capability_tags`. The `3dsmax` and
 `aftereffects` detectors do check `PATH` (`3dsmaxcmd`, `aerender`), because those
-names are specific to the product. A registry match for `3dsmax` tags the worker without a
+names are specific to the product. A match on an install location or, for `3dsmax`, the
+registry still tags a worker whose `3dsmaxcmd` or `aerender` is not on `PATH`; the
+presets invoke the bare command, so it must be on the worker's `PATH` for the job to
+run, as for Cinema 4D. A registry match for `3dsmax` tags the worker without a
 version: the key carries the product version (`27.0` for 2025), not the year.
 
 Each standalone-renderer detector checks `PATH` for the command its preset

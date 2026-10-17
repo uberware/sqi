@@ -22,8 +22,8 @@ presets:
         whether Blender appends its own extension to the supplied .png are
         unverified. A stepped or listed Frames range splits into one chunk per
         run of consecutive frames, so -s/-e never spans a frame the range
-        excluded; neither golden here exercises one (houdini-rop-render's
-        stepped-range golden shows the expansion).
+        excluded; neither golden here exercises one (blender-view-layer-render's
+        stepped-range golden shows the same -s/-e split).
     tier3:
       case: TestPresetTier3/blender-batch-render/default
       required_on: [linux, darwin, windows]
@@ -170,9 +170,9 @@ presets:
         frames), so no shipped expansion reaches the driver's lo-hi or :step
         branches. The driver merges each run of consecutive frames into one
         rop.render(frame_range=(lo, hi, 1)) call, so each run of consecutive
-        frames in a chunk is one call: an unstepped chunk is one call, as it
-        was before the switch to NONCONTIGUOUS, and a stepped range is one call
-        per frame. A stub hou module checks that
+        frames in a chunk is one call, as it was before the switch to
+        NONCONTIGUOUS: a stepped range is one call per frame, and a gapped list
+        such as 1-5,8-12 is two calls. A stub hou module checks that
         (TestHoudiniROPRender_DriverCoalescesFrameRuns), but that one call per
         run behaves as before is unverified on a real Houdini. No Houdini or
         hython installation has executed it: hou.hipFile.load, hou.node and
@@ -496,8 +496,9 @@ presets:
         not 0; that -s/-e override the -rqindex item's own time span, which
         Adobe implies ("like with the -comp flag") rather than states. A movie
         output is kept to one task only by Frames Per Task, which the artist
-        (or the After Effects submitter) must set; nothing in the preset
-        enforces it.
+        (or the After Effects submitter) must set, with the range entered
+        without a step or gaps (a stepped or listed range always splits at each
+        gap); nothing in the preset enforces it.
     tier3:
       case: TestPresetTier3/after-effects-render-windows/default
       required_on: [windows]
@@ -559,7 +560,9 @@ presets:
         -rqindex item's own time span, which Adobe implies ("like with the
         -comp flag") rather than states. A movie output is kept to one task
         only by Frames Per Task, which the artist (or the After Effects
-        submitter) must set; nothing in the preset enforces it.
+        submitter) must set, with the range entered without a step or gaps (a
+        stepped or listed range always splits at each gap); nothing in the
+        preset enforces it.
     tier3:
       case: TestPresetTier3/after-effects-render-macos/default
       required_on: [darwin]

@@ -32,6 +32,9 @@ readme: |
   `aerender` exits non-zero or when any line of its output contains
   `aerender ERROR`, in any letter case.
 
+  A failure that neither makes `aerender` exit non-zero nor prints
+  `aerender ERROR` is still reported as a success.
+
   ## Requirements
 
   - **Windows workers only.** The step requires `attr.worker.os.family` =

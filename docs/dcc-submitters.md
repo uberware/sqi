@@ -308,10 +308,16 @@ task.** `aerender` is reported to exit 0 when a render fails, so the four After
 Effects presets run it through a small embedded script (PowerShell on Windows,
 POSIX `sh` on macOS). The wrapper streams `aerender`'s output to the task log
 unchanged and fails the task when `aerender` exits non-zero or when any output line
-contains `aerender ERROR`, in any letter case. After Effects cannot render one movie
-file from several machines, so when the render-queue item writes a movie, set
-`FramesPerTask` to at least the number of frames in the range, which makes the whole
-range one task. The preset cannot see the output format, so nothing enforces this.
+contains `aerender ERROR`, in any letter case; a failure that neither makes it exit
+non-zero nor prints that marker is still reported as a success. Each render node needs
+`aerender` and `powershell` (Windows) or `sh` (macOS) on its `PATH`, and Adobe's
+render-only marker, an empty file named `ae_render_only_node.txt` in
+`C:\Users\Public\Documents\Adobe` (Windows) or `/Users/Shared/Adobe` (macOS). After
+Effects cannot render one movie file from several machines, so when the render-queue
+item writes a movie, set `FramesPerTask` to at least the number of frames in the
+range and enter the range with no step and no gaps, such as `1-240`, which makes the
+whole range one task: a stepped or listed range always splits at each gap. The preset
+cannot see the output format, so nothing enforces this.
 
 Each preset's `hostRequirements` gates it to workers advertising the matching
 `attr.worker.tag.<name>` capability tag; `3dsmax-render` and the After Effects
@@ -336,6 +342,12 @@ because Mistika is *installed* under the SGO layout, but the preset invokes
 the bare command, so the binary must also be on the worker's `PATH`. If your
 SGO install is not on `PATH`, either add it or duplicate the preset and give
 `command:` an absolute path.
+
+The Cinema 4D, 3ds Max and After Effects detectors have the same trade-off: they tag a
+worker from where the application is installed (or, for 3ds Max and After Effects, from
+the command on `PATH`), but a registry or install-location match does not put
+`Commandline`, `3dsmaxcmd` or `aerender` on the worker's `PATH`, and the presets invoke
+the bare command. Add the install folder to `PATH` on each such node.
 
 Manual tags are only needed when a DCC lives at a nonstandard install path (or
 under a name/location the built-in detectors don't check) or for in-house
@@ -427,7 +439,7 @@ aliased to anything else):
 | `WriteNode` | Nuke | Write node |
 | `Scene`, `ViewLayer` | Blender | the **scene name** (not a path — see `hosts/blender/adapter.py`) and the view layer |
 | `Take` | Cinema 4D | take name |
-| `RenderQueueItem` | After Effects | the render-queue item's 1-based index, as text |
+| `RenderQueueItem` | After Effects | the render-queue item's 1-based index (an `INT` parameter, minimum 1, submitted as text) |
 
 Blender's target picker is scene × view-layer. `blender-view-layer-render`
 declares both `Scene` and `ViewLayer`, so selecting a target there fills them;
