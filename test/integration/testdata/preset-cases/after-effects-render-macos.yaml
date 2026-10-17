@@ -5,21 +5,21 @@
 # stripped, in TestPresetAfterEffects_WrapperFailsOnLoggedError.
 #
 # stub_inner: the task's own command is /bin/sh running the embedded aerender
-# wrapper, an absolute path the stub cannot shadow on PATH, and replacing it
-# would prove nothing about the wrapper anyway. The real /bin/sh runs; aerender
-# is the stub, so expect_inner_argv pins the argv the wrapper hands aerender:
-# that a scene path holding a space and an apostrophe arrives as one argument.
-# Tier 3 runs `default` only; the other cases' inner argv states what the
-# golden must show.
+# wrapper. /bin/sh is an absolute path the stub cannot shadow on PATH, and
+# replacing it would test nothing about the wrapper. The real /bin/sh runs and
+# aerender is the stub, so expect_inner_argv pins the argv the wrapper hands
+# aerender, including a scene path holding a space and an apostrophe as one
+# argument. Tier 3 runs `default` only, so no test checks the other cases'
+# expect_inner_argv; it records the argv their goldens show.
 #
 # The cases are after-effects-render-windows' with a POSIX scene path, since
 # the two variants pass aerender the same arguments
 # (internal/product/aftereffectspair_test.go). `default` is two tasks at the
-# default ten frames per task. `movie-one-task` is the readme's movie rule:
-# Frames Per Task at least the frame count keeps the whole range one aerender
-# invocation. `stepped-range` shows a stepped range splitting into one
-# single-frame task per frame, so -s and -e never span a frame the range
-# excluded.
+# default ten frames per task. `movie-one-task` follows the preset readme's
+# movie rule: Frames Per Task at least the frame count keeps the whole range
+# one aerender invocation. `stepped-range` shows a stepped range splitting
+# into one single-frame task per frame, so -s and -e never span a frame the
+# range excluded.
 cases:
   - name: default
     params:

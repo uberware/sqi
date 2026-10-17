@@ -21,8 +21,7 @@ readme: |
     `1-100:2` for every second frame.
   - **Output Path** - the output path passed to Blender as `-o`. Blender treats
     it as a prefix and appends the frame number and extension. The flag is
-    always passed, so an empty value reaches Blender as an empty path rather
-    than being omitted; set it explicitly.
+    always passed, even with an empty value, so set it.
   - **Scene** - the name of the scene to render, passed as `-S`.
   - **View Layer** - the name of the view layer to render. Names are
     case-sensitive and may contain spaces and quotes.
@@ -45,11 +44,12 @@ readme: |
 
   The frame range expands into tasks through OpenJD task chunking. The
   `SQI_CHUNK_BOUNDS` extension gives each task the first and last frame of its
-  own slice, which is what lets the command pass a start and an end rather than
-  a frame list.
+  own slice, which the command passes as `-s` and `-e`. A slice never spans a
+  gap, so a stepped range such as `1-9:4` becomes one task per frame.
 
-  One frame per task is the default. Raise the chunk size to batch a frame range
-  into a single Blender launch, which trades parallelism for fewer scene loads.
+  One frame per task is the default. Raise the step's `chunks.defaultTaskCount`
+  to render up to that many consecutive frames in one Blender launch, trading
+  parallelism for fewer scene loads.
 
   ## Requirements
 
@@ -114,12 +114,11 @@ template:
               - "--python-exit-code"
               - "1"
               - "--python-expr"
-              # One line, fixed, and free of template substitution: OpenJD
-              # forbids a line break in a literal arg, and the layer name must
-              # never be spliced into Python source. It reads the name that
-              # follows `--` in sys.argv, exits with a message naming the layer
-              # when the scene has no such layer, and otherwise enables that
-              # layer alone.
+              # One fixed line with no template substitution: OpenJD forbids a
+              # line break in a literal arg, and the layer name must never be
+              # spliced into Python source. It reads the name after `--` from
+              # sys.argv, exits with a message naming the layer when the scene
+              # has no such layer, and otherwise enables that layer alone.
               - "import sys, bpy; name = sys.argv[sys.argv.index('--') + 1]; layers = bpy.context.scene.view_layers; any(l.name == name for l in layers) or sys.exit('no view layer named ' + repr(name) + ' in scene ' + repr(bpy.context.scene.name)); [setattr(l, 'use', l.name == name) for l in layers]"
               - "-a"
               - "--"

@@ -10,8 +10,6 @@ readme: |
   script leaves enabled. Use Nuke Write Render instead to render one named Write
   node.
 
-  Each task renders a contiguous chunk of frames, up to ten per task by default.
-
   ## Parameters
 
   - **Scene File** - the `.nk` script to render. It must be reachable from every
@@ -21,12 +19,14 @@ readme: |
 
   ## How work is divided
 
-  The frame range expands into tasks through OpenJD task chunking, up to ten frames per
-  task by default. Each task receives its own frames as a list and passes them to
-  Nuke's `-F` flag directly, so this preset needs no chunk-bounds extension.
+  The frame range expands into tasks through OpenJD task chunking, up to ten
+  frames per task by default. Each task passes its frames, as a `start-end`
+  range, to Nuke's `-F` flag directly, so this preset needs no chunk-bounds
+  extension. A chunk never spans a gap, so a stepped range such as `1-100:2`
+  becomes one task per frame.
 
-  Raise or lower the chunk size to trade parallelism against the cost of loading
-  the script once per task.
+  Change the step's `chunks.defaultTaskCount` to trade parallelism against the
+  cost of loading the script once per task.
 
   ## Requirements
 

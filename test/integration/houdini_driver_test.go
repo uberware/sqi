@@ -51,7 +51,7 @@ print(json.dumps(state))
 // compact <IntRangeExpr> (internal/openjd/expand.go, formatNoncontiguousChunk):
 // a run of three or more frames at one step is a lo-hi or lo-hi:step range,
 // rendered in one call, while a shorter run is listed frame by frame, so the
-// driver merges frames that continue one another back into one call.
+// driver merges consecutive frames back into one call.
 func TestHoudiniROPRender_DriverRendersEachRange(t *testing.T) {
 	python := findPython3(t)
 	if python == "" {

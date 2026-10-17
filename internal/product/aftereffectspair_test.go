@@ -43,12 +43,12 @@ var (
 // aePresetKinds are the After Effects presets shipped as a Windows/macOS pair.
 var aePresetKinds = []string{"after-effects-render", "after-effects-queue-render"}
 
-// TestAfterEffectsPresets_VariantsDifferOnlyInGateAndWrapper pins design §5.3:
-// the two variants of each After Effects preset differ only in their
-// os.family gate and the wrapper that runs aerender. Their parameters, their
-// parameter space and the argv aerender receives are identical, so an artist
-// picking by render-node OS gets the same render either way, and an edit to
-// one variant that is not made to the other fails here.
+// TestAfterEffectsPresets_VariantsDifferOnlyInGateAndWrapper pins that the two
+// variants of each After Effects preset differ only in their os.family gate
+// and the wrapper that runs aerender. Their parameters, their parameter space
+// and the argv aerender receives are identical, so an artist picking by
+// render-node OS gets the same render either way, and an edit to one variant
+// that is not made to the other fails here.
 func TestAfterEffectsPresets_VariantsDifferOnlyInGateAndWrapper(t *testing.T) {
 	for _, kind := range aePresetKinds {
 		t.Run(kind, func(t *testing.T) {

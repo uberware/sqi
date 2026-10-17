@@ -15,32 +15,27 @@ import (
 // its catalog category, the convention-named parameters it must define, and the
 // OpenJD extensions it must declare.
 //
-// It exists because presets/sqi is not homogeneous. The render presets are
-// "Rendering" and declare "TASK_CHUNKING"; the ffmpeg presets are
-// Transcoding, and the segmented ones deliberately do NOT chunk (their join
-// step names every intermediate file from the template, which is only possible
-// when slices map one-to-one onto tasks). Per-preset expectations keep the
-// pinning without the false generalization.
+// Expectations are per preset because presets/sqi is not homogeneous: the
+// render presets are Rendering and the ffmpeg presets Transcoding, some render
+// presets do not chunk, and the segmented ffmpeg presets must not,
+// because their join step names every intermediate file from the template,
+// which works only when slices map one-to-one onto tasks.
 type presetExpectation struct {
 	category   string
 	params     []string
 	extensions []string
-	// noExtensions asserts the template declares no `extensions:` key at all,
-	// by byte-scan -- the same technique the scheduler's own EXPR-withholding
-	// gate uses. extensions: nil on its own only skips the (zero-iteration)
-	// positive-extensions loop below; it does not prove the key is absent, so
-	// ffmpeg-transcode's entire reason for existing (a template that is never
-	// withheld from a worker whose EXPR limits undercut the server's) would
-	// otherwise go unenforced.
+	// noExtensions asserts the template contains no `extensions:` key, by
+	// byte-scan, as the scheduler's EXPR-withholding gate does. A nil
+	// extensions field only skips the positive check below, so it cannot prove
+	// the key is absent.
 	noExtensions bool
 }
 
 // The reference presets (presets/sqi/) are authored in this repo and published
 // to the preset library; this test pins them to the real schema.
 //
-// EVERY FILE IN THE DIRECTORY MUST HAVE AN ENTRY. The count check below is not
-// bookkeeping -- it is what makes adding a preset a paired change, so a new
-// preset cannot ship without someone stating what it is supposed to be.
+// Every file in the directory must have an entry. The count check below makes
+// adding a preset a paired change that states what the preset must satisfy.
 func TestSQIReferencePresets(t *testing.T) {
 	want := map[string]presetExpectation{
 		"maya-layer-render": {
@@ -118,15 +113,14 @@ func TestSQIReferencePresets(t *testing.T) {
 			noExtensions: true,
 		},
 		// The three Mistika presets invoke the renderer as `-s START -e
-		// END`, so they need a chunk's bounds rather than the chunk itself.
-		// They are not alone in that: the two Maya presets, the two Blender
-		// presets, vray-standalone-render, the two Cinema 4D presets,
-		// 3dsmax-render and both after-effects-render variants also declare
-		// SQI_CHUNK_BOUNDS.
-		// Houdini and the two Nuke presets take a frame list directly;
-		// husk-usd-render computes its start and count with EXPR; the other
-		// standalone renderers render one file per frame and do not chunk,
-		// and nor do the whole-queue After Effects presets.
+		// END`, so they need a chunk's bounds rather than the chunk itself
+		// and declare SQI_CHUNK_BOUNDS. So do the two Maya presets, the two
+		// Blender presets, vray-standalone-render, the two Cinema 4D presets,
+		// 3dsmax-render and both after-effects-render variants. Houdini and
+		// the two Nuke presets take a frame list directly; husk-usd-render
+		// computes its start and count with EXPR; the other standalone
+		// renderers render one file per frame and do not chunk, and neither
+		// do the whole-queue After Effects presets.
 		"mistika-boutique-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames"},

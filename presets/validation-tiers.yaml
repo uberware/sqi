@@ -3,11 +3,10 @@
 # Which validation tier each shipped preset and built-in product has actually
 # reached. See docs/preset-library.md for what each tier proves.
 #
-# This file is verified, not declarative. internal/presettest and
+# Every claim here is checked. internal/presettest and
 # test/integration/preset_tiers_test.go refuse a claim that is not backed by a
-# fixture, a golden, or a named test that actually ran — including a Tier-3
-# claim whose case skipped on a platform listed in required_on. A tier here is a
-# fact about the test suite, not an intention.
+# fixture, a golden, or a named test that ran, including a Tier-2 or Tier-3
+# claim whose case skipped on a platform listed in required_on.
 presets:
   - name: blender-batch-render
     source: presets/sqi
@@ -15,15 +14,16 @@ presets:
     tier1:
       cases: [default, multi-frame-chunk]
       caveat: >-
-        argv derived from Blender 4.x command-line documentation. The goldens show
-        the documented ordering rule holding — -o/-s/-e all precede -a, which
-        triggers the render — and chunk bounds 1-5 then 6-10 under a patched chunk
-        size. No Blender has executed it, so the #### frame-padding token in -o and
-        whether Blender appends its own extension to the supplied .png are
-        unverified. A stepped or listed Frames range splits into one chunk per
-        run of consecutive frames, so -s/-e never spans a frame the range
-        excluded; neither golden here exercises one (blender-view-layer-render's
-        stepped-range golden shows the same -s/-e split).
+        argv derived from Blender 4.x command-line documentation. The goldens
+        show the documented ordering rule holding (-o/-s/-e all precede -a,
+        which triggers the render) and chunk bounds 1-5 then 6-10 under a
+        patched chunk size. No Blender has executed it, so the #### frame-padding
+        token in -o and whether Blender appends its own extension to the
+        supplied .png are unverified. A stepped or listed Frames range splits
+        into one chunk per run of consecutive frames, so -s/-e never spans a
+        frame the range excluded. Neither golden here exercises one;
+        blender-view-layer-render's stepped-range golden shows the same -s/-e
+        split.
     tier3:
       case: TestPresetTier3/blender-batch-render/default
       required_on: [linux, darwin, windows]
@@ -36,23 +36,21 @@ presets:
       caveat: >-
         argv derived from the Blender 4.5 manual's command-line arguments
         (arguments run in order, -a last, nothing after -- is parsed by Blender,
-        --python-exit-code, -S) and from the Python API's ViewLayer.use. The
-        view layer is selected by a fixed one-line Python expression that reads
-        its name from sys.argv after --, so the goldens show the layer name as
-        its own final argument and never inside the Python source. quoted-layer
-        carries It's "Main" layer and a scene called Shot 010, each one argument.
-        Chunk bounds and the 1-9:4 split behave as in blender-batch-render. No
-        Blender has executed it, and Tier 3 proves only that the stub receives
-        that argv, not that Blender honours use. Unverified: that
-        bpy.context.scene is the scene -S selected when the expression runs; that
-        a use=False layer is skipped by -a; that sys.exit with a message in a
-        --python-expr stops Blender with a non-zero status before -a renders;
-        that the expression's generator, which refers to a name bound in the
-        --python-expr namespace, resolves it, which assumes Blender runs the
-        expression with one shared globals/locals dict (a stub with separate
-        dicts raised NameError); what -S does when the scene does not exist;
-        the #### padding token in -o and whether Blender appends its own
-        extension, as in blender-batch-render.
+        --python-exit-code, -S) and from the Python API's ViewLayer.use. A
+        fixed one-line Python expression selects the view layer, reading its
+        name from sys.argv after --, so the goldens show the layer name as the
+        final argument and never inside the Python source. quoted-layer passes
+        It's "Main" layer and a scene called Shot 010, each as one argument;
+        stepped-range splits 1-9:4 into -s/-e 1 1, 5 5 and 9 9. No Blender has
+        executed it, and Tier 3 proves only that the stub receives that argv.
+        Unverified: that Blender honours use, so -a skips a use=False layer;
+        that bpy.context.scene is the scene -S selected when the expression
+        runs; that sys.exit with a message in a --python-expr stops Blender
+        with a non-zero status before -a renders; that the expression's
+        generator can see the name it reads, which holds only if Blender runs
+        the expression with one shared globals/locals dict; what -S does when
+        the scene does not exist; the #### padding token in -o and whether
+        Blender appends its own extension, as in blender-batch-render.
     tier3:
       case: TestPresetTier3/blender-view-layer-render/default
       required_on: [linux, darwin, windows]
@@ -85,8 +83,8 @@ presets:
         (Render -r <renderer> -s/-e -rd <dir> <scene>). Same coverage and same gaps
         as maya-layer-render, minus -rl: the goldens review the shipped
         one-frame-per-task shape and a patched chunk size of 5, and no Maya render
-        session has executed either. Which layers Maya treats as renderable — the
-        whole point of this variant — is not observable in argv at all.
+        session has executed either. Which layers Maya treats as renderable,
+        which decides what this variant renders, is not visible in argv.
     tier3:
       case: TestPresetTier3/maya-scene-render/default
       required_on: [linux, darwin, windows]
@@ -98,16 +96,14 @@ presets:
       cases: [default, multi-frame-chunk, stepped-range]
       caveat: >-
         argv derived from SGO's documented Mistika Boutique/Ultima command-line
-        invocation (mistika -r <scene> -s/-e). Weaker than the other
-        documentation-derived claims here in one specific way: the command token
-        itself (mistika) is unverified as well as its flags, because no Mistika
-        installation has executed it and sqi has no in-application Mistika
-        submitter to cross-check the convention against. This preset ships
-        chunks.defaultTaskCount 10, but a stepped Frames range splits into one
-        chunk per run of consecutive frames, so -s/-e never spans an excluded
-        frame: mistika-boutique-render's stepped-range golden shows
-        Frame=1-20:2 reaching the renderer as ten single-frame tasks (-s 1 -e 1,
-        -s 3 -e 3, ...), at the cost of ten scene loads rather than one.
+        invocation (mistika -r <scene> -s/-e). No Mistika installation has
+        executed it and sqi has no in-application Mistika submitter to
+        cross-check against, so the command token (mistika) is unverified as
+        well as its flags. The preset ships chunks.defaultTaskCount 10, but a
+        stepped Frames range splits into one chunk per run of consecutive
+        frames, so -s/-e never spans an excluded frame: the stepped-range
+        golden shows Frame=1-20:2 reaching the renderer as ten single-frame
+        tasks (-s 1 -e 1, -s 3 -e 3, ...), each loading the scene again.
     tier3:
       case: TestPresetTier3/mistika-boutique-render/default
       required_on: [linux, darwin, windows]
@@ -118,17 +114,15 @@ presets:
     tier1:
       cases: [default, multi-frame-chunk]
       caveat: >-
-        argv derived from SGO's documented Mistika VR command-line
-        invocation (vr -r <scene> -s/-e). Weaker than the other
-        documentation-derived claims here in one specific way: the command token
-        itself (vr) is unverified as well as its flags, because no Mistika
-        installation has executed it and sqi has no in-application Mistika
-        submitter to cross-check the convention against. This preset ships
+        argv derived from SGO's documented Mistika VR command-line invocation
+        (vr -r <scene> -s/-e). No Mistika installation has executed it and sqi
+        has no in-application Mistika submitter to cross-check against, so the
+        command token (vr) is unverified as well as its flags. The preset ships
         chunks.defaultTaskCount 10, but a stepped Frames range splits into one
         chunk per run of consecutive frames, so -s/-e never spans an excluded
         frame: mistika-boutique-render's stepped-range golden shows
         Frame=1-20:2 reaching the renderer as ten single-frame tasks (-s 1 -e 1,
-        -s 3 -e 3, ...), at the cost of ten scene loads rather than one.
+        -s 3 -e 3, ...), each loading the scene again.
     tier3:
       case: TestPresetTier3/mistika-vr-render/default
       required_on: [linux, darwin, windows]
@@ -140,16 +134,15 @@ presets:
       cases: [default, multi-frame-chunk]
       caveat: >-
         argv derived from SGO's documented Mistika Workflows command-line
-        invocation (workflows -r <scene> -s/-e). Weaker than the other
-        documentation-derived claims here in one specific way: the command token
-        itself (workflows) is unverified as well as its flags, because no Mistika
-        installation has executed it and sqi has no in-application Mistika
-        submitter to cross-check the convention against. This preset ships
-        chunks.defaultTaskCount 10, but a stepped Frames range splits into one
-        chunk per run of consecutive frames, so -s/-e never spans an excluded
-        frame: mistika-boutique-render's stepped-range golden shows
-        Frame=1-20:2 reaching the renderer as ten single-frame tasks (-s 1 -e 1,
-        -s 3 -e 3, ...), at the cost of ten scene loads rather than one.
+        invocation (workflows -r <scene> -s/-e). No Mistika installation has
+        executed it and sqi has no in-application Mistika submitter to
+        cross-check against, so the command token (workflows) is unverified as
+        well as its flags. The preset ships chunks.defaultTaskCount 10, but a
+        stepped Frames range splits into one chunk per run of consecutive
+        frames, so -s/-e never spans an excluded frame: mistika-boutique-render's
+        stepped-range golden shows Frame=1-20:2 reaching the renderer as ten
+        single-frame tasks (-s 1 -e 1, -s 3 -e 3, ...), each loading the scene
+        again.
     tier3:
       case: TestPresetTier3/mistika-workflows-render/default
       required_on: [linux, darwin, windows]
@@ -161,20 +154,19 @@ presets:
       cases: [default, stepped-range]
       caveat: >-
         argv derived from SideFX's documented hython command-line convention for
-        driving a ROP via an embedded Python driver script. Stronger than the other
-        render presets in one respect: the chunk syntax the driver must parse is
-        visible in the golden alongside the parser itself, so the two can be
-        read against each other. Its chunks are NONCONTIGUOUS, which sqi spells
-        as a compact frame range (1-8 in the default case; three tasks such as
-        1-19:2 for the stepped-range case's thirty frames). The driver renders
-        each lo-hi:step part in one rop.render(frame_range=(lo, hi, step)) call
-        and merges parts that continue one another, since a run of two frames
-        is spelled 7,8: a stepped chunk is one call, and a gapped chunk such as
-        1-5,8-12 is two. A stub hou module checks that
-        (TestHoudiniROPRender_DriverRendersEachRange), but a stepped
-        frame_range is unverified on a real Houdini. No Houdini or
-        hython installation has executed it: hou.hipFile.load, hou.node and
-        RopNode.render(frame_range=...) are unexercised, and a golden cannot
+        driving a ROP via an embedded Python driver script. The golden shows
+        both the chunk the driver receives and the driver's parser, so the two
+        can be read against each other. The chunks are NONCONTIGUOUS, which sqi
+        spells as a compact frame range: the default case's 1-24 becomes 1-8,
+        9-16 and 17-24, and the stepped-range case's thirty frames become three
+        tasks such as 1-19:2. The driver renders each lo-hi:step part in one
+        rop.render(frame_range=(lo, hi, step)) call, merging parts that
+        continue one another because sqi lists a run of two frames as 7,8: a
+        stepped chunk is one call, and a gapped chunk such as 1-5,8-12 is two.
+        TestHoudiniROPRender_DriverRendersEachRange checks those calls against
+        a stub hou module. No Houdini or hython installation has executed it:
+        hou.hipFile.load, hou.node and RopNode.render(frame_range=...),
+        including a stepped frame_range, are unexercised, and a golden cannot
         show that hython puts the script's own path in sys.argv[0].
     tier3:
       case: TestPresetTier3/houdini-rop-render/default
@@ -192,13 +184,12 @@ presets:
         single-frame task per requested frame (-F 1-1, -F 3-3, ...), because a
         CONTIGUOUS chunk never spans a gap, so -F never receives OpenJD's colon
         step syntax (1-19:2) where Foundry documents x (1-19x2). Whether Nuke
-        reads -F 1-1 as the single frame 1 is unverified at Tier 1. It stays
-        CONTIGUOUS because Foundry's Command Line Operations page documents -F
-        only as one frame, a-b or a-bxN (repeating -F for more ranges), with no
-        comma-list form. A NONCONTIGUOUS chunk such as 1-19:2 or 1-3,7,8 would
-        need its ':' rewritten to 'x' and each comma part passed as its own -F,
-        which a literal args list cannot do without a wrapper script, so a
-        stepped range still costs one task, and one script load, per frame.
+        reads -F 1-1 as the single frame 1 is unverified at Tier 1. The chunks
+        are CONTIGUOUS because Foundry's Command Line Operations page documents
+        -F only as one frame, a-b or a-bxN (repeating -F for more ranges), with
+        no comma-list form, so a NONCONTIGUOUS chunk such as 1-19:2 or 1-3,7,8
+        could reach Nuke only through a wrapper script that rewrites it. A
+        stepped range therefore costs one task, and one script load, per frame.
     tier3:
       case: TestPresetTier3/nuke-write-render/default
       required_on: [linux, darwin, windows]
@@ -211,14 +202,12 @@ presets:
       caveat: >-
         argv derived from Foundry's documented nuke -x batch-render flags
         (-F <frame list>, rendering every enabled Write node); no Nuke installation
-        has executed it, so which Write nodes are enabled — this variant's entire
-        subject — is invisible in argv. Its stepped-range golden shows the same
-        single-frame expansion as nuke-write-render's (-F 1-1, -F 3-3, ...), so
-        no step separator reaches -F; whether Nuke reads -F 1-1 as one frame is
-        unverified at Tier 1. It stays CONTIGUOUS for nuke-write-render's
-        reason: Foundry documents no comma-list form of -F, so a NONCONTIGUOUS
-        chunk (1-19:2, 1-3,7,8) cannot reach Nuke without a wrapper script, and
-        a stepped range still costs one task per frame.
+        has executed it, so which Write nodes are enabled, and so what this
+        variant renders, is invisible in argv. Its chunks are CONTIGUOUS for
+        nuke-write-render's reason, and its stepped-range golden shows the same
+        single-frame expansion (-F 1-1, -F 3-3, ...): no step separator reaches
+        -F, and a stepped range costs one task per frame. Whether Nuke reads
+        -F 1-1 as one frame is unverified at Tier 1.
     tier3:
       case: TestPresetTier3/nuke-script-render/default
       required_on: [linux, darwin, windows]
@@ -277,9 +266,10 @@ presets:
         argument. No Houdini installation has executed it. The start frame and
         count are computed with EXPR (min and len of the chunk's range),
         because SQI_CHUNK_BOUNDS's .Start/.End do not resolve on an EXPR
-        range_expr. The goldens show them at one frame per task, across an
-        uneven tail at a patched chunk size of 4 (1/4, 5/4, 9/2), and over a
-        stepped range (each --frame-count 1). With the Hydra Delegate empty no
+        range_expr. The goldens show them at one frame per task, at a patched
+        chunk size of 4, which balances 1-10 into chunks of 4, 3 and 3
+        (start/count 1/4, 5/3, 8/3), and over a stepped range (each
+        --frame-count 1). With the Hydra Delegate empty no
         --renderer is passed and husk uses the stage's husk:delegate render
         setting; the renderer case shows the flag when a delegate is named.
         Its BRAY_HdKarmaXPU is an example, not a verified delegate name.
@@ -405,13 +395,12 @@ presets:
         -nogui -render <scene> -frame <start> <end> -oimage <path>. The goldens
         show the spaced scene path as one argument, chunk bounds 1-5 then 6-10
         under a patched chunk size, and 1-9:4 splitting into -frame 1 1,
-        -frame 5 5 and -frame 9 9. No Cinema 4D has executed it. Unverified: a
-        blank OutputPath reaches Commandline as -oimage "" (base OpenJD cannot
-        omit an argument without EXPR, so the flag is always passed, as in
-        blender-batch-render) and what Commandline does with that; whether the
-        -frame end is inclusive (documented by example only); the exit status on
-        failure, which Maxon does not document; the macOS Commandline path.
-        Every node also needs licensing before it can render.
+        -frame 5 5 and -frame 9 9. No Cinema 4D has executed it. Unverified:
+        what Commandline does with a blank OutputPath, which arrives as
+        -oimage "" because the flag is always passed; whether the -frame end is
+        inclusive (documented by example only); the exit status on failure,
+        which Maxon does not document; the macOS Commandline path. Every node
+        also needs licensing before it can render.
     tier3:
       case: TestPresetTier3/cinema4d-render/default
       required_on: [linux, darwin, windows]
@@ -429,20 +418,20 @@ presets:
         quotes each as one argument, chunk bounds 1-5 then 6-10 under a patched
         chunk size, and 1-9:4 splitting into -frame 1 1, -frame 5 5 and
         -frame 9 9. No Cinema 4D has executed it. Unverified: -take with a
-        child take's name alone, and with "all"; what happens when -take is
-        omitted, as cinema4d-render does; a blank OutputPath reaches
-        Commandline as -oimage "" and what Commandline does with that; whether
-        the -frame end is inclusive; the exit status on failure, which Maxon
-        does not document; the macOS Commandline path. Every node also needs
+        child take's name alone, and with "all"; what Commandline renders when
+        -take is omitted, as cinema4d-render omits it; what Commandline does
+        with a blank OutputPath, which arrives as -oimage ""; whether the
+        -frame end is inclusive; the exit status on failure, which Maxon does
+        not document; the macOS Commandline path. Every node also needs
         licensing before it can render.
     tier3:
       case: TestPresetTier3/cinema4d-take-render/default
       required_on: [linux, darwin, windows]
 
   # Windows-only by hostRequirements (attr.worker.os.family anyOf ["windows"]),
-  # which no test environment can fake, so this entry's Tier-3 claim is
-  # required_on [windows] alone. TestThreeDSMaxRender_IsWindowsOnly pins the
-  # gate, and TestPresetTier3RequiredOnMatchesOSGate the required_on it implies.
+  # so this entry's Tier-3 claim is required_on [windows] alone.
+  # TestThreeDSMaxRender_IsWindowsOnly pins the gate, and
+  # TestPresetTier3RequiredOnMatchesOSGate the required_on it implies.
   - name: 3dsmax-render
     source: presets/sqi
     tier: 1
@@ -454,10 +443,9 @@ presets:
         -outputName:<path> <scene>. The goldens show the spaced scene path as
         one argument, chunk bounds 1-5 then 6-10 under a patched chunk size,
         and 1-9:4 splitting into frames 1, 5 and 9. No 3ds Max has executed it.
-        Unverified: a blank OutputPath reaches 3dsmaxcmd as -outputName: with
-        nothing after it (base OpenJD cannot omit an argument without EXPR, so
-        the switch is always passed, as in cinema4d-render) and what 3dsmaxcmd
-        does with that; whether the -end frame is inclusive; the exit status on
+        Unverified: what 3dsmaxcmd does with a blank OutputPath, which arrives
+        as -outputName: with nothing after it because the switch is always
+        passed; whether the -end frame is inclusive; the exit status on
         failure, which Autodesk does not document; whether it renders from a
         worker with no interactive session (session 0).
     tier3:
@@ -468,9 +456,8 @@ presets:
   # so both After Effects Windows entries' Tier-3 claims are required_on
   # [windows] alone. Tier 3 runs the real powershell and stubs aerender
   # (stub_inner), and expect_inner_argv pins the argv the wrapper forwards.
-  # The wrapper's exit-status contract is carried by
   # TestPresetAfterEffects_WrapperFailsOnLoggedError, which is not a registry
-  # case.
+  # case, tests the wrapper's exit status.
   - name: after-effects-render-windows
     source: presets/sqi
     tier: 1
@@ -481,23 +468,22 @@ presets:
         page (Wayback copy of 2026-05-27): aerender -project <scene> -rqindex
         <n> -s <start> -e <end> -v ERRORS_AND_PROGRESS -close
         DO_NOT_SAVE_CHANGES, passed through an embedded PowerShell wrapper the
-        goldens print in full (its leading UTF-8 BOM is invisible there). The
-        wrapper exists because aerender is reported to exit 0 when a render
-        fails (Adobe community and Thinkbox forum reports, not Adobe's
-        documentation): it also fails the task when any output line contains
-        "aerender ERROR", matched case-insensitively, a marker taken from
-        those reports and unverified against a real failing render. The
-        goldens show the scene path with a space and an apostrophe as one
-        argument, 1-20 at ten frames per task as 1-10 and 11-20, a 240-frame
-        movie kept whole by Frames Per Task 240, and 1-9:4 as frames 1, 5 and
-        9. No After Effects has executed it.
-        Unverified: how -s/-e number frames in a comp whose display start is
-        not 0; that -s/-e override the -rqindex item's own time span, which
-        Adobe implies ("like with the -comp flag") rather than states. A movie
-        output is kept to one task only by Frames Per Task, which the artist
-        (or the After Effects submitter) must set, with the range entered
-        without a step or gaps (a stepped or listed range always splits at each
-        gap); nothing in the preset enforces it.
+        goldens print in full (its leading UTF-8 BOM is invisible there).
+        aerender is reported to exit 0 when a render fails (in Adobe community
+        and Thinkbox forum reports, not Adobe's documentation), so the wrapper
+        also fails the task when any output line contains "aerender ERROR" in
+        any letter case. That marker comes from the same reports and is
+        unverified against a real failing render. The goldens show the scene
+        path with a space and an apostrophe as one argument, 1-20 at ten frames
+        per task as 1-10 and 11-20, a 240-frame movie kept whole by Frames Per
+        Task 240, and 1-9:4 as frames 1, 5 and 9. No After Effects has executed
+        it. Unverified: how -s/-e number frames in a comp whose display start
+        is not 0; that -s/-e override the -rqindex item's own time span, which
+        Adobe implies ("like with the -comp flag") rather than states. Nothing
+        in the preset keeps a movie output to one task: the artist must set
+        Frames Per Task to at least the frame count and enter the range without
+        a step or gaps, since a stepped or listed range always splits at each
+        gap.
     tier3:
       case: TestPresetTier3/after-effects-render-windows/default
       required_on: [windows]
@@ -513,27 +499,23 @@ presets:
         ERRORS_AND_PROGRESS -close DO_NOT_SAVE_CHANGES, which renders the
         saved queue as is (Adobe: with no -comp, -s, -e, -i and -output are
         ignored), passed through the same embedded PowerShell wrapper as
-        after-effects-render-windows. The wrapper exists because aerender is
-        reported to exit 0 when a render fails (Adobe community and Thinkbox
-        forum reports, not Adobe's documentation): it also fails the task when
-        any output line contains "aerender ERROR", matched case-insensitively,
-        a marker taken from those reports and unverified against a real
-        failing render. The golden shows the scene path with a space and an
-        apostrophe as one argument. No After Effects has executed it. Frame
-        numbering and movie splitting do not arise: the whole queue is one
-        task on one machine.
+        after-effects-render-windows, whose "aerender ERROR" failure marker is
+        equally unverified against a real failing render. The golden shows the
+        scene path with a space and an apostrophe as one argument. No After
+        Effects has executed it. The whole queue is one task on one machine, so
+        frame numbering and movie splitting do not arise.
     tier3:
       case: TestPresetTier3/after-effects-queue-render-windows/default
       required_on: [windows]
 
   # macOS-only by hostRequirements (attr.worker.os.family anyOf ["macos"]),
   # so both After Effects macOS entries' Tier-3 claims are required_on
-  # [darwin] alone, and no CI job has a macOS runner to earn them. Tier 3 runs
-  # the real /bin/sh and stubs aerender (stub_inner), and expect_inner_argv
-  # pins the argv the wrapper forwards. The wrapper itself is not left to a
-  # Mac: Linux CI exercises the same sh script, with the os.family gate
-  # stripped, through TestPresetAfterEffects_WrapperFailsOnLoggedError, which
-  # is not a registry case and carries the exit-status contract for both OSes.
+  # [darwin] alone, and no CI job runs Tier 3 on macOS. Tier 3 runs the real
+  # /bin/sh and stubs aerender (stub_inner), and expect_inner_argv pins the
+  # argv the wrapper forwards. Linux CI runs the same sh wrapper, with the
+  # os.family gate stripped, in
+  # TestPresetAfterEffects_WrapperFailsOnLoggedError, which is not a registry
+  # case and tests the wrapper's exit status on both OSes.
   - name: after-effects-render-macos
     source: presets/sqi
     tier: 1
@@ -545,23 +527,20 @@ presets:
         <n> -s <start> -e <end> -v ERRORS_AND_PROGRESS -close
         DO_NOT_SAVE_CHANGES, the same argv as after-effects-render-windows,
         passed through an embedded POSIX sh wrapper run by /bin/sh, which the
-        goldens print in full. The wrapper exists because aerender is reported
-        to exit 0 when a render fails (Adobe community and Thinkbox forum
-        reports, not Adobe's documentation): it also fails the task when any
-        output line contains "aerender ERROR", matched case-insensitively, a
-        marker taken from those reports and unverified against a real failing
-        render. The goldens show the scene path with a space and an apostrophe
-        as one argument, 1-20 at ten frames per task as 1-10 and 11-20, a
-        240-frame movie kept whole by Frames Per Task 240, and 1-9:4 as frames
-        1, 5 and 9. No After Effects has executed it, and the wrapper has run
-        under Linux's dash, not macOS's /bin/sh. Unverified: how -s/-e number
-        frames in a comp whose display start is not 0; that -s/-e override the
-        -rqindex item's own time span, which Adobe implies ("like with the
-        -comp flag") rather than states. A movie output is kept to one task
-        only by Frames Per Task, which the artist (or the After Effects
-        submitter) must set, with the range entered without a step or gaps (a
-        stepped or listed range always splits at each gap); nothing in the
-        preset enforces it.
+        goldens print in full. The wrapper fails the task on the same
+        "aerender ERROR" marker as the Windows wrapper, equally unverified
+        against a real failing render. The goldens show the scene path with a
+        space and an apostrophe as one argument, 1-20 at ten frames per task as
+        1-10 and 11-20, a 240-frame movie kept whole by Frames Per Task 240,
+        and 1-9:4 as frames 1, 5 and 9. No After Effects has executed it, and
+        the wrapper has run only under Linux's dash, never macOS's /bin/sh.
+        Unverified: how -s/-e number frames in a comp whose display start is
+        not 0; that -s/-e override the -rqindex item's own time span, which
+        Adobe implies ("like with the -comp flag") rather than states. Nothing
+        in the preset keeps a movie output to one task: the artist must set
+        Frames Per Task to at least the frame count and enter the range without
+        a step or gaps, since a stepped or listed range always splits at each
+        gap.
     tier3:
       case: TestPresetTier3/after-effects-render-macos/default
       required_on: [darwin]
@@ -578,16 +557,12 @@ presets:
         saved queue as is (Adobe: with no -comp, -s, -e, -i and -output are
         ignored), the same argv as after-effects-queue-render-windows, passed
         through the same embedded POSIX sh wrapper as
-        after-effects-render-macos. The wrapper exists because aerender is
-        reported to exit 0 when a render fails (Adobe community and Thinkbox
-        forum reports, not Adobe's documentation): it also fails the task when
-        any output line contains "aerender ERROR", matched case-insensitively,
-        a marker taken from those reports and unverified against a real
-        failing render. The golden shows the scene path with a space and an
-        apostrophe as one argument. No After Effects has executed it, and the
-        wrapper has run under Linux's dash, not macOS's /bin/sh. Frame
-        numbering and movie splitting do not arise: the whole queue is one
-        task on one machine.
+        after-effects-render-macos, whose "aerender ERROR" failure marker is
+        equally unverified against a real failing render. The golden shows the
+        scene path with a space and an apostrophe as one argument. No After
+        Effects has executed it, and the wrapper has run only under Linux's
+        dash, never macOS's /bin/sh. The whole queue is one task on one machine, so
+        frame numbering and movie splitting do not arise.
     tier3:
       case: TestPresetTier3/after-effects-queue-render-macos/default
       required_on: [darwin]
@@ -598,12 +573,11 @@ presets:
     tier1:
       cases: [default]
       caveat: >-
-        this entry carries a tier2 block, so the real-ffmpeg evidence is a
-        verified fact rather than prose -- read it there. What the Tier-1 golden
-        adds is a non-executing companion check; one case is the whole preset,
-        since it declares no parameter space. What neither tier proves is that
-        -crf is meaningful when VideoCodec is copy: ffmpeg ignores it with a
-        warning, and no assertion notices.
+        the tier2 case runs real ffmpeg. The Tier-1 golden reviews the argv
+        without executing it; one case covers the whole preset, since it
+        declares no parameter space. Neither tier proves that -crf means
+        anything when VideoCodec is copy: ffmpeg ignores it with a warning, and
+        no assertion notices.
     tier2:
       case: TestFFmpegPreset_TranscodeProducesPlayableOutput
       required_on: [linux, darwin, windows]
@@ -617,16 +591,14 @@ presets:
     tier1:
       cases: [default, offset-range]
       caveat: >-
-        this entry carries a tier2 block, so the real-ffmpeg evidence is a
-        verified fact rather than prose -- read it there. What the two Tier-1
-        cases add is what that single run cannot show — the EXPR-derived output
-        filename under both separator shapes (beauty_%04d and .plate.%04d, i.e.
-        the underscore and the dot that rstrip(..., '_-.') must strip) and
-        -frames:v at a non-1 start frame (1001-1048 -> 48, a count and not an
-        end frame). It has no parameter space, so neither case is a second
-        expansion shape. What neither tier proves is colour handling: it is
-        unverified and unopinionated, a linear EXR sequence forced to yuv420p
-        with no transform will look dark, and no test asserts otherwise.
+        the tier2 case runs real ffmpeg once. The two Tier-1 cases add what
+        that run cannot show: the EXPR-derived output filename under both
+        separator shapes (beauty_%04d and .plate.%04d, the underscore and the
+        dot that rstrip(..., '_-.') must strip) and -frames:v at a start frame
+        other than 1 (1001-1048 gives 48, a count rather than an end frame).
+        The preset has no parameter space, so each case is one task. Neither
+        tier checks colour handling: the preset applies no colour transform,
+        so a linear EXR sequence encoded to yuv420p will look dark.
     tier2:
       case: TestFFmpegPreset_SequenceEncodeNamesOutputAfterPattern
       required_on: [linux, darwin, windows]
@@ -640,29 +612,23 @@ presets:
     tier1:
       cases: [default, uneven-tail]
       caveat: >-
-        this entry carries a tier2 block, so the real-ffmpeg-and-real-bash
-        evidence is a verified fact rather than prose -- read it there. What the
-        two Tier-1 cases add is the review that test cannot do: the goldens put
-        the join script's glob (<dir>/<stem>_seg_*.<ext>) next to the exact
-        slice paths the Transcode step writes, at 3 slices and at 4
-        (uneven-tail, 7s in 2s slices, which is also the shape a truncating
-        division would get wrong). The goldens render on Windows too, but
-        they show the computed file body, not the bytes the worker writes, so
-        they do not prove that endOfLine LF survives to a Windows worker. What
-        does is a real bash running the join script there, which has been
-        observed on a developer Windows host only: the tier2 case below is not
-        required on windows, so that evidence is unenforced until it is
-        promoted. What neither tier proves is the concat list's quoting: it
-        quotes slice paths as file '<path>', unescaped, so a path containing a
-        single quote would break the concat parse.
+        the tier2 case runs real ffmpeg and a real bash. The two Tier-1 cases
+        add a review that test cannot do: the goldens put the join script's
+        glob (<dir>/<stem>_seg_*.<ext>) next to the exact slice paths the
+        Transcode step writes, at 3 slices and at 4 (uneven-tail, 7s in 2s
+        slices, the shape a truncating division would get wrong). The goldens
+        show the computed file body, not the bytes the worker writes, so they
+        do not prove that endOfLine LF reaches a Windows worker's disk, and the
+        tier2 case is not required on windows, so no enforced test runs the
+        join script under bash on Windows. Neither tier proves the concat
+        list's quoting: slice paths are written as file '<path>', unescaped,
+        so a path containing a single quote would break the concat parse.
     tier2:
       case: TestFFmpegPreset_BashSegmentTranscodeJoins
-      # Not required on windows, although it passes there on a developer host.
-      # ci.yml's preset-harness-windows job states the rule: this test is
-      # promoted only once that runner image is seen to pass rather than skip,
-      # because it skips when bash.exe is not resolvable by Windows PATH lookup
-      # from the worker process. A pass on a machine with Git Bash installed is
-      # evidence from the wrong host.
+      # Not required on windows: the test skips when the worker process cannot
+      # resolve bash.exe on PATH, and the Windows CI runner has not been seen
+      # to provide one. ci.yml's preset-harness-windows job states when to add
+      # windows here.
       required_on: [linux, darwin]
     tier3:
       case: TestPresetTier3/ffmpeg-segment-transcode-bash/default
@@ -674,17 +640,13 @@ presets:
     tier1:
       cases: [default, uneven-tail]
       caveat: >-
-        this entry carries a tier2 block, so the real-ffmpeg evidence -- the
-        template's own EXPR-generated concat list joining the segments with no
-        shell -- is a verified fact rather than prose -- read it there. This is
-        the variant every other segment-transcode case in that file exercises
-        most heavily. What the two Tier-1 goldens add is the only side-by-side
-        comparison that exists: the resolved concat-list body and the
-        Transcode step's slice paths are both printed in full, and they are
-        character-identical at 3 slices and at 4 (uneven-tail). What neither
-        tier proves is the concat list's quoting: the file '<path>' quoting is
-        not escaped, so a slice path containing a single quote would break the
-        concat parse.
+        the tier2 case runs real ffmpeg on the template's own EXPR-generated
+        concat list, joining the segments with no shell. The two Tier-1
+        goldens print the resolved concat-list body and the Transcode step's
+        slice paths in full, side by side, and they are character-identical at
+        3 slices and at 4 (uneven-tail). Neither tier proves the concat list's
+        quoting: file '<path>' is not escaped, so a slice path containing a
+        single quote would break the concat parse.
     tier2:
       case: TestFFmpegPreset_PortableSegmentTranscodeJoins
       required_on: [linux, darwin, windows]
@@ -692,32 +654,27 @@ presets:
       case: TestPresetTier3/ffmpeg-segment-transcode-expr/default
       required_on: [linux, darwin, windows]
 
-  # Windows-only by hostRequirements (attr.worker.os.family anyOf ["windows"]),
-  # which no test environment can fake -- the worker reports runtime.GOOS at
-  # registration and scheduler/matcher.go translates it. So this entry's Tier-3
-  # claim is required_on [windows] alone: it cannot run anywhere else.
+  # Windows-only by hostRequirements (attr.worker.os.family anyOf ["windows"]).
+  # The worker reports its real runtime.GOOS, so no other platform can run it,
+  # and both claims are required_on [windows] alone.
   - name: ffmpeg-segment-transcode-powershell
     source: presets/sqi
     tier: 2
     tier1:
       cases: [default, uneven-tail]
       caveat: >-
-        this entry carries a tier2 block, so the real-ffmpeg-and-real-PowerShell
-        evidence is a verified fact rather than prose -- read it there; its
-        required_on: [windows] enforces that the variant runs only on Windows
-        workers. The Tier-1 goldens matter most here: they are the only review
-        this variant gets off Windows, and they pin two properties it depends
-        on: the embedded file's on-disk name is join.ps1, which powershell
-        -File requires, and its body carries no byte-order mark. The cases
-        also use native C:\... paths and show them
-        surviving the POSIX-flavoured path engine intact, which works only
-        because a backslash is an ordinary character to a POSIX PurePath —
-        correct, but by accident rather than by design. Tier 2 and Tier 3 both
-        execute this on a real Windows worker, so powershell.exe accepting
-        the script is proven. Get-ChildItem -Filter's ordering is exercised
-        only at three and four slices, where lexical and numeric order
-        coincide for any padding; TestFFmpegPreset_SliceNamesAreZeroPadded
-        covers the eleven-slice case on the portable variant, not this one.
+        the tier2 case runs real ffmpeg and real PowerShell on a Windows
+        worker. The Tier-1 goldens are the only review this variant gets off
+        Windows, and they pin two properties it depends on: the embedded
+        file's on-disk name is join.ps1, which powershell -File requires, and
+        its body carries no byte-order mark. The cases use native C:\... paths
+        and show them passing through the POSIX-flavoured path engine intact,
+        because a backslash is an ordinary character in a POSIX path. Tier 2
+        and Tier 3 both run the join script under a real powershell.exe. The
+        join sorts slices by name, and that order is exercised only at three
+        and four slices, where lexical and numeric order coincide for any
+        padding; TestFFmpegPreset_SliceNamesAreZeroPadded covers the
+        eleven-slice case on the portable variant, not this one.
     tier2:
       case: TestFFmpegPreset_PowerShellSegmentTranscodeJoins
       required_on: [windows]
@@ -732,15 +689,15 @@ presets:
       cases: [default]
       caveat: >-
         argv derived from the /bin/sh -c convention documented in the product's
-        own readme. Tier 3 does execute it: a real worker runs a real /bin/sh,
-        which resolves the fixture's deliberately nonexistent command
+        own readme. Tier 3 executes it: a real worker runs a real /bin/sh, which
+        resolves the fixture's otherwise nonexistent command
         (sqi-stub-command --frame 1) from PATH, so the stub is observed being
-        invoked from inside -c. What that cannot show is the argv of the shell
-        itself — /bin/sh is an absolute path, so nothing shadows it and the
-        observed-vs-computed cross-check does not apply here (this fixture
-        declares stub_inner: true; see Case.StubInner in
-        internal/presettest/cases.go): the -c string is evidenced only by
-        the Tier-1 golden and by the fact that the shell found the stub in it.
+        invoked from inside -c. That cannot show the argv of the shell itself:
+        /bin/sh is an absolute path, so nothing shadows it and the
+        observed-vs-computed cross-check does not apply (the fixture declares
+        stub_inner: true; see Case.StubInner in internal/presettest/cases.go).
+        The -c string is evidenced only by the Tier-1 golden and by the shell
+        finding the stub in it.
     tier3:
       case: TestPresetTier3/script/default
       required_on: [linux, darwin]
@@ -754,16 +711,15 @@ presets:
         argv derived from the documented powershell -NoProfile -NonInteractive
         -ExecutionPolicy Bypass -File convention in the product's own readme,
         and the golden prints the embedded command.ps1 in full (including its
-        leading UTF-8 BOM, which is invisible there). Tier 3 does execute it: a
-        real worker runs a real powershell.exe, which resolves the fixture's
-        deliberately nonexistent command (sqi-stub-command --frame 1) from PATH,
-        so the stub is observed being invoked from inside command.ps1. What that
-        cannot show is the argv of the shell itself, which is evidenced only by
-        the Tier-1 golden. Nor can either tier show the exit-status wrapper
-        working: the stub always exits 0, so TestScriptPowerShell_ExitStatus
-        carries that claim alone -- and it is not a registry case, so the only
-        thing enforcing that it runs is its by-name PASS assertion in ci.yml's
-        preset-harness-windows job.
+        leading UTF-8 BOM, which is invisible there). Tier 3 executes it: a real
+        worker runs a real powershell.exe, which resolves the fixture's
+        otherwise nonexistent command (sqi-stub-command --frame 1) from PATH, so
+        the stub is observed being invoked from inside command.ps1. That cannot
+        show the argv of the shell itself, which is evidenced only by the
+        Tier-1 golden. Neither tier shows the exit-status wrapper working,
+        because the stub always exits 0; TestScriptPowerShell_ExitStatus covers
+        that. It is not a registry case, so only its by-name PASS assertion in
+        ci.yml's preset-harness-windows job ensures it runs.
     tier3:
       case: TestPresetTier3/script-powershell/default
       required_on: [windows]
@@ -778,7 +734,8 @@ presets:
         own readme, with the four SQI_FRAME* exports prefixed to Command. The
         goldens show that prefix at one frame per task, at five per task with a
         multi-line Command ending in a comment, and over a frame list, where
-        the chunks stop at every gap (1-1, 5-5, 10-14, 15-19, 20-20). Tier 3
+        the chunks stop at every gap (1,5,10-20 at five per task is 1-1, 5-5,
+        10-13, 14-17, 18-20). Tier 3
         executes it: a real /bin/sh runs the export prefix and hands the
         expanded variables to the stub, and expect_inner_argv pins the exact
         values each of the three tasks received. What neither tier observes is
@@ -790,7 +747,7 @@ presets:
       required_on: [linux, darwin]
 
   # Windows-only by hostRequirements, so its Tier-3 claim is required_on
-  # [windows] alone -- the same reasoning as ffmpeg-segment-transcode-powershell.
+  # [windows] alone, as for ffmpeg-segment-transcode-powershell.
   - name: command-sequence-powershell
     source: internal/product/builtins
     tier: 1
@@ -817,12 +774,12 @@ presets:
     tier1:
       cases: [default, chunked, frame-list]
       caveat: >-
-        the real-Python behavior is this entry's tier2 claim. What the Tier-1
-        goldens add is the launcher's argv per task (the three frame values
-        after the two embedded-file paths) and the launcher's full text, which
-        contains no format string by design. Tier 3 runs the stub as the
-        interpreter, so it observes that argv through a real worker and the
-        observed-vs-computed cross-check applies. What no tier proves is an
+        the tier2 case runs the launcher under a real Python. The Tier-1
+        goldens add the launcher's argv per task (the three frame values after
+        the two embedded-file paths) and the launcher's full text, which
+        contains no format string. Tier 3 runs the stub as the interpreter, so
+        it observes that argv through a real worker and the
+        observed-vs-computed cross-check applies. No tier covers an
         interpreter whose sys.executable cannot run a script file (an embedded
         DCC Python launched through its host application): the launcher
         re-runs sys.executable, so Interpreter must be a real Python.

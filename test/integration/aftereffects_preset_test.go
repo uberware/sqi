@@ -5,20 +5,19 @@ package integration
 // aftereffects_preset_test.go -- the After Effects presets' wrapper, run for
 // real.
 //
-// aerender is reported to exit 0 when a render fails (design §13.1), so every
-// After Effects preset runs it through a wrapper script that also fails the
-// task when aerender's output contains "aerender ERROR". Tier 3 cannot see
-// that: its stub always exits 0 with nothing on stdout, so a wrapper that
-// trusted the exit status would pass it. These tests drive the shipped
-// templates through a real worker and a real shell, with aerender replaced by
-// test/stubproc printing chosen text (SQI_STUB_STDOUT) and exiting with a
-// chosen status (SQI_STUB_EXIT), set per job by a sidecar beside the job's
-// scene, and assert the job's outcome. This is the pin
-// for the design's first anti-goal: a failed render reported as succeeded.
+// aerender is reported to exit 0 when a render fails, so every After Effects
+// preset runs it through a wrapper script that also fails the task when
+// aerender's output contains "aerender ERROR". Tier 3 cannot check that, because
+// its stub exits 0 with nothing on stdout, which a wrapper that trusted the exit
+// status would also pass. These tests drive the shipped templates through a
+// real worker and a real shell, with aerender replaced by test/stubproc
+// printing chosen text (SQI_STUB_STDOUT) and exiting with a chosen status
+// (SQI_STUB_EXIT), set per job by a sidecar beside the job's scene, and assert
+// that a failed render is never reported as succeeded.
 //
-// NOT tagged `integration`, for the reason ffmpeg_presets_test.go gives: an
-// untagged file is what CI's ordinary `go test` runs, and every helper used
-// here is untagged too.
+// Not tagged `integration`, for the reason ffmpeg_presets_test.go gives: CI's
+// ordinary `go test` runs only untagged files. Every helper used here is
+// untagged too.
 
 import (
 	"fmt"
@@ -52,16 +51,14 @@ func (v aeWrapperVariant) runsHere() bool {
 // below drives.
 //
 // The macOS variants run on every host but Windows, with their os.family gate
-// stripped. Their Tier-3 cases can run only on a Mac (required_on [darwin]),
-// and CI has no macOS runner, so without these rows the POSIX sh wrapper's
-// exit-status contract would be exercised nowhere in CI. Stripping the gate
-// changes nothing the wrapper sees: the same /bin/sh runs the same embedded
-// script with the same arguments (presettest's
-// TestStripOSFamilyGate_KeepsEverythingButTheGate). What a Linux run cannot
-// show is macOS's own /bin/sh, which is bash in POSIX mode rather than
-// Ubuntu's dash; the script keeps to POSIX sh for that reason. They do not run
-// on Windows, which has no /bin/sh. On a Mac the strip is unnecessary but
-// harmless.
+// stripped. Their Tier 3 cases run only on a Mac (required_on [darwin]), and no
+// CI job runs the Go tests on macOS, so these rows are what exercises the sh
+// wrapper's exit status in CI. Stripping the gate changes nothing the wrapper
+// sees: the same /bin/sh runs the same embedded script with the same arguments
+// (presettest's TestStripOSFamilyGate_KeepsEverythingButTheGate). A Linux run
+// uses that host's /bin/sh (dash on Ubuntu) rather than macOS's (bash in POSIX
+// mode), so the script keeps to POSIX sh. They do not run on Windows, which
+// has no /bin/sh. On a Mac the strip is unnecessary but harmless.
 var aeWrapperVariants = []aeWrapperVariant{
 	{preset: "after-effects-render-windows"},
 	{preset: "after-effects-queue-render-windows"},

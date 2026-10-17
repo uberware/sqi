@@ -19,24 +19,23 @@ readme: |
   - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
     `1-100:2` for every second frame.
   - **Take** - the name of the take to render, passed as `-take`. Takes are
-    named, not pathed: enter the take's name alone. Whether a child take's name
-    alone resolves is unverified.
+    named, not pathed: enter the take's name alone. Whether a child take
+    resolves by its name alone is unverified.
   - **Output Path** - the output image path passed to Commandline as
     `-oimage`. Enter one. The flag is always passed, so an empty value reaches
-    Commandline as an empty path rather than being omitted, and what it does
-    with that is unverified.
+    Commandline as `-oimage ""`; what it does then is unverified.
 
   ## How work is divided
 
   The frame range expands into tasks through OpenJD task chunking. The
   `SQI_CHUNK_BOUNDS` extension gives each task the first and last frame of its
-  own slice, which is what lets the command pass `-frame <start> <end>`. A
-  stepped range such as `1-9:4` splits into one task per frame, so a step
-  argument is never needed.
+  own slice, which the command passes as `-frame <start> <end>`. A slice never
+  spans a gap, so a stepped range such as `1-9:4` becomes one task per frame
+  and no step argument is needed.
 
-  One frame per task is the default. Raise the chunk size to batch a frame range
-  into a single Commandline launch, which trades parallelism for fewer scene
-  loads.
+  One frame per task is the default. Raise the step's `chunks.defaultTaskCount`
+  to render up to that many consecutive frames in one Commandline launch,
+  trading parallelism for fewer scene loads.
 
   ## Requirements
 
@@ -48,8 +47,7 @@ readme: |
     is unverified.
   - Each render node must be licensed before it can render: run `Commandline`
     once interactively and sign in, or configure a licence model in
-    `config.txt`. A node that has not been licensed is the most likely
-    first-run failure.
+    `config.txt`. An unlicensed node is the most likely first-run failure.
 category: Rendering
 version: 1.0.0
 template:

@@ -5,7 +5,7 @@ layers overriding earlier ones:
 
 1. **Built-in defaults** — sensible values for local development.
 2. **Config file** — YAML or JSON. With no `--config`, six paths are tried in
-   order and the **first that exists** is the only one read:
+   order and only the first that exists is read:
    `./config/sqi-server.yaml`, `./config/sqi-server.json`,
    `~/.sqi/sqi-server.yaml`, `~/.sqi/sqi-server.json`,
    `/etc/sqi/sqi-server.yaml`, `/etc/sqi/sqi-server.json`. Pass an explicit
@@ -26,9 +26,8 @@ sqi-server config print
 ```
 
 A commented example file is at
-[`config/sqi-server.example.yaml`](https://github.com/uberware/sqi/blob/main/config/sqi-server.example.yaml)
-(it does not yet include the `auth` block or `http.cors_origins` — see those
-sections below).
+[`config/sqi-server.example.yaml`](https://github.com/uberware/sqi/blob/main/config/sqi-server.example.yaml).
+It omits the `auth` block and `http.cors_origins`; both are documented below.
 
 Duration values use Go syntax: `30s`, `1m30s`, `500ms`, `2h`, etc.
 
@@ -70,8 +69,8 @@ http:
 | **CLI flag** | *(none — set via config file or env var)* |
 
 Expose Go runtime profiling endpoints at `/debug/pprof/`. Profiling data
-reveals memory layout, goroutine stacks, and CPU hotspots — never enable
-this on a server accessible to untrusted networks. Enable temporarily on a
+reveals memory layout, goroutine stacks, and CPU hotspots, so never enable
+this on a server reachable from untrusted networks. Enable it temporarily on a
 loopback-only instance for performance diagnosis.
 
 ```yaml
@@ -90,28 +89,25 @@ http:
 | **Env var** | `SQI_HTTP_CORS_ORIGINS` (comma-separated) |
 | **CLI flag** | `--http-cors-origins` |
 
-Browser origins the CORS middleware allows. Only relevant to a
-**separately-hosted web UI** calling this server cross-origin; the normal
-same-origin deployment (where `sqi-server` serves the embedded UI itself)
-needs none of this.
+Browser origins the CORS middleware allows. This matters only for a
+separately-hosted web UI calling this server cross-origin; when `sqi-server`
+serves the embedded UI itself, requests are same-origin and need none of this.
 
 Each entry must be `scheme://host[:port]`, or the bare wildcard `"*"`. A
 trailing slash, a path, a query, a fragment, or embedded whitespace is
-rejected at startup with an `http.cors_origins` validation error — go-chi/cors
-could never match such a value, so a typo fails loudly at boot rather than
-silently at request time. **A wildcard *pattern* is rejected too**
-(`https://*.example.com`, `https://app.example.com*`): go-chi/cors would honor
-any embedded `*` as a prefix/suffix match — with credentials, once auth is
-enabled — so only the bare `"*"` is supported. Name explicit origins.
+rejected at startup with an `http.cors_origins` validation error, because
+go-chi/cors could never match such a value. A wildcard pattern
+(`https://*.example.com`, `https://app.example.com*`) is rejected too:
+go-chi/cors would treat an embedded `*` as a prefix or suffix match, which
+with auth enabled would extend credentialed access to every matching origin.
+Name explicit origins.
 
-**With `auth.enabled=true` a wildcard is dropped at startup** (and a warning is
-logged — or, when the wildcard came from the empty-list default rather than
-explicit config, an informational line): browsers reject
-`Access-Control-Allow-Credentials` combined with
-`*`. An empty list defaults to `["*"]` and so is dropped too — meaning a
-separately-hosted UI must name its origin explicitly here for credentialed
-cross-origin requests to work at all. See
-[auth.md § CSRF & CORS](auth.md#csrf--cors).
+With `auth.enabled=true` a wildcard is dropped at startup, because browsers
+reject `Access-Control-Allow-Credentials` combined with `*`. The server logs a
+warning, or an informational line when the wildcard came from the empty-list
+default. An empty list means `["*"]` and is dropped the same way, so a
+separately-hosted UI must name its origin here for credentialed cross-origin
+requests to work. See [auth.md § CSRF & CORS](auth.md#csrf--cors).
 
 ```yaml
 http:
@@ -133,9 +129,9 @@ sqi-server serve --http-cors-origins=https://ui.example.com
 | **Default** | `false` |
 | **Env var** | `SQI_HTTP_TLS_ENABLED` |
 
-Terminate TLS in-process on the REST/WebSocket listener. **The listener
-upgrades in place — there is no plaintext port when this is on.** A plaintext
-request to the TLS port receives a `400` rather than hanging.
+Terminate TLS in-process on the REST/WebSocket listener. The listener
+upgrades in place, so there is no plaintext port when this is on. A plaintext
+request to the TLS port receives a `400`.
 
 Requires [`http.tls.cert_file`](#httptlscert_file) and
 [`http.tls.key_file`](#httptlskey_file); the server refuses to start without
@@ -163,9 +159,9 @@ http:
 PEM certificate served on the HTTP listener: leaf first, then any
 intermediates. Generate a pair with `sqi-server tls init`.
 
-Validated at startup — a missing file, a key that does not match, or an
-already-expired certificate is a startup error naming this key, never a
-runtime surprise. A certificate expiring within 30 days logs a WARN. Setting
+Validated at startup: a missing file, a key that does not match, or an
+already-expired certificate is a startup error naming this key. A
+certificate expiring within 30 days logs a WARN. Setting
 this while `http.tls.enabled` is `false` logs a WARN that the server is
 serving plaintext.
 
@@ -182,8 +178,7 @@ serving plaintext.
 PEM private key matching [`http.tls.cert_file`](#httptlscert_file). Should be
 mode `0600`; `sqi-server tls init` writes it that way.
 
-Certificates are read once at startup. **Rotation requires a restart** —
-replacing the files under a running server has no effect until it restarts.
+Certificates are read once at startup, so rotating them requires a restart.
 
 ---
 
@@ -200,11 +195,11 @@ replacing the files under a running server has no effect until it restarts.
 TCP address the embedded NATS server binds to. Defaults to all interfaces so
 that workers which discover the server over mDNS can connect to NATS at the
 advertised LAN host. Set this to `"127.0.0.1:4222"` to restrict NATS to loopback
-(single-machine only). **Broker authentication is a separate, opt-in gate from
-`auth.enabled`** — see [`nats.auth.*`](#natsauthenabled) below. While
-`nats.auth.enabled` is off (the default), any host that can reach this port
-can register as a worker and receive task assignments, regardless of
-`auth.enabled` — see [Known gaps](auth.md#known-gaps).
+(single-machine only). Broker authentication is a separate opt-in setting,
+independent of `auth.enabled`; see [`nats.auth.*`](#natsauthenabled) below.
+While `nats.auth.enabled` is off (the default), any host that can reach this
+port can register as a worker and receive task assignments, whatever
+`auth.enabled` says. See [Known gaps](auth.md#known-gaps).
 
 ```yaml
 nats:
@@ -266,10 +261,10 @@ nats:
 
 Requires every NATS client to present a per-worker nkey credential. When
 `true`, the broker refuses any connection that does not present one. When
-`false` (the default), the broker accepts any connection — see the warning
-under [`nats.addr`](#natsaddr) above. Deliberately independent of
-`auth.enabled`: that flag gates human users and API keys over the REST API,
-this one gates workers over the broker transport.
+`false` (the default), the broker accepts any connection; see the warning
+under [`nats.addr`](#natsaddr) above. Independent of `auth.enabled`, which
+gates human users and API keys on the REST API; this setting gates workers on
+the broker.
 
 ```yaml
 nats:
@@ -288,11 +283,10 @@ nats:
 | **Range** | `1m` – `24h` |
 | **Env var** | `SQI_NATS_AUTH_JOIN_TOKEN_TTL` |
 
-How long a newly issued worker join token remains valid. The floor exists
-because below a minute an operator cannot realistically get the token onto a
-machine and boot it; the ceiling exists because a join token mints a worker
-credential, so a token valid for weeks would be a standing secret. Ignored
-while `nats.auth.enabled` is `false`.
+How long a newly issued worker join token remains valid. Below a minute an
+operator cannot realistically get the token onto a machine and boot it; the
+ceiling keeps a token, which mints a worker credential, from becoming a
+long-lived secret. Ignored while `nats.auth.enabled` is `false`.
 
 ```yaml
 nats:
@@ -352,16 +346,16 @@ nats:
 
 Require TLS on every connection to the embedded broker.
 
-This is what encrypts the **worker transport** — task assignments (command
-lines, embedded file contents, parameters, environment, the isolation
-username), status messages and log chunks. Broker *authentication*
+This encrypts the worker transport: task assignments (command lines, embedded
+file contents, parameters, environment, the isolation username), status
+messages and log chunks. Broker authentication
 ([`nats.auth.enabled`](#natsauthenabled)) does not encrypt anything; the two
-settings are independent and address different threats. A production farm
-wants both.
+settings are independent and address different threats, and a production farm
+should enable both.
 
 Requires [`nats.tls.cert_file`](#natstlscert_file) and
 [`nats.tls.key_file`](#natstlskey_file). Workers must be configured with the
-matching CA (`nats.tls_ca_file`) — see [`docs/tls.md`](tls.md).
+matching CA (the worker key `nats.tls_ca_file`); see [`docs/tls.md`](tls.md).
 
 ```yaml
 nats:
@@ -382,9 +376,9 @@ nats:
 | **Env var** | `SQI_NATS_TLS_CERT_FILE` |
 
 PEM certificate the broker presents to connecting workers. May be the same
-file as [`http.tls.cert_file`](#httptlscert_file), or a different one — the
-two listeners are configured independently, so an operator can serve the API
-with a publicly-issued certificate and the broker with a private farm CA.
+file as [`http.tls.cert_file`](#httptlscert_file) or a different one: the two
+listeners are configured independently, so an operator can serve the API with
+a publicly-issued certificate and the broker with a private farm CA.
 
 Validated at startup on the same terms as `http.tls.cert_file`.
 
@@ -414,14 +408,14 @@ When set, every connecting worker must present a client certificate signed by
 this CA (mutual TLS). Issue per-worker certificates with
 `sqi-server tls init --client <worker-id>`.
 
-This **layers on** the per-worker nkey credential rather than replacing it: the
-certificate gates who may open a connection, the nkey decides which worker they
-are and drives subject permissions and revocation. A valid farm certificate on
-its own authenticates nobody. sqi does not bind a certificate to a worker ID.
+This adds to the per-worker nkey credential and does not replace it. The
+certificate gates who may open a connection; the nkey identifies the worker and
+drives subject permissions and revocation. A valid farm certificate on its own
+authenticates nobody, and sqi does not bind a certificate to a worker ID.
 
-Requires [`nats.tls.enabled`](#natstlsenabled) — setting this on a plaintext
-broker is a startup error, since client certificates cannot be verified where
-there is no TLS handshake.
+Requires [`nats.tls.enabled`](#natstlsenabled). Setting this on a plaintext
+broker is a startup error, since client certificates cannot be verified
+without a TLS handshake.
 
 ---
 
@@ -429,9 +423,9 @@ there is no TLS handshake.
 
 The state store holds every job, task, worker, farm, queue, usage pool,
 account and audit entry. It is embedded SQLite by default, or an external
-PostgreSQL server (16 or later) when `store.driver` is `postgres`. Running on
-PostgreSQL — creating the database, the DSN, backups and the one-server rule —
-is covered in [Running on PostgreSQL](operations.md#running-on-postgresql).
+PostgreSQL server (16 or later) when `store.driver` is `postgres`. Creating
+the database, the DSN, backups and the one-server rule are covered in
+[Running on PostgreSQL](operations.md#running-on-postgresql).
 
 ### `store.driver`
 
@@ -457,9 +451,9 @@ ignored, and the server logs a start-up warning for each one set explicitly
 in the config file or the environment (`store.sqlite_path is ignored when
 store.driver is postgres`).
 
-> **The `migrate`, `backup`, `restore` and `worker` subcommands choose their
-> store from the same configuration, and take flags that override it.** Highest priority
-> first: an explicit `--dsn` (a PostgreSQL database), then an explicit `--db`
+> The `migrate`, `backup`, `restore` and `worker` subcommands choose their
+> store from the same configuration, and take flags that override it. Highest
+> priority first: an explicit `--dsn` (a PostgreSQL database), then an explicit `--db`
 > (a SQLite file), then `store.driver` from the resolved configuration (the
 > root `-c/--config` file and `SQI_STORE_DRIVER`), with `store.postgres.dsn`
 > for PostgreSQL and the [`store.sqlite_path`](#storesqlite_path) layering
@@ -487,9 +481,10 @@ default source of [`sqi-server store copy`](operations.md#moving-to-postgresql).
 The server also creates `<sqlite_path>.lock` beside the database (for example
 `sqi.db.lock`) and holds an operating-system lock on it while it runs, so a
 second server on the same file is refused; `migrate up`, `restore` and
-`store copy` take it too. Do not delete the file: the lock, not the file, is
-the guard, and a crashed server leaves nothing stale. On a
-network filesystem the lock is only as reliable as that filesystem's locking.
+`store copy` take it too. Leave the file in place. The guard is the lock held
+on it, which the operating system releases when the server exits or crashes,
+so a leftover file is never stale. On a network filesystem the lock is only as
+reliable as that filesystem's locking.
 See [One server per database](operations.md#one-server-per-database).
 
 ```yaml
@@ -497,19 +492,18 @@ store:
   sqlite_path: "/var/lib/sqi/sqi.db"
 ```
 
-> **The `migrate`, `backup`, `restore`, `store copy` and `worker` subcommands
-> resolve their database path the same way the server does.** Highest
+> The `migrate`, `backup`, `restore`, `store copy` and `worker` subcommands
+> resolve their database path the same way the server does. Highest
 > priority first: an explicit `--db` flag (`--from` for `store copy`); this
 > key (the root `-c/--config` file and
 > `SQI_STORE_SQLITE_PATH`); the legacy `SQI_SQLITE_PATH` environment
 > variable, which still works but prints a deprecation notice to stderr when
 > it is what decided the path; and finally the built-in `"sqi.db"` default.
-> `migrate up` creates the database when it does not already exist — that is
-> its job. `backup` and `worker` (`sqi-server worker
-> token issue|enroll|revoke|list` — see
+> `migrate up` creates the database when it does not already exist. `backup`
+> and `worker` (`sqi-server worker token issue|enroll|revoke|list`; see
 > [`docs/operations.md`](operations.md#worker-broker-credentials)) never
-> create one: pointing either at a database that does not exist is a clear
-> error naming the resolved path, not a silently created empty database.
+> create one: pointing either at a database that does not exist is an error
+> naming the resolved path.
 
 ---
 
@@ -527,13 +521,10 @@ checkpointing the WAL grows unboundedly under write load. A final checkpoint
 always runs on clean shutdown regardless of this setting, and that one uses
 `TRUNCATE` so the WAL is left at zero bytes.
 
-The periodic checkpoint is deliberately `PASSIVE` rather than `TRUNCATE`.
-Reads are served from a separate connection pool, so a reader holding a WAL
-snapshot blocks a truncating checkpoint — which waits out the whole 5s
-`busy_timeout` on the single write connection and then still fails to
-truncate, stalling job submission and task-status writes for five seconds on
-every tick. `PASSIVE` never waits: it moves what it can and the next tick
-takes the rest. Shutdown can afford to wait once; a timer cannot.
+The periodic checkpoint is `PASSIVE` because it never waits on a reader: it
+moves what it can and the next tick takes the rest. A `TRUNCATE` checkpoint
+blocked by a reader's WAL snapshot would hold the single write connection for
+the 5s `busy_timeout`, stalling job submission and task-status writes.
 
 Set to a large value (e.g. `"24h"`) to disable periodic checkpointing while
 keeping the shutdown checkpoint. Must be `> 0`. Ignored when `store.driver` is
@@ -583,8 +574,8 @@ placeholder (`postgres://<redacted>`) and nothing more. That covers a URL with
 more than one `@`, or an `@` that does not end the user name (one in a query
 value, say); any `#`; any `;` in the query; a `password` key that is
 percent-encoded or padded with spaces; a query pair without `=`; or a query
-value holding a second `=`. **In a URL, percent-encode any `@` or `#` (in the
-password too) and any `;` or `=` inside a query value** (`%40`, `%23`, `%3B`,
+value holding a second `=`. In a URL, percent-encode any `@` or `#` (in the
+password too) and any `;` or `=` inside a query value (`%40`, `%23`, `%3B`,
 `%3D`); otherwise `config print` hides the whole DSN and
 [`sqi-server backup`](operations.md#backing-up-postgresql) refuses it.
 
@@ -628,8 +619,8 @@ store:
 | **Env var** | `SQI_LOG_LEVEL` |
 | **CLI flag** | `--log-level` |
 
-Minimum log level to emit. `debug` includes verbose request tracing and
-scheduler internals — useful during development but noisy in production.
+Minimum log level to emit. `debug` adds verbose request tracing and
+scheduler internals, which is noisy in production.
 
 ```yaml
 log:
@@ -648,9 +639,9 @@ log:
 | **Env var** | `SQI_LOG_FORMAT` |
 | **CLI flag** | `--log-format` |
 
-Log output format. `json` is structured and machine-parseable — use it in
+Log output format. `json` is structured and machine-parseable; use it in
 production so log aggregators (Loki, Datadog, Splunk, etc.) can index fields.
-`text` is human-readable with aligned columns — use it during local development.
+`text` is human-readable, for local development.
 
 ```yaml
 log:
@@ -758,11 +749,11 @@ scheduler:
 | **Default** | `"500ms"` |
 | **Env var** | `SQI_SCHEDULER_TICK_INTERVAL` |
 
-> **Reserved — not yet wired.** This key is parsed and validated but the
-> scheduler does not currently consume it; the assignment loop runs on a fixed
-> 1s interval (`AssignInterval`). Setting it has no effect today. Must be `> 0`.
+> **Reserved.** This key is parsed and validated (it must be `> 0`), but the
+> scheduler does not read it: the assignment loop runs on a fixed 1s interval
+> (`AssignInterval`), so setting it has no effect.
 
-Intended meaning: how often the assignment loop wakes to match ready tasks to
+Reserved meaning: how often the assignment loop wakes to match ready tasks to
 idle workers.
 
 ```yaml
@@ -780,12 +771,11 @@ scheduler:
 | **Default** | `1` |
 | **Env var** | `SQI_SCHEDULER_MAX_TASKS_PER_WORKER` |
 
-> **Reserved — not yet wired.** This key is parsed and validated but the
-> scheduler does not currently consume it; task concurrency is governed by
-> CPU-core commitment (`CPUCount − committed`), not a per-worker task cap.
-> Setting it has no effect today. Must be `≥ 1`.
+> **Reserved.** This key is parsed and validated (it must be `≥ 1`), but the
+> scheduler does not read it: task concurrency on a worker is governed by
+> CPU-core commitment (`CPUCount − committed`), so setting it has no effect.
 
-Intended meaning: the maximum number of tasks simultaneously assigned to a
+Reserved meaning: the maximum number of tasks simultaneously assigned to a
 single worker.
 
 ```yaml
@@ -807,10 +797,9 @@ How long a worker may remain offline before the retention sweep hard-deletes its
 record, bounding the growth of the worker list on farms with ephemeral nodes
 (e.g. cloud workers that spin up for a burst of work and are then destroyed). The
 sweep runs on the heartbeat-sweep tick and only removes workers in the `offline`
-state — `online` and administratively `disabled` workers are never auto-removed.
+state; `online` and administratively `disabled` workers are never auto-removed.
 A worker that reconnects after removal re-registers. Set to `0` to disable
-automatic removal entirely (workers can still be removed manually from the web
-UI).
+automatic removal (workers can still be removed manually from the web UI).
 
 ```yaml
 scheduler:
@@ -869,9 +858,8 @@ scheduler:
 | **Env var** | `SQI_SCHEDULER_UNSCHEDULABLE_GRACE` |
 
 How long a `ready` task may wait with no eligible online worker before it is
-flagged "unschedulable" (surfaced in the API/UI so operators can spot stuck
-work rather than assume the scheduler is silently making progress). Set to `0`
-to disable the sweep entirely.
+flagged "unschedulable", which the API and UI surface so operators can spot
+stuck work. Set to `0` to disable the sweep.
 
 ```yaml
 scheduler:
@@ -925,7 +913,7 @@ scheduler:
 Worker-reported task failures auto-retry with backoff up to a per-task attempt
 ceiling, and a job auto-parks (pauses) once its cumulative genuine failures
 reach a failure limit. Three server keys set the farm-wide defaults for this
-policy:
+policy.
 
 ### `scheduler.default_max_attempts`
 
@@ -970,8 +958,8 @@ scheduler:
 
 Farm-wide default ceiling on a job's cumulative genuine task failures. Once
 reached, the job is auto-parked (`status=paused`, with a `park_reason` such as
-`"failure limit reached (N)"`). `0` disables the limit (off — a job never
-auto-parks on failure count alone).
+`"failure limit reached (N)"`). `0` disables the limit, so a job never
+auto-parks on failure count alone.
 
 ```yaml
 scheduler:
@@ -981,17 +969,17 @@ scheduler:
 ### Precedence: Server → Farm → Queue → Job
 
 The effective value for each of the three knobs above is resolved
-independently as the **first non-null** of, in order: **Job → Queue → Farm →
-server default**. A farm sets a studio-wide policy; a queue can narrow it for
-a class of work; a job can override it for one submission. Any tier left
+independently as the first non-null of, in order: Job → Queue → Farm →
+server default. A farm sets a studio-wide policy, a queue can narrow it for
+a class of work, and a job can override it for one submission. Any tier left
 unset (`null`) falls through to the next.
 
 Farm and queue overrides are set via the farm/queue REST resources'
 `max_attempts` / `retry_delay_seconds` / `failure_limit` fields (and the
 matching Python SDK keyword arguments on `create_farm`/`update_farm` and
 `create_queue`/`update_queue`). A job's overrides use the same three names,
-but on `POST /api/v1/jobs` they travel as **query parameters** — alongside
-`priority` — not as a body field, since the body is the raw OpenJD template:
+but on `POST /api/v1/jobs` they are query parameters, alongside `priority`,
+because the body is the raw OpenJD template:
 
 ```sh
 curl -X POST "http://localhost:8080/api/v1/jobs?max_attempts=5&retry_delay_seconds=10&failure_limit=20" \
@@ -1002,10 +990,9 @@ curl -X POST "http://localhost:8080/api/v1/jobs?max_attempts=5&retry_delay_secon
 Overrides are validated at the API boundary: `max_attempts` must be >= 1,
 `retry_delay_seconds` and `failure_limit` must be >= 0 (an explicit
 `failure_limit` of 0 disables an inherited limit). Out-of-range or
-non-integer values are rejected with `400` rather than stored or silently
-ignored. The job detail response (`GET /api/v1/jobs/{id}`) reports both the
-configured per-job overrides and `effective_retry` — the fully resolved
-policy the job actually runs under.
+non-integer values are rejected with `400`. The job detail response
+(`GET /api/v1/jobs/{id}`) reports both the configured per-job overrides and
+`effective_retry`, the fully resolved policy the job runs under.
 
 A manual `POST /api/v1/tasks/{id}/retry` or `POST /api/v1/jobs/{id}/retry`
 resets a task/job's failure counters, independent of this policy. See
@@ -1014,12 +1001,10 @@ retry, exhaustion, and auto-park interact, and
 [Retry and auto-park metrics](observability.md#retry-and-auto-park-metrics)
 for the Prometheus counters.
 
-> **Behavior change on upgrade.** The default `scheduler.default_max_attempts`
-> is `3`, so farms that upgrade into this feature will see transient task
-> failures auto-retry (up to 2 extra attempts) where they previously went
-> straight to terminal-`failed`. To restore the prior no-auto-retry behavior,
-> set `scheduler.default_max_attempts: 1` (or
-> `SQI_SCHEDULER_DEFAULT_MAX_ATTEMPTS=1`).
+> **Upgrading from v0.1.0.** v0.1.0 had no auto-retry. With the default
+> `scheduler.default_max_attempts` of `3`, a failed task now gets up to 2 more
+> attempts. To keep v0.1.0's behavior, set `scheduler.default_max_attempts: 1`
+> (or `SQI_SCHEDULER_DEFAULT_MAX_ATTEMPTS=1`).
 
 ---
 
@@ -1034,9 +1019,9 @@ for the Prometheus counters.
 | **Env var** | `SQI_DISCOVERY_ENABLED` |
 
 When `true`, `sqi-server` broadcasts a `_sqi._tcp` mDNS record so that workers
-and the `sqi` CLI can discover it automatically on the local network without any
-manual address configuration. Disable in environments that prohibit multicast —
-most cloud VPCs, VLANs, and container networks fall into this category.
+and the `sqi` CLI can discover it on the local network without manual address
+configuration. Disable it where multicast is unavailable, as in most cloud
+VPCs and container networks and many VLANs.
 
 ```yaml
 discovery:
@@ -1057,10 +1042,10 @@ The mDNS service instance name advertised on the network. Each `sqi-server` on
 the same subnet should use a distinct name to avoid collisions when running
 multiple farms on the same local network.
 
-Must not be empty, and this is checked **regardless of `discovery.enabled`** —
-explicitly setting it to `""` fails config validation and the server will not
-start, even with discovery switched off. Leave the default in place rather than
-blanking it to disable advertisement; use `discovery.enabled: false` for that.
+Must not be empty, whatever `discovery.enabled` says: setting it to `""`
+fails config validation and the server does not start, even with discovery
+off. To disable advertisement, set `discovery.enabled: false` and leave this
+key alone.
 
 ```yaml
 discovery:
@@ -1081,28 +1066,25 @@ discovery:
 | **CLI flag** | `--openjd-enforce-limits` |
 
 When `true`, submitted job templates are checked against the OpenJD quantitative
-limits — maximum name lengths, parameter-definition counts, per-parameter value
-counts, and host-requirement counts — **plus one sqi-defined limit the OpenJD
-specification does not itself set: a maximum of 100 steps per job template**.
-A template exceeding 100 steps is rejected with an error at `/steps`. Set to
-`false` only in operator environments that predate strict limit enforcement
-and cannot yet update all templates — including templates with more than 100
-steps; resource-exhaustion guards (the per-range value cap and the per-step
-task-count cap) always apply regardless of this setting.
+limits (maximum name lengths, parameter-definition counts, per-parameter value
+counts, and host-requirement counts), plus one sqi-defined limit the OpenJD
+specification does not set: a maximum of 100 steps per job template. A
+template exceeding 100 steps is rejected with an error at `/steps`. Set to
+`false` only for existing templates that break these limits, including ones
+with more than 100 steps, and cannot be updated. The resource-exhaustion
+guards (the per-range value cap, the 1,000,000-task cap per step and the
+1,000,000-task cap per job) apply whatever this is set to.
 
-**The step-count relief above does not carry over to `EXPR` templates.** A
-template declaring `extensions: [EXPR]` is *also* subject to the
-template-wide expression budget ([`openjd.expr_template_positions`](#openjdexpr_template_positions),
-default 10,000), which is **always on** — a resource-exhaustion guard, not a
-quantitative limit, so `enforce_limits: false` does not lift it. That budget
-counts **expression positions**, not steps, so the relief is partial rather
-than absent: a many-step `EXPR` template is accepted only while its *total*
-positions stay under the configured position limit. At the
-~70-positions-per-step shape the default was sized against, the crossover is
-around 143 steps — so a 300-step `EXPR` template of any realistic content is
-rejected whichever way this flag is set, while a 300-step template whose steps
-carry almost no expressions still passes. Only a base-spec template gets the
-unqualified relief this flag promises. See
+For an `EXPR` template, `false` lifts the step cap only partly. A template
+declaring `extensions: [EXPR]` is also subject to the template-wide
+expression budget
+([`openjd.expr_template_positions`](#openjdexpr_template_positions), default
+10,000), which is a resource-exhaustion guard and stays on. That budget counts
+expression positions, so a many-step `EXPR` template is accepted only while
+its total positions stay under the limit. At about 70 positions per step (the
+shape the default was sized against) that is around 143 steps: a 300-step
+`EXPR` template with realistic content is rejected either way, while a
+300-step template whose steps carry almost no expressions passes. See
 [`docs/openjd-extensions/expr.md`](openjd-extensions/expr.md) for what the
 budget bounds.
 
@@ -1115,89 +1097,74 @@ openjd:
 
 ### EXPR expression limits — read this before changing any of them
 
-Four keys bound what **one submitted job template** may spend inside the
-OpenJD expression-language checker (the `EXPR` extension —
+Four keys bound what one submitted job template may spend inside the
+OpenJD expression-language checker (the `EXPR` extension; see
 [`docs/openjd-extensions/expr.md`](openjd-extensions/expr.md)). They exist
 because `POST /api/v1/jobs` accepts a template of up to 4 MiB and, with auth
-off (the default), accepts it anonymously — so the cost of checking a
-template is attacker-chosen work on a synchronous request path.
+off (the default), accepts it anonymously, so checking a template is
+attacker-chosen work on a synchronous request path.
 
-**Four routes are bounded by these keys, not one.** Three of them accept an
-arbitrary client-supplied template body: `POST /api/v1/jobs`,
-`POST /api/v1/products` and `PUT /api/v1/products/{name}` (the last two when a
-custom product is installed or edited). The fourth,
-`POST /api/v1/products/{name}/jobs`, submits a template the operator already
-installed — but the *parameters* are the client's and every expression is
-re-evaluated with them bound, so it is bounded on the same terms. All four are
-bounded by these four keys and by
+Four routes are bounded by these keys and by
 [`openjd.expr_submission_deadline`](#openjdexpr_submission_deadline), and all
-four can answer `503` for a deadline.
+four can answer `503` for a deadline. Three accept a client-supplied template
+body: `POST /api/v1/jobs`, `POST /api/v1/products` and
+`PUT /api/v1/products/{name}` (the last two when a custom product is installed
+or edited). The fourth, `POST /api/v1/products/{name}/jobs`, submits a
+template the operator already installed, but the parameters are the client's
+and every expression is re-evaluated with them bound.
 
-The preset routes — `GET /api/v1/presets/{name}` and
-`POST /api/v1/presets/{name}/install` — validate a definition too. Its body is
-sha256-pinned against the index at `preset_library.url`, so it is
-operator-vouched rather than client-chosen; they nevertheless run under these
-four keys and under the deadline, because the limits are operator
-configuration (an operator who
-tightened a knob asked for it to be enforced wherever validation happens) and
-because the install route sits behind the *same* permission as
-`POST /api/v1/products`, which grants everyone access while auth is off.
+The preset routes, `GET /api/v1/presets/{name}` and
+`POST /api/v1/presets/{name}/install`, validate a definition too, under the
+same four keys and the deadline. The definition is sha256-pinned against the
+index at `preset_library.url`, so the operator vouches for it, but the limits
+are operator configuration and apply wherever validation happens, and the
+install route needs the same permission as `POST /api/v1/products`, which
+everyone holds while auth is off.
 
-Unlike `enforce_limits`, these are **always on**: they are
-resource-exhaustion guards, not OpenJD quantitative limits, and no setting
-turns them off. `0` is not "unlimited" — it is out of range and fails
-startup. **An out-of-range value is a startup failure, not a clamp.**
+Unlike `enforce_limits`, these limits are always on: they are
+resource-exhaustion guards rather than OpenJD quantitative limits, and no
+setting turns them off. An out-of-range value, including `0`, fails startup;
+it is never clamped.
 
-> `EXPR` is a supported extension: every EXPR template is accepted on its
-> merits, and each of these keys decides real submissions. See
-> [`docs/openjd-extensions/expr.md`](openjd-extensions/expr.md).
-
-Every one of these has a counterpart on the worker
+Each key has a counterpart on the worker
 ([Worker configuration → `expr`](worker-configuration.md#expr--expr-expression-limits))
-that meters the same thing one phase later. Four caveats apply to all four
-keys.
+that meters the same thing at run time. Four caveats apply to all four keys.
 
-A **fifth** key sits alongside them and is deliberately not one of them:
-[`openjd.expr_submission_deadline`](#openjdexpr_submission_deadline) is a
-wall-clock backstop, so it decides only whether this server keeps working on a
+A fifth key,
+[`openjd.expr_submission_deadline`](#openjdexpr_submission_deadline), is a
+wall-clock backstop. It decides only whether this server keeps working on a
 request (503), never whether a template is valid (422). It has no worker
-counterpart and none of the four caveats below applies to it — read its own
+counterpart and the four caveats below do not apply to it; see its own
 section.
 
-#### 1. The cumulative operation ceiling is a product, not a measurement
+#### 1. The cumulative operation ceiling is the product of two keys
 
 Nothing in sqi counts operations across a whole template. The template-wide
-budget counts **positions** — one per format string or `let:` binding
-walked — and each position is separately capped at
-`openjd.expr_operation_limit` operations. The cumulative ceiling an operator
-is really setting is therefore the **product**:
+budget counts positions (one per format string or `let:` binding walked), and
+each position is separately capped at `openjd.expr_operation_limit`
+operations. The cumulative ceiling an operator sets is therefore the product:
 
 ```
 openjd.expr_template_positions  x  openjd.expr_operation_limit
           10,000                x          10,000              = 10^8 (default)
 ```
 
-Raising either multiplies that ceiling; raising both multiplies it twice.
-At the two maxima (100,000 x 100,000) it is 10¹⁰ — **100x the default**.
-Nothing measures the sum, so nothing will report that you crossed it; the
-product is a derived upper bound on what the per-position limit, applied
-that many times, could in principle cost.
+Raising either key multiplies that ceiling; raising both multiplies it twice.
+At the two maxima (100,000 x 100,000) it is 10¹⁰, 100x the default. Nothing
+measures the sum, so nothing reports that a template came close to it.
 
-`openjd.expr_memory_limit` is **not** a third multiplier here. It decides how
-large a value one evaluation may hold, not what an operation costs: the worst
-construction measured under a 100,000-operation budget costs **the same 1.43 s
-at the default 1,000,000-byte memory limit as at the 10,000,000 maximum**,
-because it never holds more than one intermediate value live. Raise it because
-a template needs to build a large value, not to bound time.
+`openjd.expr_memory_limit` is not a third multiplier. It decides how large a
+value one evaluation may hold, not what an operation costs, and raising it to
+the maximum leaves the cost of an operation-heavy template unchanged. Raise it
+when a template needs to build a large value.
 
 #### 2. None of these limits bounds wall-clock time
 
-An operation's real cost is not uniform. Specification section 1.3.10 rule 3
-(`third_party/openjd-specifications/wiki/2026-02-Expression-Language.md:1090`)
-prices a string operation at *the value's length divided by 256* — so
-byte-heavy work is charged almost nothing. Measured in this repository, all
-four of these expressions stay inside a single position's default
-10,000-operation budget:
+Operations do not all cost the same time. Specification section 1.3.10 rule 3
+(`third_party/openjd-specifications/wiki/2026-02-Expression-Language.md`)
+prices a string operation at the value's length divided by 256, so byte-heavy
+work is charged very little. Each of these expressions fits inside one
+position's default 10,000-operation budget:
 
 | Expression | Operations charged | CPU | per operation |
 |---|---|---|---|
@@ -1206,90 +1173,60 @@ four of these expressions stay inside a single position's default
 | `re_findall("x", "x" * 900000)` | 3,519 | ~51 ms | 14.5 µs |
 | `max([len(re_findall("x", "x" * 900000)) for i in range(2)])` | 7,048 | ~103 ms | 14.6 µs |
 
-The first two are charged **identically** and differ by 9x in time; the third
-is charged **half** as much as either yet costs nearly as much time. **The
-per-operation cost varies by ~17x**, which is why no operation budget bounds
-time.
+The cost per operation varies by about 17x, so no operation budget bounds
+time. A template of 10,000 positions of the last row (about 650 KB, inside the
+4 MiB request limit) costs about 17 minutes of server CPU with every default
+budget respected; at the two maxima the same construction costs about 40
+hours. Treat these as lower bounds on the worst case: a construction with a
+higher cost per operation would cost more.
 
-The fourth row is the one to size against. Ten thousand positions of it — a
-template body of roughly 650 KB, well inside the 4 MiB limit — cost about
-**1,030 seconds** (~17 minutes) of server CPU on one synchronous request, with
-every budget respected the entire way; a position that spent its whole
-10,000-operation allowance at that rate would cost ~146 ms, putting the same
-template near **24 minutes**. At the
-two maxima the same construction reaches 98,646 operations in **1.43 s**, and
-100,000 such positions are roughly **40 hours**.
+Raising these limits therefore lengthens the worst request the server can be
+asked to serve, roughly in proportion. The time is bounded by a separate key,
+[`openjd.expr_submission_deadline`](#openjdexpr_submission_deadline), which
+stops one submission's expression evaluation after a fixed wall-clock
+allowance (5s by default) and answers `503`. That bound holds whatever the
+operation pricing permits, but it does not make the four limits safe to raise
+freely: a request refused at the deadline still spent that time, and
+concurrent requests each get their own allowance. If `POST /api/v1/jobs` is
+reachable without authentication, size request timeouts and front-end
+concurrency with that in mind.
 
-Caveat 1's 100x is the correct scaling factor between those two settings: the
-worst per-operation rate measured is the same (~14.6 µs) at both, so ten times
-the positions times ten times the operations is a hundred times the time.
-Dividing the two measurements above gives ~139x only because the default-side
-construction leaves ~30% of its 10,000-operation budget unspent while the
-maxima-side one uses 98.6% of its 100,000.
-
-**This figure is a floor on the worst case, not a proof of it**: a
-construction with a higher cost per operation raises it (the same
-10,000-position template built from `.title()`, which does not maximize the
-cost per operation, gives 571 seconds). Treat the order of magnitude as the
-claim, not the digits.
-
-**So: raising these limits lengthens the worst request your farm can be
-asked to serve, roughly in proportion.** There is no value of these settings
-that makes a slow request impossible. If `POST /api/v1/jobs` is reachable
-without authentication, size your request timeouts and front-end concurrency
-against that, not against the position cap.
-
-**A separate key bounds the time**, because none of these four can:
-[`openjd.expr_submission_deadline`](#openjdexpr_submission_deadline) stops one
-submission's expression evaluation after a fixed wall-clock allowance (5s by
-default) and answers `503`. It bounds elapsed time directly, so it holds
-whatever the operation pricing turns out to permit and does not depend on the
-figures above being right. It does **not** make the numbers above safe to
-raise freely: a request refused at the deadline still spent that time, and
-concurrent requests each get their own allowance.
-
-**Raising these four keys without also raising the deadline turns legitimate
-acceptances into 503s.** This is the realistic way a legitimate pipeline
-gets a 503, and it is not visible from either side on its own. Measured with a
-generated multi-layer VFX
-shot-render job — 12 `let:` bindings per step, comprehensions over real frame
-ranges, `RANGE_EXPR`/`LIST[STRING]`/`PATH` parameters — driven through the
-real submission path:
+Raising these four keys without also raising the deadline turns legitimate
+acceptances into 503s. For a generated multi-layer VFX shot-render job (12
+`let:` bindings per step, comprehensions over real frame ranges,
+`RANGE_EXPR`/`LIST[STRING]`/`PATH` parameters) submitted through the real
+submission path:
 
 | Limits | Shape | Wall clock | Verdict |
 |---|---|---|---|
 | defaults | 100 steps x 1,000 frames | 0.83 s | accepted |
 | defaults | 100 steps x 2,000 frames | 1.11 s | `422`, retained bytes |
-| legal maxima | 100 steps x 10,000 frames | 7.5 s | **`503`, deadline** |
+| legal maxima | 100 steps x 10,000 frames | 7.5 s | `503`, deadline |
 
-At the defaults the deterministic budgets always bind first and the clock
-never does; the binding dimension is **retained bytes**, not positions. At the
-maxima that inverts, and a template the counters would have accepted is
-stopped by a 5s clock instead. If you raise these four, raise
-[`openjd.expr_submission_deadline`](#openjdexpr_submission_deadline) with
-them.
+At the defaults the deterministic budgets bind before the clock, and the
+budget that binds is retained bytes. At the maxima that inverts: a template
+the counters would accept is stopped by the 5s clock. If you raise these four,
+raise [`openjd.expr_submission_deadline`](#openjdexpr_submission_deadline)
+with them.
 
 #### 3. The byte dimension is cumulative allocation, not peak live retention
 
 `openjd.expr_template_retained_bytes` sums what every `let:` block in the
-template retains, **in evaluation order, across the whole walk**. It does not
+template retains, in evaluation order, across the whole walk. It does not
 model when Go's garbage collector reclaims an earlier block's values. A
-template that never holds more than 2.7 MB live at any one instant is still
-charged 10.8 MB if it retains that much across four sequential `let:` blocks,
-and is rejected exactly as a template that held all of it at once would be.
+template that never holds more than 2.7 MB live at once is still charged
+10.8 MB if it retains that much across four sequential `let:` blocks, and is
+rejected as if it held all of it at once.
 
-Two consequences, in both directions:
-
-- **Sizing a host's RAM against this number over-provisions** — the template
-  never needs that much at once.
-- **Sizing this number against an observed RSS under-bounds it** — you will
-  reject templates that were never going to use that memory.
+So sizing a host's RAM against this number over-provisions, and sizing this
+number against an observed RSS rejects templates that would never have used
+that memory.
 
 #### 4. Every worker must be at least as generous as this server
 
-All five worker keys meter the same values one phase later, on the host,
-*after* the job has already been accepted. A worker that is **tighter** than
-this server can be handed work this server accepted and fail it there:
+The five worker keys meter the same values on the worker host at run time,
+after the job has been accepted. A worker tighter than this server could be
+handed work this server accepted and fail it there:
 
 | This server accepts templates under… | …so every worker needs at least |
 |---|---|
@@ -1299,55 +1236,51 @@ this server can be handed work this server accepted and fail it there:
 | `openjd.expr_template_retained_bytes` | `expr.assignment_retained_bytes` |
 | `openjd.expr_template_retained_bytes` | `expr.let_retained_bytes` |
 
-Every worker advertises all five values
-when it registers, and **the scheduler refuses to dispatch an EXPR job to a
-worker whose values are short** — the job is withheld, never accepted and
-then failed per task on the host. What an operator sees:
+Every worker advertises all five values when it registers, and the scheduler
+does not dispatch EXPR work to a worker whose values are short, so the job is
+withheld instead of failing task by task on the host. What an operator sees:
 
 - a `WARN` diagnostic when the short worker registers, naming the worker and
-  every short dimension with both numbers and both config keys. **It is the
-  *server* that logs this, so it appears under Admin → Server log — not on
-  that worker's detail page**, which shows only what the worker itself
-  published;
+  every short dimension with both numbers and both config keys. The server
+  logs it, so it appears under Admin → Server log and not on that worker's
+  detail page, which shows only what the worker itself published;
 - `unschedulable_reason` on any `ready` task no capable worker exists for,
-  carrying the same text, plus a WebSocket event —
-  **but only while the unschedulable sweep is on.** With
-  [`scheduler.unschedulable_grace`](#schedulerunschedulable_grace) set to `0`
-  or negative, the sweep is disabled and such a task waits `ready`
-  with nothing written on it; the registration `WARN` — which fires once, and
-  may well predate the job — becomes the only signal.
+  carrying the same text, plus a WebSocket event, but only while the
+  unschedulable sweep is on. With
+  [`scheduler.unschedulable_grace`](#schedulerunschedulable_grace) set to `0`,
+  the sweep is disabled and such a task waits `ready` with nothing written on
+  it; the registration `WARN`, which fires once and may predate the job, is
+  then the only signal.
 
-A short worker keeps running **everything else**; only EXPR work is withheld
-from it. So **raise the workers first, then the server.**
+A short worker keeps running all other work; only EXPR work is withheld from
+it. Raise the workers first, then the server.
 
 The last row pairs one key with two: `expr.let_retained_bytes` bounds a single
-symbol table, a scope this server does not meter separately, so it is compared
-against the template-wide budget that upper-bounds it. That comparison is
-deliberately conservative, and its floor is a tenth of this key's default —
-**a worker whose `expr.let_retained_bytes` is below your
-`openjd.expr_template_retained_bytes` gets no EXPR work**, even though the
-value it holds may be ample for the templates you actually submit. Lower this
-key or raise that one; both are visible, and neither fails a task after
+symbol table, a scope this server does not meter separately, so it is
+compared against the template-wide budget that bounds it from above. The
+comparison is conservative: a worker whose `expr.let_retained_bytes` is below
+`openjd.expr_template_retained_bytes` gets no EXPR work, even when its value
+is ample for the templates you submit. Lower the server key or raise the
+worker key; either way the mismatch is visible, and no task fails after
 acceptance.
 
-**None of the five is a guarantee.** They are necessary conditions: phase 3
-binds concrete values this server only had placeholders for, so an accepted
-job can still exhaust a worker that satisfies every row above.
+None of the five is a guarantee. They are necessary conditions: at run time
+the worker binds concrete values this server only had placeholders for, so an
+accepted job can still exhaust a worker that satisfies every row above.
 
-> **The gate spots an EXPR job by reading the extension list recorded on the
-> job row at submission**, so for every job submitted since the upgrade the
-> test is exact: a job flagged with this reason declares `EXPR`.
+> The gate recognizes an EXPR job from the extension list recorded on the job
+> row at submission, so for jobs submitted by v0.3.0 or later the test is
+> exact: a job flagged with this reason declares `EXPR`.
 >
-> Job rows written before that column existed record no list, and those alone
-> fall back to a heuristic — a scan of the raw template for the
-> bytes `EXPR` *and* the bytes `extensions`. A **base-spec** template that
-> declares some other extension and mentions the string incidentally (a
-> comment, or an environment variable such as `HOUDINI_EXPR_CACHE`) matches
-> that scan, and such a job is withheld from every short worker and flagged
-> with a reason naming EXPR limits it does not use. If you see that message on
-> an older job that uses no expressions, this is why; the fix is the same
-> either way — raise the workers, or lower the server. The fallback only ever
-> errs toward withholding work, never toward dispatching it wrongly.
+> Job rows written by v0.2.0 or earlier record no list. For those the gate
+> falls back to scanning the raw template for the bytes `EXPR` and the bytes
+> `extensions`. A template that declares some other extension and also
+> mentions the string elsewhere (a comment, or an environment variable such
+> as `HOUDINI_EXPR_CACHE`) matches, and the job is withheld from every short
+> worker with a reason naming EXPR limits it does not use. The fix is the same
+> either way: raise the workers or lower the server. The scan errs toward
+> withholding work, except for a deliberately obfuscated declaration (an
+> escaped `EXPR` in YAML or JSON), which it misses.
 
 ---
 
@@ -1360,21 +1293,19 @@ job can still exhaust a worker that satisfies every row above.
 | **Range** | `1000` – `100000` |
 | **Env var** | `SQI_OPENJD_EXPR_OPERATION_LIMIT` |
 
-Operations (specification section 1.3.10 —
-`wiki/2026-02-Expression-Language.md:1071`) that **one** expression
-evaluation may spend. An expression exceeding it is rejected with an
-operation-limit error naming the configured number, and the template is
-refused at `POST /api/v1/jobs`. Deliberately far below the specification's
-own *recommended* default of 10 million: sqi checks attacker-supplied
-templates synchronously, which the recommendation does not assume.
+Operations (specification section 1.3.10) that one expression evaluation may
+spend. An expression exceeding it is rejected with an operation-limit error
+naming the configured number, and the template is refused. The default is far
+below the specification's recommended 10 million because sqi checks
+client-supplied templates synchronously on the request path.
 
-Multiplies with `expr_template_positions` — see caveat 1 above.
+Multiplies with `expr_template_positions`; see caveat 1 above.
 
-Lowering this toward its floor has a concrete, shipped consequence: the
-`ffmpeg-segment-transcode-expr` reference preset's join-list expression costs
-~24.15 operations per slice and documents a 400-slice ceiling measured
-against the **default** of 10,000 — at the floor of 1,000 that ceiling drops
-to roughly 41 slices, with no warning surfaced anywhere else.
+Lowering it shrinks what shipped presets can do. The
+`ffmpeg-segment-transcode-expr` preset's join-list expression costs about
+24.15 operations per slice, so its documented 400-slice ceiling assumes the
+default of 10,000; at the floor of 1,000 the ceiling is about 41 slices, and
+nothing else warns about it.
 
 ```yaml
 openjd:
@@ -1390,27 +1321,25 @@ openjd:
 | **Range** | `4096` – `10000000` |
 | **Env var** | `SQI_OPENJD_EXPR_MEMORY_LIMIT` |
 
-Live bytes (specification section 1.3.9 —
-`wiki/2026-02-Expression-Language.md:1060`) that **one** expression
-evaluation may hold. Exceeding it fails that evaluation with a
-memory-limit error naming the configured number. Again far below the
-specification's recommended 100 million, for the same reason.
+Live bytes (specification section 1.3.9) that one expression evaluation may
+hold. Exceeding it fails that evaluation with a memory-limit error naming the
+configured number. The default is far below the specification's recommended
+100 million, for the same reason as the operation limit.
 
-This is the value that decides how large a string or list a single
-expression can build, so it is also what sets the "~900 KB" in caveat 2's
-measurements.
+This decides how large a string or list a single expression can build, which
+is why caveat 2's examples use strings of about 900 KB.
 
-**Raising it permits 50x this number.** The template-wide
-retained-bytes counter is charged once per `let:` **block**, after that block
-finishes, so a single block can transiently hold up to
-`50 x openjd.expr_memory_limit` before anything sees it — 50 MB at this
-default, and **500 MB at the 10000000 maximum**, per concurrent request, on a
-path that is unauthenticated by default. Size the server's RAM against that
-product, not against this number. (50 is the specification's per-block binding
-cap: Template Schemas §3.6.) The same ceiling is stated from the other end
-under [`openjd.expr_template_retained_bytes`](#openjdexpr_template_retained_bytes).
+A single `let:` block can hold 50 times this number. The template-wide
+retained-bytes counter is charged once per block, after the block finishes,
+so one block can transiently hold up to `50 x openjd.expr_memory_limit`
+before anything sees it: 50 MB at this default and 500 MB at the 10000000
+maximum, per concurrent request, on a path that is unauthenticated by
+default. Size the server's RAM against that product. (50 is the
+specification's per-block binding cap, Template Schemas §3.6.) The same
+ceiling is described under
+[`openjd.expr_template_retained_bytes`](#openjdexpr_template_retained_bytes).
 
-It is **not** a multiplier on wall-clock time — see caveat 1.
+It does not multiply wall-clock time; see caveat 1.
 
 ```yaml
 openjd:
@@ -1426,23 +1355,21 @@ openjd:
 | **Range** | `256` – `100000` |
 | **Env var** | `SQI_OPENJD_EXPR_TEMPLATE_POSITIONS` |
 
-Expression **positions** one template may contain, summed across a whole
-validation pass — one charge per format string checked and one per `let:`
+Expression positions one template may contain, summed across a whole
+validation pass: one charge per format string checked and one per `let:`
 binding evaluated. Exceeding it rejects the template with a template-wide
 budget error.
 
-The default was sized from a worked count of ~70 positions for a generous
-real step, times the 100-step cap: ~7,040, with headroom. A template of
-~21 positions per step (a command, 15 args, 3 environment variables, 2
-embedded files, no `let:`) uses about 2,100.
+The default allows about 70 positions for a generous step across the 100-step
+cap (about 7,040), with headroom. A template of about 21 positions per step (a
+command, 15 args, 3 environment variables, 2 embedded files, no `let:`) uses
+about 2,100.
 
-Each phase gets its own fresh allowance: template upload, submit-time
-re-checking, and the parameter-space resolver each walk under a separate
-budget rather than sharing one pool.
+Template upload, submit-time re-checking and the parameter-space resolver
+each walk under their own allowance.
 
-**This is the key most likely to strand work if you raise it alone** — see
-caveat 4. Raise every worker's `expr.assignment_positions` to at least this
-value first.
+Raising this key alone is the likeliest way to strand work (caveat 4). Raise
+every worker's `expr.assignment_positions` to at least this value first.
 
 ```yaml
 openjd:
@@ -1458,35 +1385,31 @@ openjd:
 | **Range** | `65536` – `100000000` |
 | **Env var** | `SQI_OPENJD_EXPR_TEMPLATE_RETAINED_BYTES` |
 
-Bytes a template's `let:` bindings may **cumulatively retain** across one
-walk. `let:` is the only construct in the walk that keeps a value — every
-other position renders a result and discards it — so it is the only thing
-that charges this counter.
+Bytes a template's `let:` bindings may cumulatively retain across one walk.
+`let:` is the only construct in the walk that keeps a value (every other
+position renders a result and discards it), so it is the only thing that
+charges this counter. It counts cumulative allocation; see caveat 3.
 
-Cumulative allocation, not peak live retention — see caveat 3.
-
-> **This key cannot be raised without touching every worker.** It is compared
-> against **two** worker keys (caveat 4): `expr.assignment_retained_bytes`,
-> whose default of `20000000` leaves 2× headroom, and
-> `expr.let_retained_bytes`, whose default is `10000000` — **exactly this
-> default**. So any increase at all puts every default-configured worker below
-> this server and withholds EXPR work from all of them. Raise
-> `expr.let_retained_bytes` on every worker first, to at least the value you
-> intend to set here. Lowering this key is always safe.
+> **Raise every worker before raising this key.** It is compared against two
+> worker keys (caveat 4): `expr.assignment_retained_bytes`, whose default of
+> `20000000` leaves 2× headroom, and `expr.let_retained_bytes`, whose default
+> of `10000000` equals this default. Any increase puts every
+> default-configured worker below this server and withholds EXPR work from
+> all of them. Raise `expr.let_retained_bytes` on every worker first, to at
+> least the value you intend to set here. Lowering this key is always safe.
 
 Even with both worker keys satisfied, this bound does not cover everything the
-worker meters: it charges only what a `let:` block **adds**, while the worker
-measures the whole symbol table the bindings land in — a job's own large
-`STRING`/`PATH` parameters included. A worker sized exactly at this value can
+worker meters. It charges only what a `let:` block adds, while the worker
+measures the whole symbol table the bindings land in, including a job's own
+large `STRING`/`PATH` parameters. A worker sized exactly at this value can
 still fail an accepted job whose parameters are large. See
 [`expr.let_retained_bytes`](worker-configuration.md#exprlet_retained_bytes).
 
-Note what this does *not* bound: the charge lands once per `let:` **block**,
-after that block finishes evaluating, so a single block can transiently
-retain up to 50 x `openjd.expr_memory_limit` — 50 MB at both defaults —
-before this counter ever sees it. (50 is the per-block binding cap the
-specification sets: Template Schemas §3.6, "Maximum number of items: 50".)
-That per-block ceiling moves with `expr_memory_limit`, not with this key.
+This key does not bound a single block. The charge lands once per `let:`
+block, after the block finishes evaluating, so one block can transiently
+retain up to 50 x `openjd.expr_memory_limit` (50 MB at the defaults) before
+this counter sees it. (50 is the specification's per-block binding cap,
+Template Schemas §3.6.) That per-block ceiling moves with `expr_memory_limit`.
 
 ```yaml
 openjd:
@@ -1502,75 +1425,51 @@ openjd:
 | **Range** | `1s` – `60s` |
 | **Env var** | `SQI_OPENJD_EXPR_SUBMISSION_DEADLINE` |
 
-How long this server keeps evaluating **one submission's** expressions before
+How long this server keeps evaluating one submission's expressions before
 giving up on it.
 
-> `EXPR` is a supported extension, so every route listed below can answer
-> `503` for a real submission. See
-> [`docs/openjd-extensions/expr.md`](openjd-extensions/expr.md).
-
-**This is not a fifth limit, and it does not decide whether a template is
-valid.** The four above are deterministic: a template that breaches one
-breaches it on every machine, so the breach is a property of the template and
-the submitter is told so — `422 Unprocessable Entity`, and retrying is
-pointless. This one is wall clock, so the same body would be accepted on an
-idle host and refused on a loaded one. A breach therefore reports that *this
-server gave up* — `503 Service Unavailable`, and a retry may well succeed.
-Persistent 503s mean either an expensive template or a deadline set
-too low.
+This is not a fifth limit and does not decide whether a template is valid.
+The four limits above are deterministic: a template that breaches one
+breaches it on every machine, so the submitter gets
+`422 Unprocessable Entity` and retrying cannot help. This one is wall clock,
+so the same body could be accepted on an idle host and refused on a loaded
+one. A breach therefore reports that this server gave up, with
+`503 Service Unavailable`, and a retry may succeed. Persistent 503s mean
+either an expensive template or a deadline set too low.
 
 Six routes can answer `503` for this reason: `POST /api/v1/jobs` and
 `POST /api/v1/products/{name}/jobs` (which otherwise answer `422` for an
 invalid template), `POST /api/v1/products` and `PUT /api/v1/products/{name}`
 (which otherwise answer `400`), and the two preset routes
 `GET /api/v1/presets/{name}` and `POST /api/v1/presets/{name}/install` (which
-otherwise answer `422`, and which also answer `503` when no preset library is
-configured — an unrelated meaning of the same code). The split is the same
-everywhere — the 4xx is a verdict on the template, the 503 is not.
+otherwise answer `422`, and also answer `503`, for an unrelated reason, when
+no preset library is configured). On every route the 4xx is a verdict on the
+template and the 503 is not.
 
-It exists because **none of the other four bounds time** (caveat 2). Section
-1.3.10 prices 256 bytes at one operation, so byte-heavy work is nearly free in
-operations and expensive in seconds; the worst single request measured is
-~17 minutes of server CPU with every budget respected. This is the
-only bound here that does not depend on that measurement being right.
+It exists because none of the four limits bounds time (caveat 2): a template
+within every default budget can cost about 17 minutes of server CPU without
+this deadline. It is the only bound that does not depend on that estimate.
 
-The floor is `1s` because below it a legitimate large template — a body near
-the 4 MiB request cap, on a busy host — could plausibly be refused, and a
-backstop that rejects valid work is worse than the exposure it guards. The
-ceiling is `60s` because the key exists to bound that ~17-minute figure; a
-ceiling near it would bound nothing.
+The floor is `1s` because below it a legitimate large template (a body near
+the 4 MiB request cap, on a busy host) could be refused. The ceiling is `60s`
+because a ceiling anywhere near the 17-minute worst case would bound nothing.
 
-> **The headroom against real work is ~6x, not three orders of magnitude.**
-> `5s` was chosen against an *adversarial* worst case. Measured with a
-> generated multi-layer VFX shot-render job (12 `let:` bindings per step,
-> comprehensions over real frame ranges, `RANGE_EXPR`/`LIST[STRING]`/`PATH`
-> parameters) driven through the real submission path, **the worst shape this
-> server still accepts costs 0.83 s** — 100 steps over 1,000 frames, 5,013
-> positions, 1.66M operations — against a 5s default. A production server
-> 2–3x slower than the measuring host puts that same job at 1.7–2.5 s. Still
-> safe, but worth knowing before you tighten this key.
+> **The headroom against real work is about 6x.** The largest template in
+> caveat 2's VFX example that the defaults accept (100 steps over 1,000
+> frames, 5,013 positions, 1.66M operations) takes 0.83 s against the 5s
+> default; on a host 2–3x slower it would take 1.7–2.5 s. Keep that in mind
+> before lowering this key.
 >
-> The same measurement shows two more things. **At the defaults the counters
-> always bind before the clock**, and the dimension that binds is *retained
-> bytes*, not positions — 100 steps over 2,000 frames is refused at 1.11 s with a
-> `422`, never reaching this deadline. And the clock and the counters are
-> **not co-sized**: at the legal maximum limits the same job shape at 10,000
-> frames runs 7.5 s and is correctly stopped here with a `503`. Raising the
-> four limits without raising this key converts legitimate acceptances into
-> 503s — see caveat 2 above.
->
-> **None of that makes the ~17-minute figure unreachable.** The two numbers
-> describe different template *shapes*: an adversarial template does
-> op-cheap, byte-heavy work across many positions and **discards** each
-> result, so it never approaches the retained-bytes cap and this clock is the
-> only thing bounding it, while a legitimate template leans on `let:` and
-> therefore hits retained bytes first, at ~1.1 s. **~1.1 s is
-> the ceiling for realistic `let:`-using templates, and the adversarial
-> ceiling is far higher — which is why this wall-clock backstop exists.**
+> At the defaults, realistic `let:`-using templates hit the retained-bytes
+> budget at about 1.1 s, before this deadline. A template that does cheap,
+> byte-heavy work across many positions and discards each result never
+> approaches that budget, so this deadline is the only bound on it. At the
+> legal maximum limits the deadline binds for legitimate templates too, so
+> raising the four limits without raising this key converts legitimate
+> acceptances into 503s (caveat 2).
 
-Unlike the four limits, it has **no worker counterpart**: the worker's own
-phase-3 evaluation is work this server already accepted, not an anonymous
-request, so caveat 4 does not apply to this key.
+It has no worker counterpart: the worker evaluates jobs this server has
+already accepted, not anonymous requests, so caveat 4 does not apply.
 
 ```yaml
 openjd:
@@ -1581,9 +1480,10 @@ openjd:
 > alike.** `5 sec`, `5000` or `5 s` is not a Go duration, so
 > `expr_submission_deadline: 5 sec` fails the load naming its line, and
 > `SQI_OPENJD_EXPR_SUBMISSION_DEADLINE=5 sec` naming the variable. This holds
-> for every duration key in the server's configuration. When upgrading from
-> v0.3.0 or earlier, which skipped an unparseable value in the *file* and kept
-> the default, a configuration file that started before can now fail to load.
+> for every duration key in the server's configuration. v0.3.0 and earlier
+> skipped an unparseable value in the file and kept the default, so a
+> configuration file those versions accepted can fail to load after an
+> upgrade.
 
 ---
 
@@ -1597,14 +1497,13 @@ openjd:
 | **Default** | `1000` |
 | **Env var** | `SQI_DIAGNOSTICS_BUFFER_SIZE` |
 
-Maximum diagnostic records retained **per component** (`server` plus each
-connected worker) in `sqi-server`'s in-memory ring buffer. This single value is
-also the on/off switch:
+Maximum diagnostic records retained per component (`server` plus each
+connected worker) in `sqi-server`'s in-memory ring buffer. This value is also
+the on/off switch:
 
-- **`0`** — diagnostics are **disabled**: no buffer is allocated, the server
-  does not subscribe to `worker.diag.>`, and the REST diagnostics endpoint
-  returns 503.
-- **positive** — the per-component capacity. When a component's buffer is full
+- `0`: diagnostics are disabled. No buffer is allocated, the server does not
+  subscribe to `worker.diag.>`, and the REST diagnostics endpoint returns 503.
+- positive: the per-component capacity. When a component's buffer is full
   the oldest records are evicted. The buffer is in-memory only and is cleared on
   server restart.
 
@@ -1616,8 +1515,8 @@ diagnostics:
   buffer_size: 2000 # or 0 to disable
 ```
 
-> Workers have their own separate `diagnostics.enabled` toggle (they publish
-> rather than buffer) — see [Worker configuration](#worker-configuration) below.
+> Workers have their own `diagnostics.enabled` toggle, since they publish
+> rather than buffer; see [Worker configuration](#worker-configuration) below.
 
 See [`docs/observability.md`](observability.md) for the full diagnostics guide.
 
@@ -1636,7 +1535,7 @@ See [`docs/observability.md`](observability.md) for the full diagnostics guide.
 URL of the preset library's JSON index. The default points to the official community
 preset library hosted on GitHub Pages.
 
-Set to an empty string `""` to **disable** the feature. When disabled, the Preset
+Set to an empty string `""` to disable the feature. When disabled, the Preset
 Library browse page shows a "not configured" empty state and all `/api/v1/presets`
 endpoints return 503.
 
@@ -1651,7 +1550,7 @@ index format and full integration guide.
 
 ---
 
-## `auth` — Authentication (Phase 3, opt-in)
+## `auth` — Authentication (opt-in)
 
 ### `auth.enabled`
 
@@ -1662,15 +1561,14 @@ index format and full integration guide.
 | **Env var** | `SQI_AUTH_ENABLED` |
 | **CLI flag** | `--auth-enabled` |
 
-The single switch for sqi's authentication gate. Default `false` — the server
-is open on a trusted local network and every request is served as an anonymous
-superuser.
+The switch for sqi's authentication gate. With the default `false`, the
+server is open on a trusted local network and every request is served as an
+anonymous superuser.
 
 Setting it to `true` requires every REST request and the WebSocket upgrade to
-carry a valid session, backed by local accounts (see below and
-[`docs/auth.md`](auth.md)). Role-based authorization is enforced: every
-mutating route and several read routes are gated by a role→permission
-policy — see [`docs/auth.md`](auth.md).
+carry valid credentials (a session or an API key) and enforces role-based
+authorization: every mutating route and several read routes are gated by a
+role→permission policy. See [`docs/auth.md`](auth.md).
 
 ```yaml
 auth:
@@ -1689,11 +1587,11 @@ auth:
 | **CLI flag** | `--auth-validate-job-owner` |
 
 Rejects a job submission whose `owner` (set via a `jobs.submit_as` override)
-names no known user, with `400`. Default `true` — it keeps `Job.Owner` a
-trustworthy key for owner-scoped visibility: the `user` role's job listings are
-filtered by owner, so a typo'd owner yields a job invisible to the person who
-actually owns it and missed by an admin filtering on them. Disable it when
-owners come from a directory that has not yet provisioned local records.
+names no known user, with `400`. This keeps `Job.Owner` reliable for
+owner-scoped visibility: the `user` role's job listings are filtered by owner,
+so a mistyped owner would produce a job invisible to the person who owns it
+and missed by an admin filtering on them. Disable it when owners come from a
+directory that has not yet provisioned local records.
 
 ```yaml
 auth:
@@ -1711,8 +1609,8 @@ auth:
 | **Env var** | `SQI_AUTH_SESSION_TTL` |
 
 Absolute lifetime of a session created by `POST /api/v1/auth/login`, from
-creation. There is no sliding/idle renewal — using a session does not extend
-it. Must be `> 0` when `auth.enabled` is `true`; ignored (no validation) when
+creation. There is no sliding or idle renewal: using a session does not
+extend it. Must be `> 0` when `auth.enabled` is `true`; not validated when
 auth is disabled.
 
 ```yaml
@@ -1735,11 +1633,10 @@ Name of the session cookie set by login and cleared by logout. Change this
 only if `sqi_session` collides with another cookie on the same domain (e.g.
 sqi served under a shared reverse-proxy host alongside another app).
 
-Must not be empty when `auth.enabled` is true — the server fails to start
-otherwise. The name is deliberately required rather than defaulted at the point
-of use: the CSRF middleware reads the cookie by name, and an empty name would
-make every mutating request take the "no session cookie" exempt path, silently
-disabling CSRF protection.
+Must not be empty when `auth.enabled` is true, or the server fails to start.
+The CSRF middleware reads the cookie by name, and an empty name would let
+every mutating request take the "no session cookie" exempt path, disabling
+CSRF protection.
 
 ```yaml
 auth:
@@ -1759,12 +1656,10 @@ auth:
 | **Env var** | `SQI_AUTH_SESSION_COOKIE_SECURE` |
 
 Controls the session cookie's `Secure` attribute. `"auto"` sets `Secure` when
-the request arrived over TLS or carries `X-Forwarded-Proto: https` — correct
-behind a TLS-terminating proxy. sqi's default deployment posture is a
-trusted, plain-HTTP LAN, so `"false"` lets an operator force `Secure` off
-explicitly on such a deployment rather than rely on `"auto"` guessing right;
-`"true"` forces it on. Any other value fails config validation when
-`auth.enabled` is `true`.
+the request arrived over TLS or carries `X-Forwarded-Proto: https`, which
+covers a TLS-terminating proxy. `"false"` forces `Secure` off, for a
+plain-HTTP LAN deployment; `"true"` forces it on. Any other value fails config
+validation when `auth.enabled` is `true`.
 
 ```yaml
 auth:
@@ -1783,17 +1678,16 @@ auth:
 | **Env var** | `SQI_AUTH_BOOTSTRAP_USERNAME` / `SQI_AUTH_BOOTSTRAP_PASSWORD` |
 
 Seed credentials for the first admin account, applied once at startup only
-when `auth.enabled` is `true` **and** the `users` table is empty; the account
-is created with `role: "admin"`. Idempotent — once any user exists, these
-values have no further effect and never overwrite an existing password.
-Leaving both empty is valid: an auth-enabled server with no users just logs a
-`WARN` and boots without an admin, until an operator sets both and restarts.
-Setting only one of the two is a startup validation error (guards against a
-typo'd env var name).
+when `auth.enabled` is `true` and the `users` table is empty; the account
+is created with `role: "admin"`. Once any user exists, these values have no
+effect and never overwrite an existing password. Leaving both empty is valid:
+an auth-enabled server with no users logs a `WARN` and boots without an admin,
+until an operator sets both and restarts. Setting only one of the two is a
+startup validation error, which catches a mistyped env var name.
 
-`auth.bootstrap.password` is **redacted** (`<redacted>`) in
-`sqi-server config print` and any other re-marshaled dump of the config — it
-never appears in that output, even though the loaded value is used normally.
+`auth.bootstrap.password` is redacted (`<redacted>`) in
+`sqi-server config print` and any other re-marshaled dump of the config; the
+loaded value is used normally.
 
 ```yaml
 auth:
@@ -1809,25 +1703,23 @@ account model, and the role/permission matrix enforced on every route.
 
 ### `auth.ldap.*`
 
-Directory (LDAP / Active Directory) authentication. Every key
-below sits under `auth.ldap`. **No `ldap.*` key has a CLI flag** — these are
-file- or environment-configured only. `role_map` is additionally **file-only:
-it has no environment form**, because a list of group→role pairs has no
-sensible flat encoding.
+Directory (LDAP / Active Directory) authentication. Every key below sits
+under `auth.ldap`. No `auth.ldap` key has a CLI flag; set them in the config
+file or the environment. `role_map` is file-only, because a list of
+group→role pairs has no sensible environment encoding.
 
 The whole block is inert while `auth.ldap.enabled` is false: the server never
 builds a verifier and never contacts a directory, whatever else is set here.
 Validation of the keys below only runs when `auth.ldap.enabled` is true.
 
-Setting `auth.ldap.enabled: true` while `auth.enabled` is false is **not** a
-silent no-op — it is a configuration error, and the server refuses to start:
+Setting `auth.ldap.enabled: true` while `auth.enabled` is false is a
+configuration error, and the server refuses to start:
 
 ```
 auth.ldap.enabled: requires auth.enabled=true; LDAP without the auth gate authenticates nobody
 ```
 
-Enable both together, or neither. You cannot stage an LDAP block behind a
-closed auth gate.
+Enable both together, or neither.
 
 | Key | Type | Default | Env var |
 |---|---|---|---|
@@ -1853,43 +1745,39 @@ closed auth gate.
 **Transport.** `url` must be `ldap://…` or `ldaps://…` and is required when
 enabled. `start_tls` upgrades a plain `ldap://` connection and is rejected
 against `ldaps://`, which is already TLS. `ca_file` is a PEM bundle used to
-verify the directory's certificate; an unreadable file **aborts boot** rather
-than yielding a server that looks healthy but can authenticate nobody.
-`tls_skip_verify` disables certificate verification entirely — a MITM can
-then harvest every password that crosses the connection — so it is logged as
-a `WARN` at boot and should never be set outside a lab. `timeout` must be
-`> 0`; it bounds the TCP connect and each request leg, and is the *only*
-bound on a hung directory (see
+verify the directory's certificate; an unreadable file aborts boot.
+`tls_skip_verify` disables certificate verification, which lets a
+man-in-the-middle read every password sent over the connection; it is logged
+as a `WARN` at boot and should never be set outside a lab. `timeout` must be
+`> 0`; it bounds the TCP connect and each request leg, and is the only bound
+on a hung directory (see
 [A hung directory](auth.md#a-hung-directory)).
 
-**Bind mode** — mutually exclusive, one is required:
+**Bind mode.** The two modes are mutually exclusive, and one is required:
 
 - **Search-then-bind:** set `base_dn` (required) and usually `bind_dn` +
   `bind_password`. `user_filter` must contain `%s`, the placeholder for the
-  escaped username. Leaving `bind_dn` empty selects **anonymous search**,
-  which is valid; setting `bind_password` *without* `bind_dn` is a validation
-  error, because the password would be silently discarded.
+  escaped username. Leaving `bind_dn` empty selects anonymous search, which
+  is valid; setting `bind_password` without `bind_dn` is a validation error,
+  because the password would be ignored.
 - **Template bind:** set `user_dn_template`, which must contain `%s` (e.g.
   `uid=%s,ou=people,dc=example,dc=com`). Combining it with
   `bind_dn`/`base_dn` is a validation error.
 
-`nested_groups` requires search mode — template bind reads the flat
-`memberOf` attribute, so the combination is rejected at boot rather than
-silently ignored.
+`nested_groups` requires search mode. Template bind reads the flat
+`memberOf` attribute, so the combination is rejected at boot.
 
 **Roles.** `role_source` must be `directory` or `local` (see
 [`role_source`](auth.md#role_source--who-owns-a-users-role) for what each
 means and why one value drives both the login re-sync and the API's 409).
-`role_map` is ordered and **first match wins**; each entry needs a non-empty
-`group` and a `role` that is one of `admin`, `operator`, `user`, `read-only`
-— an unknown role fails validation rather than falling through to
-`default_role`. `default_role` accepts those same four values **or empty**,
-where empty means reject any login that matched no group.
+`role_map` is ordered and the first match wins. Each entry needs a non-empty
+`group` and a `role` that is one of `admin`, `operator`, `user`, `read-only`;
+an unknown role fails validation. `default_role` accepts those same four
+values or empty, where empty means reject any login that matched no group.
 
-`bind_password` is **redacted** (`<redacted>`) in `sqi-server config print`,
-the same as `auth.bootstrap.password`. Prefer `SQI_AUTH_LDAP_BIND_PASSWORD`
-over writing it into a config file regardless — a secret that never lands on
-disk cannot leak from one.
+`bind_password` is redacted (`<redacted>`) in `sqi-server config print`, like
+`auth.bootstrap.password`. Prefer setting it through
+`SQI_AUTH_LDAP_BIND_PASSWORD`, so it never lands in a config file on disk.
 
 ```yaml
 auth:
@@ -1915,14 +1803,12 @@ auth:
     default_role: "read-only"
 ```
 
-**`unique_id_attr` is a breaking change for an existing enabled-LDAP
-deployment.** It has no default anywhere — not in the defaults struct, not in
-the loader, not in the environment — because no single value is correct on both
-Active Directory (`objectGUID`) and RFC 4530 servers (`entryUUID`), and
-guessing on a server exposing both would silently pick the wrong one. A config
-with `auth.ldap.enabled: true` and no `unique_id_attr` **fails validation and
-the server does not boot**. Accounts provisioned before this key existed carry
-an empty identifier and must be recreated — see
+**`unique_id_attr` is required and has no default**, because no single value
+is correct on both Active Directory (`objectGUID`) and RFC 4530 servers
+(`entryUUID`), and guessing on a server exposing both could pick the wrong
+one. A config with `auth.ldap.enabled: true` and no `unique_id_attr` fails
+validation and the server does not boot. LDAP accounts provisioned before
+this key existed carry an empty identifier and must be recreated; see
 [Upgrading from an earlier sqi](auth.md#upgrading-from-an-earlier-sqi).
 
 See [`docs/auth.md`](auth.md#ldap--active-directory) for the model behind
@@ -1935,29 +1821,27 @@ mode, and the revocation-lag and timing caveats.
 
 ### `auth.oidc.*`
 
-OAuth2/OIDC single sign-on. Every key below sits under
-`auth.oidc`. **No `oidc.*` key has a CLI flag** — these are file- or
-environment-configured only. `role_map` is additionally **file-only: it has
-no environment form**, for the same reason as `auth.ldap.role_map` — a list of
-group→role pairs has no sensible flat encoding.
+OAuth2/OIDC single sign-on. Every key below sits under `auth.oidc`. No
+`auth.oidc` key has a CLI flag; set them in the config file or the
+environment. `role_map` is file-only, for the same reason as
+`auth.ldap.role_map`.
 
 The whole block is inert while `auth.oidc.enabled` is false: the server never
 builds the SSO route, whatever else is set here. Validation of the keys below
 only runs when `auth.oidc.enabled` is true.
 
-Setting `auth.oidc.enabled: true` while `auth.enabled` is false is **not** a
-silent no-op — it is a configuration error, and the server refuses to start:
+Setting `auth.oidc.enabled: true` while `auth.enabled` is false is a
+configuration error, and the server refuses to start:
 
 ```
 auth.oidc.enabled: requires auth.enabled=true; SSO without the auth gate authenticates nobody
 ```
 
-Enable both together, or neither. Unlike LDAP, `issuer` discovery happens lazily on
-first use, not at boot — a briefly unreachable provider must not stop the
-scheduler from starting.
+Enable both together, or neither. `issuer` discovery happens on first use
+rather than at boot, so a briefly unreachable provider does not stop the
+server from starting.
 
-Deliberately a single provider block, not a list: almost every organization
-has one identity provider.
+The block configures a single identity provider.
 
 | Key | Type | Default | Env var |
 |---|---|---|---|
@@ -1979,38 +1863,36 @@ has one identity provider.
 | `auth.oidc.button_label` | string | `Sign in with SSO` | `SQI_AUTH_OIDC_BUTTON_LABEL` |
 
 **Endpoint.** `issuer`, `client_id`, `client_secret`, and `redirect_url` are
-all required when enabled — none has a safe empty meaning. `issuer` and
+all required when enabled. `issuer` and
 `redirect_url` must each be an absolute URL. `redirect_url` must resolve to
 this server's `/api/v1/auth/oidc/callback`; `post_logout_redirect_url` is
 only read (and only required) when `logout_mode` is `"provider"`.
 
-**Claims.** `scopes` must be non-empty and include `"openid"`; note that
-`"groups"` is *not* standard OIDC — whether group membership needs a scope, a
-provider-side mapper, or both varies by provider. `username_claim` and
-`display_name_claim` carry defaults, so an empty value means the operator
-explicitly cleared it (same reasoning as `auth.ldap.username_attr` /
-`display_name_attr`); `groups_claim` feeds `role_map` the same way.
+**Claims.** `scopes` must be non-empty and include `"openid"`. `"groups"` is
+not a standard OIDC scope: whether group membership needs a scope, a
+provider-side mapper, or both varies by provider. `username_claim`,
+`display_name_claim` and `groups_claim` must not be empty; each has a
+default, so an empty value can only come from clearing it explicitly.
+`groups_claim` names the claim that feeds `role_map`.
 
-**Roles.** `role_source` must be `directory` or `local`, mirroring
-`auth.ldap.role_source` but tracked separately — an operator may trust one
-provider's groups and not the other's. `role_map` is ordered and **first
-match wins**; each entry needs a non-empty `group` and a `role` that is one
-of `admin`, `operator`, `user`, `read-only` — an unknown role fails
-validation rather than falling through to `default_role`. `default_role`
-accepts those same four values **or empty**, where empty means reject any
-login that matched no group.
+**Roles.** `role_source` must be `directory` or `local`. It mirrors
+`auth.ldap.role_source` but is set separately, so an operator can trust one
+provider's groups and not the other's. `role_map` is ordered and the first
+match wins. Each entry needs a non-empty `group` and a `role` that is one of
+`admin`, `operator`, `user`, `read-only`; an unknown role fails validation.
+`default_role` accepts those same four values or empty, where empty means
+reject any login that matched no group.
 
 **Reauth and logout.** `reauth_mode` is one of `after_logout` (re-prompt only
 on the login following an explicit logout), `always` (re-prompt every
 login), or `never` (silent re-login always permitted). `logout_mode` is
 `local` (end only the sqi session) or `provider` (also end the session at the
-identity provider, signing the user out of every tool that trusts it — off
-by default because of that blast radius).
+identity provider, which signs the user out of every tool that trusts it, and
+is therefore not the default).
 
-`client_secret` is **redacted** (`<redacted>`) in `sqi-server config print`,
-the same as `auth.ldap.bind_password`. Prefer `SQI_AUTH_OIDC_CLIENT_SECRET`
-over writing it into a config file regardless — a secret that never lands on
-disk cannot leak from one.
+`client_secret` is redacted (`<redacted>`) in `sqi-server config print`, like
+`auth.ldap.bind_password`. Prefer setting it through
+`SQI_AUTH_OIDC_CLIENT_SECRET`, so it never lands in a config file on disk.
 
 ```yaml
 auth:
@@ -2036,69 +1918,58 @@ auth:
     logout_mode: "local"
 ```
 
-The mode constants (`ReauthAfterLogout`/`ReauthAlways`/`ReauthNever`,
-`LogoutLocal`/`LogoutProvider`, `RoleSourceDirectory`/`RoleSourceLocal`) live
-in `internal/auth/oidc`, not `internal/config` — `internal/api` reads them
-directly and must not import the config loader, the same boundary that
-`toLDAPConfig` exists to keep for LDAP.
-
 See [`docs/auth.md`](auth.md#oidc--sso) for the model behind these keys: the
 login flow and its defenses, why accounts match on the `sub` claim, how
-`reauth_mode` and `logout_mode` differ, and the limits — revocation lag, roles
-applying at next login only, what `logout_mode: provider` actually does on
-Keycloak, and which providers CI does and does not cover.
+`reauth_mode` and `logout_mode` differ, and the limits (revocation lag, roles
+applying at next login only, what `logout_mode: provider` does on Keycloak,
+and which providers CI covers).
 
 ---
 
 ## Queue identity: `run_as_user` / `run_as_group` (task isolation)
 
-Unlike everything else in this reference, `run_as_user` and `run_as_group`
-are not `sqi-server` config-file keys — there is no server-wide or
-farm-wide default for either. They are set per queue, via the queue REST
-resource only (`POST /api/v1/queues`, `PUT /api/v1/queues/{id}`) — there is
-no web UI field or Python SDK field for either yet — and are documented here
-because, like the retry overrides above, they are queue-level settings that
-change worker behavior.
+`run_as_user` and `run_as_group` are not `sqi-server` config-file keys, and
+there is no server-wide or farm-wide default for either. They are set per
+queue, through the queue REST resource only (`POST /api/v1/queues`,
+`PUT /api/v1/queues/{id}`); the web UI and the Python SDK have no field for
+them. They are documented here because, like the retry overrides above, they
+are queue-level settings that change worker behavior.
 
 | Field | Type | Default | Effect |
 |---|---|---|---|
-| `run_as_user` | `string \| null` | `null` | OS username tasks (and OpenJD environment `onEnter`/`onExit` actions) in this queue execute as. `null` — the default — means no isolation: tasks run as the worker daemon's own account, identical to a worker with no isolation feature at all. |
+| `run_as_user` | `string \| null` | `null` | OS username tasks (and OpenJD environment `onEnter`/`onExit` actions) in this queue execute as. `null`, the default, means no isolation: tasks run as the worker daemon's own account. |
 | `run_as_group` | `string \| null` | `null` | OS group for the same tasks. `null` means the target user's primary group. |
 
-Both fields are deliberately **excluded** from the Farm → server-default
-cascade that the retry-policy fields above use: a farm-wide default would
-silently apply an OS identity to a queue whose owner never configured one.
-Every queue's isolation setting is explicit or absent — never inherited.
+Both fields are excluded from the Farm → server-default cascade that the
+retry-policy fields above use, because a farm-wide default would apply an OS
+identity to a queue whose owner never configured one. A queue's isolation
+setting is either explicit or absent; it is never inherited.
 
-**Permission.** Setting either field — including sending an explicit `null`
-to clear a previously-set value — requires the `isolation.manage`
-permission, held only by the `admin` role; `infra.manage` (which `operator`
-holds, and which gates every other queue field) is not sufficient. **Omitting
-both keys from a `PUT` body** preserves whatever is currently stored and
-requires no permission — this is a deliberate exception to `PUT`'s normal
-full-replace semantics, so that an `operator` without `isolation.manage` can
-still edit a queue's priority or concurrency limit without silently clearing
-an `admin`'s isolation configuration on the same request. See
-[Task isolation](auth.md#task-isolation) in the auth guide for the full
-reasoning, including why enabling isolation raises the *worker daemon's*
-privilege even though it lowers an individual *task's*.
+**Permission.** Setting either field, including sending an explicit `null` to
+clear a previously-set value, requires the `isolation.manage` permission,
+held only by the `admin` role; `infra.manage` (which `operator` holds, and
+which gates every other queue field) is not sufficient. Omitting both keys
+from a `PUT` body preserves whatever is stored and requires no permission.
+This exception to `PUT`'s full-replace semantics lets an `operator` without
+`isolation.manage` edit a queue's priority or concurrency limit without
+clearing an `admin`'s isolation configuration. See
+[Task isolation](auth.md#task-isolation) in the auth guide for the reasoning,
+including why enabling isolation raises the worker daemon's privilege even
+though it lowers each task's.
 
-**Validation.** `run_as_group` requires `run_as_user` to also be set (in the
-same request, or already stored and preserved by an omitted key) — the
-scheduler only gates isolation on `run_as_user`, so a group with no user
-would select no OS identity at all and be silently ignored. Both `POST` and
-`PUT` reject that combination with `400 Bad Request`.
+**Validation.** `run_as_group` requires `run_as_user` to be set too (in the
+same request, or already stored and preserved by an omitted key). The
+scheduler applies isolation only when `run_as_user` is set, so a group with no
+user would be ignored. Both `POST` and `PUT` reject that combination with
+`400 Bad Request`.
 
-The scheduler places only the resolved **username** in the task assignment
-sent to the worker over NATS — never a credential. Both worker↔server
-transport protections are **opt-in and off by default**: authentication via
-`nats.auth` (see [Known gaps](auth.md#known-gaps)) and encryption via
-`nats.tls` (see [`docs/tls.md`](tls.md)). So in a default deployment the
-assignment channel is neither authenticated nor encrypted, and enabling
-either one does not change this design: the protocol is specified for the
-weakest configuration it supports, and a secret that never travels cannot be
-read by an attacker who has attached to the broker or is reading the wire.
-The worker resolves that username to a real OS credential itself.
+The scheduler places only the username in the task assignment sent to the
+worker over NATS, never a credential, and the worker resolves it to a real OS
+credential itself. This matters because both worker↔server transport
+protections are opt-in and off by default: authentication via `nats.auth`
+(see [Known gaps](auth.md#known-gaps)) and encryption via `nats.tls` (see
+[`docs/tls.md`](tls.md)). In a default deployment the assignment channel is
+neither authenticated nor encrypted, so nothing secret may travel on it.
 
 This mechanism runs on both POSIX (Linux/macOS) and Windows (the worker must
 run as a LocalSystem service, or hold `SeAssignPrimaryTokenPrivilege`, to
@@ -2109,29 +1980,22 @@ and the per-platform requirements.
 
 ### Important: Worker upgrade required
 
-**`run_as_user` is only enforced by workers that support task isolation.** A
-worker binary built before isolation support shipped will silently ignore the
-`isolation` field in its task assignments and run job code as the worker
-daemon's own OS user. The scheduler does not filter assignments by worker
-capability, so an admin who sets `run_as_user` on a queue while even one
-un-upgraded worker remains in the farm gets silent, partial enforcement —
-some tasks isolated, some not, with no indication which.
+`run_as_user` is enforced only by workers that support task isolation. A
+worker built without it (v0.2.0 and earlier) would ignore the `isolation`
+field in its task assignments and run job code as the worker daemon's own OS
+user, reporting success.
 
-The asymmetry:
+The server prevents that: it discards registrations, heartbeats and status
+reports from any worker whose wire-protocol version differs from its own, and
+such a worker is offered no work at all. Every worker without isolation
+support speaks an older protocol version, so it never receives an
+assignment. The scheduler does not otherwise check for isolation support, so
+upgrade every worker to the server's release and do not rely on mixed
+versions.
 
-- **A worker that *supports* isolation but is misconfigured fails closed and
-  loudly**: it refuses to start, or fails the individual task with an
-  actionable error message.
-- **An old worker fails open and silently**: it accepts the assignment,
-  executes the task unisolated, and reports success. There is no error
-  anywhere.
-
-**Guidance:** upgrade all workers to a binary that supports task isolation
-before enabling `run_as_user` on any queue. Do not mix binary versions.
-
-Workers do not advertise isolation capability, and the scheduler does not
-refuse isolation-required tasks to workers lacking it, so the only way to
-ensure consistent enforcement is to roll the farm forward in lockstep.
+A worker that supports isolation but is misconfigured fails closed: it
+refuses to start, or fails the individual task with an actionable error
+message.
 
 ---
 
@@ -2139,19 +2003,19 @@ ensure consistent enforcement is to roll the farm forward in lockstep.
 
 Worker configuration applies to `sqi-worker` instances, not the server. Workers
 load configuration from the same layered sources as the server (defaults → file →
-environment → flags), except that environment variables use the `SQI_WORKER_`
-prefix and the config file is named `sqi-worker.yaml`.
+environment → flags), except that the config file is named `sqi-worker.yaml`
+and environment variables use the `SQI_WORKER_` prefix, apart from
+`SQI_DIAGNOSTICS_ENABLED` and `SQI_STAGING_DEFAULTS`.
 
-The full worker key reference — NATS connection, identity, metrics, discovery, log
-streaming, and more — lives in
-[`docs/worker-configuration.md`](worker-configuration.md), and a fully commented
+The full worker key reference (NATS connection, identity, metrics, discovery,
+log streaming, and more) is in
+[`docs/worker-configuration.md`](worker-configuration.md), and a commented
 example is at
 [`config/sqi-worker.example.yaml`](https://github.com/uberware/sqi/blob/main/config/sqi-worker.example.yaml).
-The keys below are summarized here for operators configuring a worker alongside
-the server; the same keys are covered in full in that reference. `staging`
-bridges server storage configuration to worker execution, `diagnostics` mirrors
-the server-side diagnostics setting, and `capabilities` configures the worker's
-software auto-detection.
+The keys below are summarized for operators configuring a worker alongside
+the server: `staging` controls local path staging, `diagnostics` is the
+counterpart of the server-side diagnostics setting, `expr` must match the
+server's EXPR limits, and `capabilities` configures software auto-detection.
 
 ### Staging (`stage_locally` path delivery)
 
@@ -2171,17 +2035,17 @@ staging:
   defaults: true
 ```
 
-Full detail, including the built-in copy's local/dev caveat and the
-`staging.defaults` behavior change, is in
+Full detail, including the limits of the built-in copy and the
+`SQI_STAGING_DEFAULTS` environment variable, is in
 [Worker configuration → `staging`](worker-configuration.md#staging--local-path-staging-stage_locally-delivery).
 
 ### Diagnostics (`diagnostics.enabled`)
 
 Controls whether the worker mirrors its own structured (`slog`) output to
-`sqi-server` over core NATS, where it appears in the web UI alongside server logs.
-This is the worker agent's operational log — distinct from task process output,
-which is always streamed. This is the worker's counterpart to the server's
-`diagnostics.buffer_size` (workers publish; the server buffers).
+`sqi-server` over core NATS, where it appears in the web UI alongside server
+logs. This is the worker agent's operational log, separate from task process
+output, which is always streamed. It is the worker's counterpart to the
+server's `diagnostics.buffer_size`: workers publish and the server buffers.
 
 | Key | Type | Default | Env var | Description |
 |---|---|---|---|---|
@@ -2199,10 +2063,10 @@ See [`docs/observability.md`](observability.md) for the full diagnostics guide.
 
 ### EXPR expression limits (`expr.*`)
 
-The worker's own five `expr.*` keys bound what one *assignment* may spend
-evaluating EXPR expressions on the host, at task-execution time. Four of them
-must be **at least** as generous as this server's `openjd.expr_*` counterparts
-or the scheduler withholds EXPR work from that worker — see
+The worker's five `expr.*` keys bound what one assignment may spend
+evaluating EXPR expressions on the worker host at run time. Each must be at
+least as generous as its `openjd.expr_*` counterpart on this server, or the
+scheduler withholds EXPR work from that worker. See
 [EXPR expression limits, caveat 4](#4-every-worker-must-be-at-least-as-generous-as-this-server)
 above for the pairings and what an operator sees, and
 [Worker configuration → `expr`](worker-configuration.md#expr--expr-expression-limits)
@@ -2210,12 +2074,13 @@ for the keys themselves.
 
 ### Capability auto-detection (`capabilities.detect` / `capabilities.disable`)
 
-Controls the worker's software capability auto-detection: built-in detectors
-for Maya, Nuke, Houdini, Blender, Cinema 4D, 3ds Max, After Effects, FFmpeg and SGO Mistika (Boutique/Ultima, VR
-and Workflows) run automatically at startup and advertise a tag (e.g. `maya`,
-plus `maya-2025`) with value `"true"`, with no
-per-worker configuration — enough on its own to satisfy the reference DCC
-products/presets' `key=true` requirement. See
+Controls the worker's software capability auto-detection. Built-in detectors
+for Maya, Nuke, Houdini, Blender, Cinema 4D, 3ds Max, After Effects, FFmpeg,
+SGO Mistika (Boutique/Ultima, VR and Workflows), the standalone renderers
+(Arnold `kick`, V-Ray, `husk`, Redshift, RenderMan, 3Delight and Mantra) and
+`oiiotool` run automatically at startup and advertise a tag (e.g. `maya`, plus `maya-2025`) with value `"true"`, with no
+per-worker configuration. That alone satisfies the reference DCC presets'
+`key=true` requirement. See
 [`docs/products.md`](products.md) and
 [`docs/dcc-submitters.md`](dcc-submitters.md) for how these auto-detected
 tags relate to the reference DCC products/presets.
@@ -2249,6 +2114,9 @@ for the detector schema reference.
 | `http.addr` | string | `0.0.0.0:8080` | `SQI_HTTP_ADDR` | `--http-addr` |
 | `http.enable_pprof` | bool | `false` | `SQI_HTTP_ENABLE_PPROF` | — |
 | `http.cors_origins` | []string | `[]` (= `*`) | `SQI_HTTP_CORS_ORIGINS` | `--http-cors-origins` |
+| `http.tls.enabled` | bool | `false` | `SQI_HTTP_TLS_ENABLED` | — |
+| `http.tls.cert_file` | string | `""` | `SQI_HTTP_TLS_CERT_FILE` | — |
+| `http.tls.key_file` | string | `""` | `SQI_HTTP_TLS_KEY_FILE` | — |
 | `nats.addr` | string | `0.0.0.0:4222` | `SQI_NATS_ADDR` | — |
 | `nats.data_dir` | string | `data/nats` | `SQI_NATS_DATA_DIR` | — |
 | `nats.max_store_mb` | int | `1024` | `SQI_NATS_MAX_STORE_MB` | — |
@@ -2256,6 +2124,10 @@ for the detector schema reference.
 | `nats.auth.join_token_ttl` | duration | `1h` | `SQI_NATS_AUTH_JOIN_TOKEN_TTL` | — |
 | `nats.auth.join_token_single_use` | bool | `true` | `SQI_NATS_AUTH_JOIN_TOKEN_SINGLE_USE` | — |
 | `nats.auth.enrollment_endpoint_enabled` | bool | `true` | `SQI_NATS_AUTH_ENROLLMENT_ENDPOINT_ENABLED` | — |
+| `nats.tls.enabled` | bool | `false` | `SQI_NATS_TLS_ENABLED` | — |
+| `nats.tls.cert_file` | string | `""` | `SQI_NATS_TLS_CERT_FILE` | — |
+| `nats.tls.key_file` | string | `""` | `SQI_NATS_TLS_KEY_FILE` | — |
+| `nats.tls.client_ca_file` | string | `""` | `SQI_NATS_TLS_CLIENT_CA_FILE` | — |
 | `store.driver` | string | `sqlite` | `SQI_STORE_DRIVER` | — |
 | `store.sqlite_path` | string | `sqi.db` | `SQI_STORE_SQLITE_PATH` | — |
 | `store.checkpoint_interval` | duration | `5m` | `SQI_STORE_CHECKPOINT_INTERVAL` | — |

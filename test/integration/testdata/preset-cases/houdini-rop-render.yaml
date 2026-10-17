@@ -1,18 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Houdini ROP Render. This preset hands the whole chunk to its driver script as
-# a frame LIST rather than a start/end pair, so the reviewable question is not
-# "are the bounds right" but "what range syntax reaches the script". The two
-# cases therefore vary the SHAPE of the range: a plain contiguous range, and a
-# stepped one, each large enough (chunks.defaultTaskCount ships at 10) to split
-# into several chunks so chunk boundaries are visible too.
+# a range expression rather than a start/end pair, so the cases show what range
+# syntax reaches the script: a plain contiguous range and a stepped one, each
+# large enough to split into several chunks at the shipped
+# chunks.defaultTaskCount of 10.
 #
 # The chunks are NONCONTIGUOUS, which sqi spells as a compact frame range
-# (internal/openjd/expand.go, formatNoncontiguousChunk), so the default case's
-# tasks read 1-8, 9-16 and 17-24 (balanced chunks of at most ten). The stepped
-# case is the point of NONCONTIGUOUS: 1-60:2 is thirty frames in three tasks of
-# ten (1-19:2, three hip loads, one render call each), where CONTIGUOUS split it
-# into thirty single-frame tasks.
+# (internal/openjd/expand.go, formatNoncontiguousChunk). The default case's
+# 1-24 balances to 1-8, 9-16 and 17-24. The stepped case's 1-60:2 is thirty
+# frames in three tasks of ten such as 1-19:2, each one hip load and one
+# render call.
 cases:
   - name: default
     params:

@@ -10,10 +10,6 @@ readme: |
   runs `hython` against a short Python script the template carries as an embedded
   file, which opens the hip, finds the ROP and renders the frames it was given.
 
-  Each task renders a chunk of frames, up to ten per task by default. A chunk may
-  skip frames, so a stepped range such as `1-100:2` still renders up to ten of its
-  frames per task, loading the hip file once per task.
-
   ## Parameters
 
   - **Scene File** - the `.hip` file to render. It must be reachable from every
@@ -25,12 +21,15 @@ readme: |
 
   ## How work is divided
 
-  The frame range expands into tasks through OpenJD task chunking, ten frames per
-  task by default. Each task receives its own frames as a compact frame range
-  (for example `1-10`, `1-19:2` or `1-3,7`) and passes it straight to the
-  embedded script, which renders each part in one `rop.render` call (so
-  `1-19:2` is one call and `1-3,7` is two), so this preset needs no
-  chunk-bounds extension.
+  The frame range expands into tasks through OpenJD task chunking, up to ten
+  frames per task by default, and each task loads the hip file once. A chunk
+  may skip frames, so a stepped range such as `1-100:2` still puts up to ten
+  frames in each task. Each task passes its frames as a compact frame range
+  such as `1-10`, `1-19:2` or `1-3,7` straight to the embedded script, so this
+  preset needs no chunk-bounds extension. The script renders each part of the
+  range in one `rop.render` call and merges a part that continues a run of
+  consecutive frames into that run's call, so `1-19:2` is one call and
+  `1-3,7,8` is two.
 
   ## Requirements
 

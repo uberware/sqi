@@ -13,9 +13,8 @@ import (
 // ApplyChunkPatch returns rawTemplate with p applied. The ChunkPatch type is
 // declared in snapshot.go.
 //
-// It edits the YAML node tree rather than the text: a regex over
-// "defaultTaskCount: 1" would hit the wrong step in any template with more than
-// one, silently snapshotting a different expansion than the case declares.
+// It edits the YAML node tree rather than the text, so that in a template with
+// several steps only the named step's defaultTaskCount changes.
 func ApplyChunkPatch(rawTemplate string, p ChunkPatch) (string, error) {
 	if p.ChunksDefaultTaskCount < 1 {
 		return "", fmt.Errorf("presettest: chunk patch for step %q: defaultTaskCount must be >= 1, got %d",
@@ -95,8 +94,8 @@ func applyPatchToStep(step *yaml.Node, p ChunkPatch) (int, error) {
 // StripOSFamilyGate returns rawTemplate with every attr.worker.os.family host
 // requirement removed, so a worker of any OS family can lease its steps.
 // Everything else, the embedded files included, is kept. A template with no
-// such requirement is an error, since a strip that removed nothing would leave
-// a caller silently exercising an unchanged template.
+// such requirement is an error, so a caller never runs an unchanged template
+// believing it stripped.
 func StripOSFamilyGate(rawTemplate string) (string, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal([]byte(rawTemplate), &doc); err != nil {

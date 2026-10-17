@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Husk USD Render: each task passes husk its chunk's first frame and count.
-# default omits --renderer; multi-frame-chunk has an uneven last chunk;
+# default omits --renderer; multi-frame-chunk splits 1-10 unevenly (4, 3, 3);
 # stepped-range splits into one-frame chunks; renderer passes --renderer.
 cases:
   - name: default

@@ -112,8 +112,8 @@ func TestSubmit_TargetRuntimeResolvingNegativeRejected(t *testing.T) {
 	}
 }
 
-// A non-integer reaching an INT chunk-size parameter is a 422
-// naming the parameter -- never a 500, never a silent chunk size of 1.
+// A non-integer reaching an INT chunk-size parameter is a 422 naming the
+// parameter, rather than a 500 or a silent chunk size of 1.
 func TestSubmit_ChunkSizeNonIntegerParameterRejected(t *testing.T) {
 	_, err := submitChunks(t, tutorialChunkTemplate, map[string]string{"ChunkSize": "abc"})
 	if _, ok := errors.AsType[*openjd.SubmitValidationError](err); !ok {

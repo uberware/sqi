@@ -13,9 +13,9 @@ package capabilities
 var dccLayouts = []rendererLayout{
 	{
 		// Commandline is generic enough to collide with unrelated software,
-		// so there is no exe check (the mistikavr.yaml rule). The Linux
-		// folder carries no year the version regex reads. Only the Windows
-		// path is asserted for a version (versioned holds one path).
+		// so there is no exe check, as in mistikavr.yaml. The Linux folder
+		// name does not match the version regex, so only the Windows path
+		// is checked for a version.
 		tag: "cinema4d",
 		exe: "",
 		installs: []string{
@@ -27,9 +27,8 @@ var dccLayouts = []rendererLayout{
 		version:   "2026",
 	},
 	{
-		// 3ds Max is Windows-only. The registry key carries the product
-		// version (2025 = 27.0) rather than the year, so only the install
-		// path yields a version.
+		// 3ds Max is Windows-only. The registry key carries no year, so
+		// only the install path yields a version.
 		tag: "3dsmax",
 		exe: "3dsmaxcmd",
 		installs: []string{
@@ -39,9 +38,9 @@ var dccLayouts = []rendererLayout{
 		version:   "2026",
 	},
 	{
-		// aerender ships inside the application folder on both platforms;
-		// the versioned folder names are unverified (Adobe's page still
-		// says "CC"). The Windows path stands for the version check.
+		// aerender ships inside the application folder on both platforms.
+		// The versioned folder names are unverified (see aftereffects.yaml).
+		// The Windows path stands for the version check.
 		tag: "aftereffects",
 		exe: "aerender",
 		installs: []string{

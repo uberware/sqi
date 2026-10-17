@@ -9,7 +9,7 @@ readme: |
 
   Renders one item of a saved `.aep` project's render queue with Adobe's
   `aerender`, using that item's own render settings and output module. Each
-  task renders a contiguous slice of the frame range, up to ten frames per task by
+  task renders a contiguous slice of the frame range, up to ten frames by
   default. Use After Effects Queue Render (Windows) instead to render
   everything the project has queued on one machine.
 
@@ -56,8 +56,8 @@ readme: |
   The frame range expands into tasks through OpenJD task chunking. The
   `SQI_CHUNK_BOUNDS` extension gives each task the first and last frame of its
   own slice. A stepped range such as `1-9:4` splits into one task per frame,
-  so a step argument is never needed, and `aerender`'s `-i` is never used: it
-  repeats frames rather than skipping them.
+  so no task needs a step argument. The preset does not use `aerender`'s
+  `-i`, which repeats frames rather than skipping them.
 
   ## Requirements
 
@@ -124,34 +124,35 @@ template:
               rangeConstraint: CONTIGUOUS
       script:
         embeddedFiles:
-          # The aerender wrapper; after-effects-queue-render-windows carries the
+          # The aerender wrapper; after-effects-queue-render-windows embeds the
           # same file byte for byte. Its arguments are aerender's argv, passed
-          # on unchanged with @args. On a run against real powershell.exe, the
+          # on unchanged with @args. Under real powershell.exe, the
           # dash-prefixed arguments after -File (-project, -rqindex, -s, -e, -v,
-          # -close) and a scene path holding a space and an apostrophe all
-          # arrive intact; the Tier-3 case's expect_inner_argv pins that. Two
-          # spellings do not survive -File, neither of which this argv uses: a
-          # colon-joined `-name:value` arrives split in two, and an embedded
-          # double quote is mangled.
+          # -close) and a scene path holding a space and an apostrophe arrive
+          # intact, as the `default` case's expect_inner_argv in
+          # test/integration/testdata/preset-cases/ checks. Two spellings do
+          # not survive -File, and this argv uses neither: a colon-joined
+          # `-name:value` arrives split in two, and an embedded double quote is
+          # mangled.
           #
-          # 2>&1 sends aerender's stderr down the same pipeline, so a marker
-          # printed on either stream is seen. Each line is converted to text and
-          # written out before it is matched, so stderr lines reach the task log
-          # as aerender printed them rather than as PowerShell error records.
-          # -like matches the marker case-insensitively, as grep -i does in
+          # 2>&1 merges aerender's stderr into the pipeline, so the marker is
+          # seen on either stream. Each line is converted to a string before it
+          # is written and matched, so stderr lines reach the task log as
+          # aerender printed them rather than as PowerShell error records.
+          # -like matches the marker case-insensitively, like grep -i in
           # after-effects-render-macos' sh wrapper.
           #
-          # ErrorActionPreference stays Continue because under Stop, Windows
+          # ErrorActionPreference stays Continue: under Stop, Windows
           # PowerShell 5.1 aborts on the first redirected stderr line.
           #
-          # The trap is load-bearing: 5.1 reports a missing aerender as an
-          # error and carries on, which would reach `exit 0` and report the
-          # task as succeeded. $LASTEXITCODE forwards aerender's own non-zero
-          # code before the marker check can flatten it to 1.
+          # Keep the trap: 5.1 reports a missing aerender as an error and
+          # carries on to `exit 0`, which would mark the task succeeded.
+          # $LASTEXITCODE is checked first so aerender's own non-zero code is
+          # forwarded rather than replaced by the marker check's 1.
           #
           # The data opens with a UTF-8 BOM (\uFEFF), as script-powershell's
-          # command.ps1 does: 5.1 reads a BOM-less .ps1 in the ANSI code page.
-          # The script is ASCII today; the BOM keeps a non-ASCII edit safe.
+          # command.ps1 does, because 5.1 reads a BOM-less .ps1 in the ANSI
+          # code page. The script is ASCII; the BOM keeps a non-ASCII edit safe.
           - name: aerender_wrapper
             type: TEXT
             filename: aerender_wrapper.ps1

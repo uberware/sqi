@@ -57,8 +57,8 @@ func TestApplyChunkPatch_RaisesTaskCount(t *testing.T) {
 	if len(tasks) != 2 {
 		t.Fatalf("tasks = %d, want 2 (10 frames in chunks of 5)", len(tasks))
 	}
-	// The whole point of the patch: Start and End differ, so the -s/-e
-	// substitution is actually exercised.
+	// With chunks of 5, Start and End differ, so the -s/-e substitution is
+	// exercised.
 	if tasks[0].Args[1] != "1" || tasks[0].Args[3] != "5" {
 		t.Errorf("task 1 bounds = %v, want -s 1 -e 5", tasks[0].Args)
 	}

@@ -34,10 +34,9 @@ import (
 
 // ── defaults ────────────────────────────────────────────────────────────────
 
-// TestExprLimits_DefaultsMatchLiteralValues pins each default to its
-// established literal value. Deliberately written as literals rather than as
-// the constants themselves: comparing defaultTemplatePositions to
-// defaultTemplatePositions would pass no matter what either became.
+// TestExprLimits_DefaultsMatchLiteralValues pins each default to its literal
+// value. It compares against literals because comparing
+// defaultTemplatePositions to itself would pass whatever it became.
 func TestExprLimits_DefaultsMatchLiteralValues(t *testing.T) {
 	got := DefaultExprLimits()
 	tests := []struct {
@@ -62,8 +61,6 @@ func TestExprLimits_DefaultsMatchLiteralValues(t *testing.T) {
 }
 
 // TestExprLimits_OrDefaults pins the "zero means unset, never unlimited" rule.
-// A resource-exhaustion guard acquiring the meaning "unlimited" by accident is
-// the one outcome this normalization exists to prevent.
 func TestExprLimits_OrDefaults(t *testing.T) {
 	d := DefaultExprLimits()
 	tests := []struct {
@@ -107,47 +104,35 @@ func TestExprLimits_OrDefaults(t *testing.T) {
 
 // ── floors, measured against this repo's own templates ──────────────────────
 
-// TestExprLimits_FloorsAcceptReferencePresets is where the FLOORS in
-// exprlimits.go come from, and it re-derives them on every run rather than
-// asking the reader to trust a comment.
+// TestExprLimits_FloorsAcceptReferencePresets checks the floors in
+// exprlimits.go against the reference presets in presets/sqi/ (the files
+// internal/product/sqipresets_test.go validates) on every run. A floor set too
+// low rejects legitimate templates at submit, so no floor may reject one of
+// sqi's own presets, and each must keep at least 4x headroom.
 //
-// A limit set absurdly low does not fail safe: it rejects legitimate templates
-// at submit. The cheapest available definition of "legitimate" is the
-// reference presets this repo itself ships (presets/sqi/*.yaml, the same files
-// internal/product/sqipresets_test.go validates), so no floor may be tight
-// enough to reject one of them.
-//
-// This walks each preset AS AUTHORED -- default job-parameter values, not a
-// submission with concrete parameters -- so it measures shape, not scale. The
-// five ffmpeg presets' slice arithmetic is linear in a slice count that a real
-// submission controls (DurationSeconds / SegmentSeconds), and at its
-// documented 400-slice ceiling one of them costs ~9,662 operations against
-// this package's own defaults; at the default 600s/60s parameters used here it
-// costs a low double digit. That much higher, parameter-driven cost is
-// deliberately NOT this test's concern -- it is pinned separately, against
-// concrete phase-2 parameters, by internal/product/exprpresetcost_test.go.
+// It walks each preset as authored, with default job-parameter values, so it
+// measures the template's shape rather than its scale. The three
+// ffmpeg-segment-transcode presets cost operations linear in a slice count the
+// submission controls (DurationSeconds / SegmentSeconds); that
+// parameter-driven cost is pinned against concrete parameters by
+// internal/product/exprpresetcost_test.go instead.
 //
 // Most presets do not declare EXPR, so the walk is switched on by adding the
-// declaration to the parsed template; ffmpeg-segment-transcode-expr.yaml
-// already declares it, and appending again is a harmless duplicate (Extensions
-// carries no dedup requirement, and LookupExtension is idempotent). That
-// measures the right thing anyway: the cost is a property of the template's
-// SHAPE (how many format-string-bearing fields it has and what they
-// evaluate), not of which extension it declares.
+// declaration to the parsed template. ffmpeg-segment-transcode-expr.yaml
+// already declares it, and the duplicate is harmless (Extensions has no dedup
+// requirement and LookupExtension is idempotent). The cost depends on the
+// template's format-string fields and what they evaluate, not on which
+// extensions it declares.
 //
-// HOW IT ASSERTS: it matches NO message at all. Matching the string
-// "template-wide expression budget exceeded" would see only two of the four
-// dimensions: a per-EVALUATION trip under the floors reports "operation limit
-// exceeded" / "memory limit exceeded" instead, so MinExprSubmissionOperations
-// and MinExprSubmissionMemoryBytes would be asserted by nothing -- a preset
-// gaining a comprehension or a case mapping could be rejected by sqi's own
-// floor with this test green. Instead it compares the error set produced
-// under the floors against the error set produced under the DEFAULTS: any
-// error the floors introduce is a floor-induced rejection, whichever
-// dimension caused it. The presets do produce a couple of
-// unrelated errors of their own (a TASK_CHUNKING range_expr property access
-// that EXPR's checker does not accept), which is exactly why the baseline is a
-// diff rather than "expect zero errors".
+// It asserts by comparing the error set under the floors with the error set
+// under the defaults, not by matching a message: a per-evaluation trip reports
+// an operation or memory limit error rather than "template-wide expression
+// budget exceeded", so matching that string would leave
+// MinExprSubmissionOperations and MinExprSubmissionMemoryBytes untested. Any
+// error the floors add is a floor-induced rejection. The comparison is a diff
+// because many presets already produce errors of their own here: under EXPR a
+// CHUNK[INT] is a range_expr, and the checker rejects their SQI_CHUNK_BOUNDS
+// .Start/.End access.
 func TestExprLimits_FloorsAcceptReferencePresets(t *testing.T) {
 	paths, err := fsutil.Glob(filepath.Join("..", "..", "presets", "sqi", "*.yaml"))
 	if err != nil {
@@ -164,9 +149,8 @@ func TestExprLimits_FloorsAcceptReferencePresets(t *testing.T) {
 		TemplateRetainedBytes: MinExprTemplateRetainedBytes,
 	}
 
-	// One entry per configurable dimension, so adding a fifth knob without
-	// extending this table is a compile-time-visible omission rather than a
-	// silent coverage hole.
+	// One entry per configurable dimension. A new limit must be added here
+	// too, or this test does not cover it.
 	dims := []struct {
 		name  string
 		floor int64
@@ -190,9 +174,8 @@ func TestExprLimits_FloorsAcceptReferencePresets(t *testing.T) {
 				return errorSet(checkTemplateExpressions(load(), nil, b)), b
 			}
 
-			// The baseline: whatever this preset reports with nothing
-			// tightened. Its content is deliberately not asserted -- only that
-			// the floors add nothing to it.
+			// The baseline: whatever this preset reports at the defaults. Its
+			// content is not asserted, only that the floors add nothing to it.
 			baseline, defaultBudget := walk(DefaultExprLimits())
 
 			t.Run("all four floors together", func(t *testing.T) {
@@ -205,10 +188,9 @@ func TestExprLimits_FloorsAcceptReferencePresets(t *testing.T) {
 			})
 
 			// Per dimension, the smallest value at which this preset still
-			// produces exactly its baseline errors -- the preset's real cost in
-			// that dimension. Reported alongside the floor so a preset that
-			// grows toward one is visible in the log, and asserted with 4x
-			// headroom so it fails BEFORE a preset can reach the floor.
+			// produces exactly its baseline errors, which is its real cost in
+			// that dimension. It is logged beside the floor and asserted with
+			// 4x headroom, so the test fails before a preset reaches the floor.
 			for _, d := range dims {
 				t.Run(d.name, func(t *testing.T) {
 					need := minimalLimit(baseline, load, d.set, d.floor*4)
@@ -231,12 +213,12 @@ func TestExprLimits_FloorsAcceptReferencePresets(t *testing.T) {
 	}
 }
 
-// minimalLimit binary-searches the smallest value of ONE dimension at which
-// the walk still produces exactly baseline -- i.e. the template's real cost in
-// that dimension. The search is valid because every one of these limits is
-// monotone: raising it can only remove errors, never add them. hi is an upper
-// bound the caller believes is sufficient; if even hi is not, hi+1 is returned
-// so the caller reports "needs more than the floor" rather than looping.
+// minimalLimit binary-searches the smallest value of one dimension at which
+// the walk still produces exactly baseline, which is the template's real cost
+// in that dimension. The search is valid because every one of these limits is
+// monotone: raising it can only remove errors. hi is an upper bound the caller
+// believes is sufficient; if hi is not enough, hi+1 is returned so the caller
+// reports "needs more than the floor".
 func minimalLimit(baseline map[string]bool, load func() *JobTemplate, set func(*ExprLimits, int64), hi int64) int64 {
 	ok := func(v int64) bool {
 		lim := DefaultExprLimits()
@@ -329,11 +311,11 @@ func argsTemplate(n int) *JobTemplate {
 	}
 }
 
-// TestExprLimits_TemplatePositionsIsObserved is the position knob's mutation
-// test, and it is written at the exact boundary on purpose: chargePositions
-// rejects when the running total EXCEEDS the limit, so a construction costing
-// exactly N positions must be accepted at N and rejected at N-1. A test that
-// only compared 10 against 10^9 would pass with an off-by-one.
+// TestExprLimits_TemplatePositionsIsObserved is the position limit's mutation
+// test, written at the exact boundary: chargePositions rejects when the
+// running total exceeds the limit, so a construction costing exactly N
+// positions must be accepted at N and rejected at N-1. That catches an
+// off-by-one a wide comparison would miss.
 func TestExprLimits_TemplatePositionsIsObserved(t *testing.T) {
 	const args = 300
 	const cost = args + 2 // /name + /command + args entries
@@ -378,11 +360,9 @@ func TestExprLimits_TemplatePositionsIsObserved(t *testing.T) {
 	}
 }
 
-// TestExprLimits_TemplateRetainedBytesIsObserved is the retained-bytes knob's
-// mutation test. It moves the bound in BOTH directions around one fixed
-// construction: a template the default accepts is rejected once the knob is
-// lowered beneath it, and a template the default rejects is accepted once the
-// knob is raised above it.
+// TestExprLimits_TemplateRetainedBytesIsObserved is the retained-bytes limit's
+// mutation test. One fixed construction, which the default accepts, is
+// accepted at exactly its retained size and rejected one byte below it.
 func TestExprLimits_TemplateRetainedBytesIsObserved(t *testing.T) {
 	// Three bindings of 900,000 bytes each (+64-byte header, expr.SizeOf) =
 	// 2,700,192 retained bytes -- the same shape
@@ -437,10 +417,9 @@ func TestExprLimits_TemplateRetainedBytesIsObserved(t *testing.T) {
 }
 
 // TestExprLimits_SubmissionMemoryBytesIsObserved is the per-evaluation memory
-// knob's mutation test. The construction allocates ~1.5 MB in ONE expression:
-// the default (1 MB) rejects it, a raised limit accepts it, and a lowered one
-// still rejects it -- so the observed bound tracks the knob in both
-// directions, which no "the value parses" test could show.
+// limit's mutation test. The construction allocates ~1.5 MB in one
+// expression: the default (1 MB) rejects it, a raised limit accepts it, and a
+// lowered one still rejects it.
 func TestExprLimits_SubmissionMemoryBytesIsObserved(t *testing.T) {
 	build := func() *JobTemplate {
 		return &JobTemplate{
@@ -476,10 +455,9 @@ func TestExprLimits_SubmissionMemoryBytesIsObserved(t *testing.T) {
 }
 
 // TestExprLimits_SubmissionOperationsIsObserved is the per-evaluation
-// operation knob's mutation test. The construction is deliberately BYTE-CHEAP
-// (a comprehension over a range, producing small integers) so that only the
-// operation dimension can be what trips: if lowering this knob did nothing,
-// the "tightened" rows below would pass validation.
+// operation limit's mutation test. The construction is byte-cheap (a
+// comprehension over a range, producing small integers), so only the
+// operation dimension can trip.
 func TestExprLimits_SubmissionOperationsIsObserved(t *testing.T) {
 	build := func() *JobTemplate {
 		return &JobTemplate{
@@ -515,9 +493,9 @@ func TestExprLimits_SubmissionOperationsIsObserved(t *testing.T) {
 	}
 }
 
-// TestExprLimits_KnobsAreIndependent proves the four are four, not one read
-// four times: tightening any one of them to its configurable floor must not
-// change the verdict on a template bounded by a DIFFERENT dimension.
+// TestExprLimits_KnobsAreIndependent checks that tightening any one limit to
+// its configurable floor does not change the verdict on a template bounded by
+// a different dimension.
 func TestExprLimits_KnobsAreIndependent(t *testing.T) {
 	// Costs 302 positions, retains nothing, and every evaluation is trivial:
 	// only TemplatePositions can reject it.
@@ -552,11 +530,9 @@ func TestExprLimits_KnobsAreIndependent(t *testing.T) {
 
 // ── the carriers ────────────────────────────────────────────────────────────
 
-// TestValidateWithOptions_ExprLimitsReachTheWalk closes the gap between "the
-// budget observes the limit" (every test above) and "the limit an OPERATOR set
-// reaches the budget". ValidateWithOptions is the carrier, and this is the
-// test that fails if it stops threading the value through. It drives the
-// same production path an operator's configuration reaches.
+// TestValidateWithOptions_ExprLimitsReachTheWalk checks that limits passed in
+// ValidateOptions reach the budget, the path an operator's configuration
+// takes. It fails if ValidateWithOptions stops threading them through.
 func TestValidateWithOptions_ExprLimitsReachTheWalk(t *testing.T) {
 	const args = 300
 	const cost = args + 2
@@ -587,41 +563,34 @@ func TestValidateWithOptions_ExprLimitsReachTheWalk(t *testing.T) {
 	}
 }
 
-// TestSubmit_ExprLimitsAreEnforcedThroughTheSubmitter is the submit
-// pipeline's carrier test, end to end through the real [Submitter.Submit].
-//
-// It must go through prepareTemplate: a test that only checks that
-// NewSubmitterWithOptions stores the struct and that newTemplateBudget
-// normalizes it stays green when either budget in submit.go is reverted to
-// newTemplateBudget(ExprLimits{}), or when ExprLimits is dropped from the
-// phase-1 ValidateOptions.
+// TestSubmit_ExprLimitsAreEnforcedThroughTheSubmitter checks, end to end
+// through the real [Submitter.Submit], that the configured limits reach each
+// of the three budgets in submit.go. Checking only that
+// NewSubmitterWithOptions stores the struct would stay green if a budget were
+// reverted to newTemplateBudget(ExprLimits{}).
 //
 // The three wiring points and what covers each:
 //
-//   - PHASE 1 (submit.go's ValidateOptions.ExprLimits): the "rejects at phase 1,
-//     before parameter binding" sub-test. The plain "positions tightened"
-//     sub-test does NOT pin it -- phase 2 re-walks the identical positions
-//     under the identical limits and masks it -- so the isolating sub-test
-//     submits with a required parameter missing, putting the binding failure
-//     between phase 1 and phase 2.
-//   - PHASE 2 (prepareTemplate's checkerBudget): the "memory at phase 2 only"
-//     sub-test. It uses the same phase-distinction mechanism as
-//     TestSubmit_PhaseDistinction_ThroughRealSubmit: an unresolved Param
+//   - Phase 1 (submit.go's ValidateOptions.ExprLimits): the "positions
+//     tightened rejects at phase 1, before parameter binding" sub-test. The
+//     "positions tightened below the template's cost" sub-test does not pin
+//     it, because phase 2 re-walks the same positions
+//     under the same limits, so this sub-test submits with a required
+//     parameter missing to make binding fail between phase 1 and phase 2.
+//   - Phase 2 (prepareTemplate's checkerBudget): the "memory tightened trips
+//     at phase 2 only" sub-test, using the same mechanism as
+//     TestSubmit_PhaseDistinction_ThroughRealSubmit. An unresolved Param
 //     placeholder costs almost nothing at phase 1, while the same expression
-//     over a CONCRETE 300,000-byte value costs 300,064 live bytes at phase 2
-//     (measured -- the meter does not hold the bound value and the .upper()
-//     copy simultaneously, so the cost is not doubled). Tightened to 200,000,
-//     phase 1 passes and phase 2
-//     rejects -- so only the phase-2 budget can be what refused it.
-//   - The RESOLVER budget (prepareTemplate's resolverBudget): the
-//     "resolver budget carries them" sub-test, which calls prepareTemplate
-//     directly and inspects the budget it returns. This one is NOT observable
-//     through Submit's verdict, and that is a property of the design rather
-//     than a gap in the test: the checker walks the same range positions
-//     first, under the same limits, so anything that would exhaust the
-//     resolver's allowance exhausts the checker's one walk earlier. Inspecting
-//     the returned budget is the strongest available observation, and it does
-//     fail if submit.go stops passing s.exprLimits there.
+//     over a concrete 300,000-byte value costs 300,064 live bytes at phase 2
+//     (the meter does not hold the bound value and the .upper() copy at the
+//     same time). With the limit at 200,000, phase 1 passes and phase 2
+//     rejects.
+//   - The resolver budget (prepareTemplate's resolverBudget): the "resolver
+//     budget carries them" sub-test, which calls prepareTemplate directly and
+//     inspects the budget it returns. Submit's verdict cannot show this one:
+//     the checker walks the same range positions first under the same limits,
+//     so anything that would exhaust the resolver's allowance exhausts the
+//     checker's first.
 func TestSubmit_ExprLimitsAreEnforcedThroughTheSubmitter(t *testing.T) {
 	const tmplYAML = `
 specificationVersion: jobtemplate-2023-09
@@ -679,15 +648,13 @@ steps:
 		}
 	})
 
-	// PHASE 1 IN ISOLATION. The sub-test above does not actually pin phase 1:
-	// phase 2 re-walks the identical positions under the identical limits, so
-	// dropping ExprLimits from prepareTemplate's ValidateOptions leaves it
-	// green (verified by mutation). The distinguisher is ORDER -- prepareTemplate
-	// runs phase 1, then storage-location checks, then PARAMETER BINDING, then
-	// phase 2. Submitting with no value for a required parameter makes binding
-	// fail, so phase 2 is never reached: if the rejection still names the
-	// budget, only phase 1 can have produced it, and if phase 1 is running at
-	// the defaults the error is the binding failure instead.
+	// Phase 1 in isolation. The sub-test above does not pin phase 1, because
+	// phase 2 re-walks the same positions under the same limits.
+	// prepareTemplate runs phase 1, then storage-location checks, then
+	// parameter binding, then phase 2. With no value for a required
+	// parameter, binding fails and phase 2 never runs: a budget rejection can
+	// only come from phase 1, and if phase 1 ran at the defaults the error is
+	// the binding failure instead.
 	t.Run("positions tightened rejects at phase 1, before parameter binding", func(t *testing.T) {
 		err := submitWith(t, ExprLimits{TemplatePositions: positionCost - 1}, nil)
 		if err == nil {
@@ -705,9 +672,8 @@ steps:
 		lim := ExprLimits{SubmissionMemoryBytes: 200_000}
 
 		// Phase 1 sees Param.S as an unresolved placeholder and costs almost
-		// nothing, so a submission with a SMALL value must still succeed --
-		// this is what proves the rejection below comes from phase 2 and not
-		// from the phase-1 walk under the same tightened limit.
+		// nothing, so a submission with a small value must still succeed. That
+		// shows the rejection below comes from phase 2.
 		if err := submitWith(t, lim, map[string]string{"S": "small"}); err != nil {
 			t.Fatalf("a small parameter must still pass under the tightened limit: %v", err)
 		}
@@ -759,9 +725,8 @@ steps:
 
 // budgetError returns the message of the first template-wide budget error in
 // errs, and whether there was one. Other validation errors (an unsupported
-// extension, a scope failure) are deliberately not counted: these tests are
-// about the budget, and a template that is rejected for an unrelated reason
-// must not read as a budget trip.
+// extension, a scope failure) are not counted, so a template rejected for an
+// unrelated reason does not read as a budget trip.
 func budgetError(errs ValidationErrors) (string, bool) {
 	for _, e := range errs {
 		if strings.Contains(e.Message, "template-wide expression budget exceeded") {

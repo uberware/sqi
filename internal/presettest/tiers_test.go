@@ -47,9 +47,8 @@ presets:
 }
 
 // An execution-tier block with no required platform can never fail the
-// registry's skip check -- slices.Contains(nil, anything) is false on every GOOS
-// that exists or ever will -- so it would read as verified forever while proving
-// nothing. Omitting the block is how an unrunnable tier is recorded.
+// registry's skip check, so the loader rejects it. Omitting the block is how an
+// unrunnable tier is recorded.
 func TestLoadRegistry_RejectsExecTierWithNoRequiredPlatform(t *testing.T) {
 	for _, field := range []string{"tier2", "tier3"} {
 		t.Run(field, func(t *testing.T) {
@@ -68,8 +67,8 @@ presets:
 			}
 		})
 	}
-	// The same block WITH a platform is accepted, so the rule rejects the empty
-	// list rather than the block.
+	// The same block with a platform is accepted: the rule rejects only the
+	// empty list.
 	if _, err := presettest.ParseRegistry([]byte(`
 presets:
   - name: demo
@@ -82,8 +81,7 @@ presets:
 `)); err != nil {
 		t.Errorf("ParseRegistry: a tier3 block naming a platform must parse, got %v", err)
 	}
-	// And omitting the block entirely stays legal -- that is the documented way
-	// to record a tier nothing can run.
+	// Omitting the block stays legal: it records a tier nothing can run.
 	if _, err := presettest.ParseRegistry([]byte(`
 presets:
   - name: demo

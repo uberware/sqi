@@ -9,7 +9,7 @@ readme: |
 
   Renders one item of a saved `.aep` project's render queue with Adobe's
   `aerender`, using that item's own render settings and output module. Each
-  task renders a contiguous slice of the frame range, up to ten frames per task by
+  task renders a contiguous slice of the frame range, up to ten frames by
   default. Use After Effects Queue Render (macOS) instead to render
   everything the project has queued on one machine.
 
@@ -56,8 +56,8 @@ readme: |
   The frame range expands into tasks through OpenJD task chunking. The
   `SQI_CHUNK_BOUNDS` extension gives each task the first and last frame of its
   own slice. A stepped range such as `1-9:4` splits into one task per frame,
-  so a step argument is never needed, and `aerender`'s `-i` is never used: it
-  repeats frames rather than skipping them.
+  so no task needs a step argument. The preset does not use `aerender`'s
+  `-i`, which repeats frames rather than skipping them.
 
   ## Requirements
 
@@ -121,29 +121,29 @@ template:
               rangeConstraint: CONTIGUOUS
       script:
         embeddedFiles:
-          # The aerender wrapper; after-effects-queue-render-macos carries the
-          # same file byte for byte, and after-effects-render-windows carries a
-          # PowerShell script with the same contract. /bin/sh runs it with
+          # The aerender wrapper; after-effects-queue-render-macos embeds the
+          # same file byte for byte, and after-effects-render-windows embeds a
+          # PowerShell script that behaves the same way. /bin/sh runs it with
           # aerender's argv as its arguments, which "$@" passes on unchanged.
           # It keeps to POSIX sh: macOS's /bin/sh is bash in POSIX mode, and
           # Linux CI runs it under dash, with the os.family gate stripped, in
           # TestPresetAfterEffects_WrapperFailsOnLoggedError.
           #
-          # 2>&1 sends aerender's stderr down the same pipe, so a marker
-          # printed on either stream is seen. tee streams every line to the
-          # task log as it arrives and keeps a copy, which grep -i searches
-          # for the marker case-insensitively, as PowerShell's -like does in
-          # the Windows wrapper, once aerender has exited.
+          # 2>&1 merges aerender's stderr into the pipe, so the marker is seen
+          # on either stream. tee streams each line to the task log as it
+          # arrives and keeps a copy. Once aerender has exited, grep -i
+          # searches the copy for the marker case-insensitively, like -like in
+          # the Windows wrapper.
           #
-          # POSIX sh has no pipefail: a pipeline's status is its last
-          # command's, here tee's. So aerender's own status is written to a
-          # file from inside the pipeline and read back, which keeps a
-          # non-zero code (127 when aerender is not on PATH) rather than
-          # tee's 0. A missing status file, a failed tee or an unreadable log
-          # copy fails the task too: each means the output was not checked.
+          # POSIX sh has no pipefail, so a pipeline's status is its last
+          # command's, here tee's. aerender's own status is therefore written
+          # to a file inside the pipeline and read back, which keeps a non-zero
+          # code (127 when aerender is not on PATH). A missing status file, a
+          # failed tee or an unreadable log copy also fails the task, since
+          # each means the output was not checked.
           #
           # The temporary directory under ${TMPDIR:-/tmp} is removed on every
-          # exit. The HUP/INT/TERM traps turn a signal into an exit, so the
+          # exit. The HUP/INT/TERM traps turn a signal into an exit so the
           # EXIT trap runs; the worker signals the whole process group, so
           # aerender and tee stop too. Only SIGKILL leaves the directory
           # behind.

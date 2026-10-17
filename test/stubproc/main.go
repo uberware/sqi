@@ -18,8 +18,8 @@ import (
 	"github.com/uberware/sqi/test/stubproc/record"
 )
 
-// stdinLimit bounds what is recorded from stdin. A stub that buffered an
-// unbounded pipe would be a way to hang a test rather than a way to observe one.
+// stdinLimit bounds what is recorded from stdin, so an endless pipe cannot keep
+// the stub reading forever.
 const stdinLimit = 64 << 10
 
 func main() {
@@ -70,11 +70,11 @@ func run(name string) error {
 
 // applyEnvFromArg lets one invocation configure itself, so a single worker
 // environment can serve jobs that each want the stub to behave differently.
-// SQI_STUB_ENV_FROM_ARG names a flag; when the flag appears in argv, the
-// argument after it names a file whose sibling "<value>.stubenv" holds
-// SQI_STUB_* settings, one KEY=VALUE per line, that override the environment's
-// for this invocation. A missing sidecar changes nothing. Only SQI_STUB_ keys
-// are accepted, so a sidecar cannot reach anything but the stub.
+// SQI_STUB_ENV_FROM_ARG names a flag; when the flag appears in argv followed
+// by a value, the file "<value>.stubenv" holds SQI_STUB_* settings, one
+// KEY=VALUE per line, that override the environment's for this invocation. A
+// missing sidecar changes nothing. Any key without the SQI_STUB_ prefix is an
+// error, so a sidecar cannot set anything but the stub's own settings.
 func applyEnvFromArg() error {
 	flag := os.Getenv("SQI_STUB_ENV_FROM_ARG")
 	if flag == "" {
@@ -143,9 +143,9 @@ func writeRecord(name string) error {
 	return nil
 }
 
-// readStdin returns up to stdinLimit bytes of stdin, or "" when stdin is not a
-// pipe. A CLI driven by piped commands has no argv worth snapshotting, so this
-// is the only surface such a preset offers.
+// readStdin returns up to stdinLimit bytes of stdin, or "" when stdin is a
+// character device such as a terminal. A CLI driven by piped commands has no
+// argv worth snapshotting, so stdin is what a test of such a preset asserts on.
 func readStdin() string {
 	info, err := os.Stdin.Stat()
 	if err != nil || info.Mode()&os.ModeCharDevice != 0 {

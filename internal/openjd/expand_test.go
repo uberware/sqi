@@ -2,11 +2,10 @@
 
 package openjd_test
 
-// Additional expand tests — item 7 of the test roadmap.
-//
-// openjd_test.go already covers nil, INT/FLOAT/STRING ranges, Cartesian
-// product, zip, zip mismatch, undeclared param, and chunk expansion.
-// This file adds the one gap: a syntactically malformed combination expression.
+// Expansion tests beyond the basic cases in openjd_test.go (nil, INT/FLOAT/STRING
+// ranges, Cartesian product, zip, zip mismatch, undeclared parameter): a
+// malformed combination expression, the per-step task-count guard, chunk
+// bounds, and how CONTIGUOUS and NONCONTIGUOUS chunks are spelled.
 
 import (
 	"math"
@@ -17,8 +16,7 @@ import (
 )
 
 func TestExpand_MalformedCombinationExpr(t *testing.T) {
-	// "A**B" has two consecutive stars — the parser should return an error
-	// rather than panicking or silently producing wrong results.
+	// "A**B" has two consecutive stars; the parser must return an error.
 	comb := "A**B"
 	ps := &openjd.StepParameterSpace{
 		TaskParameterDefinitions: []openjd.TaskParamDefinition{
@@ -35,7 +33,7 @@ func TestExpand_MalformedCombinationExpr(t *testing.T) {
 
 // TestExpand_TaskCountExplosionRejected verifies the resource-exhaustion guard:
 // a Cartesian product whose task count exceeds the per-step cap is rejected
-// BEFORE materialization, rather than allocating ~1M task rows.
+// before its ~1M task rows are materialized.
 func TestExpand_TaskCountExplosionRejected(t *testing.T) {
 	// 1024 * 1024 = 1,048,576 tasks, just over the 1,000,000 cap.
 	a, b := "1-1024", "1-1024"
@@ -52,9 +50,9 @@ func TestExpand_TaskCountExplosionRejected(t *testing.T) {
 	}
 }
 
-// TestExpand_TaskCountGuardRespectsZip verifies the guard counts via the
-// combination tree, not a naive product: zipping two 1024-value parameters
-// yields 1024 tasks (not ~1M), so it must be accepted.
+// TestExpand_TaskCountGuardRespectsZip verifies the guard counts through the
+// combination tree: zipping two 1024-value parameters yields 1024 tasks, so it
+// must be accepted.
 func TestExpand_TaskCountGuardRespectsZip(t *testing.T) {
 	a, b := "1-1024", "1-1024"
 	zip := "(A,B)"
@@ -121,8 +119,7 @@ func TestDeriveChunkBounds_NilAndNonChunk(t *testing.T) {
 
 // TestExpand_ChunkContiguousNeverSpansAGap pins RFC 0001's definition of a
 // CONTIGUOUS chunk: "always a contiguous range of integers", spelled
-// "<start>-<end>" even for one frame. The first row is the RFC's worked
-// example.
+// "<start>-<end>" even for one frame. The first row is the RFC's example.
 func TestExpand_ChunkContiguousNeverSpansAGap(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -132,20 +129,20 @@ func TestExpand_ChunkContiguousNeverSpansAGap(t *testing.T) {
 		want       []string
 	}{
 		{
-			// The RFC's own "likely division" ends 18-27, 28-37, 38-47,
-			// 48-50; the reference implementation balances the run instead.
+			// The RFC illustrates this as 18-27, 28-37, 38-47, 48-50; the
+			// reference implementation balances the run instead.
 			"RFC 0001 example", "1,10-12,18-50", 10, "CONTIGUOUS",
 			[]string{"1-1", "10-12", "18-26", "27-34", "35-42", "43-50"},
 		},
 		{
 			// Balanced: the fewest chunks of at most 5, with the values spread
-			// evenly, never a short last chunk (contiguous-uneven.test.yaml).
+			// evenly (contiguous-uneven.test.yaml).
 			"uneven range is balanced", "1-12", 5, "CONTIGUOUS",
 			[]string{"1-4", "5-8", "9-12"},
 		},
 		{
-			// Chunk i ends at ceil((i+1)*n/k), so the sizes alternate rather
-			// than front-loading the remainder (3,2,3,2, not 3,3,2,2).
+			// Chunk i ends at ceil((i+1)*n/k), so the sizes alternate
+			// (3,2,3,2) instead of front-loading the remainder (3,3,2,2).
 			"balanced sizes alternate", "1-10", 3, "CONTIGUOUS",
 			[]string{"1-3", "4-5", "6-8", "9-10"},
 		},
@@ -209,10 +206,10 @@ func TestExpand_ChunkContiguousNeverSpansAGap(t *testing.T) {
 }
 
 // TestExpand_ChunkNoncontiguousIsCompact pins the spelling of a NONCONTIGUOUS
-// chunk. Every row's want was measured from the reference implementation
-// (openjd-model's StepParameterSpaceIterator, the pinned OPENJD_MODEL_VERSION);
-// the first two are also the TASK_CHUNKING conformance fixtures
-// noncontiguous.test.yaml and noncontiguous-format.test.yaml, which
+// chunk. Every row but the last matches the output of the reference
+// implementation (openjd-model's StepParameterSpaceIterator, at the pinned
+// OPENJD_MODEL_VERSION); the first two are also the TASK_CHUNKING conformance
+// fixtures noncontiguous.test.yaml and noncontiguous-format.test.yaml, which
 // test/conformance scores. The last row has no reference equivalent: the
 // reference orders a range's values increasingly where internal/openjd keeps
 // them first-seen, so a chunk can descend, and a descent never forms a range.
@@ -277,8 +274,8 @@ func chunkParam(t *testing.T, rangeExpr string, chunkSize int, constraint string
 	return out
 }
 
-// TestDeriveChunkBounds_GappedRangeGivesPerRunBounds is the user-visible half:
-// .Start/.End over a gapped range must never enclose a frame the range excluded.
+// TestDeriveChunkBounds_GappedRangeGivesPerRunBounds checks that .Start/.End
+// over a gapped CONTIGUOUS range never enclose a frame the range excluded.
 func TestDeriveChunkBounds_GappedRangeGivesPerRunBounds(t *testing.T) {
 	ps := &openjd.StepParameterSpace{
 		TaskParameterDefinitions: []openjd.TaskParamDefinition{{

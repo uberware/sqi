@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Nuke Write Render. The chunk reaches nuke as a frame list after -F, so the two
-# cases vary the range shape (contiguous, then stepped) rather than patching the
-# chunk size; chunks.defaultTaskCount ships at 10, so both cases fan out.
+# Nuke Write Render. The chunk reaches nuke as a start-end range after -F, so
+# the two cases vary the range shape (contiguous, then stepped) rather than
+# patching the chunk size; chunks.defaultTaskCount ships at 10, so both cases
+# fan out.
 cases:
   - name: default
     params:

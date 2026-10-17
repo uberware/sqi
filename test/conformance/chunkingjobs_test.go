@@ -24,14 +24,13 @@ import (
 // spelled (CONTIGUOUS "7-8", NONCONTIGUOUS "7,8"), which a template-validity
 // fixture cannot see.
 //
-// sqi's chunk value is the task parameter expansion yields, substituted
-// unchanged, so the printed lines are "CHUNK:" plus each expanded value. A
-// listed line matches as a substring, the way the fixtures' runner searches
-// task output.
+// sqi substitutes the task parameter value that expansion yields unchanged,
+// so the printed lines are "CHUNK:" plus each expanded value. A listed line
+// matches as a substring, the way the fixtures' runner searches task output.
 //
-// A fixture in chunkingJobDivergences must still fail, for the same
-// three-direction reason baseline.txt gives: one that starts passing is a
-// stale entry.
+// A fixture in chunkingJobDivergences must still fail, as a baselined case
+// must in baseline.go's DiffBaseline: one that starts passing is a stale
+// entry.
 func TestConformance_TaskChunkingJobOutputs(t *testing.T) {
 	paths, err := filepath.Glob(filepath.Join(SuiteRoot, "TASK_CHUNKING", "jobs", "*.test.yaml"))
 	if err != nil {

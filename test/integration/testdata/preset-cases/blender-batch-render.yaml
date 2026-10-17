@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Blender Batch Render. OutputPath defaults to "" (Blender then writes to its
-# own scene-configured output path); the cases below supply one so the -o
-# argument is reviewable, including Blender's #### frame-padding convention.
+# Blender Batch Render. OutputPath defaults to "" and -o is always passed, so
+# the cases supply one to keep the argument reviewable, including Blender's
+# #### frame-padding convention.
 cases:
   - name: default
     params:

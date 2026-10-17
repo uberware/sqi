@@ -20,20 +20,19 @@ readme: |
   - **Output Path** - the output image path passed to `3dsmaxcmd` as
     `-outputName:`. Enter one, and make sure its folder exists: `3dsmaxcmd` does
     not create it. The switch is always passed, so an empty value reaches
-    `3dsmaxcmd` as `-outputName:` with nothing after it rather than being
-    omitted, and what it does with that is unverified.
+    `3dsmaxcmd` as a bare `-outputName:`; what it does then is unverified.
 
   ## How work is divided
 
   The frame range expands into tasks through OpenJD task chunking. The
   `SQI_CHUNK_BOUNDS` extension gives each task the first and last frame of its
-  own slice, which is what lets the command pass `-start:` and `-end:`. A
-  stepped range such as `1-9:4` splits into one task per frame, so a step
-  argument is never needed.
+  own slice, which the command passes as `-start:` and `-end:`. A slice never
+  spans a gap, so a stepped range such as `1-9:4` becomes one task per frame
+  and no step argument is needed.
 
-  One frame per task is the default. Raise the chunk size to batch a frame range
-  into a single `3dsmaxcmd` launch, which trades parallelism for fewer scene
-  loads.
+  One frame per task is the default. Raise the step's `chunks.defaultTaskCount`
+  to render up to that many consecutive frames in one `3dsmaxcmd` launch,
+  trading parallelism for fewer scene loads.
 
   ## Requirements
 
@@ -43,12 +42,10 @@ readme: |
   - `3dsmaxcmd` on the worker's `PATH`: add the install folder, for example
     `C:\Program Files\Autodesk\3ds Max 2026`. The built-in detector tags a
     default install, but tagging does not put the command on `PATH`.
-  - A rendering session that may need a desktop. Whether `3dsmaxcmd` renders
-    from a worker running as a service with no interactive session is
-    unverified.
+  - Possibly an interactive desktop session. Whether `3dsmaxcmd` renders from
+    a worker running as a service, with no interactive session, is unverified.
   - Launch 3ds Max once as an administrator on each render node before the
-    first job. This is Deadline's advice for headless rendering; no reason is
-    given for it.
+    first job, as Deadline's documentation advises for headless rendering.
 category: Rendering
 version: 1.0.0
 template:

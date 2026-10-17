@@ -1,21 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Adobe After Effects' command-line renderer, aerender, which the
-# presets/sqi/after-effects-*-render-{windows,macos}.yaml presets run through a
-# wrapper script by bare name. Source: Adobe's "Automated rendering and network
-# rendering" page (helpx.adobe.com/after-effects/using/automated-rendering-network-rendering.html,
-# Wayback copy of 2026-05-27); see design section 13.1 of
-# docs/superpowers/specs/2026-10-16-p5a-dcc-breadth-design.md.
+# presets/sqi/after-effects-*-render-{windows,macos}.yaml presets run by bare
+# name through a wrapper script. Source: Adobe's "Automated rendering and
+# network rendering" page
+# (helpx.adobe.com/after-effects/using/automated-rendering-network-rendering.html).
 #
 # The globs match the default install locations:
 # C:\Program Files\Adobe\Adobe After Effects <year>\Support Files\aerender.exe
 # on Windows and /Applications/Adobe After Effects <year>/aerender on macOS.
 #
-# Unverified: the versioned folder names. Adobe's page still spells them with
-# "CC" (Adobe After Effects CC), which recent releases have dropped, so the
-# globs take the current "Adobe After Effects <year>" form on trust. A worker
-# whose folder does not match is tagged only when aerender is on its PATH, and
-# gets a version only when that path spells the year in the same form.
+# Unverified: the versioned folder names. Adobe's page still spells them
+# "Adobe After Effects CC", which recent releases have dropped, so the globs
+# assume the current "Adobe After Effects <year>" form. A worker whose folder
+# does not match is tagged only when aerender is on its PATH, and gets a
+# version only when that path spells the year in the same form.
 tag: aftereffects
 checks:
   - exe: aerender

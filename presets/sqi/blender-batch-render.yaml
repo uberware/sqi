@@ -27,11 +27,12 @@ readme: |
 
   The frame range expands into tasks through OpenJD task chunking. The
   `SQI_CHUNK_BOUNDS` extension gives each task the first and last frame of its
-  own slice, which is what lets the command pass a start and an end rather than
-  a frame list.
+  own slice, which the command passes as `-s` and `-e`. A slice never spans a
+  gap, so a stepped range such as `1-9:4` becomes one task per frame.
 
-  One frame per task is the default. Raise the chunk size to batch a frame range
-  into a single Blender launch, which trades parallelism for fewer scene loads.
+  One frame per task is the default. Raise the step's `chunks.defaultTaskCount`
+  to render up to that many consecutive frames in one Blender launch, trading
+  parallelism for fewer scene loads.
 
   ## Requirements
 

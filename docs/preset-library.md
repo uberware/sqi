@@ -2,9 +2,9 @@
 # Preset Library
 
 The **preset library** is a catalog of ready-to-use product definitions hosted at a
-configurable URL. Each entry is a product definition file — the same format as a
+configurable URL. Each entry is a product definition file in the same format as a
 hand-authored custom product (`name`, `title`, `description`, `category`, `version`,
-and an inline OpenJD `template:`) — that can be fetched and installed on the farm
+and an inline OpenJD `template:`), which can be fetched and installed on the farm
 without writing any YAML.
 
 > **Installed presets run commands on your farm. Only configure a preset library
@@ -16,12 +16,12 @@ without writing any YAML.
 
 The preset library operates at two levels:
 
-1. **Index** — a single JSON file listing every available preset with metadata and a
+1. **Index**: a single JSON file listing every available preset with metadata and a
    SHA-256 checksum of its definition file. `sqi-server` fetches the index when you
-   open the Preset Library page and caches it in memory for a few minutes. The
+   open the Preset Library page and caches it in memory for five minutes. The
    **Refresh** button forces a fresh fetch.
 
-2. **Definition files** — individual product definition YAML files referenced by the
+2. **Definition files**: individual product definition YAML files referenced by the
    index. A definition is always fetched fresh at install time; the server verifies
    its SHA-256 against the index before storing it. A mismatch is rejected with 422.
 
@@ -50,13 +50,12 @@ The preset library operates at two levels:
 `sha256` is the hex-encoded SHA-256 hash of the definition file's raw content. It
 serves two purposes: **integrity** (the downloaded bytes match what the index
 promised) and **update detection** (if the hash in the index changes, the installed
-product is shown as having an update available). It is not a cryptographic authorship
-signature — the trust boundary is the configured index URL itself.
+product is shown as having an update available). It does not authenticate the
+author: the trust boundary is the configured index URL.
 
-The index carries `description` but **not** `readme`. `description` is there
-because the preset list page searches it; `readme` is not searched, so shipping
-it in the index would grow every client's cached index for nothing. A preset's
-readme arrives with its definition when the detail page is opened.
+The index carries `description`, which the preset list page searches, but not
+`readme`. A preset's readme arrives with its definition when its detail page is
+opened.
 
 ---
 
@@ -118,10 +117,10 @@ A first install returns HTTP 201; an update or reinstall returns HTTP 200.
 
 ## REST endpoints
 
-All endpoints return 503 when `preset_library.url` is empty. A 503 also means
-the definition's validation exceeded `openjd.expr_submission_deadline` on this
-server (retry; it is not a rejection of the preset). An unreachable or
-unparseable **index** is 502.
+All endpoints return 503 when `preset_library.url` is empty. A 503 can also
+mean that validating the definition exceeded `openjd.expr_submission_deadline`
+on this server; that is not a rejection of the preset, so retry. An unreachable
+or unparseable **index** is 502.
 
 | Method | Path | Description |
 |---|---|---|
@@ -139,18 +138,17 @@ Installed products follow different rules from custom products:
 
 - **Read-only.** `PUT /api/v1/products/{name}` returns 403. The template is
   authoritative from the library and is updated only via the preset install flow.
-- **Uninstallable.** `DELETE /api/v1/products/{name}` works normally — removing the
-  product from the catalog without affecting any jobs that were already submitted
-  from it (those snapshot their template at submission time).
+- **Uninstallable.** `DELETE /api/v1/products/{name}` removes the product from
+  the catalog. Jobs already submitted from it are unaffected, because each job
+  keeps a copy of its template from submission time.
 - **Update available.** When the library's SHA-256 for a preset changes, the Browse
-  and Preview pages surface an **Update available** badge. Updating re-fetches the
-  definition, verifies the new hash, and overwrites the stored product. Because
-  installed products cannot be edited in place, no locally authored content is at
-  risk of being clobbered.
-- **Duplicate to custom.** Every product — including installed ones — has a
-  **Duplicate to custom** action. Use it to create a locally-editable copy that is no
-  longer tied to the library. The duplicate gets `source: custom` and behaves as a
-  fully mutable product; it is not affected by future library updates.
+  and Preview pages show an **Update available** badge. Updating re-fetches the
+  definition, verifies the new hash, and overwrites the stored product. Installed
+  products cannot be edited, so an update never overwrites local edits.
+- **Duplicate to custom.** Every product, installed ones included, has a
+  **Duplicate to custom** action. It creates a locally editable copy with
+  `source: custom` that is no longer tied to the library and is not affected by
+  future library updates.
 
 ---
 
@@ -169,32 +167,33 @@ copies show the **Update available** badge.
 
 ## DCC reference presets
 
-The official library ships `Rendering`-category presets — `maya-layer-render`,
-`maya-scene-render`, `houdini-rop-render`, `nuke-write-render`,
-`nuke-script-render`, `blender-batch-render` and `blender-view-layer-render` —
-as ready targets for the [`sqi-submitter`](dcc-submitters.md) in-application
-submitters, plus `mistika-boutique-render`, `mistika-vr-render` and
-`mistika-workflows-render`, which have no in-application submitter, and
-`cinema4d-render`, `cinema4d-take-render`, `3dsmax-render` and four After Effects
-presets, whose submitters have not shipped yet. Those ten are submitted from the
-web UI or the API. Each names its parameters from the [parameter convention
-contract](dcc-submitters.md#the-parameter-convention-contract) so submitter
-pre-fill works out of the box — all but the two After Effects queue presets
-declare `SceneFile` and `Frames` (the queue presets render whatever the project
-has queued, so they take only `SceneFile`); an output parameter is declared only
-where the command takes one (`OutputDir` on the two Maya presets, `OutputPath` on
-Blender, Cinema 4D and 3ds Max), alongside per-host extras such as `Renderer`,
-`RenderLayer`, `RopPath`, `WriteNode`, `Scene`, `ViewLayer`, `Take` and
-`RenderQueueItem`. Each gates on a worker
-capability tag that `sqi-worker` auto-detects from a standard install with no
-per-worker configuration — manual tags are needed only for nonstandard
-install paths (see [capability
+The official library ships seven `Rendering`-category presets as targets for
+the [`sqi-submitter`](dcc-submitters.md) in-application submitters:
+`maya-layer-render`, `maya-scene-render`, `houdini-rop-render`,
+`nuke-write-render`, `nuke-script-render`, `blender-batch-render` and
+`blender-view-layer-render`. Ten more have no in-application submitter and are
+submitted from the web UI or the API: `mistika-boutique-render`,
+`mistika-vr-render`, `mistika-workflows-render`, `cinema4d-render`,
+`cinema4d-take-render`, `3dsmax-render` and the four After Effects presets.
+
+Each names its parameters by the [parameter convention
+contract](dcc-submitters.md#the-parameter-convention-contract), so submitter
+pre-fill works without configuration. All but the two After Effects queue
+presets declare `SceneFile` and `Frames`; the queue presets render whatever the
+project has queued, so they take only `SceneFile`. An output parameter is
+declared only where the command takes one: `OutputDir` on the two Maya presets
+and `OutputPath` on Blender, Cinema 4D and 3ds Max. Per-host extras include
+`Renderer`, `RenderLayer`, `RopPath`, `WriteNode`, `Scene`, `ViewLayer`, `Take`
+and `RenderQueueItem`.
+
+Each preset gates on a capability tag that `sqi-worker` auto-detects from a
+standard install; a manual tag is needed only for a nonstandard install path
+(see [capability
 auto-detection](worker-capabilities.md#capability-auto-detection-built-in-dcc-detectors)).
 See [`docs/dcc-submitters.md`](dcc-submitters.md) for the full reference,
-including the chunking behavior and worker requirements per preset. Every
-software tag a shipped preset requires must be emitted by a built-in detector —
-enforced by `TestBuiltinDetectors_CoverPresets`, so a new reference preset
-cannot ship without one.
+including the chunking behavior and worker requirements per preset.
+`TestBuiltinDetectors_CoverPresets` fails if a shipped preset requires a
+software tag that no built-in detector emits.
 
 ### Cinema 4D, 3ds Max and After Effects
 
@@ -208,30 +207,27 @@ cannot ship without one.
 | `after-effects-queue-render-windows` | everything the saved project has queued | one task for the whole queue | `aftereffects`, and `attr.worker.os.family` = `windows` |
 | `after-effects-queue-render-macos` | the same, on macOS | one task for the whole queue | `aftereffects`, and `attr.worker.os.family` = `macos` |
 
-`3dsmax-render` is Windows-only because 3ds Max does not run elsewhere. The two
-Cinema 4D presets carry no OS gate. Every Cinema 4D render node must be licensed
-before it can render, which is the most likely first-run failure. The
-`cinema4d` detector has no `exe` check, only install-location globs, so a
-Cinema 4D installed elsewhere needs the tag set by hand (see [built-in
-detectors](worker-capabilities.md#built-in-detectors)).
+`3dsmax-render` is Windows-only because 3ds Max runs only on Windows. The two
+Cinema 4D presets carry no OS gate. Each Cinema 4D render node must be licensed
+before it can render. The `cinema4d` detector has no `exe` check, only
+install-location globs, so a Cinema 4D installed elsewhere needs the tag set by
+hand (see [built-in detectors](worker-capabilities.md#built-in-detectors)).
 
-For Cinema 4D, 3ds Max and After Effects alike, the built-in detector tags a worker
-from where the application is installed, but tagging does not put the command on the
-worker's `PATH`. The presets run the bare `Commandline`, `3dsmaxcmd` and `aerender`,
-so each must also be on the `PATH` for the job to run.
+A detector can tag a worker from the install location alone, but the presets
+run the bare commands `Commandline`, `3dsmaxcmd` and `aerender`, so each must
+also be on the worker's `PATH` for the job to run.
 
 **The After Effects wrapper.** `aerender` is reported to exit with status 0 when
-a render fails, so a task that trusted its exit status would report every failure
-as a success. All four After Effects presets therefore run `aerender` through a
-small script embedded in the preset: PowerShell on Windows, POSIX `sh` on macOS.
-The wrapper streams `aerender`'s output to the task log unchanged and fails the
-task when `aerender` exits non-zero or when any line of its output contains
-`aerender ERROR`, matched without regard to letter case. That marker comes from
-user reports and has not been checked against a real failing render, and a
-failure that neither makes `aerender` exit non-zero nor prints `aerender ERROR`
-is still reported as a success. This is why the presets come in Windows and macOS
-variants: the argument lists are identical, but the wrapper script is not, and the
-variant's `os.family` gate selects it.
+a render fails, so all four After Effects presets run it through a small script
+embedded in the preset: PowerShell on Windows, POSIX `sh` on macOS. The wrapper
+passes `aerender`'s output to the task log unchanged and fails the task when
+`aerender` exits non-zero or when any line of its output contains
+`aerender ERROR`, matched case-insensitively. That marker comes from user
+reports and has not been checked against a real failing render; a failure that
+neither exits non-zero nor prints the marker is still reported as a success.
+The Windows and macOS variants pass identical arguments to `aerender` and
+differ only in the wrapper script, which the variant's `os.family` gate
+selects.
 
 Each After Effects render node needs `aerender` on its `PATH`, `powershell`
 (Windows) or `sh` (macOS) on its `PATH`, and Adobe's render-only marker: an empty
@@ -241,61 +237,54 @@ non-royalty-bearing, render-only mode.
 
 **A movie output must be one task.** After Effects cannot render one movie file
 (a QuickTime or other container, as opposed to an image sequence) from several
-machines. When the render-queue item writes a movie, set **Frames Per Task** to at
-least the number of frames in the range, and enter the range with no step and no
-gaps, such as `1-240`: a stepped or listed range always splits at each gap. The
-preset cannot see the output format, so nothing enforces this; the queue presets
-are unaffected because they are always one task.
+machines. When the render-queue item writes a movie, set **Frames Per Task** to
+at least the number of frames in the range, and enter the range with no step and
+no gaps, such as `1-240`, because a `CONTIGUOUS` chunk always splits at a gap.
+The preset cannot see the output format, so nothing enforces this. The queue
+presets always run as one task.
 
-**Houdini and Nuke chunking.** `houdini-rop-render` uses `NONCONTIGUOUS` chunks,
-so a task receives a compact frame range (`1-10`, `1-19:2`, `1-3,7,8`) and a
-stepped range such as `1-60:2` costs `ceil(n/chunk)` tasks rather than one task
-per frame. The embedded driver script renders each part of the range with one
-`rop.render()` call, merging parts that continue one another, so a stepped chunk
-is one call. `nuke-write-render` and `nuke-script-render` stay `CONTIGUOUS`:
-Foundry documents no comma-list form of `-F`, so a chunk such as `1-3,7,8`
-would need a wrapper script to become several `-F` flags, and a stepped range
-there still costs one task per frame.
+**Houdini and Nuke chunking.** `houdini-rop-render` uses `NONCONTIGUOUS` chunks
+of up to ten frames, so a task receives a compact frame range (`1-10`,
+`1-19:2`, `1-3,7,8`) and a stepped range such as `1-60:2` is three tasks
+rather than thirty. The embedded driver script renders each part of the range
+with one `rop.render()` call and merges consecutive frames into one call, so
+`1-19:2` is one call and `1-3,7,8` is two. `nuke-write-render` and
+`nuke-script-render` use `CONTIGUOUS` chunks because Foundry documents no
+comma-list form of `-F`, so a stepped range there is one task per frame.
 
 ## Transcoding reference presets
 
 The official library also ships five `Transcoding`-category presets under
-`presets/sqi/*.yaml` — plain ffmpeg jobs meant to be submitted directly rather
-than through a DCC submitter. Each gates on the `attr.worker.tag.ffmpeg =
-"true"` capability tag, which `sqi-worker` sets automatically on any worker
-with `ffmpeg` on `PATH` (see [worker capability
-tags](worker-capabilities.md)); only the PowerShell-joined segmented variant
-adds an OS gate on top of that:
+`presets/sqi/*.yaml`: plain ffmpeg jobs submitted directly rather than through
+a DCC submitter. Each gates on the `attr.worker.tag.ffmpeg = "true"` capability
+tag, which `sqi-worker` sets automatically on any worker with `ffmpeg` on
+`PATH` (see [worker capability tags](worker-capabilities.md)). Only the
+PowerShell-joined segmented variant adds an OS gate:
 
-- `ffmpeg-transcode` — converts one video file on one worker, start to
-  finish. Base-spec OpenJD (declares no extensions), so it runs on any
-  `ffmpeg=true` worker regardless of that worker's EXPR limit configuration.
-- `ffmpeg-sequence-encode` — turns a rendered image sequence into a movie on
-  one worker, the step that typically follows a render job. Declares `EXPR`.
+- `ffmpeg-transcode` converts one video file on one worker. It is base-spec
+  OpenJD (declares no extensions), so the scheduler never withholds it from an
+  `ffmpeg=true` worker because of that worker's EXPR limits.
+- `ffmpeg-sequence-encode` turns a rendered image sequence into a movie on one
+  worker, typically after a render job. It declares `EXPR`.
 - Three segmented variants split a long source into fixed-length slices,
-  transcode each slice — possibly on a different worker, though the
-  scheduler may also reuse one — then join the slices back into a single
-  file. All three need Source Duration entered by hand, since nothing can
-  measure it before submission. Pick one based on your farm:
-  - `ffmpeg-segment-transcode-bash` — joins with a bash script. Carries no OS
-    gate: bash is not POSIX-only, since git-bash puts it on Windows too, so
-    this variant runs on any `ffmpeg=true` worker with `bash` on `PATH`. It
-    invokes `bash` explicitly with the script as an argument rather than
-    exec'ing the script directly, because executing a `#!` script is a POSIX
-    kernel feature Windows has no equivalent of, and the script folds
-    backslashes in the output path to forward slashes so its `dirname`,
-    `basename`, and glob work on a Windows path. Removes its slice files once
-    the join succeeds.
-  - `ffmpeg-segment-transcode-powershell` — joins with a PowerShell script;
-    needs Windows workers. Removes its slice files once the join succeeds.
-  - `ffmpeg-segment-transcode-expr` ("Portable") — needs no shell at all, so
-    it runs on any `ffmpeg=true` worker without even requiring `bash`; its join
-    file list is generated by the template itself. That list-building cost is
-    charged at
-    submission and grows with the slice count, so it suits jobs of up to 400
-    slices — past that, use the Bash or PowerShell variant, whose cost does
-    not grow with slice count. Unlike the two shell variants, it leaves its
-    slice files beside the output for you to remove.
+  transcode each slice as its own task, which may run on different workers,
+  then join the slices into a single file. All three need Source Duration
+  entered by hand, because nothing measures the source before submission:
+  - `ffmpeg-segment-transcode-bash` joins with a bash script. It has no OS
+    gate, so it runs on any `ffmpeg=true` worker with `bash` on `PATH`,
+    including a Windows worker with Git Bash. The task runs `bash` with the
+    script as an argument rather than executing the script directly, which
+    Windows cannot do, and the script converts backslashes in a Windows output
+    path to forward slashes. It removes its slice files once the join
+    succeeds.
+  - `ffmpeg-segment-transcode-powershell` joins with a PowerShell script and
+    needs Windows workers. It removes its slice files once the join succeeds.
+  - `ffmpeg-segment-transcode-expr` ("Portable") needs no shell, so it runs on
+    any `ffmpeg=true` worker; the template itself generates the join's file
+    list. That list is evaluated at submission and its cost grows with the
+    slice count, so this variant suits jobs of up to 400 slices. Past that,
+    use the Bash or PowerShell variant, whose cost does not grow with the slice
+    count. It leaves its slice files beside the output for you to remove.
 
 Install and use them exactly like the DCC reference presets above (Browse →
 Install as a product).
@@ -325,8 +314,8 @@ tags](worker-capabilities.md#built-in-detectors)):
 a **Scene File Pattern** that marks the frame number with a run of `#`
 characters, such as `shot.####.ass`. Each task renders one frame. The run is
 replaced with the frame number, zero-padded to the run's length: frame 7 is
-`shot.0007.ass`. A frame number longer than the run is written in full. A negative frame keeps its sign inside the padding:
-frame -2 is `shot.-002.ass`. A pattern with no run of `#`, or with more than
+`shot.0007.ass`. A frame number longer than the run is written in full. A
+negative frame keeps its sign inside the padding: frame -2 is `shot.-002.ass`. A pattern with no run of `#`, or with more than
 one, is rejected at submission. Only the file name is checked, so a `#` in a
 directory of a `/`-separated path is allowed. A backslash-separated Windows
 path is treated as one file name, so its directories must not contain `#`.
@@ -354,171 +343,152 @@ tiers](#validation-tiers) and each preset's caveat in
 
 ## Testing presets
 
-The official library also ships four `Testing`-category presets — authored in
-this repo under `presets/testing/` and published to the library under a
-`testing/` namespace — for smoke-testing a fresh farm without a DCC installed:
+The official library also ships four `Testing`-category presets for
+smoke-testing a fresh farm without a DCC installed. They are authored under
+`presets/testing/` and published to the library under a `testing/` namespace:
 
-- `test-render-bash` / `test-render-powershell` — a no-op render simulator that
-  sleeps per frame and can inject failures, hangs, and progress (bash and
-  PowerShell variants), to exercise task chunking, the worker process executor,
-  and the retry/timeout paths.
-- `test-steps-bash` / `test-steps-powershell` — a multi-step job (render →
+- `test-render-bash` / `test-render-powershell`: a no-op render simulator that
+  sleeps per frame and can inject failures, hangs and progress, to exercise
+  task chunking, the worker process executor, and the retry and timeout paths.
+- `test-steps-bash` / `test-steps-powershell`: a multi-step job (render →
   publish → notify) that exercises step-dependency gating and cross-step
   ordering.
 
-Install them exactly like the reference presets (Browse → Install as a product),
-then submit with the generated form. Because they depend on no software, they
-require no worker capability tags — any online worker on the matching OS can run
-them.
+Install them like the reference presets (Browse → Install as a product), then
+submit with the generated form. They require no capability tags. The
+PowerShell variants gate on Windows workers. The bash variants carry no OS gate
+but run their script directly, so they need a Linux or macOS worker.
 
 ---
 
 ## Validation tiers
 
-`presets/validation-tiers.yaml` tracks exactly 37 entries — the 30 presets
-under `presets/sqi/` plus the seven built-in products documented in
-[`docs/development.md`](development.md#adding-a-product) — stating which
-validation tier each job type has actually reached. The four `presets/testing/`
-presets above are intentionally out of scope for this registry: unlike the
-reference presets, they need no vendor application to prove anything — they
-*are* the stand-in executable, meant to be installed and run directly against
-a real farm rather than reviewed tier by tier. The tiers are:
+`presets/validation-tiers.yaml` has 37 entries, the 30 presets under
+`presets/sqi/` plus the seven built-in products documented in
+[`docs/development.md`](development.md#adding-a-product), and states which
+validation tier each has reached. The four `presets/testing/` presets are not
+in the registry: they run no vendor application, so there is nothing for a
+tier to stand in for. The tiers are:
 
-- **Tier 1 — argv snapshot.** The template is expanded and resolved through
-  the real production submit → assign → resolve pipeline
-  (`internal/presettest`, driving the same code path a live server and worker
-  use) and the resulting command line is compared byte-for-byte against a
-  reviewed golden file.
+- **Tier 1: argv snapshot.** The template is expanded and resolved through the
+  production submit → assign → resolve code path (`internal/presettest`) and
+  the resulting command line is compared byte for byte against a reviewed
+  golden file.
 
-  **What a green Tier-1 test proves:** the preset expands to *exactly* the
-  command line a human reviewed, and any future change to expansion,
-  resolution, or the preset's own template shows up as a golden diff someone
-  has to look at.
+  **What a passing Tier-1 test proves:** the preset expands to exactly the
+  command line that was reviewed, and any change to expansion, resolution or
+  the preset's template shows up as a golden diff.
 
   **What it does not prove:** that the vendor's application accepts that
   command line. No Maya, Nuke, Houdini, Blender, Cinema 4D, 3ds Max, After
-  Effects, Mistika or standalone renderer installation executes anything at
-  Tier 1 — the argv is correct only insofar as the documentation it was derived
-  from is correct and current. What the goldens do pin for the frame-range
-  presets follows from their `CONTIGUOUS` chunks (all but Houdini's, below),
-  each always a plain `start-end` run of consecutive frames:
+  Effects, Mistika or standalone renderer installation runs at Tier 1, so the
+  argv is only as correct as the documentation it was derived from. For the
+  frame-range presets, the goldens pin what follows from their `CONTIGUOUS`
+  chunks (all but Houdini's, below), each a plain `start-end` run of
+  consecutive frames:
   - `nuke-write-render` and `nuke-script-render` never pass Nuke's `-F` flag an
     OpenJD step (`1-19:2`, where Foundry documents `1-19x2`). Whether Nuke
     reads `-F 1-1` as the single frame 1 needs a real Nuke (Tier 2).
-  - The `-s`/`-e` presets (Maya, Blender, the Cinema 4D, 3ds Max and After
-    Effects frame-range presets, and the three Mistika presets) and V-Ray's
-    `-frames=START-END` never render a frame the range excluded: a
-    stepped or listed range splits into one chunk per run of consecutive frames, so a stepped range yields one
-    single-frame chunk per frame. See
-    [sqi-chunk-bounds](openjd-extensions/sqi-chunk-bounds.md).
-  - `houdini-rop-render` is the exception: its chunks are `NONCONTIGUOUS`, so
-    its goldens show a compact frame range (`1-10`, or `1-19:2` for a stepped
-    range) that the driver script renders with one `rop.render()` call per
-    part.
+  - The presets that pass a chunk's first and last frame (Maya, Blender,
+    Cinema 4D, 3ds Max, the two per-item After Effects presets and the three
+    Mistika presets) and V-Ray's `-frames=START-END` never render a frame the
+    range excluded: a stepped or listed range splits into one chunk per run of
+    consecutive frames, so a stepped range yields one single-frame chunk per
+    frame. See [sqi-chunk-bounds](openjd-extensions/sqi-chunk-bounds.md).
+  - `houdini-rop-render` uses `NONCONTIGUOUS` chunks, so its goldens show a
+    compact frame range (`1-8`, or `1-19:2` for a stepped range) that the
+    driver script renders with one `rop.render()` call per run of frames.
 
   Read a preset's `caveat` field before trusting its golden for anything more
   than "the template still expands the way it did when this was reviewed."
 
-- **Tier 2 — real application.** A real, licensed copy of the vendor
-  application runs the resolved command and its output is inspected. The
-  twenty-five render presets (Maya, Nuke, Houdini, Blender, Cinema 4D, 3ds Max,
-  After Effects, the three Mistika products and the eight standalone renderers)
-  have not reached Tier 2 — none
-  of those vendor applications has a redistributable, CI-friendly way to run
-  headless in this project's CI, so their entries in `presets/validation-tiers.yaml` carry no `tier2` block.
-  The five ffmpeg presets *are* Tier 2: ffmpeg is freely available, so each of
-  their registry entries carries a `tier2` block, and
-  `test/integration/ffmpeg_presets_test.go` runs real ffmpeg end to end and
-  decodes the produced file, checked against the registry the same way Tier 1
-  and Tier 3 are.
+- **Tier 2: real application.** The real application runs the resolved command
+  and its output is inspected. The twenty-five render presets (Maya, Nuke,
+  Houdini, Blender, Cinema 4D, 3ds Max, After Effects, the three Mistika
+  products and the eight standalone renderers) have not reached Tier 2: none
+  of those applications can run headless in this project's CI, so their
+  registry entries carry no `tier2` block. The five ffmpeg presets and the
+  `python-sequence` built-in are Tier 2. Each of their entries carries a
+  `tier2` block naming a test that runs the real program end to end:
+  `test/integration/ffmpeg_presets_test.go` runs real ffmpeg and decodes the
+  file it produced, and `TestPresetPythonSequence_LauncherContract` runs
+  `python-sequence`'s launcher under a real Python.
 
-- **Tier 3 — real pipeline, no vendor license.** A real `sqi-server` and
-  `sqi-worker`, wired together exactly as in production, execute the preset
-  end to end — but the worker's OpenJD action target is
-  `test/stubproc`, a recording stand-in binary rather than the real vendor
-  executable. This proves the *sqi-side* plumbing (task assignment, worker
-  process execution, argument delivery, exit-status handling)
-  without needing a Maya or Nuke license in CI, and cross-checks the
-  arguments the stub actually observed against the Tier-1 golden for the same
-  case — in both directions, so a resolution that collapsed every task onto one
-  argv would fail. Environment delivery is **not** covered: the stub records
-  only the command, its arguments, its working directory and its stdin, so
-  nothing here observes the variables a task's process was handed.
+- **Tier 3: real pipeline, no vendor license.** A real `sqi-server` and
+  `sqi-worker`, wired together as in production, execute the preset end to
+  end, but the worker's action target is `test/stubproc`, a recording stand-in
+  binary, in place of the vendor executable. This proves the sqi side (task
+  assignment, worker process execution, argument delivery, exit-status
+  handling) without a vendor license, and cross-checks the arguments the stub
+  observed against the Tier-1 golden for the same case in both directions, so
+  a resolution that collapsed every task onto one argv would fail. Environment
+  delivery is **not** covered: the stub records only the command, its
+  arguments, its working directory and its stdin.
 
-**The registry is verified, not maintained by hand.** Every claim in
-`presets/validation-tiers.yaml` is checked by
-`test/integration/preset_tiers_test.go`'s `TestZZPresetTierRegistrySatisfied`
-against what the suite actually ran. A Tier-1 claim needs a fixture case and a
-golden that exist; a Tier-3 claim needs a named test that actually ran, and a
-Tier-3 case that skipped on a platform listed in that entry's `required_on` is
-a registry failure, not a no-op — every container-backed target in this repo
-can exit 0 while running nothing, and this is enforced in Go rather than by a CI job asserting
-test names by hand. An entry's `tier3.required_on` need not name every
-platform: it may leave out a platform the preset itself is gated against, so a
-skip there is expected rather than a registry failure. For example, `script`
-(the POSIX-only built-in) gates on `attr.worker.os.family anyOf ["linux",
-"macos"]`, so a Windows worker could never run it — its `tier3.required_on:
-[linux, darwin]` deliberately omits `windows`, rather than naming a platform
-the skip check could never see a real run on. An empty `required_on: []` is
-rejected at load time instead, because it would make the skip check
-permanently unfalsifiable on every platform.
+**The registry is verified.** `TestZZPresetTierRegistrySatisfied` in
+`test/integration/preset_tiers_test.go` checks every claim in
+`presets/validation-tiers.yaml` against what the suite ran. A Tier-1 claim
+needs a fixture case and a golden that exist. A Tier-2 or Tier-3 claim needs a
+named test that ran, and a case that skipped on a platform listed in its
+`required_on` is a registry failure. An entry's `required_on` may leave out a
+platform the preset is gated against, where a skip is expected. For example,
+`script` (the POSIX-only built-in) gates on `attr.worker.os.family anyOf
+["linux", "macos"]`, so its `tier3.required_on: [linux, darwin]` omits
+`windows`. An empty `required_on: []` is rejected at load time, because no skip
+could ever fail it.
 
 ### Adding a preset to the harness
 
-1. **Fixture** — add a case file at `test/integration/testdata/preset-cases/<preset-name>.yaml`
+1. **Fixture**: add a case file at `test/integration/testdata/preset-cases/<preset-name>.yaml`
    describing the job parameters for each scenario you want reviewed (at
    minimum a `default` case).
-2. **Golden** — run
+2. **Golden**: run
    `go test ./test/integration/ -run TestPresetTier1Argv -preset-update` to
    generate `test/integration/testdata/preset-argv/<preset-name>--<case>.golden`
    for each case.
-3. **Registry entry** — add the preset to `presets/validation-tiers.yaml` with
-   its `tier1.cases` list, a `caveat` describing what the golden is derived
-   from and what it does not prove, and — if a Tier-3 case exists and can run
-   in this environment — a `tier3` block naming the test and the platforms it
-   must not skip on (`required_on`).
-4. **Review the diff.** A regenerated or newly generated golden is not a
-   passing test by itself; reading the diff *is* the test. Check the argv
-   against the vendor's actual documented CLI, not just against what the
-   template was expected to produce.
+3. **Registry entry**: add the preset to `presets/validation-tiers.yaml` with
+   its `tier1.cases` list, a `caveat` stating what the golden is derived from
+   and what it does not prove, and, if a Tier-3 case exists, a `tier3` block
+   naming the test and the platforms it must not skip on (`required_on`).
+4. **Review the diff.** A generated golden is not a passing test until someone
+   has read it. Check the argv against the vendor's documented command line,
+   not only against what the template was expected to produce.
 
 `make test-preset-harness` runs the whole harness (Tiers 1, 2 and 3, plus the
-registry verification) locally, in one `go test` invocation —
-`TestZZPresetTierRegistrySatisfied` asserts on what the tier tests recorded in
-that same process, so splitting the run across two `go test` invocations makes
-the registry check fail with "never reported" in both. ffmpeg must be on
-`PATH`: the registry's `tier2` blocks require the real-ffmpeg cases to run,
-and a skip on a platform named in `required_on` is a registry failure, not a
-harmless no-op.
+registry check) in one `go test` invocation. It must be one invocation:
+`TestZZPresetTierRegistrySatisfied` checks what the tier tests recorded in the
+same process, so a split run fails the registry check with "never reported".
+ffmpeg and Python must be on `PATH`, because the `tier2` cases need them and a
+skip on a platform named in `required_on` is a registry failure.
 
 ### Tier 3 on Windows
 
-Tier 3 runs on Windows exactly as it does on Linux and macOS — a real
-`sqi-server` and `sqi-worker`, wired together, executing every preset end to
-end against `test/stubproc` in place of the vendor executable — and CI runs
-it in a dedicated job (`preset-harness-windows`). Of the 37 entries in
-`presets/validation-tiers.yaml`, 27 require all three platforms
-(`tier3.required_on: [linux, darwin, windows]`), so a skip on Windows is a
-registry failure for every one of them, not a harmless no-op. The other 10 are
-gated to a narrower platform subset, because their Tier 3 case cannot run
-everywhere by construction. Two are POSIX-only (`required_on: [linux, darwin]`):
-`script` and `command-sequence`. Six are Windows-only
-(`required_on: [windows]`): `script-powershell`, `command-sequence-powershell`,
-`ffmpeg-segment-transcode-powershell`, `3dsmax-render`,
-`after-effects-render-windows` and `after-effects-queue-render-windows` (each
-gated on `attr.worker.os.family anyOf ["windows"]`). The Windows-only six still
-name `windows` and are required to run on this Windows job; they are not required
-anywhere else. Two are macOS-only (`required_on: [darwin]`):
-`after-effects-render-macos` and `after-effects-queue-render-macos`, gated on
-`attr.worker.os.family anyOf ["macos"]`. No CI job has a macOS runner for the
-preset harness, so those two Tier 3 claims are not exercised in CI; the macOS
-wrapper script is instead run under Linux `sh`, with the OS gate stripped, by
-`TestPresetAfterEffects_WrapperFailsOnLoggedError`, and the Windows job runs the
-same test against the PowerShell wrapper.
+Tier 3 runs on Windows as it does on Linux and macOS, and CI runs it in a
+dedicated job (`preset-harness-windows`). Of the 37 registry entries, 27 have
+`tier3.required_on: [linux, darwin, windows]`, so a skip on Windows fails the
+registry check for each of them. The other 10 are gated to fewer platforms:
+
+- POSIX-only (`required_on: [linux, darwin]`), gated on
+  `attr.worker.os.family anyOf ["linux", "macos"]`: `script` and
+  `command-sequence`.
+- Windows-only (`required_on: [windows]`), gated on
+  `attr.worker.os.family anyOf ["windows"]`: `script-powershell`,
+  `command-sequence-powershell`, `ffmpeg-segment-transcode-powershell`,
+  `3dsmax-render`, `after-effects-render-windows` and
+  `after-effects-queue-render-windows`. Only the Windows job runs them.
+- macOS-only (`required_on: [darwin]`), gated on
+  `attr.worker.os.family anyOf ["macos"]`: `after-effects-render-macos` and
+  `after-effects-queue-render-macos`. No CI job runs the preset harness on
+  macOS, so these two Tier-3 claims are not exercised in CI.
+  `TestPresetAfterEffects_WrapperFailsOnLoggedError` runs their `sh` wrapper
+  under Linux with the OS gate stripped; the Windows job runs the same test
+  against the PowerShell wrapper.
+
 `TestPresetTier3RequiredOnMatchesOSGate` fails any entry whose
 `tier3.required_on` differs from the platforms its template's
 `attr.worker.os.family` requirements admit.
+
 `script-powershell` is `script`'s Windows counterpart: where `script` invokes
 `/bin/sh -c`, `script-powershell` runs the command as an embedded `.ps1` with
-`powershell -File`, so between the two every worker platform sqi ships has a
-generic single-command built-in.
+`powershell -File`, so every worker platform has a generic single-command
+built-in.

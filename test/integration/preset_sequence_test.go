@@ -14,9 +14,9 @@ import (
 	"github.com/uberware/sqi/internal/presettest"
 )
 
-// TestPresetPythonSequence_LauncherContract is python-sequence's Tier-2 claim:
-// a real Python runs the product's launcher, the one part of the product no
-// stub can stand in for. It pins the four variables per task, the child's exit
+// TestPresetPythonSequence_LauncherContract is python-sequence's Tier-2 case:
+// a real Python runs the product's launcher, which no stub can stand in for.
+// It pins the four variables per task, the child's exit
 // code, (POSIX) a canceled child's own exit code, and that the script runs as
 // __main__ with its own path in sys.argv[0], as under `python script.py`.
 //
@@ -99,7 +99,7 @@ func requirePython(t *testing.T, caseName string) string {
 }
 
 // findPython3 returns the absolute path of a working Python 3, or "" when
-// there is none. A path is only accepted once it has RUN: on Windows,
+// there is none. A path is accepted only once it has run: on Windows,
 // `python3` commonly resolves to an App Execution Alias that opens the Store
 // instead of running anything.
 func findPython3(t *testing.T) string {

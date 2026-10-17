@@ -117,7 +117,7 @@ func TestRendererDetectors_MatchVendorInstallLayout(t *testing.T) {
 // TestRendererDetectors_ProbePATHForTheCommand checks that each detector has an
 // ungated exe check for the bare command its preset runs. A layout with no exe
 // asserts the opposite: the detector must have no exe check at all, because
-// the command is too generic to probe for (the mistikavr.yaml rule).
+// the command is too generic to probe for (see mistikavr.yaml).
 func TestRendererDetectors_ProbePATHForTheCommand(t *testing.T) {
 	for _, layout := range detectorLayouts {
 		t.Run(layout.tag, func(t *testing.T) {
@@ -217,7 +217,7 @@ func TestRendererDetectors_3DelightReadsDELIGHT(t *testing.T) {
 // platform: a matching glob tags the worker (plus the versioned tag where
 // expected), a Windows-only glob stays silent off Windows, nothing installed
 // advertises nothing, and the command on PATH alone is enough. A layout with no
-// exe skips that last half: there is no command to put on PATH.
+// exe skips the PATH check: there is no command to put on PATH.
 func TestRendererDetectors_EvaluateOnEveryPlatform(t *testing.T) {
 	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
 	goosOf := func(install string) string {

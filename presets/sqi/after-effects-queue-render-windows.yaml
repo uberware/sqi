@@ -70,8 +70,9 @@ template:
           label: After Effects projects
           patterns: ["*.aep"]
   steps:
-    # One task: with no -comp, aerender renders the queue as saved and ignores
-    # -s, -e, -i and -output (Adobe), so there is nothing to split.
+    # One task: with no -comp, aerender renders the queue as saved and, per
+    # Adobe's documentation, ignores -s, -e, -i and -output, so there is
+    # nothing to split.
     - name: Render
       hostRequirements:
         attributes:
@@ -82,7 +83,7 @@ template:
       script:
         embeddedFiles:
           # after-effects-render-windows' aerender wrapper, byte for byte; see
-          # that preset for what each line does and why.
+          # that preset for what each line does.
           - name: aerender_wrapper
             type: TEXT
             filename: aerender_wrapper.ps1

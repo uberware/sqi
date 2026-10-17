@@ -7,13 +7,12 @@ hardware.
 
 Tags appear in two forms:
 
-- **List-style tags** — presence only; e.g., a manual `gpu` entry (the value
-  is the empty string). Used for software labels and feature flags. (The
-  built-in DCC detectors below are the exception: they emit `key=true` pairs,
-  not empty-value presence tags — see [Capability
-  auto-detection](#capability-auto-detection-built-in-dcc-detectors).)
-- **Key=value tags** — e.g., `os=linux`, `os_version=22.04`. The value adds
-  context for range-based matching rules.
+- **List-style tags**: presence only, such as a manual `gpu` entry, whose value
+  is the empty string. Used for software labels and feature flags. The
+  built-in detectors below instead emit `key=true` pairs (see [Capability
+  auto-detection](#capability-auto-detection-built-in-dcc-detectors)).
+- **Key=value tags**: such as `os=linux` or `os_version=22.04`, where the value
+  carries information a matching rule can test.
 
 ---
 
@@ -61,12 +60,12 @@ the sysctl call fails.
 
 Number of logical (hardware-thread) CPUs available to the worker process.
 
-**Detection:** `runtime.NumCPU()` on all platforms. Reflects the number of
-CPUs visible to the process; on containerized workers this is the cgroup CPU
-quota rather than the full host core count.
+**Detection:** `runtime.NumCPU()` on all platforms: the logical CPUs the
+process may run on. On Linux that is the process's CPU affinity set, so a
+container pinned with `--cpuset-cpus` reports the pinned CPUs, while a CPU
+quota such as `--cpus` does not lower the count.
 
-**Example:** Used as a numeric value in heartbeat messages and registration.
-Not stored as a string tag but reported in registration metadata.
+Reported as a number in registration metadata, not as a string tag.
 
 ---
 
@@ -110,39 +109,36 @@ GPU-capable on macOS or Windows.
 
 ## Capability auto-detection (built-in DCC detectors)
 
-In addition to the hardware/OS tags above, `sqi-worker` runs a second,
-declarative detection engine (`internal/worker/capabilities`) that looks for
-installed creative applications — Maya, Nuke, Houdini, Blender, Cinema 4D,
-3ds Max, After Effects, Mistika (Boutique/Ultima, VR, Workflows) and ffmpeg,
-plus the standalone renderers below — and advertises a tag with value
-`"true"` automatically, with no per-worker configuration. This makes the
-software actually installed on a worker visible without hand-editing its
-config, and it's enough on its own to satisfy the `anyOf: ["true"]` gate the
-shipped reference presets declare — a standard install matches those presets
-with zero configuration. Run `sqi-worker capabilities` any time to see what
-was found. See [`docs/dcc-submitters.md`](dcc-submitters.md#reference-presets)
-for how these auto-detected tags relate to the reference presets.
+In addition to the hardware and OS tags above, `sqi-worker` runs a declarative
+detection engine (`internal/worker/capabilities`) that looks for installed
+applications (Maya, Nuke, Houdini, Blender, Cinema 4D, 3ds Max, After Effects,
+Mistika Boutique/Ultima, VR and Workflows, ffmpeg, and the standalone
+renderers below) and advertises a tag with value `"true"` for each one found,
+with no per-worker configuration. That satisfies the `anyOf: ["true"]` gate the
+shipped reference presets declare, so a worker with a standard install matches
+those presets as is. Run `sqi-worker capabilities` to see what was found. See
+[`docs/dcc-submitters.md`](dcc-submitters.md#reference-presets) for how these
+tags relate to the reference presets.
 
 ### How it runs
 
 Detection runs once, at process startup, before the worker's first
-registration (`BuildWorkerCapabilities` in
+registration (`capabilities.BuildWorkerCapabilities`, called from
 [`cmd/sqi-worker/start.go`](https://github.com/uberware/sqi/blob/main/cmd/sqi-worker/start.go)):
 
 1. Every **built-in detector** not named in `capabilities.disable` is
    evaluated.
-2. Every **custom detector** under `capabilities.detect` is evaluated (these
-   are validated at load time; a malformed custom detector — missing `tag`,
-   zero checks, more than one check primitive set, an invalid `os` gate, or a
-   non-compiling regex — fails worker startup with a clear error rather than
-   silently skipping).
-3. Manual `worker.capability_tags` are merged last and always win on a key
-   collision (see [Manual capability tags](#manual-capability-tags) below).
+2. Every **custom detector** under `capabilities.detect` is evaluated. A
+   malformed custom detector (missing `tag`, no checks, more than one check
+   primitive in a check, an invalid `os` gate, or a regex that does not
+   compile) stops the worker from starting with an error.
+3. Manual `worker.capability_tags` are merged last and win on a key collision
+   (see [Manual capability tags](#manual-capability-tags) below).
 
-Detection is declarative only — checks read the filesystem, `PATH`, an
-environment variable, or (Windows) the registry; nothing is executed. It runs
-once at startup, not on a timer, so installing or removing an application on a
-running worker is only picked up on the next restart.
+Checks only read the filesystem, `PATH`, an environment variable or (on
+Windows) the registry; nothing is executed. Because detection runs only at
+startup, installing or removing an application takes effect when the worker
+restarts.
 
 ### Built-in detectors
 
@@ -155,15 +151,15 @@ application under
 | `maya` | Linux `path_glob /usr/autodesk/maya*/bin/maya`; macOS `path_glob /Applications/Autodesk/maya*/Maya.app`; Windows `registry HKLM\SOFTWARE\Autodesk\Maya` | `maya(?P<v>[0-9]+)` against the matched path |
 | `houdini` | `exe hython` (any OS, if on `PATH`); Linux `path_glob /opt/hfs*/bin/houdini`; macOS `path_glob /Applications/Houdini/Houdini*/Frameworks/Houdini.framework`; Windows `registry HKLM\SOFTWARE\Side Effects Software\Houdini` | `(?:hfs\|Houdini ?)(?P<v>[0-9]+\.[0-9]+)` against the matched path |
 | `nuke` | Linux `path_glob /usr/local/Nuke*/Nuke*`; macOS `path_glob /Applications/Nuke*/Nuke*.app`; Windows `registry HKLM\SOFTWARE\The Foundry\Nuke` | `Nuke([0-9]+\.[0-9]+)` against the matched path |
-| `blender` | `exe blender` (any OS, if on `PATH`); macOS `path_glob /Applications/Blender.app`; Windows `registry HKLM\SOFTWARE\BlenderFoundation\Blender` | none (presence only — no `-<version>` tags) |
+| `blender` | `exe blender` (any OS, if on `PATH`); macOS `path_glob /Applications/Blender.app`; Windows `registry HKLM\SOFTWARE\BlenderFoundation\Blender` | none (presence only, no `-<version>` tags) |
 | `cinema4d` | Linux `path_glob /opt/maxon/cinema4dr*/bin/Commandline`; macOS `path_glob /Applications/Maxon Cinema 4D */Commandline.app`; Windows `path_glob C:\Program Files\Maxon Cinema 4D *\Commandline.exe` | `Maxon Cinema 4D (?P<v>[0-9]{4})` against the matched path (a Linux match carries no year, so no version) |
 | `3dsmax` | `exe 3dsmaxcmd` (any OS, if on `PATH`); Windows `registry HKLM\SOFTWARE\Autodesk\3dsMax`; Windows `path_glob C:\Program Files\Autodesk\3ds Max *\3dsmaxcmd.exe` | `3ds Max (?P<v>[0-9]{4})` against the matched path |
 | `aftereffects` | `exe aerender` (any OS, if on `PATH`); macOS `path_glob /Applications/Adobe After Effects */aerender`; Windows `path_glob C:\Program Files\Adobe\Adobe After Effects *\Support Files\aerender.exe` | `After Effects (?P<v>[0-9]{4})` against the matched path |
-| `ffmpeg` | `exe ffmpeg` (any OS, if on `PATH`) — a PATH tool everywhere, so no install glob and no registry probe | none (presence only) |
+| `ffmpeg` | `exe ffmpeg` (any OS, if on `PATH`); no install glob or registry probe | none (presence only) |
 | `mistika` | Linux `path_glob /home/mistika/SGO Apps/Mistika Ultima*/bin/mistika`; macOS `path_glob /Applications/SGO Apps/Mistika Boutique.app*/Contents/MacOS/mistika`; Windows `path_glob C:\Program Files\SGO Apps\Mistika Boutique*\bin\mistika.exe` | `Mistika (?:Ultima\|Boutique) ?(?P<v>[0-9]+\.[0-9]+)` against the matched path |
 | `mistikavr` | Linux `path_glob /home/mistika/SGO Apps/Mistika VR*/bin/vr`; macOS `path_glob /Applications/SGO Apps/Mistika VR.app*/Contents/MacOS/vr`; Windows `path_glob C:\Program Files\SGO Apps\Mistika VR*\bin\vr.exe` | `Mistika VR ?(?P<v>[0-9]+\.[0-9]+)` against the matched path |
 | `mistikaworkflows` | Linux `path_glob /home/mistika/SGO Apps/Mistika Workflows*/bin/workflows`; macOS `path_glob /Applications/SGO Apps/Mistika Workflows.app*/Contents/MacOS/workflows`; Windows `path_glob C:\Program Files\SGO Apps\Mistika Workflows*\bin\workflows.exe` | `Mistika Workflows ?(?P<v>[0-9]+\.[0-9]+)` against the matched path |
-| `arnold` | `exe kick` (any OS); Linux `path_glob /usr/autodesk/arnold/maya*/bin/kick`; Windows `path_glob C:\Program Files\Autodesk\Arnold\maya*\bin\kick.exe` (the copy MtoA installs) | none (presence only — the paths carry the Maya version, not Arnold's) |
+| `arnold` | `exe kick` (any OS); Linux `path_glob /usr/autodesk/arnold/maya*/bin/kick`; Windows `path_glob C:\Program Files\Autodesk\Arnold\maya*\bin\kick.exe` (the copy MtoA installs) | none (presence only; the paths carry the Maya version, not Arnold's) |
 | `vray` | `exe vray` (any OS); Linux `path_glob /usr/Chaos/V-Ray/Standalone_for_*/bin/vray`; Windows `path_glob C:\Program Files\Chaos\V-Ray\Standalone for x64\bin\vray.exe` | none |
 | `husk` | `exe husk` (any OS); Linux `path_glob /opt/hfs*/bin/husk`; Windows `path_glob C:\Program Files\Side Effects Software\Houdini *\bin\husk.exe` | `(?:hfs\|Houdini ?)(?P<v>[0-9]+\.[0-9]+)` against the matched path |
 | `mantra` | `exe mantra` (any OS); Linux `path_glob /opt/hfs*/bin/mantra`; Windows `path_glob C:\Program Files\Side Effects Software\Houdini *\bin\mantra.exe` | `(?:hfs\|Houdini ?)(?P<v>[0-9]+\.[0-9]+)` against the matched path |
@@ -172,27 +168,23 @@ application under
 | `3delight` | `exe renderdl` (any OS); `env DELIGHT`; macOS `path_glob /Applications/3Delight/bin/renderdl`; Windows `path_glob C:\Program Files\3Delight\bin\renderdl.exe` | none |
 | `oiiotool` | `exe oiiotool` (any OS, if on `PATH`) | none (presence only) |
 
-The three Mistika detectors and the seven standalone-renderer detectors
-(`arnold` through `3delight`) probe Windows with a `path_glob` rather than a
-`registry` key. The Mistika detectors carry **no `exe` check**: their
-binaries are `mistika`, `vr` and `workflows`, and a bare `PATH` probe for the
-last two would tag workers that have no Mistika at all. Detection is by install
-location only, but the presets invoke the bare command, so the binary must also
-be on the worker's `PATH` for the job to run.
+The three Mistika detectors carry **no `exe` check**: their binaries are
+`mistika`, `vr` and `workflows`, and a bare `PATH` probe for the last two would
+tag workers that have no Mistika at all. They detect by install location only,
+but the presets invoke the bare command, so the binary must also be on the
+worker's `PATH` for the job to run.
 
-The `cinema4d` detector likewise carries **no `exe` check**, deliberately. Its
-preset invokes the bare command `Commandline`, a name generic enough that a
-`PATH` probe could tag workers with no Cinema 4D installed, and a falsely tagged
-worker is handed render work it cannot do. It matches install locations only
-(the default Maxon folders in the table), and the command must still be on the
-worker's `PATH` for the job to run. A Cinema 4D installed elsewhere is tagged by
-hand with `cinema4d=true` under `worker.capability_tags`. The `3dsmax` and
-`aftereffects` detectors do check `PATH` (`3dsmaxcmd`, `aerender`), because those
-names are specific to the product. A match on an install location or, for `3dsmax`, the
-registry still tags a worker whose `3dsmaxcmd` or `aerender` is not on `PATH`; the
-presets invoke the bare command, so it must be on the worker's `PATH` for the job to
-run, as for Cinema 4D. A registry match for `3dsmax` tags the worker without a
-version: the key carries the product version (`27.0` for 2025), not the year.
+The `cinema4d` detector also carries **no `exe` check**. Its preset invokes the
+bare command `Commandline`, a name generic enough that a `PATH` probe could tag
+a worker with no Cinema 4D installed, which would then be handed render work it
+cannot do. It matches the default Maxon install folders only; tag a Cinema 4D
+installed elsewhere by hand with `cinema4d=true` under
+`worker.capability_tags`. The `3dsmax` and `aftereffects` detectors do probe
+`PATH` for `3dsmaxcmd` and `aerender`, names specific to the product. For all
+three, a match on an install location (or, for `3dsmax`, the registry) tags the
+worker even when the command is not on `PATH`, but the presets invoke the bare
+command, so it must be on the worker's `PATH` for the job to run. A `3dsmax`
+registry match carries no year, so it tags the worker without a version.
 
 Each standalone-renderer detector checks `PATH` for the command its preset
 runs, plus the install locations listed in the table. `husk` and `mantra` have
@@ -202,17 +194,17 @@ without either renderer on `PATH`. The `redshift` tag marks the Redshift
 [GPU fields](#gpu-fields)). On a host with Redshift but no usable GPU, list
 `redshift` under `capabilities.disable`.
 
-A `path_glob`/`exe` check's matched signal is a filesystem path, so version
-extraction works there. A `registry` check's signal is the registry key
-string itself (not a value read from the registry), so on Windows these
-built-ins currently detect *presence* only — no `-<version>` variant — unless
-a path-based check also matches on that host.
+A `path_glob` or `exe` check's matched signal is a filesystem path, so version
+extraction works there. A `registry` check's signal is the registry key string
+itself, not a value read from the registry, so a registry match on Windows
+(`maya`, `houdini`, `nuke`, `blender`, `3dsmax`) yields the bare tag without a
+`-<version>` variant unless a path-based check also matches on that host.
 
 Every software tag a shipped reference preset requires
-(`presets/sqi/*.yaml`'s `attr.worker.tag.<name>`) must be emitted by some
-built-in detector — enforced by `TestBuiltinDetectors_CoverPresets` in
-[`internal/worker/capabilities/builtins_test.go`](https://github.com/uberware/sqi/blob/main/internal/worker/capabilities/builtins_test.go),
-so a new default preset cannot ship without a matching detector (see
+(`presets/sqi/*.yaml`'s `attr.worker.tag.<name>`) must be emitted by a
+built-in detector. `TestBuiltinDetectors_CoverPresets` in
+[`internal/worker/capabilities/builtins_test.go`](https://github.com/uberware/sqi/blob/main/internal/worker/capabilities/builtins_test.go)
+enforces this, so a new default preset cannot ship without one (see
 [Adding a new auto-detected tag](development.md#adding-a-new-capability-tag-to-auto-detection)
 in the development guide).
 
@@ -220,40 +212,35 @@ in the development guide).
 
 A detector emits tags into the same `Tags` map as the hardware tags above:
 
-- The bare `<tag>` (e.g. `maya`) is emitted once, with value `"true"`, the
-  moment *any* of its checks matches — this matches the same `key=true`
-  convention as a manual tag like `maya=true`, so `attr.worker.tag.<tag>`
-  `anyOf: ["true"]` requirements are satisfied directly.
-- `<tag>-<version>` (e.g. `maya-2025`) is emitted per **distinct** version
+- The bare `<tag>` (e.g. `maya`) is emitted once, with value `"true"`, when
+  any of its checks matches. That is the same `key=true` form as a manual tag
+  like `maya=true`, so it satisfies an `attr.worker.tag.<tag>`
+  `anyOf: ["true"]` requirement directly.
+- `<tag>-<version>` (e.g. `maya-2025`) is emitted once per distinct version
   string captured by the detector's `version.from` regex, also with value
   `"true"`.
-- **Multi-version is supported.** A `path_glob` check can match several
-  installs at once (e.g. `/opt/hfs20.0/…` and `/opt/hfs20.5/…` both present),
-  so a single detector run can emit `houdini`, `houdini-20.0`, **and**
-  `houdini-20.5` together — every distinct version found, not just one.
+- A `path_glob` check can match several installs at once (e.g.
+  `/opt/hfs20.0/…` and `/opt/hfs20.5/…`), so one detector can emit `houdini`,
+  `houdini-20.0` and `houdini-20.5` together.
 
 ### Precedence: built-in → custom → manual
 
-- Built-in detectors run before custom detectors; if a custom detector emits
-  a tag also emitted by an (enabled) built-in, the built-in's evaluation runs
-  first and the tag is already present, so the custom detector doesn't
-  overwrite it. Since both detectors emit the same `"true"` value this has no
-  practical effect on the tag itself, only on which detector is credited as
-  the source in the `sqi-worker capabilities` output below.
-- To fully replace a built-in's checks for a tag (e.g. because it misfires on
-  a nonstandard host layout), also add the tag to `capabilities.disable` so
-  only your custom detector's checks run.
+- Built-in detectors run before custom detectors, and a detector never
+  overwrites a tag already present. When a custom detector emits a tag an
+  enabled built-in also emits, the value is `"true"` either way; only the
+  source credited in the `sqi-worker capabilities` output differs.
+- To replace a built-in's checks for a tag (e.g. because it misfires on a
+  nonstandard host layout), also add the tag to `capabilities.disable` so only
+  your custom detector's checks run.
 - Manual `worker.capability_tags` are merged last via `MergeManualTags` and
-  always overwrite a same-named key from any detector, built-in or custom —
-  this is the escape hatch to suppress a misdetection (`maya=` clears it to
-  empty) or to force the tag on a worker where the built-in checks don't fire
+  overwrite a same-named key from any detector. Use them to suppress a
+  misdetection (`maya=` clears the value) or to set a tag the checks miss
   (`maya=true` on a nonstandard install path).
 
 ### The `sqi-worker capabilities` command
 
-Prints every tag the worker would currently advertise — auto-detected
-(hardware and software) plus manual — with its source, without connecting to
-a server:
+Prints every tag the worker would advertise, auto-detected (hardware and
+software) and manual, with its source, without connecting to a server:
 
 ```sh
 sqi-worker capabilities
@@ -267,15 +254,14 @@ os         linux   auto
 os_version 22.04   auto
 ```
 
-The `VALUE` column is the tag's advertised value (bare tags resolve to `true`;
-hardware tags like `os`/`os_version` carry their detected string). The `SOURCE`
-column is one of `auto` (the hardware probe's own `Tags` entries — just `os`
-and, when detected, `os_version`), `builtin:<tag>`, `custom`, or `manual`.
-This is the first thing to run when a worker isn't picking up jobs you'd
-expect it to — it answers "why isn't my worker getting Maya jobs?" without
-needing to connect to a server or inspect logs. `sqi-worker start --dry-run`
-includes the same detected capabilities as part of its larger
-config-and-capabilities summary.
+The `VALUE` column is the tag's advertised value: `true` for a detector tag,
+the detected string for `os` and `os_version`, and whatever a manual entry set
+(a bare manual entry such as `gpu` has an empty value; the example above was
+set as `gpu=true`). The `SOURCE` column is one of `auto` (the hardware probe's
+`os` and, when detected, `os_version`), `builtin:<tag>`, `custom`, or `manual`.
+Run this first when a worker is not picking up jobs you expect it to.
+`sqi-worker start --dry-run` includes the same tags in its configuration and
+capabilities summary.
 
 ---
 
@@ -317,19 +303,17 @@ capabilities:
 | `checks[].exe` | one of these four per check | Resolved via a `PATH` lookup (like the shell `which`, using `exec.LookPath`). The signal is the resolved path. |
 | `checks[].path_glob` | | A `filepath.Glob` pattern; every match is a separate signal, which is how multi-version detection works. |
 | `checks[].env` | | An environment variable check. Bare form (`env: HFS`) requires the variable to be present in the environment (an empty value still counts as present). Mapping form (`env: {name: ..., matches: ...}`) additionally requires the value to match a regex. |
-| `checks[].registry` | | A Windows registry key path; checked for existence only (no value read). Evaluates to false on Linux/macOS unless combined with an `os: windows` gate (harmless either way, since the underlying check is a no-op off Windows). |
+| `checks[].registry` | | A Windows registry key path under `HKLM` or `HKCU`, checked for existence only (no value is read). Never matches on Linux or macOS; pairing it with `os: windows` makes that explicit. |
 | `checks[].os` | no | Restricts the check to one platform: `linux`, `darwin`, or `windows`. Omit to run the check on all platforms. |
 | `version.from` | no | A regex applied to **each matched signal** of every check. The version is the named group `v` (`(?P<v>...)`) if present, otherwise the first capturing group. A signal that doesn't match contributes only the bare tag, no version tag. |
 
-Exactly one of `exe` / `path_glob` / `env` / `registry` must be set per
-check — a check with zero or more than one is rejected at load time, along
-with a missing `tag`, zero `checks`, an invalid `os` value, or a `version.from`
-/ `env.matches` regex that fails to compile. Built-ins go through the same
-`Validate()` call at load time and are covered by tests that assert they
-parse and validate cleanly, so a broken built-in YAML is caught in CI; custom
-detectors are validated when the worker config is loaded at startup, and a
-validation failure stops the worker from starting with a descriptive error
-rather than silently dropping the detector.
+Exactly one of `exe` / `path_glob` / `env` / `registry` must be set per check.
+A check with none or more than one is rejected at load time, as are a missing
+`tag`, an empty `checks` list, an invalid `os` value, and a `version.from` or
+`env.matches` regex that fails to compile. Built-ins go through the same
+`Validate()` call, and tests assert that each one parses and validates.
+Custom detectors are validated when the worker starts, and a validation
+failure stops the worker with an error naming the detector.
 
 ---
 
@@ -373,8 +357,8 @@ and manual) that would be sent in the registration message.
 
 ## Common manual tag conventions
 
-These are not enforced by the software — they are conventions that make
-affinity rules in job submissions readable and consistent.
+sqi does not enforce these; they are conventions that keep affinity rules in
+job submissions readable and consistent.
 
 | Tag | Meaning |
 |---|---|
@@ -409,8 +393,8 @@ Each `capability_tags` entry is parsed by `MergeManualTags`:
 - An entry with an empty key (starting with `=`, e.g. `=true`) is skipped —
   an empty tag key can never satisfy an `attr.worker.tag.<key>` requirement.
 
-**Auto-detected string tags** — `os` and `os_version` — are stored in `Tags`
-and can be overridden by adding a manual tag with the same exact key:
+**Auto-detected string tags** (`os` and `os_version`) are stored in `Tags`
+and can be overridden by a manual tag with exactly the same key:
 
 ```yaml
 worker:
@@ -423,16 +407,11 @@ To override `os_version` with a specific value, use `os_version=<value>`; to
 just clear it, add the bare `os_version` entry (which sets
 `Tags["os_version"] = ""`).
 
-**Hardware values** — `RAMMb`, `CPUCount`, and GPU fields — are reported as
-typed struct fields in the registration message, **not** as entries in the
-`Tags` map. They cannot be overridden through `capability_tags`. If you need
-to suppress or correct these values, the current option is to set
-`SQI_WORKER_CAPABILITY_TAGS` to a flag readable by the server's job affinity
-rules, such as `no-gpu`, to annotate the worker without relying on the
-auto-detected field.
-
-There is currently no explicit "remove this field" mechanism for hardware
-fields. Hardware-field overrides are planned for a future configuration option.
+**Hardware values** (`RAMMb`, `CPUCount` and the GPU fields) are reported as
+typed fields in the registration message, not as entries in the `Tags` map,
+and cannot be overridden or removed through `capability_tags`. To route work
+around a wrong value, add a manual tag such as `no-gpu` and write affinity
+rules against that tag instead of the detected field.
 
 ---
 
@@ -451,29 +430,29 @@ always resolves to `""` and can never match.
 **`attr.worker.os.family` and `attr.worker.cpu.arch` take OpenJD's tokens, not
 Go's.** The validator accepts only `linux`, `windows`, `macos` for the first
 and `x86_64`, `arm64` for the second, and rejects anything else. Two of those
-disagree with what the worker reports about itself:
+differ from what the worker reports about itself:
 
-| Requirement value | Worker reports | Shown in the API, UI and `sqi-worker capabilities` |
+| Requirement value | Worker reports | Shown in the API |
 | --- | --- | --- |
 | `macos` | `darwin` | `darwin` |
 | `x86_64` | `amd64` | `amd64` |
 
 The scheduler translates when it matches, so a Mac satisfies `macos` and an
-Intel host satisfies `x86_64` — you never write `darwin` or `amd64` in a
-template, and doing so is rejected. If you specifically want the Go spelling,
-gate on the `attr.worker.tag.os` tag instead.
+Intel host satisfies `x86_64`. A template that writes `darwin` or `amd64` is
+rejected. The web UI and `sqi-worker capabilities` also show the OS as
+`darwin`, and neither shows the architecture. To gate on the Go spelling of
+the OS, use the `attr.worker.tag.os` tag instead.
 
-A worker running a build older than the one that added architecture reporting
-sends no architecture at all, and an empty value matches **no**
-`attr.worker.cpu.arch` requirement — deliberately, since assuming otherwise
-would send `x86_64` work to an `arm64` host. Such a worker starts reporting as
-soon as it is upgraded and restarts.
+A worker that reports no architecture (one built before architecture
+reporting was added) matches no `attr.worker.cpu.arch` requirement, so
+architecture-gated work is never sent to a host of unknown architecture.
+Upgrading and restarting the worker makes it report one.
 
-To gate a step on a worker tagged `maya=true` — auto-detected on any worker
-with a standard Maya install (see [Capability
-auto-detection](#capability-auto-detection-built-in-dcc-detectors) above), or
-set manually via `capability_tags: [maya=true]` (see [Setting manual
-tags](#setting-manual-tags) above) for a nonstandard install:
+To gate a step on a worker tagged `maya=true`, whether auto-detected from a
+standard Maya install (see [Capability
+auto-detection](#capability-auto-detection-built-in-dcc-detectors) above) or
+set manually with `capability_tags: [maya=true]` for a nonstandard install
+(see [Setting manual tags](#setting-manual-tags) above):
 
 ```yaml
 steps:
@@ -484,12 +463,11 @@ steps:
           anyOf: ["true"]
 ```
 
-This is the syntax the seventeen DCC reference products under `presets/sqi/` (see
+The seventeen DCC reference presets under `presets/sqi/` (see
 [`docs/dcc-submitters.md`](dcc-submitters.md#reference-presets)) and the eight
 [standalone renderer presets](preset-library.md#standalone-renderer-reference-presets)
-use.
-(`presets/sqi/` also ships `Transcoding`-category ffmpeg presets that gate on
-`attr.worker.tag.ffmpeg` instead — see [`docs/preset-library.md`](preset-library.md#transcoding-reference-presets).)
+use this syntax, as do the `Transcoding` presets, which gate on
+`attr.worker.tag.ffmpeg` (see [`docs/preset-library.md`](preset-library.md#transcoding-reference-presets)).
 
 The server's scheduler matches the required attribute against registered
 workers' `Tags` map and routes each task only to workers that satisfy every

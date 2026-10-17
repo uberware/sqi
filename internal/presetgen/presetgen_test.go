@@ -177,7 +177,7 @@ func TestPublish(t *testing.T) {
 		t.Error("published index dropped the foreign community entry")
 	}
 	if byName["gone"] {
-		t.Error("published index kept the stale dcc entry")
+		t.Error("published index kept the stale sqi entry")
 	}
 	if !byName["blender-batch-render"] {
 		t.Error("published index missing blender-batch-render")

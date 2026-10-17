@@ -3,18 +3,20 @@
 `sqi-worker` is configured through four layers applied in order, with later
 layers overriding earlier ones:
 
-1. **Built-in defaults** — sensible values for local development.
-2. **Config file** — YAML or JSON; searched in `./config/sqi-worker.yaml`,
-   `~/.sqi/sqi-worker.yaml`, and `/etc/sqi/sqi-worker.yaml` by default. Pass
-   an explicit path with `--config /path/to/file`. A Windows service does not
+1. **Built-in defaults**, suitable for local development.
+2. **Config file**, YAML or JSON. Without `--config /path/to/file`, the worker
+   uses the first file it finds among `./config/sqi-worker.yaml`,
+   `~/.sqi/sqi-worker.yaml` and `/etc/sqi/sqi-worker.yaml`, trying each path
+   with a `.json` extension after the `.yaml` one. A Windows service does not
    search: it refuses to start without `--config` (see
    [registering the service by hand](worker-deployment.md#registering-the-service-by-hand)).
-3. **Environment variables** — prefixed `SQI_WORKER_`, e.g.
-   `SQI_WORKER_NATS_URL`. (Exceptions: `diagnostics.enabled` uses
-   `SQI_DIAGNOSTICS_ENABLED` and `staging.defaults` uses
-   `SQI_STAGING_DEFAULTS`, both with no `WORKER` infix — see the
-   `diagnostics` and `staging` sections.)
-4. **CLI flags** — highest priority. `--config`/`-c`, `--log-level` and
+3. **Environment variables**, prefixed `SQI_WORKER_`, e.g.
+   `SQI_WORKER_NATS_URL`. Two have no `WORKER` infix: `diagnostics.enabled`
+   uses `SQI_DIAGNOSTICS_ENABLED` and `staging.defaults` uses
+   `SQI_STAGING_DEFAULTS`. A numeric or duration variable that does not parse
+   is ignored, leaving the value from the lower layers; a boolean variable
+   that does not parse is read as `false`.
+4. **CLI flags**, highest priority. `--config`/`-c`, `--log-level` and
    `--log-format` are root flags available on every subcommand; `--dry-run` and
    `--nats-insecure-skip-verify` belong to `start` only.
 
@@ -24,7 +26,8 @@ Print the effective merged configuration at any time with:
 sqi-worker config print
 ```
 
-Validate configuration without connecting to the server:
+Validate configuration and print the capabilities the worker would register,
+without connecting to the server:
 
 ```sh
 sqi-worker start --dry-run
@@ -47,9 +50,9 @@ Duration values use Go syntax: `30s`, `1m30s`, `500ms`, `2h`, etc.
 | **Default** | `""` (empty — use mDNS discovery) |
 | **Env var** | `SQI_WORKER_NATS_URL` |
 
-URL of the NATS server embedded in `sqi-server`. Required when
-`discovery.enable_mdns` is `false`. Must not be empty unless mDNS discovery
-is enabled. Example: `nats://sqi-server.local:4222`.
+URL of the NATS server embedded in `sqi-server`, e.g.
+`nats://sqi-server.local:4222`. Required when `discovery.enable_mdns` is
+`false`. When set, mDNS discovery is skipped.
 
 ```yaml
 nats:
@@ -99,29 +102,24 @@ Path to the client TLS private key (PEM-encoded). Must be set together with
 | **Default** | `"auto"` |
 | **Env var** | `SQI_WORKER_NATS_TLS_ENABLED` |
 
-Whether to use TLS on the broker connection. Three-valued, mirroring the
-server's [`auth.session.cookie_secure`](configuration.md):
+Whether to use TLS on the broker connection. Three-valued, like the server's
+[`auth.session.cookie_secure`](configuration.md#authsessioncookie_secure):
 
 | Value | Meaning |
 |---|---|
-| `"auto"` | Use TLS when there is a reason to: any `tls_*` field is set, **or** the server discovered over mDNS advertises a TLS-required broker (`nats_tls=1`) |
-| `"true"` | Always use TLS, even with no CA configured — verification then uses the system roots, which is right for a publicly-trusted broker certificate and wrong for a farm CA |
+| `"auto"` | Use TLS when any `nats.tls_*` file or `nats.insecure_skip_verify` is set, or when the server discovered over mDNS advertises a TLS-required broker (`nats_tls=1`) |
+| `"true"` | Always use TLS. With no `tls_ca_file`, the certificate is verified against the system roots, which works for a publicly trusted broker certificate and fails for a farm CA |
 | `"false"` | Never use TLS, even with a CA configured |
 
-A bool cannot express this: the interesting states are *infer* and *force off*,
-and a bool collapses both onto its zero value.
-
-The usual boolean spellings are accepted as synonyms in both the config file and
-the environment — `1`/`yes`/`on` for `"true"`, `0`/`no`/`off` for `"false"` —
-since `SQI_WORKER_NATS_TLS_ENABLED=1` is how boolean-looking variables get set.
-Anything else is rejected at startup with a `nats.tls_enabled` validation error,
-rather than silently falling back to `"auto"`.
+The file and the environment also accept `1`/`yes`/`on` for `"true"` and
+`0`/`no`/`off` for `"false"`. Any other value fails startup with a
+`nats.tls_enabled` validation error.
 
 Under `"auto"`, a worker that discovers a TLS-required broker enables TLS and
-says so in its startup log; if no `tls_ca_file` is configured it also warns that
-the system roots cannot verify a farm CA. Under `"false"` the advertisement is
-honored rather than overridden, but the worker warns that the connection is
-about to be refused — the broker's own error names neither the cause nor this
+logs that it did; if no `tls_ca_file` is configured it also warns that the
+system roots cannot verify a farm CA. Under `"false"`, a worker that
+discovers a TLS-required broker keeps plaintext and warns that the broker will
+refuse the connection, because the broker's own error does not name this
 setting.
 
 ```yaml
@@ -139,15 +137,13 @@ nats:
 | **Default** | `""` (use system CA pool) |
 | **Env var** | `SQI_WORKER_NATS_TLS_CA_FILE` |
 
-Path to the CA certificate that verifies the **broker's** TLS certificate
-(PEM-encoded), i.e. the certificate configured as `nats.tls.cert_file` on the
-server.
+Path to the CA certificate (PEM-encoded) that verifies the broker's TLS
+certificate, i.e. the one configured as `nats.tls.cert_file` on the server.
 
-Empty means the system certificate pool; set means **that CA only**, so
-pointing this at a farm CA pins the acceptable issuer rather than widening the
-set. Distinct from
+Empty means the system certificate pool. When set, only certificates issued by
+this CA are accepted. Separate from
 [`nats.server_tls_ca_file`](#natsserver_tls_ca_file), which verifies the HTTPS
-API on a different port and may legitimately have a different issuer.
+API on a different port and may have a different issuer.
 
 ```yaml
 nats:
@@ -165,9 +161,9 @@ nats:
 | **Env var** | `SQI_WORKER_NATS_INSECURE_SKIP_VERIFY` |
 | **CLI flag** | `--nats-insecure-skip-verify` |
 
-Skip TLS certificate verification. **Never set this to `true` in production**
-— it defeats the purpose of TLS. Use only in development environments where a
-self-signed certificate is acceptable.
+Skip verification of the broker's TLS certificate. Development only: with
+verification off, the connection can be intercepted. Under
+`nats.tls_enabled: "auto"`, setting this also turns TLS on.
 
 ---
 
@@ -179,28 +175,21 @@ self-signed certificate is acceptable.
 | **Default** | `-1` (retry indefinitely) |
 | **Env var** | `SQI_WORKER_NATS_MAX_RECONNECT_ATTEMPTS` |
 
-Maximum number of reconnection attempts before giving up and exiting. `-1`
-means retry indefinitely — the recommended setting for long-running workers.
-Reconnect attempts use exponential backoff with jitter starting at
-`nats.reconnect_wait`.
+Maximum number of reconnection attempts before the worker gives up and shuts
+down. `-1` retries indefinitely and is the recommended setting. Delays between
+attempts are set by [`nats.reconnect_wait`](#natsreconnect_wait).
 
 ```yaml
 nats:
   max_reconnect_attempts: -1
 ```
 
-> **`0` weakens a diagnostic message, not just reconnect behavior.** When
-> broker authentication is on and the server rejects this worker's
-> credential mid-run (most often after `sqi-server worker revoke` or
-> `DELETE /api/v1/workers/{id}/credential`), the worker names the cause and
-> the remediation — but doing so relies on at least one reconnect attempt
-> completing its handshake with the broker, which is where the specific
-> rejection reason is confirmed. With `max_reconnect_attempts: 0`, no
-> reconnect is attempted at all: the connection closes, and the
-> operator sees only a generic "connection closed" with no named cause. The
-> default of `-1` does not have this problem — reconnect indefinitely and
-> the diagnostic message is always reached before the worker exits.
-> If you must cap reconnect attempts, keep it above `0`.
+> **Keep this above `0`.** When broker authentication is on and the server
+> rejects this worker's credential mid-run (usually after
+> `sqi-server worker revoke` or `DELETE /api/v1/workers/{id}/credential`), the
+> worker logs that its credential was rejected and that it must re-enroll. It
+> learns the reason from a reconnect attempt, so with `0` it attempts none and
+> logs only a generic "connection closed".
 
 ---
 
@@ -212,9 +201,10 @@ nats:
 | **Default** | `"2s"` |
 | **Env var** | `SQI_WORKER_NATS_RECONNECT_WAIT` |
 
-Base wait duration between reconnection attempts. The actual delay uses
-exponential backoff with ±20% jitter; this is the floor of that range. Must
-be `> 0`.
+Delay before the first reconnection attempt. Each later attempt doubles the
+delay, up to 2 minutes, and every delay varies randomly by ±20% so workers
+that lose the server together do not reconnect in step. Not validated at load;
+`0` reconnects with no delay.
 
 ```yaml
 nats:
@@ -231,24 +221,19 @@ nats:
 | **Default** | `""` (resolves to `<worker.data_dir>/worker.nk`) |
 | **Env var** | `SQI_WORKER_NATS_CREDENTIAL_FILE` |
 
-Path to this worker's nkey seed file. Only meaningful when the server's
-`nats.auth.enabled` is `true` — see
-[`docs/configuration.md`](configuration.md#natsauthenabled). The worker
-presents the credential in this file to authenticate to the broker. When
-left empty, it defaults to `<worker.data_dir>/worker.nk`, and that default
-path is created by enrollment or by `sqi-worker keygen`. The file must be
-mode `0600`, and `SaveSeed` requires **write permission on the containing
-directory**, not just the file itself — the write goes through a temporary
-file created alongside the target and then renamed into place, so a
-directory locked down to e.g. `0500` fails the write even if the seed file
-inside it is owner-writable.
+Path to this worker's nkey seed file, which it presents to authenticate to the
+broker. Only used when the server's
+[`nats.auth.enabled`](configuration.md#natsauthenabled) is `true`. Empty
+resolves to `<worker.data_dir>/worker.nk`.
 
-Set this field to a non-default path and both enrollment paths honor it:
-`sqi-worker keygen` loads the same layered configuration `sqi-worker start`
-does (the root `-c/--config` file, `SQI_WORKER_NATS_CREDENTIAL_FILE`, and
-this field's config-file value) and writes wherever `credential_file`
-resolves, and self-service enrollment writes to the same resolved path as
-part of a live enrollment run.
+Enrollment and `sqi-worker keygen` both create the file at the resolved path;
+`keygen` loads the same configuration layers as `start`, so a non-default
+path set here or in `SQI_WORKER_NATS_CREDENTIAL_FILE` applies to both. The
+file is written owner-only, and the worker refuses to load one that anyone
+else can read (POSIX mode `0600`, an owner-only ACL on Windows). The worker
+writes it through a temporary file in the same directory and renames it into
+place, so it needs write permission on the directory: a directory set to
+`0500` fails the write even when the seed file inside is owner-writable.
 
 ```yaml
 nats:
@@ -265,10 +250,10 @@ nats:
 | **Default** | `""` |
 | **Env var** | `SQI_WORKER_NATS_JOIN_TOKEN` |
 
-A worker enrollment token, used exactly once on first start to obtain a
-credential. Ignored once `nats.credential_file` already exists. Prefer
-[`nats.join_token_file`](#natsjoin_token_file) over this field — a token in a
-config file is a secret at rest.
+A worker enrollment token, used once on first start to obtain a credential
+and ignored once `nats.credential_file` exists. Prefer
+[`nats.join_token_file`](#natsjoin_token_file), since a token in a config file
+is a secret stored at rest.
 
 ```yaml
 nats:
@@ -304,19 +289,19 @@ nats:
 | **Env var** | `SQI_WORKER_NATS_SERVER_URL` |
 
 `sqi-server` HTTP base URL used for enrollment, e.g.
-`"http://sqi-server.example:8080"`. Enrollment runs over REST, not NATS: the
-broker's job is to reject unauthenticated connections, so it cannot also be
-the channel a worker gets its first credential over.
+`"http://sqi-server.example:8080"`. Enrollment runs over REST because the
+broker rejects unauthenticated connections, so a worker cannot get its first
+credential over NATS.
 
-This is **not** derived from mDNS discovery — it must be set explicitly
-whenever [`nats.join_token`](#natsjoin_token) or
-[`nats.join_token_file`](#natsjoin_token_file) is configured. A worker that
-needs to enroll with no `server_url` set fails fast with an actionable error
-naming this field, rather than attempting a request with no host.
+mDNS discovery does not supply this value. Set it whenever
+[`nats.join_token`](#natsjoin_token) or
+[`nats.join_token_file`](#natsjoin_token_file) is configured; a worker that
+needs to enroll without it fails with an error naming this field.
 
 When the server has `http.tls` enabled this must be an `https://` URL, and
 [`nats.server_tls_ca_file`](#natsserver_tls_ca_file) must name the CA that
-signed its certificate.
+signed its certificate. A worker that discovers an HTTPS server over mDNS
+warns at startup when this URL is `http://`.
 
 ```yaml
 nats:
@@ -336,16 +321,15 @@ nats:
 Path to the CA certificate that verifies `sqi-server`'s HTTPS certificate at
 [`nats.server_url`](#natsserver_url), for enrollment.
 
-Deliberately separate from [`nats.tls_ca_file`](#natstls_ca_file): the two
-verify different certificates on different ports, which can legitimately come
-from different issuers — a publicly-issued certificate on the API and a private
-farm CA on the broker. On a farm generated by `sqi-server tls init` they are
-the same `ca.crt`.
+Separate from [`nats.tls_ca_file`](#natstls_ca_file) because the two verify
+different certificates on different ports, which can come from different
+issuers (for example a publicly issued certificate on the API and a farm CA on
+the broker). On a farm set up with `sqi-server tls init` both are the same
+`ca.crt`.
 
-**This is on the bootstrap critical path.** Enrollment runs over REST before the
-worker holds any broker credential, so without it a farm with an HTTPS server
-cannot bootstrap at all. Same CA semantics as everywhere: empty means the system
-roots, set means that CA only.
+Enrollment needs this when the server uses a private CA: without it, a worker
+cannot verify the HTTPS server and so cannot obtain its first credential.
+Empty means the system roots; when set, only this CA is accepted.
 
 ```yaml
 nats:
@@ -363,8 +347,8 @@ nats:
 | **Env var** | `SQI_WORKER_NATS_SERVER_TLS_INSECURE_SKIP_VERIFY` |
 
 Skip verification of `sqi-server`'s HTTPS certificate during enrollment.
-**Development environments only** — it accepts any certificate, which makes the
-enrollment request, join token included, interceptable.
+Development only: it accepts any certificate, so the enrollment request and
+its join token can be intercepted.
 
 ---
 
@@ -398,10 +382,9 @@ worker:
 | **Env var** | `SQI_WORKER_FARM_ID` |
 
 Farm this worker belongs to. When set, the worker only receives tasks
-belonging to that farm. When empty (the default), the worker is unaffiliated
-and accepts tasks from any farm — suitable for single-farm or development
-setups. Set this when running workers across multiple farms to prevent
-cross-farm task assignment.
+belonging to that farm. When empty (the default), the worker accepts tasks
+from any farm, which suits single-farm and development setups. Set it on farms
+that must not share workers.
 
 ```yaml
 worker:
@@ -415,28 +398,27 @@ worker:
 | | |
 |---|---|
 | **Type** | `string` |
-| **Default** | `~/.sqi/worker` (Linux/macOS); `%USERPROFILE%\.sqi\worker` (Windows) |
+| **Default** | `~/.sqi/worker` (Linux/macOS); `%USERPROFILE%\.sqi\worker` (Windows); `/var/lib/sqi-worker` when no home directory can be determined |
 | **Env var** | `SQI_WORKER_DATA_DIR` |
 
-Directory used to persist the worker ID file (`worker.id`), and on Windows the
-DPAPI-encrypted run-as-user credential store (`<data_dir>\isolation\`). Created
-automatically on first start, and never widened for run-as-user traversal —
-it stays private (0700) for as long as the worker exists.
+Directory holding the worker ID file (`worker.id`), the default location of
+the nkey seed (`worker.nk`), and on Windows the DPAPI-encrypted run-as-user
+credential store (`<data_dir>\isolation\`). Created on first start as a
+private (`0700`) directory, and never widened for run-as-user traversal.
 
-The worker ID file ensures the server can correlate this worker across
-restarts. Do not delete `worker.id` unless you intend to re-register as a new
-worker. For production, use an absolute path on a fast local SSD.
+The worker ID lets the server recognize this worker across restarts. Do not
+delete `worker.id` unless you intend to re-register as a new worker. For
+production, use an absolute path on local disk.
 
-Each worker instance needs its own `data_dir`: two workers sharing one would
-load the same `worker.id` and collide on the server. This is the key setting
-when [running multiple workers on one host](#running-multiple-workers-on-one-host).
+Each worker instance needs its own `data_dir`: two workers sharing one load
+the same `worker.id` and collide on the server. See
+[running multiple workers on one host](#running-multiple-workers-on-one-host).
 
-Session working directories have their own setting — see
-[`worker.session_dir`](#workersession_dir) below. They are moved out from under
-`data_dir` for any worker that could actually use run-as-user isolation (a root
-POSIX worker, or any Windows worker); a non-root POSIX worker with
-`session_dir` unset keeps them at `<data_dir>/sessions`, because isolation
-cannot function there anyway.
+Session working directories are configured separately by
+[`worker.session_dir`](#workersession_dir). With it unset, they live outside
+`data_dir` on any worker that can use run-as-user isolation (a root POSIX
+worker, or any Windows worker), and at `<data_dir>/sessions` on a non-root
+POSIX worker, which cannot isolate.
 
 ```yaml
 worker:
@@ -454,32 +436,26 @@ worker:
 | **Env var** | `SQI_WORKER_SESSION_DIR` |
 
 Directory under which session working directories are created
-(`<session_dir>/<sessionID>/`). Deliberately separate from `data_dir`: this
-is ephemeral scratch that, when run-as-user isolation (`isolation:` in the
-config file — see `config/sqi-worker.example.yaml`) is in use, must be
-traversable by whichever run-as-user identity a session resolves to, while
-`data_dir` holds the persistent worker-id and must stay private.
+(`<session_dir>/<sessionID>/`). Kept separate from `data_dir` because, under
+run-as-user isolation (see [`isolation`](#isolation--run-as-user-task-execution)),
+session scratch must be traversable by the run-as-user account, while
+`data_dir` holds the worker ID and must stay private. An explicitly set
+directory is created at `0711` if it does not exist.
 
-Left unset, the effective value is resolved at startup:
+Left unset, the value is resolved at startup:
 
-- **Running as root (POSIX)** — `/var/lib/sqi-worker-sessions`, created traversable
-  (`0711`) from birth. Deliberately a SIBLING of, never a descendant of,
-  `data_dir`'s own HOME-unset fallback (`/var/lib/sqi-worker`): nesting the
-  two would make `LoadOrCreateWorkerID`'s own `0700` `data_dir` an ancestor
-  of the session root, and the boot-time traversal check below would then
-  refuse to start over a directory sqi itself just created. Its ancestors
-  (`/var`, `/var/lib`) are `0755` on every real Linux/macOS installation, so
-  nothing needs to be created or widened specifically for this.
-- **Windows (any account)** — `%ProgramData%\sqi\worker\sessions`, chosen
-  regardless of privilege: a worker running as LocalSystem resolves its data
-  directory under `System32\config\systemprofile`, which is the wrong place for
-  render scratch. Directory modes are inert on Windows; a session directory's
-  real protection is the protected NTFS DACL applied beneath this root (see
-  [Windows](#windows) below).
-- **Otherwise (non-root POSIX)** — `<data_dir>/sessions`, created at `0750`.
-  Real run-as-user isolation cannot function without root regardless of
-  directory permissions, so there is nothing to protect by moving it, or widening it, for a worker
-  that can never use it anyway.
+- **Running as root (POSIX)**: `/var/lib/sqi-worker-sessions`, created at
+  `0711`. It sits beside `data_dir`'s no-home fallback (`/var/lib/sqi-worker`)
+  rather than inside it, because a session root under the `0700` `data_dir`
+  would fail the traversal check described below.
+- **Windows (any account)**: `%ProgramData%\sqi\worker\sessions`. A worker
+  running as LocalSystem has its home directory under
+  `System32\config\systemprofile`, which is unsuitable for render scratch.
+  Directory modes have no effect on Windows; each session directory is
+  protected by an NTFS DACL instead (see [Windows](#windows) below).
+- **Otherwise (non-root POSIX)**: `<data_dir>/sessions`, created at `0750`. A
+  non-root worker cannot run tasks as another user, so session scratch needs no
+  wider access.
 
 ```yaml
 worker:
@@ -487,43 +463,20 @@ worker:
 ```
 
 > **Never widened.** sqi does not `chmod` an existing directory to make it
-> traversable — a directory is
-> either created fresh at the correct mode, or the worker refuses to start
-> with an actionable error naming the exact ancestor that needs
-> `chmod o+x` and why (see `internal/worker/isolation.ValidateTraversable`).
-> At **boot**, this check runs only when `isolation.required: true` — an
-> operator who never sets that on a worker that happens to run as root (but
-> was never actually going to receive an isolated assignment) must still be
-> able to start with a deliberately restricted `staging.scratch_dir` or
-> `session_dir`. Otherwise, the identical check (same actionable message)
-> runs the moment an assignment that actually carries run-as-user isolation
-> arrives, failing that one task rather than the whole worker.
+> traversable. A directory is either created at the correct mode, or the
+> worker refuses with an error naming the ancestor that needs `chmod o+x`.
+> At boot this check runs only when `isolation.required: true`, so a root
+> worker that never receives an isolated assignment can still start with a
+> restricted `staging.scratch_dir` or `session_dir`. Otherwise the same check
+> runs when an assignment with run-as-user isolation arrives, and fails only
+> that task.
 
-> **Upgrade note: a root worker's sessions relocate automatically, with no
-> config change.** The root/non-root branch above is decided purely by the
-> worker's effective uid at startup, not by whether any queue actually
-> configures `run_as_user` — a worker that has always run as root (for
-> whatever reason, isolation-related or not) and never set `session_dir`
-> moves from `<data_dir>/sessions` to `/var/lib/sqi-worker-sessions` the
-> moment it is upgraded to a version that has `worker.session_dir`, with no
-> config change and no explicit opt-in. This is intentional, not a regression
-> to work around by setting `session_dir` back to the old path: keeping
-> sessions under `data_dir` would eventually demand `chmod o+x` on `data_dir`
-> itself for the first isolated assignment, widening the `0700` directory that
-> holds the worker-id file — which separating the two directories prevents.
-> Two consequences to plan for before upgrading a root worker:
->
-> - Any directories preserved under the old `<data_dir>/sessions` by
->   `worker.keep_failed_sessions` are orphaned — they still exist on disk for
->   post-mortem inspection, but the worker will never look there again after
->   the upgrade. Copy out anything you still need before upgrading, or check
->   both paths for a time.
-> - The new default, `/var/lib/sqi-worker-sessions`, sits on the root
->   filesystem, not necessarily the volume `data_dir` points at. A
->   deployment that intentionally placed `data_dir` on a large/fast dedicated
->   volume (the `data_dir` doc above recommends "an absolute path on a fast
->   local SSD") gets session scratch on `/var` instead unless `session_dir` is
->   set explicitly to point back at that volume.
+> **A root worker's default session root is on `/var`.** The root/non-root
+> choice above depends only on the worker's effective uid at startup, not on
+> whether any queue sets `run_as_user`. If `data_dir` is on a dedicated
+> scratch volume, set `session_dir` to a directory on that volume too, but
+> not inside `data_dir`: a session root under the `0700` `data_dir` fails the
+> traversal check above on the first isolated assignment.
 
 ---
 
@@ -535,15 +488,14 @@ worker:
 | **Default** | `""` (none) |
 | **Env var** | `SQI_WORKER_COMPUTE_LOCATION` |
 
-Named compute location for this worker. When non-empty, `sqi-server`
-auto-registers an entry for this name in the compute-location registry if one
-does not already exist — you do not need to pre-create the entry.
-The value is used for two purposes:
+Named compute location for this worker. When set, `sqi-server` registers the
+name in its compute-location registry if it is not there already, so the entry
+need not be created first. The value is used for:
 
-- **Storage-location path mapping** — the server resolves `loc://` URI
+- **Storage-location path mapping**: the server resolves `loc://` URI
   references using the root keyed by this name in each storage location (see
   [`docs/storage-locations.md`](storage-locations.md)).
-- **Step affinity matching** — steps that declare
+- **Step affinity matching**: steps that declare
   `attr.worker.computelocation: [<name>]` in their OpenJD host requirements
   are only assigned to workers whose `compute_location` matches.
 
@@ -569,9 +521,9 @@ relationship to storage-location roots.
 | **Default** | `[]` (empty) |
 | **Env var** | `SQI_WORKER_CAPABILITY_TAGS` (comma-separated) |
 
-Arbitrary capability tags merged with auto-detected capabilities at
-registration time. Use these to annotate software or hardware features that
-the auto-detector cannot discover. Tags listed here overwrite any
+Capability tags merged with auto-detected capabilities at registration. Use
+them for software or hardware the detectors cannot discover. An entry is a
+bare tag (`gpu`) or a `key=value` pair (`maya=false`), and it overrides any
 auto-detected tag with the same key.
 
 ```yaml
@@ -600,11 +552,10 @@ reference including auto-detected tags.
 | **Default** | `"15s"` |
 | **Env var** | `SQI_WORKER_HEARTBEAT_INTERVAL` |
 
-How often the worker publishes a heartbeat message to `sqi-server`. The
-server uses heartbeat gaps to detect stale workers — this value should be
-shorter than the server's `scheduler.heartbeat_timeout` (default 30 s). At
-the default of 15 s the server receives two heartbeats per timeout window.
-Must be `> 0`.
+How often the worker publishes a heartbeat to `sqi-server`. The server marks a
+worker stale when heartbeats stop, so keep this shorter than the server's
+`scheduler.heartbeat_timeout` (default 30 s); the default sends two per
+timeout window. Must be `> 0`.
 
 ```yaml
 worker:
@@ -621,11 +572,11 @@ worker:
 | **Default** | `"30s"` |
 | **Env var** | `SQI_WORKER_SHUTDOWN_GRACE_PERIOD` |
 
-Maximum time the worker waits for in-flight tasks to finish after receiving
-SIGINT or SIGTERM before force-killing them. Tasks that do not complete within
-this window receive SIGTERM then SIGKILL and are reported as `failed`. Set
-this to match your longest expected task duration on rolling-restart workers.
-Must be `> 0`.
+Maximum time the worker waits for in-flight tasks to finish after SIGINT,
+SIGTERM or a Windows service stop. Tasks still running at the end of this
+window receive SIGTERM, then SIGKILL a third of this period later, and are
+reported as `failed`. On workers you restart while they are busy, set it to
+your longest expected task duration. Must be `> 0`.
 
 ```yaml
 worker:
@@ -642,10 +593,11 @@ worker:
 | **Default** | `false` |
 | **Env var** | `SQI_WORKER_ALLOW_ROOT` |
 
-Allow the worker to run as the root user on Linux and macOS. Disabled by
-default because executing render processes as root is a security risk. Enable
-only when running inside a container where root is expected (e.g., as the
-container's only user), or when you understand and accept the risk.
+Allow the worker to run as root on Linux and macOS; with `false`, a root
+worker refuses to start. Disabled by default because running render processes
+as root is a security risk. Enable it inside a container where root is the
+only user, or for run-as-user isolation (see
+[`isolation.required`](#isolationrequired)). Ignored on Windows.
 
 ```yaml
 worker:
@@ -662,10 +614,10 @@ worker:
 | **Default** | `false` |
 | **Env var** | `SQI_WORKER_KEEP_FAILED_SESSIONS` |
 
-Retain a session's working directory after a failed session (task
-cancellation, non-zero exit code, or environment setup error). Useful for
-post-mortem inspection of partial outputs and environment state on a specific
-worker. Disable in production to avoid filling the data directory on busy
+Keep a session's working directory after the session fails (task
+cancellation, non-zero exit code, or environment setup error), for inspecting
+partial outputs and environment state. Leave it off in production so failed
+sessions do not fill [`worker.session_dir`](#workersession_dir) on busy
 workers.
 
 ```yaml
@@ -683,23 +635,18 @@ worker:
 | **Default** | `[]` (all queues) |
 | **Env var** | `SQI_WORKER_QUEUE_IDS` (comma-separated) |
 
-Restrict this worker to serving specific queue IDs. The worker keeps one
-outstanding lease request per listed queue (`work.lease.<workerID>.<queueID>`). When
-empty (the default), the worker issues a single lease request on the reserved
-subject `work.lease.<workerID>._any` — an empty queue token would produce an
-unroutable subject with no responders. The server selects tasks farm-wide for that
-token and gates by worker eligibility, so a queue-unaffiliated worker is
-matched to any queue's ready work. Set this on heterogeneous farms where some
-workers specialise in a subset of queues.
+Restrict this worker to specific queue IDs. The worker keeps one outstanding
+lease request per listed queue, on `work.lease.<workerID>.<queueID>`. When
+empty (the default), it issues a single lease request on
+`work.lease.<workerID>._any`, and the server offers it ready work from any
+queue it is eligible for. Set this on farms where some workers serve only a
+subset of queues.
 
-Each entry must be usable as a single NATS subject token, because it becomes
-one: `<queueID>` is a literal token in `work.lease.<workerID>.<queueID>`, so
-an entry containing `.` would silently split into extra tokens the
-server-side parser and this worker's own broker-auth publish grant both
-reject. An entry that is empty, or contains `.`, whitespace, `*` or `>`, is
-therefore **rejected at load**, naming the offending entry: the worker
-refuses to start rather than issuing lease requests that would be refused or
-go unanswered with nothing in its logs saying why.
+Each entry becomes one NATS subject token, so an entry that is empty or
+contains `.`, whitespace, `*` or `>` is rejected at load with an error
+naming it. Such an entry would otherwise produce lease requests that the
+broker refuses or the server never answers, with nothing in the worker's log
+saying why.
 
 ```yaml
 worker:
@@ -718,11 +665,10 @@ worker:
 | **Default** | `"2s"` |
 | **Env var** | `SQI_WORKER_PULL_IDLE_BACKOFF` |
 
-> **Deprecated.** This field is accepted by the config loader for backwards
-> compatibility but has no effect in the current lease-based worker. Idle
-> backoff is no longer needed: the worker's lease request long-polls on the
-> server (~30 s hold) and re-issues immediately on return — there is no tight
-> polling loop to throttle.
+> **Deprecated.** Accepted by the config loader but has no effect (a negative
+> value still fails validation). The server holds an unfulfilled lease
+> request for up to 30 s and the worker re-issues it on return, so there is
+> no polling loop to throttle.
 
 ---
 
@@ -734,34 +680,27 @@ worker:
 | **Default** | `"5s"` |
 | **Env var** | `SQI_WORKER_PULL_NACK_DELAY` |
 
-> **Deprecated.** This field is accepted by the config loader for backwards
-> compatibility but has no effect in the current lease-based worker.
-> Pre-execution NACKs no longer apply: the server validates eligibility before
-> leasing, so the worker runs what it is given.
+> **Deprecated.** Accepted by the config loader but has no effect (a negative
+> value still fails validation). The server checks eligibility before
+> leasing a task, and the worker runs what it is given.
 
 ---
 
 ## `isolation` — Run-as-user task execution
 
-Runs job-supplied task and environment actions under a queue-configured OS
-user (`run_as_user`/`run_as_group` on the queue — see
+Runs job-supplied task and environment actions as the OS user configured on
+the queue (`run_as_user`/`run_as_group`; see
 [`docs/configuration.md`](configuration.md#queue-identity-run_as_user--run_as_group-task-isolation)
 and [`docs/auth.md`](auth.md#task-isolation)) instead of the worker daemon's
-own account. Supported on POSIX (Linux/macOS) and on Windows via the
-`logon_user` provider — see [Windows](#windows) below for the
-platform-specific setup and requirements. With no queue configured for
-isolation anywhere, a worker's behavior is byte-for-byte unchanged whether or
-not this section is present.
+own account. Supported on POSIX (Linux/macOS) and on Windows through the
+`logon_user` provider; see [Windows](#windows) below for its setup. When no
+queue is configured for isolation, this section has no effect.
 
-> **Enabling this raises the worker daemon's own privilege.** The only
-> mechanism sqi has for a POSIX process to become another OS user
-> (`setuid`/`setgid`/`setgroups`) itself requires starting as root:
-> `isolation.Provider.Capable()` fails unless the worker's effective uid is 0.
-> If you run `sqi-worker` unprivileged today, turning isolation on is **not**
-> a pure reduction in privilege — it is a trade. The **daemon** gains root so
-> that individual **tasks** can lose it. Do not enable `isolation.required` or
-> point any queue's `run_as_user` at this worker expecting the daemon itself
-> to end up with less access than it has now; it ends up with more.
+> **Enabling this raises the worker daemon's own privilege.** On POSIX, sqi
+> switches to another user with `setuid`/`setgid`/`setgroups`, which requires
+> the daemon to run as root: `isolation.Provider.Capable()` fails unless the
+> effective uid is 0. For a worker that runs unprivileged today, isolation
+> gives the daemon root so that tasks can run without it.
 
 ### `isolation.required`
 
@@ -771,24 +710,19 @@ not this section is present.
 | **Default** | `false` |
 | **Env var** | `SQI_WORKER_ISOLATION_REQUIRED` |
 
-Exit at boot if this worker cannot assume another OS identity (POSIX: not
-running as root). Separate from a per-assignment credential-resolution
-failure, which fails only that one task: `required: true` says "this worker
-is misconfigured" — a problem the worker can only detect at boot, since it
-learns queue identities solely from each assignment, never from its own
-config. Default `false`, so a worker that never expects an isolated
-assignment keeps starting normally even if it happens to run as root.
+Exit at boot if this worker cannot assume another OS identity (on POSIX, when
+it is not running as root). With the default `false`, the worker starts
+anyway, and an isolated assignment that it cannot run fails only that task.
+The worker learns which queues use isolation only from each assignment, so
+this setting is the way to make a misconfigured worker fail at boot.
 
-`isolation.required: true` is a contradiction with `worker.allow_root: false`
-(the default) on POSIX: the POSIX provider can only assume another identity
-from root, but `worker.allow_root: false` refuses to let the worker start as
-root at all. Config validation catches this combination explicitly at load
-time with a message naming both keys, rather than letting it surface as a
-confusing "cannot start as root" error that never mentions isolation. Set
-`worker.allow_root: true` together with `isolation.required: true`, or leave
-`isolation.required: false`. Windows is exempt from this check: its
-credential mechanism does not require the worker process itself to run
-privileged.
+On POSIX, `isolation.required: true` conflicts with `worker.allow_root: false`
+(the default): isolation needs root, and `allow_root: false` refuses to start
+as root. Config validation rejects the combination at load with a message
+naming both keys. Set `worker.allow_root: true` alongside it, or leave
+`isolation.required: false`. The check does not apply on Windows, where
+`worker.allow_root` has no effect and the provider checks its own privileges
+at boot.
 
 ```yaml
 isolation:
@@ -806,10 +740,9 @@ worker:
 | **Accepted values** | `logon_user` (`s4u` is recognised and refused; any other value fails Windows provider construction) |
 | **Env var** | `SQI_WORKER_ISOLATION_PROVIDER` |
 
-Selects the Windows credential mechanism. **Ignored on POSIX** — setting it
-on a Linux/macOS worker has no effect at all, since the POSIX provider has no
-concept of a selectable mechanism. `logon_user` is the only supported value;
-`s4u` is refused explicitly (see [Windows](#windows) below).
+Selects the Windows credential mechanism. Ignored on Linux and macOS.
+`logon_user` is the only supported value; `s4u` is refused (see
+[Windows](#windows) below).
 
 ### `isolation.env_passthrough`
 
@@ -819,24 +752,20 @@ concept of a selectable mechanism. `logon_user` is the only supported value;
 | **Default** | `[]` (empty — only the minimal base is inherited) |
 | **Env var** | `SQI_WORKER_ISOLATION_ENV_PASSTHROUGH` (comma-separated) |
 
-Daemon environment variable **name** patterns (`filepath.Match` globs, e.g.
-`FLEXLM_*`) that an isolated task's environment inherits from the worker
-daemon's own process, in addition to a minimal base (`PATH`,
-`HOME`/`USERPROFILE`, `TMPDIR`, and a few others rewritten to the target
-user rather than left pointing at the daemon's). Each pattern is validated as
-a glob at config-load time; an invalid one (e.g. an unbalanced `[`) fails
-worker startup naming the exact field, `isolation.env_passthrough[N]`.
+Environment variable name patterns (`filepath.Match` globs, e.g.
+`FLEXLM_*`) that an isolated task inherits from the worker daemon's
+environment, in addition to a minimal base (`PATH`, `HOME`/`USERPROFILE`,
+`TMPDIR` and a few others, rewritten for the target user where they name the
+daemon's). Each pattern is validated at config load; an invalid glob (e.g. an
+unbalanced `[`) fails startup naming the field, `isolation.env_passthrough[N]`.
 
-**This governs only what an isolated task inherits from the daemon's own
-environment.** Anything the job itself supplies — an OpenJD
-`Environment.variables` block, an `openjd_env` export, a task template
-variable — always reaches the task unfiltered, regardless of this setting;
-those are the job's own data, not daemon leakage, and filtering them would
-break jobs whose variable names no operator allowlist could anticipate.
+This applies only to variables inherited from the daemon. Variables the job
+supplies (an OpenJD `Environment.variables` block, an `openjd_env` export, a
+task template variable) always reach the task.
 
-A render farm's licensing model is the realistic reason this exists — most
-license managers are configured via environment variable on the render node,
-and that variable has to survive into the isolated task:
+The usual reason to set it is licensing: many license managers are configured
+by an environment variable on the render node, and that variable must reach
+the isolated task:
 
 ```yaml
 isolation:
@@ -846,63 +775,55 @@ isolation:
     - "solidangle_LICENSE"  # Arnold, older variable name
 ```
 
-> **A broad glob defeats the allowlist entirely.** `env_passthrough: ["*"]`
-> re-opens the daemon-environment leak this filter exists to close, and
-> so does anything that reads narrower but matches broadly in practice, like
-> `"*KEY*"` — the daemon's own credentials, tokens, and internal service
-> addresses all match a wildcard just as easily as a license variable does.
-> Write the actual variable name. A task failing on a missing license
-> variable is the expected, correct symptom of an allowlist that is too
-> tight — the fix is to add that one name, not to widen the pattern.
+> **Avoid broad globs.** `"*"`, or a pattern like `"*KEY*"`, passes the
+> daemon's own credentials, tokens and internal service addresses to every
+> isolated task. List the exact variable names. When a task fails on a
+> missing license variable, add that one name.
 
 ### Windows
 
-Task isolation is implemented on Windows via the `logon_user` provider. The
-full suite — `make test-isolation-windows`, which exercises real local
-accounts, real NTFS ACLs, DPAPI credential storage, and a child process
-actually launched under the target account's token — passes on a real
-elevated host (tier 1 as elevated Administrator, tier 2 as SYSTEM via a
-scheduled task). See [Known gaps](auth.md#known-gaps) in `docs/auth.md` for the
-caveats that remain.
+On Windows, task isolation uses the `logon_user` provider.
+`make test-isolation-windows` tests it against real local accounts, NTFS ACLs,
+DPAPI credential storage and processes launched under the target account's
+token. See [Known gaps](auth.md#known-gaps) in `docs/auth.md` for its
+remaining limitations.
 
 **The worker must run as a service under LocalSystem**, or as an account
 granted `SeAssignPrimaryTokenPrivilege`. Windows requires that privilege to
 start a process under another account's token, and an elevated Administrator
-does **not** hold it by default — this is the most common cause of
-`isolation: worker cannot assume another OS identity` on Windows. `Capable()`
-reports it at boot with the fix named.
+does not hold it by default. A missing privilege is the most common cause
+of `isolation: worker cannot assume another OS identity` on Windows;
+`Capable()` reports it at boot and names the fix.
 
-That is not the only privilege the worker's own account needs. `Capable()` also
-requires `SeIncreaseQuotaPrivilege` (`CreateProcessAsUser` needs it too), and
-loading the target account's profile needs `SeBackupPrivilege` and
-`SeRestorePrivilege`. LocalSystem holds all four. An account you install the
-service under with `sqi-worker service install --user …` holds them only if you
-grant them (Local Security Policy → User Rights Assignment: *Replace a process
-level token*, *Adjust memory quotas for a process*, *Back up files and
-directories* and *Restore files and directories*) — and that list is only what
-sqi itself checks or documents, not a promise that granting it is enough:
-Microsoft documents `LoadUserProfile` as callable only by an administrator or
-LocalSystem. Treat LocalSystem as the supported account for run-as-user
-isolation. See [Choosing the account](worker-deployment.md#choosing-the-account)
-for installing the worker under another account.
+`Capable()` also requires `SeIncreaseQuotaPrivilege` (needed by
+`CreateProcessAsUser`), and loading the target account's profile needs
+`SeBackupPrivilege` and `SeRestorePrivilege`. LocalSystem holds all four. An
+account you install the service under with `sqi-worker service install --user …`
+holds them only if you grant them (Local Security Policy → User Rights
+Assignment: *Replace a process level token*, *Adjust memory quotas for a
+process*, *Back up files and directories* and *Restore files and
+directories*). Granting them may not be enough: Microsoft documents
+`LoadUserProfile` as callable only by an administrator or LocalSystem. Treat
+LocalSystem as the supported account for run-as-user isolation. See
+[Choosing the account](worker-deployment.md#choosing-the-account) for
+installing the worker under another account.
 
 **Each run-as-user account needs the "Log on as a batch job" right**
 (`SeBatchLogonRight`). The provider logs the account on with
-`LOGON32_LOGON_BATCH` — the correct logon type for a service doing work on a
-user's behalf, since unlike an interactive logon it does not require "Allow log
-on locally", and unlike an S4U logon it does carry network credentials. Default
-workstation policy grants that right to Administrators, Backup Operators and
-Performance Log Users only, so a purpose-made standard account does **not**
-hold it until you say so, and credential resolution fails with:
+`LOGON32_LOGON_BATCH`, which does not require "Allow log on locally" and,
+unlike an S4U logon, carries network credentials. Default workstation policy
+grants that right only to Administrators, Backup Operators and Performance Log
+Users, so a purpose-made standard account does not hold it until you grant
+it, and credential resolution fails with:
 
     isolation: logon "render-svc": LogonUserW: Logon failure: the user has not
     been granted the requested logon type at this computer.
 
 Grant it in `secpol.msc` under **Local Policies → User Rights Assignment → Log
-on as a batch job**. To script it, or on an edition that ships no `secpol.msc`
-(Windows Home), call `LsaAddAccountRights` with the account's SID —
-`scripts/test-isolation-windows.ps1` does that for its throwaway
-accounts and is a working reference.
+on as a batch job**. To script it, or on an edition without `secpol.msc`
+(Windows Home), call `LsaAddAccountRights` with the account's SID;
+`scripts/test-isolation-windows.ps1` does this for its test accounts and can
+serve as a reference.
 
 **Provisioning credentials.** Each run-as-user account needs its password
 stored on every worker that serves a queue configured for it. From an elevated
@@ -910,108 +831,91 @@ shell:
 
     sqi-worker isolation set-credential render-svc
 
-The secret is read from stdin — never pass it as an argument, where it is
-visible to every process on the host. It is encrypted with the machine DPAPI
-key and written under `<data_dir>\isolation\` with an ACL granting only SYSTEM
-and Administrators.
+The secret is read from stdin; an argument would be visible to every process
+on the host. It is encrypted with the machine DPAPI key and written under
+`<data_dir>\isolation\` with an ACL granting only SYSTEM and Administrators.
 
 > **Machine-scope encryption means the file ACL is the real boundary.**
 > Anything running on the host that can *read* the file can decrypt it. Do not
 > relax the ACL, and treat a backup that copies it elsewhere on the same
 > machine as a credential disclosure.
 
-**Session directories** are secured with a protected NTFS DACL granting the
-target account, SYSTEM, and Administrators — and nothing else. Inheritance is
-stripped, so a session directory does not carry whatever `BUILTIN\Users` grant
-its parent had. Ownership is deliberately *not* transferred to the target
-account: a Windows owner implicitly holds `WRITE_DAC` and could otherwise
-re-open its own session to other accounts.
+**Session directories** are secured with a protected NTFS DACL granting only
+the target account, SYSTEM and Administrators. Inheritance is stripped, so a
+session directory does not inherit a `BUILTIN\Users` grant from its parent.
+Ownership is not transferred to the target account, because a Windows owner
+implicitly holds `WRITE_DAC` and could open its session to other accounts.
 
-**Session root** defaults to `%ProgramData%\sqi\worker\sessions`, not the
-worker data directory — as LocalSystem, the data directory resolves under
-`System32\config\systemprofile`, which is the wrong place for render scratch.
-Override with `worker.session_dir`.
+**Session root** defaults to `%ProgramData%\sqi\worker\sessions` (see
+[`worker.session_dir`](#workersession_dir)).
 
 **Bypass traverse checking.** Windows grants `SeChangeNotifyPrivilege` to
-`Everyone` by default, which is why sqi does not check ancestor permissions
-the way it does on POSIX. If your environment strips that privilege, isolation
-is refused at credential-resolution time with a message naming the policy —
-sqi will not widen the directories above a session root for you.
+`Everyone` by default, so sqi does not check ancestor directory permissions as
+it does on POSIX. If your environment removes that privilege from the target
+account, credential resolution fails with a message naming the policy; sqi
+does not widen the directories above a session root.
 
-**The `s4u` provider is not implemented** and is refused explicitly. An S4U
-logon needs no password, but its token carries no network credentials: any UNC
-path, mapped drive, or authenticated licence server fails as `ANONYMOUS`
-inside the task.
+**The `s4u` provider is not implemented** and is refused. An S4U logon needs
+no password, but its token carries no network credentials: any UNC path,
+mapped drive, or authenticated license server fails as `ANONYMOUS` inside the
+task.
 
 **Process containment.** Windows task processes run inside a job object, so a
-grandchild orphaned before a cancel or timeout is still reaped. One
-consequence applies to *every* Windows worker, isolated or not: a running task
-is terminated when the worker process exits, including on a graceful service
-restart. Previously such processes were orphaned while the task was reclaimed
-and re-run elsewhere.
+grandchild orphaned before a cancel or timeout is still reaped. This applies
+to every Windows worker, isolated or not: a running task is terminated when
+the worker process exits, including on a graceful service restart.
 
-> **A session directory is task-owned, and stage-out assumes it.**
-> Because the ACL hands the directory to the target account, an isolated task
-> can replace anything under its own scratch subdirectory — including
-> swapping the file it just wrote for a symlink or a directory junction.
-> Stage-out is built for that: it opens every source through an `os.Root`
+> **An isolated task controls its session directory.** The ACL grants the
+> target account full access, so the task can replace anything under its
+> scratch subdirectory, including swapping a file it wrote for a symlink or a
+> directory junction. Stage-out opens every source through an `os.Root`
 > rooted at the scratch directory, so the kernel refuses a reparse point or
-> an escape at the open, and the built-in copy reads that same descriptor
-> rather than the path. See [`staging.sync_command`](#stagingsync_command)
-> for the one residue this leaves — an operator-configured `sync_command`
-> gets path strings, not a descriptor.
+> an escape at the open, and the built-in copy reads that same descriptor.
+> An operator-configured `sync_command` receives path strings instead; see
+> [`staging.sync_command`](#stagingsync_command) for the risk that leaves.
 
 ### Privileged accounts and groups are refused outright
 
-Before any stripping or filtering happens, `isolation.Provider.Resolve`
-refuses several requests outright:
+`isolation.Provider.Resolve` refuses these requests:
 
 - A `run_as_user` naming a known-privileged account (`root`, `Administrator`,
-  `SYSTEM`, ...) or resolving to **uid 0**, regardless of name.
-- An explicit `run_as_group` naming a known-privileged group (`root`,
-  `wheel`, `admin`, `sudo`, `sudoers`, `adm`, `docker`, `disk`, `shadow`,
-  `staff`, `administrators`) — a check on the group you asked FOR, distinct
-  from the target account's ambient memberships covered below.
-- A `run_as_user` account whose **primary** group is gid 0 — refused even
-  with no `run_as_group` set at all, since gid 0 is refused unconditionally
-  regardless of which name a platform gives it (`root` on Linux, `wheel` on
-  macOS/BSD).
+  `SYSTEM`, ...) or resolving to uid 0, whatever its name.
+- A `run_as_group` naming a known-privileged group (`root`, `wheel`, `admin`,
+  `sudo`, `sudoers`, `adm`, `docker`, `disk`, `shadow`, `staff`,
+  `administrators`). This checks the group requested on the queue; the target
+  account's existing memberships are covered below.
+- A `run_as_user` account whose primary group is gid 0, even with no
+  `run_as_group` set. gid 0 is refused whatever the platform calls it (`root`
+  on Linux, `wheel` on macOS/BSD).
 
 ### A target account's existing group memberships are not stripped
 
-Isolation strips gid 0 (`root`) from a target account's supplementary groups
-unconditionally. It does **not** strip any other, named group the account
-already belongs to — `docker`, `disk`, `shadow`, or an in-house group. This
-is deliberate: those memberships are the account's own pre-existing access,
-typically how a render-farm account reaches project storage, and stripping
-them "to be safe" would break that access. The operator's
-responsibility, correspondingly: **do not point a queue's `run_as_user` at an
-account that belongs to `docker`** (a well-known one-step escalation to root)
+Isolation always strips gid 0 (`root`) from a target account's supplementary
+groups. It keeps every other group the account belongs to, such as `docker`,
+`disk`, `shadow` or an in-house group, because those memberships are often
+how a render account reaches project storage. **Do not point a queue's
+`run_as_user` at an account in `docker`** (a one-step escalation to root)
 **or `disk`/`shadow`.** Check with `id <user>` before assigning an account to
-an isolated queue, the same as you would before granting it any other kind of
-OS-level access.
+an isolated queue.
 
 ### The NSS (directory-backed account) fallback, and its caveats
 
-`sqi-worker` ships with `CGO_ENABLED=0`, so Go's `os/user` package reads only
-`/etc/passwd` and `/etc/group` directly and never consults NSS — an account
-that only exists via a directory service (LDAP/AD, `sssd`, `winbind`) would
-not resolve at all. To make `run_as_user` usable against such an account, sqi
-falls back to shelling out to `id`/`getent` when the direct read fails, and
-parses their output.
+`sqi-worker` is built with `CGO_ENABLED=0`, so Go's `os/user` package reads
+only `/etc/passwd` and `/etc/group` and never consults NSS. An account that
+exists only in a directory service (LDAP/AD, `sssd`, `winbind`) would not
+resolve. When the direct read fails, sqi runs `id`/`getent` (from `/usr/bin`
+or `/bin`, falling back to a `PATH` search with a warning) and parses their
+output.
 
-Two caveats that no existing test covers:
+Two caveats:
 
-- **The `id`/`getent` output parsers have only ever been exercised against
-  canned, hand-written output.** They have never been run against a real
-  directory server. Verify a directory-backed `run_as_user` account resolves
-  correctly in your own environment before relying on it in production —
-  there is no equivalent of `make test-ldap`/`make test-oidc` for this path.
-- **A worker sandboxed by systemd (or similar) in a way that blocks `exec`
-  breaks this fallback outright.** If your unit file restricts syscalls or
-  denies executing external binaries, `id`/`getent` cannot run, and
-  directory-backed accounts fail to resolve even though the account itself is
-  valid.
+- **The `id`/`getent` parsers are tested only against hand-written output,**
+  never against a real directory server. Confirm that a directory-backed
+  `run_as_user` account resolves correctly in your environment before relying
+  on it.
+- **A sandbox that blocks `exec` breaks this fallback.** If a systemd unit (or
+  similar) restricts syscalls or forbids running external binaries,
+  `id`/`getent` cannot run and directory-backed accounts fail to resolve.
 
 ```yaml
 isolation:
@@ -1026,28 +930,21 @@ isolation:
 
 ## `expr` — EXPR expression limits
 
-Five keys bound what **one assignment** may spend evaluating OpenJD `EXPR`
-expressions **on this host**, at task-execution time — after the server has
-already accepted the job. They are separate from the server's own
-submission-time limits
-([`openjd.expr_*`](configuration.md#expr-expression-limits--read-this-before-changing-any-of-them)):
-each worker reads its own, which is what lets a heterogeneous farm size them
-to each host's real memory.
+Five keys bound what one assignment may spend evaluating OpenJD `EXPR`
+expressions on this host at task-execution time, after the server has
+accepted the job. They are separate from the server's submission-time limits
+([`openjd.expr_*`](configuration.md#expr-expression-limits--read-this-before-changing-any-of-them)),
+and each worker reads its own, so hosts with different memory can be sized
+differently. See [`docs/openjd-extensions/expr.md`](openjd-extensions/expr.md)
+for the extension itself.
 
-These are **always on**. `0` is not "unlimited" — it is out of range, and an
-out-of-range value is a **startup failure, not a clamp**.
-
-> **These keys are live.** `EXPR` is a supported extension: EXPR jobs are
-> submitted, dispatched and executed, and every one of these keys meters real
-> work on this host. See
-> [`docs/openjd-extensions/expr.md`](openjd-extensions/expr.md).
+These limits are always enforced. `0` does not mean unlimited: it is out of
+range, and an out-of-range value fails startup rather than being clamped.
 
 ### Four caveats before you change any of them
 
-**1. Tightening is not free here the way it is on the server.** Every one of
-these five is compared against a server-side limit metering the same values
-one phase earlier, and this worker must not be **tighter** than the server it
-reports to:
+**1. This worker must not be tighter than the server.** Each key is compared
+with a server limit that meters the same values at submission:
 
 | This worker's key | must be ≥ the server's |
 |---|---|
@@ -1057,72 +954,59 @@ reports to:
 | `expr.assignment_retained_bytes` | `openjd.expr_template_retained_bytes` |
 | `expr.let_retained_bytes` | `openjd.expr_template_retained_bytes` |
 
-The last row pairs a **per-table** limit with a **template-wide** one, because
-the server meters no per-table scope. A whole template's retained bytes is a
-valid upper bound on any one of its tables, so the comparison is conservative
-— see [`expr.let_retained_bytes`](#exprlet_retained_bytes), which is where the
-consequence of this key's low floor is spelled out.
+The last row compares a per-table limit with a template-wide one,
+because the server has no per-table limit. A template's total retained bytes
+bounds any one of its tables, so the comparison errs toward withholding work;
+see [`expr.let_retained_bytes`](#exprlet_retained_bytes).
 
-This worker advertises all five when it registers, and the server **refuses
-to dispatch EXPR jobs to it while any of them is short** — it does not accept
-the job and then fail it here, once per task, naming a budget the submitter
-never saw. So the cost of tightening past the server is that this host stops
-being offered EXPR work; it keeps running **everything else**. The server logs
-the reason when this worker registers, and flags any task no capable worker
-exists for — the latter only while the server's unschedulable sweep is on
-(`scheduler.unschedulable_grace > 0`, the default). With that sweep off, such
-a task waits `ready` with nothing written on it, and the one-off
-registration log line is the only signal — and because the *server* emits it,
-it lands in the server's own log (Admin → Server log, component `server`), not
-in this worker's diagnostics.
+The worker advertises all five when it registers, and the server does not
+dispatch EXPR jobs to it while any of them is lower than the server's
+value. The worker keeps running all other work. The server logs a `WARN` when
+the worker registers, in its own log (Admin → Server log, component
+`server`), not in this worker's diagnostics. While the server's unschedulable
+sweep is on (`scheduler.unschedulable_grace > 0`, the default), it also marks
+any task that no worker can run; with the sweep off, such a task waits in
+`ready` and the registration warning is the only signal.
 
-The relation is **necessary, not sufficient.** Phase 3 evaluates concrete
-values where the server had placeholders, so the same expression can
-legitimately cost more here than it did at submit — which is why the
-shipped defaults are 100x the server's operation budget and 20x its memory
-budget rather than equal to them. Matching the server is the floor, not a
-guarantee: an accepted job can still exhaust a worker that passes every
-comparison, and no configuration on either side makes that impossible.
+Passing the comparison does not guarantee a job will fit. At execution time
+expressions see concrete values where the server saw placeholders, so they
+can cost more here than at submission, and an accepted job can still exceed
+this worker's limits. That is why the operation and memory defaults are well
+above the server's.
 
-**Two of the five defaults have zero headroom against the server's, so raise
-the workers first.** `expr.assignment_positions` (10,000) is exactly the
-server's `openjd.expr_template_positions` default, and `expr.let_retained_bytes`
-(10,000,000) is exactly its `openjd.expr_template_retained_bytes` default.
-Raising either of those two server keys by any amount therefore withholds EXPR
-work from *every* worker still on the shipped defaults, immediately and
-farm-wide. The other three ship with real headroom (100x the server's operation
-budget, 20x its memory budget, 2x its template-retained-bytes budget for
-`expr.assignment_retained_bytes`). Roll the worker value out first, confirm the
-registration `WARN` is gone, then raise the server.
+**Raise worker limits before server limits.** Two defaults equal the server's:
+`expr.assignment_positions` (10,000) matches `openjd.expr_template_positions`,
+and `expr.let_retained_bytes` (10,000,000) matches
+`openjd.expr_template_retained_bytes`. Raising either server key at all
+withholds EXPR work from every worker still on the defaults. The other three
+defaults have headroom: 100x the server's operation limit, 20x its memory
+limit, and 2x its template retained bytes for `expr.assignment_retained_bytes`.
+Roll out the new worker value, confirm the registration `WARN` is gone, then
+raise the server.
 
-**2. `operation_limit` and `assignment_positions` multiply.** The cumulative
-operation ceiling for one assignment is their product — 10¹⁰ at the defaults
-(1,000,000 x 10,000), and 10¹² if both are raised to their maxima
-(10,000,000 x 100,000), **100x**. Nothing counts operations cumulatively; the
-product is a derived upper bound, not a measurement. `memory_limit` is not a
-third multiplier on it: raising that lets one evaluation hold a larger value,
-and measurement shows it does **not** change what an operation costs in time.
+**2. `operation_limit` and `assignment_positions` multiply.** Their product is
+the upper bound on operations for one assignment: 10¹⁰ at the defaults
+(1,000,000 x 10,000) and 10¹² at the maxima (10,000,000 x 100,000). Nothing
+counts operations across an assignment; the product is derived, not
+enforced. `memory_limit` does not multiply it: it raises how large a value
+one evaluation may hold, not how long an operation takes.
 
-**3. None of these bounds wall-clock time.** Specification section 1.3.10
-rule 3 prices a string operation at the value's length divided by 256, so
-byte-heavy work is charged almost nothing:
-`("x" * 900000).upper()` and `("x" * 900000).title()` are charged **the same
-7,034 operations** and differ by 9x in CPU (~6 ms vs ~58 ms), and a
-regex over the same string is charged **half** as much for nearly the slowest
-time — a ~17x spread in cost per operation. Raising a limit lengthens the
-worst assignment this host can be asked to resolve, roughly in proportion, and
-no value makes a slow one impossible. Unlike the server's, this cost is
-charged to the task slot the assignment already occupies; see
+**3. None of these limits bounds wall-clock time.** Specification section
+1.3.10 rule 3 charges a string operation its length divided by 256, so
+operations on the same string can be charged the same and differ several-fold
+in CPU time. Raising a limit lengthens the slowest assignment this host can be
+asked to resolve, roughly in proportion. The time is spent in the task slot
+the assignment already occupies. See
 [the server's caveat 2](configuration.md#2-none-of-these-limits-bounds-wall-clock-time)
-for the measured numbers, which apply per position here too.
+for figures, which apply per position here too.
 
-**4. The byte dimensions count cumulative allocation, not peak live
-retention.** A session that never holds more than a few MB live at once is
-still charged the sum of every environment it enters. Sizing host RAM against
-`assignment_retained_bytes` **over-provisions**; sizing that key against an
-observed RSS **under-bounds** it. For real RAM, the number that matters is
-`50 x memory_limit` — the structural ceiling of a single `let:` block, 1 GB at
-the default — per concurrently-resolving task slot, not `memory_limit` itself.
+**4. The byte limits count cumulative allocation, not peak live memory.** A
+session is charged the sum over every environment it enters, even if it never
+holds more than a few MB at once. Sizing host RAM against
+`assignment_retained_bytes` over-provisions, and setting that key from an
+observed RSS under-sizes it. For host RAM, size against `50 x memory_limit`
+(the most a single `let:` block can hold, 1 GB at the default) per task slot
+resolving expressions at the same time.
 
 ### `expr.operation_limit`
 
@@ -1133,10 +1017,9 @@ the default — per concurrently-resolving task slot, not `memory_limit` itself.
 | **Range** | `10000` – `10000000` |
 | **Env var** | `SQI_WORKER_EXPR_OPERATION_LIMIT` |
 
-Operations (specification section 1.3.10) **one** host-side expression
-evaluation may spend. The floor is the server's own *default* per-evaluation
-operation budget: below that, this worker would reject at execution what the
-server type-checked at submit.
+Operations (specification section 1.3.10) that one expression evaluation
+on this host may spend. The floor equals the server's default
+`openjd.expr_operation_limit`.
 
 ```yaml
 expr:
@@ -1152,9 +1035,10 @@ expr:
 | **Range** | `1000000` – `200000000` |
 | **Env var** | `SQI_WORKER_EXPR_MEMORY_LIMIT` |
 
-Live bytes (specification section 1.3.9) **one** host-side expression
-evaluation may hold. See caveat 4: the per-`let:`-block structural ceiling is
-50x this number, so size RAM against that product, not against this value.
+Live bytes (specification section 1.3.9) that one expression evaluation on
+this host may hold. The floor equals the server's default
+`openjd.expr_memory_limit`. A `let:` block can hold up to 50x this value, so
+size host RAM against that product (caveat 4).
 
 ```yaml
 expr:
@@ -1170,19 +1054,15 @@ expr:
 | **Range** | `2000` – `100000` |
 | **Env var** | `SQI_WORKER_EXPR_ASSIGNMENT_POSITIONS` |
 
-Expression **positions** (the command, one args entry, one embedded file, one
-variable value) one assignment may resolve, summed across the task's own
-symbol table and every environment the session enters. Charged at environment
-**entry** only — teardown gets a fresh allowance per evaluation so a budget
-that cannot avert the memory it charges for can never silently skip an
-`onExit` (license check-ins, unmounts).
+Expression positions (a command, one args entry, one embedded file, one
+variable value) one assignment may resolve, summed across the task and every
+environment the session enters. Only environment entry is charged: teardown
+is exempt, so an exhausted budget never skips an `onExit` action such as a
+license check-in or an unmount.
 
-**Must not be lower than the server's `openjd.expr_template_positions`.** An
-assignment's positions are a subset of its template's, so a lower value here
-cannot run a job the server accepted; the server sees that from this worker's
-registration and withholds EXPR work rather than failing it here. The floor of
-2,000 sits just above a worked count of 1,841 positions for a generous session
-(one task action plus 50 entered environments).
+**Must not be lower than the server's `openjd.expr_template_positions`;**
+the server withholds EXPR work from a worker that is (caveat 1). The floor of
+2,000 covers a large session of one task action plus 50 entered environments.
 
 ```yaml
 expr:
@@ -1198,12 +1078,11 @@ expr:
 | **Range** | `2000000` – `200000000` |
 | **Env var** | `SQI_WORKER_EXPR_ASSIGNMENT_RETAINED_BYTES` |
 
-Bytes every `let:` block in one assignment may **cumulatively** retain, summed
-across the task's symbol table and every environment's. The default is exactly
-2x `expr.let_retained_bytes` — sized for a task plus one environment, each
-near its own per-table ceiling.
-
-Cumulative allocation, not peak live retention — see caveat 4.
+Bytes that all `let:` blocks in one assignment may retain in total, summed
+across the task's symbol table and every environment's. The default is 2x
+`expr.let_retained_bytes`, enough for a task and one environment each near
+the per-table limit. This counts cumulative allocation, not peak live memory
+(caveat 4).
 
 ```yaml
 expr:
@@ -1219,37 +1098,29 @@ expr:
 | **Range** | `1000000` – `100000000` |
 | **Env var** | `SQI_WORKER_EXPR_LET_RETAINED_BYTES` |
 
-Bytes **one** symbol table may hold live. Measured across the *whole* table,
-not just its `let:` bindings — so a job whose own parameters are large spends
-budget its `let:` block never asked for. A block that would push the table
-past this stops there with an error rather than spending a fresh evaluation
-budget per remaining binding.
+Bytes one symbol table may hold live. The whole table counts, not only
+its `let:` bindings, so large job parameters use up part of this budget. A
+`let:` block that would push the table past this limit stops with an error at
+that binding.
 
-It bounds **one table**, a scope the server's template-wide walk does not
-meter separately — but it is advertised and compared all the same, against
-`openjd.expr_template_retained_bytes` (caveat 1's last row). A whole
-template's retained bytes is a valid upper bound on any one of its tables, so
-the comparison is conservative in one direction only: it can withhold EXPR
-work from a worker whose per-table limit was never going to be the binding
-constraint. It is **not** sufficient in the other — see below.
+The server has no per-table limit, so this key is compared with
+`openjd.expr_template_retained_bytes` (caveat 1's last row). That comparison
+can withhold EXPR work from a worker whose per-table limit would never have
+been reached.
 
-> **Read this before lowering it.** The floor of `1000000` is a **tenth** of
-> `openjd.expr_template_retained_bytes`' default. A worker set anywhere below
-> the server's value for that key is offered **no EXPR work at all** until one
-> of the two moves. That is the intended outcome, and it is visible — a
-> registration `WARN` and an `unschedulable_reason` naming both keys. Without
-> the comparison, such a worker would accept the assignment and fail **every
-> task of the job**, once per task, over a `let:` block the server had already
-> accepted.
+> **Read this before lowering it.** The floor of `1000000` is a tenth of the
+> server's default `openjd.expr_template_retained_bytes`. A worker set below
+> the server's value for that key is offered no EXPR work at all until one
+> of the two changes, and the server reports this with a registration `WARN`
+> and an `unschedulable_reason` naming both keys.
 
-Even with the comparison satisfied, this key can still reject an accepted
-job — the accounting measures the *whole table*, and phase 3 binds concrete
-values the server only had placeholders for (`"x" * Task.Param.N` costs
-nothing at submit). Sizing it at exactly the server's value is the floor, not
-a guarantee.
+Even at or above the server's value, this key can reject an accepted job: it
+measures the whole table, and at execution time bindings hold concrete values
+the server saw only as placeholders (`"x" * Task.Param.N` costs nothing at
+submission).
 
-It may legally be set higher than `expr.assignment_retained_bytes`; the
-tighter of the two becomes the effective one.
+It may be set higher than `expr.assignment_retained_bytes`; the lower of the
+two then applies.
 
 ```yaml
 expr:
@@ -1260,13 +1131,13 @@ expr:
 
 ## `capabilities` — Software auto-detection
 
-Configures the nineteen built-in software detectors (Maya, Nuke, Houdini,
-Blender, Cinema 4D, 3ds Max, After Effects, Mistika Boutique/Ultima, Mistika VR,
-Mistika Workflows, ffmpeg, the standalone renderers Arnold kick, V-Ray, husk,
-Redshift, RenderMan, 3Delight and Mantra, and oiiotool)
-that run automatically at startup and advertise a `key=true` tag with no
-per-worker configuration, plus any custom detectors for in-house tools. Full
-reference, including the detector schema and the tag/version model:
+Configures software detection. Nineteen built-in detectors (Maya, Nuke,
+Houdini, Blender, Cinema 4D, 3ds Max, After Effects, Mistika Boutique/Ultima,
+Mistika VR, Mistika Workflows, ffmpeg, the standalone renderers Arnold kick,
+V-Ray, husk, Redshift, RenderMan, 3Delight and Mantra, and oiiotool) run at
+startup with no configuration and advertise a `key=true` tag for each tool
+found. You can add custom detectors for in-house tools. Full reference,
+including the detector schema and the tag/version model:
 [`docs/worker-capabilities.md`](worker-capabilities.md#capability-auto-detection-built-in-dcc-detectors).
 
 ### `capabilities.detect`
@@ -1277,12 +1148,12 @@ reference, including the detector schema and the tag/version model:
 | **Default** | `[]` (empty — only the built-ins run) |
 | **Env var** | — (config file only) |
 
-Custom detectors, in the same schema as the built-ins. Structured detectors
-have no environment-variable form — cloud fleets bake them into the worker
-config file shipped in the image. Each entry is validated at config-load
-time; an invalid detector (missing `tag`, zero `checks`, more than one check
-primitive set, a bad `os` value, or a non-compiling regex) fails worker
-startup with a descriptive error.
+Custom detectors, in the same schema as the built-ins. They have no
+environment-variable form; on cloud fleets, put them in the config file baked
+into the image. Each entry is validated at config load, and an invalid one
+(missing `tag`, no `checks`, a check without exactly one of
+`exe`/`path_glob`/`env`/`registry`, a bad `os` value, or a regex that does not
+compile) fails startup with an error naming it.
 
 ```yaml
 capabilities:
@@ -1303,11 +1174,12 @@ capabilities:
 | **Default** | `[]` (empty — all built-ins run) |
 | **Env var** | `SQI_WORKER_CAPABILITIES_DISABLE` (comma-separated, appended to any config-file entries) |
 
-Built-in tag names to turn off, by exact tag (`maya`, `nuke`, `houdini`,
-`blender`, `cinema4d`, `3dsmax`, `aftereffects`, `ffmpeg`, `mistika`, `mistikavr`, `mistikaworkflows`). Use this
-when a built-in misfires on a nonstandard host layout — typically paired with
-a `capabilities.detect` entry for the same tag that supplies more specific
-checks.
+Built-in detectors to turn off, by exact tag: `maya`, `nuke`, `houdini`,
+`blender`, `cinema4d`, `3dsmax`, `aftereffects`, `mistika`, `mistikavr`,
+`mistikaworkflows`, `ffmpeg`, `arnold`, `vray`, `husk`, `redshift`,
+`renderman`, `3delight`, `mantra` or `oiiotool`. Use this when a built-in
+misfires on a nonstandard host layout, typically with a `capabilities.detect`
+entry for the same tag that has more specific checks.
 
 ```yaml
 capabilities:
@@ -1318,20 +1190,19 @@ capabilities:
 SQI_WORKER_CAPABILITIES_DISABLE=blender,nuke sqi-worker start
 ```
 
-Run `sqi-worker capabilities` to print every tag the worker would currently
-advertise, with its source (`auto`, `builtin:<tag>`, `custom`, or `manual`) —
-the fastest way to confirm a detector is (or isn't) firing.
+Run `sqi-worker capabilities` to print every tag the worker would advertise,
+with its source (`auto`, `builtin:<tag>`, `custom`, or `manual`), to check
+whether a detector fires.
 
 ---
 
 ## `staging` — Local path staging (`stage_locally` delivery)
 
 Used by jobs that run a `stage_locally` delivery of the `SQI_PATH_TRANSLATION`
-extension. `scratch_dir` and `sync_command` are operator-owned and have no
-environment-variable form (config file only); cloud fleets bake them into the
-worker config shipped in the image. `defaults` (with its `SQI_STAGING_DEFAULTS`
-env var) controls whether an otherwise-unconfigured worker still runs
-`stage_locally` jobs — see below.
+extension. `scratch_dir` and `sync_command` can be set only in the config file;
+on cloud fleets, bake them into the config shipped in the image. `defaults`
+(env var `SQI_STAGING_DEFAULTS`) controls whether a worker without them still
+runs `stage_locally` jobs.
 
 ### `staging.scratch_dir`
 
@@ -1341,13 +1212,10 @@ env var) controls whether an otherwise-unconfigured worker still runs
 | **Default** | `""` → `<os.TempDir()>/sqi-staging` whenever unset |
 | **Env var** | — (config file only) |
 
-Base directory for per-attempt staged copies. Leave unset to use the
-platform temp directory (e.g. `/tmp/sqi-staging` on Linux/macOS,
-`%TEMP%\sqi-staging` on Windows) — convenient for local/dev workers, but a
-persistent, purpose-built scratch volume is recommended for production. This
-fallback applies whenever `scratch_dir` is unset, independent of
-`staging.defaults`; what `staging.defaults` controls is whether staging is
-allowed to proceed at all on an otherwise-unconfigured worker (see below).
+Base directory for per-attempt staged copies. When unset, staging uses
+`sqi-staging` under the platform temp directory (e.g. `/tmp/sqi-staging` on
+Linux, `%TEMP%\sqi-staging` on Windows), whatever `staging.defaults` says.
+That suits development; use a dedicated scratch volume in production.
 
 ### `staging.sync_command`
 
@@ -1357,106 +1225,81 @@ allowed to proceed at all on an otherwise-unconfigured worker (see below).
 | **Default** | `""` → built-in copy when unset and `staging.defaults` is true |
 | **Env var** | — (config file only) |
 
-Command template invoked per path, with `{src}`, `{dest}`, and optional
+Command template run once per path, with `{src}`, `{dest}`, and optional
 `{object_type}` placeholders (e.g. `rsync -a {src} {dest}`). The same template
-serves copy-in and copy-out.
+serves copy-in and copy-out. The template is split on whitespace and run
+directly, not through a shell: quoting, pipes and redirection are not
+interpreted, and each placeholder is substituted within its own argument.
 
-Leave unset, or set explicitly to the sentinel value `builtin`, to use sqi's
-built-in cross-platform copy instead of shelling out — sqi then copies bytes
-itself (single file or recursive directory tree, preserving file mode but not
-ownership/xattrs) rather than invoking an external command. Any other value is
-treated as a shell command template.
+Leave it unset, or set it to `builtin`, to use sqi's built-in cross-platform
+copy instead of an external command. The built-in copy handles a single file
+or a directory tree and preserves file mode, but not ownership or extended
+attributes.
 
-Explicitly setting `sync_command: builtin` selects the built-in copy — and,
-via the TEMP-scratch fallback above, lets staging proceed with `scratch_dir`
-left unset — even when `staging.defaults` is `false`. It's an intentional
-per-worker opt-in, distinct from the automatic fallback described under
-`staging.defaults`, so it does not log the one-time WARN either.
+`sync_command: builtin` selects the built-in copy even when
+`staging.defaults` is `false`, and works with `scratch_dir` unset (the temp
+directory fallback above applies). Because it is an explicit choice, it does
+not log the one-time warning described under `staging.defaults`.
 
 > **The built-in copy only moves bytes the worker can already reach** (local
-> disk or a filesystem already shared/mounted on that worker). It is a
-> local/dev convenience, not a substitute for remote transfer. A farm whose
-> workers span multiple compute locations (see
-> [`docs/compute-locations.md`](compute-locations.md)) needs a real
-> `sync_command` (`rsync`, `aws s3 cp`, etc.) to move data between them —
-> configure one explicitly rather than relying on the built-in copy.
+> disk or a filesystem mounted on that worker). It does not transfer data
+> between hosts. A farm whose workers span multiple compute locations (see
+> [`docs/compute-locations.md`](compute-locations.md)) needs a `sync_command`
+> such as `rsync` or `aws s3 cp` to move data between them.
 
-> **The built-in copy refuses an input that already carries more than one
-> hardlink**, on stage-in as well as stage-out. The two paths fail the task
-> with **different messages** — grep for both:
+> **sqi refuses to stage a file that has more than one hardlink.** On
+> stage-in the built-in copy refuses such an input; on stage-out the check
+> runs before any copy, built-in or `sync_command`. The task fails with one
+> of two messages, both containing `has more than one hardlink`:
 >
 > - stage-in: `copy refused: opened "<path>" has more than one hardlink; sqi
 >   will not copy a file that may alias content beyond scratch`
 > - stage-out: `stage-out refused: "<path>" has more than one hardlink; sqi
 >   will not copy a file that may alias content beyond scratch`
 >
-> (stage-out quotes the path *relative to the scratch directory*, not the
-> absolute one, because it is looked up through a rooted descriptor.) The
-> shared, greppable substring across both is
-> `has more than one hardlink`. A hardlink is not a copy of
-> the file, it *is* the file — one inode under a second name — so staging it
-> into scratch and chowning it to the run-as-user identity would chown the
-> original too, and nothing sqi does afterward can separate them again. If
-> your inputs are delivered by a content-addressed or deduplicating asset
-> store, or by `cp -al` / `rsync --link-dest`, they will be multiply linked
-> and will be refused. Deliver them with a real copy (`rsync -a` without
-> `--link-dest`, `cp` without `-l`) or configure a `sync_command` that does.
+> The stage-out message gives the path relative to the scratch directory. A
+> hardlink shares its inode with the original file, so chowning the staged
+> copy to the run-as-user account would chown the original too. Inputs
+> delivered by a content-addressed or deduplicating asset store, or by
+> `cp -al` / `rsync --link-dest`, are multiply linked and will be refused.
+> Deliver them with a real copy (`rsync -a` without `--link-dest`, `cp`
+> without `-l`) or configure a `sync_command` that makes one.
 >
-> This is **not** the same thing as the `sync_command` hardlink warning
-> below, and the remedies differ: that one is about a *sync command you
-> configure* creating a link into scratch; this one is about an *input asset
-> that already had one* before sqi ever saw it.
+> This concerns input files that already have extra links. The next note
+> concerns a `sync_command` that creates them.
 >
-> **Upgrade note for Windows workers:** earlier releases did not check the
-> link count on Windows, so a multiply linked input staged in without error.
-> POSIX workers have always enforced it. After upgrading, the same job on a
-> mixed farm may start failing on the Windows workers and nowhere else — not
-> because those workers are stricter than the rest, but because they are no
-> longer the lenient ones.
+> Releases up to v0.3.0 did not enforce this on Windows, so after upgrading a
+> mixed farm, a job with multiply linked inputs can start failing on its
+> Windows workers only.
 
 > **`sync_command` MUST NOT create hardlinks into scratch** when run-as-user
-> isolation is in use — e.g. `cp -al`, or `rsync --link-dest`. A hardlink is
-> the file: it shares one inode with whatever it links to, so chowning the
-> scratch copy to the target run-as-user identity chowns the original file
-> too, and no permission fix-up sqi applies afterward can separate the two —
-> there is nothing left to distinguish. `rsync -a` (no `--link-dest`) and the
-> built-in copy above are both safe: they always copy bytes into a fresh
-> inode.
+> isolation is in use (e.g. `cp -al` or `rsync --link-dest`). Chowning the
+> scratch copy to the run-as-user account would chown the original file too.
+> `rsync -a` without `--link-dest` and the built-in copy are both safe: they
+> always write a new inode.
 
 > **`sync_command` MUST NOT dereference symlinks at either end**, on stage-in
-> or stage-out. sqi validates the scratch-side source before invoking the
-> command: on stage-out it opens that source *through* an `os.Root` rooted at
-> the scratch directory, so containment is enforced by the kernel in the open
-> itself (`OBJ_DONT_REPARSE` on Windows, `openat` with per-component
-> `O_NOFOLLOW` on POSIX) rather than computed from the path beforehand, and a
-> source reached through a symlink or a directory junction is refused before
-> the command is ever invoked. On Windows this matters because a path-based
-> containment computation does not resolve junctions at all. It then checks
-> on that open descriptor that the source is a regular file with a single hardlink. But none of that can see
-> what the command itself does once invoked: `rsync -a` preserves a symlink,
-> `rsync -aL` or plain `cp` follow it. A command that follows a symlink a
-> task planted at its declared output path hands the daemon's `sync_command`
-> process — running as root — whatever that symlink points to, on stage-out,
-> or writes through a symlink planted at the real destination path, on
-> stage-in. This is entirely a property of the command template an operator
-> chooses and is outside anything sqi can inspect or enforce.
+> or stage-out. Before running the command on stage-out, sqi opens the source
+> through an `os.Root` rooted at the scratch directory, so the kernel enforces
+> containment during the open (`OBJ_DONT_REPARSE` on Windows, `openat` with
+> per-component `O_NOFOLLOW` on POSIX) and refuses a source reached through a
+> symlink or a directory junction. It then checks on the open descriptor that
+> the source is a regular file with a single hardlink. sqi cannot control what
+> the command does after that: `rsync -a` preserves a symlink, while
+> `rsync -aL` and plain `cp` follow it. A command that follows a symlink a task
+> planted at its output path gives the `sync_command` process, which runs as
+> the worker daemon (root under POSIX isolation), whatever the link points to
+> on stage-out, and writes through a symlink planted at the destination on
+> stage-in.
 >
-> **This residue also includes a race that cannot be closed for
-> `sync_command`.** sqi hands `sync_command` a
-> path string, not an open file descriptor, so there is nothing for sqi to
-> pin between validating the scratch-side path and the command actually
-> opening it — a task whose process group is still alive after its own
-> successful exit (nothing kills it on success; only the timeout/cancel
-> paths do) can still own a scratch subdirectory and swap a hardlink into it
-> after sqi's check passes and before the external command reads the file.
-> The built-in copy (`sync_command` unset or `builtin`) does not have this
-> gap: it re-validates the file on the descriptor it actually opened, which
-> pins the inode and cannot be swapped out from under it. That re-validation
-> has no equivalent for an external command sqi merely invokes with strings —
-> there is no descriptor to hand it and no way to make its own `open()` call
-> observe what sqi already checked. Treat a configured `sync_command` as
-> carrying this residual risk permanently when run-as-user isolation is in
-> use, not as a gap that a smarter check could close.
+> **A configured `sync_command` also leaves a race open.** sqi passes it a
+> path string, not an open descriptor, so a task process still running after
+> its task exits successfully (only timeout and cancel kill it) can swap a
+> hardlink into its scratch subdirectory between sqi's check and the
+> command's own open. The built-in copy (`sync_command` unset or `builtin`)
+> reads the descriptor it validated, so it has no such gap. When run-as-user
+> isolation is in use, treat this as a permanent property of any external
+> `sync_command`.
 
 ### `staging.defaults`
 
@@ -1466,13 +1309,14 @@ per-worker opt-in, distinct from the automatic fallback described under
 | **Default** | `true` |
 | **Env var** | `SQI_STAGING_DEFAULTS` |
 
-When true (the default), a worker that hasn't configured `scratch_dir` and
-`sync_command` at all still runs `stage_locally` jobs: it falls back to the
-TEMP scratch directory and the built-in copy described above, logging a
-one-time WARN the first time it does so. Set `staging.defaults: false` to
-disable that automatic fallback — a worker with neither key set then fails
-`stage_locally` jobs immediately with a pre-execution error. (An explicit
-`sync_command: builtin` still works even with `defaults: false` — see above.)
+When `true` (the default), a worker without `scratch_dir` and `sync_command`
+still runs `stage_locally` jobs, using the temp scratch directory and the
+built-in copy described above. It logs a one-time `WARN` the first time it
+uses the built-in copy with no `scratch_dir` set.
+
+With `false`, a worker runs `stage_locally` jobs only when both `scratch_dir`
+and `sync_command` are set, or `sync_command` is `builtin`; otherwise each
+such job fails before execution.
 
 ```yaml
 staging:
@@ -1480,14 +1324,6 @@ staging:
   sync_command: "rsync -a {src} {dest}"
   defaults: true
 ```
-
-> **Behavior change on upgrade.** Before this setting existed, any worker that
-> ran a `stage_locally` job without `staging.scratch_dir` and
-> `staging.sync_command` configured failed the task immediately with a
-> staging error. `staging.defaults` now defaults to `true`, so those same
-> workers instead run the job using TEMP scratch and the built-in copy. Set
-> `staging.defaults: false` (or `SQI_STAGING_DEFAULTS=false`) to restore the
-> old fail-hard behavior.
 
 ---
 
@@ -1501,11 +1337,11 @@ staging:
 | **Default** | `true` |
 | **Env var** | `SQI_DIAGNOSTICS_ENABLED` (note: no `WORKER` infix) |
 
-When enabled (the default) the worker publishes its own `slog` output to the
-ephemeral core-NATS subject `worker.diag.<workerID>`, which the server ingests
-into its diagnostics ring buffer and surfaces in the web UI. Set to `false` to
-suppress publishing (the worker still logs locally: to stderr, or to `log.file` when set). This is the worker
-counterpart to the server's `diagnostics.buffer_size` knob.
+When enabled (the default), the worker publishes its own `slog` output on the
+core-NATS subject `worker.diag.<workerID>`, which the server keeps in its
+in-memory diagnostics buffer and shows in the web UI. Set to `false` to stop
+publishing; the worker still logs locally, to stderr or to `log.file`. The
+server side is controlled by its `diagnostics.buffer_size`.
 
 ```yaml
 diagnostics:
@@ -1550,10 +1386,9 @@ log:
 | **Env var** | `SQI_WORKER_LOG_FORMAT` |
 | **CLI flag** | `--log-format` |
 
-Log output format. `json` is structured and machine-parseable — use it in
-production so log aggregators (Loki, Datadog, Splunk, etc.) can index fields.
-`text` is human-readable with aligned columns — use it during local
-development.
+Log output format. `json` suits production, where log aggregators (Loki,
+Datadog, Splunk, etc.) can index its fields. `text` writes human-readable
+`key=value` pairs, which suits local development.
 
 ```yaml
 log:
@@ -1571,15 +1406,15 @@ log:
 | **Env var** | `SQI_WORKER_LOG_FILE` |
 | **CLI flag** | — |
 
-Path of a file to write log output to instead of stderr. The file is rotated by
-size (see `log.max_size_mb` and `log.max_backups`). Relative paths resolve
-against the working directory; a Windows service runs in the directory that
-holds its config file. Empty keeps logging on stderr.
+Path of a file to write log output to instead of stderr, rotated by size (see
+`log.max_size_mb` and `log.max_backups`). Relative paths resolve against the
+working directory; a Windows service runs in the directory that holds its
+config file. Empty logs to stderr.
 
 The directory must already exist: sqi-worker does not create it, and startup
-fails with a `log.file` validation error naming the missing directory. The path
-must name a file: one that ends with a path separator, or names an existing
-directory, fails validation too.
+fails with a `log.file` validation error naming the missing directory. A path
+that ends with a separator or names an existing directory also fails
+validation.
 
 When `sqi-worker` runs as a Windows service and `log.file` is empty, logs go to
 `%ProgramData%\sqi\logs\<service-name>.log` instead, since a service has no
@@ -1633,14 +1468,13 @@ log:
 
 ## `metrics` — Local HTTP server
 
-The worker exposes a small HTTP server on loopback for container orchestration
-health probes and Prometheus metrics. This server is not exposed to the
-network by default.
+The worker runs a small HTTP server for health probes and Prometheus metrics.
+By default it listens on loopback only.
 
 | Path | Purpose |
 |---|---|
-| `/healthz` | Liveness probe — always returns 200 when the process is running |
-| `/readyz` | Readiness probe — returns 503 when the NATS connection is not connected |
+| `/healthz` | Liveness probe; returns 200 while the process is running |
+| `/readyz` | Readiness probe; returns 503 while the NATS connection is down |
 | `/metrics` | Prometheus metrics endpoint |
 | `/debug/pprof/` | Go profiling endpoints (only when `metrics.enable_pprof: true`) |
 
@@ -1652,18 +1486,17 @@ network by default.
 | **Default** | `"127.0.0.1:9091"` |
 | **Env var** | `SQI_WORKER_METRICS_ADDR` |
 
-This listener is **plaintext unless [`metrics.tls.enabled`](#metricstlsenabled)
-is set** — `nats.tls_*` covers the broker connection, not this one. It serves
-metrics, health and (optionally) pprof, never credentials or job payloads, and
-defaults to loopback. Turn TLS on together with any address reachable from
-elsewhere.
+TCP address the HTTP server listens on. Use `0.0.0.0:9091` to expose the
+endpoints to Prometheus scrapers on the network, and firewall the port.
 
-TCP address the local HTTP server listens on. Use `0.0.0.0:9091` to expose
-the endpoints to Prometheus scrapers on the network (ensure the port is
-firewalled appropriately).
+The listener is **plaintext unless [`metrics.tls.enabled`](#metricstlsenabled)
+is set**; the `nats.tls_*` settings cover only the broker connection. It
+serves metrics, health and (optionally) pprof, never credentials or job
+payloads. Turn TLS on with any address reachable from other hosts.
 
 When [running multiple workers on one host](#running-multiple-workers-on-one-host),
-give each instance a distinct port — otherwise the second worker fails to bind.
+give each instance a distinct port; a second worker on the same port fails to
+bind.
 
 ```yaml
 metrics:
@@ -1680,15 +1513,15 @@ metrics:
 | **Default** | `false` |
 | **Env var** | `SQI_WORKER_METRICS_TLS_ENABLED` |
 
-Terminate TLS on the metrics/health listener. As with the server's listeners,
-there is no plaintext port when it is on — the listener upgrades in place.
+Serve HTTPS on `metrics.addr`. As with the server's listeners, the same port
+switches to TLS and no plaintext port remains.
 
 Requires `metrics.tls.cert_file` and `metrics.tls.key_file`
 (`SQI_WORKER_METRICS_TLS_CERT_FILE` / `SQI_WORKER_METRICS_TLS_KEY_FILE`); the
-worker refuses to start without both, and refuses a pair it cannot load. The
-worker needs a certificate of its own here — this listener is the worker's, not
-the server's — so issue one with `sqi-server tls issue --host <worker-host>` or
-use whatever your monitoring stack already trusts.
+worker refuses to start without both, or with a pair it cannot load. Use a
+certificate issued for the worker's own host, from
+`sqi-server tls issue --host <worker-host>` or from a CA your monitoring stack
+already trusts.
 
 ```yaml
 metrics:
@@ -1709,9 +1542,9 @@ metrics:
 | **Default** | `false` |
 | **Env var** | `SQI_WORKER_METRICS_ENABLE_PPROF` |
 
-Expose Go runtime profiling endpoints at `/debug/pprof/`. Profiling data
-reveals memory layout, goroutine stacks, and CPU hotspots — enable
-temporarily for performance diagnosis, never in long-term production.
+Expose Go runtime profiling endpoints at `/debug/pprof/`. Profiles reveal
+memory contents, goroutine stacks and CPU hotspots, so enable this only
+temporarily, for performance diagnosis.
 
 ```yaml
 metrics:
@@ -1730,10 +1563,10 @@ metrics:
 | **Default** | `true` |
 | **Env var** | `SQI_WORKER_DISCOVERY_ENABLE_MDNS` |
 
-Enable mDNS-based `sqi-server` auto-discovery. When `true` and `nats.url` is
-empty, the worker browses for `_sqi._tcp` services on the local network.
-Disable on networks that prohibit multicast — most cloud VPCs, VLANs, and
-container networks.
+Enable mDNS discovery of `sqi-server`. When `true` and `nats.url` is empty,
+the worker browses for `_sqi._tcp` services on the local network and uses the
+first server found. Disable it on networks without multicast, which includes
+most cloud VPCs and container networks.
 
 ```yaml
 discovery:
@@ -1750,9 +1583,9 @@ discovery:
 | **Default** | `"5s"` |
 | **Env var** | `SQI_WORKER_DISCOVERY_MDNS_TIMEOUT` |
 
-Maximum time to wait for an mDNS discovery result before giving up. Increase
-if the server is slow to respond on a congested network. Only relevant when
-`discovery.enable_mdns` is `true`.
+Maximum time to wait for an mDNS discovery result before startup fails.
+Increase it if the server is slow to respond on a congested network. Used only
+when `discovery.enable_mdns` is `true` and `nats.url` is empty.
 
 ```yaml
 discovery:
@@ -1764,8 +1597,9 @@ discovery:
 ## `log_streamer` — Log chunk publisher
 
 Controls how task process stdout/stderr is batched and streamed to
-`sqi-server` via NATS JetStream. Tune these values to balance NATS message
-overhead against how live the web UI log viewer feels.
+`sqi-server` over NATS JetStream. These values trade NATS message overhead
+against how quickly output appears in the web UI log viewer. In each key, `0`
+selects the default and a negative value fails validation.
 
 ### `log_streamer.max_lines_per_chunk`
 
@@ -1775,10 +1609,10 @@ overhead against how live the web UI log viewer feels.
 | **Default** | `50` |
 | **Env var** | `SQI_WORKER_LOG_STREAMER_MAX_LINES_PER_CHUNK` |
 
-Maximum number of output lines batched into a single NATS message. A flush is
-triggered immediately when the buffer reaches this count. Increase for very
-verbose processes to reduce per-message overhead; decrease for better
-granularity when watching live log output.
+Maximum number of output lines batched into one NATS message; the buffer is
+flushed as soon as it reaches this count. Increase it for very verbose
+processes to reduce per-message overhead, or decrease it for finer-grained
+live output.
 
 ```yaml
 log_streamer:
@@ -1795,9 +1629,9 @@ log_streamer:
 | **Default** | `16384` (16 KB) |
 | **Env var** | `SQI_WORKER_LOG_STREAMER_MAX_BYTES_PER_CHUNK` |
 
-Maximum total byte count of line content in a single NATS message. A flush is
-triggered when the accumulated bytes reach this limit after adding a line.
-Guards against a single very long line producing an oversized message.
+Byte threshold for the line content buffered for one NATS message. The buffer
+is flushed when, after a line is added, its total reaches this value, so a
+message can exceed it by up to one line. Lines are not split or truncated.
 
 ```yaml
 log_streamer:
@@ -1814,10 +1648,9 @@ log_streamer:
 | **Default** | `"500ms"` |
 | **Env var** | `SQI_WORKER_LOG_STREAMER_FLUSH_INTERVAL` |
 
-Maximum time a line may sit in the buffer before being flushed regardless of
-the chunk size thresholds. Smaller values make the web UI log viewer feel
-more live at the cost of more frequent small NATS publishes on slowly printing
-processes.
+Maximum time a line may wait in the buffer before it is flushed, whatever the
+size thresholds. Smaller values show output sooner, at the cost of more small
+NATS publishes from processes that print slowly.
 
 ```yaml
 log_streamer:
@@ -1831,6 +1664,7 @@ log_streamer:
 | Key | Type | Default | Env var | CLI flag |
 |---|---|---|---|---|
 | `nats.url` | string | `""` | `SQI_WORKER_NATS_URL` | — |
+| `nats.tls_enabled` | string | `auto` | `SQI_WORKER_NATS_TLS_ENABLED` | — |
 | `nats.tls_cert_file` | string | `""` | `SQI_WORKER_NATS_TLS_CERT_FILE` | — |
 | `nats.tls_key_file` | string | `""` | `SQI_WORKER_NATS_TLS_KEY_FILE` | — |
 | `nats.tls_ca_file` | string | `""` | `SQI_WORKER_NATS_TLS_CA_FILE` | — |
@@ -1841,9 +1675,11 @@ log_streamer:
 | `nats.join_token` | string | `""` | `SQI_WORKER_NATS_JOIN_TOKEN` | — |
 | `nats.join_token_file` | string | `""` | `SQI_WORKER_NATS_JOIN_TOKEN_FILE` | — |
 | `nats.server_url` | string | `""` | `SQI_WORKER_NATS_SERVER_URL` | — |
+| `nats.server_tls_ca_file` | string | `""` | `SQI_WORKER_NATS_SERVER_TLS_CA_FILE` | — |
+| `nats.server_tls_insecure_skip_verify` | bool | `false` | `SQI_WORKER_NATS_SERVER_TLS_INSECURE_SKIP_VERIFY` | — |
 | `worker.name` | string | hostname | `SQI_WORKER_NAME` | — |
 | `worker.farm_id` | string | `""` | `SQI_WORKER_FARM_ID` | — |
-| `worker.data_dir` | string | `~/.sqi/worker` (Linux/macOS); `%USERPROFILE%\.sqi\worker` (Windows) | `SQI_WORKER_DATA_DIR` | — |
+| `worker.data_dir` | string | `~/.sqi/worker` (Linux/macOS); `%USERPROFILE%\.sqi\worker` (Windows); `/var/lib/sqi-worker` with no home directory | `SQI_WORKER_DATA_DIR` | — |
 | `worker.session_dir` | string | `""` → resolved at startup | `SQI_WORKER_SESSION_DIR` | — |
 | `worker.compute_location` | string | `""` | `SQI_WORKER_COMPUTE_LOCATION` | — |
 | `worker.capability_tags` | []string | `[]` | `SQI_WORKER_CAPABILITY_TAGS` | — |
@@ -1874,6 +1710,9 @@ log_streamer:
 | `log.max_size_mb` | int | `100` | `SQI_WORKER_LOG_MAX_SIZE_MB` | — |
 | `log.max_backups` | int | `5` | `SQI_WORKER_LOG_MAX_BACKUPS` | — |
 | `metrics.addr` | string | `127.0.0.1:9091` | `SQI_WORKER_METRICS_ADDR` | — |
+| `metrics.tls.enabled` | bool | `false` | `SQI_WORKER_METRICS_TLS_ENABLED` | — |
+| `metrics.tls.cert_file` | string | `""` | `SQI_WORKER_METRICS_TLS_CERT_FILE` | — |
+| `metrics.tls.key_file` | string | `""` | `SQI_WORKER_METRICS_TLS_KEY_FILE` | — |
 | `metrics.enable_pprof` | bool | `false` | `SQI_WORKER_METRICS_ENABLE_PPROF` | — |
 | `discovery.enable_mdns` | bool | `true` | `SQI_WORKER_DISCOVERY_ENABLE_MDNS` | — |
 | `discovery.mdns_timeout` | duration | `5s` | `SQI_WORKER_DISCOVERY_MDNS_TIMEOUT` | — |
@@ -1920,33 +1759,30 @@ metrics:
 
 ## Running multiple workers on one host
 
-A single worker executes tasks in parallel — the server leases as many tasks as
-fit the worker's CPU cores (see [CPU reservations in OpenJD
-templates](openjd-submission.md#5-cpu-reservations)). The worker runs whatever
-it is leased; concurrency is gated entirely by the server's CPU-core accounting
-(`amount.worker.vcpu`). There is no local task-count cap.
+A single worker runs tasks in parallel: the server leases it as many tasks as
+fit its CPU cores (see [CPU reservations in OpenJD
+templates](openjd-submission.md#5-cpu-reservations)). Concurrency is set by the
+server's CPU-core accounting (`amount.worker.vcpu`); the worker has no local
+task-count cap.
 
-Run *separate* worker processes when you want distinct worker identities:
-independent heartbeats and registrations, different capability sets, or
-separate queue assignments — useful for local farm simulation and testing the
-scheduler. `sqi-worker` dials out to the server's NATS (it binds no inbound
-ports except the metrics server), so multiple instances coexist on one host as
-long as three things differ per instance:
+Run separate worker processes when you want distinct worker identities, each
+with its own heartbeats, registration, capability set or queue assignment, for
+example to simulate a farm or test the scheduler. `sqi-worker` connects out to
+the server's NATS and listens only on its metrics port, so several instances
+can share a host as long as these settings differ:
 
 | Setting | Env var | Why it must differ |
 |---|---|---|
-| [`worker.data_dir`](#workerdata_dir) | `SQI_WORKER_DATA_DIR` | Holds the persistent `worker.id` UUID and (when `nats.credential_file` is left at its default) the worker's nkey seed; a shared dir means a duplicate identity on the server, or two instances fighting over one credential. |
+| [`worker.data_dir`](#workerdata_dir) | `SQI_WORKER_DATA_DIR` | Holds the persistent `worker.id` UUID and, when `nats.credential_file` is left at its default, the worker's nkey seed. Sharing it gives two instances one identity on the server and one credential. |
 | [`metrics.addr`](#metricsaddr) | `SQI_WORKER_METRICS_ADDR` | The local health/metrics HTTP server; a second instance on the same port fails to bind. |
-| [`worker.name`](#workername) | `SQI_WORKER_NAME` | Cosmetic only — defaults to the hostname, so instances would otherwise share a label in the web UI. |
+| [`worker.name`](#workername) | `SQI_WORKER_NAME` | Display only. It defaults to the hostname, so instances would otherwise share a label in the web UI. |
 
-Everything else (NATS URL, discovery, capability tags) can be shared or vary
-as you like. If broker authentication is on and each instance enrolls with a
-join token, each also needs its own token: tokens are single-use by default
-(`nats.auth.join_token_single_use`), so the second instance to redeem a
-shared token fails enrollment.
+Other settings (NATS URL, discovery, capability tags) may be shared or differ.
+With broker authentication on, each instance that enrolls needs its own join
+token: tokens are single-use by default (`nats.auth.join_token_single_use`),
+so a second instance redeeming the same token fails enrollment.
 
-For local development the `make run-workers` target wires all of this up for
-you — see
+For local development, the `make run-workers` target sets all of this up; see
 [Running multiple workers locally](development.md#running-multiple-workers-locally)
 in the development guide. A manual example starting three workers:
 
@@ -1967,4 +1803,4 @@ done
 - [`docs/worker-capabilities.md`](worker-capabilities.md) — Auto-detected capability tags and how to override them.
 - [`docs/worker-deployment.md`](worker-deployment.md) — systemd, launchd, and Windows service installation.
 - [`docs/configuration.md`](configuration.md) — `sqi-server` configuration reference.
-- [`docs/auth.md`](auth.md#task-isolation) — the task-isolation model: `isolation.manage`, `run_as_user` update semantics, and why isolation trades daemon privilege for task privilege.
+- [`docs/auth.md`](auth.md#task-isolation) — The task-isolation model: `isolation.manage`, `run_as_user` update semantics, and why isolation raises the daemon's privilege to lower the task's.

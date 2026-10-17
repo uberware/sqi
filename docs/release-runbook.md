@@ -1,18 +1,18 @@
 # Release Runbook
 
-This runbook captures the complete maintainer procedure for cutting a versioned
-`sqi` release. Follow the steps in order. Each external action has a **Verify:**
-line — do not proceed past a step until verification passes.
+The maintainer procedure for cutting a versioned `sqi` release. Follow the
+steps in order. Each external action has a **Verify:** line; do not continue
+past a step until it passes.
 
-The step numbering starts at Step 2. Steps 2, 3, 3b, 6b and 7 are one-time setup;
+Numbering starts at Step 2. Steps 2, 3, 3b, 6b and 7 are one-time setup;
 Steps 4-9 are the per-release procedure.
 
 ---
 
 ## Step 2: Apple signing prerequisites
 
-Before the first release that includes macOS notarization, the maintainer must
-provision Apple credentials and add them as GitHub secrets.
+Before the first release with macOS notarization, create Apple credentials and
+add them as GitHub secrets.
 
 **Prerequisites:**
 - An active Apple Developer Program membership (individual or organization).
@@ -51,8 +51,7 @@ provision Apple credentials and add them as GitHub secrets.
 
 ## Step 3: PyPI trusted publisher
 
-This step is required before `sqi-sdk` can be published to PyPI. It only
-needs to be done once.
+Required once, before `sqi-sdk` can be published to PyPI.
 
 **Procedure:**
 
@@ -82,19 +81,17 @@ needs to be done once.
 
 ## Step 3b: sqi-submitter PyPI trusted publisher
 
-Same procedure as Step 3, for the separate `sqi-submitter` PyPI project (the
-DCC submitter framework package in `clients/submitter/`). This is required
-before `sqi-submitter` can be published to PyPI, and it only needs to be done
-once.
+The Step 3 procedure for the separate `sqi-submitter` PyPI project (the DCC
+submitter package in `clients/submitter/`). Required once, before
+`sqi-submitter` can be published to PyPI.
 
 **Procedure:**
 
 1. Log in to [pypi.org](https://pypi.org) as the `uberware` account.
 
 2. If the `sqi-submitter` project does not yet exist on PyPI, claim the name
-   with a one-time manual placeholder upload (a pending trusted publisher
-   alone does not reserve the name against a `python -m build` from a local
-   checkout):
+   with a one-time manual upload built from a local checkout (a pending
+   trusted publisher does not reserve the name):
 
    ```bash
    cd clients/submitter
@@ -112,8 +109,8 @@ once.
    - Workflow filename: `release.yml`
    - Environment name: *(leave blank)*
 
-4. The `PUBLISH_TO_PYPI` repository variable set in Step 3 gates both the
-   `sqi-sdk` and `sqi-submitter` publish steps in `release.yml` — no separate
+4. The `PUBLISH_TO_PYPI` repository variable from Step 3 gates both the
+   `sqi-sdk` and `sqi-submitter` publish steps in `release.yml`; no separate
    variable is needed.
 
 **Verify:** the `sqi-submitter` project's Publishing page on PyPI lists the
@@ -124,12 +121,12 @@ trusted publisher above, and `gh variable list` still shows
 
 ## Step 4: Notarization dry-run via a throwaway tag
 
-Run a full release pipeline using a throwaway `-rc` tag to confirm that
-notarization is wired up correctly before tagging the real release.
+Run the full release pipeline on a throwaway `-rc` tag to confirm notarization
+works before tagging the real release.
 
-The `release.yml` workflow skips the `sqi-sdk` version check for tags
-containing `-rc` (via `if: ${{ !contains(github.ref_name, '-rc') }}`), so the
-dry-run tag `v0.0.1-rc.1` does not require bumping `_version.py`.
+`release.yml` skips the `sqi-sdk` and `sqi-submitter` version checks for tags
+containing `-rc` (`if: ${{ !contains(github.ref_name, '-rc') }}`), so the
+dry-run tag `v0.0.1-rc.1` needs no `_version.py` bump.
 
 **Procedure:**
 
@@ -202,11 +199,10 @@ VERSION=0.3.0
    grep __version__ clients/python/src/sqi_client/_version.py
    ```
 
-   Also bump and confirm `clients/submitter/src/sqi_submitter/_version.py` —
-   it does **not** track the same version as `sqi-sdk` automatically (it ships
-   a `.dev0` placeholder until deliberately bumped) and `release.yml`'s
-   "Check sqi-submitter version matches the tag" step fails the release
-   outright if it does not match the tag:
+   Also bump and confirm `clients/submitter/src/sqi_submitter/_version.py`.
+   It is a separate version from `sqi-sdk`'s and is not updated with it, and
+   `release.yml`'s "Check sqi-submitter version matches the tag" step fails the
+   release if it does not match the tag:
    ```bash
    grep __version__ clients/submitter/src/sqi_submitter/_version.py
    ```
@@ -214,12 +210,11 @@ VERSION=0.3.0
 2. Confirm the `main` branch is green in CI and all release-blocking tasks are
    merged.
 
-3. Regenerate and commit the changelog so the tag captures a dated section.
-   `CHANGELOG.md` is generated from the Conventional Commit history by
-   git-cliff — do it as the last commit before tagging so the section date
-   matches the tag date. (The release workflow also regenerates it for the
-   archives, but that copy is not committed back, so the tracked file must be
-   refreshed here.)
+3. Regenerate and commit the changelog so the tag includes a dated section.
+   git-cliff generates `CHANGELOG.md` from the Conventional Commit history.
+   Make this the last commit before tagging so the section date matches the
+   tag date. The release workflow regenerates it for the archives but does not
+   commit that copy, so the tracked file must be refreshed here.
    ```bash
    make changelog VERSION=$VERSION      # requires git-cliff; rolls pending commits into a dated $VERSION section
    git add CHANGELOG.md
@@ -248,33 +243,37 @@ VERSION=0.3.0
 
 ## Step 6b: Publish reference and testing presets to the preset library
 
-The presets authored in this repo — the thirty `presets/sqi/*.yaml` reference
-presets (Maya layer + scene, Nuke write + script, Houdini ROP, Blender batch +
-view layer, Cinema 4D scene + take, 3ds Max, After Effects render + queue render
-each in Windows and macOS variants,
-Mistika Boutique + VR + Workflows; the standalone renderers Arnold kick + kick
-tile, V-Ray, husk, Redshift, RenderMan, 3Delight and Mantra; ffmpeg transcode,
-sequence-encode, and segment-transcode bash/PowerShell/EXPR)
-and the four `presets/testing/*.yaml` smoke-test presets (test-render and
-test-steps, each in bash + PowerShell) — are not distributed as part of the
-GitHub release or PyPI packages; they are published to the separate
-`uberware/sqi-presets` repository that backs the default `preset_library.url`
-(see `docs/preset-library.md`). This is **automated** by the `publish-presets`
-job in `.github/workflows/release.yml`: after a successful release, on a
-non-`-rc` tag, it runs `cmd/presetgen` twice against a checkout of the library
-repo — once for `presets/sqi` (the `sqi/` namespace) and once for
-`presets/testing` under the `testing/` subdir — to regenerate `index.json` +
-the definition files, and pushes only if something changed. `presetgen`
-merges — each pass owns its own namespace and leaves any other library entries
-untouched — and computes each `sha256` over the raw file bytes, so the
-published index always matches what `sqi-server` verifies on install.
+The presets authored in this repo are not part of the GitHub release or the
+PyPI packages:
 
-**One-time setup** (until done, the job is skipped and the release is
+- the thirty `presets/sqi/*.yaml` reference presets (Maya layer + scene, Nuke
+  write + script, Houdini ROP, Blender batch + view layer, Cinema 4D scene +
+  take, 3ds Max, After Effects render + queue render in Windows and macOS
+  variants, Mistika Boutique + VR + Workflows; the standalone renderers Arnold
+  kick + kick tile, V-Ray, husk, Redshift, RenderMan, 3Delight and Mantra;
+  ffmpeg transcode, sequence-encode, and segment-transcode
+  bash/PowerShell/EXPR);
+- the four `presets/testing/*.yaml` smoke-test presets (test-render and
+  test-steps, each in bash + PowerShell).
+
+They are published to the separate `uberware/sqi-presets` repository that
+backs the default `preset_library.url` (see `docs/preset-library.md`). The
+`publish-presets` job in `.github/workflows/release.yml` does this
+**automatically**: after a successful release on a non-`-rc` tag, it runs
+`cmd/presetgen` twice against a checkout of the library repo, once for
+`presets/sqi` (the `sqi/` namespace) and once for `presets/testing` under the
+`testing/` subdirectory, to regenerate `index.json` and the definition files,
+and pushes only if something changed. Each `presetgen` pass merges into its own
+namespace and leaves other library entries untouched, and computes each
+`sha256` over the raw file bytes, so the published index matches what
+`sqi-server` verifies on install.
+
+**One-time setup** (until it is done, the job is skipped and the release is
 unaffected):
 
 1. Create the `uberware/sqi-presets` repository and enable GitHub Pages serving
    from the default branch root, so `https://uberware.github.io/sqi-presets/index.json`
-   resolves. It may start empty — the first release populates it.
+   resolves. It may start empty; the first release populates it.
 
 2. Create a fine-grained personal access token with **Contents: write** scoped
    to `uberware/sqi-presets`, and add it as a secret on this repo:
@@ -308,8 +307,8 @@ go run ./cmd/presetgen -presets presets/testing -subdir testing -out /path/to/sq
 
 ## Step 7: Make GHCR packages public
 
-By default, packages pushed to GHCR inherit the repository's visibility
-(private). Make both packages public so users can pull without authenticating.
+Packages pushed to GHCR start private. Make both public so users can pull
+without authenticating.
 
 **Procedure:**
 
@@ -339,8 +338,7 @@ python -c "import sqi_client; print(sqi_client.__version__)"
 
 Expected output: `$VERSION`.
 
-Also verify `sqi-submitter` (once its version has been bumped past the
-`.dev0` placeholder per Step 6):
+Also verify `sqi-submitter`:
 
 ```bash
 python -m pip install --no-cache-dir "sqi-submitter==$VERSION"
@@ -381,8 +379,9 @@ JOB=$(curl -s -X POST \
 curl -s localhost:8080/api/v1/jobs/$JOB/tasks
 ```
 
-Expected: the job's tasks reach `succeeded` status. Logs in the web UI
-(http://localhost:8080) show `Hello from sqi v$VERSION`.
+Expected: the job's tasks reach `succeeded` status. The task log in the web UI
+(http://localhost:8080) shows the greeting from `hello.json`, `Hello from sqi
+v<version>`, where the version is the one written in that file at the tag.
 
 Clean up:
 
