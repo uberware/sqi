@@ -1503,10 +1503,10 @@ jobs:
       - name: Run the integration suite
         run: |
           set +e
-          # INTEGRATION_TEST_FLAGS replaces the Makefile's default
-          # (-timeout 20m) with 15m. Container readiness takes up to ~90s for
-          # LDAP and ~180s for Keycloak on top of the suite's own runtime.
-          make test-integration INTEGRATION_TEST_FLAGS="-timeout 15m" 2>&1 | tee integration-output.log
+          # The Makefile's INTEGRATION_TEST_FLAGS default (-timeout 20m)
+          # covers the backup/restore tests' reconcile-grace waits plus up to
+          # ~90s of LDAP and ~180s of Keycloak container readiness.
+          make test-integration 2>&1 | tee integration-output.log
           status=${PIPESTATUS[0]}
           set -e
 
