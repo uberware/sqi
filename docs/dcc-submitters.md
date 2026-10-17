@@ -284,8 +284,11 @@ frame.
 
 The three Mistika presets use `SQI_CHUNK_BOUNDS` like Maya and Blender but
 default to chunks of 10: every Mistika renderer takes `-s START -e END`, so a
-chunk maps onto one invocation. All three render `.rnd` job files. For a
-single movie-file render, submit `Frames` as `1`.
+chunk maps onto one invocation. All three render `.rnd` job files, whose
+output format the job file sets. A movie output cannot be split across tasks,
+and these presets render up to ten frames per task, so a movie longer than ten
+frames needs the step's `chunks.defaultTaskCount` raised to cover the whole
+range. How Mistika writes a movie from a partial `-s`/`-e` range is unverified.
 
 **After Effects runs `aerender` through a wrapper, and a movie output must be
 one task.** `aerender` is reported to exit 0 when a render fails, so the four

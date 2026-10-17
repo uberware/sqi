@@ -211,18 +211,13 @@ scheduler:
   # Type: duration   Env: SQI_SCHEDULER_HEARTBEAT_TIMEOUT
   heartbeat_timeout: "30s"
 
-  # How often the assignment loop wakes to match ready tasks to idle workers.
-  # Lower values reduce assignment latency at the cost of more CPU. Most farms
-  # work well at the default; reduce to 100ms only for sub-second task bursts.
-  # Must be > 0.
+  # Reserved: parsed and validated (must be > 0) but not read. The assignment
+  # loop runs on a fixed 1s interval, so setting this has no effect.
   # Type: duration   Env: SQI_SCHEDULER_TICK_INTERVAL
   tick_interval: "500ms"
 
-  # Maximum number of tasks that can be simultaneously assigned to a single
-  # worker. The default of 1 is appropriate for rendering workloads that
-  # saturate CPU/GPU. Increase for lightweight tasks that benefit from
-  # in-process concurrency on the worker side.
-  # Must be ≥ 1.
+  # Reserved: parsed and validated (must be ≥ 1) but not read. A worker's task
+  # concurrency is set by CPU-core commitment, so setting this has no effect.
   # Type: int   Env: SQI_SCHEDULER_MAX_TASKS_PER_WORKER
   max_tasks_per_worker: 1
 

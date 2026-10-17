@@ -2224,8 +2224,6 @@ log:
 
 scheduler:
   heartbeat_timeout: "60s"
-  tick_interval: "500ms"
-  max_tasks_per_worker: 1
 
 discovery:
   enabled: false       # disable multicast in a server environment
