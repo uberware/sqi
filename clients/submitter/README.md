@@ -18,7 +18,7 @@ are installed with `sqi-submit install-host`.
 
 ```sh
 pip install sqi-submitter              # core (requires sqi-sdk)
-pip install 'sqi-submitter[qt]'        # + PySide6 for standalone UI
+pip install "sqi-submitter[qt]"        # + PySide6 for standalone UI
 ```
 
 For development (run from `clients/submitter/`):

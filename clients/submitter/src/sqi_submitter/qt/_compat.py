@@ -40,5 +40,5 @@ def require_qt() -> None:
     if not QT_BINDING:
         raise SubmitterError(
             "No Qt binding found. Run inside a DCC that bundles PySide, or "
-            "install one with: pip install 'sqi-submitter[qt]'"
+            'install one with: pip install "sqi-submitter[qt]"'
         )

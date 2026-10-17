@@ -236,7 +236,7 @@ Blender hands the open scene to `sqi-submit`. The add-on is one file,
 1. Install `sqi-submit` on the machine, outside Blender's Python:
 
    ```sh
-   pipx install 'sqi-submitter[qt]'
+   pipx install "sqi-submitter[qt]"
    ```
 
 2. Run `sqi-submit install-host blender`. It prints the add-on's path; it does
@@ -281,7 +281,7 @@ Cinema 4D hands the open scene to `sqi-submit`. The plug-in is one file,
 `sqi_submitter`.
 
 1. Install `sqi-submit` on the machine, outside Cinema 4D's Python:
-   `pipx install 'sqi-submitter[qt]'`.
+   `pipx install "sqi-submitter[qt]"`.
 2. Run `sqi-submit install-host cinema4d`. When it finds exactly one `Maxon
    Cinema 4D *` preferences folder, it copies the file into that folder's
    `plugins` folder; otherwise it prints the file's path and what to do (see
@@ -313,7 +313,7 @@ ScriptUI panel written in ExtendScript, `Submit to sqi.jsx`, plus the public
 domain `json2.js` it includes (ExtendScript has no native `JSON`). The two
 files must sit in the same folder.
 
-1. Install `sqi-submit` on the machine: `pipx install 'sqi-submitter[qt]'`.
+1. Install `sqi-submit` on the machine: `pipx install "sqi-submitter[qt]"`.
 2. Run `sqi-submit install-host aftereffects`. It prints the two files' paths
    and the destination pattern, `<After Effects install>/Support
    Files/Scripts/ScriptUI Panels`, and copies nothing, because that folder is
@@ -384,7 +384,7 @@ For testing outside a DCC, or for a host not listed above, install the `qt`
 extra, which pulls in PySide6, and use the `sqi-submit` console command:
 
 ```sh
-pip install 'sqi-submitter[qt]'
+pip install "sqi-submitter[qt]"
 sqi-submit                          # opens the dialog against the configured server
 sqi-submit --server http://farm.example:8080
 sqi-submit --context FILE           # open the dialog for a handoff context file

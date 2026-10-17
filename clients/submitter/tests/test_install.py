@@ -199,7 +199,7 @@ def test_cli_dialog_without_qt_names_the_install_command(
     assert cli.main([]) == 1
     err = capsys.readouterr().err
     assert "No Qt binding found" in err
-    assert "pip install 'sqi-submitter[qt]'" in err
+    assert 'pip install "sqi-submitter[qt]"' in err
     assert "Traceback" not in err
 
 
