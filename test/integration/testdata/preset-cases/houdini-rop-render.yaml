@@ -6,6 +6,15 @@
 # cases therefore vary the SHAPE of the range: a plain contiguous range, and a
 # stepped one, each large enough (chunks.defaultTaskCount ships at 10) to split
 # into several chunks so chunk boundaries are visible too.
+#
+# The chunks are NONCONTIGUOUS, which sqi always writes as a flat comma list of
+# single frames (internal/openjd/expand.go, formatNoncontiguousChunk), never a
+# compact a-b or a-b:step. So the default case's tasks read 1,2,...,10 rather
+# than 1-10. That golden change is accepted by design (a compact encoding would
+# change every NONCONTIGUOUS template's task values server-wide): the driver
+# renders the same frames, only the task values and names differ. The stepped
+# case is the point of the switch: 1-60:2 is thirty frames in three tasks of ten
+# (three hip loads), where CONTIGUOUS split it into thirty single-frame tasks.
 cases:
   - name: default
     params:
@@ -20,6 +29,6 @@ cases:
       SceneFile: /mnt/show/seq010/shot0010/scene/shot0010_fx_v004.hip
       Frames: "1-60:2"
       RopPath: /out/mantra_beauty
-    expect_tasks: 30
+    expect_tasks: 3
     expect_invocations:
-      hython: 30
+      hython: 3

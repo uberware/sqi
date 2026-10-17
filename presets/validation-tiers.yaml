@@ -159,12 +159,15 @@ presets:
         argv derived from SideFX's documented hython command-line convention for
         driving a ROP via an embedded Python driver script. Stronger than the other
         render presets in one respect: the chunk syntax the driver must parse is
-        visible in the golden (1-10 in the default case; the stepped-range case
-        expands to thirty single-frame chunks such as 1-1, so no shipped
-        expansion reaches the driver's :step branch) alongside the parser itself, so the two can be read against each other. Still, no
-        Houdini or hython installation has executed it: hou.hipFile.load,
-        hou.node and RopNode.render(frame_range=...) are unexercised, and a golden
-        cannot show that hython puts the script's own path in sys.argv[0].
+        visible in the golden alongside the parser itself, so the two can be
+        read against each other. Its chunks are NONCONTIGUOUS, which sqi always
+        writes as a flat comma list of single frames (1,2,...,10 in the default
+        case; three tasks such as 1,3,...,19 for the stepped-range case's thirty
+        frames), so no shipped expansion reaches the driver's lo-hi or :step
+        branches. Still, no Houdini or hython installation has executed it:
+        hou.hipFile.load, hou.node and RopNode.render(frame_range=...) are
+        unexercised, and a golden cannot show that hython puts the script's own
+        path in sys.argv[0].
     tier3:
       case: TestPresetTier3/houdini-rop-render/default
       required_on: [linux, darwin, windows]
@@ -181,7 +184,12 @@ presets:
         single-frame task per requested frame (-F 1-1, -F 3-3, ...), because a
         CONTIGUOUS chunk never spans a gap, so -F never receives OpenJD's colon
         step syntax (1-19:2) where Foundry documents x (1-19x2). Whether Nuke
-        reads -F 1-1 as the single frame 1 is unverified at Tier 1.
+        reads -F 1-1 as the single frame 1 is unverified at Tier 1. It stays
+        CONTIGUOUS because Foundry's Command Line Operations page documents -F
+        only as one frame, a-b or a-bxN (repeating -F for more ranges), with no
+        comma-list form, so sqi's flat NONCONTIGUOUS chunk (1,3,5) has no
+        documented -F spelling and a stepped range still costs one task, and one
+        script load, per frame.
     tier3:
       case: TestPresetTier3/nuke-write-render/default
       required_on: [linux, darwin, windows]
@@ -198,7 +206,10 @@ presets:
         subject — is invisible in argv. Its stepped-range golden shows the same
         single-frame expansion as nuke-write-render's (-F 1-1, -F 3-3, ...), so
         no step separator reaches -F; whether Nuke reads -F 1-1 as one frame is
-        unverified at Tier 1.
+        unverified at Tier 1. It stays CONTIGUOUS for nuke-write-render's
+        reason: Foundry documents no comma-list form of -F, so a flat
+        NONCONTIGUOUS chunk (1,3,5) cannot reach Nuke and a stepped range still
+        costs one task per frame.
     tier3:
       case: TestPresetTier3/nuke-script-render/default
       required_on: [linux, darwin, windows]

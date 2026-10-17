@@ -251,7 +251,7 @@ so they are submitted from the web UI or the API like any other product.
 |---|---|---|---|---|
 | `maya-layer-render` | `Render -r <renderer> -s/-e <frame> -rl <layer> -rd <dir> <scene>` | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `OutputDir`, `Renderer` (default `file`), `RenderLayer` (default `masterLayer`) | `attr.worker.tag.maya = "true"` |
 | `maya-scene-render` | `Render -r <renderer> -s/-e <frame> -rd <dir> <scene>` (no `-rl`) | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `OutputDir`, `Renderer` (default `file`) | `attr.worker.tag.maya = "true"` |
-| `houdini-rop-render` | `hython` running an embedded chunk script that loads the hip file and calls `rop.render()` per frame range | chunks of 10 | `SceneFile`, `Frames`, `RopPath` | `attr.worker.tag.houdini = "true"` |
+| `houdini-rop-render` | `hython` running an embedded chunk script that loads the hip file and calls `rop.render()` for each frame in the chunk | chunks of 10 | `SceneFile`, `Frames`, `RopPath` | `attr.worker.tag.houdini = "true"` |
 | `nuke-write-render` | `nuke -x -X <writeNode> -F <range> <script>` | chunks of 10 | `SceneFile`, `Frames`, `WriteNode` | `attr.worker.tag.nuke = "true"` |
 | `nuke-script-render` | `nuke -x -F <range> <script>` (no `-X`; all enabled Write nodes) | chunks of 10 | `SceneFile`, `Frames` | `attr.worker.tag.nuke = "true"` |
 | `blender-batch-render` | `blender -b <file> -o <output> -s/-e <frame range> -a` | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `OutputPath` (optional; blank = scene setting) | `attr.worker.tag.blender = "true"` |
@@ -270,8 +270,12 @@ Maya and Blender default to one frame per task (chunk size 1) but declare the
 chunk's `Frame.Start`/`Frame.End`, so raising the task chunk size batches a
 contiguous frame range per DCC launch with no other template change. Houdini and
 Nuke instead get multi-frame chunks (10 by default) natively, because both the
-embedded `hython` script and `nuke -F` accept a frame range per invocation, so a
-chunk amortizes DCC startup cost across several frames.
+embedded `hython` script and `nuke -F` accept several frames per invocation, so a
+chunk amortizes DCC startup cost across several frames. Houdini's chunks are
+`NONCONTIGUOUS`: the script receives a comma-separated list of single frames
+(`1,3,5,...`), so a stepped range such as `1-60:2` still renders ten frames per
+task. Nuke's stay `CONTIGUOUS`, because Foundry documents no comma-list form of
+`-F`; a stepped range there costs one task per frame.
 
 The three Mistika presets use `SQI_CHUNK_BOUNDS` the same way Maya and Blender
 do, but batch by default (chunks of 10): every Mistika renderer takes `-s
