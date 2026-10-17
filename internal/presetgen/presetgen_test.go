@@ -33,6 +33,7 @@ func TestBuild(t *testing.T) {
 		"arnold-kick-render",
 		"arnold-kick-tile-render",
 		"blender-batch-render",
+		"blender-view-layer-render",
 		"cinema4d-render",
 		"cinema4d-take-render",
 		"ffmpeg-segment-transcode-bash",

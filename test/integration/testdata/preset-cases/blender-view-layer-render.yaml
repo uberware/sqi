@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Blender View Layer Render. OutputPath is supplied because -o is always
+# passed. default shows the fixed Python expression and the layer name as the
+# final argument. quoted-layer passes a view layer name holding both quote
+# characters and spaces, and a scene name with a space, so the golden shows
+# each travelling as a single argument after `--` and never inside the Python
+# source. stepped-range shows a gap-bearing range splitting into one chunk per
+# run of consecutive frames.
+cases:
+  - name: default
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/scene/shot0010_anim_v007.blend
+      Frames: "1-3"
+      Scene: Scene
+      ViewLayer: Beauty
+      OutputPath: /mnt/show/seq010/shot0010/images/shot0010_####.png
+    expect_tasks: 3
+    expect_invocations:
+      blender: 3
+  - name: quoted-layer
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/scene/shot0010_anim_v007.blend
+      Frames: "1-3"
+      Scene: 'Shot 010'
+      ViewLayer: 'It''s "Main" layer'
+      OutputPath: /mnt/show/seq010/shot0010/images/shot0010_####.png
+    expect_tasks: 3
+    expect_invocations:
+      blender: 3
+  - name: stepped-range
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/scene/shot0010_anim_v007.blend
+      Frames: "1-9:4"
+      Scene: Scene
+      ViewLayer: Beauty
+      OutputPath: /mnt/show/seq010/shot0010/images/shot0010_####.png
+    expect_tasks: 3
+    expect_invocations:
+      blender: 3

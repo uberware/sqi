@@ -9,7 +9,8 @@ readme: |
 
   Renders a saved `.blend` file with `blender -b`, writing image files to the
   output path you choose. Each task renders a contiguous slice of the frame
-  range, one frame per task by default.
+  range, one frame per task by default. Use Blender View Layer Render instead
+  to render a single named view layer.
 
   ## Parameters
 

@@ -28,6 +28,31 @@ presets:
       case: TestPresetTier3/blender-batch-render/default
       required_on: [linux, darwin, windows]
 
+  - name: blender-view-layer-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, quoted-layer, stepped-range]
+      caveat: >-
+        argv derived from the Blender 4.5 manual's command-line arguments
+        (arguments run in order, -a last, nothing after -- is parsed by Blender,
+        --python-exit-code, -S) and from the Python API's ViewLayer.use. The
+        view layer is selected by a fixed one-line Python expression that reads
+        its name from sys.argv after --, so the goldens show the layer name as
+        its own final argument and never inside the Python source. quoted-layer
+        carries It's "Main" layer and a scene called Shot 010, each one argument.
+        Chunk bounds and the 1-9:4 split behave as in blender-batch-render. No
+        Blender has executed it, and Tier 3 proves only that the stub receives
+        that argv, not that Blender honours use. Unverified: that
+        bpy.context.scene is the scene -S selected when the expression runs; that
+        a use=False layer is skipped by -a; that sys.exit with a message in a
+        --python-expr stops Blender with a non-zero status before -a renders;
+        what -S does when the scene does not exist; the #### padding token in -o
+        and whether Blender appends its own extension, as in blender-batch-render.
+    tier3:
+      case: TestPresetTier3/blender-view-layer-render/default
+      required_on: [linux, darwin, windows]
+
   - name: maya-layer-render
     source: presets/sqi
     tier: 1

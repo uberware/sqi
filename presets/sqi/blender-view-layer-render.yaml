@@ -1,0 +1,126 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: blender-view-layer-render
+title: Blender View Layer Render
+description: >-
+  Renders one named view layer of a saved .blend file headless with Blender's
+  batch mode, one frame per task by default.
+readme: |
+  # Blender View Layer Render
+
+  Renders one view layer of one scene in a saved `.blend` file with
+  `blender -b`, writing image files to the output path you choose. Each task
+  renders a contiguous slice of the frame range, one frame per task by default.
+  Use Blender Batch Render instead to render the scene with every view layer
+  that is enabled in the file.
+
+  ## Parameters
+
+  - **Scene File** - the `.blend` file to render. It must be reachable from every
+    worker that runs the job.
+  - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
+    `1-100:2` for every second frame.
+  - **Output Path** - the output path passed to Blender as `-o`. Blender treats
+    it as a prefix and appends the frame number and extension. The flag is
+    always passed, so an empty value reaches Blender as an empty path rather
+    than being omitted; set it explicitly.
+  - **Scene** - the name of the scene to render, passed as `-S`.
+  - **View Layer** - the name of the view layer to render. Names are
+    case-sensitive and may contain spaces and quotes.
+
+  ## How the view layer is chosen
+
+  Blender has no command-line flag for a view layer. The command instead runs a
+  short fixed Python expression before rendering, which turns off every view
+  layer of the scene except the one you named, using each layer's `use`
+  property (the "Use for Rendering" checkbox). If no layer in the scene has that
+  name, the expression stops Blender with a message naming the layer, and the
+  task fails without rendering anything.
+
+  The view layer's name is never written into that Python expression. It is
+  passed as a separate argument after `--`, which Blender ignores, and the
+  expression reads it back from `sys.argv`. A name containing a quote or a
+  backslash therefore cannot break the expression or run as code.
+
+  ## How work is divided
+
+  The frame range expands into tasks through OpenJD task chunking. The
+  `SQI_CHUNK_BOUNDS` extension gives each task the first and last frame of its
+  own slice, which is what lets the command pass a start and an end rather than
+  a frame list.
+
+  One frame per task is the default. Raise the chunk size to batch a frame range
+  into a single Blender launch, which trades parallelism for fewer scene loads.
+
+  ## Requirements
+
+  - Workers tagged `attr.worker.tag.blender = true`
+  - `blender` on the worker's `PATH`
+category: Rendering
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: Blender View Layer Render
+  extensions: [TASK_CHUNKING, SQI_CHUNK_BOUNDS]
+  parameterDefinitions:
+    - name: SceneFile
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface: { control: CHOOSE_INPUT_FILE, label: Scene File }
+    - name: Frames
+      type: STRING
+      userInterface: { control: LINE_EDIT, label: Frame Range }
+    - name: OutputPath
+      type: PATH
+      objectType: FILE
+      dataFlow: OUT
+      default: ""
+      userInterface: { control: CHOOSE_OUTPUT_FILE, label: Output Path }
+    - name: Scene
+      type: STRING
+      userInterface: { control: LINE_EDIT, label: Scene }
+    - name: ViewLayer
+      type: STRING
+      userInterface: { control: LINE_EDIT, label: View Layer }
+  steps:
+    - name: Render
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.blender
+            anyOf: ["true"]
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Frame
+            type: CHUNK[INT]
+            range: "{{Param.Frames}}"
+            chunks:
+              defaultTaskCount: 1
+              rangeConstraint: CONTIGUOUS
+      script:
+        actions:
+          onRun:
+            command: blender
+            args:
+              - "-b"
+              - "{{Param.SceneFile}}"
+              - "-S"
+              - "{{Param.Scene}}"
+              - "-o"
+              - "{{Param.OutputPath}}"
+              - "-s"
+              - "{{Task.Param.Frame.Start}}"
+              - "-e"
+              - "{{Task.Param.Frame.End}}"
+              - "--python-exit-code"
+              - "1"
+              - "--python-expr"
+              # One line, fixed, and free of template substitution: OpenJD
+              # forbids a line break in a literal arg, and the layer name must
+              # never be spliced into Python source. It reads the name that
+              # follows `--` in sys.argv, exits with a message naming the layer
+              # when the scene has no such layer, and otherwise enables that
+              # layer alone.
+              - "import sys, bpy; name = sys.argv[sys.argv.index('--') + 1]; layers = bpy.context.scene.view_layers; any(l.name == name for l in layers) or sys.exit('no view layer named ' + repr(name) + ' in scene ' + repr(bpy.context.scene.name)); [setattr(l, 'use', l.name == name) for l in layers]"
+              - "-a"
+              - "--"
+              - "{{Param.ViewLayer}}"
