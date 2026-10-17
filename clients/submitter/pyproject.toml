@@ -91,6 +91,9 @@ module = [
   "c4d",
   "c4d.*",
   "mxutils",
+  "pymxs",
+  "pymxs.*",
+  "qtmax",
 ]
 ignore_missing_imports = true
 

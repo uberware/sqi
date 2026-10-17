@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!--
+  Autodesk application package for the sqi submitter. Copy this folder's contents to
+  %ProgramData%\Autodesk\ApplicationPlugins\sqi\ (or %APPDATA%\Autodesk\ApplicationPlugins\sqi\)
+  and restart 3ds Max. The Python side is installed separately:
+  python.exe -m pip install sqi-submitter[qt] from 3ds Max's Python folder.
+-->
+<ApplicationPackage
+    SchemaVersion="1.0"
+    ProductType="Application"
+    Name="sqi submitter"
+    Description="Submit the current 3ds Max scene to an sqi render farm."
+    AppVersion="1.0.0"
+    Author="Uberware Inc."
+    UniqueId="{d13e821b-60ef-4a16-bc4f-3fd7fb199ce1}"
+    HelpFile="https://github.com/uberware/sqi/blob/main/docs/dcc-submitters.md">
+  <CompanyDetails
+      Name="Uberware Inc."
+      Url="https://github.com/uberware/sqi"
+      Email="robin@uberware.net" />
+  <Components>
+    <RuntimeRequirements OS="Win64" Platform="3dsMax|3dsMaxDesign" SeriesMin="2024" />
+    <ComponentEntry
+        AppName="sqi submitter"
+        Version="1.0.0"
+        ModuleName="./Contents/scripts/startup/sqi_submitter.ms"
+        AppDescription="sqi submit menu and macroScript" />
+  </Components>
+</ApplicationPackage>

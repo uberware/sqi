@@ -117,3 +117,12 @@ def test_unsavable_scene_blocks_submit() -> None:
     adapter = MiniAdapter(modified=True, can_save=False)
     with pytest.raises(SubmitterError, match="save"):
         submit_form(session, "mini-render", model, farm_id="f", queue_id="q", adapter=adapter)
+
+
+def test_max_adapter_implements_the_host_contract() -> None:
+    from sqi_submitter.hosts.max.adapter import MaxAdapter
+
+    # Instantiable (no abstract method left) without any host module present.
+    adapter = MaxAdapter()
+    assert isinstance(adapter, HostAdapter)
+    assert adapter.host_name and adapter.display_name
