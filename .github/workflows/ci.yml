@@ -2038,10 +2038,10 @@ jobs:
       - name: Ruff lint
         run: ruff check .
 
-      # src is type-checked at the 3.9 floor (pyproject python_version); the
-      # tests are checked at a newer target where they are allowed to run.
+      # A bare mypy checks src and the Cinema 4D plugin (pyproject files) at the 3.9
+      # floor; the tests are checked at a newer target where they are allowed to run.
       - name: mypy
-        run: mypy src && mypy --python-version=3.13 tests
+        run: mypy && mypy --python-version=3.13 tests
 
   # ── Submitter client: unit tests ─────────────────────────────────────────────
   # Runtime behavior varies by interpreter, so the unit suite and its coverage
