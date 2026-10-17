@@ -177,7 +177,7 @@ type ExprLimits struct {
 //
 // The FLOORS all come from measurement, not from taste.
 // TestExprLimits_FloorsAcceptReferencePresets binary-searches each dimension
-// for the twenty-two reference presets in presets/sqi/: at most 38 expression
+// for the thirty reference presets in presets/sqi/: at most 38 expression
 // positions and 512 retained let bytes template-wide, and 390 live bytes with
 // 15 operations in any single evaluation. ffmpeg-segment-transcode-expr sets
 // the two per-evaluation maxima; arnold-kick-tile-render, with the most
@@ -213,7 +213,7 @@ const (
 	// Floor: one order of magnitude below the default so tightening remains
 	// meaningful, and ~67x above what a reference preset's expressions
 	// actually spend: the most expensive single evaluation in any of the
-	// twenty-two presets costs 15 operations (see the floors paragraph above).
+	// thirty presets costs 15 operations (see the floors paragraph above).
 	MinExprSubmissionOperations int64 = 1_000
 	MaxExprSubmissionOperations int64 = 100_000
 

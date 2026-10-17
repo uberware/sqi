@@ -1260,10 +1260,10 @@ expr:
 
 ## `capabilities` — Software auto-detection
 
-Configures the sixteen built-in software detectors (Maya, Nuke, Houdini,
-Blender, Mistika Boutique/Ultima, Mistika VR, Mistika Workflows, ffmpeg, the
-standalone renderers Arnold kick, V-Ray, husk, Redshift, RenderMan, 3Delight
-and Mantra, and oiiotool)
+Configures the nineteen built-in software detectors (Maya, Nuke, Houdini,
+Blender, Cinema 4D, 3ds Max, After Effects, Mistika Boutique/Ultima, Mistika VR,
+Mistika Workflows, ffmpeg, the standalone renderers Arnold kick, V-Ray, husk,
+Redshift, RenderMan, 3Delight and Mantra, and oiiotool)
 that run automatically at startup and advertise a `key=true` tag with no
 per-worker configuration, plus any custom detectors for in-house tools. Full
 reference, including the detector schema and the tag/version model:
@@ -1304,7 +1304,7 @@ capabilities:
 | **Env var** | `SQI_WORKER_CAPABILITIES_DISABLE` (comma-separated, appended to any config-file entries) |
 
 Built-in tag names to turn off, by exact tag (`maya`, `nuke`, `houdini`,
-`blender`, `ffmpeg`, `mistika`, `mistikavr`, `mistikaworkflows`). Use this
+`blender`, `cinema4d`, `3dsmax`, `aftereffects`, `ffmpeg`, `mistika`, `mistikavr`, `mistikaworkflows`). Use this
 when a built-in misfires on a nonstandard host layout — typically paired with
 a `capabilities.detect` entry for the same tag that supplies more specific
 checks.

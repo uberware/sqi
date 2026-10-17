@@ -51,7 +51,8 @@ presets:
         --python-expr namespace, resolves it, which assumes Blender runs the
         expression with one shared globals/locals dict (a stub with separate
         dicts raised NameError); what -S does when the scene does not exist;
-        the #### padding token in -o and whether Blender appends its own extension, as in blender-batch-render.
+        the #### padding token in -o and whether Blender appends its own
+        extension, as in blender-batch-render.
     tier3:
       case: TestPresetTier3/blender-view-layer-render/default
       required_on: [linux, darwin, windows]
@@ -168,11 +169,12 @@ presets:
         case; three tasks such as 1,3,...,19 for the stepped-range case's thirty
         frames), so no shipped expansion reaches the driver's lo-hi or :step
         branches. The driver merges each run of consecutive frames into one
-        rop.render(frame_range=(lo, hi, 1)) call, so an unstepped chunk renders
-        as one call, as it did before the switch to NONCONTIGUOUS, and a stepped
-        range renders one call per frame; a stub hou module checks that
+        rop.render(frame_range=(lo, hi, 1)) call, so each run of consecutive
+        frames in a chunk is one call: an unstepped chunk is one call, as it
+        was before the switch to NONCONTIGUOUS, and a stepped range is one call
+        per frame. A stub hou module checks that
         (TestHoudiniROPRender_DriverCoalescesFrameRuns), but that one call per
-        chunk behaves as before is unverified on a real Houdini. No Houdini or
+        run behaves as before is unverified on a real Houdini. No Houdini or
         hython installation has executed it: hou.hipFile.load, hou.node and
         RopNode.render(frame_range=...) are unexercised, and a golden cannot
         show that hython puts the script's own path in sys.argv[0].

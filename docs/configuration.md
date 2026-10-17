@@ -2211,7 +2211,7 @@ for the keys themselves.
 ### Capability auto-detection (`capabilities.detect` / `capabilities.disable`)
 
 Controls the worker's software capability auto-detection: built-in detectors
-for Maya, Nuke, Houdini, Blender, FFmpeg and SGO Mistika (Boutique/Ultima, VR
+for Maya, Nuke, Houdini, Blender, Cinema 4D, 3ds Max, After Effects, FFmpeg and SGO Mistika (Boutique/Ultima, VR
 and Workflows) run automatically at startup and advertise a tag (e.g. `maya`,
 plus `maya-2025`) with value `"true"`, with no
 per-worker configuration — enough on its own to satisfy the reference DCC

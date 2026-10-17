@@ -228,9 +228,9 @@ enforcement point, and the submitter must not break against an older server.
 
 ## Reference presets
 
-sqi ships nine DCC reference products under `presets/sqi/`, published through
+sqi ships seventeen DCC reference products under `presets/sqi/`, published through
 the [preset library](preset-library.md) so `sqi-submitter` has something real
-to submit to out of the box. The directory holds twenty-two products in total;
+to submit to out of the box. The directory holds thirty products in total;
 the other thirteen are eight [standalone renderer
 presets](preset-library.md#standalone-renderer-reference-presets), which render
 exported scene files without loading the DCC and have no in-application
@@ -239,13 +239,17 @@ presets](preset-library.md#transcoding-reference-presets). Install the DCC
 presets from **Admin → Preset Library** in the web UI, or by hand via `POST
 /api/v1/products` (or **Admin → Products** in the web UI) if you're not using
 a preset index. All use the product `category`
-`Rendering` and declare `TASK_CHUNKING` for frame distribution; the Maya,
-Blender and Mistika presets additionally declare `SQI_CHUNK_BOUNDS` to expose
-each chunk's start/end frame (see [OpenJD extensions](openjd-extensions.md)).
+`Rendering`. All but the two After Effects queue presets (one task each) declare
+`TASK_CHUNKING` for frame distribution; the Maya, Blender, Cinema 4D, 3ds Max,
+After Effects and Mistika frame-range presets additionally declare
+`SQI_CHUNK_BOUNDS` to expose each chunk's start/end frame (see [OpenJD
+extensions](openjd-extensions.md)).
 
-Six of the nine have a matching `sqi-submitter` host (Maya, Houdini, Nuke,
-Blender). The three Mistika presets do not — Mistika has no in-DCC submitter,
-so they are submitted from the web UI or the API like any other product.
+Seven of the seventeen have a matching `sqi-submitter` host (Maya, Houdini, Nuke,
+Blender). The other ten do not: the three Mistika presets never will (Mistika has
+no in-DCC submitter), and the Cinema 4D, 3ds Max and After Effects presets have no
+submitter host yet. All ten are submitted from the web UI or the API like any
+other product.
 
 | Product | Command | Chunking | Parameters | Worker tag |
 |---|---|---|---|---|
@@ -255,6 +259,14 @@ so they are submitted from the web UI or the API like any other product.
 | `nuke-write-render` | `nuke -x -X <writeNode> -F <range> <script>` | chunks of 10 | `SceneFile`, `Frames`, `WriteNode` | `attr.worker.tag.nuke = "true"` |
 | `nuke-script-render` | `nuke -x -F <range> <script>` (no `-X`; all enabled Write nodes) | chunks of 10 | `SceneFile`, `Frames` | `attr.worker.tag.nuke = "true"` |
 | `blender-batch-render` | `blender -b <file> -o <output> -s/-e <frame range> -a` | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `OutputPath` (optional; blank = scene setting) | `attr.worker.tag.blender = "true"` |
+| `blender-view-layer-render` | `blender -b <file> -S <scene> -o <output> -s/-e <frame range> --python-exit-code 1 --python-expr <select-layer> -a -- <layer>` (one named view layer) | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `OutputPath`, `Scene`, `ViewLayer` | `attr.worker.tag.blender = "true"` |
+| `cinema4d-render` | `Commandline -nogui -render <scene> -frame <start> <end> -oimage <path>` | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `OutputPath` | `attr.worker.tag.cinema4d = "true"` |
+| `cinema4d-take-render` | `Commandline -nogui -render <scene> -frame <start> <end> -take <take> -oimage <path>` | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `Take`, `OutputPath` | `attr.worker.tag.cinema4d = "true"` |
+| `3dsmax-render` | `3dsmaxcmd -v:5 -rfw:0 -start:<n> -end:<n> -outputName:<path> <scene>` | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `OutputPath` | `attr.worker.tag.3dsmax = "true"` and `attr.worker.os.family = "windows"` |
+| `after-effects-render-windows` | `aerender -project <scene> -rqindex <n> -s <start> -e <end> -v ERRORS_AND_PROGRESS -close DO_NOT_SAVE_CHANGES`, run through an embedded PowerShell wrapper | `FramesPerTask` per task, default 10 | `SceneFile`, `Frames`, `RenderQueueItem`, `FramesPerTask` | `attr.worker.tag.aftereffects = "true"` and `attr.worker.os.family = "windows"` |
+| `after-effects-render-macos` | the same `aerender` arguments, run through an embedded POSIX `sh` wrapper | `FramesPerTask` per task, default 10 | `SceneFile`, `Frames`, `RenderQueueItem`, `FramesPerTask` | `attr.worker.tag.aftereffects = "true"` and `attr.worker.os.family = "macos"` |
+| `after-effects-queue-render-windows` | `aerender -project <scene> -v ERRORS_AND_PROGRESS -close DO_NOT_SAVE_CHANGES` (renders the saved queue as is), through the PowerShell wrapper | one task for the whole queue | `SceneFile` | `attr.worker.tag.aftereffects = "true"` and `attr.worker.os.family = "windows"` |
+| `after-effects-queue-render-macos` | the same queue render, through the `sh` wrapper | one task for the whole queue | `SceneFile` | `attr.worker.tag.aftereffects = "true"` and `attr.worker.os.family = "macos"` |
 | `mistika-boutique-render` | `mistika -r <scene> -s/-e <frame range>` | chunks of 10 | `SceneFile` (`*.rnd`), `Frames` | `attr.worker.tag.mistika = "true"` |
 | `mistika-vr-render` | `vr -r <scene> -s/-e <frame range>` | chunks of 10 | `SceneFile` (`*.rnd`), `Frames` | `attr.worker.tag.mistikavr = "true"` |
 | `mistika-workflows-render` | `workflows -r <scene> -s/-e <frame range>` | chunks of 10 | `SceneFile` (`*.rnd`), `Frames` | `attr.worker.tag.mistikaworkflows = "true"` |
@@ -262,10 +274,19 @@ so they are submitted from the web UI or the API like any other product.
 Maya and Nuke each ship two variants: a **single-target** product (`-rl <layer>` /
 `-X <writeNode>`) and a **whole-scene** product that omits that flag — Maya's
 renders the scene's renderable layers, Nuke's renders every enabled Write node.
-Houdini and Blender have one product each (Houdini's output target is a scripted
-`rop.render()` call, not an omittable flag).
+Houdini has one product (its output target is a scripted `rop.render()` call, not
+an omittable flag). Blender, Cinema 4D and After Effects each ship a **per-target**
+product and a **whole-scene** product: `blender-view-layer-render` renders one
+named view layer where `blender-batch-render` renders the scene as saved;
+`cinema4d-take-render` renders one named take where `cinema4d-render` renders
+without naming a take; `after-effects-render-*` renders one render-queue item,
+split into frame chunks, where `after-effects-queue-render-*` renders everything
+the saved project has queued, as one task. 3ds Max ships only `3dsmax-render`.
+After Effects ships a Windows and a macOS variant of each, with the same
+parameters and the same `aerender` arguments, because the wrapper script that runs
+`aerender` differs by OS; pick the one that matches your render nodes.
 
-Maya and Blender default to one frame per task (chunk size 1) but declare the
+Maya, Blender, Cinema 4D and 3ds Max default to one frame per task (chunk size 1) but declare the
 `SQI_CHUNK_BOUNDS` extension: their `-s`/`-e` arguments are filled from the
 chunk's `Frame.Start`/`Frame.End`, so raising the task chunk size batches a
 contiguous frame range per DCC launch with no other template change. Houdini and
@@ -282,14 +303,26 @@ do, but batch by default (chunks of 10): every Mistika renderer takes `-s
 START -e END`, so a chunk maps directly onto one invocation. All three render
 `.rnd` job files. For a single movie-file render, submit `Frames` as `1`.
 
+**After Effects runs `aerender` through a wrapper, and a movie output must be one
+task.** `aerender` is reported to exit 0 when a render fails, so the four After
+Effects presets run it through a small embedded script (PowerShell on Windows,
+POSIX `sh` on macOS). The wrapper streams `aerender`'s output to the task log
+unchanged and fails the task when `aerender` exits non-zero or when any output line
+contains `aerender ERROR`, in any letter case. After Effects cannot render one movie
+file from several machines, so when the render-queue item writes a movie, set
+`FramesPerTask` to at least the number of frames in the range, which makes the whole
+range one task. The preset cannot see the output format, so nothing enforces this.
+
 Each preset's `hostRequirements` gates it to workers advertising the matching
-`attr.worker.tag.<name>` capability tag. `sqi-worker` auto-detects a standard
-Maya/Nuke/Houdini/Blender/Mistika install on `PATH`/in its usual install
-location and advertises the matching tag (`maya`, plus a version variant like
+`attr.worker.tag.<name>` capability tag; `3dsmax-render` and the After Effects
+presets additionally require `attr.worker.os.family` (`windows` for `3dsmax-render`,
+`windows` or `macos` for the matching After Effects variant). `sqi-worker`
+auto-detects a standard Maya/Nuke/Houdini/Blender/Cinema 4D/3ds Max/After
+Effects/Mistika install on `PATH`/in its usual install location and advertises the matching tag (`maya`, plus a version variant like
 `maya-2025`) with value `"true"` automatically at startup, with no
 configuration — see [Capability
 auto-detection](worker-capabilities.md#capability-auto-detection-built-in-dcc-detectors).
-That satisfies the `anyOf: ["true"]` requirement each of the nine presets above
+That satisfies the `anyOf: ["true"]` requirement each of the seventeen presets above
 declares, so a worker with a standard DCC install matches these presets with
 no per-worker configuration. Run `sqi-worker capabilities` (or
 `start --dry-run`) to confirm at a glance which DCCs were actually found.
@@ -316,8 +349,9 @@ worker:
     - maya=true
 ```
 
-(substitute `houdini=true`, `nuke=true`, `blender=true`, `mistika=true`,
-`mistikavr=true`, or `mistikaworkflows=true` for the other seven presets), or
+(substitute `houdini=true`, `nuke=true`, `blender=true`, `cinema4d=true`,
+`3dsmax=true`, `aftereffects=true`, `mistika=true`, `mistikavr=true`, or
+`mistikaworkflows=true` for the other presets), or
 add a [custom detector](worker-capabilities.md#writing-custom-detectors)
 instead. A job submitted against one of these products sits `ready` forever if
 no worker ends up advertising the tag (auto-detected or manual).
@@ -384,16 +418,28 @@ browse the farm filesystem — and the Blender panel uses a text property.)
 
 A selected render target can also supply **exact-name** extras that aren't
 part of the general convention (still case/separator-insensitive, but not
-aliased to anything else): `RenderLayer` (Maya render layer), `RopPath`
-(Houdini ROP path), `WriteNode` (Nuke Write node). Blender's target picker is
-scene × view-layer, and each target's extras include `Scene` (the Blender
-**scene name**, not a path — see `hosts/blender/adapter.py`) and `ViewLayer`.
-The shipped `blender-batch-render` preset doesn't declare `Scene`/`ViewLayer`
-parameters yet — selecting a target there only drives the
-`frame_range`/`output_path` override — but a fork that adds a `Scene`
-parameter gets the scene name unambiguously: extras always win over
-convention aliases (below), and `scene` is deliberately not a `scene_path`
-alias for this reason.
+aliased to anything else):
+
+| Target parameter | Host | Meaning |
+|---|---|---|
+| `RenderLayer` | Maya | render layer |
+| `RopPath` | Houdini | ROP path |
+| `WriteNode` | Nuke | Write node |
+| `Scene`, `ViewLayer` | Blender | the **scene name** (not a path — see `hosts/blender/adapter.py`) and the view layer |
+| `Take` | Cinema 4D | take name |
+| `RenderQueueItem` | After Effects | the render-queue item's 1-based index, as text |
+
+Blender's target picker is scene × view-layer. `blender-view-layer-render`
+declares both `Scene` and `ViewLayer`, so selecting a target there fills them;
+`blender-batch-render` declares neither, so selecting a target there only drives
+the `frame_range`/`output_path` override. A parameter named `Scene` gets the scene
+name unambiguously: extras always win over convention aliases (below), and
+`scene` is deliberately not a `scene_path` alias for this reason.
+
+`Take` and `RenderQueueItem` are the parameter names `cinema4d-take-render` and
+`after-effects-render-*` declare, so a Cinema 4D or After Effects submitter can
+fill them the same way. No such submitter host ships yet; until one does, enter
+them by hand in the web UI.
 
 Rules that make this a stable contract:
 

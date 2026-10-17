@@ -276,8 +276,8 @@ configuration (see [worker-capabilities.md](worker-capabilities.md)). Runs
 `docker run --rm {{Param.Image}}`.
 
 **A note on the DCC reference presets and auto-detection.** The
-`presets/sqi/*.yaml` reference products (Maya, Nuke, Houdini, Blender, Mistika
-Boutique/VR/Workflows — see
+`presets/sqi/*.yaml` reference products (Maya, Nuke, Houdini, Blender, Cinema 4D,
+3ds Max, After Effects, Mistika Boutique/VR/Workflows — see
 [docs/dcc-submitters.md](dcc-submitters.md#reference-presets)) gate the same
 way: a `hostRequirements.attributes` entry requiring `attr.worker.tag.<app>`
 with `anyOf: ["true"]`. `sqi-worker` auto-detects a standard install of each
@@ -288,7 +288,8 @@ auto-detection](worker-capabilities.md#capability-auto-detection-built-in-dcc-de
 a standard install matches these built-in gates with zero per-worker
 configuration. `docker` has no built-in detector, so the `container` product
 above still needs the manual `capability_tags: ["docker=true"]` entry.
-Nonstandard install paths for Maya/Nuke/Houdini/Blender/Mistika, or an in-house tool
+Nonstandard install paths for Maya/Nuke/Houdini/Blender/Cinema 4D/3ds Max/After
+Effects/Mistika, or an in-house tool
 not covered by a built-in detector, can add a manual tag or a [custom
 detector](worker-capabilities.md#writing-custom-detectors) instead. The
 [standalone renderer
@@ -323,17 +324,26 @@ with `source: installed`.
 See [`docs/preset-library.md`](preset-library.md) for the full guide, including the
 index format, configuration, and the browse → preview → install flow.
 
-The official library ships nine `Rendering`-category presets. Six of them —
-`maya-layer-render`, `maya-scene-render`, `houdini-rop-render`,
-`nuke-write-render`, `nuke-script-render`, `blender-batch-render` — exist to give
-the [`sqi-submitter`](dcc-submitters.md) in-application submitters something real
-to target. The other three, `mistika-boutique-render`, `mistika-vr-render` and
-`mistika-workflows-render`, have no in-application submitter and are submitted
-from the web UI or the API. They name their parameters from a documented,
-versioned, additive-only convention — `SceneFile` and `Frames` on all nine, an
-output parameter only where the command takes one (`OutputDir` on the Maya
-presets, `OutputPath` on Blender), plus per-host extras like
-`Renderer`/`RopPath`/`WriteNode` — duplicate one and keep the parameter names
+The official library ships seventeen DCC `Rendering`-category presets (and eight
+more that render exported scenes with standalone renderers, below). Seven of
+them — `maya-layer-render`, `maya-scene-render`, `houdini-rop-render`,
+`nuke-write-render`, `nuke-script-render`, `blender-batch-render` and
+`blender-view-layer-render` — exist to give the
+[`sqi-submitter`](dcc-submitters.md) in-application submitters something real
+to target. The other ten have no in-application submitter and are submitted
+from the web UI or the API: `mistika-boutique-render`, `mistika-vr-render` and
+`mistika-workflows-render`, plus `cinema4d-render`, `cinema4d-take-render`,
+`3dsmax-render` and the four After Effects presets
+(`after-effects-render-windows`, `after-effects-render-macos`,
+`after-effects-queue-render-windows`, `after-effects-queue-render-macos`).
+`3dsmax-render` and the After Effects presets also gate on the worker's OS.
+They name their parameters from a documented,
+versioned, additive-only convention — `SceneFile` and `Frames` on all but the
+two After Effects queue presets (which take only `SceneFile`), an output
+parameter only where the command takes one (`OutputDir` on the Maya presets,
+`OutputPath` on Blender, Cinema 4D and 3ds Max), plus per-host extras like
+`Renderer`/`RopPath`/`WriteNode`/`Scene`/`ViewLayer`/`Take`/`RenderQueueItem` —
+duplicate one and keep the parameter names
 to keep submitter pre-fill working. Full reference:
 [`docs/dcc-submitters.md`](dcc-submitters.md).
 

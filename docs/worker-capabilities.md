@@ -112,8 +112,9 @@ GPU-capable on macOS or Windows.
 
 In addition to the hardware/OS tags above, `sqi-worker` runs a second,
 declarative detection engine (`internal/worker/capabilities`) that looks for
-installed creative applications — Maya, Nuke, Houdini, Blender, Mistika
-(Boutique/Ultima, VR, Workflows) and ffmpeg — and advertises a tag with value
+installed creative applications — Maya, Nuke, Houdini, Blender, Cinema 4D,
+3ds Max, After Effects, Mistika (Boutique/Ultima, VR, Workflows) and ffmpeg,
+plus the standalone renderers below — and advertises a tag with value
 `"true"` automatically, with no per-worker configuration. This makes the
 software actually installed on a worker visible without hand-editing its
 config, and it's enough on its own to satisfy the `anyOf: ["true"]` gate the
@@ -145,7 +146,7 @@ running worker is only picked up on the next restart.
 
 ### Built-in detectors
 
-Sixteen built-ins ship embedded in the worker binary, one YAML file per
+Nineteen built-ins ship embedded in the worker binary, one YAML file per
 application under
 [`internal/worker/capabilities/builtins/`](https://github.com/uberware/sqi/tree/main/internal/worker/capabilities/builtins):
 
@@ -155,6 +156,9 @@ application under
 | `houdini` | `exe hython` (any OS, if on `PATH`); Linux `path_glob /opt/hfs*/bin/houdini`; macOS `path_glob /Applications/Houdini/Houdini*/Frameworks/Houdini.framework`; Windows `registry HKLM\SOFTWARE\Side Effects Software\Houdini` | `(?:hfs\|Houdini ?)(?P<v>[0-9]+\.[0-9]+)` against the matched path |
 | `nuke` | Linux `path_glob /usr/local/Nuke*/Nuke*`; macOS `path_glob /Applications/Nuke*/Nuke*.app`; Windows `registry HKLM\SOFTWARE\The Foundry\Nuke` | `Nuke([0-9]+\.[0-9]+)` against the matched path |
 | `blender` | `exe blender` (any OS, if on `PATH`); macOS `path_glob /Applications/Blender.app`; Windows `registry HKLM\SOFTWARE\BlenderFoundation\Blender` | none (presence only — no `-<version>` tags) |
+| `cinema4d` | Linux `path_glob /opt/maxon/cinema4dr*/bin/Commandline`; macOS `path_glob /Applications/Maxon Cinema 4D */Commandline.app`; Windows `path_glob C:\Program Files\Maxon Cinema 4D *\Commandline.exe` | `Maxon Cinema 4D (?P<v>[0-9]{4})` against the matched path (a Linux match carries no year, so no version) |
+| `3dsmax` | `exe 3dsmaxcmd` (any OS, if on `PATH`); Windows `registry HKLM\SOFTWARE\Autodesk\3dsMax`; Windows `path_glob C:\Program Files\Autodesk\3ds Max *\3dsmaxcmd.exe` | `3ds Max (?P<v>[0-9]{4})` against the matched path |
+| `aftereffects` | `exe aerender` (any OS, if on `PATH`); macOS `path_glob /Applications/Adobe After Effects */aerender`; Windows `path_glob C:\Program Files\Adobe\Adobe After Effects *\Support Files\aerender.exe` | `After Effects (?P<v>[0-9]{4})` against the matched path |
 | `ffmpeg` | `exe ffmpeg` (any OS, if on `PATH`) — a PATH tool everywhere, so no install glob and no registry probe | none (presence only) |
 | `mistika` | Linux `path_glob /home/mistika/SGO Apps/Mistika Ultima*/bin/mistika`; macOS `path_glob /Applications/SGO Apps/Mistika Boutique.app*/Contents/MacOS/mistika`; Windows `path_glob C:\Program Files\SGO Apps\Mistika Boutique*\bin\mistika.exe` | `Mistika (?:Ultima\|Boutique) ?(?P<v>[0-9]+\.[0-9]+)` against the matched path |
 | `mistikavr` | Linux `path_glob /home/mistika/SGO Apps/Mistika VR*/bin/vr`; macOS `path_glob /Applications/SGO Apps/Mistika VR.app*/Contents/MacOS/vr`; Windows `path_glob C:\Program Files\SGO Apps\Mistika VR*\bin\vr.exe` | `Mistika VR ?(?P<v>[0-9]+\.[0-9]+)` against the matched path |
@@ -175,6 +179,17 @@ binaries are `mistika`, `vr` and `workflows`, and a bare `PATH` probe for the
 last two would tag workers that have no Mistika at all. Detection is by install
 location only, but the presets invoke the bare command, so the binary must also
 be on the worker's `PATH` for the job to run.
+
+The `cinema4d` detector likewise carries **no `exe` check**, deliberately. Its
+preset invokes the bare command `Commandline`, a name generic enough that a
+`PATH` probe could tag workers with no Cinema 4D installed, and a falsely tagged
+worker is handed render work it cannot do. It matches install locations only
+(the default Maxon folders in the table), and the command must still be on the
+worker's `PATH` for the job to run. A Cinema 4D installed elsewhere is tagged by
+hand with `cinema4d=true` under `worker.capability_tags`. The `3dsmax` and
+`aftereffects` detectors do check `PATH` (`3dsmaxcmd`, `aerender`), because those
+names are specific to the product. A registry match for `3dsmax` tags the worker without a
+version: the key carries the product version (`27.0` for 2025), not the year.
 
 Each standalone-renderer detector checks `PATH` for the command its preset
 runs, plus the install locations listed in the table. `husk` and `mantra` have
@@ -466,7 +481,7 @@ steps:
           anyOf: ["true"]
 ```
 
-This is the syntax the nine DCC reference products under `presets/sqi/` (see
+This is the syntax the seventeen DCC reference products under `presets/sqi/` (see
 [`docs/dcc-submitters.md`](dcc-submitters.md#reference-presets)) and the eight
 [standalone renderer presets](preset-library.md#standalone-renderer-reference-presets)
 use.

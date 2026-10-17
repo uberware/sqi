@@ -171,16 +171,21 @@ copies show the **Update available** badge.
 
 The official library ships `Rendering`-category presets — `maya-layer-render`,
 `maya-scene-render`, `houdini-rop-render`, `nuke-write-render`,
-`nuke-script-render`, `blender-batch-render` — as ready targets for the
-[`sqi-submitter`](dcc-submitters.md) in-application submitters, plus
-`mistika-boutique-render`, `mistika-vr-render` and `mistika-workflows-render`,
-which have no in-application submitter and are submitted from the web UI or
-the API. Each names its parameters from the [parameter convention
+`nuke-script-render`, `blender-batch-render` and `blender-view-layer-render` —
+as ready targets for the [`sqi-submitter`](dcc-submitters.md) in-application
+submitters, plus `mistika-boutique-render`, `mistika-vr-render` and
+`mistika-workflows-render`, which have no in-application submitter, and
+`cinema4d-render`, `cinema4d-take-render`, `3dsmax-render` and four After Effects
+presets, whose submitters have not shipped yet. Those ten are submitted from the
+web UI or the API. Each names its parameters from the [parameter convention
 contract](dcc-submitters.md#the-parameter-convention-contract) so submitter
-pre-fill works out of the box — all nine declare `SceneFile` and `Frames`; an
-output parameter is declared only where the command takes one (`OutputDir` on
-the two Maya presets, `OutputPath` on Blender), alongside per-host extras such
-as `Renderer`, `RenderLayer`, `RopPath` and `WriteNode`. Each gates on a worker
+pre-fill works out of the box — all but the two After Effects queue presets
+declare `SceneFile` and `Frames` (the queue presets render whatever the project
+has queued, so they take only `SceneFile`); an output parameter is declared only
+where the command takes one (`OutputDir` on the two Maya presets, `OutputPath` on
+Blender, Cinema 4D and 3ds Max), alongside per-host extras such as `Renderer`,
+`RenderLayer`, `RopPath`, `WriteNode`, `Scene`, `ViewLayer`, `Take` and
+`RenderQueueItem`. Each gates on a worker
 capability tag that `sqi-worker` auto-detects from a standard install with no
 per-worker configuration — manual tags are needed only for nonstandard
 install paths (see [capability
@@ -190,6 +195,52 @@ including the chunking behavior and worker requirements per preset. Every
 software tag a shipped preset requires must be emitted by a built-in detector —
 enforced by `TestBuiltinDetectors_CoverPresets`, so a new reference preset
 cannot ship without one.
+
+### Cinema 4D, 3ds Max and After Effects
+
+| Preset | Renders | Shape | Gate |
+|---|---|---|---|
+| `cinema4d-render` | a `.c4d` scene with Maxon's `Commandline`, using the scene's render settings | one frame per task by default | `cinema4d` |
+| `cinema4d-take-render` | one named take of a `.c4d` scene (`Take`) | one frame per task by default | `cinema4d` |
+| `3dsmax-render` | a `.max` scene with `3dsmaxcmd` | one frame per task by default | `3dsmax`, and `attr.worker.os.family` = `windows` |
+| `after-effects-render-windows` | one render-queue item (`RenderQueueItem`) of an `.aep` project with `aerender` | `FramesPerTask` frames per task, default 10 | `aftereffects`, and `attr.worker.os.family` = `windows` |
+| `after-effects-render-macos` | the same, on macOS | `FramesPerTask` frames per task, default 10 | `aftereffects`, and `attr.worker.os.family` = `macos` |
+| `after-effects-queue-render-windows` | everything the saved project has queued | one task for the whole queue | `aftereffects`, and `attr.worker.os.family` = `windows` |
+| `after-effects-queue-render-macos` | the same, on macOS | one task for the whole queue | `aftereffects`, and `attr.worker.os.family` = `macos` |
+
+`3dsmax-render` is Windows-only because 3ds Max does not run elsewhere. The two
+Cinema 4D presets carry no OS gate. Every Cinema 4D render node must be licensed
+before it can render, which is the most likely first-run failure. The
+`cinema4d` detector has no `exe` check, only install-location globs, so a
+Cinema 4D installed elsewhere needs the tag set by hand (see [built-in
+detectors](worker-capabilities.md#built-in-detectors)).
+
+**The After Effects wrapper.** `aerender` is reported to exit with status 0 when
+a render fails, so a task that trusted its exit status would report every failure
+as a success. All four After Effects presets therefore run `aerender` through a
+small script embedded in the preset: PowerShell on Windows, POSIX `sh` on macOS.
+The wrapper streams `aerender`'s output to the task log unchanged and fails the
+task when `aerender` exits non-zero or when any line of its output contains
+`aerender ERROR`, matched without regard to letter case. That marker comes from
+user reports and has not been checked against a real failing render. This is why
+the presets come in Windows and macOS variants: the argument lists are identical,
+but the wrapper script is not, and the variant's `os.family` gate selects it.
+
+**A movie output must be one task.** After Effects cannot render one movie file
+(a QuickTime or other container, as opposed to an image sequence) from several
+machines. When the render-queue item writes a movie, set **Frames Per Task** to at
+least the number of frames in the range. The preset cannot see the output format,
+so nothing enforces this; the queue presets are unaffected because they are always
+one task.
+
+**Houdini and Nuke chunking.** `houdini-rop-render` uses `NONCONTIGUOUS` chunks,
+so a task receives a flat comma list of single frames (`1,3,5,...`) and a stepped
+range such as `1-60:2` costs `ceil(n/chunk)` tasks rather than one task per
+frame. The embedded driver script renders each run of consecutive frames in a
+chunk with one `rop.render()` call, so an unstepped chunk is still one call and a
+stepped range is one call per frame. `nuke-write-render` and `nuke-script-render`
+stay `CONTIGUOUS`: Foundry documents no comma-list form of `-F`, so a stepped
+range there still costs one task per frame.
 
 ## Transcoding reference presets
 
@@ -309,7 +360,7 @@ them.
 
 ## Validation tiers
 
-`presets/validation-tiers.yaml` tracks exactly 29 entries — the 22 presets
+`presets/validation-tiers.yaml` tracks exactly 37 entries — the 30 presets
 under `presets/sqi/` plus the seven built-in products documented in
 [`docs/development.md`](development.md#adding-a-product) — stating which
 validation tier each job type has actually reached. The four `presets/testing/`
@@ -330,28 +381,34 @@ a real farm rather than reviewed tier by tier. The tiers are:
   has to look at.
 
   **What it does not prove:** that the vendor's application accepts that
-  command line. No Maya, Nuke, Houdini, Blender, Mistika or standalone
-  renderer installation executes anything at Tier 1 — the argv is correct only
-  insofar as the documentation it was derived from is correct and current.
-  What the goldens do pin for the frame-range presets follows from their
-  `CONTIGUOUS` chunks,
+  command line. No Maya, Nuke, Houdini, Blender, Cinema 4D, 3ds Max, After
+  Effects, Mistika or standalone renderer installation executes anything at
+  Tier 1 — the argv is correct only insofar as the documentation it was derived
+  from is correct and current. What the goldens do pin for the frame-range
+  presets follows from their `CONTIGUOUS` chunks (all but Houdini's, below),
   each always a plain `start-end` run of consecutive frames:
   - `nuke-write-render` and `nuke-script-render` never pass Nuke's `-F` flag an
     OpenJD step (`1-19:2`, where Foundry documents `1-19x2`). Whether Nuke
     reads `-F 1-1` as the single frame 1 needs a real Nuke (Tier 2).
-  - The `-s`/`-e` presets (Maya, Blender and the three Mistika presets) and
-    V-Ray's `-frames=START-END` never render a frame the range excluded: a
+  - The `-s`/`-e` presets (Maya, Blender, the Cinema 4D, 3ds Max and After
+    Effects frame-range presets, and the three Mistika presets) and V-Ray's
+    `-frames=START-END` never render a frame the range excluded: a
     stepped or listed range splits into one chunk per run of consecutive frames, so a stepped range yields one
     single-frame chunk per frame. See
     [sqi-chunk-bounds](openjd-extensions/sqi-chunk-bounds.md).
+  - `houdini-rop-render` is the exception: its chunks are `NONCONTIGUOUS`, so
+    its goldens show a flat comma list of single frames (`1,2,...,10`, or
+    `1,3,...,19` for a stepped range) that the driver script merges into one
+    `rop.render()` call per run of consecutive frames.
 
   Read a preset's `caveat` field before trusting its golden for anything more
   than "the template still expands the way it did when this was reviewed."
 
 - **Tier 2 — real application.** A real, licensed copy of the vendor
   application runs the resolved command and its output is inspected. The
-  seventeen render presets (Maya, Nuke, Houdini, Blender, the three Mistika
-  products and the eight standalone renderers) have not reached Tier 2 — none
+  twenty-five render presets (Maya, Nuke, Houdini, Blender, Cinema 4D, 3ds Max,
+  After Effects, the three Mistika products and the eight standalone renderers)
+  have not reached Tier 2 — none
   of those vendor applications has a redistributable, CI-friendly way to run
   headless in this project's CI, so their entries in `presets/validation-tiers.yaml` carry no `tier2` block.
   The five ffmpeg presets *are* Tier 2: ffmpeg is freely available, so each of
@@ -424,18 +481,26 @@ harmless no-op.
 Tier 3 runs on Windows exactly as it does on Linux and macOS — a real
 `sqi-server` and `sqi-worker`, wired together, executing every preset end to
 end against `test/stubproc` in place of the vendor executable — and CI runs
-it in a dedicated job (`preset-harness-windows`). Of the 29 entries in
-`presets/validation-tiers.yaml`, 24 require all three platforms
+it in a dedicated job (`preset-harness-windows`). Of the 37 entries in
+`presets/validation-tiers.yaml`, 27 require all three platforms
 (`tier3.required_on: [linux, darwin, windows]`), so a skip on Windows is a
-registry failure for every one of them, not a harmless no-op. The other 5 are
+registry failure for every one of them, not a harmless no-op. The other 10 are
 gated to a narrower platform subset, because their Tier 3 case cannot run
 everywhere by construction. Two are POSIX-only (`required_on: [linux, darwin]`):
-`script` and `command-sequence`. Three are Windows-only
-(`required_on: [windows]`): `script-powershell`, `command-sequence-powershell`
-and `ffmpeg-segment-transcode-powershell` (gated on
-`attr.worker.os.family anyOf ["windows"]`). The Windows-only three still name
-`windows` and are required to run on this Windows job; they are not required
-anywhere else. `TestPresetTier3RequiredOnMatchesOSGate` fails any entry whose
+`script` and `command-sequence`. Six are Windows-only
+(`required_on: [windows]`): `script-powershell`, `command-sequence-powershell`,
+`ffmpeg-segment-transcode-powershell`, `3dsmax-render`,
+`after-effects-render-windows` and `after-effects-queue-render-windows` (each
+gated on `attr.worker.os.family anyOf ["windows"]`). The Windows-only six still
+name `windows` and are required to run on this Windows job; they are not required
+anywhere else. Two are macOS-only (`required_on: [darwin]`):
+`after-effects-render-macos` and `after-effects-queue-render-macos`, gated on
+`attr.worker.os.family anyOf ["macos"]`. No CI job has a macOS runner for the
+preset harness, so those two Tier 3 claims are not exercised in CI; the macOS
+wrapper script is instead run under Linux `sh`, with the OS gate stripped, by
+`TestAfterEffectsPreset_WrapperFailsOnLoggedError`, and the Windows job runs the
+same test against the PowerShell wrapper.
+`TestPresetTier3RequiredOnMatchesOSGate` fails any entry whose
 `tier3.required_on` differs from the platforms its template's
 `attr.worker.os.family` requirements admit.
 `script-powershell` is `script`'s Windows counterpart: where `script` invokes

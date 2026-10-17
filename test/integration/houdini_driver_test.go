@@ -53,7 +53,7 @@ print(json.dumps(state))
 // merge each run of consecutive frames back into one render call: that keeps
 // an unstepped range rendering exactly as it did before the preset moved to
 // NONCONTIGUOUS (one call per chunk), while a stepped range still renders
-// frame by frame. A legacy `lo-hi:step` part is still honoured.
+// frame by frame. A legacy `lo-hi:step` part is still honored.
 func TestHoudiniROPRender_DriverCoalescesFrameRuns(t *testing.T) {
 	python := requireStubPython(t)
 
