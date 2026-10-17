@@ -1514,7 +1514,9 @@ clients/submitter/
   src/sqi_submitter/
     core/                   no Qt, no DCC imports — session, form model, pre-fill, HostAdapter
     qt/                      Qt only, imported lazily (PySide6, falls back to PySide2)
-    hosts/{maya,houdini,nuke,blender}/   adapter + launch glue per host
+    hosts/{maya,houdini,nuke,max}/       adapter + launch glue (in-process hosts)
+    hosts/{blender,cinema4d,aftereffects}/   one self-contained host file each (handoff hosts)
+    cli.py, install.py                   sqi-submit, sqi-submit install-host
   tests/                     pytest; tests/integration/ is env-gated (see below)
 presets/sqi/                 the thirty reference preset YAML fixtures (seventeen DCC render
                               presets, eight standalone renderer presets, five ffmpeg
@@ -1535,8 +1537,12 @@ ruff format --check . && ruff check . && mypy src && mypy --python-version=3.13 
 
 `tests/integration/` is skipped unless `SQI_TEST_SERVER_URL` points at a live
 `sqi-server`; the Blender render smoke inside it additionally requires
-`SQI_TEST_BLENDER=1` and a local Blender install.
+`SQI_TEST_BLENDER=1` and a local Blender install. That smoke test renders
+through the `blender-batch-render` preset; it does not exercise the Blender
+add-on, which is covered by the manual checklist in `docs/dcc-submitters.md`.
 
-Adding a DCC adapter (a fifth Python-based host) is a `HostAdapter` subclass
-plus launch glue, walked through in
-[Writing a new adapter](dcc-submitters.md#writing-a-new-adapter) in `docs/dcc-submitters.md`.
+Adding an in-process DCC adapter is a `HostAdapter` subclass plus launch glue,
+walked through in
+[Writing a new adapter](dcc-submitters.md#writing-a-new-adapter) in
+`docs/dcc-submitters.md`. A host that cannot run the Qt dialog writes a context
+file instead; see [The handoff contract](dcc-submitters.md#the-handoff-contract).

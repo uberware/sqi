@@ -4,7 +4,8 @@
   Autodesk application package for the sqi submitter. Copy this folder's contents to
   %ProgramData%\Autodesk\ApplicationPlugins\sqi\ (or %APPDATA%\Autodesk\ApplicationPlugins\sqi\)
   and restart 3ds Max. The Python side is installed separately:
-  python.exe -m pip install sqi-submitter[qt] from 3ds Max's Python folder.
+  python.exe -m pip install sqi-submitter from 3ds Max's Python folder (3ds Max bundles
+  PySide, so do not install the [qt] extra).
 -->
 <ApplicationPackage
     SchemaVersion="1.0"

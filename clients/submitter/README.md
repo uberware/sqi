@@ -4,9 +4,15 @@ DCC submitter framework for [`sqi`](https://github.com/uberware/sqi) — a distr
 task and render farm manager.
 
 `sqi-submitter` is a Python framework for building DCC (Digital Content Creation)
-integrations on top of [`sqi-sdk`](../python). It provides Qt-based UI components,
-host adapters for Maya, Houdini, Nuke, and Blender, and a foundation for submitting
-OpenJD job templates to an `sqi` farm directly from within your application.
+integrations on top of [`sqi-sdk`](../python). It provides one Qt submit dialog,
+host adapters for Maya, Houdini, Nuke, and 3ds Max, and a handoff for Blender,
+Cinema 4D, and After Effects, for submitting OpenJD job templates to an `sqi`
+farm directly from within your application.
+
+Every host opens the same dialog. Maya, Houdini, Nuke, and 3ds Max open it in
+their own process. Blender, Cinema 4D, and After Effects write a small context
+file and start `sqi-submit --context FILE`, which opens it; their host files
+are installed with `sqi-submit install-host`.
 
 ## Installation
 
@@ -54,6 +60,15 @@ sqi-submit --server http://localhost:8080
 
 Inside a DCC, wire the host's launch glue per
 [`docs/dcc-submitters.md`](../../docs/dcc-submitters.md#installation-per-host).
+For Blender, Cinema 4D, and After Effects, install the host file with:
+
+```sh
+sqi-submit install-host blender        # or cinema4d, aftereffects
+```
+
+The handoff context file that those hosts write is documented in
+[The handoff contract](../../docs/dcc-submitters.md#the-handoff-contract); its
+JSON Schema is `src/sqi_submitter/core/context.schema.json`.
 
 ## Testing
 

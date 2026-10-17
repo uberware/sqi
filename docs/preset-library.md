@@ -167,14 +167,14 @@ copies show the **Update available** badge.
 
 ## DCC reference presets
 
-The official library ships seven `Rendering`-category presets as targets for
+The official library ships fourteen `Rendering`-category presets as targets for
 the [`sqi-submitter`](dcc-submitters.md) in-application submitters:
 `maya-layer-render`, `maya-scene-render`, `houdini-rop-render`,
-`nuke-write-render`, `nuke-script-render`, `blender-batch-render` and
-`blender-view-layer-render`. Ten more have no in-application submitter and are
-submitted from the web UI or the API: `mistika-boutique-render`,
-`mistika-vr-render`, `mistika-workflows-render`, `cinema4d-render`,
-`cinema4d-take-render`, `3dsmax-render` and the four After Effects presets.
+`nuke-write-render`, `nuke-script-render`, `blender-batch-render`,
+`blender-view-layer-render`, `cinema4d-render`, `cinema4d-take-render`,
+`3dsmax-render` and the four After Effects presets. Three more have no
+in-application submitter and are submitted from the web UI or the API:
+`mistika-boutique-render`, `mistika-vr-render` and `mistika-workflows-render`.
 
 Each names its parameters by the [parameter convention
 contract](dcc-submitters.md#the-parameter-convention-contract), so submitter

@@ -7,14 +7,26 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sqi-submitter"
-description = "DCC submitter framework for sqi (Maya, Houdini, Nuke, Blender) on top of sqi-sdk"
+description = "DCC submitter framework for sqi (Maya, Houdini, Nuke, 3ds Max, Blender, Cinema 4D, After Effects) on top of sqi-sdk"
 readme = "README.md"
 requires-python = ">=3.9"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
 authors = [{ name = "Robin Scher", email = "robin@uberware.net" }]
 maintainers = [{ name = "Uberware Inc.", email = "robin@uberware.net" }]
-keywords = ["render-farm", "openjd", "vfx", "sqi", "maya", "houdini", "nuke", "blender"]
+keywords = [
+  "render-farm",
+  "openjd",
+  "vfx",
+  "sqi",
+  "maya",
+  "houdini",
+  "nuke",
+  "3dsmax",
+  "blender",
+  "cinema4d",
+  "aftereffects",
+]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
