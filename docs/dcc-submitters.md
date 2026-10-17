@@ -1234,9 +1234,10 @@ sqi-submit was not found. Install it on this machine with: pip install "sqi-subm
 ```
 
 After Effects shows its own message instead, since it only knows the located
-path: `sqi-submit was not found. Install it with "pip install sqi-submitter" (or
-"pipx install sqi-submitter"), then click "Locate sqi-submit…" in this panel and
-choose the sqi-submit program.`
+path: `sqi-submit was not found. Install it with pip install "sqi-submitter[qt]"
+(or pipx install "sqi-submitter[qt]"), then click "Locate sqi-submit…" in this
+panel and choose the sqi-submit program.` Both messages double-quote the package
+name, since `cmd.exe` passes single quotes through literally.
 
 ### Launching it
 

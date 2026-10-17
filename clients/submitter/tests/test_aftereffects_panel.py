@@ -123,6 +123,7 @@ out = {
   accNone: sqiFileAccessAllowed(reader({})),
   ctx: ctx,
   ctxText: JSON.stringify(ctx),
+  noCommand: SQI_MSG.noCommand,
 };
 `;
 vm.runInContext(json2 + "\n" + jsx + "\n" + driver, sandbox);
@@ -137,7 +138,7 @@ def _run_harness() -> dict[str, Any]:
     done = subprocess.run(
         [node, "-e", _HARNESS],
         capture_output=True,
-        text=True,
+        encoding="utf-8",  # node writes UTF-8 to a pipe; the Windows locale default is not
         timeout=60,
         env={**os.environ, "SQI_JSX": str(JSX), "SQI_JSON2": str(JSON2)},
     )
@@ -205,6 +206,15 @@ def test_jsx_pure_functions_under_node() -> None:
     assert context["scene"]["path"] == "C:\\p\\spot.aep"
     assert context["scene"]["frame_range"] == "1-1250"
     assert [t["extra"]["RenderQueueItem"] for t in context["targets"]] == ["1", "2"]
+
+
+def test_jsx_not_found_message_names_the_qt_extra() -> None:
+    """sqi-submit needs the [qt] extra; double quotes so the command also works in cmd.exe."""
+    message = _run_harness()["noCommand"]
+    assert 'pip install "sqi-submitter[qt]"' in message
+    assert 'pipx install "sqi-submitter[qt]"' in message
+    assert "'" not in message
+    assert "Locate sqi-submit…" in message
 
 
 def test_jsx_context_is_accepted_by_load_context(tmp_path: Path) -> None:

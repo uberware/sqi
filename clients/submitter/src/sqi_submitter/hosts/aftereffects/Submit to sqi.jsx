@@ -36,9 +36,9 @@ var SQI_MSG = {
         "Nothing is queued. Add a composition to the Render Queue and leave its status " +
         "Queued, then submit again.",
     noCommand:
-        "sqi-submit was not found. Install it with \"pip install sqi-submitter\" (or " +
-        "\"pipx install sqi-submitter\"), then click \"Locate sqi-submit\u2026\" in this " +
-        "panel and choose the sqi-submit program.",
+        "sqi-submit was not found. Install it with pip install \"sqi-submitter[qt]\" " +
+        "(or pipx install \"sqi-submitter[qt]\"), then click \"Locate sqi-submit\u2026\" " +
+        "in this panel and choose the sqi-submit program.",
     commandMissing:
         "The saved sqi-submit location no longer exists: click \"Locate sqi-submit\u2026\" " +
         "and choose it again. Saved location: ",
