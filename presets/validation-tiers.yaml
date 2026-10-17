@@ -418,6 +418,65 @@ presets:
       case: TestPresetTier3/3dsmax-render/default
       required_on: [windows]
 
+  # Windows-only by hostRequirements (attr.worker.os.family anyOf ["windows"]),
+  # so both After Effects Windows entries' Tier-3 claims are required_on
+  # [windows] alone. Tier 3 runs the real powershell and stubs aerender
+  # (stub_inner), and expect_inner_argv pins the argv the wrapper forwards.
+  # The wrapper's exit-status contract is carried by
+  # TestAfterEffectsPreset_WrapperFailsOnLoggedError, which is not a registry
+  # case.
+  - name: after-effects-render-windows
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, movie-one-task, stepped-range]
+      caveat: >-
+        argv derived from Adobe's "Automated rendering and network rendering"
+        page (Wayback copy of 2026-05-27): aerender -project <scene> -rqindex
+        <n> -s <start> -e <end> -v ERRORS_AND_PROGRESS -close
+        DO_NOT_SAVE_CHANGES, passed through an embedded PowerShell wrapper the
+        goldens print in full (its leading UTF-8 BOM is invisible there). The
+        wrapper exists because aerender is reported to exit 0 when a render
+        fails (Adobe community and Thinkbox forum reports, not Adobe's
+        documentation): it also fails the task when any output line contains
+        "aerender ERROR", a marker taken from those reports and unverified
+        against a real failing render. The goldens show the scene path with a
+        space and an apostrophe as one argument, 1-20 at ten frames per task
+        as 1-10 and 11-20, a 240-frame movie kept whole by Frames Per Task 240,
+        and 1-9:4 as frames 1, 5 and 9. No After Effects has executed it.
+        Unverified: how -s/-e number frames in a comp whose display start is
+        not 0; that -s/-e override the -rqindex item's own time span, which
+        Adobe implies ("like with the -comp flag") rather than states. A movie
+        output is kept to one task only by Frames Per Task, which the artist
+        (or the After Effects submitter) must set; nothing in the preset
+        enforces it.
+    tier3:
+      case: TestPresetTier3/after-effects-render-windows/default
+      required_on: [windows]
+
+  - name: after-effects-queue-render-windows
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default]
+      caveat: >-
+        argv derived from Adobe's "Automated rendering and network rendering"
+        page (Wayback copy of 2026-05-27): aerender -project <scene> -v
+        ERRORS_AND_PROGRESS -close DO_NOT_SAVE_CHANGES, which renders the
+        saved queue as is (Adobe: with no -comp, -s, -e, -i and -output are
+        ignored), passed through the same embedded PowerShell wrapper as
+        after-effects-render-windows. The wrapper exists because aerender is
+        reported to exit 0 when a render fails (Adobe community and Thinkbox
+        forum reports, not Adobe's documentation): it also fails the task when
+        any output line contains "aerender ERROR", a marker taken from those
+        reports and unverified against a real failing render. The golden shows
+        the scene path with a space and an apostrophe as one argument. No After
+        Effects has executed it. Frame numbering and movie splitting do not
+        arise: the whole queue is one task on one machine.
+    tier3:
+      case: TestPresetTier3/after-effects-queue-render-windows/default
+      required_on: [windows]
+
   - name: ffmpeg-transcode
     source: presets/sqi
     tier: 2

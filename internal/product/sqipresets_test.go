@@ -88,15 +88,28 @@ func TestSQIReferencePresets(t *testing.T) {
 			params:     []string{"SceneFile", "Frames", "OutputPath", "Take"},
 			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
 		},
+		"after-effects-render-windows": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames", "RenderQueueItem", "FramesPerTask"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
+		},
+		// The whole-queue variant is one task, and its wrapper script is an
+		// embedded file, which base OpenJD carries without an extension.
+		"after-effects-queue-render-windows": {
+			category:     "Rendering",
+			params:       []string{"SceneFile"},
+			noExtensions: true,
+		},
 		// The three Mistika presets invoke the renderer as `-s START -e END`,
 		// so they need a chunk's bounds rather than the chunk itself. They are
 		// not alone in that: the two Maya presets, blender-batch-render,
-		// vray-standalone-render, the two Cinema 4D presets and
-		// 3dsmax-render also declare SQI_CHUNK_BOUNDS, ten of the twenty
-		// render presets. Houdini and the two Nuke presets take a frame list
-		// directly; husk-usd-render computes its start and count with EXPR;
-		// the other standalone renderers render one file per frame and do not
-		// chunk.
+		// vray-standalone-render, the two Cinema 4D presets, 3dsmax-render and
+		// after-effects-render-windows also declare SQI_CHUNK_BOUNDS, eleven
+		// of the twenty-two render presets. Houdini and the two Nuke presets
+		// take a frame list directly; husk-usd-render computes its start and
+		// count with EXPR; the other standalone renderers render one file per
+		// frame and do not chunk, and nor does the whole-queue After Effects
+		// preset.
 		"mistika-boutique-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames"},

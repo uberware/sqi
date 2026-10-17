@@ -1,0 +1,43 @@
+preset: after-effects-render-windows
+case:   movie-one-task
+params:
+  Frames=1-240
+  FramesPerTask=240
+  RenderQueueItem=2
+  SceneFile=C:\Show Files\spot\o'brien_v002.aep
+
+step "Render" — 1 task
+
+task 1/1  name="Render[Frame=1-240,Frame.End=240,Frame.Start=1]"
+  task params:
+    Frame=1-240
+    Frame.End=240
+    Frame.Start=1
+  command: powershell
+  args:
+    [0]  -NoProfile
+    [1]  -NonInteractive
+    [2]  -ExecutionPolicy
+    [3]  Bypass
+    [4]  -File
+    [5]  <WORKDIR>
+    [6]  -project
+    [7]  C:\Show Files\spot\o'brien_v002.aep
+    [8]  -rqindex
+    [9]  2
+    [10]  -s
+    [11]  1
+    [12]  -e
+    [13]  240
+    [14]  -v
+    [15]  ERRORS_AND_PROGRESS
+    [16]  -close
+    [17]  DO_NOT_SAVE_CHANGES
+  embedded file "aerender_wrapper" (aerender_wrapper.ps1):
+    ﻿trap { [Console]::Error.WriteLine('aerender_wrapper: ' + $_); exit 1 }
+    $ErrorActionPreference = 'Continue'
+    $failed = $false
+    & aerender @args 2>&1 | ForEach-Object { $line = [string]$_; $line; if ($line -like '*aerender ERROR*') { $failed = $true } }
+    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    if ($failed) { exit 1 }
+    exit 0

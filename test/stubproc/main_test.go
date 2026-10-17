@@ -129,6 +129,23 @@ func TestStub_EmitsProgressAndStatus(t *testing.T) {
 	}
 }
 
+// TestStub_PrintsStdout pins SQI_STUB_STDOUT: arbitrary text on stdout with a
+// zero exit, the shape of a renderer that logs an error and still exits 0.
+func TestStub_PrintsStdout(t *testing.T) {
+	dir := t.TempDir()
+	bin := buildStub(t, dir, "aerender")
+	const line = "aerender ERROR: boom"
+	cmd := exec.CommandContext(t.Context(), bin)
+	cmd.Env = append(os.Environ(), "SQI_STUB_STDOUT="+line)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("stub run: err = %v, want exit 0 (SQI_STUB_STDOUT must not change the exit status)", err)
+	}
+	if !strings.Contains(string(out), line+"\n") {
+		t.Errorf("stdout = %q, want it to contain %q followed by a newline", out, line)
+	}
+}
+
 func TestStub_SleepsOnRequest(t *testing.T) {
 	dir := t.TempDir()
 	bin := buildStub(t, dir, "renderer")

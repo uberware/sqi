@@ -1,0 +1,109 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: after-effects-queue-render-windows
+title: After Effects Queue Render (Windows)
+description: >-
+  Renders everything a saved After Effects project has queued, as one task on
+  one Windows worker, with aerender.
+readme: |
+  # After Effects Queue Render (Windows)
+
+  Renders whatever the saved `.aep` project has queued in its render queue, on
+  one machine, as a single task. Each queued item renders with its own render
+  settings, output module and time span, exactly as the project was saved.
+  Use After Effects Render (Windows) instead to split one queue item's frames
+  across machines.
+
+  This is the Windows variant. Its sibling, `after-effects-queue-render-macos`,
+  has the same parameter and passes `aerender` the same arguments; pick the
+  one that matches your render nodes.
+
+  ## Parameters
+
+  - **Scene File** - the `.aep` project to render. It must be reachable from
+    the worker that runs the job. Queue the items you want rendered and save
+    the project before submitting.
+
+  ## Why aerender runs through a wrapper
+
+  `aerender` is reported to exit with status 0 even when a render fails, so a
+  task that trusted its exit status would report every failure as a success.
+  The task therefore runs a small PowerShell script that runs `aerender`,
+  streams its output to the task log unchanged, and fails the task when
+  `aerender` exits non-zero or when any line of its output contains
+  `aerender ERROR`.
+
+  ## Requirements
+
+  - **Windows workers only.** The step requires `attr.worker.os.family` =
+    `windows` as well as the tag.
+  - Workers tagged `attr.worker.tag.aftereffects = true`
+  - `aerender` on the worker's `PATH`. It lives in the install's
+    `Support Files` folder, e.g.
+    `C:\Program Files\Adobe\Adobe After Effects 2026\Support Files`; add that
+    folder to `PATH`.
+  - `powershell` (Windows PowerShell 5.1, which ships with Windows) on the
+    worker's `PATH`.
+  - On each render node, Adobe's render-only marker: an empty file named
+    `ae_render_only_node.txt` in `C:\Users\Public\Documents\Adobe`. It runs
+    After Effects in its non-royalty-bearing, render-only mode; Adobe's
+    network rendering page gives the licensing terms.
+category: Rendering
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: After Effects Queue Render
+  parameterDefinitions:
+    - name: SceneFile
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface:
+        control: CHOOSE_INPUT_FILE
+        label: Scene File
+        fileFilters:
+          - label: After Effects projects
+            patterns: ["*.aep"]
+        fileFilterDefault:
+          label: After Effects projects
+          patterns: ["*.aep"]
+  steps:
+    # One task: with no -comp, aerender renders the queue as saved and ignores
+    # -s, -e, -i and -output (Adobe), so there is nothing to split.
+    - name: Render
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.aftereffects
+            anyOf: ["true"]
+          - name: attr.worker.os.family
+            anyOf: ["windows"]
+      script:
+        embeddedFiles:
+          # after-effects-render-windows' aerender wrapper, byte for byte; see
+          # that preset for what each line does and why.
+          - name: aerender_wrapper
+            type: TEXT
+            filename: aerender_wrapper.ps1
+            data: "\uFEFF\
+              trap { [Console]::Error.WriteLine('aerender_wrapper: ' + $_); exit 1 }\n\
+              $ErrorActionPreference = 'Continue'\n\
+              $failed = $false\n\
+              & aerender @args 2>&1 | ForEach-Object { $line = [string]$_; $line; if ($line -like '*aerender ERROR*') { $failed = $true } }\n\
+              if ($LASTEXITCODE) { exit $LASTEXITCODE }\n\
+              if ($failed) { exit 1 }\n\
+              exit 0\n"
+        actions:
+          onRun:
+            command: powershell
+            args:
+              - "-NoProfile"
+              - "-NonInteractive"
+              - "-ExecutionPolicy"
+              - "Bypass"
+              - "-File"
+              - "{{Task.File.aerender_wrapper}}"
+              - "-project"
+              - "{{Param.SceneFile}}"
+              - "-v"
+              - "ERRORS_AND_PROGRESS"
+              - "-close"
+              - "DO_NOT_SAVE_CHANGES"

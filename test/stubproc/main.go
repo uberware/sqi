@@ -33,7 +33,7 @@ func main() {
 	os.Exit(exitCode(name))
 }
 
-// run performs every observable side effect: record, emit, touch, sleep.
+// run performs every observable side effect: record, emit, touch, sleep, print.
 func run(name string) error {
 	if err := writeRecord(name); err != nil {
 		return err
@@ -53,6 +53,11 @@ func run(name string) error {
 			return fmt.Errorf("SQI_STUB_SLEEP %q: %w", v, err)
 		}
 		time.Sleep(d)
+	}
+	// SQI_STUB_STDOUT prints one arbitrary line whatever the exit status, so a
+	// test can model a renderer that logs an error and still exits 0 (aerender).
+	if v, ok := os.LookupEnv("SQI_STUB_STDOUT"); ok {
+		fmt.Println(v)
 	}
 	return nil
 }

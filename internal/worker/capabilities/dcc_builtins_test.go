@@ -39,6 +39,19 @@ var dccLayouts = []rendererLayout{
 		versioned: `C:\Program Files\Autodesk\3ds Max 2026\3dsmaxcmd.exe`,
 		version:   "2026",
 	},
+	{
+		// aerender ships inside the application folder on both platforms;
+		// the versioned folder names are unverified (Adobe's page still
+		// says "CC"). The Windows path stands for the version check.
+		tag: "aftereffects",
+		exe: "aerender",
+		installs: []string{
+			`C:\Program Files\Adobe\Adobe After Effects 2026\Support Files\aerender.exe`,
+			"/Applications/Adobe After Effects 2026/aerender",
+		},
+		versioned: `C:\Program Files\Adobe\Adobe After Effects 2026\Support Files\aerender.exe`,
+		version:   "2026",
+	},
 }
 
 // TestDCCDetectors_MatchVendorInstallLayout checks that a shipped glob matches
