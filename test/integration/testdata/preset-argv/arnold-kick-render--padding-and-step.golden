@@ -1,0 +1,43 @@
+preset: arnold-kick-render
+case:   padding-and-step
+params:
+  Frames=1001-1009:4
+  SceneFile=/mnt/show/seq010/shot0010/render/shot0010_beauty.######.ass
+
+step "Render" — 3 tasks
+
+task 1/3  name="Render[Frame=1001]"
+  task params:
+    Frame=1001
+  command: kick
+  args:
+    [0]  -i
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_beauty.001001.ass
+    [2]  -dw
+    [3]  -dp
+    [4]  -v
+    [5]  2
+
+task 2/3  name="Render[Frame=1005]"
+  task params:
+    Frame=1005
+  command: kick
+  args:
+    [0]  -i
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_beauty.001005.ass
+    [2]  -dw
+    [3]  -dp
+    [4]  -v
+    [5]  2
+
+task 3/3  name="Render[Frame=1009]"
+  task params:
+    Frame=1009
+  command: kick
+  args:
+    [0]  -i
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_beauty.001009.ass
+    [2]  -dw
+    [3]  -dp
+    [4]  -v
+    [5]  2

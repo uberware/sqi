@@ -230,10 +230,13 @@ enforcement point, and the submitter must not break against an older server.
 
 sqi ships nine DCC reference products under `presets/sqi/`, published through
 the [preset library](preset-library.md) so `sqi-submitter` has something real
-to submit to out of the box (the directory holds fourteen products in total —
-the other five are `Transcoding`-category ffmpeg presets; see [Transcoding
-reference presets](preset-library.md#transcoding-reference-presets)). Install
-them from **Admin → Preset Library** in the web UI, or by hand via `POST
+to submit to out of the box. The directory holds twenty-two products in total;
+the other thirteen are eight [standalone renderer
+presets](preset-library.md#standalone-renderer-reference-presets), which render
+exported scene files without loading the DCC and have no in-application
+submitter, and five `Transcoding`-category [ffmpeg
+presets](preset-library.md#transcoding-reference-presets). Install the DCC
+presets from **Admin → Preset Library** in the web UI, or by hand via `POST
 /api/v1/products` (or **Admin → Products** in the web UI) if you're not using
 a preset index. All use the product `category`
 `Rendering` and declare `TASK_CHUNKING` for frame distribution; the Maya,

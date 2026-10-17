@@ -4,11 +4,71 @@ package capabilities
 
 import (
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"testing"
 )
+
+// builtinDetector returns the built-in detector emitting tag.
+func builtinDetector(t *testing.T, tag string) Detector {
+	t.Helper()
+	ds, err := BuiltinDetectors()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range ds {
+		if d.Tag == tag {
+			return d
+		}
+	}
+	t.Fatalf("no built-in detector emits the %q tag", tag)
+	return Detector{}
+}
+
+// assertInstallsMatchGlobs fails for every install path that no path_glob
+// check of d matches. It uses path.Match on slash-normalized strings rather
+// than filepath.Glob because the paths do not exist on the test runner, and
+// because filepath.Match treats a Windows pattern's backslashes as escapes off
+// Windows; normalizing gives the same result on every runner.
+func assertInstallsMatchGlobs(t *testing.T, d Detector, installs []string) {
+	t.Helper()
+	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
+	for _, install := range installs {
+		var matched bool
+		for _, c := range d.Checks {
+			if c.PathGlob == "" {
+				continue
+			}
+			ok, err := path.Match(norm(c.PathGlob), norm(install))
+			if err != nil {
+				t.Fatalf("bad pattern %q: %v", c.PathGlob, err)
+			}
+			if ok {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			t.Errorf("no check matches the vendor install path %s", install)
+		}
+	}
+}
+
+// assertWindowsGlobsGated fails for every backslash path_glob of d not gated to
+// os: windows. Off Windows, filepath.Match treats backslashes as escapes, so an
+// ungated Windows glob would be a bad pattern there rather than a no-op.
+func assertWindowsGlobsGated(t *testing.T, d Detector) {
+	t.Helper()
+	for i, c := range d.Checks {
+		if strings.Contains(c.PathGlob, `\`) && c.OS != "windows" {
+			t.Errorf("check %d has a backslash pattern %q but os = %q, want %q",
+				i, c.PathGlob, c.OS, "windows")
+		}
+	}
+}
 
 func TestBuiltinDetectors_LoadValidate(t *testing.T) {
 	ds, err := BuiltinDetectors()
@@ -102,5 +162,14 @@ func TestBuiltinDetectors_FFmpeg(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("no built-in detector emits the ffmpeg tag")
+	}
+}
+
+// TestBuiltinDetectors_OIIOTool checks that the oiiotool detector is a single
+// PATH probe for oiiotool.
+func TestBuiltinDetectors_OIIOTool(t *testing.T) {
+	d := builtinDetector(t, "oiiotool")
+	if len(d.Checks) != 1 || d.Checks[0].Exe != "oiiotool" {
+		t.Errorf("oiiotool detector checks = %+v, want exactly exe: oiiotool", d.Checks)
 	}
 }

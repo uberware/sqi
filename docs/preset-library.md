@@ -234,6 +234,58 @@ adds an OS gate on top of that:
 Install and use them exactly like the DCC reference presets above (Browse →
 Install as a product).
 
+## Standalone renderer reference presets
+
+The official library also ships eight `Rendering`-category presets that render
+an **exported scene description** with a standalone renderer. The application
+that produced the scene is not loaded on the farm. These presets have no
+in-application submitter; submit them from the web UI or the API. Each gates on
+a capability tag that a built-in detector sets on any worker with the renderer
+installed or on `PATH` (see [worker capability
+tags](worker-capabilities.md#built-in-detectors)):
+
+| Preset | Renders | Shape | Worker tag |
+|---|---|---|---|
+| `arnold-kick-render` | Arnold `.ass` files with `kick` | one file per frame | `arnold` |
+| `arnold-kick-tile-render` | each `.ass` frame as a grid of `kick` render regions, then assembled with `oiiotool` | one file per frame, × tiles | `arnold` (Render), `oiiotool` (Assemble) |
+| `vray-standalone-render` | one animated `.vrscene` with `vray` | frame range per task | `vray` |
+| `husk-usd-render` | one USD stage with `husk`, through Karma or any Hydra delegate | frame range per task | `husk` |
+| `redshift-standalone-render` | Redshift `.rs` files with `redshiftCmdLine` | one file per frame | `redshift` |
+| `prman-render` | RenderMan `.rib` files with `prman` | one file per frame | `renderman` |
+| `3delight-render` | 3Delight `.nsi` files with `renderdl` | one file per frame | `3delight` |
+| `mantra-render` | Mantra `.ifd` files with `mantra` (legacy; prefer husk) | one file per frame | `mantra` |
+
+**One file per frame.** The presets that read one exported file per frame take
+a **Scene File Pattern** that marks the frame number with a run of `#`
+characters, such as `shot.####.ass`. Each task renders one frame. The run is
+replaced with the frame number, zero-padded to the run's length: frame 7 is
+`shot.0007.ass`. A frame number longer than the run is written in full. A negative frame keeps its sign inside the padding:
+frame -2 is `shot.-002.ass`. A pattern with no run of `#`, or with more than
+one, is rejected at submission. Only the file name is checked, so a `#` in a
+directory of a `/`-separated path is allowed. A backslash-separated Windows
+path is treated as one file name, so its directories must not contain `#`.
+Output paths come from the exported files.
+
+**Frame range per task.** `vray-standalone-render` and `husk-usd-render` read
+the whole animation from one file. They split the frame range into chunks, as
+the DCC presets do, with one frame per task by default.
+
+**Tile rendering.** `arnold-kick-tile-render` splits each frame into a grid of
+1 to 16 tiles on each axis and renders each tile as its own task. A dependent
+Assemble step then joins each frame's tiles into one image. Assembly starts
+only after **every** tile of **every** frame has finished. The tile list is
+built at submission, and its cost grows with the grid. A 16 × 16 grid fits the
+default EXPR limits. A server with `openjd.expr_memory_limit` at its minimum of
+4,096 bytes accepts at most a 7 × 7 grid.
+
+**Redshift and GPUs.** `redshift-standalone-render` gates on the Redshift
+install, not on a detected GPU. On a worker with Redshift installed but no
+usable GPU, list `redshift` under the worker's `capabilities.disable`.
+
+These presets are verified at Tier 1 and Tier 3 only. See [Validation
+tiers](#validation-tiers) and each preset's caveat in
+`presets/validation-tiers.yaml`.
+
 ## Testing presets
 
 The official library also ships four `Testing`-category presets — authored in
@@ -257,7 +309,7 @@ them.
 
 ## Validation tiers
 
-`presets/validation-tiers.yaml` tracks exactly 21 entries — the 14 presets
+`presets/validation-tiers.yaml` tracks exactly 29 entries — the 22 presets
 under `presets/sqi/` plus the seven built-in products documented in
 [`docs/development.md`](development.md#adding-a-product) — stating which
 validation tier each job type has actually reached. The four `presets/testing/`
@@ -278,17 +330,18 @@ a real farm rather than reviewed tier by tier. The tiers are:
   has to look at.
 
   **What it does not prove:** that the vendor's application accepts that
-  command line. No Maya, Nuke, Houdini, Blender, or Mistika installation
-  executes anything at Tier 1 — the argv is correct only insofar as the
-  documentation it was derived from is correct and current. What the goldens
-  do pin for the frame-range presets follows from their `CONTIGUOUS` chunks,
+  command line. No Maya, Nuke, Houdini, Blender, Mistika or standalone
+  renderer installation executes anything at Tier 1 — the argv is correct only
+  insofar as the documentation it was derived from is correct and current.
+  What the goldens do pin for the frame-range presets follows from their
+  `CONTIGUOUS` chunks,
   each always a plain `start-end` run of consecutive frames:
   - `nuke-write-render` and `nuke-script-render` never pass Nuke's `-F` flag an
     OpenJD step (`1-19:2`, where Foundry documents `1-19x2`). Whether Nuke
     reads `-F 1-1` as the single frame 1 needs a real Nuke (Tier 2).
-  - The `-s`/`-e` presets (Maya, Blender and the three Mistika presets) never
-    render a frame the range excluded: a stepped or listed range splits into
-    one chunk per run of consecutive frames, so a stepped range yields one
+  - The `-s`/`-e` presets (Maya, Blender and the three Mistika presets) and
+    V-Ray's `-frames=START-END` never render a frame the range excluded: a
+    stepped or listed range splits into one chunk per run of consecutive frames, so a stepped range yields one
     single-frame chunk per frame. See
     [sqi-chunk-bounds](openjd-extensions/sqi-chunk-bounds.md).
 
@@ -296,11 +349,11 @@ a real farm rather than reviewed tier by tier. The tiers are:
   than "the template still expands the way it did when this was reviewed."
 
 - **Tier 2 — real application.** A real, licensed copy of the vendor
-  application runs the resolved command and its output is inspected. The nine
-  render presets (Maya, Nuke, Houdini, Blender, the three Mistika products)
-  have not reached Tier 2 — none of those vendor applications has a
-  redistributable, CI-friendly way to run headless in this project's CI, so
-  their entries in `presets/validation-tiers.yaml` carry no `tier2` block.
+  application runs the resolved command and its output is inspected. The
+  seventeen render presets (Maya, Nuke, Houdini, Blender, the three Mistika
+  products and the eight standalone renderers) have not reached Tier 2 — none
+  of those vendor applications has a redistributable, CI-friendly way to run
+  headless in this project's CI, so their entries in `presets/validation-tiers.yaml` carry no `tier2` block.
   The five ffmpeg presets *are* Tier 2: ffmpeg is freely available, so each of
   their registry entries carries a `tier2` block, and
   `test/integration/ffmpeg_presets_test.go` runs real ffmpeg end to end and
@@ -371,8 +424,8 @@ harmless no-op.
 Tier 3 runs on Windows exactly as it does on Linux and macOS — a real
 `sqi-server` and `sqi-worker`, wired together, executing every preset end to
 end against `test/stubproc` in place of the vendor executable — and CI runs
-it in a dedicated job (`preset-harness-windows`). Of the 21 entries in
-`presets/validation-tiers.yaml`, 16 require all three platforms
+it in a dedicated job (`preset-harness-windows`). Of the 29 entries in
+`presets/validation-tiers.yaml`, 24 require all three platforms
 (`tier3.required_on: [linux, darwin, windows]`), so a skip on Windows is a
 registry failure for every one of them, not a harmless no-op. The other 5 are
 gated to a narrower platform subset, because their Tier 3 case cannot run

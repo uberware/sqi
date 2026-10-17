@@ -1,0 +1,31 @@
+preset: prman-render
+case:   default
+params:
+  Frames=1-3
+  SceneFile=/mnt/show/seq010/shot0010/rib/shot0010_beauty.####.rib
+
+step "Render" — 3 tasks
+
+task 1/3  name="Render[Frame=1]"
+  task params:
+    Frame=1
+  command: prman
+  args:
+    [0]  -Progress
+    [1]  /mnt/show/seq010/shot0010/rib/shot0010_beauty.0001.rib
+
+task 2/3  name="Render[Frame=2]"
+  task params:
+    Frame=2
+  command: prman
+  args:
+    [0]  -Progress
+    [1]  /mnt/show/seq010/shot0010/rib/shot0010_beauty.0002.rib
+
+task 3/3  name="Render[Frame=3]"
+  task params:
+    Frame=3
+  command: prman
+  args:
+    [0]  -Progress
+    [1]  /mnt/show/seq010/shot0010/rib/shot0010_beauty.0003.rib

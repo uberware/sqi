@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/uberware/sqi/internal/presetgen"
@@ -21,25 +22,45 @@ func TestBuild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if len(got) != 14 {
-		t.Fatalf("got %d presets, want 14", len(got))
-	}
-	// Sorted by name.
+	// Every preset, sorted by name.
 	want := []string{
-		"blender-batch-render", "ffmpeg-segment-transcode-bash",
+		"3delight-render",
+		"arnold-kick-render",
+		"arnold-kick-tile-render",
+		"blender-batch-render",
+		"ffmpeg-segment-transcode-bash",
 		"ffmpeg-segment-transcode-expr",
-		"ffmpeg-segment-transcode-powershell", "ffmpeg-sequence-encode",
-		"ffmpeg-transcode", "houdini-rop-render", "maya-layer-render",
-		"maya-scene-render", "mistika-boutique-render", "mistika-vr-render",
-		"mistika-workflows-render", "nuke-script-render", "nuke-write-render",
+		"ffmpeg-segment-transcode-powershell",
+		"ffmpeg-sequence-encode",
+		"ffmpeg-transcode",
+		"houdini-rop-render",
+		"husk-usd-render",
+		"mantra-render",
+		"maya-layer-render",
+		"maya-scene-render",
+		"mistika-boutique-render",
+		"mistika-vr-render",
+		"mistika-workflows-render",
+		"nuke-script-render",
+		"nuke-write-render",
+		"prman-render",
+		"redshift-standalone-render",
+		"vray-standalone-render",
 	}
-	for i, w := range want {
-		if got[i].Entry.Name != w {
-			t.Fatalf("got[%d].Name = %q, want %q", i, got[i].Entry.Name, w)
-		}
+	names := make([]string, len(got))
+	for i, g := range got {
+		names[i] = g.Entry.Name
+	}
+	if !slices.Equal(names, want) {
+		t.Fatalf("published presets = %v, want %v", names, want)
 	}
 
-	blender := got[0]
+	// Look up by name: other presets sort ahead of it.
+	i := slices.IndexFunc(got, func(p presetgen.Generated) bool { return p.Entry.Name == "blender-batch-render" })
+	if i < 0 {
+		t.Fatal("blender-batch-render not published")
+	}
+	blender := got[i]
 	if blender.Entry.Title != "Blender Batch Render" {
 		t.Errorf("title = %q, want Blender Batch Render", blender.Entry.Title)
 	}

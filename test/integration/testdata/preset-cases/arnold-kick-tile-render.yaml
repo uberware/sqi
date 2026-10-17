@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Arnold Kick Tile Render: default is the 2x2 grid over one frame (4 Render
+# tasks, 1 Assemble); uneven splits a width of 1000 into 3 tiles (0-332,
+# 333-665, 666-999) over two frames.
+cases:
+  - name: default
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/render/shot0010_beauty.####.ass
+      OutputFile: /mnt/show/seq010/shot0010/images/shot0010_beauty.####.exr
+      Frames: "1"
+    expect_tasks: 5
+    expect_invocations:
+      kick: 4
+      oiiotool: 1
+  - name: uneven
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/render/shot0010_beauty.####.ass
+      OutputFile: /mnt/show/seq010/shot0010/images/shot0010_beauty.####.exr
+      Frames: "1-2"
+      Width: "1000"
+      Height: "500"
+      TilesX: "3"
+      TilesY: "2"
+    expect_tasks: 14
+    expect_invocations:
+      kick: 12
+      oiiotool: 2

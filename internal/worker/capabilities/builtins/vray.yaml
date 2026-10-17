@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# V-Ray Standalone, which presets/sqi/vray-standalone-render.yaml invokes by
+# bare name.
+#
+# The globs match the default install locations:
+# C:\Program Files\Chaos\V-Ray\Standalone for x64\bin on Windows and
+# /usr/Chaos/V-Ray/Standalone_for_<platform>/bin on Linux. macOS is covered by
+# the PATH probe only.
+#
+# No version is extracted: neither path carries one.
+tag: vray
+checks:
+  - exe: vray
+  - path_glob: "/usr/Chaos/V-Ray/Standalone_for_*/bin/vray"                    # linux
+  - path_glob: 'C:\Program Files\Chaos\V-Ray\Standalone for x64\bin\vray.exe'  # windows
+    os: windows
