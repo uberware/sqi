@@ -22,7 +22,7 @@ from sqi_submitter.core.joboptions import JobOptions
 from sqi_submitter.core.mapping import normalize_name, prefill
 from sqi_submitter.core.schema import FormModel
 from sqi_submitter.core.session import SubmitterSession
-from sqi_submitter.core.submit import submit_form
+from sqi_submitter.core.submit import SCENE_NOT_SAVED_MESSAGE, submit_form
 
 
 def target_parameters(
@@ -96,10 +96,22 @@ def submit_targets(
 ) -> list[TargetResult]:
     """Submit each model as its own job, in order; a failure does not stop the rest.
 
-    The scene is saved (when ``save_scene``) before the first job only.
+    The scene is saved once, up front, when ``save_scene`` is set and the host
+    reports it modified. If that save fails nothing is submitted and every
+    target reports the failure, since each job would render a stale file.
     """
+    if (
+        adapter is not None
+        and save_scene
+        and adapter.is_scene_modified()
+        and not adapter.save_scene()
+    ):
+        return [
+            TargetResult(target=target, job=None, error=SCENE_NOT_SAVED_MESSAGE)
+            for target, _ in models
+        ]
     results: list[TargetResult] = []
-    for index, (target, model) in enumerate(models):
+    for target, model in models:
         try:
             job = submit_form(
                 session,
@@ -109,7 +121,7 @@ def submit_targets(
                 queue_id=queue_id,
                 job_name=job_name_for(job_name_prefix, target),
                 adapter=adapter,
-                save_scene=save_scene and index == 0,
+                save_scene=False,
                 job_options=job_options,
             )
         except SubmitterError as exc:

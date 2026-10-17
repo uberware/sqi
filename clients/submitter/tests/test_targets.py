@@ -228,3 +228,76 @@ def test_submit_targets_saves_once() -> None:
     )
     assert [r.error for r in results] == [None, None, None]
     assert len(saves) == 1
+
+
+@respx.mock
+def test_submit_targets_failed_save_submits_nothing() -> None:
+    route = respx.post(f"{BASE}/api/v1/products/blender/jobs").mock(
+        return_value=httpx.Response(201, json={"id": "j", "name": "n"})
+    )
+    adapter = MiniAdapter(modified=True, can_save=False)
+    models = per_target_models(BLENDER_PARAMS, CTX, _three_targets(), {})
+    results = submit_targets(
+        SubmitterSession(server_url=BASE),
+        "blender",
+        models,
+        farm_id="f",
+        queue_id="q",
+        job_name_prefix="Blender",
+        adapter=adapter,
+        save_scene=True,
+        job_options=None,
+    )
+    assert route.call_count == 0
+    assert len(results) == 3
+    assert all(r.job is None for r in results)
+    assert all(r.error is not None and "could not be saved" in r.error for r in results)
+
+
+@respx.mock
+def test_submit_targets_saves_even_when_first_target_fails_early() -> None:
+    route = respx.post(f"{BASE}/api/v1/products/blender/jobs").mock(
+        return_value=httpx.Response(201, json={"id": "j", "name": "n"})
+    )
+    params = [*BLENDER_PARAMS, _p("OutputPath", "PATH")]
+    targets = [
+        RenderTarget(name="A", kind="view_layer", extra={"Scene": "S", "ViewLayer": "A"}),
+        RenderTarget(
+            name="B",
+            kind="view_layer",
+            output_path="/o/b",
+            extra={"Scene": "S", "ViewLayer": "B"},
+        ),
+        RenderTarget(
+            name="C",
+            kind="view_layer",
+            output_path="/o/c",
+            extra={"Scene": "S", "ViewLayer": "C"},
+        ),
+    ]
+    ctx = SceneContext(scene_path="/x/s.scene", frame_range="1-4")
+    adapter = MiniAdapter(modified=True)
+    saves: list[int] = []
+    original = adapter.save_scene
+
+    def counting_save() -> bool:
+        saves.append(1)
+        return original()
+
+    adapter.save_scene = counting_save  # type: ignore[method-assign]
+    results = submit_targets(
+        SubmitterSession(server_url=BASE),
+        "blender",
+        per_target_models(params, ctx, targets, {}),
+        farm_id="f",
+        queue_id="q",
+        job_name_prefix="Blender",
+        adapter=adapter,
+        save_scene=True,
+        job_options=None,
+    )
+    assert results[0].job is None and results[0].error is not None
+    assert "output path" in results[0].error.lower()
+    assert results[1].job is not None and results[2].job is not None
+    assert len(saves) == 1
+    assert route.call_count == 2
