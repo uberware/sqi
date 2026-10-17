@@ -77,5 +77,5 @@ def main(argv: list[str] | None = None) -> int:
 
         # An unknown host is a usage error, so its message goes to stderr.
         out = sys.stdout if args.host in KNOWN_HOSTS else sys.stderr
-        return install_host(args.host, Path(args.dest) if args.dest else None, out)
+        return install_host(args.host, Path(args.dest) if args.dest else None, out, sys.stderr)
     return _run_dialog(args.server, args.context)

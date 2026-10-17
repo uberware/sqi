@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import io
+import shutil
 from importlib import resources
 from pathlib import Path
 
@@ -139,3 +140,45 @@ def test_cli_install_host_unknown_exits_two(capsys: pytest.CaptureFixture[str]) 
     assert cli.main(["install-host", "maya"]) == 2
     captured = capsys.readouterr()
     assert "cinema4d" in captured.err
+
+
+def test_install_host_dest_is_a_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(install, "HOST_FILES", _STAND_INS)
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("x", encoding="utf-8")
+    out = io.StringIO()
+    err = io.StringIO()
+    assert install.install_host("blender", blocker, out, err) == 1
+    assert f"could not install into {blocker}" in err.getvalue()
+    assert "nothing was installed" in err.getvalue()
+    assert out.getvalue() == ""
+
+
+def test_install_host_mid_loop_failure_reports_partial_copy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(install, "HOST_FILES", _STAND_INS)
+    real_copy = shutil.copyfile
+    calls: list[int] = []
+
+    def flaky(src: Path, dst: Path) -> Path:
+        calls.append(1)
+        if len(calls) == 2:
+            raise PermissionError(13, "Permission denied")
+        return real_copy(src, dst)
+
+    monkeypatch.setattr(shutil, "copyfile", flaky)
+    err = io.StringIO()
+    assert install.install_host("aftereffects", tmp_path / "d", io.StringIO(), err) == 1
+    assert "Permission denied" in err.getvalue()
+    assert "1 file(s) already copied were left in place" in err.getvalue()
+
+
+def test_cli_install_host_bad_dest_exits_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(install, "HOST_FILES", _STAND_INS)
+    blocker = tmp_path / "f"
+    blocker.write_text("x", encoding="utf-8")
+    assert cli.main(["install-host", "blender", "--dest", str(blocker)]) == 1
+    assert "could not install into" in capsys.readouterr().err

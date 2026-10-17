@@ -81,10 +81,11 @@ def _no_destination_hint(host: str) -> str:
     )
 
 
-def install_host(host: str, dest: Path | None, out: TextIO) -> int:
+def install_host(host: str, dest: Path | None, out: TextIO, err: TextIO | None = None) -> int:
     """Install ``host``'s files into ``dest`` (or its default), reporting on ``out``.
 
-    Returns 0 on success, 2 for an unknown host, 1 when this build ships no files for it.
+    Returns 0 on success, 2 for an unknown host, 1 when this build ships no files for it or
+    the destination cannot be written (that error goes to ``err``, default ``out``).
     """
     if host not in KNOWN_HOSTS:
         print(f"unknown host {host!r}; known hosts: {', '.join(KNOWN_HOSTS)}", file=out)
@@ -107,11 +108,23 @@ def install_host(host: str, dest: Path | None, out: TextIO) -> int:
         print(_NEXT_STEP[host], file=out)
         return 0
 
-    dest.mkdir(parents=True, exist_ok=True)
-    for rel in files:
-        target = dest / Path(rel).name
-        with resources.as_file(root.joinpath(rel)) as path:
-            shutil.copyfile(path, target)
-        print(f"copied {target}", file=out)
+    copied: list[Path] = []
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+        for rel in files:
+            target = dest / Path(rel).name
+            with resources.as_file(root.joinpath(rel)) as path:
+                shutil.copyfile(path, target)
+            copied.append(target)
+            print(f"copied {target}", file=out)
+    except OSError as exc:
+        reason = exc.strerror or str(exc)
+        message = f"could not install into {dest}: {reason}"
+        if copied:
+            message += f" ({len(copied)} file(s) already copied were left in place)"
+        else:
+            message += " (nothing was installed)"
+        print(message, file=err if err is not None else out)
+        return 1
     print(_NEXT_STEP[host], file=out)
     return 0
