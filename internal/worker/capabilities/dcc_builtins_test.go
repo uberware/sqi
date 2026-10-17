@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package capabilities
+
+// The DCC detectors pair with the presets in presets/sqi/ that drive a DCC's
+// own command-line renderer. They share rendererLayout and the
+// TestRendererDetectors_* tests in renderer_builtins_test.go, which check
+// detectorLayouts; a layout with an empty exe asserts the detector has no exe
+// check, for a command too generic to probe PATH for.
+//
+// dccLayouts lists each detector's expected install paths independently of its
+// YAML, so the tests check the shipped globs against them.
+var dccLayouts = []rendererLayout{
+	{
+		// Commandline is generic enough to collide with unrelated software,
+		// so there is no exe check, as in mistikavr.yaml. The Linux folder
+		// name does not match the version regex, so only the Windows path
+		// is checked for a version.
+		tag: "cinema4d",
+		exe: "",
+		installs: []string{
+			`C:\Program Files\Maxon Cinema 4D 2026\Commandline.exe`,
+			"/Applications/Maxon Cinema 4D 2026/Commandline.app",
+			"/opt/maxon/cinema4dr2026.000/bin/Commandline",
+		},
+		versioned: `C:\Program Files\Maxon Cinema 4D 2026\Commandline.exe`,
+		version:   "2026",
+	},
+	{
+		// 3ds Max is Windows-only. The registry key carries no year, so
+		// only the install path yields a version.
+		tag: "3dsmax",
+		exe: "3dsmaxcmd",
+		installs: []string{
+			`C:\Program Files\Autodesk\3ds Max 2026\3dsmaxcmd.exe`,
+		},
+		versioned: `C:\Program Files\Autodesk\3ds Max 2026\3dsmaxcmd.exe`,
+		version:   "2026",
+	},
+	{
+		// aerender ships inside the application folder on both platforms.
+		// The versioned folder names are unverified (see aftereffects.yaml).
+		// The Windows path stands for the version check.
+		tag: "aftereffects",
+		exe: "aerender",
+		installs: []string{
+			`C:\Program Files\Adobe\Adobe After Effects 2026\Support Files\aerender.exe`,
+			"/Applications/Adobe After Effects 2026/aerender",
+		},
+		versioned: `C:\Program Files\Adobe\Adobe After Effects 2026\Support Files\aerender.exe`,
+		version:   "2026",
+	},
+}

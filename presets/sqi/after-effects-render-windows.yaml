@@ -1,0 +1,188 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: after-effects-render-windows
+title: After Effects Render (Windows)
+description: >-
+  Renders one render-queue item of a saved After Effects project with aerender
+  on Windows workers, up to ten frames per task by default.
+readme: |
+  # After Effects Render (Windows)
+
+  Renders one item of a saved `.aep` project's render queue with Adobe's
+  `aerender`, using that item's own render settings and output module. Each
+  task renders a contiguous slice of the frame range, up to ten frames by
+  default. Use After Effects Queue Render (Windows) instead to render
+  everything the project has queued on one machine.
+
+  This is the Windows variant. Its sibling, `after-effects-render-macos`, has
+  the same parameters and passes `aerender` the same arguments; pick the one
+  that matches your render nodes.
+
+  ## Parameters
+
+  - **Scene File** - the `.aep` project to render. It must be reachable from
+    every worker that runs the job.
+  - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
+    `1-100:2` for every second frame. Each task passes its slice to `aerender`
+    as `-s <start> -e <end>`; the end frame is inclusive.
+  - **Render Queue Item** - the item's position in the render queue, counting
+    from 1, passed as `-rqindex`.
+  - **Frames Per Task** - the most frames one task renders. `aerender` is
+    slow to start, so the default is 10 rather than 1. A range that does not
+    divide evenly is spread over the same number of tasks in near-equal
+    chunks: `1-24` at 10 is `1-8`, `9-16`, `17-24`.
+
+  **A movie output must be one task.** After Effects cannot render one movie
+  file (a QuickTime or other container, as opposed to an image sequence) from
+  several machines. If the item writes a movie, set Frames Per Task to at
+  least the number of frames in the range, so the whole range is one task.
+  Enter the range with no step and no gaps, such as `1-240`: a stepped or
+  listed range always splits at each gap, whatever Frames Per Task says.
+  The preset cannot see the output format, so nothing enforces this.
+
+  ## Why aerender runs through a wrapper
+
+  `aerender` is reported to exit with status 0 even when a render fails, so a
+  task that trusted its exit status would report every failure as a success.
+  The task therefore runs a small PowerShell script that runs `aerender`,
+  streams its output to the task log unchanged, and fails the task when
+  `aerender` exits non-zero or when any line of its output contains
+  `aerender ERROR`, in any letter case.
+
+  A failure that neither makes `aerender` exit non-zero nor prints
+  `aerender ERROR` is still reported as a success.
+
+  ## How work is divided
+
+  The frame range expands into tasks through OpenJD task chunking. The
+  `SQI_CHUNK_BOUNDS` extension gives each task the first and last frame of its
+  own slice. A stepped range such as `1-9:4` splits into one task per frame,
+  so no task needs a step argument. The preset does not use `aerender`'s
+  `-i`, which repeats frames rather than skipping them.
+
+  ## Requirements
+
+  - **Windows workers only.** The step requires `attr.worker.os.family` =
+    `windows` as well as the tag.
+  - Workers tagged `attr.worker.tag.aftereffects = true`
+  - `aerender` on the worker's `PATH`. It lives in the install's
+    `Support Files` folder, e.g.
+    `C:\Program Files\Adobe\Adobe After Effects 2026\Support Files`; add that
+    folder to `PATH`.
+  - `powershell` (Windows PowerShell 5.1, which ships with Windows) on the
+    worker's `PATH`.
+  - On each render node, Adobe's render-only marker: an empty file named
+    `ae_render_only_node.txt` in `C:\Users\Public\Documents\Adobe`. It runs
+    After Effects in its non-royalty-bearing, render-only mode; Adobe's
+    network rendering page gives the licensing terms.
+category: Rendering
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: After Effects Render
+  extensions: [TASK_CHUNKING, SQI_CHUNK_BOUNDS]
+  parameterDefinitions:
+    - name: SceneFile
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface:
+        control: CHOOSE_INPUT_FILE
+        label: Scene File
+        fileFilters:
+          - label: After Effects projects
+            patterns: ["*.aep"]
+        fileFilterDefault:
+          label: After Effects projects
+          patterns: ["*.aep"]
+    - name: Frames
+      type: STRING
+      userInterface: { control: LINE_EDIT, label: Frame Range }
+    - name: RenderQueueItem
+      type: INT
+      minValue: 1
+      userInterface: { control: SPIN_BOX, label: Render Queue Item }
+    - name: FramesPerTask
+      type: INT
+      default: 10
+      minValue: 1
+      userInterface: { control: SPIN_BOX, label: Frames Per Task }
+  steps:
+    - name: Render
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.aftereffects
+            anyOf: ["true"]
+          - name: attr.worker.os.family
+            anyOf: ["windows"]
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Frame
+            type: CHUNK[INT]
+            range: "{{Param.Frames}}"
+            chunks:
+              defaultTaskCount: "{{Param.FramesPerTask}}"
+              rangeConstraint: CONTIGUOUS
+      script:
+        embeddedFiles:
+          # The aerender wrapper; after-effects-queue-render-windows embeds the
+          # same file byte for byte. Its arguments are aerender's argv, passed
+          # on unchanged with @args. Under real powershell.exe, the
+          # dash-prefixed arguments after -File (-project, -rqindex, -s, -e, -v,
+          # -close) and a scene path holding a space and an apostrophe arrive
+          # intact, as the `default` case's expect_inner_argv in
+          # test/integration/testdata/preset-cases/ checks. Two spellings do
+          # not survive -File, and this argv uses neither: a colon-joined
+          # `-name:value` arrives split in two, and an embedded double quote is
+          # mangled.
+          #
+          # 2>&1 merges aerender's stderr into the pipeline, so the marker is
+          # seen on either stream. Each line is converted to a string before it
+          # is written and matched, so stderr lines reach the task log as
+          # aerender printed them rather than as PowerShell error records.
+          # -like matches the marker case-insensitively, like grep -i in
+          # after-effects-render-macos' sh wrapper.
+          #
+          # ErrorActionPreference stays Continue: under Stop, Windows
+          # PowerShell 5.1 aborts on the first redirected stderr line.
+          #
+          # Keep the trap: 5.1 reports a missing aerender as an error and
+          # carries on to `exit 0`, which would mark the task succeeded.
+          # $LASTEXITCODE is checked first so aerender's own non-zero code is
+          # forwarded rather than replaced by the marker check's 1.
+          #
+          # The data opens with a UTF-8 BOM (\uFEFF), as script-powershell's
+          # command.ps1 does, because 5.1 reads a BOM-less .ps1 in the ANSI
+          # code page. The script is ASCII; the BOM keeps a non-ASCII edit safe.
+          - name: aerender_wrapper
+            type: TEXT
+            filename: aerender_wrapper.ps1
+            data: "\uFEFF\
+              trap { [Console]::Error.WriteLine('aerender_wrapper: ' + $_); exit 1 }\n\
+              $ErrorActionPreference = 'Continue'\n\
+              $failed = $false\n\
+              & aerender @args 2>&1 | ForEach-Object { $line = [string]$_; $line; if ($line -like '*aerender ERROR*') { $failed = $true } }\n\
+              if ($LASTEXITCODE) { exit $LASTEXITCODE }\n\
+              if ($failed) { exit 1 }\n\
+              exit 0\n"
+        actions:
+          onRun:
+            command: powershell
+            args:
+              - "-NoProfile"
+              - "-NonInteractive"
+              - "-ExecutionPolicy"
+              - "Bypass"
+              - "-File"
+              - "{{Task.File.aerender_wrapper}}"
+              - "-project"
+              - "{{Param.SceneFile}}"
+              - "-rqindex"
+              - "{{Param.RenderQueueItem}}"
+              - "-s"
+              - "{{Task.Param.Frame.Start}}"
+              - "-e"
+              - "{{Task.Param.Frame.End}}"
+              - "-v"
+              - "ERRORS_AND_PROGRESS"
+              - "-close"
+              - "DO_NOT_SAVE_CHANGES"

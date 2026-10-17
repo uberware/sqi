@@ -16,8 +16,9 @@ readme: |
   - **Python Script** - the script body each task runs.
   - **Frame Range** - the frames to cover, in OpenJD range syntax: `1-100`,
     `1-100:2` for every second frame, or a list such as `1,5,10-20`.
-  - **Frames per Task** - how many consecutive frames each task covers. One by
-    default.
+  - **Frames per Task** - the most consecutive frames one task covers, one by
+    default. A range that does not divide evenly is split into near-equal
+    chunks: `1-10` at 4 is `1-4`, `5-7`, `8-10`.
 
   ## Frame variables
 
@@ -43,11 +44,12 @@ readme: |
 
   ## How it runs
 
-  The script is delivered as a real `script.py`. A small launcher, started by
+  The script is written to a file, `script.py`. A small launcher, started by
   your **Interpreter**, runs it in a child process with that same Python
   (`sys.executable`), with the four variables added to its environment, so it
-  behaves as if you ran it yourself: `__name__` is `"__main__"`,
-  `sys.argv[0]` is its own path, and `multiprocessing` works. The task's exit code is the script's.
+  behaves as if you ran it yourself: `__name__` is `"__main__"`, `sys.argv[0]`
+  is its own path, and `multiprocessing` works. The task's exit code is the
+  script's.
 
   ## Requirements
 

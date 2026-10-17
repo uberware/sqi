@@ -176,6 +176,10 @@ changelog:
 #   ghcr.io/uberware/sqi/sqi-worker:<full-tag>
 #   ghcr.io/uberware/sqi/sqi-worker:v<major>
 #
+# A prerelease tag (v0.0.1-rc.1) publishes only its <full-tag> images: the
+# v<major> templates render empty for it, and goreleaser skips an empty image
+# or manifest name, so a dry-run never moves the :v<major> tag users pull.
+#
 # The :latest tag is published separately on every push to main by the
 # docker-latest job in .github/workflows/ci.yml using the standalone
 # multi-stage Dockerfiles.
@@ -187,7 +191,7 @@ dockers:
     ids: [sqi-server]
     image_templates:
       - "ghcr.io/uberware/sqi/sqi-server:{{ .Tag }}-amd64"
-      - "ghcr.io/uberware/sqi/sqi-server:v{{ .Major }}-amd64"
+      - '{{ if not .Prerelease }}ghcr.io/uberware/sqi/sqi-server:v{{ .Major }}-amd64{{ end }}'
     dockerfile: deploy/docker/Dockerfile.goreleaser
     use: buildx
     build_flag_templates:
@@ -202,7 +206,7 @@ dockers:
     ids: [sqi-server]
     image_templates:
       - "ghcr.io/uberware/sqi/sqi-server:{{ .Tag }}-arm64"
-      - "ghcr.io/uberware/sqi/sqi-server:v{{ .Major }}-arm64"
+      - '{{ if not .Prerelease }}ghcr.io/uberware/sqi/sqi-server:v{{ .Major }}-arm64{{ end }}'
     dockerfile: deploy/docker/Dockerfile.goreleaser
     use: buildx
     build_flag_templates:
@@ -217,7 +221,7 @@ dockers:
     ids: [sqi-worker]
     image_templates:
       - "ghcr.io/uberware/sqi/sqi-worker:{{ .Tag }}-amd64"
-      - "ghcr.io/uberware/sqi/sqi-worker:v{{ .Major }}-amd64"
+      - '{{ if not .Prerelease }}ghcr.io/uberware/sqi/sqi-worker:v{{ .Major }}-amd64{{ end }}'
     dockerfile: deploy/docker/worker/Dockerfile.goreleaser
     use: buildx
     build_flag_templates:
@@ -232,7 +236,7 @@ dockers:
     ids: [sqi-worker]
     image_templates:
       - "ghcr.io/uberware/sqi/sqi-worker:{{ .Tag }}-arm64"
-      - "ghcr.io/uberware/sqi/sqi-worker:v{{ .Major }}-arm64"
+      - '{{ if not .Prerelease }}ghcr.io/uberware/sqi/sqi-worker:v{{ .Major }}-arm64{{ end }}'
     dockerfile: deploy/docker/worker/Dockerfile.goreleaser
     use: buildx
     build_flag_templates:
@@ -248,7 +252,7 @@ docker_manifests:
     image_templates:
       - "ghcr.io/uberware/sqi/sqi-server:{{ .Tag }}-amd64"
       - "ghcr.io/uberware/sqi/sqi-server:{{ .Tag }}-arm64"
-  - name_template: "ghcr.io/uberware/sqi/sqi-server:v{{ .Major }}"
+  - name_template: '{{ if not .Prerelease }}ghcr.io/uberware/sqi/sqi-server:v{{ .Major }}{{ end }}'
     image_templates:
       - "ghcr.io/uberware/sqi/sqi-server:v{{ .Major }}-amd64"
       - "ghcr.io/uberware/sqi/sqi-server:v{{ .Major }}-arm64"
@@ -256,7 +260,7 @@ docker_manifests:
     image_templates:
       - "ghcr.io/uberware/sqi/sqi-worker:{{ .Tag }}-amd64"
       - "ghcr.io/uberware/sqi/sqi-worker:{{ .Tag }}-arm64"
-  - name_template: "ghcr.io/uberware/sqi/sqi-worker:v{{ .Major }}"
+  - name_template: '{{ if not .Prerelease }}ghcr.io/uberware/sqi/sqi-worker:v{{ .Major }}{{ end }}'
     image_templates:
       - "ghcr.io/uberware/sqi/sqi-worker:v{{ .Major }}-amd64"
       - "ghcr.io/uberware/sqi/sqi-worker:v{{ .Major }}-arm64"

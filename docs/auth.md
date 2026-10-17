@@ -497,8 +497,9 @@ environment-allowlist mechanics.
 
 **Before enabling `run_as_user` on any queue, see the worker upgrade requirement
 documented in [`docs/configuration.md`](configuration.md#important-worker-upgrade-required):**
-old workers ignore isolation without reporting it, so a mixed-version farm
-enforces it only partially.
+a worker without isolation support speaks an older wire-protocol version, so
+the server ignores it and offers it no work. Upgrade every worker to the
+server's release.
 
 ### `isolation.manage` is a separate, admin-only permission
 

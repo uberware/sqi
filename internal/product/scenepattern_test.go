@@ -49,11 +49,22 @@ const badPatternMessage = "must contain exactly one run of #"
 // TestPerFilePresets_ListIsComplete recognizes a per-file preset.
 const scenePadLine = "pad = Param.SceneFile.name.count('#')"
 
-func perFileTemplate(t *testing.T, name string) string {
+// presetTemplate returns the template text of the presets/sqi preset name.
+func presetTemplate(t *testing.T, name string) string {
 	t.Helper()
 	tmpl, err := presettest.PresetTemplate(presettest.SourcePresets, name)
 	if err != nil {
 		t.Fatal(err)
+	}
+	return tmpl
+}
+
+// parsedPresetTemplate returns the presets/sqi preset name's template, parsed.
+func parsedPresetTemplate(t *testing.T, name string) *openjd.JobTemplate {
+	t.Helper()
+	tmpl, err := openjd.Parse([]byte(presetTemplate(t, name)), openjd.FormatYAML)
+	if err != nil {
+		t.Fatalf("%s: openjd.Parse: %v", name, err)
 	}
 	return tmpl
 }
@@ -91,7 +102,7 @@ func TestPerFilePresets_ListIsComplete(t *testing.T) {
 func TestPerFilePresets_RejectABadScenePattern(t *testing.T) {
 	for _, pf := range perFilePresets {
 		t.Run(pf.name, func(t *testing.T) {
-			tmpl := perFileTemplate(t, pf.name)
+			tmpl := presetTemplate(t, pf.name)
 			submit := func(scene string) (*openjd.SubmitResult, error) {
 				params := map[string]string{"SceneFile": scene, "Frames": "1-2"}
 				maps.Copy(params, pf.extra)
@@ -145,10 +156,7 @@ func TestPerFilePresets_ShareOneScenePatternBinding(t *testing.T) {
 // failing if any step that carries one lacks the other, or if no step does.
 func sceneBinding(t *testing.T, name string) string {
 	t.Helper()
-	tmpl, err := openjd.Parse([]byte(perFileTemplate(t, name)), openjd.FormatYAML)
-	if err != nil {
-		t.Fatalf("openjd.Parse %s: %v", name, err)
-	}
+	tmpl := parsedPresetTemplate(t, name)
 	binding := ""
 	for _, s := range tmpl.Steps {
 		if s.Script == nil {
@@ -202,7 +210,7 @@ const windowsFolderNote = "in a Windows path, folders may not contain #"
 // identical out binding whose message includes windowsFolderNote.
 func TestArnoldKickTileRender_RejectsABadOutputPattern(t *testing.T) {
 	const name = "arnold-kick-tile-render"
-	tmpl := perFileTemplate(t, name)
+	tmpl := presetTemplate(t, name)
 	st := fake.New()
 	farmID, queueID := seedFarmQueue(t, st)
 	_, err := openjd.NewSubmitter(st).Submit(t.Context(), tmpl, store.TemplateFormatYAML, openjd.SubmitOptions{

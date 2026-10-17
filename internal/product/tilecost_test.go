@@ -17,10 +17,10 @@ import (
 
 // The tile preset's Assemble step lists every tile of a frame in an EXPR
 // comprehension, so its submission cost grows with TilesX x TilesY. At 16 x 16
-// it costs 536 operations, 16,448 live bytes, 38 positions and 512 retained
-// bytes: inside the default limits, but over openjd.expr_memory_limit's
-// 4,096-byte floor. The output path's length does not change the cost: at
-// submission the list's elements are frame-dependent placeholders of fixed size.
+// it costs 536 operations and 16,448 live bytes: inside the default limits, but
+// over openjd.expr_memory_limit's 4,096-byte floor. The output path's length
+// does not change the cost, because at submission the list's elements are
+// frame-dependent placeholders of fixed size.
 //
 // The preset's tier caveat states both constants.
 const (
@@ -36,7 +36,7 @@ func submitTileGrid(t *testing.T, lim openjd.ExprLimits, n int) error {
 	st := fake.New()
 	farmID, queueID := seedFarmQueue(t, st)
 	_, err := openjd.NewSubmitterWithOptions(st, openjd.SubmitterOptions{ExprLimits: lim}).Submit(
-		t.Context(), perFileTemplate(t, "arnold-kick-tile-render"), store.TemplateFormatYAML,
+		t.Context(), presetTemplate(t, "arnold-kick-tile-render"), store.TemplateFormatYAML,
 		openjd.SubmitOptions{FarmID: farmID, QueueID: queueID, Parameters: map[string]string{
 			"SceneFile": "/mnt/show/shot.####.ass", "OutputFile": "/mnt/show/images/beauty.####.exr",
 			"Frames": "1", "Width": "1920", "Height": "1080",

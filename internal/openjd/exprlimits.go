@@ -14,258 +14,176 @@ import (
 // expression checker: four operator-configurable numbers, plus the
 // per-request [ExprLimits.Deadline].
 //
-// The four numbers split into two per-EVALUATION bounds (SubmissionOperations,
-// SubmissionMemoryBytes -- what ONE expression position may cost, section
-// 1.3.10 and section 1.3.9 respectively) and two per-WALK bounds
-// (TemplatePositions, TemplateRetainedBytes -- what the WHOLE template may
-// cost across one checkTemplateExpressions call). See each field's own
-// comment, and the rationale blocks in exprcheck.go for each field's
-// DEFAULT.
+// Two of the four bound one expression evaluation (SubmissionOperations,
+// section 1.3.10, and SubmissionMemoryBytes, section 1.3.9). The other two
+// bound the whole template across one checkTemplateExpressions walk
+// (TemplatePositions and TemplateRetainedBytes). Exceeding any of them makes
+// the template invalid (422). Each field's comment names its config key, and
+// the defaults are explained beside their constants in exprcheck.go.
 //
-// The fifth field is none of those things and is documented as such on itself:
-// it is per-REQUEST rather than operator configuration, it measures TIME rather
-// than counting anything, and it decides whether this server keeps working
-// (503) rather than whether the template is valid (422). It rides on this
-// struct because this struct is the bundle already threaded to every
-// evaluation. Phrases like "the four" below mean the four numbers, and
-// deliberately exclude it.
+// Deadline is not one of the four. It is set per request, measures wall-clock
+// time, and a breach is a 503 (this server stopped working on the template)
+// rather than a 422. It is carried here because this struct is already
+// threaded to every evaluation.
 //
-// A ZERO field means "unset, use the default" -- see [ExprLimits.orDefaults].
-// That is deliberate: every ValidateOptions{EnforceLimits: ...} literal in
-// this repo (and every caller that has no operator configuration to offer,
-// e.g. internal/product's ValidateTemplate) gets the defaults without naming
-// them. It also means a NEGATIVE value is not accepted as "unlimited":
-// orDefaults treats anything <= 0 as unset, and internal/config's
-// validateOpenJD rejects an out-of-range configured value at startup long
-// before one could reach here.
+// A zero or negative field means "unset, use the default" (see
+// [ExprLimits.orDefaults]), never "unlimited". Callers with no operator
+// configuration, such as internal/product's ValidateTemplate, therefore get
+// the defaults without naming them.
 //
-// The ranges an OPERATOR may choose from are NOT enforced here -- they live in
-// internal/config (MinOpenJDExpr*/MaxOpenJDExpr*) and are rejected at load,
-// because internal/config is the layer that owns operator-facing policy and
-// this package must stay importable from it-free code. This type accepts any
-// positive value so that a test can deliberately set an absurd one to prove a
-// knob is wired (which is how the mutation tests for these limits work).
+// The ranges an operator may choose from (the Min/MaxExpr* constants below)
+// are enforced at startup by internal/config, not here. This type accepts any
+// positive value, so tests can set an extreme one to prove a limit is wired.
+//
+// The scheduler withholds EXPR work from any worker whose advertised caps are
+// below these values (internal/scheduler/exprcaps.go), so raising a server
+// limit past a worker's matching cap needs that worker's cap raised first.
 type ExprLimits struct {
-	// SubmissionOperations is the section 1.3.10 operation budget for ONE
-	// expression evaluation at submission time.
+	// SubmissionOperations is the section 1.3.10 operation budget for one
+	// expression evaluation at submission time (openjd.expr_operation_limit,
+	// default 10,000; worker counterpart expr.operation_limit).
 	//
-	// CATASTROPHE BOUND. It is one of the two multiplicands in the derived
-	// cumulative-operation ceiling (TemplatePositions x SubmissionOperations)
-	// and it scales the measured worst-case wall clock of a single request
-	// directly: the worst single request measured is ~17 minutes of server
-	// CPU at the default 10,000, because op-cheap byte-heavy work over the
-	// ~900 KB SubmissionMemoryBytes allows to be live spends only a few
-	// thousand of those 10,000 operations for tens of milliseconds --
-	// measured, a regex (re_findall) 3,519 for ~50 ms, a case mapping
-	// (.title()) 7,034 for ~57 ms, and that same regex twice inside a
-	// comprehension 7,048 for ~103 ms. Doubling this number roughly doubles
-	// that floor, which is why internal/config caps it at one order of
-	// magnitude above the default rather than leaving it open-ended.
-	//
-	// No counter measures TIME; the wall-clock backstop
-	// (openjd.expr_submission_deadline, default 5s, carried as
-	// [ExprLimits.Deadline]) stops an evaluation directly, so RAISING THIS
-	// NUMBER IS FAR LESS OF A LEVER ON ELAPSED TIME THAN IT LOOKS: at the
-	// default deadline a request is cut off at 5s whatever the ~17-minute
-	// figure permits. Raise it because a template's expressions need more
-	// operations, not to buy time -- and read the deadline's own limits
-	// before concluding the ceiling here is what bounds the worst case.
+	// Catastrophe bound. Together with TemplatePositions it bounds the
+	// operations one request may spend (positions x operations, 10^8 at the
+	// defaults). Operations do not measure time: section 1.3.10 prices 256
+	// bytes of string work at one operation, so a byte-heavy expression costs
+	// far more wall clock per operation than arithmetic does.
+	// [ExprLimits.Deadline] is what bounds time. Raise this when a template's
+	// expressions need more operations; it does not buy time.
 	SubmissionOperations int64
 
-	// SubmissionMemoryBytes is the section 1.3.9 live-byte budget for ONE
-	// expression evaluation at submission time.
+	// SubmissionMemoryBytes is the section 1.3.9 live-byte budget for one
+	// expression evaluation at submission time (openjd.expr_memory_limit,
+	// default 1,000,000; worker counterpart expr.memory_limit).
 	//
-	// CATASTROPHE BOUND, with a ceiling of one order of magnitude above the
-	// default -- the same shape, and the same reasoning, as
-	// SubmissionOperations and TemplatePositions. It is what bounds the live
-	// string a single evaluation can hold, and therefore how much byte-heavy,
-	// operation-cheap work one position can be asked to do.
-	//
-	// The ceiling is a judgement, NOT derived from internal/openjd/expr's
-	// fixed maxStringBytes (10,000,000) firing first above it: maxStringBytes
-	// bounds ONE PRODUCED STRING, while section 1.3.9's meter bounds the SUM
-	// of live values and recurses into containers.
-	// `["a"*4000000, "b"*4000000, "c"*4000000]` holds 12,000,192 live bytes
-	// with no fixed guard firing -- each string is 4 MB, three elements is
-	// nowhere near maxElements -- so it is rejected at a 10 MB limit and
-	// ACCEPTED at 20 MB. Raising this knob is not inert; it permits
-	// proportionally more live memory per evaluation on an unauthenticated
-	// path.
+	// Catastrophe bound. It caps the sum of live values in one evaluation,
+	// recursing into containers, and so how much byte-heavy, operation-cheap
+	// work one position can do. internal/openjd/expr's fixed maxStringBytes
+	// (10,000,000) caps only a single produced string, so it does not limit
+	// this sum: raising this limit permits proportionally more live memory per
+	// evaluation on an unauthenticated path.
 	SubmissionMemoryBytes int64
 
-	// TemplatePositions is how many expression positions ONE
-	// checkTemplateExpressions walk may check.
+	// TemplatePositions is how many expression positions one
+	// checkTemplateExpressions walk may check (openjd.expr_template_positions,
+	// default 10,000).
 	//
-	// CATASTROPHE BOUND. It is the other multiplicand in the derived
-	// cumulative-operation ceiling, and it is the bound that makes the walk
-	// safe to run at all: without it an 84 KB template of ~2,000 args
-	// entries costs 11.3 s of CPU per anonymous request, with nothing but the
-	// 4 MiB body size bounding it.
+	// Catastrophe bound, and the other factor in the per-request operation
+	// bound. Without it the walk's cost grows with template size, limited only
+	// by the 4 MiB request body.
 	//
-	// It also carries a CROSS-BINARY relation the server cannot check on its
-	// own: internal/worker/fmtres's assignment-position cap bounds the same
-	// quantity on the host, an assignment's positions are a subset of its
-	// template's, and a worker cap BELOW this value is reachable by a template
-	// this package ACCEPTED -- failing every task in the job after submission
-	// instead of failing the one request that could have reported it.
-	// TestTemplateBudget_WorkerCapIsNotTighter compares the two DEFAULTS;
-	// because both sides are configurable, the relation is also enforced at
-	// RUNTIME: workers advertise their caps at registration and
-	// internal/scheduler refuses to dispatch an EXPR job to one that is
-	// tighter than the value this field carried at acceptance
-	// (internal/scheduler/exprcaps.go). That gate does not make a tighter
-	// worker safe -- it makes it visibly unused for EXPR work instead of
-	// failing every task.
+	// The worker's expr.assignment_positions (default 10,000) bounds the same
+	// quantity at phase 3, and an assignment's positions are a subset of its
+	// template's. A worker whose cap is below this value is never sent EXPR
+	// work (the unschedulable sweep reports why), so raising this above 10,000
+	// withholds EXPR work from every worker still at its default.
+	// TestTemplateBudget_WorkerCapIsNotTighter compares the two defaults.
 	TemplatePositions int64
 
 	// TemplateRetainedBytes is how many bytes every let: block in the template
-	// may cumulatively RETAIN across one walk -- summed over the whole call,
-	// not reset per block. Every other position discards its result; let is
-	// the only construct that keeps one.
+	// may retain in total across one walk (openjd.expr_template_retained_bytes,
+	// default 10,000,000). It is summed over the whole walk, not reset per
+	// block; let is the only construct that keeps a value, every other
+	// position discards its result.
 	//
-	// POLICY BOUND, and the only one of the four. Its absence does not
-	// produce a measured catastrophe on its own: enforcing maxLetBindings at
-	// the evaluator makes a single block's cost O(cap) (without it, one
-	// construction reached 6.9 GB in 1.45 s), and a block's transient ceiling is
-	// already maxLetBindings x SubmissionMemoryBytes regardless of what this
-	// number says. What this bounds is the SUM across many
-	// individually-compliant blocks, which a template with many steps can
-	// legitimately grow -- so an operator with an unusual workload has a real
-	// reason to move it, in either direction, and internal/config gives it a
-	// wide but finite range rather than a ceiling tied to a measurement.
+	// Policy bound, the only one of the four. A single block is already
+	// bounded by maxLetBindings x SubmissionMemoryBytes; this bounds the sum
+	// across many individually compliant blocks, which a template with many
+	// steps can legitimately grow, so its configurable range is wide.
+	//
+	// The scheduler compares it against the worker's expr.let_retained_bytes
+	// (default 10,000,000) and expr.assignment_retained_bytes (default
+	// 20,000,000). The default has no headroom against let_retained_bytes, so
+	// raising this withholds EXPR work from every worker still at its default.
 	TemplateRetainedBytes int64
 
 	// Deadline, when non-zero, is an absolute wall-clock time after which
-	// evaluation stops with [expr.ErrDeadlineExceeded].
+	// evaluation stops with [expr.ErrDeadlineExceeded], which the submission
+	// path reports as a 503. It is computed at the start of each submission
+	// from openjd.expr_submission_deadline (default 5s, range 1s to 60s). See
+	// [ValidateWithBudget].
 	//
-	// IT IS NOT ONE OF THE FOUR. Unlike every other field here it is
-	// per-REQUEST rather than operator configuration -- it is computed at the
-	// top of one submission from the configured duration, so two requests
-	// arriving a second apart carry different values. It is also not a
-	// VALIDITY bound: the four numbers above decide whether a template is
-	// INVALID (a 422), while this decides only whether this server keeps
-	// working on it (a 503). See [ValidateWithBudget].
+	// Raising the four limits above without raising the deadline can turn
+	// legitimate templates that the counters would accept into 503s.
 	//
-	// It lives on this struct because this struct is already the budget bundle
-	// threaded to every evaluation, and adding a parameter to
-	// [ExprLimits.evalOptions] would touch its ~25 call sites to no benefit.
-	// It is deliberately EXEMPT from [ExprLimits.orDefaults]' "<= 0 means
-	// unset, use the default" rule, which has no meaning for a time: the zero
-	// time means NO deadline, and that is the default.
+	// It is exempt from [ExprLimits.orDefaults]: the zero time means no
+	// deadline, and that is the default.
 	//
-	// BEING PER-REQUEST, IT MUST NEVER BE SET ON A LONG-LIVED ExprLimits.
-	// [SubmitterOptions.ExprLimits] is the trap: it is read once at server boot
-	// into a [Submitter] reused for every subsequent submission, so a deadline
-	// stored there is a single absolute instant that every later request is
-	// measured against -- accepting nothing at all once it passes. See that
-	// field's own comment for what the submission path needs instead.
+	// Never set it on a long-lived ExprLimits. [SubmitterOptions.ExprLimits]
+	// is read once at server boot into a [Submitter] reused for every
+	// submission, so a deadline stored there is one fixed instant, and once it
+	// passes every later submission fails. See that field's comment for what
+	// the submission path does instead.
 	Deadline time.Time
 }
 
-// The range an operator may configure each of the four to. Out-of-range
-// values are rejected at STARTUP by internal/config's validateOpenJD, which
-// carries its own copies of these numbers (internal/config must not import
-// this package) and is pinned to them by internal/server's
-// TestExprLimits_ConfigMatchesOpenJD, the one package that may import both.
+// The range an operator may configure each of the four to. Out-of-range values
+// are rejected at startup by internal/config's validateOpenJD, which keeps its
+// own copies of these numbers (internal/config must not import this package);
+// internal/server's TestExprLimits_ConfigMatchesOpenJD keeps the copies in
+// step.
 //
-// The CEILINGS distinguish a catastrophe bound (a tight ceiling, tied to a
-// measurement) from a policy bound (wide but finite). Which of the four is
-// which, and why, is on each [ExprLimits] field. All three catastrophe
-// ceilings are one order of magnitude above their default, and all three are
-// JUDGEMENTS -- none is derived from some fixed guard firing first (see
-// [ExprLimits.SubmissionMemoryBytes]).
+// The three catastrophe bounds have a ceiling one order of magnitude above
+// their default. These are judgements, not derived from a fixed guard firing
+// first. The policy bound, TemplateRetainedBytes, has a wide range.
 //
-// The FLOORS all come from measurement, not from taste.
-// TestExprLimits_FloorsAcceptReferencePresets binary-searches each dimension
-// for the twenty-two reference presets in presets/sqi/: at most 38 expression
-// positions and 512 retained let bytes template-wide, and 390 live bytes with
-// 15 operations in any single evaluation. ffmpeg-segment-transcode-expr sets
-// the two per-evaluation maxima; arnold-kick-tile-render, with the most
-// expressions and the largest let blocks, sets the two template-wide ones.
-// Each per-file standalone renderer preset retains 128 bytes for its
-// scene-pattern binding; a preset with no let block measures 1, meaning
-// nothing measurable. Every floor below leaves at least 4x headroom over the
-// worst of them (7x to 128x in practice), so no operator can tighten a knob to
-// a value that rejects sqi's own templates.
-// TestExprLimits_FloorsAcceptReferencePresets re-measures that on every run
-// rather than trusting this paragraph; the figures move as presets are added.
+// Each floor leaves at least 4x headroom over the most any reference preset in
+// presets/sqi/ needs, so no operator can tighten a limit far enough to reject
+// sqi's own templates. TestExprLimits_FloorsAcceptReferencePresets measures
+// this on every run. Currently the largest needs are 15 operations and 390
+// live bytes in one evaluation (ffmpeg-segment-transcode-expr), and 38
+// positions and 512 retained let bytes in one template
+// (arnold-kick-tile-render).
 const (
 	// MinExprSubmissionOperations / MaxExprSubmissionOperations bound
 	// [ExprLimits.SubmissionOperations].
 	//
-	// Ceiling: exactly one order of magnitude above the default. The
-	// worst-case single request measured with this dimension at 10,000 is
-	// ~17 minutes of server CPU (~24 if a position spends its whole budget at
-	// the worst measured rate), and no COUNTER can see that, so the only
-	// accurate statement about a raised value is that it lengthens that floor
-	// proportionally -- at both maxima the same construction measures ~40
-	// hours. Ten times is a deliberate limit on how much worse an operator can
-	// make the worst request the farm can be asked to serve.
+	// Ceiling: 10x the default. A raised value lengthens the worst-case CPU
+	// cost of one request proportionally. With the counters alone, a request
+	// can cost at least ~17 minutes of server CPU at the defaults and ~40
+	// hours with this and MaxExprTemplatePositions both at their ceilings.
+	// What actually stops a request is [ExprLimits.Deadline], whose 60s
+	// ceiling is far below either figure.
 	//
-	// Those figures are the counter-only cost this ceiling was chosen
-	// against; they are not the wall-clock outcome. [ExprLimits.Deadline]
-	// stops an evaluation at openjd.expr_submission_deadline (default 5s,
-	// ceiling 60s) whatever they permit. The two are NOT co-sized -- 10,000
-	// positions x 10,000 operations nominally permits ~17 minutes against a
-	// 60s ceiling -- so at any legal configuration the deadline, not this
-	// number, is what a request actually stops at.
-	//
-	// Floor: one order of magnitude below the default so tightening remains
-	// meaningful, and ~67x above what a reference preset's expressions
-	// actually spend: the most expensive single evaluation in any of the
-	// twenty-two presets costs 15 operations (see the floors paragraph above).
+	// Floor: 10x below the default, ~67x the 15 operations the most expensive
+	// reference preset evaluation needs.
 	MinExprSubmissionOperations int64 = 1_000
 	MaxExprSubmissionOperations int64 = 100_000
 
 	// MinExprSubmissionMemoryBytes / MaxExprSubmissionMemoryBytes bound
 	// [ExprLimits.SubmissionMemoryBytes].
 	//
-	// Ceiling: one order of magnitude above the default, a JUDGEMENT, and the
-	// same shape as the other two catastrophe ceilings.
+	// Ceiling: 10x the default. Host RAM must be sized against more than this
+	// number. The TemplateRetainedBytes charge lands once per let: block, after
+	// the block has finished evaluating, so one block can transiently hold up
+	// to maxLetBindings (50, Template Schemas section 3.6) x this limit before
+	// any counter sees it: 50 MB at the default and 500 MB at the ceiling, per
+	// concurrently resolving request. The ceiling happens to equal
+	// internal/openjd/expr's maxStringBytes but is not derived from it.
 	//
-	// WHAT THAT CEILING REALLY PERMITS is not 10 MB of live values per
-	// evaluation but 50x that. The charge against TemplateRetainedBytes
-	// lands ONCE PER let: BLOCK, after that block has finished evaluating,
-	// so a single block transiently holds up to maxLetBindings (50, Template
-	// Schemas section 3.6) x THIS number before any counter sees it: 50 MB
-	// at the default and 500 MB at this ceiling, per concurrently-resolving
-	// request. That product, not this number, is what a host's RAM has to be
-	// sized against, and it is the reason this ceiling is a tight multiple
-	// rather than an open range. See [ExprLimits.TemplateRetainedBytes] and
-	// defaultTemplateRetainedBytes' own comment in exprcheck.go, which state
-	// the same product from the other end.
-	//
-	// It coincides with internal/openjd/expr's fixed maxStringBytes, but is
-	// not derived from it -- see [ExprLimits.SubmissionMemoryBytes] for the
-	// construction that holds 12 MB live with no fixed guard firing. Do not
-	// re-derive this ceiling from maxStringBytes; if the argument for 10x ever
-	// changes, this number is free to move with it.
-	//
-	// Floor: 4 KB, ~10x the live bytes a reference preset's largest expression
-	// produces (390 bytes; see the floors paragraph above).
+	// Floor: 4 KB, ~10x the 390 live bytes of the largest reference preset
+	// expression.
 	MinExprSubmissionMemoryBytes int64 = 4_096
 	MaxExprSubmissionMemoryBytes int64 = 10_000_000
 
 	// MinExprTemplatePositions / MaxExprTemplatePositions bound
 	// [ExprLimits.TemplatePositions].
 	//
-	// Ceiling: one order of magnitude above the default, for the same reason
-	// as the operation ceiling — this is the other multiplicand in the
-	// derived cumulative-operation ceiling, and raising BOTH to their maxima
-	// multiplies that derived number by 100 (10^8 -> 10^10). Documentation
-	// must say so in those words.
+	// Ceiling: 10x the default. Raising both this and
+	// MaxExprSubmissionOperations to their ceilings multiplies the per-request
+	// operation bound by 100 (10^8 to 10^10).
 	//
-	// Floor: 256, roughly 8x the largest reference preset's measured 31
-	// positions, and still ~40x below the default so an operator running only
-	// small templates can tighten hard.
+	// Floor: 256, ~6.7x the 38 positions of the largest reference preset and
+	// ~40x below the default, so an operator running only small templates can
+	// tighten hard.
 	MinExprTemplatePositions int64 = 256
 	MaxExprTemplatePositions int64 = 100_000
 
 	// MinExprTemplateRetainedBytes / MaxExprTemplateRetainedBytes bound
-	// [ExprLimits.TemplateRetainedBytes] — the one POLICY bound of the four,
-	// so the range is wide rather than tied to a measurement: 64 KB (about a
-	// thousand small let bindings; the reference presets use no let: at all
-	// and retain zero) up to 100 MB of live values from one request.
+	// [ExprLimits.TemplateRetainedBytes], the one policy bound, so the range
+	// is wide: 64 KB (about a thousand small let bindings, 128x the 512 bytes
+	// the largest reference preset retains) up to 100 MB of live values from
+	// one request.
 	MinExprTemplateRetainedBytes int64 = 65_536
 	MaxExprTemplateRetainedBytes int64 = 100_000_000
 )
@@ -282,31 +200,23 @@ func DefaultExprLimits() ExprLimits {
 	}
 }
 
-// Normalized is the exported form of [ExprLimits.orDefaults], for the one
-// production caller outside this package that needs the values a walk would ACTUALLY
-// enforce rather than the ones a config literal happens to carry:
-// internal/scheduler compares them against each worker's advertised EXPR caps
-// before dispatching an EXPR job. Comparing an un-normalized zero would
-// report a shortfall of "0", i.e. no shortfall at all, in every dimension the
-// caller left unset.
+// Normalized is the exported form of [ExprLimits.orDefaults]: the values a
+// walk actually enforces. internal/scheduler compares them against each
+// worker's advertised EXPR caps before dispatching an EXPR job; comparing an
+// unset zero would report no shortfall in that dimension.
 func (l ExprLimits) Normalized() ExprLimits { return l.orDefaults() }
 
 // orDefaults returns l with every unset (<= 0) field replaced by its default.
 //
-// It PATCHES A COPY of l (a value receiver, mutated in place and returned)
-// rather than building a fresh ExprLimits field by field, and that is
-// deliberate: [ExprLimits.Deadline] has no default and is not a number, so a
-// rebuild-style normalization would drop it and leave every deadline test
-// passing against templates that happen to finish quickly. Any field added
-// here inherits the same pass-through for free; a field that needs a default
-// must be added to the list below explicitly.
+// It patches a copy of l rather than building a new ExprLimits field by
+// field, so [ExprLimits.Deadline], which has no default, passes through. A
+// rebuild would drop the deadline silently. Any new field passes through the
+// same way; a field that needs a default must be added below explicitly.
 //
-// Applied ONCE, at [newTemplateBudget], so the budget every consumption point
-// reads through is already normalized and no call site has to remember to do
-// it. A field is treated as unset rather than as "unlimited" because the zero
-// value of a struct literal is the overwhelmingly common case here (every
-// ValidateOptions{EnforceLimits: ...} in this repo) and "unlimited" is the one
-// meaning a resource-exhaustion guard must never acquire by accident.
+// [newTemplateBudget] applies it, so every consumption point reads normalized
+// limits. Unset means default rather than unlimited because the zero value of
+// a struct literal is the common case here, and a resource-exhaustion guard
+// must never become unlimited by accident.
 func (l ExprLimits) orDefaults() ExprLimits {
 	d := DefaultExprLimits()
 	if l.SubmissionOperations <= 0 {
@@ -325,15 +235,12 @@ func (l ExprLimits) orDefaults() ExprLimits {
 }
 
 // evalOptions builds the expr.Option slice every submission-time evaluation
-// runs under -- checkFormatString's and checkLetBindings' alike, plus
-// resolve.go's expr.Eval call sites. The values come from THIS walk's budget
-// rather than from a constant. It is a function rather than a package-level
-// slice so each call gets its own slice header.
+// runs under: checkFormatString's, checkLetBindings' and resolve.go's
+// expr.Eval call sites. The values come from this walk's budget. It returns a
+// new slice on each call.
 //
-// It also carries [ExprLimits.Deadline] when one is set, which is why that
-// field lives on this struct at all: this method is the single point every
-// walk position gets its options from, so a per-request backstop threaded here
-// reaches all ~25 of them without a signature change.
+// It also adds [ExprLimits.Deadline] when one is set, so the per-request
+// deadline reaches every walk position without a signature change.
 func (l ExprLimits) evalOptions() []expr.Option {
 	opts := []expr.Option{
 		expr.WithOperationLimit(l.SubmissionOperations),

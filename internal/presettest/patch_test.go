@@ -3,9 +3,13 @@
 package presettest_test
 
 import (
+	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/presettest"
 	"github.com/uberware/sqi/internal/store"
 )
@@ -53,8 +57,8 @@ func TestApplyChunkPatch_RaisesTaskCount(t *testing.T) {
 	if len(tasks) != 2 {
 		t.Fatalf("tasks = %d, want 2 (10 frames in chunks of 5)", len(tasks))
 	}
-	// The whole point of the patch: Start and End differ, so the -s/-e
-	// substitution is actually exercised.
+	// With chunks of 5, Start and End differ, so the -s/-e substitution is
+	// exercised.
 	if tasks[0].Args[1] != "1" || tasks[0].Args[3] != "5" {
 		t.Errorf("task 1 bounds = %v, want -s 1 -e 5", tasks[0].Args)
 	}
@@ -97,4 +101,81 @@ steps:
 	if err == nil {
 		t.Fatal("ApplyChunkPatch: want error for a step with no chunks: block, got nil")
 	}
+}
+
+// TestStripOSFamilyGate_KeepsEverythingButTheGate runs the strip over every
+// shipped preset that declares an os.family gate: the parsed template must
+// equal the original with only its os.family requirements removed, so each
+// embedded file survives the YAML round trip byte for byte (a PowerShell
+// wrapper's leading BOM and a sh wrapper's line breaks included).
+func TestStripOSFamilyGate_KeepsEverythingButTheGate(t *testing.T) {
+	root, err := presettest.RepoRoot()
+	if err != nil {
+		t.Fatalf("RepoRoot: %v", err)
+	}
+	paths, err := filepath.Glob(filepath.Join(root, "presets", "sqi", "*.yaml"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	gated := 0
+	for _, p := range paths {
+		name := strings.TrimSuffix(filepath.Base(p), ".yaml")
+		raw, err := presettest.PresetTemplate(presettest.SourcePresets, name)
+		if err != nil {
+			t.Fatalf("PresetTemplate(%s): %v", name, err)
+		}
+		if !strings.Contains(raw, "attr.worker.os.family") {
+			continue
+		}
+		gated++
+		t.Run(name, func(t *testing.T) {
+			want, err := openjd.Parse([]byte(raw), openjd.FormatYAML)
+			if err != nil {
+				t.Fatalf("parse shipped template: %v", err)
+			}
+			stripped, err := presettest.StripOSFamilyGate(raw)
+			if err != nil {
+				t.Fatalf("StripOSFamilyGate: %v", err)
+			}
+			got, err := openjd.Parse([]byte(stripped), openjd.FormatYAML)
+			if err != nil {
+				t.Fatalf("parse stripped template: %v", err)
+			}
+			for i := range want.Steps {
+				want.Steps[i].HostRequirements = withoutOSFamily(want.Steps[i].HostRequirements)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("the strip changed more than the os.family requirements\n got: %+v\nwant: %+v", got, want)
+			}
+		})
+	}
+	if gated == 0 {
+		t.Fatal("no shipped preset declares an os.family gate; the test checked nothing")
+	}
+}
+
+func TestStripOSFamilyGate_UngatedTemplateIsAnError(t *testing.T) {
+	if _, err := presettest.StripOSFamilyGate(chunkTemplate); err == nil {
+		t.Fatal("StripOSFamilyGate: want error for a template with no os.family requirement, got nil")
+	}
+}
+
+// withoutOSFamily returns hr with its os.family attributes removed, or nil when
+// nothing is left: the strip drops an emptied hostRequirements, as OpenJD
+// rejects one.
+func withoutOSFamily(hr *openjd.HostRequirements) *openjd.HostRequirements {
+	if hr == nil {
+		return nil
+	}
+	out := *hr
+	out.Attributes = slices.DeleteFunc(slices.Clone(hr.Attributes), func(a openjd.AttributeRequirement) bool {
+		return a.Name == "attr.worker.os.family"
+	})
+	if len(out.Attributes) == 0 {
+		out.Attributes = nil
+		if len(out.Amounts) == 0 {
+			return nil
+		}
+	}
+	return &out
 }

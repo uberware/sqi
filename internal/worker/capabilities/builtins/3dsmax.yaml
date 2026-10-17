@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Autodesk 3ds Max's command-line renderer, 3dsmaxcmd, which
+# presets/sqi/3dsmax-render.yaml invokes by bare name. 3ds Max runs only on
+# Windows, so the registry and path checks are gated to it and the PATH probe
+# is the only check that can match elsewhere. Sources: Autodesk's 3ds Max 2026
+# command-line switches page and the 3ds Max SDK registry-keys page.
+#
+# The path glob matches the default install location,
+# C:\Program Files\Autodesk\3ds Max <year>\3dsmaxcmd.exe.
+#
+# A registry match tags the worker without a version, because the key name
+# carries no year. A version comes only from a matched file path: the glob, or
+# a 3dsmaxcmd on PATH that sits in a "3ds Max <year>" folder.
+tag: 3dsmax
+checks:
+  - exe: 3dsmaxcmd
+  - registry: 'HKLM\SOFTWARE\Autodesk\3dsMax'                                  # windows
+    os: windows
+  - path_glob: 'C:\Program Files\Autodesk\3ds Max *\3dsmaxcmd.exe'             # windows
+    os: windows
+version:
+  from: '3ds Max (?P<v>[0-9]{4})'

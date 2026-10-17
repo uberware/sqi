@@ -1,0 +1,103 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: cinema4d-render
+title: Cinema 4D Render
+description: >-
+  Renders a saved Cinema 4D scene headless with Commandline, one frame per
+  task by default.
+readme: |
+  # Cinema 4D Render
+
+  Renders a saved `.c4d` file with Maxon's `Commandline`, using the render
+  settings stored in the scene. Each task renders a contiguous slice of the
+  frame range, one frame per task by default. Use Cinema 4D Take Render instead
+  to render one named take.
+
+  ## Parameters
+
+  - **Scene File** - the `.c4d` file to render. It must be reachable from every
+    worker that runs the job.
+  - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
+    `1-100:2` for every second frame.
+  - **Output Path** - the output image path passed to Commandline as
+    `-oimage`. Enter one. The flag is always passed, so an empty value reaches
+    Commandline as `-oimage ""`; what it does then is unverified.
+
+  ## How work is divided
+
+  The frame range expands into tasks through OpenJD task chunking. The
+  `SQI_CHUNK_BOUNDS` extension gives each task the first and last frame of its
+  own slice, which the command passes as `-frame <start> <end>`. A slice never
+  spans a gap, so a stepped range such as `1-9:4` becomes one task per frame
+  and no step argument is needed.
+
+  One frame per task is the default. Raise the step's `chunks.defaultTaskCount`
+  to render up to that many consecutive frames in one Commandline launch,
+  trading parallelism for fewer scene loads.
+
+  ## Requirements
+
+  - Workers tagged `attr.worker.tag.cinema4d = true`
+  - `Commandline` on the worker's `PATH`. The built-in detector tags a stock
+    install, but tagging does not put the command on `PATH`. On Linux, source
+    Maxon's `setup_c4d_env` first, or add the folder under `/opt/maxon/` that
+    holds `Commandline`. On macOS the executable path inside `Commandline.app`
+    is unverified.
+  - Each render node must be licensed before it can render: run `Commandline`
+    once interactively and sign in, or configure a licence model in
+    `config.txt`. An unlicensed node is the most likely first-run failure.
+category: Rendering
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: Cinema 4D Render
+  extensions: [TASK_CHUNKING, SQI_CHUNK_BOUNDS]
+  parameterDefinitions:
+    - name: SceneFile
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface:
+        control: CHOOSE_INPUT_FILE
+        label: Scene File
+        fileFilters:
+          - label: Cinema 4D scenes
+            patterns: ["*.c4d"]
+        fileFilterDefault:
+          label: Cinema 4D scenes
+          patterns: ["*.c4d"]
+    - name: Frames
+      type: STRING
+      userInterface: { control: LINE_EDIT, label: Frame Range }
+    - name: OutputPath
+      type: PATH
+      objectType: FILE
+      dataFlow: OUT
+      default: ""
+      userInterface: { control: CHOOSE_OUTPUT_FILE, label: Output Path }
+  steps:
+    - name: Render
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.cinema4d
+            anyOf: ["true"]
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Frame
+            type: CHUNK[INT]
+            range: "{{Param.Frames}}"
+            chunks:
+              defaultTaskCount: 1
+              rangeConstraint: CONTIGUOUS
+      script:
+        actions:
+          onRun:
+            command: Commandline
+            args:
+              - "-nogui"
+              - "-render"
+              - "{{Param.SceneFile}}"
+              - "-frame"
+              - "{{Task.Param.Frame.Start}}"
+              - "{{Task.Param.Frame.End}}"
+              - "-oimage"
+              - "{{Param.OutputPath}}"

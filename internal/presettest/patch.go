@@ -13,9 +13,8 @@ import (
 // ApplyChunkPatch returns rawTemplate with p applied. The ChunkPatch type is
 // declared in snapshot.go.
 //
-// It edits the YAML node tree rather than the text: a regex over
-// "defaultTaskCount: 1" would hit the wrong step in any template with more than
-// one, silently snapshotting a different expansion than the case declares.
+// It edits the YAML node tree rather than the text, so that in a template with
+// several steps only the named step's defaultTaskCount changes.
 func ApplyChunkPatch(rawTemplate string, p ChunkPatch) (string, error) {
 	if p.ChunksDefaultTaskCount < 1 {
 		return "", fmt.Errorf("presettest: chunk patch for step %q: defaultTaskCount must be >= 1, got %d",
@@ -90,6 +89,74 @@ func applyPatchToStep(step *yaml.Node, p ChunkPatch) (int, error) {
 		return 0, fmt.Errorf("presettest: chunk patch: step %q declares no chunks: block", p.Step)
 	}
 	return patched, nil
+}
+
+// StripOSFamilyGate returns rawTemplate with every attr.worker.os.family host
+// requirement removed, so a worker of any OS family can lease its steps.
+// Everything else, the embedded files included, is kept. A template with no
+// such requirement is an error, so a caller never runs an unchanged template
+// believing it stripped.
+func StripOSFamilyGate(rawTemplate string) (string, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(rawTemplate), &doc); err != nil {
+		return "", fmt.Errorf("presettest: strip os.family: parse template: %w", err)
+	}
+	if len(doc.Content) == 0 {
+		return "", errors.New("presettest: strip os.family: empty template")
+	}
+	removed := 0
+	if steps := mappingValue(doc.Content[0], "steps"); steps != nil {
+		for _, step := range steps.Content {
+			removed += stripStepOSFamily(step)
+		}
+	}
+	if removed == 0 {
+		return "", errors.New("presettest: strip os.family: the template has no attr.worker.os.family requirement")
+	}
+	out, err := yaml.Marshal(&doc)
+	if err != nil {
+		return "", fmt.Errorf("presettest: strip os.family: re-serialize: %w", err)
+	}
+	return string(out), nil
+}
+
+// stripStepOSFamily removes the os.family attribute requirements from one step
+// node and returns how many it removed. An attribute list left empty is
+// dropped, and so is a hostRequirements left with nothing in it, because
+// OpenJD rejects both empty.
+func stripStepOSFamily(step *yaml.Node) int {
+	hr := mappingValue(step, "hostRequirements")
+	attrs := mappingValue(hr, "attributes")
+	if attrs == nil {
+		return 0
+	}
+	kept := attrs.Content[:0]
+	removed := 0
+	for _, attr := range attrs.Content {
+		if name := mappingValue(attr, "name"); name != nil && name.Value == "attr.worker.os.family" {
+			removed++
+			continue
+		}
+		kept = append(kept, attr)
+	}
+	attrs.Content = kept
+	if len(kept) == 0 {
+		mappingDelete(hr, "attributes")
+	}
+	if len(hr.Content) == 0 {
+		mappingDelete(step, "hostRequirements")
+	}
+	return removed
+}
+
+// mappingDelete removes key and its value from a mapping node.
+func mappingDelete(node *yaml.Node, key string) {
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			node.Content = append(node.Content[:i], node.Content[i+2:]...)
+			return
+		}
+	}
 }
 
 // mappingValue returns the value node for key in a mapping node, or nil.

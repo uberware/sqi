@@ -3,30 +3,29 @@
 
 name: CI
 
-# Runs on every push to main and on every pull request targeting main.
+# Runs on every push to main, on every pull request, and on manual dispatch.
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch: # allows manual triggering from the GitHub Actions UI
 
-# If a new push arrives on the same branch while a run is in progress,
-# cancel the older run. Prevents wasted minutes on stale commits.
+# A new push to the same ref cancels the run still in progress for it.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Minimal permissions — principle of least privilege.
-# Individual jobs can elevate if needed (none currently do).
+# Read-only by default. changes adds pull-requests: read and docker-latest
+# adds packages: write.
 permissions:
   contents: read
 
 jobs:
   # ── Change detection ─────────────────────────────────────────────────────────
-  # Detects which areas changed so downstream jobs run only when relevant: the
-  # Python jobs target `clients/python/`, the submitter jobs target
-  # `clients/submitter/` and `presets/sqi/`, and the actionlint job targets the
-  # workflow files themselves.
+  # Detects which areas changed so path-gated jobs run only when relevant: the
+  # Python jobs on `clients/python/`, the submitter jobs on
+  # `clients/submitter/` and `presets/sqi/`, preset-harness-windows on the
+  # presets filter, and actionlint on the workflow files.
   changes:
     name: Detect changed paths
     runs-on: ubuntu-latest
@@ -54,33 +53,25 @@ jobs:
               - 'clients/submitter/**'
               - 'presets/sqi/**'
               - '.github/workflows/ci.yml'
-            # Gates the native Windows ffmpeg job below. Scoped to the presets
-            # themselves and the code that executes them, not to
-            # internal/worker or internal/openjd: a filter wide enough to catch
-            # every possible influence would fire on nearly every PR, and the
-            # job is gated to control runner cost. The tradeoff is that a
-            # change to the worker's format-string resolution can break the
-            # PowerShell join without this firing — that lands on the
-            # push-to-main run instead.
+            # Gates preset-harness-windows below. Scoped to the presets and the
+            # code that executes them, not internal/worker or internal/openjd,
+            # to control runner cost: a wider filter would fire on nearly every
+            # PR. A worker change that breaks a preset on Windows (the
+            # PowerShell join, say) is caught by the push-to-main run instead.
             #
-            # 'presets/**' already covers presets/validation-tiers.yaml (listed
-            # explicitly anyway, since it is the tier registry); test/stubproc/** and
-            # test/integration/testdata/** are the preset validation harness's
-            # own inputs (the Tier-3 recording stub and the Tier-1 fixtures +
-            # goldens), so a change to either also fires this filter.
+            # presets/validation-tiers.yaml is the tier registry (already
+            # under 'presets/**', listed for clarity). test/stubproc/** and
+            # test/integration/testdata/** are the preset harness's inputs:
+            # the Tier-3 recording stub and the Tier-1 fixtures and goldens.
             #
-            # internal/presettest/** and preset_argv_test.go are the Tier-1
-            # harness itself, listed so preset-harness-windows fires when the
-            # renderer changes and not only when a golden does. They are the
-            # host-sensitive half: Render() undoes the host's
-            # path flavor, so a change there can break every golden on Windows
-            # while leaving the goldens themselves untouched. test/integration/
-            # preset_*.go widens that to every tier test file (Tier-3 execution
-            # and the registry check too), for the same reason.
+            # internal/presettest/** and test/integration/preset_*.go are the
+            # harness itself. Render() undoes the host's path flavor, so a
+            # change there can break every golden on Windows without changing
+            # a golden.
             #
-            # internal/product/builtins/** holds seven registry entries of its
-            # own, and script-powershell's exit-status wrapper is executed by
-            # nothing but this job.
+            # internal/product/builtins/** holds seven registry entries, and
+            # only preset-harness-windows executes script-powershell's
+            # exit-status wrapper.
             presets:
               - 'presets/**'
               - 'internal/product/builtins/**'
@@ -117,8 +108,8 @@ jobs:
         run: make lint-actions
 
   # ── Primary CI job ───────────────────────────────────────────────────────────
-  # Runs build → vet → lint → test (race + coverage gate) → upload coverage.
-  # All steps are sequential; failure in any step stops the job.
+  # Tidy check, build, vet, lint, then the test suite with the race detector
+  # and coverage gate. Any failing step stops the job.
   test:
     name: Build, lint, and test
     runs-on: ubuntu-latest
@@ -130,29 +121,27 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          # Reads the Go and toolchain versions from go.mod automatically.
-          # Module download cache and build cache are enabled by default in v6.
+          # Reads the Go and toolchain versions from go.mod. The module and
+          # build caches are on by default.
           go-version-file: go.mod
 
-      # Ensure go.mod (and go.sum once dependencies exist) are tidy, then check
-      # that nothing changed. Fails the build if a developer forgot to commit
-      # the result of go mod tidy.
+      # Fails if go.mod or go.sum differs from its `go mod tidy` form.
       - name: Tidy module
         run: go mod tidy
 
       - name: Check go.mod is committed tidy
         run: git diff --exit-code go.mod go.sum
 
-      # Verifies that the on-disk module cache matches go.sum exactly.
-      # Catches tampered or corrupted dependencies before they can affect the build.
+      # Fails if the module cache does not match go.sum, catching tampered or
+      # corrupted dependencies before they reach the build.
       - name: Verify module integrity
         run: go mod verify
 
       - name: Build
         run: make build
 
-      # Publish the freshly-built binaries so the Python integration job can run
-      # against them without rebuilding the web UI + Go toolchain itself.
+      # Publishes the binaries so python-integration can use them without
+      # rebuilding the web UI and Go code.
       - name: Upload binaries
         uses: actions/upload-artifact@v7
         with:
@@ -165,70 +154,53 @@ jobs:
       - name: go vet
         run: make vet
 
-      # Uses the official golangci-lint GitHub Action, which handles binary
-      # download and caching. Configuration is read from .golangci.yml at the
-      # repo root.
+      # Configuration is read from .golangci.yml at the repo root.
       #
-      # version is pinned. Left unset the action resolves "latest", so each new
-      # golangci-lint release can fail unrelated PRs: v2.13.1, for example,
-      # enabled the modernize/errorsastype analyzer, which reports code a PR
-      # need not have touched. Bump this in its own commit, with the fallout
-      # fixed alongside it.
+      # version is pinned because "latest" lets each new golangci-lint
+      # release, with its new analyzers, fail unrelated PRs. Bump it in its
+      # own commit with the fallout fixed alongside.
       #
-      # There is also a floor below this pin: .golangci.yml excludes
-      # errors.AsType from errcheck by function name, and errcheck before
-      # 2.13.0 cannot resolve a generic function's name, so on an older
-      # golangci-lint that exclusion fails to match and every
-      # errors.AsType call site is reported. The floor is 2.13.0 (what Homebrew
-      # ships, verified clean on this repo); this pin is one patch above it.
+      # The floor is 2.13.0: .golangci.yml excludes errors.AsType from
+      # errcheck by function name, and older errcheck cannot resolve a
+      # generic function's name, so every errors.AsType call is reported.
       # Keep docs/development.md's required-version note in step with both.
       #
-      # Explicit path patterns mirror the Makefile LINT_PKGS variable: they
-      # exclude web/node_modules/ (third-party JS packages that happen to
-      # contain Go code and are not part of the sqi codebase).
+      # The path patterns mirror the Makefile's LINT_PKGS, which excludes
+      # web/node_modules/ (third-party packages that contain Go files).
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13.1
           args: --timeout=5m ./cmd/... ./internal/... ./pkg/... ./test/... ./web
 
-      # The internal/openjd/expr path-engine differentials shell out to python3
-      # and compare against pathlib. sqi implements CPython 3.13 path semantics
-      # (PureWindowsPath.is_absolute() delegating to ntpath.isabs, and stem/suffix
-      # no longer treating a name's leading/trailing dot run as an extension), so
-      # those tests requirePython313 and SKIP on anything older — including the
-      # ubuntu-latest system python, which is 3.12. Pin >= 3.13 here so the
-      # differential asserts rather than skipping. This is the
-      # normal test suite only; the oracle job keeps its own 3.12 pin, which is
-      # about the openjd-model venv, not pathlib.
+      # The internal/openjd/expr path-engine differentials compare against
+      # python3's pathlib. sqi implements CPython 3.13 path semantics, so
+      # those tests call requirePython313 and skip on older versions,
+      # including ubuntu-latest's system 3.12. This pin makes them run. The
+      # expr-oracle job has its own 3.12 pin for the openjd-model venv.
       - name: Set up Python (>= 3.13 for the expr path differentials)
         uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
-      # The preset tests are untagged by design (the `test` job runs
-      # `make test-cover`, which passes no -tags), so this job runs
-      # TestZZPresetTierRegistrySatisfied -- and the registry's tier2 blocks
-      # require the real-ffmpeg cases to run here, not skip.
+      # The preset tests are untagged, so `make test-cover` runs
+      # TestZZPresetTierRegistrySatisfied here, and the registry's tier2
+      # blocks require the real-ffmpeg cases to run, not skip.
       - name: Install ffmpeg (the registry's tier-2 claims require it)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ffmpeg
           ffmpeg -version | head -1
 
-      # Run the full test suite with the race detector enabled and enforce
-      # the minimum line-coverage threshold.
-      # `make test-cover` enables -race via RACE=on (the Makefile default),
-      # writes coverage.out, and exits non-zero if coverage < COVERAGE_MIN.
-      # COVERAGE_MIN defaults to 70 in the Makefile — that is the single
-      # source of truth; raise it there as coverage grows.
+      # `make test-cover` runs the suite with -race (RACE=on, the Makefile
+      # default), writes coverage.out, and fails below COVERAGE_MIN. The
+      # threshold is set only in the Makefile (default 70).
       - name: Test (race detector + coverage gate)
         run: make test-cover
 
-      # Uploads coverage.out to Codecov. Requires the CODECOV_TOKEN secret
-      # to be configured in the repository — see docs/development.md for setup
-      # instructions. fail_ci_if_error is false so a Codecov outage does not
-      # break the build.
+      # Needs the CODECOV_TOKEN repository secret (setup in
+      # docs/development.md). fail_ci_if_error is false so a Codecov outage
+      # does not break the build.
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7
         with:
@@ -237,9 +209,8 @@ jobs:
           fail_ci_if_error: false
 
   # ── Web UI quality gates ─────────────────────────────────────────────────────
-  # Runs ESLint (--max-warnings 0), TypeScript type-check (tsc -b), and the
-  # Vitest test suite with coverage enforcement — all in parallel with the Go
-  # test job so neither blocks the other.
+  # Prettier, ESLint, tsc and Vitest with a coverage gate, in parallel with the
+  # Go test job.
   web-check:
     name: Web UI lint, typecheck, and test
     runs-on: ubuntu-latest
@@ -248,8 +219,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      # Read the required Node version from .nvmrc at the repo root.
-      # The engines field in web/package.json documents the same constraint.
+      # The Node version comes from .nvmrc; web/package.json's engines field
+      # states the same constraint.
       - name: Set up Node.js
         uses: actions/setup-node@v7
         with:
@@ -261,12 +232,12 @@ jobs:
         working-directory: web
         run: npm ci
 
-      # Prettier — fail if any file would be reformatted.
+      # Fails if any file would be reformatted.
       - name: Check formatting (Prettier)
         working-directory: web
         run: npm run format:check
 
-      # ESLint — --max-warnings 0 makes every warning a build failure.
+      # --max-warnings 0 makes every warning a failure.
       - name: Lint (ESLint)
         working-directory: web
         run: npm run lint
@@ -277,15 +248,13 @@ jobs:
         working-directory: web
         run: npm run typecheck
 
-      # Vitest run with V8 coverage; exits non-zero if thresholds are not met.
-      # The thresholds are defined in vite.config.ts (85 % lines / 82 % functions).
+      # V8 coverage; fails below the thresholds set in vite.config.ts.
       - name: Test with coverage gate (Vitest)
         working-directory: web
         run: npm run test:coverage
 
-      # Upload the JSON coverage report to Codecov so web coverage trends are
-      # tracked separately from Go (flags: web).  Mirrors the Go upload step.
-      # fail_ci_if_error: false so a Codecov outage does not break the build.
+      # flags: web tracks web coverage separately from Go. fail_ci_if_error is
+      # false so a Codecov outage does not break the build.
       - name: Upload web coverage to Codecov
         uses: codecov/codecov-action@v7
         with:
@@ -303,8 +272,9 @@ jobs:
   web-e2e:
     name: Web UI end-to-end (Playwright)
     runs-on: ubuntu-latest
-    # The worker refuses to run as root unless explicitly allowed; CI runs as
-    # root, so the global setup boots it with this set.
+    # The worker refuses to start as root unless this is set. The global
+    # setup's worker inherits it, so the job does not depend on the runner's
+    # user.
     env:
       SQI_WORKER_ALLOW_ROOT: "true"
 
@@ -328,9 +298,8 @@ jobs:
         working-directory: web
         run: npm ci
 
-      # Builds web/dist + both binaries into ./bin so the Playwright global
-      # setup finds bin/sqi-server and bin/sqi-worker (it would build them
-      # otherwise, but doing it here keeps the failure mode obvious).
+      # The Playwright global setup would build bin/sqi-server and
+      # bin/sqi-worker itself; building here makes a build failure obvious.
       - name: Build binaries (server embeds the UI)
         run: make build
 
@@ -343,8 +312,7 @@ jobs:
         working-directory: web
         run: npm run test:e2e
 
-      # Publish the HTML report and traces when the E2E run fails so flakes are
-      # diagnosable from the CI artifacts.
+      # Keeps the HTML report and traces of a failed run for diagnosis.
       - name: Upload Playwright report on failure
         if: ${{ failure() }}
         uses: actions/upload-artifact@v7
@@ -354,9 +322,9 @@ jobs:
           retention-days: 7
 
   # ── Docker latest ────────────────────────────────────────────────────────────
-  # Builds and pushes ghcr.io/uberware/sqi/sqi-server:latest on every push to
-  # main. Uses the standalone multi-stage Dockerfile so the image is built from
-  # source without needing goreleaser. Runs only after the test job passes.
+  # Builds and pushes the sqi-server and sqi-worker :latest images to GHCR on
+  # every push to main, from the multi-stage Dockerfiles (no goreleaser), once
+  # the test and web-check jobs pass.
   docker-latest:
     name: Publish :latest to GHCR
     runs-on: ubuntu-latest
@@ -405,11 +373,10 @@ jobs:
             COMMIT=${{ github.sha }}
             BUILD_DATE=${{ github.event.head_commit.timestamp || github.event.repository.updated_at }}
             GOVERSION=${{ env.GOVERSION }}
-          # Per-image cache scope so the server and worker exports (both
-          # mode=max, run back-to-back) don't clobber each other's blob refs.
-          # ignore-error keeps a flaky GitHub Actions Cache export (the known
-          # "error writing layer blob: not_found") from failing a job whose real
-          # job — publishing :latest — has already succeeded.
+          # A cache scope per image keeps the server and worker exports (both
+          # mode=max) from overwriting each other's blob refs. ignore-error
+          # keeps a flaky cache export ("error writing layer blob: not_found")
+          # from failing the job after the image is pushed.
           cache-from: type=gha,scope=docker-latest-server
           cache-to: type=gha,scope=docker-latest-server,mode=max,ignore-error=true
 
@@ -430,25 +397,17 @@ jobs:
           cache-to: type=gha,scope=docker-latest-worker,mode=max,ignore-error=true
 
   # ── Cross-compilation matrix ─────────────────────────────────────────────────
-  # Verifies that the binary compiles cleanly for all target platforms.
-  # Runs only after the test job passes (needs: test).
-  # fail-fast: false means a failure on one platform does not cancel the others,
-  # giving a complete picture of which targets are broken.
+  # Builds both binaries for every target platform. fail-fast is off so one
+  # broken target does not hide the state of the others.
   #
-  # `go build ./cmd/sqi-server/... ./cmd/sqi-worker/...` below proves the two
-  # binaries link, but `go build` never compiles _test.go files at all, so it
-  # cannot catch a Windows-only break in test code — for example, a POSIX-only
-  # test file in internal/worker/isolation referencing SysProcAttr.Credential
-  # breaks `GOOS=windows go vet` while the matrix build stays green. The extra
-  # windows/amd64-only step compiles every internal package (not just cmd/,
-  # unlike the matrix build above) and vets internal/worker/... plus the
-  # packages that carry the Windows service support (internal/winsvc,
-  # internal/secretin, internal/log, cmd/...) — vet, like test compilation,
-  # type-checks _test.go files too — so the same class of break fails a PR
-  # instead of surviving until someone runs it by hand. The real-SCM suite
-  # test/winservice is behind both the `winservice` build tag and
-  # //go:build windows, so the vet line passes the tag explicitly (no other
-  # package uses it).
+  # `go build` never compiles _test.go files, so it cannot catch a
+  # Windows-only break in test code (a POSIX-only test referencing
+  # SysProcAttr.Credential, say). The windows/amd64 step builds every
+  # internal package and vets internal/worker/..., cmd/... and the Windows
+  # service packages (internal/winsvc, internal/secretin, internal/log); vet
+  # type-checks _test.go files. test/winservice is behind the `winservice`
+  # build tag and //go:build windows, so the vet line passes the tag (no
+  # other package uses it).
   cross-compile:
     name: Cross-compile (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ubuntu-latest
@@ -473,10 +432,8 @@ jobs:
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build ./cmd/sqi-server/...
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build ./cmd/sqi-worker/...
 
-      # See the job's own comment above for why this exists and why plain
-      # `go build` (above) cannot substitute for it. amd64-only: GOARCH does
-      # not affect what go vet's type-checking can see, so running this a
-      # second time on arm64 would only cost CI minutes for no new coverage.
+      # See the job comment for why `go build` cannot replace this. amd64
+      # only: GOARCH does not change what vet's type-checking sees.
       - name: Windows internal packages build + vet
         if: matrix.goos == 'windows' && matrix.goarch == 'amd64'
         run: |
@@ -484,15 +441,14 @@ jobs:
           GOOS=windows GOARCH=amd64 go vet -tags winservice ./internal/worker/... ./internal/winsvc/... ./internal/secretin/... ./internal/log/... ./cmd/... ./test/winservice/...
 
   # ── Cross-platform runtime smoke ─────────────────────────────────────────────
-  # cross-compile (above) proves the binaries *build* for every target; this job
-  # proves they *run* — start, register a worker, execute a job, and stream logs
-  # over REST + WebSocket — natively on macOS and Windows. Linux runtime is
-  # already covered by the docker smoke-test and web-e2e jobs, so it is omitted
-  # here. The manual VM-based equivalent is docs/cross-platform-validation.md.
+  # Runs the binaries natively on macOS and Windows: start, register a worker,
+  # execute a job and stream logs over REST and WebSocket. Linux is covered by
+  # smoke-test and web-e2e. The manual VM-based equivalent is
+  # docs/cross-platform-validation.md.
   #
-  # Native macOS/Windows runner minutes cost ~10x Linux, so this is skipped on
-  # pull requests and runs only on pushes to main and manual dispatch.
-  # fail-fast: false so a Windows-only failure still reports the macOS result.
+  # macOS and Windows runner minutes cost about 10x Linux, so this skips pull
+  # requests and runs on pushes to main and manual dispatch. fail-fast is off
+  # so a Windows failure still reports the macOS result.
   cross-platform-runtime:
     name: Runtime smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -502,12 +458,12 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-latest, windows-latest]
-    # The worker refuses to run as root/elevated unless this is set; harmless on
-    # the unprivileged runner users but keeps parity with the docker smoke job.
+    # The worker refuses to start as root on Linux and macOS unless this is
+    # set. The runner users are not root, so this is only a safeguard.
     env:
       SQI_WORKER_ALLOW_ROOT: "true"
-    # Use bash on every OS (Git Bash on Windows) so the one smoke script runs
-    # unchanged across platforms.
+    # bash on every OS (Git Bash on Windows), so one smoke script runs
+    # unchanged.
     defaults:
       run:
         shell: bash
@@ -538,8 +494,7 @@ jobs:
       - name: Install websockets for the WS smoke check
         run: python -m pip install --upgrade pip websockets
 
-      # Build the web bundle first (the server embeds web/dist), then both
-      # binaries with the platform-appropriate extension.
+      # The web bundle comes first because the server embeds web/dist.
       - name: Build web bundle and binaries
         run: |
           (cd web && npm ci && npm run build)
@@ -547,9 +502,9 @@ jobs:
           go build -o "bin/sqi-server${ext}" ./cmd/sqi-server
           go build -o "bin/sqi-worker${ext}" ./cmd/sqi-worker
 
-      # Reuses scripts/smoke.sh (the same script developers run via `make smoke`).
-      # Passing the prebuilt binaries skips its internal `make build`, so no GNU
-      # make is required on the Windows runner.
+      # scripts/smoke.sh is what `make smoke` runs. Passing the prebuilt
+      # binaries skips its internal `make build`, so the Windows runner needs
+      # no GNU make.
       - name: End-to-end smoke (REST + WebSocket, plain / broker-auth / TLS)
         run: |
           ext=""; [ "$RUNNER_OS" = "Windows" ] && ext=".exe"
@@ -562,9 +517,8 @@ jobs:
           bash scripts/smoke.sh 2>&1 | tee smoke-output.log
           status=${PIPESTATUS[0]}
 
-          # The script runs three modes. Assert each one actually reported a
-          # pass by name: a filter or branch regression that skipped a
-          # mode would otherwise leave this job green while covering less.
+          # The script runs three modes. Each must report a pass by name, or
+          # a regression that skips a mode would leave this job green.
           missing=0
           for mode in noauth brokerauth tls; do
             if ! grep -q "SMOKE TEST PASSED (mode=$mode)" smoke-output.log; then
@@ -579,16 +533,13 @@ jobs:
           echo "Confirmed all three smoke modes passed."
 
   # ── Docker smoke test ────────────────────────────────────────────────────────
-  # Builds both Docker images from source (no registry push) and runs them
-  # together via docker-compose.smoke.yml to verify that the worker registers
-  # successfully with the server.  Runs on every push to main after the primary
-  # test job passes; also runs on pull requests as a pre-merge gate.
+  # Builds both Docker images locally (no push) and runs them together with
+  # docker-compose.smoke.yml to check that the worker registers with the
+  # server. Runs on pushes to main and on pull requests.
   #
-  # Plain `docker build` (not docker/build-push-action) is used here so that
-  # setup-buildx is not needed.  setup-buildx pulls moby/buildkit from Docker
-  # Hub at job start, which times out on congested runners.  The smoke test
-  # only needs single-platform local builds, which the daemon's built-in
-  # BuildKit supports without any external image.
+  # Plain `docker build` avoids setup-buildx, which pulls moby/buildkit from
+  # Docker Hub at job start and times out on congested runners. A
+  # single-platform local build needs only the daemon's built-in BuildKit.
   smoke-test:
     name: Docker smoke test (server + worker)
     runs-on: ubuntu-latest
@@ -606,9 +557,7 @@ jobs:
       - name: Export GOVERSION
         run: echo "GOVERSION=$(go version | awk '{print $3}')" >> "$GITHUB_ENV"
 
-      # Build images locally using the Docker daemon's built-in BuildKit.
-      # docker build is used directly (no setup-buildx needed) because the
-      # smoke test only requires a single-platform local image.
+      # The daemon's built-in BuildKit; see the job comment.
       - name: Build sqi-server image
         run: |
           DOCKER_BUILDKIT=1 docker build \
@@ -670,26 +619,23 @@ jobs:
         run: docker compose -f deploy/docker-compose.smoke.yml down -v
 
   # ── Auth surface demo ────────────────────────────────────────────────────────
-  # Runs scripts/auth-demo.sh (the same script developers run via `make
-  # auth-demo`) against real binaries on a live local farm: auth enabled, a
-  # bootstrap admin, a second non-admin account, and a worker executing a job.
+  # Runs scripts/auth-demo.sh (what `make auth-demo` runs) against real
+  # binaries on a live local farm: auth enabled, a bootstrap admin, a second
+  # non-admin account, and a worker executing a job.
   #
-  # This is the end-to-end regression test for the auth surface — session
-  # cookies, API keys, the CSRF guard, the RBAC permission matrix, and job owner
-  # scoping — all of which are cross-cutting enough that the Go unit tests can
-  # confirm each piece in isolation without catching a router that mounts the
-  # wrong middleware on a real route.
+  # End-to-end test of session cookies, API keys, the CSRF guard, the RBAC
+  # permission matrix and job owner scoping. Unit tests check each piece
+  # alone and cannot catch a router that mounts the wrong middleware on a
+  # real route.
   #
-  # Linux-only and unconditional: it takes well under a minute, so unlike
-  # cross-platform-runtime there is no reason to restrict it to pushes.
+  # Linux only, on every run: it takes under a minute.
   #
-  # The script needs curl + jq (preinstalled on GitHub-hosted runners) and
-  # python3 (likewise; used only to allocate free loopback ports). Passing the
-  # prebuilt binaries via SQI_*_BIN skips the script's internal `make build`.
+  # The script needs curl, jq and python3 (for free loopback ports), all
+  # preinstalled on hosted runners. SQI_*_BIN skips its internal
+  # `make build`.
   #
-  # No Node build: the tracked placeholder web/dist/index.html is enough to keep
-  # the server's //go:embed valid on a clean checkout, and this job exercises
-  # only the REST API, never the UI bundle.
+  # No Node build: the tracked placeholder web/dist/index.html keeps the
+  # server's //go:embed valid, and this job uses only the REST API.
   auth-demo:
     name: Auth surface demo (live farm)
     runs-on: ubuntu-latest
@@ -716,31 +662,25 @@ jobs:
         run: bash scripts/auth-demo.sh
 
   # ── LDAP: real-directory integration ─────────────────────────────────────────
-  # Runs the LDAP tests against an actual OpenLDAP server in a container, which
-  # is the only thing that exercises sqi's go-ldap *wire* usage: search scopes,
-  # attribute names, filter syntax, and how a real server answers a request it
-  # does not support. Every other LDAP test drives a fake connection and cannot
-  # see any of that — a wire bug passes the rest of CI and fails only against a
-  # live directory. This job exists so that class of bug cannot merge.
+  # Runs the LDAP tests against a real OpenLDAP server in a container. This is
+  # the only coverage of sqi's go-ldap wire usage (search scopes, attribute
+  # names, filter syntax, how a real server answers a request it does not
+  # support); every other LDAP test drives a fake connection.
   #
-  # Docker is preinstalled on the ubuntu runners, so the test provisions its own
-  # container and needs no service definition here. It skips (does not fail)
-  # when Docker is unavailable, which keeps it harmless on any runner that lacks
-  # it. Tagged `integration`, so it does not run in the default `make test`.
+  # The test starts its own container, so no service definition is needed. It
+  # skips, rather than fails, without Docker. Tagged `integration`, so the
+  # default `make test` does not run it.
   ldap-integration:
     name: LDAP integration (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     needs: test
 
-    # Both architectures, because the container image is multi-arch and its
-    # variants are not equivalent: the memberof module registers its schema
-    # several seconds later on amd64 than on arm64, which is a race a fixture
-    # can sit inside on one architecture and not the other. Native runners
-    # rather than QEMU: emulation is several times slower and would test the
-    # emulator's timing rather than the runner's.
+    # Both architectures, because the image's amd64 and arm64 variants differ
+    # in test-visible ways: the memberof module registers its schema seconds
+    # later on amd64, a race a fixture can hit on one architecture only.
+    # Native runners, not QEMU, so the timing tested is the runner's.
     #
-    # fail-fast is off: when the two disagree, both results are needed, and
-    # canceling the sibling job discards one of them.
+    # fail-fast is off: when the two disagree, both results are needed.
     strategy:
       fail-fast: false
       matrix:
@@ -768,28 +708,19 @@ jobs:
         run: make test-ldap
 
   # ── SSO against a real identity provider ─────────────────────────────────────
-  # The SSO unit tests drive a fake provider. It signs real tokens, so a
-  # validation mistake surfaces — but a fake returns whatever the test asks for,
-  # so it cannot show what a real provider omits. Keycloak emits no group
-  # membership at all without a protocol mapper configured for it, and a token
-  # with no groups still validates: every user then lands on default_role, a
-  # privilege downgrade with no error anywhere. This job makes that class of
-  # bug fail before it merges. It also pins the two vendor behaviors the
-  # logout flow relies on (see test/integration/oidc_test.go).
+  # The SSO unit tests drive a fake provider that signs real tokens, but a
+  # fake cannot show what a real provider omits. Keycloak emits no group
+  # claim without a protocol mapper, and a token with no groups still
+  # validates, so every user silently lands on default_role. This job runs
+  # the SSO flow against a real Keycloak. It also pins the two vendor
+  # behaviors the logout flow relies on (see test/integration/oidc_test.go).
   #
-  # One architecture, unlike ldap-integration above: that job runs both
-  # because the OpenLDAP image's arm64 and amd64 variants differ in
-  # test-visible ways (cn=config credentials, overlay instantiation,
-  # module-registration timing). No such divergence is known for the Keycloak
-  # image — it is a JVM application whose HTTP and token behavior is what this
-  # job asserts on, none of which is architecture-dependent — so a second
-  # runner would cost time without pinning anything the first does not.
-  # Revisit if an arch-specific difference appears.
+  # One architecture: no arch divergence is known for the Keycloak image, a
+  # JVM application. Add arm64 if one appears.
   #
-  # Docker is preinstalled on the ubuntu runners, so the test provisions its own
-  # container and needs no service definition here. It skips (does not fail)
-  # when Docker is unavailable. Tagged `integration`, so it does not run in the
-  # default `make test`.
+  # The test starts its own container, so no service definition is needed. It
+  # skips, rather than fails, without Docker. Tagged `integration`, so the
+  # default `make test` does not run it.
   oidc-integration:
     name: OIDC integration
     runs-on: ubuntu-latest
@@ -816,32 +747,22 @@ jobs:
         run: make test-oidc
 
   # ── Task isolation: run-as-user integration ──────────────────────────────────
-  # Runs the run-as-user isolation suite as real root against real unprivileged
-  # OS accounts inside a container — the only thing that exercises uid/gid
-  # switching, session-directory ownership, environment filtering, and
-  # process-group kill. internal/worker/isolation's fake Provider cannot
-  # observe any of it. This job makes that class of bug fail before it merges.
+  # Runs the run-as-user isolation suite as root against real unprivileged OS
+  # accounts inside a container. This is the only coverage of uid/gid
+  # switching, session-directory ownership, environment filtering and
+  # process-group kill; internal/worker/isolation's fake Provider sees none
+  # of it.
   #
-  # Both architectures, matching ldap-integration above and for the same
-  # reason: this exercises syscall-level behavior (setuid/setgid/setgroups,
-  # SysProcAttr.Credential), which is where arch divergence could hide.
-  # oidc-integration's single-arch rationale ("no arch divergence is known for
-  # a JVM app") does not apply to raw kernel syscalls.
-  # Native runners rather than QEMU, same reasoning as ldap-integration:
-  # emulation is several times slower and would test the emulator's timing
-  # rather than the runner's.
+  # Both architectures, on native runners, because raw syscalls
+  # (setuid/setgid/setgroups, SysProcAttr.Credential) are where an arch
+  # divergence could hide.
   #
   # `make test-isolation` builds its own image from a staged copy of the repo
-  # (see the Makefile comment above the target), so unlike ldap-integration/
-  # oidc-integration it needs no image pre-pulled here.
+  # (see the Makefile comment above the target), so no image is pulled here.
   #
-  # `make test-isolation` exits 0 with a message when Docker is unavailable —
-  # correct on a developer machine that may not have Docker, but on a CI runner
-  # (where Docker is always preinstalled) a skip here would pass with nothing
-  # verified. So this job does not trust the target's own exit code: it
-  # captures the output and fails unless (1) no Docker-unavailable skip message
-  # appears and (2) all 11 TestIsolation_ tests are confirmed PASS by name. A
-  # skip, a build failure, or a partial run all fail the job.
+  # `make test-isolation` exits 0 with a message when Docker is unavailable,
+  # so the job does not trust its exit code: it fails if that message appears
+  # or if any of the 11 TestIsolation_ tests is not confirmed PASS.
   isolation-integration:
     name: Isolation integration (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
@@ -865,10 +786,8 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # Does not trust a bare exit-0 from `make test-isolation`: asserts the
-      # suite actually executed (no Docker-unavailable skip) and that every one
-      # of the 11 TestIsolation_ tests is confirmed PASS by name, so a skip or
-      # a partial run fails the job.
+      # Fails on a Docker-unavailable skip or unless all 11 TestIsolation_
+      # tests report PASS; see the job comment.
       - name: Run isolation integration tests
         run: |
           set +e
@@ -893,28 +812,26 @@ jobs:
   # ── State store on PostgreSQL ────────────────────────────────────────────────
   # Runs everything that needs a real PostgreSQL: the shared SQL layer's
   # concurrency races, schema parity with the SQLite migrations, the
-  # atomic-submission and readiness tests, the pg_dump backup round trip, the
-  # scheduler stress test, and the whole integration suite with the server's
-  # state store on PostgreSQL. SQLite cannot stand in: its single write
-  # connection serializes what PostgreSQL runs concurrently, so lock-order and
-  # isolation mistakes show up only here.
+  # atomic-submission and readiness tests, backup, restore and store copy,
+  # the scheduler stress test, and the integration suite with the state store
+  # on PostgreSQL. SQLite cannot stand in: its single write connection
+  # serializes what PostgreSQL runs concurrently, so lock-order and isolation
+  # mistakes show up only here.
   #
-  # Runs on 16 (the oldest supported major) and 18 (the newest tested): pg_dump
-  # must be at least the server's major version, and lock and planner behavior
-  # differ between majors. Only the 18 leg runs the smoke test (below); what it
-  # checks, the shipped binaries booting on PostgreSQL, does not depend on the
-  # major.
+  # Runs on 16 (the oldest supported major) and 18 (the newest tested):
+  # pg_dump must be at least the server's major version, and lock and planner
+  # behavior differ between majors. Only the 18 leg runs the smoke test
+  # (below), which does not depend on the major.
   #
-  # scripts/test-postgres.sh starts its own throwaway container. The matrix
-  # pulls each pinned image and passes it to the script
-  # (SQI_TEST_POSTGRES_IMAGE), so the image pulled is the image tested. The
-  # script's defaults for local runs carry the same pins; change both.
+  # scripts/test-postgres.sh starts its own container from the image the
+  # matrix pulls (SQI_TEST_POSTGRES_IMAGE). The script's local-run defaults
+  # carry the same pins; change both.
   #
-  # `make test-postgres` exits 0 when Docker is unavailable, and every
-  # PostgreSQL test skips without a DSN, so the job does not trust the exit
-  # code: it fails unless the suite reached its last line, each named test
-  # passed, and no PostgreSQL subtest was skipped. It asserts by name because
-  # a count stays green when a test is renamed or stops running.
+  # `make test-postgres` exits 0 without Docker, and every PostgreSQL test
+  # skips without a DSN, so the job does not trust the exit code: it fails
+  # unless the suite reached its last line, each named test passed, and no
+  # PostgreSQL subtest was skipped. It asserts by name because a count stays
+  # green when a test is renamed or stops running.
   postgres-integration:
     name: PostgreSQL integration (${{ matrix.pg }})
     runs-on: ubuntu-latest
@@ -943,17 +860,16 @@ jobs:
       - name: Pull PostgreSQL image
         run: docker pull ${{ matrix.image }}
 
-      # The backup test runs pg_dump and restores its archive into the server,
-      # so the client must match the server's major version. The runner's own
-      # PostgreSQL client may not, so install the matrix major from PGDG and
-      # put it first on PATH.
+      # The backup test restores a pg_dump archive into the server, so the
+      # client must match the server's major version. The runner's own client
+      # may not, so the matrix major is installed from PGDG and put first on
+      # PATH.
       #
-      # ffmpeg: test-postgres.sh's last phase runs the whole ./test/integration/
-      # package (all but the LDAP, OIDC and isolation tests), and
-      # presets/validation-tiers.yaml requires the ffmpeg presets' tier-2 cases
-      # on linux, so TestZZPresetTierRegistrySatisfied fails without ffmpeg. The
-      # install matches the test and integration-tests jobs; the version line
-      # fails here if it did not install.
+      # ffmpeg: test-postgres.sh's last phase runs the whole
+      # ./test/integration/ package (all but the LDAP, OIDC and isolation
+      # tests), and presets/validation-tiers.yaml requires the ffmpeg presets'
+      # tier-2 cases on linux, so TestZZPresetTierRegistrySatisfied fails
+      # without it. The version line fails if the install did not happen.
       - name: Install PostgreSQL ${{ matrix.pg }} client tools and ffmpeg
         run: |
           sudo install -d /usr/share/postgresql-common/pgdg
@@ -975,20 +891,18 @@ jobs:
       # subtest failed, not that none was skipped, hence the separate
       # `/postgres` skip check.
       #
-      # TestPGRace_G7_DeleteJobHoldsOffALogThatRaced and
-      # TestPGRace_G7_RetentionHoldsOffALogThatRaced cover the same race at
-      # its two call sites.
+      # The two TestPGRace_G7_ tests cover the same race at its two call
+      # sites.
       #
-      # The restore and store copy tests (TestPostgres_Restore*,
-      # TestRestorePostgres_*, TestStoreCopy*) are listed because each skips
-      # without PostgreSQL: a run that never reached a server would otherwise
-      # pass them all. TestBackupRestore_FarmResumes and
-      # TestUpgrade_OlderBinaryRefused are the integration-phase tests run with
-      # the server on PostgreSQL; TestStoreCopy_SQLiteToPostgres skips in the
-      # SQLite integration job (no PostgreSQL configured), so only this job
-      # can assert it. TestPostgres_OpenRefusesANewerSchema is named apart
-      # from the SQLite package's TestOpen_RefusesANewerSchema, whose PASS
-      # line would otherwise satisfy the check.
+      # The restore and store copy tests are listed because each skips without
+      # PostgreSQL, so a run that never reached a server would pass them all.
+      # TestBackupRestore_FarmResumes and TestUpgrade_OlderBinaryRefused run in
+      # the integration phase with the server on PostgreSQL.
+      # TestStoreCopy_SQLiteToPostgres skips in integration-tests (no
+      # PostgreSQL there), so only this job asserts it.
+      # TestPostgres_OpenRefusesANewerSchema is named apart from the SQLite
+      # package's TestOpen_RefusesANewerSchema, whose PASS line would
+      # otherwise satisfy the check.
       - name: Run PostgreSQL tests
         run: |
           set +e
@@ -1068,16 +982,16 @@ jobs:
             echo "::error::a PostgreSQL subtest was skipped"
             missing=1
           fi
-          # No skip is not the same as ran: a run that collected no
-          # /postgres subtests would have none to skip either.
+          # No skips does not mean the backend ran: a run that collected no
+          # /postgres subtests has none to skip.
           pg_passes=$(grep -c -E -- '--- PASS: .*/postgres' pg-output.log || true)
           if [ "$pg_passes" -lt 1 ]; then
             echo "::error::no /postgres subtest passed; the PostgreSQL backend was not exercised"
             missing=1
           fi
           # The forced-retry phase (store packages only, every transaction
-          # retried once) is checked on its own. The race tests skip in it, but
-          # they are top-level tests, so they match neither pattern.
+          # retried once) is checked on its own. The race tests skip in it but
+          # are top-level tests, so they match neither pattern.
           sed -n '/^== BEGIN FORCED-RETRY PHASE$/,/^== END FORCED-RETRY PHASE$/p' pg-output.log > pg-retry.log
           if ! grep -q '^== END FORCED-RETRY PHASE$' pg-retry.log; then
             echo "::error::the forced-retry phase did not run to its end"
@@ -1104,7 +1018,7 @@ jobs:
           echo "Confirmed the PostgreSQL ${{ matrix.pg }} suite passed, including ${#expected[@]} named tests and ${retry_passes} /postgres subtests under forced retry."
 
       # ── Smoke test with the server on PostgreSQL (18 only) ─────────────────
-      # `make smoke` builds both binaries, web UI included, so it needs the same
+      # `make smoke` builds both binaries and the web UI, so it needs the same
       # Node and Python setup as cross-platform-runtime. The next three steps
       # are copied from that job; keep them in step.
       - name: Set up Node.js
@@ -1127,10 +1041,10 @@ jobs:
         if: ${{ matrix.pg == '18' }}
         run: python -m pip install --upgrade pip websockets
 
-      # A fresh container, since the smoke run needs an empty database (it
-      # creates a uniquely named farm). With SQI_SMOKE_POSTGRES_DSN set,
-      # scripts/smoke.sh runs its three SQLite modes and then a fourth with the
-      # state store on PostgreSQL.
+      # A fresh container, because the smoke run creates a farm named "smoke
+      # farm" and farm names are unique. With SQI_SMOKE_POSTGRES_DSN set,
+      # scripts/smoke.sh runs its three SQLite modes and then a fourth with
+      # the state store on PostgreSQL.
       #
       # The readiness probe uses TCP (-h 127.0.0.1): on first boot the image
       # runs a temporary server on the Unix socket only, which a socket probe
@@ -1174,8 +1088,8 @@ jobs:
           status=${PIPESTATUS[0]}
           set -e
 
-          # Assert each mode reported a pass by name, as cross-platform-runtime
-          # does, so a dropped mode cannot leave this job green.
+          # Each mode must report a pass by name, so a dropped mode cannot
+          # leave this job green.
           missing=0
           for mode in noauth brokerauth tls postgres; do
             if ! grep -q "SMOKE TEST PASSED (mode=$mode)" smoke-pg.log; then
@@ -1191,49 +1105,37 @@ jobs:
 
   # ── Task isolation: run-as-user integration (Windows) ────────────────────────
   # Runs the Windows run-as-user isolation suite against real local accounts,
-  # with its privileged tier running as SYSTEM — the Windows counterpart to
-  # isolation-integration above, which covers POSIX.
+  # with its privileged tier running as SYSTEM. isolation-integration covers
+  # POSIX.
   #
-  # Two tiers because they need different privileges. CreateProcessAsUser —
-  # which os/exec invokes whenever SysProcAttr.Token is set — requires
-  # SeAssignPrimaryTokenPrivilege, held by default only by LocalSystem and the
-  # LOCAL/NETWORK SERVICE accounts. The windows-latest runner user is an
-  # administrator and does not hold it, so scripts/test-isolation-windows.ps1
-  # registers a scheduled task with /ru SYSTEM for the tests that launch a
-  # process as the target account (TestIsolationWindowsSystem_*). Everything
-  # else — ACL shape, credential storage, impersonated access checks
-  # (TestIsolationWindows_*) — runs directly under the elevated admin shell.
+  # Two tiers because they need different privileges. CreateProcessAsUser,
+  # which os/exec calls whenever SysProcAttr.Token is set, requires
+  # SeAssignPrimaryTokenPrivilege, held by default only by LocalSystem and
+  # the LOCAL/NETWORK SERVICE accounts. The runner user is an administrator
+  # without it, so scripts/test-isolation-windows.ps1 runs the tests that
+  # launch a process as the target account (TestIsolationWindowsSystem_*)
+  # from a scheduled task with /ru SYSTEM. The rest (TestIsolationWindows_*:
+  # ACL shape, credential storage, impersonated access checks) run in the
+  # elevated admin shell.
   #
-  # One arch, matching oidc-integration's rationale rather than
-  # ldap-integration's or isolation-integration's: the Win32 APIs this suite
-  # exercises (ACLs, LogonUserW, CreateProcessAsUser) are not architecture-
-  # dependent, and hosted windows-arm64 runners are not generally available.
+  # One arch: the Win32 APIs involved (ACLs, LogonUserW, CreateProcessAsUser)
+  # are not architecture-dependent, and hosted windows-arm64 runners are not
+  # generally available.
   #
-  # This job also runs the Windows-only unit tests, because nothing else in CI
-  # does. cross-platform-runtime is a runtime smoke job and is skipped on pull
-  # requests (if: github.event_name != 'pull_request'); the only other Windows
-  # coverage is the cross-compile job's `GOOS=windows go vet`, which
-  # type-checks test files but never executes them. Package list below is
-  # every package with `GOOS`-conditional behavior (a `_windows.go`
-  # file, or a `runtime.GOOS == "windows"` branch in its tests) rather than
-  # every package that merely imports something isolation-related:
-  # internal/worker/isolation, internal/worker/executor, internal/worker/staging,
-  # and cmd/sqi-worker each carry dedicated _windows.go/_windows_test.go files;
-  # so do the Windows service packages: internal/winsvc (the service handler,
-  # SCM wrapper, log-directory ACLs and the `service` command group),
-  # internal/secretin, internal/log (the rotating log file's Windows-only test)
-  # and cmd/sqi-server (its service wiring). internal/worker/envutil and
-  # internal/worker/session have no such files but
-  # branch on runtime.GOOS in their test bodies (path separators, credential
-  # handling, profile-env resolution), so running them only on Linux would
-  # never execute the Windows branch of those tests.
+  # This job also runs the Windows-only unit tests, because no other job
+  # executes them: cross-platform-runtime skips pull requests, and
+  # cross-compile's `GOOS=windows go vet` only type-checks. The package list
+  # is every package with GOOS-conditional behavior. internal/worker/isolation,
+  # internal/worker/executor, internal/worker/staging, cmd/sqi-worker and the
+  # Windows service packages (internal/winsvc, internal/secretin, internal/log,
+  # cmd/sqi-server) carry _windows.go or _windows_test.go files.
+  # internal/worker/envutil and internal/worker/session branch on
+  # runtime.GOOS in their tests, so only a Windows run executes the Windows
+  # branch.
   #
   # scripts/test-isolation-windows.ps1 exits 0 with a message when the shell
-  # is not elevated, mirroring how `make test-isolation` exits 0 without
-  # Docker. A bare exit 0 therefore proves nothing, which is why the
-  # assertion step below checks for the not-elevated message and then counts
-  # named PASS lines instead of trusting the exit code — the same shape as
-  # isolation-integration's own assertion step above.
+  # is not elevated, so the assertion step fails on that message and requires
+  # each test's PASS line by name instead of trusting the exit code.
   isolation-integration-windows:
     name: Isolation integration (windows)
     runs-on: windows-latest
@@ -1248,38 +1150,26 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # Lint the Windows-only sources. This is the only place they are linted:
-      # the `lint` step lives in the `test` job on ubuntu-latest, where
-      # golangci-lint type-checks with GOOS=linux and so never compiles a
-      # *_windows.go file — the same kind of gap as `go build` never compiling
-      # _test.go (see the cross-compile job). Without it a defect such as
-      # checking `if e1 != nil` on the third result of syscall.Proc.Call (a
-      # syscall.Errno, therefore never nil) goes unreported, leaving a
-      # fallback branch unreachable and reporting "The operation completed
-      # successfully." as the reason a LogonUserW failed.
+      # The only lint of the Windows-only sources: the ubuntu lint step
+      # type-checks with GOOS=linux and never compiles a *_windows.go file.
       #
-      # The version is pinned to the same v2.13.1 the ubuntu lint step uses;
-      # keep the two in step, or a bump lands here as an unrelated red run.
-      # Scoped to the packages that carry per-GOOS files rather than the whole
-      # module: the worker tree, cmd/sqi-server and cmd/sqi-worker, and the
-      # Windows service support (internal/winsvc, internal/secretin, and
-      # internal/log, whose rotating file has a Windows-only test). A
-      # full-module run on Windows would re-report the same findings the
-      # ubuntu job already gates. ./test/winservice/... is behind the
-      # `winservice` build tag (set in .golangci.yml) and //go:build windows,
-      # so this is the only place it is ever compiled by the linter.
+      # The version matches the ubuntu step's pin; keep the two in step.
+      # Scoped to the packages with per-GOOS code (the worker tree, both cmd
+      # packages, internal/winsvc, internal/secretin, internal/log) plus
+      # internal/brokerauth and internal/tlsutil, because a full-module run
+      # would repeat the ubuntu job's findings. ./test/winservice/... is
+      # behind the `winservice` build tag (set in .golangci.yml) and
+      # //go:build windows, so only this step lints it.
       - name: golangci-lint (windows sources)
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13.1
           args: --timeout=5m ./cmd/sqi-worker/... ./cmd/sqi-server/... ./internal/worker/... ./internal/winsvc/... ./internal/secretin/... ./internal/log/... ./internal/brokerauth/... ./internal/tlsutil/... ./test/winservice/...
 
-      # Windows-only unit tests. See the job comment above for why these
-      # packages and not others. -count=1 disables the test cache so a stale
-      # pass from an earlier step can't stand in for a real run. -v (and the
-      # tee) exist so the assertion steps below have per-test PASS lines to
-      # match against; without them a t.Skip is indistinguishable from a pass
-      # in this step's output.
+      # The job comment explains the package list. -count=1 disables the test
+      # cache so a cached pass cannot stand in for a run. -v and the tee give
+      # the assertion steps per-test PASS lines; without them a skip looks
+      # like a pass.
       - name: Windows unit tests
         shell: bash
         run: |
@@ -1295,29 +1185,19 @@ jobs:
             ./cmd/sqi-server/... \
             ./cmd/sqi-worker/... 2>&1 | tee windows-unit.log
 
-      # Separate from the isolation assertion below on purpose: these are a
-      # different suite with different prerequisites (plain `go test`, no
-      # elevation, no throwaway OS accounts), so a shared list would hide
-      # which prerequisite went missing.
+      # Separate from the isolation assertion below because these have
+      # different prerequisites (plain `go test`, no elevation, no throwaway
+      # accounts), and a shared list would hide which one went missing.
       #
-      # The Windows staging tests below are a mix: the two hardlink-refusal
-      # tests carry a t.Skipf escape hatch for a non-NTFS temp directory, but
-      # the rest — including both junction tests — carry none. A skipped test
-      # verifies nothing, and a green `go test` cannot tell a skip from a pass
-      # — so every one of them is confirmed PASS by name here, the same way
-      # the isolation suite's names are below.
+      # The two hardlink-refusal tests skip on a non-NTFS temp directory, so
+      # every staging test is required to PASS by name.
       #
-      # TestStageOut_SharingViolationIsNotReportedAsEscape is not in this
-      # list because this runner does not enforce a deny-all share mode:
-      # CreateFile(dwShareMode: 0) returns a handle and a second open of the
-      # same path then succeeds, through os.Root and through a plain os.Open
-      # alike. The sharing violation that test classifies cannot be provoked
-      # on this host, so it skips instead of reporting a missing OS behavior
-      # as an sqi defect. The property it proves is required by name below as
-      # TestClassifyStageOutOpenError_SharingViolationIsUnreadable, which
-      # feeds the classifier the errno the kernel really produces and so holds
-      # on every host. Requiring the provocation test by name would demand an
-      # OS behavior the runner does not have.
+      # TestStageOut_SharingViolationIsNotReportedAsEscape is not listed: this
+      # runner does not enforce a deny-all share mode (a second open of a file
+      # held with dwShareMode 0 succeeds), so the test skips here. The
+      # property it covers is required as
+      # TestClassifyStageOutOpenError_SharingViolationIsUnreadable, which feeds
+      # the classifier the real errno and so holds on every host.
       - name: Assert the windows staging tests actually ran
         shell: bash
         run: |
@@ -1332,12 +1212,10 @@ jobs:
           )
           missing=0
           for name in "${expected[@]}"; do
-            # The trailing space anchors the match. `go test -v` emits
-            # "--- PASS: <name> (0.01s)", so the name is always followed by
-            # one; without it this is a prefix match and a future
-            # TestStageOut_OrdinaryFileUnaffectedByX would satisfy
-            # the assertion for TestStageOut_OrdinaryFileUnaffected, which
-            # could then be deleted with this step still green.
+            # The trailing space anchors the match: `go test -v` emits
+            # "--- PASS: <name> (0.01s)". Without it a future
+            # TestStageOut_OrdinaryFileUnaffectedByX would satisfy the check
+            # for TestStageOut_OrdinaryFileUnaffected.
             if ! grep -q -- "--- PASS: $name " windows-unit.log; then
               echo "::error::$name did not pass (skipped, missing, or failed)"
               missing=1
@@ -1348,38 +1226,28 @@ jobs:
           fi
           exit $missing
 
-      # The Windows service support's unit tests, confirmed PASS by name for the
-      # same reason as the staging block above: a skipped test verifies nothing
-      # and a green `go test` cannot tell a skip from a pass. Separate from the
-      # staging list because it is a different feature with different
-      # prerequisites; the real-SCM suite (test/winservice) has its own job.
+      # The Windows service support's unit tests, required to PASS by name
+      # because a green `go test` cannot tell a skip from a pass. The real-SCM
+      # suite (test/winservice) has its own job.
       #
-      # Everything below runs on this job's elevated windows-latest runner and
-      # touches no real service, account or system directory: the service
-      # handler is driven through a fake SCM request channel, the command group
-      # through injected fake operations, and the ACL tests on temp directories
-      # the test owns. A test that can skip on this runner is not listed:
+      # None of these touches a real service, account or system directory:
+      # the handler is driven through a fake SCM request channel, the command
+      # group through injected fake operations, and the ACL tests use temp
+      # directories. Tests that can skip on this runner are not listed:
       #
       # TestNewCommand_EverySubcommandRequiresElevationFirst runs the real
-      # operations and therefore skips whenever the process is elevated, which
-      # this runner is. The property it pins (every subcommand checks for
-      # elevation before doing anything else) is required by name below as
-      # TestNewCommand_ElevationCheckedBeforeAnyOperation, which injects an
-      # operations set whose elevation check fails and so holds at any
-      # elevation.
+      # operations, so it skips when the process is elevated, as this runner
+      # is. Its property (every subcommand checks elevation first) is required
+      # as TestNewCommand_ElevationCheckedBeforeAnyOperation, which injects a
+      # failing elevation check and holds at any elevation.
       #
-      # TestRotatingFile_RenameBlockedByOpenHandleKeepsAppending is not in
-      # this list either: it is expected to skip on this runner, for the same
-      # reason as the staging test above. The runner does not enforce a
-      # deny-all share mode (0); whether it blocks renaming a file held open
-      # without FILE_SHARE_DELETE is not measured separately, so the test
-      # probes the host first (renames a scratch file held by such a handle)
-      # and skips when the rename succeeds, instead of reporting a missing OS
-      # behavior as an sqi defect. The
-      # property it proves (a failed rotation rename keeps appending, loses
-      # nothing, and retries later) is required by name below as
+      # TestRotatingFile_RenameBlockedByOpenHandleKeepsAppending probes whether
+      # the host blocks renaming a file held open without FILE_SHARE_DELETE
+      # and skips when it does not, which is expected here. Its property (a
+      # failed rotation rename keeps appending, loses nothing, and retries
+      # later) is required as
       # TestRotatingFile_RenameFailureKeepsAppendingAndRetriesLater, which
-      # injects the failure and so holds on every host.
+      # injects the failure and holds on every host.
       - name: Assert the windows service unit tests actually ran
         shell: bash
         run: |
@@ -1442,9 +1310,9 @@ jobs:
             TestRotatingFile_BackupShiftFailurePutsCurrentFileBack
             TestRotatingFile_RecoversAfterFailedReopen
             TestRotatingFile_CloseAfterUnrecoveredReopenIsNil
-            # Secret reading (internal/secretin) — the non-console fallback
-            # only: these tests read from a strings.Reader, which is not an
-            # *os.File, so the no-echo console path is not exercised here.
+            # Secret reading (internal/secretin), non-console fallback only:
+            # these read from a strings.Reader, so the no-echo console path
+            # is not exercised.
             TestReadLine_PipedInputUnchanged
             TestReadLine_EmptyInputErrors
             # Per-binary service wiring.
@@ -1457,8 +1325,7 @@ jobs:
           )
           missing=0
           for name in "${expected[@]}"; do
-            # The trailing space anchors the match: see the staging block
-            # above.
+            # The trailing space anchors the match (see the staging step).
             if ! grep -q -- "--- PASS: $name " windows-unit.log; then
               echo "::error::$name did not pass (skipped, missing, or failed)"
               missing=1
@@ -1475,11 +1342,9 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass `
             -File scripts/test-isolation-windows.ps1 2>&1 | Tee-Object -FilePath isolation-windows.log
 
-      # Does not trust a bare exit-0 from the script: asserts the suite
-      # actually executed (the runner was elevated) and that every one of the
-      # 17 named tests — 8 TestIsolationWindows_* (elevated admin) plus
-      # 9 TestIsolationWindowsSystem_* (SYSTEM) — is confirmed PASS by name, so
-      # a skip, a build failure, or a partial run all fail the job.
+      # The script exits 0 when not elevated, so this fails on that message
+      # and requires all 17 tests to PASS by name: 8 TestIsolationWindows_*
+      # (elevated admin) and 9 TestIsolationWindowsSystem_* (SYSTEM).
       - name: Assert the suite actually ran
         shell: bash
         run: |
@@ -1508,12 +1373,9 @@ jobs:
           )
           missing=0
           for name in "${expected[@]}"; do
-            # The trailing space anchors the match — same reasoning as the
-            # staging block above. `go test -v` emits
-            # "--- PASS: <name> (0.01s)", so a passing name is always followed
-            # by a space; without it this is a prefix match and a future
-            # TestIsolationWindowsSystem_CapableXyz would satisfy the
-            # assertion for TestIsolationWindowsSystem_Capable.
+            # The trailing space anchors the match (see the staging step).
+            # Without it a future TestIsolationWindowsSystem_CapableXyz would
+            # satisfy the check for TestIsolationWindowsSystem_Capable.
             if ! grep -q -- "--- PASS: $name " isolation-windows.log; then
               echo "::error::$name did not pass"
               missing=1
@@ -1527,19 +1389,16 @@ jobs:
   # ── Windows service: real Service Control Manager ────────────────────────────
   # Drives both binaries through the real Windows Service Control Manager:
   # install, start, stop, uninstall, a hand-registered New-Service worker, a
-  # startup failure's trace, and a --user account.
-  # The fake-driven unit tests for the same code run in
-  # isolation-integration-windows above; this is the only job that installs a
-  # real service.
+  # startup failure's trace, and a --user account. This is the only job that
+  # installs a real service; the fake-driven unit tests run in
+  # isolation-integration-windows.
   #
-  # windows-latest runners are elevated. The suite prints "not elevated" and
-  # exits 0 without running when they are not — the same shape as the isolation
-  # script above — so a bare exit 0 proves nothing, and the assertion step fails
-  # on that message and requires every test PASS by name.
+  # The suite prints "not elevated" and exits 0 without running on a
+  # non-elevated shell, so the assertion step fails on that message and
+  # requires every test to PASS by name.
   #
-  # One arch, for the same reason as isolation-integration-windows: the Win32
-  # APIs this exercises (the SCM, LogonUserW, the LSA) are not architecture-
-  # dependent, and hosted windows-arm64 runners are not generally available.
+  # One arch: the SCM, LogonUserW and the LSA are not architecture-dependent,
+  # and hosted windows-arm64 runners are not generally available.
   winservice-integration:
     name: Windows service integration
     runs-on: windows-latest
@@ -1554,16 +1413,15 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # -timeout matches `make test-service-windows`. The suite builds both
-      # binaries itself (in TestMain), so no separate build step is needed.
+      # -timeout matches `make test-service-windows`. TestMain builds both
+      # binaries.
       - name: Run the Windows service suite
         shell: bash
         run: |
           go test -tags winservice -count=1 -v -timeout 20m ./test/winservice/... 2>&1 | tee winservice.log
 
-      # Does not trust a bare exit-0: asserts the suite actually executed (the
-      # runner was elevated) and that each of the six tests is confirmed PASS by
-      # name, so a skip, a build failure, or a partial run all fail the job.
+      # Fails on the not-elevated message and unless all six tests PASS by
+      # name; see the job comment.
       - name: Assert the suite actually ran
         shell: bash
         run: |
@@ -1581,8 +1439,8 @@ jobs:
           )
           missing=0
           for name in "${expected[@]}"; do
-            # The trailing space anchors the match — same reasoning as the
-            # isolation-integration-windows job's assertion steps.
+            # The trailing space anchors the match (see
+            # isolation-integration-windows).
             if ! grep -q -- "--- PASS: $name " winservice.log; then
               echo "::error::$name did not pass (skipped, missing, or failed)"
               missing=1
@@ -1594,36 +1452,21 @@ jobs:
           exit $missing
 
   # ── Integration suite (whole package) ────────────────────────────────────────
-  # Runs every file under test/integration/ via `make test-integration`, rather
-  # than naming individual tests in a -run regex the way the LDAP, OIDC, and
-  # isolation jobs below do. Those three name their tests because each needs
-  # its own runner matrix or container prerequisites; everything else in the
-  # package — broker auth, EXPR parameter binding and end-to-end execution,
-  # failure-reason propagation (both in-process and against a real worker
-  # binary), retry/auto-park behavior, and product retry-override submission —
-  # shares no such prerequisite, so a single whole-package run covers a new
-  # test the moment it is added instead of only if someone also remembers to
-  # list it in a job. `go build`s a real sqi-worker binary along the way (see
-  # worker_binary_test.go); no other tooling is required beyond Go itself.
+  # Runs all of test/integration/ with `make test-integration`, with no -run
+  # filter, so a new test is covered as soon as it is added. It builds a real
+  # sqi-worker binary along the way (see worker_binary_test.go) and needs
+  # nothing beyond Go, Docker and ffmpeg.
   #
-  # LDAP, OIDC, and isolation tests live in this same package and this job
-  # exercises them too, but ubuntu-latest ships Docker so they are expected to
-  # run rather than skip; the LDAP and Keycloak images are pulled explicitly
-  # first so a registry hiccup fails here with a clear message instead of
-  # inside the test as a cold-pull timeout that would read as a skip. The
-  # isolation tests, in contrast, require running as root (see
-  # isolation-integration below) and are expected to skip on this ordinary
-  # runner — that is fine, and this job asserts nothing about them by name.
+  # The LDAP and OIDC tests run here too, against containers. Their images are
+  # pulled first so a registry problem fails with a clear message instead of
+  # a cold-pull timeout inside the test that reads as a skip. The isolation
+  # tests need root (see isolation-integration) and skip here; this job
+  # asserts nothing about them.
   #
-  # A green `go test` here proves nothing on its own if the whole suite
-  # collected zero tests (a build-tag regression, a stray
-  # -run filter). This job does not trust the exit code alone: it requires a
-  # test named from every file in the package that has no dedicated CI job of
-  # its own — one exception is authfixture_test.go, which holds only helpers
-  # shared by ldap_test.go and oidc_test.go and declares no test function of
-  # its own to name. A confirmed-skip line for LDAP/OIDC/isolation does not
-  # fail the job; only a missing PASS among the required names, or a nonzero
-  # exit, does.
+  # A green `go test` proves nothing if the suite collected no tests (a
+  # build-tag regression, a stray -run filter), so the job also requires a
+  # fixed list of tests to PASS by name. A skip in the LDAP, OIDC or
+  # isolation tests does not fail the job.
   integration-tests:
     name: Integration suite
     runs-on: ubuntu-latest
@@ -1638,11 +1481,9 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # Pulled explicitly for the same reason ldap-integration and
-      # oidc-integration below pull them: a registry problem fails here with a
-      # clear message rather than surfacing inside the test as a cold-pull
-      # timeout, which the test's own Docker-unavailable handling would read
-      # as an ordinary skip.
+      # Pulled explicitly so a registry problem fails here with a clear
+      # message, not inside the test as a cold-pull timeout that reads as a
+      # skip.
       - name: Pull OpenLDAP image
         run: docker pull osixia/openldap:1.5.0
 
@@ -1662,22 +1503,15 @@ jobs:
       - name: Run the integration suite
         run: |
           set +e
-          # go test's own default (10m per package) leaves little headroom
-          # once the LDAP and Keycloak containers are in the run: up to ~90s
-          # for LDAP readiness plus up to ~180s for Keycloak, on top of the
-          # suite's own runtime, which is dominated by that container
-          # readiness rather than by the tests themselves. 15m is set
-          # explicitly here, through INTEGRATION_TEST_FLAGS, so a slow runner
-          # gets a clear failure instead of a default timeout landing close
-          # enough to the estimate to be a coin flip; local runs are
-          # unaffected since the Makefile leaves this empty by default.
-          make test-integration INTEGRATION_TEST_FLAGS="-timeout 15m" 2>&1 | tee integration-output.log
+          # The Makefile's INTEGRATION_TEST_FLAGS default (-timeout 20m)
+          # covers the backup/restore tests' reconcile-grace waits plus up to
+          # ~90s of LDAP and ~180s of Keycloak container readiness.
+          make test-integration 2>&1 | tee integration-output.log
           status=${PIPESTATUS[0]}
           set -e
 
-          # One name from each file in test/integration/ that has no dedicated
-          # CI job of its own, so a build-tag or filter regression that let the
-          # suite collect zero tests cannot pass this job.
+          # Required by name, so a build-tag or filter regression that leaves
+          # the suite collecting no tests cannot pass this job.
           expected=(
             TestDefaultConfig_NoBrokerAuth
             TestRevocation_DisconnectsAndReclaims
@@ -1693,6 +1527,17 @@ jobs:
             TestAutoRetry_RetryThenSucceed
             TestTLSEndToEnd
             TestTLSWorkerWithoutCAIsRefused
+            # Skips without a working Python 3. Runs the Houdini preset's
+            # driver against every chunk spelling sqi emits.
+            TestHoudiniROPRender_DriverRendersEachRange
+            # The After Effects macOS presets' sh wrapper, run here with its
+            # os.family gate stripped because no macOS runner exists
+            # (preset-harness-windows asserts the Windows wrapper). The parent
+            # passes even when every subtest skips (newTier3Env skips on a
+            # host it cannot stage), so one leaf is named too: aerender
+            # logging an error and exiting 0, on a macOS variant.
+            TestPresetAfterEffects_WrapperFailsOnLoggedError
+            TestPresetAfterEffects_WrapperFailsOnLoggedError/logged-error-exit-0/after-effects-render-macos
           )
           missing=0
           for name in "${expected[@]}"; do
@@ -1708,17 +1553,15 @@ jobs:
           echo "Confirmed all ${#expected[@]} named integration tests passed, and the whole suite exited 0."
 
   # ── mDNS discovery over real multicast ───────────────────────────────────────
-  # A separate job, not folded into integration-tests, for two reasons. Whether
-  # a hosted runner can do multicast on loopback depends on the runner, so
-  # isolating it means a runner that cannot fails this job precisely instead of
-  # taking the whole integration suite down with an unrelated-looking error.
-  # And the real-binary
-  # test binds the test broker to all interfaces, which should happen only when
-  # discovery testing was asked for — `make test-integration` skips it.
+  # Separate from integration-tests for two reasons. Whether a hosted runner
+  # can multicast on loopback depends on the runner, so a runner that cannot
+  # fails this job alone with a clear error. And the real-binary test binds
+  # the test broker to all interfaces, which should happen only when
+  # discovery testing was asked for; `make test-integration` skips it.
   #
   # SQI_TEST_REQUIRE_MULTICAST=1 (set by `make test-discovery`) turns the
-  # capability skip into a failure, so this job cannot go green while covering
-  # nothing — the same guard ldap-integration and isolation-integration use.
+  # capability skip into a failure, so this job cannot pass while covering
+  # nothing.
   discovery-integration:
     name: mDNS discovery (real multicast)
     runs-on: ubuntu-latest
@@ -1734,37 +1577,30 @@ jobs:
           cache: true
 
       # The advertisement carries "<hostname>.local", which the worker dials.
-      # macOS answers that through mDNSResponder; a stock ubuntu runner has no
-      # mDNS NSS module, so the worker would discover the server and then fail
-      # to dial it.
+      # macOS resolves that through mDNSResponder; a stock ubuntu runner has
+      # no mDNS NSS module, so the worker would discover the server and then
+      # fail to dial it.
       #
-      # A hosts entry rather than libnss-mdns + avahi: avahi-daemon would want
-      # port 5353, which is the port the test's own responder binds, so
-      # installing it to fix resolution risks breaking advertisement. Mapping
-      # the name to loopback needs no daemon and cannot conflict.
+      # A hosts entry instead of libnss-mdns and avahi: avahi-daemon would
+      # take port 5353, which the test's own responder binds.
       - name: Resolve this host's mDNS name locally
         run: |
           echo "127.0.0.1 $(hostname).local" | sudo tee -a /etc/hosts
           getent hosts "$(hostname).local" || {
             echo "::error::$(hostname).local still does not resolve"; exit 1; }
 
-      # Two things a Linux loopback lacks that macOS lo0 has by default, and the
-      # loopback-only advertisement needs both. The tests advertise on loopback
-      # only — deliberately, so a run never announces a service on the network it
-      # happens to be on — and refuse to fall back to a real interface, so
-      # neither of these can be skipped: without them the suite cannot run at all.
+      # The tests advertise on loopback only, so a run never announces a
+      # service on the network it is on, and never fall back to a real
+      # interface. That needs two things macOS lo0 has and Linux lo lacks:
       #
-      #  1. The MULTICAST flag. Linux `lo` ships without it, and the tests select
-      #     their interfaces by that flag, so an untouched `lo` looks to them like
-      #     a host that cannot do multicast.
-      #  2. A non-loopback address. zeroconf fills the advertisement's address
-      #     records from the interface's own addresses and discards loopback ones
-      #     (addrsForInterface: `!ipnet.IP.IsLoopback()`); a Linux `lo` carries
-      #     only 127.0.0.1 and ::1, so registering on loopback alone fails
-      #     outright with "Could not determine host IP addresses". macOS lo0 also
-      #     carries fe80::1, which is why this does not happen there.
-      #     Adding that same link-local address makes the two behave alike — it
-      #     is scoped to the link and is not routed anywhere.
+      #  1. The MULTICAST flag. The tests select interfaces by it, so an
+      #     untouched `lo` looks like a host that cannot multicast.
+      #  2. A non-loopback address. zeroconf builds the advertisement's address
+      #     records from the interface's addresses minus loopback ones
+      #     (addrsForInterface: `!ipnet.IP.IsLoopback()`). Linux `lo` has only
+      #     127.0.0.1 and ::1, so registration fails with "Could not determine
+      #     host IP addresses". macOS lo0 also has fe80::1; adding it here
+      #     makes the two alike, and a link-local address is not routed.
       - name: Prepare loopback for mDNS
         run: |
           ip -o addr show lo
@@ -1804,18 +1640,18 @@ jobs:
           echo "Confirmed all ${#expected[@]} discovery tests passed over real multicast."
 
   # Runs the official OpenJD conformance suite (a pinned submodule under
-  # third_party/) against internal/openjd. Tagged `conformance`, so it does not
-  # run in the default `make test`.
+  # third_party/) against internal/openjd. Tagged `conformance`, so the
+  # default `make test` does not run it.
   #
-  # The assertion step below is not redundant. `make test-conformance` would
-  # report success if the walker collected zero fixtures, so this job does not
-  # trust the exit code alone — it requires the test names in the output, the
-  # same guard ldap-integration and isolation-integration use.
+  # `make test-conformance` would succeed if the walker collected no
+  # fixtures, so the assertion step requires each test's PASS line.
   #
   # TestConformance_Templates scores EXPR/job_templates along with the other
   # suites. TestConformance_LetBindingFixtures asserts named EXPR fixtures by
   # their exact rejection message, so requiring it keeps a zero-fixture run
-  # from looking green.
+  # from looking green. TestConformance_TaskChunkingJobOutputs scores the
+  # TASK_CHUNKING jobs/ fixtures (how chunks are spelled and sized), which
+  # TestConformance_Templates does not read.
   conformance:
     name: OpenJD conformance
     runs-on: ubuntu-latest
@@ -1841,30 +1677,25 @@ jobs:
           grep -q -- '--- PASS: TestConformance_SuitePresent' /tmp/conformance.log
           grep -q -- '--- PASS: TestConformance_Templates' /tmp/conformance.log
           grep -q -- '--- PASS: TestConformance_LetBindingFixtures' /tmp/conformance.log
+          grep -q -- '--- PASS: TestConformance_TaskChunkingJobOutputs' /tmp/conformance.log
 
   # ── ffmpeg reference presets: execute them ───────────────────────────────────
-  # The shipped ffmpeg presets (presets/sqi/ffmpeg-*.yaml) are covered three
-  # ways: internal/product validates them against the schema, exprpresetcost
-  # pins the portable variant's submission cost, and test/integration runs them
-  # through a real server and worker and probes the video they produce. Only the
-  # third can see a command line that parses perfectly and transcodes nothing,
-  # such as a BOM'd concat list or an embedded join script with no .ps1
-  # filename.
+  # Runs the shipped ffmpeg presets (presets/sqi/ffmpeg-*.yaml) through a real
+  # server and worker and probes the video they produce. Schema validation
+  # (internal/product) and the cost pin (exprpresetcost) cannot see a command
+  # line that parses and transcodes nothing, such as a BOM'd concat list or
+  # an embedded join script with no .ps1 filename.
   #
-  # That third layer skips without ffmpeg and ffprobe on PATH. The `test` job
-  # also installs ffmpeg, but the registry it enforces there
-  # (presets/validation-tiers.yaml) names only one tier2 case per preset; the
-  # rest of TestFFmpegPreset_* -- the ceiling, zero-padding and cost-ceiling
-  # cases -- are named nowhere else. This job installs the binaries and requires
-  # each PASS line by name, the same guard conformance, expr-oracle,
-  # ldap-integration and isolation-integration use.
+  # These tests skip without ffmpeg and ffprobe on PATH. The `test` job also
+  # installs ffmpeg, but its registry (presets/validation-tiers.yaml) names
+  # only one tier2 case per preset; the ceiling, zero-padding and
+  # cost-ceiling cases are required nowhere else. This job requires each PASS
+  # line by name.
   #
-  # Linux is where the bash-joined variant's coverage is required by name below.
-  # That variant does not gate on an OS -- bash is not POSIX-only, git-bash
-  # puts it on Windows too -- so it also runs on the Windows job, but only
-  # opportunistically there (see that job's own note). The PowerShell-gated
-  # variant runs in preset-harness-windows below, because it can run
-  # nowhere but a Windows runner.
+  # The bash-joined variant is required here. It has no OS gate (Git Bash
+  # puts bash on Windows), so it also runs in preset-harness-windows, but is
+  # not required there (see that job's note). The PowerShell-joined variant
+  # can run only on Windows and is required in preset-harness-windows.
   ffmpeg-presets:
     name: ffmpeg reference presets (execution)
     runs-on: ubuntu-latest
@@ -1879,9 +1710,8 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # Explicit rather than relying on the runner image: ffmpeg being present
-      # by accident is an undeclared dependency that disappears on an image
-      # bump, and without it the tests skip rather than fail.
+      # Installed explicitly: an ffmpeg that comes with the runner image can
+      # disappear on an image bump, and without it the tests skip.
       - name: Install ffmpeg
         run: |
           sudo apt-get update
@@ -1895,9 +1725,9 @@ jobs:
           go test -run TestFFmpegPreset -v -timeout 900s ./test/integration/ 2>&1 \
             | tee /tmp/ffmpeg-presets.log
 
-      # Each case is named individually so that a preset losing its coverage --
-      # by being skipped, renamed, or deleted -- fails here rather than
-      # shrinking the suite unnoticed. The PowerShell-joined case is absent: it is Windows-only, and preset-harness-windows asserts it.
+      # Each case is named, so a case that is skipped, renamed or deleted
+      # fails here. The PowerShell-joined case is Windows-only and asserted in
+      # preset-harness-windows.
       - name: Assert every linux-runnable case actually ran
         run: |
           for name in \
@@ -1915,30 +1745,26 @@ jobs:
 
   # ── Preset harness, on Windows ───────────────────────────────────────────────
   # TestPresetTier1Argv, TestPresetTier3 and TestZZPresetTierRegistrySatisfied
-  # are all untagged, so they run in the ordinary `make test` suite -- and that
-  # suite runs only on ubuntu-latest. Running them on Windows is not
-  # redundant: the Tier-1 goldens it compares against
-  # are POSIX-spelled, and phase 3 is a host context, so an EXPR preset
-  # resolving "/mnt/show/a.mov" really does produce a backslash-separated
-  # spelling of it on a Windows worker. internal/presettest's Render() undoes
-  # that flavor so one reviewed golden serves every host; if it ever stops doing
-  # so, the argv sqi ships to a Windows renderer has changed and no ubuntu job
-  # can see it. The registry's tier2 blocks also name Windows in `required_on`,
-  # so this is the only job that can prove ffmpeg's real-execution cases run
-  # here rather than skip.
+  # are untagged, so `make test` runs them, but only on ubuntu-latest. The
+  # Tier-1 goldens are POSIX-spelled, and the worker resolves an EXPR
+  # preset's paths in the host's flavor, so "/mnt/show/a.mov" becomes a
+  # backslash-separated path on a Windows worker. internal/presettest's
+  # Render() undoes that so one golden serves every host; if it stops doing
+  # so, the argv sqi sends a Windows renderer has changed and no ubuntu job
+  # can see it. The registry's tier2 blocks also name windows in
+  # `required_on`, so only this job can prove those cases run there.
   #
-  # Its own job rather than a step on isolation-integration-windows: that one
-  # is a run-as-user suite needing an elevated runner and a SYSTEM re-launch, and a
-  # preset regression reported under "Isolation integration (windows)" names the
-  # wrong thing. This needs no elevation and no containers.
+  # Its own job, not a step of isolation-integration-windows, so a preset
+  # failure is reported under its own name. It needs no elevation and no
+  # containers.
   #
-  # Every tier runs in one `go test` invocation.
-  # TestZZPresetTierRegistrySatisfied asserts on what the tier tests recorded in
-  # this process (internal/presettest's outcome sink), so splitting the tiers
-  # across steps or jobs makes the registry check fail with "never reported" in
-  # each of them.
+  # TestZZPresetTierRegistrySatisfied checks what the tier tests recorded in
+  # this process (internal/presettest's outcome sink), so every tier runs in
+  # one `go test` invocation; splitting them makes the registry check fail
+  # with "never reported".
   #
-  # Runs on every push, and on pull requests only when the presets filter fires.
+  # Runs on every push, and on pull requests only when the presets filter
+  # fires.
   preset-harness-windows:
     name: Preset harness (windows)
     runs-on: windows-latest
@@ -1957,17 +1783,15 @@ jobs:
       - name: Install ffmpeg
         run: choco install ffmpeg --yes --no-progress
 
-      # Explicit, for the reason ffmpeg is: python-sequence's tier2 claim
-      # (TestPresetPythonSequence_LauncherContract) is required on windows, and
-      # a Python present on the image by accident disappears on an image bump.
+      # Installed explicitly, like ffmpeg: python-sequence's tier2 case
+      # (TestPresetPythonSequence_LauncherContract) is required on windows,
+      # and a Python that comes with the image can disappear on an image bump.
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
-      # One invocation covering every tier. TestZZPresetTierRegistrySatisfied
-      # asserts on an in-process sink, so splitting the tiers across steps or
-      # jobs makes it fail with "never reported" in each of them.
+      # One invocation for every tier; see the job comment.
       - name: Run the whole preset harness
         shell: bash
         run: |
@@ -1975,19 +1799,21 @@ jobs:
           go test -count=1 -run 'TestPreset|TestZZPreset|TestFFmpegPreset|TestScriptPowerShell' -v -timeout 1800s ./test/integration/ 2>&1 |
             tee preset-harness-windows.log
 
-      # Not redundant with the step above. A `-run` regex that matched nothing --
-      # after a rename, or a registry that failed to load -- exits 0 having
-      # asserted nothing. A trailing space anchors each name:
-      # `go test -v` emits "--- PASS: <name> (0.01s)", so without it these are
-      # prefix matches a future TestPresetTier3Xyz would satisfy on their behalf.
-      # Only the ffmpeg name, a full test name nothing else extends, goes
-      # without one.
+      # A `-run` regex that matched nothing (after a rename, or a registry
+      # that failed to load) exits 0 having asserted nothing.
+      # TestPresetAfterEffects_WrapperFailsOnLoggedError pins the After
+      # Effects Windows wrapper's exit status, which no registry case covers;
+      # one leaf subtest is named too, because the parent passes even when
+      # every subtest skips. A trailing space anchors each name: `go test -v`
+      # emits "--- PASS: <name> (0.01s)", so without it a future
+      # TestPresetTier3Xyz would satisfy the check. Only the ffmpeg name,
+      # which nothing else extends, goes without one.
       #
       # TestFFmpegPreset_BashSegmentTranscodeJoins runs here but is not
       # listed, and the registry's tier2 required_on omits windows for it: it
-      # skips when bash.exe is not resolvable by Windows PATH lookup from the
-      # worker process, which has not been observed on this runner image.
-      # Promote it (here and in the registry) once a run here shows a PASS.
+      # skips when the worker process cannot find bash.exe on PATH, and no
+      # run on this image has shown it passing. Add it here and in the
+      # registry once one does.
       - name: Assert every tier actually ran
         shell: bash
         run: |
@@ -1995,6 +1821,8 @@ jobs:
           for name in "TestPresetTier1Argv " "TestPresetTier3 " "TestZZPresetTierRegistrySatisfied " \
                       "TestFFmpegPreset_PowerShellSegmentTranscodeJoins" \
                       "TestScriptPowerShell_ExitStatus " \
+                      "TestPresetAfterEffects_WrapperFailsOnLoggedError " \
+                      "TestPresetAfterEffects_WrapperFailsOnLoggedError/logged-error-exit-0/after-effects-render-windows " \
                       "TestPresetPythonSequence_LauncherContract "; do
             if ! grep -q -- "--- PASS: ${name}" preset-harness-windows.log; then
               echo "::error::${name} did not run to a PASS on windows"
@@ -2002,23 +1830,18 @@ jobs:
             fi
           done
           [ "$missing" -eq 0 ] || exit 1
-          echo "Confirmed tiers 1, 2 and 3, the Python launcher and the registry check ran on windows."
+          echo "Confirmed tiers 1, 2 and 3, the Python launcher, the After Effects wrapper and the registry check ran on windows."
 
-  # Differential-tests internal/openjd/expr against the implementation the EXPR
-  # specification names as its reference — the openjd.expr namespace of
-  # openjd-model, which is a thin re-export layer over a compiled Rust crate
-  # rather than a Python implementation. Tagged `oracle`, so it does not run in
-  # the default `make test`.
+  # Differential-tests internal/openjd/expr against the EXPR reference
+  # implementation, the openjd.expr namespace of openjd-model (a re-export
+  # layer over a compiled Rust crate). Tagged `oracle`, so the default
+  # `make test` does not run it.
   #
-  # The assertion step below is not redundant. `make test-expr-oracle` exits 0
-  # when no interpreter has the package importable, and the test itself skips
-  # in that case — so a green job would otherwise prove nothing.
-  # Requiring the PASS line is the same guard conformance, ldap-integration and
-  # isolation-integration use.
+  # `make test-expr-oracle` exits 0 and the test skips when no interpreter
+  # can import the package, so the assertion step requires the PASS line.
   #
-  # One arch: the corpus exercises expression semantics, and no arch divergence
-  # is plausible for either side (Go's evaluator is pure Go; the reference ships
-  # as an abi3 wheel built per-arch by upstream).
+  # One arch: the corpus tests expression semantics. sqi's evaluator is pure
+  # Go, and upstream builds the reference's abi3 wheel per arch.
   expr-oracle:
     name: EXPR reference-implementation oracle
     runs-on: ubuntu-latest
@@ -2047,10 +1870,9 @@ jobs:
           grep -q -- '--- PASS: TestExprOracle_MatchesReferenceImplementation' /tmp/expr-oracle.log
 
   # ── Python client: lint + type-check ─────────────────────────────────────────
-  # ruff and mypy are driven by config/target versions (mypy targets the 3.9
-  # floor for src and 3.13 for tests via flags), not by the interpreter they run
-  # on, so they run once on a single Python rather than across the matrix. (A
-  # matrix here would only vary the resolved mypy *version*, which is noise.)
+  # ruff and mypy follow their configured target versions (mypy checks src at
+  # the 3.9 floor and tests at 3.13), not the interpreter they run on, so they
+  # run once on one Python.
   python-lint:
     name: Python client lint + type-check
     runs-on: ubuntu-latest
@@ -2085,9 +1907,8 @@ jobs:
         run: mypy src && mypy --python-version=3.13 tests
 
   # ── Python client: unit tests ────────────────────────────────────────────────
-  # Runtime behavior is what varies by interpreter, so the unit suite
-  # (with its coverage gate) runs across the supported range: 3.9 floor through
-  # the latest stable.
+  # Runtime behavior varies by interpreter, so the unit suite and its coverage
+  # gate run on every supported version from the 3.9 floor up.
   python-test:
     name: Python client tests (${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -2118,8 +1939,8 @@ jobs:
         run: pytest
 
   # ── Python client: integration tests ─────────────────────────────────────────
-  # Boots the real sqi-server/sqi-worker binaries (downloaded from the test job)
-  # and runs the @pytest.mark.integration suite. One interpreter is sufficient.
+  # Runs the @pytest.mark.integration suite against the real binaries from
+  # the test job, on one interpreter.
   python-integration:
     name: Python client integration tests
     runs-on: ubuntu-latest
@@ -2149,15 +1970,15 @@ jobs:
         working-directory: clients/python
         run: pip install -e '.[yaml,ws,dev]'
 
-      # The harness finds the binaries at <repo-root>/bin by default; --no-cov
-      # because the integration subset alone does not meet the unit coverage gate.
+      # The harness finds the binaries in <repo-root>/bin. --no-cov because
+      # the integration subset alone does not meet the unit coverage gate.
       - name: Integration tests
         working-directory: clients/python
         run: pytest -m integration --no-cov
 
   # ── Python client: package build check ───────────────────────────────────────
-  # Builds the sdist + wheel and validates the metadata, so a broken package
-  # fails the PR rather than the release.
+  # Builds the sdist and wheel and checks the metadata, so a broken package
+  # fails the PR instead of the release.
   python-package:
     name: Python client package check
     runs-on: ubuntu-latest
@@ -2185,10 +2006,10 @@ jobs:
         run: twine check dist/*
 
   # ── Submitter client: lint + type-check ──────────────────────────────────────
-  # Mirrors python-lint above: ruff and mypy run once on a single Python rather
-  # than across the matrix. The local sqi-sdk checkout is installed first (`pip
-  # install -e ../python`) so the submitter's `sqi-sdk>=0.1` dependency resolves
-  # to the in-repo package, never a published PyPI release.
+  # Like python-lint, ruff and mypy run once on one Python. The in-repo
+  # sqi-sdk is installed first (`pip install -e ../python`) so the
+  # submitter's `sqi-sdk>=0.1` dependency resolves to it, not to a PyPI
+  # release.
   submitter-lint:
     name: Submitter client lint + type-check
     runs-on: ubuntu-latest
@@ -2223,9 +2044,8 @@ jobs:
         run: mypy src && mypy --python-version=3.13 tests
 
   # ── Submitter client: unit tests ─────────────────────────────────────────────
-  # Runtime behavior is what varies by interpreter, so the unit suite
-  # (with its coverage gate) runs across the supported range: 3.9 floor through
-  # the latest stable.
+  # Runtime behavior varies by interpreter, so the unit suite and its coverage
+  # gate run on every supported version from the 3.9 floor up.
   submitter-test:
     name: Submitter client tests (${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -2256,10 +2076,9 @@ jobs:
         run: pytest
 
   # ── Submitter client: Qt widget tests ────────────────────────────────────────
-  # PySide6 widget/dialog tests are excluded from the main coverage-gated suite
-  # (see pyproject.toml tool.coverage.run.omit) and run separately here, headless
-  # via Qt's offscreen platform plugin. One interpreter is sufficient — this is
-  # exercising Qt binding behavior, not sqi-submitter's own version matrix.
+  # The PySide6 widget and dialog modules are left out of the main coverage
+  # gate (pyproject.toml tool.coverage.run.omit); their tests run here,
+  # headless through Qt's offscreen platform plugin, on one interpreter.
   submitter-qt-test:
     name: Submitter client Qt widget tests
     runs-on: ubuntu-latest
@@ -2279,10 +2098,9 @@ jobs:
           cache: pip
           cache-dependency-path: clients/submitter/pyproject.toml
 
-      # PySide6's offscreen QPA platform plugin needs a few system libraries
-      # that ubuntu-latest runners do not ship by default. libegl1 + libgl1
-      # satisfy Qt's GL loader, libxkbcommon0 satisfies the keyboard/input
-      # abstraction the offscreen plugin still initializes.
+      # The offscreen plugin needs libraries ubuntu-latest lacks: libegl1 and
+      # libgl1 for Qt's GL loader, libxkbcommon0 for the keyboard layer the
+      # plugin still initializes.
       - name: Install PySide6 offscreen platform dependencies
         run: |
           sudo apt-get update

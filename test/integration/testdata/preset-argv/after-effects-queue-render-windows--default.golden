@@ -1,0 +1,30 @@
+preset: after-effects-queue-render-windows
+case:   default
+params:
+  SceneFile=C:\Show Files\spot\o'brien_v002.aep
+
+step "Render" — 1 task
+
+task 1/1  name="Render"
+  command: powershell
+  args:
+    [0]  -NoProfile
+    [1]  -NonInteractive
+    [2]  -ExecutionPolicy
+    [3]  Bypass
+    [4]  -File
+    [5]  <WORKDIR>
+    [6]  -project
+    [7]  C:\Show Files\spot\o'brien_v002.aep
+    [8]  -v
+    [9]  ERRORS_AND_PROGRESS
+    [10]  -close
+    [11]  DO_NOT_SAVE_CHANGES
+  embedded file "aerender_wrapper" (aerender_wrapper.ps1):
+    ﻿trap { [Console]::Error.WriteLine('aerender_wrapper: ' + $_); exit 1 }
+    $ErrorActionPreference = 'Continue'
+    $failed = $false
+    & aerender @args 2>&1 | ForEach-Object { $line = [string]$_; $line; if ($line -like '*aerender ERROR*') { $failed = $true } }
+    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    if ($failed) { exit 1 }
+    exit 0

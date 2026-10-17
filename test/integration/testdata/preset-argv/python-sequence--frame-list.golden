@@ -94,18 +94,18 @@ task 2/5  name="Run[Frame=5-5,Frame.End=5,Frame.Start=5]"
   embedded file "script" (script.py):
     print('hello')
 
-task 3/5  name="Run[Frame=10-14,Frame.End=14,Frame.Start=10]"
+task 3/5  name="Run[Frame=10-13,Frame.End=13,Frame.Start=10]"
   task params:
-    Frame=10-14
-    Frame.End=14
+    Frame=10-13
+    Frame.End=13
     Frame.Start=10
   command: python3
   args:
     [0]  <WORKDIR>
     [1]  <WORKDIR>
     [2]  10
-    [3]  14
-    [4]  10-14
+    [3]  13
+    [4]  10-13
   embedded file "launcher" (launcher.py):
     # sqi python-sequence launcher: runs the user's script as a child
     # process with the four SQI_FRAME* variables added to its
@@ -137,18 +137,18 @@ task 3/5  name="Run[Frame=10-14,Frame.End=14,Frame.Start=10]"
   embedded file "script" (script.py):
     print('hello')
 
-task 4/5  name="Run[Frame=15-19,Frame.End=19,Frame.Start=15]"
+task 4/5  name="Run[Frame=14-17,Frame.End=17,Frame.Start=14]"
   task params:
-    Frame=15-19
-    Frame.End=19
-    Frame.Start=15
+    Frame=14-17
+    Frame.End=17
+    Frame.Start=14
   command: python3
   args:
     [0]  <WORKDIR>
     [1]  <WORKDIR>
-    [2]  15
-    [3]  19
-    [4]  15-19
+    [2]  14
+    [3]  17
+    [4]  14-17
   embedded file "launcher" (launcher.py):
     # sqi python-sequence launcher: runs the user's script as a child
     # process with the four SQI_FRAME* variables added to its
@@ -180,18 +180,18 @@ task 4/5  name="Run[Frame=15-19,Frame.End=19,Frame.Start=15]"
   embedded file "script" (script.py):
     print('hello')
 
-task 5/5  name="Run[Frame=20-20,Frame.End=20,Frame.Start=20]"
+task 5/5  name="Run[Frame=18-20,Frame.End=20,Frame.Start=18]"
   task params:
-    Frame=20-20
+    Frame=18-20
     Frame.End=20
-    Frame.Start=20
+    Frame.Start=18
   command: python3
   args:
     [0]  <WORKDIR>
     [1]  <WORKDIR>
-    [2]  20
+    [2]  18
     [3]  20
-    [4]  20-20
+    [4]  18-20
   embedded file "launcher" (launcher.py):
     # sqi python-sequence launcher: runs the user's script as a child
     # process with the four SQI_FRAME* variables added to its

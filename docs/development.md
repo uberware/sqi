@@ -17,23 +17,22 @@ guides for extending the worker.
 | `golangci-lint` ≥ 2.13.0 (see the version floor below) | Linter suite | [golangci-lint.run/usage/install](https://golangci-lint.run/usage/install/) |
 | `lefthook` | Git hook runner | `go install github.com/evilmartians/lefthook@latest` |
 | `pkgsite` | Local pkg.go.dev docs server | `go install golang.org/x/pkgsite/cmd/pkgsite@latest` |
-| `ffmpeg` (with `ffprobe`) | Required by `make test`, `make test-cover`, `make ci`, and `make test-preset-harness` — the preset validation registry's `tier2` blocks require the real-ffmpeg cases to run rather than skip, and a skip on a required platform is a hard failure, not a quiet no-op | `apt-get install ffmpeg` / `choco install ffmpeg` / `brew install ffmpeg` |
-| Docker (optional) | Build and run the container image; also runs the real-directory LDAP tests (`make test-ldap`), the real-provider SSO tests (`make test-oidc`), and the real-root run-as-user isolation tests (`make test-isolation`), all of which skip cleanly without it | [docs.docker.com](https://docs.docker.com/get-docker/), or `brew install colima docker && colima start` |
+| `ffmpeg` (with `ffprobe`) | Required by `make test`, `make test-cover`, `make ci` and `make test-preset-harness`: the preset validation registry's `tier2` blocks require the real-ffmpeg cases to run, and a skip on a required platform is a failure | `apt-get install ffmpeg` / `choco install ffmpeg` / `brew install ffmpeg` |
+| Python 3 (`python3` or `python` on `PATH`) | Required by the same four targets for the `python-sequence` Tier-2 case. Some `internal/openjd/expr` path tests compare against `python3`'s `pathlib` and skip without it. `make test-expr-oracle`, `make docs-site-install` and the `py-*` targets build their virtualenvs from it | [python.org](https://www.python.org/downloads/) |
+| Docker (optional) | Build and run the container image. Also runs the real-directory LDAP tests (`make test-ldap`), the real-provider SSO tests (`make test-oidc`), the real-root run-as-user isolation tests (`make test-isolation`) and the PostgreSQL tests (`make test-postgres`), all of which skip without it | [docs.docker.com](https://docs.docker.com/get-docker/), or `brew install colima docker && colima start` |
 
 `gofumpt`, `goimports`, and `golangci-lint` are required at commit time via
 pre-commit hooks. Install them before running `make hooks`.
 
-**`golangci-lint` 2.13.0 is a required minimum.** `.golangci.yml`
-excludes `errors.AsType` from `errcheck` by function name, and `errcheck` before
-2.13.0 cannot resolve a *generic* function's name — it reports `Error return
-value is not checked` with no name at all, so the exclusion never matches and
-every `errors.AsType` call site in the repo is reported. On an older
-golangci-lint `make lint` fails on code CI considers clean.
+**`golangci-lint` 2.13.0 is the minimum.** `.golangci.yml` excludes
+`errors.AsType` from `errcheck` by function name. Before 2.13.0, `errcheck`
+cannot resolve a generic function's name, so the exclusion never matches and
+`make lint` reports every `errors.AsType` call site as `Error return value is
+not checked`.
 
-CI pins v2.13.1 exactly (`.github/workflows/ci.yml`) rather than the floor, so
-the runner never drifts; 2.13.0 is what Homebrew currently ships and lints this
-repo clean, which is why the floor sits a patch below the pin. Raise both
-together when bumping.
+CI pins v2.13.1 (`.github/workflows/ci.yml`) so a new golangci-lint release
+cannot change its result. 2.13.0 also lints this repo clean, so the local floor
+sits one patch below the pin. Raise both together.
 
 ---
 
@@ -70,8 +69,10 @@ Run `make` (no arguments) to see all available targets with descriptions.
 |---|---|
 | `make build` | Build `sqi-server` and `sqi-worker` into `./bin/` (builds the web UI first) |
 | `make build-server` | Build `sqi-server` only (builds the web UI first) |
+| `make build-worker` | Build `sqi-worker` only |
 | `make build-web` | Build the web UI bundle into `web/dist/` (`npm ci` runs only when npm manifests change) |
-| `make run` | Build then run `sqi-server` with default config |
+| `make build-all` | Cross-compile both binaries for linux/darwin/windows × amd64/arm64 |
+| `make run` | Build then run `sqi-server` with default config (`make run-server` is the same) |
 | `make run-worker` | Build then run a single `sqi-worker` with default config |
 | `make run-workers` | Build then run N `sqi-worker` instances locally (`N=3` default); Ctrl-C stops all |
 | `make test` | Run all tests with the race detector enabled |
@@ -80,14 +81,15 @@ Run `make` (no arguments) to see all available targets with descriptions.
 | `make test-integration` | Run integration tests (build tag `integration`) |
 | `make test-ldap` | Run the LDAP tests against a real OpenLDAP directory in a container (needs Docker; **skips** without it) |
 | `make test-oidc` | Run the SSO tests against a real Keycloak in a container (needs Docker; **skips** without it) |
-| `make test-postgres` | Run the PostgreSQL-backed tests against a throwaway PostgreSQL in a container (`PG_VERSION=16` or `18`, default 18; needs Docker; **skips** without it) — see [Testing against PostgreSQL](#testing-against-postgresql) |
+| `make test-postgres` | Run the PostgreSQL-backed tests against a throwaway PostgreSQL in a container (`PG_VERSION=16` or `18`, default 18; needs Docker; **skips** without it). See [Testing against PostgreSQL](#testing-against-postgresql) |
 | `make test-isolation` | Run run-as-user task-isolation tests as real root against real OS accounts in a container (needs Docker; **skips** without it) |
-| `make test-isolation-windows` | Run the Windows run-as-user isolation tests against real local accounts — must be run from an **elevated** shell on a real Windows host (no container); exits 0 with a message when not elevated |
-| `make test-service-windows` | Drive `sqi-server` and `sqi-worker` through the real Windows service manager — it **really installs, starts, stops and deletes services** (`sqi-test-*`) and creates and deletes a throwaway local account (`sqisvc-*`); must be run from an **elevated** shell on a real Windows host (no container); exits 0 with a "not elevated" message, having done nothing, when not elevated |
-| `make test-discovery` | Run the mDNS discovery tests over **real multicast** (no container; **fails rather than skips** when multicast is unavailable) |
+| `make test-isolation-windows` | Run the Windows run-as-user isolation tests against real local accounts, tier 1 as the elevated administrator and tier 2 as SYSTEM. Needs an **elevated** shell on a real Windows host (no container); exits 0 with a message when not elevated |
+| `make test-service-windows` | Drive `sqi-server` and `sqi-worker` through the real Windows service manager. It installs, starts, stops and deletes real `sqi-test-*` services and creates and deletes a throwaway `sqisvc-*` local account. Needs an **elevated** shell on a real Windows host (no container); exits 0 having done nothing when not elevated |
+| `make test-discovery` | Run the mDNS discovery tests over real multicast (no container; **fails rather than skips** when multicast is unavailable) |
 | `make test-conformance` | Run the official OpenJD conformance suite against the vendored `third_party/` fixtures (build tag `conformance`) |
 | `make test-expr-oracle` | Differential-test the EXPR evaluator against the OpenJD reference implementation (needs `python3`; **skips** without it) |
-| `make test-preset-library` | Validate the **published** preset library against the validator in your tree (needs network; **skips** when the library is unreachable, **fails** when it is reachable but invalid) |
+| `make test-preset-harness` | Run the whole preset validation harness (Tiers 1 to 3 and the registry check) in one `go test` process. See [Running the preset validation harness](#running-the-preset-validation-harness) |
+| `make test-preset-library` | Validate the published preset library against the validator in your tree (needs network; **skips** when the library is unreachable, **fails** when it is reachable but invalid) |
 | `make expr-oracle-venv` | Create `.venv-oracle/` with the pinned reference implementation (`make test-expr-oracle` does this on demand) |
 | `make smoke` | End-to-end smoke test against the real binaries (REST + WebSocket) |
 | `make auth-demo` | Run the auth-surface demo against a live local farm (`KEEP=1` leaves it running) |
@@ -98,85 +100,30 @@ Run `make` (no arguments) to see all available targets with descriptions.
 | `make fmt` | Format all Go files with `gofumpt` and `goimports` |
 | `make fmt-check` | Check formatting without modifying files (the `make ci` gate) |
 | `make vet` | Run `go vet` over the filtered package list (excludes `web/node_modules/`) |
+| `make generate` | Run `go generate` across the module |
 | `make docs` | Serve Go package docs at `localhost:8080` via `pkgsite` |
 | `make docs-site-install` | Create `.venv-docs/` and install the pinned MkDocs dependencies |
 | `make docs-site` | Build the MkDocs documentation site with `--strict` (the CI gate) |
 | `make docs-site-serve` | Serve the documentation site locally with live reload |
 | `make changelog` | Regenerate `CHANGELOG.md` from Conventional Commits via `git-cliff` (`VERSION=x.y.z` tags the pending release) |
 | `make hooks` | Install git hooks via `lefthook` |
+| `make release` | Build a release with goreleaser |
+| `make release-snapshot` | Build a local snapshot release (no publish, no git tag required) |
+| `make docker-build` | Build the `sqi-server` Docker image |
+| `make docker-run` | Run the `sqi-server` Docker image with default config |
+| `make deps` | Download and tidy Go module dependencies |
+| `make deps-upgrade` | Upgrade all Go dependencies to the latest minor/patch versions |
 | `make clean` | Remove build artifacts and `coverage.out` |
 | `make ci` | Run the full CI sequence (fmt-check, vet, lint, test-cover) |
+
+The `py-*` targets for the Python client are listed under
+[sqi-sdk (Python) development](#sqi-sdk-python-development).
 
 Override the race detector: `make test RACE=off`
 
 Override the coverage threshold: `make test-cover COVERAGE_MIN=50`
 
 ---
-
-
-## Testing mDNS discovery over real multicast
-
-`make test-discovery` runs the discovery suite against a **real** mDNS round
-trip: a real responder advertises on a real interface and a real browser finds
-it. It needs no container — unlike LDAP, SSO and isolation, nothing here is
-unavailable natively.
-
-What it covers that unit tests cannot: the server decides its TXT records from
-its own config, they cross the wire, and the worker parses them back and acts on
-them. Unit tests of each half cannot catch a record one side advertises and the
-other never reads, such as `nats_tls` advertised by the server with no worker
-acting on it. `TestDiscovery_RealBinaryFindsItsServerOverMDNS` goes furthest: a
-real `sqi-worker` subprocess with **no** `nats.url` at all has to find its server,
-learn from the advertisement that the broker needs TLS, and register.
-
-### It does not advertise on your network
-
-Every advertisement these tests make is restricted to **loopback**. A browser
-listening on all interfaces still receives it — that is verified rather than
-assumed — so the coverage is unaffected, and a test run never announces a
-service on the LAN it happens to be attached to. Where loopback cannot carry
-multicast the tests refuse to run rather than fall back to a real interface.
-
-Linux loopback needs two things macOS lo0 has by default, and the tests state
-each one when it is missing:
-
-```bash
-sudo ip link set lo multicast on      # Linux `lo` ships without the flag
-sudo ip -6 addr add fe80::1/64 dev lo # and with no non-loopback address
-```
-
-The second is the less obvious one. zeroconf builds the advertisement's address
-records from the advertising interface's own addresses and **discards loopback
-ones**, so on Linux — whose `lo` carries only `127.0.0.1` and `::1` — there is
-nothing left to advertise and registration fails outright with "Could not
-determine host IP addresses", multicast flag or no multicast flag. macOS lo0
-also carries `fe80::1`, which is why the problem does not appear on a Mac.
-Adding that same link-local address makes the two hosts behave alike; it is
-scoped to the link and is not routed anywhere.
-
-The CI job runs both.
-
-### The one test that does open a listener
-
-`TestDiscovery_RealBinaryFindsItsServerOverMDNS` binds the test broker to all
-interfaces for about ten seconds, so it runs **only** under `make
-test-discovery` — `make test-integration` skips it. It cannot avoid the
-listener: the mDNS advertisement carries this machine's *hostname*, so the
-worker dials that name whatever interface the announcement went out on, and a
-loopback-bound broker is unreachable there. Broker authentication and TLS are
-both on, so enrolling still requires a join token.
-
-### Two more things
-
-- **It refuses to run next to a real farm.** The tests never advertise beyond
-  loopback, but they still *browse* on every interface, because the production
-  worker does. If anything else is already advertising `_sqi._tcp` they skip,
-  rather than risk discovering a colleague's server — the test cannot tell their
-  production broker from its own before connecting to it.
-- **A skip is a failure here.** `SQI_TEST_REQUIRE_MULTICAST=1` (which the target
-  sets) turns the capability skip into a failure, so the target cannot pass
-  while running nothing. The same tests are part of `make test-integration`,
-  where they skip cleanly on a host without loopback multicast.
 
 ## Running tests
 
@@ -188,7 +135,7 @@ make test
 go test -race ./internal/scheduler/...
 
 # Single test function
-go test -race -run TestScheduler_LicenseGating ./internal/scheduler/...
+go test -race -run TestPolicyGate_QueueAtCapacity ./internal/scheduler/...
 
 # With verbose output
 go test -race -v ./internal/openjd/...
@@ -214,33 +161,32 @@ make test-isolation
 # real Windows host; installs and deletes real services)
 make test-service-windows
 
-# Fuzz targets (run for 30 seconds each)
-go test -fuzz=FuzzParse         -fuzztime=30s ./internal/openjd/...
-go test -fuzz=FuzzRESTPayloads  -fuzztime=30s ./internal/api/...
+# Fuzz targets (-fuzz takes one target per run; each runs for 30 seconds)
+go test -fuzz=FuzzParseYAML         -fuzztime=30s ./internal/openjd/
+go test -fuzz=FuzzSubmitJobPayload  -fuzztime=30s ./internal/api/
 ```
+
+The other fuzz targets are `FuzzParseJSON` (`internal/openjd`),
+`FuzzPatchJobPayload` (`internal/api`), `FuzzDecodeAssignMsg`
+(`internal/worker/protocol`) and `FuzzHandleLine` (`internal/worker/openjd`).
 
 ### Testing against a real directory or identity provider
 
 Two suites in `test/integration/` talk to a real external identity source
 rather than a fake: `ldap_test.go` (`make test-ldap`) and `oidc_test.go`
 (`make test-oidc`). Both are behind the `integration` build tag, both boot a
-throwaway container, and **both skip rather than fail when Docker is
-unavailable** — which means a green run proves nothing until you have confirmed
-it actually executed. Check for `--- PASS` lines, not merely an exit code of
-zero; `GOFLAGS=-count=1` defeats a cached result that would otherwise replay a
-previous run.
+throwaway container, and **both skip when Docker is unavailable**, so a green
+run proves nothing until you confirm it executed. Check for `--- PASS` lines,
+not just a zero exit code; `GOFLAGS=-count=1` stops Go replaying a cached
+result.
 
-Most LDAP tests drive a fake connection, which covers sqi's own logic but
-cannot catch a mistake in how it uses go-ldap *on the wire* — a wrong search
-scope, a misnamed attribute, a filter a real server rejects. `make test-ldap`
-closes that: it boots a throwaway OpenLDAP container and drives the whole login
-path against it in every supported bind mode. It runs in CI on every change
-(the `ldap-integration` job), on **both amd64 and arm64** — the container image
-is multi-arch and its variants do not behave identically.
-
-It **skips**, rather than fails, when Docker is unavailable, so it never blocks
-a contributor who has not installed it — but a skip verifies nothing, so run it
-before touching anything under `internal/auth/ldap/`.
+Most LDAP tests drive a fake connection. That covers sqi's own logic but not
+how it uses go-ldap on the wire: a wrong search scope, a misnamed attribute, a
+filter a real server rejects. `make test-ldap` boots a throwaway OpenLDAP
+container and drives the whole login path against it in every supported bind
+mode. CI runs it on every change (the `ldap-integration` job) on both amd64 and
+arm64, because the image's variants do not behave identically. Run it before
+touching anything under `internal/auth/ldap/`.
 
 To point it at a directory you already have, including a real Active Directory,
 set `SQI_TEST_LDAP_URL` and no container is started:
@@ -249,23 +195,21 @@ set `SQI_TEST_LDAP_URL` and no container is started:
 SQI_TEST_LDAP_URL=ldap://dc01.example.com:389 make test-ldap
 ```
 
-That directory must already hold the fixture tree — see the `seedLDIF` constant
+That directory must already hold the fixture tree; see the `seedLDIF` constant
 in `test/integration/ldap_test.go` for the exact users, groups, and passwords.
 
-**Reproducing an architecture-specific failure.** The image's variants are not
-identical — most visibly, the memberof module registers its schema several
-seconds later on x86 than on arm64, a window a fixture can sit inside on one
-architecture and not the other. CI covers both, so it will tell you *which*
-architecture broke; this reproduces that one locally without pushing:
+**Reproducing an architecture-specific failure.** The image's variants differ:
+for example, the memberof module registers its schema later on x86 than on
+arm64, so a fixture can fall inside that window on one architecture only. CI
+reports which architecture broke; this reproduces it locally:
 
 ```sh
 SQI_TEST_LDAP_PLATFORM=linux/amd64 make test-ldap
 ```
 
-It runs under emulation, so expect it to be several times slower than native —
-worth it when CI is red and your machine is green.
+It runs under emulation, so expect it to be several times slower than native.
 
-Two fixture properties are required and easy to get wrong:
+The fixture directory needs two properties:
 
 - **`memberOf` must be populated.** AD does this natively; OpenLDAP needs the
   `memberof` overlay, and the overlay's `olcMemberOfGroupOC` must match the
@@ -275,18 +219,16 @@ Two fixture properties are required and easy to get wrong:
   works without this (sqi binds *as* the user and reads that user's own entry),
   so a directory that fails only in search mode is the usual symptom.
 
-The fixture asserts both up front, as the service account, and fails with a
-message naming the cause rather than letting them surface as wrong roles later.
+The fixture checks both up front, as the service account, and fails naming the
+cause instead of letting it surface later as wrong roles.
 
 ### Testing SSO against a real identity provider
 
-The SSO unit tests drive a fake provider. It signs real tokens, so a validation
-mistake surfaces — but a fake returns whatever the test asks for, so it cannot
-show what a *real* provider **omits**. Keycloak emits no group membership at all
-unless a protocol mapper is configured for it, and a token carrying no groups
-still validates: every user then lands on `default_role`, a silent privilege
-downgrade with no error anywhere. `make test-oidc` makes that class of bug fail
-before it merges.
+The SSO unit tests drive a fake provider that signs real tokens, so
+token-validation mistakes surface. A fake cannot show what a real provider
+omits: Keycloak emits no group membership unless a protocol mapper is
+configured, and a token with no groups still validates, so every user silently
+lands on `default_role`. `make test-oidc` catches that class of bug.
 
 ```sh
 make test-oidc
@@ -297,15 +239,13 @@ browser-shaped flow: the authorization-code round trip, group → role mapping, 
 rename at the provider keeping the same account, state-mismatch refusal,
 `prompt=login` forcing re-authentication, and the RP-initiated logout behavior
 documented in [`docs/auth.md`](auth.md#provider-logout-is-weaker-than-it-looks).
-It runs in CI on every change (the `oidc-integration` job) on **one**
-architecture, unlike `ldap-integration` — Keycloak is a JVM application and none
-of the HTTP or token behavior this job asserts on is architecture-dependent.
+CI runs it on every change (the `oidc-integration` job) on one architecture,
+since none of the HTTP or token behavior it asserts on depends on architecture.
 
-It **skips**, rather than fails, when Docker is unavailable. **A skip verifies
-nothing**, so run it — and confirm it ran — before touching anything under
-`internal/auth/oidc/` or the SSO routes in `internal/api/`. Go's test cache can
-replay a previous result; `GOFLAGS=-count=1 make test-oidc` and a check for
-`--- PASS` on each `TestOIDC_` is the only reliable confirmation.
+It skips when Docker is unavailable, and a skip verifies nothing. Run it, and
+confirm it ran, before touching anything under `internal/auth/oidc/` or the SSO
+routes in `internal/api/`: use `GOFLAGS=-count=1 make test-oidc` so Go cannot
+replay a cached result, and check for `--- PASS` on each `TestOIDC_` test.
 
 To point it at a realm you already have instead of starting a container, set
 `SQI_TEST_OIDC_ISSUER`:
@@ -315,21 +255,20 @@ SQI_TEST_OIDC_ISSUER=https://keycloak.example.com/realms/farm make test-oidc
 ```
 
 That realm must already hold the fixture's client, users, groups, and the
-`groups` protocol mapper — see the seeding code in
+`groups` protocol mapper; see the seeding code in
 `test/integration/oidc_test.go` for exactly what. Any test that **mutates** the
 fixture through the admin API (the rename-at-the-provider case) skips under this
-variable rather than editing a realm you did not intend it to, so an external
-issuer covers strictly less than the container does.
+variable rather than edit your realm, so an external issuer covers less than
+the container does.
 
-Use `https://` for a remote issuer. Keycloak marks its session cookies `Secure`
-unconditionally; Go's cookie jar exempts loopback from that rule, which is why
-the container fixture works over plain HTTP on `127.0.0.1`, but a **non**-loopback
-issuer over `http://` would hide the provider's session from the test client.
+Use `https://` for a remote issuer. Keycloak always marks its session cookies
+`Secure`. Go's cookie jar exempts loopback from that rule, so the container
+fixture works over plain HTTP on `127.0.0.1`, but a non-loopback issuer over
+`http://` would hide the provider's session from the test client.
 
-The Keycloak image tag is pinned, not floating on `:latest`, because the test
-scrapes Keycloak's own login and logout-confirmation markup. It appears in two
-places that must stay in step — `keycloakImage` in
-`test/integration/oidc_test.go` and the `docker pull` in
+The Keycloak image tag is pinned because the tests scrape Keycloak's login and
+logout-confirmation markup. It appears in two places that must match:
+`keycloakImage` in `test/integration/oidc_test.go` and the `docker pull` in
 `.github/workflows/ci.yml`.
 
 ### Testing the Windows service against the real service manager
@@ -360,14 +299,14 @@ for both binaries, the refusal of an existing name, a service that fails at
 startup and leaves a trace line, a hand-registered service, and `--user`.
 
 Not elevated, it prints `winservice: not elevated — the service suite needs an
-elevated (Administrator) shell` and **exits 0 without doing anything**. **A skip
-verifies nothing**, so confirm all six `--- PASS: TestWinService_` lines (the
-target already passes `-count=1`, so a cached result cannot stand in). CI runs it as the
-`winservice-integration` job on a `windows-latest` runner, which is elevated, on
-one architecture (the Win32 APIs it exercises are not architecture-dependent),
-and fails the job on that message or on any of the six names not passing.
+elevated (Administrator) shell` and **exits 0 without doing anything**. A skip
+verifies nothing, so confirm all six `--- PASS: TestWinService_` lines (the
+target passes `-count=1`, so a cached result cannot stand in). CI runs it as the
+`winservice-integration` job on an elevated `windows-latest` runner, on one
+architecture, and fails the job on that message or when any of the six does not
+pass.
 
-Two things make a local run fail for reasons that are not sqi's:
+Two things make a local run fail for reasons outside sqi:
 
 - **Machine-level `SQI_*` environment variables** reach the services the suite
   installs, because a service sees the machine environment. Unset them first.
@@ -376,8 +315,8 @@ Two things make a local run fail for reasons that are not sqi's:
   deletion*. Close it.
 
 **Cleaning up after a killed run.** Every test registers its cleanup, but a
-killed run (or Ctrl-C) skips them. Unique names mean a leftover never breaks the
-next run, but it stays on the machine until you remove it, from an elevated
+killed run (or Ctrl-C) skips it. Unique names mean a leftover never breaks the
+next run, but it stays on the machine until you remove it from an elevated
 PowerShell:
 
 ```powershell
@@ -401,10 +340,65 @@ Remove-Item "$env:ProgramData\sqi\logs\sqi-test-*"
 ```
 
 The suite also creates `%ProgramData%\sqi` and `%ProgramData%\sqi\logs` when they
-are missing (the installer does) and **never removes them**, so they are left
-behind on a host that had none — `logs` with the protected permissions the
-installer gives it. Delete them by hand if you want the host back as it was, once
-you have checked that nothing else on the machine uses them.
+are missing, as the installer does, and never removes them; `logs` keeps the
+protected permissions the installer gives it. To return the host to how it was,
+delete them by hand once you have checked that nothing else uses them.
+
+### Testing mDNS discovery over real multicast
+
+`make test-discovery` runs the discovery suite over a real mDNS round trip: a
+real responder advertises on a real interface and a real browser finds it. It
+needs no container.
+
+It covers what unit tests of each half cannot: the server derives its TXT
+records from its config, they cross the wire, and the worker parses them and
+acts on them, so a record one side advertises and the other never reads (such
+as `nats_tls`) fails here. In `TestDiscovery_RealBinaryFindsItsServerOverMDNS`
+a real `sqi-worker` subprocess with no `nats.url` has to find its server, learn
+from the advertisement that the broker needs TLS, and register.
+
+#### It does not advertise on your network
+
+Every advertisement these tests make is restricted to loopback. A browser
+listening on all interfaces still receives it, so coverage is unaffected and a
+test run never announces a service on your LAN. Where loopback cannot carry
+multicast the tests refuse to run rather than fall back to a real interface.
+
+Linux loopback needs two settings that macOS `lo0` has by default, and the tests
+name each one that is missing:
+
+```bash
+sudo ip link set lo multicast on      # Linux `lo` ships without the flag
+sudo ip -6 addr add fe80::1/64 dev lo # and with no non-loopback address
+```
+
+zeroconf builds the advertisement's address records from the advertising
+interface's addresses and discards loopback ones. Linux `lo` carries only
+`127.0.0.1` and `::1`, so without the second command registration fails with
+"Could not determine host IP addresses" even with the multicast flag set. macOS
+`lo0` already carries `fe80::1`. The link-local address is scoped to the link
+and not routed. The `discovery-integration` CI job runs both commands.
+
+#### The one test that opens a listener
+
+`TestDiscovery_RealBinaryFindsItsServerOverMDNS` binds the test broker to all
+interfaces for about ten seconds, so it runs only under `make test-discovery`;
+`make test-integration` skips it. The advertisement carries this machine's
+hostname, so the worker dials that name whatever interface the announcement
+went out on, and a loopback-bound broker would be unreachable. Broker
+authentication and TLS are both on, so enrolling still requires a join token.
+
+#### Other farms and skips
+
+- **It refuses to run next to a real farm.** The tests advertise only on
+  loopback but browse on every interface, as the production worker does. If
+  anything else already advertises `_sqi._tcp` they skip rather than risk
+  discovering another server, because a test cannot tell another broker from
+  its own before connecting to it.
+- **A skip is a failure here.** `SQI_TEST_REQUIRE_MULTICAST=1`, which the target
+  sets, turns the capability skip into a failure, so the target cannot pass
+  while running nothing. The same tests run under `make test-integration`,
+  where they skip on a host without loopback multicast.
 
 ---
 
@@ -423,12 +417,12 @@ pinned image tag for `PG_VERSION`, data on tmpfs), points
 `SQI_TEST_POSTGRES_DSN` at it, sets `SQI_TEST_REQUIRE_POSTGRES=1`, and runs
 three passes:
 
-1. the store, scheduler, API, server and `cmd` packages, with the race
+1. the store, scheduler, API, server, restore and `cmd` packages, with the race
    detector (`RACE=off` drops it);
 2. the store packages again with `SQI_TEST_PG_FORCE_TX_RETRY=1`, which runs
-   every transaction once, rolls it back and runs it again, so a transaction
-   body that keeps state from a failed attempt fails a test (the store retries
-   aborted transactions, so every body must be safe to re-run). It prints
+   every transaction once, rolls it back and runs it again. The store retries
+   aborted transactions, so every body must be safe to re-run, and one that
+   keeps state from a failed attempt fails a test here. It prints
    `== BEGIN FORCED-RETRY PHASE` and `== END FORCED-RETRY PHASE` around this
    pass, and CI checks between them that its `/postgres` subtests passed and
    none was skipped;
@@ -452,19 +446,19 @@ tests` and exits 0, and without `SQI_TEST_POSTGRES_DSN` every PostgreSQL test
 skips. A skip verifies nothing.** Confirm the run with `--- PASS` lines for
 `/postgres` subtests and the final `POSTGRES TESTS PASSED` line. CI's
 `postgres-integration` job runs the target on PostgreSQL 16 and 18. It fails
-when Docker is unavailable, when any of its named tests (the
+when Docker is unavailable; when any of its named tests does not pass (the
 `TestPGRace_G1_…` to `TestPGRace_G12_…` race tests, the schema parity,
 atomic-submission, readiness and backup round-trip tests, the PostgreSQL
-stress test and the EXPR end-to-end job) does not pass, when any `/postgres`
-subtest is skipped, and when none passed at all, over the whole run or within
-the forced-retry pass. The 18 leg also runs `make smoke` with the server on
-PostgreSQL.
+stress test, the EXPR end-to-end job, and the restore, store copy and upgrade
+tests); when any `/postgres` subtest is skipped; and when none passed, over the
+whole run or within the forced-retry pass. The 18 leg also runs `make smoke`
+with the server on PostgreSQL.
 
 A local `PG_VERSION=16` run needs a PostgreSQL 16 `pg_dump` and `pg_restore`
-**first on `PATH`**. The backup round trip restores a dump into the test
-server, and a newer client's dump carries settings (such as
-`SET transaction_timeout`) that a PostgreSQL 16 server rejects; CI installs the
-matching client tools for each leg.
+first on `PATH`. The backup round trip restores a dump into the test server,
+and a newer client's dump carries settings (such as `SET transaction_timeout`)
+that a PostgreSQL 16 server rejects. CI installs the matching client tools for
+each leg.
 
 **Every cross-backend test runs three ways.** The store packages' `newStores`,
 the scheduler's `raceBackends` and the API's `seedBackends` return the fake
@@ -475,8 +469,8 @@ to run on PostgreSQL. Both SQL stores refuse a transaction that locks anchor
 rows out of the [lock order](architecture.md#lock-order), so an inversion fails
 the test on SQLite as well.
 
-**Concurrency tests force their interleaving.** A race that a single writer
-cannot produce is tested on PostgreSQL with the pause hook in
+**Concurrency tests force their interleaving.** A race that SQLite's single
+writer cannot produce is tested on PostgreSQL with the pause hook in
 `internal/store/sqlstore/pause_test.go`. `pgRace(t)` opens a PostgreSQL store
 whose dialect parks the first transaction that reaches an armed point:
 `p.atStatement(sql)` arms the first dynamic statement whose text contains
@@ -505,15 +499,14 @@ rehearsal that is rolled back.
 evaluator (`internal/openjd/expr`) and the implementation the EXPR spec names as
 its reference, then compares the results.
 
-This catches a class of defect no single-implementation test can reach: a
-misreading of the spec applied *consistently*, which looks correct from the
-inside because every test encodes the same misreading. It is not a conformance
-check — `make test-conformance` is, and it runs the official fixture suite. The
-oracle is supplementary: it explains *why* a fixture disagrees, and it reaches
-expressions no fixture happens to contain.
+It catches a misreading of the spec applied consistently, which sqi's own tests
+cannot see because they encode the same misreading. It is not a conformance
+check (`make test-conformance` runs the official fixture suite); it helps
+explain why a fixture disagrees, and it reaches expressions no fixture
+contains.
 
 ```sh
-make test-expr-oracle        # creates .venv-oracle/ on first run, then compares
+make test-expr-oracle        # (re)installs .venv-oracle/ when missing or off-pin, then compares
 make expr-oracle-venv        # (re)create the venv explicitly
 SQI_EXPR_ORACLE_PYTHON=/path/to/python3 make test-expr-oracle
 ```
@@ -527,87 +520,84 @@ Moving parts:
 | `scripts/expr-oracle.py` | Feeds the corpus to the reference over JSON lines. |
 | `test/oracle/oracle_test.go` | Runs both sides and compares (build tag `oracle`). |
 
-**The oracle grades the same on every host** because of two deliberate pins.
-`scripts/expr-oracle.py` reads and writes UTF-8 explicitly, because Python
-otherwise picks the locale encoding and Windows hands it the ANSI code page —
-which makes the reference answer every non-ASCII corpus case for a mangled
-expression. And it passes `path_format=PathFormat.POSIX` rather than letting
-the reference follow the specification's host-native default: sqi's own
-`expr.WithPathFormat` defaults to POSIX on purpose, so without that pin every
-path case in the corpus would diverge on a Windows host. Both are no-ops on
-Linux and macOS, and `make expr-oracle-venv` likewise resolves the venv's interpreter per host
-(`bin/python3` or `Scripts/python.exe`).
+**The oracle grades the same on every host** because of two pins.
+`scripts/expr-oracle.py` reads and writes UTF-8 explicitly; otherwise Python
+uses the locale encoding, which on Windows is the ANSI code page, and the
+reference receives every non-ASCII corpus case mangled. It also passes
+`path_format=PathFormat.POSIX` instead of the specification's host-native
+default, because sqi's `expr.WithPathFormat` defaults to POSIX and every path
+case would otherwise diverge on a Windows host. Both are no-ops on Linux and
+macOS. The Makefile resolves the venv's interpreter per host (`bin/python3` or
+`Scripts/python.exe`).
 
-**The reference is not the authority.** Despite living in the `openjd.expr`
+**The reference is not the authority.** Although it lives in the `openjd.expr`
 Python namespace, it is a thin re-export layer over a compiled Rust crate
-(`openjd-expr`, in `OpenJobDescription/openjd-rs`), and that crate is **Beta** —
-on the 0.x line, where breaking changes are permitted in minor bumps. The
+(`openjd-expr`, in `OpenJobDescription/openjd-rs`), and that crate is Beta: on
+the 0.x line, breaking changes are permitted in minor releases. The
 specification outranks it. When the two disagree, read
 `third_party/openjd-specifications/` and decide; do not change sqi to match the
-reference. **Most** baselined entries are cases where **the reference is
-wrong** — each baselined divergence's reasoning is argued in
-`test/oracle/baseline.txt`, which is the authority on any individual ruling.
-Divergences found this way are reported upstream, for example
-[openjd-rs#291](https://github.com/OpenJobDescription/openjd-rs/issues/291) (a
-`target_type` inherited by operands that must not have it, including the
-operand `and`/`or` discards per section 2.1.6) and
-[#290 item 6](https://github.com/OpenJobDescription/openjd-rs/issues/290#issuecomment-5125365894)
-(a `path` as the **left** operand of an ordering operator inverts the
-comparison).
+reference. In most baselined entries the reference is the one that is wrong.
+`test/oracle/baseline.txt` gives the reasoning for each ruling, and divergences
+in the reference are reported upstream.
 
-**The oracle does not cover the Windows path flavor.** `scripts/expr-oracle.py`
-evaluates every case with `path_format=PathFormat.POSIX`, so
-`test/oracle/corpus.txt` carries no Windows-flavor case, and every Windows
-expectation in `internal/openjd/expr` is pinned by that package's own unit
-tests against CPython's `PureWindowsPath` instead. URI behavior *is* oracle-measurable, because a URI is detected under
-the POSIX format too.
+**The oracle does not cover the Windows path flavor.** Every case is evaluated
+with `path_format=PathFormat.POSIX`, so `test/oracle/corpus.txt` has no
+Windows-flavor case, and the Windows expectations in `internal/openjd/expr` are
+pinned by that package's own unit tests against CPython's `PureWindowsPath`.
+URI behavior is covered, because a URI is detected under the POSIX format too.
 
-`OPENJD_MODEL_VERSION` in the `Makefile` pins the reference. It is pinned
-deliberately: unpinned, an upstream release could turn this red with no sqi
-commit behind it, and a divergence report means little without knowing which
-build produced it.
+`OPENJD_MODEL_VERSION` in the `Makefile` pins the reference, so an upstream
+release cannot change the result without an sqi commit and every divergence is
+tied to a known build. The Makefile passes the pin to the test as
+`SQI_EXPR_ORACLE_EXPECT_VERSION`, and the test fails when the reference that
+answered is a different version. With `SQI_EXPR_ORACLE_PYTHON` set, no version
+is expected.
 
 **A skip proves nothing.** The target exits 0 when no interpreter has the
-package importable, and the test skips — as `make test-isolation` does
-without Docker. Confirm it actually ran by looking for
+package importable, and the test skips, as `make test-isolation` does without
+Docker. Confirm it ran by looking for
 `--- PASS: TestExprOracle_MatchesReferenceImplementation`. CI (`expr-oracle`)
-asserts that line by name for this reason.
+asserts that line by name.
 
 ---
 
 ### Running the preset validation harness
 
-Every shipped preset and built-in product has a Tier-1 argv "golden" — a
-reviewed snapshot of the exact command line the template resolves to — most
-have a Tier-3 case that runs the real submit → assign → resolve pipeline
-against a recording stub in place of the vendor executable, and the five
-ffmpeg presets also have a Tier-2 case that runs real ffmpeg end to end. See
-[`docs/preset-library.md`](preset-library.md#validation-tiers) for what each
-tier does and does not prove.
+Every shipped preset and built-in product has a Tier-1 argv golden (a reviewed
+snapshot of the exact command line the template resolves to) and a Tier-3 case
+that runs the real submit → assign → resolve pipeline against a recording stub
+in place of the vendor executable. The five ffmpeg presets also have a Tier-2
+case that runs real ffmpeg end to end, and `python-sequence` has one that runs
+real Python. See [`docs/preset-library.md`](preset-library.md#validation-tiers)
+for what each tier does and does not prove.
 
 ```sh
-# Run the whole harness: Tier 1 (argv goldens), Tier 2 (real ffmpeg), Tier 3
-# (stub execution), and the registry-verification test that checks all three
-# actually ran — in one go test invocation, which TestZZPresetTierRegistrySatisfied
-# requires (it asserts on an in-process outcome sink, so splitting the tiers
-# across invocations makes it fail with "never reported" in both).
+# Run the whole harness: Tier 1 (argv goldens), Tier 2 (real ffmpeg and
+# Python), Tier 3 (stub execution), and the registry check that all three ran.
+# They must share one go test invocation: TestZZPresetTierRegistrySatisfied
+# reads an in-process outcome sink, so splitting the tiers across invocations
+# makes it fail with "never reported" in both.
 make test-preset-harness
 
 # Just Tier 1, verbose, for one preset
 go test ./test/integration/ -run TestPresetTier1Argv/maya-layer-render -v
 ```
 
-`make test-preset-harness` needs ffmpeg on `PATH` — the registry's `tier2`
-blocks require the real-ffmpeg cases to run rather than skip, and a skip on a
-required platform is a registry failure. Four built-ins are gated to a single
-platform each (`script` and `command-sequence` to POSIX, `script-powershell`
-and `command-sequence-powershell` to Windows) and one more
-(`ffmpeg-segment-transcode-powershell`) only executes on Windows. Each of these
-five therefore runs only on its own platform: the two POSIX-gated built-ins on
-Linux or macOS, the other three on Windows. A pass on one OS proves nothing
-about the other OS's products, which is why CI runs the whole harness natively
-on both Linux and Windows (`preset-harness-windows`) rather than trusting one
-job's result to generalize.
+`make test-preset-harness` needs ffmpeg and Python 3 on `PATH`: the
+registry's `tier2` blocks require those cases to run, and a skip on a required
+platform is a registry failure. Each registry entry's `required_on` names the
+platforms its cases must run on. Most name Linux, macOS and Windows; these name
+fewer:
+
+- Linux and macOS: `script`, `command-sequence`, `ffmpeg-segment-transcode-bash`
+- Windows: `script-powershell`, `command-sequence-powershell`,
+  `ffmpeg-segment-transcode-powershell`, `3dsmax-render`,
+  `after-effects-render-windows`, `after-effects-queue-render-windows`
+- macOS: `after-effects-render-macos`, `after-effects-queue-render-macos`
+
+A pass on one OS proves nothing about another OS's entries, so CI runs the
+whole harness natively on Linux (the `test` job) and on Windows
+(`preset-harness-windows`). No CI job runs it on macOS.
 
 To regenerate goldens after an intentional change to a preset's template or to
 expansion/resolution behavior:
@@ -616,12 +606,11 @@ expansion/resolution behavior:
 go test ./test/integration/ -run TestPresetTier1Argv -preset-update
 ```
 
-**A regenerated golden is not a passing test — reading the diff is the test.**
-`-preset-update` rewrites the golden to match whatever the pipeline currently
-produces, including a regression; `git diff` the golden file and check the new
-argv against the vendor's actual documented command-line flags before staging
-it. A golden that changed because of a bug would still make the test pass
-right after regeneration.
+**Review the diff of a regenerated golden.** `-preset-update` rewrites each
+golden to whatever the pipeline now produces, regressions included, so the test
+passes right after regeneration whatever changed. `git diff` the golden and
+check the new argv against the vendor's documented command-line flags before
+staging it.
 
 Adding a new preset to the harness (fixture → golden → registry entry) is
 covered step by step in
@@ -634,54 +623,64 @@ covered step by step in
 ```
 sqi/
 ├── cmd/
-│   ├── sqi-server/        Entry point, Cobra subcommands (serve, migrate, backup, config, version)
+│   ├── sqi-server/        Entry point, Cobra subcommands (serve, migrate, backup, restore, store, config, worker, tls, version; service on Windows)
 │   └── sqi-worker/        Worker entry point
 ├── internal/
 │   ├── api/               HTTP router, REST handlers, WebSocket upgrade, OpenAPI spec
 │   ├── auth/              Auth gate, accounts, sessions, API keys, RBAC policy, LDAP, OIDC
+│   ├── brokerauth/        NATS broker credential primitives shared by server and worker
 │   ├── bus/               Typed NATS JetStream client wrapper
+│   ├── certgen/           Farm CA, server and client certificate generation (sqi-server tls)
 │   ├── config/            Typed config struct, layered loader
 │   ├── diag/              In-memory diagnostic-log ring buffer
 │   ├── discovery/         mDNS _sqi._tcp responder
+│   ├── fslock/            Exclusive OS file lock (the SQLite single-server lock)
+│   ├── fsutil/            Small shared filesystem helpers
 │   ├── health/            /healthz and /readyz handlers
-│   ├── log/               slog helpers
+│   ├── log/               slog setup and the fan-out handler
 │   ├── metrics/           Prometheus metric definitions
-│   ├── middleware/        HTTP middleware (logging, metrics, versioning)
+│   ├── middleware/        HTTP middleware (auth, CSRF, rate limiting, logging, metrics, versioning)
 │   ├── openjd/            OpenJD parser, validator, parameter-space expansion
+│   ├── pgdsn/             Reads and redacts PostgreSQL DSNs
 │   ├── presetgen/         Generates the preset-library index.json + definition files
-│   ├── product/           Products/presets — the catalog layer over OpenJD templates
-│   ├── scheduler/         Assignment loop, worker registry, heartbeat sweep
+│   ├── presetlib/         Client for a community preset library index
+│   ├── presettest/        Preset validation harness
+│   ├── product/           Products/presets, the catalog layer over OpenJD templates
+│   ├── restore/           Puts a backup in place and fences the attempts it records as open
+│   ├── scheduler/         Lease handling, worker registry, status and log ingestion, periodic sweeps
+│   ├── secretin/          Reads one line of secret input from stdin
 │   ├── server/            Process boot, graceful shutdown orchestration
 │   ├── store/             Store interface; sqlstore (shared SQL implementation), sqlite and postgres (the two databases), backend (opens the configured one), fake; migrations (migrations/postgres for PostgreSQL)
+│   ├── tlsutil/           TLS loading primitives shared by server and worker
 │   ├── ui/                Embeds web/dist; SPA fallback handler
 │   ├── version/           Build metadata (version, commit, date, Go version)
+│   ├── winsvc/            Runs sqi-server and sqi-worker as Windows services
 │   ├── worker/            sqi-worker binary internals (executor, lease, heartbeat, capabilities, …); only worker/protocol is shared with the server
 │   └── ws/                WebSocket hub, subscription management, scheduler-driven fanout
 ├── pkg/                   Public Go API (currently empty; see pkg/doc.go)
-├── api/                   Source-of-truth specs: OpenAPI 3.1, JSON schemas
+├── api/                   Reserved for non-Go API contract artifacts (currently empty; the OpenAPI spec is internal/api/openapi.yaml)
 ├── clients/               Python packages: clients/python (sqi-sdk), clients/submitter (sqi-submitter)
 ├── presets/               Reference (presets/sqi) and test (presets/testing) preset YAML
 ├── third_party/           Vendored OpenJD specifications submodule (specs, RFCs, and conformance fixtures)
 ├── web/                   Frontend source; web/dist is embedded
 ├── config/                Example config files
-├── deploy/                Docker and infrastructure manifests
+├── deploy/                Docker, Compose and systemd manifests
 ├── docs/                  Human-readable documentation
-├── scripts/               Utility scripts (SBOM, signing, etc.)
-└── test/                  Integration test harness
+├── scripts/               Developer and CI scripts (smoke test, PostgreSQL and Windows test runners, oracle glue, signing hook)
+└── test/                  Integration, conformance, oracle, preset-library and Windows-service test suites
 ```
 
 ### Key conventions
 
-**Imports run one way down the dependency direction.** Composition flows:
-`cmd` → `internal/server` → `internal/api`, `internal/scheduler` → `internal/store`, `internal/bus`
-Higher-level packages import lower-level ones — `internal/api`, for instance,
-imports `internal/auth`, `internal/openjd`, `internal/scheduler`, `internal/store`,
-`internal/ws` and more — but never the reverse: nothing a package depends on may
-depend back on it.
+**Imports follow the dependency direction.** `cmd` → `internal/server` →
+`internal/api`, `internal/scheduler` → `internal/store`, `internal/bus`. A
+higher-level package imports lower-level ones (`internal/api` imports
+`internal/auth`, `internal/openjd`, `internal/scheduler`, `internal/store`,
+`internal/ws` and more), never the reverse.
 
 **Interfaces over concrete types at package boundaries.** Handlers and the
-scheduler receive the `store.Store` interface, never `*sqlite.Store`, so tests
-can inject a fake.
+scheduler receive the `store.Store` interface, never `*sqlite.Store` or
+`*postgres.Store`, so tests can inject a fake.
 
 **One file per route group.** `internal/api/jobs.go`, `internal/api/tasks.go`,
 `internal/api/workers.go`, etc. Each file owns its handler struct, wire-format
@@ -698,13 +697,13 @@ types, and route-mounting helper.
 **Conventional Commits.** The `commit-msg` hook enforces the format:
 `type(scope)?: description`. Valid types: `feat fix docs style refactor test chore build ci perf revert`.
 
-**Changelog.** `CHANGELOG.md` is a generated artifact — do not edit it by hand.
+**Changelog.** `CHANGELOG.md` is generated; do not edit it by hand.
 [git-cliff](https://git-cliff.org) derives it from the Conventional Commit
 history (config in `cliff.toml`), so the way to change an entry is to change the
 commit message. `feat`/`fix`/`perf`/`refactor`/`build`/`ci`/`docs`/`test`
 commits become changelog entries grouped by type; `chore` and `release` commits
-are omitted. A commit that doesn't parse as a Conventional Commit is skipped
-entirely, so it never reaches the changelog. Regenerate with:
+are omitted, and so is a commit that doesn't parse as a Conventional Commit.
+Regenerate with:
 
 ```sh
 make changelog                 # refresh, leaving pending commits under [Unreleased]
@@ -713,9 +712,9 @@ make changelog VERSION=0.3.0   # roll pending commits into a dated 0.3.0 section
 
 Install git-cliff first (`brew install git-cliff`, or see
 <https://git-cliff.org/docs/installation>). The release workflow also runs
-git-cliff automatically at tag time and bundles the result into the release
-archives — but that copy is not committed back, so the tracked `CHANGELOG.md` is
-refreshed by hand during release prep (see `docs/release-runbook.md`).
+git-cliff at tag time and bundles the result into the release archives, but
+does not commit that copy back, so the tracked `CHANGELOG.md` is refreshed by
+hand during release prep (see `docs/release-runbook.md`).
 
 ---
 
@@ -746,11 +745,11 @@ func (h *jobHandler) listSteps(w http.ResponseWriter, r *http.Request) {
     steps, err := h.store.ListStepsForJob(ctx, jobID)
     if err != nil {
         if errors.Is(err, store.ErrNotFound) {
-            writeError(w, r, http.StatusNotFound, "job not found")
+            writeProblem(w, r, http.StatusNotFound, "job not found")
             return
         }
         h.logger.ErrorContext(ctx, "list steps", slog.String("job_id", jobID), slog.Any("err", err))
-        writeError(w, r, http.StatusInternalServerError, "internal error")
+        writeProblem(w, r, http.StatusInternalServerError, "internal error")
         return
     }
 
@@ -763,12 +762,14 @@ func (h *jobHandler) listSteps(w http.ResponseWriter, r *http.Request) {
 
 ### Step 2 — Wire the route in the router
 
-Open `internal/api/router.go` and find the `/api/v1` sub-router block. Add
-the new route alongside the related routes:
+Open `internal/api/router.go`. Routes are grouped by the permission they need
+(each group calls `g.Use(az.require(policy.<Permission>))`), and a route on one
+job also takes `az.requireJobAccessByJobID()` so the job-owner rules apply. Add
+the new route to the matching group, next to the related routes:
 
 ```go
-// inside the r.Route("/api/v1", ...) block:
-r.Get("/jobs/{id}/steps", jobs.listSteps)
+// inside the jobs.read group:
+g.With(az.requireJobAccessByJobID()).Get("/jobs/{id}/steps", jobs.listSteps)
 ```
 
 ### Step 3 — Add or extend the Store interface
@@ -809,10 +810,9 @@ A method that reads rows to decide a write takes its anchor rows first, in
 the [global lock order](architecture.md#lock-order) (see
 [Store invariants](architecture.md#store-invariants)).
 
-**A wholly new aggregate — a new table, not just a new method on an
-existing one — needs a migration, and every migration ships as a pair.** Add a
-numbered SQL file to `internal/store/migrations/` (e.g. `00038_my_feature.sql`,
-continuing the existing sequence) **and** one with the same number to
+**A new table needs a migration, and every migration ships as a pair.** Add a
+numbered SQL file to `internal/store/migrations/` (the next number in the
+sequence, e.g. `00039_my_feature.sql`) **and** one with the same number to
 `internal/store/migrations/postgres/`, each with `+goose Up`/`+goose Down`
 sections following the pattern of the surrounding files. A new column or
 index on an existing table needs a pair too. `TestSchemaParity`
@@ -834,29 +834,26 @@ PostgreSQL, where the `ts` domain's `CHECK` refuses any other form,
 `TestMigrations_StampTimesInTheStoredForm` fails on a SQLite migration whose
 SQL, comments aside, uses strftime's `%SZ` or `%fZ`.
 
-Finally, add a corresponding stub to the in-memory fake. The fake is split
-per aggregate, mirroring `internal/store/sqlstore/`, not one
-`internal/store/fake/store.go` file — a `step.go` under `internal/store/fake/`
-for the `StepStore` methods above, or a new file named for a wholly new
-aggregate (see `internal/store/fake/workercredential.go` for what a new
-aggregate's fake looks like end to end). Stub it so existing tests keep
-compiling.
+Finally, add the method to the in-memory fake so existing tests keep
+compiling. The fake has one file per aggregate, mirroring
+`internal/store/sqlstore/`: the `StepStore` methods above go in
+`internal/store/fake/step.go`, and a wholly new aggregate gets a new file
+(`internal/store/fake/workercredential.go` is a complete example).
 
 > **Not every new store method is REST-triggered.** `RecordTaskFailure`,
 > `RequeueTaskForRetry` (`internal/store/sqlstore/task.go`), and `ParkJob`
-> (`internal/store/sqlstore/job.go`) exist purely for the scheduler's auto-retry
-> and failure-limit handling (`internal/scheduler/failure.go`'s
-> `handleTaskFailed`) — no handler in
-> `internal/api/` calls them directly. They still follow the same shape as
+> (`internal/store/sqlstore/job.go`) exist only for the scheduler's auto-retry
+> and failure-limit handling (`handleTaskFailed` in
+> `internal/scheduler/failure.go`); no handler in `internal/api/` calls them.
+> They still follow the same shape as
 > REST-triggered methods: declared on the relevant sub-interface
 > (`TaskStore`/`JobStore`), implemented in `internal/store/sqlstore/`, and
 > stubbed in `internal/store/fake/` so scheduler tests can inject the fake.
-> Layered policy resolution that isn't itself a store method — e.g. picking
-> the effective retry policy from Job → Queue → Farm → server default — is a
-> plain package-level helper next to its caller rather than a store method:
-> see `resolveRetryPolicy` in `internal/scheduler/retrypolicy.go`. Follow this
-> pattern for scheduler-internal state changes that don't need a REST
-> surface of their own.
+> Layered policy resolution, such as picking the effective retry policy from
+> Job → Queue → Farm → server default, is a plain package-level helper rather
+> than a store method: see `ResolveRetryPolicy` in
+> `internal/scheduler/retrypolicy.go`. Follow this pattern for
+> scheduler-internal state changes that need no REST surface of their own.
 
 > **Every terminal non-success must leave a reason.** `task_attempts.message`
 > is the per-attempt reason (next to `exit_code`); `tasks.failure_reason`
@@ -897,7 +894,7 @@ A new permission must be added in **two** places:
    rather than shipping with no client-side gate.
 
 Then gate the UI affordance itself with `can(principal, '<permission>')` and,
-for a whole route, wrap it in `<RequireRole permission="…">` — see
+for a whole route, wrap it in `<RequireRole permission="…">`; see
 [`web-development.md`](web-development.md#role-gating-can-requirerole-navcard-filtering).
 
 ### Step 4 — Update the OpenAPI spec
@@ -1018,7 +1015,7 @@ Built-ins live in `internal/product/builtins/*.yaml` and are compiled into the
 binary via `//go:embed` in `internal/product/builtins.go`. At process init,
 `loadBuiltins` reads every `.yaml` file in that directory, calls
 `ParseDefinition` on each (which re-serializes the inline template and validates
-it via `openjd.Parse` + `openjd.ValidateWithOptions`), and panics if any file is
+it via `openjd.Parse` + `openjd.ValidateWithBudget`), and panics if any file is
 malformed. To add a new built-in:
 
 1. Create `internal/product/builtins/<name>.yaml` using the definition file
@@ -1029,21 +1026,19 @@ malformed. To add a new built-in:
    ```
    # SPDX-License-Identifier: AGPL-3.0-or-later
    ```
-3. Run `go test ./internal/product/...` — the `TestBuiltins_LoadValidateAndStamp`
-   test validates every built-in definition and will catch template errors.
+3. Run `go test ./internal/product/...`: `TestBuiltins_LoadValidateAndStamp`
+   validates every built-in definition and catches template errors.
 4. Built-in names are reserved; `POST /api/v1/products` rejects names that
    shadow a built-in.
-5. New default/built-in product or reference preset requiring a software
-   capability tag → add a matching built-in detector in
-   `internal/worker/capabilities/builtins/`; the
-   `TestBuiltinDetectors_CoverPresets` invariant must stay green (see
+5. If the product requires a software capability tag, add a matching built-in
+   detector in `internal/worker/capabilities/builtins/` (see
    [Adding a built-in DCC detector](#adding-a-built-in-dcc-detector) below).
 
 ### Custom products
 
-Custom products are created at runtime through the REST API and stored in
-SQLite (the `products` table). They are mutable (PUT/DELETE) and appear in `GET
-/api/v1/products` merged with the built-ins.
+Custom products are created at runtime through the REST API and stored in the
+state store's `products` table. They are mutable (PUT/DELETE) and appear in
+`GET /api/v1/products` merged with the built-ins.
 
 ```sh
 curl -X POST http://localhost:8080/api/v1/products \
@@ -1103,8 +1098,8 @@ The hooks installed by `make hooks` run automatically on every `git commit`:
 3. **go vet** — basic correctness checks.
 4. **golangci-lint** — full linter suite with auto-fix.
 
-A failing hook blocks the commit and prints the fix command. To bypass for a
-WIP commit: `git commit --no-verify`.
+A failing hook blocks the commit and prints a hint. To bypass for a WIP commit:
+`git commit --no-verify`.
 
 To skip the slow `golangci-lint` step locally while keeping the others, add
 a `lefthook-local.yml` (not committed):
@@ -1181,7 +1176,7 @@ SQI_WORKER_NATS_URL=nats://127.0.0.1:4222 \
   ./bin/sqi-worker start --dry-run
 ```
 
-To run both components together in a single shell session:
+To rebuild both binaries before starting the worker:
 
 ```sh
 # Terminal 1
@@ -1197,8 +1192,8 @@ SQI_WORKER_LOG_FORMAT=text \
 
 ### Running multiple workers locally
 
-To simulate a multi-worker farm on one machine — for exercising the scheduler,
-capability matching, or queue routing — use the `run-workers` target. With
+To simulate a multi-worker farm on one machine, for exercising the scheduler,
+capability matching or queue routing, use the `run-workers` target. With
 `sqi-server` running (`make run` in another terminal), start N workers:
 
 ```sh
@@ -1210,8 +1205,8 @@ Each instance gets a distinct identity so they don't collide: a unique name
 (`worker-1`, `worker-2`, …), its own data dir under `./.run/workers/worker-<i>`
 (holding a separate `worker.id` UUID), and its own metrics port (`9091`,
 `9092`, …). Ctrl-C stops them all. Inherited `SQI_WORKER_*` env vars still
-apply, so you can layer on shared config — e.g. point them at an explicit NATS
-URL instead of mDNS discovery:
+apply, so you can layer on shared config, for example an explicit NATS URL
+instead of mDNS discovery:
 
 ```sh
 SQI_WORKER_NATS_URL=nats://127.0.0.1:4222 make run-workers N=5
@@ -1240,17 +1235,17 @@ make test-integration
 ### Writing a new executor type
 
 The task executor lives in `internal/worker/executor`. It is wired into the
-pull loop via the `pull.TaskDispatcher` interface and into the heartbeat
-publisher via `heartbeat.StateSource`. To change *how* tasks execute, you
-implement a new type that satisfies these interfaces.
+lease loop via the `lease.Dispatcher` interface and into the heartbeat
+publisher via `heartbeat.StateSource`. To change how tasks execute, implement a
+new type that satisfies these interfaces.
 
-**The relevant interfaces** (defined in `internal/worker/pull/pull.go` and
+**The relevant interfaces** (defined in `internal/worker/lease/lease.go` and
 `internal/worker/heartbeat/heartbeat.go`):
 
 ```go
-// pull.TaskDispatcher — called by the pull loop for each incoming assignment.
-type TaskDispatcher interface {
-    Dispatch(ctx context.Context, msg *protocol.AssignMsg) error
+// lease.Dispatcher — called by the lease loop for each incoming assignment.
+type Dispatcher interface {
+    Dispatch(ctx context.Context, m *protocol.AssignMsg) error
 }
 
 // heartbeat.StateSource — queried by the heartbeat publisher on each tick.
@@ -1268,7 +1263,7 @@ type StateSource interface {
    `internal/worker/executor/container/container.go`.
 
 2. **Implement the interfaces** — your type must implement at minimum
-   `pull.TaskDispatcher` and `heartbeat.StateSource`. It also needs to
+   `lease.Dispatcher` and `heartbeat.StateSource`. It also needs to
    implement `cancel.TaskCanceler` if you want NATS-driven cancellation:
 
    ```go
@@ -1293,11 +1288,13 @@ type StateSource interface {
    - `Terminal` ("succeeded", "failed", "canceled") after it exits.
 
 4. **Wire it in `cmd/sqi-worker/start.go`** — replace the `executor.New(...)`
-   call with your constructor. Wire the same `statusPub`, `sessionMgr`,
-   `metrics`, and `logPub` dependencies.
+   call with your constructor, passing the same status publisher
+   (`statusPub`), session manager (`sessionMgr`), metrics and OpenJD output
+   interceptor (`openjdInterceptor`).
 
 5. **Add unit tests** — create `executor_test.go` asserting at minimum:
-   - Dispatch returns an error when at capacity.
+   - A `Dispatch` that fails before the task starts publishes a terminal
+     `failed` status and returns the error.
    - Status messages are published for success and failure.
    - `DrainAndShutdown` (or equivalent) blocks until all goroutines exit.
 
@@ -1321,6 +1318,7 @@ and `probe_other.go`.
    ```go
    type Probe interface {
        OS() string
+       Arch() string
        OSVersion() string
        CPUCount() int
        RAMMb() int
@@ -1393,47 +1391,46 @@ and `probe_other.go`.
 ### Adding a built-in DCC detector
 
 This is a separate, declarative detection path from the `Probe`-based
-hardware tags above — see
+hardware tags above. See
 [`docs/worker-capabilities.md`](worker-capabilities.md#capability-auto-detection-built-in-dcc-detectors)
 for the full picture (how detection runs, the tag/version model, precedence)
 and the
 [Writing custom detectors](worker-capabilities.md#writing-custom-detectors)
 reference for the detector schema.
 
-**Paired-change convention:** every new default/built-in product or reference
-preset that requires a software capability tag ships a matching built-in
-detector in `internal/worker/capabilities/builtins/`. For `presets/sqi/*.yaml`
-specifically, this is test-enforced: `TestBuiltinDetectors_CoverPresets` in
+**Paired-change convention:** a new built-in product or reference preset that
+requires a software capability tag ships a matching built-in detector in
+`internal/worker/capabilities/builtins/`. For reference presets this is
+enforced: `TestBuiltinDetectors_CoverPresets` in
 [`internal/worker/capabilities/builtins_test.go`](https://github.com/uberware/sqi/blob/main/internal/worker/capabilities/builtins_test.go)
-cross-checks every `attr.worker.tag.<x>` required by `presets/sqi/*.yaml`
-against the tags emitted by the built-in detectors, so a new reference preset
-cannot ship without a matching detector or the test fails. (The test currently
-only scans `presets/sqi/`, not `internal/product/builtins/`; apply the same
-convention by hand to a new built-in *product* until that coverage is
-extended.)
+checks every `attr.worker.tag.<x>` required by `presets/sqi/*.yaml` against the
+tags the built-in detectors emit. It does not scan `internal/product/builtins/`,
+so apply the convention to a new built-in product by hand. The one existing
+exception is the `container` built-in's `docker` tag, which has no detector and
+is set manually.
 
 **Steps to add a new built-in detector:**
 
 1. Create `internal/worker/capabilities/builtins/<name>.yaml` with the
-   detector schema — `tag`, `checks` (each check exactly one of
+   detector schema: `tag`, `checks` (each check exactly one of
    `exe`/`path_glob`/`env`/`registry`, with an optional per-check `os` gate),
    and an optional `version.from` regex. Use the existing built-ins
-   (`maya.yaml`, `nuke.yaml`, `houdini.yaml`, `blender.yaml`) as reference —
-   they use the identical schema as a custom detector.
+   (`maya.yaml`, `nuke.yaml`, `houdini.yaml`, `blender.yaml`) as reference;
+   they use the same schema as a custom detector.
 2. Stamp the file with the SPDX comment header:
    ```
    # SPDX-License-Identifier: AGPL-3.0-or-later
    ```
-3. Run `go test ./internal/worker/capabilities/...` —
+3. Run `go test ./internal/worker/capabilities/...`:
    `TestBuiltinDetectors_CoverPresets` and the built-in load/validate tests
-   will catch a malformed detector or a still-uncovered preset tag.
+   catch a malformed detector or an uncovered preset tag.
 4. `make fmt && make lint`.
 
 ## sqi-sdk (Python) development
 
-The Python client lives at `clients/python/` (import name `sqi_client`). It is a
-separate toolchain from the Go code — it has its own virtualenv, dependencies,
-and Make targets — so its commands do not overlap with the Go ones above.
+The Python client lives at `clients/python/` (import name `sqi_client`). It has
+its own toolchain, virtualenv, dependencies and Make targets, separate from the
+Go code.
 
 ### First-time setup
 
@@ -1456,7 +1453,7 @@ make py-build            # build sdist + wheel into clients/python/dist/
 ```
 
 `make py-check` is the pre-PR gate; it matches what CI runs for the client. Run
-it (not bare `pytest`) from the repo root, or `cd clients/python` first — pytest
+it (not bare `pytest`) from the repo root, or `cd clients/python` first: pytest
 must load `clients/python/pyproject.toml` for the markers, coverage gate, and
 `addopts` to apply.
 
@@ -1482,11 +1479,12 @@ If a binary is missing the whole marker is skipped with a clear message.
 
 To wrap a new server endpoint in the client, mirror the existing layering:
 
-1. **Transport** — reach for the shared helpers in `client.py` rather than
-   calling `httpx` directly: `_request` / `_request_json` (path joining under
+1. **Transport** — use the shared helpers rather than calling `httpx`
+   directly: `_request` / `_request_json` in `client.py` (path joining under
    `/api/v1`, `None`-param dropping, typed-error mapping, GET-only retry),
-   `parse_page` for paginated responses, and the generic `_CrudResource` for
-   standard create/get/update/delete resources.
+   `parse_page` in `models.py` for paginated responses, and the generic
+   `_CrudResource` in `client.py` for standard create/get/update/delete
+   resources.
 2. **Model** — add or extend a frozen dataclass in `models.py` matching the
    OpenAPI component schema field-for-field, with a tolerant `from_dict`. Export
    it from `__init__.py`'s `__all__`.
@@ -1506,8 +1504,8 @@ server diverge, treat the spec as authoritative and flag the discrepancy.
 ## The sqi-submitter package
 
 `clients/submitter/` (import name `sqi_submitter`, distribution `sqi-submitter`)
-is a second, separate Python package depending on `sqi-sdk` — its own
-virtualenv, `pyproject.toml`, and gate, independent of both the Go build and
+is a second Python package that depends on `sqi-sdk`. It has its own
+virtualenv, `pyproject.toml` and gate, independent of both the Go build and
 `clients/python`. Full user-facing reference: [`docs/dcc-submitters.md`](dcc-submitters.md).
 
 ```
@@ -1518,20 +1516,18 @@ clients/submitter/
     qt/                      Qt only, imported lazily (PySide6, falls back to PySide2)
     hosts/{maya,houdini,nuke,blender}/   adapter + launch glue per host
   tests/                     pytest; tests/integration/ is env-gated (see below)
-presets/sqi/                 the twenty-two reference preset YAML fixtures (nine DCC render
+presets/sqi/                 the thirty reference preset YAML fixtures (seventeen DCC render
                               presets, eight standalone renderer presets, five ffmpeg
                               transcode presets), validated by
                               internal/product/sqipresets_test.go against a per-preset
-                              `want` map of expected category/params/extensions —
-                              not a blanket rule, since not every preset is
-                              `Rendering` or declares `TASK_CHUNKING`
+                              `want` map of expected category/params/extensions
 presets/testing/             the four test/QA preset fixtures (test-render, test-steps;
                               bash + PowerShell), validated by
                               internal/product/testingpresets_test.go
 ```
 
-Gate command line (from `clients/submitter`, with `sqi-sdk` resolvable —
-`pip install -e ../python` first if not already installed):
+Gate command line (from `clients/submitter`, with `sqi-sdk` resolvable; run
+`pip install -e ../python` first if it is not installed):
 
 ```sh
 ruff format --check . && ruff check . && mypy src && mypy --python-version=3.13 tests && pytest -q
@@ -1542,5 +1538,5 @@ ruff format --check . && ruff check . && mypy src && mypy --python-version=3.13 
 `SQI_TEST_BLENDER=1` and a local Blender install.
 
 Adding a DCC adapter (a fifth Python-based host) is a `HostAdapter` subclass
-plus launch glue — walked through in
-[`docs/dcc-submitters.md` §6, Writing a new adapter](dcc-submitters.md#writing-a-new-adapter).
+plus launch glue, walked through in
+[Writing a new adapter](dcc-submitters.md#writing-a-new-adapter) in `docs/dcc-submitters.md`.

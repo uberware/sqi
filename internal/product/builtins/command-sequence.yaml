@@ -15,8 +15,9 @@ readme: |
     so pipes, redirection and `&&` all work.
   - **Frame Range** - the frames to cover, in OpenJD range syntax: `1-100`,
     `1-100:2` for every second frame, or a list such as `1,5,10-20`.
-  - **Frames per Task** - how many consecutive frames each task covers. One by
-    default.
+  - **Frames per Task** - the most consecutive frames one task covers, one by
+    default. A range that does not divide evenly is split into near-equal
+    chunks: `1-10` at 4 is `1-4`, `5-7`, `8-10`.
 
   ## Frame variables
 
@@ -30,8 +31,8 @@ readme: |
 
   A task never covers a gap in the range. Frames are grouped only while they
   are consecutive, so `1-100:2` runs one frame per task whatever **Frames per
-  Task** says, and `1,5,10-20` at five per task runs `1-1`, `5-5`, `10-14`,
-  `15-19` and `20-20`. A renderer given `-s $SQI_FRAME_START -e
+  Task** says, and `1,5,10-20` at five per task runs `1-1`, `5-5`, `10-13`,
+  `14-17` and `18-20`. A renderer given `-s $SQI_FRAME_START -e
   $SQI_FRAME_END` therefore renders exactly the frames you asked for. A frame
   can be any integer index: a dataset shard, a seed, a batch number.
 

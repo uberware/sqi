@@ -1,0 +1,104 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: 3dsmax-render
+title: 3ds Max Render
+description: >-
+  Renders a saved 3ds Max scene headless with 3dsmaxcmd on Windows workers, one
+  frame per task by default.
+readme: |
+  # 3ds Max Render
+
+  Renders a saved `.max` file with Autodesk's `3dsmaxcmd`, using the render
+  settings stored in the scene. Each task renders a contiguous slice of the
+  frame range, one frame per task by default.
+
+  ## Parameters
+
+  - **Scene File** - the `.max` file to render. It must be reachable from every
+    worker that runs the job.
+  - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
+    `1-100:2` for every second frame.
+  - **Output Path** - the output image path passed to `3dsmaxcmd` as
+    `-outputName:`. Enter one, and make sure its folder exists: `3dsmaxcmd` does
+    not create it. The switch is always passed, so an empty value reaches
+    `3dsmaxcmd` as a bare `-outputName:`; what it does then is unverified.
+
+  ## How work is divided
+
+  The frame range expands into tasks through OpenJD task chunking. The
+  `SQI_CHUNK_BOUNDS` extension gives each task the first and last frame of its
+  own slice, which the command passes as `-start:` and `-end:`. A slice never
+  spans a gap, so a stepped range such as `1-9:4` becomes one task per frame
+  and no step argument is needed.
+
+  One frame per task is the default. Raise the step's `chunks.defaultTaskCount`
+  to render up to that many consecutive frames in one `3dsmaxcmd` launch,
+  trading parallelism for fewer scene loads.
+
+  ## Requirements
+
+  - **Windows workers only.** 3ds Max does not run elsewhere, so the step
+    requires `attr.worker.os.family` = `windows` as well as the tag.
+  - Workers tagged `attr.worker.tag.3dsmax = true`
+  - `3dsmaxcmd` on the worker's `PATH`: add the install folder, for example
+    `C:\Program Files\Autodesk\3ds Max 2026`. The built-in detector tags a
+    default install, but tagging does not put the command on `PATH`.
+  - Possibly an interactive desktop session. Whether `3dsmaxcmd` renders from
+    a worker running as a service, with no interactive session, is unverified.
+  - Launch 3ds Max once as an administrator on each render node before the
+    first job, as Deadline's documentation advises for headless rendering.
+category: Rendering
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: 3ds Max Render
+  extensions: [TASK_CHUNKING, SQI_CHUNK_BOUNDS]
+  parameterDefinitions:
+    - name: SceneFile
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface:
+        control: CHOOSE_INPUT_FILE
+        label: Scene File
+        fileFilters:
+          - label: 3ds Max scenes
+            patterns: ["*.max"]
+        fileFilterDefault:
+          label: 3ds Max scenes
+          patterns: ["*.max"]
+    - name: Frames
+      type: STRING
+      userInterface: { control: LINE_EDIT, label: Frame Range }
+    - name: OutputPath
+      type: PATH
+      objectType: FILE
+      dataFlow: OUT
+      default: ""
+      userInterface: { control: CHOOSE_OUTPUT_FILE, label: Output Path }
+  steps:
+    - name: Render
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.3dsmax
+            anyOf: ["true"]
+          - name: attr.worker.os.family
+            anyOf: ["windows"]
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Frame
+            type: CHUNK[INT]
+            range: "{{Param.Frames}}"
+            chunks:
+              defaultTaskCount: 1
+              rangeConstraint: CONTIGUOUS
+      script:
+        actions:
+          onRun:
+            command: 3dsmaxcmd
+            args:
+              - "-v:5"
+              - "-rfw:0"
+              - "-start:{{Task.Param.Frame.Start}}"
+              - "-end:{{Task.Param.Frame.End}}"
+              - "-outputName:{{Param.OutputPath}}"
+              - "{{Param.SceneFile}}"

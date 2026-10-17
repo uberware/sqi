@@ -2,13 +2,13 @@
 name: mistika-boutique-render
 title: Mistika Ultima & Boutique Render
 description: >-
-  Renders a saved Mistika Boutique project on the command line, in frame
-  chunks.
+  Renders a saved Mistika Ultima or Boutique project on the command line, in
+  frame chunks.
 readme: |
-  # Mistika Boutique Render
+  # Mistika Ultima & Boutique Render
 
-  Renders a saved Mistika Boutique project by invoking `mistika` in render mode.
-  Each task renders a contiguous slice of the frame range.
+  Renders a saved Mistika Ultima or Boutique project by invoking `mistika` in
+  render mode. Each task renders a contiguous slice of the frame range.
 
   ## Parameters
 
@@ -19,10 +19,11 @@ readme: |
 
   ## How work is divided
 
-  The frame range expands into tasks through OpenJD task chunking, ten frames per
-  task by default. The `SQI_CHUNK_BOUNDS` extension gives each task the first and
-  last frame of its own slice, which is what lets the command pass `-s` and `-e`
-  rather than a frame list.
+  The frame range expands into tasks through OpenJD task chunking, up to ten
+  frames per task by default. The `SQI_CHUNK_BOUNDS` extension gives each task
+  the first and last frame of its own slice, which the command passes as `-s`
+  and `-e`. A slice never spans a gap, so a stepped range such as `1-100:2`
+  becomes one task per frame.
 
   There is no in-application submitter for this product: build the job from the
   sqi web UI or the Python client rather than from inside the application.

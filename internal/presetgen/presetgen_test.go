@@ -25,9 +25,17 @@ func TestBuild(t *testing.T) {
 	// Every preset, sorted by name.
 	want := []string{
 		"3delight-render",
+		"3dsmax-render",
+		"after-effects-queue-render-macos",
+		"after-effects-queue-render-windows",
+		"after-effects-render-macos",
+		"after-effects-render-windows",
 		"arnold-kick-render",
 		"arnold-kick-tile-render",
 		"blender-batch-render",
+		"blender-view-layer-render",
+		"cinema4d-render",
+		"cinema4d-take-render",
 		"ffmpeg-segment-transcode-bash",
 		"ffmpeg-segment-transcode-expr",
 		"ffmpeg-segment-transcode-powershell",
@@ -169,7 +177,7 @@ func TestPublish(t *testing.T) {
 		t.Error("published index dropped the foreign community entry")
 	}
 	if byName["gone"] {
-		t.Error("published index kept the stale dcc entry")
+		t.Error("published index kept the stale sqi entry")
 	}
 	if !byName["blender-batch-render"] {
 		t.Error("published index missing blender-batch-render")

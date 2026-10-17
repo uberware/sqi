@@ -26,10 +26,9 @@ import (
 // If no combination expression is provided, all parameters are joined with *.
 //
 // This entry point charges no job-wide budget ([maxTasksPerJob]): it expands
-// ONE step, and a single step is already bounded by [maxTasksPerStep], which
-// is the same number. The submission pipeline calls [expandParameterSpace]
-// with a per-job budget instead, because only a caller that walks a whole
-// template can see the sum.
+// one step, which [maxTasksPerStep] already bounds at the same number. The
+// submission pipeline calls [expandParameterSpace] with a per-job budget,
+// because only a caller that walks a whole template can see the sum.
 func ExpandParameterSpace(ps *StepParameterSpace) ([]TaskParams, error) {
 	return expandParameterSpace(ps, nil)
 }
@@ -38,7 +37,7 @@ func ExpandParameterSpace(ps *StepParameterSpace) ([]TaskParams, error) {
 // task budget. jobBudget may be nil, which means "this step is not part of a
 // job being expanded" and skips the [maxTasksPerJob] check entirely.
 //
-// Both caps are charged BEFORE materialization, from countCombNode's
+// Both caps are charged before materialization, from countCombNode's
 // arithmetic, so an over-cap step never allocates its rows.
 func expandParameterSpace(ps *StepParameterSpace, jobBudget *jobTaskBudget) ([]TaskParams, error) {
 	if ps == nil {
@@ -84,20 +83,20 @@ func expandParameterSpace(ps *StepParameterSpace, jobBudget *jobTaskBudget) ([]T
 		return nil, fmt.Errorf("openjd: combination expression: %w", err)
 	}
 
-	// Resource-exhaustion guard: compute the emitted task count arithmetically
-	// from the tree before materializing the Cartesian product. This bounds both
-	// the result allocation and the number of per-task DB inserts a single
-	// submission can trigger. Like the per-range maxRangeValues cap it ALWAYS
-	// applies, independent of EnforceLimits.
+	// Resource-exhaustion guard: compute the task count arithmetically from the
+	// tree before materializing the Cartesian product. This bounds both the
+	// result allocation and the number of per-task DB inserts one submission can
+	// trigger. Like the per-range maxRangeValues cap it always applies,
+	// independent of EnforceLimits.
 	count, ok := countCombNode(tree, paramValues)
 	if !ok || count > maxTasksPerStep {
 		return nil, fmt.Errorf(
 			"openjd: parameter space expands to too many tasks (limit %d)", maxTasksPerStep,
 		)
 	}
-	// The same count, charged against the whole job's allowance. Also before
-	// materialization: a step that fits on its own but does not fit in what the
-	// job has left must not build its rows either.
+	// The same count, charged against the whole job's allowance, also before
+	// materialization: a step that fits on its own but not in what the job has
+	// left must not build its rows either.
 	if err := jobBudget.charge(count); err != nil {
 		return nil, err
 	}
@@ -110,55 +109,43 @@ func expandParameterSpace(ps *StepParameterSpace, jobBudget *jobTaskBudget) ([]T
 }
 
 // maxTasksPerStep is a hard resource-exhaustion bound on the number of tasks a
-// single step's parameter space may expand to. Like [maxRangeValues] it ALWAYS
-// applies — even when EnforceLimits is false — because it guards against
+// single step's parameter space may expand to. Like [maxRangeValues] it always
+// applies, even when EnforceLimits is false, because it guards against
 // unbounded materialization and an unbounded number of per-task DB inserts
 // reachable from POST /api/v1/jobs (e.g. two 1024-value parameters joined by a
 // Cartesian product already yield ~1M tasks). It is deliberately generous; tune
 // it if legitimate jobs need larger steps.
 const maxTasksPerStep = 1_000_000
 
-// maxTasksPerJob caps the tasks a whole job may produce, SUMMED across its
-// steps. See [maxSteps]' own doc comment (validate.go) for why that cap does
-// not bound it.
+// maxTasksPerJob caps the tasks a whole job may produce, summed across its
+// steps. Without it [maxSteps] (100) multiplies through [maxTasksPerStep], so
+// one POST /api/v1/jobs could create 100 x 1,000,000 = 10^8 task rows with
+// every other limit respected.
 //
-// It exists because maxSteps (100) multiplies straight through
-// [maxTasksPerStep]: without it, one POST /api/v1/jobs can reach 100 x
-// 1,000,000 = 10^8 task rows with every other limit respected — exactly the
-// unbounded per-task DB insert count maxTasksPerStep's own comment says it
-// guards against, only spread over steps instead of concentrated in one.
+// It equals maxTasksPerStep: a job may not produce more tasks than a single
+// step may. It therefore rejects some jobs the per-step cap alone would
+// accept, such as two 600,000-task steps; tune it if legitimate jobs need
+// larger totals.
 //
-// It equals maxTasksPerStep deliberately: a job may not produce more tasks
-// than a single step may. That needs no second number justified from nothing,
-// it states in one sentence, and it cuts the worst case by 100x. It rejects
-// jobs the per-step cap alone would accept — two 600,000-task steps, for
-// example — which is acceptable because the per-step figure is already
-// "deliberately generous" above; tune it if legitimate jobs need larger
-// totals.
-//
-// Always-on, even when EnforceLimits is false, for the same reason its sibling
-// is: a caller that relaxes quantitative POLICY limits does not thereby
-// acquire the right to insert a hundred million rows. That matters more here
-// than for the per-step cap, because with EnforceLimits false maxSteps is not
-// enforced either, so without this constant the product has no ceiling at all.
+// It always applies, even when EnforceLimits is false. With EnforceLimits
+// false maxSteps is not enforced either, so without this cap the total has no
+// ceiling at all.
 const maxTasksPerJob = maxTasksPerStep
 
 // jobTaskBudget is the running total of tasks one job's steps have produced so
 // far, so [maxTasksPerJob] can be enforced across them. [Submitter.Submit]
-// creates exactly one per submission and threads it through every step's
-// expansion.
+// creates one per submission and threads it through every step's expansion.
 //
-// A nil *jobTaskBudget is valid and charges nothing — that is what the
-// exported [ExpandParameterSpace] passes, since a lone step has no job to be
-// summed into.
+// A nil *jobTaskBudget is valid and charges nothing. The exported
+// [ExpandParameterSpace] passes nil, since a lone step has no job to be summed
+// into.
 type jobTaskBudget struct {
 	// total is the number of tasks charged so far by this job's steps.
 	total int
 }
 
 // charge adds count to the running total, reporting an error once the job
-// passes [maxTasksPerJob]. Callers charge BEFORE materializing rows, so the
-// bound is on what would be built, not on what already was.
+// passes [maxTasksPerJob]. Callers charge before materializing rows.
 //
 // The total cannot overflow: every caller has already rejected a count above
 // maxTasksPerStep, and charge returns an error as soon as the total passes
@@ -178,7 +165,7 @@ func (b *jobTaskBudget) charge(count int) error {
 }
 
 // countCombNode computes, arithmetically, the number of [TaskParams] rows that
-// [evalCombNode] would produce for tree, WITHOUT materializing them. ok is false
+// [evalCombNode] would produce for tree, without materializing them. ok is false
 // if the running product overflows, so callers can reject before allocating. A
 // product node multiplies its children; an association (zip) node takes its
 // first child's count, matching [zipRows] (a length mismatch is reported later
@@ -229,9 +216,9 @@ func mulSaturate(a, b int) (product int, ok bool) {
 // expandTaskParam expands a single task parameter definition into a flat list
 // of string values, one per task.
 //
-// For CHUNK[INT] parameters each returned string is a range expression
-// (CONTIGUOUS) or comma-separated list (NONCONTIGUOUS) encoding the group of
-// integers that a single task will process.
+// For CHUNK[INT] parameters each returned string is a "<start>-<end>" range
+// (CONTIGUOUS) or a compact <IntRangeExpr> (NONCONTIGUOUS) encoding the group
+// of integers that a single task will process.
 func expandTaskParam(tp TaskParamDefinition) ([]string, error) {
 	switch tp.Type {
 	case TaskParamTypeInt:
@@ -266,9 +253,9 @@ func expandTaskParam(tp TaskParamDefinition) ([]string, error) {
 }
 
 // expandChunkInt expands a CHUNK[INT] parameter into one string per chunk.
-// Each string is either a compact range expression (CONTIGUOUS) or a
-// comma-separated integer list (NONCONTIGUOUS), matching the value a worker
-// will receive as its task parameter.
+// Each string is either a "<start>-<end>" range (CONTIGUOUS) or a compact
+// <IntRangeExpr> (NONCONTIGUOUS), matching the value a worker will receive as
+// its task parameter.
 func expandChunkInt(tp TaskParamDefinition) ([]string, error) {
 	if tp.Chunks != nil && tp.Chunks.DefaultTaskCountExpr != nil {
 		// Only ResolveParameterSpaceParams turns this into a count; chunking
@@ -313,9 +300,16 @@ func expandChunkInt(tp TaskParamDefinition) ([]string, error) {
 //
 // A CONTIGUOUS chunk is "always a contiguous range of integers" (TASK_CHUNKING,
 // Template Schemas), so all is first split into runs of consecutive integers
-// and each run is chunked on its own: RFC 0001's example, "1,10-12,18-50" at
-// 10, is "1-1", "10-12", "18-27", "28-37", "38-47", "48-50". A NONCONTIGUOUS
-// chunk may be any set, so the flat list is chunked directly.
+// and each run is chunked on its own. A NONCONTIGUOUS chunk may be any set, so
+// the flat list is chunked directly and each chunk spelled by
+// formatNoncontiguousChunk.
+//
+// Each run is split into the fewest chunks that fit, with its values spread
+// evenly across them, as the reference implementation does and the
+// TASK_CHUNKING fixture contiguous-uneven.test.yaml requires: 1-12 at 5 is
+// 1-4, 5-8, 9-12. RFC 0001's example, "1,10-12,18-50" at 10, is therefore
+// "1-1", "10-12", "18-26", "27-34", "35-42", "43-50"; the RFC's own
+// illustration, which does not balance, ends 18-27, ..., 48-50.
 func chunkValues(all []int, chunkSize int, contiguous bool) []string {
 	runs, format := [][]int{all}, formatNoncontiguousChunk
 	if contiguous {
@@ -323,8 +317,17 @@ func chunkValues(all []int, chunkSize int, contiguous bool) []string {
 	}
 	var out []string
 	for _, run := range runs {
-		for i := 0; i < len(run); i += chunkSize {
-			out = append(out, format(run[i:min(i+chunkSize, len(run))]))
+		// k = ceil(n/chunkSize) chunks, chunk i ending at index
+		// ceil((i+1)*n/k). k is computed as (n-1)/chunkSize+1 because
+		// defaultTaskCount has no upper bound, and n+chunkSize-1 would wrap
+		// at the largest INT and give zero chunks. n >= 1 always.
+		n := len(run)
+		k := (n-1)/chunkSize + 1
+		start := 0
+		for i := range k {
+			end := ((i+1)*n + k - 1) / k
+			out = append(out, format(run[start:end]))
+			start = end
 		}
 	}
 	return out
@@ -351,11 +354,46 @@ func formatContiguousChunk(vals []int) string {
 	return strconv.Itoa(vals[0]) + "-" + strconv.Itoa(vals[len(vals)-1])
 }
 
-// formatNoncontiguousChunk encodes a chunk as a comma-separated integer list.
+// formatNoncontiguousChunk spells a chunk as the compact <IntRangeExpr> the
+// reference implementation produces, as the TASK_CHUNKING conformance fixtures
+// require ("1-8" at 3 is "1-3", "4-6", "7,8"). Scanning left to right, the
+// longest run with one constant positive step is written as a range when it
+// holds at least three values ("1-5", "1-9:2"); a shorter run is written as its
+// first two values, and the scan carries on after them. So a run of two stays
+// a list ("7,8"), and "1,3,5,6,7,8" is "1-5:2,6-8".
+//
+// The values keep the order expansion gave them, which for a range such as
+// "10-15:2,1-5" is first-seen rather than increasing. A step that is not
+// positive never forms a range, because internal/openjd's own parser rejects
+// "a-b" with a > b, so a descending or repeated pair is written value by value.
 func formatNoncontiguousChunk(vals []int) string {
-	parts := make([]string, len(vals))
-	for i, v := range vals {
-		parts[i] = strconv.Itoa(v)
+	var parts []string
+	for i := 0; i < len(vals); {
+		if i+1 == len(vals) {
+			parts = append(parts, strconv.Itoa(vals[i]))
+			break
+		}
+		step := vals[i+1] - vals[i]
+		if step <= 0 {
+			parts = append(parts, strconv.Itoa(vals[i]))
+			i++
+			continue
+		}
+		j := i + 1
+		for j+1 < len(vals) && vals[j+1]-vals[j] == step {
+			j++
+		}
+		switch {
+		case j-i+1 < 3:
+			parts = append(parts, strconv.Itoa(vals[i]), strconv.Itoa(vals[i+1]))
+			i += 2
+			continue
+		case step == 1:
+			parts = append(parts, strconv.Itoa(vals[i])+"-"+strconv.Itoa(vals[j]))
+		default:
+			parts = append(parts, strconv.Itoa(vals[i])+"-"+strconv.Itoa(vals[j])+":"+strconv.Itoa(step))
+		}
+		i = j + 1
 	}
 	return strings.Join(parts, ",")
 }
@@ -365,9 +403,9 @@ func formatNoncontiguousChunk(vals []int) string {
 // contiguous integer range encoding (e.g. "1-10", "5-5"; a NONCONTIGUOUS-style
 // list is also tolerated); Start is the smallest integer in the chunk and End
 // the largest. It is a no-op when ps is nil or declares no CHUNK[INT]
-// parameter, and is only meaningful (and only called) when the
-// SQI_CHUNK_BOUNDS extension is enabled. A value that fails to
-// parse is left without derived keys — expansion has already validated ranges.
+// parameter, and the submission pipeline calls it only when the template
+// enables the SQI_CHUNK_BOUNDS extension. A value that fails to parse is left
+// without derived keys, since expansion has already validated the range.
 func DeriveChunkBounds(rows []TaskParams, ps *StepParameterSpace) {
 	if ps == nil {
 		return
@@ -482,9 +520,9 @@ func parseCombinationExpr(expr string) (combNode, error) {
 }
 
 // combinationIdentifiers parses an expression and returns the identifier list
-// and the parsed tree, both for use by the validator.  Duplicates are allowed
-// by this function (the validator checks for them separately via containment
-// checks).  The returned tree lets callers avoid a second parse.
+// and the parsed tree, both for use by the validator. The list keeps
+// duplicates; validateCombination reports them. The returned tree lets callers
+// avoid a second parse.
 func combinationIdentifiers(expr string) ([]string, combNode, error) {
 	tree, err := parseCombinationExpr(expr)
 	if err != nil {

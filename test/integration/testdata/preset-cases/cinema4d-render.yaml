@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Cinema 4D Render. OutputPath defaults to "" and is always passed as -oimage,
+# so the cases supply one to keep the argument reviewable. The scene path
+# contains a space so the goldens show it travelling as a single argument.
+# stepped-range shows a gap-bearing range never producing a -frame span that
+# covers a frame the range excluded: a CONTIGUOUS chunk cannot span a gap, so
+# 1-9:4 becomes -frame 1 1, -frame 5 5 and -frame 9 9.
+cases:
+  - name: default
+    params:
+      SceneFile: '/mnt/show/seq010/shot 0010/c4d/shot0010_v003.c4d'
+      Frames: "1-3"
+      OutputPath: /mnt/show/seq010/shot0010/render/shot0010_
+    expect_tasks: 3
+    expect_invocations:
+      Commandline: 3
+  - name: multi-frame-chunk
+    params:
+      SceneFile: '/mnt/show/seq010/shot 0010/c4d/shot0010_v003.c4d'
+      Frames: "1-10"
+      OutputPath: /mnt/show/seq010/shot0010/render/shot0010_
+    template_patch:
+      step: Render
+      chunks_default_task_count: 5
+    expect_tasks: 2
+    expect_invocations:
+      Commandline: 2
+  - name: stepped-range
+    params:
+      SceneFile: '/mnt/show/seq010/shot 0010/c4d/shot0010_v003.c4d'
+      Frames: "1-9:4"
+      OutputPath: /mnt/show/seq010/shot0010/render/shot0010_
+    expect_tasks: 3
+    expect_invocations:
+      Commandline: 3

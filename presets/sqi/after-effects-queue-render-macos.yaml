@@ -1,0 +1,117 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: after-effects-queue-render-macos
+title: After Effects Queue Render (macOS)
+description: >-
+  Renders everything a saved After Effects project has queued, as one task on
+  one macOS worker, with aerender.
+readme: |
+  # After Effects Queue Render (macOS)
+
+  Renders whatever the saved `.aep` project has queued in its render queue, on
+  one machine, as a single task. Each queued item renders with its own render
+  settings, output module and time span, exactly as the project was saved.
+  Use After Effects Render (macOS) instead to split one queue item's frames
+  across machines.
+
+  This is the macOS variant. Its sibling, `after-effects-queue-render-windows`,
+  has the same parameter and passes `aerender` the same arguments; pick the
+  one that matches your render nodes.
+
+  ## Parameters
+
+  - **Scene File** - the `.aep` project to render. It must be reachable from
+    the worker that runs the job. Queue the items you want rendered and save
+    the project before submitting.
+
+  ## Why aerender runs through a wrapper
+
+  `aerender` is reported to exit with status 0 even when a render fails, so a
+  task that trusted its exit status would report every failure as a success.
+  The task therefore runs a small `sh` script that runs `aerender`, streams
+  its output to the task log unchanged, and fails the task when `aerender`
+  exits non-zero or when any line of its output contains `aerender ERROR`, in
+  any letter case.
+
+  A failure that neither makes `aerender` exit non-zero nor prints
+  `aerender ERROR` is still reported as a success.
+
+  ## Requirements
+
+  - **macOS workers only.** The step requires `attr.worker.os.family` =
+    `macos` as well as the tag.
+  - Workers tagged `attr.worker.tag.aftereffects = true`
+  - `aerender` on the worker's `PATH`. It lives in the install's folder, e.g.
+    `/Applications/Adobe After Effects 2026`; add that folder to `PATH`.
+  - `/bin/sh`, which ships with macOS, runs the wrapper.
+  - On each render node, Adobe's render-only marker: an empty file named
+    `ae_render_only_node.txt` in `/Users/Shared/Adobe`. It runs After Effects
+    in its non-royalty-bearing, render-only mode; Adobe's network rendering
+    page gives the licensing terms.
+category: Rendering
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: After Effects Queue Render
+  parameterDefinitions:
+    - name: SceneFile
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface:
+        control: CHOOSE_INPUT_FILE
+        label: Scene File
+        fileFilters:
+          - label: After Effects projects
+            patterns: ["*.aep"]
+        fileFilterDefault:
+          label: After Effects projects
+          patterns: ["*.aep"]
+  steps:
+    # One task: with no -comp, aerender renders the queue as saved and, per
+    # Adobe's documentation, ignores -s, -e, -i and -output, so there is
+    # nothing to split.
+    - name: Render
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.aftereffects
+            anyOf: ["true"]
+          - name: attr.worker.os.family
+            anyOf: ["macos"]
+      script:
+        embeddedFiles:
+          # after-effects-render-macos' aerender wrapper, byte for byte; see
+          # that preset for what each line does.
+          - name: aerender_wrapper
+            type: TEXT
+            filename: aerender_wrapper.sh
+            data: |
+              dir=
+              trap '[ -z "$dir" ] || rm -rf "$dir"' EXIT
+              trap 'exit 129' HUP
+              trap 'exit 130' INT
+              trap 'exit 143' TERM
+              dir=$(mktemp -d "${TMPDIR:-/tmp}/aerender_wrapper.XXXXXX") || { echo 'aerender_wrapper: cannot create a temporary directory' >&2; exit 1; }
+              { aerender "$@" 2>&1; echo "$?" >"$dir/status"; } | tee "$dir/log" || { echo 'aerender_wrapper: tee failed, so the output was not checked' >&2; exit 1; }
+              rc=$(cat "$dir/status" 2>/dev/null)
+              case $rc in
+              0) ;;
+              '') echo 'aerender_wrapper: aerender exit status unknown' >&2; exit 1 ;;
+              *) exit "$rc" ;;
+              esac
+              grep -qiF 'aerender ERROR' "$dir/log"
+              case $? in
+              0) exit 1 ;;
+              1) exit 0 ;;
+              *) echo 'aerender_wrapper: cannot read the output back' >&2; exit 1 ;;
+              esac
+        actions:
+          onRun:
+            command: /bin/sh
+            args:
+              - "{{Task.File.aerender_wrapper}}"
+              - "-project"
+              - "{{Param.SceneFile}}"
+              - "-v"
+              - "ERRORS_AND_PROGRESS"
+              - "-close"
+              - "DO_NOT_SAVE_CHANGES"

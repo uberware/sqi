@@ -14,9 +14,9 @@ import (
 	"github.com/uberware/sqi/internal/presettest"
 )
 
-// TestPresetPythonSequence_LauncherContract is python-sequence's Tier-2 claim:
-// a real Python runs the product's launcher, the one part of the product no
-// stub can stand in for. It pins the four variables per task, the child's exit
+// TestPresetPythonSequence_LauncherContract is python-sequence's Tier-2 case:
+// a real Python runs the product's launcher, which no stub can stand in for.
+// It pins the four variables per task, the child's exit
 // code, (POSIX) a canceled child's own exit code, and that the script runs as
 // __main__ with its own path in sys.argv[0], as under `python script.py`.
 //
@@ -82,16 +82,27 @@ with open(os.path.join(r"%s", os.environ["SQI_FRAME_START"] + ".txt"), "w") as f
 	})
 
 	t.Run("canceled child's exit code is reported", func(t *testing.T) {
-		launcherForwardsSignalExit(t, python, pythonSequenceLauncher(t, tmpl))
+		launcherForwardsSignalExit(t, python, embeddedFileData(t, tmpl, "launcher"))
 	})
 }
 
 // requirePython returns the absolute path of a working Python 3, or skips --
 // recording the skip against caseName, which the registry turns into a failure
-// on a required platform. A path is only accepted once it has RUN: on Windows,
+// on a required platform.
+func requirePython(t *testing.T, caseName string) string {
+	t.Helper()
+	path := findPython3(t)
+	if path == "" {
+		skipOutcome(t, caseName, "no working Python 3 on PATH (tried python3, python)")
+	}
+	return path
+}
+
+// findPython3 returns the absolute path of a working Python 3, or "" when
+// there is none. A path is accepted only once it has run: on Windows,
 // `python3` commonly resolves to an App Execution Alias that opens the Store
 // instead of running anything.
-func requirePython(t *testing.T, caseName string) string {
+func findPython3(t *testing.T) string {
 	t.Helper()
 	for _, name := range []string{"python3", "python"} {
 		path, err := exec.LookPath(name)
@@ -106,23 +117,22 @@ func requirePython(t *testing.T, caseName string) string {
 			}
 		}
 	}
-	skipOutcome(t, caseName, "no working Python 3 on PATH (tried python3, python)")
 	return ""
 }
 
-// pythonSequenceLauncher returns the product's launcher.py text, read from the
-// parsed template so the test always runs the shipped bytes.
-func pythonSequenceLauncher(t *testing.T, tmpl string) string {
+// embeddedFileData returns the data of the first step's embedded file called
+// name, read from the parsed template so a test always runs the shipped bytes.
+func embeddedFileData(t *testing.T, tmpl, name string) string {
 	t.Helper()
 	parsed, err := openjd.Parse([]byte(tmpl), openjd.FormatYAML)
 	if err != nil {
 		t.Fatalf("openjd.Parse: %v", err)
 	}
 	for _, f := range parsed.Steps[0].Script.EmbeddedFiles {
-		if f.Name == "launcher" {
+		if f.Name == name {
 			return f.Data
 		}
 	}
-	t.Fatal("python-sequence declares no embedded file named launcher")
+	t.Fatalf("template declares no embedded file named %s", name)
 	return ""
 }

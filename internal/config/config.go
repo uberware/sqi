@@ -70,9 +70,9 @@ type HTTPConfig struct {
 
 // NATSConfig controls the embedded NATS JetStream broker.
 type NATSConfig struct {
-	// Addr is the TCP address the embedded NATS server binds to.
-	// Default is loopback so external clients cannot reach it directly;
-	// sqi-server communicates with NATS in-process.
+	// Addr is the TCP address the embedded NATS server binds to. The default,
+	// 0.0.0.0:4222, listens on every interface because workers connect to the
+	// broker over the network; sqi-server itself uses NATS in-process.
 	// Env: SQI_NATS_ADDR
 	Addr string `yaml:"addr"`
 
@@ -774,10 +774,9 @@ type OpenJDConfig struct {
 	//
 	// It exists because none of the four bounds TIME. Specification section
 	// 1.3.10 prices 256 bytes at one operation, so byte-heavy work is nearly
-	// free in operations and expensive in seconds; the worst single request
-	// measured on this branch is ~17 minutes of server CPU with every budget
-	// respected. This is the only bound that does not depend on that
-	// measurement being right.
+	// free in operations and expensive in seconds; with every budget
+	// respected, one request can still cost at least ~17 minutes of server
+	// CPU at the defaults. The deadline is the only bound on time.
 	// Range: [MinOpenJDExprSubmissionDeadline, MaxOpenJDExprSubmissionDeadline].
 	// Env: SQI_OPENJD_EXPR_SUBMISSION_DEADLINE
 	ExprSubmissionDeadline time.Duration `yaml:"expr_submission_deadline"`
@@ -787,12 +786,10 @@ type OpenJDConfig struct {
 // EXPR expression limits.
 //
 // These duplicate internal/openjd's DefaultExprLimits and Min/MaxExpr*
-// constants ON PURPOSE: internal/config must not import internal/openjd (that
+// constants because internal/config must not import internal/openjd (that
 // would be a cross-import between two same-level internal packages, and
-// internal/openjd pulls in internal/store). The duplication is pinned by
-// TestExprLimits_ConfigMatchesOpenJD in internal/server -- the one package that
-// may import both -- which fails the build if either side moves without the
-// other.
+// internal/openjd pulls in internal/store). TestExprLimits_ConfigMatchesOpenJD
+// in internal/server, which may import both, fails if the two sides differ.
 //
 // The rationale for each number — which bounds are catastrophe bounds with a
 // ceiling no operator may raise past, which is a policy bound, and what the
@@ -825,12 +822,12 @@ const (
 // so internal/openjd holds no constant to keep in step with. Nothing in this
 // package imports internal/openjd, and nothing needs to.
 const (
-	// DefaultOpenJDExprSubmissionDeadline is deliberately about three orders
-	// of magnitude below the measured ~17-minute worst case rather than
-	// derived from a template that needs it: no legitimate submission
-	// observed on this branch spends anything close to five seconds in the
-	// expression checker, and the point of the number is the distance from
-	// the exposure, not that any particular second is special.
+	// DefaultOpenJDExprSubmissionDeadline sits about three orders of
+	// magnitude below the ~17-minute worst case. The largest legitimate
+	// template accepted at the defaults spends about 0.83 s in the
+	// expression checker, roughly 6x headroom; raising the four EXPR limits
+	// without raising this deadline can turn legitimate submissions into
+	// 503s.
 	DefaultOpenJDExprSubmissionDeadline = 5 * time.Second
 
 	// MinOpenJDExprSubmissionDeadline is the floor because below a second a

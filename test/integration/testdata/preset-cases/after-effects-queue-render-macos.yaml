@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# After Effects Queue Render (macOS). macOS-only by hostRequirements, so its
+# Tier-3 case runs on macOS only. One task: the project's saved queue renders
+# as is, so there is no frame range to split.
+#
+# stub_inner for the reason after-effects-render-macos' fixture gives: the real
+# /bin/sh runs the embedded wrapper and aerender is the stub, so
+# expect_inner_argv pins the argv the wrapper hands aerender.
+cases:
+  - name: default
+    params:
+      SceneFile: '/Volumes/Show Files/spot/o''brien_v002.aep'
+    stub_inner: true
+    expect_tasks: 1
+    expect_invocations:
+      aerender: 1
+    expect_inner_argv:
+      - ["-project", "/Volumes/Show Files/spot/o'brien_v002.aep", "-v", "ERRORS_AND_PROGRESS", "-close", "DO_NOT_SAVE_CHANGES"]

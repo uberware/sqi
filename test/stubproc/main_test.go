@@ -129,6 +129,62 @@ func TestStub_EmitsProgressAndStatus(t *testing.T) {
 	}
 }
 
+// TestStub_PrintsStdout pins SQI_STUB_STDOUT: arbitrary text on stdout with a
+// zero exit, the shape of a renderer that logs an error and still exits 0.
+func TestStub_PrintsStdout(t *testing.T) {
+	dir := t.TempDir()
+	bin := buildStub(t, dir, "aerender")
+	const line = "aerender ERROR: boom"
+	cmd := exec.CommandContext(t.Context(), bin)
+	cmd.Env = append(os.Environ(), "SQI_STUB_STDOUT="+line)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("stub run: err = %v, want exit 0 (SQI_STUB_STDOUT must not change the exit status)", err)
+	}
+	if !strings.Contains(string(out), line+"\n") {
+		t.Errorf("stdout = %q, want it to contain %q followed by a newline", out, line)
+	}
+}
+
+// TestStub_EnvFromArg pins SQI_STUB_ENV_FROM_ARG: the sidecar beside the file
+// named after the flag overrides the environment for that invocation alone,
+// and an invocation with no sidecar keeps the environment's settings.
+func TestStub_EnvFromArg(t *testing.T) {
+	dir := t.TempDir()
+	bin := buildStub(t, dir, "aerender")
+	configured := filepath.Join(dir, "configured.aep")
+	sidecar := "SQI_STUB_STDOUT=aerender ERROR: from sidecar\r\nSQI_STUB_EXIT=3\n"
+	if err := os.WriteFile(configured+".stubenv", []byte(sidecar), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run := func(scene string) (string, int) {
+		t.Helper()
+		cmd := exec.CommandContext(t.Context(), bin, "-project", scene)
+		cmd.Env = append(os.Environ(), "SQI_STUB_ENV_FROM_ARG=-project", "SQI_STUB_STDOUT=from env")
+		out, err := cmd.Output()
+		var exitErr *exec.ExitError
+		if err != nil && !errors.As(err, &exitErr) {
+			t.Fatalf("stub run: %v", err)
+		}
+		return string(out), cmd.ProcessState.ExitCode()
+	}
+
+	if out, code := run(configured); out != "aerender ERROR: from sidecar\n" || code != 3 {
+		t.Errorf("with a sidecar: stdout %q exit %d, want the sidecar's line and exit 3", out, code)
+	}
+	if out, code := run(filepath.Join(dir, "plain.aep")); out != "from env\n" || code != 0 {
+		t.Errorf("without a sidecar: stdout %q exit %d, want the environment's line and exit 0", out, code)
+	}
+
+	bad := filepath.Join(dir, "bad.aep")
+	if err := os.WriteFile(bad+".stubenv", []byte("PATH=/nowhere\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, code := run(bad); code != 70 {
+		t.Errorf("a sidecar setting a non-SQI_STUB_ key: exit %d, want 70 (a stub failure)", code)
+	}
+}
+
 func TestStub_SleepsOnRequest(t *testing.T) {
 	dir := t.TempDir()
 	bin := buildStub(t, dir, "renderer")

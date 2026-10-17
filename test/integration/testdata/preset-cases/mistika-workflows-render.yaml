@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Mistika Workflows Render. Ships chunks.defaultTaskCount 10; "1-24" leaves a
-# short tail chunk (21-24) so the bounds derivation is reviewable at both ends.
+# Mistika Workflows Render. Ships chunks.defaultTaskCount 10; "1-24" does not
+# divide by ten, so it balances to 1-8, 9-16 and 17-24, where an off-by-one in
+# the bounds derivation would show.
 cases:
   - name: default
     params:
