@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Generic Qt submit dialog: product → target → params → farm/queue → submit."""
+"""Generic Qt submit dialog: product → targets → params → farm/queue → submit."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 
-from sqi_client.models import Farm, Job, Product, ProductParameter, Queue
+from sqi_client.models import Farm, Product, ProductParameter, Queue
 from sqi_submitter.core import (
     FormInvalidError,
     FormModel,
@@ -14,9 +14,14 @@ from sqi_submitter.core import (
     RenderTarget,
     SubmitterError,
     SubmitterSession,
+    TargetResult,
     group_products,
+    normalize_name,
+    per_target_models,
     prefill,
     submit_form,
+    submit_targets,
+    target_parameters,
 )
 from sqi_submitter.core.handoff import ContextAdapter
 from sqi_submitter.core.joboptions import JobOptions
@@ -27,67 +32,61 @@ __all__ = ["SubmitDialog", "open_for_adapter"]
 
 _SUGGESTED_LABEL = "Suggested —"
 _ALL_PRODUCTS_LABEL = "All —"
-_SCENE_SETTINGS_LABEL = "Scene settings"
 _ERROR_STYLE = "border: 1px solid red;"
 _STALE_MODEL_MESSAGE = "Product parameters failed to load — reload and try again."
 _EMPTY_CATALOG_MESSAGE = (
     "No products are available on this server. Ask your admin to install a "
     "preset from the preset library (Admin → Preset Library), then Reload."
 )
+_PER_TARGET_MODE = "One job per ticked target"
+_WHOLE_SCENE_MODE = "One job for the whole scene, as configured"
+_TICK_HINT = "Tick at least one target."
+_FROM_EACH_TARGET_TIP = "From each target"
+_LOCKED_TIP = "Kept per target (e.g. a movie renders as one task)"
+_PREFILL_TIP = "Pre-filled from the scene"
+_TARGET_INDEX_ROLE = QtCore.Qt.ItemDataRole.UserRole
 _CLOSE_WAIT_MS = 10_000
+
+_SubmitCall = Callable[[], list[TargetResult]]
 
 
 class _SubmitWorker(QtCore.QThread):
-    """Runs :func:`submit_form` off the GUI thread; reports back via signals."""
+    """Runs one prepared submit off the GUI thread; reports back via signals.
+
+    ``done`` carries the ``list[TargetResult]``; ``failed`` carries a
+    :class:`SubmitterError` the call raised (the whole-scene path only, so the
+    single job keeps its banner and highlighted fields).
+    """
 
     done = QtCore.Signal(object)
     failed = QtCore.Signal(object)
 
-    def __init__(
-        self,
-        session: SubmitterSession,
-        product_name: str,
-        model: FormModel,
-        *,
-        farm_id: str,
-        queue_id: str,
-        job_name: str | None,
-        adapter: HostAdapter | None,
-        save_scene: bool,
-        job_options: JobOptions | None,
-    ) -> None:
+    def __init__(self, call: _SubmitCall) -> None:
         super().__init__()
-        self._session = session
-        self._product_name = product_name
-        self._model = model
-        self._farm_id = farm_id
-        self._queue_id = queue_id
-        self._job_name = job_name
-        self._adapter = adapter
-        self._save_scene = save_scene
-        self._job_options = job_options
+        self._call = call
 
     def run(self) -> None:
         try:
-            job = submit_form(
-                self._session,
-                self._product_name,
-                self._model,
-                farm_id=self._farm_id,
-                queue_id=self._queue_id,
-                job_name=self._job_name,
-                adapter=self._adapter,
-                save_scene=self._save_scene,
-                job_options=self._job_options,
-            )
+            results = self._call()
         except SubmitterError as exc:
             self.failed.emit(exc)
         else:
-            self.done.emit(job)
+            self.done.emit(results)
+
+
+@dataclass(frozen=True)
+class _Submission:
+    """Everything one submit needs, captured on the GUI thread at submit-start."""
+
+    call: _SubmitCall
+    product_name: str
+    save_scene: bool
+    # (settings key, ticked names) to remember; None for a whole-scene product.
+    remember_ticks: tuple[str, list[str]] | None
 
 
 class SubmitDialog(QtWidgets.QDialog):
-    """Product → target → parameters → farm/queue → submit, one dialog."""
+    """Product → targets → parameters → farm/queue → submit, one dialog."""
 
     def __init__(
         self,
@@ -102,10 +101,19 @@ class SubmitDialog(QtWidgets.QDialog):
         self.adapter = adapter
 
         self._products: list[Product] = []
+        self._targets: list[RenderTarget] = []
+        self._parameters: list[ProductParameter] = []
+        self._parameters_product: str | None = None
+        self._target_params: frozenset[str] = frozenset()
         self._model: FormModel | None = None
         self._model_product: str | None = None
         self._form_root: QtWidgets.QWidget | None = None
         self._worker: _SubmitWorker | None = None
+        self._submitting = False
+        # Fields the artist changed, by parameter name. Each job takes these
+        # over its target's own pre-fill (except target parameters and keys a
+        # target locks); reset when the product changes.
+        self.edited: dict[str, str] = {}
 
         self.setWindowTitle("Submit to sqi")
         self._build_ui()
@@ -129,9 +137,16 @@ class SubmitDialog(QtWidgets.QDialog):
         self._product_combo = QtWidgets.QComboBox(self)
         self._product_combo.setObjectName("productCombo")
 
-        self._target_combo = QtWidgets.QComboBox(self)
-        self._target_combo.setObjectName("targetCombo")
-        self._target_combo.hide()
+        self._mode_label = QtWidgets.QLabel(self)
+        self._mode_label.setObjectName("modeLabel")
+
+        self._target_list = QtWidgets.QListWidget(self)
+        self._target_list.setObjectName("targetList")
+        self._target_list.hide()
+
+        self._target_hint = QtWidgets.QLabel(_TICK_HINT, self)
+        self._target_hint.setObjectName("targetHint")
+        self._target_hint.hide()
 
         self._form_scroll = QtWidgets.QScrollArea(self)
         self._form_scroll.setWidgetResizable(True)
@@ -179,7 +194,9 @@ class SubmitDialog(QtWidgets.QDialog):
         layout = QtWidgets.QVBoxLayout(self)
         layout.addLayout(error_row)
         layout.addWidget(self._product_combo)
-        layout.addWidget(self._target_combo)
+        layout.addWidget(self._mode_label)
+        layout.addWidget(self._target_list)
+        layout.addWidget(self._target_hint)
         layout.addWidget(self._form_scroll, 1)
         layout.addWidget(QtWidgets.QLabel("Job name", self))
         layout.addWidget(self._job_name_edit)
@@ -248,7 +265,7 @@ class SubmitDialog(QtWidgets.QDialog):
 
     def _wire_signals(self) -> None:
         self._product_combo.currentIndexChanged.connect(self._on_product_changed)
-        self._target_combo.currentIndexChanged.connect(self._on_target_changed)
+        self._target_list.itemChanged.connect(self._on_ticks_changed)
         self._farm_combo.currentIndexChanged.connect(self._on_farm_changed)
         self._reload_button.clicked.connect(self._load)
         self._submit_button.clicked.connect(self._on_submit)
@@ -281,7 +298,7 @@ class SubmitDialog(QtWidgets.QDialog):
 
     def _populate_products(self, products: list[Product]) -> None:
         self._products = products
-        host_token = self.adapter.host_name if self.adapter is not None else ""
+        host_token = self._host_token()
         suggested, rest = group_products(products, host_token)
 
         combo = self._product_combo
@@ -325,18 +342,37 @@ class SubmitDialog(QtWidgets.QDialog):
                 combo.setCurrentIndex(i)
                 return
 
+    def _host_token(self) -> str:
+        return self.adapter.host_name if self.adapter is not None else ""
+
+    def _ticks_key(self) -> str:
+        scene = self.adapter.scene_context().scene_path if self.adapter is not None else None
+        return f"last_targets.{self._host_token()}.{scene or ''}"
+
+    def _remembered_ticks(self, names: Sequence[str]) -> set[str]:
+        """Remembered ticked names that still exist; else just the first target."""
+        stored = self.session.settings.get(self._ticks_key())
+        kept = {n for n in stored if n in names} if isinstance(stored, list) else set()
+        if not kept and names:
+            kept = {names[0]}
+        return kept
+
     def _populate_targets(self) -> None:
-        combo = self._target_combo
-        combo.blockSignals(True)
-        combo.clear()
-        targets = self.adapter.render_targets() if self.adapter is not None else []
-        if targets:
-            combo.addItem(_SCENE_SETTINGS_LABEL, None)
-            for target in targets:
-                combo.addItem(target.name, target)
-            combo.setCurrentIndex(0)
-        combo.setVisible(bool(targets))
-        combo.blockSignals(False)
+        self._targets = self.adapter.render_targets() if self.adapter is not None else []
+        ticked = self._remembered_ticks([t.name for t in self._targets])
+        widget = self._target_list
+        widget.blockSignals(True)
+        widget.clear()
+        for index, target in enumerate(self._targets):
+            item = QtWidgets.QListWidgetItem(target.name, widget)
+            item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+            item.setData(_TARGET_INDEX_ROLE, index)
+            item.setCheckState(
+                QtCore.Qt.CheckState.Checked
+                if target.name in ticked
+                else QtCore.Qt.CheckState.Unchecked
+            )
+        widget.blockSignals(False)
 
     def _populate_farms(self, farms: list[Farm]) -> None:
         combo = self._farm_combo
@@ -366,20 +402,43 @@ class SubmitDialog(QtWidgets.QDialog):
             return
         self._populate_queues(queues)
 
+    # -- targets ----------------------------------------------------------
+
+    @property
+    def _per_target(self) -> bool:
+        return bool(self._target_params)
+
+    def _ticked_targets(self) -> list[RenderTarget]:
+        """Ticked targets in list order (the first one drives the form)."""
+        widget = self._target_list
+        ticked: list[RenderTarget] = []
+        for i in range(widget.count()):
+            item = widget.item(i)
+            if item is None or item.checkState() != QtCore.Qt.CheckState.Checked:
+                continue
+            index = item.data(_TARGET_INDEX_ROLE)
+            if isinstance(index, int) and 0 <= index < len(self._targets):
+                ticked.append(self._targets[index])
+        return ticked
+
+    def _on_ticks_changed(self, _item: object) -> None:
+        # An edit to a target parameter belonged to the old selection: with
+        # several ticked the field is "from each target", so drop it.
+        for name in self._target_params:
+            self.edited.pop(name, None)
+        product = self._current_product()
+        if product is not None and self._parameters_product == product.name:
+            self._rebuild_model()
+        else:
+            self._update_submit_state()
+
     # -- form -----------------------------------------------------------
 
     def _current_product(self) -> Product | None:
         data = self._product_combo.currentData()
         return data if isinstance(data, Product) else None
 
-    def _current_target(self) -> RenderTarget | None:
-        data = self._target_combo.currentData()
-        return data if isinstance(data, RenderTarget) else None
-
     def _on_product_changed(self, _index: int) -> None:
-        self._rebuild_form()
-
-    def _on_target_changed(self, _index: int) -> None:
         self._rebuild_form()
 
     def _hidden_field_names(self, model: FormModel) -> frozenset[str]:
@@ -389,35 +448,107 @@ class SubmitDialog(QtWidgets.QDialog):
         return frozenset(f.parameter.name for f in model.fields if f.is_scene_path)
 
     def _rebuild_form(self) -> None:
+        """Fetch the selected product's parameters, then rebuild the form."""
         product = self._current_product()
         if product is None:
             return
+        self.edited = {}
         try:
             parameters: list[ProductParameter] = self.session.parameters(product.name)
         except SubmitterError as exc:
             # The combo already moved: whatever model we hold belongs to the
             # previous product. Mark it stale so submit refuses to post the
             # old fields under the new product's name.
+            self._parameters_product = None
             self._model_product = None
             self._submit_button.setEnabled(False)
             self._show_error(exc.user_message)
             return
 
-        model = FormModel.from_parameters(parameters)
-        if self.adapter is not None:
+        self._parameters = parameters
+        self._parameters_product = product.name
+        self._target_params = target_parameters(parameters, self._targets)
+        self._target_list.setVisible(self._per_target)
+        self._mode_label.setText(_PER_TARGET_MODE if self._per_target else _WHOLE_SCENE_MODE)
+        self._job_name_edit.setText(product.title or product.name)
+        self._rebuild_model()
+
+    def _display_model(self, ticked: Sequence[RenderTarget]) -> FormModel:
+        """The model the form shows: the first ticked target's pre-fill + edits."""
+        if self.adapter is None:
+            model = FormModel.from_parameters(self._parameters)
+        elif ticked:
             context = self.adapter.scene_context()
-            model.apply_prefill(prefill(parameters, context, self._current_target()))
+            _, model = per_target_models(self._parameters, context, ticked[:1], self.edited)[0]
+            return model
+        else:
+            model = FormModel.from_parameters(self._parameters)
+            model.apply_prefill(prefill(self._parameters, self.adapter.scene_context()))
+        known = {f.parameter.name for f in model.fields}
+        for name, value in self.edited.items():
+            if name in known:
+                model.set_value(name, value)
+        return model
+
+    def _rebuild_model(self) -> None:
+        """Rebuild the model and editors from cached parameters (no fetch)."""
+        ticked = self._ticked_targets() if self._per_target else []
+        model = self._display_model(ticked)
         self._model = model
-        self._model_product = product.name
-        self._submit_button.setEnabled(True)
+        self._model_product = self._parameters_product
 
         old = self._form_scroll.takeWidget()
-        self._form_scroll.setWidget(build_form(model, hidden_names=self._hidden_field_names(model)))
+        self._form_scroll.setWidget(
+            build_form(
+                model,
+                hidden_names=self._hidden_field_names(model),
+                on_change=self._on_field_edited,
+            )
+        )
         self._form_root = self._form_scroll.widget()
         if old is not None:
             old.deleteLater()
+        self._apply_target_states()
+        self._update_submit_state()
 
-        self._job_name_edit.setText(product.title or product.name)
+    def _on_field_edited(self, name: str, value: str) -> None:
+        self.edited[name] = value
+
+    def _field_editor(self, name: str) -> QtWidgets.QWidget | None:
+        if self._form_root is None:
+            return None
+        return self._form_root.findChild(QtWidgets.QWidget, f"field_{name}")
+
+    def _apply_target_states(self) -> None:
+        """Lock target parameters while several are ticked; flag locked keys."""
+        if self._form_root is None or not self._per_target:
+            return
+        ticked = self._ticked_targets()
+        locked = {normalize_name(k) for t in ticked for k in t.locked}
+        for parameter in self._parameters:
+            if normalize_name(parameter.name) in locked:
+                editor = self._field_editor(parameter.name)
+                if editor is not None:
+                    editor.setToolTip(_LOCKED_TIP)
+        several = len(ticked) > 1
+        for name in self._target_params:
+            editor = self._field_editor(name)
+            if editor is None:
+                continue
+            row = self._form_root.findChild(QtWidgets.QWidget, f"row_{name}")
+            (row or editor).setEnabled(not several)
+            if several:
+                editor.setToolTip(_FROM_EACH_TARGET_TIP)
+
+    def _update_submit_state(self) -> None:
+        """Submit needs a current model, no submit running, and (per-target) a tick."""
+        product = self._current_product()
+        ready = (
+            product is not None and self._model is not None and self._model_product == product.name
+        )
+        needs_tick = self._per_target and not self._ticked_targets()
+        self._target_hint.setVisible(needs_tick)
+        self._submit_button.setEnabled(ready and not needs_tick and not self._submitting)
 
     # -- submit -----------------------------------------------------------
 
@@ -441,20 +572,6 @@ class SubmitDialog(QtWidgets.QDialog):
         )
         return None if opts.is_empty() else opts
 
-    def _submit_kwargs(self) -> dict[str, Any]:
-        farm = self._farm_combo.currentData()
-        queue = self._queue_combo.currentData()
-        return {
-            "farm_id": farm.id if isinstance(farm, Farm) else "",
-            "queue_id": queue.id if isinstance(queue, Queue) else "",
-            "job_name": self._job_name_edit.text() or None,
-            "adapter": self.adapter,
-            "save_scene": (
-                self._save_scene_check.isChecked() if self.adapter is not None else True
-            ),
-            "job_options": self._job_options(),
-        }
-
     def _ready_product(self) -> Product | None:
         """The selected product, only if the current form model belongs to it.
 
@@ -470,49 +587,146 @@ class SubmitDialog(QtWidgets.QDialog):
             return None
         return product
 
-    def _on_submit(self) -> None:
+    def _submission_models(
+        self, ticked: Sequence[RenderTarget]
+    ) -> list[tuple[RenderTarget, FormModel]]:
+        assert self.adapter is not None  # per-target implies targets, so an adapter
+        models = per_target_models(
+            self._parameters, self.adapter.scene_context(), ticked, self.edited
+        )
+        if len(models) == 1:
+            # One ticked target behaves like a single-target pre-fill: an edit
+            # to its target parameter is the artist's to make.
+            _, model = models[0]
+            for name in self._target_params:
+                if name in self.edited:
+                    model.set_value(name, self.edited[name])
+        return models
+
+    def _prepare_submit(self) -> _Submission | None:
+        """Capture the whole submit at submit-start, or ``None`` if not ready.
+
+        The async submit must use (and persist) what was on screen when the
+        artist pressed Submit, not whatever the widgets say when it finishes.
+        """
         product = self._ready_product()
-        if product is None or self._model is None:
-            return
-        kwargs = self._submit_kwargs()
-        # Capture at submit-start: the async submit must persist what was
-        # actually submitted, not whatever the widgets say when it finishes.
+        model = self._model
+        if product is None or model is None:
+            return None
+        ticked = self._ticked_targets() if self._per_target else []
+        if self._per_target and not ticked:
+            self._update_submit_state()
+            return None
+
+        session = self.session
         product_name = product.name
-        save_scene = bool(kwargs["save_scene"])
-        self._submit_button.setEnabled(False)
-        worker = _SubmitWorker(self.session, product_name, self._model, **kwargs)
-        worker.done.connect(lambda job: self._on_submit_success(job, product_name, save_scene))
+        farm = self._farm_combo.currentData()
+        queue = self._queue_combo.currentData()
+        farm_id = farm.id if isinstance(farm, Farm) else ""
+        queue_id = queue.id if isinstance(queue, Queue) else ""
+        job_name = self._job_name_edit.text()
+        adapter = self.adapter
+        save_scene = self._save_scene_check.isChecked() if adapter is not None else True
+        job_options = self._job_options()
+
+        if self._per_target:
+            models = self._submission_models(ticked)
+            prefix = job_name or product.title or product.name
+
+            def call() -> list[TargetResult]:
+                return submit_targets(
+                    session,
+                    product_name,
+                    models,
+                    farm_id=farm_id,
+                    queue_id=queue_id,
+                    job_name_prefix=prefix,
+                    adapter=adapter,
+                    save_scene=save_scene,
+                    job_options=job_options,
+                )
+
+            remember = (self._ticks_key(), [t.name for t in ticked])
+            return _Submission(call, product_name, save_scene, remember)
+
+        scene = RenderTarget(name=job_name or product.title or product.name, kind="scene")
+
+        def call_whole_scene() -> list[TargetResult]:
+            job = submit_form(
+                session,
+                product_name,
+                model,
+                farm_id=farm_id,
+                queue_id=queue_id,
+                job_name=job_name or None,
+                adapter=adapter,
+                save_scene=save_scene,
+                job_options=job_options,
+            )
+            return [TargetResult(target=scene, job=job, error=None)]
+
+        return _Submission(call_whole_scene, product_name, save_scene, None)
+
+    def _on_submit(self) -> None:
+        submission = self._prepare_submit()
+        if submission is None:
+            return
+        self._set_submitting(True)
+        worker = _SubmitWorker(submission.call)
+        worker.done.connect(lambda results: self._on_submit_done(results, submission))
         worker.failed.connect(self._on_submit_error)
-        worker.finished.connect(lambda: self._submit_button.setEnabled(True))
+        worker.finished.connect(lambda: self._set_submitting(False))
         self._worker = worker
         worker.start()
 
     def submit_and_wait(self) -> None:
         """Test/QA hook: runs the submit body synchronously, no worker thread."""
-        product = self._ready_product()
-        if product is None or self._model is None:
+        submission = self._prepare_submit()
+        if submission is None:
             return
-        kwargs = self._submit_kwargs()
-        self._submit_button.setEnabled(False)
+        self._set_submitting(True)
         try:
-            job = submit_form(self.session, product.name, self._model, **kwargs)
+            results = submission.call()
         except SubmitterError as exc:
             self._on_submit_error(exc)
         else:
-            self._on_submit_success(job, product.name, bool(kwargs["save_scene"]))
+            self._on_submit_done(results, submission)
         finally:
-            self._submit_button.setEnabled(True)
+            self._set_submitting(False)
 
-    def _on_submit_success(self, job: Job, product_name: str, save_scene: bool) -> None:
+    def _set_submitting(self, submitting: bool) -> None:
+        self._submitting = submitting
+        self._update_submit_state()
+
+    def _result_text(self, results: Sequence[TargetResult]) -> str:
+        lines: list[str] = []
+        for result in results:
+            if result.job is not None:
+                lines.append(f"{result.target.name}: job {result.job.id}")
+                lines.append(f"    {self.session.server_url}/jobs/{result.job.id}")
+            else:
+                lines.append(f"{result.target.name}: FAILED — {result.error}")
+        return "\n".join(lines)
+
+    def _on_submit_done(self, results: list[TargetResult], submission: _Submission) -> None:
         self._clear_field_errors()
         self._clear_error()
-        url = f"{self.session.server_url}/jobs/{job.id}"
-        QtWidgets.QMessageBox.information(self, "Job submitted", f"Submitted job {job.id}\n{url}")
+        submitted = [r for r in results if r.job is not None]
+        text = self._result_text(results)
+        if len(submitted) == len(results):
+            title = "Job submitted" if len(results) == 1 else "Jobs submitted"
+            QtWidgets.QMessageBox.information(self, title, text)
+        else:
+            title = "Some jobs failed" if submitted else "No jobs submitted"
+            QtWidgets.QMessageBox.warning(self, title, text)
+        if not submitted:
+            return
 
-        host = self.adapter.host_name if self.adapter is not None else ""
-        self.session.settings.set(f"last_product.{host}", product_name)
+        self.session.settings.set(f"last_product.{self._host_token()}", submission.product_name)
         if self.adapter is not None and not isinstance(self.adapter, ContextAdapter):
-            self.session.settings.set("save_before_submit", save_scene)
+            self.session.settings.set("save_before_submit", submission.save_scene)
+        if submission.remember_ticks is not None:
+            self.session.settings.set(*submission.remember_ticks)
 
     def _on_submit_error(self, exc: SubmitterError) -> None:
         if isinstance(exc, FormInvalidError):
@@ -524,7 +738,7 @@ class SubmitDialog(QtWidgets.QDialog):
         if self._form_root is None:
             return
         for name, message in errors.items():
-            editor = self._form_root.findChild(QtWidgets.QWidget, f"field_{name}")
+            editor = self._field_editor(name)
             if editor is None:
                 continue
             editor.setToolTip(message)
@@ -534,11 +748,12 @@ class SubmitDialog(QtWidgets.QDialog):
         if self._form_root is None or self._model is None:
             return
         for f in self._model.fields:
-            editor = self._form_root.findChild(QtWidgets.QWidget, f"field_{f.parameter.name}")
+            editor = self._field_editor(f.parameter.name)
             if editor is None:
                 continue
             editor.setStyleSheet("")
-            editor.setToolTip("Pre-filled from the scene" if f.prefilled else "")
+            editor.setToolTip(_PREFILL_TIP if f.prefilled else "")
+        self._apply_target_states()
 
     # -- error banner -------------------------------------------------------
 

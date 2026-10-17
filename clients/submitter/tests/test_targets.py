@@ -201,6 +201,30 @@ def test_submit_targets_reports_partial_failure() -> None:
 
 
 @respx.mock
+def test_submit_targets_names_the_invalid_fields() -> None:
+    route = respx.post(f"{BASE}/api/v1/products/blender/jobs").mock(
+        return_value=httpx.Response(201, json={"id": "j", "name": "n"})
+    )
+    params = [*BLENDER_PARAMS, _p("Chunk", "INT")]
+    models = per_target_models(params, CTX, _three_targets()[:1], {"Chunk": "x"})
+    (result,) = submit_targets(
+        SubmitterSession(server_url=BASE),
+        "blender",
+        models,
+        farm_id="f",
+        queue_id="q",
+        job_name_prefix="Blender",
+        adapter=None,
+        save_scene=False,
+        job_options=None,
+    )
+    assert route.call_count == 0
+    assert result.job is None
+    # "Please fix the highlighted fields." tells the artist nothing in a list.
+    assert result.error == "Invalid parameters — Chunk: Must be an integer"
+
+
+@respx.mock
 def test_submit_targets_saves_once() -> None:
     respx.post(f"{BASE}/api/v1/products/blender/jobs").mock(
         return_value=httpx.Response(201, json={"id": "j", "name": "n"})

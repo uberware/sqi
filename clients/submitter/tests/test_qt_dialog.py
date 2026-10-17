@@ -4,7 +4,7 @@
 import json
 import os
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import httpx
 import pytest
@@ -18,12 +18,13 @@ if not compat.QT_BINDING:
 from sqi_client import SqiClient  # noqa: E402
 from sqi_client.models import Product  # noqa: E402
 from sqi_submitter import cli  # noqa: E402
-from sqi_submitter.core import SubmitterSession  # noqa: E402
+from sqi_submitter.core import RenderTarget, SceneContext, SubmitterSession  # noqa: E402
 from sqi_submitter.core.handoff import ContextAdapter, dump_context, load_context  # noqa: E402
 from sqi_submitter.qt import dialog as qt_dialog  # noqa: E402
 from sqi_submitter.qt.dialog import SubmitDialog  # noqa: E402
 from tests.test_adapter_contract import BASE, MiniAdapter  # noqa: E402
 
+QtCore = compat.QtCore
 QtWidgets = compat.QtWidgets
 
 pytestmark = pytest.mark.usefixtures("_clean_settings")
@@ -364,3 +365,343 @@ def test_dialog_hides_save_checkbox_for_context_adapter(app: object, tmp_path: P
 def test_cli_install_host_is_a_stub_exiting_two(capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["install-host", "maya"]) == 2
     assert "not implemented" in capsys.readouterr().err
+
+
+# -- multi-target checklist ---------------------------------------------------
+
+_PER_TARGET_MODE = "One job per ticked target"
+_WHOLE_SCENE_MODE = "One job for the whole scene, as configured"
+
+
+class PassAdapter(MiniAdapter):
+    """Three targets that each carry a ``Pass`` extra (a target parameter)."""
+
+    def __init__(self, scene_path: str = "/x/s.mini", movie_locked: bool = False) -> None:
+        super().__init__()
+        self.scene_path = scene_path
+        self.movie_locked = movie_locked
+
+    def scene_context(self) -> SceneContext:
+        return SceneContext(scene_path=self.scene_path, frame_range="1-4")
+
+    def render_targets(self) -> list[RenderTarget]:
+        targets = [RenderTarget(name=n, kind="pass", extra={"Pass": n}) for n in ("A", "B", "C")]
+        if self.movie_locked:
+            targets[1] = RenderTarget(
+                name="B",
+                kind="pass",
+                frame_range="10-20",
+                extra={"Pass": "B", "FramesPerTask": "11"},
+                locked=frozenset({"FramesPerTask"}),
+            )
+        return targets
+
+
+def _mock_pass_server(
+    responses: "list[httpx.Response] | None" = None,
+) -> respx.Route:
+    _mock_server(
+        products=[
+            {"name": "mini-render", "title": "Mini Render"},
+            {"name": "pass-render", "title": "Pass Render"},
+        ]
+    )
+    respx.get(f"{BASE}/api/v1/products/pass-render/parameters").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"name": "SceneFile", "type": "PATH"},
+                {"name": "Frames", "type": "STRING"},
+                {"name": "Pass", "type": "STRING"},
+                {"name": "FramesPerTask", "type": "INT", "default": "1"},
+            ],
+        )
+    )
+    if responses is None:
+        responses = [httpx.Response(201, json={"id": f"j{i}", "name": "n"}) for i in range(1, 4)]
+    return respx.post(f"{BASE}/api/v1/products/pass-render/jobs").mock(side_effect=responses)
+
+
+def _select_product(dialog: SubmitDialog, name: str) -> None:
+    combo = dialog.findChild(QtWidgets.QComboBox, "productCombo")
+    assert combo is not None
+    for i in range(combo.count()):
+        data = combo.itemData(i)
+        if isinstance(data, Product) and data.name == name:
+            combo.setCurrentIndex(i)
+            return
+    raise AssertionError(f"product {name} not in combo")
+
+
+def _target_list(dialog: SubmitDialog) -> Any:
+    widget = dialog.findChild(QtWidgets.QListWidget, "targetList")
+    assert widget is not None
+    return widget
+
+
+def _ticked(dialog: SubmitDialog) -> list[str]:
+    widget = _target_list(dialog)
+    return [
+        item.text()
+        for item in (widget.item(i) for i in range(widget.count()))
+        if item is not None and item.checkState() == QtCore.Qt.CheckState.Checked
+    ]
+
+
+def _tick(dialog: SubmitDialog, name: str, on: bool = True) -> None:
+    widget = _target_list(dialog)
+    (item,) = widget.findItems(name, QtCore.Qt.MatchFlag.MatchExactly)
+    item.setCheckState(QtCore.Qt.CheckState.Checked if on else QtCore.Qt.CheckState.Unchecked)
+
+
+def _pass_dialog(adapter: "PassAdapter | None" = None) -> SubmitDialog:
+    dialog = SubmitDialog(SubmitterSession(server_url=BASE), adapter=adapter or PassAdapter())
+    _select_product(dialog, "pass-render")
+    return dialog
+
+
+def _capture_boxes(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
+    boxes: list[tuple[str, str]] = []
+
+    def record(_parent: object, title: str, text: str, *a: object, **k: object) -> None:
+        boxes.append((title, text))
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "information", record)
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", record)
+    return boxes
+
+
+def _mode_text(dialog: SubmitDialog) -> str:
+    label = dialog.findChild(QtWidgets.QLabel, "modeLabel")
+    assert label is not None
+    return str(label.text())
+
+
+@respx.mock
+def test_checklist_shown_for_per_target_product(app: object) -> None:
+    _mock_pass_server()
+    dialog = _pass_dialog()
+    widget = _target_list(dialog)
+    assert not widget.isHidden()
+    assert [widget.item(i).text() for i in range(widget.count())] == ["A", "B", "C"]
+    assert _ticked(dialog) == ["A"]  # the first target is ticked by default
+    assert dialog.findChild(QtWidgets.QComboBox, "targetCombo") is None
+
+
+@respx.mock
+def test_no_target_control_for_whole_scene_product(app: object) -> None:
+    _mock_pass_server()
+    dialog = SubmitDialog(SubmitterSession(server_url=BASE), adapter=PassAdapter())
+    _select_product(dialog, "mini-render")
+    assert _target_list(dialog).isHidden()
+    assert dialog.findChild(QtWidgets.QComboBox, "targetCombo") is None
+    hint = dialog.findChild(QtWidgets.QLabel, "targetHint")
+    assert hint is not None
+    assert hint.isHidden()
+
+
+@respx.mock
+def test_submit_disabled_with_nothing_ticked(app: object) -> None:
+    route = _mock_pass_server()
+    dialog = _pass_dialog()
+    submit = dialog.findChild(QtWidgets.QPushButton, "submitButton")
+    hint = dialog.findChild(QtWidgets.QLabel, "targetHint")
+    assert submit is not None and hint is not None
+    assert submit.isEnabled()
+    assert hint.isHidden()
+
+    _tick(dialog, "A", on=False)
+    assert not submit.isEnabled()
+    assert not hint.isHidden()
+    assert hint.text() == "Tick at least one target."
+    dialog.submit_and_wait()
+    assert not route.called
+    assert not submit.isEnabled()
+
+    _tick(dialog, "C")
+    assert submit.isEnabled()
+    assert hint.isHidden()
+
+
+@respx.mock
+def test_three_ticked_submits_three_jobs(app: object, monkeypatch: pytest.MonkeyPatch) -> None:
+    route = _mock_pass_server()
+    boxes = _capture_boxes(monkeypatch)
+    dialog = _pass_dialog()
+    _tick(dialog, "B")
+    _tick(dialog, "C")
+    dialog.submit_and_wait()
+
+    bodies = [json.loads(c.request.content) for c in route.calls]
+    assert [b["parameters"]["Pass"] for b in bodies] == ["A", "B", "C"]
+    assert [b["name"] for b in bodies] == [
+        "Pass Render - A",
+        "Pass Render - B",
+        "Pass Render - C",
+    ]
+    assert all(b["parameters"]["SceneFile"] == "/x/s.mini" for b in bodies)
+    ((_title, text),) = boxes
+    for name, job_id in (("A", "j1"), ("B", "j2"), ("C", "j3")):
+        assert f"{name}: job {job_id}" in text
+        assert f"{BASE}/jobs/{job_id}" in text
+    assert dialog.session.settings.get("last_product.mini") == "pass-render"
+
+
+@respx.mock
+def test_partial_failure_lists_each_target(app: object, monkeypatch: pytest.MonkeyPatch) -> None:
+    route = _mock_pass_server(
+        responses=[
+            httpx.Response(201, json={"id": "j1", "name": "n"}),
+            httpx.Response(400, json={"error": "bad pass"}),
+            httpx.Response(201, json={"id": "j3", "name": "n"}),
+        ]
+    )
+    boxes = _capture_boxes(monkeypatch)
+    dialog = _pass_dialog()
+    _tick(dialog, "B")
+    _tick(dialog, "C")
+    dialog.submit_and_wait()
+
+    assert route.call_count == 3
+    ((_title, text),) = boxes
+    assert "A: job j1" in text
+    assert "B: FAILED — " in text and "bad pass" in text
+    assert "C: job j3" in text
+    assert f"{BASE}/jobs/j2" not in text
+
+
+@respx.mock
+def test_mode_label_text(app: object) -> None:
+    _mock_pass_server()
+    dialog = _pass_dialog()
+    assert _mode_text(dialog) == _PER_TARGET_MODE
+    _select_product(dialog, "mini-render")
+    assert _mode_text(dialog) == _WHOLE_SCENE_MODE
+
+
+@respx.mock
+def test_ticks_remembered_per_scene(app: object, monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_pass_server()
+    _capture_boxes(monkeypatch)
+    dialog = _pass_dialog()
+    _tick(dialog, "A", on=False)
+    _tick(dialog, "C")
+    dialog.submit_and_wait()
+    assert dialog.session.settings.get("last_targets.mini./x/s.mini") == ["C"]
+
+    assert _ticked(_pass_dialog()) == ["C"]
+    # Another scene has nothing remembered: back to the first target.
+    assert _ticked(_pass_dialog(PassAdapter(scene_path="/x/other.mini"))) == ["A"]
+
+    # Remembered names that no longer exist are dropped.
+    dialog.session.settings.set("last_targets.mini./x/s.mini", ["Gone", "B"])
+    assert _ticked(_pass_dialog()) == ["B"]
+    dialog.session.settings.set("last_targets.mini./x/s.mini", ["Gone"])
+    assert _ticked(_pass_dialog()) == ["A"]
+
+
+def _field(dialog: SubmitDialog, name: str) -> Any:
+    line = dialog.findChild(QtWidgets.QLineEdit, f"field_{name}")
+    assert line is not None
+    return line
+
+
+@respx.mock
+def test_target_parameter_editor_disabled_when_several_ticked(app: object) -> None:
+    _mock_pass_server()
+    dialog = _pass_dialog()
+    assert _field(dialog, "Pass").isEnabled()
+    assert _field(dialog, "Pass").text() == "A"
+
+    _tick(dialog, "B")
+    line = _field(dialog, "Pass")
+    assert not line.isEnabled()
+    assert line.toolTip() == "From each target"
+    assert line.text() == "A"  # the form shows the first ticked target
+    assert _field(dialog, "Frames").isEnabled()
+
+    _tick(dialog, "A", on=False)
+    assert _field(dialog, "Pass").isEnabled()
+    assert _field(dialog, "Pass").text() == "B"
+
+
+@respx.mock
+def test_edited_field_applies_to_every_job(app: object, monkeypatch: pytest.MonkeyPatch) -> None:
+    route = _mock_pass_server()
+    _capture_boxes(monkeypatch)
+    dialog = _pass_dialog()
+    line = _field(dialog, "Frames")
+    line.setText("1-2")
+    line.editingFinished.emit()
+    assert dialog.edited == {"Frames": "1-2"}
+
+    _tick(dialog, "B")  # rebuilds the form; the edit survives
+    assert _field(dialog, "Frames").text() == "1-2"
+    dialog.submit_and_wait()
+    assert [json.loads(c.request.content)["parameters"]["Frames"] for c in route.calls] == [
+        "1-2",
+        "1-2",
+    ]
+
+
+@respx.mock
+def test_untouched_field_takes_each_targets_value(
+    app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    route = _mock_pass_server()
+    _capture_boxes(monkeypatch)
+    dialog = _pass_dialog(PassAdapter(movie_locked=True))
+    _tick(dialog, "B")
+    dialog.submit_and_wait()
+    frames = [json.loads(c.request.content)["parameters"]["Frames"] for c in route.calls]
+    assert frames == ["1-4", "10-20"]
+
+
+@respx.mock
+def test_locked_key_editor_tooltip_and_value(app: object, monkeypatch: pytest.MonkeyPatch) -> None:
+    route = _mock_pass_server()
+    _capture_boxes(monkeypatch)
+    dialog = _pass_dialog(PassAdapter(movie_locked=True))
+    spin = dialog.findChild(QtWidgets.QSpinBox, "field_FramesPerTask")
+    assert spin is not None
+    assert spin.toolTip() == ""  # no ticked target locks it yet
+
+    _tick(dialog, "B")
+    spin = dialog.findChild(QtWidgets.QSpinBox, "field_FramesPerTask")
+    assert spin is not None
+    assert spin.isEnabled()
+    assert spin.toolTip() == "Kept per target (e.g. a movie renders as one task)"
+    spin.setValue(5)
+    assert dialog.edited == {"FramesPerTask": "5"}
+    dialog.submit_and_wait()
+    per_task = [json.loads(c.request.content)["parameters"]["FramesPerTask"] for c in route.calls]
+    assert per_task == ["5", "11"]  # the movie target keeps its own value
+
+
+@respx.mock
+def test_single_ticked_target_honours_an_edit_to_its_target_parameter(
+    app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One ticked target behaves like today's single-target pre-fill."""
+    route = _mock_pass_server()
+    _capture_boxes(monkeypatch)
+    dialog = _pass_dialog()
+    line = _field(dialog, "Pass")
+    line.setText("custom")
+    line.editingFinished.emit()
+    dialog.submit_and_wait()
+    body = json.loads(route.calls.last.request.content)
+    assert body["parameters"]["Pass"] == "custom"
+    assert body["name"] == "Pass Render - A"
+
+
+@respx.mock
+def test_whole_scene_submit_reports_one_job(app: object, monkeypatch: pytest.MonkeyPatch) -> None:
+    route = _mock_server()
+    boxes = _capture_boxes(monkeypatch)
+    dialog = SubmitDialog(SubmitterSession(server_url=BASE), adapter=MiniAdapter())
+    dialog.submit_and_wait()
+    assert route.call_count == 1
+    ((_title, text),) = boxes
+    assert "job j1" in text
+    assert f"{BASE}/jobs/j1" in text

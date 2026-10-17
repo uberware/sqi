@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from sqi_client.models import Job, ProductParameter
 from sqi_submitter.core.adapter import HostAdapter
 from sqi_submitter.core.context import RenderTarget, SceneContext
-from sqi_submitter.core.errors import SubmitterError
+from sqi_submitter.core.errors import FormInvalidError, SubmitterError
 from sqi_submitter.core.joboptions import JobOptions
 from sqi_submitter.core.mapping import normalize_name, prefill
 from sqi_submitter.core.schema import FormModel
@@ -82,6 +82,18 @@ class TargetResult:
     error: str | None
 
 
+def _error_text(exc: SubmitterError) -> str:
+    """One line fit for a per-target result list.
+
+    A ``FormInvalidError``'s own message points at highlighted fields, which a
+    result list has none of, so it names each invalid field instead.
+    """
+    if isinstance(exc, FormInvalidError) and exc.errors:
+        details = "; ".join(f"{name}: {message}" for name, message in exc.errors.items())
+        return f"Invalid parameters — {details}"
+    return exc.user_message
+
+
 def submit_targets(
     session: SubmitterSession,
     product_name: str,
@@ -125,7 +137,7 @@ def submit_targets(
                 job_options=job_options,
             )
         except SubmitterError as exc:
-            results.append(TargetResult(target=target, job=None, error=exc.user_message))
+            results.append(TargetResult(target=target, job=None, error=_error_text(exc)))
         else:
             results.append(TargetResult(target=target, job=job, error=None))
     return results
