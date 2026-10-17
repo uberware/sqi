@@ -1,0 +1,37 @@
+preset: 3dsmax-render
+case:   multi-frame-chunk
+template modified: step "Render" chunks.defaultTaskCount=5
+params:
+  Frames=1-10
+  OutputPath=C:\renders\shot0010\beauty_.exr
+  SceneFile=C:\Show Files\seq010\shot0010_v003.max
+
+step "Render" — 2 tasks
+
+task 1/2  name="Render[Frame=1-5,Frame.End=5,Frame.Start=1]"
+  task params:
+    Frame=1-5
+    Frame.End=5
+    Frame.Start=1
+  command: 3dsmaxcmd
+  args:
+    [0]  -v:5
+    [1]  -rfw:0
+    [2]  -start:1
+    [3]  -end:5
+    [4]  -outputName:C:\renders\shot0010\beauty_.exr
+    [5]  C:\Show Files\seq010\shot0010_v003.max
+
+task 2/2  name="Render[Frame=6-10,Frame.End=10,Frame.Start=6]"
+  task params:
+    Frame=6-10
+    Frame.End=10
+    Frame.Start=6
+  command: 3dsmaxcmd
+  args:
+    [0]  -v:5
+    [1]  -rfw:0
+    [2]  -start:6
+    [3]  -end:10
+    [4]  -outputName:C:\renders\shot0010\beauty_.exr
+    [5]  C:\Show Files\seq010\shot0010_v003.max

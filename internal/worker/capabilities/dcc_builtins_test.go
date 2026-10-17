@@ -27,6 +27,18 @@ var dccLayouts = []rendererLayout{
 		versioned: `C:\Program Files\Maxon Cinema 4D 2026\Commandline.exe`,
 		version:   "2026",
 	},
+	{
+		// 3ds Max is Windows-only. The registry key carries the product
+		// version (2025 = 27.0) rather than the year, so only the install
+		// path yields a version.
+		tag: "3dsmax",
+		exe: "3dsmaxcmd",
+		installs: []string{
+			`C:\Program Files\Autodesk\3ds Max 2026\3dsmaxcmd.exe`,
+		},
+		versioned: `C:\Program Files\Autodesk\3ds Max 2026\3dsmaxcmd.exe`,
+		version:   "2026",
+	},
 }
 
 // TestDCCDetectors_MatchVendorInstallLayout checks that a shipped glob matches

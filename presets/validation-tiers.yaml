@@ -393,6 +393,31 @@ presets:
       case: TestPresetTier3/cinema4d-take-render/default
       required_on: [linux, darwin, windows]
 
+  # Windows-only by hostRequirements (attr.worker.os.family anyOf ["windows"]),
+  # which no test environment can fake, so this entry's Tier-3 claim is
+  # required_on [windows] alone. TestThreeDSMaxRender_IsWindowsOnly pins both
+  # halves.
+  - name: 3dsmax-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, multi-frame-chunk, stepped-range]
+      caveat: >-
+        argv derived from Autodesk's documented 3dsmaxcmd switches (the 3ds Max
+        2026 command-line switches page): -v:5 -rfw:0 -start:<n> -end:<n>
+        -outputName:<path> <scene>. The goldens show the spaced scene path as
+        one argument, chunk bounds 1-5 then 6-10 under a patched chunk size,
+        and 1-9:4 splitting into frames 1, 5 and 9. No 3ds Max has executed it.
+        Unverified: a blank OutputPath reaches 3dsmaxcmd as -outputName: with
+        nothing after it (base OpenJD cannot omit an argument without EXPR, so
+        the switch is always passed, as in cinema4d-render) and what 3dsmaxcmd
+        does with that; whether the -end frame is inclusive; the exit status on
+        failure, which Autodesk does not document; whether it renders from a
+        worker with no interactive session (session 0).
+    tier3:
+      case: TestPresetTier3/3dsmax-render/default
+      required_on: [windows]
+
   - name: ffmpeg-transcode
     source: presets/sqi
     tier: 2

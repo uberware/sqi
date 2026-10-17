@@ -25,6 +25,7 @@ func TestBuild(t *testing.T) {
 	// Every preset, sorted by name.
 	want := []string{
 		"3delight-render",
+		"3dsmax-render",
 		"arnold-kick-render",
 		"arnold-kick-tile-render",
 		"blender-batch-render",
