@@ -3,6 +3,8 @@
 
 import json
 import os
+from pathlib import Path
+from typing import ClassVar
 
 import httpx
 import pytest
@@ -15,8 +17,11 @@ if not compat.QT_BINDING:
 
 from sqi_client import SqiClient  # noqa: E402
 from sqi_client.models import Product  # noqa: E402
+from sqi_submitter import cli  # noqa: E402
 from sqi_submitter.core import SubmitterSession  # noqa: E402
-from sqi_submitter.qt.dialog import SubmitDialog, main  # noqa: E402
+from sqi_submitter.core.handoff import ContextAdapter, dump_context, load_context  # noqa: E402
+from sqi_submitter.qt import dialog as qt_dialog  # noqa: E402
+from sqi_submitter.qt.dialog import SubmitDialog  # noqa: E402
 from tests.test_adapter_contract import BASE, MiniAdapter  # noqa: E402
 
 QtWidgets = compat.QtWidgets
@@ -197,7 +202,7 @@ def test_owner_field_visible_when_me_endpoint_missing(app: object) -> None:
 
 
 def test_main_is_importable_entry_point() -> None:
-    assert callable(main)
+    assert callable(cli.main)
 
 
 @respx.mock
@@ -249,3 +254,113 @@ def test_advanced_unchecked_sends_no_overrides(
     assert "owner" not in body
     assert "priority" not in body
     assert "max_attempts" not in body
+
+
+class _CapturingDialog:
+    """Stands in for SubmitDialog: records constructor arguments, never builds Qt."""
+
+    instances: ClassVar["list[_CapturingDialog]"] = []
+
+    def __init__(self, session: SubmitterSession, **kwargs: object) -> None:
+        self.session = session
+        self.kwargs = kwargs
+        self.adapter = kwargs.get("adapter")
+        self.calls: list[str] = []
+        _CapturingDialog.instances.append(self)
+
+    def show(self) -> None:
+        self.calls.append("show")
+
+    def raise_(self) -> None:
+        self.calls.append("raise_")
+
+    def activateWindow(self) -> None:
+        self.calls.append("activateWindow")
+
+
+def _patch_cli(monkeypatch: pytest.MonkeyPatch, dialog_cls: type) -> None:
+    monkeypatch.setattr(qt_dialog, "SubmitDialog", dialog_cls)
+    monkeypatch.setattr(cli, "_exec_app", lambda app: 0)
+
+
+def test_cli_context_opens_dialog_with_context_adapter(
+    app: object, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _CapturingDialog.instances = []
+    _patch_cli(monkeypatch, _CapturingDialog)
+    path = tmp_path / "ctx.json"
+    dump_context(MiniAdapter(), str(path))
+
+    assert cli.main(["--context", str(path)]) == 0
+
+    (dialog,) = _CapturingDialog.instances
+    assert isinstance(dialog.adapter, ContextAdapter)
+    assert dialog.adapter.host_name == "mini"
+    assert dialog.kwargs.get("initial_error") is None
+    assert dialog.calls == ["show", "raise_", "activateWindow"]
+    assert not path.exists()
+
+
+def test_cli_context_server_url_wins_over_missing_flag_not_explicit_flag(
+    app: object, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _CapturingDialog.instances = []
+    _patch_cli(monkeypatch, _CapturingDialog)
+    for flag, expected in ((["--server", "http://flag:1"], "http://flag:1"), ([], "http://file:2")):
+        path = tmp_path / "ctx.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "host": {"name": "x"},
+                    "scene": {"path": "/a"},
+                    "server_url": "http://file:2",
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert cli.main([*flag, "--context", str(path)]) == 0
+        assert _CapturingDialog.instances[-1].session.server_url == expected
+
+
+@respx.mock
+def test_cli_bad_context_file_shows_banner_and_exits_zero(
+    app: object, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _mock_server()
+    made: list[SubmitDialog] = []
+
+    class Recording(SubmitDialog):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+            made.append(self)
+
+    _patch_cli(monkeypatch, Recording)
+    path = tmp_path / "broken.json"
+    path.write_text("{not json", encoding="utf-8")
+
+    assert cli.main(["--server", BASE, "--context", str(path)]) == 0
+
+    (dialog,) = made
+    assert dialog.adapter is None
+    assert not dialog._error_label.isHidden()
+    assert "broken.json" in dialog._error_label.text()
+    assert path.exists()
+
+
+@respx.mock
+def test_dialog_hides_save_checkbox_for_context_adapter(app: object, tmp_path: Path) -> None:
+    _mock_server()
+    path = tmp_path / "ctx.json"
+    dump_context(MiniAdapter(), str(path))
+    handoff = SubmitDialog(SubmitterSession(server_url=BASE), adapter=load_context(path))
+    assert handoff._save_scene_check.isHidden()
+
+    in_process = SubmitDialog(SubmitterSession(server_url=BASE), adapter=MiniAdapter())
+    # not shown yet, so isHidden() is False only if explicitly visible-flagged
+    assert not in_process._save_scene_check.isHidden()
+
+
+def test_cli_install_host_is_a_stub_exiting_two(capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["install-host", "maya"]) == 2
+    assert "not implemented" in capsys.readouterr().err

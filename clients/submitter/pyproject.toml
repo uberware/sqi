@@ -35,7 +35,7 @@ qt = ["PySide6"]
 dev = ["ruff", "mypy<2", "pytest", "pytest-cov", "respx", "PyYAML", "types-PyYAML"]
 
 [project.scripts]
-sqi-submit = "sqi_submitter.qt.dialog:main"
+sqi-submit = "sqi_submitter.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/uberware/sqi"

@@ -23,6 +23,7 @@ class RenderTarget:
 
     ``extra`` maps exact product-parameter names (e.g. ``RopPath``) to values;
     ``frame_range``/``output_path`` override the scene-level values when set.
+    ``locked`` names ``extra`` keys the artist cannot override for this target.
     """
 
     name: str
@@ -30,6 +31,7 @@ class RenderTarget:
     frame_range: str | None = None
     output_path: str | None = None
     extra: Mapping[str, str] = field(default_factory=dict)
+    locked: frozenset[str] = frozenset()
 
 
 def frame_range_str(start: float, end: float) -> str:

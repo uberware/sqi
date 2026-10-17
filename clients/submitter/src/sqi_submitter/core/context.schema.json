@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/uberware/sqi/clients/submitter/context.schema.json",
+  "title": "sqi-submit handoff context file, version 1",
+  "description": "Written by a host that cannot run the Qt dialog, then passed to `sqi-submit --context FILE`. Unknown keys are ignored. The file is deleted after a successful read.",
+  "type": "object",
+  "required": ["version", "scene"],
+  "properties": {
+    "version": { "const": 1 },
+    "host": {
+      "type": "object",
+      "description": "name drives the Suggested product group and per-host remembered settings.",
+      "properties": {
+        "name": { "type": "string" },
+        "display_name": { "type": "string" },
+        "version": { "type": ["string", "null"] }
+      }
+    },
+    "scene": {
+      "type": "object",
+      "required": ["path"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "frame_range": { "type": ["string", "null"] },
+        "output_path": { "type": ["string", "null"] },
+        "renderer": { "type": ["string", "null"] }
+      }
+    },
+    "targets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "kind"],
+        "properties": {
+          "name": { "type": "string" },
+          "kind": { "type": "string" },
+          "frame_range": { "type": ["string", "null"] },
+          "output_path": { "type": ["string", "null"] },
+          "extra": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
+          "locked": {
+            "type": "array",
+            "description": "Keys of this target's extra that the artist cannot override. Every entry must be a key of extra (checked by the reader; JSON Schema cannot express it).",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    },
+    "server_url": {
+      "type": ["string", "null"],
+      "description": "Used ahead of the normal server resolution order; null or absent means normal resolution."
+    }
+  }
+}

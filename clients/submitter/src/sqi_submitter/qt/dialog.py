@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import argparse
 from collections.abc import Mapping
 from typing import Any
 
@@ -19,11 +18,12 @@ from sqi_submitter.core import (
     prefill,
     submit_form,
 )
+from sqi_submitter.core.handoff import ContextAdapter
 from sqi_submitter.core.joboptions import JobOptions
 from sqi_submitter.qt._compat import QtCore, QtGui, QtWidgets, require_qt
 from sqi_submitter.qt.widgets import build_form
 
-__all__ = ["SubmitDialog", "main", "open_for_adapter"]
+__all__ = ["SubmitDialog", "open_for_adapter"]
 
 _SUGGESTED_LABEL = "Suggested —"
 _ALL_PRODUCTS_LABEL = "All —"
@@ -94,6 +94,7 @@ class SubmitDialog(QtWidgets.QDialog):
         session: SubmitterSession,
         adapter: HostAdapter | None = None,
         parent: QtWidgets.QWidget | None = None,
+        initial_error: str | None = None,
     ) -> None:
         require_qt()
         super().__init__(parent)
@@ -110,6 +111,8 @@ class SubmitDialog(QtWidgets.QDialog):
         self._build_ui()
         self._wire_signals()
         self._load()
+        if initial_error:
+            self._show_error(initial_error)
 
     # -- construction -----------------------------------------------------
 
@@ -143,7 +146,11 @@ class SubmitDialog(QtWidgets.QDialog):
 
         self._save_scene_check = QtWidgets.QCheckBox("Save scene before submit", self)
         self._save_scene_check.setObjectName("saveSceneCheck")
-        self._save_scene_check.setVisible(self.adapter is not None)
+        # A handoff host saves the scene before launching sqi-submit, so the
+        # box would offer something the dialog cannot do.
+        self._save_scene_check.setVisible(
+            self.adapter is not None and not isinstance(self.adapter, ContextAdapter)
+        )
         if self.adapter is not None:
             self._save_scene_check.setChecked(
                 bool(self.session.settings.get("save_before_submit", True))
@@ -504,7 +511,7 @@ class SubmitDialog(QtWidgets.QDialog):
 
         host = self.adapter.host_name if self.adapter is not None else ""
         self.session.settings.set(f"last_product.{host}", product_name)
-        if self.adapter is not None:
+        if self.adapter is not None and not isinstance(self.adapter, ContextAdapter):
             self.session.settings.set("save_before_submit", save_scene)
 
     def _on_submit_error(self, exc: SubmitterError) -> None:
@@ -575,19 +582,7 @@ def open_for_adapter(
     session = SubmitterSession(server_url=server_url)
     dialog = SubmitDialog(session, adapter=adapter, parent=parent)
     dialog.show()
+    dialog.raise_()
+    dialog.activateWindow()
     _dialog_ref = dialog
     return dialog
-
-
-def main() -> int:
-    """Console-script entry point (``sqi-submit``): standalone dialog, no DCC."""
-    parser = argparse.ArgumentParser(prog="sqi-submit", description="Submit a job to sqi.")
-    parser.add_argument("--server", default=None, help="sqi server URL (default: configured)")
-    args = parser.parse_args()
-    require_qt()
-
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    dialog = SubmitDialog(SubmitterSession(server_url=args.server))
-    dialog.show()
-    run = getattr(app, "exec", None) or app.exec_
-    return int(run())

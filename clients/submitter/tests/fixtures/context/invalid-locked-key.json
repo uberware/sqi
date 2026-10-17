@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "host": { "name": "x" },
+  "scene": { "path": "/a" },
+  "targets": [{ "name": "t", "kind": "k", "extra": { "A": "1" }, "locked": ["B"] }]
+}
