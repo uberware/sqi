@@ -201,3 +201,11 @@ def test_cli_dialog_without_qt_names_the_install_command(
     assert "No Qt binding found" in err
     assert "pip install 'sqi-submitter[qt]'" in err
     assert "Traceback" not in err
+
+
+def test_hosts_package_docstring_names_every_host() -> None:
+    import sqi_submitter.hosts as hosts
+
+    doc = hosts.__doc__ or ""
+    for name in ("Maya", "Houdini", "Nuke", "3ds Max", "Blender", "Cinema 4D", "After Effects"):
+        assert name in doc, name
