@@ -5,6 +5,7 @@ package sqlstore
 import (
 	"context"
 	"database/sql"
+	"time"
 
 	"github.com/uberware/sqi/internal/store"
 )
@@ -49,6 +50,36 @@ SET    status = 'canceled', ended_at = ?
 WHERE  status = 'running'
   AND  task_id IN (SELECT id FROM tasks WHERE job_id = ?)`
 )
+
+const sqlListOpenAttempts = `
+SELECT a.id, a.task_id, a.worker_id, a.created_at
+FROM   task_attempts a
+JOIN   tasks t ON t.id = a.task_id
+WHERE  a.status = 'running'
+  AND  t.status IN ('assigned', 'running')
+  AND  a.attempt_number = (SELECT MAX(m.attempt_number) FROM task_attempts m WHERE m.task_id = a.task_id)
+  AND  a.created_at < ?
+ORDER  BY a.created_at, a.id`
+
+// ListOpenAttempts implements [store.TaskAttemptStore].
+func (s *Store) ListOpenAttempts(ctx context.Context, createdBefore time.Time) ([]store.OpenAttempt, error) {
+	rows, err := s.r.QueryContext(ctx, sqlListOpenAttempts, TimeText(createdBefore))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []store.OpenAttempt
+	for rows.Next() {
+		var a store.OpenAttempt
+		var created string
+		if err := rows.Scan(&a.AttemptID, &a.TaskID, &a.WorkerID, &created); err != nil {
+			return nil, mapErr(err)
+		}
+		a.CreatedAt = mustTime(created)
+		out = append(out, a)
+	}
+	return out, mapErr(rows.Err())
+}
 
 func scanAttempt(row scanner) (store.TaskAttempt, error) {
 	var a store.TaskAttempt

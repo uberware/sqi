@@ -1,0 +1,54 @@
+preset: husk-usd-render
+case:   multi-frame-chunk
+template modified: step "Render" chunks.defaultTaskCount=4
+params:
+  Frames=1-10
+  Renderer=
+  SceneFile=/mnt/show/seq010/shot0010/usd/shot0010_lighting.usd
+
+step "Render" — 3 tasks
+
+task 1/3  name="Render[Frame=1-4]"
+  task params:
+    Frame=1-4
+  command: husk
+  args:
+    [0]  --frame
+    [1]  1
+    [2]  --frame-count
+    [3]  4
+    [4]  --make-output-path
+    [5]  --no-mplay
+    [6]  -V
+    [7]  2a
+    [8]  /mnt/show/seq010/shot0010/usd/shot0010_lighting.usd
+
+task 2/3  name="Render[Frame=5-8]"
+  task params:
+    Frame=5-8
+  command: husk
+  args:
+    [0]  --frame
+    [1]  5
+    [2]  --frame-count
+    [3]  4
+    [4]  --make-output-path
+    [5]  --no-mplay
+    [6]  -V
+    [7]  2a
+    [8]  /mnt/show/seq010/shot0010/usd/shot0010_lighting.usd
+
+task 3/3  name="Render[Frame=9-10]"
+  task params:
+    Frame=9-10
+  command: husk
+  args:
+    [0]  --frame
+    [1]  9
+    [2]  --frame-count
+    [3]  2
+    [4]  --make-output-path
+    [5]  --no-mplay
+    [6]  -V
+    [7]  2a
+    [8]  /mnt/show/seq010/shot0010/usd/shot0010_lighting.usd

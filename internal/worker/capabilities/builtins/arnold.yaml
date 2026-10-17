@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Arnold's standalone renderer, kick, which presets/sqi/arnold-kick-render.yaml
+# and arnold-kick-tile-render.yaml invoke by bare name.
+#
+# The globs match the copy of kick that MtoA (Arnold for Maya) installs:
+# /usr/autodesk/arnold/maya<year>/bin on Linux and
+# C:\Program Files\Autodesk\Arnold\maya<year>\bin on Windows. A standalone
+# Arnold SDK has no fixed location and is found by the PATH probe.
+#
+# No version is extracted: these paths carry the Maya year, not Arnold's
+# version.
+#
+# A host with an unrelated "kick" on PATH can list arnold in
+# capabilities.disable.
+tag: arnold
+checks:
+  - exe: kick
+  - path_glob: "/usr/autodesk/arnold/maya*/bin/kick"                      # linux (MtoA)
+  - path_glob: 'C:\Program Files\Autodesk\Arnold\maya*\bin\kick.exe'      # windows (MtoA)
+    os: windows

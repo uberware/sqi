@@ -79,6 +79,12 @@ type StateSource interface {
 	LastAssignmentAt() *time.Time
 }
 
+// AttemptSource is implemented by a StateSource that reports held attempts
+// (the executor). A source without it leaves both heartbeat fields unset.
+type AttemptSource interface {
+	ActiveAttemptIDs() []string
+}
+
 // NoopStateSource is a [StateSource] that always reports zero active tasks.
 // Use it before the executor is available.
 type NoopStateSource struct{}
@@ -212,6 +218,10 @@ func (p *Publisher) publish(ctx context.Context) {
 		ActiveTaskIDs:      p.state.ActiveTaskIDs(),
 		UptimeSeconds:      time.Since(p.startTime).Seconds(),
 		LastAssignmentAt:   p.state.LastAssignmentAt(),
+	}
+	if as, ok := p.state.(AttemptSource); ok {
+		msg.AttemptsReported = true
+		msg.ActiveAttemptIDs = as.ActiveAttemptIDs()
 	}
 
 	data, err := json.Marshal(msg)

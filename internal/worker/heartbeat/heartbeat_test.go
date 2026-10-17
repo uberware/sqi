@@ -397,3 +397,68 @@ func TestWatchdog_ResetsDisconnectStateAfterReconnect(t *testing.T) {
 		t.Errorf("Register called %d time(s); expected ≥2 (one per cycle)", got)
 	}
 }
+
+// ── publish: held attempts ────────────────────────────────────────────────────
+
+// attemptStateSource is a StateSource that also implements AttemptSource.
+type attemptStateSource struct {
+	fakeStateSource
+
+	attempts []string
+}
+
+func (a *attemptStateSource) ActiveAttemptIDs() []string { return a.attempts }
+
+// publishedHeartbeat publishes one heartbeat from state and returns it decoded
+// into a generic map, so absent keys are distinguishable from zero values.
+func publishedHeartbeat(t *testing.T, state StateSource) map[string]any {
+	t.Helper()
+	var data []byte
+	nc := &stubConn{publishFn: func(_ string, d []byte) error {
+		data = d
+		return nil
+	}}
+	New(nc, "w", 4, 15*time.Second, state, &stubRegistrar{}, discardLogger()).publish(context.Background())
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return m
+}
+
+// TestPublish_ReportsHeldAttemptsFromAnAttemptSource verifies that a source
+// implementing AttemptSource makes the heartbeat authoritative about attempts.
+func TestPublish_ReportsHeldAttemptsFromAnAttemptSource(t *testing.T) {
+	m := publishedHeartbeat(t, &attemptStateSource{attempts: []string{"a1"}})
+	if m["attempts_reported"] != true {
+		t.Errorf("attempts_reported = %v, want true", m["attempts_reported"])
+	}
+	ids, _ := m["active_attempt_ids"].([]any) //nolint:errcheck // a failed assertion leaves ids nil and fails below
+	if len(ids) != 1 || ids[0] != "a1" {
+		t.Errorf("active_attempt_ids = %v, want [a1]", m["active_attempt_ids"])
+	}
+}
+
+// TestPublish_HoldingNothingStillReportsAttempts verifies that an empty set is
+// reported as authoritative: attempts_reported is true with no id list, which
+// is how the server tells "holds nothing" from "predates the field".
+func TestPublish_HoldingNothingStillReportsAttempts(t *testing.T) {
+	m := publishedHeartbeat(t, &attemptStateSource{})
+	if m["attempts_reported"] != true {
+		t.Errorf("attempts_reported = %v, want true", m["attempts_reported"])
+	}
+	if _, ok := m["active_attempt_ids"]; ok {
+		t.Errorf("active_attempt_ids present for an empty set: %v", m["active_attempt_ids"])
+	}
+}
+
+// TestPublish_NoAttemptSourceLeavesAttemptFieldsUnset verifies that a source
+// without AttemptSource sets neither field.
+func TestPublish_NoAttemptSourceLeavesAttemptFieldsUnset(t *testing.T) {
+	m := publishedHeartbeat(t, &fakeStateSource{count: 1, ids: []string{"t1"}})
+	for _, key := range []string{"attempts_reported", "active_attempt_ids"} {
+		if _, ok := m[key]; ok {
+			t.Errorf("key %q present without an AttemptSource: %v", key, m[key])
+		}
+	}
+}

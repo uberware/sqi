@@ -100,13 +100,10 @@ func TestMigration00037_RewritesEveryStoredForm(t *testing.T) {
 	}
 }
 
-// TestMigration00037_DownUpNormalizesRowsAnOlderBinaryWrote covers the
-// downgrade recovery in docs/architecture.md: an older release writes trimmed
-// timestamps into a database at version 37, and the CLI's `migrate down`
-// (goose.Down, one step, a no-op for 00037) followed by `migrate up` re-runs
-// 00037 over them. The recovery works only while 00037 is the newest
-// migration; the version check fails once a later one exists, and the
-// documentation must then change.
+// TestMigration00037_DownUpNormalizesRowsAnOlderBinaryWrote covers re-running
+// 00037 over trimmed timestamps, the form releases before 00037 write, in a
+// database already at version 37 or later: rewound to 36 with goose's library
+// API and migrated up again, the rows come out normalized.
 func TestMigration00037_DownUpNormalizesRowsAnOlderBinaryWrote(t *testing.T) {
 	path, s, _ := openSeedable(t)
 	farm, err := s.CreateFarm(t.Context(), store.Farm{ID: uuid.NewString(), Name: uuid.NewString()})
@@ -117,17 +114,13 @@ func TestMigration00037_DownUpNormalizesRowsAnOlderBinaryWrote(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 	db := openRaw(t, path)
-	if v, err := goose.GetDBVersion(db); err != nil || v != 37 {
-		t.Fatalf("database version = %d, %v; want 37. A later migration makes `migrate down` "+
-			"roll that one back instead: reword the recovery in docs/architecture.md, then this test", v, err)
-	}
-	// What an older release writes after a downgrade.
+	// The trimmed form a release before 00037 writes.
 	if _, err := db.ExecContext(t.Context(),
 		`UPDATE farms SET created_at = '2026-10-10T12:00:05.5Z' WHERE id = ?`, farm.ID); err != nil {
 		t.Fatalf("plant: %v", err)
 	}
-	if err := goose.Down(db, "."); err != nil {
-		t.Fatalf("goose.Down: %v", err)
+	if err := goose.DownTo(db, ".", 36); err != nil {
+		t.Fatalf("goose.DownTo(36): %v", err)
 	}
 	if err := goose.Up(db, "."); err != nil {
 		t.Fatalf("goose.Up: %v", err)

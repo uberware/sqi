@@ -593,6 +593,90 @@ func TestValidate_UnschedulableGraceZeroAllowed(t *testing.T) {
 	}
 }
 
+// ── Scheduler: reconcile_grace ───────────────────────────────────────────────
+
+// TestReconcileGrace covers scheduler.reconcile_grace end to end through
+// LoadWithSources and Validate: the 2m default, 0 (disabled) accepted, and any
+// other explicit value below scheduler.heartbeat_timeout (30s by default) or
+// negative rejected on the reconcile_grace field. Left unset, it resolves to
+// heartbeat_timeout when that is longer than 2m, so a config that raises only
+// heartbeat_timeout still validates; an explicit value is never raised.
+func TestReconcileGrace(t *testing.T) {
+	cases := []struct {
+		name         string
+		env          string // SQI_SCHEDULER_RECONCILE_GRACE; empty leaves it unset
+		heartbeatEnv string // SQI_SCHEDULER_HEARTBEAT_TIMEOUT; empty leaves it unset
+		file         string // scheduler block of a config file; empty means no file
+		want         time.Duration
+		wantExplicit bool
+		wantInvalid  bool
+	}{
+		{name: "default", want: 2 * time.Minute},
+		{name: "zero disables", env: "0", want: 0, wantExplicit: true},
+		{name: "equal to heartbeat_timeout", env: "30s", want: 30 * time.Second, wantExplicit: true},
+		{name: "below heartbeat_timeout", env: "10s", want: 10 * time.Second, wantExplicit: true, wantInvalid: true},
+		{name: "negative", env: "-1s", want: -time.Second, wantExplicit: true, wantInvalid: true},
+		{name: "unset follows a longer env heartbeat_timeout", heartbeatEnv: "5m", want: 5 * time.Minute},
+		{
+			name: "unset follows a longer file heartbeat_timeout", file: "scheduler:\n  heartbeat_timeout: 5m\n",
+			want: 5 * time.Minute,
+		},
+		{
+			name: "explicit env 2m below a 5m heartbeat_timeout is rejected", env: "2m", heartbeatEnv: "5m",
+			want: 2 * time.Minute, wantExplicit: true, wantInvalid: true,
+		},
+		{
+			name: "explicit file 2m below a 5m heartbeat_timeout is rejected",
+			file: "scheduler:\n  heartbeat_timeout: 5m\n  reconcile_grace: 2m\n",
+			want: 2 * time.Minute, wantExplicit: true, wantInvalid: true,
+		},
+		{name: "explicit zero stays zero under a 5m heartbeat_timeout", env: "0", heartbeatEnv: "5m", want: 0, wantExplicit: true},
+		{name: "unset under a shorter heartbeat_timeout keeps 2m", heartbeatEnv: "1m", want: 2 * time.Minute},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Chdir(dir)
+			t.Setenv("SQI_SCHEDULER_RECONCILE_GRACE", tc.env)
+			t.Setenv("SQI_SCHEDULER_HEARTBEAT_TIMEOUT", tc.heartbeatEnv)
+			path := ""
+			if tc.file != "" {
+				path = filepath.Join(dir, "sqi-server.yaml")
+				if err := os.WriteFile(path, []byte(tc.file), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg, src, err := config.LoadWithSources(path, config.FlagOverrides{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Scheduler.ReconcileGrace != tc.want {
+				t.Fatalf("reconcile_grace = %s, want %s", cfg.Scheduler.ReconcileGrace, tc.want)
+			}
+			if src.SchedulerReconcileGrace != tc.wantExplicit {
+				t.Fatalf("Sources.SchedulerReconcileGrace = %v, want %v", src.SchedulerReconcileGrace, tc.wantExplicit)
+			}
+			var got *config.ValidationError
+			for _, e := range config.Validate(cfg) {
+				if e.Field == "scheduler.reconcile_grace" {
+					got = &e
+				}
+			}
+			if (got != nil) != tc.wantInvalid {
+				t.Fatalf("validation error on scheduler.reconcile_grace = %v, want invalid=%v", got, tc.wantInvalid)
+			}
+		})
+	}
+}
+
+// TestDefaultConfig_ReconcileGraceIsTwoMinutes pins that the heartbeat-timeout
+// adjustment lives in the loader: DefaultConfig itself always says 2m.
+func TestDefaultConfig_ReconcileGraceIsTwoMinutes(t *testing.T) {
+	if got := config.DefaultConfig().Scheduler.ReconcileGrace; got != 2*time.Minute {
+		t.Fatalf("DefaultConfig reconcile_grace = %s, want 2m", got)
+	}
+}
+
 // ── Scheduler: retry-policy defaults (server-level backstop) ─────────────────
 //
 // default_max_attempts / retry_delay / default_failure_limit are the
@@ -2711,5 +2795,59 @@ func TestLoad_StorePostgresDSNSurvivesRedactedMarshal(t *testing.T) {
 	}
 	if strings.Contains(string(out), "s3cret") {
 		t.Fatalf("marshaled loaded config leaks the DSN password:\n%s", out)
+	}
+}
+
+// TestLoad_RejectsAMalformedFileDuration verifies that every duration key in
+// the config file fails the load on a value that is not a Go duration, naming
+// its line, as the environment layer does, instead of leaving the key at its
+// default. A valid value is still read.
+func TestLoad_RejectsAMalformedFileDuration(t *testing.T) {
+	keys := []struct{ block, key string }{
+		{"nats:\n  auth:\n", "join_token_ttl"},
+		{"store:\n", "checkpoint_interval"},
+		{"scheduler:\n", "heartbeat_timeout"},
+		{"scheduler:\n", "tick_interval"},
+		{"scheduler:\n", "offline_worker_retention"},
+		{"scheduler:\n", "job_retention"},
+		{"scheduler:\n", "unschedulable_grace"},
+		{"scheduler:\n", "reconcile_grace"},
+		{"scheduler:\n", "retry_delay"},
+		{"openjd:\n", "expr_submission_deadline"},
+		{"auth:\n  session:\n", "ttl"},
+		{"auth:\n  ldap:\n", "timeout"},
+	}
+	for _, k := range keys {
+		indent := strings.Repeat("  ", strings.Count(k.block, "\n"))
+		for _, value := range []string{"5 sec", "30"} {
+			t.Run(k.key+"="+value, func(t *testing.T) {
+				dir := t.TempDir()
+				t.Chdir(dir)
+				path := filepath.Join(dir, "sqi-server.yaml")
+				body := k.block + indent + k.key + ": " + value + "\n"
+				if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				_, err := config.Load(path, config.FlagOverrides{})
+				if err == nil || !strings.Contains(err.Error(), `invalid duration "`+value+`"`) ||
+					!strings.Contains(err.Error(), "line ") {
+					t.Fatalf("Load with %s: %s = %v, want an invalid-duration error naming the line", k.key, value, err)
+				}
+			})
+		}
+	}
+
+	dir := t.TempDir()
+	t.Chdir(dir)
+	path := filepath.Join(dir, "sqi-server.yaml")
+	if err := os.WriteFile(path, []byte("scheduler:\n  retry_delay: \" 45s \"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path, config.FlagOverrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Scheduler.RetryDelay != 45*time.Second {
+		t.Fatalf("retry_delay = %s, want 45s", cfg.Scheduler.RetryDelay)
 	}
 }

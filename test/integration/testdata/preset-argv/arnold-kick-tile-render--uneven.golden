@@ -1,0 +1,334 @@
+preset: arnold-kick-tile-render
+case:   uneven
+params:
+  Frames=1-2
+  Height=500
+  OutputFile=/mnt/show/seq010/shot0010/images/shot0010_beauty.####.exr
+  SceneFile=/mnt/show/seq010/shot0010/render/shot0010_beauty.####.ass
+  TilesX=3
+  TilesY=2
+  Width=1000
+
+step "Render" — 12 tasks
+
+task 1/12  name="Render[Frame=1,TileX=0,TileY=0]"
+  task params:
+    Frame=1
+    TileX=0
+    TileY=0
+  command: kick
+  args:
+    [0]  -i
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_beauty.0001.ass
+    [2]  -r
+    [3]  1000
+    [4]  500
+    [5]  -rg
+    [6]  0
+    [7]  0
+    [8]  332
+    [9]  249
+    [10]  -o
+    [11]  /mnt/show/seq010/shot0010/images/shot0010_beauty.0001_tile_0_0.exr
+    [12]  -dw
+    [13]  -dp
+    [14]  -v
+    [15]  2
+
+task 2/12  name="Render[Frame=1,TileX=0,TileY=1]"
+  task params:
+    Frame=1
+    TileX=0
+    TileY=1
+  command: kick
+  args:
+    [0]  -i
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_beauty.0001.ass
+    [2]  -r
+    [3]  1000
+    [4]  500
+    [5]  -rg
+    [6]  0
+    [7]  250
+    [8]  332
+    [9]  499
+    [10]  -o
+    [11]  /mnt/show/seq010/shot0010/images/shot0010_beauty.0001_tile_1_0.exr
+    [12]  -dw
+    [13]  -dp
+    [14]  -v
+    [15]  2
+
+task 3/12  name="Render[Frame=1,TileX=1,TileY=0]"
+  task params:
+    Frame=1
+    TileX=1
+    TileY=0
+  command: kick
+  args:
+    [0]  -i
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_beauty.0001.ass
+    [2]  -r
+    [3]  1000
+    [4]  500
+    [5]  -rg
+    [6]  333
+    [7]  0
+    [8]  665
+    [9]  249
+    [10]  -o
+    [11]  /mnt/show/seq010/shot0010/images/shot0010_beauty.0001_tile_0_1.exr
+    [12]  -dw
+    [13]  -dp
+    [14]  -v
+    [15]  2
+
+task 4/12  name="Render[Frame=1,TileX=1,TileY=1]"
+  task params:
+    Frame=1
+    TileX=1
+    TileY=1
+  command: kick
+  args:
+    [0]  -i
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_beauty.0001.ass
+    [2]  -r
+    [3]  1000
+    [4]  500
+    [5]  -rg
+    [6]  333
+    [7]  250
+    [8]  665
+    [9]  499
+    [10]  -o
+    [11]  /mnt/show/seq010/shot0010/images/shot0010_beauty.0001_tile_1_1.exr
+    [12]  -dw
+    [13]  -dp
+    [14]  -v
+    [15]  2
+
+task 5/12  name="Render[Frame=1,TileX=2,TileY=0]"
+  task params:
+    Frame=1
+    TileX=2
+    TileY=0
+  command: kick
+  args:
+    [0]  -i
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_beauty.0001.ass
+    [2]  -r
+    [3]  1000
+    [4]  500
+    [5]  -rg
+    [6]  666
+    [7]  0
+    [8]  999
+    [9]  249
+    [10]  -o
+    [11]  /mnt/show/seq010/shot0010/images/shot0010_beauty.0001_tile_0_2.exr
+    [12]  -dw
+    [13]  -dp
+    [14]  -v
+    [15]  2
+
+task 6/12  name="Render[Frame=1,TileX=2,TileY=1]"
+  task params:
+    Frame=1
+    TileX=2
+    TileY=1
+  command: kick
+  args:
+    [0]  -i
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_beauty.0001.ass
+    [2]  -r
+    [3]  1000
+    [4]  500
+    [5]  -rg
+    [6]  666
+    [7]  250
+    [8]  999
+    [9]  499
+    [10]  -o
+    [11]  /mnt/show/seq010/shot0010/images/shot0010_beauty.0001_tile_1_2.exr
+    [12]  -dw
+    [13]  -dp
+    [14]  -v
+    [15]  2
+
+task 7/12  name="Render[Frame=2,TileX=0,TileY=0]"
+  task params:
+    Frame=2
+    TileX=0
+    TileY=0
+  command: kick
+  args:
+    [0]  -i
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_beauty.0002.ass
+    [2]  -r
+    [3]  1000
+    [4]  500
+    [5]  -rg
+    [6]  0
+    [7]  0
+    [8]  332
+    [9]  249
+    [10]  -o
+    [11]  /mnt/show/seq010/shot0010/images/shot0010_beauty.0002_tile_0_0.exr
+    [12]  -dw
+    [13]  -dp
+    [14]  -v
+    [15]  2
+
+task 8/12  name="Render[Frame=2,TileX=0,TileY=1]"
+  task params:
+    Frame=2
+    TileX=0
+    TileY=1
+  command: kick
+  args:
+    [0]  -i
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_beauty.0002.ass
+    [2]  -r
+    [3]  1000
+    [4]  500
+    [5]  -rg
+    [6]  0
+    [7]  250
+    [8]  332
+    [9]  499
+    [10]  -o
+    [11]  /mnt/show/seq010/shot0010/images/shot0010_beauty.0002_tile_1_0.exr
+    [12]  -dw
+    [13]  -dp
+    [14]  -v
+    [15]  2
+
+task 9/12  name="Render[Frame=2,TileX=1,TileY=0]"
+  task params:
+    Frame=2
+    TileX=1
+    TileY=0
+  command: kick
+  args:
+    [0]  -i
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_beauty.0002.ass
+    [2]  -r
+    [3]  1000
+    [4]  500
+    [5]  -rg
+    [6]  333
+    [7]  0
+    [8]  665
+    [9]  249
+    [10]  -o
+    [11]  /mnt/show/seq010/shot0010/images/shot0010_beauty.0002_tile_0_1.exr
+    [12]  -dw
+    [13]  -dp
+    [14]  -v
+    [15]  2
+
+task 10/12  name="Render[Frame=2,TileX=1,TileY=1]"
+  task params:
+    Frame=2
+    TileX=1
+    TileY=1
+  command: kick
+  args:
+    [0]  -i
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_beauty.0002.ass
+    [2]  -r
+    [3]  1000
+    [4]  500
+    [5]  -rg
+    [6]  333
+    [7]  250
+    [8]  665
+    [9]  499
+    [10]  -o
+    [11]  /mnt/show/seq010/shot0010/images/shot0010_beauty.0002_tile_1_1.exr
+    [12]  -dw
+    [13]  -dp
+    [14]  -v
+    [15]  2
+
+task 11/12  name="Render[Frame=2,TileX=2,TileY=0]"
+  task params:
+    Frame=2
+    TileX=2
+    TileY=0
+  command: kick
+  args:
+    [0]  -i
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_beauty.0002.ass
+    [2]  -r
+    [3]  1000
+    [4]  500
+    [5]  -rg
+    [6]  666
+    [7]  0
+    [8]  999
+    [9]  249
+    [10]  -o
+    [11]  /mnt/show/seq010/shot0010/images/shot0010_beauty.0002_tile_0_2.exr
+    [12]  -dw
+    [13]  -dp
+    [14]  -v
+    [15]  2
+
+task 12/12  name="Render[Frame=2,TileX=2,TileY=1]"
+  task params:
+    Frame=2
+    TileX=2
+    TileY=1
+  command: kick
+  args:
+    [0]  -i
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_beauty.0002.ass
+    [2]  -r
+    [3]  1000
+    [4]  500
+    [5]  -rg
+    [6]  666
+    [7]  250
+    [8]  999
+    [9]  499
+    [10]  -o
+    [11]  /mnt/show/seq010/shot0010/images/shot0010_beauty.0002_tile_1_2.exr
+    [12]  -dw
+    [13]  -dp
+    [14]  -v
+    [15]  2
+
+step "Assemble" — 2 tasks
+
+task 1/2  name="Assemble[Frame=1]"
+  task params:
+    Frame=1
+  command: oiiotool
+  args:
+    [0]  /mnt/show/seq010/shot0010/images/shot0010_beauty.0001_tile_0_0.exr
+    [1]  /mnt/show/seq010/shot0010/images/shot0010_beauty.0001_tile_0_1.exr
+    [2]  /mnt/show/seq010/shot0010/images/shot0010_beauty.0001_tile_0_2.exr
+    [3]  /mnt/show/seq010/shot0010/images/shot0010_beauty.0001_tile_1_0.exr
+    [4]  /mnt/show/seq010/shot0010/images/shot0010_beauty.0001_tile_1_1.exr
+    [5]  /mnt/show/seq010/shot0010/images/shot0010_beauty.0001_tile_1_2.exr
+    [6]  --paste:mergeroi=1:all=1
+    [7]  +0+0
+    [8]  -o
+    [9]  /mnt/show/seq010/shot0010/images/shot0010_beauty.0001.exr
+
+task 2/2  name="Assemble[Frame=2]"
+  task params:
+    Frame=2
+  command: oiiotool
+  args:
+    [0]  /mnt/show/seq010/shot0010/images/shot0010_beauty.0002_tile_0_0.exr
+    [1]  /mnt/show/seq010/shot0010/images/shot0010_beauty.0002_tile_0_1.exr
+    [2]  /mnt/show/seq010/shot0010/images/shot0010_beauty.0002_tile_0_2.exr
+    [3]  /mnt/show/seq010/shot0010/images/shot0010_beauty.0002_tile_1_0.exr
+    [4]  /mnt/show/seq010/shot0010/images/shot0010_beauty.0002_tile_1_1.exr
+    [5]  /mnt/show/seq010/shot0010/images/shot0010_beauty.0002_tile_1_2.exr
+    [6]  --paste:mergeroi=1:all=1
+    [7]  +0+0
+    [8]  -o
+    [9]  /mnt/show/seq010/shot0010/images/shot0010_beauty.0002.exr

@@ -226,6 +226,10 @@ startup if it does not exist. Relative paths are resolved from the working
 directory at the time `sqi-server` starts. For production, use an absolute path
 on fast local storage.
 
+It holds only messages in transit, so it is not part of a backup;
+`sqi-server restore` renames it to `<dir>.pre-restore-<time>` instead (see
+[Restore](operations.md#restore)).
+
 ```yaml
 nats:
   data_dir: "/var/lib/sqi/nats"
@@ -453,8 +457,8 @@ ignored, and the server logs a start-up warning for each one set explicitly
 in the config file or the environment (`store.sqlite_path is ignored when
 store.driver is postgres`).
 
-> **The `migrate`, `backup` and `worker` subcommands choose their store from
-> the same configuration, and take flags that override it.** Highest priority
+> **The `migrate`, `backup`, `restore` and `worker` subcommands choose their
+> store from the same configuration, and take flags that override it.** Highest priority
 > first: an explicit `--dsn` (a PostgreSQL database), then an explicit `--db`
 > (a SQLite file), then `store.driver` from the resolved configuration (the
 > root `-c/--config` file and `SQI_STORE_DRIVER`), with `store.postgres.dsn`
@@ -462,7 +466,8 @@ store.driver is postgres`).
 > for SQLite. A `store.driver` other than `sqlite` or `postgres` is an error.
 > Without `-c`, a configuration that fails to load is normally a warning and
 > the command falls back to SQLite; when `SQI_STORE_DRIVER` names anything
-> but `sqlite`, it is an error instead.
+> but `sqlite`, it is an error instead. `restore` and `store copy` never fall
+> back: they refuse unless every target is named on the command line.
 
 ---
 
@@ -476,16 +481,26 @@ store.driver is postgres`).
 
 Path to the SQLite database file. Created at startup if it does not exist.
 Schema migrations run automatically at startup. For production, use an absolute
-path on a local SSD. Ignored when `store.driver` is `postgres`.
+path on a local SSD. Ignored when `store.driver` is `postgres`, except as the
+default source of [`sqi-server store copy`](operations.md#moving-to-postgresql).
+
+The server also creates `<sqlite_path>.lock` beside the database (for example
+`sqi.db.lock`) and holds an operating-system lock on it while it runs, so a
+second server on the same file is refused; `migrate up`, `restore` and
+`store copy` take it too. Do not delete the file: the lock, not the file, is
+the guard, and a crashed server leaves nothing stale. On a
+network filesystem the lock is only as reliable as that filesystem's locking.
+See [One server per database](operations.md#one-server-per-database).
 
 ```yaml
 store:
   sqlite_path: "/var/lib/sqi/sqi.db"
 ```
 
-> **The `migrate`, `backup`, and `worker` subcommands resolve their database
-> path the same way the server does.** Highest priority first: an explicit
-> `--db` flag; this key (the root `-c/--config` file and
+> **The `migrate`, `backup`, `restore`, `store copy` and `worker` subcommands
+> resolve their database path the same way the server does.** Highest
+> priority first: an explicit `--db` flag (`--from` for `store copy`); this
+> key (the root `-c/--config` file and
 > `SQI_STORE_SQLITE_PATH`); the legacy `SQI_SQLITE_PATH` environment
 > variable, which still works but prints a deprecation notice to stderr when
 > it is what decided the path; and finally the built-in `"sqi.db"` default.
@@ -867,6 +882,41 @@ See
 [Why isn't my job running? — Unschedulable tasks](observability.md#why-isnt-my-job-running--unschedulable-tasks)
 for what the flag means, where it surfaces (task `unschedulable_reason`, job
 `task_counts.unschedulable`, the job-detail badge), and how it clears.
+
+---
+
+### `scheduler.reconcile_grace`
+
+| | |
+|---|---|
+| **Type** | `duration` |
+| **Default** | `2m`, or `scheduler.heartbeat_timeout` when that is longer (only when this key is not set) |
+| **Env var** | `SQI_SCHEDULER_RECONCILE_GRACE` |
+
+How long a live worker may go without listing, in its heartbeats, an attempt
+the store says it holds before the heartbeat sweep reclaims that attempt: the
+task goes back to `ready` and runs again, with no retry used. This recovers a
+task whose completion report was lost or whose database was restored by hand.
+Nothing is reclaimed during the first `reconcile_grace` after the server
+starts. Each reclaim is logged at Warn and counted in
+`sqi_scheduler_tasks_reconciled_total`.
+
+`0` disables reconciliation. Any other value must be at least
+`scheduler.heartbeat_timeout`, or start-up fails validation. When the key is
+set neither in the file nor in the environment, the default follows a raised
+`heartbeat_timeout`; set explicitly, it is used exactly as given.
+
+If the server falls more than `reconcile_grace` behind in processing status
+reports, a task that has already finished can be reclaimed and run again
+(never lost or recorded twice); raise this value if
+`sqi_scheduler_tasks_reconciled_total` climbs while no worker was lost.
+Workers from v0.3.0 and earlier do not report their attempts and are never
+reconciled. See [Reconciliation](operations.md#reconciliation).
+
+```yaml
+scheduler:
+  reconcile_grace: "2m"
+```
 
 ---
 
@@ -1527,16 +1577,13 @@ openjd:
   expr_submission_deadline: 5s
 ```
 
-> **A malformed duration in the config *file* is ignored, not rejected.**
-> `5 sec`, `5000` or `5 s` leaves the default `5s` in place and the server
-> starts. This is how every duration key in the file layer behaves — the value
-> is parsed with Go's `time.ParseDuration` and an unparseable one is skipped —
-> but it is worth stating here because the other four `openjd.expr_*` keys are
-> integers, so a typo in one of *those* fails YAML unmarshalling loudly. The
-> environment variable **does** report a parse error, so
-> `SQI_OPENJD_EXPR_SUBMISSION_DEADLINE=5 sec` fails at startup. Check the
-> effective value rather than assuming the file was read: an out-of-range value
-> is a startup failure, but an unparseable one is silence.
+> **A malformed duration fails at startup, in the file and the environment
+> alike.** `5 sec`, `5000` or `5 s` is not a Go duration, so
+> `expr_submission_deadline: 5 sec` fails the load naming its line, and
+> `SQI_OPENJD_EXPR_SUBMISSION_DEADLINE=5 sec` naming the variable. This holds
+> for every duration key in the server's configuration. When upgrading from
+> v0.3.0 or earlier, which skipped an unparseable value in the *file* and kept
+> the default, a configuration file that started before can now fail to load.
 
 ---
 
@@ -2226,6 +2273,7 @@ for the detector schema reference.
 | `scheduler.job_retention` | duration | `168h` | `SQI_SCHEDULER_JOB_RETENTION` | — |
 | `scheduler.job_retention_include_failed` | bool | `false` | `SQI_SCHEDULER_JOB_RETENTION_INCLUDE_FAILED` | — |
 | `scheduler.unschedulable_grace` | duration | `30s` | `SQI_SCHEDULER_UNSCHEDULABLE_GRACE` | — |
+| `scheduler.reconcile_grace` | duration | `2m` (or `heartbeat_timeout` if longer, when unset) | `SQI_SCHEDULER_RECONCILE_GRACE` | — |
 | `scheduler.default_max_attempts` | int | `3` | `SQI_SCHEDULER_DEFAULT_MAX_ATTEMPTS` | — |
 | `scheduler.retry_delay` | duration | `30s` | `SQI_SCHEDULER_RETRY_DELAY` | — |
 | `scheduler.default_failure_limit` | int | `0` | `SQI_SCHEDULER_DEFAULT_FAILURE_LIMIT` | — |
@@ -2321,5 +2369,5 @@ discovery:
   OpenJD, diagnostics and preset-library sections. The `http.cors_origins` key
   and the whole `auth` block are documented in this reference only.
 - [`docs/architecture.md`](architecture.md) — Component layout and how configuration values are consumed.
-- [`docs/operations.md`](operations.md) — Install, upgrade, backup, and log rotation.
+- [`docs/operations.md`](operations.md) — Install, upgrade, rollback, backup, restore, moving to PostgreSQL, and log rotation.
 - [`docs/observability.md`](observability.md) — In-UI diagnostics, REST/WS log API, and external log wiring.

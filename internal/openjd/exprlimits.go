@@ -175,18 +175,18 @@ type ExprLimits struct {
 // JUDGEMENTS -- none is derived from some fixed guard firing first (see
 // [ExprLimits.SubmissionMemoryBytes]).
 //
-// The FLOORS all come from measurement, not from taste. The fourteen reference
-// presets in presets/sqi/ -- the templates this repo itself ships -- are
-// measured per dimension by binary search on every run, by
-// TestExprLimits_FloorsAcceptReferencePresets: at most 31 expression positions
-// template-wide, and 390 live bytes with 15 operations in any single
-// evaluation. Those three maxima are set by ffmpeg-segment-transcode-expr, the
-// only preset doing real slice arithmetic; the render presets cost an order of
-// magnitude less. Retained bytes are effectively zero for all fourteen -- the
-// binary search floors that dimension at 1, so a reported "1" means "nothing
-// measurable", not a real cost. Every floor below leaves at least 4x headroom
-// over the worst of them (8x to 65536x in practice), so no operator can
-// tighten a knob to a value that rejects sqi's own templates.
+// The FLOORS all come from measurement, not from taste.
+// TestExprLimits_FloorsAcceptReferencePresets binary-searches each dimension
+// for the twenty-two reference presets in presets/sqi/: at most 38 expression
+// positions and 512 retained let bytes template-wide, and 390 live bytes with
+// 15 operations in any single evaluation. ffmpeg-segment-transcode-expr sets
+// the two per-evaluation maxima; arnold-kick-tile-render, with the most
+// expressions and the largest let blocks, sets the two template-wide ones.
+// Each per-file standalone renderer preset retains 128 bytes for its
+// scene-pattern binding; a preset with no let block measures 1, meaning
+// nothing measurable. Every floor below leaves at least 4x headroom over the
+// worst of them (7x to 128x in practice), so no operator can tighten a knob to
+// a value that rejects sqi's own templates.
 // TestExprLimits_FloorsAcceptReferencePresets re-measures that on every run
 // rather than trusting this paragraph; the figures move as presets are added.
 const (
@@ -213,7 +213,7 @@ const (
 	// Floor: one order of magnitude below the default so tightening remains
 	// meaningful, and ~67x above what a reference preset's expressions
 	// actually spend: the most expensive single evaluation in any of the
-	// fourteen presets costs 15 operations (see the floors paragraph above).
+	// twenty-two presets costs 15 operations (see the floors paragraph above).
 	MinExprSubmissionOperations int64 = 1_000
 	MaxExprSubmissionOperations int64 = 100_000
 

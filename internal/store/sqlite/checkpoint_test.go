@@ -4,29 +4,21 @@ package sqlite
 
 import (
 	"context"
+	"log/slog"
+	"os"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/sqlstore"
 )
 
-// TestCheckpoint_DoesNotBlockOnAReader is the reason [Store.Checkpoint] runs in
-// PASSIVE mode rather than TRUNCATE.
-//
-// Before reads moved to their own pool there was only one connection, so a
-// checkpoint never had a reader to wait for and TRUNCATE was free. Now a reader
-// holding a WAL snapshot makes TRUNCATE invoke SQLite's busy handler, which
-// waits out the ENTIRE busy_timeout (5s) on the write connection before giving
-// up — stalling job submission, lease grants and every task-status write, on a
-// five-minute timer, and still failing to truncate.
-//
-// That is the same multi-second write stall the separate read pool exists to
-// remove, reintroduced through the back door. PASSIVE never invokes the busy
-// handler: it transfers what it can and returns immediately.
-//
-// The assertion is deliberately far below busy_timeout. A regression to
-// TRUNCATE does not make this slow — it makes it take the full 5s.
+// TestCheckpoint_DoesNotBlockOnAReader pins that [Store.Checkpoint] returns at
+// once while a reader on the read pool holds a WAL snapshot. It runs in PASSIVE
+// mode: TRUNCATE would invoke SQLite's busy handler and hold the write
+// connection for the whole busy_timeout (5 s). The bound is far below
+// busy_timeout, so TRUNCATE fails it.
 func TestCheckpoint_DoesNotBlockOnAReader(t *testing.T) {
 	ctx := context.Background()
 	st := openFilePoolStore(t)
@@ -97,5 +89,33 @@ func seedCheckpointRows(t *testing.T, ctx context.Context, st *Store) {
 		); err != nil {
 			t.Fatalf("seed farm %d: %v", i, err)
 		}
+	}
+}
+
+// TestStartCheckpointer_DoneClosesAfterTheFinalTruncate pins the contract the
+// server's shutdown relies on: the returned channel closes only once the final
+// TRUNCATE has run, so closing the store after it cannot race the checkpoint.
+func TestStartCheckpointer_DoneClosesAfterTheFinalTruncate(t *testing.T) {
+	path := t.TempDir() + "/test.db"
+	st, err := Open(t.Context(), path, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	// Write something so the WAL is non-empty.
+	if _, err := st.CreateFarm(t.Context(), store.Farm{ID: "f1", Name: "f1"}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := st.StartCheckpointer(ctx, time.Hour, slog.New(slog.DiscardHandler))
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("checkpointer did not finish after cancel")
+	}
+	fi, err := os.Stat(path + "-wal")
+	if err == nil && fi.Size() != 0 {
+		t.Fatalf("WAL is %d bytes after the final checkpoint, want 0", fi.Size())
 	}
 }

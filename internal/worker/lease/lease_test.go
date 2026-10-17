@@ -5,6 +5,7 @@ package lease
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -164,5 +165,74 @@ func TestLoop_RequestCarriesTheInstanceID(t *testing.T) {
 		if got.WorkerID != "w1" || got.InstanceID != "inst-1" {
 			t.Fatalf("request %d = %s, want worker_id w1 and instance_id inst-1", i, data)
 		}
+	}
+}
+
+// holdingDispatcher is a Dispatcher that also implements Hold, recording the
+// order of both calls.
+type holdingDispatcher struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (d *holdingDispatcher) Hold(attemptID string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.events = append(d.events, "hold "+attemptID)
+}
+
+func (d *holdingDispatcher) Dispatch(_ context.Context, m *protocol.AssignMsg) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.events = append(d.events, "dispatch "+m.AttemptID)
+	return nil
+}
+
+// TestLoop_HoldsTheWholeBatchBeforeDispatchingAny pins that every Hold
+// precedes the first Dispatch: dispatch is sequential, so an attempt waiting
+// behind another's session setup must already be reported as held.
+func TestLoop_HoldsTheWholeBatchBeforeDispatchingAny(t *testing.T) {
+	var raws []json.RawMessage
+	for _, id := range []string{"a1", "a2"} {
+		b, _ := json.Marshal(protocol.AssignMsg{Version: protocol.ProtocolVersion, Type: protocol.TypeAssign, TaskID: "t-" + id, AttemptID: id}) //nolint:errcheck // simple struct, never fails
+		raws = append(raws, b)
+	}
+	batch, _ := json.Marshal(reply{Assignments: raws}) //nolint:errcheck // simple struct, never fails
+
+	d := &holdingDispatcher{}
+	l := New(&fakeTransport{replies: [][]byte{batch}}, d, Config{QueueIDs: []string{"q1"}, RequestTimeout: 50 * time.Millisecond}, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	l.Run(ctx)
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	want := []string{"hold a1", "hold a2", "dispatch a1", "dispatch a2"}
+	if !slices.Equal(d.events, want) {
+		t.Fatalf("events = %v, want %v", d.events, want)
+	}
+}
+
+// TestLoop_DoesNotHoldAMalformedAssignment pins that an assignment the loop
+// rejects (here a wrong protocol version) is never held, so it cannot be
+// reported as held forever.
+func TestLoop_DoesNotHoldAMalformedAssignment(t *testing.T) {
+	bad, _ := json.Marshal(protocol.AssignMsg{Version: "999", Type: protocol.TypeAssign, TaskID: "bad", AttemptID: "a-bad"})                       //nolint:errcheck // simple struct, never fails
+	good, _ := json.Marshal(protocol.AssignMsg{Version: protocol.ProtocolVersion, Type: protocol.TypeAssign, TaskID: "good", AttemptID: "a-good"}) //nolint:errcheck // simple struct, never fails
+	batch, _ := json.Marshal(reply{Assignments: []json.RawMessage{bad, good}})                                                                     //nolint:errcheck // simple struct, never fails
+
+	d := &holdingDispatcher{}
+	l := New(&fakeTransport{replies: [][]byte{batch}}, d, Config{QueueIDs: []string{"q1"}, RequestTimeout: 50 * time.Millisecond}, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	l.Run(ctx)
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	want := []string{"hold a-good", "dispatch a-good"}
+	if !slices.Equal(d.events, want) {
+		t.Fatalf("events = %v, want %v", d.events, want)
 	}
 }

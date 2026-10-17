@@ -1260,8 +1260,10 @@ expr:
 
 ## `capabilities` — Software auto-detection
 
-Configures the eight built-in software detectors (Maya, Nuke, Houdini,
-Blender, Mistika Boutique/Ultima, Mistika VR, Mistika Workflows, and ffmpeg)
+Configures the sixteen built-in software detectors (Maya, Nuke, Houdini,
+Blender, Mistika Boutique/Ultima, Mistika VR, Mistika Workflows, ffmpeg, the
+standalone renderers Arnold kick, V-Ray, husk, Redshift, RenderMan, 3Delight
+and Mantra, and oiiotool)
 that run automatically at startup and advertise a `key=true` tag with no
 per-worker configuration, plus any custom detectors for in-house tools. Full
 reference, including the detector schema and the tag/version model:

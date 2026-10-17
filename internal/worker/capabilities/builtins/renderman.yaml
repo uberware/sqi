@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# RenderMan's renderer, prman, which presets/sqi/prman-render.yaml invokes by
+# bare name.
+#
+# Probes PATH, the RMANTREE variable RenderMan's installers set to the Pro
+# Server install, and the default install directories:
+# /opt/pixar/RenderManProServer-<version> on Linux,
+# /Applications/Pixar/RenderManProServer-<version> on macOS and
+# C:\Program Files\Pixar\RenderManProServer-<version> on Windows. The version
+# is read from that directory name, whether it came from a glob match or from
+# RMANTREE.
+tag: renderman
+checks:
+  - exe: prman
+  - env: RMANTREE
+  - path_glob: "/opt/pixar/RenderManProServer-*/bin/prman"                         # linux
+  - path_glob: "/Applications/Pixar/RenderManProServer-*/bin/prman"                # macOS
+  - path_glob: 'C:\Program Files\Pixar\RenderManProServer-*\bin\prman.exe'         # windows
+    os: windows
+version:
+  from: 'RenderManProServer-(?P<v>[0-9]+\.[0-9]+)'

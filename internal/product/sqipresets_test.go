@@ -75,10 +75,12 @@ func TestSQIReferencePresets(t *testing.T) {
 		},
 		// The three Mistika presets invoke the renderer as `-s START -e END`,
 		// so they need a chunk's bounds rather than the chunk itself. They are
-		// not alone in that: the two Maya presets and blender-batch-render
-		// declare SQI_CHUNK_BOUNDS for the same reason, so six of the nine
-		// render presets use it. Only Houdini and the two Nuke presets take a
-		// frame list directly and can do without it.
+		// not alone in that: the two Maya presets, blender-batch-render and
+		// vray-standalone-render also declare SQI_CHUNK_BOUNDS, seven of the
+		// seventeen render presets. Houdini and the two Nuke presets take a
+		// frame list directly; husk-usd-render computes its start and count
+		// with EXPR; the other standalone renderers render one file per frame
+		// and do not chunk.
 		"mistika-boutique-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames"},
@@ -93,6 +95,49 @@ func TestSQIReferencePresets(t *testing.T) {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames"},
 			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
+		},
+		// Standalone renderers. The per-file ones (one exported scene file
+		// per frame) declare EXPR for the shared scene-pattern binding
+		// (scenepattern_test.go) and no task chunking.
+		"arnold-kick-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames"},
+			extensions: []string{"EXPR"},
+		},
+		"vray-standalone-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
+		},
+		"husk-usd-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames", "Renderer"},
+			extensions: []string{"TASK_CHUNKING", "EXPR"},
+		},
+		"redshift-standalone-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames"},
+			extensions: []string{"EXPR"},
+		},
+		"prman-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames"},
+			extensions: []string{"EXPR"},
+		},
+		"arnold-kick-tile-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames", "OutputFile", "Width", "Height", "TilesX", "TilesY"},
+			extensions: []string{"EXPR"},
+		},
+		"3delight-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames"},
+			extensions: []string{"EXPR"},
+		},
+		"mantra-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames"},
+			extensions: []string{"EXPR"},
 		},
 		"ffmpeg-transcode": {
 			category: "Transcoding",

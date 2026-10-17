@@ -25,12 +25,12 @@ import (
 // restores it into an empty database with pg_restore, and reads a row back.
 func TestPostgres_BackupRestoreRoundTrip(t *testing.T) {
 	storetest.RequirePostgresTool(t, "pg_restore")
-	src := storetest.Postgres(t)
+	src, srcDSN := storetest.PostgresAndDSN(t)
 	if _, err := src.CreateFarm(t.Context(), store.Farm{ID: "farm-backup", Name: "kept"}); err != nil {
 		t.Fatal(err)
 	}
 	out := filepath.Join(t.TempDir(), "sqi.dump")
-	if err := src.Backup(t.Context(), out); err != nil {
+	if err := postgres.BackupDSN(t.Context(), srcDSN, out, nil); err != nil {
 		t.Fatalf("Backup: %v", err)
 	}
 	// Backup creates the archive owner-only and pg_dump writes into it: the
@@ -38,7 +38,7 @@ func TestPostgres_BackupRestoreRoundTrip(t *testing.T) {
 	if fi, err := os.Stat(out); err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600) {
 		t.Fatalf("archive = %v, %v; want mode 0600", fi, err)
 	}
-	if err := src.Backup(t.Context(), out); err == nil {
+	if err := postgres.BackupDSN(t.Context(), srcDSN, out, nil); err == nil {
 		t.Fatal("Backup overwrote an existing archive")
 	}
 
@@ -97,13 +97,8 @@ func TestPostgres_BackupDSNForms(t *testing.T) {
 	}
 	for name, dsn := range forms {
 		t.Run(name, func(t *testing.T) {
-			st, err := postgres.Open(t.Context(), dsn, postgres.Options{MaxConns: 2})
-			if err != nil {
-				t.Fatalf("Open: %v", err)
-			}
-			defer st.Close()
 			out := filepath.Join(t.TempDir(), "sqi.dump")
-			if err := st.Backup(t.Context(), out); err != nil {
+			if err := postgres.BackupDSN(t.Context(), dsn, out, nil); err != nil {
 				t.Fatalf("Backup: %v", err)
 			}
 			if fi, err := os.Stat(out); err != nil || fi.Size() == 0 {

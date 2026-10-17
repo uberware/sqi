@@ -176,10 +176,22 @@ func Postgres(t testing.TB) *postgres.Store {
 	return PostgresWith(t, postgres.DefaultOptions())
 }
 
+// PostgresAndDSN is Postgres, also returning the database's DSN, for a test
+// that reaches the database without the store as well (a backup).
+func PostgresAndDSN(t testing.TB) (st *postgres.Store, dsn string) {
+	t.Helper()
+	dsn = PostgresDSN(t)
+	return postgresAt(t, dsn, postgres.DefaultOptions()), dsn
+}
+
 // PostgresWith is Postgres with explicit options.
 func PostgresWith(t testing.TB, opts postgres.Options) *postgres.Store {
 	t.Helper()
-	dsn := PostgresDSN(t)
+	return postgresAt(t, PostgresDSN(t), opts)
+}
+
+func postgresAt(t testing.TB, dsn string, opts postgres.Options) *postgres.Store {
+	t.Helper()
 	if os.Getenv("SQI_TEST_PG_FORCE_TX_RETRY") == "1" {
 		opts.ForceTxRetry = true
 	}

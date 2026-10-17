@@ -192,6 +192,26 @@ else
   [ -x "$WORKER_BIN" ] || fail "worker binary not found after build: $WORKER_BIN"
 fi
 
+# wait_ready polls /readyz until 200 (bounded), failing fast if the server
+# process in SERVER_PID exits early. Used for the first start and for the
+# restart after the restore round trip.
+wait_ready() {
+  local ready=0 code
+  for _ in $(seq 1 150); do
+    if ! kill -0 "$SERVER_PID" >/dev/null 2>&1; then
+      log_tail "server log" "$SERVER_LOG"
+      fail "sqi-server exited before becoming ready"
+    fi
+    code="$(curl -s ${CURL_CA} -o /dev/null -w '%{http_code}' "${BASE_URL}/readyz" 2>/dev/null || true)"
+    if [ "$code" = "200" ]; then
+      ready=1
+      break
+    fi
+    sleep 0.2
+  done
+  [ "$ready" -eq 1 ] || { log_tail "server log" "$SERVER_LOG"; fail "sqi-server not ready within 30s"; }
+}
+
 # ── The smoke flow, run once per broker-auth mode ─────────────────────────────
 #
 # run_smoke_flow MODE boots a fresh server+worker pair and drives the whole
@@ -328,21 +348,7 @@ esac
 "$SERVER_BIN" serve >"$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 
-# Poll /readyz until 200 (bounded). Fail fast if the process exits early.
-ready=0
-for _ in $(seq 1 150); do
-  if ! kill -0 "$SERVER_PID" >/dev/null 2>&1; then
-    log_tail "server log" "$SERVER_LOG"
-    fail "sqi-server exited before becoming ready"
-  fi
-  code="$(curl -s ${CURL_CA} -o /dev/null -w '%{http_code}' "${BASE_URL}/readyz" 2>/dev/null || true)"
-  if [ "$code" = "200" ]; then
-    ready=1
-    break
-  fi
-  sleep 0.2
-done
-[ "$ready" -eq 1 ] || { log_tail "server log" "$SERVER_LOG"; fail "sqi-server not ready within 30s"; }
+wait_ready
 log "server ready"
 
 # ── Create a farm and a queue ─────────────────────────────────────────────────
@@ -709,6 +715,35 @@ done
   fail "EXPR assertion: resolved text '${EXPR_EXPECTED}' not found in task logs"
 }
 log "EXPR assertion PASSED: phase-3 resolved text found in task logs"
+
+# ── Backup -> restore round trip (SQLite) ─────────────────────────────────────
+#
+# Back the finished farm up, stop everything, restore the backup over the live
+# database and restart the server on the restored state. The job above has
+# completed, so it must still be completed afterwards. SQLite only: a
+# PostgreSQL round trip needs pg_dump and pg_restore, which this script does
+# not provision
+# (CI's postgres-integration job covers it).
+if [ "$mode" = "noauth" ]; then
+  log "backup -> restore round trip (SQLite)"
+  "$SERVER_BIN" backup --db "${TMP_DIR}/sqi.db" --out "${TMP_DIR}/smoke-backup.db" >/dev/null \
+    || fail "sqi-server backup failed"
+  kill "$WORKER_PID" >/dev/null 2>&1 || true
+  kill "$SERVER_PID" >/dev/null 2>&1 || true
+  # A killed child exits non-zero; under `set -e` that must not end the run.
+  wait "$WORKER_PID" "$SERVER_PID" 2>/dev/null || true
+  WORKER_PID=""; SERVER_PID=""
+  "$SERVER_BIN" restore "${TMP_DIR}/smoke-backup.db" --db "${TMP_DIR}/sqi.db" \
+    --nats-data-dir "${TMP_DIR}/nats" >"${TMP_DIR}/restore.out" 2>&1 \
+    || { cat "${TMP_DIR}/restore.out" >&2; fail "sqi-server restore failed"; }
+  grep -q "fenced" "${TMP_DIR}/restore.out" || fail "restore printed no summary"
+  "$SERVER_BIN" serve >>"$SERVER_LOG" 2>&1 &
+  SERVER_PID=$!
+  wait_ready
+  job_after="$(curl -fsS ${CURL_CA} "${BASE_URL}/api/v1/jobs/${JOB_ID}")" || fail "job missing after restore"
+  [ "$(json_get "$job_after" status)" = "completed" ] || fail "job not completed after restore"
+  log "  restore round trip: PASSED"
+fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 

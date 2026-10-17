@@ -1,0 +1,55 @@
+preset: arnold-kick-render
+case:   default
+params:
+  Frames=1-3,12345
+  SceneFile=/mnt/show/seq010/shot0010/render/shot0010_beauty.####.ass
+
+step "Render" — 4 tasks
+
+task 1/4  name="Render[Frame=1]"
+  task params:
+    Frame=1
+  command: kick
+  args:
+    [0]  -i
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_beauty.0001.ass
+    [2]  -dw
+    [3]  -dp
+    [4]  -v
+    [5]  2
+
+task 2/4  name="Render[Frame=2]"
+  task params:
+    Frame=2
+  command: kick
+  args:
+    [0]  -i
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_beauty.0002.ass
+    [2]  -dw
+    [3]  -dp
+    [4]  -v
+    [5]  2
+
+task 3/4  name="Render[Frame=3]"
+  task params:
+    Frame=3
+  command: kick
+  args:
+    [0]  -i
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_beauty.0003.ass
+    [2]  -dw
+    [3]  -dp
+    [4]  -v
+    [5]  2
+
+task 4/4  name="Render[Frame=12345]"
+  task params:
+    Frame=12345
+  command: kick
+  args:
+    [0]  -i
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_beauty.12345.ass
+    [2]  -dw
+    [3]  -dp
+    [4]  -v
+    [5]  2

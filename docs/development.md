@@ -1278,6 +1278,14 @@ type StateSource interface {
    }
    ```
 
+   To take part in the server's attempt reconciliation, also implement the
+   optional `heartbeat.AttemptSource` (`ActiveAttemptIDs() []string`) and
+   `Hold(attemptID string)`. The lease loop calls `Hold` for every assignment
+   in a batch before dispatching any of it; the attempt must stay reported until
+   its terminal status has been published (or `Dispatch` fails before running
+   it). A source without `AttemptSource` sends heartbeats without
+   `attempts_reported`, and the server never reconciles that worker's attempts.
+
 3. **Publish status messages** — inject `*status.Publisher` and call
    `Running`, `Terminal`, and (on shutdown) `ShutdownFailed`. Match the
    existing executor's publish points:
@@ -1510,8 +1518,9 @@ clients/submitter/
     qt/                      Qt only, imported lazily (PySide6, falls back to PySide2)
     hosts/{maya,houdini,nuke,blender}/   adapter + launch glue per host
   tests/                     pytest; tests/integration/ is env-gated (see below)
-presets/sqi/                 the fourteen reference preset YAML fixtures (nine DCC render
-                              presets, five ffmpeg transcode presets), validated by
+presets/sqi/                 the twenty-two reference preset YAML fixtures (nine DCC render
+                              presets, eight standalone renderer presets, five ffmpeg
+                              transcode presets), validated by
                               internal/product/sqipresets_test.go against a per-preset
                               `want` map of expected category/params/extensions —
                               not a blanket rule, since not every preset is

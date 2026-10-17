@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Redshift's standalone renderer, redshiftCmdLine, which
+# presets/sqi/redshift-standalone-render.yaml invokes by bare name.
+#
+# The globs match the default install locations:
+# C:\Program Files\Maxon Redshift <year>\bin on Windows,
+# /Applications/Maxon Redshift <year>/bin on macOS and /usr/redshift/bin on
+# Linux. Other layouts, such as C:\ProgramData\Redshift, are found by the PATH
+# probe.
+#
+# This tags the install, not a usable GPU: sqi's GPU probe sees only NVIDIA on
+# Linux, and Redshift also renders on Windows and Apple Silicon. A host with
+# Redshift but no usable GPU can list redshift in capabilities.disable.
+tag: redshift
+checks:
+  - exe: redshiftCmdLine
+  - path_glob: "/usr/redshift/bin/redshiftCmdLine"                                 # linux
+  - path_glob: "/Applications/Maxon Redshift */bin/redshiftCmdLine"                # macOS
+  - path_glob: 'C:\Program Files\Maxon Redshift *\bin\redshiftCmdLine.exe'         # windows
+    os: windows
+version:
+  from: 'Maxon Redshift (?P<v>[0-9]{4})'

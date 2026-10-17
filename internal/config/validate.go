@@ -310,6 +310,16 @@ func validateScheduler(cfg SchedulerConfig) []ValidationError {
 			),
 		})
 	}
+	if cfg.ReconcileGrace < 0 || (cfg.ReconcileGrace > 0 && cfg.ReconcileGrace < cfg.HeartbeatTimeout) {
+		errs = append(errs, ValidationError{
+			Field: "scheduler.reconcile_grace",
+			Message: fmt.Sprintf(
+				"must be 0 (disabled) or at least scheduler.heartbeat_timeout (%s), got %s; "+
+					"set SQI_SCHEDULER_RECONCILE_GRACE or scheduler.reconcile_grace",
+				cfg.HeartbeatTimeout, cfg.ReconcileGrace,
+			),
+		})
+	}
 	if cfg.DefaultMaxAttempts < 1 {
 		errs = append(errs, ValidationError{
 			Field: "scheduler.default_max_attempts",

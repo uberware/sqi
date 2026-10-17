@@ -1,0 +1,83 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: vray-standalone-render
+title: V-Ray Standalone Render
+description: >-
+  Renders an exported V-Ray scene with V-Ray Standalone, one frame per task by
+  default.
+readme: |
+  # V-Ray Standalone Render
+
+  Renders an exported V-Ray scene (`.vrscene`) with V-Ray Standalone, without
+  loading the application the scene came from. One `.vrscene` holds the whole
+  animation.
+
+  ## Parameters
+
+  - **Scene File** - the `.vrscene` file to render. It must be reachable from
+    every worker that runs the job.
+  - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
+    `1-100:2` for every second frame.
+
+  ## How work is divided
+
+  Each task renders a contiguous chunk of the frame range, one frame per task
+  by default. The task passes its first and last frame to V-Ray as
+  `-frames=START-END`, so a larger chunk size renders several frames in one
+  V-Ray launch, with fewer scene loads and less parallelism. A stepped range
+  such as `1-100:2` always runs one task per frame, so V-Ray never renders a
+  frame the range leaves out.
+
+  Output paths come from the scene file.
+
+  ## Requirements
+
+  - Workers tagged `attr.worker.tag.vray = true`
+  - `vray` on the worker's `PATH`
+category: Rendering
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: V-Ray Standalone Render
+  extensions: [TASK_CHUNKING, SQI_CHUNK_BOUNDS]
+  parameterDefinitions:
+    - name: SceneFile
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface:
+        control: CHOOSE_INPUT_FILE
+        label: Scene File
+        fileFilters:
+          - label: V-Ray scene files
+            patterns: ["*.vrscene"]
+        fileFilterDefault:
+          label: V-Ray scene files
+          patterns: ["*.vrscene"]
+    - name: Frames
+      type: STRING
+      userInterface: { control: LINE_EDIT, label: Frame Range }
+  steps:
+    - name: Render
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.vray
+            anyOf: ["true"]
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Frame
+            type: CHUNK[INT]
+            range: "{{Param.Frames}}"
+            chunks:
+              defaultTaskCount: 1
+              rangeConstraint: CONTIGUOUS
+      script:
+        actions:
+          onRun:
+            command: vray
+            args:
+              - "-sceneFile={{Param.SceneFile}}"
+              - "-frames={{Task.Param.Frame.Start}}-{{Task.Param.Frame.End}}"
+              - "-display=0"
+              - "-autoClose=1"
+              - "-progressUseColor=0"
+              - "-progressUseCR=0"

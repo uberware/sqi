@@ -72,13 +72,15 @@ func (c *Client) ConsumeTaskStatus(ctx context.Context, handler jetstream.Messag
 // during [Client.Drain].
 //
 // Ack / redelivery policy:
-//   - AckWait 30 s — the server has 30 s to persist a log chunk to SQLite.
-//     The SQLite write path is a single INSERT so this window is very generous.
+//   - AckWait 30 s — the server has 30 s to persist a log chunk to the store.
+//     The write is a single INSERT.
 //   - MaxDeliver 5 — allows for transient DB errors without re-filling the
-//     stream indefinitely.  After exhaustion the chunk is discarded; log gaps
-//     are recoverable from the NATS JetStream replay if MaxAge permits.
-//   - DeliverAllPolicy — replays unprocessed log chunks from before the last
-//     server restart so no output is permanently lost across restarts.
+//     stream indefinitely.  After exhaustion the chunk is discarded; the
+//     stream is not read back by the API, so the gap stays.
+//   - DeliverAllPolicy — redelivers unacked log chunks from before the last
+//     server restart so no output is permanently lost across restarts.  A chunk
+//     already stored is acked without being written again (task_logs is unique
+//     on attempt and worker sequence).
 func (c *Client) ConsumeTaskLogs(ctx context.Context, handler jetstream.MessageHandler) (jetstream.ConsumeContext, error) {
 	cfg := jetstream.ConsumerConfig{
 		Durable:       taskLogsConsumerName,

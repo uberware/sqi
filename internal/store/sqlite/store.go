@@ -71,9 +71,11 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	_ "modernc.org/sqlite" // register the "sqlite" driver
 
+	"github.com/uberware/sqi/internal/fslock"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/migrations"
 	"github.com/uberware/sqi/internal/store/sqlstore"
@@ -105,6 +107,12 @@ type Options struct {
 	// Set to false in HA deployments where migrations are applied explicitly
 	// via "sqi-server migrate up" before starting new server instances.
 	AutoMigrate bool
+
+	// ServerLock takes the single-server lock file (LockPath) for the store's
+	// life. The server sets it; backup and the worker-token commands do not.
+	// Ignored for an in-memory or temporary database, which no second process
+	// can open.
+	ServerLock bool
 }
 
 // DefaultOptions returns an [Options] with recommended defaults.
@@ -121,6 +129,12 @@ type Store struct {
 
 	db  *sql.DB // write pool, one connection
 	rdb *sql.DB // read pool; the write pool for an in-memory database
+
+	// lock is the single-server lock, nil unless Options.ServerLock. The store
+	// keeps it referenced for its whole life: an unreachable fslock.Lock is
+	// finalizer-closed, which would silently unlock.
+	lockMu sync.Mutex
+	lock   *fslock.Lock
 }
 
 // Open opens (or creates) the SQLite database at path, applies connection
@@ -133,7 +147,32 @@ func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 		return nil, errors.New("sqlite: path is empty")
 	}
 
-	db, err := sql.Open("sqlite", path)
+	var lock *fslock.Lock
+	if opts.ServerLock && isSharedPath(path) {
+		l, err := AcquireLock(path)
+		if err != nil {
+			return nil, err
+		}
+		lock = l
+	}
+	st, err := open(ctx, path, opts)
+	if err != nil {
+		if lock != nil {
+			err = errors.Join(err, lock.Release())
+		}
+		return nil, err
+	}
+	st.lock = lock
+	return st, nil
+}
+
+// open is Open without the server lock; Open releases the lock when it fails.
+func open(ctx context.Context, path string, opts Options) (*Store, error) {
+	dsn, err := DSN(path)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: open %q: %w", path, err)
+	}
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: open %q: %w", path, err)
 	}
@@ -154,6 +193,19 @@ func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 			_ = db.Close()
 			return nil, fmt.Errorf("sqlite: set %s: %w", pragma, err)
 		}
+	}
+
+	// Refuse a database a newer sqi-server migrated: before AutoMigrate, which
+	// would otherwise run against a schema it does not understand, and whether
+	// or not AutoMigrate is set. Open releases the server lock on this error.
+	v, err := SchemaVersion(ctx, db)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := migrations.CheckVersion("sqlite", v); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("sqlite: %w", err)
 	}
 
 	if opts.AutoMigrate {
@@ -197,11 +249,17 @@ func openReadPool(path string, write *sql.DB) (*sql.DB, error) {
 	// DSN parameter is applied by the driver to every connection it opens.
 	// Nothing else needs re-applying: journal_mode=WAL is persistent in the
 	// file, and foreign_keys only constrains writes.
-	sep := "?"
-	if strings.Contains(path, "?") {
-		sep = "&"
+	dsn, err := DSN(path)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: open read pool %q: %w", path, err)
 	}
-	dsn := fmt.Sprintf("%s%s_pragma=busy_timeout(%d)", path, sep, busyTimeoutMS)
+	if dsn == path { // a FileURI already carries the busy_timeout
+		sep := "?"
+		if strings.Contains(path, "?") {
+			sep = "&"
+		}
+		dsn = fmt.Sprintf("%s%s_pragma=busy_timeout(%d)", path, sep, busyTimeoutMS)
+	}
 
 	rdb, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -227,6 +285,20 @@ func isSharedPath(path string) bool {
 		return false
 	}
 	return !strings.Contains(strings.ToLower(path), "mode=memory")
+}
+
+// Close releases the server lock, if held, and closes the store. Safe to call
+// more than once.
+func (s *Store) Close() error {
+	s.lockMu.Lock()
+	lock := s.lock
+	s.lock = nil
+	s.lockMu.Unlock()
+	err := s.Store.Close()
+	if lock != nil {
+		err = errors.Join(err, lock.Release())
+	}
+	return err
 }
 
 // Ping verifies the database connection is still alive. Health checks use it.
