@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 from typing import Any
 
 from sqi_submitter.core import SubmitterSession
@@ -29,7 +30,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
     install = sub.add_parser("install-host", help="install the sqi submitter into a host")
-    install.add_argument("host", help="host to install into (e.g. aftereffects)")
+    install.add_argument("host", help="host to install into: blender, cinema4d or aftereffects")
     install.add_argument("--dest", default=None, help="install into this directory")
     return parser
 
@@ -72,6 +73,9 @@ def main(argv: list[str] | None = None) -> int:
     """Console-script entry point (``sqi-submit``)."""
     args = _build_parser().parse_args(argv)
     if args.command == "install-host":
-        print("sqi-submit install-host: not implemented yet", file=sys.stderr)
-        return 2
+        from sqi_submitter.install import KNOWN_HOSTS, install_host
+
+        # An unknown host is a usage error, so its message goes to stderr.
+        out = sys.stdout if args.host in KNOWN_HOSTS else sys.stderr
+        return install_host(args.host, Path(args.dest) if args.dest else None, out)
     return _run_dialog(args.server, args.context)

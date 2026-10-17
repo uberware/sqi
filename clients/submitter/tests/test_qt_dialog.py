@@ -362,11 +362,6 @@ def test_dialog_hides_save_checkbox_for_context_adapter(app: object, tmp_path: P
     assert not in_process._save_scene_check.isHidden()
 
 
-def test_cli_install_host_is_a_stub_exiting_two(capsys: pytest.CaptureFixture[str]) -> None:
-    assert cli.main(["install-host", "maya"]) == 2
-    assert "not implemented" in capsys.readouterr().err
-
-
 # -- multi-target checklist ---------------------------------------------------
 
 _PER_TARGET_MODE = "One job per ticked target"
