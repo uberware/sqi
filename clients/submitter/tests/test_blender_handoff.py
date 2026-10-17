@@ -175,6 +175,45 @@ def test_blender_handoff_reports_runtime_error(
     assert events == []
 
 
+@pytest.mark.parametrize(
+    "error", [RuntimeError("sqi-submit was not found."), PermissionError("denied")]
+)
+def test_blender_launch_problems_are_reported_not_raised(
+    fake_host_module: FakeHost, monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    _install_fake_bpy(fake_host_module, dirty=False)
+    addon = _addon()
+    monkeypatch.setattr(addon, "resolve_submit_command", lambda _c: "sqi")
+    monkeypatch.setattr(addon, "write_context", lambda _d: "ctx.json")
+
+    def fail(*_args: object) -> None:
+        raise error
+
+    monkeypatch.setattr(addon, "launch", fail)
+    seen, report = _reports()
+    assert addon.submit_scene(report, "") == {"CANCELLED"}
+    assert seen == [({"ERROR"}, str(error))]
+
+
+def test_blender_context_write_failure_is_reported(
+    fake_host_module: FakeHost, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, events = _install_fake_bpy(fake_host_module, dirty=False)
+    addon = _addon()
+    monkeypatch.setattr(addon, "resolve_submit_command", lambda _c: "sqi")
+
+    def no_space(_data: dict[str, Any]) -> str:
+        raise FileNotFoundError(2, "No such file or directory", "/tmp/sqi-handoff")
+
+    monkeypatch.setattr(addon, "write_context", no_space)
+    monkeypatch.setattr(addon, "launch", lambda *_a: events.append("launch"))
+    seen, report = _reports()
+    assert addon.submit_scene(report, "") == {"CANCELLED"}
+    [(level, message)] = seen
+    assert level == {"ERROR"} and "No such file or directory" in message
+    assert events == []
+
+
 def test_blender_register_adds_operator_panel_and_preferences(
     fake_host_module: FakeHost,
 ) -> None:

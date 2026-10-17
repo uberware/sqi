@@ -65,5 +65,5 @@ class MaxAdapter(HostAdapter):
         name = str(rt.maxFileName or "")
         if not name:
             return False  # untitled; the artist must save-as first
-        rt.saveMaxFile(str(rt.maxFilePath) + name, quiet=True)
-        return True
+        # saveMaxFile returns false when the save fails (read-only file, full disk).
+        return bool(rt.saveMaxFile(str(rt.maxFilePath) + name, quiet=True))

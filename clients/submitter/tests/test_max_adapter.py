@@ -120,6 +120,21 @@ def test_max_save_scene_saves_quietly(fake_host_module: FakeInstaller) -> None:
     assert rt.saved == [("D:/shows/a/shot_010.max", True)]
 
 
+def test_max_failed_save_is_reported(fake_host_module: FakeInstaller) -> None:
+    """saveMaxFile returning false (read-only file, full disk) must not submit a stale scene."""
+    saved: list[str] = []
+
+    def refuse(path: str, quiet: bool = False) -> bool:
+        saved.append(path)
+        return False
+
+    _install_fake_pymxs(fake_host_module, saveMaxFile=refuse)
+    from sqi_submitter.hosts.max.adapter import MaxAdapter
+
+    assert MaxAdapter().save_scene() is False
+    assert saved == ["D:/shows/a/shot_010.max"]
+
+
 def test_max_untitled_scene_cannot_save(fake_host_module: FakeInstaller) -> None:
     rt = _install_fake_pymxs(fake_host_module, maxFilePath="", maxFileName="")
     from sqi_submitter.hosts.max.adapter import MaxAdapter

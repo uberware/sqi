@@ -67,11 +67,26 @@ class _SubmitWorker(QtCore.QThread):
 
     def run(self) -> None:
         try:
-            results = self._call()
+            results = _run_submit(self._call)
         except SubmitterError as exc:
             self.failed.emit(exc)
         else:
             self.done.emit(results)
+
+
+def _run_submit(call: _SubmitCall) -> list[TargetResult]:
+    """Run ``call``, turning any exception into a :class:`SubmitterError`.
+
+    A host's ``save_scene`` (Maya's ``cmds.file``, say) can raise anything; on the
+    worker thread an unhandled exception just ends the thread and the artist sees
+    nothing, so it is reported through the banner like any other failure.
+    """
+    try:
+        return call()
+    except SubmitterError:
+        raise
+    except Exception as exc:
+        raise SubmitterError(str(exc) or type(exc).__name__) from exc
 
 
 @dataclass(frozen=True)
@@ -699,7 +714,7 @@ class SubmitDialog(QtWidgets.QDialog):
             return
         self._set_submitting(True)
         try:
-            results = submission.call()
+            results = _run_submit(submission.call)
         except SubmitterError as exc:
             self._on_submit_error(exc)
         else:

@@ -19,6 +19,7 @@ from sqi_client import SqiClient  # noqa: E402
 from sqi_client.models import Product  # noqa: E402
 from sqi_submitter import cli  # noqa: E402
 from sqi_submitter.core import RenderTarget, SceneContext, SubmitterSession  # noqa: E402
+from sqi_submitter.core.errors import SubmitterError  # noqa: E402
 from sqi_submitter.core.handoff import ContextAdapter, dump_context, load_context  # noqa: E402
 from sqi_submitter.qt import dialog as qt_dialog  # noqa: E402
 from sqi_submitter.qt.dialog import SubmitDialog  # noqa: E402
@@ -740,3 +741,47 @@ def test_edit_to_a_key_only_some_targets_share_applies_to_every_job(
     dialog.submit_and_wait()  # A and B ticked
     outputs = [json.loads(c.request.content)["parameters"]["OutputPath"] for c in route.calls]
     assert outputs == ["/edited", "/edited", "/edited"]
+
+
+# -- host save failures -------------------------------------------------------
+
+
+class _SaveRaisesAdapter(MiniAdapter):
+    """A modified scene whose host save raises, as Maya's ``cmds.file`` can."""
+
+    def __init__(self) -> None:
+        super().__init__(modified=True)
+
+    def save_scene(self) -> bool:
+        raise RuntimeError("Permission denied: /x/s.mini")
+
+
+def test_worker_reports_a_host_exception_as_failed(app: object) -> None:
+    """An exception that is not a SubmitterError must still reach the artist, not die."""
+
+    def boom() -> list[Any]:
+        raise RuntimeError("Permission denied: /x/s.mini")
+
+    worker = qt_dialog._SubmitWorker(boom)
+    failed: list[object] = []
+    done: list[object] = []
+    worker.failed.connect(failed.append)
+    worker.done.connect(done.append)
+    worker.run()  # synchronously, on this thread: the signals are delivered directly
+    assert done == []
+    [error] = failed
+    assert isinstance(error, SubmitterError)
+    assert "Permission denied: /x/s.mini" in error.user_message
+
+
+@respx.mock
+def test_host_save_exception_shows_banner(app: object) -> None:
+    route = _mock_server()
+    dialog = SubmitDialog(SubmitterSession(server_url=BASE), adapter=_SaveRaisesAdapter())
+    dialog._save_scene_check.setChecked(True)
+    dialog.submit_and_wait()
+    assert not route.called
+    error_label = dialog.findChild(QtWidgets.QLabel, "errorLabel")
+    assert error_label is not None
+    assert not error_label.isHidden()
+    assert "Permission denied: /x/s.mini" in error_label.text()

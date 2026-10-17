@@ -191,7 +191,7 @@ def submit_scene(report: Callable[[set[str], str], None], configured: str) -> se
             bpy.ops.wm.save_mainfile()
         command = resolve_submit_command(configured)
         launch(command, write_context(read_scene()))
-    except RuntimeError as exc:
+    except (RuntimeError, OSError) as exc:  # OSError: writing the context or launching
         report({"ERROR"}, str(exc))
         return {"CANCELLED"}
     return {"FINISHED"}
