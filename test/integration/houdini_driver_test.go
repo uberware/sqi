@@ -87,6 +87,12 @@ func TestHoudiniROPRender_DriverRendersEachRange(t *testing.T) {
 		{"range then a continuing frame", "1-3,4", [][]int{{1, 4, 1}}},
 		{"single frame", "7", [][]int{{7, 7, 1}}},
 		{"order given is kept", "10-14:2,1", [][]int{{10, 14, 2}, {1, 1, 1}}},
+		// Negative frames (simulation pre-roll) in every shape sqi emits.
+		{"range across zero", "-5-5", [][]int{{-5, 5, 1}}},
+		{"negative range", "-3--1", [][]int{{-3, -1, 1}}},
+		{"negative stepped range", "-9--1:2", [][]int{{-9, -1, 2}}},
+		{"negative stepped pair", "-10,-8", [][]int{{-10, -10, 1}, {-8, -8, 1}}},
+		{"negative pair", "-2,-1", [][]int{{-2, -1, 1}}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

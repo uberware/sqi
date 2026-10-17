@@ -19,7 +19,7 @@ readme: |
 
   ## How work is divided
 
-  The frame range expands into tasks through OpenJD task chunking, ten frames per
+  The frame range expands into tasks through OpenJD task chunking, up to ten frames per
   task by default. The `SQI_CHUNK_BOUNDS` extension gives each task the first and
   last frame of its own slice, which is what lets the command pass `-s` and `-e`
   rather than a frame list.

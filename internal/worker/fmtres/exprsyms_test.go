@@ -320,6 +320,52 @@ func TestTaskSymbols_ChunkIntTaskParam(t *testing.T) {
 	}
 }
 
+// TestTaskSymbols_ChunkIntTaskParam_EveryChunkShape reads each shape
+// internal/openjd's expansion can hand a worker -- a CONTIGUOUS "a-b", and a
+// NONCONTIGUOUS chunk spelled as a compact <IntRangeExpr> with steps, listed
+// pairs, negative frames, or values in first-seen rather than increasing order
+// -- as a concrete range_expr, and checks what an EXPR template computes from
+// it (husk-usd-render takes min() and len() of its chunk).
+func TestTaskSymbols_ChunkIntTaskParam_EveryChunkShape(t *testing.T) {
+	tests := []struct {
+		chunk         string
+		len, min, max int64
+	}{
+		{"5-5", 1, 5, 5},
+		{"1-10", 10, 1, 10},
+		{"1-19:2", 10, 1, 19},
+		{"1-3,7,8", 5, 1, 8},
+		{"10-14:2,1", 4, 1, 14},
+		{"-3--1", 3, -3, -1},
+		{"-10,-8", 2, -10, -8},
+	}
+	for _, tc := range tests {
+		t.Run(tc.chunk, func(t *testing.T) {
+			msg := &protocol.AssignMsg{
+				Parameters:     map[string]string{"Frames": tc.chunk},
+				ParameterTypes: map[string]string{"Frames": "CHUNK[INT]"},
+			}
+			syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
+			if err != nil {
+				t.Fatalf("TaskSymbols: %v", err)
+			}
+			got, ok := syms.Lookup("Task.Param.Frames")
+			if !ok || got.IsUnresolved() || !got.Type.Equal(expr.TRangeExpr) {
+				t.Fatalf("Task.Param.Frames = %+v, want concrete range_expr", got)
+			}
+			for fn, want := range map[string]int64{"len": tc.len, "min": tc.min, "max": tc.max} {
+				v, err := expr.Eval(fn+"(Task.Param.Frames)", syms, expr.TInt)
+				if err != nil {
+					t.Fatalf("%s(Task.Param.Frames): %v", fn, err)
+				}
+				if v.AsInt() != want {
+					t.Errorf("%s(Task.Param.Frames) = %d, want %d", fn, v.AsInt(), want)
+				}
+			}
+		})
+	}
+}
+
 // TestTaskSymbols_ChunkIntTaskParam_InvalidRangeFallsBackToUnresolved pins
 // the parse-failure fallback for range_expr, matching INT/FLOAT's existing
 // rule in expr.ValueFromText.

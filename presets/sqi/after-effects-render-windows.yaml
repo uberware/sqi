@@ -3,13 +3,13 @@ name: after-effects-render-windows
 title: After Effects Render (Windows)
 description: >-
   Renders one render-queue item of a saved After Effects project with aerender
-  on Windows workers, ten frames per task by default.
+  on Windows workers, up to ten frames per task by default.
 readme: |
   # After Effects Render (Windows)
 
   Renders one item of a saved `.aep` project's render queue with Adobe's
   `aerender`, using that item's own render settings and output module. Each
-  task renders a contiguous slice of the frame range, ten frames per task by
+  task renders a contiguous slice of the frame range, up to ten frames per task by
   default. Use After Effects Queue Render (Windows) instead to render
   everything the project has queued on one machine.
 

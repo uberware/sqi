@@ -10,9 +10,9 @@ readme: |
   runs `hython` against a short Python script the template carries as an embedded
   file, which opens the hip, finds the ROP and renders the frames it was given.
 
-  Each task renders a chunk of frames, ten per task by default. A chunk may
-  skip frames, so a stepped range such as `1-100:2` still renders ten of its
-  frames per task, loading the hip file once for each ten.
+  Each task renders a chunk of frames, up to ten per task by default. A chunk may
+  skip frames, so a stepped range such as `1-100:2` still renders up to ten of its
+  frames per task, loading the hip file once per task.
 
   ## Parameters
 
@@ -77,6 +77,7 @@ template:
             type: TEXT
             filename: render_chunk.py
             data: |
+              import re
               import sys
               import hou
 
@@ -86,13 +87,16 @@ template:
               if rop is None:
                   raise SystemExit("no such ROP: " + rop_path)
               # The chunk is a compact frame range such as 1-10, 1-19:2 or
-              # 1-3,7,8. Each lo-hi:step part is one render call, and parts
-              # that continue one another (7,8 above, a run of two) merge into one.
+              # 1-3,7,8, and frames may be negative (-5-5, -3--1). Each
+              # lo-hi:step part is one render call, and parts that continue
+              # one another (7,8 above, a run of two) merge into one.
+              part_re = re.compile(r"(-?\d+)(?:-(-?\d+)(?::(\d+))?)?")
               ranges = []
               for part in frames.split(","):
-                  expr, _, step = part.partition(":")
-                  lo, _, hi = expr.partition("-")
-                  lo, hi, step = int(lo), int(hi or lo), int(step or 1)
+                  m = part_re.fullmatch(part)
+                  if m is None:
+                      raise SystemExit("not a frame range part: " + part)
+                  lo, hi, step = int(m[1]), int(m[2] or m[1]), int(m[3] or 1)
                   last = ranges[-1] if ranges else None
                   if last and step == last[2] == 1 and lo == last[1] + 1:
                       last[1] = hi

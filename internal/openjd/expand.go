@@ -329,9 +329,11 @@ func chunkValues(all []int, chunkSize int, contiguous bool) []string {
 		// TASK_CHUNKING fixture contiguous-uneven.test.yaml pins: the fewest
 		// chunks of at most chunkSize, ceil(n/chunkSize), with chunk i ending
 		// at ceil((i+1)*n/k), so 1-12 at 5 is 1-4, 5-8, 9-12 rather than a
-		// short last chunk.
+		// short last chunk. k is ceil(n/chunkSize) written so that it cannot
+		// overflow: defaultTaskCount has no upper bound, and n+chunkSize-1
+		// wraps to a zero chunk count at the largest INT. n >= 1 always.
 		n := len(run)
-		k := (n + chunkSize - 1) / chunkSize
+		k := (n-1)/chunkSize + 1
 		start := 0
 		for i := range k {
 			end := ((i+1)*n + k - 1) / k

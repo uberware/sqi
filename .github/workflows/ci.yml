@@ -1693,6 +1693,9 @@ jobs:
             TestAutoRetry_RetryThenSucceed
             TestTLSEndToEnd
             TestTLSWorkerWithoutCAIsRefused
+            # Skips without a working Python 3, so name it: the Houdini
+            # driver's parse of every chunk shape sqi emits.
+            TestHoudiniROPRender_DriverRendersEachRange
             # The After Effects macOS presets' sh wrapper, run with the
             # os.family gate stripped: no macOS runner exists, so this is the
             # only Linux job that asserts that wrapper's exit-status pin by
@@ -1826,7 +1829,9 @@ jobs:
   # TestConformance_Templates scores EXPR/job_templates along with the other
   # suites. TestConformance_LetBindingFixtures asserts named EXPR fixtures by
   # their exact rejection message, so requiring it keeps a zero-fixture run
-  # from looking green.
+  # from looking green. TestConformance_TaskChunkingJobOutputs scores the
+  # TASK_CHUNKING jobs/ fixtures (how a chunk is spelled and sized), which
+  # TestConformance_Templates does not read.
   conformance:
     name: OpenJD conformance
     runs-on: ubuntu-latest
@@ -1852,6 +1857,7 @@ jobs:
           grep -q -- '--- PASS: TestConformance_SuitePresent' /tmp/conformance.log
           grep -q -- '--- PASS: TestConformance_Templates' /tmp/conformance.log
           grep -q -- '--- PASS: TestConformance_LetBindingFixtures' /tmp/conformance.log
+          grep -q -- '--- PASS: TestConformance_TaskChunkingJobOutputs' /tmp/conformance.log
 
   # ── ffmpeg reference presets: execute them ───────────────────────────────────
   # The shipped ffmpeg presets (presets/sqi/ffmpeg-*.yaml) are covered three

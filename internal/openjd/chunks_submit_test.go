@@ -66,6 +66,9 @@ func TestSubmit_SpecTutorialChunkTemplate(t *testing.T) {
 	}{
 		{"defaults", nil, []string{"1-3", "4-5", "6-8", "9-10"}},
 		{"chunk size from a parameter", map[string]string{"ChunkSize": "5"}, []string{"1-5", "6-10"}},
+		// The largest INT as "everything in one task" must not overflow into
+		// a step with no tasks.
+		{"largest chunk size", map[string]string{"ChunkSize": "9223372036854775807"}, []string{"1-10"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

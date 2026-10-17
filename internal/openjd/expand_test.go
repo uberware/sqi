@@ -9,6 +9,7 @@ package openjd_test
 // This file adds the one gap: a syntactically malformed combination expression.
 
 import (
+	"math"
 	"slices"
 	"testing"
 
@@ -167,6 +168,17 @@ func TestExpand_ChunkContiguousNeverSpansAGap(t *testing.T) {
 		{
 			"chunk larger than range", "1-5", 100, "CONTIGUOUS",
 			[]string{"1-5"},
+		},
+		{
+			// defaultTaskCount has no upper bound, so "everything in one task"
+			// may be spelled as the largest INT; counting chunks must not
+			// overflow into zero of them.
+			"largest chunk size", "1-5", math.MaxInt, "CONTIGUOUS",
+			[]string{"1-5"},
+		},
+		{
+			"largest chunk size noncontiguous", "1-9:2", math.MaxInt, "NONCONTIGUOUS",
+			[]string{"1-9:2"},
 		},
 		{
 			"empty constraint defaults to contiguous", "1,3", 2, "",

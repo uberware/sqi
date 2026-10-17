@@ -3,13 +3,13 @@ name: after-effects-render-macos
 title: After Effects Render (macOS)
 description: >-
   Renders one render-queue item of a saved After Effects project with aerender
-  on macOS workers, ten frames per task by default.
+  on macOS workers, up to ten frames per task by default.
 readme: |
   # After Effects Render (macOS)
 
   Renders one item of a saved `.aep` project's render queue with Adobe's
   `aerender`, using that item's own render settings and output module. Each
-  task renders a contiguous slice of the frame range, ten frames per task by
+  task renders a contiguous slice of the frame range, up to ten frames per task by
   default. Use After Effects Queue Render (macOS) instead to render
   everything the project has queued on one machine.
 
