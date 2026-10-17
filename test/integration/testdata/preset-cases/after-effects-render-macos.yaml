@@ -2,7 +2,7 @@
 #
 # After Effects Render (macOS). macOS-only by hostRequirements, so its Tier-3
 # case runs on macOS only. Linux CI runs the same sh wrapper, with the gate
-# stripped, in TestAfterEffectsPreset_WrapperFailsOnLoggedError.
+# stripped, in TestPresetAfterEffects_WrapperFailsOnLoggedError.
 #
 # stub_inner: the task's own command is /bin/sh running the embedded aerender
 # wrapper, an absolute path the stub cannot shadow on PATH, and replacing it

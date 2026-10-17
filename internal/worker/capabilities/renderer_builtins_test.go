@@ -100,17 +100,14 @@ var rendererLayouts = []rendererLayout{
 	},
 }
 
-// TestRendererDetectors_MatchVendorInstallLayout checks that a shipped glob
-// matches every install path in rendererLayouts.
-func TestRendererDetectors_MatchVendorInstallLayout(t *testing.T) {
-	checkInstallLayout(t, rendererLayouts)
-}
+// detectorLayouts is every layout the tests below check: the standalone
+// renderers above and the DCCs in dcc_builtins_test.go.
+var detectorLayouts = slices.Concat(rendererLayouts, dccLayouts)
 
-// checkInstallLayout is the body of the install-layout test, shared with the
-// DCC detectors in dcc_builtins_test.go.
-func checkInstallLayout(t *testing.T, layouts []rendererLayout) {
-	t.Helper()
-	for _, layout := range layouts {
+// TestRendererDetectors_MatchVendorInstallLayout checks that a shipped glob
+// matches every install path in detectorLayouts.
+func TestRendererDetectors_MatchVendorInstallLayout(t *testing.T) {
+	for _, layout := range detectorLayouts {
 		t.Run(layout.tag, func(t *testing.T) {
 			assertInstallsMatchGlobs(t, builtinDetector(t, layout.tag), layout.installs)
 		})
@@ -118,17 +115,11 @@ func checkInstallLayout(t *testing.T, layouts []rendererLayout) {
 }
 
 // TestRendererDetectors_ProbePATHForTheCommand checks that each detector has an
-// ungated exe check for the bare command its preset runs.
-func TestRendererDetectors_ProbePATHForTheCommand(t *testing.T) {
-	checkPATHProbe(t, rendererLayouts)
-}
-
-// checkPATHProbe is the body of the PATH-probe test. A layout with no exe
+// ungated exe check for the bare command its preset runs. A layout with no exe
 // asserts the opposite: the detector must have no exe check at all, because
 // the command is too generic to probe for (the mistikavr.yaml rule).
-func checkPATHProbe(t *testing.T, layouts []rendererLayout) {
-	t.Helper()
-	for _, layout := range layouts {
+func TestRendererDetectors_ProbePATHForTheCommand(t *testing.T) {
+	for _, layout := range detectorLayouts {
 		t.Run(layout.tag, func(t *testing.T) {
 			d := builtinDetector(t, layout.tag)
 			if layout.exe == "" {
@@ -152,13 +143,7 @@ func checkPATHProbe(t *testing.T, layouts []rendererLayout) {
 // TestRendererDetectors_WindowsCheckIsGated guards the backslash globs (see
 // assertWindowsGlobsGated).
 func TestRendererDetectors_WindowsCheckIsGated(t *testing.T) {
-	checkWindowsGated(t, rendererLayouts)
-}
-
-// checkWindowsGated is the body of the Windows-gating test.
-func checkWindowsGated(t *testing.T, layouts []rendererLayout) {
-	t.Helper()
-	for _, layout := range layouts {
+	for _, layout := range detectorLayouts {
 		t.Run(layout.tag, func(t *testing.T) {
 			assertWindowsGlobsGated(t, builtinDetector(t, layout.tag))
 		})
@@ -168,13 +153,7 @@ func checkWindowsGated(t *testing.T, layouts []rendererLayout) {
 // TestRendererDetectors_ExtractVersion checks the version extracted from a
 // versioned install path, and that a detector with no version extracts none.
 func TestRendererDetectors_ExtractVersion(t *testing.T) {
-	checkVersion(t, rendererLayouts)
-}
-
-// checkVersion is the body of the version-extraction test.
-func checkVersion(t *testing.T, layouts []rendererLayout) {
-	t.Helper()
-	for _, layout := range layouts {
+	for _, layout := range detectorLayouts {
 		t.Run(layout.tag, func(t *testing.T) {
 			d := builtinDetector(t, layout.tag)
 			if layout.versioned == "" {
@@ -237,16 +216,9 @@ func TestRendererDetectors_3DelightReadsDELIGHT(t *testing.T) {
 // TestRendererDetectors_EvaluateOnEveryPlatform runs Evaluate on each install's
 // platform: a matching glob tags the worker (plus the versioned tag where
 // expected), a Windows-only glob stays silent off Windows, nothing installed
-// advertises nothing, and the command on PATH alone is enough.
+// advertises nothing, and the command on PATH alone is enough. A layout with no
+// exe skips that last half: there is no command to put on PATH.
 func TestRendererDetectors_EvaluateOnEveryPlatform(t *testing.T) {
-	checkEvaluateEveryPlatform(t, rendererLayouts)
-}
-
-// checkEvaluateEveryPlatform is the body of the per-platform Evaluate test. A
-// layout with no exe skips the "on PATH alone" half: there is no command to
-// put on PATH.
-func checkEvaluateEveryPlatform(t *testing.T, layouts []rendererLayout) {
-	t.Helper()
 	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
 	goosOf := func(install string) string {
 		switch {
@@ -258,7 +230,7 @@ func checkEvaluateEveryPlatform(t *testing.T, layouts []rendererLayout) {
 			return "linux"
 		}
 	}
-	for _, layout := range layouts {
+	for _, layout := range detectorLayouts {
 		t.Run(layout.tag, func(t *testing.T) {
 			d := builtinDetector(t, layout.tag)
 			for _, install := range layout.installs {

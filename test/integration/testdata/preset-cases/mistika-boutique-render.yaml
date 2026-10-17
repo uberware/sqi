@@ -2,8 +2,9 @@
 #
 # Mistika Ultima & Boutique Render. Unlike the Maya and Blender presets this one
 # ships chunks.defaultTaskCount 10, so the unpatched case already spans frames;
-# "1-24" is chosen so the last chunk is a short tail (21-24) rather than a full
-# ten, which is where an off-by-one in the bounds derivation would show.
+# "1-24" is chosen because it does not divide by ten, so the chunks are
+# balanced to 1-8, 9-16, 17-24 rather than full tens, which is where an
+# off-by-one in the bounds derivation would show.
 cases:
   - name: default
     params:

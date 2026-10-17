@@ -164,17 +164,15 @@ presets:
         driving a ROP via an embedded Python driver script. Stronger than the other
         render presets in one respect: the chunk syntax the driver must parse is
         visible in the golden alongside the parser itself, so the two can be
-        read against each other. Its chunks are NONCONTIGUOUS, which sqi always
-        writes as a flat comma list of single frames (1,2,...,10 in the default
-        case; three tasks such as 1,3,...,19 for the stepped-range case's thirty
-        frames), so no shipped expansion reaches the driver's lo-hi or :step
-        branches. The driver merges each run of consecutive frames into one
-        rop.render(frame_range=(lo, hi, 1)) call, so each run of consecutive
-        frames in a chunk is one call, as it was before the switch to
-        NONCONTIGUOUS: a stepped range is one call per frame, and a gapped list
-        such as 1-5,8-12 is two calls. A stub hou module checks that
-        (TestHoudiniROPRender_DriverCoalescesFrameRuns), but that one call per
-        run behaves as before is unverified on a real Houdini. No Houdini or
+        read against each other. Its chunks are NONCONTIGUOUS, which sqi spells
+        as a compact frame range (1-8 in the default case; three tasks such as
+        1-19:2 for the stepped-range case's thirty frames). The driver renders
+        each lo-hi:step part in one rop.render(frame_range=(lo, hi, step)) call
+        and merges parts that continue one another, since a run of two frames
+        is spelled 7,8: a stepped chunk is one call, and a gapped chunk such as
+        1-5,8-12 is two. A stub hou module checks that
+        (TestHoudiniROPRender_DriverRendersEachRange), but a stepped
+        frame_range is unverified on a real Houdini. No Houdini or
         hython installation has executed it: hou.hipFile.load, hou.node and
         RopNode.render(frame_range=...) are unexercised, and a golden cannot
         show that hython puts the script's own path in sys.argv[0].
@@ -197,9 +195,10 @@ presets:
         reads -F 1-1 as the single frame 1 is unverified at Tier 1. It stays
         CONTIGUOUS because Foundry's Command Line Operations page documents -F
         only as one frame, a-b or a-bxN (repeating -F for more ranges), with no
-        comma-list form, so sqi's flat NONCONTIGUOUS chunk (1,3,5) has no
-        documented -F spelling and a stepped range still costs one task, and one
-        script load, per frame.
+        comma-list form. A NONCONTIGUOUS chunk such as 1-19:2 or 1-3,7,8 would
+        need its ':' rewritten to 'x' and each comma part passed as its own -F,
+        which a literal args list cannot do without a wrapper script, so a
+        stepped range still costs one task, and one script load, per frame.
     tier3:
       case: TestPresetTier3/nuke-write-render/default
       required_on: [linux, darwin, windows]
@@ -217,9 +216,9 @@ presets:
         single-frame expansion as nuke-write-render's (-F 1-1, -F 3-3, ...), so
         no step separator reaches -F; whether Nuke reads -F 1-1 as one frame is
         unverified at Tier 1. It stays CONTIGUOUS for nuke-write-render's
-        reason: Foundry documents no comma-list form of -F, so a flat
-        NONCONTIGUOUS chunk (1,3,5) cannot reach Nuke and a stepped range still
-        costs one task per frame.
+        reason: Foundry documents no comma-list form of -F, so a NONCONTIGUOUS
+        chunk (1-19:2, 1-3,7,8) cannot reach Nuke without a wrapper script, and
+        a stepped range still costs one task per frame.
     tier3:
       case: TestPresetTier3/nuke-script-render/default
       required_on: [linux, darwin, windows]
@@ -442,8 +441,8 @@ presets:
 
   # Windows-only by hostRequirements (attr.worker.os.family anyOf ["windows"]),
   # which no test environment can fake, so this entry's Tier-3 claim is
-  # required_on [windows] alone. TestThreeDSMaxRender_IsWindowsOnly pins both
-  # halves.
+  # required_on [windows] alone. TestThreeDSMaxRender_IsWindowsOnly pins the
+  # gate, and TestPresetTier3RequiredOnMatchesOSGate the required_on it implies.
   - name: 3dsmax-render
     source: presets/sqi
     tier: 1
@@ -470,7 +469,7 @@ presets:
   # [windows] alone. Tier 3 runs the real powershell and stubs aerender
   # (stub_inner), and expect_inner_argv pins the argv the wrapper forwards.
   # The wrapper's exit-status contract is carried by
-  # TestAfterEffectsPreset_WrapperFailsOnLoggedError, which is not a registry
+  # TestPresetAfterEffects_WrapperFailsOnLoggedError, which is not a registry
   # case.
   - name: after-effects-render-windows
     source: presets/sqi
@@ -533,7 +532,7 @@ presets:
   # the real /bin/sh and stubs aerender (stub_inner), and expect_inner_argv
   # pins the argv the wrapper forwards. The wrapper itself is not left to a
   # Mac: Linux CI exercises the same sh script, with the os.family gate
-  # stripped, through TestAfterEffectsPreset_WrapperFailsOnLoggedError, which
+  # stripped, through TestPresetAfterEffects_WrapperFailsOnLoggedError, which
   # is not a registry case and carries the exit-status contract for both OSes.
   - name: after-effects-render-macos
     source: presets/sqi

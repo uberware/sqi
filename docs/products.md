@@ -227,7 +227,9 @@ real `powershell.exe`.
 The fan-out counterpart of `script`: runs one shell command per frame, or per
 chunk of consecutive frames, across a range. Parameters `Command`
 (`MULTILINE_EDIT`), `Frames` (OpenJD range syntax) and `FramesPerTask` (`INT`,
-default 1, minimum 1, the chunk size via a format-string `defaultTaskCount`).
+default 1, minimum 1, the largest chunk via a format-string `defaultTaskCount`;
+a range that does not divide evenly is spread over the same number of tasks in
+near-equal chunks).
 Each task's command sees `SQI_FRAME_START`, `SQI_FRAME_END`, `SQI_FRAMES`
 (always `START-END`) and `SQI_FRAME` (equal to `SQI_FRAME_START`), exported by
 a prefix on the `/bin/sh -c` string. A chunk never spans a gap in the range,

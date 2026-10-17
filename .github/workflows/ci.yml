@@ -1702,8 +1702,8 @@ jobs:
             # skips on a host it cannot stage), so a leaf that can only have
             # run is named too: the case the wrapper exists for, aerender
             # logging an error and exiting 0, on a macOS variant.
-            TestAfterEffectsPreset_WrapperFailsOnLoggedError
-            TestAfterEffectsPreset_WrapperFailsOnLoggedError/logged-error-exit-0/after-effects-render-macos
+            TestPresetAfterEffects_WrapperFailsOnLoggedError
+            TestPresetAfterEffects_WrapperFailsOnLoggedError/logged-error-exit-0/after-effects-render-macos
           )
           missing=0
           for name in "${expected[@]}"; do
@@ -1983,12 +1983,12 @@ jobs:
         shell: bash
         run: |
           ffmpeg -version | head -1
-          go test -count=1 -run 'TestPreset|TestZZPreset|TestFFmpegPreset|TestScriptPowerShell|TestAfterEffectsPreset' -v -timeout 1800s ./test/integration/ 2>&1 |
+          go test -count=1 -run 'TestPreset|TestZZPreset|TestFFmpegPreset|TestScriptPowerShell' -v -timeout 1800s ./test/integration/ 2>&1 |
             tee preset-harness-windows.log
 
       # Not redundant with the step above. A `-run` regex that matched nothing --
       # after a rename, or a registry that failed to load -- exits 0 having
-      # asserted nothing. TestAfterEffectsPreset_WrapperFailsOnLoggedError is
+      # asserted nothing. TestPresetAfterEffects_WrapperFailsOnLoggedError is
       # the After Effects Windows wrapper's exit-status pin, which no registry
       # case carries; its leaf subtest is named too, because the parent passes
       # even when every subtest skips. A trailing space anchors each name:
@@ -2009,8 +2009,8 @@ jobs:
           for name in "TestPresetTier1Argv " "TestPresetTier3 " "TestZZPresetTierRegistrySatisfied " \
                       "TestFFmpegPreset_PowerShellSegmentTranscodeJoins" \
                       "TestScriptPowerShell_ExitStatus " \
-                      "TestAfterEffectsPreset_WrapperFailsOnLoggedError " \
-                      "TestAfterEffectsPreset_WrapperFailsOnLoggedError/logged-error-exit-0/after-effects-render-windows " \
+                      "TestPresetAfterEffects_WrapperFailsOnLoggedError " \
+                      "TestPresetAfterEffects_WrapperFailsOnLoggedError/logged-error-exit-0/after-effects-render-windows " \
                       "TestPresetPythonSequence_LauncherContract "; do
             if ! grep -q -- "--- PASS: ${name}" preset-harness-windows.log; then
               echo "::error::${name} did not run to a PASS on windows"

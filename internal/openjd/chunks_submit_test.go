@@ -64,7 +64,7 @@ func TestSubmit_SpecTutorialChunkTemplate(t *testing.T) {
 		params map[string]string
 		want   []string
 	}{
-		{"defaults", nil, []string{"1-3", "10-10", "4-6", "7-9"}},
+		{"defaults", nil, []string{"1-3", "4-5", "6-8", "9-10"}},
 		{"chunk size from a parameter", map[string]string{"ChunkSize": "5"}, []string{"1-5", "6-10"}},
 	}
 	for _, tc := range tests {

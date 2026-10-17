@@ -3,7 +3,10 @@
 // Command stubproc is a stand-in for any vendor CLI a preset invokes.
 //
 // It records the argv, working directory and stdin it was called with, and can
-// be told to fail, hang, create an output file, or emit OpenJD progress lines.
+// be told to fail, hang, create an output file, print a line, or emit OpenJD
+// progress lines. Those settings come from SQI_STUB_* environment variables,
+// and with SQI_STUB_ENV_FROM_ARG from a sidecar file named by an argument, so
+// each invocation under one worker can be configured differently.
 // Installed on a worker's PATH under a preset's real command name (Render,
 // ffmpeg, kick, pwsh), it turns "does this preset run end to end?" into a test
 // that needs no license and no vendor install — Tier 3 of the preset validation

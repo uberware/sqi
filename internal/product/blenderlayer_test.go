@@ -1,19 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// An external test package: it locates the preset through presettest, and
+// An external test package: it reads the preset through presettest, and
 // presettest imports product.
 package product_test
 
 import (
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
-
-	"gopkg.in/yaml.v3"
-
-	"github.com/uberware/sqi/internal/presettest"
 )
 
 // TestBlenderViewLayerRender_LayerNameIsNeverInPythonSource pins the property
@@ -27,37 +21,14 @@ import (
 // the captured argv shows only one layer name; the property is about the
 // template.
 func TestBlenderViewLayerRender_LayerNameIsNeverInPythonSource(t *testing.T) {
-	root, err := presettest.RepoRoot()
-	if err != nil {
-		t.Fatalf("RepoRoot: %v", err)
+	tmpl := parsedPresetTemplate(t, "blender-view-layer-render")
+	if len(tmpl.Steps) != 1 || tmpl.Steps[0].Script == nil {
+		t.Fatalf("preset declares %d steps, want 1 with a script", len(tmpl.Steps))
 	}
-	data, err := os.ReadFile(filepath.Join(root, "presets", "sqi", "blender-view-layer-render.yaml"))
-	if err != nil {
-		t.Fatalf("read preset: %v", err)
-	}
-	var def struct {
-		Template struct {
-			Steps []struct {
-				Script struct {
-					Actions struct {
-						OnRun struct {
-							Command string   `yaml:"command"`
-							Args    []string `yaml:"args"`
-						} `yaml:"onRun"`
-					} `yaml:"actions"`
-				} `yaml:"script"`
-			} `yaml:"steps"`
-		} `yaml:"template"`
-	}
-	if err := yaml.Unmarshal(data, &def); err != nil {
-		t.Fatalf("parse preset: %v", err)
-	}
-	if len(def.Template.Steps) != 1 {
-		t.Fatalf("preset declares %d steps, want 1", len(def.Template.Steps))
-	}
-	args := def.Template.Steps[0].Script.Actions.OnRun.Args
-	if got := def.Template.Steps[0].Script.Actions.OnRun.Command; got != "blender" {
-		t.Errorf("command = %q, want blender", got)
+	onRun := tmpl.Steps[0].Script.Actions.OnRun
+	args := onRun.Args
+	if onRun.Command != "blender" {
+		t.Errorf("command = %q, want blender", onRun.Command)
 	}
 
 	expr := slices.Index(args, "--python-expr")

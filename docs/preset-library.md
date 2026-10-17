@@ -203,8 +203,8 @@ cannot ship without one.
 | `cinema4d-render` | a `.c4d` scene with Maxon's `Commandline`, using the scene's render settings | one frame per task by default | `cinema4d` |
 | `cinema4d-take-render` | one named take of a `.c4d` scene (`Take`) | one frame per task by default | `cinema4d` |
 | `3dsmax-render` | a `.max` scene with `3dsmaxcmd` | one frame per task by default | `3dsmax`, and `attr.worker.os.family` = `windows` |
-| `after-effects-render-windows` | one render-queue item (`RenderQueueItem`) of an `.aep` project with `aerender` | `FramesPerTask` frames per task, default 10 | `aftereffects`, and `attr.worker.os.family` = `windows` |
-| `after-effects-render-macos` | the same, on macOS | `FramesPerTask` frames per task, default 10 | `aftereffects`, and `attr.worker.os.family` = `macos` |
+| `after-effects-render-windows` | one render-queue item (`RenderQueueItem`) of an `.aep` project with `aerender` | up to `FramesPerTask` frames per task, default 10 | `aftereffects`, and `attr.worker.os.family` = `windows` |
+| `after-effects-render-macos` | the same, on macOS | up to `FramesPerTask` frames per task, default 10 | `aftereffects`, and `attr.worker.os.family` = `macos` |
 | `after-effects-queue-render-windows` | everything the saved project has queued | one task for the whole queue | `aftereffects`, and `attr.worker.os.family` = `windows` |
 | `after-effects-queue-render-macos` | the same, on macOS | one task for the whole queue | `aftereffects`, and `attr.worker.os.family` = `macos` |
 
@@ -248,13 +248,14 @@ preset cannot see the output format, so nothing enforces this; the queue presets
 are unaffected because they are always one task.
 
 **Houdini and Nuke chunking.** `houdini-rop-render` uses `NONCONTIGUOUS` chunks,
-so a task receives a flat comma list of single frames (`1,3,5,...`) and a stepped
-range such as `1-60:2` costs `ceil(n/chunk)` tasks rather than one task per
-frame. The embedded driver script renders each run of consecutive frames in a
-chunk with one `rop.render()` call, so a run of consecutive frames is still one call
-and a stepped range is one call per frame. `nuke-write-render` and `nuke-script-render`
-stay `CONTIGUOUS`: Foundry documents no comma-list form of `-F`, so a stepped
-range there still costs one task per frame.
+so a task receives a compact frame range (`1-10`, `1-19:2`, `1-3,7,8`) and a
+stepped range such as `1-60:2` costs `ceil(n/chunk)` tasks rather than one task
+per frame. The embedded driver script renders each part of the range with one
+`rop.render()` call, merging parts that continue one another, so a stepped chunk
+is one call. `nuke-write-render` and `nuke-script-render` stay `CONTIGUOUS`:
+Foundry documents no comma-list form of `-F`, so a chunk such as `1-3,7,8`
+would need a wrapper script to become several `-F` flags, and a stepped range
+there still costs one task per frame.
 
 ## Transcoding reference presets
 
@@ -411,9 +412,9 @@ a real farm rather than reviewed tier by tier. The tiers are:
     single-frame chunk per frame. See
     [sqi-chunk-bounds](openjd-extensions/sqi-chunk-bounds.md).
   - `houdini-rop-render` is the exception: its chunks are `NONCONTIGUOUS`, so
-    its goldens show a flat comma list of single frames (`1,2,...,10`, or
-    `1,3,...,19` for a stepped range) that the driver script merges into one
-    `rop.render()` call per run of consecutive frames.
+    its goldens show a compact frame range (`1-10`, or `1-19:2` for a stepped
+    range) that the driver script renders with one `rop.render()` call per
+    part.
 
   Read a preset's `caveat` field before trusting its golden for anything more
   than "the template still expands the way it did when this was reviewed."
@@ -512,7 +513,7 @@ anywhere else. Two are macOS-only (`required_on: [darwin]`):
 `attr.worker.os.family anyOf ["macos"]`. No CI job has a macOS runner for the
 preset harness, so those two Tier 3 claims are not exercised in CI; the macOS
 wrapper script is instead run under Linux `sh`, with the OS gate stripped, by
-`TestAfterEffectsPreset_WrapperFailsOnLoggedError`, and the Windows job runs the
+`TestPresetAfterEffects_WrapperFailsOnLoggedError`, and the Windows job runs the
 same test against the PowerShell wrapper.
 `TestPresetTier3RequiredOnMatchesOSGate` fails any entry whose
 `tier3.required_on` differs from the platforms its template's

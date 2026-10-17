@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/presettest"
 )
 
@@ -47,33 +46,23 @@ runpy.run_path(driver, run_name="__main__")
 print(json.dumps(state))
 `
 
-// TestHoudiniROPRender_DriverCoalescesFrameRuns pins what the embedded driver
-// asks hou to render for a task's comma-separated frame list. sqi writes a
-// NONCONTIGUOUS chunk as a flat list of single frames, so the driver has to
-// merge each run of consecutive frames back into one render call: that keeps
-// an unstepped range rendering exactly as it did before the preset moved to
-// NONCONTIGUOUS (one call per chunk), while a stepped range still renders
-// frame by frame. A legacy `lo-hi:step` part is still honored.
-func TestHoudiniROPRender_DriverCoalescesFrameRuns(t *testing.T) {
-	python := requireStubPython(t)
+// TestHoudiniROPRender_DriverRendersEachRange pins what the embedded driver
+// asks hou to render for a task's chunk. sqi spells a NONCONTIGUOUS chunk as a
+// compact <IntRangeExpr> (internal/openjd/expand.go, formatNoncontiguousChunk):
+// a run of three or more frames at one step is a lo-hi or lo-hi:step range,
+// rendered in one call, while a shorter run is listed frame by frame, so the
+// driver merges frames that continue one another back into one call.
+func TestHoudiniROPRender_DriverRendersEachRange(t *testing.T) {
+	python := findPython3(t)
+	if python == "" {
+		t.Skip("no working Python 3 on PATH (tried python3, python)")
+	}
 
 	tmpl, err := presettest.PresetTemplate(presettest.SourcePresets, "houdini-rop-render")
 	if err != nil {
 		t.Fatalf("PresetTemplate: %v", err)
 	}
-	parsed, err := openjd.Parse([]byte(tmpl), openjd.FormatYAML)
-	if err != nil {
-		t.Fatalf("openjd.Parse: %v", err)
-	}
-	var driver string
-	for _, f := range parsed.Steps[0].Script.EmbeddedFiles {
-		if f.Name == "render_chunk" {
-			driver = f.Data
-		}
-	}
-	if driver == "" {
-		t.Fatal("houdini-rop-render declares no embedded file named render_chunk")
-	}
+	driver := embeddedFileData(t, tmpl, "render_chunk")
 
 	dir := t.TempDir()
 	driverPath := filepath.Join(dir, "render_chunk.py")
@@ -90,14 +79,14 @@ func TestHoudiniROPRender_DriverCoalescesFrameRuns(t *testing.T) {
 		frames string
 		want   [][]int
 	}{
-		{"consecutive run", "1,2,3", [][]int{{1, 3, 1}}},
-		{"no two consecutive", "1,3,5", [][]int{{1, 1, 1}, {3, 3, 1}, {5, 5, 1}}},
-		{"run then run", "1,2,3,7,8", [][]int{{1, 3, 1}, {7, 8, 1}}},
-		{"run then single", "1,2,3,7", [][]int{{1, 3, 1}, {7, 7, 1}}},
+		{"range", "1-10", [][]int{{1, 10, 1}}},
+		{"stepped range", "1-19:2", [][]int{{1, 19, 2}}},
+		{"range then a pair", "1-3,7,8", [][]int{{1, 3, 1}, {7, 8, 1}}},
+		{"pairs", "1,2,4,5", [][]int{{1, 2, 1}, {4, 5, 1}}},
+		{"stepped pair", "7,9", [][]int{{7, 7, 1}, {9, 9, 1}}},
+		{"range then a continuing frame", "1-3,4", [][]int{{1, 4, 1}}},
 		{"single frame", "7", [][]int{{7, 7, 1}}},
-		{"order given is kept", "7,8,1,2", [][]int{{7, 8, 1}, {1, 2, 1}}},
-		{"legacy stepped part", "1-3:2", [][]int{{1, 3, 2}}},
-		{"legacy range part", "4-9", [][]int{{4, 9, 1}}},
+		{"order given is kept", "10-14:2,1", [][]int{{10, 14, 2}, {1, 1, 1}}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -121,23 +110,4 @@ func TestHoudiniROPRender_DriverCoalescesFrameRuns(t *testing.T) {
 			}
 		})
 	}
-}
-
-// requireStubPython returns a working Python 3 or skips. A path is only
-// accepted once it has run: on Windows `python3` commonly resolves to an App
-// Execution Alias that opens the Store instead of running anything.
-func requireStubPython(t *testing.T) string {
-	t.Helper()
-	for _, name := range []string{"python3", "python"} {
-		path, err := exec.LookPath(name)
-		if err != nil {
-			continue
-		}
-		out, err := exec.CommandContext(t.Context(), path, "-c", "import sys; print(sys.version_info[0])").Output()
-		if err == nil && strings.TrimSpace(string(out)) == "3" {
-			return path
-		}
-	}
-	t.Skip("no working Python 3 on PATH (tried python3, python)")
-	return ""
 }

@@ -229,9 +229,9 @@ func mulSaturate(a, b int) (product int, ok bool) {
 // expandTaskParam expands a single task parameter definition into a flat list
 // of string values, one per task.
 //
-// For CHUNK[INT] parameters each returned string is a range expression
-// (CONTIGUOUS) or comma-separated list (NONCONTIGUOUS) encoding the group of
-// integers that a single task will process.
+// For CHUNK[INT] parameters each returned string is a "<start>-<end>" range
+// (CONTIGUOUS) or a compact <IntRangeExpr> (NONCONTIGUOUS) encoding the group
+// of integers that a single task will process.
 func expandTaskParam(tp TaskParamDefinition) ([]string, error) {
 	switch tp.Type {
 	case TaskParamTypeInt:
@@ -266,9 +266,9 @@ func expandTaskParam(tp TaskParamDefinition) ([]string, error) {
 }
 
 // expandChunkInt expands a CHUNK[INT] parameter into one string per chunk.
-// Each string is either a compact range expression (CONTIGUOUS) or a
-// comma-separated integer list (NONCONTIGUOUS), matching the value a worker
-// will receive as its task parameter.
+// Each string is either a "<start>-<end>" range (CONTIGUOUS) or a compact
+// <IntRangeExpr> (NONCONTIGUOUS), matching the value a worker will receive as
+// its task parameter.
 func expandChunkInt(tp TaskParamDefinition) ([]string, error) {
 	if tp.Chunks != nil && tp.Chunks.DefaultTaskCountExpr != nil {
 		// Only ResolveParameterSpaceParams turns this into a count; chunking
@@ -314,8 +314,10 @@ func expandChunkInt(tp TaskParamDefinition) ([]string, error) {
 // A CONTIGUOUS chunk is "always a contiguous range of integers" (TASK_CHUNKING,
 // Template Schemas), so all is first split into runs of consecutive integers
 // and each run is chunked on its own: RFC 0001's example, "1,10-12,18-50" at
-// 10, is "1-1", "10-12", "18-27", "28-37", "38-47", "48-50". A NONCONTIGUOUS
-// chunk may be any set, so the flat list is chunked directly.
+// 10, is "1-1", "10-12", "18-26", "27-34", "35-42", "43-50" (the RFC's own
+// "likely division" ends 18-27, ..., 48-50, unbalanced). A NONCONTIGUOUS
+// chunk may be any set, so the flat list is chunked directly and each chunk
+// spelled by formatNoncontiguousChunk.
 func chunkValues(all []int, chunkSize int, contiguous bool) []string {
 	runs, format := [][]int{all}, formatNoncontiguousChunk
 	if contiguous {
@@ -323,8 +325,18 @@ func chunkValues(all []int, chunkSize int, contiguous bool) []string {
 	}
 	var out []string
 	for _, run := range runs {
-		for i := 0; i < len(run); i += chunkSize {
-			out = append(out, format(run[i:min(i+chunkSize, len(run))]))
+		// Balanced, as the reference implementation chunks and the
+		// TASK_CHUNKING fixture contiguous-uneven.test.yaml pins: the fewest
+		// chunks of at most chunkSize, ceil(n/chunkSize), with chunk i ending
+		// at ceil((i+1)*n/k), so 1-12 at 5 is 1-4, 5-8, 9-12 rather than a
+		// short last chunk.
+		n := len(run)
+		k := (n + chunkSize - 1) / chunkSize
+		start := 0
+		for i := range k {
+			end := ((i+1)*n + k - 1) / k
+			out = append(out, format(run[start:end]))
+			start = end
 		}
 	}
 	return out
@@ -351,11 +363,46 @@ func formatContiguousChunk(vals []int) string {
 	return strconv.Itoa(vals[0]) + "-" + strconv.Itoa(vals[len(vals)-1])
 }
 
-// formatNoncontiguousChunk encodes a chunk as a comma-separated integer list.
+// formatNoncontiguousChunk spells a chunk as the compact <IntRangeExpr> the
+// reference implementation produces, which the TASK_CHUNKING conformance
+// fixtures pin ("1-8" at 3 is "1-3", "4-6", "7,8"). Scanning left to right, the
+// longest run with one constant positive step is written as a range when it
+// holds at least three values ("1-5", "1-9:2"); a shorter run is written as its
+// first two values, and the scan carries on after them. So a run of two stays
+// a list ("7,8"), and "1,3,5,6,7,8" is "1-5:2,6-8".
+//
+// The values keep the order expansion gave them, which for a range such as
+// "10-15:2,1-5" is first-seen rather than increasing. A step that is not
+// positive never forms a range, since internal/openjd's own parser rejects
+// "a-b" with a > b, so a descending pair is written value by value.
 func formatNoncontiguousChunk(vals []int) string {
-	parts := make([]string, len(vals))
-	for i, v := range vals {
-		parts[i] = strconv.Itoa(v)
+	var parts []string
+	for i := 0; i < len(vals); {
+		if i+1 == len(vals) {
+			parts = append(parts, strconv.Itoa(vals[i]))
+			break
+		}
+		step := vals[i+1] - vals[i]
+		if step <= 0 {
+			parts = append(parts, strconv.Itoa(vals[i]))
+			i++
+			continue
+		}
+		j := i + 1
+		for j+1 < len(vals) && vals[j+1]-vals[j] == step {
+			j++
+		}
+		switch {
+		case j-i+1 < 3:
+			parts = append(parts, strconv.Itoa(vals[i]), strconv.Itoa(vals[i+1]))
+			i += 2
+			continue
+		case step == 1:
+			parts = append(parts, strconv.Itoa(vals[i])+"-"+strconv.Itoa(vals[j]))
+		default:
+			parts = append(parts, strconv.Itoa(vals[i])+"-"+strconv.Itoa(vals[j])+":"+strconv.Itoa(step))
+		}
+		i = j + 1
 	}
 	return strings.Join(parts, ",")
 }

@@ -36,7 +36,7 @@ func submitTileGrid(t *testing.T, lim openjd.ExprLimits, n int) error {
 	st := fake.New()
 	farmID, queueID := seedFarmQueue(t, st)
 	_, err := openjd.NewSubmitterWithOptions(st, openjd.SubmitterOptions{ExprLimits: lim}).Submit(
-		t.Context(), perFileTemplate(t, "arnold-kick-tile-render"), store.TemplateFormatYAML,
+		t.Context(), presetTemplate(t, "arnold-kick-tile-render"), store.TemplateFormatYAML,
 		openjd.SubmitOptions{FarmID: farmID, QueueID: queueID, Parameters: map[string]string{
 			"SceneFile": "/mnt/show/shot.####.ass", "OutputFile": "/mnt/show/images/beauty.####.exr",
 			"Frames": "1", "Width": "1920", "Height": "1080",

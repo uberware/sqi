@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Adobe After Effects' command-line renderer, aerender, which the
-# presets/sqi/after-effects-*-render-windows.yaml presets run through a wrapper
-# script by bare name. Source: Adobe's "Automated rendering and network
+# presets/sqi/after-effects-*-render-{windows,macos}.yaml presets run through a
+# wrapper script by bare name. Source: Adobe's "Automated rendering and network
 # rendering" page (helpx.adobe.com/after-effects/using/automated-rendering-network-rendering.html,
 # Wayback copy of 2026-05-27); see design section 13.1 of
 # docs/superpowers/specs/2026-10-16-p5a-dcc-breadth-design.md.

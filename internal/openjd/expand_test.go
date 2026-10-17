@@ -131,8 +131,22 @@ func TestExpand_ChunkContiguousNeverSpansAGap(t *testing.T) {
 		want       []string
 	}{
 		{
+			// The RFC's own "likely division" ends 18-27, 28-37, 38-47,
+			// 48-50; the reference implementation balances the run instead.
 			"RFC 0001 example", "1,10-12,18-50", 10, "CONTIGUOUS",
-			[]string{"1-1", "10-12", "18-27", "28-37", "38-47", "48-50"},
+			[]string{"1-1", "10-12", "18-26", "27-34", "35-42", "43-50"},
+		},
+		{
+			// Balanced: the fewest chunks of at most 5, with the values spread
+			// evenly, never a short last chunk (contiguous-uneven.test.yaml).
+			"uneven range is balanced", "1-12", 5, "CONTIGUOUS",
+			[]string{"1-4", "5-8", "9-12"},
+		},
+		{
+			// Chunk i ends at ceil((i+1)*n/k), so the sizes alternate rather
+			// than front-loading the remainder (3,2,3,2, not 3,3,2,2).
+			"balanced sizes alternate", "1-10", 3, "CONTIGUOUS",
+			[]string{"1-3", "4-5", "6-8", "9-10"},
 		},
 		{
 			"stepped range is one frame per chunk", "1-9:2", 5, "CONTIGUOUS",
@@ -140,7 +154,7 @@ func TestExpand_ChunkContiguousNeverSpansAGap(t *testing.T) {
 		},
 		{
 			"list with a run longer than the chunk", "1,5,10-20", 5, "CONTIGUOUS",
-			[]string{"1-1", "5-5", "10-14", "15-19", "20-20"},
+			[]string{"1-1", "5-5", "10-13", "14-17", "18-20"},
 		},
 		{
 			"single frames are start-end", "1-3", 1, "CONTIGUOUS",
@@ -157,10 +171,6 @@ func TestExpand_ChunkContiguousNeverSpansAGap(t *testing.T) {
 		{
 			"empty constraint defaults to contiguous", "1,3", 2, "",
 			[]string{"1-1", "3-3"},
-		},
-		{
-			"noncontiguous is unchanged", "1-9:2", 3, "NONCONTIGUOUS",
-			[]string{"1,3,5", "7,9"},
 		},
 	}
 	for _, tc := range tests {
@@ -184,6 +194,75 @@ func TestExpand_ChunkContiguousNeverSpansAGap(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestExpand_ChunkNoncontiguousIsCompact pins the spelling of a NONCONTIGUOUS
+// chunk. Every row's want was measured from the reference implementation
+// (openjd-model's StepParameterSpaceIterator, the pinned OPENJD_MODEL_VERSION);
+// the first two are also the TASK_CHUNKING conformance fixtures
+// noncontiguous.test.yaml and noncontiguous-format.test.yaml, which
+// test/conformance scores. The last row has no reference equivalent: the
+// reference orders a range's values increasingly where internal/openjd keeps
+// them first-seen, so a chunk can descend, and a descent never forms a range.
+func TestExpand_ChunkNoncontiguousIsCompact(t *testing.T) {
+	tests := []struct {
+		rangeExpr string
+		chunkSize int
+		want      []string
+	}{
+		{"1-10", 5, []string{"1-5", "6-10"}},
+		{"1-8", 3, []string{"1-3", "4-6", "7,8"}},
+		{"1-9:2", 3, []string{"1-5:2", "7,9"}},
+		{"1-20:2", 10, []string{"1-19:2"}},
+		{"5", 1, []string{"5"}},
+		{"1,3", 2, []string{"1,3"}},
+		{"1-3,10", 4, []string{"1-3,10"}},
+		{"1-3,7-8", 5, []string{"1-3,7,8"}},
+		{"1,3,4,5,7", 5, []string{"1,3,4,5,7"}},
+		{"1,2,4,5,7,8", 6, []string{"1,2,4,5,7,8"}},
+		{"1,3,5,6,7,8", 6, []string{"1-5:2,6-8"}},
+		{"2,4,5,6,8,10,12", 7, []string{"2,4,5,6,8-12:2"}},
+		{"1-30:5,31,32,33", 20, []string{"1-31:5,32,33"}},
+		{"10-15:2,1-5", 4, []string{"10-14:2,1", "2-5"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.rangeExpr, func(t *testing.T) {
+			got := chunkParam(t, tc.rangeExpr, tc.chunkSize, "NONCONTIGUOUS")
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("chunks = %v, want %v", got, tc.want)
+			}
+			// Each chunk must read back, through the same parser a template's
+			// range goes through, as exactly the values it was made from.
+			var back []string
+			for _, chunk := range got {
+				back = append(back, chunkParam(t, chunk, 1, "NONCONTIGUOUS")...)
+			}
+			if want := chunkParam(t, tc.rangeExpr, 1, "NONCONTIGUOUS"); !slices.Equal(back, want) {
+				t.Errorf("chunks %v read back as %v, want %v", got, back, want)
+			}
+		})
+	}
+}
+
+// chunkParam expands rangeExpr as a CHUNK[INT] parameter and returns each
+// task's value.
+func chunkParam(t *testing.T, rangeExpr string, chunkSize int, constraint string) []string {
+	t.Helper()
+	ps := &openjd.StepParameterSpace{
+		TaskParameterDefinitions: []openjd.TaskParamDefinition{{
+			Name: "Frame", Type: openjd.TaskParamTypeChunkInt, RangeExpr: new(rangeExpr),
+			Chunks: &openjd.TaskChunks{DefaultTaskCount: chunkSize, RangeConstraint: constraint},
+		}},
+	}
+	rows, err := openjd.ExpandParameterSpace(ps)
+	if err != nil {
+		t.Fatalf("ExpandParameterSpace(%q): %v", rangeExpr, err)
+	}
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = r["Frame"]
+	}
+	return out
 }
 
 // TestDeriveChunkBounds_GappedRangeGivesPerRunBounds is the user-visible half:

@@ -569,10 +569,10 @@ func presetFiles(t *testing.T) []string {
 //
 // The baseline is needed rather than "expect zero errors" because these
 // presets are base-spec templates being pushed through the EXPR evaluator:
-// thirteen of the thirty reference a chunked task parameter's .Start property
+// many of them reference a chunked task parameter's .Start property
 // ("{{Task.Param.Frame.Start}}", a TASK_CHUNKING spelling the EXPR evaluator
 // has no property for), which is an unrelated error and not this test's
-// business. It does mean those thirteen stop resolving at the offending args
+// business. It does mean those stop resolving at the offending args
 // entry, so their measured POSITION cost below is a lower bound on what the
 // whole step would charge -- which does not weaken the conclusion, because the
 // floor is sized from the 1,841-position worked session rather than from

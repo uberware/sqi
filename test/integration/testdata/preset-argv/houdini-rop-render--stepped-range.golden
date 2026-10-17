@@ -7,15 +7,15 @@ params:
 
 step "Render" — 3 tasks
 
-task 1/3  name="Render[Frames=1,3,5,7,9,11,13,15,17,19]"
+task 1/3  name="Render[Frames=1-19:2]"
   task params:
-    Frames=1,3,5,7,9,11,13,15,17,19
+    Frames=1-19:2
   command: hython
   args:
     [0]  <WORKDIR>
     [1]  /mnt/show/seq010/shot0010/scene/shot0010_fx_v004.hip
     [2]  /out/mantra_beauty
-    [3]  1,3,5,7,9,11,13,15,17,19
+    [3]  1-19:2
   embedded file "render_chunk" (render_chunk.py):
     import sys
     import hou
@@ -25,36 +25,31 @@ task 1/3  name="Render[Frames=1,3,5,7,9,11,13,15,17,19]"
     rop = hou.node(rop_path)
     if rop is None:
         raise SystemExit("no such ROP: " + rop_path)
-    # sqi hands a chunk over as single frames. Merge each run of
-    # consecutive frames into one render call; a lo-hi:step part is
-    # rendered as written.
-    run = None
+    # The chunk is a compact frame range such as 1-10, 1-19:2 or
+    # 1-3,7,8. Each lo-hi:step part is one render call, and parts
+    # that continue one another (7,8 above, a run of two) merge into one.
+    ranges = []
     for part in frames.split(","):
         expr, _, step = part.partition(":")
         lo, _, hi = expr.partition("-")
-        if hi or step:
-            if run:
-                rop.render(frame_range=(run[0], run[1], 1))
-                run = None
-            rop.render(frame_range=(int(lo), int(hi or lo), int(step or 1)))
-        elif run and int(lo) == run[1] + 1:
-            run[1] = int(lo)
+        lo, hi, step = int(lo), int(hi or lo), int(step or 1)
+        last = ranges[-1] if ranges else None
+        if last and step == last[2] == 1 and lo == last[1] + 1:
+            last[1] = hi
         else:
-            if run:
-                rop.render(frame_range=(run[0], run[1], 1))
-            run = [int(lo), int(lo)]
-    if run:
-        rop.render(frame_range=(run[0], run[1], 1))
+            ranges.append([lo, hi, step])
+    for lo, hi, step in ranges:
+        rop.render(frame_range=(lo, hi, step))
 
-task 2/3  name="Render[Frames=21,23,25,27,29,31,33,35,37,39]"
+task 2/3  name="Render[Frames=21-39:2]"
   task params:
-    Frames=21,23,25,27,29,31,33,35,37,39
+    Frames=21-39:2
   command: hython
   args:
     [0]  <WORKDIR>
     [1]  /mnt/show/seq010/shot0010/scene/shot0010_fx_v004.hip
     [2]  /out/mantra_beauty
-    [3]  21,23,25,27,29,31,33,35,37,39
+    [3]  21-39:2
   embedded file "render_chunk" (render_chunk.py):
     import sys
     import hou
@@ -64,36 +59,31 @@ task 2/3  name="Render[Frames=21,23,25,27,29,31,33,35,37,39]"
     rop = hou.node(rop_path)
     if rop is None:
         raise SystemExit("no such ROP: " + rop_path)
-    # sqi hands a chunk over as single frames. Merge each run of
-    # consecutive frames into one render call; a lo-hi:step part is
-    # rendered as written.
-    run = None
+    # The chunk is a compact frame range such as 1-10, 1-19:2 or
+    # 1-3,7,8. Each lo-hi:step part is one render call, and parts
+    # that continue one another (7,8 above, a run of two) merge into one.
+    ranges = []
     for part in frames.split(","):
         expr, _, step = part.partition(":")
         lo, _, hi = expr.partition("-")
-        if hi or step:
-            if run:
-                rop.render(frame_range=(run[0], run[1], 1))
-                run = None
-            rop.render(frame_range=(int(lo), int(hi or lo), int(step or 1)))
-        elif run and int(lo) == run[1] + 1:
-            run[1] = int(lo)
+        lo, hi, step = int(lo), int(hi or lo), int(step or 1)
+        last = ranges[-1] if ranges else None
+        if last and step == last[2] == 1 and lo == last[1] + 1:
+            last[1] = hi
         else:
-            if run:
-                rop.render(frame_range=(run[0], run[1], 1))
-            run = [int(lo), int(lo)]
-    if run:
-        rop.render(frame_range=(run[0], run[1], 1))
+            ranges.append([lo, hi, step])
+    for lo, hi, step in ranges:
+        rop.render(frame_range=(lo, hi, step))
 
-task 3/3  name="Render[Frames=41,43,45,47,49,51,53,55,57,59]"
+task 3/3  name="Render[Frames=41-59:2]"
   task params:
-    Frames=41,43,45,47,49,51,53,55,57,59
+    Frames=41-59:2
   command: hython
   args:
     [0]  <WORKDIR>
     [1]  /mnt/show/seq010/shot0010/scene/shot0010_fx_v004.hip
     [2]  /out/mantra_beauty
-    [3]  41,43,45,47,49,51,53,55,57,59
+    [3]  41-59:2
   embedded file "render_chunk" (render_chunk.py):
     import sys
     import hou
@@ -103,23 +93,18 @@ task 3/3  name="Render[Frames=41,43,45,47,49,51,53,55,57,59]"
     rop = hou.node(rop_path)
     if rop is None:
         raise SystemExit("no such ROP: " + rop_path)
-    # sqi hands a chunk over as single frames. Merge each run of
-    # consecutive frames into one render call; a lo-hi:step part is
-    # rendered as written.
-    run = None
+    # The chunk is a compact frame range such as 1-10, 1-19:2 or
+    # 1-3,7,8. Each lo-hi:step part is one render call, and parts
+    # that continue one another (7,8 above, a run of two) merge into one.
+    ranges = []
     for part in frames.split(","):
         expr, _, step = part.partition(":")
         lo, _, hi = expr.partition("-")
-        if hi or step:
-            if run:
-                rop.render(frame_range=(run[0], run[1], 1))
-                run = None
-            rop.render(frame_range=(int(lo), int(hi or lo), int(step or 1)))
-        elif run and int(lo) == run[1] + 1:
-            run[1] = int(lo)
+        lo, hi, step = int(lo), int(hi or lo), int(step or 1)
+        last = ranges[-1] if ranges else None
+        if last and step == last[2] == 1 and lo == last[1] + 1:
+            last[1] = hi
         else:
-            if run:
-                rop.render(frame_range=(run[0], run[1], 1))
-            run = [int(lo), int(lo)]
-    if run:
-        rop.render(frame_range=(run[0], run[1], 1))
+            ranges.append([lo, hi, step])
+    for lo, hi, step in ranges:
+        rop.render(frame_range=(lo, hi, step))

@@ -26,10 +26,10 @@ readme: |
   ## How work is divided
 
   The frame range expands into tasks through OpenJD task chunking, ten frames per
-  task by default. Each task receives its own frames as a comma-separated list
-  of single frames (for example `1,3,5`) and passes it straight to the embedded
-  script, which renders each run of consecutive frames in one `rop.render` call
-  (so `1,2,3,7` is two calls, frames 1-3 and frame 7), so this preset needs no
+  task by default. Each task receives its own frames as a compact frame range
+  (for example `1-10`, `1-19:2` or `1-3,7`) and passes it straight to the
+  embedded script, which renders each part in one `rop.render` call (so
+  `1-19:2` is one call and `1-3,7` is two), so this preset needs no
   chunk-bounds extension.
 
   ## Requirements
@@ -85,26 +85,21 @@ template:
               rop = hou.node(rop_path)
               if rop is None:
                   raise SystemExit("no such ROP: " + rop_path)
-              # sqi hands a chunk over as single frames. Merge each run of
-              # consecutive frames into one render call; a lo-hi:step part is
-              # rendered as written.
-              run = None
+              # The chunk is a compact frame range such as 1-10, 1-19:2 or
+              # 1-3,7,8. Each lo-hi:step part is one render call, and parts
+              # that continue one another (7,8 above, a run of two) merge into one.
+              ranges = []
               for part in frames.split(","):
                   expr, _, step = part.partition(":")
                   lo, _, hi = expr.partition("-")
-                  if hi or step:
-                      if run:
-                          rop.render(frame_range=(run[0], run[1], 1))
-                          run = None
-                      rop.render(frame_range=(int(lo), int(hi or lo), int(step or 1)))
-                  elif run and int(lo) == run[1] + 1:
-                      run[1] = int(lo)
+                  lo, hi, step = int(lo), int(hi or lo), int(step or 1)
+                  last = ranges[-1] if ranges else None
+                  if last and step == last[2] == 1 and lo == last[1] + 1:
+                      last[1] = hi
                   else:
-                      if run:
-                          rop.render(frame_range=(run[0], run[1], 1))
-                      run = [int(lo), int(lo)]
-              if run:
-                  rop.render(frame_range=(run[0], run[1], 1))
+                      ranges.append([lo, hi, step])
+              for lo, hi, step in ranges:
+                  rop.render(frame_range=(lo, hi, step))
         actions:
           onRun:
             command: hython

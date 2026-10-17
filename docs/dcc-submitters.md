@@ -263,8 +263,8 @@ other product.
 | `cinema4d-render` | `Commandline -nogui -render <scene> -frame <start> <end> -oimage <path>` | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `OutputPath` | `attr.worker.tag.cinema4d = "true"` |
 | `cinema4d-take-render` | `Commandline -nogui -render <scene> -frame <start> <end> -take <take> -oimage <path>` | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `Take`, `OutputPath` | `attr.worker.tag.cinema4d = "true"` |
 | `3dsmax-render` | `3dsmaxcmd -v:5 -rfw:0 -start:<n> -end:<n> -outputName:<path> <scene>` | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `OutputPath` | `attr.worker.tag.3dsmax = "true"` and `attr.worker.os.family = "windows"` |
-| `after-effects-render-windows` | `aerender -project <scene> -rqindex <n> -s <start> -e <end> -v ERRORS_AND_PROGRESS -close DO_NOT_SAVE_CHANGES`, run through an embedded PowerShell wrapper | `FramesPerTask` per task, default 10 | `SceneFile`, `Frames`, `RenderQueueItem`, `FramesPerTask` | `attr.worker.tag.aftereffects = "true"` and `attr.worker.os.family = "windows"` |
-| `after-effects-render-macos` | the same `aerender` arguments, run through an embedded POSIX `sh` wrapper | `FramesPerTask` per task, default 10 | `SceneFile`, `Frames`, `RenderQueueItem`, `FramesPerTask` | `attr.worker.tag.aftereffects = "true"` and `attr.worker.os.family = "macos"` |
+| `after-effects-render-windows` | `aerender -project <scene> -rqindex <n> -s <start> -e <end> -v ERRORS_AND_PROGRESS -close DO_NOT_SAVE_CHANGES`, run through an embedded PowerShell wrapper | up to `FramesPerTask` per task, default 10 | `SceneFile`, `Frames`, `RenderQueueItem`, `FramesPerTask` | `attr.worker.tag.aftereffects = "true"` and `attr.worker.os.family = "windows"` |
+| `after-effects-render-macos` | the same `aerender` arguments, run through an embedded POSIX `sh` wrapper | up to `FramesPerTask` per task, default 10 | `SceneFile`, `Frames`, `RenderQueueItem`, `FramesPerTask` | `attr.worker.tag.aftereffects = "true"` and `attr.worker.os.family = "macos"` |
 | `after-effects-queue-render-windows` | `aerender -project <scene> -v ERRORS_AND_PROGRESS -close DO_NOT_SAVE_CHANGES` (renders the saved queue as is), through the PowerShell wrapper | one task for the whole queue | `SceneFile` | `attr.worker.tag.aftereffects = "true"` and `attr.worker.os.family = "windows"` |
 | `after-effects-queue-render-macos` | the same queue render, through the `sh` wrapper | one task for the whole queue | `SceneFile` | `attr.worker.tag.aftereffects = "true"` and `attr.worker.os.family = "macos"` |
 | `mistika-boutique-render` | `mistika -r <scene> -s/-e <frame range>` | chunks of 10 | `SceneFile` (`*.rnd`), `Frames` | `attr.worker.tag.mistika = "true"` |
@@ -293,10 +293,10 @@ contiguous frame range per DCC launch with no other template change. Houdini and
 Nuke instead get multi-frame chunks (10 by default) natively, because both the
 embedded `hython` script and `nuke -F` accept several frames per invocation, so a
 chunk amortizes DCC startup cost across several frames. Houdini's chunks are
-`NONCONTIGUOUS`: the script receives a comma-separated list of single frames
-(`1,3,5,...`), so a stepped range such as `1-60:2` still renders ten frames per
-task. Nuke's stay `CONTIGUOUS`, because Foundry documents no comma-list form of
-`-F`; a stepped range there costs one task per frame.
+`NONCONTIGUOUS`: the script receives a compact frame range (`1-19:2`), so a
+stepped range such as `1-60:2` still renders ten frames per task, in one
+`rop.render()` call. Nuke's stay `CONTIGUOUS`, because Foundry documents no
+comma-list form of `-F`; a stepped range there costs one task per frame.
 
 The three Mistika presets use `SQI_CHUNK_BOUNDS` the same way Maya and Blender
 do, but batch by default (chunks of 10): every Mistika renderer takes `-s

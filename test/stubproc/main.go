@@ -4,10 +4,13 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -35,6 +38,9 @@ func main() {
 
 // run performs every observable side effect: record, emit, touch, sleep, print.
 func run(name string) error {
+	if err := applyEnvFromArg(); err != nil {
+		return err
+	}
 	if err := writeRecord(name); err != nil {
 		return err
 	}
@@ -58,6 +64,47 @@ func run(name string) error {
 	// test can model a renderer that logs an error and still exits 0 (aerender).
 	if v, ok := os.LookupEnv("SQI_STUB_STDOUT"); ok {
 		fmt.Println(v)
+	}
+	return nil
+}
+
+// applyEnvFromArg lets one invocation configure itself, so a single worker
+// environment can serve jobs that each want the stub to behave differently.
+// SQI_STUB_ENV_FROM_ARG names a flag; when the flag appears in argv, the
+// argument after it names a file whose sibling "<value>.stubenv" holds
+// SQI_STUB_* settings, one KEY=VALUE per line, that override the environment's
+// for this invocation. A missing sidecar changes nothing. Only SQI_STUB_ keys
+// are accepted, so a sidecar cannot reach anything but the stub.
+func applyEnvFromArg() error {
+	flag := os.Getenv("SQI_STUB_ENV_FROM_ARG")
+	if flag == "" {
+		return nil
+	}
+	args := os.Args[1:]
+	i := slices.Index(args, flag)
+	if i < 0 || i+1 >= len(args) {
+		return nil
+	}
+	path := args[i+1] + ".stubenv"
+	data, err := os.ReadFile(path) //nolint:gosec // G304: a test stub deliberately reads beside the file its caller names
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("SQI_STUB_ENV_FROM_ARG: %w", err)
+	}
+	for line := range strings.Lines(string(data)) {
+		line = strings.TrimRight(line, "\r\n")
+		if line == "" {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || !strings.HasPrefix(key, "SQI_STUB_") {
+			return fmt.Errorf("%s: %q is not an SQI_STUB_ KEY=VALUE line", path, line)
+		}
+		if err := os.Setenv(key, value); err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
 	}
 	return nil
 }

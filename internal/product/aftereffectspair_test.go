@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package product
+// An external test package: it reads the presets through presettest, and
+// presettest imports product.
+package product_test
 
 import (
 	"fmt"
 	"maps"
-	"os"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"testing"
@@ -20,9 +20,8 @@ const aeWrapperRef = "{{Task.File.aerender_wrapper}}"
 
 // aeOS is one operating system's half of an After Effects preset pair.
 type aeOS struct {
-	// suffix ends the preset's name.
-	suffix string
-	// family is the attr.worker.os.family value its steps require.
+	// family is the attr.worker.os.family value its steps require, and ends
+	// the preset's name.
 	family string
 	// command is the onRun command, which runs the wrapper.
 	command string
@@ -35,10 +34,10 @@ type aeOS struct {
 
 var (
 	aeWindows = aeOS{
-		suffix: "windows", family: "windows", command: "powershell", filename: "aerender_wrapper.ps1",
+		family: "windows", command: "powershell", filename: "aerender_wrapper.ps1",
 		launch: []string{"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"},
 	}
-	aeMacOS = aeOS{suffix: "macos", family: "macos", command: "/bin/sh", filename: "aerender_wrapper.sh"}
+	aeMacOS = aeOS{family: "macos", command: "/bin/sh", filename: "aerender_wrapper.sh"}
 )
 
 // aePresetKinds are the After Effects presets shipped as a Windows/macOS pair.
@@ -53,8 +52,8 @@ var aePresetKinds = []string{"after-effects-render", "after-effects-queue-render
 func TestAfterEffectsPresets_VariantsDifferOnlyInGateAndWrapper(t *testing.T) {
 	for _, kind := range aePresetKinds {
 		t.Run(kind, func(t *testing.T) {
-			win := loadAETemplate(t, kind+"-"+aeWindows.suffix)
-			mac := loadAETemplate(t, kind+"-"+aeMacOS.suffix)
+			win := loadAETemplate(t, kind+"-"+aeWindows.family)
+			mac := loadAETemplate(t, kind+"-"+aeMacOS.family)
 
 			// Everything above the steps: parameterDefinitions, name,
 			// extensions, specificationVersion.
@@ -86,10 +85,10 @@ func TestAfterEffectsPresets_VariantsDifferOnlyInGateAndWrapper(t *testing.T) {
 // wrapper byte for byte, so a fix to one cannot silently miss the other.
 func TestAfterEffectsPresets_WrapperSharedWithinOS(t *testing.T) {
 	for _, host := range []aeOS{aeWindows, aeMacOS} {
-		t.Run(host.suffix, func(t *testing.T) {
+		t.Run(host.family, func(t *testing.T) {
 			var want string
 			for _, kind := range aePresetKinds {
-				name := kind + "-" + host.suffix
+				name := kind + "-" + host.family
 				steps := aeSteps(t, loadAETemplate(t, name))
 				for _, step := range steps {
 					file := aeWrapperFile(t, step)
@@ -106,7 +105,7 @@ func TestAfterEffectsPresets_WrapperSharedWithinOS(t *testing.T) {
 					}
 					if data != want {
 						t.Errorf("%s embeds a different wrapper from %s-%s\n got: %q\nwant: %q",
-							name, aePresetKinds[0], host.suffix, data, want)
+							name, aePresetKinds[0], host.family, data, want)
 					}
 				}
 			}
@@ -164,11 +163,10 @@ func compareAESteps(t *testing.T, win, mac map[string]any) {
 			name, winActions, macActions)
 	}
 	for _, key := range unionKeys(winScript, macScript) {
-		switch key {
-		case "embeddedFiles":
-			continue // the wrapper, compared by TestAfterEffectsPresets_WrapperSharedWithinOS
-		case "actions":
-			// Compared above, minus the part that legitimately differs.
+		// embeddedFiles is the wrapper, compared by
+		// TestAfterEffectsPresets_WrapperSharedWithinOS; actions was compared
+		// above, minus the part that legitimately differs.
+		if key == "embeddedFiles" || key == "actions" {
 			continue
 		}
 		if !reflect.DeepEqual(winScript[key], macScript[key]) {
@@ -225,19 +223,19 @@ func aerenderArgv(t *testing.T, name string, v aeOS, step map[string]any) []any 
 	t.Helper()
 	onRun := mapField(mapField(mapField(step, "script"), "actions"), "onRun")
 	if got := onRun["command"]; got != v.command {
-		t.Errorf("step %q: %s variant command = %v, want %s", name, v.suffix, got, v.command)
+		t.Errorf("step %q: %s variant command = %v, want %s", name, v.family, got, v.command)
 	}
 	args := asList(onRun["args"])
 	i := slices.Index(args, any(aeWrapperRef))
 	if i < 0 {
-		t.Fatalf("step %q: %s variant args do not pass %s: %v", name, v.suffix, aeWrapperRef, args)
+		t.Fatalf("step %q: %s variant args do not pass %s: %v", name, v.family, aeWrapperRef, args)
 	}
 	var launch []string
 	for _, a := range args[:i] {
 		launch = append(launch, fmt.Sprint(a))
 	}
 	if !slices.Equal(launch, v.launch) {
-		t.Errorf("step %q: %s variant args before %s = %v, want %v", name, v.suffix, aeWrapperRef, launch, v.launch)
+		t.Errorf("step %q: %s variant args before %s = %v, want %v", name, v.family, aeWrapperRef, launch, v.launch)
 	}
 	return args[i+1:]
 }
@@ -259,20 +257,11 @@ func aeWrapperFile(t *testing.T, step map[string]any) map[string]any {
 // loadAETemplate decodes one presets/sqi preset's template.
 func loadAETemplate(t *testing.T, name string) map[string]any {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "..", "presets", "sqi", name+".yaml"))
-	if err != nil {
-		t.Fatalf("read preset: %v", err)
-	}
-	var def struct {
-		Template map[string]any `yaml:"template"`
-	}
-	if err := yaml.Unmarshal(data, &def); err != nil {
+	var tmpl map[string]any
+	if err := yaml.Unmarshal([]byte(presetTemplate(t, name)), &tmpl); err != nil {
 		t.Fatalf("parse %s: %v", name, err)
 	}
-	if def.Template == nil {
-		t.Fatalf("%s has no template", name)
-	}
-	return def.Template
+	return tmpl
 }
 
 // aeSteps returns a template's steps.
@@ -316,15 +305,8 @@ func asList(v any) []any {
 
 // unionKeys returns the keys of a and b, sorted.
 func unionKeys(a, b map[string]any) []string {
-	var keys []string
-	for k := range a {
-		keys = append(keys, k)
-	}
-	for k := range b {
-		if _, ok := a[k]; !ok {
-			keys = append(keys, k)
-		}
-	}
-	slices.Sort(keys)
-	return keys
+	all := map[string]any{}
+	maps.Copy(all, a)
+	maps.Copy(all, b)
+	return slices.Sorted(maps.Keys(all))
 }

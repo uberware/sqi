@@ -26,8 +26,10 @@ readme: |
     as `-s <start> -e <end>`; the end frame is inclusive.
   - **Render Queue Item** - the item's position in the render queue, counting
     from 1, passed as `-rqindex`.
-  - **Frames Per Task** - how many frames each task renders. `aerender` is
-    slow to start, so the default is 10 rather than 1.
+  - **Frames Per Task** - the most frames one task renders. `aerender` is
+    slow to start, so the default is 10 rather than 1. A range that does not
+    divide evenly is spread over the same number of tasks in near-equal
+    chunks: `1-24` at 10 is `1-8`, `9-16`, `17-24`.
 
   **A movie output must be one task.** After Effects cannot render one movie
   file (a QuickTime or other container, as opposed to an image sequence) from
