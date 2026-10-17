@@ -26,6 +26,7 @@ KNOWN_HOSTS: tuple[str, ...] = ("blender", "cinema4d", "aftereffects")
 HOST_FILES: dict[str, list[str]] = {
     "blender": ["hosts/blender/sqi_blender_addon.py"],
     "cinema4d": ["hosts/cinema4d/sqi_submit.pyp"],
+    "aftereffects": ["hosts/aftereffects/Submit to sqi.jsx", "hosts/aftereffects/json2.js"],
 }
 
 _C4D_PREFS_GLOB = "Maxon Cinema 4D *"
