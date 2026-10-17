@@ -164,6 +164,22 @@ def test_context_adapter_rejects_malformed_json(tmp_path: Path) -> None:
     assert path.exists()
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[" * 100000,  # RecursionError from the decoder, not a JSONDecodeError
+        '{"version": ' + "1" * 5000 + "}",  # 3.11+: ValueError, over the int digit limit
+    ],
+    ids=["deeply-nested", "over-long-integer"],
+)
+def test_context_adapter_rejects_hostile_json(tmp_path: Path, text: str) -> None:
+    path = _write(tmp_path, text)
+    with pytest.raises(ContextError) as info:
+        load_context(path)
+    assert path.name in info.value.user_message
+    assert path.exists()
+
+
 def test_context_adapter_rejects_missing_scene_path(tmp_path: Path) -> None:
     path = _write(tmp_path, '{"version": 1, "scene": {"path": ""}}')
     with pytest.raises(ContextError) as info:

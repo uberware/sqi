@@ -129,6 +129,12 @@ def _read_document(file: Path) -> object:
         return json.loads(text)
     except json.JSONDecodeError as exc:
         raise ContextError(f"The submit context file {file.name} is not valid JSON: {exc}") from exc
+    except (ValueError, RecursionError) as exc:
+        # Valid JSON the decoder still refuses: nesting too deep for the stack, or (3.11+)
+        # an integer longer than the interpreter's digit limit.
+        raise ContextError(
+            f"The submit context file {file.name} cannot be decoded as JSON: {exc}"
+        ) from exc
 
 
 def _parse(file: Path, document: object) -> ContextAdapter:
