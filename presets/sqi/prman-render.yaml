@@ -7,8 +7,8 @@ readme: |
   # RenderMan Render
 
   Renders a sequence of exported RenderMan scene files (`.rib`) with `prman`,
-  RenderMan's standalone renderer, so the farm never loads the application the
-  scene came from. Each task renders one frame's RIB file.
+  RenderMan's standalone renderer, without loading the application the scene
+  came from. Each task renders one frame's RIB file.
 
   ## Parameters
 
@@ -29,8 +29,7 @@ readme: |
   none, or with the `#` characters split into more than one run, is rejected
   when the job is submitted.
 
-  Output paths come from the RIB files themselves, as the exporter wrote them;
-  this preset does not override them. `prman` resolves relative paths inside a
+  Output paths come from the RIB files. `prman` resolves relative paths in a
   RIB file against the task's working directory, not the RIB file's folder, so
   export RIB files with absolute paths.
 

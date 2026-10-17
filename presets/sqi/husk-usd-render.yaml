@@ -11,28 +11,25 @@ readme: |
   opening Houdini. `husk` renders through Karma or any other Hydra delegate
   installed on the worker.
 
-  Each task renders a contiguous slice of the frame range, one frame per task
-  by default.
-
   ## Parameters
 
   - **Scene File** - the USD stage to render (`.usd`, `.usda`, `.usdc` or
     `.usdz`). It must be reachable from every worker that runs the job.
   - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
     `1-100:2` for every second frame.
-  - **Hydra Delegate** - the render delegate `husk` should use, passed as
+  - **Hydra Delegate** - the render delegate `husk` uses, passed as
     `--renderer`. Leave it empty to use the delegate the stage's render
     settings choose. `husk --list-renderers` prints the names a worker
     accepts.
 
   ## How work is divided
 
-  The frame range expands into tasks through OpenJD task chunking, one frame
-  per task by default. Each task passes `husk` its first frame and its frame
-  count, so raising the chunk size renders several frames in one `husk`
-  launch, trading parallelism for fewer stage loads. A stepped range such as
-  `1-100:2` always runs one task per frame, so `husk` never renders a frame the
-  range left out.
+  Each task renders a contiguous chunk of the frame range, one frame per task
+  by default. The task passes `husk` its first frame and its frame count, so a
+  larger chunk size renders several frames in one `husk` launch, with fewer
+  stage loads and less parallelism. A stepped range such as `1-100:2` always
+  runs one task per frame, so `husk` never renders a frame the range leaves
+  out.
 
   Output paths come from the stage's render products; `husk` creates any
   missing output directories.

@@ -3,14 +3,13 @@
 # RenderMan's renderer, prman, which presets/sqi/prman-render.yaml invokes by
 # bare name.
 #
-# RenderMan's installers set RMANTREE to the RenderMan Pro Server install and
-# document $RMANTREE/bin as what belongs on PATH; the default install
-# directories are /opt/pixar/RenderManProServer-<version> on Linux,
+# Probes PATH, the RMANTREE variable RenderMan's installers set to the Pro
+# Server install, and the default install directories:
+# /opt/pixar/RenderManProServer-<version> on Linux,
 # /Applications/Pixar/RenderManProServer-<version> on macOS and
-# C:\Program Files\Pixar\RenderManProServer-<version> on Windows (RenderMan 26
-# "Environment Variables" page; RenderMan 27 follows the same pattern). The
-# version is read from that directory name, wherever the signal came from --
-# a matched glob or the RMANTREE value.
+# C:\Program Files\Pixar\RenderManProServer-<version> on Windows. The version
+# is read from that directory name, whether it came from a glob match or from
+# RMANTREE.
 tag: renderman
 checks:
   - exe: prman

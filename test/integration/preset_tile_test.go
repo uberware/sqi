@@ -16,10 +16,9 @@ import (
 
 // The arnold-kick-tile-render preset splits each frame into a TilesX x TilesY
 // grid of kick render regions and assembles them in a dependent step. These
-// tests drive the SHIPPED preset through presettest.Capture -- the real
-// submission and worker resolution path -- at shapes the two Tier-1 goldens do
-// not cover, because the region arithmetic is the one place a tile preset can
-// silently lose pixels.
+// tests drive the shipped preset through presettest.Capture, the real
+// submission and worker resolution path, to check the region arithmetic at
+// shapes the Tier-1 goldens do not cover.
 
 const tilePreset = "arnold-kick-tile-render"
 
@@ -112,10 +111,9 @@ func assertRegionsPartition(t *testing.T, render presettest.StepSnapshot, width,
 	assertPartition(t, "y", slices.Collect(maps.Keys(ys)), height)
 }
 
-// TestArnoldKickTileRender_RegionsPartitionTheImage pins the region
-// arithmetic: at every resolution, divisible by the tile count or not, the
-// tiles cover every pixel exactly once. The 16x16 maximum is covered by
-// TestArnoldKickTileRender_MaxTilesResolve.
+// TestArnoldKickTileRender_RegionsPartitionTheImage asserts the tiles cover
+// every pixel exactly once, whether or not the tile count divides the
+// resolution. TestArnoldKickTileRender_MaxTilesResolve covers 16 x 16.
 func TestArnoldKickTileRender_RegionsPartitionTheImage(t *testing.T) {
 	for _, tc := range []struct{ size, tiles int }{
 		{1, 1}, {7, 2}, {7, 7}, {1000, 3},
@@ -134,9 +132,8 @@ func TestArnoldKickTileRender_RegionsPartitionTheImage(t *testing.T) {
 	}
 }
 
-// TestArnoldKickTileRender_RejectsMoreTilesThanPixels pins the submission-time
-// refusal of a grid finer than the image, which would otherwise produce
-// empty regions.
+// TestArnoldKickTileRender_RejectsMoreTilesThanPixels asserts a grid with more
+// tiles than pixels in either direction is rejected at submission.
 func TestArnoldKickTileRender_RejectsMoreTilesThanPixels(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -158,10 +155,9 @@ func TestArnoldKickTileRender_RejectsMoreTilesThanPixels(t *testing.T) {
 	}
 }
 
-// TestArnoldKickTileRender_MaxTilesResolve submits the largest grid the
-// parameters allow (16 x 16) and checks that both steps resolve under the
-// stock EXPR limits, that the 256 regions partition a non-square image, and
-// that the assembly receives every tile.
+// TestArnoldKickTileRender_MaxTilesResolve asserts the largest grid (16 x 16)
+// resolves under the default EXPR limits, its 256 regions partition a
+// non-square image, and the assembly receives every tile.
 func TestArnoldKickTileRender_MaxTilesResolve(t *testing.T) {
 	snap, err := captureTiles(t, map[string]string{
 		"Width": "1920", "Height": "1080", "TilesX": "16", "TilesY": "16",

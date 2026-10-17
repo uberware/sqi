@@ -237,11 +237,11 @@ Install as a product).
 ## Standalone renderer reference presets
 
 The official library also ships eight `Rendering`-category presets that render
-an **exported scene description** with a standalone renderer, so the farm never
-loads the application the scene came from — how large farms usually render.
-They have no in-application submitter; submit them from the web UI or the API.
-Each gates on a capability tag that a built-in detector sets on any worker with
-the renderer installed or on `PATH` (see [worker capability
+an **exported scene description** with a standalone renderer. The application
+that produced the scene is not loaded on the farm. These presets have no
+in-application submitter; submit them from the web UI or the API. Each gates on
+a capability tag that a built-in detector sets on any worker with the renderer
+installed or on `PATH` (see [worker capability
 tags](worker-capabilities.md#built-in-detectors)):
 
 | Preset | Renders | Shape | Worker tag |
@@ -255,40 +255,35 @@ tags](worker-capabilities.md#built-in-detectors)):
 | `3delight-render` | 3Delight `.nsi` files with `renderdl` | one file per frame | `3delight` |
 | `mantra-render` | Mantra `.ifd` files with `mantra` (legacy; prefer husk) | one file per frame | `mantra` |
 
-**One file per frame.** Most standalone renderers read one exported file per
-frame. Those presets take a **Scene File Pattern** whose frame number is a run
-of `#` characters — `shot.####.ass` — and run one task per frame, replacing the
-run with the frame number padded to its length (`shot.0007.ass`; a longer frame
-number is written in full, and a negative frame keeps its sign inside the
-padding, so frame -2 of `shot.####.ass` is `shot.-002.ass`). A pattern with no
-run of `#`, or with more than one, is rejected at submission rather than
-rendering one file many times. Only the file name is checked, so a `#` in a
-directory of a `/`-separated path is fine; in a backslash-separated Windows
-path the whole path counts as the file name, so its directories must not
-contain `#`. Output paths come from the exported files themselves.
+**One file per frame.** The presets that read one exported file per frame take
+a **Scene File Pattern** that marks the frame number with a run of `#`
+characters, such as `shot.####.ass`. Each task renders one frame. The run is
+replaced with the frame number, zero-padded to the run's length: frame 7 is
+`shot.0007.ass`. A frame number longer than the run is written in full. A negative frame keeps its sign inside the padding:
+frame -2 is `shot.-002.ass`. A pattern with no run of `#`, or with more than
+one, is rejected at submission. Only the file name is checked, so a `#` in a
+directory of a `/`-separated path is allowed. A backslash-separated Windows
+path is treated as one file name, so its directories must not contain `#`.
+Output paths come from the exported files.
 
-**Frame range per task.** V-Ray and husk read the whole animation from one
-file, so they split the frame range into chunks like the DCC presets do, one
-frame per task by default.
+**Frame range per task.** `vray-standalone-render` and `husk-usd-render` read
+the whole animation from one file. They split the frame range into chunks, as
+the DCC presets do, with one frame per task by default.
 
 **Tile rendering.** `arnold-kick-tile-render` splits each frame into a grid of
-up to 16 × 16 tiles, renders each as its own task, and pastes each frame's
-tiles into one image in a dependent Assemble step. Assembly waits for **every**
-tile of **every** frame, because OpenJD job templates have no per-task
-dependencies. The assembly list is built at submission and its cost grows with
-the grid: 16 × 16 fits the default EXPR limits with wide margin, but a server
-whose `openjd.expr_memory_limit` is lowered to its 4,096-byte minimum accepts at
-most a 7 × 7 grid.
+1 to 16 tiles on each axis and renders each tile as its own task. A dependent
+Assemble step then joins each frame's tiles into one image. Assembly starts
+only after **every** tile of **every** frame has finished. The tile list is
+built at submission, and its cost grows with the grid. A 16 × 16 grid fits the
+default EXPR limits. A server with `openjd.expr_memory_limit` at its minimum of
+4,096 bytes accepts at most a 7 × 7 grid.
 
 **Redshift and GPUs.** `redshift-standalone-render` gates on the Redshift
-install, not on a detected GPU: sqi detects GPUs only on Linux hosts with
-NVIDIA drivers, while Redshift also renders on Windows and on Apple Silicon. On
-a worker with Redshift installed but no usable GPU, list `redshift` under the
-worker's `capabilities.disable`.
+install, not on a detected GPU. On a worker with Redshift installed but no
+usable GPU, list `redshift` under the worker's `capabilities.disable`.
 
-None of these renderers has executed under the test suite; every command line
-is derived from vendor documentation and verified at Tier 1 and Tier 3 only —
-see [Validation tiers](#validation-tiers) and each preset's caveat in
+These presets are verified at Tier 1 and Tier 3 only. See [Validation
+tiers](#validation-tiers) and each preset's caveat in
 `presets/validation-tiers.yaml`.
 
 ## Testing presets
@@ -336,17 +331,17 @@ a real farm rather than reviewed tier by tier. The tiers are:
 
   **What it does not prove:** that the vendor's application accepts that
   command line. No Maya, Nuke, Houdini, Blender, Mistika or standalone
-  renderer installation executes anything at Tier 1 — the argv is correct only insofar as the
-  documentation it was derived from is correct and current. What the goldens
-  do pin for the frame-range presets follows from their `CONTIGUOUS` chunks,
+  renderer installation executes anything at Tier 1 — the argv is correct only
+  insofar as the documentation it was derived from is correct and current.
+  What the goldens do pin for the frame-range presets follows from their
+  `CONTIGUOUS` chunks,
   each always a plain `start-end` run of consecutive frames:
   - `nuke-write-render` and `nuke-script-render` never pass Nuke's `-F` flag an
     OpenJD step (`1-19:2`, where Foundry documents `1-19x2`). Whether Nuke
     reads `-F 1-1` as the single frame 1 needs a real Nuke (Tier 2).
-  - The `-s`/`-e` presets (Maya, Blender and the three Mistika presets), and
-    V-Ray's `-frames=START-END`, never
-    render a frame the range excluded: a stepped or listed range splits into
-    one chunk per run of consecutive frames, so a stepped range yields one
+  - The `-s`/`-e` presets (Maya, Blender and the three Mistika presets) and
+    V-Ray's `-frames=START-END` never render a frame the range excluded: a
+    stepped or listed range splits into one chunk per run of consecutive frames, so a stepped range yields one
     single-frame chunk per frame. See
     [sqi-chunk-bounds](openjd-extensions/sqi-chunk-bounds.md).
 
@@ -356,9 +351,9 @@ a real farm rather than reviewed tier by tier. The tiers are:
 - **Tier 2 — real application.** A real, licensed copy of the vendor
   application runs the resolved command and its output is inspected. The
   seventeen render presets (Maya, Nuke, Houdini, Blender, the three Mistika
-  products and the eight standalone renderers) have not reached Tier 2 — none of those vendor applications has a
-  redistributable, CI-friendly way to run headless in this project's CI, so
-  their entries in `presets/validation-tiers.yaml` carry no `tier2` block.
+  products and the eight standalone renderers) have not reached Tier 2 — none
+  of those vendor applications has a redistributable, CI-friendly way to run
+  headless in this project's CI, so their entries in `presets/validation-tiers.yaml` carry no `tier2` block.
   The five ffmpeg presets *are* Tier 2: ffmpeg is freely available, so each of
   their registry entries carries a `tier2` block, and
   `test/integration/ffmpeg_presets_test.go` runs real ffmpeg end to end and

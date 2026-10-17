@@ -3,16 +3,13 @@
 # 3Delight's standalone renderer, renderdl, which
 # presets/sqi/3delight-render.yaml invokes by bare name.
 #
-# 3Delight's installers set DELIGHT to the install directory
-# (documentation.3delightcloud.com, configuration search starts at $DELIGHT).
-# The globs are the install directories 3Delight's own documentation shows in
-# its examples: C:\Program Files\3Delight on Windows and /Applications/3Delight
-# on macOS. The Linux default could not be confirmed, so a Linux worker is
-# found by the PATH probe or by DELIGHT rather than by a guessed path.
+# Probes PATH, the DELIGHT variable 3Delight's installers set to the install
+# directory, and the default install directories on macOS and Windows. Linux
+# has no glob; a Linux worker is found by PATH or DELIGHT.
 #
-# No version is extracted: the documented locations carry none, and 3Delight does
-# not document what the directory DELIGHT names is called, so a version-like
-# string in its value is not trusted (TestRendererDetectors_3DelightReadsDELIGHT).
+# No version is extracted: the install paths carry none, and the directory
+# DELIGHT names has no fixed naming scheme, so a version-like string in it is
+# not trusted.
 tag: 3delight
 checks:
   - exe: renderdl

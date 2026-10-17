@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Husk USD Render. Each task passes husk its chunk's first frame and frame
-# count, computed with EXPR from the chunk itself. default leaves the Hydra
-# delegate empty, so no --renderer reaches husk; multi-frame-chunk patches the
-# chunk size to show start/count across an uneven tail; stepped-range shows a
-# stepped range splitting into one-frame chunks; renderer shows --renderer
-# passed when a delegate is named.
+# Husk USD Render: each task passes husk its chunk's first frame and count.
+# default omits --renderer; multi-frame-chunk has an uneven last chunk;
+# stepped-range splits into one-frame chunks; renderer passes --renderer.
 cases:
   - name: default
     params:

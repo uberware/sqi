@@ -788,14 +788,12 @@ Three properties of that surface:
    bound, rather than being clamped. The two sides' floors are sized
    differently on purpose. On the **server**, tightening only rejects work at
    submit, on the one request that can report it, so the floors are sized
-   against this repository's own reference presets (`presets/sqi/*.yaml`) —
-   whose worst case costs 38 positions and 512 retained bytes template-wide,
-   and 390 live bytes with 15 operations in any single evaluation — the
-   per-evaluation two set by `ffmpeg-segment-transcode-expr`, the template-wide
-   two by `arnold-kick-tile-render`, and all four re-measured on every run by
-   `TestExprLimits_FloorsAcceptReferencePresets`. Headroom is wide
-   throughout (7x to 128x). On the
-   **worker**, tightening rejects work *after* the job was accepted, so the
+   against this repository's own reference presets (`presets/sqi/*.yaml`).
+   Their worst case is 38 positions and 512 retained bytes template-wide
+   (`arnold-kick-tile-render`), and 390 live bytes and 15 operations in one
+   evaluation (`ffmpeg-segment-transcode-expr`).
+   `TestExprLimits_FloorsAcceptReferencePresets` re-measures all four on every
+   run. Headroom is 7x to 128x. On the **worker**, tightening rejects work *after* the job was accepted, so the
    floors are sized well above what a preset happens to cost: the server's own
    **defaults** for the two per-evaluation dimensions, and 2,000 positions
    against a worked figure of 1,841 for a generous session.

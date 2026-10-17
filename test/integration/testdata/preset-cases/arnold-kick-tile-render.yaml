@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Arnold Kick Tile Render. default is the shipped 2x2 grid over one frame (4
-# Render tasks, then 1 Assemble). uneven splits 1000x500 into 3x2 tiles over two
-# frames, a width 3 does not divide, so the golden shows the remainder absorbed
-# (x spans 0-332, 333-665, 666-999). TestArnoldKickTileRender_* in
-# preset_tile_test.go covers the partition property and the 16x16 maximum.
+# Arnold Kick Tile Render: default is the 2x2 grid over one frame (4 Render
+# tasks, 1 Assemble); uneven splits a width of 1000 into 3 tiles (0-332,
+# 333-665, 666-999) over two frames.
 cases:
   - name: default
     params:

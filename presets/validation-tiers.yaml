@@ -178,30 +178,24 @@ presets:
       case: TestPresetTier3/nuke-script-render/default
       required_on: [linux, darwin, windows]
 
-  # The standalone renderers. Each renders an exported scene description
-  # without loading the application that wrote it. None has executed against a
-  # real renderer: every argv below is documentation-derived, and Tier 3 drives
-  # a stub through the real worker path.
+  # Standalone renderers: each renders an exported scene description without
+  # the application that wrote it. Every argv below is derived from vendor
+  # documentation and has not run against a real renderer; Tier 3 drives a
+  # stub through the real worker path.
   - name: arnold-kick-render
     source: presets/sqi
     tier: 1
     tier1:
       cases: [default, padding-and-step]
       caveat: >-
-        argv derived from kick's own help text (-i, -dw, -dp, -v); Autodesk's
-        current kick reference could not be read, so the flag set is the
-        conservative subset every Arnold release documents. The stdin and
-        crash-dialog flags (-nstdin/-nostdin, -nokeypress, -nocrashpopup) are
-        left out on purpose: their spelling changed across releases and kick
-        exits on a flag it does not recognise, while the worker already gives
-        kick a null stdin. The goldens show the scene-pattern substitution:
-        #### padding with 12345 written in full rather than truncated, and a
-        ###### run setting six-digit padding over a stepped range. A pattern
-        with no run of # or with two runs is rejected at submission
-        (TestPerFilePresets_RejectABadScenePattern), not rendered. No Arnold
-        installation has executed it, so licensing behaviour and whether the
-        exported .ass carries the output paths the user expects are
-        unverified.
+        argv derived from kick's help text (-i, -dw, -dp, -v); no Arnold
+        installation has executed it. No stdin or crash-dialog flag is passed;
+        the worker gives kick a null stdin. The goldens show the scene-pattern
+        substitution: #### padding with 12345 written in full, not truncated,
+        and a ###### run setting six-digit padding over a stepped range. A
+        pattern with no run of # or with two runs is rejected at submission
+        (TestPerFilePresets_RejectABadScenePattern). Unverified: licensing, and
+        whether the exported .ass carries the output paths the user expects.
     tier3:
       case: TestPresetTier3/arnold-kick-render/default
       required_on: [linux, darwin, windows]
@@ -212,17 +206,16 @@ presets:
     tier1:
       cases: [default, multi-frame-chunk, stepped-range]
       caveat: >-
-        argv derived from Chaos's V-Ray Standalone command-line options page
-        and vray -h (-sceneFile, -frames=START-END with inclusive bounds,
-        -display=0 for no frame buffer, -autoClose=1 to exit when done, and
-        -progressUseColor=0 with -progressUseCR=0 for plain, newline-terminated
-        progress lines suited to a captured task log). The goldens show the chunk bounds at the shipped one
-        frame per task, at a patched chunk size of 5 (-frames=1-5 then
-        -frames=6-10), and a stepped range reaching V-Ray as single-frame
-        tasks (-frames=1-1, 5-5, 9-9), so -frames never spans an excluded
-        frame. No V-Ray installation has executed it, so licensing and
-        whether the .vrscene's own output settings are what the user expects
-        are unverified.
+        argv derived from Chaos's V-Ray Standalone documentation and vray -h:
+        -sceneFile, -frames=START-END (inclusive), -display=0 (no frame
+        buffer), -autoClose=1 (exit when done), and -progressUseColor=0 with
+        -progressUseCR=0 (plain, newline-terminated progress lines). No V-Ray
+        installation has executed it. The goldens show the chunk bounds at the
+        shipped one frame per task, at a patched chunk size of 5 (-frames=1-5
+        then -frames=6-10), and a stepped range as single-frame tasks
+        (-frames=1-1, 5-5, 9-9), so -frames never spans an excluded frame.
+        Unverified: licensing, and whether the .vrscene's own output settings
+        are what the user expects.
     tier3:
       case: TestPresetTier3/vray-standalone-render/default
       required_on: [linux, darwin, windows]
@@ -233,21 +226,19 @@ presets:
     tier1:
       cases: [default, multi-frame-chunk, stepped-range, renderer]
       caveat: >-
-        argv derived from SideFX's husk reference page for Houdini 22.0
-        (--renderer, --frame, --frame-count, --make-output-path, --no-mplay,
-        -V 2a for line-per-update progress, the USD stage as a positional
-        argument). The start frame and count are computed with EXPR from the
-        chunk (min and len of the chunk's range) rather than with
-        SQI_CHUNK_BOUNDS, whose .Start/.End do not resolve on an EXPR
-        range_expr; the goldens show them at one frame per task, across an
+        argv derived from SideFX's husk documentation for Houdini 22.0:
+        --renderer, --frame, --frame-count, --make-output-path, --no-mplay,
+        -V 2a (line-per-update progress), and the USD stage as a positional
+        argument. No Houdini installation has executed it. The start frame and
+        count are computed with EXPR (min and len of the chunk's range),
+        because SQI_CHUNK_BOUNDS's .Start/.End do not resolve on an EXPR
+        range_expr. The goldens show them at one frame per task, across an
         uneven tail at a patched chunk size of 4 (1/4, 5/4, 9/2), and over a
-        stepped range (each --frame-count 1). With the Hydra Delegate left
-        empty no --renderer is passed and husk falls back to the stage's
-        husk:delegate render setting; the renderer case shows the flag when a
-        delegate is named. SideFX's documentation does not list delegate
-        names, so BRAY_HdKarmaXPU in that case is a forum-sourced example, not
-        a verified default. No Houdini installation has executed it, so
-        licensing and the stage's render products are unverified.
+        stepped range (each --frame-count 1). With the Hydra Delegate empty no
+        --renderer is passed and husk uses the stage's husk:delegate render
+        setting; the renderer case shows the flag when a delegate is named.
+        Its BRAY_HdKarmaXPU is an example, not a verified delegate name.
+        Unverified: licensing and the stage's render products.
     tier3:
       case: TestPresetTier3/husk-usd-render/default
       required_on: [linux, darwin, windows]
@@ -258,17 +249,17 @@ presets:
     tier1:
       cases: [default, padding-and-step, windows-path]
       caveat: >-
-        argv derived from Maxon's redshiftCmdLine reference, which documents
-        one exported .rs file per frame and every other option as an override
-        (-oip, -gpu, -cachepath, ...), so the preset passes the scene file
-        alone. The goldens show the shared scene-pattern substitution, and the
-        windows-path case shows a native C:\... pattern reaching the renderer
-        intact. A bad pattern is rejected at submission. Scheduling gates on
-        the redshift install tag only, not on a detected GPU, because sqi's GPU
-        probe sees only NVIDIA on Linux while Redshift also renders on Windows
-        and on Apple Silicon; a host with no usable GPU is the operator's to
-        exclude (capabilities.disable). No Redshift installation has executed
-        it, so licensing, device selection and exit codes are unverified.
+        argv derived from Maxon's redshiftCmdLine documentation: one exported
+        .rs file per frame, every other option (-oip, -gpu, -cachepath, ...)
+        an override, so the preset passes the scene file alone. No Redshift
+        installation has executed it. The goldens show the shared
+        scene-pattern substitution; the windows-path case shows a native
+        C:\... pattern reaching the renderer intact. A bad pattern is rejected
+        at submission. Scheduling gates on the redshift install tag, not on a
+        detected GPU: sqi's GPU probe sees only NVIDIA on Linux, and Redshift
+        also renders on Windows and Apple Silicon. The operator excludes a host
+        with no usable GPU (capabilities.disable). Unverified: licensing,
+        device selection and exit codes.
     tier3:
       case: TestPresetTier3/redshift-standalone-render/default
       required_on: [linux, darwin, windows]
@@ -279,16 +270,13 @@ presets:
     tier1:
       cases: [default, padding-and-step]
       caveat: >-
-        argv derived from Pixar's prman command-line documentation
-        (-Progress, the capitalised form that prints one progress line per
-        update for farm tools, and the RIB file as a positional argument). The
-        RenderMan 27 page could not be read directly (403), so the flags come
-        from its search excerpts and the older prman manual; -t and -cwd are
-        left out, so prman uses every core and the task's working directory.
-        The goldens show the shared scene-pattern substitution; a bad pattern
-        is rejected at submission. No RenderMan installation has executed it,
-        so licensing, and how RenderMan 27 chooses between RIS and XPU for a
-        command-line render, are unverified.
+        argv derived from Pixar's prman documentation: -Progress (one progress
+        line per update) and the RIB file as a positional argument. -t and
+        -cwd are not passed, so prman uses every core and the task's working
+        directory. No RenderMan installation has executed it. The goldens show
+        the shared scene-pattern substitution; a bad pattern is rejected at
+        submission. Unverified: licensing, and how RenderMan 27 chooses
+        between RIS and XPU for a command-line render.
     tier3:
       case: TestPresetTier3/prman-render/default
       required_on: [linux, darwin, windows]
@@ -299,30 +287,29 @@ presets:
     tier1:
       cases: [default, uneven]
       caveat: >-
-        argv derived from kick's help text (-r for resolution, -rg minx miny
-        maxx maxy for the render region, -o for the output) and OpenImageIO's
-        oiiotool documentation (--paste:mergeroi=1:all=1 +0+0, which pastes
-        every image on the stack at its own data-window offset into one image
-        sized to their union). The goldens show every tile's region, its
-        output path and the generated assembly list; the uneven case shows a
-        width 3 does not divide split with no gap or overlap (0-332, 333-665,
-        666-999), which TestArnoldKickTileRender_RegionsPartitionTheImage
-        pins over further sizes. Three things are unverified without Arnold:
-        that -rg bounds are inclusive pixel coordinates (indirect evidence
-        only), that the y-origin is the top edge, and that kick writes a
-        region render as a full display window with a region-sized data
-        window -- the assumption --paste depends on; if kick instead writes
-        full-size pixels outside the region, the last tile pasted wins. A bad
-        pattern, or more tiles than pixels in either direction, is rejected
-        at submission. Assembly waits for the whole Render step, because
-        jobtemplate-2023-09 has no task-level dependencies. The Assemble
-        step's tile list is built at submission, so its cost grows with the
-        grid: the largest grid, 16 x 16, measures 536 operations and 16,448
-        live bytes, well inside the stock server EXPR limits, but above the
-        configurable memory floor (openjd.expr_memory_limit at its 4,096-byte
-        minimum), where the largest square grid that still submits is 7 x 7,
-        whatever the output path's length. TestArnoldKickTileRender_GridCostAtTheLimits
-        pins both figures.
+        argv derived from kick's help text (-r resolution, -rg minx miny maxx
+        maxy render region, -o output) and OpenImageIO's oiiotool
+        documentation (--paste:mergeroi=1:all=1 +0+0 pastes every image on the
+        stack at its data-window offset into one image sized to their union).
+        No Arnold installation has executed it. The goldens show every tile's
+        region, its output path and the generated assembly list; the uneven
+        case shows a width 3 does not divide split with no gap or overlap
+        (0-332, 333-665, 666-999), and
+        TestArnoldKickTileRender_RegionsPartitionTheImage checks further
+        sizes. Unverified: that -rg bounds are inclusive pixel coordinates,
+        that the y-origin is the top edge, and that kick writes a region
+        render as a full display window with a region-sized data window, which
+        --paste depends on; if kick writes full-size pixels outside the
+        region, the last tile pasted wins. A bad pattern, or more tiles than
+        pixels in either direction, is rejected at submission. Assembly waits
+        for the whole Render step; jobtemplate-2023-09 has no task-level
+        dependencies. The Assemble step's tile list is built at submission, so
+        its cost grows with the grid: the largest grid, 16 x 16, costs 536
+        operations and 16,448 live bytes, inside the default server EXPR
+        limits. With openjd.expr_memory_limit at its 4,096-byte floor, the
+        largest square grid that submits is 7 x 7, whatever the output path's
+        length. TestArnoldKickTileRender_GridCostAtTheLimits pins both
+        figures.
     tier3:
       case: TestPresetTier3/arnold-kick-tile-render/default
       required_on: [linux, darwin, windows]
@@ -334,15 +321,13 @@ presets:
       cases: [default, padding-and-step]
       caveat: >-
         argv derived from 3Delight's "Rendering NSI file" documentation
-        (renderdl -progress <file.nsi>). That page documents no frame-range
-        option and describes sequences as one .nsi file per frame, which
-        corrects the farm-tool survey's range classification -- taken from
-        Smedge's RIB-era renderdl -frames template -- so this preset uses the
-        per-file shape rather than chunk bounds. -t is left out, so renderdl
-        uses every core. The goldens show the shared scene-pattern
-        substitution; a bad pattern is rejected at submission. No 3Delight
-        installation has executed it, so licensing and the handling of a
-        separate .static.nsi file are unverified.
+        (renderdl -progress <file.nsi>). renderdl documents no frame-range
+        option and renders one .nsi file per frame, so this preset uses the
+        per-file shape, not chunk bounds. -t is not passed, so renderdl uses
+        every core. No 3Delight installation has executed it. The goldens show
+        the shared scene-pattern substitution; a bad pattern is rejected at
+        submission. Unverified: licensing and the handling of a separate
+        .static.nsi file.
     tier3:
       case: TestPresetTier3/3delight-render/default
       required_on: [linux, darwin, windows]
@@ -353,14 +338,13 @@ presets:
     tier1:
       cases: [default, padding-and-step]
       caveat: >-
-        argv derived from SideFX's batch-rendering page for Houdini 22.0
-        (mantra -f <file.ifd>, one IFD per command, with -V 2a for
-        line-per-update progress); -j is left out, so mantra uses every core.
-        Mantra still ships but SideFX has not supported it since the end of
-        2024, and the readme points to husk-usd-render. The goldens show the
-        shared scene-pattern substitution; a bad pattern is rejected at
-        submission. No Houdini installation has executed it, so licensing is
-        unverified.
+        argv derived from SideFX's batch-rendering documentation for Houdini
+        22.0: mantra -f <file.ifd>, one IFD per command, with -V 2a
+        (line-per-update progress). -j is not passed, so mantra uses every
+        core. Mantra ships but is unsupported by SideFX; the readme points to
+        husk-usd-render. No Houdini installation has executed it. The goldens
+        show the shared scene-pattern substitution; a bad pattern is rejected
+        at submission. Unverified: licensing.
     tier3:
       case: TestPresetTier3/mantra-render/default
       required_on: [linux, darwin, windows]

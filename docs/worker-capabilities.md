@@ -159,36 +159,30 @@ application under
 | `mistika` | Linux `path_glob /home/mistika/SGO Apps/Mistika Ultima*/bin/mistika`; macOS `path_glob /Applications/SGO Apps/Mistika Boutique.app*/Contents/MacOS/mistika`; Windows `path_glob C:\Program Files\SGO Apps\Mistika Boutique*\bin\mistika.exe` | `Mistika (?:Ultima\|Boutique) ?(?P<v>[0-9]+\.[0-9]+)` against the matched path |
 | `mistikavr` | Linux `path_glob /home/mistika/SGO Apps/Mistika VR*/bin/vr`; macOS `path_glob /Applications/SGO Apps/Mistika VR.app*/Contents/MacOS/vr`; Windows `path_glob C:\Program Files\SGO Apps\Mistika VR*\bin\vr.exe` | `Mistika VR ?(?P<v>[0-9]+\.[0-9]+)` against the matched path |
 | `mistikaworkflows` | Linux `path_glob /home/mistika/SGO Apps/Mistika Workflows*/bin/workflows`; macOS `path_glob /Applications/SGO Apps/Mistika Workflows.app*/Contents/MacOS/workflows`; Windows `path_glob C:\Program Files\SGO Apps\Mistika Workflows*\bin\workflows.exe` | `Mistika Workflows ?(?P<v>[0-9]+\.[0-9]+)` against the matched path |
-| `arnold` | `exe kick` (any OS); Linux `path_glob /usr/autodesk/arnold/maya*/bin/kick`; Windows `path_glob C:\Program Files\Autodesk\Arnold\maya*\bin\kick.exe` (the copy MtoA installs) | none (the paths carry the Maya year, not Arnold's version) |
+| `arnold` | `exe kick` (any OS); Linux `path_glob /usr/autodesk/arnold/maya*/bin/kick`; Windows `path_glob C:\Program Files\Autodesk\Arnold\maya*\bin\kick.exe` (the copy MtoA installs) | none (presence only — the paths carry the Maya version, not Arnold's) |
 | `vray` | `exe vray` (any OS); Linux `path_glob /usr/Chaos/V-Ray/Standalone_for_*/bin/vray`; Windows `path_glob C:\Program Files\Chaos\V-Ray\Standalone for x64\bin\vray.exe` | none |
 | `husk` | `exe husk` (any OS); Linux `path_glob /opt/hfs*/bin/husk`; Windows `path_glob C:\Program Files\Side Effects Software\Houdini *\bin\husk.exe` | `(?:hfs\|Houdini ?)(?P<v>[0-9]+\.[0-9]+)` against the matched path |
 | `mantra` | `exe mantra` (any OS); Linux `path_glob /opt/hfs*/bin/mantra`; Windows `path_glob C:\Program Files\Side Effects Software\Houdini *\bin\mantra.exe` | `(?:hfs\|Houdini ?)(?P<v>[0-9]+\.[0-9]+)` against the matched path |
 | `redshift` | `exe redshiftCmdLine` (any OS); Linux `path_glob /usr/redshift/bin/redshiftCmdLine`; macOS `path_glob /Applications/Maxon Redshift */bin/redshiftCmdLine`; Windows `path_glob C:\Program Files\Maxon Redshift *\bin\redshiftCmdLine.exe` | `Maxon Redshift (?P<v>[0-9]{4})` against the matched path |
 | `renderman` | `exe prman` (any OS); `env RMANTREE`; `path_glob RenderManProServer-*/bin/prman` under `/opt/pixar` (Linux), `/Applications/Pixar` (macOS) and `C:\Program Files\Pixar` (Windows) | `RenderManProServer-(?P<v>[0-9]+\.[0-9]+)` against the matched path or the `RMANTREE` value |
 | `3delight` | `exe renderdl` (any OS); `env DELIGHT`; macOS `path_glob /Applications/3Delight/bin/renderdl`; Windows `path_glob C:\Program Files\3Delight\bin\renderdl.exe` | none |
-| `oiiotool` | `exe oiiotool` (any OS, if on `PATH`) — a PATH tool everywhere, like `ffmpeg` | none (presence only) |
+| `oiiotool` | `exe oiiotool` (any OS, if on `PATH`) | none (presence only) |
 
 The three Mistika detectors and the seven standalone-renderer detectors
 (`arnold` through `3delight`) probe Windows with a `path_glob` rather than a
-`registry` key — each vendor installs under a known, often versioned,
-directory, and the path is what carries a version. The Mistika detectors also
-deliberately carry **no `exe` check**: their binaries are `mistika`, `vr` and `workflows`, and a bare
-`PATH` probe for the last two would tag workers that have no Mistika at all.
-Detection is therefore by install location only, while the presets still
-invoke the bare command — so the binary must also be on the worker's `PATH`
-for the job to run. The install layouts are taken from the corresponding
-Smedge product definitions.
+`registry` key. The Mistika detectors carry **no `exe` check**: their
+binaries are `mistika`, `vr` and `workflows`, and a bare `PATH` probe for the
+last two would tag workers that have no Mistika at all. Detection is by install
+location only, but the presets invoke the bare command, so the binary must also
+be on the worker's `PATH` for the job to run.
 
-The standalone-renderer detectors (`arnold` through `3delight` above) each probe
-`PATH` for the exact command their preset runs, and add an install-location
-glob only where the vendor documents one; a location that could not be
-confirmed from vendor documentation is left out rather than guessed. `husk` and
-`mantra` have their own tags rather than reusing `houdini`, because a worker can
-have Houdini's `hython` without either renderer on `PATH`. The `redshift` tag
-marks the Redshift **install**, not a usable GPU — sqi's GPU probe sees only
-NVIDIA on Linux, and Redshift also renders on Windows and Apple Silicon — so a
-host with Redshift but no GPU it can use should list `redshift` under
-`capabilities.disable`.
+Each standalone-renderer detector checks `PATH` for the command its preset
+runs, plus the install locations listed in the table. `husk` and `mantra` have
+their own tags, separate from `houdini`, because a worker can have `hython`
+without either renderer on `PATH`. The `redshift` tag marks the Redshift
+**install**, not a usable GPU; GPU detection covers only NVIDIA on Linux (see
+[GPU fields](#gpu-fields)). On a host with Redshift but no usable GPU, list
+`redshift` under `capabilities.disable`.
 
 A `path_glob`/`exe` check's matched signal is a filesystem path, so version
 extraction works there. A `registry` check's signal is the registry key
@@ -472,10 +466,10 @@ steps:
           anyOf: ["true"]
 ```
 
-This is the syntax the nine DCC reference products under `presets/sqi/`
-use — see [`docs/dcc-submitters.md`](dcc-submitters.md#reference-presets) —
-and the eight standalone-renderer presets beside them (see
-[`docs/preset-library.md`](preset-library.md#standalone-renderer-reference-presets)).
+This is the syntax the nine DCC reference products under `presets/sqi/` (see
+[`docs/dcc-submitters.md`](dcc-submitters.md#reference-presets)) and the eight
+[standalone renderer presets](preset-library.md#standalone-renderer-reference-presets)
+use.
 (`presets/sqi/` also ships `Transcoding`-category ffmpeg presets that gate on
 `attr.worker.tag.ffmpeg` instead — see [`docs/preset-library.md`](preset-library.md#transcoding-reference-presets).)
 

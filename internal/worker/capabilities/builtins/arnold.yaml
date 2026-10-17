@@ -3,18 +3,16 @@
 # Arnold's standalone renderer, kick, which presets/sqi/arnold-kick-render.yaml
 # and arnold-kick-tile-render.yaml invoke by bare name.
 #
-# The globs are the copy of kick that MtoA (Arnold for Maya) installs, the
-# usual way a farm host gets one: /usr/autodesk/arnold/maya<year>/bin on Linux
-# (the MtoA installer's layout) and
-# C:\Program Files\Autodesk\Arnold\maya<year>\bin on Windows (as it appears in
-# Autodesk forum command lines). A standalone Arnold SDK has no fixed install
-# location -- kick is in <sdk>/bin -- which is what the PATH probe is for.
+# The globs match the copy of kick that MtoA (Arnold for Maya) installs:
+# /usr/autodesk/arnold/maya<year>/bin on Linux and
+# C:\Program Files\Autodesk\Arnold\maya<year>\bin on Windows. A standalone
+# Arnold SDK has no fixed location and is found by the PATH probe.
 #
 # No version is extracted: these paths carry the Maya year, not Arnold's
-# version, so a tag such as arnold-2026 would be misleading.
+# version.
 #
-# "kick" is a short name, but no other farm tool ships under it; a host where
-# it collides can list arnold in capabilities.disable.
+# A host with an unrelated "kick" on PATH can list arnold in
+# capabilities.disable.
 tag: arnold
 checks:
   - exe: kick

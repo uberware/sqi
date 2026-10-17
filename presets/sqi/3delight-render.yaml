@@ -7,9 +7,8 @@ readme: |
   # 3Delight Render
 
   Renders a sequence of exported 3Delight scene files (`.nsi`) with `renderdl`,
-  3Delight's standalone renderer, so the farm never loads the application the
-  scene came from. 3Delight exports each frame of an animation as its own file,
-  and each task renders one of them.
+  3Delight's standalone renderer, without loading the application the scene
+  came from. Each frame is its own file, and each task renders one of them.
 
   ## Parameters
 
@@ -30,9 +29,8 @@ readme: |
   none, or with the `#` characters split into more than one run, is rejected
   when the job is submitted.
 
-  Output paths come from the scene files themselves, as the exporter wrote them;
-  this preset does not override them. A separate static-geometry file that a
-  frame's file refers to is read from wherever the exporter wrote it.
+  Output paths come from the scene files. A static-geometry file that a frame's
+  file refers to is read from the path recorded in that file.
 
   ## Requirements
 

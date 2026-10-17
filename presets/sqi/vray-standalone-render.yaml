@@ -7,9 +7,9 @@ description: >-
 readme: |
   # V-Ray Standalone Render
 
-  Renders an exported V-Ray scene (`.vrscene`) with V-Ray Standalone, so the
-  farm never loads the application the scene came from. One `.vrscene` holds
-  the whole animation; each task renders a contiguous slice of its frames.
+  Renders an exported V-Ray scene (`.vrscene`) with V-Ray Standalone, without
+  loading the application the scene came from. One `.vrscene` holds the whole
+  animation.
 
   ## Parameters
 
@@ -20,15 +20,14 @@ readme: |
 
   ## How work is divided
 
-  The frame range expands into tasks through OpenJD task chunking, one frame
-  per task by default. Each task passes its first and last frame to V-Ray as
-  `-frames=START-END`, so raising the chunk size batches several frames into
-  one V-Ray launch, trading parallelism for fewer scene loads. A stepped range
+  Each task renders a contiguous chunk of the frame range, one frame per task
+  by default. The task passes its first and last frame to V-Ray as
+  `-frames=START-END`, so a larger chunk size renders several frames in one
+  V-Ray launch, with fewer scene loads and less parallelism. A stepped range
   such as `1-100:2` always runs one task per frame, so V-Ray never renders a
-  frame the range left out.
+  frame the range leaves out.
 
-  Output paths come from the scene file, as the exporter wrote them; this
-  preset does not override them.
+  Output paths come from the scene file.
 
   ## Requirements
 

@@ -16,19 +16,18 @@ import (
 )
 
 // The tile preset's Assemble step lists every tile of a frame in an EXPR
-// comprehension, so its submission cost grows with TilesX x TilesY. Measured
-// through the real Submitter at 16 x 16 (the largest grid the parameters allow):
-// 536 operations, 16,448 live bytes, 38 positions and 512 retained bytes -- well
-// inside the stock limits, but the 256-element list is above the CONFIGURABLE
-// memory floor (openjd.expr_memory_limit's minimum, 4,096 bytes), where the
-// largest square grid that still submits is 7 x 7. The output path's length does
-// not move that figure: the list's elements depend on the task's frame, so at
-// submission they are unresolved placeholders of fixed size.
+// comprehension, so its submission cost grows with TilesX x TilesY. At 16 x 16
+// it costs 536 operations, 16,448 live bytes, 38 positions and 512 retained
+// bytes: inside the default limits, but over openjd.expr_memory_limit's
+// 4,096-byte floor. The output path's length does not change the cost: at
+// submission the list's elements are frame-dependent placeholders of fixed size.
 //
-// These constants are what the preset's tier caveat states; the tests below
-// pin them.
+// The preset's tier caveat states both constants.
 const (
-	tileGridMax         = 16
+	// tileGridMax is the largest TilesX and TilesY the parameters allow.
+	tileGridMax = 16
+	// tileGridAtTheFloors is the largest square grid that submits at the
+	// configurable EXPR floors.
 	tileGridAtTheFloors = 7
 )
 
@@ -47,10 +46,9 @@ func submitTileGrid(t *testing.T, lim openjd.ExprLimits, n int) error {
 	return err
 }
 
-// TestArnoldKickTileRender_GridCostAtTheLimits pins where the tile grid sits
-// against the server's EXPR limits: the largest grid submits under the stock
-// limits, and under the four configurable floors the documented grid submits
-// while the next one up fails on the memory limit.
+// TestArnoldKickTileRender_GridCostAtTheLimits asserts the largest grid submits
+// under the default limits, and at the four configurable floors a
+// tileGridAtTheFloors grid submits while one larger fails on the memory limit.
 func TestArnoldKickTileRender_GridCostAtTheLimits(t *testing.T) {
 	t.Run("largest grid at the stock limits", func(t *testing.T) {
 		if err := submitTileGrid(t, openjd.ExprLimits{}, tileGridMax); err != nil {
@@ -79,8 +77,8 @@ func TestArnoldKickTileRender_GridCostAtTheLimits(t *testing.T) {
 	})
 }
 
-// TestArnoldKickTileRender_CaveatStatesTheGridCost keeps the tier caveat in
-// step with the constants above.
+// TestArnoldKickTileRender_CaveatStatesTheGridCost asserts the tier caveat
+// states both grid constants.
 func TestArnoldKickTileRender_CaveatStatesTheGridCost(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "presets", "validation-tiers.yaml"))
 	if err != nil {

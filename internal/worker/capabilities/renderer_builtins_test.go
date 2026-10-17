@@ -10,19 +10,18 @@ import (
 )
 
 // The standalone-renderer detectors pair with the presets in presets/sqi/ that
-// invoke a renderer directly rather than through a DCC. Each one probes PATH
-// for the exact command its preset runs, and where the vendor documents a fixed
-// install location, a path_glob for it too.
+// invoke a renderer directly rather than through a DCC. Each probes PATH for
+// the command its preset runs and, where one exists, the default install
+// location.
 //
-// This table restates the vendor install layouts (sources are cited in each
-// detector's YAML), so the tests below check the shipped globs against the
-// documented layout rather than against a copy of themselves.
+// rendererLayout lists each detector's expected install paths independently of
+// its YAML, so the tests check the shipped globs against them.
 type rendererLayout struct {
 	tag string
 	// exe is the bare command the paired preset invokes; the detector must
 	// probe PATH for it.
 	exe string
-	// installs are vendor install paths some path_glob check must match.
+	// installs are install paths some path_glob check must match.
 	installs []string
 	// versioned is an install path that carries a version, and version is the
 	// version the detector must extract from it. Both are empty when the
@@ -100,8 +99,8 @@ var rendererLayouts = []rendererLayout{
 	},
 }
 
-// TestRendererDetectors_MatchVendorInstallLayout checks every documented
-// install path against the shipped globs.
+// TestRendererDetectors_MatchVendorInstallLayout checks that a shipped glob
+// matches every install path in rendererLayouts.
 func TestRendererDetectors_MatchVendorInstallLayout(t *testing.T) {
 	for _, layout := range rendererLayouts {
 		t.Run(layout.tag, func(t *testing.T) {
@@ -110,9 +109,8 @@ func TestRendererDetectors_MatchVendorInstallLayout(t *testing.T) {
 	}
 }
 
-// TestRendererDetectors_ProbePATHForTheCommand pins the PATH probe: a worker
-// with the renderer on PATH but installed somewhere no glob knows must still be
-// tagged, because the preset runs the bare command.
+// TestRendererDetectors_ProbePATHForTheCommand checks that each detector has an
+// ungated exe check for the bare command its preset runs.
 func TestRendererDetectors_ProbePATHForTheCommand(t *testing.T) {
 	for _, layout := range rendererLayouts {
 		t.Run(layout.tag, func(t *testing.T) {
@@ -137,9 +135,8 @@ func TestRendererDetectors_WindowsCheckIsGated(t *testing.T) {
 	}
 }
 
-// TestRendererDetectors_ExtractVersion checks the version regex against a
-// versioned install path, and that a detector expected to emit no version
-// extracts none from any of its install paths.
+// TestRendererDetectors_ExtractVersion checks the version extracted from a
+// versioned install path, and that a detector with no version extracts none.
 func TestRendererDetectors_ExtractVersion(t *testing.T) {
 	for _, layout := range rendererLayouts {
 		t.Run(layout.tag, func(t *testing.T) {
@@ -159,12 +156,10 @@ func TestRendererDetectors_ExtractVersion(t *testing.T) {
 	}
 }
 
-// TestRendererDetectors_HoudiniUtilitiesVersionOnEveryOS checks that the
-// detectors for what Houdini installs in $HFS/bin extract the same Houdini
-// version from the Linux and Windows install layouts, which spell it
-// differently (hfs21.0.440 against "Houdini 21.0.440"). The houdini detector
-// is included because its exe: hython signal on Windows is a path inside that
-// spaced directory.
+// TestRendererDetectors_HoudiniUtilitiesVersionOnEveryOS checks that husk,
+// mantra and houdini extract the same version from each platform's install
+// path (hfs21.0.440, Houdini21.0.440, "Houdini 21.0.440"). houdini is included
+// because its hython path on Windows is inside the spaced directory.
 func TestRendererDetectors_HoudiniUtilitiesVersionOnEveryOS(t *testing.T) {
 	for _, tag := range []string{"husk", "mantra", "houdini"} {
 		t.Run(tag, func(t *testing.T) {
@@ -182,10 +177,8 @@ func TestRendererDetectors_HoudiniUtilitiesVersionOnEveryOS(t *testing.T) {
 	}
 }
 
-// TestRendererDetectors_RenderManReadsRMANTREE checks the environment probe:
-// RenderMan's installers point RMANTREE at the Pro Server install, which is how
-// a worker with RenderMan installed outside the default location is still
-// tagged, with the version read from the install directory's name.
+// TestRendererDetectors_RenderManReadsRMANTREE checks that RMANTREE alone tags
+// the worker, with the version read from the directory name it holds.
 func TestRendererDetectors_RenderManReadsRMANTREE(t *testing.T) {
 	d := builtinDetector(t, "renderman")
 	env := fakeEnv{goos: "linux", envs: map[string]string{"RMANTREE": "/opt/pixar/RenderManProServer-27.2"}}
@@ -194,12 +187,9 @@ func TestRendererDetectors_RenderManReadsRMANTREE(t *testing.T) {
 	}
 }
 
-// TestRendererDetectors_3DelightReadsDELIGHT checks the environment probe:
-// 3Delight's installers set DELIGHT to the install directory, which is how a
-// Linux worker (whose default install location is not documented) is tagged
-// when renderdl is not on PATH. The value deliberately looks versioned: no
-// version is read from it, because 3Delight does not document what the
-// directory is called, so a version-like string in it is not trusted.
+// TestRendererDetectors_3DelightReadsDELIGHT checks that DELIGHT alone tags the
+// worker, and that no version is read from it even when its value looks
+// versioned.
 func TestRendererDetectors_3DelightReadsDELIGHT(t *testing.T) {
 	d := builtinDetector(t, "3delight")
 	env := fakeEnv{goos: "linux", envs: map[string]string{"DELIGHT": "/opt/3delight-2.9.208/Linux-x86_64"}}
@@ -208,12 +198,10 @@ func TestRendererDetectors_3DelightReadsDELIGHT(t *testing.T) {
 	}
 }
 
-// TestRendererDetectors_EvaluateOnEveryPlatform drives each detector through
-// the real Evaluate path on the platform each documented install belongs to:
-// the install's glob firing tags the worker (plus the versioned tag where one
-// is expected), a worker with nothing installed advertises nothing, the bare
-// command on PATH alone is enough, and a Windows-only glob stays silent on a
-// non-Windows worker even when the path would match.
+// TestRendererDetectors_EvaluateOnEveryPlatform runs Evaluate on each install's
+// platform: a matching glob tags the worker (plus the versioned tag where
+// expected), a Windows-only glob stays silent off Windows, nothing installed
+// advertises nothing, and the command on PATH alone is enough.
 func TestRendererDetectors_EvaluateOnEveryPlatform(t *testing.T) {
 	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
 	goosOf := func(install string) string {

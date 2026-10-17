@@ -7,11 +7,10 @@ readme: |
   # Mantra Render
 
   Renders a sequence of exported Mantra scene files (`.ifd`) with `mantra`,
-  Houdini's legacy renderer, so the farm never loads Houdini itself. Each task
-  renders one frame's IFD file.
+  without loading Houdini. Each task renders one frame's IFD file.
 
-  SideFX has not supported Mantra since the end of 2024; Karma is Houdini's
-  current renderer. For Karma, use Husk USD Render instead.
+  Mantra is Houdini's legacy renderer. To render with Karma, Houdini's current
+  renderer, use Husk USD Render.
 
   ## Parameters
 
@@ -32,8 +31,7 @@ readme: |
   none, or with the `#` characters split into more than one run, is rejected
   when the job is submitted.
 
-  Output paths come from the IFD files themselves, as Houdini wrote them; this
-  preset does not override them.
+  Output paths come from the IFD files.
 
   ## Requirements
 

@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# V-Ray Standalone Render. One .vrscene holds the animation; each task passes
-# its chunk's bounds as -frames=START-END. default is the shipped one frame per
-# task, multi-frame-chunk patches the chunk size so both bound ends are
-# reviewed, and stepped-range shows a stepped range splitting into one
-# single-frame task per frame.
+# V-Ray Standalone Render: each task passes its chunk as -frames=START-END.
+# default is one frame per task; multi-frame-chunk uses 5-frame chunks;
+# stepped-range splits into one task per frame.
 cases:
   - name: default
     params:

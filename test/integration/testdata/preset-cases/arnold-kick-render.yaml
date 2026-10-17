@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Arnold Kick Render. One task per frame, each rendering the scene file the
-# frame number names. default shows #### padding and a frame number wider than
-# the run (12345, written in full, never truncated); padding-and-step shows the
-# run length setting the padding (######) over a stepped range.
+# Arnold Kick Render: one task per frame. default includes a frame wider than
+# the #### run (12345, written in full); padding-and-step uses ###### over a
+# stepped range.
 cases:
   - name: default
     params:

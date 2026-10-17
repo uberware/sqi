@@ -7,8 +7,8 @@ readme: |
   # Arnold Kick Render
 
   Renders a sequence of exported Arnold scene files (`.ass`) with `kick`,
-  Arnold's standalone renderer, so the farm never loads the application the
-  scene came from. Each task renders one frame.
+  Arnold's standalone renderer, without loading the application the scene came
+  from. Each task renders one frame.
 
   ## Parameters
 
@@ -29,8 +29,7 @@ readme: |
   none, or with the `#` characters split into more than one run, is rejected
   when the job is submitted.
 
-  Output paths come from the scene files themselves, as the exporter wrote
-  them; this preset does not override them.
+  Output paths come from the scene files.
 
   ## Requirements
 

@@ -55,8 +55,7 @@ func TestBuild(t *testing.T) {
 		t.Fatalf("published presets = %v, want %v", names, want)
 	}
 
-	// Looked up by name, not position: "arnold-..." and "3delight-..." sort
-	// ahead of it.
+	// Look up by name: other presets sort ahead of it.
 	i := slices.IndexFunc(got, func(p presetgen.Generated) bool { return p.Entry.Name == "blender-batch-render" })
 	if i < 0 {
 		t.Fatal("blender-batch-render not published")

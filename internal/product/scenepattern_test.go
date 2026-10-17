@@ -58,9 +58,8 @@ func perFileTemplate(t *testing.T, name string) string {
 	return tmpl
 }
 
-// TestPerFilePresets_ListIsComplete keeps perFilePresets honest: every shipped
-// preset carrying the scene binding must be in it, or the identity and
-// rejection tests below would silently skip it.
+// TestPerFilePresets_ListIsComplete asserts perFilePresets lists exactly the
+// shipped presets that carry the scene binding.
 func TestPerFilePresets_ListIsComplete(t *testing.T) {
 	paths, err := fsutil.Glob(filepath.Join("..", "..", "presets", "sqi", "*.yaml"))
 	if err != nil {
@@ -87,10 +86,8 @@ func TestPerFilePresets_ListIsComplete(t *testing.T) {
 	}
 }
 
-// TestPerFilePresets_RejectABadScenePattern pins the guard that keeps a
-// per-file preset from rendering one file N times: a pattern with no frame
-// token, or with the # characters split into two runs, is refused at
-// SUBMISSION by the phase-2 re-check, never accepted and rendered.
+// TestPerFilePresets_RejectABadScenePattern asserts a scene pattern with no run
+// of #, or with two runs, is rejected at submission, and a valid one expands.
 func TestPerFilePresets_RejectABadScenePattern(t *testing.T) {
 	for _, pf := range perFilePresets {
 		t.Run(pf.name, func(t *testing.T) {
@@ -131,9 +128,8 @@ func TestPerFilePresets_RejectABadScenePattern(t *testing.T) {
 	}
 }
 
-// TestPerFilePresets_ShareOneScenePatternBinding pins the scene-pattern let
-// lines byte-identical across every per-file preset, so a fix to the rule in
-// one preset cannot leave the others behind.
+// TestPerFilePresets_ShareOneScenePatternBinding asserts the scene-pattern let
+// lines are byte-identical across every per-file preset.
 func TestPerFilePresets_ShareOneScenePatternBinding(t *testing.T) {
 	want := sceneBinding(t, perFilePresets[0].name)
 	for _, pf := range perFilePresets {
@@ -185,11 +181,8 @@ func sceneBinding(t *testing.T, name string) string {
 	return binding
 }
 
-// TestPerFilePresets_BadPatternMessageNamesNoRenderer pins the shared fail()
-// message to a renderer-neutral example, since every per-file preset carries it,
-// and to the one case the rule cannot explain on its own: a backslash Windows
-// path is a single file name to the template's POSIX path engine, so a # in one
-// of its folders counts against the pattern.
+// TestPerFilePresets_BadPatternMessageNamesNoRenderer asserts the shared fail()
+// message uses a renderer-neutral example and carries windowsFolderNote.
 func TestPerFilePresets_BadPatternMessageNamesNoRenderer(t *testing.T) {
 	binding := sceneBinding(t, perFilePresets[0].name)
 	for _, want := range []string{"e.g. shot.####.<ext>", windowsFolderNote} {
@@ -199,15 +192,14 @@ func TestPerFilePresets_BadPatternMessageNamesNoRenderer(t *testing.T) {
 	}
 }
 
-// windowsFolderNote is the clause both pattern messages carry for the one case
-// the run-of-# rule cannot explain on its own.
+// windowsFolderNote is the clause both pattern messages carry. The template's
+// POSIX path engine reads a backslash Windows path as one file name, so a # in
+// a folder counts against the pattern.
 const windowsFolderNote = "in a Windows path, folders may not contain #"
 
-// TestArnoldKickTileRender_RejectsABadOutputPattern pins the tile preset's
-// second pattern: the Output File Pattern follows the same one-run rule as the
-// scene pattern, is rejected at submission the same way, and its message --
-// carried by both steps, byte-identical -- explains the same Windows-folder
-// case.
+// TestArnoldKickTileRender_RejectsABadOutputPattern asserts an Output File
+// Pattern with no # is rejected at submission, and both steps carry one
+// identical out binding whose message includes windowsFolderNote.
 func TestArnoldKickTileRender_RejectsABadOutputPattern(t *testing.T) {
 	const name = "arnold-kick-tile-render"
 	tmpl := perFileTemplate(t, name)

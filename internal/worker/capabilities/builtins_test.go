@@ -28,16 +28,11 @@ func builtinDetector(t *testing.T, tag string) Detector {
 	return Detector{}
 }
 
-// assertInstallsMatchGlobs fails for every vendor install path that no
-// path_glob check of d matches.
-//
-// It matches with path.Match on slash-normalized strings rather than calling
-// filepath.Glob, for two reasons: the install paths are absolute and do not
-// exist on a test runner, and a Windows pattern's backslashes are separators on
-// Windows but escape characters to filepath.Match everywhere else, so a
-// host-native match would silently test something different per platform.
-// path.Match on normalized input is the same per-component wildcard semantics
-// filepath.Glob applies, checked identically on every runner.
+// assertInstallsMatchGlobs fails for every install path that no path_glob
+// check of d matches. It uses path.Match on slash-normalized strings rather
+// than filepath.Glob because the paths do not exist on the test runner, and
+// because filepath.Match treats a Windows pattern's backslashes as escapes off
+// Windows; normalizing gives the same result on every runner.
 func assertInstallsMatchGlobs(t *testing.T, d Detector, installs []string) {
 	t.Helper()
 	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
@@ -63,10 +58,8 @@ func assertInstallsMatchGlobs(t *testing.T, d Detector, installs []string) {
 }
 
 // assertWindowsGlobsGated fails for every backslash path_glob of d not gated to
-// os: windows. Backslashes are separators on Windows and escapes to
-// filepath.Match elsewhere, so an ungated Windows glob would be an
-// ErrBadPattern (silently no matches) on POSIX rather than the no-op it looks
-// like.
+// os: windows. Off Windows, filepath.Match treats backslashes as escapes, so an
+// ungated Windows glob would be a bad pattern there rather than a no-op.
 func assertWindowsGlobsGated(t *testing.T, d Detector) {
 	t.Helper()
 	for i, c := range d.Checks {
@@ -172,10 +165,8 @@ func TestBuiltinDetectors_FFmpeg(t *testing.T) {
 	}
 }
 
-// TestBuiltinDetectors_OIIOTool pins the oiiotool detector's shape, which
-// arnold-kick-tile-render's assembly step gates on. Like ffmpeg it is a PATH
-// tool on every platform, installed by package managers and pipeline builds
-// alike, so it carries no install-location glob.
+// TestBuiltinDetectors_OIIOTool checks that the oiiotool detector is a single
+// PATH probe for oiiotool.
 func TestBuiltinDetectors_OIIOTool(t *testing.T) {
 	d := builtinDetector(t, "oiiotool")
 	if len(d.Checks) != 1 || d.Checks[0].Exe != "oiiotool" {

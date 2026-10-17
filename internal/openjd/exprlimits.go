@@ -175,20 +175,18 @@ type ExprLimits struct {
 // JUDGEMENTS -- none is derived from some fixed guard firing first (see
 // [ExprLimits.SubmissionMemoryBytes]).
 //
-// The FLOORS all come from measurement, not from taste. The twenty-two
-// reference presets in presets/sqi/ -- the templates this repo itself ships --
-// are measured per dimension by binary search on every run, by
-// TestExprLimits_FloorsAcceptReferencePresets: at most 38 expression positions
-// and 512 retained let bytes template-wide, and 390 live bytes with 15
-// operations in any single evaluation. The two per-evaluation maxima are set by
-// ffmpeg-segment-transcode-expr's slice arithmetic; the two template-wide ones
-// by arnold-kick-tile-render, whose two steps carry the most expressions and
-// the largest let blocks of any preset (each per-file standalone renderer preset
-// retains 128 bytes for its scene-pattern binding; presets with no let block
-// floor that dimension at 1, which means "nothing measurable"). Every floor
-// below leaves at least 4x headroom over the worst of them (7x to 128x in
-// practice), so no operator can tighten a knob to a value that rejects sqi's
-// own templates.
+// The FLOORS all come from measurement, not from taste.
+// TestExprLimits_FloorsAcceptReferencePresets binary-searches each dimension
+// for the twenty-two reference presets in presets/sqi/: at most 38 expression
+// positions and 512 retained let bytes template-wide, and 390 live bytes with
+// 15 operations in any single evaluation. ffmpeg-segment-transcode-expr sets
+// the two per-evaluation maxima; arnold-kick-tile-render, with the most
+// expressions and the largest let blocks, sets the two template-wide ones.
+// Each per-file standalone renderer preset retains 128 bytes for its
+// scene-pattern binding; a preset with no let block measures 1, meaning
+// nothing measurable. Every floor below leaves at least 4x headroom over the
+// worst of them (7x to 128x in practice), so no operator can tighten a knob to
+// a value that rejects sqi's own templates.
 // TestExprLimits_FloorsAcceptReferencePresets re-measures that on every run
 // rather than trusting this paragraph; the figures move as presets are added.
 const (

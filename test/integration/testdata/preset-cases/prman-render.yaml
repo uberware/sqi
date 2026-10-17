@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# RenderMan Render. One task per frame, each rendering the RIB file the frame
-# number names; padding-and-step shows the run length setting the padding over
-# a stepped range.
+# RenderMan Render: one task per frame. padding-and-step shows the # run length
+# setting the padding over a stepped range.
 cases:
   - name: default
     params:

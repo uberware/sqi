@@ -7,9 +7,9 @@ readme: |
   # Redshift Standalone Render
 
   Renders a sequence of exported Redshift scene files (`.rs`) with
-  `redshiftCmdLine`, Redshift's standalone renderer, so the farm never loads the
-  application the scene came from. Redshift exports each frame of an animation
-  as its own file, and each task renders one of them.
+  `redshiftCmdLine`, Redshift's standalone renderer, without loading the
+  application the scene came from. Each frame is its own file, and each task
+  renders one of them.
 
   ## Parameters
 
@@ -30,15 +30,13 @@ readme: |
   none, or with the `#` characters split into more than one run, is rejected
   when the job is submitted.
 
-  Output paths come from the scene files themselves, as the exporter wrote them;
-  this preset does not override them.
+  Output paths come from the scene files.
 
-  Redshift renders on the GPU. This preset sends work to any worker with
-  Redshift installed, not only to workers sqi has seen a GPU on: sqi detects
-  GPUs only on Linux hosts with NVIDIA drivers, while Redshift also renders on
-  Windows and on Apple Silicon Macs. On a worker that has Redshift installed but
-  no GPU it can use, list `redshift` under `capabilities.disable` in the worker's
-  configuration so it is not handed Redshift work.
+  Redshift renders on the GPU. Work goes to any worker with Redshift installed,
+  whether or not sqi has detected a GPU on it: sqi detects GPUs only on Linux
+  hosts with NVIDIA drivers, and Redshift also renders on Windows and on Apple
+  Silicon Macs. To keep Redshift work off a worker that has no usable GPU, list
+  `redshift` under `capabilities.disable` in that worker's configuration.
 
   ## Requirements
 

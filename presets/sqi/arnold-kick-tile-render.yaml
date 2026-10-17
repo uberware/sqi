@@ -8,10 +8,9 @@ readme: |
   # Arnold Kick Tile Render
 
   Splits each frame of an exported Arnold scene (`.ass`) into a grid of tiles,
-  renders every tile as its own task with `kick`, Arnold's standalone
-  renderer, and then assembles each frame's tiles into one image with
-  `oiiotool`. Tiling spreads one very large or very slow frame across many
-  workers.
+  renders each tile as its own task with `kick`, Arnold's standalone renderer,
+  and assembles each frame's tiles into one image with `oiiotool`. Tiling
+  spreads a large or slow frame across many workers.
 
   ## Parameters
 
@@ -30,18 +29,16 @@ readme: |
 
   ## How work is divided
 
-  The job has two steps. **Render** runs one task per tile of every frame:
-  `kick` renders only that tile's region of the image and writes it beside
-  the output, named after the frame's output file with `_tile_<row>_<column>`
-  added before the extension, e.g. `beauty.0007_tile_0_1.exr`. The tiles
-  share the image between them exactly, with no gaps and no overlap, even when
-  the resolution does not divide evenly.
+  The job has two steps. **Render** runs one task per tile of every frame.
+  `kick` renders only that tile's region and writes it beside the output,
+  named after the frame's output file with `_tile_<row>_<column>` added before
+  the extension, e.g. `beauty.0007_tile_0_1.exr`. The tiles cover the image
+  exactly, with no gaps or overlap, even when the resolution does not divide
+  evenly.
 
   **Assemble** runs one task per frame and pastes that frame's tiles into the
-  finished image with `oiiotool`. It starts only once every Render task of
-  every frame has finished, because OpenJD job templates cannot make one
-  frame's assembly wait for only that frame's tiles. Tile files are left on
-  disk afterwards.
+  finished image with `oiiotool`. It starts only after every Render task of
+  every frame has finished. Tile files are left on disk.
 
   Both patterns must contain exactly one run of `#` characters, which is
   replaced by the frame number padded with zeros to the run's length. A

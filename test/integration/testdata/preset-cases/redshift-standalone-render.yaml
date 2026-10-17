@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Redshift Standalone Render. One task per frame, each rendering the .rs file
-# the frame number names. windows-path shows a native C:\... pattern surviving
-# the substitution intact: the template's path engine is POSIX-flavoured, so
-# the whole backslash path is one file name whose parent is ".", and
-# "." / name reproduces it unchanged.
+# Redshift Standalone Render: one task per frame. windows-path shows a C:\...
+# pattern substituted with the rest of the path unchanged.
 cases:
   - name: default
     params:

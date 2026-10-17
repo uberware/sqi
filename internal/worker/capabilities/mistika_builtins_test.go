@@ -58,9 +58,9 @@ var mistikaLayouts = []struct {
 	},
 }
 
-// TestMistikaDetectors_MatchVendorInstallLayout is the substantive check: each
-// shipped glob must actually match the SGO install path Smedge looks for
-// (assertInstallsMatchGlobs says why it uses path.Match).
+// TestMistikaDetectors_MatchVendorInstallLayout checks that each shipped glob
+// matches the SGO install path (assertInstallsMatchGlobs says why it uses
+// path.Match).
 //
 // This is what catches the subtle failure: the .psx files spell the macOS
 // bundle directory "Contents/MACOS", which works for Smedge only because macOS
