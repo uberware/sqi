@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import io
 import shutil
+import sys
 from importlib import resources
 from pathlib import Path
 
@@ -182,3 +183,21 @@ def test_cli_install_host_bad_dest_exits_one(
     blocker.write_text("x", encoding="utf-8")
     assert cli.main(["install-host", "blender", "--dest", str(blocker)]) == 1
     assert "could not install into" in capsys.readouterr().err
+
+
+def test_cli_dialog_without_qt_names_the_install_command(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No Qt binding: an actionable message and exit 1, never an import-time traceback."""
+    import sqi_submitter.qt as qt_package
+    from sqi_submitter.qt import _compat
+
+    monkeypatch.setattr(_compat, "QT_BINDING", "")
+    # Importing the dialog without a binding fails at import time: it must not be reached.
+    monkeypatch.setitem(sys.modules, "sqi_submitter.qt.dialog", None)
+    monkeypatch.delattr(qt_package, "dialog", raising=False)
+    assert cli.main([]) == 1
+    err = capsys.readouterr().err
+    assert "No Qt binding found" in err
+    assert "pip install 'sqi-submitter[qt]'" in err
+    assert "Traceback" not in err

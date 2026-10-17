@@ -41,10 +41,12 @@ def _exec_app(app: Any) -> int:
 
 
 def _run_dialog(server: str | None, context: str | None) -> int:
-    from sqi_submitter.qt import dialog as qt_dialog
     from sqi_submitter.qt._compat import QtWidgets, require_qt
 
+    # Before importing the dialog, which cannot even be imported without a binding.
     require_qt()
+    from sqi_submitter.qt import dialog as qt_dialog
+
     adapter: ContextAdapter | None = None
     error: str | None = None
     if context:
@@ -78,4 +80,8 @@ def main(argv: list[str] | None = None) -> int:
         # An unknown host is a usage error, so its message goes to stderr.
         out = sys.stdout if args.host in KNOWN_HOSTS else sys.stderr
         return install_host(args.host, Path(args.dest) if args.dest else None, out, sys.stderr)
-    return _run_dialog(args.server, args.context)
+    try:
+        return _run_dialog(args.server, args.context)
+    except SubmitterError as exc:
+        print(exc.user_message, file=sys.stderr)
+        return 1
