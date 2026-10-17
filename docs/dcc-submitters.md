@@ -338,7 +338,10 @@ saved (a changed project is offered a save); the file/network preference is on;
 at least one render-queue item has status **Queued**; and `sqi-submit` is
 located and still exists. Every **Queued** item is a target, named after its
 composition, with a frame range from the composition's display start and the
-item's time span.
+item's time span. When two queued items render the same composition (a ProRes
+and an H.264 output, say), the first keeps the composition name and each later
+one is disambiguated with `(#<queue index>)`, its position in the render queue,
+so every target, and so every job, gets a distinct name.
 
 An output module file name with a `[#...]` frame token is an image sequence;
 anything else is a movie. A movie target carries its whole frame count as
@@ -1042,7 +1045,8 @@ After installing per [Installation per host](#installation-per-host):
    file name) and one to a movie, and a third with status other than
    **Queued**. Submit: the dialog lists the two queued items by composition
    name, not the third, with `RenderQueueItem` equal to each item's position in
-   the render queue.
+   the render queue. Duplicate one of the queued items (same composition, a
+   second output): the duplicate is listed as `<comp> (#<queue index>)`.
 5. **Frame range.** For a composition whose start time is not 0, and whose
    render queue item has a custom time span, confirm the pre-filled **Frame
    Range** is what After Effects shows (`S-E`, inclusive), and that `aerender`

@@ -95,6 +95,11 @@ function reader(values) {
 var movie = sqiTarget(2, "Main Comp", "1-240", "D:\\\\out\\\\spot.mov", false);
 var seq = sqiTarget(1, "Main Comp", "1001-1250", "D:\\\\out\\\\spot_[#####].png", true);
 var ctx = sqiBuildContext("25.2x12", "C:\\\\p\\\\spot.aep", [seq, movie]);
+var dupTargets = sqiUniqueTargetNames([
+  sqiTarget(2, "Main Comp", "1-240", "D:\\\\out\\\\spot.mov", false),
+  sqiTarget(5, "Main Comp", "1-240", "D:\\\\out\\\\spot_h264.mp4", false),
+  sqiTarget(7, "Other", "1-240", "D:\\\\out\\\\other.mov", false)
+]);
 out = {
   r0: sqiFrameRange(0, 0, 10, 0.04),
   r1001: sqiFrameRange(1001, 0, 10, 0.04),
@@ -124,6 +129,15 @@ out = {
   ctx: ctx,
   ctxText: JSON.stringify(ctx),
   noCommand: SQI_MSG.noCommand,
+  uniqAlready: sqiUniqueNames(["Main", "Alt", "End"]),
+  uniqOne: sqiUniqueNames(["Main", "Main"]),
+  uniqThree: sqiUniqueNames(["Main", "Alt", "Main", "Main", "Main"]),
+  uniqCollide: sqiUniqueNames(["A", "B", "A", "A (#3)"]),
+  uniqIndexes: sqiUniqueNames(["Main", "Main"], [4, 9]),
+  uniqEmpty: sqiUniqueNames([]),
+  uniqProto: sqiUniqueNames(["__proto__", "__proto__", "hasOwnProperty"]),
+  dupNames: [dupTargets[0].name, dupTargets[1].name, dupTargets[2].name],
+  dupExtra: dupTargets[1].extra,
 };
 `;
 vm.runInContext(json2 + "\n" + jsx + "\n" + driver, sandbox);
@@ -206,6 +220,26 @@ def test_jsx_pure_functions_under_node() -> None:
     assert context["scene"]["path"] == "C:\\p\\spot.aep"
     assert context["scene"]["frame_range"] == "1-1250"
     assert [t["extra"]["RenderQueueItem"] for t in context["targets"]] == ["1", "2"]
+
+
+def test_jsx_unique_names_under_node() -> None:
+    """Two render-queue items for one comp get distinct target (and so job) names."""
+    r = _run_harness()
+
+    assert r["uniqAlready"] == ["Main", "Alt", "End"]  # unique names are left alone
+    assert r["uniqEmpty"] == []
+    # The first occurrence keeps its name; a later one gets its 1-based position.
+    assert r["uniqOne"] == ["Main", "Main (#2)"]
+    assert r["uniqThree"] == ["Main", "Alt", "Main (#3)", "Main (#4)", "Main (#5)"]
+    # "A (#3)" is taken by an existing name, so the duplicate is disambiguated again.
+    assert r["uniqCollide"] == ["A", "B", "A (#3) (#3)", "A (#3)"]
+    assert r["uniqIndexes"] == ["Main", "Main (#9)"]  # explicit indexes win over positions
+    # Names are data, never object keys that collide with Object.prototype.
+    assert r["uniqProto"] == ["__proto__", "__proto__ (#2)", "hasOwnProperty"]
+
+    # The panel suffixes with the render-queue index, which is what the artist sees in AE.
+    assert r["dupNames"] == ["Main Comp", "Main Comp (#5)", "Other"]
+    assert r["dupExtra"] == {"RenderQueueItem": "5", "FramesPerTask": "240"}
 
 
 def test_jsx_not_found_message_names_the_qt_extra() -> None:

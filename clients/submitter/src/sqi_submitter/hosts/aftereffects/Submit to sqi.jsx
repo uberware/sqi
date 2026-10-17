@@ -94,6 +94,50 @@ function sqiTarget(index, compName, frameRange, outputFsName, isSequence) {
     };
 }
 
+// The names made unique: the first occurrence of a name is kept, and every later duplicate
+// becomes "<name> (#<k>)", k being indexes[i] (default: the 1-based position). A candidate
+// that is itself already taken gets " (#<k>)" again until it is free.
+function sqiUniqueNames(names, indexes) {
+    var taken = {};
+    var result = [];
+    var i;
+    for (i = 0; i < names.length; i += 1) {
+        taken["n:" + names[i]] = true;
+    }
+    var seen = {};
+    for (i = 0; i < names.length; i += 1) {
+        var name = names[i];
+        if (seen["n:" + name] === true) {
+            var suffix = " (#" + (indexes === undefined ? i + 1 : indexes[i]) + ")";
+            name = name + suffix;
+            while (taken["n:" + name] === true) {
+                name = name + suffix;
+            }
+            taken["n:" + name] = true;
+        }
+        seen["n:" + names[i]] = true;
+        result.push(name);
+    }
+    return result;
+}
+
+// The targets with unique names, a duplicate suffixed with its render-queue index, so two
+// items for one comp (a ProRes and an H.264 output, say) give two distinct job names.
+function sqiUniqueTargetNames(targets) {
+    var names = [];
+    var indexes = [];
+    var i;
+    for (i = 0; i < targets.length; i += 1) {
+        names.push(targets[i].name);
+        indexes.push(targets[i].extra.RenderQueueItem);
+    }
+    var unique = sqiUniqueNames(names, indexes);
+    for (i = 0; i < targets.length; i += 1) {
+        targets[i].name = unique[i];
+    }
+    return targets;
+}
+
 // The smallest range covering every "S-E" range given.
 function sqiUnionRange(ranges) {
     var lo = null;
@@ -218,7 +262,7 @@ function sqiOutputFile(item) {
     }
 }
 
-// Every QUEUED render-queue item as a target.
+// Every QUEUED render-queue item as a target, with unique names.
 function sqiReadQueuedTargets() {
     var targets = [];
     var queue = app.project.renderQueue;
@@ -241,7 +285,7 @@ function sqiReadQueuedTargets() {
         var fileName = file === null ? null : file.displayName;
         targets.push(sqiTarget(i, comp.name, range, fsName, sqiIsSequence(fileName)));
     }
-    return targets;
+    return sqiUniqueTargetNames(targets);
 }
 
 // Writes the context to <temp>/sqi-handoff/<timestamp>.json. Returns the path or null.
