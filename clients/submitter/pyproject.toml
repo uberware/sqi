@@ -114,4 +114,4 @@ markers = [
 [tool.coverage.run]
 # Qt widget/dialog code and pure-registration DCC glue are exercised only where
 # a Qt binding / real DCC exists (separate CI job / manual checklist).
-omit = ["*/qt/widgets.py", "*/qt/dialog.py", "*/hosts/blender/addon.py", "*/hosts/*/startup/*"]
+omit = ["*/qt/widgets.py", "*/qt/dialog.py", "*/hosts/*/startup/*"]

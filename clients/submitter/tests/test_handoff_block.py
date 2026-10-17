@@ -17,8 +17,8 @@ from sqi_submitter.hosts import _handoff_block as block
 
 HOSTS_DIR = Path(block.__file__).parent
 
-# Task 6 and Task 7 append the Blender add-on and the Cinema 4D plugin here.
-HANDOFF_HOST_FILES: list[Path] = []
+# Task 7 appends the Cinema 4D plugin here.
+HANDOFF_HOST_FILES: list[Path] = [HOSTS_DIR / "blender" / "sqi_blender_addon.py"]
 
 BEGIN = "# --- sqi handoff begin ---"
 END = "# --- sqi handoff end ---"

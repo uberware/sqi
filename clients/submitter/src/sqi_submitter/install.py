@@ -23,7 +23,7 @@ __all__ = ["HOST_FILES", "KNOWN_HOSTS", "default_destination", "install_host"]
 KNOWN_HOSTS: tuple[str, ...] = ("blender", "cinema4d", "aftereffects")
 
 # Package-relative files per host. The host tasks add their entries as the files land.
-HOST_FILES: dict[str, list[str]] = {}
+HOST_FILES: dict[str, list[str]] = {"blender": ["hosts/blender/sqi_blender_addon.py"]}
 
 _C4D_PREFS_GLOB = "Maxon Cinema 4D *"
 

@@ -13,7 +13,7 @@ from sqi_client.models import ProductParameter
 from sqi_submitter.core.context import RenderTarget, SceneContext
 
 CONVENTION_ALIASES: dict[str, frozenset[str]] = {
-    # "scene" is deliberately NOT an alias: hosts/blender/adapter.py emits a
+    # "scene" is deliberately NOT an alias: hosts/blender/sqi_blender_addon.py emits a
     # target extra key "Scene" holding the Blender scene NAME (not a path),
     # and extras beat convention aliases in prefill() below. Keeping "scene"
     # here would silently overwrite a scene-name extra with a scene path for
