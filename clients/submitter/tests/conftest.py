@@ -3,11 +3,30 @@
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 import types
 from collections.abc import Callable, Iterator
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
 
 import pytest
+
+
+def load_host_file(path: Path) -> types.ModuleType:
+    """Load a host file that is not importable by name (a Cinema 4D ``.pyp``).
+
+    The module is not added to ``sys.modules``, so each call returns a fresh copy and
+    ``__name__`` is never ``"__main__"`` (the plugin's registration stays off).
+    """
+    name = "host_" + path.stem
+    spec = importlib.util.spec_from_file_location(
+        name, path, loader=SourceFileLoader(name, str(path))
+    )
+    assert spec is not None and spec.loader is not None, f"cannot load {path}"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 @pytest.fixture

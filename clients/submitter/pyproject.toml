@@ -59,6 +59,8 @@ include = ["src", "tests", "README.md", "LICENSE", "pyproject.toml"]
 target-version = "py39"
 line-length = 100
 src = ["src", "tests"]
+# The Cinema 4D plugin is a .pyp: Python that ruff does not pick up by extension.
+extend-include = ["*.pyp"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "FA"]
@@ -69,14 +71,27 @@ known-first-party = ["sqi_submitter", "sqi_client"]
 [tool.mypy]
 python_version = "3.9"
 strict = true
-files = ["src"]
+# `mypy src` reads only .py files; a bare `mypy` also checks the Cinema 4D plugin (a .pyp).
+files = ["src", "src/sqi_submitter/hosts/cinema4d/sqi_submit.pyp"]
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
 # PySide6/PySide6.*: qt/_compat.py type-checks against the real PySide6 stubs
 # when the qt extra is installed; without it, treat PySide6 as Any so
 # `mypy src` still passes in Qt-less environments (DCC-bundled bindings).
-module = ["PySide6", "PySide6.*", "PySide2.*", "maya.*", "hou", "nuke", "bpy", "bpy.*"]
+module = [
+  "PySide6",
+  "PySide6.*",
+  "PySide2.*",
+  "maya.*",
+  "hou",
+  "nuke",
+  "bpy",
+  "bpy.*",
+  "c4d",
+  "c4d.*",
+  "mxutils",
+]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
