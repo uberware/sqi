@@ -100,16 +100,28 @@ func TestSQIReferencePresets(t *testing.T) {
 			params:       []string{"SceneFile"},
 			noExtensions: true,
 		},
+		// The macOS variants differ from the Windows ones only in their gate
+		// and wrapper (aftereffectspair_test.go), so their expectations match.
+		"after-effects-render-macos": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames", "RenderQueueItem", "FramesPerTask"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
+		},
+		"after-effects-queue-render-macos": {
+			category:     "Rendering",
+			params:       []string{"SceneFile"},
+			noExtensions: true,
+		},
 		// The three Mistika presets invoke the renderer as `-s START -e END`,
 		// so they need a chunk's bounds rather than the chunk itself. They are
 		// not alone in that: the two Maya presets, blender-batch-render,
 		// vray-standalone-render, the two Cinema 4D presets, 3dsmax-render and
-		// after-effects-render-windows also declare SQI_CHUNK_BOUNDS, eleven
-		// of the twenty-two render presets. Houdini and the two Nuke presets
-		// take a frame list directly; husk-usd-render computes its start and
-		// count with EXPR; the other standalone renderers render one file per
-		// frame and do not chunk, and nor does the whole-queue After Effects
-		// preset.
+		// both after-effects-render variants also declare SQI_CHUNK_BOUNDS,
+		// twelve of the twenty-four render presets. Houdini and the two Nuke
+		// presets take a frame list directly; husk-usd-render computes its
+		// start and count with EXPR; the other standalone renderers render one
+		// file per frame and do not chunk, and nor do the whole-queue After
+		// Effects presets.
 		"mistika-boutique-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames"},

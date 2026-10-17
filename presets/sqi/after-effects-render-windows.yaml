@@ -42,7 +42,7 @@ readme: |
   The task therefore runs a small PowerShell script that runs `aerender`,
   streams its output to the task log unchanged, and fails the task when
   `aerender` exits non-zero or when any line of its output contains
-  `aerender ERROR`.
+  `aerender ERROR`, in any letter case.
 
   ## How work is divided
 
@@ -131,6 +131,9 @@ template:
           # printed on either stream is seen. Each line is converted to text and
           # written out before it is matched, so stderr lines reach the task log
           # as aerender printed them rather than as PowerShell error records.
+          # -like matches the marker case-insensitively, as grep -i does in
+          # after-effects-render-macos' sh wrapper.
+          #
           # ErrorActionPreference stays Continue because under Stop, Windows
           # PowerShell 5.1 aborts on the first redirected stderr line.
           #

@@ -1,0 +1,37 @@
+preset: after-effects-queue-render-macos
+case:   default
+params:
+  SceneFile=/Volumes/Show Files/spot/o'brien_v002.aep
+
+step "Render" — 1 task
+
+task 1/1  name="Render"
+  command: /bin/sh
+  args:
+    [0]  <WORKDIR>
+    [1]  -project
+    [2]  /Volumes/Show Files/spot/o'brien_v002.aep
+    [3]  -v
+    [4]  ERRORS_AND_PROGRESS
+    [5]  -close
+    [6]  DO_NOT_SAVE_CHANGES
+  embedded file "aerender_wrapper" (aerender_wrapper.sh):
+    dir=
+    trap '[ -z "$dir" ] || rm -rf "$dir"' EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    dir=$(mktemp -d "${TMPDIR:-/tmp}/aerender_wrapper.XXXXXX") || { echo 'aerender_wrapper: cannot create a temporary directory' >&2; exit 1; }
+    { aerender "$@" 2>&1; echo "$?" >"$dir/status"; } | tee "$dir/log" || { echo 'aerender_wrapper: tee failed, so the output was not checked' >&2; exit 1; }
+    status=$(cat "$dir/status" 2>/dev/null)
+    case $status in
+    0) ;;
+    '') echo 'aerender_wrapper: aerender exit status unknown' >&2; exit 1 ;;
+    *) exit "$status" ;;
+    esac
+    grep -qiF 'aerender ERROR' "$dir/log"
+    case $? in
+    0) exit 1 ;;
+    1) exit 0 ;;
+    *) echo 'aerender_wrapper: cannot read the output back' >&2; exit 1 ;;
+    esac

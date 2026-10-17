@@ -26,7 +26,9 @@ func TestBuild(t *testing.T) {
 	want := []string{
 		"3delight-render",
 		"3dsmax-render",
+		"after-effects-queue-render-macos",
 		"after-effects-queue-render-windows",
+		"after-effects-render-macos",
 		"after-effects-render-windows",
 		"arnold-kick-render",
 		"arnold-kick-tile-render",

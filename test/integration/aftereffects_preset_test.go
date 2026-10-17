@@ -47,9 +47,22 @@ type aeWrapperVariant struct {
 
 // aeWrapperVariants lists every After Effects preset whose wrapper the table
 // below drives.
+//
+// The macOS variants run on every host but Windows, with their os.family gate
+// stripped. Their Tier-3 cases can run only on a Mac (required_on [darwin]),
+// and CI has no macOS runner, so without these rows the POSIX sh wrapper's
+// exit-status contract would be exercised nowhere in CI. Stripping the gate
+// changes nothing the wrapper sees: the same /bin/sh runs the same embedded
+// script with the same arguments (TestAfterEffectsPreset_StripOSFamilyGate).
+// What a Linux run cannot show is macOS's own /bin/sh, which is bash in POSIX
+// mode rather than Ubuntu's dash; the script keeps to POSIX sh for that reason.
+// They do not run on Windows, which has no /bin/sh. On a Mac the strip is
+// unnecessary but harmless.
 var aeWrapperVariants = []aeWrapperVariant{
 	{preset: "after-effects-render-windows", goos: "windows"},
 	{preset: "after-effects-queue-render-windows", goos: "windows"},
+	{preset: "after-effects-render-macos", goos: "!windows", stripOSGate: true},
+	{preset: "after-effects-queue-render-macos", goos: "!windows", stripOSGate: true},
 }
 
 // aeWrapperOutcome is one way aerender can end and the job outcome it must
@@ -80,6 +93,16 @@ var aeWrapperOutcomes = []aeWrapperOutcome{
 		logLine:  "aerender ERROR: Unable to render",
 	},
 	{
+		// The marker matches case-insensitively in both wrappers
+		// (PowerShell's -like, grep -i), so a differently cased spelling of
+		// it is still a failure.
+		name:     "logged-error-other-case",
+		env:      []string{"SQI_STUB_STDOUT=AERENDER error: Unable to render"},
+		want:     "failed",
+		wantCode: 1,
+		logLine:  "AERENDER error: Unable to render",
+	},
+	{
 		// A non-zero exit is forwarded as is, not flattened to 1.
 		name:     "non-zero-exit",
 		env:      []string{"SQI_STUB_EXIT=2"},
@@ -97,8 +120,9 @@ var aeWrapperOutcomes = []aeWrapperOutcome{
 		// A shell that cannot find aerender must not fall through to the
 		// wrapper's final exit 0. Windows PowerShell reports a missing
 		// command as an error and carries on, which without the wrapper's
-		// trap would end the script with exit 0. No exit code is pinned:
-		// the shells report a missing command differently.
+		// trap would end the script with exit 0; sh reports 127, which the
+		// sh wrapper must forward through its pipeline. No exit code is
+		// pinned: the shells report a missing command differently.
 		name:       "aerender-not-on-path",
 		noAerender: true,
 		want:       "failed",
@@ -336,7 +360,8 @@ func yamlMapDelete(m *yaml.Node, key string) {
 // TestAfterEffectsPreset_StripOSFamilyGate checks the helper on every variant
 // on every host, not only where a row strips: the os.family requirement goes,
 // the capability tag stays, and each embedded file survives the YAML round
-// trip byte for byte (the PowerShell wrapper's leading BOM included).
+// trip byte for byte (the PowerShell wrapper's leading BOM and the sh
+// wrapper's line breaks included).
 func TestAfterEffectsPreset_StripOSFamilyGate(t *testing.T) {
 	for _, v := range aeWrapperVariants {
 		t.Run(v.preset, func(t *testing.T) {

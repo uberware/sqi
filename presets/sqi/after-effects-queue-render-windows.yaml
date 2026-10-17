@@ -30,7 +30,7 @@ readme: |
   The task therefore runs a small PowerShell script that runs `aerender`,
   streams its output to the task log unchanged, and fails the task when
   `aerender` exits non-zero or when any line of its output contains
-  `aerender ERROR`.
+  `aerender ERROR`, in any letter case.
 
   ## Requirements
 
