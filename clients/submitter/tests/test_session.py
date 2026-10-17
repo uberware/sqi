@@ -172,3 +172,20 @@ def test_group_products_floats_host_matches_without_hiding_any() -> None:
     assert [p.name for p in rest] == ["python"]
     s2, r2 = group_products(ps, "")
     assert s2 == [] and len(r2) == 3
+
+
+def test_group_products_ignores_separators() -> None:
+    ps = [
+        Product(name="aer-win", title="After Effects Render (Windows)"),
+        Product(name="max-render", title="3ds Max Render"),
+        Product(name="cinema4d-take-render"),
+        Product(name="python"),
+    ]
+    for token, expected in (
+        ("aftereffects", "aer-win"),
+        ("3dsmax", "max-render"),
+        ("cinema4d", "cinema4d-take-render"),
+    ):
+        suggested, rest = group_products(ps, token)
+        assert [p.name for p in suggested] == [expected]
+        assert len(rest) == 3

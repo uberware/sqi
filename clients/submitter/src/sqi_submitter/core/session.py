@@ -165,20 +165,27 @@ class SubmitterSession:
             )
 
 
+def _squash(text: str) -> str:
+    """Lower-case with spaces, ``-`` and ``_`` removed, for host-token matching."""
+    return text.lower().replace(" ", "").replace("-", "").replace("_", "")
+
+
 def group_products(
     products: Sequence[Product], host_token: str
 ) -> tuple[list[Product], list[Product]]:
     """Split into (suggested, rest) by a cosmetic host-token match.
 
     Nothing is ever hidden: ordering only. Pre-fill is independent of this.
+    Matching ignores case, spaces, ``-`` and ``_`` on both sides, so the token
+    ``cinema4d`` finds "Cinema 4D" and ``aftereffects`` finds ``after-effects-render``.
     """
-    token = host_token.lower()
+    token = _squash(host_token)
     if not token:
         return [], list(products)
     suggested = [
         p
         for p in products
-        if token in p.name.lower() or token in p.title.lower() or token in p.description.lower()
+        if token in _squash(p.name) or token in _squash(p.title) or token in _squash(p.description)
     ]
     rest = [p for p in products if p not in suggested]
     return suggested, rest
