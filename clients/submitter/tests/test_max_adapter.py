@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import sys
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from importlib import resources
@@ -154,9 +155,12 @@ def test_max_menu_parents_to_max_main_window(
     def fake_open(adapter: Any, server_url: Any = None, parent: Any = None) -> None:
         calls.append((adapter, parent))
 
-    import sqi_submitter.qt.dialog as dialog
-
-    monkeypatch.setattr(dialog, "open_for_adapter", fake_open)
+    # Stub the module: importing the real qt.dialog fails without a Qt binding (CI has none).
+    monkeypatch.setitem(
+        sys.modules,
+        "sqi_submitter.qt.dialog",
+        SimpleNamespace(open_for_adapter=fake_open),
+    )
     from sqi_submitter.hosts.max import menu
     from sqi_submitter.hosts.max.adapter import MaxAdapter
 
