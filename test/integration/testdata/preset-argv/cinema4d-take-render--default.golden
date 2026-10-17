@@ -1,0 +1,63 @@
+preset: cinema4d-take-render
+case:   default
+params:
+  Frames=1-3
+  OutputPath=/mnt/show/seq010/shot0010/render/shot0010_
+  SceneFile=/mnt/show/seq010/shot 0010/c4d/shot0010_v003.c4d
+  Take=Final "A"
+
+step "Render" — 3 tasks
+
+task 1/3  name="Render[Frame=1-1,Frame.End=1,Frame.Start=1]"
+  task params:
+    Frame=1-1
+    Frame.End=1
+    Frame.Start=1
+  command: Commandline
+  args:
+    [0]  -nogui
+    [1]  -render
+    [2]  /mnt/show/seq010/shot 0010/c4d/shot0010_v003.c4d
+    [3]  -frame
+    [4]  1
+    [5]  1
+    [6]  -take
+    [7]  Final "A"
+    [8]  -oimage
+    [9]  /mnt/show/seq010/shot0010/render/shot0010_
+
+task 2/3  name="Render[Frame=2-2,Frame.End=2,Frame.Start=2]"
+  task params:
+    Frame=2-2
+    Frame.End=2
+    Frame.Start=2
+  command: Commandline
+  args:
+    [0]  -nogui
+    [1]  -render
+    [2]  /mnt/show/seq010/shot 0010/c4d/shot0010_v003.c4d
+    [3]  -frame
+    [4]  2
+    [5]  2
+    [6]  -take
+    [7]  Final "A"
+    [8]  -oimage
+    [9]  /mnt/show/seq010/shot0010/render/shot0010_
+
+task 3/3  name="Render[Frame=3-3,Frame.End=3,Frame.Start=3]"
+  task params:
+    Frame=3-3
+    Frame.End=3
+    Frame.Start=3
+  command: Commandline
+  args:
+    [0]  -nogui
+    [1]  -render
+    [2]  /mnt/show/seq010/shot 0010/c4d/shot0010_v003.c4d
+    [3]  -frame
+    [4]  3
+    [5]  3
+    [6]  -take
+    [7]  Final "A"
+    [8]  -oimage
+    [9]  /mnt/show/seq010/shot0010/render/shot0010_

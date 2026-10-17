@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Maxon Cinema 4D's command-line renderer, Commandline, which
+# presets/sqi/cinema4d-render.yaml and cinema4d-take-render.yaml invoke by bare
+# name. Sources: Maxon help 2026 (help.maxon.net/c4d/2026/en-us/Content/html/52193.html)
+# and the Cinema 4D 2025 downloads page; see design section 13.1 of
+# docs/superpowers/specs/2026-10-16-p5a-dcc-breadth-design.md.
+#
+# The globs match the default install locations:
+# C:\Program Files\Maxon Cinema 4D <year>\Commandline.exe on Windows,
+# /Applications/Maxon Cinema 4D <year>/Commandline.app on macOS and
+# /opt/maxon/cinema4dr<ver>/bin/Commandline on Linux.
+#
+# There is deliberately no `exe: Commandline` check. The preset invokes the bare
+# `Commandline` command, but that name is generic enough that a PATH probe could
+# tag workers with no Cinema 4D installed, and a falsely tagged worker is handed
+# render work it cannot do. A Cinema 4D installed elsewhere is tagged by hand
+# with cinema4d=true under worker.capability_tags.
+#
+# Unverified: the macOS path is taken from the install folder name, not from a
+# macOS install. The Linux folder carries no year the version regex reads
+# (cinema4dr2026.000), so a Linux worker is tagged without a version.
+tag: cinema4d
+checks:
+  - path_glob: "/opt/maxon/cinema4dr*/bin/Commandline"                    # linux
+  - path_glob: "/Applications/Maxon Cinema 4D */Commandline.app"          # macOS
+  - path_glob: 'C:\Program Files\Maxon Cinema 4D *\Commandline.exe'       # windows
+    os: windows
+version:
+  from: 'Maxon Cinema 4D (?P<v>[0-9]{4})'

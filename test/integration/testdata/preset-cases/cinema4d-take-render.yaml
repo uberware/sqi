@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Cinema 4D Take Render. Every case passes a take name containing double
+# quotes, and a scene path containing a space, so the goldens show each
+# travelling as a single argument. OutputPath is supplied because -oimage is
+# always passed. stepped-range shows a gap-bearing range splitting into one
+# chunk per run of consecutive frames.
+cases:
+  - name: default
+    params:
+      SceneFile: '/mnt/show/seq010/shot 0010/c4d/shot0010_v003.c4d'
+      Frames: "1-3"
+      Take: 'Final "A"'
+      OutputPath: /mnt/show/seq010/shot0010/render/shot0010_
+    expect_tasks: 3
+    expect_invocations:
+      Commandline: 3
+  - name: multi-frame-chunk
+    params:
+      SceneFile: '/mnt/show/seq010/shot 0010/c4d/shot0010_v003.c4d'
+      Frames: "1-10"
+      Take: 'Final "A"'
+      OutputPath: /mnt/show/seq010/shot0010/render/shot0010_
+    template_patch:
+      step: Render
+      chunks_default_task_count: 5
+    expect_tasks: 2
+    expect_invocations:
+      Commandline: 2
+  - name: stepped-range
+    params:
+      SceneFile: '/mnt/show/seq010/shot 0010/c4d/shot0010_v003.c4d'
+      Frames: "1-9:4"
+      Take: 'Final "A"'
+      OutputPath: /mnt/show/seq010/shot0010/render/shot0010_
+    expect_tasks: 3
+    expect_invocations:
+      Commandline: 3

@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package capabilities
+
+import "testing"
+
+// The DCC detectors pair with the presets in presets/sqi/ that drive a DCC's
+// own command-line renderer. They share rendererLayout and the check helpers
+// in renderer_builtins_test.go; a layout with an empty exe asserts the detector
+// has no exe check, for a command too generic to probe PATH for.
+//
+// dccLayouts lists each detector's expected install paths independently of its
+// YAML, so the tests check the shipped globs against them.
+var dccLayouts = []rendererLayout{
+	{
+		// Commandline is generic enough to collide with unrelated software,
+		// so there is no exe check (the mistikavr.yaml rule). The Linux
+		// folder carries no year the version regex reads, so only the
+		// Windows and macOS installs yield a version.
+		tag: "cinema4d",
+		exe: "",
+		installs: []string{
+			`C:\Program Files\Maxon Cinema 4D 2026\Commandline.exe`,
+			"/Applications/Maxon Cinema 4D 2026/Commandline.app",
+			"/opt/maxon/cinema4dr2026.000/bin/Commandline",
+		},
+		versioned: `C:\Program Files\Maxon Cinema 4D 2026\Commandline.exe`,
+		version:   "2026",
+	},
+}
+
+// TestDCCDetectors_MatchVendorInstallLayout checks that a shipped glob matches
+// every install path in dccLayouts.
+func TestDCCDetectors_MatchVendorInstallLayout(t *testing.T) {
+	checkInstallLayout(t, dccLayouts)
+}
+
+// TestDCCDetectors_ProbePATH checks that each detector probes PATH for the
+// command its preset runs, or has no exe check when the command is too generic.
+func TestDCCDetectors_ProbePATH(t *testing.T) {
+	checkPATHProbe(t, dccLayouts)
+}
+
+// TestDCCDetectors_WindowsCheckIsGated guards the backslash globs.
+func TestDCCDetectors_WindowsCheckIsGated(t *testing.T) {
+	checkWindowsGated(t, dccLayouts)
+}
+
+// TestDCCDetectors_ExtractVersion checks the version extracted from a versioned
+// install path, and that a detector with no version extracts none.
+func TestDCCDetectors_ExtractVersion(t *testing.T) {
+	checkVersion(t, dccLayouts)
+}
+
+// TestDCCDetectors_EvaluateOnEveryPlatform runs Evaluate on each install's
+// platform.
+func TestDCCDetectors_EvaluateOnEveryPlatform(t *testing.T) {
+	checkEvaluateEveryPlatform(t, dccLayouts)
+}

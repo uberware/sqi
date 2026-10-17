@@ -349,6 +349,50 @@ presets:
       case: TestPresetTier3/mantra-render/default
       required_on: [linux, darwin, windows]
 
+  - name: cinema4d-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, multi-frame-chunk, stepped-range]
+      caveat: >-
+        argv derived from Maxon's documented Commandline flags (Maxon help 2026
+        and the support article on Commandline rendering arguments):
+        -nogui -render <scene> -frame <start> <end> -oimage <path>. The goldens
+        show the spaced scene path as one argument, chunk bounds 1-5 then 6-10
+        under a patched chunk size, and 1-9:4 splitting into -frame 1 1,
+        -frame 5 5 and -frame 9 9. No Cinema 4D has executed it. Unverified: a
+        blank OutputPath reaches Commandline as -oimage "" (base OpenJD cannot
+        omit an argument without EXPR, so the flag is always passed, as in
+        blender-batch-render) and what Commandline does with that; whether the
+        -frame end is inclusive (documented by example only); the exit status on
+        failure, which Maxon does not document; the macOS Commandline path.
+        Every node also needs licensing before it can render.
+    tier3:
+      case: TestPresetTier3/cinema4d-render/default
+      required_on: [linux, darwin, windows]
+
+  - name: cinema4d-take-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, multi-frame-chunk, stepped-range]
+      caveat: >-
+        argv derived from Maxon's documented Commandline flags (Maxon help 2026
+        and the support article on Commandline rendering arguments):
+        -nogui -render <scene> -frame <start> <end> -take <take> -oimage <path>.
+        The goldens show the spaced scene path and a take name containing double
+        quotes each as one argument, chunk bounds 1-5 then 6-10 under a patched
+        chunk size, and 1-9:4 splitting into -frame 1 1, -frame 5 5 and
+        -frame 9 9. No Cinema 4D has executed it. Unverified: -take with a
+        child take's name alone, and with "all"; what happens when -take is
+        omitted, as cinema4d-render does (Deadline reports the current take); a blank OutputPath reaches Commandline as -oimage "" and what
+        Commandline does with that; whether the -frame end is inclusive; the
+        exit status on failure, which Maxon does not document; the macOS
+        Commandline path. Every node also needs licensing before it can render.
+    tier3:
+      case: TestPresetTier3/cinema4d-take-render/default
+      required_on: [linux, darwin, windows]
+
   - name: ffmpeg-transcode
     source: presets/sqi
     tier: 2
