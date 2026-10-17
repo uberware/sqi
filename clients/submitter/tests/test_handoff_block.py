@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import ctypes
 import json
+import os
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -27,7 +29,7 @@ END = "# --- sqi handoff end ---"
 
 NOT_FOUND = (
     "sqi-submit was not found. Install it on this machine with: "
-    "pip install 'sqi-submitter[qt]' \u2014 then set its full path in the sqi "
+    'pip install "sqi-submitter[qt]" \u2014 then set its full path in the sqi '
     "add-on/plugin settings, or as sqi_submit_command in ~/.sqi/submitter.json."
 )
 
@@ -88,6 +90,23 @@ def test_resolve_submit_command_falls_back_to_path(
     assert block.resolve_submit_command("") == on_path
 
 
+def test_resolve_submit_command_reads_settings_file_with_bom(
+    tmp_path: Path, isolated: Path
+) -> None:
+    """PowerShell 5's ``Set-Content -Encoding utf8`` writes a BOM; it must not hide the path."""
+    from_file = _fake_exe(tmp_path, "from-file")
+    isolated.write_bytes(
+        b"\xef\xbb\xbf" + json.dumps({"sqi_submit_command": from_file}).encode("utf-8")
+    )
+    assert block.resolve_submit_command("") == from_file
+
+
+def test_not_found_message_double_quotes_the_extra() -> None:
+    # cmd.exe passes single quotes through literally, so only double quotes work everywhere.
+    assert 'pip install "sqi-submitter[qt]"' in block.NOT_FOUND_MESSAGE
+    assert "'" not in block.NOT_FOUND_MESSAGE
+
+
 def test_resolve_submit_command_not_found_message(isolated: Path) -> None:
     with pytest.raises(RuntimeError) as excinfo:
         block.resolve_submit_command("")
@@ -101,7 +120,91 @@ def test_write_context_is_valid_json(tmp_path: Path, monkeypatch: pytest.MonkeyP
     second = Path(block.write_context(data))
     assert first != second
     assert first.parent == tmp_path / "sqi-handoff"
+    assert first.name.startswith("context-") and first.suffix == ".json"
     assert json.loads(first.read_text(encoding="utf-8")) == data
+
+
+def test_write_context_avoids_a_non_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Something else squatting on ``<tmp>/sqi-handoff`` gets a private folder instead."""
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    (tmp_path / "sqi-handoff").write_text("not a folder", encoding="utf-8")
+    path = Path(block.write_context({"version": 1}))
+    assert path.parent.parent == tmp_path
+    assert path.parent.name.startswith("sqi-handoff-")
+    assert json.loads(path.read_text(encoding="utf-8")) == {"version": 1}
+
+
+_POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="POSIX permissions and owners")
+
+
+def _mode(path: Path) -> int:
+    return stat.S_IMODE(os.lstat(path).st_mode)
+
+
+@_POSIX_ONLY
+def test_write_context_tightens_an_open_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    folder = tmp_path / "sqi-handoff"
+    folder.mkdir()
+    folder.chmod(0o777)
+    path = Path(block.write_context({"version": 1}))
+    assert path.parent == folder
+    assert _mode(folder) == 0o700
+    assert _mode(path) == 0o600
+
+
+@_POSIX_ONLY
+def test_write_context_new_folder_and_file_are_private(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    previous = os.umask(0)  # the modes must not depend on the caller's umask
+    try:
+        path = Path(block.write_context({"version": 1}))
+    finally:
+        os.umask(previous)
+    assert _mode(path.parent) == 0o700
+    assert _mode(path) == 0o600
+
+
+@_POSIX_ONLY
+def test_write_context_refuses_a_folder_another_user_owns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    folder = tmp_path / "sqi-handoff"
+    folder.mkdir()
+    folder.chmod(0o777)
+    # The folder is really ours; pretend we are someone else. (st_uid, not os.getuid,
+    # so the test still type-checks on a Windows host, where os has no getuid.)
+    someone_else = folder.stat().st_uid + 1
+    monkeypatch.setattr("os.getuid", lambda: someone_else)
+    path = Path(block.write_context({"version": 1}))
+    assert path.parent != folder
+    assert path.parent.parent == tmp_path
+    assert path.parent.name.startswith("sqi-handoff-")
+    assert list(folder.iterdir()) == []  # nothing was written into the foreign folder
+    assert _mode(folder) == 0o777  # and it was not touched
+    assert _mode(path.parent) == 0o700
+    assert _mode(path) == 0o600
+
+
+@_POSIX_ONLY
+def test_write_context_refuses_a_symlinked_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    target = tmp_path / "attacker"
+    target.mkdir()
+    (tmp_path / "sqi-handoff").symlink_to(target, target_is_directory=True)
+    path = Path(block.write_context({"version": 1}))
+    assert path.parent.parent == tmp_path
+    assert path.parent.name.startswith("sqi-handoff-")
+    assert list(target.iterdir()) == []
 
 
 class _Recorder:
@@ -160,7 +263,7 @@ def test_launch_windows_ignores_foreground_errors(monkeypatch: pytest.MonkeyPatc
 def test_block_is_self_contained() -> None:
     text = _extract(HOSTS_DIR / "_handoff_block.py")
     assert "sqi_submitter" not in text
-    for needed in ("json", "os", "shutil", "subprocess", "sys", "tempfile"):
+    for needed in ("contextlib", "json", "os", "shutil", "stat", "subprocess", "sys", "tempfile"):
         assert f"import {needed}\n" in text
 
 

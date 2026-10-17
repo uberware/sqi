@@ -12,17 +12,18 @@ them. Windows-only calls are guarded so it imports and runs on every platform.
 """
 
 # --- sqi handoff begin ---
+import contextlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
-import uuid
 
 NOT_FOUND_MESSAGE = (
     "sqi-submit was not found. Install it on this machine with: "
-    "pip install 'sqi-submitter[qt]' — then set its full path in the sqi "
+    'pip install "sqi-submitter[qt]" — then set its full path in the sqi '
     "add-on/plugin settings, or as sqi_submit_command in ~/.sqi/submitter.json."
 )
 
@@ -32,7 +33,8 @@ def _settings_command() -> str:
         os.path.expanduser("~"), ".sqi", "submitter.json"
     )
     try:
-        with open(path, encoding="utf-8") as handle:
+        # utf-8-sig: PowerShell 5 writes UTF-8 with a BOM, which plain utf-8 rejects.
+        with open(path, encoding="utf-8-sig") as handle:
             value = json.load(handle).get("sqi_submit_command")
     except (OSError, ValueError, AttributeError):
         return ""
@@ -52,12 +54,35 @@ def resolve_submit_command(configured: str) -> str:
     raise RuntimeError(NOT_FOUND_MESSAGE)
 
 
+def _handoff_folder() -> str:
+    """``<tmp>/sqi-handoff`` if it is a directory only this user can enter, else a new one.
+
+    On Linux the temp folder is the shared ``/tmp``: another local user could create
+    ``sqi-handoff`` first, open to all, and swap the context file (and with it the
+    server the API key is sent to) before ``sqi-submit`` reads it.
+    """
+    base = tempfile.gettempdir()
+    folder = os.path.join(base, "sqi-handoff")
+    with contextlib.suppress(FileExistsError):  # not a directory: lstat below decides
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+    try:
+        info = os.lstat(folder)
+    except OSError:
+        return tempfile.mkdtemp(prefix="sqi-handoff-", dir=base)
+    getuid = getattr(os, "getuid", None)  # POSIX only
+    if not stat.S_ISDIR(info.st_mode) or (getuid is not None and info.st_uid != getuid()):
+        # A symlink, a file, or someone else's folder: use a fresh private one.
+        return tempfile.mkdtemp(prefix="sqi-handoff-", dir=base)
+    if getuid is not None and info.st_mode & 0o077:
+        os.chmod(folder, 0o700)
+    return folder
+
+
 def write_context(data: dict[str, object]) -> str:
-    """Write the handoff context to a new file in the temp folder; return its path."""
-    folder = os.path.join(tempfile.gettempdir(), "sqi-handoff")
-    os.makedirs(folder, exist_ok=True)
-    path = os.path.join(folder, "context-" + uuid.uuid4().hex + ".json")
-    with open(path, "w", encoding="utf-8") as handle:
+    """Write the handoff context to a new private file in the temp folder; return its path."""
+    # mkstemp creates the file exclusively and readable by this user only (0600).
+    fd, path = tempfile.mkstemp(prefix="context-", suffix=".json", dir=_handoff_folder())
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
         json.dump(data, handle)
     return path
 

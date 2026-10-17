@@ -1198,6 +1198,12 @@ in [Submitting several targets](#submitting-several-targets).
   happens, or that `sqi-submit` never reads, are not cleaned up: the shipped hosts
   write them to `<temp folder>/sqi-handoff/` (Python's `tempfile.gettempdir()`;
   After Effects' `Folder.temp`).
+- Blender and Cinema 4D keep the file private to the artist, because on Linux
+  the temp folder is the shared `/tmp` and the file names the server the API key
+  is sent to. The folder is created `0700` (an existing one this user owns is
+  tightened to `0700`), and each file is created exclusively, `0600`. If
+  `sqi-handoff` is a symlink, not a directory, or owned by another user, they
+  write to a fresh private `<temp folder>/sqi-handoff-<random>/` instead.
 - A UTF-8 byte order mark at the start of the file is accepted.
 
 The JSON Schema for version 1 is
@@ -1224,7 +1230,7 @@ A configured path that does not exist is skipped without complaint. If nothing
 is found, Blender reports (in its status bar) and Cinema 4D shows (in a dialog):
 
 ```
-sqi-submit was not found. Install it on this machine with: pip install 'sqi-submitter[qt]' — then set its full path in the sqi add-on/plugin settings, or as sqi_submit_command in ~/.sqi/submitter.json.
+sqi-submit was not found. Install it on this machine with: pip install "sqi-submitter[qt]" — then set its full path in the sqi add-on/plugin settings, or as sqi_submit_command in ~/.sqi/submitter.json.
 ```
 
 After Effects shows its own message instead, since it only knows the located
