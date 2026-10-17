@@ -36,11 +36,11 @@ task 1/3  name="Render[Frame=1-1,Frame.End=1,Frame.Start=1]"
     trap 'exit 143' TERM
     dir=$(mktemp -d "${TMPDIR:-/tmp}/aerender_wrapper.XXXXXX") || { echo 'aerender_wrapper: cannot create a temporary directory' >&2; exit 1; }
     { aerender "$@" 2>&1; echo "$?" >"$dir/status"; } | tee "$dir/log" || { echo 'aerender_wrapper: tee failed, so the output was not checked' >&2; exit 1; }
-    status=$(cat "$dir/status" 2>/dev/null)
-    case $status in
+    rc=$(cat "$dir/status" 2>/dev/null)
+    case $rc in
     0) ;;
     '') echo 'aerender_wrapper: aerender exit status unknown' >&2; exit 1 ;;
-    *) exit "$status" ;;
+    *) exit "$rc" ;;
     esac
     grep -qiF 'aerender ERROR' "$dir/log"
     case $? in
@@ -77,11 +77,11 @@ task 2/3  name="Render[Frame=5-5,Frame.End=5,Frame.Start=5]"
     trap 'exit 143' TERM
     dir=$(mktemp -d "${TMPDIR:-/tmp}/aerender_wrapper.XXXXXX") || { echo 'aerender_wrapper: cannot create a temporary directory' >&2; exit 1; }
     { aerender "$@" 2>&1; echo "$?" >"$dir/status"; } | tee "$dir/log" || { echo 'aerender_wrapper: tee failed, so the output was not checked' >&2; exit 1; }
-    status=$(cat "$dir/status" 2>/dev/null)
-    case $status in
+    rc=$(cat "$dir/status" 2>/dev/null)
+    case $rc in
     0) ;;
     '') echo 'aerender_wrapper: aerender exit status unknown' >&2; exit 1 ;;
-    *) exit "$status" ;;
+    *) exit "$rc" ;;
     esac
     grep -qiF 'aerender ERROR' "$dir/log"
     case $? in
@@ -118,11 +118,11 @@ task 3/3  name="Render[Frame=9-9,Frame.End=9,Frame.Start=9]"
     trap 'exit 143' TERM
     dir=$(mktemp -d "${TMPDIR:-/tmp}/aerender_wrapper.XXXXXX") || { echo 'aerender_wrapper: cannot create a temporary directory' >&2; exit 1; }
     { aerender "$@" 2>&1; echo "$?" >"$dir/status"; } | tee "$dir/log" || { echo 'aerender_wrapper: tee failed, so the output was not checked' >&2; exit 1; }
-    status=$(cat "$dir/status" 2>/dev/null)
-    case $status in
+    rc=$(cat "$dir/status" 2>/dev/null)
+    case $rc in
     0) ;;
     '') echo 'aerender_wrapper: aerender exit status unknown' >&2; exit 1 ;;
-    *) exit "$status" ;;
+    *) exit "$rc" ;;
     esac
     grep -qiF 'aerender ERROR' "$dir/log"
     case $? in

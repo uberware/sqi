@@ -15,8 +15,8 @@ var dccLayouts = []rendererLayout{
 	{
 		// Commandline is generic enough to collide with unrelated software,
 		// so there is no exe check (the mistikavr.yaml rule). The Linux
-		// folder carries no year the version regex reads, so only the
-		// Windows and macOS installs yield a version.
+		// folder carries no year the version regex reads. Only the Windows
+		// path is asserted for a version (versioned holds one path).
 		tag: "cinema4d",
 		exe: "",
 		installs: []string{

@@ -117,16 +117,16 @@ func TestSQIReferencePresets(t *testing.T) {
 			params:       []string{"SceneFile"},
 			noExtensions: true,
 		},
-		// The three Mistika presets invoke the renderer as `-s START -e END`,
-		// so they need a chunk's bounds rather than the chunk itself. They are
-		// not alone in that: the two Maya presets, the two Blender presets,
-		// vray-standalone-render, the two Cinema 4D presets, 3dsmax-render and
-		// both after-effects-render variants also declare SQI_CHUNK_BOUNDS,
-		// thirteen of the twenty-five render presets. Houdini and the two Nuke
-		// presets take a frame list directly; husk-usd-render computes its
-		// start and count with EXPR; the other standalone renderers render one
-		// file per frame and do not chunk, and nor do the whole-queue After
-		// Effects presets.
+		// The three Mistika presets invoke the renderer as `-s START -e
+		// END`, so they need a chunk's bounds rather than the chunk itself.
+		// They are not alone in that: the two Maya presets, the two Blender
+		// presets, vray-standalone-render, the two Cinema 4D presets,
+		// 3dsmax-render and both after-effects-render variants also declare
+		// SQI_CHUNK_BOUNDS, thirteen of the twenty-five render presets.
+		// Houdini and the two Nuke presets take a frame list directly;
+		// husk-usd-render computes its start and count with EXPR; the other
+		// standalone renderers render one file per frame and do not chunk,
+		// and nor do the whole-queue After Effects presets.
 		"mistika-boutique-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames"},

@@ -47,8 +47,11 @@ presets:
         bpy.context.scene is the scene -S selected when the expression runs; that
         a use=False layer is skipped by -a; that sys.exit with a message in a
         --python-expr stops Blender with a non-zero status before -a renders;
-        what -S does when the scene does not exist; the #### padding token in -o
-        and whether Blender appends its own extension, as in blender-batch-render.
+        that the expression's generator, which refers to a name bound in the
+        --python-expr namespace, resolves it, which assumes Blender runs the
+        expression with one shared globals/locals dict (a stub with separate
+        dicts raised NameError); what -S does when the scene does not exist;
+        the #### padding token in -o and whether Blender appends its own extension, as in blender-batch-render.
     tier3:
       case: TestPresetTier3/blender-view-layer-render/default
       required_on: [linux, darwin, windows]
@@ -164,10 +167,15 @@ presets:
         writes as a flat comma list of single frames (1,2,...,10 in the default
         case; three tasks such as 1,3,...,19 for the stepped-range case's thirty
         frames), so no shipped expansion reaches the driver's lo-hi or :step
-        branches. Still, no Houdini or hython installation has executed it:
-        hou.hipFile.load, hou.node and RopNode.render(frame_range=...) are
-        unexercised, and a golden cannot show that hython puts the script's own
-        path in sys.argv[0].
+        branches. The driver merges each run of consecutive frames into one
+        rop.render(frame_range=(lo, hi, 1)) call, so an unstepped chunk renders
+        as one call, as it did before the switch to NONCONTIGUOUS, and a stepped
+        range renders one call per frame; a stub hou module checks that
+        (TestHoudiniROPRender_DriverCoalescesFrameRuns), but that one call per
+        chunk behaves as before is unverified on a real Houdini. No Houdini or
+        hython installation has executed it: hou.hipFile.load, hou.node and
+        RopNode.render(frame_range=...) are unexercised, and a golden cannot
+        show that hython puts the script's own path in sys.argv[0].
     tier3:
       case: TestPresetTier3/houdini-rop-render/default
       required_on: [linux, darwin, windows]
@@ -421,10 +429,11 @@ presets:
         chunk size, and 1-9:4 splitting into -frame 1 1, -frame 5 5 and
         -frame 9 9. No Cinema 4D has executed it. Unverified: -take with a
         child take's name alone, and with "all"; what happens when -take is
-        omitted, as cinema4d-render does (Deadline reports the current take); a blank OutputPath reaches Commandline as -oimage "" and what
-        Commandline does with that; whether the -frame end is inclusive; the
-        exit status on failure, which Maxon does not document; the macOS
-        Commandline path. Every node also needs licensing before it can render.
+        omitted, as cinema4d-render does; a blank OutputPath reaches
+        Commandline as -oimage "" and what Commandline does with that; whether
+        the -frame end is inclusive; the exit status on failure, which Maxon
+        does not document; the macOS Commandline path. Every node also needs
+        licensing before it can render.
     tier3:
       case: TestPresetTier3/cinema4d-take-render/default
       required_on: [linux, darwin, windows]

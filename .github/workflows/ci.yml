@@ -1695,7 +1695,8 @@ jobs:
             TestTLSWorkerWithoutCAIsRefused
             # The After Effects macOS presets' sh wrapper, run with the
             # os.family gate stripped: no macOS runner exists, so this is the
-            # only CI job where that wrapper's exit-status pin runs.
+            # only Linux job that asserts that wrapper's exit-status pin by
+            # name.
             # preset-harness-windows asserts the Windows wrapper.
             TestAfterEffectsPreset_WrapperFailsOnLoggedError
           )

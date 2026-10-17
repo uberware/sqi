@@ -251,7 +251,7 @@ so they are submitted from the web UI or the API like any other product.
 |---|---|---|---|---|
 | `maya-layer-render` | `Render -r <renderer> -s/-e <frame> -rl <layer> -rd <dir> <scene>` | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `OutputDir`, `Renderer` (default `file`), `RenderLayer` (default `masterLayer`) | `attr.worker.tag.maya = "true"` |
 | `maya-scene-render` | `Render -r <renderer> -s/-e <frame> -rd <dir> <scene>` (no `-rl`) | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `OutputDir`, `Renderer` (default `file`) | `attr.worker.tag.maya = "true"` |
-| `houdini-rop-render` | `hython` running an embedded chunk script that loads the hip file and calls `rop.render()` for each frame in the chunk | chunks of 10 | `SceneFile`, `Frames`, `RopPath` | `attr.worker.tag.houdini = "true"` |
+| `houdini-rop-render` | `hython` running an embedded chunk script that loads the hip file and calls `rop.render()` once per run of consecutive frames in the chunk | chunks of 10 | `SceneFile`, `Frames`, `RopPath` | `attr.worker.tag.houdini = "true"` |
 | `nuke-write-render` | `nuke -x -X <writeNode> -F <range> <script>` | chunks of 10 | `SceneFile`, `Frames`, `WriteNode` | `attr.worker.tag.nuke = "true"` |
 | `nuke-script-render` | `nuke -x -F <range> <script>` (no `-X`; all enabled Write nodes) | chunks of 10 | `SceneFile`, `Frames` | `attr.worker.tag.nuke = "true"` |
 | `blender-batch-render` | `blender -b <file> -o <output> -s/-e <frame range> -a` | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `OutputPath` (optional; blank = scene setting) | `attr.worker.tag.blender = "true"` |

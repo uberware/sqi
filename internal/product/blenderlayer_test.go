@@ -68,6 +68,9 @@ func TestBlenderViewLayerRender_LayerNameIsNeverInPythonSource(t *testing.T) {
 	if strings.Contains(source, "{{") {
 		t.Errorf("the Python expression contains template substitution: %q", source)
 	}
+	if !strings.Contains(source, "sys.argv") {
+		t.Errorf("the Python expression does not read the layer name from sys.argv: %q", source)
+	}
 	if strings.ContainsAny(source, "\r\n") {
 		t.Errorf("the Python expression contains a line break, which OpenJD forbids in a literal arg: %q", source)
 	}

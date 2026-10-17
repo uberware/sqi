@@ -3,8 +3,9 @@
 # Cinema 4D Take Render. Every case passes a take name containing double
 # quotes, and a scene path containing a space, so the goldens show each
 # travelling as a single argument. OutputPath is supplied because -oimage is
-# always passed. stepped-range shows a gap-bearing range splitting into one
-# chunk per run of consecutive frames.
+# always passed. stepped-range shows a gap-bearing range never producing a
+# -frame span that covers a frame the range excluded: a CONTIGUOUS chunk
+# cannot span a gap, so 1-9:4 becomes -frame 1 1, -frame 5 5 and -frame 9 9.
 cases:
   - name: default
     params:

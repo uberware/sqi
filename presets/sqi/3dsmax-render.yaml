@@ -46,8 +46,8 @@ readme: |
     from a worker running as a service with no interactive session is
     unverified.
   - Launch 3ds Max once as an administrator on each render node before the
-    first job. This is Deadline's advice for headless rendering; the cause is
-    not documented by Autodesk.
+    first job. This is Deadline's advice for headless rendering; no reason is
+    given for it.
 category: Rendering
 version: 1.0.0
 template:

@@ -28,11 +28,17 @@ type aeOS struct {
 	command string
 	// filename is the wrapper's embedded file name.
 	filename string
+	// launch is every onRun argument before the wrapper reference: the
+	// interpreter's own flags.
+	launch []string
 }
 
 var (
-	aeWindows = aeOS{suffix: "windows", family: "windows", command: "powershell", filename: "aerender_wrapper.ps1"}
-	aeMacOS   = aeOS{suffix: "macos", family: "macos", command: "/bin/sh", filename: "aerender_wrapper.sh"}
+	aeWindows = aeOS{
+		suffix: "windows", family: "windows", command: "powershell", filename: "aerender_wrapper.ps1",
+		launch: []string{"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"},
+	}
+	aeMacOS = aeOS{suffix: "macos", family: "macos", command: "/bin/sh", filename: "aerender_wrapper.sh"}
 )
 
 // aePresetKinds are the After Effects presets shipped as a Windows/macOS pair.
@@ -147,15 +153,39 @@ func compareAESteps(t *testing.T, win, mac map[string]any) {
 		t.Errorf("step %q: aerender argv differs:\n windows: %v\n   macos: %v", name, winArgs, macArgs)
 	}
 	winScript, macScript := mapField(win, "script"), mapField(mac, "script")
+	// Everything in script.actions but onRun's command and args must match:
+	// an onRun.timeout, a cancelation setting or an onEnter/onExit action
+	// added to one variant is drift. The command and the args up to the
+	// wrapper reference are pinned per OS by aerenderArgv instead.
+	winActions := actionsWithoutLaunch(winScript)
+	macActions := actionsWithoutLaunch(macScript)
+	if !reflect.DeepEqual(winActions, macActions) {
+		t.Errorf("step %q: script.actions differ beyond onRun's command and launch args:\n windows: %v\n   macos: %v",
+			name, winActions, macActions)
+	}
 	for _, key := range unionKeys(winScript, macScript) {
 		switch key {
-		case "embeddedFiles", "actions":
-			continue // the wrapper and its invocation, compared above
+		case "embeddedFiles":
+			continue // the wrapper, compared by TestAfterEffectsPresets_WrapperSharedWithinOS
+		case "actions":
+			// Compared above, minus the part that legitimately differs.
+			continue
 		}
 		if !reflect.DeepEqual(winScript[key], macScript[key]) {
 			t.Errorf("step %q: script.%s differs", name, key)
 		}
 	}
+}
+
+// actionsWithoutLaunch returns a script's actions with onRun's command and
+// args removed, leaving the rest of onRun and every other action.
+func actionsWithoutLaunch(script map[string]any) map[string]any {
+	actions := maps.Clone(mapField(script, "actions"))
+	onRun := maps.Clone(asMap(actions["onRun"]))
+	delete(onRun, "command")
+	delete(onRun, "args")
+	actions["onRun"] = onRun
+	return actions
 }
 
 // splitOSFamily returns a step's hostRequirements with the os.family
@@ -201,6 +231,13 @@ func aerenderArgv(t *testing.T, name string, v aeOS, step map[string]any) []any 
 	i := slices.Index(args, any(aeWrapperRef))
 	if i < 0 {
 		t.Fatalf("step %q: %s variant args do not pass %s: %v", name, v.suffix, aeWrapperRef, args)
+	}
+	var launch []string
+	for _, a := range args[:i] {
+		launch = append(launch, fmt.Sprint(a))
+	}
+	if !slices.Equal(launch, v.launch) {
+		t.Errorf("step %q: %s variant args before %s = %v, want %v", name, v.suffix, aeWrapperRef, launch, v.launch)
 	}
 	return args[i+1:]
 }

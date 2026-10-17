@@ -25,10 +25,26 @@ task 1/3  name="Render[Frames=1,3,5,7,9,11,13,15,17,19]"
     rop = hou.node(rop_path)
     if rop is None:
         raise SystemExit("no such ROP: " + rop_path)
+    # sqi hands a chunk over as single frames. Merge each run of
+    # consecutive frames into one render call; a lo-hi:step part is
+    # rendered as written.
+    run = None
     for part in frames.split(","):
         expr, _, step = part.partition(":")
         lo, _, hi = expr.partition("-")
-        rop.render(frame_range=(int(lo), int(hi or lo), int(step or 1)))
+        if hi or step:
+            if run:
+                rop.render(frame_range=(run[0], run[1], 1))
+                run = None
+            rop.render(frame_range=(int(lo), int(hi or lo), int(step or 1)))
+        elif run and int(lo) == run[1] + 1:
+            run[1] = int(lo)
+        else:
+            if run:
+                rop.render(frame_range=(run[0], run[1], 1))
+            run = [int(lo), int(lo)]
+    if run:
+        rop.render(frame_range=(run[0], run[1], 1))
 
 task 2/3  name="Render[Frames=21,23,25,27,29,31,33,35,37,39]"
   task params:
@@ -48,10 +64,26 @@ task 2/3  name="Render[Frames=21,23,25,27,29,31,33,35,37,39]"
     rop = hou.node(rop_path)
     if rop is None:
         raise SystemExit("no such ROP: " + rop_path)
+    # sqi hands a chunk over as single frames. Merge each run of
+    # consecutive frames into one render call; a lo-hi:step part is
+    # rendered as written.
+    run = None
     for part in frames.split(","):
         expr, _, step = part.partition(":")
         lo, _, hi = expr.partition("-")
-        rop.render(frame_range=(int(lo), int(hi or lo), int(step or 1)))
+        if hi or step:
+            if run:
+                rop.render(frame_range=(run[0], run[1], 1))
+                run = None
+            rop.render(frame_range=(int(lo), int(hi or lo), int(step or 1)))
+        elif run and int(lo) == run[1] + 1:
+            run[1] = int(lo)
+        else:
+            if run:
+                rop.render(frame_range=(run[0], run[1], 1))
+            run = [int(lo), int(lo)]
+    if run:
+        rop.render(frame_range=(run[0], run[1], 1))
 
 task 3/3  name="Render[Frames=41,43,45,47,49,51,53,55,57,59]"
   task params:
@@ -71,7 +103,23 @@ task 3/3  name="Render[Frames=41,43,45,47,49,51,53,55,57,59]"
     rop = hou.node(rop_path)
     if rop is None:
         raise SystemExit("no such ROP: " + rop_path)
+    # sqi hands a chunk over as single frames. Merge each run of
+    # consecutive frames into one render call; a lo-hi:step part is
+    # rendered as written.
+    run = None
     for part in frames.split(","):
         expr, _, step = part.partition(":")
         lo, _, hi = expr.partition("-")
-        rop.render(frame_range=(int(lo), int(hi or lo), int(step or 1)))
+        if hi or step:
+            if run:
+                rop.render(frame_range=(run[0], run[1], 1))
+                run = None
+            rop.render(frame_range=(int(lo), int(hi or lo), int(step or 1)))
+        elif run and int(lo) == run[1] + 1:
+            run[1] = int(lo)
+        else:
+            if run:
+                rop.render(frame_range=(run[0], run[1], 1))
+            run = [int(lo), int(lo)]
+    if run:
+        rop.render(frame_range=(run[0], run[1], 1))
