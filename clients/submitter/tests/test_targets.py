@@ -149,6 +149,19 @@ def test_target_parameter_edit_is_ignored() -> None:
     assert [_values(m) for _, m in edited] == [_values(m) for _, m in base]
 
 
+def test_explicit_target_params_keep_edits_to_keys_a_subset_shares() -> None:
+    params = [_p("SceneFile", "PATH"), _p("Pass"), _p("OutputPath", "PATH")]
+    a = RenderTarget(name="A", kind="pass", extra={"Pass": "A", "OutputPath": "/a"})
+    edited = {"OutputPath": "/edited", "Pass": "ZZZ"}
+    # Derived from the given targets, A alone makes OutputPath a target parameter.
+    (derived,) = per_target_models(params, CTX, [a], edited)
+    assert _values(derived[1])["OutputPath"] == "/a"
+    # Given the set computed over every target, the edit is honoured.
+    (explicit,) = per_target_models(params, CTX, [a], edited, target_params=frozenset({"Pass"}))
+    assert _values(explicit[1])["OutputPath"] == "/edited"
+    assert _values(explicit[1])["Pass"] == "A"  # a real target parameter stays the target's
+
+
 def test_edit_for_unknown_parameter_is_ignored() -> None:
     models = per_target_models(BLENDER_PARAMS, CTX, _blender_targets(), {"Nope": "1"})
     assert all("Nope" not in _values(m) for _, m in models)

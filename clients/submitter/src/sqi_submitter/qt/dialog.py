@@ -479,7 +479,13 @@ class SubmitDialog(QtWidgets.QDialog):
             model = FormModel.from_parameters(self._parameters)
         elif ticked:
             context = self.adapter.scene_context()
-            _, model = per_target_models(self._parameters, context, ticked[:1], self.edited)[0]
+            _, model = per_target_models(
+                self._parameters,
+                context,
+                ticked[:1],
+                self.edited,
+                target_params=self._target_params,
+            )[0]
             return model
         else:
             model = FormModel.from_parameters(self._parameters)
@@ -591,12 +597,19 @@ class SubmitDialog(QtWidgets.QDialog):
         self, ticked: Sequence[RenderTarget]
     ) -> list[tuple[RenderTarget, FormModel]]:
         assert self.adapter is not None  # per-target implies targets, so an adapter
+        # The all-targets set, never one derived from the ticked subset: an
+        # edit must not be honoured or dropped depending on what else is ticked.
         models = per_target_models(
-            self._parameters, self.adapter.scene_context(), ticked, self.edited
+            self._parameters,
+            self.adapter.scene_context(),
+            ticked,
+            self.edited,
+            target_params=self._target_params,
         )
         if len(models) == 1:
             # One ticked target behaves like a single-target pre-fill: an edit
-            # to its target parameter is the artist's to make.
+            # to its target parameter is the artist's to make (per_target_models
+            # always keeps a target parameter the target's own).
             _, model = models[0]
             for name in self._target_params:
                 if name in self.edited:

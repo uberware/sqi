@@ -45,14 +45,23 @@ def per_target_models(
     context: SceneContext,
     targets: Sequence[RenderTarget],
     edited: Mapping[str, str],
+    *,
+    target_params: frozenset[str] | None = None,
 ) -> list[tuple[RenderTarget, FormModel]]:
     """Build one pre-filled form model per target.
 
     Each model starts from the parameter defaults plus ``prefill`` for that
     target, then takes the artist's ``edited`` values, except for target
     parameters (always the target's own) and for keys the target ``locked``.
+
+    ``target_params`` defaults to :func:`target_parameters` over ``targets``.
+    A caller building models for a *subset* of the host's targets (the ticked
+    ones) passes the set computed over all of them: otherwise a key every
+    ticked target happens to carry would count as a target parameter, and an
+    edit to it would be honoured or dropped depending on what else is ticked.
     """
-    target_params = target_parameters(parameters, targets)
+    if target_params is None:
+        target_params = target_parameters(parameters, targets)
     models: list[tuple[RenderTarget, FormModel]] = []
     for target in targets:
         model = FormModel.from_parameters(parameters)

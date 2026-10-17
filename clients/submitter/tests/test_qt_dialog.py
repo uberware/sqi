@@ -397,8 +397,19 @@ class PassAdapter(MiniAdapter):
         return targets
 
 
+class SubsetAdapter(PassAdapter):
+    """A carries an ``OutputPath`` extra that B lacks: a per-target pre-fill value."""
+
+    def render_targets(self) -> list[RenderTarget]:
+        return [
+            RenderTarget(name="A", kind="pass", extra={"Pass": "A", "OutputPath": "/a"}),
+            RenderTarget(name="B", kind="pass", extra={"Pass": "B"}),
+        ]
+
+
 def _mock_pass_server(
     responses: "list[httpx.Response] | None" = None,
+    extra_params: "list[dict[str, str]] | None" = None,
 ) -> respx.Route:
     _mock_server(
         products=[
@@ -414,6 +425,7 @@ def _mock_pass_server(
                 {"name": "Frames", "type": "STRING"},
                 {"name": "Pass", "type": "STRING"},
                 {"name": "FramesPerTask", "type": "INT", "default": "1"},
+                *(extra_params or []),
             ],
         )
     )
@@ -705,3 +717,31 @@ def test_whole_scene_submit_reports_one_job(app: object, monkeypatch: pytest.Mon
     ((_title, text),) = boxes
     assert "job j1" in text
     assert f"{BASE}/jobs/j1" in text
+
+
+@respx.mock
+def test_edit_to_a_key_only_some_targets_share_applies_to_every_job(
+    app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whether an edit is honoured must not depend on which other targets are ticked."""
+    route = _mock_pass_server(
+        extra_params=[{"name": "OutputPath", "type": "PATH", "default": "/default"}]
+    )
+    _capture_boxes(monkeypatch)
+    dialog = _pass_dialog(SubsetAdapter())
+    assert _ticked(dialog) == ["A"]
+    line = _field(dialog, "OutputPath")
+    assert line.text() == "/a"
+    line.setText("/edited")
+    line.editingFinished.emit()
+    assert dialog.edited == {"OutputPath": "/edited"}
+
+    dialog.submit_and_wait()  # only A ticked
+    assert json.loads(route.calls.last.request.content)["parameters"]["OutputPath"] == "/edited"
+
+    _tick(dialog, "B")
+    assert _field(dialog, "OutputPath").text() == "/edited"
+    assert _field(dialog, "OutputPath").isEnabled()
+    dialog.submit_and_wait()  # A and B ticked
+    outputs = [json.loads(c.request.content)["parameters"]["OutputPath"] for c in route.calls]
+    assert outputs == ["/edited", "/edited", "/edited"]
