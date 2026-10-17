@@ -62,7 +62,8 @@ type TaskLog struct {
 // TaskLogStore is the persistence interface for [TaskLog] records.
 type TaskLogStore interface {
 	// CreateTaskLog inserts a new log chunk. The caller must populate all
-	// fields including a unique ID.
+	// fields including a unique ID. A chunk whose AttemptID and SeqNum are
+	// already stored is not written again; CreateTaskLog returns [ErrConflict].
 	CreateTaskLog(ctx context.Context, log TaskLog) (TaskLog, error)
 
 	// ListTaskLogs returns log chunks for a task attempt in NATSSeq ascending

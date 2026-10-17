@@ -978,6 +978,17 @@ jobs:
       # TestPGRace_G7_DeleteJobHoldsOffALogThatRaced and
       # TestPGRace_G7_RetentionHoldsOffALogThatRaced cover the same race at
       # its two call sites.
+      #
+      # The restore and store copy tests (TestPostgres_Restore*,
+      # TestRestorePostgres_*, TestStoreCopy*) are listed because each skips
+      # without PostgreSQL: a run that never reached a server would otherwise
+      # pass them all. TestBackupRestore_FarmResumes and
+      # TestUpgrade_OlderBinaryRefused are the integration-phase tests run with
+      # the server on PostgreSQL; TestStoreCopy_SQLiteToPostgres skips in the
+      # SQLite integration job (no PostgreSQL configured), so only this job
+      # can assert it. TestPostgres_OpenRefusesANewerSchema is named apart
+      # from the SQLite package's TestOpen_RefusesANewerSchema, whose PASS
+      # line would otherwise satisfy the check.
       - name: Run PostgreSQL tests
         run: |
           set +e
@@ -1011,6 +1022,40 @@ jobs:
             TestPostgres_BackupRestoreRoundTrip
             TestConcurrentStress_Postgres
             TestEXPRJobEndToEnd
+            TestPostgres_RestoreRoundTrip
+            TestPostgres_RestoreOfACorruptArchiveLeavesTheDatabaseEmpty
+            TestPostgres_SchemaVersionDSN
+            TestPostgres_OpenRefusesANewerSchema
+            TestPostgres_RestoreSkipsGrantsToAbsentRoles
+            TestPostgres_RequireEmptyDatabaseSeesTablesTheRoleCannotAccess
+            TestPostgres_ArchiveSchemaVersionReportsToolProblemsAsSuch
+            TestPostgres_ReadsAMixedCaseSchema
+            TestMigration00038_DedupesLogChunksOnPostgreSQL
+            TestLockDatabase_ExcludesAServerAndIsReleasable
+            TestParity_ListOpenAttempts/postgres
+            TestParity_CreateTaskLog_DuplicateChunkIsAConflict/postgres
+            TestRestorePostgres_FencesAndRefusesANonEmptyTarget
+            TestRestorePostgres_RefusesANewerBackupWithoutTouchingTheTarget
+            TestRestorePostgres_RefusesAFileThatIsNotAnSQIBackup
+            TestRestorePostgres_InPlaceFencesTheConfiguredDatabase
+            TestRestorePostgres_InPlaceRefusesAnEmptyDatabase
+            TestRestorePostgres_InPlaceRefusesANewerSchema
+            TestRestorePostgres_AMissingPgRestoreIsNotABadBackup
+            TestStoreCopy_CopiesEveryRowVerbatim
+            TestStoreCopy_NeverWritesASourceWithAPendingWAL
+            TestStoreCopy_RefusesANonEmptyTarget
+            TestStoreCopy_RefusesASourceBehindTheBinary
+            TestStoreCopy_RefusesASourceAheadOfTheBinary
+            TestStoreCopy_RefusesATargetAtAnotherVersion
+            TestStoreCopy_RefusesWhileAServerHoldsTheSource
+            TestStoreCopy_RefusesWhileAServerHoldsTheTarget
+            TestStoreCopy_RefusesAForeignTableInTheTarget
+            TestStoreCopy_RefusesANonBooleanInABooleanColumn
+            TestStoreCopy_NamesTheRowAndColumnPostgreSQLRefuses
+            TestStoreCopyCmd_CopiesIntoPostgres
+            TestStoreCopy_SQLiteToPostgres
+            TestBackupRestore_FarmResumes
+            TestUpgrade_OlderBinaryRefused
           )
           missing=0
           for name in "${expected[@]}"; do
@@ -1639,6 +1684,9 @@ jobs:
             TestEnrollment_ConnectsToRunningBrokerWithoutRestart
             TestEXPRParamTypes_BindAndCarry
             TestEXPRJobEndToEnd
+            TestBackupRestore_FarmResumes
+            TestRestore_MixedAgeNATSDir
+            TestUpgrade_OlderBinaryRefused
             TestTaskFailureReason_VisibleEndToEnd
             TestWorkerBinaryStagingFailureReason
             TestProductSubmit_RetryOverrides

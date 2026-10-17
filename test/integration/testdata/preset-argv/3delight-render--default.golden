@@ -1,0 +1,31 @@
+preset: 3delight-render
+case:   default
+params:
+  Frames=1-3
+  SceneFile=/mnt/show/seq010/shot0010/nsi/shot0010_beauty.####.nsi
+
+step "Render" — 3 tasks
+
+task 1/3  name="Render[Frame=1]"
+  task params:
+    Frame=1
+  command: renderdl
+  args:
+    [0]  -progress
+    [1]  /mnt/show/seq010/shot0010/nsi/shot0010_beauty.0001.nsi
+
+task 2/3  name="Render[Frame=2]"
+  task params:
+    Frame=2
+  command: renderdl
+  args:
+    [0]  -progress
+    [1]  /mnt/show/seq010/shot0010/nsi/shot0010_beauty.0002.nsi
+
+task 3/3  name="Render[Frame=3]"
+  task params:
+    Frame=3
+  command: renderdl
+  args:
+    [0]  -progress
+    [1]  /mnt/show/seq010/shot0010/nsi/shot0010_beauty.0003.nsi

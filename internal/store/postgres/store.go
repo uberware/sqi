@@ -98,6 +98,9 @@ func Open(ctx context.Context, dsn string, opts Options) (*Store, error) {
 			return fail(err)
 		}
 	}
+	if err := checkSchemaVersion(ctx, db); err != nil {
+		return fail(err)
+	}
 	if opts.AutoMigrate {
 		if err := migrateUp(ctx, db); err != nil {
 			return fail(err)
@@ -113,6 +116,18 @@ func Open(ctx context.Context, dsn string, opts Options) (*Store, error) {
 		return fail(err)
 	}
 	return s, nil
+}
+
+// checkSchemaVersion refuses a database a newer sqi-server migrated.
+func checkSchemaVersion(ctx context.Context, db *sql.DB) error {
+	v, err := SchemaVersion(ctx, db)
+	if err != nil {
+		return err
+	}
+	if err := migrations.CheckVersion("postgres", v); err != nil {
+		return fmt.Errorf("postgres: %w", err)
+	}
+	return nil
 }
 
 // migrateUp applies every pending migration.
@@ -218,6 +233,17 @@ func (s *Store) closePools() error {
 		errs = append(errs, s.db.Close())
 	}
 	return errors.Join(errs...)
+}
+
+// SchemaVersionDSN is [SchemaVersion] for the database dsn names, on a
+// connection of its own.
+func SchemaVersionDSN(ctx context.Context, dsn string) (int64, error) {
+	db, err := openPool(dsn, 1)
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+	return SchemaVersion(ctx, db)
 }
 
 // SchemaVersion returns the highest applied goose version, or 0 when the

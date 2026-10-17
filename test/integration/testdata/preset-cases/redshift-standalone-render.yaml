@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Redshift Standalone Render: one task per frame. windows-path shows a C:\...
+# pattern substituted with the rest of the path unchanged.
+cases:
+  - name: default
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/render/shot0010_beauty.####.rs
+      Frames: "1-3"
+    expect_tasks: 3
+    expect_invocations:
+      redshiftCmdLine: 3
+  - name: padding-and-step
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/render/shot0010_beauty.######.rs
+      Frames: "1001-1009:4"
+    expect_tasks: 3
+    expect_invocations:
+      redshiftCmdLine: 3
+  - name: windows-path
+    params:
+      SceneFile: 'C:\shows\seq010\shot0010\shot0010.####.rs'
+      Frames: "7"
+    expect_tasks: 1
+    expect_invocations:
+      redshiftCmdLine: 1

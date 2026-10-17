@@ -1,0 +1,25 @@
+preset: husk-usd-render
+case:   renderer
+params:
+  Frames=1
+  Renderer=BRAY_HdKarmaXPU
+  SceneFile=/mnt/show/seq010/shot0010/usd/shot0010_lighting.usd
+
+step "Render" — 1 task
+
+task 1/1  name="Render[Frame=1-1]"
+  task params:
+    Frame=1-1
+  command: husk
+  args:
+    [0]  --renderer
+    [1]  BRAY_HdKarmaXPU
+    [2]  --frame
+    [3]  1
+    [4]  --frame-count
+    [5]  1
+    [6]  --make-output-path
+    [7]  --no-mplay
+    [8]  -V
+    [9]  2a
+    [10]  /mnt/show/seq010/shot0010/usd/shot0010_lighting.usd

@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Arnold Kick Render: one task per frame. default includes a frame wider than
+# the #### run (12345, written in full); padding-and-step uses ###### over a
+# stepped range.
+cases:
+  - name: default
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/render/shot0010_beauty.####.ass
+      Frames: "1-3,12345"
+    expect_tasks: 4
+    expect_invocations:
+      kick: 4
+  - name: padding-and-step
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/render/shot0010_beauty.######.ass
+      Frames: "1001-1009:4"
+    expect_tasks: 3
+    expect_invocations:
+      kick: 3

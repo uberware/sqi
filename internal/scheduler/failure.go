@@ -117,24 +117,41 @@ func (s *Scheduler) handleTaskFailed(ctx context.Context, attempt store.TaskAtte
 // applies first does the work; the other finds the attempt closed and does
 // nothing, so both orders end in the same state.
 func (s *Scheduler) handleTaskShutdown(ctx context.Context, attempt store.TaskAttempt, m protocol.TaskStatusMsg) error {
-	reclaimed, err := s.store.ReclaimTaskAttempt(ctx, attempt.ID, m.TaskID, time.Now().UTC())
+	reclaimed, err := s.reclaimAttempt(ctx, attempt.ID, m.TaskID, time.Now().UTC())
 	if err != nil {
 		return err
 	}
-	s.attemptCache.evict(attempt.ID)
 	if !reclaimed {
 		s.logger.InfoContext(ctx, "scheduler: shutdown report for an attempt already closed — discarding",
 			slog.String("task_id", m.TaskID), slog.String("attempt_id", attempt.ID))
 		return nil
 	}
-	task, err := s.store.GetTask(ctx, m.TaskID)
-	if err != nil {
-		return err
-	}
 	s.logger.InfoContext(ctx, "scheduler: task reclaimed from a shutting-down worker",
 		slog.String("task_id", m.TaskID), slog.String("worker_id", attempt.WorkerID))
-	s.notifyTaskReclaimed(ctx, task, time.Now().UTC())
 	return nil
+}
+
+// reclaimAttempt closes attemptID as a worker shutdown and hands its task back
+// to ready, then does what every reclaim needs after it: evicts the attempt's
+// cached owner (closed either way, by this reclaim or meanwhile by a report, a
+// cancel or the offline sweep, so it can receive no further log chunk) and
+// notifies the task's return. reclaimed is false when the attempt was already
+// closed; it stays true when only the follow-up read fails.
+func (s *Scheduler) reclaimAttempt(ctx context.Context, attemptID, taskID string, now time.Time) (reclaimed bool, err error) {
+	reclaimed, err = s.store.ReclaimTaskAttempt(ctx, attemptID, taskID, now)
+	if err != nil {
+		return false, err
+	}
+	s.attemptCache.evict(attemptID)
+	if !reclaimed {
+		return false, nil
+	}
+	task, err := s.store.GetTask(ctx, taskID)
+	if err != nil {
+		return true, fmt.Errorf("read reclaimed task: %w", err)
+	}
+	s.notifyTaskReclaimed(ctx, task, now)
+	return true, nil
 }
 
 // retryTaskAfterFailure re-queues the task with backoff. Split out of

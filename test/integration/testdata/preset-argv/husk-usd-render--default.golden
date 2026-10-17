@@ -1,0 +1,53 @@
+preset: husk-usd-render
+case:   default
+params:
+  Frames=1-3
+  Renderer=
+  SceneFile=/mnt/show/seq010/shot0010/usd/shot0010_lighting.usd
+
+step "Render" — 3 tasks
+
+task 1/3  name="Render[Frame=1-1]"
+  task params:
+    Frame=1-1
+  command: husk
+  args:
+    [0]  --frame
+    [1]  1
+    [2]  --frame-count
+    [3]  1
+    [4]  --make-output-path
+    [5]  --no-mplay
+    [6]  -V
+    [7]  2a
+    [8]  /mnt/show/seq010/shot0010/usd/shot0010_lighting.usd
+
+task 2/3  name="Render[Frame=2-2]"
+  task params:
+    Frame=2-2
+  command: husk
+  args:
+    [0]  --frame
+    [1]  2
+    [2]  --frame-count
+    [3]  1
+    [4]  --make-output-path
+    [5]  --no-mplay
+    [6]  -V
+    [7]  2a
+    [8]  /mnt/show/seq010/shot0010/usd/shot0010_lighting.usd
+
+task 3/3  name="Render[Frame=3-3]"
+  task params:
+    Frame=3-3
+  command: husk
+  args:
+    [0]  --frame
+    [1]  3
+    [2]  --frame-count
+    [3]  1
+    [4]  --make-output-path
+    [5]  --no-mplay
+    [6]  -V
+    [7]  2a
+    [8]  /mnt/show/seq010/shot0010/usd/shot0010_lighting.usd

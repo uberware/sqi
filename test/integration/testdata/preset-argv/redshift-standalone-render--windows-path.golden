@@ -1,0 +1,14 @@
+preset: redshift-standalone-render
+case:   windows-path
+params:
+  Frames=7
+  SceneFile=C:\shows\seq010\shot0010\shot0010.####.rs
+
+step "Render" — 1 task
+
+task 1/1  name="Render[Frame=7]"
+  task params:
+    Frame=7
+  command: redshiftCmdLine
+  args:
+    [0]  C:\shows\seq010\shot0010\shot0010.0007.rs

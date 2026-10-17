@@ -18,6 +18,7 @@ import (
 	"github.com/uberware/sqi/internal/pgdsn"
 	"github.com/uberware/sqi/internal/store/backend"
 	"github.com/uberware/sqi/internal/store/postgres"
+	"github.com/uberware/sqi/internal/store/sqlite"
 )
 
 // resolveDBPath applies the database-path precedence shared by backup,
@@ -133,7 +134,11 @@ func requireExistingDB(path string) error {
 // against sqlite_master rather than through the store, so it runs before
 // any store method that would surface that error unremediated.
 func requireMigratedDB(path string) error {
-	db, err := sql.Open("sqlite", path)
+	dsn, err := sqlite.DSN(path)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
 	}
@@ -169,14 +174,21 @@ type storeTarget struct{ Driver, SQLitePath, DSN string }
 // SQLite is then the wrong store, not a safe default. A driver the server
 // would reject is an error, never SQLite.
 func resolveStoreTarget(cmd *cobra.Command, dbFlag, dsnFlag string) (storeTarget, error) {
-	if flagChanged(cmd, "dsn") && dsnFlag == "" {
-		return storeTarget{}, errors.New("--dsn is empty")
-	}
 	c, err := loadCLIConfig()
 	if err != nil {
 		return storeTarget{}, err
 	}
+	return c.target(cmd, dbFlag, dsnFlag)
+}
+
+// target is [resolveStoreTarget] on an already-loaded configuration, for a
+// command that reads other settings from it too. It refuses an empty SQLite
+// path.
+func (c cliConfig) target(cmd *cobra.Command, dbFlag, dsnFlag string) (storeTarget, error) {
 	if flagChanged(cmd, "dsn") {
+		if dsnFlag == "" {
+			return storeTarget{}, errors.New("--dsn is empty")
+		}
 		return storeTarget{Driver: backend.DriverPostgres, DSN: dsnFlag}, nil
 	}
 	if !flagChanged(cmd, "db") {
@@ -185,7 +197,19 @@ func resolveStoreTarget(cmd *cobra.Command, dbFlag, dsnFlag string) (storeTarget
 			return tgt, err
 		}
 	}
-	return storeTarget{Driver: backend.DriverSQLite, SQLitePath: c.dbPath(dbFlag, flagChanged(cmd, "db"))}, nil
+	path := c.dbPath(dbFlag, flagChanged(cmd, "db"))
+	if path == "" {
+		return storeTarget{}, errEmptySQLitePath
+	}
+	return storeTarget{Driver: backend.DriverSQLite, SQLitePath: path}, nil
+}
+
+// errEmptySQLitePath is returned when the resolved SQLite path is empty.
+var errEmptySQLitePath = errors.New("database path is empty; use --db, set store.sqlite_path, or set SQI_STORE_SQLITE_PATH")
+
+// options returns the [backend.Options] naming tgt's store.
+func (tgt storeTarget) options() backend.Options {
+	return backend.Options{Driver: tgt.Driver, SQLitePath: tgt.SQLitePath, PostgresDSN: tgt.DSN}
 }
 
 // configuredStoreTarget resolves the store from configuration alone. It
@@ -240,12 +264,7 @@ func flagChanged(cmd *cobra.Command, name string) bool {
 // requireMigratedPostgres fails, with the same advice as requireMigratedDB,
 // when the database has no schema.
 func requireMigratedPostgres(ctx context.Context, dsn string) error {
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		return fmt.Errorf("open %s: %w", pgdsn.Redact(dsn), err)
-	}
-	defer db.Close()
-	v, err := postgres.SchemaVersion(ctx, db)
+	v, err := postgres.SchemaVersionDSN(ctx, dsn)
 	if err != nil {
 		return fmt.Errorf("check schema at %s: %w", pgdsn.Redact(dsn), err)
 	}
@@ -255,15 +274,27 @@ func requireMigratedPostgres(ctx context.Context, dsn string) error {
 	return nil
 }
 
+// requireExistingStore checks that tgt names a database that exists and
+// carries a schema, without opening the store. These commands write into an
+// existing schema; they never create one.
+func requireExistingStore(ctx context.Context, tgt storeTarget) error {
+	if tgt.Driver == backend.DriverPostgres {
+		return requireMigratedPostgres(ctx, tgt.DSN)
+	}
+	if err := requireExistingDB(tgt.SQLitePath); err != nil {
+		return err
+	}
+	return requireMigratedDB(tgt.SQLitePath)
+}
+
 // openExistingStore opens tgt's store without migrating it, after checking it
-// exists and has a schema. These commands write into an existing schema; they
-// never create one.
+// exists and has a schema (requireExistingStore). The store's own Open refuses
+// a schema newer than this binary.
 func openExistingStore(ctx context.Context, tgt storeTarget) (backend.Backend, error) {
-	switch tgt.Driver {
-	case backend.DriverPostgres:
-		if err := requireMigratedPostgres(ctx, tgt.DSN); err != nil {
-			return nil, err
-		}
+	if err := requireExistingStore(ctx, tgt); err != nil {
+		return nil, err
+	}
+	if tgt.Driver == backend.DriverPostgres {
 		st, err := backend.Open(ctx, backend.Options{
 			Driver: backend.DriverPostgres, PostgresDSN: tgt.DSN, MaxConns: 2, AutoMigrate: false,
 		})
@@ -271,20 +302,10 @@ func openExistingStore(ctx context.Context, tgt storeTarget) (backend.Backend, e
 			return nil, fmt.Errorf("open %s: %w", pgdsn.Redact(tgt.DSN), err)
 		}
 		return st, nil
-	default:
-		if tgt.SQLitePath == "" {
-			return nil, errors.New("database path is empty; use --db, set store.sqlite_path, or set SQI_STORE_SQLITE_PATH")
-		}
-		if err := requireExistingDB(tgt.SQLitePath); err != nil {
-			return nil, err
-		}
-		if err := requireMigratedDB(tgt.SQLitePath); err != nil {
-			return nil, err
-		}
-		st, err := backend.Open(ctx, backend.Options{SQLitePath: tgt.SQLitePath, AutoMigrate: false})
-		if err != nil {
-			return nil, fmt.Errorf("open database: %w", err)
-		}
-		return st, nil
 	}
+	st, err := backend.Open(ctx, backend.Options{SQLitePath: tgt.SQLitePath, AutoMigrate: false})
+	if err != nil {
+		return nil, fmt.Errorf("open database: %w", err)
+	}
+	return st, nil
 }

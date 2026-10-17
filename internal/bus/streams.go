@@ -19,9 +19,10 @@ const (
 	// by the server-side status consumer.
 	StreamTask = "SQI_TASK"
 
-	// StreamLogs captures log chunks emitted by running tasks.  LimitsPolicy
-	// retains chunks so they can be served via the REST API even after the
-	// producing worker has moved on.
+	// StreamLogs captures log chunks emitted by running tasks.  The server
+	// persists each chunk to task_logs and acks it; REST and WebSocket read
+	// task_logs.  LimitsPolicy keeps the chunks for MaxAge (96 h) after ack as
+	// a delivery buffer, but nothing reads them back from the stream.
 	StreamLogs = "SQI_LOGS"
 
 	// StreamWorker captures worker-registration and worker-heartbeat messages.
@@ -60,16 +61,16 @@ func streamDefs() []jetstream.StreamConfig {
 		{
 			// SQI_LOGS — task.logs.<worker>.<task>
 			//
-			// Workers publish structured log chunks as tasks run.  LimitsPolicy
-			// retains all chunks so the REST and WebSocket log-tail endpoints can
-			// replay them on demand.  Chunks are stored with a monotonic sequence
-			// number; the REST handler pages through them using the NATS sequence
-			// as an offset cursor.
+			// Workers publish structured log chunks as tasks run.  The server
+			// persists each chunk to task_logs and acks it; REST and WebSocket
+			// read task_logs, paging with the chunk's NATS sequence as the
+			// cursor.  LimitsPolicy keeps the chunks for MaxAge after ack, but
+			// nothing reads them back from the stream.
 			//
-			// MaxAge of 96 h balances storage cost against the window in which
-			// operators typically review task output.
+			// MaxAge of 96 h bounds the stream's disk use; a chunk the server
+			// has not acked within it is lost.
 			Name:        StreamLogs,
-			Description: "Log chunks emitted by running tasks, retained for REST retrieval.",
+			Description: "Log chunks emitted by running tasks, persisted to task_logs by the server.",
 			Subjects:    []string{SubjectTaskLogsPrefix + ".>"},
 			Retention:   jetstream.LimitsPolicy,
 			Storage:     jetstream.FileStorage,

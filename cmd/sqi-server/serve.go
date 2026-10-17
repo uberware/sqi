@@ -149,6 +149,7 @@ func serve(ctx context.Context, overrides config.FlagOverrides) error {
 	schedCfg.JobRetention = cfg.Scheduler.JobRetention
 	schedCfg.JobRetentionIncludeFailed = cfg.Scheduler.JobRetentionIncludeFailed
 	schedCfg.UnschedulableGrace = cfg.Scheduler.UnschedulableGrace
+	schedCfg.ReconcileGrace = cfg.Scheduler.ReconcileGrace
 	schedCfg.DefaultMaxAttempts = cfg.Scheduler.DefaultMaxAttempts
 	schedCfg.RetryDelay = cfg.Scheduler.RetryDelay
 	schedCfg.DefaultFailureLimit = cfg.Scheduler.DefaultFailureLimit

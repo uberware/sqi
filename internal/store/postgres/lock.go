@@ -18,7 +18,7 @@ const ServerLockKey int64 = 0x7371692d73727672
 
 // ErrServerLockHeld means another sqi-server already holds the database.
 var ErrServerLockHeld = errors.New("another sqi-server is already using this database " +
-	"(PostgreSQL advisory lock 0x7371692d73727672 is held); running more than one server on one database is not supported yet")
+	"(PostgreSQL advisory lock 0x7371692d73727672 is held); only one server can use a database, so stop the other one first")
 
 // serverLock holds the advisory lock on a connection taken out of the pool
 // for the store's life, and watches that connection.
@@ -84,4 +84,33 @@ func (l *serverLock) release() error {
 	defer cancel()
 	_, err := l.conn.ExecContext(ctx, `SELECT pg_advisory_unlock($1)`, ServerLockKey)
 	return errors.Join(err, l.conn.Close())
+}
+
+// DatabaseLock is the single-server lock held by a command (restore, store
+// copy, migrate up) rather than by a store: its own one-connection pool.
+type DatabaseLock struct {
+	db   *sql.DB
+	lock *serverLock
+}
+
+// LockDatabase takes the server lock on the database dsn names, failing with
+// ErrServerLockHeld when a server (or another such command) holds it.
+func LockDatabase(ctx context.Context, dsn string, log *slog.Logger) (*DatabaseLock, error) {
+	if log == nil {
+		log = slog.Default()
+	}
+	db, err := openPool(dsn, 1)
+	if err != nil {
+		return nil, err
+	}
+	l, err := acquireServerLock(ctx, db, log)
+	if err != nil {
+		return nil, errors.Join(err, db.Close())
+	}
+	return &DatabaseLock{db: db, lock: l}, nil
+}
+
+// Release unlocks and closes the lock's connection.
+func (d *DatabaseLock) Release() error {
+	return errors.Join(d.lock.release(), d.db.Close())
 }

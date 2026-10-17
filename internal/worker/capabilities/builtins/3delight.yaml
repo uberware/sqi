@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# 3Delight's standalone renderer, renderdl, which
+# presets/sqi/3delight-render.yaml invokes by bare name.
+#
+# Probes PATH, the DELIGHT variable 3Delight's installers set to the install
+# directory, and the default install directories on macOS and Windows. Linux
+# has no glob; a Linux worker is found by PATH or DELIGHT.
+#
+# No version is extracted: the install paths carry none, and the directory
+# DELIGHT names has no fixed naming scheme, so a version-like string in it is
+# not trusted.
+tag: 3delight
+checks:
+  - exe: renderdl
+  - env: DELIGHT
+  - path_glob: "/Applications/3Delight/bin/renderdl"                    # macOS
+  - path_glob: 'C:\Program Files\3Delight\bin\renderdl.exe'             # windows
+    os: windows

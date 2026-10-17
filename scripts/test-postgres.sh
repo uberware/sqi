@@ -54,9 +54,9 @@ if [ -z "${SQI_TEST_POSTGRES_DSN:-}" ]; then
 fi
 export SQI_TEST_REQUIRE_POSTGRES=1
 
-echo "== PostgreSQL ${PG_VERSION}: store, scheduler, api, server and cmd packages"
+echo "== PostgreSQL ${PG_VERSION}: store, scheduler, api, server, restore and cmd packages"
 go test $RACE_FLAG -count=1 -v -timeout 30m \
-  ./internal/store/... ./internal/scheduler/... ./internal/api/... ./internal/server/... ./cmd/...
+  ./internal/store/... ./internal/scheduler/... ./internal/api/... ./internal/server/... ./internal/restore/... ./cmd/...
 
 # -v, and the BEGIN/END lines around it, let CI find this phase's own PASS and
 # SKIP lines and check that its /postgres subtests really ran.

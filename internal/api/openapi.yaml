@@ -2514,7 +2514,11 @@ paths:
             type: integer
             format: int64
             default: 0
-          description: Return chunks with `nats_seq` greater than this value.
+          description: |
+            Return chunks with `nats_seq` greater than this value.
+            After a restore that replaced the JetStream directory, late chunks of
+            an attempt the restore closed can carry lower values than chunks
+            already read; a full read (`after_nats_seq=0`) shows them.
         - name: limit
           in: query
           schema:

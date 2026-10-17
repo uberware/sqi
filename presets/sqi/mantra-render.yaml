@@ -1,0 +1,82 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: mantra-render
+title: Mantra Render
+description: >-
+  Renders exported Mantra IFD files with mantra, one frame per task.
+readme: |
+  # Mantra Render
+
+  Renders a sequence of exported Mantra scene files (`.ifd`) with `mantra`,
+  without loading Houdini. Each task renders one frame's IFD file.
+
+  Mantra is Houdini's legacy renderer. To render with Karma, Houdini's current
+  renderer, use Husk USD Render.
+
+  ## Parameters
+
+  - **Scene File Pattern** - the path of the exported scene files, with the
+    frame number replaced by a run of `#` characters, e.g. `shot.####.ifd`.
+    The files must be reachable from every worker that runs the job.
+  - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
+    `1-100:2` for every second frame.
+
+  ## How work is divided
+
+  Each frame is its own task. The task's frame number replaces the run of `#`
+  characters, padded with zeros to the run's length: frame 7 of
+  `shot.####.ifd` is `shot.0007.ifd`. A frame number longer than the run is
+  written in full.
+
+  The pattern must contain exactly one run of `#` characters. A pattern with
+  none, or with the `#` characters split into more than one run, is rejected
+  when the job is submitted.
+
+  Output paths come from the IFD files.
+
+  ## Requirements
+
+  - Workers tagged `attr.worker.tag.mantra = true`
+  - `mantra` on the worker's `PATH`
+  - A Houdini render license
+category: Rendering
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: Mantra Render
+  extensions: [EXPR]
+  parameterDefinitions:
+    - name: SceneFile
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface:
+        control: CHOOSE_INPUT_FILE
+        label: Scene File Pattern
+        fileFilters:
+          - label: Mantra IFD files
+            patterns: ["*.ifd", "*.ifd.sc"]
+        fileFilterDefault:
+          label: Mantra IFD files
+          patterns: ["*.ifd", "*.ifd.sc"]
+    - name: Frames
+      type: STRING
+      userInterface: { control: LINE_EDIT, label: Frame Range }
+  steps:
+    - name: Render
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.mantra
+            anyOf: ["true"]
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Frame
+            type: INT
+            range: "{{Param.Frames}}"
+      script:
+        let:
+          - pad = Param.SceneFile.name.count('#')
+          - "scene = Param.SceneFile.parent / Param.SceneFile.name.replace('#' * pad, zfill(Task.Param.Frame, pad)) if pad > 0 and '#' * pad in Param.SceneFile.name else fail('Scene File Pattern must contain exactly one run of # characters marking the frame number, e.g. shot.####.<ext> (in a Windows path, folders may not contain #)')"
+        actions:
+          onRun:
+            command: mantra
+            args: ["-V", "2a", "-f", "{{ scene }}"]

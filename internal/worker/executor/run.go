@@ -86,6 +86,11 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	// other cleanup defers have completed.
 	defer e.wg.Done()
 
+	// Registered second so it runs second to last: the attempt stays held
+	// through the terminal status publish and every cleanup below, and is
+	// released just before wg.Done.
+	defer e.release(run.attemptID)
+
 	// failed controls the keepFailedSessions behavior in Cleanup.
 	failed := false
 
@@ -111,12 +116,13 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	e.applyCancelFunc(run, taskCancel)
 
 	// LIFO defers — registration order (first→last) and execution order (last→first):
-	//   Registered 1st → runs last:  wg.Done
-	//   Registered 2nd → runs 4th:   taskCancel
-	//   Registered 3rd → runs 3rd:   hook.Deregister (if hook is wired)
-	//   Registered 4th → runs 2nd:   sessionMgr.Cleanup
-	//   Registered 5th → runs 1st:   removeActiveTask
-	//   Registered 6th → runs 0th:   registerCancelSubscription cleanup
+	//   Registered 1st → runs last:        wg.Done
+	//   Registered 2nd → runs next-to-last: release (the held attempt)
+	//   Registered 3rd → runs 5th:         taskCancel
+	//   Registered 4th → runs 4th:         hook.Deregister (if hook is wired)
+	//   Registered 5th → runs 3rd:         sessionMgr.Cleanup
+	//   Registered 6th → runs 2nd:         removeActiveTask
+	//   Registered 7th → runs 1st:         registerCancelSubscription cleanup
 	//
 	// Deregistering the cancel subscription first ensures no cancel signal can
 	// arrive after the task is gone from activeTasks.  wg.Done runs last so
