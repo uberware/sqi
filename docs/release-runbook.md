@@ -151,6 +151,9 @@ dry-run tag `v0.0.1-rc.1` needs no `_version.py` bump.
   docker buildx imagetools inspect ghcr.io/uberware/sqi/sqi-worker:v0.0.1-rc.1
   ```
   Expected: manifest list lists both `linux/amd64` and `linux/arm64`.
+- No `:v0` image was pushed: a prerelease tag publishes only its own
+  `:v0.0.1-rc.1` images (`.goreleaser.yaml`), so the dry-run leaves the
+  `:v<major>` tag users pull where the last real release put it.
 
 **Clean up:**
 
