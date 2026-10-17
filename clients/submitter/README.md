@@ -31,12 +31,14 @@ The same checks CI runs (split there across three jobs), as one local chain —
 every stage must pass before a PR:
 
 ```sh
-ruff format --check . && ruff check . && mypy src && mypy --python-version=3.13 tests && pytest -q
+ruff format --check . && ruff check . && mypy && mypy --python-version=3.13 tests && pytest -q
 ```
 
-`mypy --python-version=3.13 tests` is not optional: `pyproject.toml` scopes
-mypy to `src`, so running `mypy src` alone misses type errors in test files
-that will still fail the PR.
+Run `mypy` bare, not `mypy src`: `pyproject.toml` lists `src` and the Cinema 4D
+plugin (`sqi_submit.pyp`, which `mypy src` skips because it is not a `.py`
+file). `mypy --python-version=3.13 tests` is not optional either: a bare `mypy`
+does not read the tests, so it alone misses type errors in test files that will
+still fail the PR.
 
 ## Authentication
 

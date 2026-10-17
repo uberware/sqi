@@ -90,7 +90,7 @@ warn_unused_configs = true
 [[tool.mypy.overrides]]
 # PySide6/PySide6.*: qt/_compat.py type-checks against the real PySide6 stubs
 # when the qt extra is installed; without it, treat PySide6 as Any so
-# `mypy src` still passes in Qt-less environments (DCC-bundled bindings).
+# `mypy` still passes in Qt-less environments (DCC-bundled bindings).
 module = [
   "PySide6",
   "PySide6.*",

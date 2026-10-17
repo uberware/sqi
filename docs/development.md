@@ -1532,7 +1532,7 @@ Gate command line (from `clients/submitter`, with `sqi-sdk` resolvable; run
 `pip install -e ../python` first if it is not installed):
 
 ```sh
-ruff format --check . && ruff check . && mypy src && mypy --python-version=3.13 tests && pytest -q
+ruff format --check . && ruff check . && mypy && mypy --python-version=3.13 tests && pytest -q
 ```
 
 `tests/integration/` is skipped unless `SQI_TEST_SERVER_URL` points at a live
