@@ -1,0 +1,168 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""The shared handoff launch block copied into every Python handoff host."""
+
+from __future__ import annotations
+
+import ctypes
+import json
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from sqi_submitter.hosts import _handoff_block as block
+
+HOSTS_DIR = Path(block.__file__).parent
+
+# Task 6 and Task 7 append the Blender add-on and the Cinema 4D plugin here.
+HANDOFF_HOST_FILES: list[Path] = []
+
+BEGIN = "# --- sqi handoff begin ---"
+END = "# --- sqi handoff end ---"
+
+NOT_FOUND = (
+    "sqi-submit was not found. Install it on this machine with: "
+    "pip install 'sqi-submitter[qt]' \u2014 then set its full path in the sqi "
+    "add-on/plugin settings, or as sqi_submit_command in ~/.sqi/submitter.json."
+)
+
+
+def _extract(path: Path) -> str:
+    text = path.read_text(encoding="utf-8")
+    assert text.count(BEGIN) == 1, f"{path} needs exactly one begin marker"
+    assert text.count(END) == 1, f"{path} needs exactly one end marker"
+    return text.split(BEGIN, 1)[1].split(END, 1)[0]
+
+
+@pytest.fixture
+def isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """No settings file and no sqi-submit on PATH, unless a test adds them."""
+    settings = tmp_path / "no-such-settings.json"
+    monkeypatch.setenv("SQI_SUBMITTER_SETTINGS", str(settings))
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    return settings
+
+
+def _fake_exe(tmp_path: Path, name: str) -> str:
+    exe = tmp_path / name
+    exe.write_text("", encoding="utf-8")
+    return str(exe)
+
+
+def test_resolve_submit_command_prefers_configured(tmp_path: Path, isolated: Path) -> None:
+    configured = _fake_exe(tmp_path, "configured-submit")
+    isolated.write_text(
+        json.dumps({"sqi_submit_command": _fake_exe(tmp_path, "from-file")}), encoding="utf-8"
+    )
+    assert block.resolve_submit_command(configured) == configured
+
+
+def test_resolve_submit_command_reads_settings_file(tmp_path: Path, isolated: Path) -> None:
+    from_file = _fake_exe(tmp_path, "from-file")
+    isolated.write_text(json.dumps({"sqi_submit_command": from_file}), encoding="utf-8")
+    assert block.resolve_submit_command("") == from_file
+    # A configured path that does not exist falls through to the file.
+    assert block.resolve_submit_command(str(tmp_path / "gone")) == from_file
+
+
+def test_resolve_submit_command_falls_back_to_path(
+    tmp_path: Path, isolated: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    on_path = _fake_exe(tmp_path, "sqi-submit")
+    asked: list[str] = []
+
+    def which(name: str) -> str:
+        asked.append(name)
+        return on_path
+
+    monkeypatch.setattr(shutil, "which", which)
+    assert block.resolve_submit_command("") == on_path
+    assert asked == ["sqi-submit"]
+    # A settings file that is unreadable JSON is ignored, not fatal.
+    isolated.write_text("{not json", encoding="utf-8")
+    assert block.resolve_submit_command("") == on_path
+
+
+def test_resolve_submit_command_not_found_message(isolated: Path) -> None:
+    with pytest.raises(RuntimeError) as excinfo:
+        block.resolve_submit_command("")
+    assert str(excinfo.value) == NOT_FOUND
+
+
+def test_write_context_is_valid_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    data: dict[str, object] = {"version": 1, "scene": "a/b.ma", "targets": [{"name": "x"}]}
+    first = Path(block.write_context(data))
+    second = Path(block.write_context(data))
+    assert first != second
+    assert first.parent == tmp_path / "sqi-handoff"
+    assert json.loads(first.read_text(encoding="utf-8")) == data
+
+
+class _Recorder:
+    def __init__(self) -> None:
+        self.calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def popen(self, argv: list[str], **kwargs: object) -> SimpleNamespace:
+        self.calls.append((argv, kwargs))
+        return SimpleNamespace(pid=4242)
+
+
+def test_launch_detaches_posix(monkeypatch: pytest.MonkeyPatch) -> None:
+    rec = _Recorder()
+    monkeypatch.setattr(subprocess, "Popen", rec.popen)
+    monkeypatch.setattr(sys, "platform", "linux")
+    block.launch("/opt/sqi-submit", "/tmp/ctx.json")
+    [(argv, kwargs)] = rec.calls
+    assert argv == ["/opt/sqi-submit", "--context", "/tmp/ctx.json"]
+    assert kwargs["start_new_session"] is True
+    assert "creationflags" not in kwargs
+
+
+def test_launch_detaches_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    rec = _Recorder()
+    allowed: list[int] = []
+    user32 = SimpleNamespace(AllowSetForegroundWindow=allowed.append)
+    monkeypatch.setattr(subprocess, "Popen", rec.popen)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(ctypes, "windll", SimpleNamespace(user32=user32), raising=False)
+    block.launch("C:/sqi/sqi-submit.exe", "C:/tmp/ctx.json")
+    [(argv, kwargs)] = rec.calls
+    assert argv == ["C:/sqi/sqi-submit.exe", "--context", "C:/tmp/ctx.json"]
+    assert kwargs["creationflags"] == 0x00000008 | 0x00000200  # DETACHED | NEW_PROCESS_GROUP
+    assert "start_new_session" not in kwargs
+    assert allowed == [4242]
+
+
+def test_launch_windows_ignores_foreground_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    rec = _Recorder()
+
+    def boom(_pid: int) -> None:
+        raise OSError("no desktop")
+
+    monkeypatch.setattr(subprocess, "Popen", rec.popen)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        ctypes,
+        "windll",
+        SimpleNamespace(user32=SimpleNamespace(AllowSetForegroundWindow=boom)),
+        raising=False,
+    )
+    block.launch("sqi-submit", "ctx.json")
+    assert len(rec.calls) == 1
+
+
+def test_block_is_self_contained() -> None:
+    text = _extract(HOSTS_DIR / "_handoff_block.py")
+    assert "sqi_submitter" not in text
+    for needed in ("json", "os", "shutil", "subprocess", "sys", "tempfile"):
+        assert f"import {needed}\n" in text
+
+
+def test_block_identical_in_every_host() -> None:
+    canonical = _extract(HOSTS_DIR / "_handoff_block.py")
+    for host_file in HANDOFF_HOST_FILES:
+        assert _extract(host_file) == canonical, f"{host_file} drifted from _handoff_block.py"
