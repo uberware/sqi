@@ -17,6 +17,7 @@ from sqi_submitter.core.handoff import (
     ContextError,
     dump_context,
     load_context,
+    unique_target_names,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "context"
@@ -271,3 +272,42 @@ def test_dumped_context_matches_schema(tmp_path: Path) -> None:
     dump_context(TwoTargetAdapter(), str(path))
     document = json.loads(path.read_text(encoding="utf-8"))
     assert _check(_load_schema(), document, "dump") == []
+
+
+@pytest.mark.parametrize(
+    ("names", "expected"),
+    [
+        ([], []),
+        (["A"], ["A"]),
+        (["A", "B", "C"], ["A", "B", "C"]),
+        (["A", "A"], ["A", "A (#2)"]),
+        (["A", "B", "A", "C", "A"], ["A", "B", "A (#3)", "C", "A (#5)"]),
+        # The candidate "A (#3)" is a later original name, so the duplicate gets a second suffix.
+        (["A", "B", "A", "A (#3)"], ["A", "B", "A (#3) (#3)", "A (#3)"]),
+        # A name that already looks like a suffix is an ordinary name.
+        (["A (#2)", "A (#2)"], ["A (#2)", "A (#2) (#2)"]),
+        (["A", "A (#2)", "A"], ["A", "A (#2)", "A (#3)"]),
+    ],
+)
+def test_unique_target_names(names: list[str], expected: list[str]) -> None:
+    assert unique_target_names(names) == expected
+
+
+def test_load_context_makes_duplicate_target_names_unique(tmp_path: Path) -> None:
+    document = {
+        "version": 1,
+        "host": {"name": "cinema4d", "display_name": "Cinema 4D"},
+        "scene": {"path": "/shows/d/shot.c4d"},
+        "targets": [
+            {"name": "Beauty", "kind": "take", "extra": {"Take": "Beauty"}, "locked": ["Take"]},
+            {"name": "Beauty", "kind": "take", "frame_range": "1-5", "extra": {"Take": "Beauty"}},
+        ],
+    }
+    path = _write(tmp_path, json.dumps(document))
+    targets = load_context(path).render_targets()
+    assert [t.name for t in targets] == ["Beauty", "Beauty (#2)"]
+    assert [t.extra for t in targets] == [{"Take": "Beauty"}, {"Take": "Beauty"}]
+    assert [t.kind for t in targets] == ["take", "take"]
+    assert targets[0].locked == frozenset({"Take"})
+    assert targets[1].frame_range == "1-5"
+    assert not path.exists()

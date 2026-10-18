@@ -292,7 +292,8 @@ The command refuses an unsaved document ("Save your scene before submitting")
 and saves a changed one without asking. Its targets are the **checked** takes
 other than the main take, each with its own frame range and output path from
 the take's effective render settings. A scene with no such take has no targets,
-so every product is treated as whole-scene.
+so every product is treated as whole-scene. Takes that share a name (under
+different parents, say) are disambiguated by the dialog with `(#<position>)`.
 
 **The plug-in ID is a placeholder.** Cinema 4D identifies a plug-in by a number
 that must be registered with Maxon. The file carries `PLUGIN_ID = 1000001`,
@@ -1187,6 +1188,10 @@ Everything is name-for-name what the in-process adapters produce:
 in [Submitting several targets](#submitting-several-targets).
 
 - **Unknown keys are ignored**, at every level, so a newer host can add fields.
+- **Target names must be unique within a context**, because job names, remembered
+  ticks and results are keyed on them. When a host sends duplicates, the dialog
+  keeps the first and renames each later one `<name> (#<position>)`, its 1-based
+  position in `targets`. Names that are already unique are untouched.
 - **Saving happens in the host, before launch.** The dialog reports the scene as
   unmodified and hides its **Save scene before submit** box.
 - **A bad file never gives a traceback.** An unreadable file, invalid JSON, an

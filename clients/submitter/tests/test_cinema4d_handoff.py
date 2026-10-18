@@ -336,6 +336,32 @@ def test_c4d_read_scene_is_a_valid_context_file(
     assert adapter.render_targets()[0].extra == {"Take": "beauty"}
 
 
+def test_c4d_same_named_takes_stay_distinct_after_the_dialog_reads_them(
+    c4d: C4D, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    plugin = _plugin()
+    # Same name under different parents: the host file is name-agnostic and emits both.
+    doc = _doc(
+        takes=[
+            FakeTake("shotA", children=[FakeTake("Beauty")]),
+            FakeTake("shotB", children=[FakeTake("Beauty")]),
+        ],
+        rendering={name: _rd() for name in ("shotA", "shotB", "Beauty")},
+    )
+    data = plugin.read_scene(doc)
+    assert [t["name"] for t in data["targets"]] == ["shotA", "Beauty", "shotB", "Beauty"]
+    adapter = load_context(plugin.write_context(data))
+    targets = adapter.render_targets()
+    assert [t.name for t in targets] == ["shotA", "Beauty", "shotB", "Beauty (#4)"]
+    assert [t.extra for t in targets] == [
+        {"Take": "shotA"},
+        {"Take": "Beauty"},
+        {"Take": "shotB"},
+        {"Take": "Beauty"},
+    ]
+
+
 def test_c4d_unsaved_document_refused(c4d: C4D, monkeypatch: pytest.MonkeyPatch) -> None:
     plugin = _plugin()
     launched: list[str] = []

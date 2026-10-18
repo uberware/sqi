@@ -10,9 +10,10 @@ dialog side reads it back through :class:`ContextAdapter`, which is an ordinary
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +21,14 @@ from sqi_submitter.core.adapter import HostAdapter
 from sqi_submitter.core.context import RenderTarget, SceneContext
 from sqi_submitter.core.errors import SubmitterError
 
-__all__ = ["CONTEXT_VERSION", "ContextAdapter", "ContextError", "dump_context", "load_context"]
+__all__ = [
+    "CONTEXT_VERSION",
+    "ContextAdapter",
+    "ContextError",
+    "dump_context",
+    "load_context",
+    "unique_target_names",
+]
 
 CONTEXT_VERSION = 1
 
@@ -120,6 +128,31 @@ def dump_context(adapter: HostAdapter, path: str) -> None:
     Path(path).write_text(json.dumps(document, indent=2), encoding="utf-8")
 
 
+def unique_target_names(names: Sequence[str]) -> list[str]:
+    """``names`` with every later duplicate made unique; already-unique names are unchanged.
+
+    Core keys on target names (job names, remembered ticks, results), so a host that sends
+    two targets with one name would otherwise get identical jobs. The first occurrence keeps
+    its name; each later one becomes ``"<name> (#<k>)"``, ``k`` being its 1-based position,
+    with the suffix repeated while the result still collides with any original name or any
+    name already assigned.
+    """
+    taken = set(names)
+    seen: set[str] = set()
+    result: list[str] = []
+    for position, original in enumerate(names, start=1):
+        name = original
+        if original in seen:
+            suffix = f" (#{position})"
+            name = original + suffix
+            while name in taken:
+                name += suffix
+            taken.add(name)
+        seen.add(original)
+        result.append(name)
+    return result
+
+
 # -- parsing ------------------------------------------------------------------
 
 
@@ -165,6 +198,10 @@ def _parse(document: object) -> ContextAdapter:
     if not isinstance(targets_raw, list):
         raise ContextError("targets must be a list")
     targets = [_target(item, i) for i, item in enumerate(targets_raw)]
+    targets = [
+        dataclasses.replace(t, name=name)
+        for t, name in zip(targets, unique_target_names([t.name for t in targets]))
+    ]
 
     return ContextAdapter(
         host_name=_str(host, "name", "host.name"),
