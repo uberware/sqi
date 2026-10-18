@@ -336,8 +336,20 @@ panel cannot cheaply parse that file or search `PATH`.
 
 The panel checks, with a plain message for each: a project is open; it has been
 saved (a changed project is offered a save); the file/network preference is on;
-at least one render-queue item has status **Queued**; and `sqi-submit` is
-located and still exists. Every **Queued** item is a target, named after its
+at least one render-queue item has status **Queued**; `sqi-submit` is
+located and still exists; and it is new enough for the panel. The last check
+runs `sqi-submit --version` and waits for it (`cmd /c ""<exe>" --version"` on
+Windows, `"<exe>" --version` on macOS, with the launch's quoting rules), before
+the context file is written. The panel launches `sqi-submit` with `--detached`
+(see [Launching it](#launching-it)), which an older `sqi-submit` rejects with a
+usage error in a console that closes at once, so the artist would see nothing;
+an `sqi-submit` that does not print `sqi-submit <version>` is reported as too
+old or not runnable, with how to update it (`pip install -U
+"sqi-submitter[qt]"`, then `sqi-submit install-host aftereffects` again) or
+pick another with **Locate sqi-submit…**, and nothing is launched. A success is
+remembered for that path until After Effects quits, so the check costs one run
+per path per session; a failure is not, so an update takes effect on the next
+submit. Every **Queued** item is a target, named after its
 composition, with a frame range from the composition's display start and the
 item's time span. When two queued items render the same composition (a ProRes
 and an H.264 output, say), the first keeps the composition name and each later
@@ -400,6 +412,7 @@ pip install "sqi-submitter[qt]"
 sqi-submit                          # opens the dialog against the configured server
 sqi-submit --server http://farm.example:8080
 sqi-submit --context FILE           # open the dialog for a handoff context file
+sqi-submit --version                # print "sqi-submit <version>" (needs no Qt)
 ```
 
 `sqi-submit` needs a Qt binding: PySide6 (from `[qt]`) or a PySide2 already on
@@ -1086,11 +1099,26 @@ After installing per [Installation per host](#installation-per-host):
    quote, `%` (Windows) or `$`, backtick or backslash (macOS) is refused with
    the "cannot launch a program or temp file whose path contains..." message
    rather than launched.
-9. The context file appears in `<temp>/sqi-handoff/<millisecond timestamp>.json`
-   and is gone once the dialog has opened.
-10. **Window focus** on macOS (see below).
+9. **Version check.** Locate an `sqi-submit` from before `--version` existed
+   (or any program that prints something else, such as `python.exe`) and
+   submit: the "too old for this panel, or could not be run" message shows, no
+   context file is written and nothing launches. Locate the current
+   `sqi-submit` and submit again without restarting After Effects: the dialog
+   opens. Submit a second time: there is no second `--version` run (no console
+   flash, no delay). Note how long the first submit's check takes on each
+   platform.
+10. The context file appears in `<temp>/sqi-handoff/<millisecond timestamp>.json`
+    and is gone once the dialog has opened.
+11. **Window focus** on macOS (see below).
 
 **Verified only against fakes or documentation:**
+
+- **The version check.** That `system.callSystem` returns the program's
+  standard output (and not its standard error) for `cmd /c ""<exe>" --version"`
+  on Windows and `"<exe>" --version` on macOS, that the Windows run does not
+  flash a visible console window, and how long it takes (a Python start-up,
+  once per path per session). The tests run only the command strings, the
+  output test and the per-path memory under Node, against a fake `callSystem`.
 
 - **The launch recipes.** Windows: `system.callSystem('cmd /c start "" "<exe>"
   --context "<file>" --detached')`. macOS: `system.callSystem('"<exe>" --context
@@ -1297,7 +1325,9 @@ session. After Effects uses `system.callSystem` with
 `cmd /c start "" "<exe>" --context "<file>" --detached` on Windows and
 `"<exe>" --context "<file>" --detached >/dev/null 2>&1 &` on macOS, and refuses
 a path that contains a character it cannot quote. `--detached` is a hidden flag
-for this launch (see below); the Python hosts do not pass it. The child inherits the host's environment. The
+for this launch (see below); the Python hosts do not pass it. Because an older
+`sqi-submit` rejects that flag, After Effects first checks `sqi-submit
+--version` (see [After Effects](#after-effects)). The child inherits the host's environment. The
 dialog calls `show()`, `raise_()` and `activateWindow()`. There is no macOS app
 bundle for `sqi-submit`, so on macOS the window may open behind the host; the
 [checklists](#manual-test-checklist-per-dcc) record that as unverified.

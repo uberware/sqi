@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+import sqi_submitter
 from sqi_submitter import _failure, cli
 from sqi_submitter.core.session import Settings
 from tests.conftest import no_qt
@@ -205,6 +206,31 @@ def test_cli_detached_flag_is_hidden(capsys: pytest.CaptureFixture[str]) -> None
     with pytest.raises(SystemExit):
         cli.main(["--help"])
     assert "--detached" not in capsys.readouterr().out
+
+
+def test_cli_version_prints_to_stdout_without_qt(
+    sqi_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    native_messages: list[str],
+) -> None:
+    # The After Effects panel probes --version before each launch: it must answer on
+    # stdout, exit 0 and need no Qt binding.
+    no_qt(monkeypatch)
+    with pytest.raises(SystemExit) as exited:
+        cli.main(["--version"])
+    assert exited.value.code == 0
+    out, err = capsys.readouterr()
+    assert out == f"sqi-submit {sqi_submitter.__version__}\n"
+    assert err == ""
+    assert native_messages == []
+    assert not (sqi_dir / _failure.LOG_NAME).exists()
+
+
+def test_cli_version_is_listed_in_help(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    assert "--version" in capsys.readouterr().out
 
 
 def test_windows_shows_a_message_box(

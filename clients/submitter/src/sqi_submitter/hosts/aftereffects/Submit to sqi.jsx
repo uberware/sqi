@@ -45,8 +45,17 @@ var SQI_MSG = {
     badPath:
         "sqi cannot launch a program or temp file whose path contains a quote, $, % or " +
         "backtick character. Move or reinstall it somewhere without one. Path: ",
+    tooOld:
+        "The sqi-submit at the saved location is too old for this panel, or could not be " +
+        "run. Update it with pip install -U \"sqi-submitter[qt]\" (or pipx upgrade " +
+        "sqi-submitter), then run sqi-submit install-host aftereffects again to update this " +
+        "panel; or click \"Locate sqi-submit\u2026\" and choose another. Saved location: ",
     writeFailed: "The submit context file could not be written to "
 };
+
+// The sqi-submit paths that answered --version this session (keys "p:<path>"). Only a
+// success is remembered, so a fixed install is picked up on the next submit.
+var SQI_VERSION_OK = {};
 
 // -- pure functions (run under Node by the tests) ---------------------------------------
 
@@ -188,14 +197,69 @@ function sqiBuildContext(hostVersion, scenePath, targets) {
 // --detached makes sqi-submit show a startup failure in a message box: `start` gives it a
 // console of its own that closes with it, so stderr alone would reach nobody.
 function sqiLaunchCommand(isWindows, exe, contextPath) {
-    var bad = isWindows ? /["%]/ : /["$\x60\\]/;
-    if (bad.test(exe) || bad.test(contextPath)) {
+    if (sqiUnsafePath(isWindows, exe) || sqiUnsafePath(isWindows, contextPath)) {
         return null;
     }
     if (isWindows) {
         return "cmd /c start \"\" \"" + exe + "\" --context \"" + contextPath + "\" --detached";
     }
     return "\"" + exe + "\" --context \"" + contextPath + "\" --detached >/dev/null 2>&1 &";
+}
+
+// Whether a path holds a character the launch strings cannot quote: a quote or % for
+// cmd.exe; a quote, $, backtick or backslash for the macOS shell.
+function sqiUnsafePath(isWindows, path) {
+    var bad = isWindows ? /["%]/ : /["$\x60\\]/;
+    return bad.test(path);
+}
+
+// The system.callSystem string that prints sqi-submit's version and waits for it, or null
+// for a path that cannot be quoted. On Windows the whole command is quoted once more: cmd /c
+// strips the outer pair, which keeps the path quoted even when it holds "(" or "&".
+function sqiVersionCommand(isWindows, exe) {
+    if (sqiUnsafePath(isWindows, exe)) {
+        return null;
+    }
+    if (isWindows) {
+        return "cmd /c \"\"" + exe + "\" --version\"";
+    }
+    return "\"" + exe + "\" --version";
+}
+
+// Whether output is what an sqi-submit new enough for this panel's launch (--detached)
+// prints for --version: "sqi-submit <version>". An older one rejects the flag with a usage
+// error on stderr, so its stdout is empty.
+function sqiVersionOk(output) {
+    if (output === null || output === undefined) {
+        return false;
+    }
+    var text = String(output).replace(/^\s+/, "").replace(/\s+$/, "");
+    return /^sqi-submit [0-9]/.test(text);
+}
+
+// Whether the sqi-submit at exe answers --version. run(command) runs a command and returns
+// its standard output (system.callSystem). Returns null for a path that cannot be quoted. A
+// success is remembered per path for the session (one probe per path); a failure is not.
+function sqiProbeVersion(isWindows, exe, run) {
+    var key = "p:" + exe;
+    if (SQI_VERSION_OK[key] === true) {
+        return true;
+    }
+    var command = sqiVersionCommand(isWindows, exe);
+    if (command === null) {
+        return null;
+    }
+    var output;
+    try {
+        output = run(command);
+    } catch (e) {
+        output = null;
+    }
+    if (!sqiVersionOk(output)) {
+        return false;
+    }
+    SQI_VERSION_OK[key] = true;
+    return true;
 }
 
 // Whether "Allow Scripts to Write Files and Access Network" is on. readPref(section) returns
@@ -339,6 +403,19 @@ function sqiSubmit() {
     }
     if (!new File(exe).exists) {
         alert(SQI_MSG.commandMissing + exe);
+        return;
+    }
+    // Before anything is written: an sqi-submit older than this panel exits on --detached
+    // in a console that closes at once, so the artist would see nothing.
+    var probe = sqiProbeVersion(sqiIsWindows(), exe, function (command) {
+        return system.callSystem(command);
+    });
+    if (probe === null) {
+        alert(SQI_MSG.badPath + exe);
+        return;
+    }
+    if (!probe) {
+        alert(SQI_MSG.tooOld + exe);
         return;
     }
     var context = sqiBuildContext(app.version, app.project.file.fsName, targets);

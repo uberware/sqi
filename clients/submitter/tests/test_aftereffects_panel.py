@@ -97,6 +97,25 @@ function reader(values) {
 var movie = sqiTarget(2, "Main Comp", "1-240", "D:\\\\out\\\\spot.mov", false);
 var seq = sqiTarget(1, "Main Comp", "1001-1250", "D:\\\\out\\\\spot_[#####].png", true);
 var ctx = sqiBuildContext("25.2x12", "C:\\\\p\\\\spot.aep", [seq, movie]);
+var probeCalls = [];
+function fakeRun(output) {
+  return function (command) { probeCalls.push(command); return output; };
+}
+function probeStep(isWindows, exe, run) {
+  var before = probeCalls.length;
+  var result = sqiProbeVersion(isWindows, exe, run);
+  return { result: result, calls: probeCalls.slice(before) };
+}
+var probes = [
+  probeStep(false, "/old/sqi-submit", fakeRun("")),
+  probeStep(false, "/old/sqi-submit", fakeRun("sqi-submit 0.3.0\\n")),
+  probeStep(false, "/old/sqi-submit", fakeRun("")),
+  probeStep(false, "/other/sqi-submit", fakeRun("sqi-submit 0.3.0\\n")),
+  probeStep(false, "/boom/sqi-submit", function (c) { probeCalls.push(c); throw new Error("x"); }),
+  probeStep(false, "/null/sqi-submit", fakeRun(null)),
+  probeStep(true, 'C:\\\\a"b.exe', fakeRun("sqi-submit 0.3.0\\r\\n")),
+  probeStep(true, "C:\\\\Program Files (x86)\\\\sqi-submit.exe", fakeRun("sqi-submit 0.3.0\\r\\n"))
+];
 var dupTargets = sqiUniqueTargetNames([
   sqiTarget(2, "Main Comp", "1-240", "D:\\\\out\\\\spot.mov", false),
   sqiTarget(5, "Main Comp", "1-240", "D:\\\\out\\\\spot_h264.mp4", false),
@@ -140,6 +159,30 @@ out = {
   uniqProto: sqiUniqueNames(["__proto__", "__proto__", "hasOwnProperty"]),
   dupNames: [dupTargets[0].name, dupTargets[1].name, dupTargets[2].name],
   dupExtra: dupTargets[1].extra,
+  verWin: sqiVersionCommand(true, "C:\\\\Program Files\\\\sqi\\\\sqi-submit.exe"),
+  verMac: sqiVersionCommand(false, "/Users/a/bin/sqi-submit"),
+  verWinQuote: sqiVersionCommand(true, 'C:\\\\a"b.exe'),
+  verWinPercent: sqiVersionCommand(true, "C:\\\\%APPDATA%\\\\sqi-submit.exe"),
+  verMacDollar: sqiVersionCommand(false, "/a/$HOME/sqi-submit"),
+  verMacBacktick: sqiVersionCommand(false, "/a/\\x60x\\x60/sqi-submit"),
+  verMacBackslash: sqiVersionCommand(false, "/a/b\\\\c/sqi-submit"),
+  okCases: [
+    "sqi-submit 0.3.0\\n",
+    "sqi-submit 0.3.0\\r\\n",
+    "  \\r\\n sqi-submit 1.0\\n",
+    "",
+    "usage: sqi-submit [-h] [--server SERVER] [--context FILE]\\n"
+      + "sqi-submit: error: unrecognized arguments: --detached\\n",
+    "sqi-submit",
+    "sqi-submit\\n",
+    "sqi-submit v0.3.0",
+    "Python 3.13.1",
+    "xsqi-submit 0.3.0",
+  ].map(sqiVersionOk),
+  okNull: sqiVersionOk(null),
+  okUndefined: sqiVersionOk(undefined),
+  probes: probes,
+  tooOld: SQI_MSG.tooOld,
 };
 `;
 vm.runInContext(json2 + "\n" + jsx + "\n" + driver, sandbox);
@@ -257,6 +300,68 @@ def test_jsx_unique_names_under_node(harness: dict[str, Any]) -> None:
     # The panel suffixes with the render-queue index, which is what the artist sees in AE.
     assert r["dupNames"] == ["Main Comp", "Main Comp (#5)", "Other"]
     assert r["dupExtra"] == {"RenderQueueItem": "5", "FramesPerTask": "240", "Frames": "1-240"}
+
+
+def test_jsx_version_probe_under_node(harness: dict[str, Any]) -> None:
+    """The --version probe that keeps the panel from launching an sqi-submit too old for it."""
+    r = harness
+
+    # Windows quotes the whole command once more: cmd /c strips that outer pair, so the
+    # path stays quoted even when it holds "(" (Program Files (x86)) or "&".
+    assert r["verWin"] == 'cmd /c ""C:\\Program Files\\sqi\\sqi-submit.exe" --version"'
+    assert r["verMac"] == '"/Users/a/bin/sqi-submit" --version'
+    # The launch's refusal rules: a path that cannot be quoted is refused, never escaped.
+    assert r["verWinQuote"] is None
+    assert r["verWinPercent"] is None
+    assert r["verMacDollar"] is None
+    assert r["verMacBacktick"] is None
+    assert r["verMacBackslash"] is None
+
+    assert r["okCases"] == [
+        True,  # sqi-submit 0.3.0\n
+        True,  # CRLF from cmd.exe
+        True,  # leading whitespace is trimmed
+        False,  # nothing on stdout: an older sqi-submit wrote its usage error to stderr
+        False,  # that usage error, had it reached stdout
+        False,  # no version
+        False,
+        False,  # not "<name> <digit>"
+        False,  # something else answered
+        False,  # the name must start the output
+    ]
+    assert r["okNull"] is False
+    assert r["okUndefined"] is False
+
+    steps = [(p["result"], p["calls"]) for p in r["probes"]]
+    mac = '"/old/sqi-submit" --version'
+    assert steps[0] == (False, [mac])  # too old: refused ...
+    assert steps[1] == (True, [mac])  # ... and not remembered, so a fix is picked up at once
+    assert steps[2] == (True, [])  # a success is remembered: no second call for the path
+    assert steps[3] == (True, ['"/other/sqi-submit" --version'])  # remembered per path
+    assert steps[4] == (False, ['"/boom/sqi-submit" --version'])  # a throwing run is a failure
+    assert steps[5] == (False, ['"/null/sqi-submit" --version'])
+    assert steps[6] == (None, [])  # an unquotable path is never run
+    assert steps[7] == (True, ['cmd /c ""C:\\Program Files (x86)\\sqi-submit.exe" --version"'])
+
+
+def test_jsx_too_old_message_says_how_to_fix_it(harness: dict[str, Any]) -> None:
+    message = harness["tooOld"]
+    assert "too old for this panel" in message
+    assert 'pip install -U "sqi-submitter[qt]"' in message
+    assert "sqi-submit install-host aftereffects" in message
+    assert "Locate sqi-submit…" in message
+    assert "'" not in message  # cmd.exe passes single quotes through literally
+
+
+def test_jsx_probes_the_version_before_writing_the_context() -> None:
+    """The Submit flow checks --version before it writes the context file or launches."""
+    code = _code_only(JSX.read_text(encoding="utf-8"))
+    body = code[code.index("function sqiSubmit()") : code.index("function sqiLocate()")]
+    probe = body.index("sqiProbeVersion(")
+    assert probe < body.index("sqiWriteContext(")
+    assert probe < body.index("sqiLaunchCommand(")
+    assert body.index("SQI_MSG.tooOld") < body.index("sqiWriteContext(")
+    assert "system.callSystem(command)" in body[probe:]
 
 
 def test_jsx_not_found_message_names_the_qt_extra(harness: dict[str, Any]) -> None:

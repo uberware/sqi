@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from sqi_submitter._failure import report_failure
+from sqi_submitter._version import __version__
 from sqi_submitter.core import SubmitterSession
 from sqi_submitter.core.errors import SubmitterError
 from sqi_submitter.core.handoff import ContextAdapter, load_context
@@ -23,6 +24,9 @@ __all__ = ["main"]
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sqi-submit", description="Submit a job to sqi.")
+    # The After Effects panel runs this before each launch: an sqi-submit too old to know
+    # --detached would exit on it in a console that closes at once.
+    parser.add_argument("--version", action="version", version=f"sqi-submit {__version__}")
     parser.add_argument("--server", default=None, help="sqi server URL (default: configured)")
     parser.add_argument(
         "--context",
