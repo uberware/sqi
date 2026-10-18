@@ -22,8 +22,10 @@ from typing import Any
 
 import pytest
 
+from sqi_client.models import ProductParameter
 from sqi_submitter import install
 from sqi_submitter.core.handoff import load_context
+from sqi_submitter.core.mapping import prefill
 
 HOST_DIR = Path(__file__).resolve().parents[1] / "src" / "sqi_submitter" / "hosts" / "aftereffects"
 JSX = HOST_DIR / "Submit to sqi.jsx"
@@ -181,15 +183,22 @@ def test_jsx_pure_functions_under_node(harness: dict[str, Any]) -> None:
     assert r["seqNull"] is False
     assert r["count"] == 250
 
-    # A movie is one task: it carries the whole frame count, and the artist cannot change it.
-    assert r["movie"]["extra"] == {"RenderQueueItem": "2", "FramesPerTask": "240"}
-    assert r["movie"]["locked"] == ["FramesPerTask"]
+    # A movie is one task: it carries its whole frame count and its own range, and locks
+    # both, so no edit (a wider range, a step, a gap) can split it.
+    assert r["movie"]["extra"] == {
+        "RenderQueueItem": "2",
+        "FramesPerTask": "240",
+        "Frames": "1-240",
+    }
+    assert r["movie"]["extra"]["Frames"] == r["movie"]["frame_range"]
+    assert r["movie"]["locked"] == ["FramesPerTask", "Frames"]
     assert r["movie"]["kind"] == "render_queue_item"
     assert r["movie"]["name"] == "Main Comp"
     assert r["movie"]["frame_range"] == "1-240"
     assert r["movie"]["output_path"] == "D:\\out\\spot.mov"
-    # An image sequence splits freely: no FramesPerTask, nothing locked.
+    # An image sequence splits freely: no FramesPerTask, no Frames, nothing locked.
     assert r["seq"]["extra"] == {"RenderQueueItem": "1"}
+    assert "Frames" not in r["seq"]["extra"]
     assert r["seq"]["locked"] == []
 
     assert r["union"] == "1-40"
@@ -247,7 +256,7 @@ def test_jsx_unique_names_under_node(harness: dict[str, Any]) -> None:
 
     # The panel suffixes with the render-queue index, which is what the artist sees in AE.
     assert r["dupNames"] == ["Main Comp", "Main Comp (#5)", "Other"]
-    assert r["dupExtra"] == {"RenderQueueItem": "5", "FramesPerTask": "240"}
+    assert r["dupExtra"] == {"RenderQueueItem": "5", "FramesPerTask": "240", "Frames": "1-240"}
 
 
 def test_jsx_not_found_message_names_the_qt_extra(harness: dict[str, Any]) -> None:
@@ -275,8 +284,23 @@ def test_jsx_context_is_accepted_by_load_context(tmp_path: Path, harness: dict[s
     assert seq.frame_range == "1001-1250"
     assert dict(seq.extra) == {"RenderQueueItem": "1"}
     assert not seq.locked
-    assert dict(movie.extra) == {"RenderQueueItem": "2", "FramesPerTask": "240"}
-    assert set(movie.locked) == {"FramesPerTask"}
+    assert movie.frame_range == "1-240"
+    assert dict(movie.extra) == {"RenderQueueItem": "2", "FramesPerTask": "240", "Frames": "1-240"}
+    assert movie.locked == frozenset({"FramesPerTask", "Frames"})
+
+    # The AE presets' parameter names: a movie's locked Frames pre-fills exactly its own
+    # range, the same value the frame_range convention gives a sequence for its own.
+    params = [
+        ProductParameter(name=n, type=t)
+        for n, t in (("Frames", "STRING"), ("RenderQueueItem", "INT"), ("FramesPerTask", "INT"))
+    ]
+    context = adapter.scene_context()
+    assert prefill(params, context, movie) == {
+        "Frames": "1-240",
+        "RenderQueueItem": "2",
+        "FramesPerTask": "240",
+    }
+    assert prefill(params, context, seq) == {"Frames": "1001-1250", "RenderQueueItem": "1"}
 
 
 def test_jsx_and_json2_are_package_resources() -> None:

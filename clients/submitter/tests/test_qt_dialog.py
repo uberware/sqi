@@ -1012,6 +1012,137 @@ def test_edit_to_a_key_only_some_targets_share_applies_to_every_job(
     assert outputs == ["/edited", "/edited", "/edited"]
 
 
+# -- After Effects movie targets ----------------------------------------------
+
+# The shape the After Effects panel's sqiTarget writes (pinned by
+# tests/test_aftereffects_panel.py): a movie locks its frame count and its own range.
+_AE_TARGETS: "dict[str, RenderTarget]" = {
+    "Movie": RenderTarget(
+        name="Movie",
+        kind="render_queue_item",
+        frame_range="1-100",
+        extra={"RenderQueueItem": "1", "FramesPerTask": "100", "Frames": "1-100"},
+        locked=frozenset({"FramesPerTask", "Frames"}),
+    ),
+    "Promo": RenderTarget(
+        name="Promo",
+        kind="render_queue_item",
+        frame_range="1-30",
+        extra={"RenderQueueItem": "2", "FramesPerTask": "30", "Frames": "1-30"},
+        locked=frozenset({"FramesPerTask", "Frames"}),
+    ),
+    "Frames": RenderTarget(
+        name="Frames",
+        kind="render_queue_item",
+        frame_range="1001-1250",
+        extra={"RenderQueueItem": "3"},
+    ),
+}
+
+
+class AfterEffectsAdapter(PassAdapter):
+    """The named ``_AE_TARGETS``, in order."""
+
+    def __init__(self, *names: str) -> None:
+        super().__init__()
+        self.names = names
+
+    def scene_context(self) -> SceneContext:
+        return SceneContext(scene_path="/x/spot.aep", frame_range="1-1250")
+
+    def render_targets(self) -> list[RenderTarget]:
+        return [_AE_TARGETS[n] for n in self.names]
+
+
+def _mock_ae_server() -> respx.Route:
+    """Mock ``ae-render`` with the After Effects presets' parameters."""
+    _mock_server(products=[{"name": "ae-render", "title": "AE Render"}])
+    respx.get(f"{BASE}/api/v1/products/ae-render/parameters").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"name": "Frames", "type": "STRING"},
+                {"name": "RenderQueueItem", "type": "INT"},
+                {"name": "FramesPerTask", "type": "INT", "default": "10"},
+            ],
+        )
+    )
+    responses = [httpx.Response(201, json={"id": f"j{i}", "name": "n"}) for i in range(1, 4)]
+    return respx.post(f"{BASE}/api/v1/products/ae-render/jobs").mock(side_effect=responses)
+
+
+def _ae_dialog(*names: str) -> SubmitDialog:
+    dialog = SubmitDialog(SubmitterSession(server_url=BASE), adapter=AfterEffectsAdapter(*names))
+    _select_product(dialog, "ae-render")
+    assert _mode_text(dialog) == _PER_TARGET_MODE
+    return dialog
+
+
+@respx.mock
+def test_single_movie_frames_are_its_own(app: object, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A widened, stepped or gapped range would split the movie: Frames is not the artist's."""
+    route = _mock_ae_server()
+    _capture_boxes(monkeypatch)
+    dialog = _ae_dialog("Movie", "Frames")
+    assert _ticked(dialog) == ["Movie"]
+    line = _field(dialog, "Frames")
+    assert not line.isEnabled()
+    assert line.toolTip() == _LOCKED
+    assert line.text() == "1-100"
+    assert not _spin(dialog, "FramesPerTask").isEnabled()
+    assert _spin(dialog, "FramesPerTask").value() == 100
+
+    line.setText("1-150")  # the artist cannot reach a disabled editor; force it anyway
+    dialog.edited["Frames"] = "1-150"
+    dialog.edited["FramesPerTask"] = "10"
+    dialog.submit_and_wait()
+    assert _posted(route, "Frames") == ["1-100"]
+    assert _posted(route, "FramesPerTask") == ["100"]
+    assert _posted(route, "RenderQueueItem") == ["1"]
+
+
+@respx.mock
+def test_movie_and_sequence_frames_edit_applies_to_the_sequence_only(
+    app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    route = _mock_ae_server()
+    _capture_boxes(monkeypatch)
+    dialog = _ae_dialog("Movie", "Frames")
+    _tick(dialog, "Frames")
+    line = _field(dialog, "Frames")
+    assert line.isEnabled()
+    assert line.toolTip() == _LOCKED
+
+    line.setText("5-9")
+    line.editingFinished.emit()
+    assert dialog.edited == {"Frames": "5-9"}
+    _spin(dialog, "FramesPerTask").setValue(2)
+    dialog.submit_and_wait()
+    assert _posted(route, "Frames") == ["1-100", "5-9"]
+    assert _posted(route, "FramesPerTask") == ["100", "2"]
+    assert _posted(route, "RenderQueueItem") == ["1", "3"]
+
+
+@respx.mock
+def test_every_ticked_movie_keeps_its_own_frames(
+    app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    route = _mock_ae_server()
+    _capture_boxes(monkeypatch)
+    dialog = _ae_dialog("Movie", "Promo", "Frames")
+    _tick(dialog, "Promo")
+    line = _field(dialog, "Frames")
+    assert not line.isEnabled()
+    assert line.toolTip() == _LOCKED
+    assert line.text() == "1-100"  # the first ticked movie's own
+
+    dialog.edited["Frames"] = "1-150"
+    dialog.edited["FramesPerTask"] = "10"
+    dialog.submit_and_wait()
+    assert _posted(route, "Frames") == ["1-100", "1-30"]
+    assert _posted(route, "FramesPerTask") == ["100", "30"]
+
+
 # -- host save failures -------------------------------------------------------
 
 

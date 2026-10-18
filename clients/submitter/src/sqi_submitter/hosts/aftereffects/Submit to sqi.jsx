@@ -76,13 +76,16 @@ function sqiFrameCount(frameRange) {
 }
 
 // One render target. A movie cannot be split across machines, so it carries its whole frame
-// count as FramesPerTask and the artist cannot override it; a sequence splits freely.
+// count as FramesPerTask and its own range as Frames, and locks both: an edit to either
+// (a wider range, a step, a gap) would split it into several tasks. A sequence splits freely.
 function sqiTarget(index, compName, frameRange, outputFsName, isSequence) {
     var extra = { RenderQueueItem: String(index) };
     var locked = [];
     if (!isSequence) {
         extra.FramesPerTask = String(sqiFrameCount(frameRange));
+        extra.Frames = frameRange;
         locked.push("FramesPerTask");
+        locked.push("Frames");
     }
     return {
         name: compName,

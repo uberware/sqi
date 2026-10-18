@@ -346,8 +346,13 @@ so every target, and so every job, gets a distinct name.
 
 An output module file name with a `[#...]` frame token is an image sequence;
 anything else is a movie. A movie target carries its whole frame count as
-`FramesPerTask`, locked, so it renders as one task, since After Effects cannot
-write one movie from several machines. See [Submitting several
+`FramesPerTask` and its own queue-item range as `Frames`, and locks both, so it
+renders as one task, since After Effects cannot write one movie from several
+machines: a widened range, or one with a step or a gap, would split it. The
+dialog therefore always submits a movie's own range; to render another range,
+change the render-queue item in After Effects and submit again. With movies and
+image sequences ticked together, a **Frame Range** edit applies to the
+image-sequence items only. See [Submitting several
 targets](#submitting-several-targets).
 
 > **For a submitted job to run,** the rendering worker needs the
@@ -518,7 +523,9 @@ several machines, so when the render-queue item writes a movie, set
 `FramesPerTask` to at least the number of frames in the range and enter the
 range with no step and no gaps, such as `1-240`, so the whole range is one
 task. A stepped or listed range always splits at each gap. The preset cannot
-see the output format, so nothing enforces this.
+see the output format, so nothing in the preset enforces this; the After
+Effects submitter does, by locking a movie target's range and frame count
+(see [After Effects](#after-effects)).
 
 Each preset's `hostRequirements` gates it to workers advertising the matching
 `attr.worker.tag.<name>` capability tag. `3dsmax-render` and the After Effects
@@ -642,9 +649,9 @@ Houdini has a per-target product only: its output target is the ROP the script
 renders, not a flag that can be left out. A target's name is for display and
 for job names; only the `extra` values reach the product's parameters.
 
-After Effects targets also carry `FramesPerTask` on **movie** targets only, and
-lock it there (see below). A key that only some targets carry, or that any
-target locks, is not a target parameter.
+After Effects targets also carry `FramesPerTask` and `Frames` on **movie**
+targets only, and lock both there (see below). A key that only some targets
+carry, or that any target locks, is not a target parameter.
 
 A parameter named `Scene` always gets the scene name: extras win over
 convention aliases (below), and `scene` is not a `scene_path` alias.
@@ -681,11 +688,11 @@ or several, purely by parameter names, for every host:
   pre-fills its parameter for that target's job, like a target's frame range,
   and never makes a product per-target. A target without it gets the form's
   value (the product default, or the artist's edit). After Effects' movie
-  targets carry `FramesPerTask` this way.
+  targets carry `FramesPerTask` and `Frames` this way.
 - A key a target **locks** is a per-target pre-fill value too, even when every
   target carries it (a render queue of movies only). Locked values are never
   target parameters and never overridable, so a generic sequence product that
-  merely declares `FramesPerTask` stays a whole-scene product.
+  merely declares `FramesPerTask` or `Frames` stays a whole-scene product.
 
 **Whole-scene product.** The target list is hidden and a line under the product
 picker says "One job for the whole scene, as configured". One job is submitted,
@@ -714,9 +721,10 @@ disabled, with the hint "Tick at least one target.", while none is ticked.
   first ticked target's value; when only some do, it stays editable and the
   edit applies to the others. This is generic; After Effects uses it for
   **movie protection**: a movie target's `FramesPerTask` is its whole frame
-  count and is `locked`, so lowering **Frames Per Task** for the sequence
-  targets does not split the movie across machines. Image-sequence targets take
-  the edit.
+  count and its `Frames` is its own range, both `locked`, so lowering **Frames
+  Per Task** or editing **Frame Range** for the sequence targets does not split
+  the movie across machines. Image-sequence targets take the edit. With only
+  movies ticked, both editors are disabled and show the first movie's values.
 - **Job names** are `<job name field> - <target name>`, for example `Cinema 4D
   Take Render - Hero`. The field defaults to the product's title; whatever the
   artist types there is the prefix for every job.
@@ -1066,8 +1074,11 @@ After installing per [Installation per host](#installation-per-host):
    renders those same frames: the preset passes `-s`/`-e` to `aerender`, and
    whether they count from the composition's display start has not been
    confirmed.
-6. **Movie protection.** Tick both targets, raise **Frames Per Task** to 50,
-   submit. The sequence job takes 50; the movie job keeps its whole frame count.
+6. **Movie protection.** Tick only the movie: **Frame Range** and **Frames Per
+   Task** are greyed out and show the item's own range and frame count. Tick
+   both targets, raise **Frames Per Task** to 50 and change **Frame Range**,
+   submit. The sequence job takes both edits; the movie job keeps its own range
+   and its whole frame count, so it is one task.
 7. **Launch.** The dialog opens without After Effects freezing while it is open
    and without a console window staying on screen (Windows). Test with
    `sqi-submit` installed in a path containing spaces.
@@ -1360,13 +1371,15 @@ and submitting creates `Cinema 4D Take Render - Hero` with `Take=Hero` and
 `Take=Hero_closeup` and `Frames=40-80`. `Hero_closeup` has no output path of its
 own, so its `OutputPath` is the scene's, `D:/renders/spot/beauty_`.
 
-A locked per-target value looks like the After Effects movie in the test
-fixture `clients/submitter/tests/fixtures/context/multi-target-locked.json`:
+A locked per-target value looks like an After Effects movie target as the
+panel writes it (a smaller one is in the test fixture
+`clients/submitter/tests/fixtures/context/multi-target-locked.json`):
 
 ```json
-{ "name": "Main Comp", "kind": "render_queue_item",
-  "extra": { "RenderQueueItem": "1", "FramesPerTask": "10" },
-  "locked": ["FramesPerTask"] }
+{ "name": "Main Comp", "kind": "render_queue_item", "frame_range": "1-240",
+  "output_path": "D:\\out\\spot.mov",
+  "extra": { "RenderQueueItem": "1", "FramesPerTask": "240", "Frames": "1-240" },
+  "locked": ["FramesPerTask", "Frames"] }
 ```
 
 ### Adding another host
