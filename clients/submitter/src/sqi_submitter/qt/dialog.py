@@ -120,6 +120,8 @@ class SubmitDialog(QtWidgets.QDialog):
         self._target_params: frozenset[str] = frozenset()
         self._model: FormModel | None = None
         self._model_product: str | None = None
+        # The first ticked target when the form was last built (None: none ticked).
+        self._displayed_target: RenderTarget | None = None
         self._form_root: QtWidgets.QWidget | None = None
         self._worker: _SubmitWorker | None = None
         self._submitting = False
@@ -437,15 +439,24 @@ class SubmitDialog(QtWidgets.QDialog):
         return ticked
 
     def _on_ticks_changed(self, _item: object) -> None:
+        ticked = self._ticked_targets() if self._per_target else []
         # An edit to a target parameter belonged to the old selection: with
         # several ticked the field is "from each target", so drop it.
+        dropped = False
         for name in self._target_params:
-            self.edited.pop(name, None)
+            if self.edited.pop(name, None) is not None:
+                dropped = True
         product = self._current_product()
-        if product is not None and self._model_product == product.name:
-            self._rebuild_model(product.name)
+        first = ticked[0] if ticked else None
+        if product is None or self._model_product != product.name:
+            self._update_submit_state(ticked)
+        elif dropped or first is not self._displayed_target:
+            self._rebuild_model(product.name, ticked)
         else:
-            self._update_submit_state()
+            # The form shows the first ticked target's model, which ticking or
+            # unticking a later target cannot change: restyle it, don't rebuild.
+            self._clear_field_errors(ticked)
+            self._update_submit_state(ticked)
 
     # -- form -----------------------------------------------------------
 
@@ -502,12 +513,16 @@ class SubmitDialog(QtWidgets.QDialog):
         apply_edits(model, self.edited)
         return model
 
-    def _rebuild_model(self, product_name: str) -> None:
+    def _rebuild_model(
+        self, product_name: str, ticked: Sequence[RenderTarget] | None = None
+    ) -> None:
         """Rebuild the model and editors from ``product_name``'s cached parameters (no fetch)."""
-        ticked = self._ticked_targets() if self._per_target else []
+        if ticked is None:
+            ticked = self._ticked_targets() if self._per_target else []
         model = self._display_model(ticked)
         self._model = model
         self._model_product = product_name
+        self._displayed_target = ticked[0] if ticked else None
 
         old = self._form_scroll.takeWidget()
         self._form_scroll.setWidget(
@@ -520,8 +535,8 @@ class SubmitDialog(QtWidgets.QDialog):
         self._form_root = self._form_scroll.widget()
         if old is not None:
             old.deleteLater()
-        self._apply_target_states()
-        self._update_submit_state()
+        self._apply_target_states(ticked)
+        self._update_submit_state(ticked)
 
     def _on_field_edited(self, name: str, value: str) -> None:
         self.edited[name] = value
@@ -531,34 +546,43 @@ class SubmitDialog(QtWidgets.QDialog):
             return None
         return self._form_root.findChild(QtWidgets.QWidget, f"field_{name}")
 
-    def _apply_target_states(self) -> None:
-        """Lock target parameters while several are ticked; flag locked keys."""
-        if self._form_root is None or not self._per_target:
+    def _apply_target_states(self, ticked: Sequence[RenderTarget] | None = None) -> None:
+        """Lock target parameters while several are ticked; flag locked keys.
+
+        Sets every field's tooltip, as a rebuild would, so the form is right
+        after the ticks change without one.
+        """
+        if self._form_root is None or self._model is None or not self._per_target:
             return
-        ticked = self._ticked_targets()
+        if ticked is None:
+            ticked = self._ticked_targets()
         locked = {normalize_name(k) for t in ticked for k in t.locked}
-        for parameter in self._parameters:
-            if normalize_name(parameter.name) in locked:
-                editor = self._field_editor(parameter.name)
-                if editor is not None:
-                    editor.setToolTip(_LOCKED_TIP)
         several = len(ticked) > 1
-        for name in self._target_params:
+        for f in self._model.fields:
+            name = f.parameter.name
             editor = self._field_editor(name)
             if editor is None:
                 continue
-            row = self._form_root.findChild(QtWidgets.QWidget, f"row_{name}")
-            (row or editor).setEnabled(not several)
-            if several:
+            is_target_param = name in self._target_params
+            if is_target_param:
+                row = self._form_root.findChild(QtWidgets.QWidget, f"row_{name}")
+                (row or editor).setEnabled(not several)
+            if several and is_target_param:
                 editor.setToolTip(_FROM_EACH_TARGET_TIP)
+            elif normalize_name(name) in locked:
+                editor.setToolTip(_LOCKED_TIP)
+            else:
+                editor.setToolTip(PREFILL_TIP if f.prefilled else "")
 
-    def _update_submit_state(self) -> None:
+    def _update_submit_state(self, ticked: Sequence[RenderTarget] | None = None) -> None:
         """Submit needs a current model, no submit running, and (per-target) a tick."""
         product = self._current_product()
         ready = (
             product is not None and self._model is not None and self._model_product == product.name
         )
-        needs_tick = self._per_target and not self._ticked_targets()
+        if self._per_target and ticked is None:
+            ticked = self._ticked_targets()
+        needs_tick = self._per_target and not ticked
         self._target_hint.setVisible(needs_tick)
         self._submit_button.setEnabled(ready and not needs_tick and not self._submitting)
 
@@ -763,7 +787,7 @@ class SubmitDialog(QtWidgets.QDialog):
             editor.setToolTip(message)
             editor.setStyleSheet(_ERROR_STYLE)
 
-    def _clear_field_errors(self) -> None:
+    def _clear_field_errors(self, ticked: Sequence[RenderTarget] | None = None) -> None:
         if self._form_root is None or self._model is None:
             return
         for f in self._model.fields:
@@ -772,7 +796,7 @@ class SubmitDialog(QtWidgets.QDialog):
                 continue
             editor.setStyleSheet("")
             editor.setToolTip(PREFILL_TIP if f.prefilled else "")
-        self._apply_target_states()
+        self._apply_target_states(ticked)
 
     # -- error banner -------------------------------------------------------
 

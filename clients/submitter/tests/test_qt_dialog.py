@@ -23,6 +23,7 @@ from sqi_submitter.core.errors import SubmitterError  # noqa: E402
 from sqi_submitter.core.handoff import ContextAdapter, dump_context, load_context  # noqa: E402
 from sqi_submitter.qt import dialog as qt_dialog  # noqa: E402
 from sqi_submitter.qt.dialog import SubmitDialog  # noqa: E402
+from sqi_submitter.qt.widgets import PREFILL_TIP, build_form  # noqa: E402
 from tests.test_adapter_contract import BASE, MiniAdapter  # noqa: E402
 
 QtCore = compat.QtCore
@@ -643,13 +644,126 @@ def test_edited_field_applies_to_every_job(app: object, monkeypatch: pytest.Monk
     line.editingFinished.emit()
     assert dialog.edited == {"Frames": "1-2"}
 
-    _tick(dialog, "B")  # rebuilds the form; the edit survives
+    _tick(dialog, "B")  # the edit survives
     assert _field(dialog, "Frames").text() == "1-2"
     dialog.submit_and_wait()
     assert [json.loads(c.request.content)["parameters"]["Frames"] for c in route.calls] == [
         "1-2",
         "1-2",
     ]
+
+
+def _count_rebuilds(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Count the dialog's form builds from now on."""
+    calls: list[int] = []
+
+    def counting(*args: Any, **kwargs: Any) -> Any:
+        calls.append(1)
+        return build_form(*args, **kwargs)
+
+    monkeypatch.setattr(qt_dialog, "build_form", counting)
+    return calls
+
+
+@respx.mock
+def test_ticking_a_later_target_keeps_the_form(
+    app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _mock_pass_server()
+    dialog = _pass_dialog()
+    rebuilds = _count_rebuilds(monkeypatch)
+    root = dialog._form_root
+    assert _field(dialog, "Pass").toolTip() == PREFILL_TIP
+
+    _tick(dialog, "B")
+    assert rebuilds == []
+    assert dialog._form_root is root
+    assert not _field(dialog, "Pass").isEnabled()
+    assert _field(dialog, "Pass").toolTip() == "From each target"
+
+    _tick(dialog, "B", on=False)
+    assert rebuilds == []
+    assert dialog._form_root is root
+    assert _field(dialog, "Pass").isEnabled()
+    assert _field(dialog, "Pass").toolTip() == PREFILL_TIP  # what a rebuild would give
+
+
+@respx.mock
+def test_changing_the_first_ticked_target_rebuilds_with_its_prefill(
+    app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _mock_pass_server()
+    dialog = _pass_dialog()
+    rebuilds = _count_rebuilds(monkeypatch)
+    _tick(dialog, "B")
+    _tick(dialog, "A", on=False)
+    assert rebuilds == [1]
+    assert _field(dialog, "Pass").text() == "B"
+    assert _field(dialog, "Pass").isEnabled()
+
+
+@respx.mock
+def test_edit_survives_a_later_tick_without_a_rebuild(
+    app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _mock_pass_server()
+    dialog = _pass_dialog()
+    rebuilds = _count_rebuilds(monkeypatch)
+    line = _field(dialog, "Frames")
+    line.setText("1-2")
+    line.editingFinished.emit()
+
+    _tick(dialog, "B")
+    assert rebuilds == []
+    assert dialog.edited == {"Frames": "1-2"}
+    assert _field(dialog, "Frames").text() == "1-2"
+    assert dialog._model is not None and dialog._model.values()["Frames"] == "1-2"
+
+
+@respx.mock
+def test_dropped_target_parameter_edit_rebuilds(
+    app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _mock_pass_server()
+    dialog = _pass_dialog()
+    rebuilds = _count_rebuilds(monkeypatch)
+    line = _field(dialog, "Pass")
+    line.setText("custom")
+    line.editingFinished.emit()
+
+    _tick(dialog, "B")
+    assert rebuilds == [1]
+    assert dialog.edited == {}
+    assert _field(dialog, "Pass").text() == "A"  # back to the first target's own
+
+
+@respx.mock
+def test_unticking_a_locking_target_clears_its_tooltip_without_a_rebuild(
+    app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _mock_pass_server()
+    dialog = _pass_dialog(PassAdapter(movie_locked=True))
+    rebuilds = _count_rebuilds(monkeypatch)
+    _tick(dialog, "B")
+    spin = dialog.findChild(QtWidgets.QSpinBox, "field_FramesPerTask")
+    assert spin is not None
+    assert spin.toolTip() == "Kept per target (e.g. a movie renders as one task)"
+
+    _tick(dialog, "B", on=False)
+    assert rebuilds == []
+    assert spin.toolTip() == ""
+
+
+@respx.mock
+def test_tick_change_clears_field_errors_like_a_rebuild(app: object) -> None:
+    _mock_pass_server()
+    dialog = _pass_dialog()
+    dialog._apply_field_errors({"Frames": "bad frames"})
+    assert _field(dialog, "Frames").toolTip() == "bad frames"
+
+    _tick(dialog, "B")
+    assert _field(dialog, "Frames").styleSheet() == ""
+    assert _field(dialog, "Frames").toolTip() == PREFILL_TIP
 
 
 @respx.mock
