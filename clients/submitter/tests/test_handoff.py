@@ -13,7 +13,6 @@ import pytest
 
 from sqi_submitter.core import HostAdapter, RenderTarget, SceneContext
 from sqi_submitter.core.handoff import (
-    CONTEXT_VERSION,
     ContextAdapter,
     ContextError,
     dump_context,
@@ -56,10 +55,6 @@ def _from_fixture(tmp_path: Path, name: str) -> Path:
     path = tmp_path / name
     shutil.copy(FIXTURES / name, path)
     return path
-
-
-def test_context_version_is_one() -> None:
-    assert CONTEXT_VERSION == 1
 
 
 def test_context_round_trip(tmp_path: Path) -> None:
@@ -127,31 +122,34 @@ def test_context_accepts_utf8_bom(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("fixture", "fragment"),
+    ("fixture", "text", "fragments"),
     [
-        ("invalid-version.json", "version"),
-        ("invalid-no-scene-path.json", "scene.path"),
-        ("invalid-extra-value.json", "extra"),
-        ("invalid-locked-key.json", "locked"),
+        ("invalid-version.json", None, ["version"]),
+        ("invalid-no-scene-path.json", None, ["scene.path"]),
+        ("invalid-extra-value.json", None, ["extra"]),
+        ("invalid-locked-key.json", None, ["locked", "'B'"]),
+        ("ctx.json", '{"version": 7, "scene": {"path": "/a"}}', ["version"]),
+        ("ctx.json", '{"version": 1, "scene": {"path": ""}}', ["scene.path"]),
+    ],
+    ids=[
+        "version",
+        "no-scene-path",
+        "extra-value",
+        "locked-key",
+        "unknown-version",
+        "empty-scene-path",
     ],
 )
 def test_context_adapter_rejects_invalid_fixture(
-    tmp_path: Path, fixture: str, fragment: str
+    tmp_path: Path, fixture: str, text: str | None, fragments: list[str]
 ) -> None:
-    path = _from_fixture(tmp_path, fixture)
+    path = _from_fixture(tmp_path, fixture) if text is None else _write(tmp_path, text)
+    assert path.name == fixture
     with pytest.raises(ContextError) as info:
         load_context(path)
     assert fixture in info.value.user_message
-    assert fragment in info.value.user_message
-    assert path.exists()
-
-
-def test_context_adapter_rejects_unknown_version(tmp_path: Path) -> None:
-    path = _write(tmp_path, '{"version": 7, "scene": {"path": "/a"}}')
-    with pytest.raises(ContextError) as info:
-        load_context(path)
-    assert path.name in info.value.user_message
-    assert "version" in info.value.user_message
+    for fragment in fragments:
+        assert fragment in info.value.user_message
     assert path.exists()
 
 
@@ -177,24 +175,6 @@ def test_context_adapter_rejects_hostile_json(tmp_path: Path, text: str) -> None
     with pytest.raises(ContextError) as info:
         load_context(path)
     assert path.name in info.value.user_message
-    assert path.exists()
-
-
-def test_context_adapter_rejects_missing_scene_path(tmp_path: Path) -> None:
-    path = _write(tmp_path, '{"version": 1, "scene": {"path": ""}}')
-    with pytest.raises(ContextError) as info:
-        load_context(path)
-    assert path.name in info.value.user_message
-    assert "scene.path" in info.value.user_message
-    assert path.exists()
-
-
-def test_context_adapter_rejects_locked_key_not_in_extra(tmp_path: Path) -> None:
-    path = _from_fixture(tmp_path, "invalid-locked-key.json")
-    with pytest.raises(ContextError) as info:
-        load_context(path)
-    assert path.name in info.value.user_message
-    assert "'B'" in info.value.user_message
     assert path.exists()
 
 

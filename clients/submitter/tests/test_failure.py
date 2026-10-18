@@ -17,6 +17,7 @@ import pytest
 
 from sqi_submitter import _failure, cli
 from sqi_submitter.core.session import Settings
+from tests.conftest import no_qt
 
 # Taken before the autouse ``native_messages`` fixture replaces it.
 REAL_SHOW_MESSAGE = _failure.show_message
@@ -166,19 +167,10 @@ def test_detached_shows_the_message_box_even_on_a_terminal(
     assert "No Qt binding found." in _log(sqi_dir)
 
 
-def _no_qt(monkeypatch: pytest.MonkeyPatch) -> None:
-    import sqi_submitter.qt as qt_package
-    from sqi_submitter.qt import _compat
-
-    monkeypatch.setattr(_compat, "QT_BINDING", "")
-    monkeypatch.setitem(sys.modules, "sqi_submitter.qt.dialog", None)
-    monkeypatch.delattr(qt_package, "dialog", raising=False)
-
-
 def test_cli_detached_flag_shows_the_box_on_a_terminal(
     sqi_dir: Path, monkeypatch: pytest.MonkeyPatch, native_messages: list[str]
 ) -> None:
-    _no_qt(monkeypatch)
+    no_qt(monkeypatch)
     monkeypatch.setattr(sys, "stderr", _Tty())
     assert cli.main(["--context", str(sqi_dir / "ctx.json"), "--detached"]) == 1
     (shown,) = native_messages
@@ -188,7 +180,7 @@ def test_cli_detached_flag_shows_the_box_on_a_terminal(
 def test_cli_without_detached_a_terminal_suppresses_the_box(
     sqi_dir: Path, monkeypatch: pytest.MonkeyPatch, native_messages: list[str]
 ) -> None:
-    _no_qt(monkeypatch)
+    no_qt(monkeypatch)
     monkeypatch.setattr(sys, "stderr", _Tty())
     assert cli.main([]) == 1
     assert native_messages == []

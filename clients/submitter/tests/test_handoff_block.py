@@ -101,12 +101,6 @@ def test_resolve_submit_command_reads_settings_file_with_bom(
     assert block.resolve_submit_command("") == from_file
 
 
-def test_not_found_message_double_quotes_the_extra() -> None:
-    # cmd.exe passes single quotes through literally, so only double quotes work everywhere.
-    assert 'pip install "sqi-submitter[qt]"' in block.NOT_FOUND_MESSAGE
-    assert "'" not in block.NOT_FOUND_MESSAGE
-
-
 def test_resolve_submit_command_not_found_message(isolated: Path) -> None:
     with pytest.raises(RuntimeError) as excinfo:
         block.resolve_submit_command("")

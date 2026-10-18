@@ -22,7 +22,7 @@ from sqi_submitter.core import RenderTarget, SceneContext, SubmitterSession  # n
 from sqi_submitter.core.errors import SubmitterError  # noqa: E402
 from sqi_submitter.core.handoff import ContextAdapter, dump_context, load_context  # noqa: E402
 from sqi_submitter.qt import dialog as qt_dialog  # noqa: E402
-from sqi_submitter.qt.dialog import SubmitDialog  # noqa: E402
+from sqi_submitter.qt.dialog import _PER_TARGET_MODE, _WHOLE_SCENE_MODE, SubmitDialog  # noqa: E402
 from sqi_submitter.qt.widgets import PREFILL_TIP, build_form  # noqa: E402
 from tests.test_adapter_contract import BASE, MiniAdapter  # noqa: E402
 
@@ -365,9 +365,6 @@ def test_dialog_hides_save_checkbox_for_context_adapter(app: object, tmp_path: P
 
 
 # -- multi-target checklist ---------------------------------------------------
-
-_PER_TARGET_MODE = "One job per ticked target"
-_WHOLE_SCENE_MODE = "One job for the whole scene, as configured"
 
 
 class PassAdapter(MiniAdapter):

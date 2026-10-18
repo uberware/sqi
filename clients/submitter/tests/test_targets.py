@@ -42,10 +42,6 @@ BLENDER_PARAMS = [_p("SceneFile", "PATH"), _p("Scene"), _p("ViewLayer"), _p("Fra
 MAYA_SCENE_PARAMS = [_p("SceneFile", "PATH"), _p("Frames"), _p("Renderer")]
 
 
-def _values(model: FormModel) -> dict[str, str]:
-    return model.values()
-
-
 def test_target_parameters_needs_key_on_every_target() -> None:
     targets = [
         RenderTarget(
@@ -99,7 +95,7 @@ def test_per_target_models_untouched_fields_follow_each_target() -> None:
     targets = _blender_targets()
     models = per_target_models(BLENDER_PARAMS, CTX, targets, {})
     assert [t for t, _ in models] == targets
-    first, second = (_values(m) for _, m in models)
+    first, second = (m.values() for _, m in models)
     assert first["Frames"] == "1-10"
     assert second["Frames"] == "20-30"
     assert (first["Scene"], first["ViewLayer"]) == ("Scene", "A")
@@ -109,7 +105,7 @@ def test_per_target_models_untouched_fields_follow_each_target() -> None:
 
 def test_per_target_models_edit_applies_to_all() -> None:
     models = per_target_models(BLENDER_PARAMS, CTX, _blender_targets(), {"Frames": "1-5"})
-    assert [_values(m)["Frames"] for _, m in models] == ["1-5", "1-5"]
+    assert [m.values()["Frames"] for _, m in models] == ["1-5", "1-5"]
 
 
 def test_per_target_models_locked_value_beats_edit() -> None:
@@ -123,7 +119,7 @@ def test_per_target_models_locked_value_beats_edit() -> None:
         RenderTarget(name="images", kind="rq_item", extra={"RenderQueueItem": "2"}),
     ]
     models = per_target_models(AE_PARAMS, CTX, targets, {"FramesPerTask": "5"})
-    movie, images = (_values(m) for _, m in models)
+    movie, images = (m.values() for _, m in models)
     assert movie["FramesPerTask"] == "240"
     assert images["FramesPerTask"] == "5"
 
@@ -138,15 +134,15 @@ def test_target_without_prefill_key_gets_form_default() -> None:
         RenderTarget(name="images", kind="rq_item", extra={"RenderQueueItem": "2"}),
     ]
     models = per_target_models(AE_PARAMS, CTX, targets, {})
-    assert _values(models[0][1])["FramesPerTask"] == "240"
-    assert _values(models[1][1])["FramesPerTask"] == "10"
+    assert models[0][1].values()["FramesPerTask"] == "240"
+    assert models[1][1].values()["FramesPerTask"] == "10"
 
 
 def test_target_parameter_edit_is_ignored() -> None:
     targets = _blender_targets()
     base = per_target_models(BLENDER_PARAMS, CTX, targets, {})
     edited = per_target_models(BLENDER_PARAMS, CTX, targets, {"ViewLayer": "ZZZ"})
-    assert [_values(m) for _, m in edited] == [_values(m) for _, m in base]
+    assert [m.values() for _, m in edited] == [m.values() for _, m in base]
 
 
 def test_explicit_target_params_keep_edits_to_keys_a_subset_shares() -> None:
@@ -155,21 +151,59 @@ def test_explicit_target_params_keep_edits_to_keys_a_subset_shares() -> None:
     edited = {"OutputPath": "/edited", "Pass": "ZZZ"}
     # Derived from the given targets, A alone makes OutputPath a target parameter.
     (derived,) = per_target_models(params, CTX, [a], edited)
-    assert _values(derived[1])["OutputPath"] == "/a"
+    assert derived[1].values()["OutputPath"] == "/a"
     # Given the set computed over every target, the edit is honoured.
     (explicit,) = per_target_models(params, CTX, [a], edited, target_params=frozenset({"Pass"}))
-    assert _values(explicit[1])["OutputPath"] == "/edited"
-    assert _values(explicit[1])["Pass"] == "A"  # a real target parameter stays the target's
+    assert explicit[1].values()["OutputPath"] == "/edited"
+    assert explicit[1].values()["Pass"] == "A"  # a real target parameter stays the target's
 
 
 def test_edit_for_unknown_parameter_is_ignored() -> None:
     models = per_target_models(BLENDER_PARAMS, CTX, _blender_targets(), {"Nope": "1"})
-    assert all("Nope" not in _values(m) for _, m in models)
+    assert all("Nope" not in m.values() for _, m in models)
 
 
 def test_job_name_for() -> None:
     target = RenderTarget(name="Scene/B", kind="view_layer")
     assert job_name_for("Blender", target) == "Blender - Scene/B"
+
+
+def _jobs_route(side_effect: list[httpx.Response] | None = None) -> respx.Route:
+    route = respx.post(f"{BASE}/api/v1/products/blender/jobs")
+    if side_effect is not None:
+        return route.mock(side_effect=side_effect)
+    return route.mock(return_value=httpx.Response(201, json={"id": "j", "name": "n"}))
+
+
+def _submit(
+    models: list[tuple[RenderTarget, FormModel]],
+    adapter: MiniAdapter | None = None,
+    save_scene: bool = False,
+) -> list[TargetResult]:
+    return submit_targets(
+        SubmitterSession(server_url=BASE),
+        "blender",
+        models,
+        farm_id="f",
+        queue_id="q",
+        job_name_prefix="Blender",
+        adapter=adapter,
+        save_scene=save_scene,
+        job_options=None,
+    )
+
+
+def _counting(adapter: MiniAdapter) -> list[int]:
+    """Count the adapter's saves from now on."""
+    saves: list[int] = []
+    original = adapter.save_scene
+
+    def counting_save() -> bool:
+        saves.append(1)
+        return original()
+
+    adapter.save_scene = counting_save  # type: ignore[method-assign]
+    return saves
 
 
 def _three_targets() -> list[RenderTarget]:
@@ -181,7 +215,7 @@ def _three_targets() -> list[RenderTarget]:
 
 @respx.mock
 def test_submit_targets_reports_partial_failure() -> None:
-    route = respx.post(f"{BASE}/api/v1/products/blender/jobs").mock(
+    route = _jobs_route(
         side_effect=[
             httpx.Response(201, json={"id": "j1", "name": "n1"}),
             httpx.Response(400, json={"error": "bad layer"}),
@@ -190,17 +224,7 @@ def test_submit_targets_reports_partial_failure() -> None:
     )
     targets = _three_targets()
     models = per_target_models(BLENDER_PARAMS, CTX, targets, {"Frames": "1-5"})
-    results = submit_targets(
-        SubmitterSession(server_url=BASE),
-        "blender",
-        models,
-        farm_id="f",
-        queue_id="q",
-        job_name_prefix="Blender",
-        adapter=None,
-        save_scene=False,
-        job_options=None,
-    )
+    results = _submit(models)
     assert len(results) == 3
     assert all(isinstance(r, TargetResult) for r in results)
     assert [r.target for r in results] == targets
@@ -215,22 +239,10 @@ def test_submit_targets_reports_partial_failure() -> None:
 
 @respx.mock
 def test_submit_targets_names_the_invalid_fields() -> None:
-    route = respx.post(f"{BASE}/api/v1/products/blender/jobs").mock(
-        return_value=httpx.Response(201, json={"id": "j", "name": "n"})
-    )
+    route = _jobs_route()
     params = [*BLENDER_PARAMS, _p("Chunk", "INT")]
     models = per_target_models(params, CTX, _three_targets()[:1], {"Chunk": "x"})
-    (result,) = submit_targets(
-        SubmitterSession(server_url=BASE),
-        "blender",
-        models,
-        farm_id="f",
-        queue_id="q",
-        job_name_prefix="Blender",
-        adapter=None,
-        save_scene=False,
-        job_options=None,
-    )
+    (result,) = _submit(models)
     assert route.call_count == 0
     assert result.job is None
     # "Please fix the highlighted fields." tells the artist nothing in a list.
@@ -239,52 +251,21 @@ def test_submit_targets_names_the_invalid_fields() -> None:
 
 @respx.mock
 def test_submit_targets_saves_once() -> None:
-    respx.post(f"{BASE}/api/v1/products/blender/jobs").mock(
-        return_value=httpx.Response(201, json={"id": "j", "name": "n"})
-    )
+    _jobs_route()
     adapter = MiniAdapter(modified=True)
-    saves: list[int] = []
-    original = adapter.save_scene
-
-    def counting_save() -> bool:
-        saves.append(1)
-        return original()
-
-    adapter.save_scene = counting_save  # type: ignore[method-assign]
+    saves = _counting(adapter)
     models = per_target_models(BLENDER_PARAMS, CTX, _three_targets(), {})
-    results = submit_targets(
-        SubmitterSession(server_url=BASE),
-        "blender",
-        models,
-        farm_id="f",
-        queue_id="q",
-        job_name_prefix="Blender",
-        adapter=adapter,
-        save_scene=True,
-        job_options=None,
-    )
+    results = _submit(models, adapter, save_scene=True)
     assert [r.error for r in results] == [None, None, None]
     assert len(saves) == 1
 
 
 @respx.mock
 def test_submit_targets_failed_save_submits_nothing() -> None:
-    route = respx.post(f"{BASE}/api/v1/products/blender/jobs").mock(
-        return_value=httpx.Response(201, json={"id": "j", "name": "n"})
-    )
+    route = _jobs_route()
     adapter = MiniAdapter(modified=True, can_save=False)
     models = per_target_models(BLENDER_PARAMS, CTX, _three_targets(), {})
-    results = submit_targets(
-        SubmitterSession(server_url=BASE),
-        "blender",
-        models,
-        farm_id="f",
-        queue_id="q",
-        job_name_prefix="Blender",
-        adapter=adapter,
-        save_scene=True,
-        job_options=None,
-    )
+    results = _submit(models, adapter, save_scene=True)
     assert route.call_count == 0
     assert len(results) == 3
     assert all(r.job is None for r in results)
@@ -293,9 +274,7 @@ def test_submit_targets_failed_save_submits_nothing() -> None:
 
 @respx.mock
 def test_submit_targets_saves_even_when_first_target_fails_early() -> None:
-    route = respx.post(f"{BASE}/api/v1/products/blender/jobs").mock(
-        return_value=httpx.Response(201, json={"id": "j", "name": "n"})
-    )
+    route = _jobs_route()
     params = [*BLENDER_PARAMS, _p("OutputPath", "PATH")]
     targets = [
         RenderTarget(name="A", kind="view_layer", extra={"Scene": "S", "ViewLayer": "A"}),
@@ -314,25 +293,8 @@ def test_submit_targets_saves_even_when_first_target_fails_early() -> None:
     ]
     ctx = SceneContext(scene_path="/x/s.scene", frame_range="1-4")
     adapter = MiniAdapter(modified=True)
-    saves: list[int] = []
-    original = adapter.save_scene
-
-    def counting_save() -> bool:
-        saves.append(1)
-        return original()
-
-    adapter.save_scene = counting_save  # type: ignore[method-assign]
-    results = submit_targets(
-        SubmitterSession(server_url=BASE),
-        "blender",
-        per_target_models(params, ctx, targets, {}),
-        farm_id="f",
-        queue_id="q",
-        job_name_prefix="Blender",
-        adapter=adapter,
-        save_scene=True,
-        job_options=None,
-    )
+    saves = _counting(adapter)
+    results = _submit(per_target_models(params, ctx, targets, {}), adapter, save_scene=True)
     assert results[0].job is None and results[0].error is not None
     assert "output path" in results[0].error.lower()
     assert results[1].job is not None and results[2].job is not None

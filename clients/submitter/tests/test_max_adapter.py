@@ -5,16 +5,14 @@ from __future__ import annotations
 
 import sys
 import xml.etree.ElementTree as ET
-from collections.abc import Callable
 from importlib import resources
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from sqi_submitter.core import HostAdapter
-
-FakeInstaller = Callable[..., ModuleType]
+from tests.conftest import FakeHost
 
 IMPORT_LINE = "from sqi_submitter.hosts.max.menu import open_submitter; open_submitter()"
 
@@ -24,7 +22,7 @@ def _t(frame: int) -> SimpleNamespace:
     return SimpleNamespace(frame=frame)
 
 
-def _install_fake_pymxs(fake_host_module: FakeInstaller, **overrides: Any) -> SimpleNamespace:
+def _install_fake_pymxs(fake_host_module: FakeHost, **overrides: Any) -> SimpleNamespace:
     saved: list[tuple[str, bool]] = []
 
     def save_max_file(path: str, quiet: bool = False) -> bool:
@@ -78,7 +76,7 @@ def test_max_is_a_host_adapter() -> None:
     ],
 )
 def test_max_frame_range_each_rend_time_type(
-    fake_host_module: FakeInstaller, rend_time_type: int, pickup: str, expected: str | None
+    fake_host_module: FakeHost, rend_time_type: int, pickup: str, expected: str | None
 ) -> None:
     _install_fake_pymxs(fake_host_module, rendTimeType=rend_time_type, rendPickupFrames=pickup)
     from sqi_submitter.hosts.max.adapter import MaxAdapter
@@ -86,7 +84,7 @@ def test_max_frame_range_each_rend_time_type(
     assert MaxAdapter().scene_context().frame_range == expected
 
 
-def test_max_scene_path_and_output(fake_host_module: FakeInstaller) -> None:
+def test_max_scene_path_and_output(fake_host_module: FakeHost) -> None:
     _install_fake_pymxs(fake_host_module)
     from sqi_submitter.hosts.max.adapter import MaxAdapter
 
@@ -96,14 +94,14 @@ def test_max_scene_path_and_output(fake_host_module: FakeInstaller) -> None:
     assert ctx.renderer == "Class_scanline"
 
 
-def test_max_output_is_none_when_not_saving(fake_host_module: FakeInstaller) -> None:
+def test_max_output_is_none_when_not_saving(fake_host_module: FakeHost) -> None:
     _install_fake_pymxs(fake_host_module, rendSaveFile=False)
     from sqi_submitter.hosts.max.adapter import MaxAdapter
 
     assert MaxAdapter().scene_context().output_path is None
 
 
-def test_max_untitled_scene_has_no_path_or_output(fake_host_module: FakeInstaller) -> None:
+def test_max_untitled_scene_has_no_path_or_output(fake_host_module: FakeHost) -> None:
     _install_fake_pymxs(fake_host_module, maxFilePath="", maxFileName="", rendOutputFilename="")
     from sqi_submitter.hosts.max.adapter import MaxAdapter
 
@@ -112,7 +110,7 @@ def test_max_untitled_scene_has_no_path_or_output(fake_host_module: FakeInstalle
     assert ctx.output_path is None
 
 
-def test_max_save_scene_saves_quietly(fake_host_module: FakeInstaller) -> None:
+def test_max_save_scene_saves_quietly(fake_host_module: FakeHost) -> None:
     rt = _install_fake_pymxs(fake_host_module)
     from sqi_submitter.hosts.max.adapter import MaxAdapter
 
@@ -120,7 +118,7 @@ def test_max_save_scene_saves_quietly(fake_host_module: FakeInstaller) -> None:
     assert rt.saved == [("D:/shows/a/shot_010.max", True)]
 
 
-def test_max_failed_save_is_reported(fake_host_module: FakeInstaller) -> None:
+def test_max_failed_save_is_reported(fake_host_module: FakeHost) -> None:
     """saveMaxFile returning false (read-only file, full disk) must not submit a stale scene."""
     saved: list[str] = []
 
@@ -135,7 +133,7 @@ def test_max_failed_save_is_reported(fake_host_module: FakeInstaller) -> None:
     assert saved == ["D:/shows/a/shot_010.max"]
 
 
-def test_max_untitled_scene_cannot_save(fake_host_module: FakeInstaller) -> None:
+def test_max_untitled_scene_cannot_save(fake_host_module: FakeHost) -> None:
     rt = _install_fake_pymxs(fake_host_module, maxFilePath="", maxFileName="")
     from sqi_submitter.hosts.max.adapter import MaxAdapter
 
@@ -145,7 +143,7 @@ def test_max_untitled_scene_cannot_save(fake_host_module: FakeInstaller) -> None
 
 @pytest.mark.parametrize("modified", [True, False])
 def test_max_scene_modified_follows_save_required(
-    fake_host_module: FakeInstaller, modified: bool
+    fake_host_module: FakeHost, modified: bool
 ) -> None:
     _install_fake_pymxs(fake_host_module, getSaveRequired=lambda: modified)
     from sqi_submitter.hosts.max.adapter import MaxAdapter
@@ -153,7 +151,7 @@ def test_max_scene_modified_follows_save_required(
     assert MaxAdapter().is_scene_modified() is modified
 
 
-def test_max_has_no_targets(fake_host_module: FakeInstaller) -> None:
+def test_max_has_no_targets(fake_host_module: FakeHost) -> None:
     _install_fake_pymxs(fake_host_module)
     from sqi_submitter.hosts.max.adapter import MaxAdapter
 
@@ -161,7 +159,7 @@ def test_max_has_no_targets(fake_host_module: FakeInstaller) -> None:
 
 
 def test_max_menu_parents_to_max_main_window(
-    fake_host_module: FakeInstaller, monkeypatch: pytest.MonkeyPatch
+    fake_host_module: FakeHost, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     main_window = object()
     fake_host_module("qtmax", GetQMaxMainWindow=lambda: main_window)

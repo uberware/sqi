@@ -161,9 +161,15 @@ def _run_harness() -> dict[str, Any]:
     return result
 
 
-def test_jsx_pure_functions_under_node() -> None:
+@pytest.fixture(scope="module")
+def harness() -> dict[str, Any]:
+    """The harness output, computed once: it is deterministic and spawning node is slow."""
+    return _run_harness()
+
+
+def test_jsx_pure_functions_under_node(harness: dict[str, Any]) -> None:
     """Scene arithmetic, target contract and launch strings, run outside After Effects."""
-    r = _run_harness()
+    r = harness
 
     assert r["r0"] == "0-249"  # 25 fps, 10 s, display start 0
     assert r["r1001"] == "1001-1250"  # display start 1001
@@ -224,9 +230,9 @@ def test_jsx_pure_functions_under_node() -> None:
     assert [t["extra"]["RenderQueueItem"] for t in context["targets"]] == ["1", "2"]
 
 
-def test_jsx_unique_names_under_node() -> None:
+def test_jsx_unique_names_under_node(harness: dict[str, Any]) -> None:
     """Two render-queue items for one comp get distinct target (and so job) names."""
-    r = _run_harness()
+    r = harness
 
     assert r["uniqAlready"] == ["Main", "Alt", "End"]  # unique names are left alone
     assert r["uniqEmpty"] == []
@@ -244,18 +250,18 @@ def test_jsx_unique_names_under_node() -> None:
     assert r["dupExtra"] == {"RenderQueueItem": "5", "FramesPerTask": "240"}
 
 
-def test_jsx_not_found_message_names_the_qt_extra() -> None:
+def test_jsx_not_found_message_names_the_qt_extra(harness: dict[str, Any]) -> None:
     """sqi-submit needs the [qt] extra; double quotes so the command also works in cmd.exe."""
-    message = _run_harness()["noCommand"]
+    message = harness["noCommand"]
     assert 'pip install "sqi-submitter[qt]"' in message
     assert 'pipx install "sqi-submitter[qt]"' in message
     assert "'" not in message
     assert "Locate sqi-submit…" in message
 
 
-def test_jsx_context_is_accepted_by_load_context(tmp_path: Path) -> None:
+def test_jsx_context_is_accepted_by_load_context(tmp_path: Path, harness: dict[str, Any]) -> None:
     """What the panel writes is what ``sqi-submit --context`` reads (the real loader)."""
-    r = _run_harness()
+    r = harness
     file = tmp_path / "ae.json"
     file.write_text(r["ctxText"], encoding="utf-8")
 

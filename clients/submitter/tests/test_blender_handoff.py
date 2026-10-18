@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import ast
 import importlib
 import sys
 from collections.abc import Callable
@@ -14,9 +13,9 @@ from typing import Any
 import pytest
 
 from sqi_submitter.core.handoff import load_context
+from tests.conftest import FakeHost, assert_no_sqi_submitter_import
 
 ADDON = "sqi_submitter.hosts.blender.sqi_blender_addon"
-FakeHost = Callable[..., ModuleType]
 
 
 def _install_fake_bpy(
@@ -158,23 +157,6 @@ def test_blender_handoff_clean_scene_is_not_saved(
     assert events == ["launch"]
 
 
-def test_blender_handoff_reports_runtime_error(
-    fake_host_module: FakeHost, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _, events = _install_fake_bpy(fake_host_module, dirty=False)
-    addon = _addon()
-
-    def missing(_configured: str) -> str:
-        raise RuntimeError("sqi-submit was not found.")
-
-    monkeypatch.setattr(addon, "resolve_submit_command", missing)
-    monkeypatch.setattr(addon, "launch", lambda *_a: events.append("launch"))
-    seen, report = _reports()
-    assert addon.submit_scene(report, "") == {"CANCELLED"}
-    assert seen == [({"ERROR"}, "sqi-submit was not found.")]
-    assert events == []
-
-
 @pytest.mark.parametrize(
     "error", [RuntimeError("sqi-submit was not found."), PermissionError("denied")]
 )
@@ -261,9 +243,4 @@ def test_blender_addon_imports_without_bpy(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_blender_addon_has_no_sqi_submitter_import() -> None:
-    source = Path(importlib.import_module(ADDON).__file__ or "").read_text(encoding="utf-8")
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Import):
-            assert not [a for a in node.names if a.name.split(".")[0] == "sqi_submitter"]
-        if isinstance(node, ast.ImportFrom):
-            assert (node.module or "").split(".")[0] != "sqi_submitter"
+    assert_no_sqi_submitter_import(Path(importlib.import_module(ADDON).__file__ or ""))

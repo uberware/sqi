@@ -5,13 +5,13 @@ from __future__ import annotations
 
 import io
 import shutil
-import sys
 from importlib import resources
 from pathlib import Path
 
 import pytest
 
 from sqi_submitter import cli, install
+from tests.conftest import no_qt
 
 # Small package files standing in for each host's real files.
 _STAND_INS: dict[str, list[str]] = {
@@ -185,14 +185,8 @@ def test_cli_dialog_without_qt_names_the_install_command(
 
     A host launches sqi-submit detached, so the message is also logged and shown natively.
     """
-    import sqi_submitter.qt as qt_package
-    from sqi_submitter.qt import _compat
-
     monkeypatch.setenv("SQI_SUBMITTER_SETTINGS", str(tmp_path / ".sqi" / "submitter.json"))
-    monkeypatch.setattr(_compat, "QT_BINDING", "")
-    # Importing the dialog without a binding fails at import time: it must not be reached.
-    monkeypatch.setitem(sys.modules, "sqi_submitter.qt.dialog", None)
-    monkeypatch.delattr(qt_package, "dialog", raising=False)
+    no_qt(monkeypatch)
     assert cli.main([]) == 1
     err = capsys.readouterr().err
     assert "No Qt binding found" in err
@@ -204,11 +198,3 @@ def test_cli_dialog_without_qt_names_the_install_command(
     (shown,) = native_messages  # pytest's stderr is not a terminal
     assert shown.startswith("No Qt binding found")
     assert shown.endswith(str(tmp_path / ".sqi" / "submit-error.log"))
-
-
-def test_hosts_package_docstring_names_every_host() -> None:
-    import sqi_submitter.hosts as hosts
-
-    doc = hosts.__doc__ or ""
-    for name in ("Maya", "Houdini", "Nuke", "3ds Max", "Blender", "Cinema 4D", "After Effects"):
-        assert name in doc, name

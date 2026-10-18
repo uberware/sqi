@@ -3,18 +3,17 @@
 
 from __future__ import annotations
 
-import ast
 import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from sqi_submitter.core.handoff import load_context
-from tests.conftest import load_host_file
+from tests.conftest import FakeHost, assert_no_sqi_submitter_import, load_host_file
 
 PYP = (
     Path(__file__).resolve().parents[1]
@@ -24,7 +23,6 @@ PYP = (
     / "cinema4d"
     / "sqi_submit.pyp"
 )
-FakeHost = Callable[..., ModuleType]
 
 UNSAVED = "Save your scene before submitting — the farm renders the file on disk."
 
@@ -446,9 +444,4 @@ def test_c4d_plugin_imports_without_c4d(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_c4d_plugin_has_no_sqi_submitter_import() -> None:
-    source = PYP.read_text(encoding="utf-8")
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Import):
-            assert not [a for a in node.names if a.name.split(".")[0] == "sqi_submitter"]
-        if isinstance(node, ast.ImportFrom):
-            assert (node.module or "").split(".")[0] != "sqi_submitter"
+    assert_no_sqi_submitter_import(PYP)
