@@ -7,6 +7,7 @@ import ctypes
 import io
 import json
 import re
+import shutil
 import subprocess
 import sys
 import types
@@ -263,7 +264,7 @@ def test_macos_shows_a_dialog_with_the_text_escaped(
     assert str(sqi_dir / _failure.LOG_NAME).replace("\\", "\\\\") in script
 
 
-@pytest.mark.parametrize("platform", ["linux", "freebsd14"])
+@pytest.mark.parametrize("platform", ["freebsd14", "openbsd7"])
 def test_other_platforms_only_log(
     sqi_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -281,6 +282,150 @@ def test_other_platforms_only_log(
 
     assert "No Qt binding found." in _log(sqi_dir)
     assert windll.used == run.used == popen.used == []
+
+
+LINUX_TOOLS = ["zenity", "kdialog", "xmessage", "notify-send"]
+
+
+class _LinuxDesktop:
+    """A Linux session whose ``shutil.which`` finds exactly ``installed``."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.installed: list[str] = list(LINUX_TOOLS)
+        self.looked_up: list[str] = []
+        self.runs: list[tuple[list[str], dict[str, Any]]] = []
+        self.windll = _Forbidden()
+        monkeypatch.setattr(_failure, "show_message", REAL_SHOW_MESSAGE)
+        monkeypatch.setattr(ctypes, "windll", self.windll, raising=False)
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(sys, "stderr", io.StringIO())  # not a terminal
+        monkeypatch.setenv("DISPLAY", ":0")
+        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+        monkeypatch.setattr(shutil, "which", self.which)
+        monkeypatch.setattr(subprocess, "run", self.run)
+
+    def which(self, name: str, *args: Any, **kwargs: Any) -> str | None:
+        self.looked_up.append(name)
+        return f"/usr/bin/{name}" if name in self.installed else None
+
+    def run(self, *args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        self.runs.append((list(args[0]), kwargs))
+        return subprocess.CompletedProcess(args[0], 0)
+
+
+@pytest.fixture
+def linux_desktop(sqi_dir: Path, monkeypatch: pytest.MonkeyPatch) -> _LinuxDesktop:
+    return _LinuxDesktop(monkeypatch)
+
+
+def _expected_text(sqi_dir: Path, message: str) -> str:
+    return f"{message}\n\nDetails are in:\n{sqi_dir / _failure.LOG_NAME}"
+
+
+@pytest.mark.parametrize(
+    ("installed", "argv_tail"),
+    [
+        (LINUX_TOOLS, ["--error", "--no-markup", "--title", "sqi", "--text", "TEXT"]),
+        (LINUX_TOOLS[1:], ["--error", "TEXT", "--title", "sqi"]),
+        (LINUX_TOOLS[2:], ["-center", "TEXT"]),
+        (LINUX_TOOLS[3:], ["-u", "critical", "sqi", "TEXT"]),
+    ],
+)
+def test_linux_uses_the_first_installed_tool(
+    sqi_dir: Path, linux_desktop: _LinuxDesktop, installed: list[str], argv_tail: list[str]
+) -> None:
+    linux_desktop.installed = installed
+    message = 'No Qt binding found. <b>$(rm -rf ~)</b> "quoted" `x`'
+
+    _failure.report_failure(message)
+
+    text = _expected_text(sqi_dir, message)
+    ((argv, kwargs),) = linux_desktop.runs
+    tool = installed[0]
+    assert argv == [f"/usr/bin/{tool}", *(text if a == "TEXT" else a for a in argv_tail)]
+    assert linux_desktop.looked_up == LINUX_TOOLS[: LINUX_TOOLS.index(tool) + 1]
+    assert kwargs.get("shell") in (None, False)
+    assert kwargs.get("stdin") == subprocess.DEVNULL
+    assert linux_desktop.windll.used == []
+
+
+def test_linux_wayland_alone_is_a_display(
+    sqi_dir: Path, linux_desktop: _LinuxDesktop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    _failure.report_failure("No Qt binding found.")
+    ((argv, _),) = linux_desktop.runs
+    assert argv[0] == "/usr/bin/zenity"
+
+
+@pytest.mark.parametrize("empty", [None, ""])
+def test_linux_without_a_display_only_logs(
+    sqi_dir: Path,
+    linux_desktop: _LinuxDesktop,
+    monkeypatch: pytest.MonkeyPatch,
+    empty: str | None,
+) -> None:
+    for name in ("DISPLAY", "WAYLAND_DISPLAY"):
+        if empty is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, empty)
+    _failure.report_failure("No Qt binding found.")
+    assert linux_desktop.runs == []
+    assert linux_desktop.looked_up == []
+    assert "No Qt binding found." in _log(sqi_dir)
+
+
+def test_linux_without_a_tool_only_logs(sqi_dir: Path, linux_desktop: _LinuxDesktop) -> None:
+    linux_desktop.installed = []
+    _failure.report_failure("No Qt binding found.")  # must not raise
+    assert linux_desktop.runs == []
+    assert linux_desktop.looked_up == LINUX_TOOLS
+    assert "No Qt binding found." in _log(sqi_dir)
+
+
+@pytest.mark.parametrize("error", [FileNotFoundError("gone"), OSError("exec failed")])
+def test_linux_a_failing_tool_is_swallowed(
+    sqi_dir: Path,
+    linux_desktop: _LinuxDesktop,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+) -> None:
+    def broken(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        raise error
+
+    monkeypatch.setattr(subprocess, "run", broken)
+    _failure.report_failure("No Qt binding found.")  # must not raise
+    assert "No Qt binding found." in _log(sqi_dir)
+
+
+def test_linux_on_a_terminal_runs_nothing(
+    sqi_dir: Path, linux_desktop: _LinuxDesktop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "stderr", _Tty())
+    _failure.report_failure("No Qt binding found.")
+    assert linux_desktop.runs == []
+
+
+def test_linux_detached_runs_the_tool_on_a_terminal(
+    sqi_dir: Path, linux_desktop: _LinuxDesktop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "stderr", _Tty())
+    _failure.report_failure("No Qt binding found.", detached=True)
+    ((argv, _),) = linux_desktop.runs
+    assert argv[0] == "/usr/bin/zenity"
+    assert argv[-1] == _expected_text(sqi_dir, "No Qt binding found.")
+
+
+def test_linux_cli_detached_flag_runs_the_tool(
+    sqi_dir: Path, linux_desktop: _LinuxDesktop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    no_qt(monkeypatch)
+    monkeypatch.setattr(sys, "stderr", _Tty())
+    assert cli.main(["--context", str(sqi_dir / "ctx.json"), "--detached"]) == 1
+    ((argv, _),) = linux_desktop.runs
+    assert argv[-1].startswith("No Qt binding found")
 
 
 def test_exceptions_inside_the_reporter_are_swallowed(
@@ -307,8 +452,12 @@ def test_real_show_message_swallows_a_failing_backend(monkeypatch: pytest.Monkey
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(subprocess, "run", run)
     REAL_SHOW_MESSAGE("text")
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(shutil, "which", lambda name, *a, **k: f"/usr/bin/{name}")
+    REAL_SHOW_MESSAGE("text")
     assert windll.used == ["user32"]
-    assert run.used == ["call"]
+    assert run.used == ["call", "call"]
 
 
 def test_unwritable_log_still_reports(

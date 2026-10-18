@@ -1149,9 +1149,23 @@ After installing per [Installation per host](#installation-per-host):
    `PYTHONHOME`/`PYTHONPATH` set by the host could break a Python-based
    `sqi-submit`. Check on each OS, in particular with a pipx install.
 9. **Window focus** on Windows (should come to the front), macOS and Linux.
+10. **A failed launch is shown.** Make `sqi-submit` fail to start (install it
+    without the `[qt]` extra, or uninstall PySide6 from its environment), start
+    Blender from the desktop menu or an icon rather than a terminal, and click
+    **Submit to sqi**: an error naming the failure and the path of
+    `submit-error.log` appears (a message box on Windows, a dialog on macOS).
+    On Linux, try a GNOME desktop (`zenity`), a KDE one (`kdialog`) and one with
+    neither: there the message comes from `xmessage` or a `notify-send`
+    notification, and with none of the four installed only the log has it.
+    Check X11 and Wayland sessions.
 
 **Verified only against fakes or documentation:**
 
+- The Linux failure message: that the `zenity`, `kdialog`, `xmessage` and
+  `notify-send` command lines `sqi-submit` builds show the text as given
+  (`zenity --no-markup` takes it literally), that a dialog started from a
+  process Blender launched reaches the artist's desktop, and that `DISPLAY` or
+  `WAYLAND_DISPLAY` is set in it.
 - The preferences class is built at runtime with `type(...)` and a computed
   `__annotations__` entry, and registered with `bpy.utils.register_class`. A
   fake accepts it; real Blender may not.
@@ -1303,20 +1317,27 @@ error, it still prints the message to stderr, and also:
   Past 64 KiB the log is cut to its last 16 KiB before the entry is added.
 - when stderr is not a terminal, or the launch passed `--detached`, shows the
   message and the log's path in a native error box: a message box on Windows,
-  an `osascript` dialog on macOS. Other platforms only log.
+  an `osascript` dialog on macOS. On Linux, when `DISPLAY` or `WAYLAND_DISPLAY`
+  is set, it runs the first of these found on `PATH`: `zenity --error
+  --no-markup`, `kdialog --error`, `xmessage -center`, then `notify-send -u
+  critical` (a notification rather than a dialog), passing the text as a single
+  argument with no shell, and waits for it to close. With no display, or none of
+  the four installed, Linux only logs, as do other platforms.
 
 It exits 1 either way. Every handoff host (Blender, Cinema 4D, After Effects)
 launches `sqi-submit` detached and relies on this to report a failed launch.
 Blender and Cinema 4D start it with no stderr on Windows and with the host's
-own stderr on macOS and Linux. After Effects passes the
+own stderr on macOS and Linux, so a Blender started from a terminal gets the
+message in that terminal, and one started from a desktop icon or menu (whose
+stderr is not a terminal) gets the native box. After Effects passes the
 hidden `--detached` flag, because `cmd /c start` gives `sqi-submit` a console of
 its own (a real terminal) that closes when it exits. `--detached` is that
 host-launch flag, not an option for users. Run from a terminal, `sqi-submit`
 prints only; a non-interactive caller with stderr redirected (a script, CI)
 gets the modal box before it exits 1. A bad context file is not a
 startup failure: the dialog opens with its banner as described above. The
-native box and dialog are tested only against fakes; whether they come to the
-front over the host is unverified.
+native box, the macOS dialog and the Linux tools are tested only against fakes;
+whether they come to the front over the host is unverified.
 
 ### A worked example
 
