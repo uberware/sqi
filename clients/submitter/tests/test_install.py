@@ -13,7 +13,7 @@ import pytest
 
 from sqi_submitter import cli, install
 
-# Package files that exist today, standing in for the host files Tasks 6-8 add.
+# Small package files standing in for each host's real files.
 _STAND_INS: dict[str, list[str]] = {
     "blender": ["hosts/__init__.py"],
     "cinema4d": ["hosts/__init__.py"],
@@ -40,16 +40,6 @@ def test_install_host_unknown() -> None:
     assert install.install_host("maya", None, out) == 2
     for host in ("blender", "cinema4d", "aftereffects"):
         assert host in out.getvalue()
-
-
-def test_install_host_known_but_no_files_shipped(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setattr(install, "HOST_FILES", {})
-    out = io.StringIO()
-    assert install.install_host("blender", tmp_path, out) == 1
-    assert "no files shipped for blender" in out.getvalue()
-    assert list(tmp_path.iterdir()) == []
 
 
 def test_install_host_without_destination_prints_instructions(

@@ -22,7 +22,7 @@ from sqi_submitter.core.joboptions import JobOptions
 from sqi_submitter.core.mapping import normalize_name, prefill
 from sqi_submitter.core.schema import FormModel
 from sqi_submitter.core.session import SubmitterSession
-from sqi_submitter.core.submit import SCENE_NOT_SAVED_MESSAGE, submit_form
+from sqi_submitter.core.submit import SCENE_NOT_SAVED_MESSAGE, scene_save_failed, submit_form
 
 
 def target_parameters(
@@ -67,15 +67,20 @@ def per_target_models(
         model = FormModel.from_parameters(parameters)
         model.apply_prefill(prefill(parameters, context, target))
         locked = {normalize_name(k) for k in target.locked}
-        known = {f.parameter.name for f in model.fields}
-        for name, value in edited.items():
-            if name not in known or name in target_params:
-                continue
-            if normalize_name(name) in locked:
-                continue
-            model.set_value(name, value)
+        locked_names = {p.name for p in parameters if normalize_name(p.name) in locked}
+        apply_edits(model, edited, skip=target_params | locked_names)
         models.append((target, model))
     return models
+
+
+def apply_edits(
+    model: FormModel, edited: Mapping[str, str], *, skip: frozenset[str] = frozenset()
+) -> None:
+    """Set each of the artist's ``edited`` values the model has a field for, except ``skip``."""
+    known = {f.parameter.name for f in model.fields}
+    for name, value in edited.items():
+        if name in known and name not in skip:
+            model.set_value(name, value)
 
 
 def job_name_for(prefix: str, target: RenderTarget) -> str:
@@ -121,12 +126,7 @@ def submit_targets(
     reports it modified. If that save fails nothing is submitted and every
     target reports the failure, since each job would render a stale file.
     """
-    if (
-        adapter is not None
-        and save_scene
-        and adapter.is_scene_modified()
-        and not adapter.save_scene()
-    ):
+    if scene_save_failed(adapter, save_scene):
         return [
             TargetResult(target=target, job=None, error=SCENE_NOT_SAVED_MESSAGE)
             for target, _ in models

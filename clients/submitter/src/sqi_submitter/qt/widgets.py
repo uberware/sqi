@@ -9,7 +9,7 @@ from sqi_submitter.core.schema import FormField, FormModel
 from sqi_submitter.qt._compat import QtWidgets, require_qt
 
 _FILE_PICKERS = {"CHOOSE_INPUT_FILE", "CHOOSE_OUTPUT_FILE", "CHOOSE_DIRECTORY"}
-_PREFILL_TIP = "Pre-filled from the scene"
+PREFILL_TIP = "Pre-filled from the scene"
 
 OnChange = Callable[[str, str], None]
 """``(parameter name, new value)``, called when the artist changes a field."""
@@ -57,7 +57,7 @@ def refresh_form(root: QtWidgets.QWidget, model: FormModel) -> None:
             _write_value(editor, f)
         finally:
             editor.blockSignals(False)
-        editor.setToolTip(_PREFILL_TIP if f.prefilled else "")
+        editor.setToolTip(PREFILL_TIP if f.prefilled else "")
 
 
 def _find_editor(root: QtWidgets.QWidget, name: str) -> QtWidgets.QWidget | None:
@@ -131,7 +131,7 @@ def _editor(f: FormField, commit: Commit, parent: QtWidgets.QWidget) -> QtWidget
     w = _make_editor(f, commit, parent)
     w.setObjectName(f"field_{f.parameter.name}")
     if f.prefilled:
-        w.setToolTip(_PREFILL_TIP)
+        w.setToolTip(PREFILL_TIP)
     return w
 
 
@@ -223,7 +223,7 @@ def _path_row(
     line.setObjectName(f"field_{name}")
     line.editingFinished.connect(lambda: commit(line.text()))
     if f.prefilled:
-        line.setToolTip(_PREFILL_TIP)
+        line.setToolTip(PREFILL_TIP)
 
     button = QtWidgets.QToolButton(row)
     button.setText("…")

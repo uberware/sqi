@@ -20,14 +20,16 @@ from typing import TextIO
 
 __all__ = ["HOST_FILES", "KNOWN_HOSTS", "default_destination", "install_host"]
 
-KNOWN_HOSTS: tuple[str, ...] = ("blender", "cinema4d", "aftereffects")
-
-# Package-relative files per host. The host tasks add their entries as the files land.
+# Package-relative files per host.
 HOST_FILES: dict[str, list[str]] = {
     "blender": ["hosts/blender/sqi_blender_addon.py"],
     "cinema4d": ["hosts/cinema4d/sqi_submit.pyp"],
     "aftereffects": ["hosts/aftereffects/Submit to sqi.jsx", "hosts/aftereffects/json2.js"],
 }
+
+# Taken from HOST_FILES once, at import, so the two cannot drift; a patched HOST_FILES
+# (tests swap in stand-in files) leaves the set of hosts this command accepts unchanged.
+KNOWN_HOSTS: tuple[str, ...] = tuple(HOST_FILES)
 
 _C4D_PREFS_GLOB = "Maxon Cinema 4D *"
 
@@ -88,16 +90,13 @@ def _no_destination_hint(host: str) -> str:
 def install_host(host: str, dest: Path | None, out: TextIO, err: TextIO | None = None) -> int:
     """Install ``host``'s files into ``dest`` (or its default), reporting on ``out``.
 
-    Returns 0 on success, 2 for an unknown host, 1 when this build ships no files for it or
-    the destination cannot be written (that error goes to ``err``, default ``out``).
+    Returns 0 on success, 2 for an unknown host, 1 when the destination cannot be written
+    (that error goes to ``err``, default ``out``).
     """
     if host not in KNOWN_HOSTS:
         print(f"unknown host {host!r}; known hosts: {', '.join(KNOWN_HOSTS)}", file=out)
         return 2
-    files = HOST_FILES.get(host)
-    if not files:
-        print(f"no files shipped for {host} in this build", file=out)
-        return 1
+    files = HOST_FILES[host]
 
     root = resources.files("sqi_submitter")
     if dest is None:

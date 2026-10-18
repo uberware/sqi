@@ -22,6 +22,7 @@ from sqi_submitter.core.session import (
 from sqi_submitter.core.submit import submit_form
 from sqi_submitter.core.targets import (
     TargetResult,
+    apply_edits,
     is_per_target,
     job_name_for,
     per_target_models,
@@ -43,6 +44,7 @@ __all__ = [
     "SubmitterError",
     "SubmitterSession",
     "TargetResult",
+    "apply_edits",
     "dump_context",
     "frame_range_str",
     "group_products",

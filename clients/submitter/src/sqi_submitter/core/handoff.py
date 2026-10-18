@@ -12,7 +12,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -23,8 +23,6 @@ from sqi_submitter.core.errors import SubmitterError
 __all__ = ["CONTEXT_VERSION", "ContextAdapter", "ContextError", "dump_context", "load_context"]
 
 CONTEXT_VERSION = 1
-
-_Fail = Callable[[str], "ContextError"]
 
 
 class ContextError(SubmitterError):
@@ -75,7 +73,13 @@ def load_context(path: str | os.PathLike[str]) -> ContextAdapter:
     left in place for debugging.
     """
     file = Path(path)
-    adapter = _parse(file, _read_document(file))
+    document = _read_document(file)
+    try:
+        adapter = _parse(document)
+    except ContextError as exc:
+        raise ContextError(
+            f"The submit context file {file.name} is invalid: {exc.user_message}"
+        ) from None
     # Best effort: a file we cannot delete must not stop the artist submitting.
     with contextlib.suppress(OSError):
         file.unlink()
@@ -137,89 +141,87 @@ def _read_document(file: Path) -> object:
         ) from exc
 
 
-def _parse(file: Path, document: object) -> ContextAdapter:
-    def fail(problem: str) -> ContextError:
-        return ContextError(f"The submit context file {file.name} is invalid: {problem}")
-
+def _parse(document: object) -> ContextAdapter:
+    """Validate ``document``; a :class:`ContextError` here carries only the problem."""
     if not isinstance(document, dict):
-        raise fail("the top level must be a JSON object")
+        raise ContextError("the top level must be a JSON object")
     version = document.get("version")
     if version != CONTEXT_VERSION or isinstance(version, bool):
-        raise fail(f"unsupported version {version!r} (this sqi-submit reads version 1)")
+        raise ContextError(f"unsupported version {version!r} (this sqi-submit reads version 1)")
 
-    host = _obj(document, "host", fail, required=False)
-    scene = _obj(document, "scene", fail, required=True)
+    host = _obj(document, "host", required=False)
+    scene = _obj(document, "scene", required=True)
     scene_path = scene.get("path")
     if not isinstance(scene_path, str) or not scene_path:
-        raise fail("scene.path is missing or empty")
+        raise ContextError("scene.path is missing or empty")
 
     scene_context = SceneContext(
         scene_path=scene_path,
-        frame_range=_opt_str(scene, "frame_range", "scene.frame_range", fail),
-        output_path=_opt_str(scene, "output_path", "scene.output_path", fail),
-        renderer=_opt_str(scene, "renderer", "scene.renderer", fail),
+        frame_range=_opt_str(scene, "frame_range", "scene.frame_range"),
+        output_path=_opt_str(scene, "output_path", "scene.output_path"),
+        renderer=_opt_str(scene, "renderer", "scene.renderer"),
     )
     targets_raw = document.get("targets", [])
     if not isinstance(targets_raw, list):
-        raise fail("targets must be a list")
-    targets = [_target(item, i, fail) for i, item in enumerate(targets_raw)]
+        raise ContextError("targets must be a list")
+    targets = [_target(item, i) for i, item in enumerate(targets_raw)]
 
     return ContextAdapter(
-        host_name=_str(host, "name", "host.name", fail),
-        display_name=_str(host, "display_name", "host.display_name", fail),
+        host_name=_str(host, "name", "host.name"),
+        display_name=_str(host, "display_name", "host.display_name"),
         scene=scene_context,
         targets=targets,
-        server_url=_opt_str(document, "server_url", "server_url", fail),
-        host_version=_opt_str(host, "version", "host.version", fail),
+        server_url=_opt_str(document, "server_url", "server_url"),
+        host_version=_opt_str(host, "version", "host.version"),
     )
 
 
-def _obj(parent: Mapping[str, Any], key: str, fail: _Fail, *, required: bool) -> dict[str, Any]:
+def _obj(parent: Mapping[str, Any], key: str, *, required: bool) -> dict[str, Any]:
     value = parent.get(key)
     if value is None and not required:
         return {}
     if not isinstance(value, dict):
-        raise fail(f"{key} must be an object")
+        raise ContextError(f"{key} must be an object")
     return value
 
 
-def _opt_str(parent: Mapping[str, Any], key: str, where: str, fail: _Fail) -> str | None:
+def _opt_str(parent: Mapping[str, Any], key: str, where: str) -> str | None:
     value = parent.get(key)
     if value is None:
         return None
     if not isinstance(value, str):
-        raise fail(f"{where} must be a string or null")
+        raise ContextError(f"{where} must be a string or null")
     return value
 
 
-def _str(parent: Mapping[str, Any], key: str, where: str, fail: _Fail) -> str:
-    return _opt_str(parent, key, where, fail) or ""
+def _str(parent: Mapping[str, Any], key: str, where: str) -> str:
+    return _opt_str(parent, key, where) or ""
 
 
-def _target(item: object, index: int, fail: _Fail) -> RenderTarget:
+def _target(item: object, index: int) -> RenderTarget:
     where = f"targets[{index}]"
     if not isinstance(item, dict):
-        raise fail(f"{where} must be an object")
+        raise ContextError(f"{where} must be an object")
     name, kind = item.get("name"), item.get("kind")
     if not isinstance(name, str) or not isinstance(kind, str):
-        raise fail(f"{where} needs a string name and kind")
+        raise ContextError(f"{where} needs a string name and kind")
     extra_raw = item.get("extra", {})
     if not isinstance(extra_raw, dict):
-        raise fail(f"{where}.extra must be an object")
+        raise ContextError(f"{where}.extra must be an object")
     for key, value in extra_raw.items():
         if not isinstance(value, str):
-            raise fail(f"{where}.extra[{key!r}] must be a string")
+            raise ContextError(f"{where}.extra[{key!r}] must be a string")
     locked_raw = item.get("locked", [])
     if not isinstance(locked_raw, list) or not all(isinstance(k, str) for k in locked_raw):
-        raise fail(f"{where}.locked must be a list of strings")
+        raise ContextError(f"{where}.locked must be a list of strings")
     for key in locked_raw:
         if key not in extra_raw:
-            raise fail(f"{where}.locked names {key!r}, which is not a key of extra")
+            raise ContextError(f"{where}.locked names {key!r}, which is not a key of extra")
     return RenderTarget(
         name=name,
         kind=kind,
-        frame_range=_opt_str(item, "frame_range", f"{where}.frame_range", fail),
-        output_path=_opt_str(item, "output_path", f"{where}.output_path", fail),
+        frame_range=_opt_str(item, "frame_range", f"{where}.frame_range"),
+        output_path=_opt_str(item, "output_path", f"{where}.output_path"),
         extra=dict(extra_raw),
         locked=frozenset(locked_raw),
     )

@@ -17,6 +17,16 @@ SCENE_NOT_SAVED_MESSAGE = (
 )
 
 
+def scene_save_failed(adapter: HostAdapter | None, save_scene: bool) -> bool:
+    """Save the scene when asked and the host reports it modified; True if that save failed."""
+    return (
+        adapter is not None
+        and save_scene
+        and adapter.is_scene_modified()
+        and not adapter.save_scene()
+    )
+
+
 def submit_form(
     session: SubmitterSession,
     product_name: str,
@@ -50,12 +60,7 @@ def submit_form(
                         "output location in your scene's render settings."
                     )
                 model.set_value(f.parameter.name, ctx.output_path)
-    if (
-        adapter is not None
-        and save_scene
-        and adapter.is_scene_modified()
-        and not adapter.save_scene()
-    ):
+    if scene_save_failed(adapter, save_scene):
         raise SubmitterError(SCENE_NOT_SAVED_MESSAGE)
     if not model.validate():
         raise FormInvalidError(model.errors())

@@ -13,6 +13,7 @@ from sqi_client import SqiClient
 from sqi_client.models import Farm, Job, Product, ProductParameter, Queue
 from sqi_submitter.core.errors import translate_errors
 from sqi_submitter.core.joboptions import JobOptions
+from sqi_submitter.core.mapping import normalize_name
 
 DEFAULT_SERVER_URL = "http://localhost:8080"
 
@@ -172,7 +173,7 @@ class SubmitterSession:
 
 def _squash(text: str) -> str:
     """Lower-case with spaces, ``-`` and ``_`` removed, for host-token matching."""
-    return text.lower().replace(" ", "").replace("-", "").replace("_", "")
+    return normalize_name(text).replace(" ", "")
 
 
 def group_products(

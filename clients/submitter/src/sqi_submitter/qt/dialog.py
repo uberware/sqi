@@ -15,6 +15,7 @@ from sqi_submitter.core import (
     SubmitterError,
     SubmitterSession,
     TargetResult,
+    apply_edits,
     group_products,
     normalize_name,
     per_target_models,
@@ -26,7 +27,7 @@ from sqi_submitter.core import (
 from sqi_submitter.core.handoff import ContextAdapter
 from sqi_submitter.core.joboptions import JobOptions
 from sqi_submitter.qt._compat import QtCore, QtGui, QtWidgets, require_qt
-from sqi_submitter.qt.widgets import build_form
+from sqi_submitter.qt.widgets import PREFILL_TIP, build_form
 
 __all__ = ["SubmitDialog", "open_for_adapter"]
 
@@ -43,8 +44,6 @@ _WHOLE_SCENE_MODE = "One job for the whole scene, as configured"
 _TICK_HINT = "Tick at least one target."
 _FROM_EACH_TARGET_TIP = "From each target"
 _LOCKED_TIP = "Kept per target (e.g. a movie renders as one task)"
-_PREFILL_TIP = "Pre-filled from the scene"
-_TARGET_INDEX_ROLE = QtCore.Qt.ItemDataRole.UserRole
 _CLOSE_WAIT_MS = 10_000
 
 _SubmitCall = Callable[[], list[TargetResult]]
@@ -118,7 +117,6 @@ class SubmitDialog(QtWidgets.QDialog):
         self._products: list[Product] = []
         self._targets: list[RenderTarget] = []
         self._parameters: list[ProductParameter] = []
-        self._parameters_product: str | None = None
         self._target_params: frozenset[str] = frozenset()
         self._model: FormModel | None = None
         self._model_product: str | None = None
@@ -176,11 +174,7 @@ class SubmitDialog(QtWidgets.QDialog):
 
         self._save_scene_check = QtWidgets.QCheckBox("Save scene before submit", self)
         self._save_scene_check.setObjectName("saveSceneCheck")
-        # A handoff host saves the scene before launching sqi-submit, so the
-        # box would offer something the dialog cannot do.
-        self._save_scene_check.setVisible(
-            self.adapter is not None and not isinstance(self.adapter, ContextAdapter)
-        )
+        self._save_scene_check.setVisible(self._saves_scene_in_dialog)
         if self.adapter is not None:
             self._save_scene_check.setChecked(
                 bool(self.session.settings.get("save_before_submit", True))
@@ -357,6 +351,15 @@ class SubmitDialog(QtWidgets.QDialog):
                 combo.setCurrentIndex(i)
                 return
 
+    @property
+    def _saves_scene_in_dialog(self) -> bool:
+        """Whether the dialog offers (and remembers) "Save scene before submit".
+
+        A handoff host saves the scene before launching sqi-submit, so the box
+        would offer something the dialog cannot do.
+        """
+        return self.adapter is not None and not isinstance(self.adapter, ContextAdapter)
+
     def _host_token(self) -> str:
         return self.adapter.host_name if self.adapter is not None else ""
 
@@ -378,10 +381,10 @@ class SubmitDialog(QtWidgets.QDialog):
         widget = self._target_list
         widget.blockSignals(True)
         widget.clear()
-        for index, target in enumerate(self._targets):
+        # Row i is self._targets[i]: _ticked_targets relies on that order.
+        for target in self._targets:
             item = QtWidgets.QListWidgetItem(target.name, widget)
             item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
-            item.setData(_TARGET_INDEX_ROLE, index)
             item.setCheckState(
                 QtCore.Qt.CheckState.Checked
                 if target.name in ticked
@@ -427,13 +430,10 @@ class SubmitDialog(QtWidgets.QDialog):
         """Ticked targets in list order (the first one drives the form)."""
         widget = self._target_list
         ticked: list[RenderTarget] = []
-        for i in range(widget.count()):
+        for i, target in enumerate(self._targets):
             item = widget.item(i)
-            if item is None or item.checkState() != QtCore.Qt.CheckState.Checked:
-                continue
-            index = item.data(_TARGET_INDEX_ROLE)
-            if isinstance(index, int) and 0 <= index < len(self._targets):
-                ticked.append(self._targets[index])
+            if item is not None and item.checkState() == QtCore.Qt.CheckState.Checked:
+                ticked.append(target)
         return ticked
 
     def _on_ticks_changed(self, _item: object) -> None:
@@ -442,8 +442,8 @@ class SubmitDialog(QtWidgets.QDialog):
         for name in self._target_params:
             self.edited.pop(name, None)
         product = self._current_product()
-        if product is not None and self._parameters_product == product.name:
-            self._rebuild_model()
+        if product is not None and self._model_product == product.name:
+            self._rebuild_model(product.name)
         else:
             self._update_submit_state()
 
@@ -474,49 +474,40 @@ class SubmitDialog(QtWidgets.QDialog):
             # The combo already moved: whatever model we hold belongs to the
             # previous product. Mark it stale so submit refuses to post the
             # old fields under the new product's name.
-            self._parameters_product = None
             self._model_product = None
             self._submit_button.setEnabled(False)
             self._show_error(exc.user_message)
             return
 
         self._parameters = parameters
-        self._parameters_product = product.name
         self._target_params = target_parameters(parameters, self._targets)
         self._target_list.setVisible(self._per_target)
         self._mode_label.setText(_PER_TARGET_MODE if self._per_target else _WHOLE_SCENE_MODE)
         self._job_name_edit.setText(product.title or product.name)
-        self._rebuild_model()
+        self._rebuild_model(product.name)
 
     def _display_model(self, ticked: Sequence[RenderTarget]) -> FormModel:
         """The model the form shows: the first ticked target's pre-fill + edits."""
-        if self.adapter is None:
-            model = FormModel.from_parameters(self._parameters)
-        elif ticked:
-            context = self.adapter.scene_context()
-            _, model = per_target_models(
+        if self.adapter is not None and ticked:
+            return per_target_models(
                 self._parameters,
-                context,
+                self.adapter.scene_context(),
                 ticked[:1],
                 self.edited,
                 target_params=self._target_params,
-            )[0]
-            return model
-        else:
-            model = FormModel.from_parameters(self._parameters)
+            )[0][1]
+        model = FormModel.from_parameters(self._parameters)
+        if self.adapter is not None:
             model.apply_prefill(prefill(self._parameters, self.adapter.scene_context()))
-        known = {f.parameter.name for f in model.fields}
-        for name, value in self.edited.items():
-            if name in known:
-                model.set_value(name, value)
+        apply_edits(model, self.edited)
         return model
 
-    def _rebuild_model(self) -> None:
-        """Rebuild the model and editors from cached parameters (no fetch)."""
+    def _rebuild_model(self, product_name: str) -> None:
+        """Rebuild the model and editors from ``product_name``'s cached parameters (no fetch)."""
         ticked = self._ticked_targets() if self._per_target else []
         model = self._display_model(ticked)
         self._model = model
-        self._model_product = self._parameters_product
+        self._model_product = product_name
 
         old = self._form_scroll.takeWidget()
         self._form_scroll.setWidget(
@@ -751,7 +742,7 @@ class SubmitDialog(QtWidgets.QDialog):
             return
 
         self.session.settings.set(f"last_product.{self._host_token()}", submission.product_name)
-        if self.adapter is not None and not isinstance(self.adapter, ContextAdapter):
+        if self._saves_scene_in_dialog:
             self.session.settings.set("save_before_submit", submission.save_scene)
         if submission.remember_ticks is not None:
             self.session.settings.set(*submission.remember_ticks)
@@ -780,7 +771,7 @@ class SubmitDialog(QtWidgets.QDialog):
             if editor is None:
                 continue
             editor.setStyleSheet("")
-            editor.setToolTip(_PREFILL_TIP if f.prefilled else "")
+            editor.setToolTip(PREFILL_TIP if f.prefilled else "")
         self._apply_target_states()
 
     # -- error banner -------------------------------------------------------
