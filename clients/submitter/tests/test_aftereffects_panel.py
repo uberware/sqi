@@ -190,10 +190,12 @@ def test_jsx_pure_functions_under_node() -> None:
 
     assert r["winCmd"] == (
         'cmd /c start "" "C:\\Program Files\\sqi\\sqi-submit.exe" '
-        '--context "C:\\Temp\\sqi-handoff\\1.json"'
+        '--context "C:\\Temp\\sqi-handoff\\1.json" --detached'
     )
+    # --detached: start gives sqi-submit a console that closes with it, so a failure must
+    # also be shown in a message box, whatever stderr is.
     assert r["macCmd"] == (
-        '"/Users/a/bin/sqi-submit" --context "/tmp/sqi-handoff/1.json" >/dev/null 2>&1 &'
+        '"/Users/a/bin/sqi-submit" --context "/tmp/sqi-handoff/1.json" --detached >/dev/null 2>&1 &'
     )
     # A path that cannot be quoted safely is refused (the panel alerts), never escaped.
     assert r["winQuote"] is None

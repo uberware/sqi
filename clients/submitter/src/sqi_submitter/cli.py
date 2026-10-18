@@ -30,6 +30,9 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="FILE",
         help="handoff context file written by a host application (deleted once read)",
     )
+    # Passed by a host launch whose console closes with the process (After Effects'
+    # `cmd /c start`): always show a startup failure natively. Not for users.
+    parser.add_argument("--detached", action="store_true", help=argparse.SUPPRESS)
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
     install = sub.add_parser("install-host", help="install the sqi submitter into a host")
     install.add_argument("host", help="host to install into: blender, cinema4d or aftereffects")
@@ -83,15 +86,16 @@ def main(argv: list[str] | None = None) -> int:
         out = sys.stdout if args.host in KNOWN_HOSTS else sys.stderr
         return install_host(args.host, Path(args.dest) if args.dest else None, out, sys.stderr)
     # A host starts sqi-submit detached, so a failure is also logged and, with no
-    # terminal to read stderr, shown natively (see _failure).
+    # terminal to read stderr (or with --detached), shown natively (see _failure).
     try:
         return _run_dialog(args.server, args.context)
     except SubmitterError as exc:
-        report_failure(exc.user_message)
+        report_failure(exc.user_message, detached=args.detached)
         return 1
     except Exception as exc:  # an artist cannot read a detached traceback
         report_failure(
             f"sqi-submit stopped unexpectedly: {type(exc).__name__}: {exc}",
             traceback.format_exc(),
+            detached=args.detached,
         )
         return 1

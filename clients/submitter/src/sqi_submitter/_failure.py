@@ -4,12 +4,14 @@
 A handoff host (Blender, Cinema 4D, After Effects) starts ``sqi-submit`` detached, with
 no console, so a message printed to stderr alone reaches nobody. A failure is therefore
 also appended to ``submit-error.log`` next to the submitter settings and, when stderr is
-not a terminal, shown in a native message box (Windows) or dialog (macOS).
+not a terminal (or the launch passed ``--detached``), shown in a native message box
+(Windows) or dialog (macOS).
 
 Everything here is best effort and stdlib only: reporting must never raise, so it cannot
 mask the original failure or change the exit code. Only the message (and, for an
-unexpected exception, its traceback) is written: never the context file, the settings'
-server URL or API key.
+unexpected exception, its traceback) is written: the settings file and the context file
+are never read into the log, but an unexpected exception's own message and traceback are
+logged as they are.
 """
 
 from __future__ import annotations
@@ -35,13 +37,18 @@ def log_path() -> Path:
     return Settings().path.parent / LOG_NAME
 
 
-def report_failure(message: str, detail: str | None = None) -> None:
-    """Print, log and (when detached) show *message*; *detail* goes to stderr and the log."""
+def report_failure(message: str, detail: str | None = None, *, detached: bool = False) -> None:
+    """Print, log and (when detached) show *message*; *detail* goes to stderr and the log.
+
+    *detached* (``sqi-submit --detached``, passed by a host launch) shows the message even
+    when stderr is a terminal: After Effects' ``cmd /c start`` gives ``sqi-submit`` a
+    console of its own, which closes with the process.
+    """
     path = None
     with contextlib.suppress(Exception):
         path = _append_log(log_path(), message, detail)
     _print_stderr(message, detail, path)
-    if not _on_terminal():
+    if detached or not _on_terminal():
         text = message if path is None else f"{message}\n\nDetails are in:\n{path}"
         with contextlib.suppress(Exception):
             show_message(text)

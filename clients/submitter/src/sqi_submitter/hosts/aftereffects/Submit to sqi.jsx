@@ -182,15 +182,17 @@ function sqiBuildContext(hostVersion, scenePath, targets) {
 
 // The system.callSystem string that starts sqi-submit without blocking After Effects, or
 // null when a path could not be quoted safely (the caller alerts; nothing is ever escaped).
+// --detached makes sqi-submit show a startup failure in a message box: `start` gives it a
+// console of its own that closes with it, so stderr alone would reach nobody.
 function sqiLaunchCommand(isWindows, exe, contextPath) {
     var bad = isWindows ? /["%]/ : /["$\x60\\]/;
     if (bad.test(exe) || bad.test(contextPath)) {
         return null;
     }
     if (isWindows) {
-        return "cmd /c start \"\" \"" + exe + "\" --context \"" + contextPath + "\"";
+        return "cmd /c start \"\" \"" + exe + "\" --context \"" + contextPath + "\" --detached";
     }
-    return "\"" + exe + "\" --context \"" + contextPath + "\" >/dev/null 2>&1 &";
+    return "\"" + exe + "\" --context \"" + contextPath + "\" --detached >/dev/null 2>&1 &";
 }
 
 // Whether "Allow Scripts to Write Files and Access Network" is on. readPref(section) returns

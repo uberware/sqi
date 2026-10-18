@@ -145,10 +145,73 @@ def test_no_message_box_on_a_terminal(
 
 
 def test_message_box_when_stderr_is_not_a_terminal(
-    sqi_dir: Path, native_messages: list[str]
+    sqi_dir: Path, monkeypatch: pytest.MonkeyPatch, native_messages: list[str]
 ) -> None:
-    _failure.report_failure("No Qt binding found.")  # capsys/pytest stderr is not a tty
+    monkeypatch.setattr(sys, "stderr", io.StringIO())  # redirected: not a tty, even under -s
+    _failure.report_failure("No Qt binding found.")
     assert len(native_messages) == 1
+
+
+def test_detached_shows_the_message_box_even_on_a_terminal(
+    sqi_dir: Path, monkeypatch: pytest.MonkeyPatch, native_messages: list[str]
+) -> None:
+    # After Effects' `cmd /c start` gives sqi-submit a console of its own: stderr is a tty
+    # nobody will read once the process exits.
+    stderr = _Tty()
+    monkeypatch.setattr(sys, "stderr", stderr)
+    _failure.report_failure("No Qt binding found.", detached=True)
+    (shown,) = native_messages
+    assert shown.startswith("No Qt binding found.")
+    assert "No Qt binding found." in stderr.getvalue()
+    assert "No Qt binding found." in _log(sqi_dir)
+
+
+def _no_qt(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sqi_submitter.qt as qt_package
+    from sqi_submitter.qt import _compat
+
+    monkeypatch.setattr(_compat, "QT_BINDING", "")
+    monkeypatch.setitem(sys.modules, "sqi_submitter.qt.dialog", None)
+    monkeypatch.delattr(qt_package, "dialog", raising=False)
+
+
+def test_cli_detached_flag_shows_the_box_on_a_terminal(
+    sqi_dir: Path, monkeypatch: pytest.MonkeyPatch, native_messages: list[str]
+) -> None:
+    _no_qt(monkeypatch)
+    monkeypatch.setattr(sys, "stderr", _Tty())
+    assert cli.main(["--context", str(sqi_dir / "ctx.json"), "--detached"]) == 1
+    (shown,) = native_messages
+    assert shown.startswith("No Qt binding found")
+
+
+def test_cli_without_detached_a_terminal_suppresses_the_box(
+    sqi_dir: Path, monkeypatch: pytest.MonkeyPatch, native_messages: list[str]
+) -> None:
+    _no_qt(monkeypatch)
+    monkeypatch.setattr(sys, "stderr", _Tty())
+    assert cli.main([]) == 1
+    assert native_messages == []
+    assert "No Qt binding found" in _log(sqi_dir)
+
+
+def test_cli_detached_also_covers_an_unexpected_exception(
+    sqi_dir: Path, monkeypatch: pytest.MonkeyPatch, native_messages: list[str]
+) -> None:
+    def explode(server: str | None, context: str | None) -> int:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(cli, "_run_dialog", explode)
+    monkeypatch.setattr(sys, "stderr", _Tty())
+    assert cli.main(["--detached"]) == 1
+    (shown,) = native_messages
+    assert "boom" in shown
+
+
+def test_cli_detached_flag_is_hidden(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    assert "--detached" not in capsys.readouterr().out
 
 
 def test_windows_shows_a_message_box(

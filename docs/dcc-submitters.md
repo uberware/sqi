@@ -1069,8 +1069,8 @@ After installing per [Installation per host](#installation-per-host):
 **Verified only against fakes or documentation:**
 
 - **The launch recipes.** Windows: `system.callSystem('cmd /c start "" "<exe>"
-  --context "<file>"')`. macOS: `system.callSystem('"<exe>" --context "<file>"
-  >/dev/null 2>&1 &')`. Both are community practice, not documented by Adobe;
+  --context "<file>" --detached')`. macOS: `system.callSystem('"<exe>" --context
+  "<file>" --detached >/dev/null 2>&1 &')`. Both are community practice, not documented by Adobe;
   the tests check only the string that is built, under Node. Whether
   `callSystem` returns at once with each (it normally blocks), whether the
   window gets focus and whether quoting survives paths with spaces are all
@@ -1249,9 +1249,10 @@ On Windows the Python hosts start `sqi-submit` detached (`DETACHED_PROCESS` and
 `CREATE_NEW_PROCESS_GROUP`) and then call `AllowSetForegroundWindow` with the
 child's process ID so its window can come to the front; on macOS and Linux they
 start it in a new session. After Effects uses `system.callSystem` with
-`cmd /c start "" "<exe>" --context "<file>"` on Windows and `"<exe>" --context
-"<file>" >/dev/null 2>&1 &` on macOS, and refuses a path that contains a
-character it cannot quote. The child inherits the host's environment. The
+`cmd /c start "" "<exe>" --context "<file>" --detached` on Windows and
+`"<exe>" --context "<file>" --detached >/dev/null 2>&1 &` on macOS, and refuses
+a path that contains a character it cannot quote. `--detached` is a hidden flag
+for this launch (see below); the Python hosts do not pass it. The child inherits the host's environment. The
 dialog calls `show()`, `raise_()` and `activateWindow()`. There is no macOS app
 bundle for `sqi-submit`, so on macOS the window may open behind the host; the
 [checklists](#manual-test-checklist-per-dcc) record that as unverified.
@@ -1265,16 +1266,23 @@ error, it still prints the message to stderr, and also:
 
 - appends a timestamped entry to `submit-error.log` in the settings directory,
   `~/.sqi/` (the directory of `SQI_SUBMITTER_SETTINGS` when that is set). The
-  entry holds only the message, plus the traceback for an unexpected error;
-  never the context file, server URL or API key. Past 64 KiB the log is cut to
-  its last 16 KiB before the entry is added.
-- when stderr is not a terminal, shows the message and the log's path in a
-  native error box: a message box on Windows, an `osascript` dialog on macOS.
-  Other platforms only log.
+  entry holds only the message, plus the traceback for an unexpected error. The
+  settings file and the context file are never read into the log, but an
+  unexpected exception's own message and traceback are logged as they are.
+  Past 64 KiB the log is cut to its last 16 KiB before the entry is added.
+- when stderr is not a terminal, or the launch passed `--detached`, shows the
+  message and the log's path in a native error box: a message box on Windows,
+  an `osascript` dialog on macOS. Other platforms only log.
 
 It exits 1 either way. Every handoff host (Blender, Cinema 4D, After Effects)
-launches `sqi-submit` detached and relies on this to report a failed launch;
-run from a terminal, `sqi-submit` prints only. A bad context file is not a
+launches `sqi-submit` detached and relies on this to report a failed launch.
+Blender and Cinema 4D start it with no stderr on Windows and with the host's
+own stderr on macOS and Linux. After Effects passes the
+hidden `--detached` flag, because `cmd /c start` gives `sqi-submit` a console of
+its own (a real terminal) that closes when it exits. `--detached` is that
+host-launch flag, not an option for users. Run from a terminal, `sqi-submit`
+prints only; a non-interactive caller with stderr redirected (a script, CI)
+gets the modal box before it exits 1. A bad context file is not a
 startup failure: the dialog opens with its banner as described above. The
 native box and dialog are tested only against fakes; whether they come to the
 front over the host is unverified.
