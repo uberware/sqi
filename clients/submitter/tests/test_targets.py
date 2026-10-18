@@ -10,9 +10,11 @@ import pytest
 import respx
 
 from sqi_client.models import ProductParameter
+from sqi_submitter.core.adapter import SnapshotAdapter
 from sqi_submitter.core.context import RenderTarget, SceneContext
 from sqi_submitter.core.schema import FormModel
 from sqi_submitter.core.session import SubmitterSession
+from sqi_submitter.core.submit import SCENE_NOT_SAVED_MESSAGE
 from sqi_submitter.core.targets import (
     TargetResult,
     is_per_target,
@@ -358,3 +360,110 @@ def test_submit_targets_saves_even_when_first_target_fails_early() -> None:
     assert results[1].job is not None and results[2].job is not None
     assert len(saves) == 1
     assert route.call_count == 2
+
+
+# -- SnapshotAdapter: a frozen adapter the submit worker can use -------------
+
+
+class _OnceAdapter(MiniAdapter):
+    """Fails any host call after the first ``scene_context``: a snapshot must not make one."""
+
+    def __init__(self) -> None:
+        super().__init__(modified=True)
+        self.contexts = 0
+        self.frozen = False
+
+    def scene_context(self) -> SceneContext:
+        assert not self.frozen, "host called after the snapshot"
+        self.contexts += 1
+        return CTX
+
+    def render_targets(self) -> list[RenderTarget]:
+        assert not self.frozen, "host called after the snapshot"
+        return _three_targets()
+
+    def is_scene_modified(self) -> bool:
+        raise AssertionError("host called after the snapshot")
+
+    def save_scene(self) -> bool:
+        raise AssertionError("host called after the snapshot")
+
+
+def test_snapshot_captures_the_host_once() -> None:
+    source = _OnceAdapter()
+    targets = _three_targets()[:2]
+    snapshot = SnapshotAdapter.capture(source, targets=targets)
+    source.frozen = True
+    assert source.contexts == 1
+    assert (snapshot.host_name, snapshot.display_name) == ("mini", "MiniTool")
+    assert snapshot.scene_context() is CTX
+    assert snapshot.scene_context() is CTX
+    assert snapshot.render_targets() == targets
+    snapshot.render_targets().clear()  # a copy: the snapshot's own list is untouched
+    assert snapshot.render_targets() == targets
+    assert not snapshot.is_scene_modified()
+    assert snapshot.save_scene()
+
+
+def test_snapshot_without_targets_asks_the_host_for_them() -> None:
+    source = _OnceAdapter()
+    snapshot = SnapshotAdapter.capture(source)
+    source.frozen = True
+    assert [t.name for t in snapshot.render_targets()] == ["A", "B", "C"]
+
+
+def test_snapshot_replays_a_failed_save() -> None:
+    snapshot = SnapshotAdapter(
+        host_name="mini", display_name="MiniTool", context=CTX, targets=[], save_failed=True
+    )
+    # The scene is still unsaved, and saving it again fails, without touching the host.
+    assert snapshot.is_scene_modified()
+    assert not snapshot.save_scene()
+
+
+@respx.mock
+def test_submit_targets_with_a_snapshot_never_calls_the_host() -> None:
+    route = _jobs_route()
+    source = _OnceAdapter()
+    snapshot = SnapshotAdapter.capture(source, targets=_three_targets())
+    source.frozen = True
+    models = per_target_models(BLENDER_PARAMS, CTX, _three_targets(), {})
+    results = submit_targets(
+        SubmitterSession(server_url=BASE),
+        "blender",
+        models,
+        farm_id="f",
+        queue_id="q",
+        job_name_prefix="Blender",
+        adapter=snapshot,
+        save_scene=True,
+        job_options=None,
+    )
+    assert [r.error for r in results] == [None, None, None]
+    assert route.call_count == 3
+    assert all(
+        json.loads(c.request.content)["parameters"]["SceneFile"] == "/x/s.scene"
+        for c in route.calls
+    )
+
+
+@respx.mock
+def test_submit_targets_with_a_failed_save_snapshot_submits_nothing() -> None:
+    route = _jobs_route()
+    snapshot = SnapshotAdapter(
+        host_name="mini", display_name="MiniTool", context=CTX, targets=[], save_failed=True
+    )
+    models = per_target_models(BLENDER_PARAMS, CTX, _three_targets(), {})
+    results = submit_targets(
+        SubmitterSession(server_url=BASE),
+        "blender",
+        models,
+        farm_id="f",
+        queue_id="q",
+        job_name_prefix="Blender",
+        adapter=snapshot,
+        save_scene=True,
+        job_options=None,
+    )
+    assert route.call_count == 0
+    assert [r.error for r in results] == [SCENE_NOT_SAVED_MESSAGE] * 3

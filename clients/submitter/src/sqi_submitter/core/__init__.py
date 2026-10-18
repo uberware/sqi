@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """No-Qt, no-DCC core: everything a submitter UI or headless tool needs."""
 
-from sqi_submitter.core.adapter import HostAdapter
+from sqi_submitter.core.adapter import HostAdapter, SnapshotAdapter
 from sqi_submitter.core.context import RenderTarget, SceneContext, frame_range_str
 from sqi_submitter.core.errors import FormInvalidError, SubmitterError
 from sqi_submitter.core.handoff import ContextAdapter, ContextError, dump_context, load_context
@@ -41,6 +41,7 @@ __all__ = [
     "RenderTarget",
     "SceneContext",
     "Settings",
+    "SnapshotAdapter",
     "SubmitterError",
     "SubmitterSession",
     "TargetResult",

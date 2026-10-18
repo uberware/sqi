@@ -12,6 +12,8 @@ from sqi_submitter.core import (
     FormModel,
     HostAdapter,
     RenderTarget,
+    SceneContext,
+    SnapshotAdapter,
     SubmitterError,
     SubmitterSession,
     TargetResult,
@@ -26,6 +28,7 @@ from sqi_submitter.core import (
 )
 from sqi_submitter.core.handoff import ContextAdapter
 from sqi_submitter.core.joboptions import JobOptions
+from sqi_submitter.core.submit import scene_save_failed
 from sqi_submitter.qt._compat import QtCore, QtGui, QtWidgets, require_qt
 from sqi_submitter.qt.widgets import PREFILL_TIP, build_form, refresh_field
 
@@ -52,6 +55,9 @@ _SubmitCall = Callable[[], list[TargetResult]]
 class _SubmitWorker(QtCore.QThread):
     """Runs one prepared submit off the GUI thread; reports back via signals.
 
+    The call only talks HTTP: it is handed a :class:`SnapshotAdapter`, never
+    the live host adapter, since host APIs are main-thread only.
+
     ``done`` carries the ``list[TargetResult]``; ``failed`` carries a
     :class:`SubmitterError` the call raised (the whole-scene path only, so the
     single job keeps its banner and highlighted fields).
@@ -76,9 +82,10 @@ class _SubmitWorker(QtCore.QThread):
 def _run_submit(call: _SubmitCall) -> list[TargetResult]:
     """Run ``call``, turning any exception into a :class:`SubmitterError`.
 
-    A host's ``save_scene`` (Maya's ``cmds.file``, say) can raise anything; on the
-    worker thread an unhandled exception just ends the thread and the artist sees
-    nothing, so it is reported through the banner like any other failure.
+    A host's ``save_scene`` (Maya's ``cmds.file``, say) can raise anything, and
+    a prepared call re-raises it (see :func:`_raising`); on the worker thread an
+    unhandled exception just ends the thread and the artist sees nothing, so it
+    is reported through the banner like any other failure.
     """
     try:
         return call()
@@ -86,6 +93,15 @@ def _run_submit(call: _SubmitCall) -> list[TargetResult]:
         raise
     except Exception as exc:
         raise SubmitterError(str(exc) or type(exc).__name__) from exc
+
+
+def _raising(exc: Exception) -> _SubmitCall:
+    """A submit call that fails with ``exc``, raised by a host call at submit-start."""
+
+    def call() -> list[TargetResult]:
+        raise exc
+
+    return call
 
 
 @dataclass(frozen=True)
@@ -365,8 +381,11 @@ class SubmitDialog(QtWidgets.QDialog):
     def _host_token(self) -> str:
         return self.adapter.host_name if self.adapter is not None else ""
 
-    def _ticks_key(self) -> str:
-        scene = self.adapter.scene_context().scene_path if self.adapter is not None else None
+    def _ticks_key(self, context: SceneContext | None = None) -> str:
+        """Settings key for the remembered ticks; ``context`` defaults to the live scene's."""
+        if context is None and self.adapter is not None:
+            context = self.adapter.scene_context()
+        scene = context.scene_path if context is not None else None
         return f"last_targets.{self._host_token()}.{scene or ''}"
 
     def _remembered_ticks(self, names: Sequence[str]) -> set[str]:
@@ -644,14 +663,13 @@ class SubmitDialog(QtWidgets.QDialog):
         return product
 
     def _submission_models(
-        self, ticked: Sequence[RenderTarget]
+        self, ticked: Sequence[RenderTarget], context: SceneContext
     ) -> list[tuple[RenderTarget, FormModel]]:
-        assert self.adapter is not None  # per-target implies targets, so an adapter
         # The all-targets set, never one derived from the ticked subset: an
         # edit must not be honoured or dropped depending on what else is ticked.
         models = per_target_models(
             self._parameters,
-            self.adapter.scene_context(),
+            context,
             ticked,
             self.edited,
             target_params=self._target_params,
@@ -670,11 +688,26 @@ class SubmitDialog(QtWidgets.QDialog):
                     model.set_value(name, self.edited[name])
         return models
 
+    def _host_snapshot(self, save_scene: bool) -> SnapshotAdapter | None:
+        """Save the scene if asked, then freeze the host for the worker (GUI thread).
+
+        Host APIs are main-thread only, so the worker never sees the live
+        adapter: this is the submit's only host contact. The save happens once,
+        here; the snapshot records whether it failed, so the shared submit flow
+        reports a failed save exactly as it did when it saved on its own.
+        """
+        adapter = self.adapter
+        if adapter is None:
+            return None
+        save_failed = scene_save_failed(adapter, save_scene)
+        return SnapshotAdapter.capture(adapter, targets=self._targets, save_failed=save_failed)
+
     def _prepare_submit(self) -> _Submission | None:
         """Capture the whole submit at submit-start, or ``None`` if not ready.
 
         The async submit must use (and persist) what was on screen when the
         artist pressed Submit, not whatever the widgets say when it finishes.
+        Everything that touches the host happens here, on the GUI thread.
         """
         product = self._ready_product()
         model = self._model
@@ -692,12 +725,19 @@ class SubmitDialog(QtWidgets.QDialog):
         farm_id = farm.id if isinstance(farm, Farm) else ""
         queue_id = queue.id if isinstance(queue, Queue) else ""
         job_name = self._job_name_edit.text()
-        adapter = self.adapter
-        save_scene = self._save_scene_check.isChecked() if adapter is not None else True
+        save_scene = self._save_scene_check.isChecked() if self.adapter is not None else True
         job_options = self._job_options()
 
+        try:
+            snapshot = self._host_snapshot(save_scene)
+        except Exception as exc:
+            # The host's own failure, reported as the worker reports one.
+            return _Submission(_raising(exc), product_name, save_scene, None)
+
         if self._per_target:
-            models = self._submission_models(ticked)
+            assert snapshot is not None  # per-target implies targets, so an adapter
+            context = snapshot.scene_context()
+            models = self._submission_models(ticked, context)
             prefix = job_name or product.title or product.name
 
             def call() -> list[TargetResult]:
@@ -708,12 +748,13 @@ class SubmitDialog(QtWidgets.QDialog):
                     farm_id=farm_id,
                     queue_id=queue_id,
                     job_name_prefix=prefix,
-                    adapter=adapter,
+                    # The snapshot, never the live host; its save replays the one above.
+                    adapter=snapshot,
                     save_scene=save_scene,
                     job_options=job_options,
                 )
 
-            remember = (self._ticks_key(), [t.name for t in ticked])
+            remember = (self._ticks_key(context), [t.name for t in ticked])
             return _Submission(call, product_name, save_scene, remember)
 
         scene = RenderTarget(name=job_name or product.title or product.name, kind="scene")
@@ -726,7 +767,7 @@ class SubmitDialog(QtWidgets.QDialog):
                 farm_id=farm_id,
                 queue_id=queue_id,
                 job_name=job_name or None,
-                adapter=adapter,
+                adapter=snapshot,  # never the live host (see _host_snapshot)
                 save_scene=save_scene,
                 job_options=job_options,
             )

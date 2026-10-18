@@ -3,6 +3,8 @@
 
 import json
 import os
+import threading
+import time
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -21,6 +23,7 @@ from sqi_submitter import cli  # noqa: E402
 from sqi_submitter.core import RenderTarget, SceneContext, SubmitterSession  # noqa: E402
 from sqi_submitter.core.errors import SubmitterError  # noqa: E402
 from sqi_submitter.core.handoff import ContextAdapter, dump_context, load_context  # noqa: E402
+from sqi_submitter.core.submit import SCENE_NOT_SAVED_MESSAGE  # noqa: E402
 from sqi_submitter.qt import dialog as qt_dialog  # noqa: E402
 from sqi_submitter.qt.dialog import _PER_TARGET_MODE, _WHOLE_SCENE_MODE, SubmitDialog  # noqa: E402
 from sqi_submitter.qt.widgets import PREFILL_TIP, build_form  # noqa: E402
@@ -1051,3 +1054,208 @@ def test_host_save_exception_shows_banner(app: object) -> None:
     assert error_label is not None
     assert not error_label.isHidden()
     assert "Permission denied: /x/s.mini" in error_label.text()
+
+
+# -- host calls stay on the GUI thread ------------------------------------------
+
+
+class _ThreadLog:
+    """One ordered log of host calls and POSTs, each with the thread it ran on."""
+
+    def __init__(self) -> None:
+        self.entries: list[tuple[str, threading.Thread]] = []
+
+    def add(self, name: str) -> None:
+        self.entries.append((name, threading.current_thread()))
+
+    def names(self) -> list[str]:
+        return [name for name, _ in self.entries]
+
+    def threads(self, name: str) -> list[threading.Thread]:
+        return [thread for n, thread in self.entries if n == name]
+
+    def post(self, response: httpx.Response) -> Any:
+        """A respx side effect that logs each POST, then answers ``response``."""
+
+        def side_effect(_request: httpx.Request) -> httpx.Response:
+            self.add("post")
+            return response
+
+        return side_effect
+
+
+class _ThreadRecordingAdapter(PassAdapter):
+    """Logs every host call (pymxs, ``maya.cmds`` and the like are main-thread only)."""
+
+    def __init__(self, log: _ThreadLog, scene_path: str = "/x/s.mini", **kwargs: bool) -> None:
+        super().__init__(scene_path=scene_path)
+        self.log = log
+        self.modified = kwargs.get("modified", True)
+        self.can_save = kwargs.get("can_save", True)
+
+    def scene_context(self) -> SceneContext:
+        self.log.add("scene_context")
+        return super().scene_context()
+
+    def render_targets(self) -> list[RenderTarget]:
+        self.log.add("render_targets")
+        return super().render_targets()
+
+    def is_scene_modified(self) -> bool:
+        self.log.add("is_scene_modified")
+        return self.modified
+
+    def save_scene(self) -> bool:
+        self.log.add("save_scene")
+        return self.can_save
+
+
+def _submit_on_worker(dialog: SubmitDialog) -> None:
+    """Press Submit for real: the submit runs on the dialog's worker QThread."""
+    dialog._on_submit()
+    worker = dialog._worker
+    assert worker is not None
+    assert worker.wait(10_000)
+    deadline = time.monotonic() + 10
+    while dialog._submitting and time.monotonic() < deadline:
+        QtWidgets.QApplication.processEvents()
+    assert not dialog._submitting
+
+
+def _assert_host_calls_on_main_thread(log: _ThreadLog) -> None:
+    main = threading.main_thread()
+    host = [(n, t) for n, t in log.entries if n != "post"]
+    assert host, "the submit made no host call at all"
+    assert all(t is main for _, t in host), [(n, t.name) for n, t in host]
+
+
+@respx.mock
+def test_per_target_submit_makes_no_host_call_on_the_worker(
+    app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = _ThreadLog()
+    route = _mock_pass_server()
+    route.mock(side_effect=log.post(httpx.Response(201, json={"id": "j", "name": "n"})))
+    _capture_boxes(monkeypatch)
+    dialog = _pass_dialog(_ThreadRecordingAdapter(log))
+    dialog._save_scene_check.setChecked(True)
+    _tick(dialog, "B")
+    _tick(dialog, "C")
+    log.entries.clear()
+
+    _submit_on_worker(dialog)
+
+    assert route.call_count == 3
+    # The POSTs ran on the worker thread, so this really exercised it.
+    assert all(t is not threading.main_thread() for t in log.threads("post"))
+    _assert_host_calls_on_main_thread(log)
+    names = log.names()
+    assert names.count("save_scene") == 1
+    assert names.count("scene_context") == 1  # one snapshot per submit, not one per target
+    assert names.index("save_scene") < names.index("post")
+
+
+@respx.mock
+def test_whole_scene_submit_makes_no_host_call_on_the_worker(
+    app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = _ThreadLog()
+    _mock_pass_server()
+    route = respx.post(f"{BASE}/api/v1/products/mini-render/jobs").mock(
+        side_effect=log.post(httpx.Response(201, json={"id": "j1", "name": "n"}))
+    )
+    boxes = _capture_boxes(monkeypatch)
+    dialog = SubmitDialog(SubmitterSession(server_url=BASE), adapter=_ThreadRecordingAdapter(log))
+    _select_product(dialog, "mini-render")
+    dialog._save_scene_check.setChecked(True)
+    log.entries.clear()
+
+    _submit_on_worker(dialog)
+
+    assert route.call_count == 1
+    assert json.loads(route.calls.last.request.content)["parameters"]["SceneFile"] == "/x/s.mini"
+    assert all(t is not threading.main_thread() for t in log.threads("post"))
+    _assert_host_calls_on_main_thread(log)
+    names = log.names()
+    assert names.count("save_scene") == 1
+    assert names.count("scene_context") == 1
+    assert names.index("save_scene") < names.index("post")
+    ((_title, text),) = boxes
+    assert "job j1" in text
+
+
+@respx.mock
+def test_per_target_failed_save_posts_nothing_and_reports_each_target(
+    app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = _ThreadLog()
+    route = _mock_pass_server()
+    boxes = _capture_boxes(monkeypatch)
+    dialog = _pass_dialog(_ThreadRecordingAdapter(log, can_save=False))
+    dialog._save_scene_check.setChecked(True)
+    _tick(dialog, "B")
+    _tick(dialog, "C")
+    log.entries.clear()
+
+    _submit_on_worker(dialog)
+
+    assert not route.called
+    _assert_host_calls_on_main_thread(log)
+    assert log.names().count("save_scene") == 1
+    ((title, text),) = boxes
+    assert title == "No jobs submitted"
+    assert text == "\n".join(f"{n}: FAILED — {SCENE_NOT_SAVED_MESSAGE}" for n in ("A", "B", "C"))
+
+
+@respx.mock
+def test_whole_scene_failed_save_posts_nothing_and_shows_the_banner(app: object) -> None:
+    log = _ThreadLog()
+    route = _mock_server()
+    dialog = SubmitDialog(
+        SubmitterSession(server_url=BASE), adapter=_ThreadRecordingAdapter(log, can_save=False)
+    )
+    dialog._save_scene_check.setChecked(True)
+    log.entries.clear()
+
+    _submit_on_worker(dialog)
+
+    assert not route.called
+    _assert_host_calls_on_main_thread(log)
+    assert log.names().count("save_scene") == 1
+    error_label = dialog.findChild(QtWidgets.QLabel, "errorLabel")
+    assert error_label is not None
+    assert error_label.text() == SCENE_NOT_SAVED_MESSAGE
+
+
+@respx.mock
+def test_untitled_scene_still_asks_to_save_first(app: object) -> None:
+    """A never-saved scene's save fails too; the banner keeps naming the real cause."""
+    route = _mock_server()
+    adapter = _ThreadRecordingAdapter(_ThreadLog(), scene_path="", can_save=False)
+    dialog = SubmitDialog(SubmitterSession(server_url=BASE), adapter=adapter)
+    dialog._save_scene_check.setChecked(True)
+
+    _submit_on_worker(dialog)
+
+    assert not route.called
+    error_label = dialog.findChild(QtWidgets.QLabel, "errorLabel")
+    assert error_label is not None
+    assert error_label.text().startswith("Save your scene before submitting")
+
+
+@respx.mock
+def test_unchecked_save_never_saves_a_modified_scene(
+    app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = _ThreadLog()
+    route = _mock_server()
+    _capture_boxes(monkeypatch)
+    dialog = SubmitDialog(SubmitterSession(server_url=BASE), adapter=_ThreadRecordingAdapter(log))
+    dialog._save_scene_check.setChecked(False)
+    log.entries.clear()
+
+    _submit_on_worker(dialog)
+
+    assert route.call_count == 1
+    assert "save_scene" not in log.names()
+    _assert_host_calls_on_main_thread(log)
