@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import argparse
 import sys
+import traceback
 from pathlib import Path
 from typing import Any
 
+from sqi_submitter._failure import report_failure
 from sqi_submitter.core import SubmitterSession
 from sqi_submitter.core.errors import SubmitterError
 from sqi_submitter.core.handoff import ContextAdapter, load_context
@@ -80,8 +82,16 @@ def main(argv: list[str] | None = None) -> int:
         # An unknown host is a usage error, so its message goes to stderr.
         out = sys.stdout if args.host in KNOWN_HOSTS else sys.stderr
         return install_host(args.host, Path(args.dest) if args.dest else None, out, sys.stderr)
+    # A host starts sqi-submit detached, so a failure is also logged and, with no
+    # terminal to read stderr, shown natively (see _failure).
     try:
         return _run_dialog(args.server, args.context)
     except SubmitterError as exc:
-        print(exc.user_message, file=sys.stderr)
+        report_failure(exc.user_message)
+        return 1
+    except Exception as exc:  # an artist cannot read a detached traceback
+        report_failure(
+            f"sqi-submit stopped unexpectedly: {type(exc).__name__}: {exc}",
+            traceback.format_exc(),
+        )
         return 1

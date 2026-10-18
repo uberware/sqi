@@ -27,6 +27,11 @@ class Settings:
             or Path.home() / ".sqi" / "submitter.json"
         )
 
+    @property
+    def path(self) -> Path:
+        """The settings file; its directory also holds ``submit-error.log``."""
+        return self._path
+
     def _load(self) -> dict[str, Any]:
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))

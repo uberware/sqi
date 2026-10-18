@@ -186,12 +186,19 @@ def test_cli_install_host_bad_dest_exits_one(
 
 
 def test_cli_dialog_without_qt_names_the_install_command(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    native_messages: list[str],
 ) -> None:
-    """No Qt binding: an actionable message and exit 1, never an import-time traceback."""
+    """No Qt binding: an actionable message and exit 1, never an import-time traceback.
+
+    A host launches sqi-submit detached, so the message is also logged and shown natively.
+    """
     import sqi_submitter.qt as qt_package
     from sqi_submitter.qt import _compat
 
+    monkeypatch.setenv("SQI_SUBMITTER_SETTINGS", str(tmp_path / ".sqi" / "submitter.json"))
     monkeypatch.setattr(_compat, "QT_BINDING", "")
     # Importing the dialog without a binding fails at import time: it must not be reached.
     monkeypatch.setitem(sys.modules, "sqi_submitter.qt.dialog", None)
@@ -201,6 +208,12 @@ def test_cli_dialog_without_qt_names_the_install_command(
     assert "No Qt binding found" in err
     assert 'pip install "sqi-submitter[qt]"' in err
     assert "Traceback" not in err
+    log = (tmp_path / ".sqi" / "submit-error.log").read_text(encoding="utf-8")
+    assert "No Qt binding found" in log
+    assert "Traceback" not in log
+    (shown,) = native_messages  # pytest's stderr is not a terminal
+    assert shown.startswith("No Qt binding found")
+    assert shown.endswith(str(tmp_path / ".sqi" / "submit-error.log"))
 
 
 def test_hosts_package_docstring_names_every_host() -> None:

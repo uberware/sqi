@@ -1256,6 +1256,29 @@ dialog calls `show()`, `raise_()` and `activateWindow()`. There is no macOS app
 bundle for `sqi-submit`, so on macOS the window may open behind the host; the
 [checklists](#manual-test-checklist-per-dcc) record that as unverified.
 
+### When `sqi-submit` fails to start
+
+A detached `sqi-submit` has no console, so an error printed to stderr reaches
+nobody. When it cannot open the dialog, most often because no Qt binding is
+installed (`pip install "sqi-submitter[qt]"`), or it stops on an unexpected
+error, it still prints the message to stderr, and also:
+
+- appends a timestamped entry to `submit-error.log` in the settings directory,
+  `~/.sqi/` (the directory of `SQI_SUBMITTER_SETTINGS` when that is set). The
+  entry holds only the message, plus the traceback for an unexpected error;
+  never the context file, server URL or API key. Past 64 KiB the log is cut to
+  its last 16 KiB before the entry is added.
+- when stderr is not a terminal, shows the message and the log's path in a
+  native error box: a message box on Windows, an `osascript` dialog on macOS.
+  Other platforms only log.
+
+It exits 1 either way. Every handoff host (Blender, Cinema 4D, After Effects)
+launches `sqi-submit` detached and relies on this to report a failed launch;
+run from a terminal, `sqi-submit` prints only. A bad context file is not a
+startup failure: the dialog opens with its banner as described above. The
+native box and dialog are tested only against fakes; whether they come to the
+front over the host is unverified.
+
 ### A worked example
 
 A Cinema 4D scene with two checked takes, `Hero` and `Hero_closeup`. This file

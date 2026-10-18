@@ -54,6 +54,19 @@ def fake_host_module(monkeypatch: pytest.MonkeyPatch) -> Callable[..., types.Mod
     return install
 
 
+@pytest.fixture(autouse=True)
+def native_messages(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record failed-launch message boxes instead of showing them: a real one blocks the run.
+
+    Tests of the real ``show_message`` restore it from a reference taken at import time.
+    """
+    from sqi_submitter import _failure
+
+    shown: list[str] = []
+    monkeypatch.setattr(_failure, "show_message", shown.append)
+    return shown
+
+
 @pytest.fixture
 def _clean_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: object) -> Iterator[None]:
     monkeypatch.setenv("SQI_SUBMITTER_SETTINGS", str(tmp_path) + "/settings.json")
