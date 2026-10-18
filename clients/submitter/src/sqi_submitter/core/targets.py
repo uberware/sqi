@@ -2,11 +2,13 @@
 """Multi-target submission: one job per ticked render target (no Qt, no DCC).
 
 A product parameter is a *target parameter* when its normalized name matches a
-key present in the ``extra`` of every target; those are the keys that identify
-a target (``RenderLayer``, ``Take``, ``RenderQueueItem``). A product with at
-least one is a *per-target product*. Keys only some targets carry (After
-Effects' ``FramesPerTask`` on movie targets) are per-target pre-fill values and
-never make a product per-target.
+key present in the ``extra`` of every target and locked by none of them; those
+are the keys that identify a target (``RenderLayer``, ``Take``,
+``RenderQueueItem``). A product with at least one is a *per-target product*.
+Keys only some targets carry, and keys a target locks (After Effects'
+``FramesPerTask`` on a movie, even when every queued item is a movie), are
+per-target pre-fill values: they never make a product per-target, and an edit
+never overrides a target's locked value.
 """
 
 from __future__ import annotations
@@ -28,10 +30,17 @@ from sqi_submitter.core.submit import SCENE_NOT_SAVED_MESSAGE, scene_save_failed
 def target_parameters(
     parameters: Sequence[ProductParameter], targets: Sequence[RenderTarget]
 ) -> frozenset[str]:
-    """Names of the product parameters every target supplies through ``extra``."""
+    """Names of the product parameters every target supplies through ``extra``.
+
+    A key any target locks is excluded even when every target carries it: a
+    locked value is that target's own pre-fill (a movie's ``FramesPerTask``),
+    and treating it as a target parameter would let a single ticked target's
+    edit override it.
+    """
     if not targets:
         return frozenset()
     shared = set.intersection(*({normalize_name(k) for k in t.extra} for t in targets))
+    shared -= {normalize_name(k) for t in targets for k in t.locked}
     return frozenset(p.name for p in parameters if normalize_name(p.name) in shared)
 
 
@@ -52,7 +61,8 @@ def per_target_models(
 
     Each model starts from the parameter defaults plus ``prefill`` for that
     target, then takes the artist's ``edited`` values, except for target
-    parameters (always the target's own) and for keys the target ``locked``.
+    parameters (always the target's own) and for keys the target ``locked``
+    (always the value from its ``extra``, whatever is edited or ticked).
 
     ``target_params`` defaults to :func:`target_parameters` over ``targets``.
     A caller building models for a *subset* of the host's targets (the ticked

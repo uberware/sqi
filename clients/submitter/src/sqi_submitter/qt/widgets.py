@@ -47,17 +47,27 @@ def build_form(
 def refresh_form(root: QtWidgets.QWidget, model: FormModel) -> None:
     """Re-read model values into their editors (e.g. after a prefill/target change)."""
     for f in model.fields:
-        if f.hidden:
-            continue
-        editor = _find_editor(root, f.parameter.name)
-        if editor is None:
-            continue
-        editor.blockSignals(True)
-        try:
-            _write_value(editor, f)
-        finally:
-            editor.blockSignals(False)
-        editor.setToolTip(PREFILL_TIP if f.prefilled else "")
+        editor = refresh_field(root, f)
+        if editor is not None:
+            editor.setToolTip(PREFILL_TIP if f.prefilled else "")
+
+
+def refresh_field(root: QtWidgets.QWidget, f: FormField) -> QtWidgets.QWidget | None:
+    """Re-read one field's model value into its editor without reporting an edit.
+
+    Returns the editor, or ``None`` when the field is hidden or has none.
+    """
+    if f.hidden:
+        return None
+    editor = _find_editor(root, f.parameter.name)
+    if editor is None:
+        return None
+    editor.blockSignals(True)
+    try:
+        _write_value(editor, f)
+    finally:
+        editor.blockSignals(False)
+    return editor
 
 
 def _find_editor(root: QtWidgets.QWidget, name: str) -> QtWidgets.QWidget | None:

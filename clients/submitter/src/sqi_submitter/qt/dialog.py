@@ -27,7 +27,7 @@ from sqi_submitter.core import (
 from sqi_submitter.core.handoff import ContextAdapter
 from sqi_submitter.core.joboptions import JobOptions
 from sqi_submitter.qt._compat import QtCore, QtGui, QtWidgets, require_qt
-from sqi_submitter.qt.widgets import PREFILL_TIP, build_form
+from sqi_submitter.qt.widgets import PREFILL_TIP, build_form, refresh_field
 
 __all__ = ["SubmitDialog", "open_for_adapter"]
 
@@ -549,30 +549,50 @@ class SubmitDialog(QtWidgets.QDialog):
     def _apply_target_states(self, ticked: Sequence[RenderTarget] | None = None) -> None:
         """Lock target parameters while several are ticked; flag locked keys.
 
-        Sets every field's tooltip, as a rebuild would, so the form is right
-        after the ticks change without one.
+        A key every ticked target locks is disabled and shows the first ticked
+        target's own value, since no edit can reach any job; a key only some
+        lock stays editable for the rest. Sets every field's tooltip and
+        enabled state, as a rebuild would, so the form is right after the
+        ticks change without one.
         """
-        if self._form_root is None or self._model is None or not self._per_target:
+        root, model = self._form_root, self._model
+        if root is None or model is None or not self._per_target:
             return
         if ticked is None:
             ticked = self._ticked_targets()
-        locked = {normalize_name(k) for t in ticked for k in t.locked}
+        locks = [{normalize_name(k) for k in t.locked} for t in ticked]
+        locked = set().union(*locks)
+        all_locked = set.intersection(*locks) if locks else set()
         several = len(ticked) > 1
-        for f in self._model.fields:
+        own = self._locked_values(ticked[0]) if all_locked else {}
+        for f in model.fields:
             name = f.parameter.name
             editor = self._field_editor(name)
             if editor is None:
                 continue
+            key = normalize_name(name)
             is_target_param = name in self._target_params
+            row = root.findChild(QtWidgets.QWidget, f"row_{name}")
             if is_target_param:
-                row = self._form_root.findChild(QtWidgets.QWidget, f"row_{name}")
                 (row or editor).setEnabled(not several)
+            else:
+                (row or editor).setEnabled(key not in all_locked)
+            if key in all_locked and name in own and own[name] != f.value:
+                # Over any stale edit: the form shows what the first job gets.
+                model.apply_prefill({name: own[name]})
+                refresh_field(root, f)
             if several and is_target_param:
                 editor.setToolTip(_FROM_EACH_TARGET_TIP)
-            elif normalize_name(name) in locked:
+            elif key in locked:
                 editor.setToolTip(_LOCKED_TIP)
             else:
                 editor.setToolTip(PREFILL_TIP if f.prefilled else "")
+
+    def _locked_values(self, target: RenderTarget) -> dict[str, str]:
+        """``target``'s pre-fill, which holds its value for every key it locks."""
+        if self.adapter is None:
+            return {}
+        return prefill(self._parameters, self.adapter.scene_context(), target)
 
     def _update_submit_state(self, ticked: Sequence[RenderTarget] | None = None) -> None:
         """Submit needs a current model, no submit running, and (per-target) a tick."""
@@ -639,10 +659,14 @@ class SubmitDialog(QtWidgets.QDialog):
         if len(models) == 1:
             # One ticked target behaves like a single-target pre-fill: an edit
             # to its target parameter is the artist's to make (per_target_models
-            # always keeps a target parameter the target's own).
-            _, model = models[0]
+            # always keeps a target parameter the target's own). Never a key the
+            # target locks: a movie is one file, so its FramesPerTask is not the
+            # artist's. target_parameters already leaves locked keys out; this
+            # holds whatever set _target_params is given.
+            target, model = models[0]
+            locked = {normalize_name(k) for k in target.locked}
             for name in self._target_params:
-                if name in self.edited:
+                if name in self.edited and normalize_name(name) not in locked:
                     model.set_value(name, self.edited[name])
         return models
 

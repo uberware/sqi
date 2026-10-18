@@ -401,16 +401,57 @@ class SubsetAdapter(PassAdapter):
         ]
 
 
+_MOVIES: "dict[str, RenderTarget]" = {
+    # After Effects-shaped: a movie is one file, so it locks its FramesPerTask.
+    "M1": RenderTarget(
+        name="M1",
+        kind="pass",
+        extra={"Pass": "M1", "FramesPerTask": "100"},
+        locked=frozenset({"FramesPerTask"}),
+    ),
+    "M2": RenderTarget(
+        name="M2",
+        kind="pass",
+        extra={"Pass": "M2", "FramesPerTask": "50"},
+        locked=frozenset({"FramesPerTask"}),
+    ),
+    "I": RenderTarget(name="I", kind="pass", extra={"Pass": "I"}),
+}
+
+
+class MovieAdapter(PassAdapter):
+    """The named ``_MOVIES`` targets, in order."""
+
+    def __init__(self, *names: str) -> None:
+        super().__init__()
+        self.names = names
+
+    def render_targets(self) -> list[RenderTarget]:
+        return [_MOVIES[n] for n in self.names]
+
+
 def _mock_pass_server(
     responses: "list[httpx.Response] | None" = None,
     extra_params: "list[dict[str, str]] | None" = None,
+    sequence: bool = False,
 ) -> respx.Route:
-    _mock_server(
-        products=[
-            {"name": "mini-render", "title": "Mini Render"},
-            {"name": "pass-render", "title": "Pass Render"},
-        ]
-    )
+    """Mock ``pass-render``; ``sequence`` adds ``seq-render`` (no target key)."""
+    products = [
+        {"name": "mini-render", "title": "Mini Render"},
+        {"name": "pass-render", "title": "Pass Render"},
+    ]
+    if sequence:
+        products.append({"name": "seq-render", "title": "Sequence Render"})
+        respx.get(f"{BASE}/api/v1/products/seq-render/parameters").mock(
+            return_value=httpx.Response(
+                200,
+                json=[
+                    {"name": "Frames", "type": "STRING"},
+                    {"name": "FramesPerTask", "type": "INT", "default": "1"},
+                ],
+            )
+        )
+    _mock_server(products=products)
     respx.get(f"{BASE}/api/v1/products/pass-render/parameters").mock(
         return_value=httpx.Response(
             200,
@@ -795,6 +836,120 @@ def test_locked_key_editor_tooltip_and_value(app: object, monkeypatch: pytest.Mo
     dialog.submit_and_wait()
     per_task = [json.loads(c.request.content)["parameters"]["FramesPerTask"] for c in route.calls]
     assert per_task == ["5", "11"]  # the movie target keeps its own value
+
+
+_LOCKED = "Kept per target (e.g. a movie renders as one task)"
+
+
+def _spin(dialog: SubmitDialog, name: str) -> Any:
+    spin = dialog.findChild(QtWidgets.QSpinBox, f"field_{name}")
+    assert spin is not None
+    return spin
+
+
+def _posted(route: respx.Route, name: str) -> list[str]:
+    return [json.loads(c.request.content)["parameters"][name] for c in route.calls]
+
+
+@respx.mock
+def test_single_queued_movie_is_never_split(app: object, monkeypatch: pytest.MonkeyPatch) -> None:
+    """One movie means every target carries FramesPerTask: it is still not the artist's."""
+    route = _mock_pass_server()
+    _capture_boxes(monkeypatch)
+    dialog = _pass_dialog(MovieAdapter("M1"))
+    assert _ticked(dialog) == ["M1"]
+    spin = _spin(dialog, "FramesPerTask")
+    assert not spin.isEnabled()
+    assert spin.toolTip() == _LOCKED
+    assert spin.value() == 100
+
+    spin.setValue(10)  # the artist cannot reach a disabled editor; force it anyway
+    dialog.edited["FramesPerTask"] = "10"
+    dialog.submit_and_wait()
+    assert _posted(route, "FramesPerTask") == ["100"]
+
+
+@respx.mock
+def test_every_ticked_movie_keeps_its_frames_per_task(
+    app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    route = _mock_pass_server()
+    _capture_boxes(monkeypatch)
+    dialog = _pass_dialog(MovieAdapter("M1", "M2"))
+    _tick(dialog, "M2")
+    spin = _spin(dialog, "FramesPerTask")
+    assert not spin.isEnabled()
+    assert spin.toolTip() == _LOCKED
+
+    dialog.edited["FramesPerTask"] = "10"
+    dialog.submit_and_wait()
+    assert _posted(route, "FramesPerTask") == ["100", "50"]
+
+
+@respx.mock
+def test_movie_and_images_edit_applies_to_the_images_only(
+    app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    route = _mock_pass_server()
+    _capture_boxes(monkeypatch)
+    dialog = _pass_dialog(MovieAdapter("M1", "I"))
+    _tick(dialog, "I")
+    spin = _spin(dialog, "FramesPerTask")
+    assert spin.isEnabled()
+    assert spin.toolTip() == _LOCKED
+
+    spin.setValue(5)
+    assert dialog.edited == {"FramesPerTask": "5"}
+    dialog.submit_and_wait()
+    assert _posted(route, "FramesPerTask") == ["100", "5"]
+
+
+@respx.mock
+def test_movie_lock_follows_the_ticks(app: object, monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_pass_server()
+    dialog = _pass_dialog(MovieAdapter("M1", "I"))
+    _tick(dialog, "I")
+    spin = _spin(dialog, "FramesPerTask")
+    spin.setValue(5)
+    rebuilds = _count_rebuilds(monkeypatch)
+
+    _tick(dialog, "I", on=False)  # only the movie is left
+    assert rebuilds == []
+    assert not spin.isEnabled()
+    assert spin.toolTip() == _LOCKED
+    assert spin.value() == 100  # what the movie submits, not the images' edit
+    assert dialog.edited == {"FramesPerTask": "5"}
+
+    _tick(dialog, "I")
+    assert rebuilds == []
+    assert spin.isEnabled()
+    assert spin.toolTip() == _LOCKED
+
+    _tick(dialog, "M1", on=False)  # only the images are left
+    spin = _spin(dialog, "FramesPerTask")
+    assert spin.isEnabled()
+    assert spin.toolTip() == ""
+    assert spin.value() == 5
+
+    _tick(dialog, "M1")
+    spin = _spin(dialog, "FramesPerTask")
+    assert spin.isEnabled()
+    assert spin.toolTip() == _LOCKED
+
+
+@respx.mock
+def test_sequence_product_is_whole_scene_for_an_all_movie_queue(app: object) -> None:
+    """A locked FramesPerTask is a pre-fill value: it never makes a product per-target."""
+    _mock_pass_server(sequence=True)
+    dialog = SubmitDialog(SubmitterSession(server_url=BASE), adapter=MovieAdapter("M1", "M2"))
+    _select_product(dialog, "seq-render")
+    assert _target_list(dialog).isHidden()
+    assert _mode_text(dialog) == _WHOLE_SCENE_MODE
+    assert _spin(dialog, "FramesPerTask").isEnabled()
+
+    _select_product(dialog, "pass-render")
+    assert not _target_list(dialog).isHidden()
+    assert _mode_text(dialog) == _PER_TARGET_MODE
 
 
 @respx.mock

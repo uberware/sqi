@@ -377,10 +377,13 @@ command prints `copied <path>` for each file, then the host's next step. The
 copy overwrites a file of the same name.
 
 Exit codes: **0** success (including "printed instructions instead of
-copying"); **1** this build ships no files for the host, or the destination
-could not be written (the message names the folder and the reason, and says how
-many files were already copied); **2** unknown host (the message, on standard
-error, lists the known hosts).
+copying"); **1** a file could not be copied into the destination (`--dest`, or
+Cinema 4D's detected folder): the destination could not be written, or this
+build is missing one of the host's files. The message names the folder and the
+reason, and says how many files were already copied. **2** unknown host (the
+message, on standard error, lists the known hosts). With no destination nothing
+is copied, so a missing package file is not detected: its path is printed like
+any other and the command exits 0.
 
 ### Standalone (`sqi-submit`)
 
@@ -639,8 +642,9 @@ Houdini has a per-target product only: its output target is the ROP the script
 renders, not a flag that can be left out. A target's name is for display and
 for job names; only the `extra` values reach the product's parameters.
 
-After Effects targets also carry `FramesPerTask` on **movie** targets only (see
-below). A key that only some targets carry is not a target parameter.
+After Effects targets also carry `FramesPerTask` on **movie** targets only, and
+lock it there (see below). A key that only some targets carry, or that any
+target locks, is not a target parameter.
 
 A parameter named `Scene` always gets the scene name: extras win over
 convention aliases (below), and `scene` is not a `scene_path` alias.
@@ -668,7 +672,8 @@ or several, purely by parameter names, for every host:
 
 - A product parameter is a **target parameter** when its name (ignoring case
   and `_`/`-`) matches a key present in the `extra` of **every** one of the
-  host's targets: `RenderLayer`, `Take`, `RenderQueueItem` and so on.
+  host's targets and `locked` by **none** of them: `RenderLayer`, `Take`,
+  `RenderQueueItem` and so on.
 - A product with at least one target parameter is a **per-target product**.
   Any other product is a **whole-scene product**, whatever targets the host
   offered.
@@ -677,6 +682,10 @@ or several, purely by parameter names, for every host:
   and never makes a product per-target. A target without it gets the form's
   value (the product default, or the artist's edit). After Effects' movie
   targets carry `FramesPerTask` this way.
+- A key a target **locks** is a per-target pre-fill value too, even when every
+  target carries it (a render queue of movies only). Locked values are never
+  target parameters and never overridable, so a generic sequence product that
+  merely declares `FramesPerTask` stays a whole-scene product.
 
 **Whole-scene product.** The target list is hidden and a line under the product
 picker says "One job for the whole scene, as configured". One job is submitted,
@@ -699,12 +708,15 @@ disabled, with the hint "Tick at least one target.", while none is ticked.
   applies to the job for every ticked target. Changing the product clears the
   edits.
 - **Locked values.** If a target lists a key in its `locked` array, an edit
-  never overrides that target's own value for it (tooltip "Kept per target (e.g.
-  a movie renders as one task)"). This is generic; After Effects uses it for
+  never overrides that target's own value for it, whether one target is ticked
+  or many (tooltip "Kept per target (e.g. a movie renders as one task)"). When
+  every ticked target locks the field, its editor is disabled and shows the
+  first ticked target's value; when only some do, it stays editable and the
+  edit applies to the others. This is generic; After Effects uses it for
   **movie protection**: a movie target's `FramesPerTask` is its whole frame
-  count and is `locked`, so raising **Frames Per Task** for the sequence targets
-  does not split the movie across machines. Image-sequence targets take the
-  edit.
+  count and is `locked`, so lowering **Frames Per Task** for the sequence
+  targets does not split the movie across machines. Image-sequence targets take
+  the edit.
 - **Job names** are `<job name field> - <target name>`, for example `Cinema 4D
   Take Render - Hero`. The field defaults to the product's title; whatever the
   artist types there is the prefix for every job.

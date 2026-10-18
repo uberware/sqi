@@ -55,6 +55,64 @@ def test_target_parameters_needs_key_on_every_target() -> None:
     assert is_per_target(AE_PARAMS, targets)
 
 
+def _movie(name: str, item: str, per_task: str) -> RenderTarget:
+    """An After Effects movie: one file, so its ``FramesPerTask`` is locked."""
+    return RenderTarget(
+        name=name,
+        kind="rq_item",
+        extra={"RenderQueueItem": item, "FramesPerTask": per_task},
+        locked=frozenset({"FramesPerTask"}),
+    )
+
+
+def test_target_parameters_exclude_a_locked_key_every_target_carries() -> None:
+    single = [_movie("movie", "1", "240")]
+    assert target_parameters(AE_PARAMS, single) == frozenset({"RenderQueueItem"})
+    movies = [_movie("m1", "1", "240"), _movie("m2", "2", "120")]
+    assert target_parameters(AE_PARAMS, movies) == frozenset({"RenderQueueItem"})
+
+
+def test_target_parameters_exclude_a_locked_key_by_normalized_name() -> None:
+    movie = RenderTarget(
+        name="movie",
+        kind="rq_item",
+        extra={"RenderQueueItem": "1", "frames_per_task": "240"},
+        locked=frozenset({"frames_per_task"}),
+    )
+    assert target_parameters(AE_PARAMS, [movie]) == frozenset({"RenderQueueItem"})
+
+
+def test_target_parameters_movie_and_images_mix() -> None:
+    images = RenderTarget(name="images", kind="rq_item", extra={"RenderQueueItem": "2"})
+    targets = [_movie("movie", "1", "240"), images]
+    assert target_parameters(AE_PARAMS, targets) == frozenset({"RenderQueueItem"})
+
+
+def test_locked_key_alone_never_makes_a_product_per_target() -> None:
+    """A generic sequence product is whole-scene even for an all-movie queue."""
+    sequence = [_p("Frames"), _p("FramesPerTask", "INT", "10")]
+    movies = [_movie("m1", "1", "240"), _movie("m2", "2", "120")]
+    assert not is_per_target(sequence, movies)
+    assert not is_per_target(sequence, movies[:1])
+    assert is_per_target(AE_PARAMS, movies)
+    assert is_per_target(AE_PARAMS, movies[:1])
+
+
+def test_per_target_models_single_locked_target_keeps_its_value() -> None:
+    edited = {"FramesPerTask": "5", "OutputPath": "/edited"}
+    (only,) = per_target_models(AE_PARAMS, CTX, [_movie("movie", "1", "240")], edited)
+    values = only[1].values()
+    assert values["FramesPerTask"] == "240"
+    assert values["OutputPath"] == "/edited"
+    assert values["RenderQueueItem"] == "1"
+
+
+def test_per_target_models_locked_value_beats_edit_for_every_movie() -> None:
+    movies = [_movie("m1", "1", "240"), _movie("m2", "2", "120")]
+    models = per_target_models(AE_PARAMS, CTX, movies, {"FramesPerTask": "5"})
+    assert [m.values()["FramesPerTask"] for _, m in models] == ["240", "120"]
+
+
 def test_target_parameters_empty_without_targets() -> None:
     assert target_parameters(AE_PARAMS, []) == frozenset()
     assert not is_per_target(AE_PARAMS, [])
