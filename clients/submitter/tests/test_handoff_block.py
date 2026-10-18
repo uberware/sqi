@@ -233,7 +233,9 @@ def test_launch_detaches_windows(monkeypatch: pytest.MonkeyPatch) -> None:
     assert argv == ["C:/sqi/sqi-submit.exe", "--context", "C:/tmp/ctx.json"]
     assert kwargs["creationflags"] == 0x00000008 | 0x00000200  # DETACHED | NEW_PROCESS_GROUP
     assert "start_new_session" not in kwargs
-    assert allowed == [4242]
+    # ASFW_ANY, not the child's pid: a pip/pipx/uv sqi-submit.exe launcher runs the
+    # real python.exe as its own child, and the window lives in that grandchild.
+    assert allowed == [-1]
 
 
 def test_launch_windows_ignores_foreground_errors(monkeypatch: pytest.MonkeyPatch) -> None:

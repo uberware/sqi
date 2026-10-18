@@ -93,11 +93,12 @@ def launch(command: str, context_path: str) -> None:
     if sys.platform == "win32":
         flags = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
         flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
-        proc = subprocess.Popen(argv, creationflags=flags, close_fds=True)
+        subprocess.Popen(argv, creationflags=flags, close_fds=True)
         try:
             import ctypes
 
-            ctypes.windll.user32.AllowSetForegroundWindow(proc.pid)
+            # ASFW_ANY (-1): a pip/pipx/uv sqi-submit.exe runs python.exe as a child of its own.
+            ctypes.windll.user32.AllowSetForegroundWindow(-1)
         except Exception:
             pass
     else:

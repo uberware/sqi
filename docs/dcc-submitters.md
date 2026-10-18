@@ -1152,7 +1152,7 @@ After installing per [Installation per host](#installation-per-host):
   from an operator, `bpy.data.scenes[].view_layers`, `scene.render.filepath` and
   `render.engine`, `bpy.app.version_string`.
 - The context file location `<tmp>/sqi-handoff`, and that
-  `AllowSetForegroundWindow` (Windows) brings the window forward.
+  `AllowSetForegroundWindow(ASFW_ANY)` (Windows) brings the window forward.
 
 ---
 
@@ -1263,9 +1263,12 @@ name, since `cmd.exe` passes single quotes through literally.
 ### Launching it
 
 On Windows the Python hosts start `sqi-submit` detached (`DETACHED_PROCESS` and
-`CREATE_NEW_PROCESS_GROUP`) and then call `AllowSetForegroundWindow` with the
-child's process ID so its window can come to the front; on macOS and Linux they
-start it in a new session. After Effects uses `system.callSystem` with
+`CREATE_NEW_PROCESS_GROUP`) and then call `AllowSetForegroundWindow` with
+`ASFW_ANY` so its window can come to the front. Not the child's process ID: the
+`sqi-submit.exe` that pip, pipx and uv install is a launcher that starts the real
+`python.exe` as its own child, so the window lives in a grandchild that a
+per-process grant never reaches. On macOS and Linux they start it in a new
+session. After Effects uses `system.callSystem` with
 `cmd /c start "" "<exe>" --context "<file>" --detached` on Windows and
 `"<exe>" --context "<file>" --detached >/dev/null 2>&1 &` on macOS, and refuses
 a path that contains a character it cannot quote. `--detached` is a hidden flag
