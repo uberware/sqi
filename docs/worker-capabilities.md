@@ -306,6 +306,9 @@ capabilities:
 | `checks[].registry` | | A Windows registry key path under `HKLM` or `HKCU`, checked for existence only (no value is read). Never matches on Linux or macOS; pairing it with `os: windows` makes that explicit. |
 | `checks[].os` | no | Restricts the check to one platform: `linux`, `darwin`, or `windows`. Omit to run the check on all platforms. |
 | `version.from` | no | A regex applied to **each matched signal** of every check. The version is the named group `v` (`(?P<v>...)`) if present, otherwise the first capturing group. A signal that doesn't match contributes only the bare tag, no version tag. |
+| `command.name` | no | The bare command name the presets run (for example `nuke`). Makes the detector supply a default for that command; see [Detected commands](#detected-commands). |
+| `command.globs[].path_glob` | with `command` | A `filepath.Glob` pattern matching the **executable itself**, not the install directory (on macOS that is inside the `.app` bundle). `version.from` is applied to each match to choose the newest install. |
+| `command.globs[].os` | no | Restricts the glob to `linux`, `darwin` or `windows`. |
 
 Exactly one of `exe` / `path_glob` / `env` / `registry` must be set per check.
 A check with none or more than one is rejected at load time, as are a missing
@@ -314,6 +317,65 @@ A check with none or more than one is rejected at load time, as are a missing
 `Validate()` call, and tests assert that each one parses and validates.
 Custom detectors are validated when the worker starts, and a validation
 failure stops the worker with an error naming the detector.
+
+### Detected commands
+
+A tag only says software is installed. The presets run a **bare command**, and an
+install often has none of that name: Nuke is `Nuke17.1.exe` on Windows and
+`Nuke17.1` elsewhere, in a directory named for the release (`Nuke17.1v2`), and
+its installer adds nothing to `PATH`. The worker starts a job's command directly,
+with no shell, so a shell alias does not count either. Without help, a worker
+tagged `nuke` would accept Nuke jobs and fail each with "executable file not
+found".
+
+A detector with a `command` stanza closes that gap. For each command name, the
+worker decides where it resolves, in this order:
+
+1. **The operator's `worker.commands` entry**, if there is one
+   ([`worker.commands`](worker-configuration.md#workercommands)).
+2. **A command of that name already on `PATH`.** The host or studio set it up, so
+   the worker leaves it alone and never shadows it.
+3. **The newest install the detector found**, as a default. "Newest" is by
+   numeric version (16.0 beats 9.0), and two installs of one version, such as
+   `Nuke17.1v1` and `Nuke17.1v2`, are ordered by path so the later release wins.
+
+A detected default carries **no arguments**. Flags that depend on a license, such
+as Nuke's `--nc` for a non-commercial license, belong to the operator: put them in
+`worker.commands`.
+
+Only the `nuke` built-in defines a command today. The others rely on the command
+being on `PATH`. Turning a detector off with `capabilities.disable` turns off its
+command default too. A custom detector can add one:
+
+```yaml
+capabilities:
+  detect:
+    - tag: mytool
+      checks:
+        - path_glob: "/opt/mytool*/bin/mytool"
+      version:
+        from: "mytool(?P<v>[0-9.]+)"
+      command:
+        name: mytool
+        globs:
+          - path_glob: "/opt/mytool*/bin/mytool"
+            os: linux
+```
+
+`sqi-worker capabilities` and `sqi-worker start --dry-run` print a **COMMAND**
+table showing what each command name resolves to, with its arguments and where
+the decision came from (`config`, `PATH` or `detected`); the worker also logs each
+one at startup.
+
+> **A `worker.commands` entry does not advertise a tag.** If the install is in a
+> location the detector's globs do not search, add `nuke=true` to
+> [`worker.capability_tags`](worker-configuration.md#workercapability_tags) as well, or
+> jobs requiring the tag will not be sent to the worker.
+
+The `nuke` default's globs follow the layouts in Foundry's documentation
+(Linux `/usr/local/Nuke17.1v2/Nuke17.1`, macOS
+`/Applications/Nuke17.1v2/Nuke17.1v2.app/Contents/MacOS/Nuke17.1`); the Windows
+path was checked against a real 17.1v2 install, the Linux and macOS ones were not.
 
 ---
 

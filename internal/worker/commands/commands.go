@@ -86,6 +86,17 @@ func hasSeparator(s string) bool {
 	return strings.ContainsAny(s, "/"+string(filepath.Separator))
 }
 
+// Contains reports whether name has an entry, by this host's name rules: exact
+// on POSIX, case-insensitive on Windows. It is the same question Resolve asks,
+// so a caller deciding whether to add a default does not add one the table
+// would already answer.
+func (t Table) Contains(name string) bool { return t.contains(name, runtime.GOOS) }
+
+func (t Table) contains(name, goos string) bool {
+	_, ok := newResolver(t, goos).lookup(name)
+	return ok
+}
+
 // Resolver applies a Table. The zero value and nil resolve nothing.
 type Resolver struct {
 	table Table

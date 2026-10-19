@@ -562,6 +562,12 @@ never resolves, and some software installs under a versioned name (Nuke on
 Windows is `Nuke17.1.exe`, never `nuke`). Without an entry the worker looks the
 name up on its own `PATH`, exactly as before.
 
+An entry is the first thing consulted. After it, a command of the same name
+already on `PATH` is used as is, and only if there is neither does a detector's
+default apply: the Nuke built-in supplies one from the newest install it finds,
+with no arguments (see [Detected commands](worker-capabilities.md#detected-commands)).
+`sqi-worker capabilities` prints what each command resolves to and why.
+
 ```yaml
 worker:
   commands:

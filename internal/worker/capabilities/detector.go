@@ -59,7 +59,11 @@ type Detector struct {
 	Tag     string      `yaml:"tag"`
 	Checks  []Check     `yaml:"checks"`
 	Version VersionSpec `yaml:"version"`
-	Origin  string      `yaml:"-"` // "builtin:<name>" or "custom"; for diagnostics
+	// Command, when set, says how to run the detected software, so the worker
+	// can supply a default for the command name its presets use. See
+	// [CommandSpec].
+	Command *CommandSpec `yaml:"command"`
+	Origin  string       `yaml:"-"` // "builtin:<name>" or "custom"; for diagnostics
 }
 
 // CapabilitiesConfig is the worker's capability-detection configuration.
@@ -94,6 +98,11 @@ func (d Detector) Validate() error {
 	if d.Version.From != "" {
 		if _, err := regexp.Compile(d.Version.From); err != nil {
 			return fmt.Errorf("detector %q: bad version regex: %w", d.Tag, err)
+		}
+	}
+	if d.Command != nil {
+		if err := d.Command.validate(d.Tag); err != nil {
+			return err
 		}
 	}
 	return nil

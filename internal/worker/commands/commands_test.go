@@ -161,3 +161,20 @@ func TestValidate_ReportsProblemsInAStableOrder(t *testing.T) {
 		}
 	}
 }
+
+func TestContains_UsesTheHostsNameRules(t *testing.T) {
+	table := Table{"nuke": {Path: "/opt/nuke"}}
+
+	if !table.contains("nuke", "linux") {
+		t.Error("linux: the exact name was not found")
+	}
+	if table.contains("Nuke", "linux") {
+		t.Error("linux: names are case-sensitive")
+	}
+	if !table.contains("Nuke", "windows") {
+		t.Error("windows: names are case-insensitive")
+	}
+	if table.contains("blender", "windows") {
+		t.Error("windows: an absent name was found")
+	}
+}

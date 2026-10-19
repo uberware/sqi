@@ -69,6 +69,21 @@ Does not connect to a server.`,
 			}
 			fmt.Fprintf(w, "%s\t%s\t%s\n", k, caps.Tags[k], source)
 		}
-		return w.Flush()
+		if err := w.Flush(); err != nil {
+			return err
+		}
+
+		// The commands a job can run by name, and where each resolves: the
+		// operator's worker.commands, a command already on PATH, or the
+		// worker's own default from a detected install.
+		plan, err := detectCommandPlan(cfg, env, hostLookPath)
+		if err != nil {
+			return err
+		}
+		if len(plan.Reports) == 0 {
+			return nil
+		}
+		fmt.Println()
+		return plan.write(os.Stdout)
 	},
 }

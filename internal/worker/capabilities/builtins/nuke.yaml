@@ -10,3 +10,23 @@ checks:
     os: windows
 version:
   from: "Nuke([0-9]+\\.[0-9]+)"
+# The presets run a bare `nuke`, and no Nuke installer creates a command of that
+# name: the executable is versioned (Nuke17.1, Nuke17.1.exe), in a directory that
+# carries the release (Nuke17.1v2). The worker supplies a default for `nuke` from
+# the newest install found here, unless the operator or the host already
+# provides one. Layouts are Foundry's documented install locations. The two
+# globs per Unix platform admit a one- or two-digit minor version while
+# excluding anything not named Nuke<major>.<minor>.
+command:
+  name: nuke
+  globs:
+    - path_glob: "/usr/local/Nuke*/Nuke[0-9]*.[0-9]"                                  # linux
+      os: linux
+    - path_glob: "/usr/local/Nuke*/Nuke[0-9]*.[0-9][0-9]"                             # linux
+      os: linux
+    - path_glob: "/Applications/Nuke*/Nuke*.app/Contents/MacOS/Nuke[0-9]*.[0-9]"      # macOS
+      os: darwin
+    - path_glob: "/Applications/Nuke*/Nuke*.app/Contents/MacOS/Nuke[0-9]*.[0-9][0-9]" # macOS
+      os: darwin
+    - path_glob: 'C:\Program Files\Nuke*\Nuke[0-9]*.exe'                              # windows
+      os: windows
