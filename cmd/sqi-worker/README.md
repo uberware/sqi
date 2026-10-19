@@ -12,8 +12,8 @@ executing them as bare-metal OS processes.
 - **Discovers** `sqi-server` automatically via mDNS on the local network, or
   connects to an explicit NATS URL for cross-subnet and cloud deployments.
 - **Registers** its capabilities at startup — OS, CPU count, RAM, GPU (where
-  detectable), plus any manual tags from configuration such as `maya-2025` or
-  `arnold-7`.
+  detectable), plus any manual tags from configuration such as `maya_2025` or
+  `arnold_7`.
 - **Leases** task assignments over core NATS (a long-polling request/reply on
   `work.lease.<workerID>.<queueID>`) and executes them concurrently; the server gates
   concurrency via CPU-core accounting. Task status, logs, heartbeats and

@@ -190,8 +190,8 @@ worker:
   capability_tags: []
   # Examples:
   #   capability_tags:
-  #     - maya-2025
-  #     - arnold-7
+  #     - maya_2025
+  #     - arnold_7
   #     - gpu
   #     - highram
 
@@ -435,7 +435,7 @@ diagnostics:
 
 # ── Capability auto-detection ─────────────────────────────────────────────────
 # Built-in detectors for Maya, Nuke, Houdini, and Blender run automatically and
-# advertise a presence tag (e.g. `maya`, plus `maya-2025`) when the app is found,
+# advertise a presence tag (e.g. `maya`, plus `maya_2025`) when the app is found,
 # so products that require attr.worker.tag.<app> match with no configuration.
 # capabilities:
 #   detect:                 # custom detectors for in-house tools

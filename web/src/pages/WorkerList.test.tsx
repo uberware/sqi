@@ -635,7 +635,15 @@ describe('WorkerList', () => {
         os: 'Linux',
         cpu_count: 8,
         ram_mb: 16384,
-        tags: { nuke: 'true', 'nuke-17.0': 'true', maya: 'true', 'maya-2025': 'true' },
+        tags: {
+          nuke: 'true',
+          nuke_17_1: 'true',
+          maya: 'true',
+          maya_2025: 'true',
+          // A tag written by hand in the older hyphenated form still collapses.
+          houdini: 'true',
+          'houdini-20.5': 'true',
+        },
       })
       fetchMock.mockResolvedValue(okJson(makeListResponse([worker])))
 
@@ -644,11 +652,29 @@ describe('WorkerList', () => {
       // Base names show (inline or in the overflow tooltip)...
       await waitFor(() => screen.getByText('nuke'))
       expect(screen.getByText('maya')).toBeInTheDocument()
+      expect(screen.getByText('houdini')).toBeInTheDocument()
       // ...and the raw "=true" / versioned forms are gone.
       expect(screen.queryByText('nuke=true')).not.toBeInTheDocument()
-      expect(screen.queryByText('nuke-17.0=true')).not.toBeInTheDocument()
-      expect(screen.queryByText('maya-2025=true')).not.toBeInTheDocument()
-      expect(screen.queryByText(/17\.0|2025/)).not.toBeInTheDocument()
+      expect(screen.queryByText('nuke_17_1=true')).not.toBeInTheDocument()
+      expect(screen.queryByText('maya_2025=true')).not.toBeInTheDocument()
+      expect(screen.queryByText('houdini-20.5=true')).not.toBeInTheDocument()
+      expect(screen.queryByText(/17|2025|20\.5/)).not.toBeInTheDocument()
+    })
+
+    it('keeps a license-class tag visible instead of collapsing it', async () => {
+      const worker = makeWorker({
+        hostname: 'nc-node',
+        os: 'Windows',
+        cpu_count: 8,
+        ram_mb: 16384,
+        tags: { nuke: 'true', nuke_license: 'noncommercial' },
+      })
+      fetchMock.mockResolvedValue(okJson(makeListResponse([worker])))
+
+      render(<WorkerList />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('nuke'))
+      expect(screen.getByText('nuke_license=noncommercial')).toBeInTheDocument()
     })
 
     it('keeps value-bearing (non-presence) tags verbatim', async () => {

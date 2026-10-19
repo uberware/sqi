@@ -69,7 +69,7 @@ var dccLayouts = []rendererLayout{
 	{
 		// 3ds Max is Windows-only. The registry key carries no year, so
 		// only the install path yields a version.
-		tag: "3dsmax",
+		tag: "threedsmax",
 		exe: "3dsmaxcmd",
 		installs: []string{
 			`C:\Program Files\Autodesk\3ds Max 2026\3dsmaxcmd.exe`,

@@ -201,7 +201,7 @@ software tag that no built-in detector emits.
 |---|---|---|---|
 | `cinema4d-render` | a `.c4d` scene with Maxon's `Commandline`, using the scene's render settings | one frame per task by default | `cinema4d` |
 | `cinema4d-take-render` | one named take of a `.c4d` scene (`Take`) | one frame per task by default | `cinema4d` |
-| `3dsmax-render` | a `.max` scene with `3dsmaxcmd` | one frame per task by default | `3dsmax`, and `attr.worker.os.family` = `windows` |
+| `3dsmax-render` | a `.max` scene with `3dsmaxcmd` | one frame per task by default | `threedsmax`, and `attr.worker.os.family` = `windows` |
 | `after-effects-render-windows` | one render-queue item (`RenderQueueItem`) of an `.aep` project with `aerender` | up to `FramesPerTask` frames per task, default 10 | `aftereffects`, and `attr.worker.os.family` = `windows` |
 | `after-effects-render-macos` | the same, on macOS | up to `FramesPerTask` frames per task, default 10 | `aftereffects`, and `attr.worker.os.family` = `macos` |
 | `after-effects-queue-render-windows` | everything the saved project has queued | one task for the whole queue | `aftereffects`, and `attr.worker.os.family` = `windows` |
@@ -307,7 +307,7 @@ tags](worker-capabilities.md#built-in-detectors)):
 | `husk-usd-render` | one USD stage with `husk`, through Karma or any Hydra delegate | frame range per task | `husk` |
 | `redshift-standalone-render` | Redshift `.rs` files with `redshiftCmdLine` | one file per frame | `redshift` |
 | `prman-render` | RenderMan `.rib` files with `prman` | one file per frame | `renderman` |
-| `3delight-render` | 3Delight `.nsi` files with `renderdl` | one file per frame | `3delight` |
+| `3delight-render` | 3Delight `.nsi` files with `renderdl` | one file per frame | `threedelight` |
 | `mantra-render` | Mantra `.ifd` files with `mantra` (legacy; prefer husk) | one file per frame | `mantra` |
 
 **One file per frame.** The presets that read one exported file per frame take

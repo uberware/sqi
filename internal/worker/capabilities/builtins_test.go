@@ -102,7 +102,7 @@ func TestBuiltinDetectors_CoverPresets(t *testing.T) {
 		detectorTags[d.Tag] = true
 	}
 	// Extract base software tags required by presets/sqi/*.yaml, dropping any
-	// "-<version>" suffix. Path is relative to this test file's package dir.
+	// "_<version>" suffix. Path is relative to this test file's package dir.
 	root := filepath.Join("..", "..", "..", "presets", "sqi")
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -120,7 +120,7 @@ func TestBuiltinDetectors_CoverPresets(t *testing.T) {
 		}
 		for _, m := range tagRe.FindAllStringSubmatch(string(data), -1) {
 			base := m[1]
-			if i := regexp.MustCompile(`-[0-9].*$`).FindStringIndex(base); i != nil {
+			if i := regexp.MustCompile(`[-_][0-9].*$`).FindStringIndex(base); i != nil {
 				base = base[:i[0]]
 			}
 			required[base] = true

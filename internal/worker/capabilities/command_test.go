@@ -4,6 +4,7 @@ package capabilities
 
 import (
 	"path"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -224,11 +225,11 @@ func TestApplyConfiguredCommands_AdvertisesTheTagAndVersionOfAMappedCommand(t *t
 	added := c.ApplyConfiguredCommands([]Detector{nukeLikeDetector()},
 		lookupIn(map[string]string{"tool": "/opt/Tool17.1v2/Tool17.1"}))
 
-	if strings.Join(added, ",") != "tool,tool-17.1" {
-		t.Errorf("added = %v, want [tool tool-17.1]", added)
+	if strings.Join(added, ",") != "tool,tool_17_1" {
+		t.Errorf("added = %v, want [tool tool_17_1]", added)
 	}
-	if c.Tags["tool"] != "true" || c.Tags["tool-17.1"] != "true" {
-		t.Errorf("tags = %v, want tool and tool-17.1 set to true", c.Tags)
+	if c.Tags["tool"] != "true" || c.Tags["tool_17_1"] != "true" {
+		t.Errorf("tags = %v, want tool and tool_17_1 set to true", c.Tags)
 	}
 }
 
@@ -275,5 +276,47 @@ func TestApplyConfiguredCommands_IgnoresADetectorWithoutACommand(t *testing.T) {
 
 	if len(added) != 0 {
 		t.Errorf("added = %v, want nothing for a detector with no command stanza", added)
+	}
+}
+
+// An OpenJD identifier allows only letters, digits and underscores, and a tag key
+// becomes the last part of attr.worker.tag.<key>, so a tag a template cannot name
+// is a tag nothing can require.
+func TestVersionTag_IsAlwaysAValidOpenJDIdentifier(t *testing.T) {
+	valid := regexp.MustCompile("^[A-Za-z_][A-Za-z0-9_]*$")
+	cases := map[string]string{
+		"17.1":      "nuke_17_1",
+		"2025":      "nuke_2025",
+		"10.10":     "nuke_10_10",
+		"2.9.208":   "nuke_2_9_208",
+		"20.0-beta": "nuke_20_0_beta",
+		"4.2 LTS":   "nuke_4_2_LTS",
+	}
+	for version, want := range cases {
+		got := versionTag("nuke", version)
+		if got != want {
+			t.Errorf("versionTag(nuke, %q) = %q, want %q", version, got, want)
+		}
+		if !valid.MatchString(got) {
+			t.Errorf("versionTag(nuke, %q) = %q is not a valid identifier", version, got)
+		}
+	}
+}
+
+// Every tag a built-in detector can emit must be a valid identifier, version tags
+// included, or a preset could never require it.
+func TestBuiltinDetectors_EmitOnlyValidIdentifiers(t *testing.T) {
+	valid := regexp.MustCompile("^[A-Za-z_][A-Za-z0-9_]*$")
+	ds, err := BuiltinDetectors()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range ds {
+		if !valid.MatchString(d.Tag) {
+			t.Errorf("detector tag %q is not a valid identifier", d.Tag)
+		}
+		if tag := versionTag(d.Tag, "1.2.3"); !valid.MatchString(tag) {
+			t.Errorf("version tag %q of detector %q is not a valid identifier", tag, d.Tag)
+		}
 	}
 }

@@ -133,8 +133,8 @@ func TestMistikaDetectors_EvaluateEmitsTags(t *testing.T) {
 		globs: map[string][]string{"/home/mistika/SGO Apps/Mistika Ultima*/bin/mistika": {hit}},
 	}
 	got := strings.Join(d.Evaluate(env), ",")
-	if got != "mistika,mistika-10.10" {
-		t.Errorf("Evaluate = %q, want %q", got, "mistika,mistika-10.10")
+	if got != "mistika,mistika_10_10" {
+		t.Errorf("Evaluate = %q, want %q", got, "mistika,mistika_10_10")
 	}
 	if got := d.Evaluate(fakeEnv{goos: "linux"}); len(got) != 0 {
 		t.Errorf("a worker with no Mistika installed advertised %v", got)

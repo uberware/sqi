@@ -64,7 +64,7 @@ func TestNukeDetector_FindsADefaultInstallOnEveryPlatform(t *testing.T) {
 				}
 			}
 			got := d.Evaluate(fakeEnv{goos: in.goos, globs: globs})
-			for _, want := range []string{"nuke", "nuke-17.1"} {
+			for _, want := range []string{"nuke", "nuke_17_1"} {
 				if !slices.Contains(got, want) {
 					t.Errorf("%s install %s: Evaluate = %v, want it to include %q", in.goos, in.install, got, want)
 				}

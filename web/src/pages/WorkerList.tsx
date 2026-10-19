@@ -79,7 +79,7 @@ function buildCapabilityTags(worker: Worker): string[] {
 
 // Auto-detected software capabilities are presence tags (value "true") emitted
 // as a bare tag plus one per installed version, e.g. { nuke: "true",
-// "nuke-17.0": "true" }. In the compact list we collapse those to the single
+// nuke_17_0: "true" }. In the compact list we collapse those to the single
 // base name ("nuke"); the worker detail page keeps the full per-version
 // breakdown. Value-bearing tags (e.g. "project=vfx") are shown verbatim.
 function collapseCapabilityTags(tags: Record<string, string>): string[] {
@@ -87,9 +87,14 @@ function collapseCapabilityTags(tags: Record<string, string>): string[] {
   const seen = new Set<string>()
   for (const [key, value] of Object.entries(tags)) {
     // A presence tag (value "true" or empty) collapses to its base name, with
-    // any trailing "-<version>" (a hyphen followed by a digit) removed.
+    // any trailing version removed. The worker writes a version as underscore-
+    // separated digits ("nuke_17_0", since OpenJD identifiers allow no dot or
+    // hyphen). A tag written by hand in the older "name-2025" form still
+    // collapses too.
     const label =
-      value === 'true' || value === '' ? key.replace(/-\d[A-Za-z0-9.]*$/, '') : `${key}=${value}`
+      value === 'true' || value === ''
+        ? key.replace(/(?:_\d+)+$/, '').replace(/-\d[A-Za-z0-9.]*$/, '')
+        : `${key}=${value}`
     if (!seen.has(label)) {
       seen.add(label)
       out.push(label)

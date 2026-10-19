@@ -287,7 +287,7 @@ location, or an in-house tool no built-in detector covers, add a manual tag or
 a [custom detector](worker-capabilities.md#writing-custom-detectors). The
 [standalone renderer
 presets](preset-library.md#standalone-renderer-reference-presets) gate the same
-way on `arnold`, `vray`, `husk`, `redshift`, `renderman`, `3delight` and
+way on `arnold`, `vray`, `husk`, `redshift`, `renderman`, `threedelight` and
 `mantra`, and the tile preset's assembly step gates on `oiiotool`. Each of
 these tags has a built-in detector.
 

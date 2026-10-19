@@ -295,7 +295,7 @@ checklist](#3ds-max-checklist).
 job is posted; an untitled scene is refused with "Save your scene before
 submitting".
 
-> **For a submitted job to run,** the rendering worker needs the `3dsmax=true`
+> **For a submitted job to run,** the rendering worker needs the `threedsmax=true`
 > capability tag and `3dsmaxcmd` on its `PATH`, on Windows. Without a tagged
 > worker the job stays `ready`. See [Reference presets](#reference-presets).
 
@@ -623,7 +623,7 @@ presets also require `attr.worker.os.family` (`windows` for `3dsmax-render`,
 `sqi-worker` detects a standard Maya, Nuke, Houdini, Blender, Cinema 4D, 3ds
 Max, After Effects or Mistika install, on `PATH` or in its usual install
 location, and advertises the matching tag (`maya`, plus a version variant such
-as `maya-2025`) with value `"true"`; see [Capability
+as `maya_2025`) with value `"true"`; see [Capability
 auto-detection](worker-capabilities.md#capability-auto-detection-built-in-dcc-detectors).
 That satisfies the `anyOf: ["true"]` requirement each of the seventeen presets
 declares, so a worker with a standard install needs no per-worker
@@ -658,7 +658,7 @@ worker:
 ```
 
 (substitute `houdini=true`, `nuke=true`, `blender=true`, `cinema4d=true`,
-`3dsmax=true`, `aftereffects=true`, `mistika=true`, `mistikavr=true`, or
+`threedsmax=true`, `aftereffects=true`, `mistika=true`, `mistikavr=true`, or
 `mistikaworkflows=true` for the other presets), or add a [custom
 detector](worker-capabilities.md#writing-custom-detectors). A job submitted
 against one of these products stays `ready` until a worker advertises the tag,

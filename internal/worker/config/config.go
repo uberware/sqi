@@ -456,7 +456,7 @@ type WorkerSettings struct {
 	ComputeLocation string `yaml:"compute_location"`
 
 	// CapabilityTags is a list of arbitrary capability tags merged with
-	// auto-detected capabilities at registration time, e.g. ["maya-2025",
+	// auto-detected capabilities at registration time, e.g. ["maya_2025",
 	// "gpu", "highram"].
 	// Env: SQI_WORKER_CAPABILITY_TAGS (comma-separated)
 	CapabilityTags []string `yaml:"capability_tags"`

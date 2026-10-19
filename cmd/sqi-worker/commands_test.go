@@ -270,11 +270,11 @@ func TestBuildCapabilities_AMappedCommandAdvertisesItsTag(t *testing.T) {
 		t.Fatalf("buildCapabilities: %v", err)
 	}
 
-	if caps.Tags["nuke"] != "true" || caps.Tags["nuke-17.1"] != "true" {
-		t.Errorf("tags = %v, want nuke and nuke-17.1 advertised from the mapping alone", caps.Tags)
+	if caps.Tags["nuke"] != "true" || caps.Tags["nuke_17_1"] != "true" {
+		t.Errorf("tags = %v, want nuke and nuke_17_1 advertised from the mapping alone", caps.Tags)
 	}
-	if !slices.Equal(implied, []string{"nuke", "nuke-17.1"}) {
-		t.Errorf("implied = %v, want [nuke nuke-17.1]", implied)
+	if !slices.Equal(implied, []string{"nuke", "nuke_17_1"}) {
+		t.Errorf("implied = %v, want [nuke nuke_17_1]", implied)
 	}
 }
 

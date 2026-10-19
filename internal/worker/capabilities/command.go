@@ -212,7 +212,7 @@ func (c *Capabilities) ApplyConfiguredCommands(detectors []Detector, mapped func
 		}
 		tags := []string{d.Tag}
 		if v := d.extractVersion(path); v != "" {
-			tags = append(tags, d.Tag+"-"+v)
+			tags = append(tags, versionTag(d.Tag, v))
 		}
 		for _, tag := range tags {
 			if _, exists := c.Tags[tag]; !exists {

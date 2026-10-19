@@ -2078,7 +2078,7 @@ Controls the worker's software capability auto-detection. Built-in detectors
 for Maya, Nuke, Houdini, Blender, Cinema 4D, 3ds Max, After Effects, FFmpeg,
 SGO Mistika (Boutique/Ultima, VR and Workflows), the standalone renderers
 (Arnold `kick`, V-Ray, `husk`, Redshift, RenderMan, 3Delight and Mantra) and
-`oiiotool` run automatically at startup and advertise a tag (e.g. `maya`, plus `maya-2025`) with value `"true"`, with no
+`oiiotool` run automatically at startup and advertise a tag (e.g. `maya`, plus `maya_2025`) with value `"true"`, with no
 per-worker configuration. That alone satisfies the reference DCC presets'
 `key=true` requirement. See
 [`docs/products.md`](products.md) and

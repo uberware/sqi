@@ -529,14 +529,14 @@ auto-detected tag with the same key.
 ```yaml
 worker:
   capability_tags:
-    - maya-2025
-    - arnold-7
+    - maya_2025
+    - arnold_7
     - gpu
     - highram
 ```
 
 ```sh
-SQI_WORKER_CAPABILITY_TAGS=maya-2025,arnold-7,gpu sqi-worker start
+SQI_WORKER_CAPABILITY_TAGS=maya_2025,arnold_7,gpu sqi-worker start
 ```
 
 See [`docs/worker-capabilities.md`](worker-capabilities.md) for the full
@@ -1237,9 +1237,9 @@ capabilities:
 | **Env var** | `SQI_WORKER_CAPABILITIES_DISABLE` (comma-separated, appended to any config-file entries) |
 
 Built-in detectors to turn off, by exact tag: `maya`, `nuke`, `houdini`,
-`blender`, `cinema4d`, `3dsmax`, `aftereffects`, `mistika`, `mistikavr`,
+`blender`, `cinema4d`, `threedsmax`, `aftereffects`, `mistika`, `mistikavr`,
 `mistikaworkflows`, `ffmpeg`, `arnold`, `vray`, `husk`, `redshift`,
-`renderman`, `3delight`, `mantra` or `oiiotool`. Use this when a built-in
+`renderman`, `threedelight`, `mantra` or `oiiotool`. Use this when a built-in
 misfires on a nonstandard host layout, typically with a `capabilities.detect`
 entry for the same tag that has more specific checks.
 
@@ -1804,7 +1804,7 @@ worker:
   data_dir: "/var/lib/sqi-worker"
   compute_location: "nas-studio"
   capability_tags:
-    - houdini-20.5
+    - houdini_20_5
     - karma-renderer
     - gpu
   heartbeat_interval: "15s"

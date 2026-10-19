@@ -38,7 +38,7 @@ readme: |
 
   - **Windows workers only.** 3ds Max does not run elsewhere, so the step
     requires `attr.worker.os.family` = `windows` as well as the tag.
-  - Workers tagged `attr.worker.tag.3dsmax = true`
+  - Workers tagged `attr.worker.tag.threedsmax = true`
   - `3dsmaxcmd` on the worker's `PATH`: add the install folder, for example
     `C:\Program Files\Autodesk\3ds Max 2026`. The built-in detector tags a
     default install, but tagging does not put the command on `PATH`.
@@ -79,7 +79,7 @@ template:
     - name: Render
       hostRequirements:
         attributes:
-          - name: attr.worker.tag.3dsmax
+          - name: attr.worker.tag.threedsmax
             anyOf: ["true"]
           - name: attr.worker.os.family
             anyOf: ["windows"]

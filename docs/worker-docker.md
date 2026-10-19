@@ -93,7 +93,7 @@ Useful optional variables for container deployments:
 | Variable | Description |
 |---|---|
 | `SQI_WORKER_NAME` | Human-readable worker name shown in the web UI (defaults to the container hostname) |
-| `SQI_WORKER_CAPABILITY_TAGS` | Comma-separated capability tags merged with auto-detected ones, e.g. `maya-2025,gpu` |
+| `SQI_WORKER_CAPABILITY_TAGS` | Comma-separated capability tags merged with auto-detected ones, e.g. `maya_2025,gpu` |
 | `SQI_WORKER_COMPUTE_LOCATION` | Compute-location name for multi-site farms (see [Compute locations](compute-locations.md)) |
 | `SQI_WORKER_FARM_ID` | Restrict the worker to a single farm (empty = accept tasks from any farm) |
 | `SQI_WORKER_QUEUE_IDS` | Comma-separated queue IDs the worker serves (empty = all queues). Each ID becomes a token in the `work.lease.<workerID>.<queueID>` subject, so an entry that is empty or contains `.`, whitespace, `*` or `>` is rejected at startup. |
@@ -238,7 +238,7 @@ docker run -d \
   -e SQI_WORKER_DISCOVERY_ENABLE_MDNS=false \
   -e SQI_WORKER_DATA_DIR=/var/lib/sqi-worker \
   -e SQI_WORKER_NAME=render-worker-01 \
-  -e SQI_WORKER_CAPABILITY_TAGS=blender-4.2,cpu-render \
+  -e SQI_WORKER_CAPABILITY_TAGS=blender_4_2,cpu_render \
   -e SQI_WORKER_LOG_FORMAT=text \
   -v sqi-worker-data:/var/lib/sqi-worker \
   ghcr.io/uberware/sqi/sqi-worker:latest

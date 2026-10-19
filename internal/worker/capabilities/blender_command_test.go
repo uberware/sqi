@@ -108,7 +108,7 @@ func TestBlenderDetector_FindsAnInstallerInstallAndDefaultsTheCommand(t *testing
 }
 
 // Blender's tag has always been presence only. Giving the command a version, to
-// pick the newest install, must not start emitting blender-<version> tags.
+// pick the newest install, must not start emitting blender_<version> tags.
 func TestBlenderDetector_StillEmitsNoVersionTags(t *testing.T) {
 	d := builtinDetector(t, "blender")
 	env := fakeEnv{goos: "windows", globs: map[string][]string{}}

@@ -34,7 +34,7 @@ readme: |
 
   ## Requirements
 
-  - Workers tagged `attr.worker.tag.3delight = true`
+  - Workers tagged `attr.worker.tag.threedelight = true`
   - `renderdl` on the worker's `PATH`
   - A 3Delight license
 category: Rendering
@@ -64,7 +64,7 @@ template:
     - name: Render
       hostRequirements:
         attributes:
-          - name: attr.worker.tag.3delight
+          - name: attr.worker.tag.threedelight
             anyOf: ["true"]
       parameterSpace:
         taskParameterDefinitions:
