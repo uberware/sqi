@@ -168,12 +168,17 @@ Restart Houdini; click the shelf tool to open the submit dialog.
 
 ### Nuke
 
+Install into Nuke's own Python, the interpreter in the Nuke install folder
+(`python.exe` on Windows, `python3` on Linux), which needs permission to write to
+that folder:
+
 ```sh
-/path/to/Nuke14.0/python -m pip install sqi-submitter
+<nuke install folder>/python3 -m pip install sqi-submitter
 ```
 
-Copy `sqi_submitter/hosts/nuke/startup/menu.py` into any directory on
-`NUKE_PATH`. It is a two-line snippet:
+Nuke supplies PySide, so use the plain package, not the `[qt]` extra. Then copy
+`sqi_submitter/hosts/nuke/startup/menu.py`, from where pip put it in that Python's
+`site-packages`, into any directory on `NUKE_PATH`. It is a two-line snippet:
 
 ```python
 from sqi_submitter.hosts.nuke.menu import install_menu
@@ -201,7 +206,10 @@ this order:
    entry for `nuke`;
 2. a `nuke` already on the worker's `PATH` (a studio launcher or wrapper is used
    as is, and must accept Nuke's command line and pass Nuke's exit status through,
-   or a failed render looks like a success);
+   or a failed render looks like a success: make the Nuke call the wrapper's last
+   command, or `exec` it in a shell script. A Windows `.cmd` or shell script that
+   runs anything after Nuke reports that command's status instead, so a render
+   that failed is recorded as succeeded);
 3. the newest Nuke the worker finds installed, with no arguments.
 
 So a worker with a commercial Nuke installed needs no configuration. To pin a
@@ -225,12 +233,27 @@ worker:
       args: ["--nc"]
 ```
 
-Without it Nuke exits with code 100 and a license error in the task log. Scripts
-saved by Non-commercial Nuke have the extension `.nknc` rather than `.nk`; the
-presets accept either, and Non-commercial output is limited to 1920 × 1080 (a
-larger bounding box fails the render, as Foundry documents). Whether the
-Non-commercial license permits rendering on a farm is a matter for its license
-terms, not something sqi checks.
+Without it Nuke exits with code 100 and a license error in the task log. This is
+an option of the same Nuke presets, not a separate product: the worker's
+`--nc` is the only difference, and the job template is unchanged.
+
+What Non-commercial Nuke restricts, which decides which scripts such a worker
+can render (from Foundry's documentation, with the first two checked on 17.1v2):
+
+- **Command-line renders accept only scripts saved by Non-commercial Nuke**
+  (encrypted, usually `.nknc`). A plain-text `.nk` saved by a commercial Nuke is
+  refused with "Please specify an existing .nknc script to execute in
+  Non-comercial Nuke" and exit code 1. The check follows the file's content, not
+  its extension. Scripts saved by Non-commercial Nuke cannot be opened in
+  commercial or Indie Nuke either, so a farm that mixes the two cannot share
+  scripts between them. sqi does not route jobs by license, so send these jobs
+  to Non-commercial workers yourself.
+- **Output is limited to 1920 × 1080**, and the MPEG4 and H.264 formats are
+  disabled. A larger bounding box fails the render.
+- **Use is limited to personal, educational and other non-commercial work**, and
+  Non-commercial mode stops working 180 days after a Nuke version is built and
+  released. Whether a farm fits the license is for Foundry's terms. sqi does not
+  check it.
 
 `sqi-worker capabilities` shows what `nuke` resolves to on a given worker.
 
