@@ -183,9 +183,56 @@ install_menu()
 Nuke runs `menu.py` files on its path at startup; a **sqi** menu appears once
 Nuke restarts.
 
-> **For a submitted job to run,** the rendering worker needs the `nuke=true`
-> capability tag and `nuke` on its `PATH`. Without a tagged worker the job stays
-> `ready`. See [Reference presets](#reference-presets).
+> **For a submitted job to actually run,** the worker that renders it needs the
+> `nuke=true` capability tag and a `nuke` command that resolves — otherwise the
+> job sits `ready` forever with no worker eligible to take it. See
+> [Reference presets](#reference-presets) and [How the worker finds
+> `nuke`](#how-the-worker-finds-nuke).
+
+#### How the worker finds `nuke`
+
+The presets run a bare `nuke`, but no Nuke installer creates a command of that
+name. The executable is versioned (`Nuke17.1.exe`, `Nuke17.1`), and a shell alias,
+which is what Foundry's own documentation suggests, is invisible to the worker,
+because it starts commands directly with no shell. The worker resolves `nuke` in
+this order:
+
+1. the operator's [`worker.commands`](worker-configuration.md#workercommands)
+   entry for `nuke`;
+2. a `nuke` already on the worker's `PATH` (a studio launcher or wrapper is used
+   as is, and must accept Nuke's command line and pass Nuke's exit status through,
+   or a failed render looks like a success);
+3. the newest Nuke the worker finds installed, with no arguments.
+
+So a worker with a commercial Nuke installed needs no configuration. To pin a
+version or point at an install the worker cannot find, add an entry:
+
+```yaml
+worker:
+  commands:
+    nuke:
+      path: "C:/Program Files/Nuke17.1v2/Nuke17.1.exe"
+```
+
+**Nuke Non-commercial.** The free license needs `--nc` on the command line, and
+the worker cannot tell which license a machine has, so you state it:
+
+```yaml
+worker:
+  commands:
+    nuke:
+      path: "C:/Program Files/Nuke17.1v2/Nuke17.1.exe"
+      args: ["--nc"]
+```
+
+Without it Nuke exits with code 100 and a license error in the task log. Scripts
+saved by Non-commercial Nuke have the extension `.nknc` rather than `.nk`; the
+presets accept either, and Non-commercial output is limited to 1920 × 1080 (a
+larger bounding box fails the render, as Foundry documents). Whether the
+Non-commercial license permits rendering on a farm is a matter for its license
+terms, not something sqi checks.
+
+`sqi-worker capabilities` shows what `nuke` resolves to on a given worker.
 
 ### 3ds Max
 
