@@ -246,8 +246,10 @@ can render (from Foundry's documentation, with the first two checked on 17.1v2):
   Non-comercial Nuke" and exit code 1. The check follows the file's content, not
   its extension. Scripts saved by Non-commercial Nuke cannot be opened in
   commercial or Indie Nuke either, so a farm that mixes the two cannot share
-  scripts between them. sqi does not route jobs by license, so send these jobs
-  to Non-commercial workers yourself.
+  scripts between them. sqi does not route jobs by license on its own; a farm
+  that mixes tiers can tag its workers and require the tag in a copy of the preset
+  (see [Routing by license
+  class](worker-capabilities.md#routing-by-license-class)).
 - **Output is limited to 1920 × 1080**, and the MPEG4 and H.264 formats are
   disabled. A larger bounding box fails the render.
 - **Use is limited to personal, educational and other non-commercial work**, and

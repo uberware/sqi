@@ -557,6 +557,65 @@ workers' `Tags` map and routes each task only to workers that satisfy every
 `hostRequirements` attribute. Workers missing the tag entirely, or whose
 `Tags[<key>]` doesn't appear in `anyOf`, are not eligible for that task.
 
+### Routing by license class
+
+Nuke and Houdini both come in tiers that cannot share scene files. Nuke has a
+commercial license, Indie and Non-commercial; Houdini has a commercial license,
+Indie and Apprentice. Scripts saved in a restricted tier (Nuke's `.nknc`,
+Houdini's `.hipnc`) are not opened by a commercial install, and a restricted
+install may refuse the others: Non-commercial Nuke refuses a plain `.nk` from the
+command line (see [Nuke Non-commercial](dcc-submitters.md#how-the-worker-finds-nuke)).
+A farm that mixes tiers needs each job to land on a worker of the right one.
+
+sqi does not do this for you. The reference presets do not require a license
+class, no worker derives one, and the submitters do not pre-fill one. A mixed
+farm can build it today from a tag convention:
+
+1. **Tag every worker that has the product**, in `worker.capability_tags`, with
+   `<product>_license` set to `commercial`, `indie` or `noncommercial`:
+
+   ```yaml
+   worker:
+     capability_tags:
+       - nuke_license=noncommercial
+   ```
+
+2. **Require it in a copy of the preset** (see
+   [Customizing for your pipeline](dcc-submitters.md#customizing-for-your-pipeline)),
+   next to the product's own tag:
+
+   ```yaml
+   hostRequirements:
+     attributes:
+       - name: attr.worker.tag.nuke
+         anyOf: ["true"]
+       - name: attr.worker.tag.nuke_license
+         anyOf: ["noncommercial"]
+   ```
+
+Points that decide whether it works:
+
+- **Every worker must carry the tag.** A requirement matches only a tag the worker
+  advertises, and `anyOf`/`allOf` cannot express "any" or "not". A worker with no
+  `nuke_license` tag never receives a job that requires one. To accept every class,
+  leave the requirement out.
+- **Spell the key with an underscore.** OpenJD identifiers allow only letters,
+  digits and underscores, so `nuke_license` is valid in any implementation.
+  sqi's validator also accepts `attr.worker.tag.nuke-license`, but the
+  specification does not, and a template written that way is not portable. The
+  same is true of the automatic version tags such as `nuke-17.1`: sqi routes on
+  them, but another OpenJD implementation may reject a template that names one.
+- **The worker does not check the claim.** The tag is whatever the operator wrote;
+  sqi neither reads the license nor stops a job whose scene file belongs to another
+  class.
+
+This was checked on a local farm with a worker tagged `nuke_license=noncommercial`:
+a job requiring `noncommercial` ran, and one requiring `commercial` stayed `ready`
+and was never sent. It was not checked with Houdini, and the Houdini rules above
+come from SideFX's documentation and forum, not from a test: SideFX's pages give
+two different resolution limits for Apprentice, and nothing says how `hython`
+behaves under it.
+
 ---
 
 ## Adding a new auto-detected tag
