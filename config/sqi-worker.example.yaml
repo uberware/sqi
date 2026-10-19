@@ -195,6 +195,17 @@ worker:
   #     - gpu
   #     - highram
 
+  # Maps a command name a job runs to the executable to start instead, with
+  # optional arguments placed before the job's own. The worker starts commands
+  # directly (no shell), so an alias never resolves; use this when the program
+  # is not on PATH under the name the job uses (Nuke on Windows is
+  # Nuke17.1.exe, not nuke). A bare path is resolved through PATH.
+  # Type: map   Env: none (config file only)
+  # commands:
+  #   nuke:
+  #     path: "C:/Program Files/Nuke17.1v2/Nuke17.1.exe"
+  #     args: ["--nc"]          # non-commercial license only
+
   # How often the worker publishes a heartbeat message to sqi-server. The server
   # uses heartbeat gaps to detect stale workers; this value should be shorter
   # than the server's scheduler.heartbeat_timeout (default 30s). At the default

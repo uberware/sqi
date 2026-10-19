@@ -65,6 +65,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/openjd/fmtstring"
+	"github.com/uberware/sqi/internal/worker/commands"
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
 	"github.com/uberware/sqi/internal/worker/envutil"
 	"github.com/uberware/sqi/internal/worker/fmtres"
@@ -216,6 +217,31 @@ type Session struct {
 	// run_as_user isolation, so the no-isolation path inherits the daemon
 	// environment byte for byte.
 	baseEnv map[string]string
+
+	// commands is the Manager's worker.commands resolver, or nil.
+	commands *commands.Resolver
+}
+
+// ResolveAction returns the action to start for a: the same one when its
+// command has no worker.commands entry, otherwise a copy that runs the entry's
+// executable with the entry's arguments ahead of the action's own. a itself is
+// never changed — it belongs to the assignment message, which a retry reuses.
+//
+// Both places that start job-supplied commands call this: the executor for a
+// task's onRun and runAction's callers for an environment's onEnter/onExit. A
+// third launch site added without it would silently ignore the operator's
+// mapping, so go through here.
+func (s *Session) ResolveAction(a *protocol.Action) *protocol.Action {
+	if a == nil {
+		return nil
+	}
+	command, args := s.commands.Resolve(a.Command, a.Args)
+	if command == a.Command && len(args) == len(a.Args) {
+		return a
+	}
+	out := *a
+	out.Command, out.Args = command, args
+	return &out
 }
 
 // PathMappingRulesFile returns the absolute path to the OpenJD path-mapping
@@ -339,7 +365,7 @@ func (s *Session) ExitEnvironments(ctx context.Context, logger *slog.Logger) err
 			slog.String("session_id", s.ID),
 			slog.String("env", env.Name),
 		)
-		if err := runAction(ctx, resolvedExit, s.WorkDir, s.buildActionEnv(resolvedVars, nil), s.cred, logger, s.actionLineHandler(ctx, logger)); err != nil {
+		if err := runAction(ctx, s.ResolveAction(resolvedExit), s.WorkDir, s.buildActionEnv(resolvedVars, nil), s.cred, logger, s.actionLineHandler(ctx, logger)); err != nil {
 			logger.WarnContext(
 				ctx, "session: environment exit action failed — continuing teardown",
 				slog.String("session_id", s.ID),
@@ -398,6 +424,11 @@ type Manager struct {
 	// configuration to offer meters by the defaults.
 	exprLimits fmtres.ExprLimits
 	logger     *slog.Logger
+	// commands maps a command name a job runs to the executable to run in its
+	// place (worker.commands). Nil resolves nothing. Handed to every session so
+	// both launch sites — the executor's task action and an environment's
+	// onEnter/onExit — resolve a name the same way.
+	commands *commands.Resolver
 }
 
 // ManagerOption customizes a Manager constructed by NewManager. See
@@ -410,6 +441,12 @@ type ManagerOption func(*Manager)
 // mode — so it has no effect on a session root that already exists.
 func WithSessionRootMode(mode os.FileMode) ManagerOption {
 	return func(m *Manager) { m.sessionRootMode = mode }
+}
+
+// WithCommands gives every session this Manager creates the operator's
+// worker.commands resolver; see Session.ResolveAction.
+func WithCommands(r *commands.Resolver) ManagerOption {
+	return func(m *Manager) { m.commands = r }
 }
 
 // NewManager returns a Manager that stores session working directories
@@ -701,6 +738,7 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 		redactedValues: make(map[string]bool),
 		cred:           cred,
 		baseEnv:        baseEnv,
+		commands:       m.commands,
 		// Fresh per assignment -- set here, before enterEnvironments runs
 		// below, so every environment table this session builds during
 		// entry already shares it. See the exprBudget field's own doc
@@ -851,7 +889,7 @@ func (s *Session) enterOne(ctx context.Context, env protocol.AssignEnvironment, 
 			slog.String("session_id", s.ID),
 			slog.String("env", env.Name),
 		)
-		if err := runAction(ctx, resolvedEnter, s.WorkDir, s.buildActionEnv(resolvedVars, nil), s.cred, logger, s.actionLineHandler(ctx, logger)); err != nil {
+		if err := runAction(ctx, s.ResolveAction(resolvedEnter), s.WorkDir, s.buildActionEnv(resolvedVars, nil), s.cred, logger, s.actionLineHandler(ctx, logger)); err != nil {
 			return fmt.Errorf("on_enter: %w", err)
 		}
 		logger.InfoContext(

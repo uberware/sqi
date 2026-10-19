@@ -544,6 +544,56 @@ reference including auto-detected tags.
 
 ---
 
+### `worker.commands`
+
+| | |
+|---|---|
+| **Type** | map of command name → `{path, args}` |
+| **Default** | `{}` (none) |
+| **Env var** | none (config file only) |
+
+Says where a command a job runs really lives. A job template names the program
+it runs (`nuke`, `blender`); this table maps that name to the executable to
+start instead, with optional arguments placed **before** the ones the job
+supplies.
+
+The worker starts a job's command directly, with no shell, so a shell alias
+never resolves, and some software installs under a versioned name (Nuke on
+Windows is `Nuke17.1.exe`, never `nuke`). Without an entry the worker looks the
+name up on its own `PATH`, exactly as before.
+
+```yaml
+worker:
+  commands:
+    nuke:
+      path: "C:/Program Files/Nuke17.1v2/Nuke17.1.exe"
+      args: ["--nc"]            # Nuke's non-commercial license flag
+    ffmpeg:
+      path: ffmpeg-7            # a bare name is resolved through the worker's PATH
+```
+
+- **`path`** is required: an absolute path, or a bare name resolved through the
+  worker's `PATH`. A relative path with a directory part is rejected, because a
+  task's working directory is a per-session scratch directory. On Windows write
+  paths with forward slashes in YAML, or single-quote them.
+- **`args`** are literal. They are not format strings, and are placed first, so
+  `args: ["--nc"]` runs `Nuke17.1.exe --nc -x -X Write1 …`.
+- **The name** must be a bare command name, with no `/` or (on Windows) `\`. A
+  job that names a path is naming a file, so a mapping never captures it. On
+  Windows names match case-insensitively, as the platform does.
+- **Where it applies:** every command a job starts: a task's `onRun`, and an
+  environment's `onEnter` and `onExit`.
+- **Who controls it:** only the operator. The table is worker configuration;
+  nothing a job or the server sends can add to it.
+- **Run-as-user isolation:** the mapped path is started under the session's
+  account like any other command, so that account must be able to execute it.
+
+The worker logs each mapping at startup, and warns about a mapping whose target
+cannot be found on that host, so a mistyped path shows up in the worker log
+rather than as a job failure.
+
+---
+
 ### `worker.heartbeat_interval`
 
 | | |
@@ -1683,6 +1733,7 @@ log_streamer:
 | `worker.session_dir` | string | `""` → resolved at startup | `SQI_WORKER_SESSION_DIR` | — |
 | `worker.compute_location` | string | `""` | `SQI_WORKER_COMPUTE_LOCATION` | — |
 | `worker.capability_tags` | []string | `[]` | `SQI_WORKER_CAPABILITY_TAGS` | — |
+| `worker.commands` | map | `{}` | — (config file only) | — |
 | `worker.heartbeat_interval` | duration | `15s` | `SQI_WORKER_HEARTBEAT_INTERVAL` | — |
 | `worker.shutdown_grace_period` | duration | `30s` | `SQI_WORKER_SHUTDOWN_GRACE_PERIOD` | — |
 | `worker.allow_root` | bool | `false` | `SQI_WORKER_ALLOW_ROOT` | — |

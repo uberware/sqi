@@ -28,6 +28,7 @@ import (
 	"github.com/uberware/sqi/internal/brokerauth"
 	sqilog "github.com/uberware/sqi/internal/log"
 	"github.com/uberware/sqi/internal/worker/capabilities"
+	"github.com/uberware/sqi/internal/worker/commands"
 )
 
 // WorkerConfig is the complete runtime configuration for sqi-worker.
@@ -459,6 +460,13 @@ type WorkerSettings struct {
 	// "gpu", "highram"].
 	// Env: SQI_WORKER_CAPABILITY_TAGS (comma-separated)
 	CapabilityTags []string `yaml:"capability_tags"`
+
+	// Commands maps a command name a job runs to the executable to run in
+	// its place, with optional leading arguments. The worker starts commands
+	// directly (no shell), so an alias never resolves, and some software
+	// installs under a versioned name; this is how an operator says where
+	// "nuke" really is, or that it needs "--nc". Config file only.
+	Commands commands.Table `yaml:"commands"`
 
 	// HeartbeatInterval is how often the worker publishes a heartbeat to the
 	// server. Should be shorter than the server's heartbeat sweep interval.
@@ -1174,9 +1182,20 @@ func Validate(cfg WorkerConfig) []ValidationError {
 	errs = append(errs, validateIsolation(cfg)...)
 	errs = append(errs, validateExpr(cfg.Expr)...)
 	errs = append(errs, validateQueueIDs(cfg.Worker.QueueIDs)...)
+	errs = append(errs, validateCommands(cfg.Worker.Commands)...)
 	errs = append(errs, validateNATSTLSMode(cfg.NATS)...)
 	errs = append(errs, validateMetricsTLS(cfg.Metrics)...)
 
+	return errs
+}
+
+// validateCommands rejects a worker.commands entry that could never resolve,
+// at load rather than when the first job names the command.
+func validateCommands(t commands.Table) []ValidationError {
+	var errs []ValidationError
+	for _, p := range t.Validate() {
+		errs = append(errs, ValidationError{Field: "worker.commands." + p.Key, Message: p.Message})
+	}
 	return errs
 }
 

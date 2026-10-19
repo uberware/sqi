@@ -305,6 +305,10 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 		sessionRoot, cfg.Worker.KeepFailedSessions, isolationProvider, cfg.Isolation,
 		exprLimitsFromConfig(cfg.Expr), logger,
 		session.WithSessionRootMode(sessionRootMode),
+		// worker.commands: the operator's name-to-executable table. Like cfg.Expr
+		// above, this is the only wiring point, so leaving it out would silently
+		// ignore the configuration.
+		commandsOption(cfg.Worker.Commands, logger),
 	)
 
 	// ── Log chunk publisher ────────────────────────────────────
