@@ -379,6 +379,13 @@ advertises nothing, and never over a tag already present: a
 such as `nuke=false` still turns the tag off. `sqi-worker capabilities` shows such
 a tag with the source `worker.commands`.
 
+The version in `nuke-<version>` is read from the text of the mapped path, as the
+detector's version regex reads it from an install path. The worker never runs the
+executable to ask it. A path that names a different release than the one it
+launches (a `Nuke16.0v1` folder that is really a link to 17.1) therefore
+advertises the wrong version. If your paths can mislead, add `nuke=false` and the
+tags you want to `capability_tags` yourself.
+
 The `nuke` default's globs follow the layouts in Foundry's documentation
 (Linux `/usr/local/Nuke17.1v2/Nuke17.1`, macOS
 `/Applications/Nuke17.1v2/Nuke17.1v2.app/Contents/MacOS/Nuke17.1`). The Windows
