@@ -3,5 +3,22 @@ tag: blender
 checks:
   - exe: blender
   - path_glob: "/Applications/Blender.app"                           # macOS
-  - registry: 'HKLM\SOFTWARE\BlenderFoundation\Blender'              # windows
+  - path_glob: 'C:\Program Files\Blender Foundation\Blender *\blender.exe'   # windows (MSI, winget)
     os: windows
+  - registry: 'HKLM\SOFTWARE\BlenderFoundation\Blender'              # windows (older installers)
+    os: windows
+# The presets run a bare `blender`, and the Windows installers do not put it on
+# PATH, so the worker supplies a default from the newest install it finds, unless
+# the operator or the host already provides one. The version is read only to pick
+# the newest install: the tag stays presence only. A Linux install is wherever it
+# was unpacked, or a distro package that is already on PATH, so there is no
+# default for it.
+command:
+  name: blender
+  version:
+    from: 'Blender ([0-9]+\.[0-9]+)'
+  globs:
+    - path_glob: 'C:\Program Files\Blender Foundation\Blender *\blender.exe'   # windows
+      os: windows
+    - path_glob: "/Applications/Blender.app/Contents/MacOS/Blender"            # macOS
+      os: darwin

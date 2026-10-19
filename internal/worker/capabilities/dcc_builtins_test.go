@@ -12,6 +12,46 @@ package capabilities
 // YAML, so the tests check the shipped globs against them.
 var dccLayouts = []rendererLayout{
 	{
+		// Maya has no exe check: its command-line renderer is Render, which is
+		// too generic to probe PATH for. The Windows glob is the Autodesk
+		// installer's default location. It is unverified: the Windows rows for
+		// Maya and Houdini were added without a machine to check them on.
+		tag: "maya",
+		exe: "",
+		installs: []string{
+			"/usr/autodesk/maya2026/bin/maya",
+			"/Applications/Autodesk/maya2026/Maya.app",
+			`C:\Program Files\Autodesk\Maya2026\bin\maya.exe`,
+		},
+		versioned: `C:\Program Files\Autodesk\Maya2026\bin\maya.exe`,
+		version:   "2026",
+	},
+	{
+		// The Windows glob is the folder the husk and mantra detectors already
+		// assume, with the same version format.
+		tag: "houdini",
+		exe: "hython",
+		installs: []string{
+			"/opt/hfs21.0.440/bin/houdini",
+			"/Applications/Houdini/Houdini21.0.440/Frameworks/Houdini.framework",
+			`C:\Program Files\Side Effects Software\Houdini 21.0.440\bin\houdini.exe`,
+		},
+		versioned: `C:\Program Files\Side Effects Software\Houdini 21.0.440\bin\houdini.exe`,
+		version:   "21.0",
+	},
+	{
+		// Blender carries no version tags (presence only), so there is no
+		// versioned path. The Windows glob is the folder the MSI and winget
+		// install to, checked against a real Blender 5.2; neither writes the
+		// registry key the detector looked for.
+		tag: "blender",
+		exe: "blender",
+		installs: []string{
+			"/Applications/Blender.app",
+			`C:\Program Files\Blender Foundation\Blender 5.2\blender.exe`,
+		},
+	},
+	{
 		// Commandline is generic enough to collide with unrelated software,
 		// so there is no exe check, as in mistikavr.yaml. The Linux folder
 		// name does not match the version regex, so only the Windows path

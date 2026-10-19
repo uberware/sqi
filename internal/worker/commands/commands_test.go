@@ -178,3 +178,18 @@ func TestContains_UsesTheHostsNameRules(t *testing.T) {
 		t.Error("windows: an absent name was found")
 	}
 }
+
+func TestLookup_ReturnsTheEntryByTheHostsNameRules(t *testing.T) {
+	table := Table{"nuke": {Path: "/opt/nuke", Args: []string{"--nc"}}}
+
+	got, ok := table.lookup("nuke", "linux")
+	if !ok || got.Path != "/opt/nuke" || len(got.Args) != 1 {
+		t.Errorf("linux lookup(nuke) = %+v, %v", got, ok)
+	}
+	if _, ok := table.lookup("Nuke", "linux"); ok {
+		t.Error("linux: names are case-sensitive")
+	}
+	if got, ok := table.lookup("NUKE", "windows"); !ok || got.Path != "/opt/nuke" {
+		t.Errorf("windows lookup(NUKE) = %+v, %v; want the entry", got, ok)
+	}
+}

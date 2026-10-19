@@ -5,6 +5,7 @@ package capabilities
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -31,6 +32,11 @@ type CommandSpec struct {
 	// Globs match the executable itself, not the install directory: on macOS
 	// that is inside the .app bundle.
 	Globs []CommandGlob `yaml:"globs"`
+	// Version, when set, is used instead of the detector's own version regex
+	// to read a version from each match. It only chooses the newest install and
+	// labels the result: it never adds a version tag. A detector whose tag is
+	// presence only (Blender) uses it to pick between installs.
+	Version VersionSpec `yaml:"version"`
 }
 
 // DetectedCommand is an executable a detector found for a command name.
@@ -48,6 +54,11 @@ func (s CommandSpec) validate(tag string) error {
 	}
 	if len(s.Globs) == 0 {
 		return fmt.Errorf("detector %q: command %q needs at least one glob", tag, s.Name)
+	}
+	if s.Version.From != "" {
+		if _, err := regexp.Compile(s.Version.From); err != nil {
+			return fmt.Errorf("detector %q: command %q: bad version regex: %w", tag, s.Name, err)
+		}
 	}
 	for i, g := range s.Globs {
 		if g.PathGlob == "" {
@@ -86,10 +97,14 @@ func (d Detector) FindCommand(env CheckEnv) (DetectedCommand, bool) {
 	if len(paths) == 0 {
 		return DetectedCommand{}, false
 	}
+	versionOf := d.extractVersion
+	if from := d.Command.Version.From; from != "" {
+		versionOf = func(p string) string { return extractVersionFrom(from, p) }
+	}
 	best := paths[0]
-	bestVersion := d.extractVersion(best)
+	bestVersion := versionOf(best)
 	for _, p := range paths[1:] {
-		v := d.extractVersion(p)
+		v := versionOf(p)
 		if c := compareVersions(v, bestVersion); c > 0 || (c == 0 && p > best) {
 			best, bestVersion = p, v
 		}
@@ -164,4 +179,48 @@ func parseVersion(v string) ([]int, bool) {
 		out = append(out, n)
 	}
 	return out, true
+}
+
+// ApplyConfiguredCommands advertises the tag of every detector whose command
+// the operator mapped in worker.commands, and returns the tags it added, sorted.
+//
+// A worker.commands entry says where the software is, so it is as good a
+// signal as a glob match: without it, an operator whose install the globs do
+// not search would have to add the tag by hand as well. mapped resolves a
+// command name to the path the operator gave, and reports false when there is
+// no entry or its target does not exist on this host — a mapping to something
+// missing advertises nothing.
+//
+// A tag already present, whatever its value, is left alone, and the detector's
+// version tag with it: capability_tags: ["maya=false"] is how an operator turns
+// a tag off, and a mapping must not turn it back on.
+func (c *Capabilities) ApplyConfiguredCommands(detectors []Detector, mapped func(name string) (path string, ok bool)) []string {
+	if c.Tags == nil {
+		c.Tags = make(map[string]string)
+	}
+	var added []string
+	for _, d := range detectors {
+		if d.Command == nil {
+			continue
+		}
+		path, ok := mapped(d.Command.Name)
+		if !ok {
+			continue
+		}
+		if _, exists := c.Tags[d.Tag]; exists {
+			continue
+		}
+		tags := []string{d.Tag}
+		if v := d.extractVersion(path); v != "" {
+			tags = append(tags, d.Tag+"-"+v)
+		}
+		for _, tag := range tags {
+			if _, exists := c.Tags[tag]; !exists {
+				c.Tags[tag] = "true"
+				added = append(added, tag)
+			}
+		}
+	}
+	slices.Sort(added)
+	return added
 }

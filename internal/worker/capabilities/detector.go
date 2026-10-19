@@ -177,10 +177,15 @@ func (c Check) signals(env CheckEnv) []string {
 }
 
 func (d Detector) extractVersion(signal string) string {
-	if d.Version.From == "" {
+	return extractVersionFrom(d.Version.From, signal)
+}
+
+// extractVersionFrom applies a version regex (see [VersionSpec]) to signal.
+func extractVersionFrom(from, signal string) string {
+	if from == "" {
 		return ""
 	}
-	re := regexp.MustCompile(d.Version.From)
+	re := regexp.MustCompile(from)
 	m := re.FindStringSubmatch(signal)
 	if m == nil {
 		return ""

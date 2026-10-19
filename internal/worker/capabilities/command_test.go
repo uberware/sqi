@@ -210,3 +210,70 @@ func TestDetectCommands_ComesFromBuiltinsAndCustomDetectorsAndHonoursDisable(t *
 		}
 	}
 }
+
+func lookupIn(mapped map[string]string) func(string) (string, bool) {
+	return func(name string) (string, bool) {
+		p, ok := mapped[name]
+		return p, ok
+	}
+}
+
+func TestApplyConfiguredCommands_AdvertisesTheTagAndVersionOfAMappedCommand(t *testing.T) {
+	c := Capabilities{Tags: map[string]string{}}
+
+	added := c.ApplyConfiguredCommands([]Detector{nukeLikeDetector()},
+		lookupIn(map[string]string{"tool": "/opt/Tool17.1v2/Tool17.1"}))
+
+	if strings.Join(added, ",") != "tool,tool-17.1" {
+		t.Errorf("added = %v, want [tool tool-17.1]", added)
+	}
+	if c.Tags["tool"] != "true" || c.Tags["tool-17.1"] != "true" {
+		t.Errorf("tags = %v, want tool and tool-17.1 set to true", c.Tags)
+	}
+}
+
+func TestApplyConfiguredCommands_AddsNoVersionWhenThePathCarriesNone(t *testing.T) {
+	c := Capabilities{Tags: map[string]string{}}
+
+	added := c.ApplyConfiguredCommands([]Detector{nukeLikeDetector()},
+		lookupIn(map[string]string{"tool": "/studio/bin/tool-wrapper"}))
+
+	if strings.Join(added, ",") != "tool" {
+		t.Errorf("added = %v, want just the bare tag", added)
+	}
+}
+
+// A tag the operator set by hand wins: capability_tags: ["tool=false"] is how
+// an operator turns a tag off, and a mapped command must not turn it back on,
+// version tag included.
+func TestApplyConfiguredCommands_NeverOverridesATagAlreadyPresent(t *testing.T) {
+	c := Capabilities{Tags: map[string]string{"tool": "false"}}
+
+	added := c.ApplyConfiguredCommands([]Detector{nukeLikeDetector()},
+		lookupIn(map[string]string{"tool": "/opt/Tool17.1v2/Tool17.1"}))
+
+	if len(added) != 0 || c.Tags["tool"] != "false" || len(c.Tags) != 1 {
+		t.Errorf("added = %v, tags = %v; want the existing tag left alone and nothing added", added, c.Tags)
+	}
+}
+
+func TestApplyConfiguredCommands_IgnoresACommandTheOperatorDidNotMap(t *testing.T) {
+	c := Capabilities{Tags: map[string]string{}}
+
+	added := c.ApplyConfiguredCommands([]Detector{nukeLikeDetector()}, lookupIn(nil))
+
+	if len(added) != 0 || len(c.Tags) != 0 {
+		t.Errorf("added = %v, tags = %v; want nothing", added, c.Tags)
+	}
+}
+
+func TestApplyConfiguredCommands_IgnoresADetectorWithoutACommand(t *testing.T) {
+	c := Capabilities{Tags: map[string]string{}}
+	plain := Detector{Tag: "plain", Checks: []Check{{Exe: "plain"}}}
+
+	added := c.ApplyConfiguredCommands([]Detector{plain}, lookupIn(map[string]string{"plain": "/opt/plain"}))
+
+	if len(added) != 0 {
+		t.Errorf("added = %v, want nothing for a detector with no command stanza", added)
+	}
+}

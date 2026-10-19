@@ -594,6 +594,12 @@ worker:
 - **Run-as-user isolation:** the mapped path is started under the session's
   account like any other command, so that account must be able to execute it.
 
+An entry for a command a detector knows (`nuke`, `blender`) also advertises that
+detector's capability tag, provided its target exists on the host, so a worker
+with the software in an unusual place needs no `capability_tags` entry as well. A
+tag set by hand still wins; see [Detected
+commands](worker-capabilities.md#detected-commands).
+
 The worker logs each mapping at startup, and warns about a mapping whose target
 cannot be found on that host, so a mistyped path shows up in the worker log
 rather than as a job failure.

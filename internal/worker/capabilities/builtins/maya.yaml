@@ -3,7 +3,10 @@ tag: maya
 checks:
   - path_glob: "/usr/autodesk/maya*/bin/maya"                        # linux
   - path_glob: "/Applications/Autodesk/maya*/Maya.app"               # macOS
+  - path_glob: 'C:\Program Files\Autodesk\Maya*\bin\maya.exe'        # windows
+    os: windows
   - registry: 'HKLM\SOFTWARE\Autodesk\Maya'                          # windows
     os: windows
 version:
-  from: "maya(?P<v>[0-9]+)"
+  # Case-insensitive: the Windows folder is Maya2026, the Linux one maya2026.
+  from: "(?i)maya(?P<v>[0-9]+)"

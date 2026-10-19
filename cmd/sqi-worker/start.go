@@ -232,7 +232,7 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	go obsServer.Run(ctx)
 
 	// ── Capabilities ──────────────────────────────────────────────────────────
-	caps, err := capabilities.BuildWorkerCapabilities(cfg.Capabilities, cfg.Worker.CapabilityTags, capabilities.OSCheckEnv())
+	caps, _, err := buildCapabilities(cfg, capabilities.OSCheckEnv())
 	if err != nil {
 		return fmt.Errorf("build capabilities: %w", err)
 	}
@@ -596,7 +596,7 @@ func runDryRun(cfg workerconfig.WorkerConfig) error {
 	fmt.Fprintln(w, "## Detected capabilities")
 	fmt.Fprintln(w)
 
-	caps, err := capabilities.BuildWorkerCapabilities(cfg.Capabilities, cfg.Worker.CapabilityTags, capabilities.OSCheckEnv())
+	caps, _, err := buildCapabilities(cfg, capabilities.OSCheckEnv())
 	if err != nil {
 		return fmt.Errorf("build capabilities: %w", err)
 	}

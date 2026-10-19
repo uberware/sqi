@@ -83,6 +83,37 @@ func planCommands(operator commands.Table, detected []capabilities.DetectedComma
 	return plan
 }
 
+// buildCapabilities is capabilities.BuildWorkerCapabilities plus the tags a
+// worker.commands entry implies, and returns the implied tags so a caller can
+// show where they came from.
+//
+// An operator who maps "nuke" has said where Nuke is, so the worker advertises
+// the nuke tag without making them add it to capability_tags as well, provided
+// the target exists on this host. Every place the worker decides its tags goes
+// through here; one that called BuildWorkerCapabilities directly would
+// advertise differently from the others.
+func buildCapabilities(cfg workerconfig.WorkerConfig, env capabilities.CheckEnv) (caps capabilities.Capabilities, implied []string, err error) {
+	caps, err = capabilities.BuildWorkerCapabilities(cfg.Capabilities, cfg.Worker.CapabilityTags, env)
+	if err != nil {
+		return capabilities.Capabilities{}, nil, err
+	}
+	detectors, err := capabilities.LoadDetectors(cfg.Capabilities)
+	if err != nil {
+		return capabilities.Capabilities{}, nil, fmt.Errorf("load detectors: %w", err)
+	}
+	implied = caps.ApplyConfiguredCommands(detectors, func(name string) (string, bool) {
+		c, ok := cfg.Worker.Commands.Lookup(name)
+		if !ok || !targetExists(c.Path) {
+			return "", false
+		}
+		return c.Path, true
+	})
+	if err := capabilities.ValidateTagKeys(caps.Tags); err != nil {
+		return capabilities.Capabilities{}, nil, fmt.Errorf("validate capability tag keys: %w", err)
+	}
+	return caps, implied, nil
+}
+
 // hostLookPath resolves a command name through this process's PATH.
 func hostLookPath(name string) (string, error) { return exec.LookPath(name) }
 

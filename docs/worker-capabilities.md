@@ -148,10 +148,10 @@ application under
 
 | Tag | Checks | Version source |
 |---|---|---|
-| `maya` | Linux `path_glob /usr/autodesk/maya*/bin/maya`; macOS `path_glob /Applications/Autodesk/maya*/Maya.app`; Windows `registry HKLM\SOFTWARE\Autodesk\Maya` | `maya(?P<v>[0-9]+)` against the matched path |
-| `houdini` | `exe hython` (any OS, if on `PATH`); Linux `path_glob /opt/hfs*/bin/houdini`; macOS `path_glob /Applications/Houdini/Houdini*/Frameworks/Houdini.framework`; Windows `registry HKLM\SOFTWARE\Side Effects Software\Houdini` | `(?:hfs\|Houdini ?)(?P<v>[0-9]+\.[0-9]+)` against the matched path |
+| `maya` | Linux `path_glob /usr/autodesk/maya*/bin/maya`; macOS `path_glob /Applications/Autodesk/maya*/Maya.app`; Windows `path_glob C:\Program Files\Autodesk\Maya*\bin\maya.exe` and `registry HKLM\SOFTWARE\Autodesk\Maya` | `(?i)maya(?P<v>[0-9]+)` against the matched path (case-insensitive: the Windows folder is `Maya2026`) |
+| `houdini` | `exe hython` (any OS, if on `PATH`); Linux `path_glob /opt/hfs*/bin/houdini`; macOS `path_glob /Applications/Houdini/Houdini*/Frameworks/Houdini.framework`; Windows `path_glob C:\Program Files\Side Effects Software\Houdini *\bin\houdini.exe` and `registry HKLM\SOFTWARE\Side Effects Software\Houdini` | `(?:hfs\|Houdini ?)(?P<v>[0-9]+\.[0-9]+)` against the matched path |
 | `nuke` | `exe nuke` (any OS, if on `PATH`); Linux `path_glob /usr/local/Nuke*/Nuke*`; macOS `path_glob /Applications/Nuke*/Nuke*.app`; Windows `path_glob C:\Program Files\Nuke*\Nuke[0-9]*.exe` and `registry HKLM\SOFTWARE\The Foundry\Nuke` (older installers; the 17.x MSI writes `HKLM\SOFTWARE\Foundry\Nuke 17.1v2` instead, so it is found by the glob) | `Nuke([0-9]+\.[0-9]+)` against the matched path (none when only `exe nuke` matched) |
-| `blender` | `exe blender` (any OS, if on `PATH`); macOS `path_glob /Applications/Blender.app`; Windows `registry HKLM\SOFTWARE\BlenderFoundation\Blender` | none (presence only, no `-<version>` tags) |
+| `blender` | `exe blender` (any OS, if on `PATH`); macOS `path_glob /Applications/Blender.app`; Windows `path_glob C:\Program Files\Blender Foundation\Blender *\blender.exe` and `registry HKLM\SOFTWARE\BlenderFoundation\Blender` (older installers; the MSI and winget write neither the key nor a `PATH` entry, so the glob is what finds them) | none (presence only, no `-<version>` tags) |
 | `cinema4d` | Linux `path_glob /opt/maxon/cinema4dr*/bin/Commandline`; macOS `path_glob /Applications/Maxon Cinema 4D */Commandline.app`; Windows `path_glob C:\Program Files\Maxon Cinema 4D *\Commandline.exe` | `Maxon Cinema 4D (?P<v>[0-9]{4})` against the matched path (a Linux match carries no year, so no version) |
 | `3dsmax` | `exe 3dsmaxcmd` (any OS, if on `PATH`); Windows `registry HKLM\SOFTWARE\Autodesk\3dsMax`; Windows `path_glob C:\Program Files\Autodesk\3ds Max *\3dsmaxcmd.exe` | `3ds Max (?P<v>[0-9]{4})` against the matched path |
 | `aftereffects` | `exe aerender` (any OS, if on `PATH`); macOS `path_glob /Applications/Adobe After Effects */aerender`; Windows `path_glob C:\Program Files\Adobe\Adobe After Effects *\Support Files\aerender.exe` | `After Effects (?P<v>[0-9]{4})` against the matched path |
@@ -343,8 +343,11 @@ A detected default carries **no arguments**. Flags that depend on a license, suc
 as Nuke's `--nc` for a non-commercial license, belong to the operator: put them in
 `worker.commands`.
 
-Only the `nuke` built-in defines a command today. The others rely on the command
-being on `PATH`. Turning a detector off with `capabilities.disable` turns off its
+The `nuke` and `blender` built-ins define a command; the others rely on the
+command being on `PATH`. Blender's has Windows and macOS globs only: a Linux
+install is wherever it was unpacked, or a distro package already on `PATH`. For
+Blender the version is read only to pick the newest install, so its tag stays
+presence only. Turning a detector off with `capabilities.disable` turns off its
 command default too. A custom detector can add one:
 
 ```yaml
@@ -367,17 +370,26 @@ table showing what each command name resolves to, with its arguments and where
 the decision came from (`config`, `PATH` or `detected`); the worker also logs each
 one at startup.
 
-> **A `worker.commands` entry does not advertise a tag.** If the install is in a
-> location the detector's globs do not search, add `nuke=true` to
-> [`worker.capability_tags`](worker-configuration.md#workercapability_tags) as well, or
-> jobs requiring the tag will not be sent to the worker.
+**A `worker.commands` entry also advertises the tag.** Mapping `nuke` says where
+Nuke is, so the worker advertises `nuke` (and `nuke-<version>`, when the path
+carries one) even if the install is somewhere the detector's globs do not search.
+It does so only when the entry's target exists on that host, so a mistyped path
+advertises nothing, and never over a tag already present: a
+[`worker.capability_tags`](worker-configuration.md#workercapability_tags) entry
+such as `nuke=false` still turns the tag off. `sqi-worker capabilities` shows such
+a tag with the source `worker.commands`.
 
 The `nuke` default's globs follow the layouts in Foundry's documentation
 (Linux `/usr/local/Nuke17.1v2/Nuke17.1`, macOS
 `/Applications/Nuke17.1v2/Nuke17.1v2.app/Contents/MacOS/Nuke17.1`). The Windows
 and Linux paths were checked against real 17.1v2 installs (Linux on Ubuntu 26.04
 under WSL2, detecting `nuke-17.1` and defaulting the command to the installed
-executable); the macOS one was not.
+executable); the macOS one was not. Blender's Windows glob was checked against a
+real Blender 5.2 installed by winget, and a job rendered through the default
+command with nothing on `PATH`; its macOS path follows Blender's documented
+bundle layout and was not checked. The Windows globs added for Maya and Houdini
+are the installers' default folders and have **not** been checked on a machine
+with either installed.
 
 ---
 

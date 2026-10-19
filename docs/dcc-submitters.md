@@ -318,8 +318,12 @@ add-on is gone, and there is no migration shim: sqi is alpha. To upgrade:
    "sqi Submitter", so make sure only the new one is enabled.
 
 > **For a submitted job to run,** the rendering worker needs the `blender=true`
-> capability tag and `blender` on its `PATH`. Without a tagged worker the job
-> stays `ready`. See [Reference presets](#reference-presets).
+> capability tag and a `blender` command that resolves. On Windows and macOS the
+> worker finds an installed Blender and supplies the command itself unless one is
+> already on `PATH` or in its `worker.commands`; on Linux put `blender` on `PATH`.
+> Without a tagged worker the job stays `ready`. See [Reference
+> presets](#reference-presets) and [Detected
+> commands](worker-capabilities.md#detected-commands).
 
 ### Cinema 4D
 

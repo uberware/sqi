@@ -4,6 +4,8 @@ checks:
   - exe: hython
   - path_glob: "/opt/hfs*/bin/houdini"                                        # linux
   - path_glob: "/Applications/Houdini/Houdini*/Frameworks/Houdini.framework"  # macOS
+  - path_glob: 'C:\Program Files\Side Effects Software\Houdini *\bin\houdini.exe'   # windows
+    os: windows
   - registry: 'HKLM\SOFTWARE\Side Effects Software\Houdini'                   # windows
     os: windows
 version:

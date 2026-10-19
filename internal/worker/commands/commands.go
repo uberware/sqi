@@ -90,10 +90,21 @@ func hasSeparator(s string) bool {
 // on POSIX, case-insensitive on Windows. It is the same question Resolve asks,
 // so a caller deciding whether to add a default does not add one the table
 // would already answer.
-func (t Table) Contains(name string) bool { return t.contains(name, runtime.GOOS) }
+func (t Table) Contains(name string) bool {
+	_, ok := t.Lookup(name)
+	return ok
+}
+
+// Lookup returns the entry for name by this host's name rules, as Contains
+// decides.
+func (t Table) Lookup(name string) (Command, bool) { return t.lookup(name, runtime.GOOS) }
+
+func (t Table) lookup(name, goos string) (Command, bool) {
+	return newResolver(t, goos).lookup(name)
+}
 
 func (t Table) contains(name, goos string) bool {
-	_, ok := newResolver(t, goos).lookup(name)
+	_, ok := t.lookup(name, goos)
 	return ok
 }
 

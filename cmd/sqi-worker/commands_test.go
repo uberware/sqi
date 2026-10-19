@@ -240,3 +240,113 @@ func TestCapabilitiesCmd_PrintsTheCommandTable(t *testing.T) {
 		}
 	}
 }
+
+// nukeInstallAt creates a file standing for a Nuke executable in a directory
+// named for its release, and returns its path.
+func nukeInstallAt(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "Nuke17.1v2")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	exe := filepath.Join(dir, "Nuke17.1")
+	if err := os.WriteFile(exe, nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return exe
+}
+
+func configWithNukeMapping(path string) workerconfig.WorkerConfig {
+	cfg := workerconfig.Default()
+	cfg.Worker.Commands = commands.Table{"nuke": {Path: path}}
+	return cfg
+}
+
+func TestBuildCapabilities_AMappedCommandAdvertisesItsTag(t *testing.T) {
+	exe := nukeInstallAt(t)
+
+	caps, implied, err := buildCapabilities(configWithNukeMapping(exe), fakeCheckEnv{goos: "linux"})
+	if err != nil {
+		t.Fatalf("buildCapabilities: %v", err)
+	}
+
+	if caps.Tags["nuke"] != "true" || caps.Tags["nuke-17.1"] != "true" {
+		t.Errorf("tags = %v, want nuke and nuke-17.1 advertised from the mapping alone", caps.Tags)
+	}
+	if !slices.Equal(implied, []string{"nuke", "nuke-17.1"}) {
+		t.Errorf("implied = %v, want [nuke nuke-17.1]", implied)
+	}
+}
+
+func TestBuildCapabilities_AMappingToSomethingMissingAdvertisesNothing(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "Nuke17.1v2", "Nuke17.1")
+
+	caps, implied, err := buildCapabilities(configWithNukeMapping(missing), fakeCheckEnv{goos: "linux"})
+	if err != nil {
+		t.Fatalf("buildCapabilities: %v", err)
+	}
+
+	if _, ok := caps.Tags["nuke"]; ok || len(implied) != 0 {
+		t.Errorf("tags = %v, implied = %v; a mapping to a file that does not exist must not advertise", caps.Tags, implied)
+	}
+}
+
+func TestBuildCapabilities_AManualSuppressionBeatsAMapping(t *testing.T) {
+	cfg := configWithNukeMapping(nukeInstallAt(t))
+	cfg.Worker.CapabilityTags = []string{"nuke=false"}
+
+	caps, implied, err := buildCapabilities(cfg, fakeCheckEnv{goos: "linux"})
+	if err != nil {
+		t.Fatalf("buildCapabilities: %v", err)
+	}
+
+	if caps.Tags["nuke"] != "false" || len(implied) != 0 {
+		t.Errorf("tags[nuke] = %q, implied = %v; want the operator's nuke=false to stand", caps.Tags["nuke"], implied)
+	}
+}
+
+func TestCapabilitiesCmd_AttributesAMappedTagToWorkerCommands(t *testing.T) {
+	t.Cleanup(func() { persistentFlags.ConfigFile = "" })
+	// A detector for a tool no machine has, so the tag can only come from the
+	// mapping, whatever this host has installed.
+	tool := filepath.ToSlash(filepath.Join(t.TempDir(), "sqiprobetool"))
+	if err := os.WriteFile(tool, nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := `
+capabilities:
+  detect:
+    - tag: sqiprobetool
+      checks:
+        - exe: sqi-no-such-command-anywhere
+      command:
+        name: sqiprobetool
+        globs:
+          - path_glob: "/no/such/place/*"
+worker:
+  commands:
+    sqiprobetool:
+      path: "` + tool + `"
+`
+	cfgPath := filepath.Join(t.TempDir(), "sqi-worker.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	prepareRoot([]string{"--config", cfgPath, "capabilities"})
+	out := captureStdout(t, func() {
+		if err := Execute(); err != nil {
+			t.Errorf("Execute(capabilities): %v", err)
+		}
+	})
+
+	var found bool
+	for line := range strings.SplitSeq(out, "\n") {
+		if strings.HasPrefix(line, "sqiprobetool ") && strings.Contains(line, "worker.commands") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no sqiprobetool tag attributed to worker.commands:\n%s", out)
+	}
+}
