@@ -374,8 +374,10 @@ one at startup.
 
 The `nuke` default's globs follow the layouts in Foundry's documentation
 (Linux `/usr/local/Nuke17.1v2/Nuke17.1`, macOS
-`/Applications/Nuke17.1v2/Nuke17.1v2.app/Contents/MacOS/Nuke17.1`); the Windows
-path was checked against a real 17.1v2 install, the Linux and macOS ones were not.
+`/Applications/Nuke17.1v2/Nuke17.1v2.app/Contents/MacOS/Nuke17.1`). The Windows
+and Linux paths were checked against real 17.1v2 installs (Linux on Ubuntu 26.04
+under WSL2, detecting `nuke-17.1` and defaulting the command to the installed
+executable); the macOS one was not.
 
 ---
 
