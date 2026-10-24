@@ -537,9 +537,11 @@ DCC presets from **Admin → Preset Library** in the web UI or, without a preset
 index, create them through `POST /api/v1/products` or **Admin → Products**. All
 seventeen use the product `category` `Rendering`. All but the two After Effects
 queue presets (one task each) declare `TASK_CHUNKING` to split the frame range;
-the Maya, Blender, Cinema 4D, 3ds Max, After Effects render and Mistika presets
-also declare `SQI_CHUNK_BOUNDS` to expose each chunk's start and end frame (see
-[OpenJD extensions](openjd-extensions.md)).
+the Maya, Blender, After Effects render and Mistika presets also declare
+`SQI_CHUNK_BOUNDS` to expose each chunk's start and end frame (see
+[OpenJD extensions](openjd-extensions.md)). The Cinema 4D and 3ds Max presets
+declare `EXPR` instead: it computes the same two frames, and leaves the output
+flag out when **Output Path** is empty.
 
 Fourteen of the seventeen have a matching `sqi-submitter` host (Maya, Houdini,
 Nuke, 3ds Max, Blender, Cinema 4D and After Effects). The three Mistika presets
@@ -554,9 +556,9 @@ have none and are submitted from the web UI or the API.
 | `nuke-script-render` | `nuke -x -F <range> <script>` (no `-X`; all enabled Write nodes) | chunks of 10 | `SceneFile`, `Frames` | `attr.worker.tag.nuke = "true"` |
 | `blender-batch-render` | `blender -b <file> -o <output> -s/-e <frame range> -a` | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `OutputPath` (always passed as `-o`; a host submitter fills a blank one from the scene) | `attr.worker.tag.blender = "true"` |
 | `blender-view-layer-render` | `blender -b <file> -S <scene> -o <output> -s/-e <frame range> --python-exit-code 1 --python-expr <check-scene-select-layer> -a -- <layer> <scene>` (one named view layer; a scene or layer the file lacks fails the task) | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `OutputPath`, `Scene`, `ViewLayer` | `attr.worker.tag.blender = "true"` |
-| `cinema4d-render` | `Commandline -nogui -render <scene> -frame <start> <end> -oimage <path>` | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `OutputPath` | `attr.worker.tag.cinema4d = "true"` |
-| `cinema4d-take-render` | `Commandline -nogui -render <scene> -frame <start> <end> -take <take> -oimage <path>` | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `Take`, `OutputPath` | `attr.worker.tag.cinema4d = "true"` |
-| `3dsmax-render` | `3dsmaxcmd -v:5 -rfw:0 -start:<n> -end:<n> -outputName:<path> <scene>` | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `OutputPath` | `attr.worker.tag.3dsmax = "true"` and `attr.worker.os.family = "windows"` |
+| `cinema4d-render` | `Commandline -nogui -render <scene> -frame <start> <end> [-oimage <path>]` | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `OutputPath` | `attr.worker.tag.cinema4d = "true"` |
+| `cinema4d-take-render` | `Commandline -nogui -render <scene> -frame <start> <end> -take <take> [-oimage <path>]` | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `Take`, `OutputPath` | `attr.worker.tag.cinema4d = "true"` |
+| `3dsmax-render` | `3dsmaxcmd -v:5 -rfw:0 -start:<n> -end:<n> [-outputName:<path>] <scene>` | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `OutputPath` | `attr.worker.tag.3dsmax = "true"` and `attr.worker.os.family = "windows"` |
 | `after-effects-render-windows` | `aerender -project <scene> -rqindex <n> -s <start> -e <end> -v ERRORS_AND_PROGRESS -close DO_NOT_SAVE_CHANGES`, run through an embedded PowerShell wrapper | up to `FramesPerTask` per task, default 10 | `SceneFile`, `Frames`, `RenderQueueItem`, `FramesPerTask` | `attr.worker.tag.aftereffects = "true"` and `attr.worker.os.family = "windows"` |
 | `after-effects-render-macos` | the same `aerender` arguments, run through an embedded POSIX `sh` wrapper | up to `FramesPerTask` per task, default 10 | `SceneFile`, `Frames`, `RenderQueueItem`, `FramesPerTask` | `attr.worker.tag.aftereffects = "true"` and `attr.worker.os.family = "macos"` |
 | `after-effects-queue-render-windows` | `aerender -project <scene> -v ERRORS_AND_PROGRESS -close DO_NOT_SAVE_CHANGES` (renders the saved queue as is), through the PowerShell wrapper | one task for the whole queue | `SceneFile` | `attr.worker.tag.aftereffects = "true"` and `attr.worker.os.family = "windows"` |
@@ -581,10 +583,13 @@ parameters and `aerender` arguments; only the wrapper script differs. Pick the
 one that matches your render nodes.
 
 Maya, Blender, Cinema 4D and 3ds Max default to one frame per task (chunk size
-1) and declare `SQI_CHUNK_BOUNDS`: their start and end frame arguments come
-from the chunk's `Frame.Start`/`Frame.End`, so raising the step's
-`chunks.defaultTaskCount` renders a contiguous frame range per DCC launch with
-no other template change. Houdini and Nuke default to chunks of 10, because
+1). Their start and end frame arguments come from the chunk: its
+`Frame.Start`/`Frame.End` under `SQI_CHUNK_BOUNDS` for Maya and Blender, its
+`min()`/`max()` under `EXPR` for Cinema 4D and 3ds Max. Either way, raising the
+step's `chunks.defaultTaskCount` renders a contiguous frame range per DCC
+launch with no other template change. An empty **Output Path** leaves Cinema
+4D's `-oimage` and 3ds Max's `-outputName:` out, so the scene's own output
+setting applies. Houdini and Nuke default to chunks of 10, because
 the embedded `hython` script and `nuke -F` both take several frames per
 invocation, which spreads DCC startup across several frames. Houdini's chunks
 are `NONCONTIGUOUS`: the script receives a compact frame range such as

@@ -76,17 +76,17 @@ func TestSQIReferencePresets(t *testing.T) {
 		"3dsmax-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames", "OutputPath"},
-			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
+			extensions: []string{"TASK_CHUNKING", "EXPR"},
 		},
 		"cinema4d-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames", "OutputPath"},
-			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
+			extensions: []string{"TASK_CHUNKING", "EXPR"},
 		},
 		"cinema4d-take-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames", "OutputPath", "Take"},
-			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
+			extensions: []string{"TASK_CHUNKING", "EXPR"},
 		},
 		"after-effects-render-windows": {
 			category:   "Rendering",
@@ -115,10 +115,12 @@ func TestSQIReferencePresets(t *testing.T) {
 		// The three Mistika presets invoke the renderer as `-s START -e
 		// END`, so they need a chunk's bounds rather than the chunk itself
 		// and declare SQI_CHUNK_BOUNDS. So do the two Maya presets, the two
-		// Blender presets, vray-standalone-render, the two Cinema 4D presets,
-		// 3dsmax-render and both after-effects-render variants. Houdini and
-		// the two Nuke presets take a frame list directly; husk-usd-render
-		// computes its start and count with EXPR; the other standalone
+		// Blender presets, vray-standalone-render and both after-effects-render
+		// variants. Houdini and the two Nuke presets take a frame list
+		// directly; husk-usd-render computes its start and count with EXPR,
+		// and the two Cinema 4D presets and 3dsmax-render their start and end,
+		// because they also need EXPR to leave out a blank output path; the
+		// other standalone
 		// renderers render one file per frame and do not chunk, and neither
 		// do the whole-queue After Effects presets.
 		"mistika-boutique-render": {

@@ -9,11 +9,9 @@ params:
 
 step "Render" — 2 tasks
 
-task 1/2  name="Render[Frame=1-5,Frame.End=5,Frame.Start=1]"
+task 1/2  name="Render[Frame=1-5]"
   task params:
     Frame=1-5
-    Frame.End=5
-    Frame.Start=1
   command: Commandline
   args:
     [0]  -nogui
@@ -27,11 +25,9 @@ task 1/2  name="Render[Frame=1-5,Frame.End=5,Frame.Start=1]"
     [8]  -oimage
     [9]  /mnt/show/seq010/shot0010/render/shot0010_
 
-task 2/2  name="Render[Frame=6-10,Frame.End=10,Frame.Start=6]"
+task 2/2  name="Render[Frame=6-10]"
   task params:
     Frame=6-10
-    Frame.End=10
-    Frame.Start=6
   command: Commandline
   args:
     [0]  -nogui

@@ -425,17 +425,17 @@ presets:
     source: presets/sqi
     tier: 1
     tier1:
-      cases: [default, multi-frame-chunk, stepped-range]
+      cases: [default, multi-frame-chunk, stepped-range, blank-output]
       caveat: >-
         argv derived from Maxon's documented Commandline flags (Maxon help 2026
         and the support article on Commandline rendering arguments):
         -nogui -render <scene> -frame <start> <end> -oimage <path>. The goldens
         show the spaced scene path as one argument, chunk bounds 1-5 then 6-10
         under a patched chunk size, and 1-9:4 splitting into -frame 1 1,
-        -frame 5 5 and -frame 9 9. No Cinema 4D has executed it. Unverified:
-        what Commandline does with a blank OutputPath, which arrives as
-        -oimage "" because the flag is always passed; whether the -frame end is
-        inclusive (documented by example only); the exit status on failure,
+        -frame 5 5 and -frame 9 9, and a blank OutputPath leaving -oimage out
+        (an EXPR conditional, so the scene's own save path applies). The frame
+        bounds are the chunk's min() and max() under EXPR. No Cinema 4D has
+        executed it. Unverified: whether the -frame end is inclusive (documented by example only); the exit status on failure,
         which Maxon does not document; the macOS Commandline path. Every node
         also needs licensing before it can render.
     tier3:
@@ -446,7 +446,7 @@ presets:
     source: presets/sqi
     tier: 1
     tier1:
-      cases: [default, multi-frame-chunk, stepped-range]
+      cases: [default, multi-frame-chunk, stepped-range, blank-output]
       caveat: >-
         argv derived from Maxon's documented Commandline flags (Maxon help 2026
         and the support article on Commandline rendering arguments):
@@ -454,11 +454,11 @@ presets:
         The goldens show the spaced scene path and a take name containing double
         quotes each as one argument, chunk bounds 1-5 then 6-10 under a patched
         chunk size, and 1-9:4 splitting into -frame 1 1, -frame 5 5 and
-        -frame 9 9. No Cinema 4D has executed it. Unverified: -take with a
+        -frame 9 9, and a blank OutputPath leaving -oimage out (an EXPR
+        conditional). No Cinema 4D has executed it. Unverified: -take with a
         child take's name alone, and with "all"; what Commandline renders when
-        -take is omitted, as cinema4d-render omits it; what Commandline does
-        with a blank OutputPath, which arrives as -oimage ""; whether the
-        -frame end is inclusive; the exit status on failure, which Maxon does
+        -take is omitted, as cinema4d-render omits it; whether the -frame end
+        is inclusive; the exit status on failure, which Maxon does
         not document; the macOS Commandline path. Every node also needs
         licensing before it can render.
     tier3:
@@ -473,16 +473,17 @@ presets:
     source: presets/sqi
     tier: 1
     tier1:
-      cases: [default, multi-frame-chunk, stepped-range]
+      cases: [default, multi-frame-chunk, stepped-range, blank-output]
       caveat: >-
         argv derived from Autodesk's documented 3dsmaxcmd switches (the 3ds Max
         2026 command-line switches page): -v:5 -rfw:0 -start:<n> -end:<n>
         -outputName:<path> <scene>. The goldens show the spaced scene path as
         one argument, chunk bounds 1-5 then 6-10 under a patched chunk size,
-        and 1-9:4 splitting into frames 1, 5 and 9. No 3ds Max has executed it.
-        Unverified: what 3dsmaxcmd does with a blank OutputPath, which arrives
-        as -outputName: with nothing after it because the switch is always
-        passed; whether the -end frame is inclusive; the exit status on
+        and 1-9:4 splitting into frames 1, 5 and 9, and a blank OutputPath
+        leaving -outputName: out (an EXPR conditional, so the scene's own
+        render output applies). The frame bounds are the chunk's min() and
+        max() under EXPR. No 3ds Max has executed it. Unverified: whether the
+        -end frame is inclusive; the exit status on
         failure, which Autodesk does not document; whether it renders from a
         worker with no interactive session (session 0).
     tier3:

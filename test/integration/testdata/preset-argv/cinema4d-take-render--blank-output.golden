@@ -1,0 +1,37 @@
+preset: cinema4d-take-render
+case:   blank-output
+params:
+  Frames=1-2
+  OutputPath=
+  SceneFile=/mnt/show/seq010/shot 0010/c4d/shot0010_v003.c4d
+  Take=Final "A"
+
+step "Render" — 2 tasks
+
+task 1/2  name="Render[Frame=1-1]"
+  task params:
+    Frame=1-1
+  command: Commandline
+  args:
+    [0]  -nogui
+    [1]  -render
+    [2]  /mnt/show/seq010/shot 0010/c4d/shot0010_v003.c4d
+    [3]  -frame
+    [4]  1
+    [5]  1
+    [6]  -take
+    [7]  Final "A"
+
+task 2/2  name="Render[Frame=2-2]"
+  task params:
+    Frame=2-2
+  command: Commandline
+  args:
+    [0]  -nogui
+    [1]  -render
+    [2]  /mnt/show/seq010/shot 0010/c4d/shot0010_v003.c4d
+    [3]  -frame
+    [4]  2
+    [5]  2
+    [6]  -take
+    [7]  Final "A"

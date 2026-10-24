@@ -1,0 +1,30 @@
+preset: 3dsmax-render
+case:   blank-output
+params:
+  Frames=1-2
+  OutputPath=
+  SceneFile=C:\Show Files\seq010\shot0010_v003.max
+
+step "Render" — 2 tasks
+
+task 1/2  name="Render[Frame=1-1]"
+  task params:
+    Frame=1-1
+  command: 3dsmaxcmd
+  args:
+    [0]  -v:5
+    [1]  -rfw:0
+    [2]  -start:1
+    [3]  -end:1
+    [4]  C:\Show Files\seq010\shot0010_v003.max
+
+task 2/2  name="Render[Frame=2-2]"
+  task params:
+    Frame=2-2
+  command: 3dsmaxcmd
+  args:
+    [0]  -v:5
+    [1]  -rfw:0
+    [2]  -start:2
+    [3]  -end:2
+    [4]  C:\Show Files\seq010\shot0010_v003.max
