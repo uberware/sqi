@@ -412,6 +412,13 @@ func tryBootServer(t *testing.T, cfg server.Config, so backend.Options) (*testSe
 	return ts, nil
 }
 
+// serverStartupTimeout bounds each wait for a booting test server (listening,
+// then /readyz). Startup runs migrations that fsync, and a single stalled flush
+// on a shared Windows CI runner has taken over 10s, failing the harness with no
+// fault in the server; a healthy boot is far under a second, so a generous bound
+// costs nothing.
+const serverStartupTimeout = 60 * time.Second
+
 // launchServer is [tryBootServer] without the cleanup: the caller registers
 // one, or adds the server to a chain whose cleanup is already registered.
 func launchServer(t *testing.T, cfg server.Config, so backend.Options) (*testServer, error) {
@@ -462,7 +469,7 @@ func launchServer(t *testing.T, cfg server.Config, so backend.Options) (*testSer
 	// the server's own error if it exits first (a port in use, a store error).
 	// The diagnostics are read before the server is stopped: stopping unwinds
 	// the very goroutines whose stacks say what startup was blocked on.
-	if err := waitForServerTCP(done, cfg.HTTPAddr, 10*time.Second); err != nil {
+	if err := waitForServerTCP(done, cfg.HTTPAddr, serverStartupTimeout); err != nil {
 		err = fmt.Errorf("%w%s", err, startupDiagnostics(logs))
 		_ = ts.stop() //nolint:errcheck // the startup error is the one to report
 		return nil, err
@@ -471,8 +478,8 @@ func launchServer(t *testing.T, cfg server.Config, so backend.Options) (*testSer
 	// Poll /readyz (which gates on NATS and the store being healthy) rather than
 	// sleeping a fixed duration.  This ensures JetStream streams are fully
 	// provisioned before the test starts publishing.
-	if !waitForReadyz(t, cfg.HTTPAddr, 10*time.Second) {
-		err := errors.New("server did not become ready (/readyz) within 10s" + startupDiagnostics(logs))
+	if !waitForReadyz(t, cfg.HTTPAddr, serverStartupTimeout) {
+		err := fmt.Errorf("server did not become ready (/readyz) within %s%s", serverStartupTimeout, startupDiagnostics(logs))
 		_ = ts.stop() //nolint:errcheck // not becoming ready is the error to report
 		return nil, err
 	}
