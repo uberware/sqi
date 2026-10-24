@@ -13,7 +13,7 @@ from sqi_client.models import ProductParameter
 from sqi_submitter.core.context import RenderTarget, SceneContext
 
 CONVENTION_ALIASES: dict[str, frozenset[str]] = {
-    # "scene" is deliberately NOT an alias: hosts/blender/adapter.py emits a
+    # "scene" is deliberately NOT an alias: hosts/blender/sqi_blender_addon.py emits a
     # target extra key "Scene" holding the Blender scene NAME (not a path),
     # and extras beat convention aliases in prefill() below. Keeping "scene"
     # here would silently overwrite a scene-name extra with a scene path for
@@ -25,7 +25,8 @@ CONVENTION_ALIASES: dict[str, frozenset[str]] = {
 }
 
 
-def _norm(name: str) -> str:
+def normalize_name(name: str) -> str:
+    """Case- and separator-insensitive form used to match parameter names."""
     return name.lower().replace("_", "").replace("-", "")
 
 
@@ -35,7 +36,7 @@ def is_scene_path_param(name: str) -> bool:
     Reuses CONVENTION_ALIASES["scene_path"] so hosts and UIs share one
     definition of "which field is the scene path".
     """
-    return _norm(name) in CONVENTION_ALIASES["scene_path"]
+    return normalize_name(name) in CONVENTION_ALIASES["scene_path"]
 
 
 def is_output_path_param(name: str) -> bool:
@@ -44,7 +45,7 @@ def is_output_path_param(name: str) -> bool:
     Reuses CONVENTION_ALIASES["output_path"] so the "default output from the
     scene when left blank" rule shares one definition with prefill.
     """
-    return _norm(name) in CONVENTION_ALIASES["output_path"]
+    return normalize_name(name) in CONVENTION_ALIASES["output_path"]
 
 
 def prefill(
@@ -65,10 +66,10 @@ def prefill(
             facts["frame_range"] = target.frame_range
         if target.output_path is not None:
             facts["output_path"] = target.output_path
-    extras = {_norm(k): v for k, v in (target.extra if target else {}).items()}
+    extras = {normalize_name(k): v for k, v in (target.extra if target else {}).items()}
 
     for param in parameters:
-        key = _norm(param.name)
+        key = normalize_name(param.name)
         if key in extras:
             values[param.name] = extras[key]
             continue

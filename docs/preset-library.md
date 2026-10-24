@@ -167,14 +167,14 @@ copies show the **Update available** badge.
 
 ## DCC reference presets
 
-The official library ships seven `Rendering`-category presets as targets for
+The official library ships fourteen `Rendering`-category presets as targets for
 the [`sqi-submitter`](dcc-submitters.md) in-application submitters:
 `maya-layer-render`, `maya-scene-render`, `houdini-rop-render`,
-`nuke-write-render`, `nuke-script-render`, `blender-batch-render` and
-`blender-view-layer-render`. Ten more have no in-application submitter and are
-submitted from the web UI or the API: `mistika-boutique-render`,
-`mistika-vr-render`, `mistika-workflows-render`, `cinema4d-render`,
-`cinema4d-take-render`, `3dsmax-render` and the four After Effects presets.
+`nuke-write-render`, `nuke-script-render`, `blender-batch-render`,
+`blender-view-layer-render`, `cinema4d-render`, `cinema4d-take-render`,
+`3dsmax-render` and the four After Effects presets. Three more have no
+in-application submitter and are submitted from the web UI or the API:
+`mistika-boutique-render`, `mistika-vr-render` and `mistika-workflows-render`.
 
 Each names its parameters by the [parameter convention
 contract](dcc-submitters.md#the-parameter-convention-contract), so submitter
@@ -201,7 +201,7 @@ software tag that no built-in detector emits.
 |---|---|---|---|
 | `cinema4d-render` | a `.c4d` scene with Maxon's `Commandline`, using the scene's render settings | one frame per task by default | `cinema4d` |
 | `cinema4d-take-render` | one named take of a `.c4d` scene (`Take`) | one frame per task by default | `cinema4d` |
-| `3dsmax-render` | a `.max` scene with `3dsmaxcmd` | one frame per task by default | `3dsmax`, and `attr.worker.os.family` = `windows` |
+| `3dsmax-render` | a `.max` scene with `3dsmaxcmd` | one frame per task by default | `threedsmax`, and `attr.worker.os.family` = `windows` |
 | `after-effects-render-windows` | one render-queue item (`RenderQueueItem`) of an `.aep` project with `aerender` | up to `FramesPerTask` frames per task, default 10 | `aftereffects`, and `attr.worker.os.family` = `windows` |
 | `after-effects-render-macos` | the same, on macOS | up to `FramesPerTask` frames per task, default 10 | `aftereffects`, and `attr.worker.os.family` = `macos` |
 | `after-effects-queue-render-windows` | everything the saved project has queued | one task for the whole queue | `aftereffects`, and `attr.worker.os.family` = `windows` |
@@ -307,7 +307,7 @@ tags](worker-capabilities.md#built-in-detectors)):
 | `husk-usd-render` | one USD stage with `husk`, through Karma or any Hydra delegate | frame range per task | `husk` |
 | `redshift-standalone-render` | Redshift `.rs` files with `redshiftCmdLine` | one file per frame | `redshift` |
 | `prman-render` | RenderMan `.rib` files with `prman` | one file per frame | `renderman` |
-| `3delight-render` | 3Delight `.nsi` files with `renderdl` | one file per frame | `3delight` |
+| `3delight-render` | 3Delight `.nsi` files with `renderdl` | one file per frame | `threedelight` |
 | `mantra-render` | Mantra `.ifd` files with `mantra` (legacy; prefer husk) | one file per frame | `mantra` |
 
 **One file per frame.** The presets that read one exported file per frame take
@@ -387,8 +387,8 @@ tier to stand in for. The tiers are:
   chunks (all but Houdini's, below), each a plain `start-end` run of
   consecutive frames:
   - `nuke-write-render` and `nuke-script-render` never pass Nuke's `-F` flag an
-    OpenJD step (`1-19:2`, where Foundry documents `1-19x2`). Whether Nuke
-    reads `-F 1-1` as the single frame 1 needs a real Nuke (Tier 2).
+    OpenJD step (`1-19:2`, where Foundry documents `1-19x2`). That Nuke reads
+    `-F 1-1` as the single frame 1 is shown by the Tier-2 case, not here.
   - The presets that pass a chunk's first and last frame (Maya, Blender,
     Cinema 4D, 3ds Max, the two per-item After Effects presets and the three
     Mistika presets) and V-Ray's `-frames=START-END` never render a frame the
@@ -403,16 +403,33 @@ tier to stand in for. The tiers are:
   than "the template still expands the way it did when this was reviewed."
 
 - **Tier 2: real application.** The real application runs the resolved command
-  and its output is inspected. The twenty-five render presets (Maya, Nuke,
-  Houdini, Blender, Cinema 4D, 3ds Max, After Effects, the three Mistika
-  products and the eight standalone renderers) have not reached Tier 2: none
-  of those applications can run headless in this project's CI, so their
-  registry entries carry no `tier2` block. The five ffmpeg presets and the
-  `python-sequence` built-in are Tier 2. Each of their entries carries a
-  `tier2` block naming a test that runs the real program end to end:
-  `test/integration/ffmpeg_presets_test.go` runs real ffmpeg and decodes the
-  file it produced, and `TestPresetPythonSequence_LauncherContract` runs
-  `python-sequence`'s launcher under a real Python.
+  and its output is inspected. Eleven entries have a `tier2` block, each naming
+  a test that runs the real program end to end:
+  - The five ffmpeg presets and the `python-sequence` built-in.
+    `test/integration/ffmpeg_presets_test.go` runs real ffmpeg and decodes the
+    file it produced, and `TestPresetPythonSequence_LauncherContract` runs
+    `python-sequence`'s launcher under a real Python.
+  - Five DCC presets: `blender-batch-render`, `blender-view-layer-render`,
+    `nuke-write-render`, `nuke-script-render` and `houdini-rop-render`.
+    `test/integration/dcc_presets_test.go` builds a scene with the application
+    itself (`test/integration/testdata/dcc/`), submits the shipped preset
+    through a real server and worker, and checks the files it renders: the exact
+    frame set, and where it can be read back, their content (the view layer in
+    an EXR header, a PNG's size, the frame a Houdini geometry file holds).
+
+  The other twenty presets (Maya, Cinema 4D, 3ds Max, After Effects, the three
+  Mistika products and the eight standalone renderers) have not reached Tier 2
+  and carry no `tier2` block.
+
+  A DCC case cannot be required by platform, because CI cannot provide the
+  application, so its block says `requires_app: blender` (or `nuke`, `houdini`)
+  in place of `required_on`. The case skips when the application is absent, and
+  that skip fails the registry check only when `SQI_TEST_REQUIRE_APPS` lists the
+  application. CI sets it for Blender, which is free and needs no license, in the
+  `blender-presets` job. Nuke and Houdini need a licensed install, so they run
+  through `make test-dcc` on a machine that has them. **A run that does not
+  require an application proves nothing about it:** look for the
+  `--- PASS: TestPresetDCC_` lines.
 
 - **Tier 3: real pipeline, no vendor license.** A real `sqi-server` and
   `sqi-worker`, wired together as in production, execute the preset end to

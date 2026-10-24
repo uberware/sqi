@@ -81,7 +81,7 @@ var rendererLayouts = []rendererLayout{
 		version:   "27.2",
 	},
 	{
-		tag: "3delight",
+		tag: "threedelight",
 		exe: "renderdl",
 		installs: []string{
 			"/Applications/3Delight/bin/renderdl",
@@ -197,8 +197,8 @@ func TestRendererDetectors_HoudiniUtilitiesVersionOnEveryOS(t *testing.T) {
 func TestRendererDetectors_RenderManReadsRMANTREE(t *testing.T) {
 	d := builtinDetector(t, "renderman")
 	env := fakeEnv{goos: "linux", envs: map[string]string{"RMANTREE": "/opt/pixar/RenderManProServer-27.2"}}
-	if got := strings.Join(d.Evaluate(env), ","); got != "renderman,renderman-27.2" {
-		t.Errorf("Evaluate = %q, want %q", got, "renderman,renderman-27.2")
+	if got := strings.Join(d.Evaluate(env), ","); got != "renderman,renderman_27_2" {
+		t.Errorf("Evaluate = %q, want %q", got, "renderman,renderman_27_2")
 	}
 }
 
@@ -206,10 +206,10 @@ func TestRendererDetectors_RenderManReadsRMANTREE(t *testing.T) {
 // worker, and that no version is read from it even when its value looks
 // versioned.
 func TestRendererDetectors_3DelightReadsDELIGHT(t *testing.T) {
-	d := builtinDetector(t, "3delight")
+	d := builtinDetector(t, "threedelight")
 	env := fakeEnv{goos: "linux", envs: map[string]string{"DELIGHT": "/opt/3delight-2.9.208/Linux-x86_64"}}
-	if got := strings.Join(d.Evaluate(env), ","); got != "3delight" {
-		t.Errorf("Evaluate = %q, want %q", got, "3delight")
+	if got := strings.Join(d.Evaluate(env), ","); got != "threedelight" {
+		t.Errorf("Evaluate = %q, want %q", got, "threedelight")
 	}
 }
 
@@ -250,7 +250,7 @@ func TestRendererDetectors_EvaluateOnEveryPlatform(t *testing.T) {
 				goos := goosOf(install)
 				want := []string{layout.tag}
 				if install == layout.versioned {
-					want = append(want, layout.tag+"-"+layout.version)
+					want = append(want, layout.tag+"_"+strings.ReplaceAll(layout.version, ".", "_"))
 				}
 				got := d.Evaluate(fakeEnv{goos: goos, globs: globs})
 				for _, w := range want {

@@ -4,7 +4,22 @@ checks:
   - exe: hython
   - path_glob: "/opt/hfs*/bin/houdini"                                        # linux
   - path_glob: "/Applications/Houdini/Houdini*/Frameworks/Houdini.framework"  # macOS
+  - path_glob: 'C:\Program Files\Side Effects Software\Houdini *\bin\houdini.exe'   # windows
+    os: windows
   - registry: 'HKLM\SOFTWARE\Side Effects Software\Houdini'                   # windows
     os: windows
 version:
   from: '(?:hfs|Houdini ?)(?P<v>[0-9]+\.[0-9]+)'
+# The presets run a bare `hython`, and the Windows installer does not put it on
+# PATH, so the worker supplies a default from the newest install it finds, unless
+# the operator or the host already provides one. hython lives in $HFS/bin, the
+# same folder the glob checks above and the husk and mantra detectors already
+# assume. macOS has no default: its hython is deep inside the framework bundle,
+# and the layout was not checked.
+command:
+  name: hython
+  globs:
+    - path_glob: "/opt/hfs*/bin/hython"                                          # linux
+      os: linux
+    - path_glob: 'C:\Program Files\Side Effects Software\Houdini *\bin\hython.exe'   # windows
+      os: windows

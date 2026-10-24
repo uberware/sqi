@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 
 	"gopkg.in/yaml.v3"
@@ -13,6 +15,33 @@ import (
 
 // RegistryPath is the tier registry's location, relative to the repo root.
 const RegistryPath = "presets/validation-tiers.yaml"
+
+// RequireAppsEnv names the environment variable that turns a skipped
+// application-backed Tier-2 case into a registry failure. It holds a
+// comma-separated list of KnownApps.
+const RequireAppsEnv = "SQI_TEST_REQUIRE_APPS"
+
+// KnownApps are the vendor applications a Tier-2 case may need, by the name
+// RequiresApp and RequireAppsEnv use.
+var KnownApps = []string{"blender", "houdini", "nuke"}
+
+// RequiredApps parses the RequireAppsEnv value. An unknown name is an error: a
+// typo would otherwise turn the requirement off silently.
+func RequiredApps(value string) ([]string, error) {
+	var apps []string
+	for name := range strings.SplitSeq(value, ",") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if !slices.Contains(KnownApps, name) {
+			return nil, fmt.Errorf("presettest: %s names unknown application %q (known: %s)",
+				RequireAppsEnv, name, strings.Join(KnownApps, ", "))
+		}
+		apps = append(apps, name)
+	}
+	return apps, nil
+}
 
 // Tier1 records a preset's argv-snapshot coverage.
 type Tier1 struct {
@@ -41,6 +70,14 @@ type TierExec struct {
 	// because a claim required nowhere can never fail. A tier that cannot be run
 	// anywhere is recorded by omitting the block entirely.
 	RequiredOn []string `yaml:"required_on"`
+
+	// RequiresApp names a vendor application (one of KnownApps) the case needs
+	// installed. It replaces RequiredOn for a case that CI cannot run on every
+	// host: the case skips when the application is absent, and that skip is a
+	// registry failure only when RequireAppsEnv lists the application. A run
+	// without it records the case as not proven rather than hiding the gap.
+	// Tier 2 only; exactly one of RequiredOn and RequiresApp is set.
+	RequiresApp string `yaml:"requires_app"`
 }
 
 // Entry is one preset's or built-in's record.
@@ -124,6 +161,9 @@ func validateEntry(i int, e Entry, seen map[string]bool) error {
 	if err := validateTierExec(e.Name, "tier2", e.Tier2); err != nil {
 		return err
 	}
+	if e.Tier3 != nil && e.Tier3.RequiresApp != "" {
+		return fmt.Errorf("presettest: %s: tier3 runs against a stub, so it cannot require an application", e.Name)
+	}
 	return validateTierExec(e.Name, "tier3", e.Tier3)
 }
 
@@ -136,6 +176,17 @@ func validateTierExec(name, field string, t *TierExec) error {
 	}
 	if t.Case == "" {
 		return fmt.Errorf("presettest: %s: %s block names no case", name, field)
+	}
+	if t.RequiresApp != "" {
+		if len(t.RequiredOn) != 0 {
+			return fmt.Errorf("presettest: %s: %s block sets both required_on and requires_app"+
+				" -- an application-backed case is required by %s, not by platform", name, field, RequireAppsEnv)
+		}
+		if !slices.Contains(KnownApps, t.RequiresApp) {
+			return fmt.Errorf("presettest: %s: %s block requires unknown application %q (known: %s)",
+				name, field, t.RequiresApp, strings.Join(KnownApps, ", "))
+		}
+		return nil
 	}
 	// slices.Contains(nil, anything) is false on every GOOS that exists or ever
 	// will, so a block with no required platform can never fail the registry's

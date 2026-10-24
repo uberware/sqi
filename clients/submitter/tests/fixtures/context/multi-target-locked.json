@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "host": { "name": "aftereffects", "display_name": "After Effects" },
+  "scene": { "path": "/projects/spot.aep" },
+  "targets": [
+    {
+      "name": "Main Comp",
+      "kind": "render_queue_item",
+      "extra": { "RenderQueueItem": "1", "FramesPerTask": "10" },
+      "locked": ["FramesPerTask"]
+    },
+    {
+      "name": "Alt Comp",
+      "kind": "render_queue_item",
+      "frame_range": "5",
+      "extra": { "RenderQueueItem": "2" }
+    }
+  ],
+  "server_url": "http://farm.example:8080",
+  "future_field": { "ignored": true }
+}

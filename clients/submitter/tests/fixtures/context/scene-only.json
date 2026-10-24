@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "host": { "name": "max", "display_name": "3ds Max" },
+  "scene": { "path": "C:/scenes/room.max" }
+}

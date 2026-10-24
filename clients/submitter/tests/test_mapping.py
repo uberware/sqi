@@ -84,7 +84,7 @@ def test_extras_win_over_convention_for_same_name() -> None:
 
 def test_scene_is_no_longer_a_scene_path_alias() -> None:
     # "scene" is not in CONVENTION_ALIASES["scene_path"]: it would collide
-    # with hosts/blender/adapter.py's "Scene" extra (the scene NAME, not a
+    # with hosts/blender/sqi_blender_addon.py's "Scene" extra (the scene NAME, not a
     # path). A parameter literally named "Scene" does not prefill from
     # SceneContext.scene_path.
     got = prefill([_p("Scene")], CTX)

@@ -31,7 +31,7 @@ Does not connect to a server.`,
 		// The authoritative tag set+values: exactly what the worker would
 		// advertise at boot, including manual-tag precedence (e.g. a
 		// suppression like capability_tags: ["maya=false"]).
-		caps, err := capabilities.BuildWorkerCapabilities(cfg.Capabilities, cfg.Worker.CapabilityTags, env)
+		caps, implied, err := buildCapabilities(cfg, env)
 		if err != nil {
 			return fmt.Errorf("build capabilities: %w", err)
 		}
@@ -49,6 +49,11 @@ Does not connect to a server.`,
 					src[tag] = d.Origin
 				}
 			}
+		}
+		// Tags advertised only because the operator mapped the command in
+		// worker.commands: no detector matched, so say where they came from.
+		for _, tag := range implied {
+			src[tag] = "worker.commands"
 		}
 		for _, m := range cfg.Worker.CapabilityTags {
 			key, _, _ := strings.Cut(m, "=")
@@ -69,6 +74,21 @@ Does not connect to a server.`,
 			}
 			fmt.Fprintf(w, "%s\t%s\t%s\n", k, caps.Tags[k], source)
 		}
-		return w.Flush()
+		if err := w.Flush(); err != nil {
+			return err
+		}
+
+		// The commands a job can run by name, and where each resolves: the
+		// operator's worker.commands, a command already on PATH, or the
+		// worker's own default from a detected install.
+		plan, err := detectCommandPlan(cfg, env, hostLookPath)
+		if err != nil {
+			return err
+		}
+		if len(plan.Reports) == 0 {
+			return nil
+		}
+		fmt.Println()
+		return plan.write(os.Stdout)
 	},
 }

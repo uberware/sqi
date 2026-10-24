@@ -148,12 +148,12 @@ application under
 
 | Tag | Checks | Version source |
 |---|---|---|
-| `maya` | Linux `path_glob /usr/autodesk/maya*/bin/maya`; macOS `path_glob /Applications/Autodesk/maya*/Maya.app`; Windows `registry HKLM\SOFTWARE\Autodesk\Maya` | `maya(?P<v>[0-9]+)` against the matched path |
-| `houdini` | `exe hython` (any OS, if on `PATH`); Linux `path_glob /opt/hfs*/bin/houdini`; macOS `path_glob /Applications/Houdini/Houdini*/Frameworks/Houdini.framework`; Windows `registry HKLM\SOFTWARE\Side Effects Software\Houdini` | `(?:hfs\|Houdini ?)(?P<v>[0-9]+\.[0-9]+)` against the matched path |
-| `nuke` | Linux `path_glob /usr/local/Nuke*/Nuke*`; macOS `path_glob /Applications/Nuke*/Nuke*.app`; Windows `registry HKLM\SOFTWARE\The Foundry\Nuke` | `Nuke([0-9]+\.[0-9]+)` against the matched path |
-| `blender` | `exe blender` (any OS, if on `PATH`); macOS `path_glob /Applications/Blender.app`; Windows `registry HKLM\SOFTWARE\BlenderFoundation\Blender` | none (presence only, no `-<version>` tags) |
+| `maya` | Linux `path_glob /usr/autodesk/maya*/bin/maya`; macOS `path_glob /Applications/Autodesk/maya*/Maya.app`; Windows `path_glob C:\Program Files\Autodesk\Maya*\bin\maya.exe` and `registry HKLM\SOFTWARE\Autodesk\Maya` | `(?i)maya(?P<v>[0-9]+)` against the matched path (case-insensitive: the Windows folder is `Maya2026`) |
+| `houdini` | `exe hython` (any OS, if on `PATH`); Linux `path_glob /opt/hfs*/bin/houdini`; macOS `path_glob /Applications/Houdini/Houdini*/Frameworks/Houdini.framework`; Windows `path_glob C:\Program Files\Side Effects Software\Houdini *\bin\houdini.exe` and `registry HKLM\SOFTWARE\Side Effects Software\Houdini` | `(?:hfs\|Houdini ?)(?P<v>[0-9]+\.[0-9]+)` against the matched path |
+| `nuke` | `exe nuke` (any OS, if on `PATH`); Linux `path_glob /usr/local/Nuke*/Nuke*`; macOS `path_glob /Applications/Nuke*/Nuke*.app`; Windows `path_glob C:\Program Files\Nuke*\Nuke[0-9]*.exe` and `registry HKLM\SOFTWARE\The Foundry\Nuke` (older installers; the 17.x MSI writes `HKLM\SOFTWARE\Foundry\Nuke 17.1v2` instead, so it is found by the glob) | `Nuke([0-9]+\.[0-9]+)` against the matched path (none when only `exe nuke` matched) |
+| `blender` | `exe blender` (any OS, if on `PATH`); macOS `path_glob /Applications/Blender.app`; Windows `path_glob C:\Program Files\Blender Foundation\Blender *\blender.exe` and `registry HKLM\SOFTWARE\BlenderFoundation\Blender` (older installers; the MSI and winget write neither the key nor a `PATH` entry, so the glob is what finds them) | none (presence only, no `_<version>` tags) |
 | `cinema4d` | Linux `path_glob /opt/maxon/cinema4dr*/bin/Commandline`; macOS `path_glob /Applications/Maxon Cinema 4D */Commandline.app`; Windows `path_glob C:\Program Files\Maxon Cinema 4D *\Commandline.exe` | `Maxon Cinema 4D (?P<v>[0-9]{4})` against the matched path (a Linux match carries no year, so no version) |
-| `3dsmax` | `exe 3dsmaxcmd` (any OS, if on `PATH`); Windows `registry HKLM\SOFTWARE\Autodesk\3dsMax`; Windows `path_glob C:\Program Files\Autodesk\3ds Max *\3dsmaxcmd.exe` | `3ds Max (?P<v>[0-9]{4})` against the matched path |
+| `threedsmax` | `exe 3dsmaxcmd` (any OS, if on `PATH`); Windows `registry HKLM\SOFTWARE\Autodesk\3dsMax`; Windows `path_glob C:\Program Files\Autodesk\3ds Max *\3dsmaxcmd.exe` | `3ds Max (?P<v>[0-9]{4})` against the matched path |
 | `aftereffects` | `exe aerender` (any OS, if on `PATH`); macOS `path_glob /Applications/Adobe After Effects */aerender`; Windows `path_glob C:\Program Files\Adobe\Adobe After Effects *\Support Files\aerender.exe` | `After Effects (?P<v>[0-9]{4})` against the matched path |
 | `ffmpeg` | `exe ffmpeg` (any OS, if on `PATH`); no install glob or registry probe | none (presence only) |
 | `mistika` | Linux `path_glob /home/mistika/SGO Apps/Mistika Ultima*/bin/mistika`; macOS `path_glob /Applications/SGO Apps/Mistika Boutique.app*/Contents/MacOS/mistika`; Windows `path_glob C:\Program Files\SGO Apps\Mistika Boutique*\bin\mistika.exe` | `Mistika (?:Ultima\|Boutique) ?(?P<v>[0-9]+\.[0-9]+)` against the matched path |
@@ -165,7 +165,7 @@ application under
 | `mantra` | `exe mantra` (any OS); Linux `path_glob /opt/hfs*/bin/mantra`; Windows `path_glob C:\Program Files\Side Effects Software\Houdini *\bin\mantra.exe` | `(?:hfs\|Houdini ?)(?P<v>[0-9]+\.[0-9]+)` against the matched path |
 | `redshift` | `exe redshiftCmdLine` (any OS); Linux `path_glob /usr/redshift/bin/redshiftCmdLine`; macOS `path_glob /Applications/Maxon Redshift */bin/redshiftCmdLine`; Windows `path_glob C:\Program Files\Maxon Redshift *\bin\redshiftCmdLine.exe` | `Maxon Redshift (?P<v>[0-9]{4})` against the matched path |
 | `renderman` | `exe prman` (any OS); `env RMANTREE`; `path_glob RenderManProServer-*/bin/prman` under `/opt/pixar` (Linux), `/Applications/Pixar` (macOS) and `C:\Program Files\Pixar` (Windows) | `RenderManProServer-(?P<v>[0-9]+\.[0-9]+)` against the matched path or the `RMANTREE` value |
-| `3delight` | `exe renderdl` (any OS); `env DELIGHT`; macOS `path_glob /Applications/3Delight/bin/renderdl`; Windows `path_glob C:\Program Files\3Delight\bin\renderdl.exe` | none |
+| `threedelight` | `exe renderdl` (any OS); `env DELIGHT`; macOS `path_glob /Applications/3Delight/bin/renderdl`; Windows `path_glob C:\Program Files\3Delight\bin\renderdl.exe` | none |
 | `oiiotool` | `exe oiiotool` (any OS, if on `PATH`) | none (presence only) |
 
 The three Mistika detectors carry **no `exe` check**: their binaries are
@@ -179,11 +179,11 @@ bare command `Commandline`, a name generic enough that a `PATH` probe could tag
 a worker with no Cinema 4D installed, which would then be handed render work it
 cannot do. It matches the default Maxon install folders only; tag a Cinema 4D
 installed elsewhere by hand with `cinema4d=true` under
-`worker.capability_tags`. The `3dsmax` and `aftereffects` detectors do probe
+`worker.capability_tags`. The `threedsmax` and `aftereffects` detectors do probe
 `PATH` for `3dsmaxcmd` and `aerender`, names specific to the product. For all
-three, a match on an install location (or, for `3dsmax`, the registry) tags the
+three, a match on an install location (or, for `threedsmax`, the registry) tags the
 worker even when the command is not on `PATH`, but the presets invoke the bare
-command, so it must be on the worker's `PATH` for the job to run. A `3dsmax`
+command, so it must be on the worker's `PATH` for the job to run. A `threedsmax`
 registry match carries no year, so it tags the worker without a version.
 
 Each standalone-renderer detector checks `PATH` for the command its preset
@@ -197,8 +197,8 @@ without either renderer on `PATH`. The `redshift` tag marks the Redshift
 A `path_glob` or `exe` check's matched signal is a filesystem path, so version
 extraction works there. A `registry` check's signal is the registry key string
 itself, not a value read from the registry, so a registry match on Windows
-(`maya`, `houdini`, `nuke`, `blender`, `3dsmax`) yields the bare tag without a
-`-<version>` variant unless a path-based check also matches on that host.
+(`maya`, `houdini`, `nuke`, `blender`, `threedsmax`) yields the bare tag without a
+`_<version>` variant unless a path-based check also matches on that host.
 
 Every software tag a shipped reference preset requires
 (`presets/sqi/*.yaml`'s `attr.worker.tag.<name>`) must be emitted by a
@@ -216,12 +216,17 @@ A detector emits tags into the same `Tags` map as the hardware tags above:
   any of its checks matches. That is the same `key=true` form as a manual tag
   like `maya=true`, so it satisfies an `attr.worker.tag.<tag>`
   `anyOf: ["true"]` requirement directly.
-- `<tag>-<version>` (e.g. `maya-2025`) is emitted once per distinct version
+- `<tag>_<version>` (e.g. `maya_2025`) is emitted once per distinct version
   string captured by the detector's `version.from` regex, also with value
-  `"true"`.
+  `"true"`. Every character of the version that is not a letter or digit becomes
+  an underscore, so `17.1` gives `nuke_17_1` and `10.10` gives `mistika_10_10`.
+  A tag key becomes the last part of `attr.worker.tag.<key>` in a job's
+  `hostRequirements`, and an OpenJD identifier allows only letters, digits and
+  underscores, so a hyphen or a dot would make the tag impossible to require from
+  a conformant template.
 - A `path_glob` check can match several installs at once (e.g.
   `/opt/hfs20.0/…` and `/opt/hfs20.5/…`), so one detector can emit `houdini`,
-  `houdini-20.0` and `houdini-20.5` together.
+  `houdini_20_0` and `houdini_20_5` together.
 
 ### Precedence: built-in → custom → manual
 
@@ -306,6 +311,9 @@ capabilities:
 | `checks[].registry` | | A Windows registry key path under `HKLM` or `HKCU`, checked for existence only (no value is read). Never matches on Linux or macOS; pairing it with `os: windows` makes that explicit. |
 | `checks[].os` | no | Restricts the check to one platform: `linux`, `darwin`, or `windows`. Omit to run the check on all platforms. |
 | `version.from` | no | A regex applied to **each matched signal** of every check. The version is the named group `v` (`(?P<v>...)`) if present, otherwise the first capturing group. A signal that doesn't match contributes only the bare tag, no version tag. |
+| `command.name` | no | The bare command name the presets run (for example `nuke`). Makes the detector supply a default for that command; see [Detected commands](#detected-commands). |
+| `command.globs[].path_glob` | with `command` | A `filepath.Glob` pattern matching the **executable itself**, not the install directory (on macOS that is inside the `.app` bundle). `version.from` is applied to each match to choose the newest install. |
+| `command.globs[].os` | no | Restricts the glob to `linux`, `darwin` or `windows`. |
 
 Exactly one of `exe` / `path_glob` / `env` / `registry` must be set per check.
 A check with none or more than one is rejected at load time, as are a missing
@@ -314,6 +322,90 @@ A check with none or more than one is rejected at load time, as are a missing
 `Validate()` call, and tests assert that each one parses and validates.
 Custom detectors are validated when the worker starts, and a validation
 failure stops the worker with an error naming the detector.
+
+### Detected commands
+
+A tag only says software is installed. The presets run a **bare command**, and an
+install often has none of that name: Nuke is `Nuke17.1.exe` on Windows and
+`Nuke17.1` elsewhere, in a directory named for the release (`Nuke17.1v2`), and
+its installer adds nothing to `PATH`. The worker starts a job's command directly,
+with no shell, so a shell alias does not count either. Without help, a worker
+tagged `nuke` would accept Nuke jobs and fail each with "executable file not
+found".
+
+A detector with a `command` stanza closes that gap. For each command name, the
+worker decides where it resolves, in this order:
+
+1. **The operator's `worker.commands` entry**, if there is one
+   ([`worker.commands`](worker-configuration.md#workercommands)).
+2. **A command of that name already on `PATH`.** The host or studio set it up, so
+   the worker leaves it alone and never shadows it.
+3. **The newest install the detector found**, as a default. "Newest" is by
+   numeric version (16.0 beats 9.0), and two installs of one version, such as
+   `Nuke17.1v1` and `Nuke17.1v2`, are ordered by path so the later release wins.
+
+A detected default carries **no arguments**. Flags that depend on a license, such
+as Nuke's `--nc` for a non-commercial license, belong to the operator: put them in
+`worker.commands`.
+
+The `nuke`, `blender` and `houdini` (`hython`) built-ins define a command; the
+others rely on the command being on `PATH`. Blender's has Windows and macOS globs
+only: a Linux install is wherever it was unpacked, or a distro package already on
+`PATH`. Houdini's has Windows and Linux globs only; on macOS put `hython` on
+`PATH` or map it in `worker.commands`. For
+Blender the version is read only to pick the newest install, so its tag stays
+presence only. Turning a detector off with `capabilities.disable` turns off its
+command default too. A custom detector can add one:
+
+```yaml
+capabilities:
+  detect:
+    - tag: mytool
+      checks:
+        - path_glob: "/opt/mytool*/bin/mytool"
+      version:
+        from: "mytool(?P<v>[0-9.]+)"
+      command:
+        name: mytool
+        globs:
+          - path_glob: "/opt/mytool*/bin/mytool"
+            os: linux
+```
+
+`sqi-worker capabilities` and `sqi-worker start --dry-run` print a **COMMAND**
+table showing what each command name resolves to, with its arguments and where
+the decision came from (`config`, `PATH` or `detected`); the worker also logs each
+one at startup.
+
+**A `worker.commands` entry also advertises the tag.** Mapping `nuke` says where
+Nuke is, so the worker advertises `nuke` (and `nuke_<version>`, when the path
+carries one) even if the install is somewhere the detector's globs do not search.
+It does so only when the entry's target exists on that host, so a mistyped path
+advertises nothing, and never over a tag already present: a
+[`worker.capability_tags`](worker-configuration.md#workercapability_tags) entry
+such as `nuke=false` still turns the tag off. `sqi-worker capabilities` shows such
+a tag with the source `worker.commands`.
+
+The version in `nuke_<version>` is read from the text of the mapped path, as the
+detector's version regex reads it from an install path. The worker never runs the
+executable to ask it. A path that names a different release than the one it
+launches (a `Nuke16.0v1` folder that is really a link to 17.1) therefore
+advertises the wrong version. If your paths can mislead, add `nuke=false` and the
+tags you want to `capability_tags` yourself.
+
+The `nuke` default's globs follow the layouts in Foundry's documentation
+(Linux `/usr/local/Nuke17.1v2/Nuke17.1`, macOS
+`/Applications/Nuke17.1v2/Nuke17.1v2.app/Contents/MacOS/Nuke17.1`). The Windows
+and Linux paths were checked against real 17.1v2 installs (Linux on Ubuntu 26.04
+under WSL2, detecting `nuke_17_1` and defaulting the command to the installed
+executable); the macOS one was not. Blender's Windows glob was checked against a
+real Blender 5.2 installed by winget, and a job rendered through the default
+command with nothing on `PATH`; its macOS path follows Blender's documented
+bundle layout and was not checked. Houdini's Windows `hython` glob was checked against a real Houdini 22.0.466
+(Apprentice), and a job ran through the default command with nothing on `PATH`;
+its Linux glob (`/opt/hfs*/bin/hython`) follows the `$HFS/bin` layout and was not
+checked. The Windows glob added for Maya is the installer's default folder and
+has **not** been checked on a machine with Maya installed.
 
 ---
 
@@ -331,8 +423,8 @@ the same key.
 ```yaml
 worker:
   capability_tags:
-    - maya-2025
-    - arnold-7
+    - maya_2025
+    - arnold_7
     - gpu
     - highram
     - maya=true   # key=value: sets Tags["maya"] = "true"
@@ -341,7 +433,7 @@ worker:
 **Via environment variable (comma-separated):**
 
 ```sh
-SQI_WORKER_CAPABILITY_TAGS=maya-2025,arnold-7,gpu,maya=true sqi-worker start
+SQI_WORKER_CAPABILITY_TAGS=maya_2025,arnold_7,gpu,maya=true sqi-worker start
 ```
 
 **Verify before connecting:**
@@ -364,11 +456,11 @@ job submissions readable and consistent.
 |---|---|
 | `gpu` | Host has a usable GPU (use on macOS/Windows where auto-detection is limited) |
 | `highram` | Host has significantly more RAM than typical (operator-defined threshold) |
-| `maya-<version>` | Maya is installed at the specified version, e.g. `maya-2025` |
-| `houdini-<version>` | Houdini is installed, e.g. `houdini-20.5` |
-| `blender-<version>` | Blender is installed, e.g. `blender-4.2` |
-| `nuke-<version>` | Nuke is installed, e.g. `nuke-15.0` |
-| `arnold-<version>` | Arnold renderer, e.g. `arnold-7` |
+| `maya_<version>` | Maya is installed at the specified version, e.g. `maya_2025` |
+| `houdini_<version>` | Houdini is installed, e.g. `houdini_20_5` |
+| `blender_<version>` | Blender is installed, e.g. `blender_4_2` |
+| `nuke_<version>` | Nuke is installed, e.g. `nuke_15_0` |
+| `arnold_<version>` | Arnold renderer, e.g. `arnold_7` |
 | `karma-renderer` | Karma (Houdini's renderer) is available |
 | `deadline-slave` | Legacy Deadline Slave running alongside sqi (for mixed farms) |
 | `nas-<location>` | Host has direct access to a specific NAS, e.g. `nas-studio-a` |
@@ -385,7 +477,7 @@ key is identical.
 Each `capability_tags` entry is parsed by `MergeManualTags`:
 
 - A bare entry with no `=` is stored as a presence-only key with an empty
-  value, e.g. `maya-2025` → `Tags["maya-2025"] = ""`.
+  value, e.g. `maya_2025` → `Tags["maya_2025"] = ""`.
 - A `key=value` entry is split on the **first** `=`, e.g. `maya=true` →
   `Tags["maya"] = "true"`. A value may itself contain `=` (only the first
   one splits the key from the value), and a trailing `=` with nothing after
@@ -426,6 +518,12 @@ Any attribute name outside the well-known set (`attr.worker.os.family`,
 `attr.worker.os.version`, `attr.worker.cpu.arch`,
 `attr.worker.computelocation`) and the `attr.worker.tag.<key>` namespace
 always resolves to `""` and can never match.
+
+A tag you want a template to require should be spelled as an OpenJD identifier:
+letters, digits and underscores, not starting with a digit. sqi's validator is
+more lenient and accepts other spellings, but a conformant implementation rejects
+a template that names one. A manual tag that nothing requires, such as a label for
+your own filtering, can be spelled however you like.
 
 **`attr.worker.os.family` and `attr.worker.cpu.arch` take OpenJD's tokens, not
 Go's.** The validator accepts only `linux`, `windows`, `macos` for the first
@@ -473,6 +571,68 @@ The server's scheduler matches the required attribute against registered
 workers' `Tags` map and routes each task only to workers that satisfy every
 `hostRequirements` attribute. Workers missing the tag entirely, or whose
 `Tags[<key>]` doesn't appear in `anyOf`, are not eligible for that task.
+
+### Routing by license class
+
+Nuke and Houdini both come in tiers that cannot share scene files. Nuke has a
+commercial license, Indie and Non-commercial; Houdini has a commercial license,
+Indie and Apprentice. Scripts saved in a restricted tier (Nuke's `.nknc`,
+Houdini's `.hipnc`) are not opened by a commercial install, and a restricted
+install may refuse the others: Non-commercial Nuke refuses a plain `.nk` from the
+command line (see [Nuke Non-commercial](dcc-submitters.md#how-the-worker-finds-nuke)).
+A farm that mixes tiers needs each job to land on a worker of the right one.
+
+sqi does not do this for you. The reference presets do not require a license
+class, no worker derives one, and the submitters do not pre-fill one. A mixed
+farm can build it today from a tag convention:
+
+1. **Tag every worker that has the product**, in `worker.capability_tags`, with
+   `<product>_license` set to `commercial`, `indie` or `noncommercial`:
+
+   ```yaml
+   worker:
+     capability_tags:
+       - nuke_license=noncommercial
+   ```
+
+2. **Require it in a copy of the preset** (see
+   [Customizing for your pipeline](dcc-submitters.md#customizing-for-your-pipeline)),
+   next to the product's own tag:
+
+   ```yaml
+   hostRequirements:
+     attributes:
+       - name: attr.worker.tag.nuke
+         anyOf: ["true"]
+       - name: attr.worker.tag.nuke_license
+         anyOf: ["noncommercial"]
+   ```
+
+Points that decide whether it works:
+
+- **Every worker must carry the tag.** A requirement matches only a tag the worker
+  advertises, and `anyOf`/`allOf` cannot express "any" or "not". A worker with no
+  `nuke_license` tag never receives a job that requires one. To accept every class,
+  leave the requirement out.
+- **Spell the key with an underscore.** OpenJD identifiers allow only letters,
+  digits and underscores, so `nuke_license` is valid in any implementation.
+  sqi's validator also accepts `attr.worker.tag.nuke-license`, but the
+  specification does not, and a template written that way is not portable. The
+  automatic tags follow the same rule (`17.1` gives `nuke_17_1`), and so do the
+  names of the built-in ones: the 3ds Max and 3Delight tags are `threedsmax` and
+  `threedelight` because an identifier cannot start with a digit.
+- **The worker does not check the claim.** The tag is whatever the operator wrote;
+  sqi neither reads the license nor stops a job whose scene file belongs to another
+  class.
+
+This was checked on a local farm with a worker tagged `nuke_license=noncommercial`:
+a job requiring `noncommercial` ran, and one requiring `commercial` stayed `ready`
+and was never sent. The license-class routing was not checked with Houdini, and the Houdini rules
+above come from SideFX's documentation and forum, not from a test: SideFX's pages
+give two different resolution limits for Apprentice. What was checked, on Houdini
+22.0.466 with an Apprentice license, is that `hython` starts headless, loads a
+`.hipnc` and renders a Geometry ROP through `houdini-rop-render`. Mantra and Karma
+renders, and Apprentice's resolution limit, were not tried.
 
 ---
 

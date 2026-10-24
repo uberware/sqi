@@ -3,15 +3,58 @@
 
 from __future__ import annotations
 
+import ast
+import importlib.util
 import sys
 import types
 from collections.abc import Callable, Iterator
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
 
 import pytest
 
+FakeHost = Callable[..., types.ModuleType]
+"""The ``fake_host_module`` fixture: ``install(name, **attrs)`` returns the fake module."""
+
+
+def assert_no_sqi_submitter_import(path: Path) -> None:
+    """A host file runs in the host's own Python, where ``sqi_submitter`` is not installed."""
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            assert not [a for a in node.names if a.name.split(".")[0] == "sqi_submitter"]
+        if isinstance(node, ast.ImportFrom):
+            assert (node.module or "").split(".")[0] != "sqi_submitter"
+
+
+def no_qt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the run look Qt-less: no binding, and importing the dialog fails."""
+    import sqi_submitter.qt as qt_package
+    from sqi_submitter.qt import _compat
+
+    monkeypatch.setattr(_compat, "QT_BINDING", "")
+    # Importing the dialog without a binding fails at import time: it must not be reached.
+    monkeypatch.setitem(sys.modules, "sqi_submitter.qt.dialog", None)
+    monkeypatch.delattr(qt_package, "dialog", raising=False)
+
+
+def load_host_file(path: Path) -> types.ModuleType:
+    """Load a host file that is not importable by name (a Cinema 4D ``.pyp``).
+
+    The module is not added to ``sys.modules``, so each call returns a fresh copy and
+    ``__name__`` is never ``"__main__"`` (the plugin's registration stays off).
+    """
+    name = "host_" + path.stem
+    spec = importlib.util.spec_from_file_location(
+        name, path, loader=SourceFileLoader(name, str(path))
+    )
+    assert spec is not None and spec.loader is not None, f"cannot load {path}"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
 
 @pytest.fixture
-def fake_host_module(monkeypatch: pytest.MonkeyPatch) -> Callable[..., types.ModuleType]:
+def fake_host_module(monkeypatch: pytest.MonkeyPatch) -> FakeHost:
     """Install a fake module (e.g. ``hou``, ``nuke``, ``bpy``, ``maya.cmds``).
 
     Returns the created module so tests can attach attributes. Dotted names
@@ -33,6 +76,19 @@ def fake_host_module(monkeypatch: pytest.MonkeyPatch) -> Callable[..., types.Mod
         return module
 
     return install
+
+
+@pytest.fixture(autouse=True)
+def native_messages(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record failed-launch message boxes instead of showing them: a real one blocks the run.
+
+    Tests of the real ``show_message`` restore it from a reference taken at import time.
+    """
+    from sqi_submitter import _failure
+
+    shown: list[str] = []
+    monkeypatch.setattr(_failure, "show_message", shown.append)
+    return shown
 
 
 @pytest.fixture

@@ -287,7 +287,7 @@ location, or an in-house tool no built-in detector covers, add a manual tag or
 a [custom detector](worker-capabilities.md#writing-custom-detectors). The
 [standalone renderer
 presets](preset-library.md#standalone-renderer-reference-presets) gate the same
-way on `arnold`, `vray`, `husk`, `redshift`, `renderman`, `3delight` and
+way on `arnold`, `vray`, `husk`, `redshift`, `renderman`, `threedelight` and
 `mantra`, and the tile preset's assembly step gates on `oiiotool`. Each of
 these tags has a built-in detector.
 
@@ -319,16 +319,17 @@ the index format, configuration, and the browse → preview → install flow.
 
 The official library ships seventeen DCC `Rendering`-category presets, plus
 eight [standalone renderer
-presets](preset-library.md#standalone-renderer-reference-presets). Seven of
+presets](preset-library.md#standalone-renderer-reference-presets). Fourteen of
 the DCC presets (`maya-layer-render`, `maya-scene-render`,
 `houdini-rop-render`, `nuke-write-render`, `nuke-script-render`,
-`blender-batch-render` and `blender-view-layer-render`) are the targets of the
-[`sqi-submitter`](dcc-submitters.md) in-application submitters. The other ten
-have no in-application submitter and are submitted from the web UI or the API: `mistika-boutique-render`, `mistika-vr-render` and
-`mistika-workflows-render`, plus `cinema4d-render`, `cinema4d-take-render`,
-`3dsmax-render` and the four After Effects presets
-(`after-effects-render-windows`, `after-effects-render-macos`,
-`after-effects-queue-render-windows`, `after-effects-queue-render-macos`).
+`blender-batch-render`, `blender-view-layer-render`, `cinema4d-render`,
+`cinema4d-take-render`, `3dsmax-render` and the four After Effects presets
+`after-effects-render-windows`, `after-effects-render-macos`,
+`after-effects-queue-render-windows`, `after-effects-queue-render-macos`) are
+the targets of the [`sqi-submitter`](dcc-submitters.md) in-application
+submitters. The other three have no in-application submitter and are submitted
+from the web UI or the API: `mistika-boutique-render`, `mistika-vr-render` and
+`mistika-workflows-render`.
 `3dsmax-render` and the After Effects presets also gate on the worker's OS.
 Parameter names follow a documented, versioned, additive-only convention:
 `SceneFile` and `Frames` on all but the two After Effects queue presets (which

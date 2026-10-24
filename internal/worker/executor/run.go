@@ -552,6 +552,13 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	// adds rules), not here.
 	action, envVars := applyDeliveries(msg.PathDeliveries, lookup, resolvedRun, envVars)
 
+	// Swap the job's command name for the operator's worker.commands entry, if
+	// there is one. After applyDeliveries so a path substituted into the command
+	// is mapped like any other; before exec.Command so the mapped path is what
+	// the process is started from. The environment onEnter/onExit launch site in
+	// the session package makes the same call.
+	action = sess.ResolveAction(action)
+
 	// Build process environment.
 	// Set working directory to the session working directory.
 	// Capture stdout and stderr via explicit pipes (not inheriting

@@ -48,6 +48,25 @@ def test_build_form_creates_bound_editors(app: object) -> None:
     assert model.values()["Frames"] == "1-10"
 
 
+def test_on_change_reports_real_edits_only(app: object) -> None:
+    model = _model()
+    seen: list[tuple[str, str]] = []
+    form = build_form(model, on_change=lambda name, value: seen.append((name, value)))
+    line = form.findChild(QtWidgets.QLineEdit, "field_Frames")
+    assert line is not None
+    # Tabbing through an empty field is not an edit: it must not record "".
+    line.editingFinished.emit()
+    assert seen == []
+    line.setText("1-10")
+    line.editingFinished.emit()
+    line.editingFinished.emit()  # unchanged on the second focus-out
+    spin = form.findChild(QtWidgets.QSpinBox, "field_Chunk")
+    assert spin is not None
+    spin.setValue(5)
+    assert seen == [("Frames", "1-10"), ("Chunk", "5")]
+    assert model.values()["Frames"] == "1-10"
+
+
 def test_spin_and_dropdown_bind(app: object) -> None:
     model = _model()
     form = build_form(model)

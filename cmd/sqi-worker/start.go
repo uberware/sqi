@@ -232,7 +232,7 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	go obsServer.Run(ctx)
 
 	// ── Capabilities ──────────────────────────────────────────────────────────
-	caps, err := capabilities.BuildWorkerCapabilities(cfg.Capabilities, cfg.Worker.CapabilityTags, capabilities.OSCheckEnv())
+	caps, _, err := buildCapabilities(cfg, capabilities.OSCheckEnv())
 	if err != nil {
 		return fmt.Errorf("build capabilities: %w", err)
 	}
@@ -301,10 +301,18 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	// through the AssignmentBudget the Manager builds per session — this call
 	// is the only wiring point, so an omission here would silently meter the
 	// whole worker against the built-in defaults.
+	// The command table: worker.commands plus any default a detector found.
+	// Like cfg.Expr above, the option below is the only wiring point, so leaving
+	// it out would silently ignore the configuration.
+	cmdPlan, err := detectCommandPlan(cfg, capabilities.OSCheckEnv(), hostLookPath)
+	if err != nil {
+		return err
+	}
 	sessionMgr := session.NewManager(
 		sessionRoot, cfg.Worker.KeepFailedSessions, isolationProvider, cfg.Isolation,
 		exprLimitsFromConfig(cfg.Expr), logger,
 		session.WithSessionRootMode(sessionRootMode),
+		cmdPlan.option(logger),
 	)
 
 	// ── Log chunk publisher ────────────────────────────────────
@@ -588,7 +596,7 @@ func runDryRun(cfg workerconfig.WorkerConfig) error {
 	fmt.Fprintln(w, "## Detected capabilities")
 	fmt.Fprintln(w)
 
-	caps, err := capabilities.BuildWorkerCapabilities(cfg.Capabilities, cfg.Worker.CapabilityTags, capabilities.OSCheckEnv())
+	caps, _, err := buildCapabilities(cfg, capabilities.OSCheckEnv())
 	if err != nil {
 		return fmt.Errorf("build capabilities: %w", err)
 	}
@@ -623,6 +631,18 @@ func runDryRun(cfg workerconfig.WorkerConfig) error {
 				fmt.Fprintf(w, "  %s\n", k)
 			}
 		}
+	}
+
+	// ── Commands ──────────────────────────────────────────────────────────────
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "## Commands")
+	fmt.Fprintln(w)
+	plan, err := detectCommandPlan(cfg, capabilities.OSCheckEnv(), hostLookPath)
+	if err != nil {
+		return err
+	}
+	if err := plan.write(w); err != nil {
+		return fmt.Errorf("write commands: %w", err)
 	}
 
 	// ── Registration summary ──────────────────────────────────────────────────

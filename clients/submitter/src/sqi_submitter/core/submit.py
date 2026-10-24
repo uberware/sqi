@@ -11,6 +11,21 @@ from sqi_submitter.core.mapping import is_output_path_param, is_scene_path_param
 from sqi_submitter.core.schema import FormModel
 from sqi_submitter.core.session import SubmitterSession
 
+SCENE_NOT_SAVED_MESSAGE = (
+    "The scene could not be saved. Save it manually, then submit "
+    "(the farm renders the file on disk)."
+)
+
+
+def scene_save_failed(adapter: HostAdapter | None, save_scene: bool) -> bool:
+    """Save the scene when asked and the host reports it modified; True if that save failed."""
+    return (
+        adapter is not None
+        and save_scene
+        and adapter.is_scene_modified()
+        and not adapter.save_scene()
+    )
+
 
 def submit_form(
     session: SubmitterSession,
@@ -45,16 +60,8 @@ def submit_form(
                         "output location in your scene's render settings."
                     )
                 model.set_value(f.parameter.name, ctx.output_path)
-    if (
-        adapter is not None
-        and save_scene
-        and adapter.is_scene_modified()
-        and not adapter.save_scene()
-    ):
-        raise SubmitterError(
-            "The scene could not be saved. Save it manually, then submit "
-            "(the farm renders the file on disk)."
-        )
+    if scene_save_failed(adapter, save_scene):
+        raise SubmitterError(SCENE_NOT_SAVED_MESSAGE)
     if not model.validate():
         raise FormInvalidError(model.errors())
     return session.submit(

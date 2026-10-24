@@ -13,7 +13,9 @@ readme: |
   ## Parameters
 
   - **Scene File** - the `.nk` script to render. It must be reachable from every
-    worker that runs the job.
+    worker that runs the job. A worker running Non-commercial Nuke renders only
+    scripts saved by Non-commercial Nuke (`.nknc`), not a plain `.nk` from a
+    commercial Nuke.
   - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
     `1-100:2` for every second frame.
 
@@ -31,7 +33,10 @@ readme: |
   ## Requirements
 
   - Workers tagged `attr.worker.tag.nuke = true`
-  - `nuke` on the worker's `PATH`
+  - A `nuke` command the worker can resolve: its `worker.commands` entry, a
+    `nuke` on its `PATH`, or the Nuke install it detects. Non-commercial Nuke
+    also needs `args: ["--nc"]` in that entry, and its output is limited to
+    1920 x 1080.
 category: Rendering
 version: 1.0.0
 template:

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -59,7 +60,11 @@ type Detector struct {
 	Tag     string      `yaml:"tag"`
 	Checks  []Check     `yaml:"checks"`
 	Version VersionSpec `yaml:"version"`
-	Origin  string      `yaml:"-"` // "builtin:<name>" or "custom"; for diagnostics
+	// Command, when set, says how to run the detected software, so the worker
+	// can supply a default for the command name its presets use. See
+	// [CommandSpec].
+	Command *CommandSpec `yaml:"command"`
+	Origin  string       `yaml:"-"` // "builtin:<name>" or "custom"; for diagnostics
 }
 
 // CapabilitiesConfig is the worker's capability-detection configuration.
@@ -96,6 +101,11 @@ func (d Detector) Validate() error {
 			return fmt.Errorf("detector %q: bad version regex: %w", d.Tag, err)
 		}
 	}
+	if d.Command != nil {
+		if err := d.Command.validate(d.Tag); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -109,7 +119,7 @@ type CheckEnv interface {
 }
 
 // Evaluate runs the detector's checks against env and returns the presence tags
-// to advertise: the bare Tag if any check matched, plus Tag-<version> for each
+// to advertise: the bare Tag if any check matched, plus Tag_<version> for each
 // distinct version captured. Results are de-duplicated and sorted.
 //
 // Evaluate assumes d has already passed Validate (in particular that
@@ -134,7 +144,7 @@ func (d Detector) Evaluate(env CheckEnv) []string {
 	}
 	out := []string{d.Tag}
 	for v := range versions {
-		out = append(out, d.Tag+"-"+v)
+		out = append(out, versionTag(d.Tag, v))
 	}
 	sort.Strings(out)
 	return out
@@ -168,10 +178,15 @@ func (c Check) signals(env CheckEnv) []string {
 }
 
 func (d Detector) extractVersion(signal string) string {
-	if d.Version.From == "" {
+	return extractVersionFrom(d.Version.From, signal)
+}
+
+// extractVersionFrom applies a version regex (see [VersionSpec]) to signal.
+func extractVersionFrom(from, signal string) string {
+	if from == "" {
 		return ""
 	}
-	re := regexp.MustCompile(d.Version.From)
+	re := regexp.MustCompile(from)
 	m := re.FindStringSubmatch(signal)
 	if m == nil {
 		return ""
@@ -183,4 +198,27 @@ func (d Detector) extractVersion(signal string) string {
 		return m[1]
 	}
 	return ""
+}
+
+// versionTag is the tag a detector emits for one detected version: the base tag,
+// an underscore, then the version with every character that is not a letter or
+// digit replaced by an underscore (nuke + 17.1 = nuke_17_1).
+//
+// The key becomes the last part of attr.worker.tag.<key> in a job's
+// hostRequirements, and OpenJD identifiers allow only letters, digits and
+// underscores, so a hyphen or a dot would make the tag impossible to require from
+// a conformant template.
+func versionTag(tag, version string) string {
+	var b strings.Builder
+	b.WriteString(tag)
+	b.WriteByte('_')
+	for _, r := range version {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
 }

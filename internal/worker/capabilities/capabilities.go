@@ -66,7 +66,7 @@ type Capabilities struct {
 	// Tags holds arbitrary string capability tags merged from auto-detection
 	// and any manual overrides supplied via WorkerConfig.Worker.CapabilityTags.
 	// The map value is the empty string for presence-only, list-style tags
-	// (e.g. "maya-2025") and the right-hand side of the entry for key=value
+	// (e.g. "maya_2025") and the right-hand side of the entry for key=value
 	// tags (e.g. "maya=true" → Tags["maya"] = "true"). See [MergeManualTags].
 	//
 	// Auto-detected entries seeded by [Detect]:
@@ -142,7 +142,7 @@ func ValidateTagKeys(tags map[string]string) error {
 // WorkerConfig.Worker.CapabilityTags into c.Tags. Each entry is either:
 //
 //   - a bare tag, stored as a map key with an empty value, signaling presence
-//     (e.g. "maya-2025", "gpu", "highram"); or
+//     (e.g. "maya_2025", "gpu", "highram"); or
 //   - a "key=value" pair, split on the first "=" (e.g. "maya=true" sets
 //     Tags["maya"] = "true"; a value may itself contain "=", e.g. "a=b=c"
 //     sets Tags["a"] = "b=c"; a trailing "=" with nothing after it, e.g.

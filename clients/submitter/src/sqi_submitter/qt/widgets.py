@@ -3,18 +3,30 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from sqi_submitter.core.schema import FormField, FormModel
 from sqi_submitter.qt._compat import QtWidgets, require_qt
 
 _FILE_PICKERS = {"CHOOSE_INPUT_FILE", "CHOOSE_OUTPUT_FILE", "CHOOSE_DIRECTORY"}
-_PREFILL_TIP = "Pre-filled from the scene"
+PREFILL_TIP = "Pre-filled from the scene"
+
+OnChange = Callable[[str, str], None]
+"""``(parameter name, new value)``, called when the artist changes a field."""
 
 
 def build_form(
     model: FormModel,
     parent: QtWidgets.QWidget | None = None,
     hidden_names: frozenset[str] = frozenset(),
+    on_change: OnChange | None = None,
 ) -> QtWidgets.QWidget:
+    """Build one editor per visible field, bound to ``model``.
+
+    ``on_change`` hears only real edits: a value that differs from the model's
+    current one (``None`` and ``""`` count as equal, so tabbing through an
+    empty field is not an edit). A path field's row is named ``row_<name>``.
+    """
     require_qt()
     root = QtWidgets.QWidget(parent)
     outer = QtWidgets.QVBoxLayout(root)
@@ -27,7 +39,7 @@ def build_form(
         )
         layout = QtWidgets.QFormLayout(box)
         for f in visible:
-            layout.addRow(f.label, _editor(f, model, box))
+            layout.addRow(f.label, _editor(f, _committer(model, f, on_change), box))
         outer.addWidget(box)
     return root
 
@@ -35,17 +47,27 @@ def build_form(
 def refresh_form(root: QtWidgets.QWidget, model: FormModel) -> None:
     """Re-read model values into their editors (e.g. after a prefill/target change)."""
     for f in model.fields:
-        if f.hidden:
-            continue
-        editor = _find_editor(root, f.parameter.name)
-        if editor is None:
-            continue
-        editor.blockSignals(True)
-        try:
-            _write_value(editor, f)
-        finally:
-            editor.blockSignals(False)
-        editor.setToolTip(_PREFILL_TIP if f.prefilled else "")
+        editor = refresh_field(root, f)
+        if editor is not None:
+            editor.setToolTip(PREFILL_TIP if f.prefilled else "")
+
+
+def refresh_field(root: QtWidgets.QWidget, f: FormField) -> QtWidgets.QWidget | None:
+    """Re-read one field's model value into its editor without reporting an edit.
+
+    Returns the editor, or ``None`` when the field is hidden or has none.
+    """
+    if f.hidden:
+        return None
+    editor = _find_editor(root, f.parameter.name)
+    if editor is None:
+        return None
+    editor.blockSignals(True)
+    try:
+        _write_value(editor, f)
+    finally:
+        editor.blockSignals(False)
+    return editor
 
 
 def _find_editor(root: QtWidgets.QWidget, name: str) -> QtWidgets.QWidget | None:
@@ -97,55 +119,68 @@ def _check_states(f: FormField) -> tuple[str, str]:
     return "false", "true"
 
 
-def _editor(f: FormField, model: FormModel, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
+Commit = Callable[[str], None]
+
+
+def _committer(model: FormModel, f: FormField, on_change: OnChange | None) -> Commit:
+    """Write an editor's value into ``model``; tell ``on_change`` if it changed."""
+    name = f.parameter.name
+
+    def commit(value: str) -> None:
+        changed = (f.value or "") != value
+        model.set_value(name, value)
+        if changed and on_change is not None:
+            on_change(name, value)
+
+    return commit
+
+
+def _editor(f: FormField, commit: Commit, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
     if f.widget in _FILE_PICKERS:
-        return _path_row(f, model, parent, f.widget)
-    w = _make_editor(f, model, parent)
+        return _path_row(f, commit, parent, f.widget)
+    w = _make_editor(f, commit, parent)
     w.setObjectName(f"field_{f.parameter.name}")
     if f.prefilled:
-        w.setToolTip(_PREFILL_TIP)
+        w.setToolTip(PREFILL_TIP)
     return w
 
 
-def _make_editor(f: FormField, model: FormModel, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
+def _make_editor(f: FormField, commit: Commit, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
     kind = f.widget
     if kind == "MULTILINE_EDIT":
-        return _multiline_edit(f, model, parent)
+        return _multiline_edit(f, commit, parent)
     if kind == "SPIN_BOX" and f.parameter.type == "INT":
-        return _int_spin_box(f, model, parent)
+        return _int_spin_box(f, commit, parent)
     if kind == "SPIN_BOX":
-        return _double_spin_box(f, model, parent)
+        return _double_spin_box(f, commit, parent)
     if kind == "CHECK_BOX":
-        return _check_box(f, model, parent)
+        return _check_box(f, commit, parent)
     if kind == "DROPDOWN_LIST":
-        return _dropdown(f, model, parent)
+        return _dropdown(f, commit, parent)
     # LINE_EDIT and unknown controls
-    return _line_edit(f, model, parent)
+    return _line_edit(f, commit, parent)
 
 
 def _multiline_edit(
-    f: FormField, model: FormModel, parent: QtWidgets.QWidget
+    f: FormField, commit: Commit, parent: QtWidgets.QWidget
 ) -> QtWidgets.QPlainTextEdit:
-    name = f.parameter.name
     w = QtWidgets.QPlainTextEdit(f.value or "", parent)
-    w.textChanged.connect(lambda: model.set_value(name, w.toPlainText()))
+    w.textChanged.connect(lambda: commit(w.toPlainText()))
     return w
 
 
-def _int_spin_box(f: FormField, model: FormModel, parent: QtWidgets.QWidget) -> QtWidgets.QSpinBox:
-    name = f.parameter.name
+def _int_spin_box(f: FormField, commit: Commit, parent: QtWidgets.QWidget) -> QtWidgets.QSpinBox:
     w = QtWidgets.QSpinBox(parent)
     w.setRange(-(2**31), 2**31 - 1)
     if f.value is not None:
         w.setValue(int(float(f.value)))
-    w.valueChanged.connect(lambda v: model.set_value(name, str(v)))
+    w.valueChanged.connect(lambda v: commit(str(v)))
     return w
 
 
 def _double_spin_box(
-    f: FormField, model: FormModel, parent: QtWidgets.QWidget
+    f: FormField, commit: Commit, parent: QtWidgets.QWidget
 ) -> QtWidgets.QDoubleSpinBox:
-    name = f.parameter.name
     w = QtWidgets.QDoubleSpinBox(parent)
     w.setRange(-1e12, 1e12)
     ui = f.parameter.user_interface
@@ -153,21 +188,19 @@ def _double_spin_box(
         w.setDecimals(ui.decimals)
     if f.value is not None:
         w.setValue(float(f.value))
-    w.valueChanged.connect(lambda v: model.set_value(name, str(v)))
+    w.valueChanged.connect(lambda v: commit(str(v)))
     return w
 
 
-def _check_box(f: FormField, model: FormModel, parent: QtWidgets.QWidget) -> QtWidgets.QCheckBox:
-    name = f.parameter.name
+def _check_box(f: FormField, commit: Commit, parent: QtWidgets.QWidget) -> QtWidgets.QCheckBox:
     off, on = _check_states(f)
     w = QtWidgets.QCheckBox(parent)
     w.setChecked(f.value == on)
-    w.toggled.connect(lambda checked: model.set_value(name, on if checked else off))
+    w.toggled.connect(lambda checked: commit(on if checked else off))
     return w
 
 
-def _dropdown(f: FormField, model: FormModel, parent: QtWidgets.QWidget) -> QtWidgets.QComboBox:
-    name = f.parameter.name
+def _dropdown(f: FormField, commit: Commit, parent: QtWidgets.QWidget) -> QtWidgets.QComboBox:
     allowed = f.parameter.allowed_values or []
     w = QtWidgets.QComboBox(parent)
     w.addItems(allowed)
@@ -177,30 +210,30 @@ def _dropdown(f: FormField, model: FormModel, parent: QtWidgets.QWidget) -> QtWi
         # View matches the empty model: no selection until the artist picks
         # (or a prefill lands), so required-field validation stays meaningful.
         w.setCurrentIndex(-1)
-    w.currentTextChanged.connect(lambda t: model.set_value(name, t))
+    w.currentTextChanged.connect(commit)
     return w
 
 
-def _line_edit(f: FormField, model: FormModel, parent: QtWidgets.QWidget) -> QtWidgets.QLineEdit:
-    name = f.parameter.name
+def _line_edit(f: FormField, commit: Commit, parent: QtWidgets.QWidget) -> QtWidgets.QLineEdit:
     w = QtWidgets.QLineEdit(f.value or "", parent)
-    w.editingFinished.connect(lambda: model.set_value(name, w.text()))
+    w.editingFinished.connect(lambda: commit(w.text()))
     return w
 
 
 def _path_row(
-    f: FormField, model: FormModel, parent: QtWidgets.QWidget, kind: str
+    f: FormField, commit: Commit, parent: QtWidgets.QWidget, kind: str
 ) -> QtWidgets.QWidget:
     name = f.parameter.name
     row = QtWidgets.QWidget(parent)
+    row.setObjectName(f"row_{name}")
     layout = QtWidgets.QHBoxLayout(row)
     layout.setContentsMargins(0, 0, 0, 0)
 
     line = QtWidgets.QLineEdit(f.value or "", row)
     line.setObjectName(f"field_{name}")
-    line.editingFinished.connect(lambda: model.set_value(name, line.text()))
+    line.editingFinished.connect(lambda: commit(line.text()))
     if f.prefilled:
-        line.setToolTip(_PREFILL_TIP)
+        line.setToolTip(PREFILL_TIP)
 
     button = QtWidgets.QToolButton(row)
     button.setText("…")
@@ -215,7 +248,7 @@ def _path_row(
             path = QtWidgets.QFileDialog.getExistingDirectory(row.window(), caption, line.text())
         if path:
             line.setText(path)
-            model.set_value(name, path)
+            commit(path)
 
     button.clicked.connect(_browse)
 

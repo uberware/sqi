@@ -99,6 +99,12 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, os.Getenv("SQI_TEST_OUTPUT"))
 		os.Exit(0)
 
+	case "args":
+		// Print the arguments this process was started with, "|"-joined, so a
+		// test can see exactly what the worker passed.
+		fmt.Println(strings.Join(os.Args[1:], "|"))
+		os.Exit(0)
+
 	case "both":
 		fmt.Println(os.Getenv("SQI_TEST_OUTPUT"))
 		fmt.Fprintln(os.Stderr, os.Getenv("SQI_TEST_OUTPUT"))

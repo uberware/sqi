@@ -34,7 +34,8 @@ readme: |
   ## Requirements
 
   - Workers tagged `attr.worker.tag.houdini = true`
-  - `hython` on the worker's `PATH`
+  - `hython`: the worker finds the newest Houdini install on Windows and Linux;
+    on macOS put it on the worker's `PATH`
 category: Rendering
 version: 1.0.0
 template:

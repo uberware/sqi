@@ -10,7 +10,7 @@
 # No version is extracted: the install paths carry none, and the directory
 # DELIGHT names has no fixed naming scheme, so a version-like string in it is
 # not trusted.
-tag: 3delight
+tag: threedelight
 checks:
   - exe: renderdl
   - env: DELIGHT

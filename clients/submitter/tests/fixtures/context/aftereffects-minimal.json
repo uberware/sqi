@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "host": { "name": "aftereffects", "display_name": "After Effects", "version": "25.2" },
+  "scene": {
+    "path": "C:/projects/spot.aep",
+    "frame_range": "1-240",
+    "output_path": "D:/renders/spot/",
+    "renderer": null
+  },
+  "targets": [
+    {
+      "name": "Main Comp",
+      "kind": "render_queue_item",
+      "frame_range": "1-240",
+      "output_path": "D:/renders/spot/main_[#####].png",
+      "extra": { "RenderQueueItem": "1" },
+      "locked": []
+    }
+  ],
+  "server_url": null
+}

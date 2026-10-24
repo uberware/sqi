@@ -8,12 +8,12 @@ from typing import Any
 import pytest
 
 from sqi_client.models import ProductParameter
-from sqi_submitter.core.adapter import HostAdapter
+from sqi_submitter.core.adapter import HostAdapter, SnapshotAdapter
 from sqi_submitter.core.context import RenderTarget, SceneContext
 from sqi_submitter.core.errors import SubmitterError
 from sqi_submitter.core.joboptions import JobOptions
 from sqi_submitter.core.schema import FormModel
-from sqi_submitter.core.submit import submit_form
+from sqi_submitter.core.submit import SCENE_NOT_SAVED_MESSAGE, submit_form
 
 
 class _FakeAdapter(HostAdapter):
@@ -183,3 +183,45 @@ def test_blank_output_and_no_scene_output_fails() -> None:
             save_scene=False,
         )
     assert session.calls == []  # never posted — would scatter files in the worker cwd
+
+
+def _failed_save_snapshot(scene_path: str | None) -> SnapshotAdapter:
+    return SnapshotAdapter(
+        host_name="fake",
+        display_name="Fake",
+        context=SceneContext(scene_path=scene_path),
+        targets=[],
+        save_failed=True,
+    )
+
+
+def test_failed_save_snapshot_raises_the_not_saved_error() -> None:
+    session = _FakeSession()
+    with pytest.raises(SubmitterError) as exc_info:
+        submit_form(
+            session,  # type: ignore[arg-type]
+            "blender-batch-render",
+            _model_with_scene(),
+            farm_id="f",
+            queue_id="q",
+            adapter=_failed_save_snapshot("/x/s.blend"),
+            save_scene=True,
+        )
+    assert exc_info.value.user_message == SCENE_NOT_SAVED_MESSAGE
+    assert session.calls == []
+
+
+def test_failed_save_snapshot_of_an_untitled_scene_asks_to_save_first() -> None:
+    """The scene-path check still comes before the save failure, as against the host."""
+    session = _FakeSession()
+    with pytest.raises(SubmitterError, match="Save your scene"):
+        submit_form(
+            session,  # type: ignore[arg-type]
+            "blender-batch-render",
+            _model_with_scene(),
+            farm_id="f",
+            queue_id="q",
+            adapter=_failed_save_snapshot(None),
+            save_scene=True,
+        )
+    assert session.calls == []

@@ -7,14 +7,26 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sqi-submitter"
-description = "DCC submitter framework for sqi (Maya, Houdini, Nuke, Blender) on top of sqi-sdk"
+description = "DCC submitter framework for sqi (Maya, Houdini, Nuke, 3ds Max, Blender, Cinema 4D, After Effects) on top of sqi-sdk"
 readme = "README.md"
 requires-python = ">=3.9"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
 authors = [{ name = "Robin Scher", email = "robin@uberware.net" }]
 maintainers = [{ name = "Uberware Inc.", email = "robin@uberware.net" }]
-keywords = ["render-farm", "openjd", "vfx", "sqi", "maya", "houdini", "nuke", "blender"]
+keywords = [
+  "render-farm",
+  "openjd",
+  "vfx",
+  "sqi",
+  "maya",
+  "houdini",
+  "nuke",
+  "3dsmax",
+  "blender",
+  "cinema4d",
+  "aftereffects",
+]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
@@ -32,10 +44,20 @@ dynamic = ["version"]
 
 [project.optional-dependencies]
 qt = ["PySide6"]
-dev = ["ruff", "mypy<2", "pytest", "pytest-cov", "respx", "PyYAML", "types-PyYAML"]
+dev = [
+  "ruff",
+  "mypy<2",
+  "pytest",
+  "pytest-cov",
+  "respx",
+  "PyYAML",
+  "types-PyYAML",
+  # The build backend: tests/test_wheel_contents.py builds a wheel and reads it back.
+  "hatchling>=1.27",
+]
 
 [project.scripts]
-sqi-submit = "sqi_submitter.qt.dialog:main"
+sqi-submit = "sqi_submitter.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/uberware/sqi"
@@ -59,6 +81,8 @@ include = ["src", "tests", "README.md", "LICENSE", "pyproject.toml"]
 target-version = "py39"
 line-length = 100
 src = ["src", "tests"]
+# The Cinema 4D plugin is a .pyp: Python that ruff does not pick up by extension.
+extend-include = ["*.pyp"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "FA"]
@@ -69,14 +93,30 @@ known-first-party = ["sqi_submitter", "sqi_client"]
 [tool.mypy]
 python_version = "3.9"
 strict = true
-files = ["src"]
+# `mypy src` reads only .py files; a bare `mypy` also checks the Cinema 4D plugin (a .pyp).
+files = ["src", "src/sqi_submitter/hosts/cinema4d/sqi_submit.pyp"]
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
 # PySide6/PySide6.*: qt/_compat.py type-checks against the real PySide6 stubs
 # when the qt extra is installed; without it, treat PySide6 as Any so
-# `mypy src` still passes in Qt-less environments (DCC-bundled bindings).
-module = ["PySide6", "PySide6.*", "PySide2.*", "maya.*", "hou", "nuke", "bpy", "bpy.*"]
+# `mypy` still passes in Qt-less environments (DCC-bundled bindings).
+module = [
+  "PySide6",
+  "PySide6.*",
+  "PySide2.*",
+  "maya.*",
+  "hou",
+  "nuke",
+  "bpy",
+  "bpy.*",
+  "c4d",
+  "c4d.*",
+  "mxutils",
+  "pymxs",
+  "pymxs.*",
+  "qtmax",
+]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
@@ -114,4 +154,4 @@ markers = [
 [tool.coverage.run]
 # Qt widget/dialog code and pure-registration DCC glue are exercised only where
 # a Qt binding / real DCC exists (separate CI job / manual checklist).
-omit = ["*/qt/widgets.py", "*/qt/dialog.py", "*/hosts/blender/addon.py", "*/hosts/*/startup/*"]
+omit = ["*/qt/widgets.py", "*/qt/dialog.py", "*/hosts/*/startup/*"]

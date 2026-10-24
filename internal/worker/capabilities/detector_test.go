@@ -84,7 +84,7 @@ func TestDetector_Evaluate_MultiVersionAndBare(t *testing.T) {
 		paths: map[string]string{"hython": "/opt/hfs20.5/bin/hython"},
 	}
 	got := d.Evaluate(env)
-	want := []string{"houdini", "houdini-20.0", "houdini-20.5"}
+	want := []string{"houdini", "houdini_20_0", "houdini_20_5"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("got %v, want %v", got, want)
 	}

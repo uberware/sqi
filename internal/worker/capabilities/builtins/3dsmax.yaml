@@ -12,7 +12,7 @@
 # A registry match tags the worker without a version, because the key name
 # carries no year. A version comes only from a matched file path: the glob, or
 # a 3dsmaxcmd on PATH that sits in a "3ds Max <year>" folder.
-tag: 3dsmax
+tag: threedsmax
 checks:
   - exe: 3dsmaxcmd
   - registry: 'HKLM\SOFTWARE\Autodesk\3dsMax'                                  # windows

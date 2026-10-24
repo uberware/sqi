@@ -1,99 +1,129 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Generic Qt submit dialog: product → target → params → farm/queue → submit."""
+"""Generic Qt submit dialog: product → targets → params → farm/queue → submit."""
 
 from __future__ import annotations
 
-import argparse
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 
-from sqi_client.models import Farm, Job, Product, ProductParameter, Queue
+from sqi_client.models import Farm, Product, ProductParameter, Queue
 from sqi_submitter.core import (
     FormInvalidError,
     FormModel,
     HostAdapter,
     RenderTarget,
+    SceneContext,
+    SnapshotAdapter,
     SubmitterError,
     SubmitterSession,
+    TargetResult,
+    apply_edits,
     group_products,
+    normalize_name,
+    per_target_models,
     prefill,
     submit_form,
+    submit_targets,
+    target_parameters,
 )
+from sqi_submitter.core.handoff import ContextAdapter
 from sqi_submitter.core.joboptions import JobOptions
+from sqi_submitter.core.submit import scene_save_failed
 from sqi_submitter.qt._compat import QtCore, QtGui, QtWidgets, require_qt
-from sqi_submitter.qt.widgets import build_form
+from sqi_submitter.qt.widgets import PREFILL_TIP, build_form, refresh_field
 
-__all__ = ["SubmitDialog", "main", "open_for_adapter"]
+__all__ = ["SubmitDialog", "open_for_adapter"]
 
 _SUGGESTED_LABEL = "Suggested —"
 _ALL_PRODUCTS_LABEL = "All —"
-_SCENE_SETTINGS_LABEL = "Scene settings"
 _ERROR_STYLE = "border: 1px solid red;"
 _STALE_MODEL_MESSAGE = "Product parameters failed to load — reload and try again."
 _EMPTY_CATALOG_MESSAGE = (
     "No products are available on this server. Ask your admin to install a "
     "preset from the preset library (Admin → Preset Library), then Reload."
 )
+_PER_TARGET_MODE = "One job per ticked target"
+_WHOLE_SCENE_MODE = "One job for the whole scene, as configured"
+_TICK_HINT = "Tick at least one target."
+_FROM_EACH_TARGET_TIP = "From each target"
+_LOCKED_TIP = "Kept per target (e.g. a movie renders as one task)"
 _CLOSE_WAIT_MS = 10_000
+
+_SubmitCall = Callable[[], list[TargetResult]]
 
 
 class _SubmitWorker(QtCore.QThread):
-    """Runs :func:`submit_form` off the GUI thread; reports back via signals."""
+    """Runs one prepared submit off the GUI thread; reports back via signals.
+
+    The call only talks HTTP: it is handed a :class:`SnapshotAdapter`, never
+    the live host adapter, since host APIs are main-thread only.
+
+    ``done`` carries the ``list[TargetResult]``; ``failed`` carries a
+    :class:`SubmitterError` the call raised (the whole-scene path only, so the
+    single job keeps its banner and highlighted fields).
+    """
 
     done = QtCore.Signal(object)
     failed = QtCore.Signal(object)
 
-    def __init__(
-        self,
-        session: SubmitterSession,
-        product_name: str,
-        model: FormModel,
-        *,
-        farm_id: str,
-        queue_id: str,
-        job_name: str | None,
-        adapter: HostAdapter | None,
-        save_scene: bool,
-        job_options: JobOptions | None,
-    ) -> None:
+    def __init__(self, call: _SubmitCall) -> None:
         super().__init__()
-        self._session = session
-        self._product_name = product_name
-        self._model = model
-        self._farm_id = farm_id
-        self._queue_id = queue_id
-        self._job_name = job_name
-        self._adapter = adapter
-        self._save_scene = save_scene
-        self._job_options = job_options
+        self._call = call
 
     def run(self) -> None:
         try:
-            job = submit_form(
-                self._session,
-                self._product_name,
-                self._model,
-                farm_id=self._farm_id,
-                queue_id=self._queue_id,
-                job_name=self._job_name,
-                adapter=self._adapter,
-                save_scene=self._save_scene,
-                job_options=self._job_options,
-            )
+            results = _run_submit(self._call)
         except SubmitterError as exc:
             self.failed.emit(exc)
         else:
-            self.done.emit(job)
+            self.done.emit(results)
+
+
+def _run_submit(call: _SubmitCall) -> list[TargetResult]:
+    """Run ``call``, turning any exception into a :class:`SubmitterError`.
+
+    A host's ``save_scene`` (Maya's ``cmds.file``, say) can raise anything, and
+    a prepared call re-raises it (see :func:`_raising`); on the worker thread an
+    unhandled exception just ends the thread and the artist sees nothing, so it
+    is reported through the banner like any other failure.
+    """
+    try:
+        return call()
+    except SubmitterError:
+        raise
+    except Exception as exc:
+        raise SubmitterError(str(exc) or type(exc).__name__) from exc
+
+
+def _raising(exc: Exception) -> _SubmitCall:
+    """A submit call that fails with ``exc``, raised by a host call at submit-start."""
+
+    def call() -> list[TargetResult]:
+        raise exc
+
+    return call
+
+
+@dataclass(frozen=True)
+class _Submission:
+    """Everything one submit needs, captured on the GUI thread at submit-start."""
+
+    call: _SubmitCall
+    product_name: str
+    save_scene: bool
+    # (settings key, ticked names) to remember; None for a whole-scene product.
+    remember_ticks: tuple[str, list[str]] | None
 
 
 class SubmitDialog(QtWidgets.QDialog):
-    """Product → target → parameters → farm/queue → submit, one dialog."""
+    """Product → targets → parameters → farm/queue → submit, one dialog."""
 
     def __init__(
         self,
         session: SubmitterSession,
         adapter: HostAdapter | None = None,
         parent: QtWidgets.QWidget | None = None,
+        initial_error: str | None = None,
     ) -> None:
         require_qt()
         super().__init__(parent)
@@ -101,15 +131,27 @@ class SubmitDialog(QtWidgets.QDialog):
         self.adapter = adapter
 
         self._products: list[Product] = []
+        self._targets: list[RenderTarget] = []
+        self._parameters: list[ProductParameter] = []
+        self._target_params: frozenset[str] = frozenset()
         self._model: FormModel | None = None
         self._model_product: str | None = None
+        # The first ticked target when the form was last built (None: none ticked).
+        self._displayed_target: RenderTarget | None = None
         self._form_root: QtWidgets.QWidget | None = None
         self._worker: _SubmitWorker | None = None
+        self._submitting = False
+        # Fields the artist changed, by parameter name. Each job takes these
+        # over its target's own pre-fill (except target parameters and keys a
+        # target locks); reset when the product changes.
+        self.edited: dict[str, str] = {}
 
         self.setWindowTitle("Submit to sqi")
         self._build_ui()
         self._wire_signals()
         self._load()
+        if initial_error:
+            self._show_error(initial_error)
 
     # -- construction -----------------------------------------------------
 
@@ -126,9 +168,16 @@ class SubmitDialog(QtWidgets.QDialog):
         self._product_combo = QtWidgets.QComboBox(self)
         self._product_combo.setObjectName("productCombo")
 
-        self._target_combo = QtWidgets.QComboBox(self)
-        self._target_combo.setObjectName("targetCombo")
-        self._target_combo.hide()
+        self._mode_label = QtWidgets.QLabel(self)
+        self._mode_label.setObjectName("modeLabel")
+
+        self._target_list = QtWidgets.QListWidget(self)
+        self._target_list.setObjectName("targetList")
+        self._target_list.hide()
+
+        self._target_hint = QtWidgets.QLabel(_TICK_HINT, self)
+        self._target_hint.setObjectName("targetHint")
+        self._target_hint.hide()
 
         self._form_scroll = QtWidgets.QScrollArea(self)
         self._form_scroll.setWidgetResizable(True)
@@ -143,7 +192,7 @@ class SubmitDialog(QtWidgets.QDialog):
 
         self._save_scene_check = QtWidgets.QCheckBox("Save scene before submit", self)
         self._save_scene_check.setObjectName("saveSceneCheck")
-        self._save_scene_check.setVisible(self.adapter is not None)
+        self._save_scene_check.setVisible(self._saves_scene_in_dialog)
         if self.adapter is not None:
             self._save_scene_check.setChecked(
                 bool(self.session.settings.get("save_before_submit", True))
@@ -172,7 +221,9 @@ class SubmitDialog(QtWidgets.QDialog):
         layout = QtWidgets.QVBoxLayout(self)
         layout.addLayout(error_row)
         layout.addWidget(self._product_combo)
-        layout.addWidget(self._target_combo)
+        layout.addWidget(self._mode_label)
+        layout.addWidget(self._target_list)
+        layout.addWidget(self._target_hint)
         layout.addWidget(self._form_scroll, 1)
         layout.addWidget(QtWidgets.QLabel("Job name", self))
         layout.addWidget(self._job_name_edit)
@@ -241,7 +292,7 @@ class SubmitDialog(QtWidgets.QDialog):
 
     def _wire_signals(self) -> None:
         self._product_combo.currentIndexChanged.connect(self._on_product_changed)
-        self._target_combo.currentIndexChanged.connect(self._on_target_changed)
+        self._target_list.itemChanged.connect(self._on_ticks_changed)
         self._farm_combo.currentIndexChanged.connect(self._on_farm_changed)
         self._reload_button.clicked.connect(self._load)
         self._submit_button.clicked.connect(self._on_submit)
@@ -274,7 +325,7 @@ class SubmitDialog(QtWidgets.QDialog):
 
     def _populate_products(self, products: list[Product]) -> None:
         self._products = products
-        host_token = self.adapter.host_name if self.adapter is not None else ""
+        host_token = self._host_token()
         suggested, rest = group_products(products, host_token)
 
         combo = self._product_combo
@@ -318,18 +369,49 @@ class SubmitDialog(QtWidgets.QDialog):
                 combo.setCurrentIndex(i)
                 return
 
+    @property
+    def _saves_scene_in_dialog(self) -> bool:
+        """Whether the dialog offers (and remembers) "Save scene before submit".
+
+        A handoff host saves the scene before launching sqi-submit, so the box
+        would offer something the dialog cannot do.
+        """
+        return self.adapter is not None and not isinstance(self.adapter, ContextAdapter)
+
+    def _host_token(self) -> str:
+        return self.adapter.host_name if self.adapter is not None else ""
+
+    def _ticks_key(self, context: SceneContext | None = None) -> str:
+        """Settings key for the remembered ticks; ``context`` defaults to the live scene's."""
+        if context is None and self.adapter is not None:
+            context = self.adapter.scene_context()
+        scene = context.scene_path if context is not None else None
+        return f"last_targets.{self._host_token()}.{scene or ''}"
+
+    def _remembered_ticks(self, names: Sequence[str]) -> set[str]:
+        """Remembered ticked names that still exist; else just the first target."""
+        stored = self.session.settings.get(self._ticks_key())
+        kept = {n for n in stored if n in names} if isinstance(stored, list) else set()
+        if not kept and names:
+            kept = {names[0]}
+        return kept
+
     def _populate_targets(self) -> None:
-        combo = self._target_combo
-        combo.blockSignals(True)
-        combo.clear()
-        targets = self.adapter.render_targets() if self.adapter is not None else []
-        if targets:
-            combo.addItem(_SCENE_SETTINGS_LABEL, None)
-            for target in targets:
-                combo.addItem(target.name, target)
-            combo.setCurrentIndex(0)
-        combo.setVisible(bool(targets))
-        combo.blockSignals(False)
+        self._targets = self.adapter.render_targets() if self.adapter is not None else []
+        ticked = self._remembered_ticks([t.name for t in self._targets])
+        widget = self._target_list
+        widget.blockSignals(True)
+        widget.clear()
+        # Row i is self._targets[i]: _ticked_targets relies on that order.
+        for target in self._targets:
+            item = QtWidgets.QListWidgetItem(target.name, widget)
+            item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(
+                QtCore.Qt.CheckState.Checked
+                if target.name in ticked
+                else QtCore.Qt.CheckState.Unchecked
+            )
+        widget.blockSignals(False)
 
     def _populate_farms(self, farms: list[Farm]) -> None:
         combo = self._farm_combo
@@ -359,20 +441,49 @@ class SubmitDialog(QtWidgets.QDialog):
             return
         self._populate_queues(queues)
 
+    # -- targets ----------------------------------------------------------
+
+    @property
+    def _per_target(self) -> bool:
+        return bool(self._target_params)
+
+    def _ticked_targets(self) -> list[RenderTarget]:
+        """Ticked targets in list order (the first one drives the form)."""
+        widget = self._target_list
+        ticked: list[RenderTarget] = []
+        for i, target in enumerate(self._targets):
+            item = widget.item(i)
+            if item is not None and item.checkState() == QtCore.Qt.CheckState.Checked:
+                ticked.append(target)
+        return ticked
+
+    def _on_ticks_changed(self, _item: object) -> None:
+        ticked = self._ticked_targets() if self._per_target else []
+        # An edit to a target parameter belonged to the old selection: with
+        # several ticked the field is "from each target", so drop it.
+        dropped = False
+        for name in self._target_params:
+            if self.edited.pop(name, None) is not None:
+                dropped = True
+        product = self._current_product()
+        first = ticked[0] if ticked else None
+        if product is None or self._model_product != product.name:
+            self._update_submit_state(ticked)
+        elif dropped or first is not self._displayed_target:
+            self._rebuild_model(product.name, ticked)
+        else:
+            # The form shows the first ticked target's model, which ticking or
+            # unticking a later target cannot change: restyle it, don't rebuild.
+            self._clear_field_errors(ticked)
+            self._update_submit_state(ticked)
+
     # -- form -----------------------------------------------------------
 
     def _current_product(self) -> Product | None:
         data = self._product_combo.currentData()
         return data if isinstance(data, Product) else None
 
-    def _current_target(self) -> RenderTarget | None:
-        data = self._target_combo.currentData()
-        return data if isinstance(data, RenderTarget) else None
-
     def _on_product_changed(self, _index: int) -> None:
-        self._rebuild_form()
-
-    def _on_target_changed(self, _index: int) -> None:
         self._rebuild_form()
 
     def _hidden_field_names(self, model: FormModel) -> frozenset[str]:
@@ -382,9 +493,11 @@ class SubmitDialog(QtWidgets.QDialog):
         return frozenset(f.parameter.name for f in model.fields if f.is_scene_path)
 
     def _rebuild_form(self) -> None:
+        """Fetch the selected product's parameters, then rebuild the form."""
         product = self._current_product()
         if product is None:
             return
+        self.edited = {}
         try:
             parameters: list[ProductParameter] = self.session.parameters(product.name)
         except SubmitterError as exc:
@@ -396,21 +509,121 @@ class SubmitDialog(QtWidgets.QDialog):
             self._show_error(exc.user_message)
             return
 
-        model = FormModel.from_parameters(parameters)
+        self._parameters = parameters
+        self._target_params = target_parameters(parameters, self._targets)
+        self._target_list.setVisible(self._per_target)
+        self._mode_label.setText(_PER_TARGET_MODE if self._per_target else _WHOLE_SCENE_MODE)
+        self._job_name_edit.setText(product.title or product.name)
+        self._rebuild_model(product.name)
+
+    def _display_model(self, ticked: Sequence[RenderTarget]) -> FormModel:
+        """The model the form shows: the first ticked target's pre-fill + edits."""
+        if self.adapter is not None and ticked:
+            return per_target_models(
+                self._parameters,
+                self.adapter.scene_context(),
+                ticked[:1],
+                self.edited,
+                target_params=self._target_params,
+            )[0][1]
+        model = FormModel.from_parameters(self._parameters)
         if self.adapter is not None:
-            context = self.adapter.scene_context()
-            model.apply_prefill(prefill(parameters, context, self._current_target()))
+            model.apply_prefill(prefill(self._parameters, self.adapter.scene_context()))
+        apply_edits(model, self.edited)
+        return model
+
+    def _rebuild_model(
+        self, product_name: str, ticked: Sequence[RenderTarget] | None = None
+    ) -> None:
+        """Rebuild the model and editors from ``product_name``'s cached parameters (no fetch)."""
+        if ticked is None:
+            ticked = self._ticked_targets() if self._per_target else []
+        model = self._display_model(ticked)
         self._model = model
-        self._model_product = product.name
-        self._submit_button.setEnabled(True)
+        self._model_product = product_name
+        self._displayed_target = ticked[0] if ticked else None
 
         old = self._form_scroll.takeWidget()
-        self._form_scroll.setWidget(build_form(model, hidden_names=self._hidden_field_names(model)))
+        self._form_scroll.setWidget(
+            build_form(
+                model,
+                hidden_names=self._hidden_field_names(model),
+                on_change=self._on_field_edited,
+            )
+        )
         self._form_root = self._form_scroll.widget()
         if old is not None:
             old.deleteLater()
+        self._apply_target_states(ticked)
+        self._update_submit_state(ticked)
 
-        self._job_name_edit.setText(product.title or product.name)
+    def _on_field_edited(self, name: str, value: str) -> None:
+        self.edited[name] = value
+
+    def _field_editor(self, name: str) -> QtWidgets.QWidget | None:
+        if self._form_root is None:
+            return None
+        return self._form_root.findChild(QtWidgets.QWidget, f"field_{name}")
+
+    def _apply_target_states(self, ticked: Sequence[RenderTarget] | None = None) -> None:
+        """Lock target parameters while several are ticked; flag locked keys.
+
+        A key every ticked target locks is disabled and shows the first ticked
+        target's own value, since no edit can reach any job; a key only some
+        lock stays editable for the rest. Sets every field's tooltip and
+        enabled state, as a rebuild would, so the form is right after the
+        ticks change without one.
+        """
+        root, model = self._form_root, self._model
+        if root is None or model is None or not self._per_target:
+            return
+        if ticked is None:
+            ticked = self._ticked_targets()
+        locks = [{normalize_name(k) for k in t.locked} for t in ticked]
+        locked = set().union(*locks)
+        all_locked = set.intersection(*locks) if locks else set()
+        several = len(ticked) > 1
+        own = self._locked_values(ticked[0]) if all_locked else {}
+        for f in model.fields:
+            name = f.parameter.name
+            editor = self._field_editor(name)
+            if editor is None:
+                continue
+            key = normalize_name(name)
+            is_target_param = name in self._target_params
+            row = root.findChild(QtWidgets.QWidget, f"row_{name}")
+            if is_target_param:
+                (row or editor).setEnabled(not several)
+            else:
+                (row or editor).setEnabled(key not in all_locked)
+            if key in all_locked and name in own and own[name] != f.value:
+                # Over any stale edit: the form shows what the first job gets.
+                model.apply_prefill({name: own[name]})
+                refresh_field(root, f)
+            if several and is_target_param:
+                editor.setToolTip(_FROM_EACH_TARGET_TIP)
+            elif key in locked:
+                editor.setToolTip(_LOCKED_TIP)
+            else:
+                editor.setToolTip(PREFILL_TIP if f.prefilled else "")
+
+    def _locked_values(self, target: RenderTarget) -> dict[str, str]:
+        """``target``'s pre-fill, which holds its value for every key it locks."""
+        if self.adapter is None:
+            return {}
+        return prefill(self._parameters, self.adapter.scene_context(), target)
+
+    def _update_submit_state(self, ticked: Sequence[RenderTarget] | None = None) -> None:
+        """Submit needs a current model, no submit running, and (per-target) a tick."""
+        product = self._current_product()
+        ready = (
+            product is not None and self._model is not None and self._model_product == product.name
+        )
+        if self._per_target and ticked is None:
+            ticked = self._ticked_targets()
+        needs_tick = self._per_target and not ticked
+        self._target_hint.setVisible(needs_tick)
+        self._submit_button.setEnabled(ready and not needs_tick and not self._submitting)
 
     # -- submit -----------------------------------------------------------
 
@@ -434,20 +647,6 @@ class SubmitDialog(QtWidgets.QDialog):
         )
         return None if opts.is_empty() else opts
 
-    def _submit_kwargs(self) -> dict[str, Any]:
-        farm = self._farm_combo.currentData()
-        queue = self._queue_combo.currentData()
-        return {
-            "farm_id": farm.id if isinstance(farm, Farm) else "",
-            "queue_id": queue.id if isinstance(queue, Queue) else "",
-            "job_name": self._job_name_edit.text() or None,
-            "adapter": self.adapter,
-            "save_scene": (
-                self._save_scene_check.isChecked() if self.adapter is not None else True
-            ),
-            "job_options": self._job_options(),
-        }
-
     def _ready_product(self) -> Product | None:
         """The selected product, only if the current form model belongs to it.
 
@@ -463,49 +662,179 @@ class SubmitDialog(QtWidgets.QDialog):
             return None
         return product
 
-    def _on_submit(self) -> None:
+    def _submission_models(
+        self, ticked: Sequence[RenderTarget], context: SceneContext
+    ) -> list[tuple[RenderTarget, FormModel]]:
+        # The all-targets set, never one derived from the ticked subset: an
+        # edit must not be honoured or dropped depending on what else is ticked.
+        models = per_target_models(
+            self._parameters,
+            context,
+            ticked,
+            self.edited,
+            target_params=self._target_params,
+        )
+        if len(models) == 1:
+            # One ticked target behaves like a single-target pre-fill: an edit
+            # to its target parameter is the artist's to make (per_target_models
+            # always keeps a target parameter the target's own). Never a key the
+            # target locks: a movie is one file, so its FramesPerTask is not the
+            # artist's. target_parameters already leaves locked keys out; this
+            # holds whatever set _target_params is given.
+            target, model = models[0]
+            locked = {normalize_name(k) for k in target.locked}
+            for name in self._target_params:
+                if name in self.edited and normalize_name(name) not in locked:
+                    model.set_value(name, self.edited[name])
+        return models
+
+    def _host_snapshot(self, save_scene: bool) -> SnapshotAdapter | None:
+        """Save the scene if asked, then freeze the host for the worker (GUI thread).
+
+        Host APIs are main-thread only, so the worker never sees the live
+        adapter: this is the submit's only host contact. The save happens once,
+        here; the snapshot records whether it failed, so the shared submit flow
+        reports a failed save exactly as it did when it saved on its own.
+        """
+        adapter = self.adapter
+        if adapter is None:
+            return None
+        save_failed = scene_save_failed(adapter, save_scene)
+        return SnapshotAdapter.capture(adapter, targets=self._targets, save_failed=save_failed)
+
+    def _prepare_submit(self) -> _Submission | None:
+        """Capture the whole submit at submit-start, or ``None`` if not ready.
+
+        The async submit must use (and persist) what was on screen when the
+        artist pressed Submit, not whatever the widgets say when it finishes.
+        Everything that touches the host happens here, on the GUI thread.
+        """
         product = self._ready_product()
-        if product is None or self._model is None:
-            return
-        kwargs = self._submit_kwargs()
-        # Capture at submit-start: the async submit must persist what was
-        # actually submitted, not whatever the widgets say when it finishes.
+        model = self._model
+        if product is None or model is None:
+            return None
+        ticked = self._ticked_targets() if self._per_target else []
+        if self._per_target and not ticked:
+            self._update_submit_state()
+            return None
+
+        session = self.session
         product_name = product.name
-        save_scene = bool(kwargs["save_scene"])
-        self._submit_button.setEnabled(False)
-        worker = _SubmitWorker(self.session, product_name, self._model, **kwargs)
-        worker.done.connect(lambda job: self._on_submit_success(job, product_name, save_scene))
+        farm = self._farm_combo.currentData()
+        queue = self._queue_combo.currentData()
+        farm_id = farm.id if isinstance(farm, Farm) else ""
+        queue_id = queue.id if isinstance(queue, Queue) else ""
+        job_name = self._job_name_edit.text()
+        save_scene = self._save_scene_check.isChecked() if self.adapter is not None else True
+        job_options = self._job_options()
+
+        try:
+            snapshot = self._host_snapshot(save_scene)
+        except Exception as exc:
+            # The host's own failure, reported as the worker reports one.
+            return _Submission(_raising(exc), product_name, save_scene, None)
+
+        if self._per_target:
+            assert snapshot is not None  # per-target implies targets, so an adapter
+            context = snapshot.scene_context()
+            models = self._submission_models(ticked, context)
+            prefix = job_name or product.title or product.name
+
+            def call() -> list[TargetResult]:
+                return submit_targets(
+                    session,
+                    product_name,
+                    models,
+                    farm_id=farm_id,
+                    queue_id=queue_id,
+                    job_name_prefix=prefix,
+                    # The snapshot, never the live host; its save replays the one above.
+                    adapter=snapshot,
+                    save_scene=save_scene,
+                    job_options=job_options,
+                )
+
+            remember = (self._ticks_key(context), [t.name for t in ticked])
+            return _Submission(call, product_name, save_scene, remember)
+
+        scene = RenderTarget(name=job_name or product.title or product.name, kind="scene")
+
+        def call_whole_scene() -> list[TargetResult]:
+            job = submit_form(
+                session,
+                product_name,
+                model,
+                farm_id=farm_id,
+                queue_id=queue_id,
+                job_name=job_name or None,
+                adapter=snapshot,  # never the live host (see _host_snapshot)
+                save_scene=save_scene,
+                job_options=job_options,
+            )
+            return [TargetResult(target=scene, job=job, error=None)]
+
+        return _Submission(call_whole_scene, product_name, save_scene, None)
+
+    def _on_submit(self) -> None:
+        submission = self._prepare_submit()
+        if submission is None:
+            return
+        self._set_submitting(True)
+        worker = _SubmitWorker(submission.call)
+        worker.done.connect(lambda results: self._on_submit_done(results, submission))
         worker.failed.connect(self._on_submit_error)
-        worker.finished.connect(lambda: self._submit_button.setEnabled(True))
+        worker.finished.connect(lambda: self._set_submitting(False))
         self._worker = worker
         worker.start()
 
     def submit_and_wait(self) -> None:
         """Test/QA hook: runs the submit body synchronously, no worker thread."""
-        product = self._ready_product()
-        if product is None or self._model is None:
+        submission = self._prepare_submit()
+        if submission is None:
             return
-        kwargs = self._submit_kwargs()
-        self._submit_button.setEnabled(False)
+        self._set_submitting(True)
         try:
-            job = submit_form(self.session, product.name, self._model, **kwargs)
+            results = _run_submit(submission.call)
         except SubmitterError as exc:
             self._on_submit_error(exc)
         else:
-            self._on_submit_success(job, product.name, bool(kwargs["save_scene"]))
+            self._on_submit_done(results, submission)
         finally:
-            self._submit_button.setEnabled(True)
+            self._set_submitting(False)
 
-    def _on_submit_success(self, job: Job, product_name: str, save_scene: bool) -> None:
+    def _set_submitting(self, submitting: bool) -> None:
+        self._submitting = submitting
+        self._update_submit_state()
+
+    def _result_text(self, results: Sequence[TargetResult]) -> str:
+        lines: list[str] = []
+        for result in results:
+            if result.job is not None:
+                lines.append(f"{result.target.name}: job {result.job.id}")
+                lines.append(f"    {self.session.server_url}/jobs/{result.job.id}")
+            else:
+                lines.append(f"{result.target.name}: FAILED — {result.error}")
+        return "\n".join(lines)
+
+    def _on_submit_done(self, results: list[TargetResult], submission: _Submission) -> None:
         self._clear_field_errors()
         self._clear_error()
-        url = f"{self.session.server_url}/jobs/{job.id}"
-        QtWidgets.QMessageBox.information(self, "Job submitted", f"Submitted job {job.id}\n{url}")
+        submitted = [r for r in results if r.job is not None]
+        text = self._result_text(results)
+        if len(submitted) == len(results):
+            title = "Job submitted" if len(results) == 1 else "Jobs submitted"
+            QtWidgets.QMessageBox.information(self, title, text)
+        else:
+            title = "Some jobs failed" if submitted else "No jobs submitted"
+            QtWidgets.QMessageBox.warning(self, title, text)
+        if not submitted:
+            return
 
-        host = self.adapter.host_name if self.adapter is not None else ""
-        self.session.settings.set(f"last_product.{host}", product_name)
-        if self.adapter is not None:
-            self.session.settings.set("save_before_submit", save_scene)
+        self.session.settings.set(f"last_product.{self._host_token()}", submission.product_name)
+        if self._saves_scene_in_dialog:
+            self.session.settings.set("save_before_submit", submission.save_scene)
+        if submission.remember_ticks is not None:
+            self.session.settings.set(*submission.remember_ticks)
 
     def _on_submit_error(self, exc: SubmitterError) -> None:
         if isinstance(exc, FormInvalidError):
@@ -517,21 +846,22 @@ class SubmitDialog(QtWidgets.QDialog):
         if self._form_root is None:
             return
         for name, message in errors.items():
-            editor = self._form_root.findChild(QtWidgets.QWidget, f"field_{name}")
+            editor = self._field_editor(name)
             if editor is None:
                 continue
             editor.setToolTip(message)
             editor.setStyleSheet(_ERROR_STYLE)
 
-    def _clear_field_errors(self) -> None:
+    def _clear_field_errors(self, ticked: Sequence[RenderTarget] | None = None) -> None:
         if self._form_root is None or self._model is None:
             return
         for f in self._model.fields:
-            editor = self._form_root.findChild(QtWidgets.QWidget, f"field_{f.parameter.name}")
+            editor = self._field_editor(f.parameter.name)
             if editor is None:
                 continue
             editor.setStyleSheet("")
-            editor.setToolTip("Pre-filled from the scene" if f.prefilled else "")
+            editor.setToolTip(PREFILL_TIP if f.prefilled else "")
+        self._apply_target_states(ticked)
 
     # -- error banner -------------------------------------------------------
 
@@ -575,19 +905,7 @@ def open_for_adapter(
     session = SubmitterSession(server_url=server_url)
     dialog = SubmitDialog(session, adapter=adapter, parent=parent)
     dialog.show()
+    dialog.raise_()
+    dialog.activateWindow()
     _dialog_ref = dialog
     return dialog
-
-
-def main() -> int:
-    """Console-script entry point (``sqi-submit``): standalone dialog, no DCC."""
-    parser = argparse.ArgumentParser(prog="sqi-submit", description="Submit a job to sqi.")
-    parser.add_argument("--server", default=None, help="sqi server URL (default: configured)")
-    args = parser.parse_args()
-    require_qt()
-
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    dialog = SubmitDialog(SubmitterSession(server_url=args.server))
-    dialog.show()
-    run = getattr(app, "exec", None) or app.exec_
-    return int(run())

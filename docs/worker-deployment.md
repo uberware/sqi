@@ -82,7 +82,7 @@ so the server can resolve storage paths and honour location affinity:
 ```yaml
 worker:
   compute_location: "onprem"      # matches a storage-location root name
-  capability_tags: ["maya-2025", "arnold-7"]
+  capability_tags: ["maya_2025", "arnold_7"]
   # queue_ids: ["gpu-renders"]    # restrict to specific queues (optional)
 ```
 
