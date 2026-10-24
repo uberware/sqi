@@ -3,6 +3,7 @@
 package presettest_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/uberware/sqi/internal/presettest"
@@ -130,5 +131,75 @@ func TestOutcomeSink_RecordsAndReports(t *testing.T) {
 	}
 	if got := presettest.LookupOutcome("TestX/never"); got.Ran {
 		t.Errorf("unrecorded case outcome = %+v, want zero value", got)
+	}
+}
+
+// A case that needs a vendor application is required by application, through
+// SQI_TEST_REQUIRE_APPS, not by platform: CI cannot install Nuke or Houdini, so
+// no platform list could be right for it.
+func TestParseRegistry_RequiresApp(t *testing.T) {
+	entry := func(tier2 string) []byte {
+		return []byte(`
+presets:
+  - name: demo
+    source: presets/sqi
+    tier: 2
+    tier1: {cases: [default], caveat: x}
+    tier2:
+` + tier2)
+	}
+	tests := []struct {
+		name    string
+		tier2   string
+		wantErr string // "" accepts the registry
+	}{
+		{"known app", "      case: TestPresetDCC_Demo\n      requires_app: blender\n", ""},
+		{"unknown app", "      case: TestPresetDCC_Demo\n      requires_app: mayaa\n", "unknown application"},
+		{
+			"both forms",
+			"      case: TestPresetDCC_Demo\n      requires_app: nuke\n      required_on: [linux]\n",
+			"both required_on and requires_app",
+		},
+		{"neither form", "      case: TestPresetDCC_Demo\n", "requires no platform"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := presettest.ParseRegistry(entry(tt.tier2))
+			switch {
+			case tt.wantErr == "" && err != nil:
+				t.Fatalf("ParseRegistry: %v", err)
+			case tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)):
+				t.Fatalf("ParseRegistry error = %v, want one containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestParseRegistry_Tier3CannotRequireAnApp(t *testing.T) {
+	_, err := presettest.ParseRegistry([]byte(`
+presets:
+  - name: demo
+    source: presets/sqi
+    tier: 3
+    tier1: {cases: [default], caveat: x}
+    tier3:
+      case: TestPresetTier3/demo/default
+      requires_app: blender
+`))
+	if err == nil || !strings.Contains(err.Error(), "stub") {
+		t.Fatalf("ParseRegistry error = %v, want a tier3 requires_app refusal", err)
+	}
+}
+
+func TestRequiredApps(t *testing.T) {
+	got, err := presettest.RequiredApps(" blender, nuke ,,houdini")
+	if err != nil || strings.Join(got, ",") != "blender,nuke,houdini" {
+		t.Errorf("RequiredApps = %v, %v, want blender,nuke,houdini", got, err)
+	}
+	if got, err := presettest.RequiredApps(""); err != nil || len(got) != 0 {
+		t.Errorf("RequiredApps(\"\") = %v, %v, want none", got, err)
+	}
+	if _, err := presettest.RequiredApps("blender,nukee"); err == nil || !strings.Contains(err.Error(), "nukee") {
+		t.Errorf("RequiredApps with a typo = %v, want an error naming it", err)
 	}
 }

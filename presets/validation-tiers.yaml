@@ -7,30 +7,42 @@
 # test/integration/preset_tiers_test.go refuse a claim that is not backed by a
 # fixture, a golden, or a named test that ran, including a Tier-2 or Tier-3
 # claim whose case skipped on a platform listed in required_on.
+#
+# A Tier-2 case that needs a vendor application (Blender, Nuke, Houdini) names it
+# with requires_app instead of required_on. It skips when the application is
+# absent, and the skip fails the check only when SQI_TEST_REQUIRE_APPS lists the
+# application (CI does for Blender; `make test-dcc` does for all three).
 presets:
   - name: blender-batch-render
     source: presets/sqi
-    tier: 1
+    tier: 2
     tier1:
       cases: [default, multi-frame-chunk]
       caveat: >-
         argv derived from Blender 4.x command-line documentation. The goldens
         show the documented ordering rule holding (-o/-s/-e all precede -a,
         which triggers the render) and chunk bounds 1-5 then 6-10 under a
-        patched chunk size. No Blender has executed it, so the #### frame-padding
-        token in -o and whether Blender appends its own extension to the
-        supplied .png are unverified. A stepped or listed Frames range splits
-        into one chunk per run of consecutive frames, so -s/-e never spans a
-        frame the range excluded. Neither golden here exercises one;
+        patched chunk size. A stepped or listed Frames range splits into one
+        chunk per run of consecutive frames, so -s/-e never spans a frame the
+        range excluded. Neither golden here exercises one;
         blender-view-layer-render's stepped-range golden shows the same -s/-e
-        split.
+        split. Tier 2 runs it against a real Blender 5.2.2 and shows that
+        #### in -o is padded to the frame number, that Blender appends the
+        format's extension itself, that a path with no # still gets the frame
+        number, and that a stepped range renders exactly its frames. Not
+        shown: Blender 4.x (the argv is derived from its documentation), a
+        supplied path that already carries an extension, or any output format
+        but multilayer EXR.
+    tier2:
+      case: TestPresetDCC_Blender_BatchRender
+      requires_app: blender
     tier3:
       case: TestPresetTier3/blender-batch-render/default
       required_on: [linux, darwin, windows]
 
   - name: blender-view-layer-render
     source: presets/sqi
-    tier: 1
+    tier: 2
     tier1:
       cases: [default, quoted-layer, stepped-range]
       caveat: >-
@@ -41,16 +53,20 @@ presets:
         name from sys.argv after --, so the goldens show the layer name as the
         final argument and never inside the Python source. quoted-layer passes
         It's "Main" layer and a scene called Shot 010, each as one argument;
-        stepped-range splits 1-9:4 into -s/-e 1 1, 5 5 and 9 9. No Blender has
-        executed it, and Tier 3 proves only that the stub receives that argv.
-        Unverified: that Blender honours use, so -a skips a use=False layer;
-        that bpy.context.scene is the scene -S selected when the expression
-        runs; that sys.exit with a message in a --python-expr stops Blender
-        with a non-zero status before -a renders; that the expression's
-        generator can see the name it reads, which holds only if Blender runs
-        the expression with one shared globals/locals dict; what -S does when
-        the scene does not exist; the #### padding token in -o and whether
-        Blender appends its own extension, as in blender-batch-render.
+        stepped-range splits 1-9:4 into -s/-e 1 1, 5 5 and 9 9. Tier 3 proves
+        only that the stub receives that argv. Tier 2 runs it against a real
+        Blender 5.2.2 and shows that Blender honours use, so -a renders only
+        the named layer (checked in the EXR header, for Shot's two layers and
+        for Alt's one); that bpy.context.scene is the scene -S selected, since
+        a layer of another scene is refused; that the expression's generator
+        sees the name it reads; that sys.exit with a message stops Blender with
+        a non-zero status before -a renders, naming the missing layer and
+        leaving no output; and that a name containing quotes arrives intact.
+        Not shown: what -S does when the scene does not exist, Blender 4.x, and
+        the #### caveats of blender-batch-render beyond padding.
+    tier2:
+      case: TestPresetDCC_Blender_ViewLayerRender
+      requires_app: blender
     tier3:
       case: TestPresetTier3/blender-view-layer-render/default
       required_on: [linux, darwin, windows]
@@ -149,7 +165,7 @@ presets:
 
   - name: houdini-rop-render
     source: presets/sqi
-    tier: 1
+    tier: 2
     tier1:
       cases: [default, stepped-range]
       caveat: >-
@@ -164,50 +180,71 @@ presets:
         continue one another because sqi lists a run of two frames as 7,8: a
         stepped chunk is one call, and a gapped chunk such as 1-5,8-12 is two.
         TestHoudiniROPRender_DriverRendersEachRange checks those calls against
-        a stub hou module. No Houdini or hython installation has executed it:
-        hou.hipFile.load, hou.node and RopNode.render(frame_range=...),
-        including a stepped frame_range, are unexercised, and a golden cannot
-        show that hython puts the script's own path in sys.argv[0].
+        a stub hou module. Tier 2 runs it under a real hython (Houdini 22.0.466,
+        Apprentice) against a Geometry ROP and shows that hou.hipFile.load,
+        hou.node and RopNode.render(frame_range=...) work, including a stepped
+        frame_range, that hython hands the driver its arguments in the order the
+        driver reads them, and that stepped (1-12:2), listed (1-3,7,8) and
+        multi-chunk (1-24, three tasks) ranges write exactly their frames, each
+        file read back to the right frame. Not shown: a render ROP (Mantra,
+        Karma, an OpenGL ROP), a scene using the ROP's own frame range, the
+        Apprentice resolution limit, or any Houdini but 22.0.466.
+    tier2:
+      case: TestPresetDCC_Houdini_ROPRender
+      requires_app: houdini
     tier3:
       case: TestPresetTier3/houdini-rop-render/default
       required_on: [linux, darwin, windows]
 
   - name: nuke-write-render
     source: presets/sqi
-    tier: 1
+    tier: 2
     tier1:
       cases: [default, stepped-range]
       caveat: >-
         argv derived from Foundry's documented nuke -x batch-render flags
-        (-X <write node> -F <frame list>); no Nuke installation has executed it.
-        The stepped-range golden shows a stepped Frames range expanding to one
-        single-frame task per requested frame (-F 1-1, -F 3-3, ...), because a
-        CONTIGUOUS chunk never spans a gap, so -F never receives OpenJD's colon
-        step syntax (1-19:2) where Foundry documents x (1-19x2). Whether Nuke
-        reads -F 1-1 as the single frame 1 is unverified at Tier 1. The chunks
+        (-X <write node> -F <frame list>). The stepped-range golden shows a
+        stepped Frames range expanding to one single-frame task per requested
+        frame (-F 1-1, -F 3-3, ...), because a CONTIGUOUS chunk never spans a
+        gap, so -F never receives OpenJD's colon step syntax (1-19:2) where
+        Foundry documents x (1-19x2). Tier 2 runs it against a real Nuke 17.1v2
+        (Non-commercial, so the test passes --nc) and shows that Nuke reads
+        -F 1-1 as the single frame 1, and that -X renders only the named Write
+        node: a 1-4:3 range wrote exactly wr2.0001.png and wr2.0004.png. Not
+        shown: a commercial license, a colon or x step, or Nuke on Linux or
+        macOS. The chunks
         are CONTIGUOUS because Foundry's Command Line Operations page documents
         -F only as one frame, a-b or a-bxN (repeating -F for more ranges), with
         no comma-list form, so a NONCONTIGUOUS chunk such as 1-19:2 or 1-3,7,8
         could reach Nuke only through a wrapper script that rewrites it. A
         stepped range therefore costs one task, and one script load, per frame.
+    tier2:
+      case: TestPresetDCC_Nuke_WriteRender
+      requires_app: nuke
     tier3:
       case: TestPresetTier3/nuke-write-render/default
       required_on: [linux, darwin, windows]
 
   - name: nuke-script-render
     source: presets/sqi
-    tier: 1
+    tier: 2
     tier1:
       cases: [default, stepped-range]
       caveat: >-
         argv derived from Foundry's documented nuke -x batch-render flags
-        (-F <frame list>, rendering every enabled Write node); no Nuke installation
-        has executed it, so which Write nodes are enabled, and so what this
-        variant renders, is invisible in argv. Its chunks are CONTIGUOUS for
-        nuke-write-render's reason, and its stepped-range golden shows the same
-        single-frame expansion (-F 1-1, -F 3-3, ...): no step separator reaches
-        -F, and a stepped range costs one task per frame. Whether Nuke reads
-        -F 1-1 as one frame is unverified at Tier 1.
+        (-F <frame list>, rendering every enabled Write node), so which Write
+        nodes are enabled, and so what this variant renders, is invisible in
+        argv. Its chunks are CONTIGUOUS for nuke-write-render's reason, and its
+        stepped-range golden shows the same single-frame expansion (-F 1-1,
+        -F 3-3, ...): no step separator reaches -F, and a stepped range costs
+        one task per frame. Tier 2 runs it against a real Nuke 17.1v2
+        (Non-commercial) and shows that, with no -X, every enabled Write node
+        renders every requested frame (two Write nodes, frames 1-4, eight
+        files). Not shown: a disabled Write node, a stepped range (covered for
+        nuke-write-render), or a commercial license.
+    tier2:
+      case: TestPresetDCC_Nuke_ScriptRender
+      requires_app: nuke
     tier3:
       case: TestPresetTier3/nuke-script-render/default
       required_on: [linux, darwin, windows]

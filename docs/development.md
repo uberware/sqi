@@ -79,6 +79,7 @@ Run `make` (no arguments) to see all available targets with descriptions.
 | `make test-cover` | Run tests and print coverage; fails below 70% (the `COVERAGE_MIN` default in the Makefile) |
 | `make test-cover-html` | Open an HTML coverage report in the browser |
 | `make test-integration` | Run integration tests (build tag `integration`) |
+| `make test-dcc` | Run the preset harness with Blender, Nuke and Houdini **required**, against the real applications (`DCC_APPS=blender,nuke,houdini` by default; narrow it to the ones you have). A missing application **fails** instead of skipping. See [Running the preset validation harness](#running-the-preset-validation-harness) |
 | `make test-ldap` | Run the LDAP tests against a real OpenLDAP directory in a container (needs Docker; **skips** without it) |
 | `make test-oidc` | Run the SSO tests against a real Keycloak in a container (needs Docker; **skips** without it) |
 | `make test-postgres` | Run the PostgreSQL-backed tests against a throwaway PostgreSQL in a container (`PG_VERSION=16` or `18`, default 18; needs Docker; **skips** without it). See [Testing against PostgreSQL](#testing-against-postgresql) |
@@ -567,8 +568,9 @@ Every shipped preset and built-in product has a Tier-1 argv golden (a reviewed
 snapshot of the exact command line the template resolves to) and a Tier-3 case
 that runs the real submit → assign → resolve pipeline against a recording stub
 in place of the vendor executable. The five ffmpeg presets also have a Tier-2
-case that runs real ffmpeg end to end, and `python-sequence` has one that runs
-real Python. See [`docs/preset-library.md`](preset-library.md#validation-tiers)
+case that runs real ffmpeg end to end, `python-sequence` has one that runs
+real Python, and the Blender, Nuke and Houdini presets have ones that render
+with the real application. See [`docs/preset-library.md`](preset-library.md#validation-tiers)
 for what each tier does and does not prove.
 
 ```sh
@@ -598,6 +600,23 @@ fewer:
 A pass on one OS proves nothing about another OS's entries, so CI runs the
 whole harness natively on Linux (the `test` job) and on Windows
 (`preset-harness-windows`). No CI job runs it on macOS.
+
+The Blender, Nuke and Houdini cases (`TestPresetDCC_*`) are different: they need
+the application, so `make test-preset-harness` skips them when it is absent.
+`make test-dcc` is the same harness with `SQI_TEST_REQUIRE_APPS` set, which makes
+a skip a failure. Each application must be installed where the worker's detector
+finds it (or its command on `PATH`) and licensed for command-line use:
+
+- **Blender:** free, no license. CI runs these cases in the `blender-presets` job
+  against a pinned Blender.
+- **Nuke:** the free Non-commercial license works and needs `--nc` on every
+  command-line run, so the tests pass `SQI_TEST_NUKE_ARGS` (default `--nc`) to
+  Nuke and to the worker's `nuke` command. Set it empty for a commercial or Indie
+  license. The license is activated by signing in once through Foundry.
+- **Houdini:** the free Apprentice license works once activated through the
+  License Administrator, and `hython` then runs headless.
+
+Use `make test-dcc DCC_APPS=blender` to require only the ones you have installed.
 
 To regenerate goldens after an intentional change to a preset's template or to
 expansion/resolution behavior:

@@ -77,6 +77,7 @@ jobs:
               - 'internal/product/builtins/**'
               - 'presets/validation-tiers.yaml'
               - 'test/integration/ffmpeg_presets_test.go'
+              - 'test/integration/dcc_presets_test.go'
               - 'test/integration/preset_argv_test.go'
               - 'test/integration/worker_binary_test.go'
               - 'test/stubproc/**'
@@ -1740,6 +1741,77 @@ jobs:
             TestFFmpegPreset_SequenceEncodeNamesOutputAfterPattern \
           ; do
             grep -q -- "--- PASS: ${name} " /tmp/ffmpeg-presets.log \
+              || { echo "::error::${name} did not run to a PASS"; exit 1; }
+          done
+
+  # ── Blender reference presets: execute them ──────────────────────────────────
+  # Runs blender-batch-render and blender-view-layer-render through a real
+  # server and worker against a real Blender, and checks the frames and view
+  # layers it writes. The argv goldens and the recording stub cannot see whether
+  # Blender accepts a command line: the #### padding in -o, the extension
+  # Blender appends, and the view layer selection all depend on Blender itself.
+  #
+  # Blender is the one DCC CI can have: it is free and needs no license. Nuke
+  # and Houdini need a licensed install and run only through `make test-dcc`.
+  # Blender is pinned (version and checksum) so an upstream release cannot
+  # change a result unseen; raise both together, and re-run the cases locally.
+  # The cases skip without Blender on PATH, so this job requires each PASS line
+  # by name.
+  #
+  # Runs on every push, and on pull requests only when the presets filter fires.
+  blender-presets:
+    name: Blender reference presets (execution)
+    runs-on: ubuntu-latest
+    needs: [test, changes]
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.presets == 'true' }}
+    env:
+      BLENDER_VERSION: "5.2.2"
+      BLENDER_SHA256: 84098912789dc450e95697c4184fb8a90acbe5111c2ba4aede3fecb57806a168
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # Blender links X11 and GL libraries even for -b, which the minimal
+      # runner image may lack.
+      - name: Install Blender's libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxi6 libxxf86vm1 libxfixes3 libxrender1 libgl1 libegl1 libxkbcommon0 libsm6
+
+      - name: Install Blender ${{ env.BLENDER_VERSION }}
+        run: |
+          series="${BLENDER_VERSION%.*}"
+          curl -fsSL -o "$RUNNER_TEMP/blender.tar.xz" \
+            "https://download.blender.org/release/Blender${series}/blender-${BLENDER_VERSION}-linux-x64.tar.xz"
+          echo "${BLENDER_SHA256}  $RUNNER_TEMP/blender.tar.xz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/blender"
+          tar -xJf "$RUNNER_TEMP/blender.tar.xz" -C "$RUNNER_TEMP/blender" --strip-components=1
+          echo "$RUNNER_TEMP/blender" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/blender/blender" --version | head -1
+          ldd "$RUNNER_TEMP/blender/blender" | { grep "not found" && exit 1 || true; }
+
+      - name: Execute the Blender presets end to end
+        shell: bash
+        env:
+          SQI_TEST_REQUIRE_APPS: blender
+        run: |
+          go test -run TestPresetDCC_Blender -v -timeout 900s ./test/integration/ 2>&1 \
+            | tee /tmp/blender-presets.log
+
+      - name: Assert every Blender case actually ran
+        run: |
+          for name in \
+            TestPresetDCC_Blender_BatchRender \
+            TestPresetDCC_Blender_ViewLayerRender \
+          ; do
+            grep -q -- "--- PASS: ${name} " /tmp/blender-presets.log \
               || { echo "::error::${name} did not run to a PASS"; exit 1; }
           done
 

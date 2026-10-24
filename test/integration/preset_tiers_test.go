@@ -37,6 +37,11 @@ func TestZZPresetTierRegistrySatisfied(t *testing.T) {
 
 	assertRegistryCoversEverySource(t, reg)
 
+	requiredApps, err := presettest.RequiredApps(os.Getenv(presettest.RequireAppsEnv))
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	anyRecorded := false
 	for _, entry := range reg.Presets {
 		t.Run(entry.Name, func(t *testing.T) {
@@ -68,7 +73,7 @@ func TestZZPresetTierRegistrySatisfied(t *testing.T) {
 				}
 				outcome := presettest.LookupOutcome(tier.Case)
 				anyRecorded = anyRecorded || outcome.Ran
-				if msg := execTierViolation(label, tier, outcome, runtime.GOOS); msg != "" {
+				if msg := execTierViolation(label, tier, outcome, runtime.GOOS, requiredApps); msg != "" {
 					t.Error(msg)
 				}
 			}
@@ -83,11 +88,20 @@ func TestZZPresetTierRegistrySatisfied(t *testing.T) {
 
 // execTierViolation is rules 3 and 4 for one execution-tier claim: the case
 // must have reported, and must not have skipped on a platform required_on
-// lists. It returns "" when the claim is earned.
-func execTierViolation(label string, tier *presettest.TierExec, outcome presettest.Outcome, goos string) string {
+// lists. An application-backed case (requires_app) is held to the same rule by
+// application instead of by platform: it may skip unless requiredApps (the
+// SQI_TEST_REQUIRE_APPS list) names its application. It returns "" when the
+// claim is earned.
+func execTierViolation(
+	label string, tier *presettest.TierExec, outcome presettest.Outcome, goos string, requiredApps []string,
+) string {
 	if !outcome.Ran {
 		return fmt.Sprintf("%s claims case %q, which never reported -- run the whole package "+
 			"(make test-preset-harness), or the claim is backed by nothing", label, tier.Case)
+	}
+	if outcome.Skipped && tier.RequiresApp != "" && slices.Contains(requiredApps, tier.RequiresApp) {
+		return fmt.Sprintf("%s case %q SKIPPED, but %s lists %s: %s\n"+
+			"a skipped test verifies nothing", label, tier.Case, presettest.RequireAppsEnv, tier.RequiresApp, outcome.Reason)
 	}
 	if outcome.Skipped && slices.Contains(tier.RequiredOn, goos) {
 		return fmt.Sprintf("%s case %q SKIPPED on %s, which required_on lists: %s\n"+
@@ -119,12 +133,42 @@ func TestExecTierViolation(t *testing.T) {
 	for _, tt := range tests {
 		for _, label := range []string{"tier2", "tier3"} {
 			t.Run(label+"/"+tt.name, func(t *testing.T) {
-				got := execTierViolation(label, tier, tt.outcome, tt.goos)
+				got := execTierViolation(label, tier, tt.outcome, tt.goos, nil)
 				if (got != "") != tt.wantViolation {
 					t.Errorf("execTierViolation = %q, want violation=%v", got, tt.wantViolation)
 				}
 			})
 		}
+	}
+}
+
+// TestExecTierViolation_RequiresApp pins the application-backed rule: a skip is
+// forgiven until SQI_TEST_REQUIRE_APPS names the case's application, on any
+// platform, and a case that never reported is a violation either way.
+func TestExecTierViolation_RequiresApp(t *testing.T) {
+	tier := &presettest.TierExec{Case: "synthetic", RequiresApp: "blender"}
+	skipped := presettest.Outcome{Ran: true, Skipped: true, Reason: "blender is not installed"}
+	tests := []struct {
+		name          string
+		outcome       presettest.Outcome
+		goos          string
+		required      []string
+		wantViolation bool
+	}{
+		{"skipped, nothing required", skipped, "linux", nil, false},
+		{"skipped, another app required", skipped, "linux", []string{"nuke"}, false},
+		{"skipped, its app required", skipped, "linux", []string{"nuke", "blender"}, true},
+		{"skipped, its app required on windows", skipped, "windows", []string{"blender"}, true},
+		{"ran, its app required", presettest.Outcome{Ran: true}, "linux", []string{"blender"}, false},
+		{"never reported, nothing required", presettest.Outcome{}, "linux", nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := execTierViolation("tier2", tier, tt.outcome, tt.goos, tt.required)
+			if (got != "") != tt.wantViolation {
+				t.Errorf("execTierViolation = %q, want violation=%v", got, tt.wantViolation)
+			}
+		})
 	}
 }
 
