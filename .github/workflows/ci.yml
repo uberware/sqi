@@ -1983,7 +1983,10 @@ jobs:
   # gate run on every supported version from the 3.9 floor up.
   python-test:
     name: Python client tests (${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to 26.04 on 2026-10-19, and setup-python has no
+    # Python 3.9 for it, so the 3.9 floor could not be tested there. Move to
+    # ubuntu-latest again once 3.9 is available on it, or when 3.9 is dropped.
+    runs-on: ubuntu-24.04
     needs: changes
     if: ${{ needs.changes.outputs.python == 'true' || github.event_name == 'workflow_dispatch' }}
     strategy:
@@ -2120,7 +2123,8 @@ jobs:
   # gate run on every supported version from the 3.9 floor up.
   submitter-test:
     name: Submitter client tests (${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    # Pinned for the same reason as python-test above: no Python 3.9 on 26.04.
+    runs-on: ubuntu-24.04
     needs: changes
     if: ${{ needs.changes.outputs.submitter == 'true' || github.event_name == 'workflow_dispatch' }}
     strategy:
