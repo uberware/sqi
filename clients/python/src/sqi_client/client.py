@@ -1631,7 +1631,7 @@ class SqiClient:
     def events(self, *, reconnect: bool = True) -> SqiEventStream:
         """Open a live WebSocket event stream for this server.
 
-        Requires the optional ``ws`` extra (``pip install 'sqi-sdk[ws]'``);
+        Requires the optional ``ws`` extra (``pip install "sqi-sdk[ws]"``);
         the import happens when the returned stream connects, so calling this
         without the extra installed only fails on connection, with an actionable
         :class:`ImportError`.
@@ -1668,7 +1668,7 @@ class SqiClient:
         underlying stream reconnects and resumes from the last seen event.
 
         Requires the optional ``ws`` extra; without it the first iteration
-        raises :class:`ImportError` naming the ``pip install 'sqi-sdk[ws]'``
+        raises :class:`ImportError` naming the ``pip install "sqi-sdk[ws]"``
         remedy.
 
         Args:
