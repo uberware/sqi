@@ -348,9 +348,11 @@ A detected default carries **no arguments**. Flags that depend on a license, suc
 as Nuke's `--nc` for a non-commercial license, belong to the operator: put them in
 `worker.commands`.
 
-The `nuke` and `blender` built-ins define a command; the others rely on the
-command being on `PATH`. Blender's has Windows and macOS globs only: a Linux
-install is wherever it was unpacked, or a distro package already on `PATH`. For
+The `nuke`, `blender` and `houdini` (`hython`) built-ins define a command; the
+others rely on the command being on `PATH`. Blender's has Windows and macOS globs
+only: a Linux install is wherever it was unpacked, or a distro package already on
+`PATH`. Houdini's has Windows and Linux globs only; on macOS put `hython` on
+`PATH` or map it in `worker.commands`. For
 Blender the version is read only to pick the newest install, so its tag stays
 presence only. Turning a detector off with `capabilities.disable` turns off its
 command default too. A custom detector can add one:
@@ -399,9 +401,11 @@ under WSL2, detecting `nuke_17_1` and defaulting the command to the installed
 executable); the macOS one was not. Blender's Windows glob was checked against a
 real Blender 5.2 installed by winget, and a job rendered through the default
 command with nothing on `PATH`; its macOS path follows Blender's documented
-bundle layout and was not checked. The Windows globs added for Maya and Houdini
-are the installers' default folders and have **not** been checked on a machine
-with either installed.
+bundle layout and was not checked. Houdini's Windows `hython` glob was checked against a real Houdini 22.0.466
+(Apprentice), and a job ran through the default command with nothing on `PATH`;
+its Linux glob (`/opt/hfs*/bin/hython`) follows the `$HFS/bin` layout and was not
+checked. The Windows glob added for Maya is the installer's default folder and
+has **not** been checked on a machine with Maya installed.
 
 ---
 
@@ -623,10 +627,12 @@ Points that decide whether it works:
 
 This was checked on a local farm with a worker tagged `nuke_license=noncommercial`:
 a job requiring `noncommercial` ran, and one requiring `commercial` stayed `ready`
-and was never sent. It was not checked with Houdini, and the Houdini rules above
-come from SideFX's documentation and forum, not from a test: SideFX's pages give
-two different resolution limits for Apprentice, and nothing says how `hython`
-behaves under it.
+and was never sent. The license-class routing was not checked with Houdini, and the Houdini rules
+above come from SideFX's documentation and forum, not from a test: SideFX's pages
+give two different resolution limits for Apprentice. What was checked, on Houdini
+22.0.466 with an Apprentice license, is that `hython` starts headless, loads a
+`.hipnc` and renders a Geometry ROP through `houdini-rop-render`. Mantra and Karma
+renders, and Apprentice's resolution limit, were not tried.
 
 ---
 

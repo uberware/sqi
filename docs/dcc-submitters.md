@@ -163,8 +163,9 @@ open_submitter()
 Restart Houdini; click the shelf tool to open the submit dialog.
 
 > **For a submitted job to run,** the rendering worker needs the `houdini=true`
-> capability tag and `hython` on its `PATH`. Without a tagged worker the job
-> stays `ready`. See [Reference presets](#reference-presets).
+> capability tag and a `hython` command. On Windows and Linux the worker finds the
+> newest install itself; on macOS put `hython` on its `PATH`. Without a tagged
+> worker the job stays `ready`. See [Reference presets](#reference-presets).
 
 ### Nuke
 
