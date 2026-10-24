@@ -21,6 +21,9 @@ readme: |
   - **Output Path** - the output image path passed to Commandline as
     `-oimage`. Leave it empty to leave `-oimage` out, so the scene's own
     render settings choose where images are saved.
+    The path is passed in the worker's own form (backslashes on Windows) and
+    normalized, so a trailing separator is dropped: give a file name or
+    prefix, not a folder.
 
   ## How work is divided
 

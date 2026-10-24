@@ -21,6 +21,9 @@ readme: |
     `-outputName:`. Make sure its folder exists: `3dsmaxcmd` does not create
     it. Leave it empty to leave `-outputName:` out, so the scene's own render
     output setting applies.
+    The path is passed in the worker's own form (backslashes on Windows) and
+    normalized, so a trailing separator is dropped: give a file name or
+    prefix, not a folder.
 
   ## How work is divided
 

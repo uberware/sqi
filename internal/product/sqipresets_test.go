@@ -120,9 +120,8 @@ func TestSQIReferencePresets(t *testing.T) {
 		// directly; husk-usd-render computes its start and count with EXPR,
 		// and the two Cinema 4D presets and 3dsmax-render their start and end,
 		// because they also need EXPR to leave out a blank output path; the
-		// other standalone
-		// renderers render one file per frame and do not chunk, and neither
-		// do the whole-queue After Effects presets.
+		// other standalone renderers render one file per frame and do not
+		// chunk, and neither do the whole-queue After Effects presets.
 		"mistika-boutique-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames"},

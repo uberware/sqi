@@ -121,12 +121,14 @@ template:
               - "--python-expr"
               # One fixed line with no template substitution: OpenJD forbids a
               # line break in a literal arg, and no name may be spliced into
-              # Python source. It reads the layer and scene names after `--`
-              # from sys.argv. It exits naming the scene when -S did not select
-              # it (Blender only prints "Can't find scene" and carries on with
-              # the file's active scene), exits naming the layer when the scene
-              # has no such layer, and otherwise enables that layer alone.
-              - "import sys, bpy; name, scene = sys.argv[sys.argv.index('--') + 1:][:2]; bpy.context.scene.name == scene or sys.exit('no scene named ' + repr(scene) + ' in the file'); layers = bpy.context.scene.view_layers; any(l.name == name for l in layers) or sys.exit('no view layer named ' + repr(name) + ' in scene ' + repr(scene)); [setattr(l, 'use', l.name == name) for l in layers]"
+              # Python source. It reads the layer and scene names from sys.argv
+              # as its last two arguments, which the template fixes after `--`
+              # (so a value of `--` earlier on cannot shift them). It exits
+              # naming the scene when -S did not select it (Blender only
+              # prints "Can't find scene" and carries on with the file's
+              # active scene), exits naming the layer when the scene has no
+              # such layer, and otherwise enables that layer alone.
+              - "import sys, bpy; name, scene = sys.argv[-2:]; bpy.context.scene.name == scene or sys.exit('no scene named ' + repr(scene) + ' in the file'); layers = bpy.context.scene.view_layers; any(l.name == name for l in layers) or sys.exit('no view layer named ' + repr(name) + ' in scene ' + repr(scene)); [setattr(l, 'use', l.name == name) for l in layers]"
               - "-a"
               - "--"
               - "{{Param.ViewLayer}}"
