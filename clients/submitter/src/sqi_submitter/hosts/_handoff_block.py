@@ -87,8 +87,25 @@ def write_context(data: dict[str, object]) -> str:
     return path
 
 
+def windowed_command(command: str) -> str:
+    """The GUI-subsystem ``sqi-submitw.exe`` beside a Windows ``sqi-submit.exe``, if any.
+
+    ``sqi-submit.exe`` is a console launcher: even started detached, the ``python.exe`` it
+    runs gets a console window of its own, open for as long as the dialog is.
+    ``sqi-submitw.exe`` runs ``pythonw.exe``, which has none. Anything else (a ``.cmd``
+    wrapper, an install from before ``sqi-submitw`` existed) is used as it is.
+    """
+    folder, name = os.path.split(command)
+    if name.lower() != "sqi-submit.exe":
+        return command
+    windowed = os.path.join(folder, "sqi-submitw.exe")
+    return windowed if os.path.isfile(windowed) else command
+
+
 def launch(command: str, context_path: str) -> None:
     """Start ``sqi-submit --context`` detached, and let its window take focus."""
+    if sys.platform == "win32":
+        command = windowed_command(command)
     argv = [command, "--context", context_path]
     if sys.platform == "win32":
         flags = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)

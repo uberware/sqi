@@ -59,6 +59,11 @@ dev = [
 [project.scripts]
 sqi-submit = "sqi_submitter.cli:main"
 
+# The same entry point with no console: on Windows it runs pythonw.exe, so a host that
+# launches the dialog (Blender, Cinema 4D, After Effects) leaves no console window open.
+[project.gui-scripts]
+sqi-submitw = "sqi_submitter.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/uberware/sqi"
 Repository = "https://github.com/uberware/sqi"

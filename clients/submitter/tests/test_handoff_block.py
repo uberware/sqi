@@ -238,6 +238,50 @@ def test_launch_detaches_windows(monkeypatch: pytest.MonkeyPatch) -> None:
     assert allowed == [-1]
 
 
+@pytest.mark.parametrize("name", ["sqi-submit.exe", "SQI-SUBMIT.EXE", "sqi-submit.EXE"])
+def test_windowed_command_prefers_sqi_submitw(tmp_path: Path, name: str) -> None:
+    # shutil.which spells the extension the way PATHEXT does (".EXE").
+    windowed = _fake_exe(tmp_path, "sqi-submitw.exe")
+    assert block.windowed_command(str(tmp_path / name)) == windowed
+
+
+def test_windowed_command_keeps_a_console_exe_with_no_sibling(tmp_path: Path) -> None:
+    exe = _fake_exe(tmp_path, "sqi-submit.exe")
+    assert block.windowed_command(exe) == exe
+
+
+@pytest.mark.parametrize("name", ["sqi-submit.cmd", "sqi-submit", "my-sqi-submit.exe"])
+def test_windowed_command_leaves_other_programs_alone(tmp_path: Path, name: str) -> None:
+    _fake_exe(tmp_path, "sqi-submitw.exe")
+    exe = str(tmp_path / name)
+    assert block.windowed_command(exe) == exe
+
+
+def test_launch_windows_starts_sqi_submitw(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    rec = _Recorder()
+    user32 = SimpleNamespace(AllowSetForegroundWindow=lambda _pid: None)
+    monkeypatch.setattr(subprocess, "Popen", rec.popen)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(ctypes, "windll", SimpleNamespace(user32=user32), raising=False)
+    windowed = _fake_exe(tmp_path, "sqi-submitw.exe")
+    block.launch(_fake_exe(tmp_path, "sqi-submit.exe"), "C:/tmp/ctx.json")
+    [(argv, _kwargs)] = rec.calls
+    assert argv == [windowed, "--context", "C:/tmp/ctx.json"]
+
+
+def test_launch_posix_never_swaps_the_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rec = _Recorder()
+    monkeypatch.setattr(subprocess, "Popen", rec.popen)
+    monkeypatch.setattr(sys, "platform", "linux")
+    _fake_exe(tmp_path, "sqi-submitw.exe")
+    exe = _fake_exe(tmp_path, "sqi-submit.exe")
+    block.launch(exe, "/tmp/ctx.json")
+    [(argv, _kwargs)] = rec.calls
+    assert argv[0] == exe
+
+
 def test_launch_windows_ignores_foreground_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     rec = _Recorder()
 

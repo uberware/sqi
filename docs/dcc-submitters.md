@@ -417,8 +417,11 @@ at least one render-queue item has status **Queued**; `sqi-submit` is
 located and still exists; and it is new enough for the panel. The last check
 runs `sqi-submit --version` and waits for it (`cmd /c ""<exe>" --version"` on
 Windows, `"<exe>" --version` on macOS, with the launch's quoting rules), before
-the context file is written. The panel launches `sqi-submit` with `--detached`
-(see [Launching it](#launching-it)), which an older `sqi-submit` rejects with a
+the context file is written. On Windows it then launches the windowed
+`sqi-submitw.exe` beside the located `sqi-submit.exe` when there is one (the
+version check needs the console program, whose output it reads). The panel
+launches with `--detached` (see [Launching it](#launching-it)), which an older
+`sqi-submit` rejects with a
 usage error in a console that closes at once, so the artist would see nothing;
 an `sqi-submit` that does not print `sqi-submit <version>` is reported as too
 old or not runnable, with how to update it (`pip install -U
@@ -1107,8 +1110,10 @@ After installing per [Installation per host](#installation-per-host):
    products and submits. Cinema 4D passes its own environment to the process it
    starts, and `PYTHONHOME`, `PYTHONPATH` or `DYLD_*` set by the host could break
    a Python-based `sqi-submit`. Check on each OS.
-9. **Window focus.** On Windows the dialog comes to the front. On macOS, check
-   it is not left behind Cinema 4D.
+9. **Window focus.** On Windows the dialog comes to the front, with no console
+   window alongside it (`sqi-submitw.exe` is launched; Task Manager shows
+   `pythonw.exe`, not `python.exe`). On macOS, check it is not left behind
+   Cinema 4D.
 10. On macOS, `sqi-submit` is found. A GUI app does not inherit the shell
     `PATH`, so if it is not found set `sqi_submit_command` in
     `~/.sqi/submitter.json` to its absolute path.
@@ -1170,8 +1175,12 @@ After installing per [Installation per host](#installation-per-host):
    submit. The sequence job takes both edits; the movie job keeps its own range
    and its whole frame count, so it is one task.
 7. **Launch.** The dialog opens without After Effects freezing while it is open
-   and without a console window staying on screen (Windows). Test with
-   `sqi-submit` installed in a path containing spaces.
+   and without a console window staying on screen (Windows: `sqi-submitw.exe`
+   is launched, and Task Manager shows `pythonw.exe`, not `python.exe`; the
+   version check's `cmd /c` may still flash briefly). Test with `sqi-submit`
+   installed in a path containing spaces, and once with `sqi-submitw.exe`
+   deleted: the console `sqi-submit.exe` is launched instead and a console
+   window stays open with the dialog.
 8. **Rejected paths.** A path to `sqi-submit` or the temp folder containing a
    quote, `%` (Windows) or `$`, backtick or backslash (macOS) is refused with
    the "cannot launch a program or temp file whose path contains..." message
@@ -1203,7 +1212,10 @@ After installing per [Installation per host](#installation-per-host):
   the tests check only the string that is built, under Node. Whether
   `callSystem` returns at once with each (it normally blocks), whether the
   window gets focus and whether quoting survives paths with spaces are all
-  untested.
+  untested. That `start` of `sqi-submitw.exe` opens no console window, and of
+  `sqi-submit.exe` does, was measured outside After Effects (a pip-installed
+  pair of probe scripts started the same way); `File.exists` finding the
+  windowed program beside the located one was not.
 - **The preference.** `Pref_SCRIPTING_FILE_NETWORK_SECURITY` under
   `app.preferences.getPrefAsLong` is read from two sections, `Main Pref Section
   v2` then `Main Pref Section`; which one a given After Effects version uses
@@ -1254,6 +1266,8 @@ After installing per [Installation per host](#installation-per-host):
    `PYTHONHOME`/`PYTHONPATH` set by the host could break a Python-based
    `sqi-submit`. Check on each OS, in particular with a pipx install.
 9. **Window focus** on Windows (should come to the front), macOS and Linux.
+   On Windows no console window opens alongside the dialog (`sqi-submitw.exe`
+   is launched; Task Manager shows `pythonw.exe`, not `python.exe`).
 10. **A failed launch is shown.** Make `sqi-submit` fail to start (install it
     without the `[qt]` extra, or uninstall PySide6 from its environment), start
     Blender from the desktop menu or an icon rather than a terminal, and click
@@ -1392,13 +1406,25 @@ name, since `cmd.exe` passes single quotes through literally.
 
 ### Launching it
 
-On Windows the Python hosts start `sqi-submit` detached (`DETACHED_PROCESS` and
+The package installs the same entry point twice: `sqi-submit`, a console
+program, and `sqi-submitw`, a windowed one (a `gui-scripts` entry point, which
+on Windows runs `pythonw.exe`). On Windows every handoff host launches
+`sqi-submitw.exe` when it finds it in the same folder as the `sqi-submit.exe` it
+resolved, and the located program as it is otherwise (a `.cmd` wrapper, or an
+install from before `sqi-submitw` existed). `sqi-submit.exe` is a launcher that
+starts `python.exe` as its own child, and that child gets a console window of
+its own however the launcher was started, open for as long as the dialog is;
+`pythonw.exe` has none. Configure and locate `sqi-submit` as before: the
+windowed program is found beside it.
+
+On Windows the Python hosts start it detached (`DETACHED_PROCESS` and
 `CREATE_NEW_PROCESS_GROUP`) and then call `AllowSetForegroundWindow` with
 `ASFW_ANY` so its window can come to the front. Not the child's process ID: the
-`sqi-submit.exe` that pip, pipx and uv install is a launcher that starts the real
-`python.exe` as its own child, so the window lives in a grandchild that a
-per-process grant never reaches. On macOS and Linux they start it in a new
-session. After Effects uses `system.callSystem` with
+`sqi-submitw.exe` and `sqi-submit.exe` that pip, pipx and uv install are
+launchers that start the real `pythonw.exe` or `python.exe` as their own child,
+so the window lives in a grandchild that a per-process grant never reaches. On
+macOS and Linux they start it in a new session. After Effects uses
+`system.callSystem` with
 `cmd /c start "" "<exe>" --context "<file>" --detached` on Windows and
 `"<exe>" --context "<file>" --detached >/dev/null 2>&1 &` on macOS, and refuses
 a path that contains a character it cannot quote. `--detached` is a hidden flag
@@ -1433,12 +1459,15 @@ error, it still prints the message to stderr, and also:
 
 It exits 1 either way. Every handoff host (Blender, Cinema 4D, After Effects)
 launches `sqi-submit` detached and relies on this to report a failed launch.
-Blender and Cinema 4D start it with no stderr on Windows and with the host's
-own stderr on macOS and Linux, so a Blender started from a terminal gets the
-message in that terminal, and one started from a desktop icon or menu (whose
-stderr is not a terminal) gets the native box. After Effects passes the
-hidden `--detached` flag, because `cmd /c start` gives `sqi-submit` a console of
-its own (a real terminal) that closes when it exits. `--detached` is that
+On Windows, `sqi-submitw` has no stderr at all, so a failure always gets the
+native box. Blender and Cinema 4D start it with the host's own stderr on macOS
+and Linux, so a Blender started from a terminal gets the message in that
+terminal, and one started from a desktop icon or menu (whose stderr is not a
+terminal) gets the native box. After Effects passes the hidden `--detached`
+flag for the case where it falls back to the console `sqi-submit.exe`, because
+`cmd /c start` then gives it a console of its own (a real terminal) that closes
+when it exits. A Python host falling back to that console program on Windows
+does not pass the flag, so there a failure is logged but not shown. `--detached` is that
 host-launch flag, not an option for users. Run from a terminal, `sqi-submit`
 prints only; a non-interactive caller with stderr redirected (a script, CI)
 gets the modal box before it exits 1. A bad context file is not a

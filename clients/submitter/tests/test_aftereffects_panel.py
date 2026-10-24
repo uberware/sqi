@@ -97,6 +97,8 @@ function reader(values) {
 var movie = sqiTarget(2, "Main Comp", "1-240", "D:\\\\out\\\\spot.mov", false);
 var seq = sqiTarget(1, "Main Comp", "1001-1250", "D:\\\\out\\\\spot_[#####].png", true);
 var ctx = sqiBuildContext("25.2x12", "C:\\\\p\\\\spot.aep", [seq, movie]);
+function yes() { return true; }
+function no() { return false; }
 var probeCalls = [];
 function fakeRun(output) {
   return function (command) { probeCalls.push(command); return output; };
@@ -140,6 +142,22 @@ out = {
   macQuote: sqiLaunchCommand(false, "/a/sqi-submit", '/tmp/a"b.json'),
   macDollar: sqiLaunchCommand(false, "/a/$HOME/sqi-submit", "/tmp/1.json"),
   winPercent: sqiLaunchCommand(true, "C:\\\\a\\\\sqi-submit.exe", "C:\\\\%TEMP%\\\\1.json"),
+  wExe: sqiWindowedExe(true, "C:\\\\Program Files\\\\sqi\\\\sqi-submit.exe", yes),
+  wExeUpper: sqiWindowedExe(true, "C:\\\\sqi\\\\SQI-SUBMIT.EXE", yes),
+  wExeSlash: sqiWindowedExe(true, "C:/sqi/sqi-submit.exe", yes),
+  wExeBare: sqiWindowedExe(true, "sqi-submit.exe", yes),
+  wExeAsked: (function () {
+    var asked = [];
+    sqiWindowedExe(true, "C:\\\\sqi\\\\sqi-submit.exe", function (p) {
+      asked.push(p);
+      return true;
+    });
+    return asked;
+  })(),
+  wExeMissing: sqiWindowedExe(true, "C:\\\\sqi\\\\sqi-submit.exe", no),
+  wExeCmd: sqiWindowedExe(true, "C:\\\\sqi\\\\sqi-submit.cmd", yes),
+  wExeOther: sqiWindowedExe(true, "C:\\\\sqi\\\\my-sqi-submit.exe", yes),
+  wExeMac: sqiWindowedExe(false, "/Users/a/bin/sqi-submit", yes),
   accV2: sqiFileAccessAllowed(reader({ "Main Pref Section v2": 1 })),
   accOneOn: sqiFileAccessAllowed(reader({ "Main Pref Section v2": 0, "Main Pref Section": 1 })),
   accV2Off: sqiFileAccessAllowed(reader({ "Main Pref Section v2": 0 })),
@@ -261,6 +279,18 @@ def test_jsx_pure_functions_under_node(harness: dict[str, Any]) -> None:
     assert r["macDollar"] is None
     assert r["winPercent"] is None
 
+    # On Windows the windowed sqi-submitw.exe beside sqi-submit.exe is launched: started
+    # with `start`, the console sqi-submit.exe would keep a console window open.
+    assert r["wExe"] == "C:\\Program Files\\sqi\\sqi-submitw.exe"
+    assert r["wExeUpper"] == "C:\\sqi\\sqi-submitw.exe"
+    assert r["wExeSlash"] == "C:/sqi/sqi-submitw.exe"
+    assert r["wExeBare"] == "sqi-submitw.exe"
+    assert r["wExeAsked"] == ["C:\\sqi\\sqi-submitw.exe"]
+    assert r["wExeMissing"] == "C:\\sqi\\sqi-submit.exe"  # an install from before it existed
+    assert r["wExeCmd"] == "C:\\sqi\\sqi-submit.cmd"  # anything else is launched as it is
+    assert r["wExeOther"] == "C:\\sqi\\my-sqi-submit.exe"
+    assert r["wExeMac"] == "/Users/a/bin/sqi-submit"
+
     # "Allow Scripts to Write Files and Access Network": v2 section first, then the old one.
     assert r["accV2"] is True
     assert r["accOneOn"] is True  # either section on is enough: AE writes only one of them
@@ -360,6 +390,10 @@ def test_jsx_probes_the_version_before_writing_the_context() -> None:
     probe = body.index("sqiProbeVersion(")
     assert probe < body.index("sqiWriteContext(")
     assert probe < body.index("sqiLaunchCommand(")
+    # The probe reads --version output, which only the console sqi-submit has: the
+    # windowed one is chosen for the launch alone.
+    assert probe < body.index("sqiWindowedExe(")
+    assert "sqiLaunchCommand(sqiIsWindows(), launchExe," in body
     assert body.index("SQI_MSG.tooOld") < body.index("sqiWriteContext(")
     assert "system.callSystem(command)" in body[probe:]
 

@@ -35,7 +35,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="handoff context file written by a host application (deleted once read)",
     )
     # Passed by a host launch whose console closes with the process (After Effects'
-    # `cmd /c start`): always show a startup failure natively. Not for users.
+    # `cmd /c start` of a console sqi-submit.exe; sqi-submitw has no console and needs
+    # no flag): always show a startup failure natively. Not for users.
     parser.add_argument("--detached", action="store_true", help=argparse.SUPPRESS)
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
     install = sub.add_parser("install-host", help="install the sqi submitter into a host")
