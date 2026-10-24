@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import contextlib
 import os
+import stat
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import BinaryIO
 
 __all__ = ["KEEP_LOG_BYTES", "LOG_NAME", "MAX_LOG_BYTES", "log_path", "report_failure"]
 
@@ -121,29 +123,52 @@ def _run(argv: list[str]) -> None:
 
 def _append_log(path: Path, message: str, detail: str | None) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    _trim(path)
     stamp = datetime.now().astimezone().isoformat(timespec="seconds")
     entry = f"{stamp} sqi-submit failed: {message}\n"
     if detail:
         entry += detail if detail.endswith("\n") else detail + "\n"
-    with path.open("a", encoding="utf-8") as log:
-        log.write(entry + "\n")
+    # One handle for the trim and the append, so nothing can be swapped in between.
+    with os.fdopen(_open_log(path), "r+b") as log:
+        _trim(log)
+        log.seek(0, os.SEEK_END)
+        log.write((entry + "\n").encode("utf-8"))
     return path
 
 
-def _trim(path: Path) -> None:
-    """Keep the log bounded: past ``MAX_LOG_BYTES``, keep only its last whole lines."""
+def _open_log(path: Path) -> int:
+    """Open (or create) the log for reading and writing, never through a symlink.
+
+    The settings directory can be moved anywhere with ``SQI_SUBMITTER_SETTINGS``. In a
+    folder other users can write to, a ``submit-error.log`` symlink would otherwise have
+    this process append to, and trim, a file of the artist's it points at. POSIX refuses
+    the link in the open itself (``O_NOFOLLOW``); Windows has no such flag, so the link
+    is refused by a check first (creating one there needs a privilege by default).
+    Anything that is not a regular file is refused too. Raises ``OSError``.
+    """
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if not nofollow and path.is_symlink():
+        raise OSError(f"{path} is a symbolic link")
+    flags = os.O_RDWR | os.O_CREAT | nofollow | getattr(os, "O_BINARY", 0)
+    fd = os.open(path, flags, 0o600)
     try:
-        size = path.stat().st_size
-    except OSError:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(f"{path} is not a regular file")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _trim(log: BinaryIO) -> None:
+    """Keep the log bounded: past ``MAX_LOG_BYTES``, keep only its last whole lines."""
+    if os.fstat(log.fileno()).st_size <= MAX_LOG_BYTES:
         return
-    if size <= MAX_LOG_BYTES:
-        return
-    with path.open("rb") as log:
-        log.seek(-KEEP_LOG_BYTES, os.SEEK_END)
-        tail = log.read()
+    log.seek(-KEEP_LOG_BYTES, os.SEEK_END)
+    tail = log.read()
     newline = tail.find(b"\n")
-    path.write_bytes(tail[newline + 1 :] if newline != -1 else b"")
+    log.seek(0)
+    log.write(tail[newline + 1 :] if newline != -1 else b"")
+    log.truncate()
 
 
 def _print_stderr(message: str, detail: str | None, path: Path | None) -> None:

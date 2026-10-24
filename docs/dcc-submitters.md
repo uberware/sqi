@@ -1452,6 +1452,12 @@ error, it still prints the message to stderr, and also:
   settings file and the context file are never read into the log, but an
   unexpected exception's own message and traceback are logged as they are.
   Past 64 KiB the log is cut to its last 16 KiB before the entry is added.
+  A new log is created readable by its owner only (POSIX). A
+  `submit-error.log` that is a symbolic link, or anything but a regular file,
+  is never written: in a settings folder other users can write to, a planted
+  link would otherwise have the entry appended to, and the trim cut, the file
+  it points at. The entry is then skipped, and the message is still shown,
+  without a log path.
 - when stderr is not a terminal, or the launch passed `--detached`, shows the
   message and the log's path in a native error box: a message box on Windows
   (asked to take the foreground and kept on top, since with no owner window it

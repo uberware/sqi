@@ -6,6 +6,7 @@ from __future__ import annotations
 import ctypes
 import io
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -110,6 +111,54 @@ def test_log_is_trimmed_before_it_grows_without_bound(sqi_dir: Path) -> None:
     assert len(data) <= _failure.KEEP_LOG_BYTES + 1024
     assert data.decode("utf-8").rstrip().endswith("The newest failure.")
     assert data.startswith(b"old entry ")  # cut at a line boundary, never mid-line
+
+
+def _symlink_or_skip(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError):  # Windows without the symlink privilege
+        pytest.skip("cannot create a symbolic link here")
+
+
+@pytest.mark.parametrize("nofollow", [True, False], ids=["o_nofollow", "lstat_check"])
+def test_a_symlinked_log_is_never_written_through(
+    sqi_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    native_messages: list[str],
+    nofollow: bool,
+) -> None:
+    """A log planted as a symlink in a shared settings folder must not reach its target."""
+    if nofollow and not hasattr(os, "O_NOFOLLOW"):
+        pytest.skip("no O_NOFOLLOW on this platform")
+    if not nofollow:
+        monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)  # the Windows path
+    victim = tmp_path / "victim.txt"
+    original = ("precious line " + "y" * 90 + "\n") * 700  # over MAX_LOG_BYTES: would trim
+    victim.write_text(original, encoding="utf-8")
+    _symlink_or_skip(sqi_dir / _failure.LOG_NAME, victim)
+
+    _failure.report_failure("No Qt binding found.")
+
+    assert victim.read_text(encoding="utf-8") == original
+    assert "No Qt binding found." in capsys.readouterr().err
+    assert native_messages == ["No Qt binding found."]  # still shown, with no log path
+
+
+def test_a_log_that_is_not_a_regular_file_is_skipped(
+    sqi_dir: Path, native_messages: list[str]
+) -> None:
+    (sqi_dir / _failure.LOG_NAME).mkdir()
+    _failure.report_failure("No Qt binding found.")
+    assert native_messages == ["No Qt binding found."]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permissions")
+def test_a_new_log_is_private(sqi_dir: Path) -> None:
+    _failure.report_failure("No Qt binding found.")
+    mode = (sqi_dir / _failure.LOG_NAME).stat().st_mode & 0o777
+    assert mode == 0o600
 
 
 def test_small_log_is_kept(sqi_dir: Path) -> None:
