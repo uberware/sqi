@@ -22,7 +22,9 @@ readme: |
   - **Output Path** - the output path passed to Blender as `-o`. Blender treats
     it as a prefix and appends the frame number and extension. The flag is
     always passed, even with an empty value, so set it.
-  - **Scene** - the name of the scene to render, passed as `-S`.
+  - **Scene** - the name of the scene to render, passed as `-S`. If the file
+    has no scene of that name, the task fails without rendering anything
+    (Blender itself would only warn and render the file's active scene).
   - **View Layer** - the name of the view layer to render. Names are
     case-sensitive and may contain spaces and quotes.
 
@@ -35,9 +37,12 @@ readme: |
   name, the expression stops Blender with a message naming the layer, and the
   task fails without rendering anything.
 
-  The view layer's name is never written into that Python expression. It is
-  passed as a separate argument after `--`, which Blender ignores, and the
-  expression reads it back from `sys.argv`. A name containing a quote or a
+  The same expression first checks that `-S` really selected the scene you
+  named, and stops Blender with a message naming the scene if it did not.
+
+  Neither the view layer's name nor the scene's is written into that Python
+  expression. Both are passed as separate arguments after `--`, which Blender
+  ignores, and the expression reads them back from `sys.argv`. A name containing a quote or a
   backslash therefore cannot break the expression or run as code.
 
   ## How work is divided
@@ -115,11 +120,14 @@ template:
               - "1"
               - "--python-expr"
               # One fixed line with no template substitution: OpenJD forbids a
-              # line break in a literal arg, and the layer name must never be
-              # spliced into Python source. It reads the name after `--` from
-              # sys.argv, exits with a message naming the layer when the scene
+              # line break in a literal arg, and no name may be spliced into
+              # Python source. It reads the layer and scene names after `--`
+              # from sys.argv. It exits naming the scene when -S did not select
+              # it (Blender only prints "Can't find scene" and carries on with
+              # the file's active scene), exits naming the layer when the scene
               # has no such layer, and otherwise enables that layer alone.
-              - "import sys, bpy; name = sys.argv[sys.argv.index('--') + 1]; layers = bpy.context.scene.view_layers; any(l.name == name for l in layers) or sys.exit('no view layer named ' + repr(name) + ' in scene ' + repr(bpy.context.scene.name)); [setattr(l, 'use', l.name == name) for l in layers]"
+              - "import sys, bpy; name, scene = sys.argv[sys.argv.index('--') + 1:][:2]; bpy.context.scene.name == scene or sys.exit('no scene named ' + repr(scene) + ' in the file'); layers = bpy.context.scene.view_layers; any(l.name == name for l in layers) or sys.exit('no view layer named ' + repr(name) + ' in scene ' + repr(scene)); [setattr(l, 'use', l.name == name) for l in layers]"
               - "-a"
               - "--"
               - "{{Param.ViewLayer}}"
+              - "{{Param.Scene}}"
