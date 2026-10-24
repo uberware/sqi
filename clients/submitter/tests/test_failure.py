@@ -146,11 +146,50 @@ def test_a_symlinked_log_is_never_written_through(
     assert native_messages == ["No Qt binding found."]  # still shown, with no log path
 
 
-def test_a_log_that_is_not_a_regular_file_is_skipped(
-    sqi_dir: Path, native_messages: list[str]
+def test_a_hard_linked_log_is_never_written_through(
+    sqi_dir: Path, tmp_path: Path, native_messages: list[str]
 ) -> None:
+    """O_NOFOLLOW and S_ISREG both accept a hard link, so it is refused by its link count."""
+    victim = tmp_path / "victim.txt"
+    original = ("precious line " + "y" * 90 + "\n") * 700  # over MAX_LOG_BYTES: would trim
+    victim.write_text(original, encoding="utf-8")
+    try:
+        os.link(victim, sqi_dir / _failure.LOG_NAME)
+    except OSError:
+        pytest.skip("cannot create a hard link here")
+
+    _failure.report_failure("No Qt binding found.")
+
+    assert victim.read_text(encoding="utf-8") == original
+    assert native_messages == ["No Qt binding found."]
+
+
+def test_a_log_that_is_a_directory_is_skipped(sqi_dir: Path, native_messages: list[str]) -> None:
     (sqi_dir / _failure.LOG_NAME).mkdir()
     _failure.report_failure("No Qt binding found.")
+    assert native_messages == ["No Qt binding found."]
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no FIFOs on this platform")
+def test_a_log_that_is_a_fifo_is_skipped(sqi_dir: Path, native_messages: list[str]) -> None:
+    # Unlike a directory, a FIFO opens: this reaches the S_ISREG refusal itself.
+    getattr(os, "mkfifo")(sqi_dir / _failure.LOG_NAME)  # noqa: B009 - absent on Windows
+    _failure.report_failure("No Qt binding found.")
+    assert native_messages == ["No Qt binding found."]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX owners")
+def test_a_log_owned_by_another_user_is_skipped(
+    sqi_dir: Path, monkeypatch: pytest.MonkeyPatch, native_messages: list[str]
+) -> None:
+    log = sqi_dir / _failure.LOG_NAME
+    log.write_text("someone else's entry\n", encoding="utf-8")
+    real_uid = getattr(os, "getuid")()  # noqa: B009 - absent on Windows
+    monkeypatch.setattr(os, "getuid", lambda: real_uid + 1)  # the file is not "ours"
+
+    _failure.report_failure("No Qt binding found.")
+
+    assert log.read_text(encoding="utf-8") == "someone else's entry\n"
     assert native_messages == ["No Qt binding found."]
 
 
@@ -159,6 +198,30 @@ def test_a_new_log_is_private(sqi_dir: Path) -> None:
     _failure.report_failure("No Qt binding found.")
     mode = (sqi_dir / _failure.LOG_NAME).stat().st_mode & 0o777
     assert mode == 0o600
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permissions")
+def test_an_existing_open_log_is_made_private(sqi_dir: Path) -> None:
+    # The open's mode applies only on create: a log from an older version keeps its own.
+    log = sqi_dir / _failure.LOG_NAME
+    log.write_text("old entry\n", encoding="utf-8")
+    log.chmod(0o644)
+    _failure.report_failure("No Qt binding found.")
+    assert log.stat().st_mode & 0o777 == 0o600
+    assert log.read_text(encoding="utf-8").startswith("old entry\n")
+
+
+def test_two_reports_through_separate_handles_both_land(sqi_dir: Path) -> None:
+    """O_APPEND: a second report opened before the first wrote still lands after it."""
+    first = _failure._open_log(sqi_dir / _failure.LOG_NAME)
+    second = _failure._open_log(sqi_dir / _failure.LOG_NAME)
+    try:
+        os.write(first, b"first\n")
+        os.write(second, b"second\n")
+    finally:
+        os.close(first)
+        os.close(second)
+    assert _log(sqi_dir) == "first\nsecond\n"
 
 
 def test_small_log_is_kept(sqi_dir: Path) -> None:

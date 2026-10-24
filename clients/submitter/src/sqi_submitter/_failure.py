@@ -23,7 +23,6 @@ import stat
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import BinaryIO
 
 __all__ = ["KEEP_LOG_BYTES", "LOG_NAME", "MAX_LOG_BYTES", "log_path", "report_failure"]
 
@@ -128,47 +127,77 @@ def _append_log(path: Path, message: str, detail: str | None) -> Path:
     if detail:
         entry += detail if detail.endswith("\n") else detail + "\n"
     # One handle for the trim and the append, so nothing can be swapped in between.
-    with os.fdopen(_open_log(path), "r+b") as log:
-        _trim(log)
-        log.seek(0, os.SEEK_END)
-        log.write((entry + "\n").encode("utf-8"))
+    fd = _open_log(path)
+    try:
+        _trim(fd)
+        _write_all(fd, (entry + "\n").encode("utf-8"))
+    finally:
+        os.close(fd)
     return path
 
 
 def _open_log(path: Path) -> int:
-    """Open (or create) the log for reading and writing, never through a symlink.
+    """Open (or create) the log for appending, refusing any file it could clobber.
 
     The settings directory can be moved anywhere with ``SQI_SUBMITTER_SETTINGS``. In a
-    folder other users can write to, a ``submit-error.log`` symlink would otherwise have
-    this process append to, and trim, a file of the artist's it points at. POSIX refuses
-    the link in the open itself (``O_NOFOLLOW``); Windows has no such flag, so the link
-    is refused by a check first (creating one there needs a privilege by default).
-    Anything that is not a regular file is refused too. Raises ``OSError``.
+    folder other users can write to, a planted ``submit-error.log`` would otherwise have
+    this process append to, and trim, a file of the artist's. So the log is refused when
+    it is a symbolic link, anything but a regular file, a hard link to another name, or
+    (POSIX) owned by someone else. POSIX refuses a symlink in the open itself
+    (``O_NOFOLLOW``); Windows has no such flag, so a symlink is refused by a check first
+    (creating one there needs a privilege by default). ``O_APPEND`` keeps concurrent
+    appends from two failures whole. Raises ``OSError``.
     """
     nofollow = getattr(os, "O_NOFOLLOW", 0)
     if not nofollow and path.is_symlink():
         raise OSError(f"{path} is a symbolic link")
-    flags = os.O_RDWR | os.O_CREAT | nofollow | getattr(os, "O_BINARY", 0)
+    flags = os.O_RDWR | os.O_APPEND | os.O_CREAT | nofollow | getattr(os, "O_BINARY", 0)
     fd = os.open(path, flags, 0o600)
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
             raise OSError(f"{path} is not a regular file")
+        if info.st_nlink != 1:
+            raise OSError(f"{path} has other hard links")
+        getuid = getattr(os, "getuid", None)  # POSIX only, as is fchmod
+        if getuid is not None:
+            if info.st_uid != getuid():
+                raise OSError(f"{path} is owned by another user")
+            if info.st_mode & 0o077:
+                # A log written before it was created private keeps its old mode.
+                getattr(os, "fchmod")(fd, 0o600)  # noqa: B009 - absent on Windows
     except BaseException:
         os.close(fd)
         raise
     return fd
 
 
-def _trim(log: BinaryIO) -> None:
-    """Keep the log bounded: past ``MAX_LOG_BYTES``, keep only its last whole lines."""
-    if os.fstat(log.fileno()).st_size <= MAX_LOG_BYTES:
+def _trim(fd: int) -> None:
+    """Keep the log bounded: past ``MAX_LOG_BYTES``, keep only its last whole lines.
+
+    The descriptor is ``O_APPEND``, so every write lands at the end: after truncating to
+    nothing, writing the kept tail puts it at the start.
+    """
+    if os.fstat(fd).st_size <= MAX_LOG_BYTES:
         return
-    log.seek(-KEEP_LOG_BYTES, os.SEEK_END)
-    tail = log.read()
+    os.lseek(fd, -KEEP_LOG_BYTES, os.SEEK_END)
+    tail = _read_all(fd)
     newline = tail.find(b"\n")
-    log.seek(0)
-    log.write(tail[newline + 1 :] if newline != -1 else b"")
-    log.truncate()
+    os.ftruncate(fd, 0)
+    _write_all(fd, tail[newline + 1 :] if newline != -1 else b"")
+
+
+def _read_all(fd: int) -> bytes:
+    chunks = []
+    while chunk := os.read(fd, 64 * 1024):
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        view = view[os.write(fd, view) :]
 
 
 def _print_stderr(message: str, detail: str | None, path: Path | None) -> None:
