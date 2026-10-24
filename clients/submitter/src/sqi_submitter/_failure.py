@@ -64,7 +64,11 @@ def show_message(text: str) -> None:
             import ctypes
 
             windll = getattr(ctypes, "windll")  # noqa: B009 - absent off Windows
-            windll.user32.MessageBoxW(None, text, "sqi", 0x10)  # MB_ICONERROR
+            # A detached process may not take the foreground (Windows refuses unless the
+            # host allowed it, which After Effects does not), so the box also stays on top:
+            # with no owner window it would otherwise open behind the host.
+            flags = 0x10 | 0x10000 | 0x40000  # MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST
+            windll.user32.MessageBoxW(None, text, "sqi", flags)
         elif platform == "darwin":
             quoted = text.replace("\\", "\\\\").replace('"', '\\"')
             script = (

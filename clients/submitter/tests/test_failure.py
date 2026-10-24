@@ -255,7 +255,9 @@ def test_windows_shows_a_message_box(
     ((owner, text, title, flags),) = calls
     assert owner is None
     assert title == "sqi"
-    assert flags == 0x10
+    # MB_ICONERROR, plus MB_SETFOREGROUND and MB_TOPMOST: an ownerless box from a
+    # detached process would otherwise open behind the host application.
+    assert flags == 0x10 | 0x10000 | 0x40000
     assert text.startswith("No Qt binding found.")
     assert text.endswith(str(sqi_dir / _failure.LOG_NAME))
 

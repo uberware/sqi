@@ -1196,6 +1196,10 @@ After installing per [Installation per host](#installation-per-host):
 10. The context file appears in `<temp>/sqi-handoff/<millisecond timestamp>.json`
     and is gone once the dialog has opened.
 11. **Window focus** on macOS (see below).
+12. **A failed launch is shown in front.** On Windows, make `sqi-submit` fail
+    to start (install it without the `[qt]` extra) and submit: the error box
+    opens on top of After Effects, not behind it, even though After Effects
+    does not hand it the foreground.
 
 **Verified only against fakes or documentation:**
 
@@ -1272,8 +1276,8 @@ After installing per [Installation per host](#installation-per-host):
     without the `[qt]` extra, or uninstall PySide6 from its environment), start
     Blender from the desktop menu or an icon rather than a terminal, and click
     **Submit to sqi**: an error naming the failure and the path of
-    `submit-error.log` appears (a message box on Windows, a dialog on macOS).
-    On Linux, try a GNOME desktop (`zenity`), a KDE one (`kdialog`) and one with
+    `submit-error.log` appears (a message box on Windows, in front of Blender,
+    a dialog on macOS). On Linux, try a GNOME desktop (`zenity`), a KDE one (`kdialog`) and one with
     neither: there the message comes from `xmessage` or a `notify-send`
     notification, and with none of the four installed only the log has it.
     Check X11 and Wayland sessions.
@@ -1449,8 +1453,9 @@ error, it still prints the message to stderr, and also:
   unexpected exception's own message and traceback are logged as they are.
   Past 64 KiB the log is cut to its last 16 KiB before the entry is added.
 - when stderr is not a terminal, or the launch passed `--detached`, shows the
-  message and the log's path in a native error box: a message box on Windows,
-  an `osascript` dialog on macOS. On Linux, when `DISPLAY` or `WAYLAND_DISPLAY`
+  message and the log's path in a native error box: a message box on Windows
+  (asked to take the foreground and kept on top, since with no owner window it
+  would otherwise open behind the host), an `osascript` dialog on macOS. On Linux, when `DISPLAY` or `WAYLAND_DISPLAY`
   is set, it runs the first of these found on `PATH`: `zenity --error
   --no-markup`, `kdialog --error`, `xmessage -center`, then `notify-send -u
   critical` (a notification rather than a dialog), passing the text as a single
