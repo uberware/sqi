@@ -2,8 +2,8 @@
 #
 # 3ds Max Render. The preset is Windows-only (its step requires
 # attr.worker.os.family = windows), so its Tier 3 case runs on Windows only.
-# OutputPath defaults to "" and is always passed as -outputName:, so the cases
-# supply one to keep the argument reviewable. The scene path contains a space so
+# OutputPath defaults to "", which leaves -outputName: out (blank-output); the
+# other cases supply one to keep the argument reviewable. The scene path contains a space so
 # the goldens show it travelling as a single argument. stepped-range shows a
 # gap-bearing range splitting into one chunk per run of consecutive frames, so
 # -start: and -end: never span a frame the range excluded.
@@ -35,3 +35,10 @@ cases:
     expect_tasks: 3
     expect_invocations:
       3dsmaxcmd: 3
+  - name: blank-output
+    params:
+      SceneFile: 'C:\Show Files\seq010\shot0010_v003.max'
+      Frames: "1-2"
+    expect_tasks: 2
+    expect_invocations:
+      3dsmaxcmd: 2

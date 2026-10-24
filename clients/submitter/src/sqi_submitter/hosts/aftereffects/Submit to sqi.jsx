@@ -192,10 +192,26 @@ function sqiBuildContext(hostVersion, scenePath, targets) {
     };
 }
 
+// The program to launch for the located exe: on Windows, the GUI-subsystem sqi-submitw.exe
+// beside an sqi-submit.exe when exists(path) says it is there. sqi-submit.exe is a console
+// program, so `start` would give it a console window, open for as long as the dialog is.
+// Anything else (a .cmd wrapper, an install from before sqi-submitw) is launched as it is.
+function sqiWindowedExe(isWindows, exe, exists) {
+    if (!isWindows) {
+        return exe;
+    }
+    var match = /^(.*[\\\/])?sqi-submit\.exe$/i.exec(exe);
+    if (match === null) {
+        return exe;
+    }
+    var windowed = (match[1] === undefined ? "" : match[1]) + "sqi-submitw.exe";
+    return exists(windowed) ? windowed : exe;
+}
+
 // The system.callSystem string that starts sqi-submit without blocking After Effects, or
 // null when a path could not be quoted safely (the caller alerts; nothing is ever escaped).
-// --detached makes sqi-submit show a startup failure in a message box: `start` gives it a
-// console of its own that closes with it, so stderr alone would reach nobody.
+// --detached makes sqi-submit show a startup failure in a message box: a console sqi-submit
+// gets a console of its own from `start` that closes with it, so stderr would reach nobody.
 function sqiLaunchCommand(isWindows, exe, contextPath) {
     if (sqiUnsafePath(isWindows, exe) || sqiUnsafePath(isWindows, contextPath)) {
         return null;
@@ -423,7 +439,11 @@ function sqiSubmit() {
     if (contextPath === null) {
         return;
     }
-    var command = sqiLaunchCommand(sqiIsWindows(), exe, contextPath);
+    // The version check above ran the console sqi-submit: only it has an output to read.
+    var launchExe = sqiWindowedExe(sqiIsWindows(), exe, function (path) {
+        return new File(path).exists;
+    });
+    var command = sqiLaunchCommand(sqiIsWindows(), launchExe, contextPath);
     if (command === null) {
         alert(SQI_MSG.badPath + exe + " / " + contextPath);
         return;

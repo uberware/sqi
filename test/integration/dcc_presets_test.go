@@ -343,18 +343,21 @@ func TestPresetDCC_Blender_ViewLayerRender(t *testing.T) {
 	}
 
 	// A layer the selected scene lacks must fail the job and render nothing. Fg
-	// exists in Shot but not in Alt, so this also shows -S chose the scene.
-	for _, tc := range []struct{ name, scene, layer string }{
-		{"no such layer", "Shot", "no such layer"},
-		{"layer of another scene", "Alt", "Fg"},
+	// exists in Shot but not in Alt, so this also shows -S chose the scene. A
+	// scene the file lacks must fail too: -S only prints "Can't find scene" and
+	// carries on with the file's active scene (Shot, which has Fg), so without
+	// the expression's own check that job would render the wrong scene and pass.
+	for _, tc := range []struct{ name, scene, layer, want string }{
+		{"no such layer", "Shot", "no such layer", "no view layer named 'no such layer' in scene 'Shot'"},
+		{"layer of another scene", "Alt", "Fg", "no view layer named 'Fg' in scene 'Alt'"},
+		{"no such scene", "Nope", "Fg", "no scene named 'Nope' in the file"},
 	} {
 		t.Run("rejects "+tc.name, func(t *testing.T) {
 			out := t.TempDir()
 			report := runDCCJobExpectingFailure(t, ts, farmID, queueID, "blender-view-layer-render",
 				params(out, tc.scene, tc.layer))
-			if want := fmt.Sprintf("no view layer named %q in scene %q", tc.layer, tc.scene); !strings.Contains(report,
-				strings.ReplaceAll(want, `"`, "'")) {
-				t.Errorf("failure report does not name the missing layer %q in scene %q:%s", tc.layer, tc.scene, report)
+			if !strings.Contains(report, tc.want) {
+				t.Errorf("failure report does not say %q:%s", tc.want, report)
 			}
 			assertExactFiles(t, out, nil)
 		})

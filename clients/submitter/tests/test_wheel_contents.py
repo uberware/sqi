@@ -83,3 +83,11 @@ def test_wheel_declares_the_console_script(wheel: dict[str, bytes]) -> None:
     text = wheel[entry_points].decode("utf-8")
     assert "[console_scripts]" in text
     assert "sqi-submit = sqi_submitter.cli:main" in text.splitlines()
+
+
+def test_wheel_declares_the_windowed_script(wheel: dict[str, bytes]) -> None:
+    """sqi-submitw is what a handoff host launches on Windows: it opens no console."""
+    (entry_points,) = [n for n in wheel if n.endswith(".dist-info/entry_points.txt")]
+    lines = wheel[entry_points].decode("utf-8").splitlines()
+    section = lines.index("[gui_scripts]")
+    assert "sqi-submitw = sqi_submitter.cli:main" in lines[section + 1 :]

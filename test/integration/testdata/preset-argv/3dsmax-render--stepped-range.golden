@@ -7,11 +7,9 @@ params:
 
 step "Render" — 3 tasks
 
-task 1/3  name="Render[Frame=1-1,Frame.End=1,Frame.Start=1]"
+task 1/3  name="Render[Frame=1-1]"
   task params:
     Frame=1-1
-    Frame.End=1
-    Frame.Start=1
   command: 3dsmaxcmd
   args:
     [0]  -v:5
@@ -21,11 +19,9 @@ task 1/3  name="Render[Frame=1-1,Frame.End=1,Frame.Start=1]"
     [4]  -outputName:C:\renders\shot0010\beauty_.exr
     [5]  C:\Show Files\seq010\shot0010_v003.max
 
-task 2/3  name="Render[Frame=5-5,Frame.End=5,Frame.Start=5]"
+task 2/3  name="Render[Frame=5-5]"
   task params:
     Frame=5-5
-    Frame.End=5
-    Frame.Start=5
   command: 3dsmaxcmd
   args:
     [0]  -v:5
@@ -35,11 +31,9 @@ task 2/3  name="Render[Frame=5-5,Frame.End=5,Frame.Start=5]"
     [4]  -outputName:C:\renders\shot0010\beauty_.exr
     [5]  C:\Show Files\seq010\shot0010_v003.max
 
-task 3/3  name="Render[Frame=9-9,Frame.End=9,Frame.Start=9]"
+task 3/3  name="Render[Frame=9-9]"
   task params:
     Frame=9-9
-    Frame.End=9
-    Frame.Start=9
   command: 3dsmaxcmd
   args:
     [0]  -v:5

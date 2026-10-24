@@ -41,8 +41,8 @@ contract is the OpenAPI spec described in [`api.md`](./api.md).
 
 ```sh
 pip install sqi-sdk            # core (httpx only)
-pip install 'sqi-sdk[yaml]'    # + PyYAML
-pip install 'sqi-sdk[ws]'      # + websockets (live event streaming)
+pip install "sqi-sdk[yaml]"    # + PyYAML
+pip install "sqi-sdk[ws]"      # + websockets (live event streaming)
 ```
 
 For offline installs or a specific pre-release build, the wheel is also attached
@@ -345,7 +345,7 @@ shadow the positional product `name`; the wire field sent to the server is
 
 ## Live events (WebSocket, `ws` extra)
 
-With `pip install 'sqi-sdk[ws]'`, `SqiClient.events()` opens a live event
+With `pip install "sqi-sdk[ws]"`, `SqiClient.events()` opens a live event
 stream over `GET /api/v1/ws`. The stream is a context manager; subscribe to one
 or more subjects and iterate `Event` objects. It tracks the last `seq` per
 subject and auto-reconnects + resubscribes (resuming from that `seq`) across an
@@ -374,7 +374,7 @@ for chunk in sqi.tail_task_logs_live(task_id):
 
 Without the `ws` extra installed, `events()` itself succeeds — the `websockets`
 import is deferred to `connect()`, so the `ImportError` naming the exact remedy
-(`pip install 'sqi-sdk[ws]'`) is raised when the stream is entered as a context
+(`pip install "sqi-sdk[ws]"`) is raised when the stream is entered as a context
 manager, and on the first iteration of `tail_task_logs_live`. The live
 `tasks/{id}/logs` payload omits `id`/`nats_seq`/`received_at`, so those are
 zero-valued on the yielded `LogChunk`; `seq_num` and the content fields are set.

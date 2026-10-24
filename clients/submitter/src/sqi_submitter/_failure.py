@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import stat
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -64,7 +65,11 @@ def show_message(text: str) -> None:
             import ctypes
 
             windll = getattr(ctypes, "windll")  # noqa: B009 - absent off Windows
-            windll.user32.MessageBoxW(None, text, "sqi", 0x10)  # MB_ICONERROR
+            # A detached process may not take the foreground (Windows refuses unless the
+            # host allowed it, which After Effects does not), so the box also stays on top:
+            # with no owner window it would otherwise open behind the host.
+            flags = 0x10 | 0x10000 | 0x40000  # MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST
+            windll.user32.MessageBoxW(None, text, "sqi", flags)
         elif platform == "darwin":
             quoted = text.replace("\\", "\\\\").replace('"', '\\"')
             script = (
@@ -117,29 +122,82 @@ def _run(argv: list[str]) -> None:
 
 def _append_log(path: Path, message: str, detail: str | None) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    _trim(path)
     stamp = datetime.now().astimezone().isoformat(timespec="seconds")
     entry = f"{stamp} sqi-submit failed: {message}\n"
     if detail:
         entry += detail if detail.endswith("\n") else detail + "\n"
-    with path.open("a", encoding="utf-8") as log:
-        log.write(entry + "\n")
+    # One handle for the trim and the append, so nothing can be swapped in between.
+    fd = _open_log(path)
+    try:
+        _trim(fd)
+        _write_all(fd, (entry + "\n").encode("utf-8"))
+    finally:
+        os.close(fd)
     return path
 
 
-def _trim(path: Path) -> None:
-    """Keep the log bounded: past ``MAX_LOG_BYTES``, keep only its last whole lines."""
+def _open_log(path: Path) -> int:
+    """Open (or create) the log for appending, refusing any file it could clobber.
+
+    The settings directory can be moved anywhere with ``SQI_SUBMITTER_SETTINGS``. In a
+    folder other users can write to, a planted ``submit-error.log`` would otherwise have
+    this process append to, and trim, a file of the artist's. So the log is refused when
+    it is a symbolic link, anything but a regular file, a hard link to another name, or
+    (POSIX) owned by someone else. POSIX refuses a symlink in the open itself
+    (``O_NOFOLLOW``); Windows has no such flag, so a symlink is refused by a check first
+    (creating one there needs a privilege by default). ``O_APPEND`` keeps concurrent
+    appends from two failures whole. Raises ``OSError``.
+    """
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if not nofollow and path.is_symlink():
+        raise OSError(f"{path} is a symbolic link")
+    flags = os.O_RDWR | os.O_APPEND | os.O_CREAT | nofollow | getattr(os, "O_BINARY", 0)
+    fd = os.open(path, flags, 0o600)
     try:
-        size = path.stat().st_size
-    except OSError:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError(f"{path} is not a regular file")
+        if info.st_nlink != 1:
+            raise OSError(f"{path} has other hard links")
+        getuid = getattr(os, "getuid", None)  # POSIX only, as is fchmod
+        if getuid is not None:
+            if info.st_uid != getuid():
+                raise OSError(f"{path} is owned by another user")
+            if info.st_mode & 0o077:
+                # A log written before it was created private keeps its old mode.
+                getattr(os, "fchmod")(fd, 0o600)  # noqa: B009 - absent on Windows
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _trim(fd: int) -> None:
+    """Keep the log bounded: past ``MAX_LOG_BYTES``, keep only its last whole lines.
+
+    The descriptor is ``O_APPEND``, so every write lands at the end: after truncating to
+    nothing, writing the kept tail puts it at the start.
+    """
+    if os.fstat(fd).st_size <= MAX_LOG_BYTES:
         return
-    if size <= MAX_LOG_BYTES:
-        return
-    with path.open("rb") as log:
-        log.seek(-KEEP_LOG_BYTES, os.SEEK_END)
-        tail = log.read()
+    os.lseek(fd, -KEEP_LOG_BYTES, os.SEEK_END)
+    tail = _read_all(fd)
     newline = tail.find(b"\n")
-    path.write_bytes(tail[newline + 1 :] if newline != -1 else b"")
+    os.ftruncate(fd, 0)
+    _write_all(fd, tail[newline + 1 :] if newline != -1 else b"")
+
+
+def _read_all(fd: int) -> bytes:
+    chunks = []
+    while chunk := os.read(fd, 64 * 1024):
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        view = view[os.write(fd, view) :]
 
 
 def _print_stderr(message: str, detail: str | None, path: Path | None) -> None:

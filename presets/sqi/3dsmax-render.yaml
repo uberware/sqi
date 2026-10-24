@@ -18,17 +18,20 @@ readme: |
   - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
     `1-100:2` for every second frame.
   - **Output Path** - the output image path passed to `3dsmaxcmd` as
-    `-outputName:`. Enter one, and make sure its folder exists: `3dsmaxcmd` does
-    not create it. The switch is always passed, so an empty value reaches
-    `3dsmaxcmd` as a bare `-outputName:`; what it does then is unverified.
+    `-outputName:`. Make sure its folder exists: `3dsmaxcmd` does not create
+    it. Leave it empty to leave `-outputName:` out, so the scene's own render
+    output setting applies.
+    The path is passed in the worker's own form (backslashes on Windows) and
+    normalized, so a trailing separator is dropped: give a file name or
+    prefix, not a folder.
 
   ## How work is divided
 
-  The frame range expands into tasks through OpenJD task chunking. The
-  `SQI_CHUNK_BOUNDS` extension gives each task the first and last frame of its
-  own slice, which the command passes as `-start:` and `-end:`. A slice never
-  spans a gap, so a stepped range such as `1-9:4` becomes one task per frame
-  and no step argument is needed.
+  The frame range expands into tasks through OpenJD task chunking. Each task
+  passes the first and last frame of its own slice as `-start:` and `-end:`,
+  computed with EXPR as the smallest and largest frame of the chunk. A slice
+  never spans a gap, so a stepped range such as `1-9:4` becomes one task per
+  frame and no step argument is needed.
 
   One frame per task is the default. Raise the step's `chunks.defaultTaskCount`
   to render up to that many consecutive frames in one `3dsmaxcmd` launch,
@@ -51,7 +54,7 @@ version: 1.0.0
 template:
   specificationVersion: jobtemplate-2023-09
   name: 3ds Max Render
-  extensions: [TASK_CHUNKING, SQI_CHUNK_BOUNDS]
+  extensions: [TASK_CHUNKING, EXPR]
   parameterDefinitions:
     - name: SceneFile
       type: PATH
@@ -98,7 +101,9 @@ template:
             args:
               - "-v:5"
               - "-rfw:0"
-              - "-start:{{Task.Param.Frame.Start}}"
-              - "-end:{{Task.Param.Frame.End}}"
-              - "-outputName:{{Param.OutputPath}}"
+              - "-start:{{ min(Task.Param.Frame) }}"
+              - "-end:{{ max(Task.Param.Frame) }}"
+              # Left out when empty, so the scene's own setting applies. The
+              # test reads RawParam: under EXPR an empty PATH binds as '.'.
+              - "{{ '-outputName:' + string(Param.OutputPath) if RawParam.OutputPath != '' else [] }}"
               - "{{Param.SceneFile}}"

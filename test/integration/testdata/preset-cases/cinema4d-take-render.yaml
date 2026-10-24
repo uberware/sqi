@@ -2,8 +2,8 @@
 #
 # Cinema 4D Take Render. Every case passes a take name containing double
 # quotes, and a scene path containing a space, so the goldens show each
-# travelling as a single argument. OutputPath is supplied because -oimage is
-# always passed. stepped-range shows a gap-bearing range never producing a
+# travelling as a single argument. OutputPath is supplied, except in
+# blank-output, which shows -oimage left out. stepped-range shows a gap-bearing range never producing a
 # -frame span that covers a frame the range excluded: a CONTIGUOUS chunk
 # cannot span a gap, so 1-9:4 becomes -frame 1 1, -frame 5 5 and -frame 9 9.
 cases:
@@ -37,3 +37,11 @@ cases:
     expect_tasks: 3
     expect_invocations:
       Commandline: 3
+  - name: blank-output
+    params:
+      SceneFile: '/mnt/show/seq010/shot 0010/c4d/shot0010_v003.c4d'
+      Frames: "1-2"
+      Take: 'Final "A"'
+    expect_tasks: 2
+    expect_invocations:
+      Commandline: 2

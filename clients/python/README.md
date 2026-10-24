@@ -24,8 +24,8 @@ Houdini, Nuke).
 
 ```sh
 pip install sqi-sdk            # core (httpx only)
-pip install 'sqi-sdk[yaml]'    # + PyYAML (for your own YAML handling; not needed to submit)
-pip install 'sqi-sdk[ws]'      # + websockets for live event streaming
+pip install "sqi-sdk[yaml]"    # + PyYAML (for your own YAML handling; not needed to submit)
+pip install "sqi-sdk[ws]"      # + websockets for live event streaming
 ```
 
 For offline installs or a specific pre-release build, the wheel is also attached
