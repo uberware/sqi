@@ -1,0 +1,23 @@
+preset: katana-render
+case:   logged-error
+params:
+  Frames=1
+  FramesPerTask=1
+  RenderNode=beauty
+  SceneFile=/mnt/show/seq010/shot0010/lookdev/shot0010_lookdev_v007.katana
+
+step "Render" — 1 task
+  log checks: failOn "ERROR +\\|"
+
+task 1/1  name="Render[Frame=1-1,Frame.End=1,Frame.Start=1]"
+  task params:
+    Frame=1-1
+    Frame.End=1
+    Frame.Start=1
+  command: katana
+  args:
+    [0]  --batch
+    [1]  --katana-file=/mnt/show/seq010/shot0010/lookdev/shot0010_lookdev_v007.katana
+    [2]  --render-node=beauty
+    [3]  -t
+    [4]  1-1

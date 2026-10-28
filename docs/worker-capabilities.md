@@ -142,7 +142,7 @@ restarts.
 
 ### Built-in detectors
 
-Nineteen built-ins ship embedded in the worker binary, one YAML file per
+Twenty built-ins ship embedded in the worker binary, one YAML file per
 application under
 [`internal/worker/capabilities/builtins/`](https://github.com/uberware/sqi/tree/main/internal/worker/capabilities/builtins):
 
@@ -167,6 +167,7 @@ application under
 | `renderman` | `exe prman` (any OS); `env RMANTREE`; `path_glob RenderManProServer-*/bin/prman` under `/opt/pixar` (Linux), `/Applications/Pixar` (macOS) and `C:\Program Files\Pixar` (Windows) | `RenderManProServer-(?P<v>[0-9]+\.[0-9]+)` against the matched path or the `RMANTREE` value |
 | `threedelight` | `exe renderdl` (any OS); `env DELIGHT`; macOS `path_glob /Applications/3Delight/bin/renderdl`; Windows `path_glob C:\Program Files\3Delight\bin\renderdl.exe` | none |
 | `oiiotool` | `exe oiiotool` (any OS, if on `PATH`) | none (presence only) |
+| `katana` | `exe katana` (any OS, if on `PATH`); Linux `path_glob /opt/Foundry/Katana*/katana` and `/opt/foundry/katana*/katana`; Windows `path_glob C:\Program Files\Katana*\bin\katanaBin.exe`. All install paths unverified; Katana does not run on macOS. Also supplies a default `katana` command (Windows: `katanaBin.exe`) | `[Kk]atana([0-9]+\.[0-9]+v[0-9]+)` against the matched path (none when only `exe katana` matched) |
 
 The three Mistika detectors carry **no `exe` check**: their binaries are
 `mistika`, `vr` and `workflows`, and a bare `PATH` probe for the last two would
@@ -570,7 +571,7 @@ steps:
           anyOf: ["true"]
 ```
 
-The seventeen DCC reference presets under `presets/sqi/` (see
+The eighteen DCC reference presets under `presets/sqi/` (see
 [`docs/dcc-submitters.md`](dcc-submitters.md#reference-presets)) and the eight
 [standalone renderer presets](preset-library.md#standalone-renderer-reference-presets)
 use this syntax, as do the `Transcoding` presets, which gate on

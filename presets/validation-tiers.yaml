@@ -605,6 +605,41 @@ presets:
       case: TestPresetTier3/after-effects-queue-render-macos/default
       required_on: [darwin]
 
+  # P5b-1: DCC breadth presets, each declaring SQI_LOG_CHECKS. Every argv is
+  # derived from vendor documentation and no application has executed any of
+  # them; Tier 3 drives a stub through the real worker path, including the
+  # outcome case that proves the log check fails a task whose process exited 0.
+  #
+  # required_on must name exactly the platforms the template's os.family
+  # requirements admit (TestPresetTier3RequiredOnMatchesOSGate). Katana runs on
+  # Linux and Windows only, but the preset carries no os.family gate, as its
+  # detector has no macOS entry rather than a refusal, so it is required on all
+  # three.
+  - name: katana-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, multi-frame-chunk, stepped-range, target-with-space, logged-error]
+      caveat: >-
+        argv derived from Foundry's Katana batch mode documentation (katana
+        --batch --katana-file=<scene> --render-node=<node> -t <first>-<last>),
+        with -t's start-end form as Deadline's Katana plugin passes it; no
+        Katana has executed it. The goldens cover the shipped one-frame-per-task
+        shape, a FramesPerTask of 5 (1-5 then 6-10), a stepped range splitting
+        into single frames because Foundry documents no step form for -t, and a
+        scene path and Render node name that each contain a space as one
+        argument. The failOn pattern (ERROR +\|) is Deadline's Katana plugin's,
+        not observed from a real failing render, so what Katana prints and
+        which exit status it returns on failure are unverified. Tier 3 runs the
+        stub through a real worker, and the logged-error case proves a task
+        whose process exited 0 still fails on a matching line. The Foundry-
+        documented batch render that hangs on a missing ImageRead file is not
+        tested, and the preset sets no timeout for it. The detector's Linux and
+        Windows install paths are unverified.
+    tier3:
+      case: TestPresetTier3/katana-render/default
+      required_on: [linux, darwin, windows]
+
   - name: ffmpeg-transcode
     source: presets/sqi
     tier: 2

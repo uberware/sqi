@@ -43,6 +43,7 @@ func TestBuild(t *testing.T) {
 		"ffmpeg-transcode",
 		"houdini-rop-render",
 		"husk-usd-render",
+		"katana-render",
 		"mantra-render",
 		"maya-layer-render",
 		"maya-scene-render",

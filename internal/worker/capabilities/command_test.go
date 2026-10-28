@@ -178,6 +178,64 @@ func TestNukeDetector_CommandFindsTheExecutableOnEveryPlatform(t *testing.T) {
 	}
 }
 
+// TestKatanaDetector_CommandFindsTheExecutableOnEveryPlatform checks the shipped
+// command globs against a Katana 7.0v1 install on the two platforms Katana runs
+// on, in both Linux letter cases. The layouts are unverified (see katana.yaml).
+// The Windows executable is katanaBin.exe, which the preset reaches through the
+// `katana` command the detector supplies; neighboring files must not match.
+func TestKatanaDetector_CommandFindsTheExecutableOnEveryPlatform(t *testing.T) {
+	d := builtinDetector(t, "katana")
+	if d.Command == nil || d.Command.Name != "katana" {
+		t.Fatalf("the katana detector has no command named katana: %+v", d.Command)
+	}
+	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
+	cases := []struct {
+		name string
+		goos string
+		exe  string
+		not  []string
+	}{
+		{"linux documented example", "linux", "/opt/Foundry/Katana7.0v1/katana", []string{"/opt/Foundry/Katana7.0v1/bin/katana", "/opt/Foundry/Katana7.0v1/katanaBin"}},
+		{"linux deadline default", "linux", "/opt/foundry/katana7.0v1/katana", []string{"/opt/foundry/katana7.0v1/bin/katana"}},
+		{"windows", "windows", `C:\Program Files\Katana7.0v1\bin\katanaBin.exe`, []string{`C:\Program Files\Katana7.0v1\bin\python.exe`, `C:\Program Files\Katana7.0v1\uninstall.exe`}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			matches := func(file string) (matched bool, glob string) {
+				for _, g := range d.Command.Globs {
+					if g.OS != "" && g.OS != tc.goos {
+						continue
+					}
+					ok, err := path.Match(norm(g.PathGlob), norm(file))
+					if err != nil {
+						t.Fatalf("bad pattern %q: %v", g.PathGlob, err)
+					}
+					if ok {
+						return true, g.PathGlob
+					}
+				}
+				return false, ""
+			}
+			if ok, _ := matches(tc.exe); !ok {
+				t.Errorf("no %s command glob matches the executable %s", tc.goos, tc.exe)
+			}
+			for _, other := range tc.not {
+				if ok, g := matches(other); ok {
+					t.Errorf("%s glob %q matched %s, which is not the Katana executable", tc.goos, g, other)
+				}
+			}
+			env := fakeEnv{goos: tc.goos, globs: map[string][]string{}}
+			for _, g := range d.Command.Globs {
+				env.globs[g.PathGlob] = []string{tc.exe}
+			}
+			got, ok := d.FindCommand(env)
+			if !ok || got.Name != "katana" || got.Path != tc.exe || got.Version != "7.0v1" {
+				t.Errorf("FindCommand = %+v (found %v), want katana 7.0v1 at %s", got, ok, tc.exe)
+			}
+		})
+	}
+}
+
 func TestDetectCommands_ComesFromBuiltinsAndCustomDetectorsAndHonoursDisable(t *testing.T) {
 	custom := Detector{
 		Tag: "inhouse", Checks: []Check{{Exe: "inhouse"}},

@@ -172,9 +172,10 @@ the [`sqi-submitter`](dcc-submitters.md) in-application submitters:
 `maya-layer-render`, `maya-scene-render`, `houdini-rop-render`,
 `nuke-write-render`, `nuke-script-render`, `blender-batch-render`,
 `blender-view-layer-render`, `cinema4d-render`, `cinema4d-take-render`,
-`3dsmax-render` and the four After Effects presets. Three more have no
+`3dsmax-render` and the four After Effects presets. Four more have no
 in-application submitter and are submitted from the web UI or the API:
-`mistika-boutique-render`, `mistika-vr-render` and `mistika-workflows-render`.
+`mistika-boutique-render`, `mistika-vr-render`, `mistika-workflows-render` and
+`katana-render`.
 
 Each names its parameters by the [parameter convention
 contract](dcc-submitters.md#the-parameter-convention-contract), so submitter
@@ -194,6 +195,29 @@ See [`docs/dcc-submitters.md`](dcc-submitters.md) for the full reference,
 including the chunking behavior and worker requirements per preset.
 `TestBuiltinDetectors_CoverPresets` fails if a shipped preset requires a
 software tag that no built-in detector emits.
+
+### Katana
+
+| Preset | Renders | Shape | Gate |
+|---|---|---|---|
+| `katana-render` | one named Render node (`RenderNode`) of a `.katana` project with `katana --batch` | `FramesPerTask` frames per task, default 1 | `katana` |
+
+`katana-render` has no whole-scene variant, because a Render node is the unit of
+work, as a ROP is for Houdini. It runs `katana --batch
+--katana-file=<scene> --render-node=<node> -t <first>-<last>`, with each of
+`--katana-file=` and `--render-node=` one argument holding the `=` and the value,
+so a name with a space stays whole. Foundry documents `-t` with ranges and comma
+lists and no step form, so a stepped `Frames` range splits into one task per
+frame. Every host that renders needs a `katana_r` render licence.
+
+It is the first preset to declare [`SQI_LOG_CHECKS`](openjd-extensions.md): a
+task fails when a line of Katana's output matches `ERROR +\|`, the pattern
+Deadline's Katana plugin treats as a failed render, because Katana's exit status
+on failure is not documented. Foundry also documents a batch render that never
+exits when an ImageRead node's file is missing (4.5v5 to 6.0v3); the preset sets
+no timeout, and its readme recommends adding one to the step's `onRun` action.
+The `katana` detector's Linux and Windows install paths are unverified; Katana
+does not run on macOS. See the preset's readme for what has not been verified.
 
 ### Cinema 4D, 3ds Max and After Effects
 
@@ -363,7 +387,7 @@ but run their script directly, so they need a Linux or macOS worker.
 
 ## Validation tiers
 
-`presets/validation-tiers.yaml` has 37 entries, the 30 presets under
+`presets/validation-tiers.yaml` has 38 entries, the 31 presets under
 `presets/sqi/` plus the seven built-in products documented in
 [`docs/development.md`](development.md#adding-a-product), and states which
 validation tier each has reached. The four `presets/testing/` presets are not
@@ -481,7 +505,7 @@ skip on a platform named in `required_on` is a registry failure.
 ### Tier 3 on Windows
 
 Tier 3 runs on Windows as it does on Linux and macOS, and CI runs it in a
-dedicated job (`preset-harness-windows`). Of the 37 registry entries, 27 have
+dedicated job (`preset-harness-windows`). Of the 38 registry entries, 28 have
 `tier3.required_on: [linux, darwin, windows]`, so a skip on Windows fails the
 registry check for each of them. The other 10 are gated to fewer platforms:
 

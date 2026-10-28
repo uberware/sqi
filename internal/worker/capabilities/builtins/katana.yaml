@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Foundry Katana, whose batch mode presets/sqi/katana-render.yaml runs through
+# the bare command `katana`. Katana runs on Linux and Windows only.
+#
+# Every path here is unverified: none was observed on a machine. The installer
+# prompts for an install path; /opt/Foundry/Katana<version> is the example it
+# documents and /opt/foundry/katana<version> is the default Deadline's Katana
+# plugin uses. The Windows path, C:\Program Files\Katana<version>\bin\katanaBin.exe,
+# is the P5b design's best reading of the default install and is the least
+# certain of the three. A Katana installed anywhere else needs the tag set by
+# hand with katana=true under worker.capability_tags, or a `katana` command in
+# worker.commands.
+#
+# The version is read from the install folder (Katana7.0v1), so a Katana found
+# only on PATH carries no version. Whether `katana --version` works is
+# unverified, so it is not used.
+tag: katana
+checks:
+  - exe: katana                                                  # a katana command the operator provides
+  - path_glob: "/opt/Foundry/Katana*/katana"                     # linux (installer's documented example)
+    os: linux
+  - path_glob: "/opt/foundry/katana*/katana"                     # linux (Deadline's default)
+    os: linux
+  - path_glob: 'C:\Program Files\Katana*\bin\katanaBin.exe'      # windows
+    os: windows
+version:
+  from: "[Kk]atana([0-9]+\\.[0-9]+v[0-9]+)"
+# The preset runs a bare `katana`. On Linux that is the install's own launcher;
+# on Windows the executable is katanaBin.exe, so the worker supplies a `katana`
+# command pointing at it from the newest install found here, unless the operator
+# or the host already provides one.
+command:
+  name: katana
+  globs:
+    - path_glob: "/opt/Foundry/Katana*/katana"                   # linux
+      os: linux
+    - path_glob: "/opt/foundry/katana*/katana"                   # linux
+      os: linux
+    - path_glob: 'C:\Program Files\Katana*\bin\katanaBin.exe'    # windows
+      os: windows

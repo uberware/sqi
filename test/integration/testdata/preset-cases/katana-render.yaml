@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Katana Render. Ships FramesPerTask 1, so the shipped shape can only produce
+# Frame.Start == Frame.End; multi-frame-chunk raises FramesPerTask to show the
+# "first-last" span the -t argument exists to carry. stepped-range shows a
+# gap-bearing range never spanning a frame it excluded: a CONTIGUOUS chunk
+# cannot cross a gap, so 1-9:4 becomes -t 1-1, -t 5-5 and -t 9-9.
+#
+# target-with-space puts a space in both the scene path and the Render node
+# name; the golden shows each travelling inside a single
+# --katana-file=/--render-node= argument.
+#
+# logged-error is an OUTCOME case (TestPresetOutcomes): the stub prints a line
+# the preset's failOn pattern (ERROR +\|) matches and exits 0, so the only thing
+# that can fail the task is the SQI_LOG_CHECKS check. One frame, so one task.
+cases:
+  - name: default
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/lookdev/shot0010_lookdev_v007.katana
+      Frames: "1-3"
+      RenderNode: beauty
+    expect_tasks: 3
+    expect_invocations:
+      katana: 3
+  - name: multi-frame-chunk
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/lookdev/shot0010_lookdev_v007.katana
+      Frames: "1-10"
+      RenderNode: beauty
+      FramesPerTask: "5"
+    expect_tasks: 2
+    expect_invocations:
+      katana: 2
+  - name: stepped-range
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/lookdev/shot0010_lookdev_v007.katana
+      Frames: "1-9:4"
+      RenderNode: beauty
+    expect_tasks: 3
+    expect_invocations:
+      katana: 3
+  - name: target-with-space
+    params:
+      SceneFile: '/mnt/show/seq010/shot 0010/lookdev/shot0010_lookdev_v007.katana'
+      Frames: "1-2"
+      RenderNode: 'Shot A Beauty'
+    expect_tasks: 2
+    expect_invocations:
+      katana: 2
+  - name: logged-error
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/lookdev/shot0010_lookdev_v007.katana
+      Frames: "1"
+      RenderNode: beauty
+    expect_tasks: 1
+    # Three, not one: a failed task is retried up to scheduler.default_max_attempts
+    # (3), and every attempt really runs the stub and prints the line.
+    expect_invocations:
+      katana: 3
+    stub_env:
+      SQI_STUB_STDOUT: "ERROR | render failed"
+    expect_status: failed
+    expect_reason: "matched failOn"

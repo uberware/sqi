@@ -90,4 +90,20 @@ var dccLayouts = []rendererLayout{
 		versioned: `C:\Program Files\Adobe\Adobe After Effects 2026\Support Files\aerender.exe`,
 		version:   "2026",
 	},
+	{
+		// Katana runs on Linux and Windows only. Every path is unverified (see
+		// katana.yaml): the two Linux layouts are the installer's documented
+		// example and Deadline's default, the Windows one the design's reading
+		// of the default. The version is read from the install folder, in either
+		// letter case.
+		tag: "katana",
+		exe: "katana",
+		installs: []string{
+			"/opt/Foundry/Katana7.0v1/katana",
+			"/opt/foundry/katana7.0v1/katana",
+			`C:\Program Files\Katana7.0v1\bin\katanaBin.exe`,
+		},
+		versioned: "/opt/foundry/katana7.0v1/katana",
+		version:   "7.0v1",
+	},
 }

@@ -180,6 +180,13 @@ func TestSQIReferencePresets(t *testing.T) {
 			params:     []string{"SceneFile", "Frames"},
 			extensions: []string{"EXPR"},
 		},
+		// P5b-1 DCC presets. Each declares SQI_LOG_CHECKS. katana-render passes a
+		// chunk's start and end to -t, so it also declares SQI_CHUNK_BOUNDS.
+		"katana-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames", "RenderNode", "FramesPerTask"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS", "SQI_LOG_CHECKS"},
+		},
 		"ffmpeg-transcode": {
 			category: "Transcoding",
 			params:   []string{"SourceFile", "OutputFile", "VideoCodec", "Quality", "AudioCodec"},

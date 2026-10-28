@@ -527,15 +527,15 @@ visible, since the server enforces the permission either way.
 
 ## Reference presets
 
-sqi ships seventeen DCC reference products under `presets/sqi/`, published
-through the [preset library](preset-library.md). The directory holds thirty
+sqi ships eighteen DCC reference products under `presets/sqi/`, published
+through the [preset library](preset-library.md). The directory holds thirty-one
 products in total. The other thirteen are eight [standalone renderer
 presets](preset-library.md#standalone-renderer-reference-presets), which render
 exported scene files without loading the DCC, and five `Transcoding`-category
 [ffmpeg presets](preset-library.md#transcoding-reference-presets). Install the
 DCC presets from **Admin → Preset Library** in the web UI or, without a preset
 index, create them through `POST /api/v1/products` or **Admin → Products**. All
-seventeen use the product `category` `Rendering`. All but the two After Effects
+eighteen use the product `category` `Rendering`. All but the two After Effects
 queue presets (one task each) declare `TASK_CHUNKING` to split the frame range;
 the Maya, Blender, After Effects render and Mistika presets also declare
 `SQI_CHUNK_BOUNDS` to expose each chunk's start and end frame (see
@@ -543,9 +543,9 @@ the Maya, Blender, After Effects render and Mistika presets also declare
 declare `EXPR` instead: it computes the same two frames, and leaves the output
 flag out when **Output Path** is empty.
 
-Fourteen of the seventeen have a matching `sqi-submitter` host (Maya, Houdini,
+Fourteen of the eighteen have a matching `sqi-submitter` host (Maya, Houdini,
 Nuke, 3ds Max, Blender, Cinema 4D and After Effects). The three Mistika presets
-have none and are submitted from the web UI or the API.
+and Katana have none and are submitted from the web UI or the API.
 
 | Product | Command | Chunking | Parameters | Worker tag |
 |---|---|---|---|---|
@@ -566,6 +566,7 @@ have none and are submitted from the web UI or the API.
 | `mistika-boutique-render` | `mistika -r <scene> -s/-e <frame range>` | chunks of 10 | `SceneFile` (`*.rnd`), `Frames` | `attr.worker.tag.mistika = "true"` |
 | `mistika-vr-render` | `vr -r <scene> -s/-e <frame range>` | chunks of 10 | `SceneFile` (`*.rnd`), `Frames` | `attr.worker.tag.mistikavr = "true"` |
 | `mistika-workflows-render` | `workflows -r <scene> -s/-e <frame range>` | chunks of 10 | `SceneFile` (`*.rnd`), `Frames` | `attr.worker.tag.mistikaworkflows = "true"` |
+| `katana-render` | `katana --batch --katana-file=<scene> --render-node=<node> -t <first>-<last>` | one frame per task by default (raise `FramesPerTask` to batch) | `SceneFile` (`*.katana`), `Frames`, `RenderNode`, `FramesPerTask` | `attr.worker.tag.katana = "true"` |
 
 Maya and Nuke each ship a **single-target** product (`-rl <layer>` /
 `-X <writeNode>`) and a **whole-scene** product that omits that flag: Maya's
@@ -634,7 +635,7 @@ Max, After Effects or Mistika install, on `PATH` or in its usual install
 location, and advertises the matching tag (`maya`, plus a version variant such
 as `maya_2025`) with value `"true"`; see [Capability
 auto-detection](worker-capabilities.md#capability-auto-detection-built-in-dcc-detectors).
-That satisfies the `anyOf: ["true"]` requirement each of the seventeen presets
+That satisfies the `anyOf: ["true"]` requirement each of the eighteen presets
 declares, so a worker with a standard install needs no per-worker
 configuration. Run `sqi-worker capabilities` (or `start --dry-run`) to see
 which DCCs were found.
@@ -741,6 +742,7 @@ are the **target parameters**: the names that identify one target.
 | 3ds Max | none: the host offers no targets | none | none | `3dsmax-render` |
 | Blender | one view layer of one scene, named `<scene> / <view layer>` | `Scene` (the **scene name**, not a path) and `ViewLayer` | `blender-view-layer-render` | `blender-batch-render` |
 | Cinema 4D | a checked take other than the main take | `Take` (the take's name) | `cinema4d-take-render` | `cinema4d-render` |
+| Katana | a Render node, named in the project | `RenderNode` (the node's name; a string) | `katana-render` | none: a Render node is the unit, as a ROP is for Houdini |
 | After Effects | a `Queued` render-queue item, named after its composition | `RenderQueueItem` (the item's 1-based index; an `INT` parameter, minimum 1; extra values are strings) | `after-effects-render-windows`, `after-effects-render-macos` | `after-effects-queue-render-windows`, `after-effects-queue-render-macos` |
 
 Houdini has a per-target product only: its output target is the ROP the script

@@ -308,17 +308,24 @@ func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseN
 		t.Fatalf("stub recorded nothing; Tier 3 observed only that the job completed")
 	}
 	assertInvocationCounts(t, c, recs)
-	if failing {
-		return
-	}
+	// Whatever the stub recorded is checked against the computed argv, failing
+	// job or not (this point is reached only with at least one recording). A
+	// failed task is retried, so the same argv is recorded once per attempt;
+	// both comparisons are over sets, which absorb the repeats. A failed job
+	// need not have run every task, so for one the check is one-sided: nothing
+	// observed may be absent from the computed set, but a computed argv that
+	// was never observed is not an error.
 	if !c.StubInner {
-		assertObservedMatchesComputed(t, snap, recs)
+		assertObservedMatchesComputed(t, snap, recs, failing)
 	} else if len(c.ExpectInnerArgv) > 0 {
 		got := make([][]string, len(recs))
 		for i, rec := range recs {
 			got[i] = rec.Args
 		}
 		for _, msg := range presettest.ArgvSetDiff(c.ExpectInnerArgv, got) {
+			if failing && strings.HasPrefix(msg, "expected argv never observed") {
+				continue // a failed job need not have run every task
+			}
 			t.Error(msg)
 		}
 	}
@@ -588,7 +595,12 @@ func assertInvocationCounts(t *testing.T, c presettest.Case, recs []stubrecord.R
 // three-chunk preset's bounds never appeared.
 //
 // Order is not asserted — tasks are leased concurrently, so the run order is
-// genuinely nondeterministic. Set equality is the real claim.
+// genuinely nondeterministic. Set equality is the real claim. It is a set, not
+// a multiset, so a failed task's retries (the same argv once per attempt) do
+// not matter; assertInvocationCounts is what counts attempts.
+//
+// subsetOnly relaxes the first direction for a job that failed: its tasks need
+// not all have run, so only "nothing observed that was not computed" is checked.
 //
 // Arguments that are absolute paths to one of this preset's MATERIALIZED
 // EMBEDDED FILES are folded to a placeholder first. They cannot be compared
@@ -598,7 +610,7 @@ func assertInvocationCounts(t *testing.T, c presettest.Case, recs []stubrecord.R
 // script or a concat list — python, houdini-rop-render, and both runnable
 // segment-transcode variants — i.e. the presets whose argv most needs
 // an independent witness.
-func assertObservedMatchesComputed(t *testing.T, snap presettest.Snapshot, recs []stubrecord.Record) {
+func assertObservedMatchesComputed(t *testing.T, snap presettest.Snapshot, recs []stubrecord.Record, subsetOnly bool) {
 	t.Helper()
 	files := materializedFileNames(snap)
 	var computed, observed [][]string
@@ -611,6 +623,12 @@ func assertObservedMatchesComputed(t *testing.T, snap presettest.Snapshot, recs 
 		observed = append(observed, append([]string{rec.Command}, foldFilePaths(rec.Args, files)...))
 	}
 	for _, msg := range presettest.ArgvSetDiff(computed, observed) {
+		// A failed job need not have run every task, so an expected argv that
+		// never appeared is not an error there; one that appeared and was not
+		// expected still is.
+		if subsetOnly && strings.HasPrefix(msg, "expected argv never observed") {
+			continue
+		}
 		t.Error(msg)
 	}
 }
