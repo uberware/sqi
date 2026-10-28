@@ -119,6 +119,15 @@ func validateExtensions(t *JobTemplate) ValidationErrors {
 	return errs
 }
 
+// unknownTopLevelMessage explains why a top-level key was rejected. A key that
+// names a step-block extension is a misplaced block, not a typo, and says so.
+func unknownTopLevelMessage(field string) string {
+	if ext, ok := LookupExtension(field); ok && ext.StepBlock {
+		return field + " is a step-level block; put it on a step, not at the top level of the template"
+	}
+	return "unknown field; the job template schema defines no such key"
+}
+
 // ─── path translation validation ─────────────────────────────────────────────
 
 // hasExtension reports whether name appears in the template's extensions list.
@@ -520,10 +529,7 @@ func ValidateWithBudget(t *JobTemplate, opts ValidateOptions) (ValidationErrors,
 		errs = append(errs, validateFormatString(t.Name, "/name", ScopeJob, nil)...)
 	}
 	for _, f := range t.UnknownFields {
-		errs = append(errs, ValidationError{
-			Pointer: "/" + f,
-			Message: "unknown field; the job template schema defines no such key",
-		})
+		errs = append(errs, ValidationError{Pointer: "/" + f, Message: unknownTopLevelMessage(f)})
 	}
 	errs = append(errs, requireNonEmptyIfSet(t.ExtensionsSet, len(t.Extensions), "/extensions", "extension")...)
 	errs = append(errs, validateDescriptionText(t.Description, "/description")...)
@@ -576,6 +582,7 @@ func ValidateWithBudget(t *JobTemplate, opts ValidateOptions) (ValidationErrors,
 	// mis-run the template.  NOT gated by opts.EnforceLimits.
 	errs = append(errs, validateExtensions(t)...)
 	errs = append(errs, validatePathTranslation(t)...)
+	errs = append(errs, validateLogChecks(t)...)
 	errs = append(errs, validateChunkBounds(t)...)
 	errs = append(errs, validateLetExtension(t)...)
 	errs = append(errs, validateLetElementCounts(t)...)

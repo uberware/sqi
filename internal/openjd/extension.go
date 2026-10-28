@@ -2,6 +2,8 @@
 
 package openjd
 
+import "sort"
+
 // Origin distinguishes an upstream OpenJD extension from one defined by sqi.
 type Origin string
 
@@ -43,6 +45,15 @@ type Extension struct {
 	Summary string
 	// DocPath points at the extension's contribution doc, repo-relative.
 	DocPath string
+	// StepBlock marks an extension whose configuration is a block keyed by the
+	// extension's own name on each STEP (e.g. SQI_LOG_CHECKS), rather than a
+	// block at the top level of the template (SQI_PATH_TRANSLATION). A StepBlock
+	// name is therefore not a legal top-level key.
+	StepBlock bool
+	// WorkerEnforced marks an extension the worker must enforce at run time.
+	// A worker that does not advertise support must not be handed a job that
+	// declares one, because it would run the task with the check silently off.
+	WorkerEnforced bool
 }
 
 // registry is the set of OpenJD extension names sqi knows about, keyed by name
@@ -58,6 +69,8 @@ type Extension struct {
 //   - SQI_CHUNK_BOUNDS: derives Task.Param.<name>.Start/.End for CHUNK[INT]
 //     parameters; implemented in expand.go (DeriveChunkBounds) and wired in
 //     submit.go.
+//   - SQI_LOG_CHECKS: a step-level failOn/requireLine block, parsed in
+//     logchecks.go and enforced by the worker's executor.
 //   - EXPR: the OpenJD expression language; implemented across internal/openjd
 //     (scope model, checker, resolver), internal/openjd/expr and
 //     internal/worker/fmtres. See that entry's own comment.
@@ -92,6 +105,15 @@ var registry = map[string]Extension{
 		Summary: "Exposes a CHUNK[INT] chunk's first/last integer as Task.Param.<name>.Start/.End.",
 		DocPath: "docs/openjd-extensions/sqi-chunk-bounds.md",
 	},
+	ExtensionLogChecks: {
+		Name:           ExtensionLogChecks,
+		Origin:         OriginVendor,
+		Status:         StatusSupported,
+		Summary:        "Step-level log checks: fail a task on a log pattern or a missing success line.",
+		DocPath:        "docs/openjd-extensions/sqi-log-checks.md",
+		StepBlock:      true,
+		WorkerEnforced: true,
+	},
 	// EXPR is the OpenJD expression language extension. It may only be
 	// StatusSupported as a whole: the extension permits no partial
 	// implementation, and section 1.2.2 makes the BOOL, RANGE_EXPR and
@@ -117,6 +139,25 @@ var registry = map[string]Extension{
 // falls back to scanning the raw template for these bytes -- a heuristic whose
 // two error directions are written out in that package's exprcaps.go.
 const ExtensionEXPR = "EXPR"
+
+// ExtensionLogChecks is the registry name of the sqi-defined step-level
+// log-check extension.
+const ExtensionLogChecks = "SQI_LOG_CHECKS"
+
+// WorkerEnforcedExtensions returns the sorted names of the registered
+// extensions the worker enforces at run time. Workers advertise the subset they
+// support at registration; the scheduler withholds a job declaring one from a
+// worker that does not.
+func WorkerEnforcedExtensions() []string {
+	var out []string
+	for name, ext := range registry {
+		if ext.WorkerEnforced {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
 
 // LookupExtension returns the registry entry for name and whether it exists.
 func LookupExtension(name string) (Extension, bool) {
