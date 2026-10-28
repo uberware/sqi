@@ -9,6 +9,7 @@ import (
 
 	"github.com/uberware/sqi/internal/presettest"
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
 // TestRender_IsStableAcrossRuns is the property that makes a golden reviewable.
@@ -158,5 +159,133 @@ func TestRender_GoldensAreHostNeutral(t *testing.T) {
 	// path the goldens spell with "/".
 	if strings.Contains(got, `\mnt`) {
 		t.Errorf("render leaked a host-flavored path:\n%s", got)
+	}
+}
+
+// TestRender_LogChecks pins how a step's SQI_LOG_CHECKS block reaches a golden:
+// one line per pattern, directly under the step header, quoted with %q so a
+// pattern's own backslashes and quotes are unambiguous. A step without checks
+// renders exactly as it did before the field existed (the existing goldens are
+// the proof of that; the second half repeats it for a bare snapshot).
+func TestRender_LogChecks(t *testing.T) {
+	task := presettest.TaskSnapshot{Name: "Render", Command: "renderer"}
+	snap := presettest.Snapshot{
+		Preset: "demo",
+		Case:   "default",
+		Steps: []presettest.StepSnapshot{{
+			Name: "Render",
+			LogChecks: &protocol.LogChecks{
+				FailOn:      []string{`ERROR +\|`, `Traceback "x"`},
+				RequireLine: []string{"SQI_RENDER: OK"},
+			},
+			Tasks: []presettest.TaskSnapshot{task},
+		}},
+	}
+	got := presettest.Render(snap)
+	want := "step \"Render\" — 1 task\n" +
+		"  log checks: failOn \"ERROR +\\\\|\"\n" +
+		"  log checks: failOn \"Traceback \\\"x\\\"\"\n" +
+		"  log checks: requireLine \"SQI_RENDER: OK\"\n" +
+		"\ntask 1/1"
+	if !strings.Contains(got, want) {
+		t.Errorf("render missing the log checks block:\nwant substring:\n%s\ngot:\n%s", want, got)
+	}
+
+	snap.Steps[0].LogChecks = nil
+	if got := presettest.Render(snap); strings.Contains(got, "log checks") {
+		t.Errorf("a step with no checks rendered a log checks line:\n%s", got)
+	}
+	snap.Steps[0].LogChecks = &protocol.LogChecks{}
+	if got := presettest.Render(snap); strings.Contains(got, "log checks") {
+		t.Errorf("an empty checks block rendered a log checks line:\n%s", got)
+	}
+}
+
+// TestCapture_CarriesLogChecks proves the snapshot takes the checks from the
+// real assignment rather than from the harness's own reading of the template.
+func TestCapture_CarriesLogChecks(t *testing.T) {
+	const tmpl = `
+specificationVersion: jobtemplate-2023-09
+extensions: [SQI_LOG_CHECKS]
+name: Checked Job
+steps:
+  - name: Render
+    SQI_LOG_CHECKS:
+      failOn: ['ERROR +\|']
+      requireLine: ['SQI_RENDER: OK']
+    script:
+      actions:
+        onRun:
+          command: renderer
+`
+	snap, err := presettest.Capture(t.Context(), tmpl, presettest.Options{Format: store.TemplateFormatYAML})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	if len(snap.Steps) != 1 || snap.Steps[0].LogChecks == nil {
+		t.Fatalf("snapshot carries no log checks: %+v", snap.Steps)
+	}
+	lc := snap.Steps[0].LogChecks
+	if len(lc.FailOn) != 1 || lc.FailOn[0] != `ERROR +\|` || len(lc.RequireLine) != 1 || lc.RequireLine[0] != "SQI_RENDER: OK" {
+		t.Errorf("LogChecks = %+v", lc)
+	}
+	if got := presettest.Render(snap); !strings.Contains(got, `  log checks: failOn "ERROR +\\|"`) {
+		t.Errorf("render missing the failOn line:\n%s", got)
+	}
+}
+
+// TestHostPathReplacer_EscapedForms covers the spellings a host script's data
+// takes. repr_json and repr_py write a Windows path with every backslash
+// doubled (into params.json, VRED's -postpython, Unreal's -execcmds); a
+// replacer that knew only the single-backslash form would match inside the
+// doubled text and leave a half-converted path in the golden. On POSIX
+// filepath.FromSlash is the identity, so the host spellings equal the golden's
+// own and the same assertions hold for the untouched text.
+func TestHostPathReplacer_EscapedForms(t *testing.T) {
+	const (
+		scene = "/proj/a b/scene.vpb"
+		dir   = "/proj/a b/"
+	)
+	host := filepath.FromSlash(scene)
+	hostDir := filepath.FromSlash(dir)
+	esc := func(s string) string { return strings.ReplaceAll(s, `\`, `\\`) }
+
+	snap := presettest.Snapshot{
+		Preset: "demo",
+		Case:   "default",
+		Params: map[string]string{"SceneFile": scene},
+		Steps: []presettest.StepSnapshot{{
+			Name: "Render",
+			Tasks: []presettest.TaskSnapshot{{
+				Name:    "Render",
+				Command: "renderer",
+				Args: []string{
+					host, // single-backslash form
+					"-postpython=exec(open(r'" + esc(host) + "').read())", // repr_py spelling
+					"--out=" + esc(hostDir) + "frame.png",                 // derived sibling, escaped
+					"--plain=" + hostDir + "frame.png",                    // derived sibling, single
+				},
+				Files: []presettest.FileSnapshot{{
+					Name:     "params",
+					Filename: "params.json",
+					Data:     `{"SceneFile": "` + esc(host) + `", "Dir": "` + esc(hostDir) + `"}` + "\n",
+				}},
+			}},
+		}},
+	}
+	got := presettest.Render(snap)
+	for _, want := range []string{
+		"    [0]  " + scene,
+		"    [1]  -postpython=exec(open(r'" + scene + "').read())",
+		"    [2]  --out=" + dir + "frame.png",
+		"    [3]  --plain=" + dir + "frame.png",
+		`    {"SceneFile": "` + scene + `", "Dir": "` + dir + `"}`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("render missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, `\`) {
+		t.Errorf("render leaked a host-flavored or escaped path:\n%s", got)
 	}
 }

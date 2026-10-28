@@ -174,3 +174,54 @@ func TestLoadCases_ExpectInnerArgv(t *testing.T) {
 		t.Fatalf("LoadCases err = %v, want expect_inner_argv without stub_inner rejected", err)
 	}
 }
+
+// TestLoadCases_OutcomeFields pins the three fixture keys that let a case state
+// an outcome instead of an argv: the environment the stub runs under, the job
+// status expected, and a substring of the failure reason.
+func TestLoadCases_OutcomeFields(t *testing.T) {
+	dir := t.TempDir()
+	ok := filepath.Join(dir, "ok.yaml")
+	writeFile(t, ok, `cases:
+  - name: default
+    expect_tasks: 1
+  - name: stub-fails
+    expect_tasks: 1
+    stub_env:
+      SQI_STUB_EXIT: "3"
+      SQI_STUB_STDOUT: "ERROR boom"
+    expect_status: failed
+    expect_reason: "exited with code 3"
+  - name: stub-succeeds
+    expect_tasks: 1
+    expect_status: completed
+`)
+	cases, err := presettest.LoadCases(ok)
+	if err != nil {
+		t.Fatalf("LoadCases: %v", err)
+	}
+	if cases[0].ExpectStatus != "" || cases[0].StubEnv != nil || cases[0].ExpectReason != "" {
+		t.Errorf("case 0 should carry no outcome fields: %+v", cases[0])
+	}
+	if c := cases[1]; c.StubEnv["SQI_STUB_EXIT"] != "3" || c.StubEnv["SQI_STUB_STDOUT"] != "ERROR boom" ||
+		c.ExpectStatus != "failed" || c.ExpectReason != "exited with code 3" {
+		t.Errorf("case 1 outcome fields = %+v", c)
+	}
+	if cases[2].ExpectStatus != "completed" {
+		t.Errorf("case 2 ExpectStatus = %q", cases[2].ExpectStatus)
+	}
+
+	for _, tc := range []struct{ name, body, wantErr string }{
+		{"reason without failed", "    expect_reason: boom\n", "expect_reason"},
+		{"reason with completed", "    expect_status: completed\n    expect_reason: boom\n", "expect_reason"},
+		{"unknown status", "    expect_status: succeeded\n", "expect_status"},
+		{"stub_env key", "    stub_env:\n      PATH: /x\n", "SQI_STUB_"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := filepath.Join(dir, strings.ReplaceAll(tc.name, " ", "-")+".yaml")
+			writeFile(t, p, "cases:\n  - name: c\n    expect_tasks: 1\n"+tc.body)
+			if _, err := presettest.LoadCases(p); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("LoadCases err = %v, want it to mention %q", err, tc.wantErr)
+			}
+		})
+	}
+}

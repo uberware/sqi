@@ -724,7 +724,7 @@ presets:
     source: internal/product/builtins
     tier: 1
     tier1:
-      cases: [default]
+      cases: [default, stub-fails]
       caveat: >-
         argv derived from the /bin/sh -c convention documented in the product's
         own readme. Tier 3 executes it: a real worker runs a real /bin/sh, which

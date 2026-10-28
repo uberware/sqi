@@ -264,18 +264,40 @@ func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseN
 
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
-	env := newTier3Env(t, names, workerTagEnv(t, entry)...)
+	// The case's stub_env goes to the WORKER, not the stub: task processes
+	// inherit the worker's environment, so SQI_STUB_EXIT=3 here reaches the stub
+	// through the real worker (and through /bin/sh for a stub_inner case). An
+	// outcome case that did not arrive would complete instead of failing.
+	extra := append(workerTagEnv(t, entry), stubEnvPairs(c)...)
+	env := newTier3Env(t, names, extra...)
 	startRealWorkerAnyOS(t, ts, farmID, queueID, env.env...)
 
 	jobID := submitPresetJob(t, ts, farmID, queueID, presetCaseTemplate(t, entry, c), c.Params)
 	// Job statuses are "completed"/"failed"/"canceled"/"paused" (store.JobStatus)
 	// -- "succeeded" is a TASK status, not a job one.
-	if status := pollJobStatus(t, ts, jobID, []string{"completed", "failed", "canceled"}, presetJobTimeout); status != "completed" {
-		t.Fatalf("job status = %q, want completed (first task failure_reason: %q)",
-			status, firstTaskFailureReason(t, ts, jobID))
+	wantStatus := c.ExpectStatus
+	if wantStatus == "" {
+		wantStatus = presettest.StatusCompleted
+	}
+	status := pollJobStatus(t, ts, jobID, []string{"completed", "failed", "canceled"}, presetJobTimeout)
+	reason := firstTaskFailureReason(t, ts, jobID)
+	if status != wantStatus {
+		t.Fatalf("job status = %q, want %s (first task failure_reason: %q)", status, wantStatus, reason)
+	}
+	failing := wantStatus == presettest.StatusFailed
+	if failing && !strings.Contains(reason, c.ExpectReason) {
+		t.Fatalf("first task failure_reason = %q, want it to contain %q", reason, c.ExpectReason)
 	}
 
 	recs := env.records(t)
+	// A job that failed may never have invoked the stub (a check that fires
+	// before the command, a worker that could not start it), and a failed
+	// job's tasks need not all have run, so the observed-vs-computed set
+	// comparison below is not meaningful for it. Counts still are, whenever the
+	// fixture states them.
+	if failing && len(recs) == 0 && len(c.ExpectInvocations) == 0 {
+		return
+	}
 	// Both assertions below are vacuous on an empty recording:
 	// assertInvocationCounts returns early when the fixture names no expected
 	// invocations (which Case's doc comment permits), and
@@ -286,6 +308,9 @@ func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseN
 		t.Fatalf("stub recorded nothing; Tier 3 observed only that the job completed")
 	}
 	assertInvocationCounts(t, c, recs)
+	if failing {
+		return
+	}
 	if !c.StubInner {
 		assertObservedMatchesComputed(t, snap, recs)
 	} else if len(c.ExpectInnerArgv) > 0 {
@@ -296,6 +321,60 @@ func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseN
 		for _, msg := range presettest.ArgvSetDiff(c.ExpectInnerArgv, got) {
 			t.Error(msg)
 		}
+	}
+}
+
+// stubEnvPairs returns the case's stub_env as KEY=VALUE entries, sorted so the
+// worker's environment does not depend on map order.
+func stubEnvPairs(c presettest.Case) []string {
+	keys := make([]string, 0, len(c.StubEnv))
+	for k := range c.StubEnv {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]string, len(keys))
+	for i, k := range keys {
+		out[i] = k + "=" + c.StubEnv[k]
+	}
+	return out
+}
+
+// TestPresetOutcomes runs every fixture case that states an outcome
+// (expect_status) through a real server and a real worker, with the stub
+// behaving as the case's stub_env says, and asserts the JOB'S status and
+// failure reason rather than an argv. It is how a preset's failure handling --
+// an SQI_LOG_CHECKS pattern, a wrapper's exit status -- is tested without the
+// vendor application: "the stub prints this line and exits 0, the job fails".
+//
+// Tier 1 still snapshots every one of these cases (assertRegistryCasesMatchFixture
+// requires the registry to claim them), so the argv an outcome case runs under
+// is as reviewed as any other.
+func TestPresetOutcomes(t *testing.T) {
+	reg, err := presettest.LoadRegistry()
+	if err != nil {
+		t.Fatalf("LoadRegistry: %v", err)
+	}
+	ran := 0
+	for _, entry := range reg.Presets {
+		cases, err := presettest.LoadCases(filepath.Join(presetCaseDir, entry.Name+".yaml"))
+		if err != nil {
+			t.Fatalf("%s: LoadCases: %v", entry.Name, err)
+		}
+		for _, c := range cases {
+			if c.ExpectStatus == "" {
+				continue
+			}
+			ran++
+			caseName := "TestPresetOutcomes/" + entry.Name + "/" + c.Name
+			t.Run(entry.Name+"/"+c.Name, func(t *testing.T) {
+				runTier3Case(t, entry, c, caseName)
+			})
+		}
+	}
+	// A fixture rename or a loader regression that dropped the key would
+	// otherwise leave this test green having run nothing.
+	if ran == 0 {
+		t.Fatal("no fixture case sets expect_status; TestPresetOutcomes ran nothing")
 	}
 }
 

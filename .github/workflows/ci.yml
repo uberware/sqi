@@ -1539,6 +1539,13 @@ jobs:
             # logging an error and exiting 0, on a macOS variant.
             TestPresetAfterEffects_WrapperFailsOnLoggedError
             TestPresetAfterEffects_WrapperFailsOnLoggedError/logged-error-exit-0/after-effects-render-macos
+            # Outcome cases (expect_status in a preset-cases fixture). The
+            # parent passes when every case skips, so the one leaf that runs on
+            # linux is named: the `script` built-in with the stub told to exit
+            # 3, which fails the job only if stub_env reached the stub through
+            # the real worker and /bin/sh.
+            TestPresetOutcomes
+            TestPresetOutcomes/script/stub-fails
           )
           missing=0
           for name in "${expected[@]}"; do
@@ -1881,6 +1888,11 @@ jobs:
       # TestPresetTier3Xyz would satisfy the check. Only the ffmpeg name,
       # which nothing else extends, goes without one.
       #
+      # TestPresetOutcomes is listed so the outcome runner cannot go missing
+      # (it fails when no fixture case sets expect_status). Its only case today
+      # is the `script` built-in, a linux/macos preset, so on this host it
+      # skips; the leaf that executes is asserted by the linux integration job.
+      #
       # TestFFmpegPreset_BashSegmentTranscodeJoins runs here but is not
       # listed, and the registry's tier2 required_on omits windows for it: it
       # skips when the worker process cannot find bash.exe on PATH, and no
@@ -1895,6 +1907,7 @@ jobs:
                       "TestScriptPowerShell_ExitStatus " \
                       "TestPresetAfterEffects_WrapperFailsOnLoggedError " \
                       "TestPresetAfterEffects_WrapperFailsOnLoggedError/logged-error-exit-0/after-effects-render-windows " \
+                      "TestPresetOutcomes " \
                       "TestPresetPythonSequence_LauncherContract "; do
             if ! grep -q -- "--- PASS: ${name}" preset-harness-windows.log; then
               echo "::error::${name} did not run to a PASS on windows"
