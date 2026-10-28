@@ -120,6 +120,73 @@ func TestScanOutput_LongLines(t *testing.T) {
 	}
 }
 
+// TestScanOutput_LongLinesReassemble feeds long lines whose pieces carry held-back
+// bytes into the next buffer (non-ASCII text, a rune right at a cut, invalid
+// UTF-8) and checks that each line's pieces reassemble to it exactly, that no
+// piece is over the limit, and that pieces of valid input are valid UTF-8.
+// Each long line is followed by a short sentinel line so its pieces can be
+// told apart from the next line.
+func TestScanOutput_LongLinesReassemble(t *testing.T) {
+	a := func(n int) string { return strings.Repeat("a", n) }
+	cases := []struct {
+		name  string
+		line  string
+		valid bool
+	}{
+		// é held back at the first cut, then a cut that must back off over the
+		// continuation byte of a second é.
+		{"carry then backoff", a(65535) + "é" + a(65533) + "é", true},
+		{"long 3-byte text", strings.Repeat("€", 50000), true},
+		{"4-byte rune across the boundary", a(65534) + "😀" + a(10), true},
+		// Three bytes of the rune are held back, then the line ends in a buffer
+		// filled to the last byte, so the line's tail is over the limit.
+		{"held-back rune then a full final buffer", a(65533) + "😀" + a(65534), true},
+		{"long 3-byte text after a held-back rune", a(65535) + strings.Repeat("€", 70000), true},
+		{"invalid continuation bytes", strings.Repeat("\x80", 200000), false},
+		{"lone 0xFF bytes", strings.Repeat("\xff", 70000), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &captureHandler{}
+			input := tc.line + "\nEND\n"
+			scanOutput(context.Background(), strings.NewReader(input), "stdout", "t", "a", "s",
+				h, nil, slog.New(slog.DiscardHandler))
+
+			if len(h.lines) < 2 || h.lines[len(h.lines)-1] != "END" {
+				t.Fatalf("last line is not the END sentinel (piece lengths %v)", lengths(h.lines))
+			}
+			pieces := h.lines[:len(h.lines)-1]
+			if got := strings.Join(pieces, ""); got != tc.line {
+				t.Fatalf("pieces reassemble to %d bytes, want the original %d (piece lengths %v)",
+					len(got), len(tc.line), lengths(pieces))
+			}
+			for i, p := range pieces {
+				if len(p) > 65536 {
+					t.Errorf("piece %d is %d bytes, over the 65536 limit", i, len(p))
+				}
+				if p == "" {
+					t.Errorf("piece %d is empty", i)
+				}
+				if tc.valid && !utf8.ValidString(p) {
+					t.Errorf("piece %d is not valid UTF-8", i)
+				}
+			}
+		})
+	}
+}
+
+// TestPieceLen_NeverZero pins the guard that keeps the reader moving: a
+// non-empty buffer always yields a non-empty piece, even when every byte would
+// otherwise be held back. scanOutput never hands pieceLen a buffer that short,
+// so the guard is only reachable directly.
+func TestPieceLen_NeverZero(t *testing.T) {
+	for _, b := range [][]byte{{0xE2}, {0xE2, 0x82}, {'\r'}} {
+		if n := pieceLen(b, maxOutputLine, true); n != len(b) {
+			t.Errorf("pieceLen(%q) = %d; want %d", b, n, len(b))
+		}
+	}
+}
+
 func lengths(lines []string) []int {
 	out := make([]int, len(lines))
 	for i, l := range lines {
