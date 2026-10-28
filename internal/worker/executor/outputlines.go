@@ -19,11 +19,13 @@ const maxOutputLine = bufio.MaxScanTokenSize
 // it is given: it may be the reader's own buffer.
 type lineSplitter struct {
 	emit func([]byte)
-	// onSplit is called each time a line is cut into pieces.
+	// onSplit is called for every piece of a split line and must not be nil;
+	// the caller deduplicates (scanOutput passes a sync.OnceFunc).
 	onSplit func()
-	// carry holds the bytes of a line already read but not yet delivered: an
-	// incomplete trailing UTF-8 sequence, or a '\r' that may precede '\n'. It
-	// is always its own copy, never a view of the reader's buffer.
+	// carry holds the tail of the last buffer that was not yet delivered: at
+	// first an incomplete trailing UTF-8 sequence or a '\r' that may precede
+	// '\n', growing by the bytes each later cut backs off over until the line
+	// ends. It is always its own copy, never a view of the reader's buffer.
 	carry []byte
 	// split is true once the current line has delivered a piece.
 	split bool
