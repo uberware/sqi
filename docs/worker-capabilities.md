@@ -314,6 +314,7 @@ capabilities:
 | `command.name` | no | The bare command name the presets run (for example `nuke`). Makes the detector supply a default for that command; see [Detected commands](#detected-commands). |
 | `command.globs[].path_glob` | with `command` | A `filepath.Glob` pattern matching the **executable itself**, not the install directory (on macOS that is inside the `.app` bundle). `version.from` is applied to each match to choose the newest install. |
 | `command.globs[].os` | no | Restricts the glob to `linux`, `darwin` or `windows`. |
+| `command.args.<os>` | no | Arguments the application's own invocation requires on that OS (`linux`, `darwin` or `windows`), for example a flag that stops it opening a window on a headless worker. Literal strings, not format strings; an empty string is rejected. Never a license flag. See [Detected commands](#detected-commands). |
 
 Exactly one of `exe` / `path_glob` / `env` / `registry` must be set per check.
 A check with none or more than one is rejected at load time, as are a missing
@@ -344,9 +345,17 @@ worker decides where it resolves, in this order:
    numeric version (16.0 beats 9.0), and two installs of one version, such as
    `Nuke17.1v1` and `Nuke17.1v2`, are ordered by path so the later release wins.
 
-A detected default carries **no arguments**. Flags that depend on a license, such
-as Nuke's `--nc` for a non-commercial license, belong to the operator: put them in
-`worker.commands`.
+A detected default carries **no arguments** unless the detector declares
+`command.args` for the platform: arguments the application's own invocation
+requires, such as a flag that keeps it from opening a window. Those are applied to
+the detected default **and** to a command found on `PATH` (the worker keeps the
+`PATH` executable and adds the arguments, and the table reports source `PATH`
+with them), but never to a `worker.commands` entry, which the operator owns
+whole. If a detector has arguments for the platform but finds no install, they
+still apply to a command on `PATH`; with neither, nothing is registered. Flags
+that depend on a license, such as Nuke's `--nc` for a non-commercial license,
+belong to the operator: put them in `worker.commands`. No built-in detector
+declares arguments yet, so a command on `PATH` is left entirely alone.
 
 The `nuke`, `blender` and `houdini` (`hython`) built-ins define a command; the
 others rely on the command being on `PATH`. Blender's has Windows and macOS globs

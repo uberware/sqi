@@ -350,3 +350,63 @@ worker:
 		t.Errorf("no sqiprobetool tag attributed to worker.commands:\n%s", out)
 	}
 }
+
+var sfxArgs = []string{"-nogui"}
+
+// An application that needs an argument on every invocation gets it whether the
+// worker found the install or the host already put the command on PATH.
+func TestPlanCommands_PathHitKeepsDetectorArgs(t *testing.T) {
+	detected := []capabilities.DetectedCommand{{Name: "sfxcmd", Args: sfxArgs}}
+
+	plan := planCommands(nil, detected, onPath(map[string]string{"sfxcmd": "/usr/bin/sfxcmd"}))
+
+	got, ok := plan.Table["sfxcmd"]
+	if !ok || got.Path != "/usr/bin/sfxcmd" || !slices.Equal(got.Args, sfxArgs) {
+		t.Fatalf("table[sfxcmd] = %+v (present %v), want /usr/bin/sfxcmd with -nogui", got, ok)
+	}
+	r := reportFor(t, plan, "sfxcmd")
+	if r.Source != sourcePATH || r.Path != "/usr/bin/sfxcmd" || !slices.Equal(r.Args, sfxArgs) {
+		t.Errorf("report = %+v, want source %q with the args", r, sourcePATH)
+	}
+}
+
+func TestPlanCommands_DetectedDefaultCarriesDetectorArgs(t *testing.T) {
+	detected := []capabilities.DetectedCommand{{Name: "sfxcmd", Path: "/opt/sfx1/sfxcmd", Args: sfxArgs}}
+
+	plan := planCommands(nil, detected, noPath)
+
+	if got := plan.Table["sfxcmd"]; got.Path != "/opt/sfx1/sfxcmd" || !slices.Equal(got.Args, sfxArgs) {
+		t.Errorf("table[sfxcmd] = %+v, want the install and -nogui", got)
+	}
+	if r := reportFor(t, plan, "sfxcmd"); r.Source != sourceDetected || !slices.Equal(r.Args, sfxArgs) {
+		t.Errorf("report = %+v, want source %q with the args", r, sourceDetected)
+	}
+}
+
+// Arguments with no install and nothing on PATH have nothing to attach to.
+func TestPlanCommands_ArgsWithNoInstallAndNoPATHAddNothing(t *testing.T) {
+	plan := planCommands(nil, []capabilities.DetectedCommand{{Name: "sfxcmd", Args: sfxArgs}}, noPath)
+
+	if _, ok := plan.Table["sfxcmd"]; ok {
+		t.Errorf("table[sfxcmd] = %+v, want no entry", plan.Table["sfxcmd"])
+	}
+	for _, r := range plan.Reports {
+		if r.Name == "sfxcmd" {
+			t.Errorf("unexpected report %+v", r)
+		}
+	}
+}
+
+func TestPlanCommands_OperatorEntryWinsWhole(t *testing.T) {
+	operator := commands.Table{"sfxcmd": {Path: "/opt/x/sfxcmd"}}
+	detected := []capabilities.DetectedCommand{{Name: "sfxcmd", Path: "/opt/sfx1/sfxcmd", Args: sfxArgs}}
+
+	plan := planCommands(operator, detected, onPath(map[string]string{"sfxcmd": "/usr/bin/sfxcmd"}))
+
+	if got := plan.Table["sfxcmd"]; got.Path != "/opt/x/sfxcmd" || len(got.Args) != 0 {
+		t.Errorf("table[sfxcmd] = %+v, want the operator's entry with no args added", got)
+	}
+	if r := reportFor(t, plan, "sfxcmd"); r.Source != sourceConfig || len(r.Args) != 0 {
+		t.Errorf("report = %+v, want source %q with no args", r, sourceConfig)
+	}
+}

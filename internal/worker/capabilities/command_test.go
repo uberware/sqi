@@ -5,6 +5,7 @@ package capabilities
 import (
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -318,5 +319,85 @@ func TestBuiltinDetectors_EmitOnlyValidIdentifiers(t *testing.T) {
 		if tag := versionTag(d.Tag, "1.2.3"); !valid.MatchString(tag) {
 			t.Errorf("version tag %q of detector %q is not a valid identifier", tag, d.Tag)
 		}
+	}
+}
+
+func TestDetectorValidate_CommandArgs(t *testing.T) {
+	cases := []struct {
+		name    string
+		args    map[string][]string
+		wantErr string
+	}{
+		{"valid", map[string][]string{"linux": {"-nogui"}, "windows": {"-nogui", "-x"}}, ""},
+		{"all three platforms", map[string][]string{"linux": {"a"}, "darwin": {"a"}, "windows": {"a"}}, ""},
+		{"unknown os", map[string][]string{"beos": {"-nogui"}}, "beos"},
+		{"empty os key", map[string][]string{"": {"-nogui"}}, "os"},
+		{"empty argument", map[string][]string{"linux": {"-nogui", ""}}, "empty"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := nukeLikeDetector()
+			d.Command.Args = tc.args
+			err := d.Validate()
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Errorf("Validate = %v, want nil", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Errorf("Validate = %v, want an error mentioning %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// A detector whose application needs arguments on an OS reports them even when
+// no install was found, so a command already on PATH still gets them.
+func TestDetectCommands_ArgsWithoutInstall(t *testing.T) {
+	cfg := CapabilitiesConfig{Detect: []Detector{{
+		Tag:    "sfx",
+		Checks: []Check{{Exe: "sfxcmd"}},
+		Command: &CommandSpec{
+			Name:  "sfxcmd",
+			Globs: []CommandGlob{{PathGlob: "/opt/sfx*/sfxcmd", OS: "linux"}},
+			Args:  map[string][]string{"linux": {"-nogui"}},
+		},
+	}}}
+
+	got, err := DetectCommands(cfg, fakeEnv{goos: "linux"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Name != "sfxcmd" || got[0].Path != "" || !slices.Equal(got[0].Args, []string{"-nogui"}) {
+		t.Errorf("DetectCommands on linux = %+v, want one entry with no path and -nogui", got)
+	}
+
+	got, err = DetectCommands(cfg, fakeEnv{goos: "windows"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range got {
+		if c.Name == "sfxcmd" {
+			t.Errorf("DetectCommands on windows = %+v, want no sfxcmd (no args for windows, no install)", got)
+		}
+	}
+}
+
+func TestDetectCommands_ArgsAccompanyAFoundInstall(t *testing.T) {
+	cfg := CapabilitiesConfig{Detect: []Detector{{
+		Tag:    "sfx",
+		Checks: []Check{{Exe: "sfxcmd"}},
+		Command: &CommandSpec{
+			Name:  "sfxcmd",
+			Globs: []CommandGlob{{PathGlob: "/opt/sfx*/sfxcmd", OS: "linux"}},
+			Args:  map[string][]string{"linux": {"-nogui"}},
+		},
+	}}}
+	env := fakeEnv{goos: "linux", globs: map[string][]string{"/opt/sfx*/sfxcmd": {"/opt/sfx1/sfxcmd"}}}
+
+	got, err := DetectCommands(cfg, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Path != "/opt/sfx1/sfxcmd" || !slices.Equal(got[0].Args, []string{"-nogui"}) {
+		t.Errorf("DetectCommands = %+v, want the install path and -nogui", got)
 	}
 }
