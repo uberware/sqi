@@ -95,6 +95,15 @@ func TestMain(m *testing.M) {
 		fmt.Println(os.Getenv("SQI_TEST_OUTPUT"))
 		os.Exit(0)
 
+	case "longline":
+		// One 1 MiB line, then enough ordinary lines to show reading went on.
+		fmt.Println(strings.Repeat("x", 1<<20))
+		for i := range 512 {
+			fmt.Printf("after-%d\n", i)
+		}
+		fmt.Println("done")
+		os.Exit(0)
+
 	case "stderr":
 		fmt.Fprintln(os.Stderr, os.Getenv("SQI_TEST_OUTPUT"))
 		os.Exit(0)
@@ -384,6 +393,53 @@ func TestExecutor_Dispatch_stdout(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("stdout line %q not captured; got: %v", "hello stdout", lines)
+	}
+}
+
+// TestExecutor_Dispatch_LongOutputLineDoesNotHang verifies that a task writing
+// an output line over 64 KiB still completes and every later line is
+// delivered. Before, the scanner stopped at the long line, nothing drained the
+// pipe, and the process blocked writing it.
+func TestExecutor_Dispatch_LongOutputLineDoesNotHang(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess test uses Unix-style exec")
+	}
+
+	capture := &captureOutput{}
+	exec, nc, _ := newTestExecutor(t, capture)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := exec.Dispatch(ctx, makeAssign("longline", nil)); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	waitForStatus(t, nc, 2, 20*time.Second)
+	statuses := nc.statuses()
+	if got := statuses[len(statuses)-1]; got != "succeeded" {
+		t.Fatalf("last status = %q; want succeeded (all: %v)", got, statuses)
+	}
+
+	var stdout []string
+	for _, l := range capture.all() {
+		if l.stream == "stdout" {
+			stdout = append(stdout, l.line)
+		}
+	}
+	piece := strings.Repeat("x", 65536)
+	if len(stdout) < 16+513 {
+		t.Fatalf("captured %d stdout lines; want 16 pieces + 512 lines + done", len(stdout))
+	}
+	for i := range 16 {
+		if stdout[i] != piece {
+			t.Fatalf("stdout[%d] has %d bytes; want a 65536-byte piece of x", i, len(stdout[i]))
+		}
+	}
+	if stdout[16] != "after-0" {
+		t.Errorf("stdout[16] = %q; want after-0", stdout[16])
+	}
+	if last := stdout[len(stdout)-1]; last != "done" {
+		t.Errorf("last stdout line = %q; want done", last)
 	}
 }
 
