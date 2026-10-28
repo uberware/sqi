@@ -163,7 +163,7 @@ func TestTaskActionsCarryCredential(t *testing.T) {
 	e := New(statusPub, mgr, metrics.New(), DiscardOutput{}, Config{}, logger)
 
 	run := &taskRun{taskID: msg.TaskID, attemptID: msg.AttemptID, sessionID: sess.ID, jobID: msg.JobID}
-	result := e.execProcess(context.Background(), msg, sess, run, nil, &protocol.Action{Command: "true"}, nil)
+	result := e.execProcess(context.Background(), msg, sess, run, nil, &protocol.Action{Command: "true"}, nil, nil)
 	if result.Err != nil {
 		t.Fatalf("execProcess: %v", result.Err)
 	}

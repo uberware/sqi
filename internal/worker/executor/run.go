@@ -203,12 +203,15 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	// Guards the object-store path (see guardUnstagedS3) and materializes
 	// step-level embedded files before OnRun.  Combined into one call to stay
 	// within the cyclomatic-complexity limit for runTask.
-	if !e.preExecValidate(ctx, msg, sess, resolvedRun, resolvedEnvVars, resolvedFiles, &failed) {
+	// It also compiles the step's SQI_LOG_CHECKS, if any, into the checker that
+	// watches the process's output.
+	checker, ok := e.preExecValidate(ctx, msg, sess, resolvedRun, resolvedEnvVars, resolvedFiles, &failed)
+	if !ok {
 		return
 	}
 
 	// ── Execute process ───────────────────────────────────────────────────────
-	result := e.execProcess(taskCtx, msg, sess, run, lookup, resolvedRun, resolvedEnvVars)
+	result := e.execProcess(taskCtx, msg, sess, run, lookup, resolvedRun, resolvedEnvVars, checker)
 
 	// ── Flush buffered log output ───────────────────────────────────
 	e.flushTaskLogs(ctx, msg, sess.ID)
@@ -224,6 +227,10 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	// Must be called before deferred Deregister removes the attempt state from
 	// the openjd interceptor.
 	lp := e.lastProgress(msg.AttemptID)
+
+	// The checker's verdict only matters to a task the cases below would
+	// otherwise mark succeeded; it sits after the exit-code case for that reason.
+	checkReason, checkFailed := checker.verdict()
 
 	// ── Publish terminal status and update metrics ────────────────────────────
 	// Cases are ordered so that openjdFailed and the worker-shutdown paths take
@@ -343,25 +350,58 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 		e.m.TasksTotal.WithLabelValues("failed").Inc()
 		e.m.ExecDuration.WithLabelValues("failed").Observe(result.duration().Seconds())
 
+	case checkFailed:
+		// The process would have succeeded, but its output failed the step's
+		// SQI_LOG_CHECKS. Every case above takes precedence, and outputs are not
+		// staged out: a failed check says the task's outputs cannot be trusted.
+		failed = true
+		e.failLogChecks(ctx, msg, sess.ID, result, checkReason, lp)
+
 	default:
 		// Successful completion: copy outputs back before publishing terminal status.
-		if !e.stageOutputs(ctx, msg, sess.ID, scratchDir, &failed) {
-			e.m.ExecDuration.WithLabelValues("failed").Observe(result.duration().Seconds())
-			return
-		}
-		zero := 0
-		e.logger.InfoContext(
-			ctx, "executor: task succeeded",
-			slog.String("task_id", msg.TaskID),
-			slog.String("attempt_id", msg.AttemptID),
-			slog.String("session_id", sess.ID),
-			slog.Int("pid", result.PID),
-			slog.Duration("duration", result.duration()),
-		)
-		e.statusPub.Terminal(context.Background(), msg, sess.ID, "succeeded", &zero, "", lp, result.EndedAt)
-		e.m.TasksTotal.WithLabelValues("succeeded").Inc()
-		e.m.ExecDuration.WithLabelValues("succeeded").Observe(result.duration().Seconds())
+		e.completeSucceeded(ctx, msg, sess.ID, scratchDir, result, lp, &failed)
 	}
+}
+
+// completeSucceeded stages a successful task's outputs out and publishes its
+// terminal "succeeded" status, or the "failed" one stageOutputs publishes when
+// staging out fails. Extracted from runTask to keep its cyclomatic complexity
+// within the project limit.
+func (e *Executor) completeSucceeded(ctx context.Context, msg *protocol.AssignMsg, sessID, scratchDir string, result processResult, lp *int, failed *bool) {
+	if !e.stageOutputs(ctx, msg, sessID, scratchDir, failed) {
+		e.m.ExecDuration.WithLabelValues("failed").Observe(result.duration().Seconds())
+		return
+	}
+	zero := 0
+	e.logger.InfoContext(
+		ctx, "executor: task succeeded",
+		slog.String("task_id", msg.TaskID),
+		slog.String("attempt_id", msg.AttemptID),
+		slog.String("session_id", sessID),
+		slog.Int("pid", result.PID),
+		slog.Duration("duration", result.duration()),
+	)
+	e.statusPub.Terminal(context.Background(), msg, sessID, "succeeded", &zero, "", lp, result.EndedAt)
+	e.m.TasksTotal.WithLabelValues("succeeded").Inc()
+	e.m.ExecDuration.WithLabelValues("succeeded").Observe(result.duration().Seconds())
+}
+
+// failLogChecks publishes the terminal "failed" status for a task whose process
+// exited 0 but whose output failed its SQI_LOG_CHECKS.
+func (e *Executor) failLogChecks(ctx context.Context, msg *protocol.AssignMsg, sessID string, result processResult, reason string, lp *int) {
+	exitCode := result.ExitCode
+	e.logger.InfoContext(
+		ctx, "executor: task failed (SQI_LOG_CHECKS)",
+		slog.String("task_id", msg.TaskID),
+		slog.String("attempt_id", msg.AttemptID),
+		slog.String("session_id", sessID),
+		slog.String("reason", reason),
+		slog.Int("pid", result.PID),
+		slog.Duration("duration", result.duration()),
+	)
+	e.statusPub.Terminal(context.Background(), msg, sessID, "failed", &exitCode, reason, lp, result.EndedAt)
+	e.m.TasksTotal.WithLabelValues("failed").Inc()
+	e.m.ExecDuration.WithLabelValues("failed").Observe(result.duration().Seconds())
 }
 
 // resolveAssignment resolves the OpenJD {{...}} format strings for a task:
@@ -544,7 +584,7 @@ func (e *Executor) failResolution(ctx context.Context, msg *protocol.AssignMsg, 
 // resolvedRun is the OnRun action with its format strings already resolved by
 // the caller; envVars is the merged, format-string-resolved environment-variable
 // map to apply on top of the inherited process environment.
-func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, sess *session.Session, run *taskRun, lookup *pathmap.Lookup, resolvedRun *protocol.Action, envVars map[string]string) processResult {
+func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, sess *session.Session, run *taskRun, lookup *pathmap.Lookup, resolvedRun *protocol.Action, envVars map[string]string, checker *logChecker) processResult {
 	// Apply path-delivery transformations: swap_in_place substitutes paths in
 	// the action, command_flags appends rendered flag strings, and environment
 	// sets the configured variable.  translation_file is handled at session/
@@ -672,15 +712,20 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	// Read stdout and stderr concurrently to prevent pipe-buffer
 	// deadlocks (if one pipe fills up waiting for the other to be drained,
 	// both sides block indefinitely).
+	//
+	// With SQI_LOG_CHECKS the handler is wrapped so the checker sees each line
+	// after redaction (scanOutput scrubs before it calls the handler), the same
+	// text the task log shows.
+	handler := checker.wrap(e.outputHandler)
 	var readWg sync.WaitGroup
 	readWg.Add(2)
 	go func() {
 		defer readWg.Done()
-		scanOutput(ctx, stdoutPipe, "stdout", msg.TaskID, msg.AttemptID, sess.ID, e.outputHandler, sess.ScrubRedacted, e.logger)
+		scanOutput(ctx, stdoutPipe, "stdout", msg.TaskID, msg.AttemptID, sess.ID, handler, sess.ScrubRedacted, e.logger)
 	}()
 	go func() {
 		defer readWg.Done()
-		scanOutput(ctx, stderrPipe, "stderr", msg.TaskID, msg.AttemptID, sess.ID, e.outputHandler, sess.ScrubRedacted, e.logger)
+		scanOutput(ctx, stderrPipe, "stderr", msg.TaskID, msg.AttemptID, sess.ID, handler, sess.ScrubRedacted, e.logger)
 	}()
 
 	// Wait for the output goroutines to finish and then for cmd.Wait() to
@@ -1062,11 +1107,12 @@ func hasDelivery(ds []protocol.PathDelivery, kind string) bool {
 	return false
 }
 
-// preExecValidate runs the two pre-exec guards that sit between resolveAssignment
-// and the process launch: (1) the s3:// path guard and (2) step embedded-file
-// materialization. Combining them keeps runTask's cyclomatic complexity within
-// the project limit. Returns true when all checks pass; false when any check
-// failed the task (caller must return).
+// preExecValidate runs the pre-exec steps that sit between resolveAssignment
+// and the process launch: (1) compiling the step's SQI_LOG_CHECKS, (2) the s3://
+// path guard and (3) step embedded-file materialization. Combining them keeps
+// runTask's cyclomatic complexity within the project limit. Returns the log
+// checker (nil when the step has no checks) and true when all steps pass; false
+// when any failed the task (caller must return).
 func (e *Executor) preExecValidate(
 	ctx context.Context,
 	msg *protocol.AssignMsg,
@@ -1075,9 +1121,22 @@ func (e *Executor) preExecValidate(
 	resolvedEnvVars map[string]string,
 	resolvedFiles []protocol.EmbeddedFile,
 	failed *bool,
-) bool {
+) (*logChecker, bool) {
+	// The server validated the patterns at submission, so a compile error here is
+	// defense only; it fails the task before anything runs.
+	checker, err := newLogChecker(msg.LogChecks)
+	if err != nil {
+		e.logger.ErrorContext(
+			ctx, "executor: invalid SQI_LOG_CHECKS pattern — failing task",
+			slog.String("task_id", msg.TaskID),
+			slog.String("attempt_id", msg.AttemptID),
+			slog.Any("error", err),
+		)
+		e.failPreExec(msg, sess.ID, failed, "invalid SQI_LOG_CHECKS pattern: "+err.Error())
+		return nil, false
+	}
 	if e.guardUnstagedS3(ctx, msg, sess.ID, resolvedRun, resolvedEnvVars, failed) {
-		return false
+		return nil, false
 	}
 	// Files are written into the session working directory before OnRun so the
 	// task command can reference them by name (and by {{Task.File.<name>}}).
@@ -1092,9 +1151,9 @@ func (e *Executor) preExecValidate(
 			slog.Any("error", err),
 		)
 		e.failPreExec(msg, sess.ID, failed, err.Error())
-		return false
+		return nil, false
 	}
-	return true
+	return checker, true
 }
 
 // guardUnstagedS3 checks whether the resolved command/args/env contains an

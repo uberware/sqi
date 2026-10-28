@@ -108,6 +108,26 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, os.Getenv("SQI_TEST_OUTPUT"))
 		os.Exit(0)
 
+	case "lines":
+		// Print each "|"-separated entry of SQI_TEST_OUTPUT on its own line
+		// (an "err:" prefix sends it to stderr), optionally sleep for
+		// SQI_TEST_SLEEP, then exit SQI_TEST_EXIT_CODE (default 0).
+		for entry := range strings.SplitSeq(os.Getenv("SQI_TEST_OUTPUT"), "|") {
+			if rest, ok := strings.CutPrefix(entry, "err:"); ok {
+				fmt.Fprintln(os.Stderr, rest)
+			} else {
+				fmt.Println(entry)
+			}
+		}
+		if dur, err := time.ParseDuration(os.Getenv("SQI_TEST_SLEEP")); err == nil {
+			time.Sleep(dur)
+		}
+		code, err := strconv.Atoi(os.Getenv("SQI_TEST_EXIT_CODE"))
+		if err != nil {
+			code = 0 // unset or unparseable
+		}
+		os.Exit(code)
+
 	case "args":
 		// Print the arguments this process was started with, "|"-joined, so a
 		// test can see exactly what the worker passed.
