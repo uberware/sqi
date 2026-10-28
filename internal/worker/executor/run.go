@@ -1248,10 +1248,12 @@ func (e *Executor) stageOutputs(ctx context.Context, msg *protocol.AssignMsg, se
 //
 // A line longer than maxOutputLine (64 KiB) is forwarded as consecutive pieces
 // of at most that many bytes, each valid UTF-8, with one WARN per stream. Each
-// piece is scrubbed and handled on its own, so a redacted value that straddles
-// a piece boundary is not guaranteed to be scrubbed, and an openjd directive
-// longer than 64 KiB reaches the handler as its first piece only. Before, such
-// a line stopped the scan altogether.
+// piece is scrubbed and handled on its own, as if it were a line: a redacted
+// value that straddles a piece boundary is not guaranteed to be scrubbed (one
+// longer than 64 KiB never is), an openjd directive longer than 64 KiB reaches
+// the handler as its first piece only, and a later piece that happens to begin
+// with a directive prefix is read as one. Before, such a line stopped the scan
+// altogether.
 //
 // scrub redacts any openjd_redacted_env values the step may echo to its own
 // output; it may be nil to disable scrubbing.
@@ -1266,7 +1268,7 @@ func scanOutput(
 	scrub func(string) string,
 	logger *slog.Logger,
 ) {
-	split := &lineSplitter{
+	lines := &lineSplitter{
 		emit: func(b []byte) {
 			line := string(b)
 			if scrub != nil {
@@ -1288,15 +1290,15 @@ func scanOutput(
 		chunk, err := br.ReadSlice('\n')
 		switch {
 		case err == nil:
-			split.end(chunk[:len(chunk)-1])
+			lines.end(chunk[:len(chunk)-1])
 			continue
 		case errors.Is(err, bufio.ErrBufferFull):
-			split.partial(chunk)
+			lines.partial(chunk)
 			continue
 		}
 		// EOF or a read error: deliver the final unterminated line, if any.
-		if len(chunk) > 0 || split.pending() {
-			split.end(chunk)
+		if len(chunk) > 0 || lines.split {
+			lines.end(chunk)
 		}
 		// A non-EOF error here typically means the process was killed and the
 		// pipe was closed abruptly; log at debug level to avoid alarming

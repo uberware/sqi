@@ -4,6 +4,7 @@ package executor
 
 import (
 	"bufio"
+	"slices"
 	"unicode/utf8"
 )
 
@@ -14,14 +15,15 @@ import (
 const maxOutputLine = bufio.MaxScanTokenSize
 
 // lineSplitter turns the slices bufio.Reader.ReadSlice returns into lines and,
-// for a line longer than maxOutputLine, pieces. emit receives a fresh copy of
-// each line or piece.
+// for a line longer than maxOutputLine, pieces. emit must not retain the slice
+// it is given: it may be the reader's own buffer.
 type lineSplitter struct {
 	emit func([]byte)
 	// onSplit is called each time a line is cut into pieces.
 	onSplit func()
 	// carry holds the bytes of a line already read but not yet delivered: an
-	// incomplete trailing UTF-8 sequence, or a '\r' that may precede '\n'.
+	// incomplete trailing UTF-8 sequence, or a '\r' that may precede '\n'. It
+	// is always its own copy, never a view of the reader's buffer.
 	carry []byte
 	// split is true once the current line has delivered a piece.
 	split bool
@@ -30,9 +32,9 @@ type lineSplitter struct {
 // partial takes a buffer-full of a line whose end has not been read yet.
 func (s *lineSplitter) partial(chunk []byte) {
 	b := s.join(chunk)
-	n := pieceLen(b, maxOutputLine, true)
+	n := pieceLen(b)
 	s.deliverPiece(b[:n])
-	s.carry = b[n:]
+	s.carry = slices.Clone(b[n:])
 }
 
 // end takes the last bytes of a line, without its '\n'. It is also called at
@@ -43,7 +45,7 @@ func (s *lineSplitter) end(chunk []byte) {
 		b = b[:len(b)-1]
 	}
 	for len(b) > maxOutputLine {
-		n := pieceLen(b, maxOutputLine, false)
+		n := pieceLen(b)
 		s.deliverPiece(b[:n])
 		b = b[n:]
 	}
@@ -55,41 +57,37 @@ func (s *lineSplitter) end(chunk []byte) {
 	s.split = false
 }
 
-// pending reports whether bytes of an unfinished line are held back.
-func (s *lineSplitter) pending() bool { return len(s.carry) > 0 || s.split }
-
 func (s *lineSplitter) deliverPiece(p []byte) {
-	if !s.split && s.onSplit != nil {
-		s.onSplit()
-	}
 	s.split = true
+	s.onSplit()
 	s.emit(p)
 }
 
-// join returns carry followed by chunk in a new slice, so neither the reader's
-// reused buffer nor carry is aliased by what is delivered.
+// join returns carry followed by chunk. With nothing carried that is chunk
+// itself, so the common short line is copied only once, by emit.
 func (s *lineSplitter) join(chunk []byte) []byte {
-	b := make([]byte, 0, len(s.carry)+len(chunk))
-	b = append(b, s.carry...)
-	b = append(b, chunk...)
+	if len(s.carry) == 0 {
+		return chunk
+	}
+	b := slices.Concat(s.carry, chunk)
 	s.carry = nil
 	return b
 }
 
 // pieceLen returns how many leading bytes of b form the next piece: at most
-// limit, never ending inside a multi-byte UTF-8 sequence. When more of the
-// line may follow (open), a piece that reaches the end of b also leaves out an
-// incomplete trailing sequence and a trailing '\r', which belong with the
-// bytes still to come. It never returns 0 for a non-empty b, so invalid UTF-8
-// cannot stall the loop.
-func pieceLen(b []byte, limit int, open bool) int {
-	n := min(len(b), limit)
+// maxOutputLine, never ending inside a multi-byte UTF-8 sequence. A piece that
+// reaches the end of b, which only happens while more of the line may follow,
+// also leaves out an incomplete trailing sequence and a trailing '\r', which
+// belong with the bytes still to come. It never returns 0 for a non-empty b,
+// so invalid UTF-8 cannot stall the loop.
+func pieceLen(b []byte) int {
+	n := min(len(b), maxOutputLine)
 	if n < len(b) {
 		// Cutting before b[n]: back off over at most UTFMax-1 continuation bytes.
 		for k := 0; k < utf8.UTFMax-1 && n > 0 && !utf8.RuneStart(b[n]); k++ {
 			n--
 		}
-	} else if open {
+	} else {
 		if i := lastRuneStart(b); i >= 0 && !utf8.FullRune(b[i:]) {
 			n = i
 		}
@@ -98,7 +96,7 @@ func pieceLen(b []byte, limit int, open bool) int {
 		}
 	}
 	if n == 0 {
-		n = min(len(b), limit)
+		n = min(len(b), maxOutputLine)
 	}
 	return n
 }

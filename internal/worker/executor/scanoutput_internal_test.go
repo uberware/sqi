@@ -3,8 +3,10 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -65,19 +67,28 @@ func TestScanOutput_NilScrubForwardsVerbatim(t *testing.T) {
 	}
 }
 
+// aRun returns n bytes of "a".
+func aRun(n int) string { return strings.Repeat("a", n) }
+
+// checkPieces fails t for any piece over the 65536-byte limit and, when the
+// input was valid UTF-8, for any piece that is not.
+func checkPieces(t *testing.T, pieces []string, valid bool) {
+	t.Helper()
+	for i, p := range pieces {
+		if len(p) > 65536 {
+			t.Errorf("piece %d is %d bytes, over the 65536 limit", i, len(p))
+		}
+		if valid && !utf8.ValidString(p) {
+			t.Errorf("piece %d is not valid UTF-8", i)
+		}
+	}
+}
+
 // TestScanOutput_LongLines verifies that a line longer than the 64 KiB scanner
 // limit is delivered as consecutive pieces of at most maxOutputLine bytes, each
 // valid UTF-8, and that reading carries on past it.
 func TestScanOutput_LongLines(t *testing.T) {
-	a := func(n int) string { return strings.Repeat("a", n) }
-	repeat := func(s string, n int) []string {
-		out := make([]string, n)
-		for i := range out {
-			out[i] = s
-		}
-		return out
-	}
-
+	a := aRun
 	cases := []struct {
 		name  string
 		input string
@@ -86,7 +97,7 @@ func TestScanOutput_LongLines(t *testing.T) {
 		{"short lines unchanged", "one\ntwo\n", []string{"one", "two"}},
 		{"exactly limit", a(65536) + "\nnext\n", []string{a(65536), "next"}},
 		{"one over limit", a(65537) + "\nnext\n", []string{a(65536), "a", "next"}},
-		{"1 MiB line then more", a(1<<20) + "\nafter\n", append(repeat(a(65536), 16), "after")},
+		{"1 MiB line then more", a(1<<20) + "\nafter\n", append(slices.Repeat([]string{a(65536)}, 16), "after")},
 		{"utf8 boundary", a(65535) + "é" + "\nnext\n", []string{a(65535), "é", "next"}},
 		{"crlf at boundary", a(65536) + "\r\nnext\r\n", []string{a(65536), "next"}},
 		{"cr is the buffer's last byte", a(65535) + "\r\nnext\n", []string{a(65535), "next"}},
@@ -105,17 +116,10 @@ func TestScanOutput_LongLines(t *testing.T) {
 			}
 			for i := range tc.want {
 				if h.lines[i] != tc.want[i] {
-					t.Errorf("piece %d: len %d, want len %d (equal=%v)", i, len(h.lines[i]), len(tc.want[i]), h.lines[i] == tc.want[i])
+					t.Errorf("piece %d: len %d, want len %d", i, len(h.lines[i]), len(tc.want[i]))
 				}
 			}
-			for i, l := range h.lines {
-				if len(l) > 65536 {
-					t.Errorf("piece %d is %d bytes, over the 65536 limit", i, len(l))
-				}
-				if !utf8.ValidString(l) {
-					t.Errorf("piece %d is not valid UTF-8", i)
-				}
-			}
+			checkPieces(t, h.lines, true)
 		})
 	}
 }
@@ -127,7 +131,7 @@ func TestScanOutput_LongLines(t *testing.T) {
 // Each long line is followed by a short sentinel line so its pieces can be
 // told apart from the next line.
 func TestScanOutput_LongLinesReassemble(t *testing.T) {
-	a := func(n int) string { return strings.Repeat("a", n) }
+	a := aRun
 	cases := []struct {
 		name  string
 		line  string
@@ -160,17 +164,10 @@ func TestScanOutput_LongLinesReassemble(t *testing.T) {
 				t.Fatalf("pieces reassemble to %d bytes, want the original %d (piece lengths %v)",
 					len(got), len(tc.line), lengths(pieces))
 			}
-			for i, p := range pieces {
-				if len(p) > 65536 {
-					t.Errorf("piece %d is %d bytes, over the 65536 limit", i, len(p))
-				}
-				if p == "" {
-					t.Errorf("piece %d is empty", i)
-				}
-				if tc.valid && !utf8.ValidString(p) {
-					t.Errorf("piece %d is not valid UTF-8", i)
-				}
+			if slices.Contains(pieces, "") {
+				t.Errorf("an empty piece was delivered (piece lengths %v)", lengths(pieces))
 			}
+			checkPieces(t, pieces, tc.valid)
 		})
 	}
 }
@@ -181,7 +178,7 @@ func TestScanOutput_LongLinesReassemble(t *testing.T) {
 // so the guard is only reachable directly.
 func TestPieceLen_NeverZero(t *testing.T) {
 	for _, b := range [][]byte{{0xE2}, {0xE2, 0x82}, {'\r'}} {
-		if n := pieceLen(b, maxOutputLine, true); n != len(b) {
+		if n := pieceLen(b); n != len(b) {
 			t.Errorf("pieceLen(%q) = %d; want %d", b, n, len(b))
 		}
 	}
@@ -195,40 +192,15 @@ func lengths(lines []string) []int {
 	return out
 }
 
-// recordingHandler is a slog.Handler that keeps every record's message.
-type recordingHandler struct {
-	mu   sync.Mutex
-	msgs []string
-}
-
-func (*recordingHandler) Enabled(context.Context, slog.Level) bool { return true }
-
-func (r *recordingHandler) Handle(_ context.Context, rec slog.Record) error {
-	r.mu.Lock()
-	r.msgs = append(r.msgs, rec.Message)
-	r.mu.Unlock()
-	return nil
-}
-
-func (r *recordingHandler) WithAttrs([]slog.Attr) slog.Handler { return r }
-
-func (r *recordingHandler) WithGroup(string) slog.Handler { return r }
-
 // TestScanOutput_LongLineWarnsOnce verifies that splitting lines is reported
 // once per stream, not once per long line.
 func TestScanOutput_LongLineWarnsOnce(t *testing.T) {
-	rec := &recordingHandler{}
+	var logs bytes.Buffer
 	long := strings.Repeat("b", 70000)
 	scanOutput(context.Background(), strings.NewReader(long+"\n"+long+"\n"), "stdout", "t", "a", "s",
-		&captureHandler{}, nil, slog.New(rec))
+		&captureHandler{}, nil, slog.New(slog.NewTextHandler(&logs, nil)))
 
-	n := 0
-	for _, m := range rec.msgs {
-		if strings.Contains(m, "over 64 KiB") {
-			n++
-		}
-	}
-	if n != 1 {
-		t.Fatalf("got %d over-64-KiB warnings, want 1 (messages: %q)", n, rec.msgs)
+	if n := strings.Count(logs.String(), "over 64 KiB"); n != 1 {
+		t.Fatalf("got %d over-64-KiB warnings, want 1 (log: %s)", n, logs.String())
 	}
 }
