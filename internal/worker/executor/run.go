@@ -1243,7 +1243,15 @@ func (e *Executor) stageOutputs(ctx context.Context, msg *protocol.AssignMsg, se
 
 // scanOutput reads lines from r, scrubs each through scrub, and forwards the
 // result to handler.HandleLine. It returns when r reaches EOF (the process has
-// closed the pipe write end, which happens when the process exits).
+// closed the pipe write end, which happens when the process exits), and it
+// always reads to EOF so the process can never block on an undrained pipe.
+//
+// A line longer than maxOutputLine (64 KiB) is forwarded as consecutive pieces
+// of at most that many bytes, each valid UTF-8, with one WARN per stream. Each
+// piece is scrubbed and handled on its own, so a redacted value that straddles
+// a piece boundary is not guaranteed to be scrubbed, and an openjd directive
+// longer than 64 KiB reaches the handler as its first piece only. Before, such
+// a line stopped the scan altogether.
 //
 // scrub redacts any openjd_redacted_env values the step may echo to its own
 // output; it may be nil to disable scrubbing.
@@ -1258,26 +1266,51 @@ func scanOutput(
 	scrub func(string) string,
 	logger *slog.Logger,
 ) {
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if scrub != nil {
-			line = scrub(line)
-		}
-		handler.HandleLine(ctx, taskID, attemptID, sessionID, stream, line)
+	split := &lineSplitter{
+		emit: func(b []byte) {
+			line := string(b)
+			if scrub != nil {
+				line = scrub(line)
+			}
+			handler.HandleLine(ctx, taskID, attemptID, sessionID, stream, line)
+		},
+		onSplit: sync.OnceFunc(func() {
+			logger.WarnContext(
+				context.Background(), "executor: task output line over 64 KiB delivered in pieces",
+				slog.String("task_id", taskID),
+				slog.String("attempt_id", attemptID),
+				slog.String("stream", stream),
+			)
+		}),
 	}
-	// scanner.Err() returns nil on EOF (normal completion) and a non-nil error
-	// on unexpected read failures.  A non-nil error here typically means the
-	// process was killed and the pipe was closed abruptly; log at debug level
-	// to avoid alarming operators on expected termination paths.
-	if err := scanner.Err(); err != nil {
-		// Use a background context in case ctx is already canceled.
-		logger.DebugContext(
-			context.Background(), "executor: output scan error",
-			slog.String("task_id", taskID),
-			slog.String("attempt_id", attemptID),
-			slog.String("stream", stream),
-			slog.Any("error", err),
-		)
+	br := bufio.NewReaderSize(r, maxOutputLine)
+	for {
+		chunk, err := br.ReadSlice('\n')
+		switch {
+		case err == nil:
+			split.end(chunk[:len(chunk)-1])
+			continue
+		case errors.Is(err, bufio.ErrBufferFull):
+			split.partial(chunk)
+			continue
+		}
+		// EOF or a read error: deliver the final unterminated line, if any.
+		if len(chunk) > 0 || split.pending() {
+			split.end(chunk)
+		}
+		// A non-EOF error here typically means the process was killed and the
+		// pipe was closed abruptly; log at debug level to avoid alarming
+		// operators on expected termination paths.
+		if !errors.Is(err, io.EOF) {
+			// Use a background context in case ctx is already canceled.
+			logger.DebugContext(
+				context.Background(), "executor: output scan error",
+				slog.String("task_id", taskID),
+				slog.String("attempt_id", attemptID),
+				slog.String("stream", stream),
+				slog.Any("error", err),
+			)
+		}
+		return
 	}
 }
