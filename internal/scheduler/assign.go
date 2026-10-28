@@ -132,6 +132,12 @@ func buildAssignPayload(
 		msg.EmbeddedFiles = convertEmbeddedFiles(stepTmpl.Script.EmbeddedFiles)
 	}
 
+	// ── Log checks (SQI_LOG_CHECKS) ─────────────────────────────────────────
+	// Nil for a step with no block, which keeps the key off the wire. The
+	// lease gate (workerExtensionBlock) has already kept this task away from a
+	// worker that does not enforce it.
+	msg.LogChecks = convertLogChecks(stepTmpl.LogChecks)
+
 	// ── Environments (job then step order, per OpenJD spec) ────────────────
 	envs := make([]protocol.AssignEnvironment, 0,
 		len(tmpl.JobEnvironments)+len(stepTmpl.StepEnvironments))
@@ -232,6 +238,18 @@ func convertAction(a *openjd.Action) *protocol.Action {
 		}
 	}
 	return pa
+}
+
+// convertLogChecks converts a step's [openjd.LogChecks] to its wire form. A nil
+// block, and a block that holds neither list, are returned as nil.
+func convertLogChecks(lc *openjd.LogChecks) *protocol.LogChecks {
+	if lc == nil || (len(lc.FailOn) == 0 && len(lc.RequireLine) == 0) {
+		return nil
+	}
+	return &protocol.LogChecks{
+		FailOn:      slices.Clone(lc.FailOn),
+		RequireLine: slices.Clone(lc.RequireLine),
+	}
 }
 
 // convertEmbeddedFiles converts a slice of [openjd.EmbeddedFile] to the

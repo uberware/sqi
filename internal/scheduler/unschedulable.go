@@ -142,6 +142,10 @@ func (s *Scheduler) evaluateSchedulability(ctx context.Context, task store.Task,
 			lastReason = exprReason
 			continue
 		}
+		if extReason := workerExtensionBlock(w, job); extReason != "" {
+			lastReason = extReason
+			continue
+		}
 		return "" // at least one eligible worker — schedulable
 	}
 	return "no eligible online worker: " + lastReason

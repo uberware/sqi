@@ -382,6 +382,13 @@ func (s *Scheduler) leaseGatesPass(
 		return d, false, nil
 	}
 
+	// Worker-enforced extensions (SQI_LOG_CHECKS): never hand a job declaring
+	// one to a worker that did not advertise enforcing it. Same skip-and-explain
+	// shape as the EXPR gate above; extcaps.go has the reason.
+	if workerExtensionBlock(worker, job) != "" {
+		return d, false, nil
+	}
+
 	step, err := s.store.GetStep(ctx, task.StepID)
 	if err != nil {
 		return d, false, fmt.Errorf("lease: get step %s: %w", task.StepID, err)

@@ -95,6 +95,11 @@ func TestMigration00037_RewritesEveryStoredForm(t *testing.T) {
 	if err := goose.UpTo(db, ".", 37); err != nil {
 		t.Fatalf("UpTo(37): %v", err)
 	}
+	// Back to the newest schema: rewinding to 36 also unwound every later
+	// migration, and the comparison is of data, not of schema version.
+	if err := goose.Up(db, "."); err != nil {
+		t.Fatalf("goose.Up after UpTo(37): %v", err)
+	}
 	if after := dumpTables(t, db); after != before {
 		t.Fatalf("re-applying 00037 changed the database:\n--- before\n%s--- after\n%s", before, after)
 	}

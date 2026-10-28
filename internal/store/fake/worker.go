@@ -26,6 +26,7 @@ func (s *Store) RegisterWorker(_ context.Context, worker store.Worker) (store.Wo
 
 	existing, isUpdate := s.workers[worker.ID]
 	worker.Tags = copyMap(worker.Tags)
+	worker.Extensions = slices.Clone(worker.Extensions)
 	worker.Disabled = existing.Disabled // false for a new worker
 	var reclaimed []store.Task
 	if isUpdate {
@@ -51,6 +52,7 @@ func (s *Store) GetWorker(_ context.Context, id string) (store.Worker, error) {
 	}
 
 	worker.Tags = copyMap(worker.Tags)
+	worker.Extensions = slices.Clone(worker.Extensions)
 	return worker, nil
 }
 
@@ -93,6 +95,7 @@ func (s *Store) SetWorkerDisabled(_ context.Context, id string, disabled bool) (
 	worker.UpdatedAt = time.Now().UTC()
 	s.workers[id] = worker
 	worker.Tags = copyMap(worker.Tags)
+	worker.Extensions = slices.Clone(worker.Extensions)
 	return worker, nil
 }
 

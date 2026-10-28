@@ -61,6 +61,15 @@ func TestDispatchHasOneGatedPath(t *testing.T) {
 			"operator sees", blocked)
 	}
 
+	// The worker-enforced extension gate (extcaps.go) has the same two halves:
+	// the bound in leaseGatesPass and the explanation in evaluateSchedulability.
+	if blocked := productionCallersOf(t, "workerExtensionBlock"); len(blocked) != 2 ||
+		!slices.Contains(blocked, "leaseGatesPass") || !slices.Contains(blocked, "evaluateSchedulability") {
+		t.Fatalf("workerExtensionBlock is called from %v; want exactly [leaseGatesPass "+
+			"evaluateSchedulability]: the first is the bound, the second is what the "+
+			"operator sees", blocked)
+	}
+
 	// exprCapShortfall is the single implementation of the comparisons. The
 	// lease path hoists it out of the candidate loop, so the two gate call
 	// sites reach it by different routes -- selectLeaseBatch computes it once

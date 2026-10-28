@@ -145,6 +145,12 @@ type Worker struct {
 	// Zero-valued for workers registered before this field existed; see
 	// [WorkerExprLimits] for what the server does with them.
 	ExprLimits WorkerExprLimits
+	// Extensions lists the worker-enforced OpenJD extensions (see
+	// openjd.WorkerEnforcedExtensions) the worker advertised at registration.
+	// Empty for a worker registered before the column existed or running a
+	// binary that enforces none; the scheduler withholds a job declaring one
+	// from such a worker (internal/scheduler's workerExtensionBlock).
+	Extensions []string
 	// Status is the worker's liveness: [WorkerStatusOnline] or
 	// [WorkerStatusOffline]. See [WorkerStatus].
 	Status WorkerStatus
