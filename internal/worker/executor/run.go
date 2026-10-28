@@ -1243,17 +1243,18 @@ func (e *Executor) stageOutputs(ctx context.Context, msg *protocol.AssignMsg, se
 
 // scanOutput reads lines from r, scrubs each through scrub, and forwards the
 // result to handler.HandleLine. It returns when r reaches EOF (the process has
-// closed the pipe write end, which happens when the process exits), and it
-// always reads to EOF so the process can never block on an undrained pipe.
+// closed the pipe write end, which happens when the process exits) or a read
+// fails. No line is too long to read, so what a process prints can never stop
+// the reading and leave it blocked on a full pipe.
 //
 // A line longer than maxOutputLine (64 KiB) is forwarded as consecutive pieces
-// of at most that many bytes, each valid UTF-8, with one WARN per stream. Each
-// piece is scrubbed and handled on its own, as if it were a line: a redacted
-// value that straddles a piece boundary is not guaranteed to be scrubbed (one
-// longer than 64 KiB never is), an openjd directive longer than 64 KiB reaches
-// the handler as its first piece only, and a later piece that happens to begin
-// with a directive prefix is read as one. Before, such a line stopped the scan
-// altogether.
+// of at most that many bytes, never cut inside a UTF-8 character, and the first
+// split on a stream logs one WARN. Each piece is scrubbed and handled on its
+// own, as if it were a line: a redacted value that straddles a piece boundary
+// is not guaranteed to be scrubbed (one longer than 64 KiB never is), an openjd
+// directive longer than 64 KiB reaches the handler as its first piece only, and
+// a later piece that happens to begin with a directive prefix is taken for a
+// directive.
 //
 // scrub redacts any openjd_redacted_env values the step may echo to its own
 // output; it may be nil to disable scrubbing.

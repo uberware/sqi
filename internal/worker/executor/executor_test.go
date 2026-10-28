@@ -397,9 +397,10 @@ func TestExecutor_Dispatch_stdout(t *testing.T) {
 }
 
 // TestExecutor_Dispatch_LongOutputLineDoesNotHang verifies that a task writing
-// an output line over 64 KiB still completes and every later line is
-// delivered. Before, the scanner stopped at the long line, nothing drained the
-// pipe, and the process blocked writing it.
+// an output line over 64 KiB still completes, that the line arrives as 64 KiB
+// pieces, and that the lines after it still arrive. It guards against reading
+// stopping at the long line, which left the pipe undrained and the process
+// blocked writing it.
 func TestExecutor_Dispatch_LongOutputLineDoesNotHang(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("subprocess test uses Unix-style exec")
@@ -428,7 +429,7 @@ func TestExecutor_Dispatch_LongOutputLineDoesNotHang(t *testing.T) {
 	}
 	piece := strings.Repeat("x", 65536)
 	if len(stdout) < 16+513 {
-		t.Fatalf("captured %d stdout lines; want 16 pieces + 512 lines + done", len(stdout))
+		t.Fatalf("captured %d stdout lines; want at least 529 (16 pieces, 512 lines and done)", len(stdout))
 	}
 	for i := range 16 {
 		if stdout[i] != piece {

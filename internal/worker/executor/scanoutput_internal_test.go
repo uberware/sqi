@@ -84,9 +84,9 @@ func checkPieces(t *testing.T, pieces []string, valid bool) {
 	}
 }
 
-// TestScanOutput_LongLines verifies that a line longer than the 64 KiB scanner
-// limit is delivered as consecutive pieces of at most maxOutputLine bytes, each
-// valid UTF-8, and that reading carries on past it.
+// TestScanOutput_LongLines verifies that a line longer than 64 KiB is delivered
+// as consecutive pieces of at most maxOutputLine bytes, each valid UTF-8, that
+// reading carries on past it, and that shorter lines arrive exactly as before.
 func TestScanOutput_LongLines(t *testing.T) {
 	a := aRun
 	cases := []struct {
