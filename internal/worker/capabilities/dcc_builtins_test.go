@@ -141,4 +141,20 @@ var dccLayouts = []rendererLayout{
 		versioned: `C:\Program Files\SilhouetteFX\Silhouette 2026\sfxcmd.exe`,
 		version:   "2026",
 	},
+	{
+		// VRED Core runs on Windows and Linux, VRED Pro on Windows. The Windows
+		// VRED Core folder is the one Autodesk's VRED Core page gives; the VRED
+		// Pro folder and both Linux roots are unverified (see vred.yaml). The
+		// version is VRED's internal one (18.0 is VRED 2026).
+		tag: "vred",
+		exe: "VREDCore",
+		installs: []string{
+			`C:\Program Files\Autodesk\VREDCore-18.0\bin\WIN64\VREDCore.exe`,
+			`C:\Program Files\Autodesk\VREDPro-18.0\bin\WIN64\VREDPro.exe`,
+			"/opt/Autodesk/VREDCore-18.0/bin/VREDCore",
+			"/opt/Autodesk/VREDCluster-18.0/bin/VREDCore",
+		},
+		versioned: `C:\Program Files\Autodesk\VREDCore-18.0\bin\WIN64\VREDCore.exe`,
+		version:   "18.0",
+	},
 }

@@ -1,0 +1,117 @@
+preset: vred-viewpoint-render
+case:   quoting
+params:
+  Frames=1-2
+  FramesPerTask=10
+  OutputFile=/mnt/renders/hero car/it's the "hero" shot.png
+  SceneFile=/mnt/show/cars/hero_car_v012.vpb
+  View=Cam 'A' "wide" \ left
+
+step "Render" — 1 task
+  log checks: failOn "SQI_RENDER: FAILED:"
+  log checks: failOn "No valid license found"
+  log checks: requireLine "SQI_RENDER: OK"
+
+task 1/1  name="Render[Frame=1-2,Frame.End=2,Frame.Start=1]"
+  task params:
+    Frame=1-2
+    Frame.End=2
+    Frame.Start=1
+  command: VREDCore
+  args:
+    [0]  /mnt/show/cars/hero_car_v012.vpb
+    [1]  -insecure_python
+    [2]  -fast_start
+    [3]  -hide_gui
+    [4]  -postpython
+    [5]  (lambda p: exec(compile(open(p, encoding='utf-8').read(), p, 'exec'), dict(globals(), __file__=p)))('<WORKDIR>')
+  embedded file "params" (params.json):
+    {"scene": "/mnt/show/cars/hero_car_v012.vpb", "frames": [1, 2], "output": "/mnt/renders/hero car/it's the \"hero\" shot.png", "view": "Cam 'A' \"wide\" \\ left"}
+  embedded file "render" (render.py):
+    # sqi VRED presets: renders this task's frames. VRED runs it after
+    # loading the scene; its parameters come from params.json beside
+    # it, never from its own text.
+    import builtins
+    import importlib
+    import json
+    import os
+    import traceback
+    
+    OK = "SQI_RENDER: OK"
+    FAILED = "SQI_RENDER: FAILED: "
+    
+    
+    def emit(line, fd=1):
+        # Straight to the file descriptor the worker reads, past
+        # whatever VRED does with sys.stdout. A failed write is
+        # ignored: the task then fails for want of the OK line.
+        try:
+            os.write(fd, (line + "\n").encode("utf-8", "replace"))
+        except OSError:
+            pass
+    
+    
+    def vred(module, name):
+        # VRED's API v1 functions are globals in its Python; import
+        # the module that documents them if they are not.
+        fn = globals().get(name) or getattr(builtins, name, None)
+        if fn is None:
+            fn = getattr(importlib.import_module(module), name)
+        return fn
+    
+    
+    def read_params(path):
+        with open(path, encoding="utf-8") as f:
+            p = json.load(f)
+        frames = sorted(int(n) for n in p["frames"])
+        if not frames:
+            raise ValueError("the task has no frames")
+        start, stop = frames[0], frames[-1]
+        if frames != list(range(start, stop + 1)):
+            raise ValueError("the task's frames are not consecutive: " + repr(frames))
+        return dict(start=start, stop=stop, output=p.get("output", ""), view=p.get("view", ""))
+    
+    
+    def render(params):
+        rs = "vrRenderSettings"
+        vred(rs, "setRenderAnimation")(True)
+        vred(rs, "setRenderUseClipRange")(False)
+        vred(rs, "setRenderStartFrame")(params["start"])
+        vred(rs, "setRenderStopFrame")(params["stop"])
+        vred(rs, "setRenderFrameStep")(1)
+        if params["view"]:
+            vred(rs, "setRenderView")(params["view"])
+        if params["output"]:
+            vred(rs, "setRenderFilename")(params["output"])
+        vred(rs, "startRenderToFile")(True)
+    
+    
+    def finish(code):
+        # terminateVred and crashVred are the documented ways out. If
+        # either cannot be called, exit anyway rather than leave VRED
+        # running with nothing left to do.
+        try:
+            if code:
+                vred("vrController", "crashVred")(code)
+            else:
+                vred("vrController", "terminateVred")()
+        except Exception:
+            os._exit(code)
+    
+    
+    def main():
+        try:
+            here = os.path.dirname(os.path.abspath(__file__))
+            render(read_params(os.path.join(here, "params.json")))
+        except Exception as e:
+            reason = " ".join((type(e).__name__ + ": " + str(e)).split())
+            emit(traceback.format_exc(), fd=2)
+            emit(FAILED + reason)
+            emit("openjd_fail: " + reason)
+            finish(1)
+            return
+        emit(OK)
+        finish(0)
+    
+    
+    main()

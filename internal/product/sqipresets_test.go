@@ -206,6 +206,19 @@ func TestSQIReferencePresets(t *testing.T) {
 			params:     []string{"SceneFile", "Frames", "FramesPerTask"},
 			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
 		},
+		// The two VRED presets are host-script presets: EXPR builds the
+		// params.json their embedded render.py reads. vred-render has no View,
+		// so it is a whole-scene product.
+		"vred-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames", "FramesPerTask", "OutputFile"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS", "EXPR", "SQI_LOG_CHECKS"},
+		},
+		"vred-viewpoint-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames", "View", "FramesPerTask", "OutputFile"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS", "EXPR", "SQI_LOG_CHECKS"},
+		},
 		"ffmpeg-transcode": {
 			category: "Transcoding",
 			params:   []string{"SourceFile", "OutputFile", "VideoCodec", "Quality", "AudioCodec"},

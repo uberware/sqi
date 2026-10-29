@@ -58,6 +58,8 @@ func TestBuild(t *testing.T) {
 		"silhouette-render",
 		"silhouette-render-all",
 		"vray-standalone-render",
+		"vred-render",
+		"vred-viewpoint-render",
 	}
 	names := make([]string, len(got))
 	for i, g := range got {

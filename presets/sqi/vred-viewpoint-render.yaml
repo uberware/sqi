@@ -1,0 +1,278 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: vred-viewpoint-render
+title: VRED Viewpoint Render
+description: >-
+  Renders one named viewpoint or camera of a saved VRED scene headless with
+  VRED Core, ten frames per task by default.
+readme: |
+  # VRED Viewpoint Render
+
+  Renders one named viewpoint or camera of a saved `.vpb` scene with VRED
+  Core, using the render settings saved in the scene. Each task starts VRED
+  Core once, loads the scene and renders a contiguous slice of the frame
+  range, ten frames per task by default. Use VRED Render instead to render
+  whatever view the scene was saved with.
+
+  ## Parameters
+
+  - **Scene File** - the `.vpb` scene to render. It must be reachable from
+    every worker that runs the job.
+  - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
+    `1-100:2` for every second frame.
+  - **View** - the name of the viewpoint or camera to render, passed to VRED's
+    `setRenderView`. A name with spaces, quotes or backslashes reaches VRED
+    unchanged.
+  - **Frames Per Task** - the most frames one task renders, at most 1000.
+    VRED loads the whole scene for every task, so a few frames per load pays.
+    A range that does not divide evenly is spread over the same number of
+    tasks in near-equal chunks: `1-12` at 5 is `1-4`, `5-8`, `9-12`.
+  - **Output File** - the image file to render to, passed to VRED's
+    `setRenderFilename`; its extension sets the image format. Leave it empty
+    to keep the render filename saved in the scene. The path reaches VRED in
+    the worker's own form (backslashes on Windows).
+
+  ## How work is divided
+
+  The frame range expands into tasks through OpenJD task chunking. A chunk
+  never spans a gap, so a stepped range such as `1-9:4` becomes one task per
+  frame, and each task renders its first to last frame at a frame step of 1.
+
+  ## How the render runs
+
+  Each task runs
+  `VREDCore <scene> -insecure_python -fast_start -hide_gui -postpython <code>`.
+  VRED loads the scene, then runs the code, which only executes the preset's
+  embedded `render.py` from the task's session folder. No job value is ever
+  written into Python source: the script reads the scene, the task's frames,
+  the view and the output file from a `params.json` written beside it, built with the
+  `EXPR` extension and its JSON quoting.
+
+  The script turns on animation rendering, clears the clip range, sets the
+  task's first and last frame and a frame step of 1, selects the view, sets
+  the render filename when one is given, and calls `startRenderToFile`. It then prints
+  `SQI_RENDER: OK` and quits VRED with `terminateVred`. On any error it prints
+  `SQI_RENDER: FAILED:` with the reason and quits with `crashVred(1)`.
+
+  Building `params.json` is metered against the worker's `EXPR` limits, and
+  its cost grows with the frames in one task. 1000 frames per task, the
+  maximum, stays well inside the worker defaults.
+
+  ## How failures are detected
+
+  This preset declares the `SQI_LOG_CHECKS` extension. A task fails unless
+  VRED's output contains `SQI_RENDER: OK`, and fails when a line contains
+  `SQI_RENDER: FAILED:` or `No valid license found`. VRED can exit with status
+  0 without rendering, after a licence failure for one, so its exit status is
+  not relied on. The script writes its two lines straight to the process's
+  standard output (file descriptor 1), past VRED's own Python console.
+
+  ## Requirements
+
+  - Workers tagged `attr.worker.tag.vred = true`. The worker tags a VRED Core
+    or VRED Pro install it finds.
+  - A `VREDCore` command the worker can resolve: its `worker.commands` entry,
+    a `VREDCore` on its `PATH`, or the VRED Core install it detects. On a
+    Windows worker with only VRED Pro, map `VREDCore` to `VREDPro.exe` in
+    `worker.commands`; the worker never does that by itself.
+  - A VRED render licence on every worker that renders.
+  - `-insecure_python` is passed because VRED 2024 and later run scene Python
+    in a sandbox by default, and the script must read `params.json`.
+  - On Linux, an X server: VRED Core needs one even with `-hide_gui`. A
+    machine with no GPU can render on Mesa under Xvfb.
+
+  VRED's version numbers are internal: 17.0 is VRED 2025 and 18.0 is VRED
+  2026. The worker's version tag uses them (`vred_18_0`).
+
+  ## What has not been verified
+
+  - No VRED has executed this preset. The command line is the one AWS's VRED
+    samples use; Autodesk's command-line reference documents `-postpython`
+    as running Python commands (or a base64 script) after the scene loads,
+    not a file name, which is why the code only executes the script file.
+  - Whether text written to file descriptor 1 reaches the worker on Windows,
+    where VRED is a windowed program, is unknown. If it does not, every task
+    fails for want of `SQI_RENDER: OK`, never the other way round.
+  - Autodesk's reference marks `startRenderToFile` as available in VRED
+    Professional only; AWS's samples call it under VRED Core.
+  - What `crashVred(1)` exits with is undocumented; the failure line, not the
+    exit status, is what fails the task.
+  - How VRED numbers the files of an animation rendered to Output File is not
+    documented here; check the first task's output before a long run.
+  - The Linux install paths the detector looks for are guesses: the installer
+    takes a target folder and Autodesk documents no default.
+  - What `setRenderView` does with a name that is neither a viewpoint nor a
+    camera in the scene is undocumented. It may render the saved view
+    without an error.
+category: Rendering
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: VRED Viewpoint Render
+  extensions: [TASK_CHUNKING, SQI_CHUNK_BOUNDS, EXPR, SQI_LOG_CHECKS]
+  parameterDefinitions:
+    - name: SceneFile
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface:
+        control: CHOOSE_INPUT_FILE
+        label: Scene File
+        fileFilters:
+          - label: VRED scenes
+            patterns: ["*.vpb"]
+        fileFilterDefault:
+          label: VRED scenes
+          patterns: ["*.vpb"]
+    - name: Frames
+      type: STRING
+      userInterface: { control: LINE_EDIT, label: Frame Range }
+    - name: View
+      type: STRING
+      minLength: 1
+      userInterface: { control: LINE_EDIT, label: View }
+    - name: FramesPerTask
+      type: INT
+      default: 10
+      minValue: 1
+      maxValue: 1000
+      userInterface: { control: SPIN_BOX, label: Frames Per Task }
+    - name: OutputFile
+      type: PATH
+      objectType: FILE
+      dataFlow: OUT
+      default: ""
+      userInterface: { control: CHOOSE_OUTPUT_FILE, label: Output File }
+  steps:
+    - name: Render
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.vred
+            anyOf: ["true"]
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Frame
+            type: CHUNK[INT]
+            range: "{{Param.Frames}}"
+            chunks:
+              defaultTaskCount: "{{Param.FramesPerTask}}"
+              rangeConstraint: CONTIGUOUS
+      SQI_LOG_CHECKS:
+        failOn: ['SQI_RENDER: FAILED:', 'No valid license found']
+        requireLine: ['SQI_RENDER: OK']
+      script:
+        embeddedFiles:
+          # The script's parameters, as data. EXPR has no dictionary type, so
+          # the JSON object is joined from strings, every value through
+          # repr_json. The test reads RawParam: under EXPR an empty PATH binds
+          # as '.'.
+          - name: params
+            type: TEXT
+            filename: params.json
+            data: |
+              {{ '{"scene": ' + repr_json(string(Param.SceneFile)) + ', "frames": ' + repr_json(list(Task.Param.Frame)) + ', "output": ' + repr_json(string(Param.OutputFile) if RawParam.OutputFile != '' else '') + ', "view": ' + repr_json(Param.View) + '}' }}
+          - name: render
+            type: TEXT
+            filename: render.py
+            data: |
+              # sqi VRED presets: renders this task's frames. VRED runs it after
+              # loading the scene; its parameters come from params.json beside
+              # it, never from its own text.
+              import builtins
+              import importlib
+              import json
+              import os
+              import traceback
+
+              OK = "SQI_RENDER: OK"
+              FAILED = "SQI_RENDER: FAILED: "
+
+
+              def emit(line, fd=1):
+                  # Straight to the file descriptor the worker reads, past
+                  # whatever VRED does with sys.stdout. A failed write is
+                  # ignored: the task then fails for want of the OK line.
+                  try:
+                      os.write(fd, (line + "\n").encode("utf-8", "replace"))
+                  except OSError:
+                      pass
+
+
+              def vred(module, name):
+                  # VRED's API v1 functions are globals in its Python; import
+                  # the module that documents them if they are not.
+                  fn = globals().get(name) or getattr(builtins, name, None)
+                  if fn is None:
+                      fn = getattr(importlib.import_module(module), name)
+                  return fn
+
+
+              def read_params(path):
+                  with open(path, encoding="utf-8") as f:
+                      p = json.load(f)
+                  frames = sorted(int(n) for n in p["frames"])
+                  if not frames:
+                      raise ValueError("the task has no frames")
+                  start, stop = frames[0], frames[-1]
+                  if frames != list(range(start, stop + 1)):
+                      raise ValueError("the task's frames are not consecutive: " + repr(frames))
+                  return dict(start=start, stop=stop, output=p.get("output", ""), view=p.get("view", ""))
+
+
+              def render(params):
+                  rs = "vrRenderSettings"
+                  vred(rs, "setRenderAnimation")(True)
+                  vred(rs, "setRenderUseClipRange")(False)
+                  vred(rs, "setRenderStartFrame")(params["start"])
+                  vred(rs, "setRenderStopFrame")(params["stop"])
+                  vred(rs, "setRenderFrameStep")(1)
+                  if params["view"]:
+                      vred(rs, "setRenderView")(params["view"])
+                  if params["output"]:
+                      vred(rs, "setRenderFilename")(params["output"])
+                  vred(rs, "startRenderToFile")(True)
+
+
+              def finish(code):
+                  # terminateVred and crashVred are the documented ways out. If
+                  # either cannot be called, exit anyway rather than leave VRED
+                  # running with nothing left to do.
+                  try:
+                      if code:
+                          vred("vrController", "crashVred")(code)
+                      else:
+                          vred("vrController", "terminateVred")()
+                  except Exception:
+                      os._exit(code)
+
+
+              def main():
+                  try:
+                      here = os.path.dirname(os.path.abspath(__file__))
+                      render(read_params(os.path.join(here, "params.json")))
+                  except Exception as e:
+                      reason = " ".join((type(e).__name__ + ": " + str(e)).split())
+                      emit(traceback.format_exc(), fd=2)
+                      emit(FAILED + reason)
+                      emit("openjd_fail: " + reason)
+                      finish(1)
+                      return
+                  emit(OK)
+                  finish(0)
+
+
+              main()
+        actions:
+          onRun:
+            command: VREDCore
+            args:
+              - "{{Param.SceneFile}}"
+              - "-insecure_python"
+              - "-fast_start"
+              - "-hide_gui"
+              - "-postpython"
+              # Python CODE, not a path: -postpython runs commands. It executes
+              # render.py with __file__ set, in one namespace of its own built
+              # from VRED's globals, so the script finds params.json beside it
+              # and its functions see one another. One expression, so it runs
+              # whether VRED execs or evals it.
+              - "(lambda p: exec(compile(open(p, encoding='utf-8').read(), p, 'exec'), dict(globals(), __file__=p)))({{ repr_py(string(Task.File.render)) }})"

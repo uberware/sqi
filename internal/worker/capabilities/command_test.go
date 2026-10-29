@@ -363,6 +363,72 @@ func TestSilhouetteDetector_CommandFindsSfxcmdAndSuppliesNogui(t *testing.T) {
 	}
 }
 
+// TestVREDDetector_CommandFindsVREDCoreOnWindowsAndLinux checks the shipped
+// command globs against a VRED Core 18.0 (VRED 2026) install on Windows and
+// under both Linux roots, and that neither a VRED Pro install nor a macOS
+// machine yields a VREDCore command: running VREDPro.exe in its place is the
+// operator's call. The layouts are unverified (see vred.yaml).
+func TestVREDDetector_CommandFindsVREDCoreOnWindowsAndLinux(t *testing.T) {
+	d := builtinDetector(t, "vred")
+	if d.Command == nil || d.Command.Name != "VREDCore" {
+		t.Fatalf("the vred detector has no command named VREDCore: %+v", d.Command)
+	}
+	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
+	matches := func(goos, file string) (matched bool, glob string) {
+		for _, g := range d.Command.Globs {
+			if g.OS != "" && g.OS != goos {
+				continue
+			}
+			ok, err := path.Match(norm(g.PathGlob), norm(file))
+			if err != nil {
+				t.Fatalf("bad pattern %q: %v", g.PathGlob, err)
+			}
+			if ok {
+				return true, g.PathGlob
+			}
+		}
+		return false, ""
+	}
+	cases := []struct {
+		name string
+		goos string
+		exe  string
+		not  []string
+	}{
+		{"windows VRED Core", "windows", `C:\Program Files\Autodesk\VREDCore-18.0\bin\WIN64\VREDCore.exe`, []string{
+			`C:\Program Files\Autodesk\VREDPro-18.0\bin\WIN64\VREDPro.exe`,
+			`C:\Program Files\Autodesk\VREDPro-18.0\bin\WIN64\VREDCore.exe`,
+			`C:\Program Files\Autodesk\VREDCore-18.0\bin\WIN64\VREDClusterService.exe`,
+		}},
+		{"linux VREDCore root", "linux", "/opt/Autodesk/VREDCore-18.0/bin/VREDCore", []string{"/opt/Autodesk/VREDCore-18.0/bin/LINUX64/VREDCore"}},
+		{"linux VREDCluster root", "linux", "/opt/Autodesk/VREDCluster-18.0/bin/VREDCore", []string{"/opt/Autodesk/VREDCluster-18.0/VREDCore"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if ok, _ := matches(tc.goos, tc.exe); !ok {
+				t.Errorf("no %s command glob matches the executable %s", tc.goos, tc.exe)
+			}
+			for _, other := range tc.not {
+				if ok, g := matches(tc.goos, other); ok {
+					t.Errorf("%s glob %q matched %s, which is not a VRED Core executable", tc.goos, g, other)
+				}
+			}
+			env := fakeEnv{goos: tc.goos, globs: map[string][]string{}}
+			for _, g := range d.Command.Globs {
+				env.globs[g.PathGlob] = []string{tc.exe}
+			}
+			got, ok := d.FindCommand(env)
+			if !ok || got.Name != "VREDCore" || got.Path != tc.exe || got.Version != "18.0" || len(got.Args) != 0 {
+				t.Errorf("FindCommand = %+v (found %v), want VREDCore 18.0 at %s with no args", got, ok, tc.exe)
+			}
+		})
+	}
+	// VRED Core does not run on macOS, so no glob may apply there.
+	if ok, g := matches("darwin", "/Applications/Autodesk/VREDCore-18.0/bin/VREDCore"); ok {
+		t.Errorf("darwin glob %q matched; VRED Core has no macOS build", g)
+	}
+}
+
 func TestDetectCommands_ComesFromBuiltinsAndCustomDetectorsAndHonoursDisable(t *testing.T) {
 	custom := Detector{
 		Tag: "inhouse", Checks: []Check{{Exe: "inhouse"}},

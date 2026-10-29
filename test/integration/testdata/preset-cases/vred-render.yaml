@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# VRED Render. A host-script preset: the argv is fixed except for the scene
+# and the script path, and everything per task travels in params.json, which
+# the goldens show in full. default (1-25 at the shipped 10 frames per task)
+# shows the near-equal chunks 1-9, 10-17, 18-25 as frame lists; stepped-range
+# shows a gap-bearing range never spanning a frame it excluded.
+#
+# Every case that Tier 3 or TestPresetOutcomes runs states what the stub
+# prints: the preset's requireLine wants SQI_RENDER: OK, which a real VRED
+# prints from render.py, so default sets it or the job could only fail.
+#
+# quoting puts a space in a directory and in the file name and both quote
+# characters in the file name of Output File (and a space in the scene path),
+# so params.json must escape them; TestVREDPreset_ParamsJSONRoundTrips decodes
+# it with encoding/json and compares the values. The quotes stay in the last
+# path segment so the golden's host-path rewrite (presettest.hostPathReplacer,
+# keyed on the parameter's parent folder) still applies on Windows, where the
+# path reaches params.json with doubled backslashes.
+#
+# logged-error, no-success-line: OUTCOME cases. One frame, so one task, run
+# three times (scheduler.default_max_attempts) before the job fails.
+cases:
+  - name: default
+    params:
+      SceneFile: /mnt/show/cars/hero_car_v012.vpb
+      Frames: "1-25"
+    expect_tasks: 3
+    expect_invocations:
+      VREDCore: 3
+    stub_env:
+      SQI_STUB_STDOUT: "SQI_RENDER: OK"
+  - name: multi-frame-chunk
+    params:
+      SceneFile: /mnt/show/cars/hero_car_v012.vpb
+      Frames: "1-10"
+      FramesPerTask: "5"
+      OutputFile: /mnt/renders/hero_car/beauty.png
+    expect_tasks: 2
+    expect_invocations:
+      VREDCore: 2
+  - name: stepped-range
+    params:
+      SceneFile: /mnt/show/cars/hero_car_v012.vpb
+      Frames: "1-9:4"
+    expect_tasks: 3
+    expect_invocations:
+      VREDCore: 3
+  - name: quoting
+    params:
+      SceneFile: '/mnt/show/cars/hero car v012.vpb'
+      Frames: "1-2"
+      OutputFile: '/mnt/renders/hero car/it''s the "hero" shot.png'
+    expect_tasks: 1
+    expect_invocations:
+      VREDCore: 1
+  - name: logged-error
+    params:
+      SceneFile: /mnt/show/cars/hero_car_v012.vpb
+      Frames: "1"
+    expect_tasks: 1
+    expect_invocations:
+      VREDCore: 3
+    stub_env:
+      SQI_STUB_STDOUT: "No valid license found for VRED Core"
+    expect_status: failed
+    expect_reason: "matched failOn"
+  - name: no-success-line
+    params:
+      SceneFile: /mnt/show/cars/hero_car_v012.vpb
+      Frames: "1"
+    expect_tasks: 1
+    expect_invocations:
+      VREDCore: 3
+    expect_status: failed
+    expect_reason: "never printed"

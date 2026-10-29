@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"sort"
@@ -676,6 +677,12 @@ func materializedFileNames(snap presettest.Snapshot) map[string]bool {
 
 // foldFilePaths replaces every argument that is an absolute path to one of files
 // with a stable placeholder. See [assertObservedMatchesComputed].
+//
+// A path QUOTED INSIDE an argument is folded too: a host-script preset hands
+// the application code that names its script (VRED's -postpython carries
+// '<session>/render.py' as a Python literal, doubled backslashes and all on
+// Windows), so the session directory sits in the middle of the argument rather
+// than being all of it.
 func foldFilePaths(args []string, files map[string]bool) []string {
 	out := make([]string, len(args))
 	for i, a := range args {
@@ -684,9 +691,21 @@ func foldFilePaths(args []string, files map[string]bool) []string {
 			out[i] = "<FILE:" + base + ">"
 			continue
 		}
-		out[i] = a
+		out[i] = foldQuotedFilePaths(a, files)
 	}
 	return out
+}
+
+// foldQuotedFilePaths replaces each single-quoted absolute path to one of files
+// inside s ('/tmp/.../render.py', 'C:\\Users\\...\\render.py') with
+// '<FILE:name>'. Single quotes only: that is how repr_py writes a path holding
+// no quote, and a session directory holds none.
+func foldQuotedFilePaths(s string, files map[string]bool) string {
+	for name := range files {
+		re := regexp.MustCompile(`'(?:[A-Za-z]:)?[\\/][^']*[\\/]` + regexp.QuoteMeta(name) + `'`)
+		s = re.ReplaceAllString(s, "'<FILE:"+name+">'")
+	}
+	return s
 }
 
 // TestPresetTier3_StubFailureSurfacesAsFailedTask proves the harness can see a

@@ -711,6 +711,53 @@ presets:
       case: TestPresetTier3/silhouette-render-all/default
       required_on: [linux, darwin, windows]
 
+  # VRED is the first host-script preset: VREDCore runs an embedded render.py
+  # through -postpython, and the per-task values travel in an EXPR-built
+  # params.json. No os.family gate (VRED Core runs on Windows and Linux; the
+  # detector has no macOS entry), so Tier 3 runs on every OS, as Katana's.
+  - name: vred-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, multi-frame-chunk, stepped-range, quoting, logged-error, no-success-line]
+      caveat: >-
+        argv from AWS's VRED samples (VREDCore <scene> -insecure_python
+        -fast_start -hide_gui -postpython <code>) and Autodesk's command-line
+        reference, which documents -postpython as Python commands (or a base64
+        script) run after the scene loads, not a file name; the code only
+        executes the embedded render.py. The render.py calls are Autodesk's
+        Python API v1 (vrRenderSettings, vrController), which marks
+        startRenderToFile as VRED Professional only although AWS calls it under
+        VRED Core. No VRED has executed this preset. Whether the script's
+        descriptor-1 lines reach the worker from windowed VRED on Windows is
+        unknown (if not, every task fails for want of SQI_RENDER: OK). The
+        goldens pin params.json in full; quoting is decoded with encoding/json
+        by TestVREDPreset_ParamsJSONRoundTrips, and render.py's parameter
+        handling runs under a real Python with stub VRED modules in
+        TestVREDPreset_ScriptDrivesVRED. The Linux install roots are guesses.
+        Tier 3 runs a stub as VREDCore: it exercises the worker, the embedded
+        files and the log checks, never the script inside VRED.
+    tier3:
+      case: TestPresetTier3/vred-render/default
+      required_on: [linux, darwin, windows]
+
+  - name: vred-viewpoint-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, multi-frame-chunk, stepped-range, target-with-space, quoting, logged-error, no-success-line]
+      caveat: >-
+        vred-render plus View, carried in params.json and passed to
+        setRenderView; the same sources and the same unverified points (see
+        vred-render). What setRenderView does with a name the scene lacks is
+        undocumented. quoting puts both quotes, a backslash and a space in View
+        and both quotes in Output File's name. Tier 3 runs a stub as VREDCore:
+        it exercises the worker, the embedded files and the log checks, never
+        the script inside VRED.
+    tier3:
+      case: TestPresetTier3/vred-viewpoint-render/default
+      required_on: [linux, darwin, windows]
+
   - name: ffmpeg-transcode
     source: presets/sqi
     tier: 2

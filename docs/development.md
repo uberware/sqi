@@ -1537,7 +1537,7 @@ clients/submitter/
     hosts/{blender,cinema4d,aftereffects}/   one self-contained host file each (handoff hosts)
     cli.py, install.py                   sqi-submit, sqi-submit install-host
   tests/                     pytest; tests/integration/ is env-gated (see below)
-presets/sqi/                 the thirty-four reference preset YAML fixtures (twenty-one DCC render
+presets/sqi/                 the thirty-six reference preset YAML fixtures (twenty-three DCC render
                               presets, eight standalone renderer presets, five ffmpeg
                               transcode presets), validated by
                               internal/product/sqipresets_test.go against a per-preset
