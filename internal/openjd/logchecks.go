@@ -3,10 +3,12 @@
 package openjd
 
 import (
+	"errors"
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/uberware/sqi/internal/openjd/logpattern"
 )
 
 // Limits on an SQI_LOG_CHECKS block. They bound what a worker compiles and runs
@@ -181,8 +183,10 @@ func validateLogChecksBlock(lc *LogChecks, ptr string) ValidationErrors {
 	return errs
 }
 
-// validateLogCheckPatterns checks one pattern list against the count, length and
-// RE2-syntax limits.
+// validateLogCheckPatterns checks one pattern list against the count, length,
+// RE2-syntax and compiled-program-size (logpattern.MaxProgramInsts) limits. The
+// size limit is the one the worker enforces too, so a pattern accepted here is
+// never refused at runtime.
 func validateLogCheckPatterns(patterns []string, ptr string) ValidationErrors {
 	var errs ValidationErrors
 	if len(patterns) > maxLogCheckPatterns {
@@ -202,7 +206,12 @@ func validateLogCheckPatterns(patterns []string, ptr string) ValidationErrors {
 				Message: fmt.Sprintf("pattern is %d bytes; at most %d bytes are allowed", len(p), maxLogCheckPatternBytes),
 			})
 		default:
-			if _, err := regexp.Compile(p); err != nil {
+			var tooLarge *logpattern.TooLargeError
+			_, err := logpattern.Compile(p)
+			switch {
+			case errors.As(err, &tooLarge):
+				errs = append(errs, ValidationError{Pointer: pp, Message: "pattern " + tooLarge.Error()})
+			case err != nil:
 				errs = append(errs, ValidationError{Pointer: pp, Message: "invalid regular expression: " + err.Error()})
 			}
 		}

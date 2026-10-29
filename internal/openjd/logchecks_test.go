@@ -142,6 +142,28 @@ func TestLogChecks_Validate(t *testing.T) {
 			wantOK:     true,
 		},
 		{
+			// 905 bytes, under the byte cap, but ~226,000 compiled instructions:
+			// matching one line would take seconds.
+			name:        "oversized compiled program",
+			extensions:  declared,
+			stepExtra:   block("{failOn: [x, '" + strings.Repeat(".{0,999}", 113) + "x']}"),
+			wantPointer: "/steps/0/SQI_LOG_CHECKS/failOn/1",
+			wantMessage: "instructions; at most 2000 are allowed",
+		},
+		{
+			name:       "compiled program exactly at the limit is allowed",
+			extensions: declared,
+			stepExtra:  block("{requireLine: ['a{998}a{1000}']}"),
+			wantOK:     true,
+		},
+		{
+			name:        "compiled program one over the limit",
+			extensions:  declared,
+			stepExtra:   block("{requireLine: ['a{999}a{1000}']}"),
+			wantPointer: "/steps/0/SQI_LOG_CHECKS/requireLine/0",
+			wantMessage: "pattern compiles to 2001 instructions; at most 2000 are allowed",
+		},
+		{
 			name:        "empty pattern",
 			extensions:  declared,
 			stepExtra:   block("{failOn: ['']}"),

@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"unicode/utf8"
 
+	"github.com/uberware/sqi/internal/openjd/logpattern"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
@@ -63,7 +64,11 @@ func newLogChecker(c *protocol.LogChecks) (*logChecker, error) {
 func compilePatterns(list string, patterns []string) ([]*regexp.Regexp, error) {
 	out := make([]*regexp.Regexp, 0, len(patterns))
 	for _, p := range patterns {
-		re, err := regexp.Compile(p)
+		// logpattern.Compile refuses a pattern whose compiled program exceeds
+		// the bound the server validates against: matching cost scales with
+		// program size, and observe runs on the reader goroutine a canceled or
+		// timed-out task waits for.
+		re, err := logpattern.Compile(p)
 		if err != nil {
 			return nil, fmt.Errorf("%s %q: %w", list, p, err)
 		}

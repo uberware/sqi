@@ -46,6 +46,50 @@ func TestNewLogChecker_BadPattern(t *testing.T) {
 	}
 }
 
+// TestNewLogChecker_ProgramSize pins that the worker refuses a pattern whose
+// compiled program exceeds logpattern.MaxProgramInsts, the same bound the
+// server validates against, and accepts one at or under it.
+func TestNewLogChecker_ProgramSize(t *testing.T) {
+	tests := []struct {
+		name    string
+		checks  *protocol.LogChecks
+		wantErr string
+	}{
+		{
+			name:   "realistic patterns",
+			checks: &protocol.LogChecks{FailOn: []string{`(?i)\berror\b.*failed with`}, RequireLine: []string{"SQI_RENDER: OK"}},
+		},
+		{
+			name:   "exactly at the limit",
+			checks: &protocol.LogChecks{RequireLine: []string{"a{998}a{1000}"}},
+		},
+		{
+			name:    "one over the limit",
+			checks:  &protocol.LogChecks{RequireLine: []string{"a{999}a{1000}"}},
+			wantErr: `requireLine "a{999}a{1000}": compiles to 2001 instructions; at most 2000 are allowed`,
+		},
+		{
+			name:    "905-byte concatenation of bounded repeats",
+			checks:  &protocol.LogChecks{FailOn: []string{"ok", strings.Repeat(".{0,999}", 113) + "x"}},
+			wantErr: "instructions; at most 2000 are allowed",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := newLogChecker(tc.checks)
+			if tc.wantErr == "" {
+				if err != nil || c == nil {
+					t.Fatalf("newLogChecker = (%v, %v), want a checker", c, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("newLogChecker error = %v, want one containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestLogChecker(t *testing.T) {
 	long := "ERROR " + strings.Repeat("x", 494) // 500 bytes
 

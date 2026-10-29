@@ -74,8 +74,18 @@ Structural, enforced at submission (`internal/openjd/logchecks.go`,
   "must be a string" rather than coerced).
 - A list holds at most **32** patterns; a pattern is at most **1024** bytes; an
   empty pattern is rejected (an empty `failOn` pattern would fail every task).
-- Every pattern must compile as RE2 (Go `regexp`). RE2 runs in linear time, so a
-  hostile pattern cannot cause catastrophic backtracking.
+- Every pattern must compile as RE2 (Go `regexp`). RE2 never backtracks, so
+  matching is linear in the length of the line, but the cost per byte also
+  scales with the size of the compiled program, and a short pattern can compile
+  to a huge one: Go bounds nested repetition but not concatenation, so the
+  905-byte `.{0,999}` repeated 113 times, followed by `x`, compiles to about
+  226,000 instructions and takes seconds to match a single 4 KiB line. The
+  compiled program is therefore capped at **2000** instructions
+  (`logpattern.MaxProgramInsts`, `internal/openjd/logpattern`); realistic
+  patterns compile to 10 to 100. A larger pattern is rejected at its own pointer
+  (`/steps/N/SQI_LOG_CHECKS/failOn/I`): "pattern compiles to <n> instructions; at
+  most 2000 are allowed". The worker enforces the same bound from the same
+  constant when it builds the checker.
 
 ## Worker behavior
 The scheduler copies the step's block into the task assignment
@@ -115,8 +125,9 @@ log, in exactly these forms:
     the task never printed a line matching requireLine pattern "<pattern>"
 
 The quoted line is cut at 200 bytes (never inside a UTF-8 character) and a cut is
-marked with an ellipsis. A pattern that fails to compile on the worker (which
-cannot happen for a validated template) fails the task before it starts, with
+marked with an ellipsis. A pattern that fails to compile on the worker, or
+compiles to more than 2000 instructions (neither can happen for a validated
+template), fails the task before it starts, with
 `invalid SQI_LOG_CHECKS pattern: <error>`.
 
 ### Scheduling gate
