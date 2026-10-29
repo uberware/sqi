@@ -1,0 +1,313 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: modo-render
+title: Modo Render
+description: >-
+  Renders a frame range of a saved Modo scene headless with modo_cl, one frame
+  per task by default, using the scene's own render outputs. Modo is
+  discontinued, and this preset has never run in Modo.
+readme: |
+  # Modo Render
+
+  **Read this first.** `modo_cl` reads its commands from standard input, and
+  the worker leaves a task's standard input as the null device, which is at
+  end-of-file from the first read. This preset therefore hands Modo its work
+  with the documented `-cmd:` startup switch instead. Whether `modo_cl` runs
+  that command to the end before it notices the empty input, or treats the
+  end-of-file as a request to quit, has not been tested. If it quits first,
+  every task fails safely: no `SQI_RENDER: OK` line is ever printed, so no task
+  can report a success it did not earn. Try one single-frame job before any
+  longer one.
+
+  Modo is also discontinued. 17.1 was the last release (Foundry, November
+  2024), the self-service download has ended and downloads now go through a
+  Foundry support ticket. The end-of-life license is an RLM `uncounted
+  hostid=ANY` key that Modo finds through the `foundry_LICENSE` environment
+  variable. Set that variable in the worker's environment.
+
+  Renders frames of a saved `.lxo` scene with `modo_cl`, using the scene's own
+  render outputs and the current pass state, and writes whatever the scene's
+  render outputs say. Each task starts Modo once, loads the scene and renders
+  its share of the frames, one per task by default. Use Modo Pass Group Render
+  instead to render one named pass group.
+
+  ## Parameters
+
+  - **Scene File** - the `.lxo` scene to render. It must be reachable from
+    every worker that runs the job.
+  - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
+    `1-100:2` for every second frame.
+  - **Frames Per Task** - the most frames one task renders, at most 1000. Modo
+    loads the whole scene for every task, so several frames per load pays on a
+    scene that is slow to open. A range that does not divide evenly is spread
+    over the same number of tasks in near-equal chunks: `1-12` at 5 is `1-4`,
+    `5-8`, `9-12`.
+
+  ## How work is divided
+
+  The frame range expands into tasks through OpenJD task chunking. A chunk
+  never spans a gap, so a stepped range such as `1-9:4` becomes one task per
+  frame, and each task renders its first to last frame at a frame step of 1.
+
+  ## How the render runs
+
+  Each task runs `modo_cl -dboff:crashreport -cmd:@{render.py} {params.json}`,
+  with both names given as the full paths of the files in the task's session
+  folder. The braces are Modo's way of quoting an argument that holds spaces.
+  Modo runs the preset's embedded `render.py` as a script and passes it the
+  path of `params.json`. No job value is ever written into Modo command text
+  or Python source: the script reads the scene and the task's frames from
+  `params.json`, which is built with the `EXPR` extension and its JSON
+  quoting.
+
+  The script turns on console logging, opens the scene, sets the render item's
+  first and last frame to the task's chunk and its step to 1, and runs
+  `render.animation`. It then prints `SQI_RENDER: OK` and quits Modo with
+  `app.quit`. On any error it prints `SQI_RENDER: FAILED:` with the reason and
+  quits.
+
+  Building `params.json` is metered against the worker's `EXPR` limits and
+  grows with the frames in one task; the maximum of 1000 stays well inside the
+  worker defaults.
+
+  ## How failures are detected
+
+  This preset declares the `SQI_LOG_CHECKS` extension. A task fails unless
+  Modo's output contains `SQI_RENDER: OK`, and fails when a line contains
+  `SQI_RENDER: FAILED:`, `failed with` or `Unknown command:`. Modo documents
+  no exit status, so it is not relied on. The script writes its two lines
+  straight to the process's standard output (file descriptor 1).
+
+  ## Set a step timeout
+
+  The checks give their verdict only once Modo has exited. The script ends with
+  `app.quit`, but if Modo keeps running after it, or hangs while rendering, the
+  task waits with it and keeps its worker busy indefinitely. This preset sets
+  no timeout, because a sensible limit depends on the scene. Add a `timeout`
+  (in seconds) to the step's `onRun` action in a copy of the preset, longer
+  than your slowest chunk.
+
+  ## Requirements
+
+  - Workers tagged `attr.worker.tag.modo = true`. The worker tags a Modo install
+    it finds on Windows or macOS, or a `modo_cl` on its `PATH`.
+  - A `modo_cl` command the worker can resolve: its `worker.commands` entry, a
+    `modo_cl` on its `PATH`, or the Modo install it detects. On Linux Modo has
+    no fixed install folder: put `modo_cl` on the worker's `PATH`.
+  - A Modo license that works without a person: headless Modo needs a normal
+    license, and fails with a license-not-found error without one.
+  - The scene's render outputs and any plug-ins it needs must work in headless
+    mode, where no command that opens a dialog can run.
+
+  ## What has not been verified
+
+  - No Modo has executed this preset. The command line and the commands in the
+    script follow Foundry's headless page and its command and Python
+    reference, and the open-source scripts and Deadline's Modo plug-in that
+    drive `modo_cl` the same way.
+  - Whether `modo_cl` runs the `-cmd:` script before it reads standard input
+    (see the top of this readme).
+  - Foundry says `-cmd:` runs before licensing and networking have started.
+    Whether a scene can be opened and rendered by a command that early, or
+    whether the script must wait, is not known.
+  - How `@{...}` and a second braced argument are read. Foundry documents
+    quotes or curly braces for a name with spaces, and shows
+    `-cmd:@script {args}`, but not a braced script path.
+  - Whether the script sees its own location. It uses the path argument first,
+    then `__file__`, then the current folder, which is where the worker starts
+    Modo; if none holds `params.json`, every task fails.
+  - The argument names of `scene.open` (`filename`, `type`) when called from
+    Python with keywords, which the script does so that no job value becomes
+    command text. A wrong name fails every task.
+  - That the render item is reachable through Modo's Python `modo` module
+    (`Scene().renderItem`); the script falls back to selecting an item named
+    `Render`.
+  - Whether Modo exits after `app.quit` in headless mode (see the timeout
+    above), and what its exit status is.
+  - Whether text written to file descriptor 1 reaches the worker on every OS.
+    If it does not, every task fails for want of `SQI_RENDER: OK`, never the
+    other way round.
+  - The install folders the detector looks for follow Foundry's documentation
+    for 17.1 and 13.2; none was seen on a machine.
+category: Rendering
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: Modo Render
+  extensions: [TASK_CHUNKING, SQI_CHUNK_BOUNDS, EXPR, SQI_LOG_CHECKS]
+  parameterDefinitions:
+    - name: SceneFile
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface:
+        control: CHOOSE_INPUT_FILE
+        label: Scene File
+        fileFilters:
+          - label: Modo scenes
+            patterns: ["*.lxo"]
+        fileFilterDefault:
+          label: Modo scenes
+          patterns: ["*.lxo"]
+    - name: Frames
+      type: STRING
+      userInterface: { control: LINE_EDIT, label: Frame Range }
+    - name: FramesPerTask
+      type: INT
+      default: 1
+      minValue: 1
+      maxValue: 1000
+      userInterface: { control: SPIN_BOX, label: Frames Per Task }
+  steps:
+    - name: Render
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.modo
+            anyOf: ["true"]
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Frame
+            type: CHUNK[INT]
+            range: "{{Param.Frames}}"
+            chunks:
+              defaultTaskCount: "{{Param.FramesPerTask}}"
+              rangeConstraint: CONTIGUOUS
+      SQI_LOG_CHECKS:
+        failOn: ['SQI_RENDER: FAILED:', 'failed with', 'Unknown command:']
+        requireLine: ['SQI_RENDER: OK']
+      script:
+        embeddedFiles:
+          # The script's parameters, as data. EXPR has no dictionary type, so
+          # the JSON object is joined from strings, every value through
+          # repr_json.
+          - name: params
+            type: TEXT
+            filename: params.json
+            data: |
+              {{ '{"scene": ' + repr_json(string(Param.SceneFile)) + ', "frames": ' + repr_json(list(Task.Param.Frame)) + '}' }}
+          - name: render
+            type: TEXT
+            filename: render.py
+            data: |
+              # sqi Modo presets: renders this task's frames. Modo runs it from
+              # the -cmd:@ startup command; its parameters come from params.json,
+              # never from its own text. Python 2 and 3 neutral, as Modo's
+              # versions differ.
+              import io
+              import json
+              import os
+              import traceback
+
+              import lx
+
+              OK = "SQI_RENDER: OK"
+              FAILED = "SQI_RENDER: FAILED: "
+
+
+              def emit(line, fd=1):
+                  # Straight to the file descriptor the worker reads, past
+                  # whatever Modo does with sys.stdout. A failed write is
+                  # ignored: the task then fails for want of the OK line.
+                  try:
+                      os.write(fd, (line + "\n").encode("utf-8", "replace"))
+                  except (OSError, UnicodeError):
+                      pass
+
+
+              def find_params():
+                  # The command line names the file; the script's own folder and
+                  # the current folder, where the worker starts Modo and writes
+                  # the embedded files, are fallbacks.
+                  found = []
+                  try:
+                      found.extend(str(a) for a in lx.args())
+                  except Exception:
+                      pass
+                  here = globals().get("__file__")
+                  if here:
+                      found.append(os.path.join(os.path.dirname(os.path.abspath(here)), "params.json"))
+                  found.append(os.path.join(os.getcwd(), "params.json"))
+                  for path in found:
+                      if os.path.basename(path) == "params.json" and os.path.isfile(path):
+                          return path
+                  raise IOError("params.json not found; looked at " + ", ".join(found))
+
+
+              def read_params(path):
+                  with io.open(path, encoding="utf-8") as f:
+                      p = json.load(f)
+                  frames = sorted(int(n) for n in p["frames"])
+                  if not frames:
+                      raise ValueError("the task has no frames")
+                  start, stop = frames[0], frames[-1]
+                  if frames != list(range(start, stop + 1)):
+                      raise ValueError("the task's frames are not consecutive: " + repr(frames))
+                  return dict(scene=p["scene"], start=start, stop=stop, group=p.get("group", ""))
+
+
+              def set_range(start, stop):
+                  # first, last and step are channels of the scene's render item.
+                  # The modo module finds that item whatever it is called; if it
+                  # is not there, select the default one by name. Only integers
+                  # reach the command text.
+                  try:
+                      import modo
+
+                      item = modo.Scene().renderItem
+                  except (ImportError, AttributeError):
+                      item = None
+                  values = (("first", start), ("last", stop), ("step", 1))
+                  if item is not None:
+                      for name, value in values:
+                          item.channel(name).set(value)
+                      return
+                  lx.eval("select.Item Render")
+                  for name, value in values:
+                      lx.eval("item.channel %s %d" % (name, value))
+
+
+              def render(params):
+                  lx.eval("log.toConsole true")
+                  # Keyword arguments, so no job value becomes command text.
+                  lx.command("scene.open", filename=params["scene"], type="normal")
+                  set_range(params["start"], params["stop"])
+                  if params["group"]:
+                      lx.command("render.animation", filename="*", group=params["group"])
+                  else:
+                      lx.eval("!render.animation {*}")
+
+
+              def finish(code):
+                  # app.quit is the documented way out. If it cannot be called,
+                  # exit anyway rather than leave Modo running with nothing left
+                  # to do.
+                  try:
+                      lx.eval("app.quit")
+                  except Exception:
+                      os._exit(code)
+
+
+              def main():
+                  try:
+                      render(read_params(find_params()))
+                  except Exception as e:
+                      reason = " ".join((type(e).__name__ + ": " + str(e)).split())
+                      emit(traceback.format_exc(), fd=2)
+                      emit(FAILED + reason)
+                      emit("openjd_fail: " + reason)
+                      finish(1)
+                      return
+                  emit(OK)
+                  finish(0)
+
+
+              main()
+        actions:
+          onRun:
+            command: modo_cl
+            args:
+              - "-dboff:crashreport"
+              # One -cmd: command: run the script, giving it params.json's path
+              # as its argument. Braces quote each path, as Foundry's Macros
+              # page documents for a name with spaces; both are files the worker
+              # wrote into the task's session folder, never job input.
+              - "{{ '-cmd:@{' + string(Task.File.render) + '} {' + string(Task.File.params) + '}' }}"

@@ -700,10 +700,17 @@ func foldFilePaths(args []string, files map[string]bool) []string {
 // inside s ('/tmp/.../render.py', 'C:\\Users\\...\\render.py') with
 // '<FILE:name>'. Single quotes only: that is how repr_py writes a path holding
 // no quote, and a session directory holds none.
+//
+// A BRACE-quoted path is folded the same way ({/tmp/.../render.py},
+// {C:\Users\...\render.py}): that is how Modo's -cmd:@ argument quotes the
+// script and the parameters file, with single backslashes since no Python
+// literal is involved. A session directory holds no brace either.
 func foldQuotedFilePaths(s string, files map[string]bool) string {
 	for name := range files {
-		re := regexp.MustCompile(`'(?:[A-Za-z]:)?[\\/][^']*[\\/]` + regexp.QuoteMeta(name) + `'`)
-		s = re.ReplaceAllString(s, "'<FILE:"+name+">'")
+		quoted := regexp.MustCompile(`'(?:[A-Za-z]:)?[\\/][^']*[\\/]` + regexp.QuoteMeta(name) + `'`)
+		s = quoted.ReplaceAllString(s, "'<FILE:"+name+">'")
+		braced := regexp.MustCompile(`\{(?:[A-Za-z]:)?[\\/][^{}]*[\\/]` + regexp.QuoteMeta(name) + `\}`)
+		s = braced.ReplaceAllString(s, "{<FILE:"+name+">}")
 	}
 	return s
 }

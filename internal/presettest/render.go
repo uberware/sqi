@@ -33,7 +33,11 @@ var uuidPattern = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{
 // gives "C:\Users\...\Temp\presettest-sessions-1\...". Matching only "/"
 // would redact the bare "presettest-sessions-1" token and leave the volatile
 // prefix and suffix around it in the golden.
-var sessionDirPattern = regexp.MustCompile(`(?:[A-Za-z]:)?(?:/private)?(?:[\\/][^\s"']*)?presettest-sessions-[0-9]+(?:[\\/][^\s"']*)?`)
+//
+// Braces end a path as quotes and whitespace do: Modo's -cmd:@{script} {params}
+// quotes each path in braces, and a pattern that ran on through them would
+// swallow the closing brace and the second path, hiding the argument's shape.
+var sessionDirPattern = regexp.MustCompile(`(?:[A-Za-z]:)?(?:/private)?(?:[\\/][^\s"'{}]*)?presettest-sessions-[0-9]+(?:[\\/][^\s"'{}]*)?`)
 
 // Render returns the golden-file text for s: a header naming the preset, the
 // case, the bound parameters and any template patch, then every step, every

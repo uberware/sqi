@@ -826,6 +826,73 @@ presets:
       case: TestPresetTier3/keyshot-studio-render/default
       required_on: [linux, darwin, windows]
 
+  # Modo is the third host-script preset family. modo_cl reads commands from
+  # stdin, which the worker leaves as the null device, so the preset runs an
+  # embedded render.py through the documented -cmd: startup command and the
+  # per-task values travel in an EXPR-built params.json. CONTIGUOUS chunks,
+  # SQI_CHUNK_BOUNDS declared but unread (EXPR). No os.family gate (Modo ran on
+  # Windows, macOS and Linux; the worker tag is the gate), so Tier 3 runs on
+  # every OS.
+  - name: modo-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, multi-frame-chunk, stepped-range, quoting, logged-error, unknown-command, failed-with, no-success-line]
+      caveat: >-
+        TOP RISK, UNTESTED: modo_cl reads commands from standard input and the
+        worker leaves a task's input as the null device, at end-of-file from the
+        first read. If modo_cl treats that as quit before the -cmd: command has
+        finished, every task fails, safely: no SQI_RENDER: OK is ever printed.
+        Modo is discontinued (17.1 final); its end-of-life license is an RLM
+        uncounted hostid=ANY key found through foundry_LICENSE. argv from
+        Foundry's headless SDK page (modo_cl, -cmd:@script {args}, app.quit,
+        -dboff:crashreport from Deadline's Modo plug-in), with the script path and
+        the params.json path each quoted in braces as Foundry's Macros page
+        documents for a name with spaces; a braced script path directly after
+        @ is NOT shown in any source, and nothing was run. The script uses
+        Modo's Python (lx.eval, lx.command with keyword arguments so that no job
+        value becomes command text, lx.args, the modo module's Scene.renderItem
+        with a select.Item Render fallback). UNVERIFIED: the keyword names of
+        scene.open (filename, type); that -cmd: runs before licensing and
+        networking start (Foundry's words) and a scene can then be opened and
+        rendered; whether the script sees its location (lx.args first, then
+        __file__, then the current folder); whether Modo exits after app.quit and
+        with what status; whether descriptor-1 lines reach the worker. The step
+        has no timeout, so a Modo that stays open would hang the task rather than
+        fail it (the readme recommends a timeout). The goldens pin params.json in
+        full; quoting is decoded with encoding/json by
+        TestPresetModo_ParamsJSONRoundTrips, and render.py runs under a real
+        Python with a fake lx and modo in TestPresetModo_ScriptDrivesModo. Tier 3
+        runs a stub as modo_cl: it exercises the worker, the embedded files and
+        the log checks, never the script inside Modo. The detector paths follow
+        Foundry's 17.1 and 13.2 documentation and were not seen on a machine;
+        Linux has no fixed path (put modo_cl on PATH).
+    tier3:
+      case: TestPresetTier3/modo-render/default
+      required_on: [linux, darwin, windows]
+
+  - name: modo-pass-group-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, multi-frame-chunk, stepped-range, target-with-space, quoting, logged-error, no-success-line]
+      caveat: >-
+        modo-render plus PassGroup, carried in params.json and passed to
+        render.animation as its group argument through lx.command (the scripts
+        this follows write render.animation {*} group:<name> as command text; the
+        keyword names group and, for the output argument, filename with the value
+        * are UNVERIFIED). Same sources, and the same unverified points, as
+        modo-render, including the top risk that modo_cl treats the null device on
+        standard input as end-of-file and quits before -cmd: has finished (every
+        task then fails safely) and that a Modo which does not exit after
+        app.quit would hang the task rather than fail it. quoting puts both
+        quotes, a backslash and a space in PassGroup and both quotes in the
+        scene's file name. Tier 3 runs a stub as modo_cl: it exercises the worker,
+        the embedded files and the log checks, never the script inside Modo.
+    tier3:
+      case: TestPresetTier3/modo-pass-group-render/default
+      required_on: [linux, darwin, windows]
+
   - name: ffmpeg-transcode
     source: presets/sqi
     tier: 2

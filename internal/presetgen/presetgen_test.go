@@ -53,6 +53,8 @@ func TestBuild(t *testing.T) {
 		"mistika-boutique-render",
 		"mistika-vr-render",
 		"mistika-workflows-render",
+		"modo-pass-group-render",
+		"modo-render",
 		"nuke-script-render",
 		"nuke-write-render",
 		"prman-render",

@@ -172,4 +172,19 @@ var dccLayouts = []rendererLayout{
 		versioned: `C:\Program Files\KeyShot12\bin\keyshot_headless.exe`,
 		version:   "12",
 	},
+	{
+		// Modo is discontinued (17.1 final). Foundry documents two Windows
+		// layouts (Modo<ver> for 17.1, Foundry\Modo\<ver> for 13.2) and the macOS
+		// bundle's modo_cl; Linux has no fixed path, only PATH (see modo.yaml).
+		// The version is Modo's own 17.1v1 form.
+		tag: "modo",
+		exe: "modo_cl",
+		installs: []string{
+			`C:\Program Files\Modo17.1v1\modo_cl.exe`,
+			`C:\Program Files\Foundry\Modo\13.2v1\modo_cl.exe`,
+			"/Applications/Modo17.1v1.app/Contents/MacOS/modo_cl",
+		},
+		versioned: `C:\Program Files\Modo17.1v1\modo_cl.exe`,
+		version:   "17.1v1",
+	},
 }

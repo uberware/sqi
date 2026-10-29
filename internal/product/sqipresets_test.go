@@ -233,6 +233,20 @@ func TestSQIReferencePresets(t *testing.T) {
 			params:     []string{"SceneFile", "Studio", "Frames", "FramesPerTask", "OutputFile", "Width", "Height", "LicenseFeature"},
 			extensions: []string{"TASK_CHUNKING", "EXPR", "SQI_LOG_CHECKS"},
 		},
+		// The two Modo presets are host-script presets with CONTIGUOUS chunks
+		// like VRED's, and declare SQI_CHUNK_BOUNDS although nothing reads
+		// the bounds under EXPR. modo-render has no PassGroup, so it is a
+		// whole-scene product.
+		"modo-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames", "FramesPerTask"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS", "EXPR", "SQI_LOG_CHECKS"},
+		},
+		"modo-pass-group-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames", "PassGroup", "FramesPerTask"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS", "EXPR", "SQI_LOG_CHECKS"},
+		},
 		"ffmpeg-transcode": {
 			category: "Transcoding",
 			params:   []string{"SourceFile", "OutputFile", "VideoCodec", "Quality", "AudioCodec"},

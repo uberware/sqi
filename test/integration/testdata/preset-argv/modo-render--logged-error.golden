@@ -1,0 +1,138 @@
+preset: modo-render
+case:   logged-error
+params:
+  Frames=1
+  FramesPerTask=1
+  SceneFile=/mnt/show/shots/hero/hero_v012.lxo
+
+step "Render" — 1 task
+  log checks: failOn "SQI_RENDER: FAILED:"
+  log checks: failOn "failed with"
+  log checks: failOn "Unknown command:"
+  log checks: requireLine "SQI_RENDER: OK"
+
+task 1/1  name="Render[Frame=1-1,Frame.End=1,Frame.Start=1]"
+  task params:
+    Frame=1-1
+    Frame.End=1
+    Frame.Start=1
+  command: modo_cl
+  args:
+    [0]  -dboff:crashreport
+    [1]  -cmd:@{<WORKDIR>} {<WORKDIR>}
+  embedded file "params" (params.json):
+    {"scene": "/mnt/show/shots/hero/hero_v012.lxo", "frames": [1]}
+  embedded file "render" (render.py):
+    # sqi Modo presets: renders this task's frames. Modo runs it from
+    # the -cmd:@ startup command; its parameters come from params.json,
+    # never from its own text. Python 2 and 3 neutral, as Modo's
+    # versions differ.
+    import io
+    import json
+    import os
+    import traceback
+    
+    import lx
+    
+    OK = "SQI_RENDER: OK"
+    FAILED = "SQI_RENDER: FAILED: "
+    
+    
+    def emit(line, fd=1):
+        # Straight to the file descriptor the worker reads, past
+        # whatever Modo does with sys.stdout. A failed write is
+        # ignored: the task then fails for want of the OK line.
+        try:
+            os.write(fd, (line + "\n").encode("utf-8", "replace"))
+        except (OSError, UnicodeError):
+            pass
+    
+    
+    def find_params():
+        # The command line names the file; the script's own folder and
+        # the current folder, where the worker starts Modo and writes
+        # the embedded files, are fallbacks.
+        found = []
+        try:
+            found.extend(str(a) for a in lx.args())
+        except Exception:
+            pass
+        here = globals().get("__file__")
+        if here:
+            found.append(os.path.join(os.path.dirname(os.path.abspath(here)), "params.json"))
+        found.append(os.path.join(os.getcwd(), "params.json"))
+        for path in found:
+            if os.path.basename(path) == "params.json" and os.path.isfile(path):
+                return path
+        raise IOError("params.json not found; looked at " + ", ".join(found))
+    
+    
+    def read_params(path):
+        with io.open(path, encoding="utf-8") as f:
+            p = json.load(f)
+        frames = sorted(int(n) for n in p["frames"])
+        if not frames:
+            raise ValueError("the task has no frames")
+        start, stop = frames[0], frames[-1]
+        if frames != list(range(start, stop + 1)):
+            raise ValueError("the task's frames are not consecutive: " + repr(frames))
+        return dict(scene=p["scene"], start=start, stop=stop, group=p.get("group", ""))
+    
+    
+    def set_range(start, stop):
+        # first, last and step are channels of the scene's render item.
+        # The modo module finds that item whatever it is called; if it
+        # is not there, select the default one by name. Only integers
+        # reach the command text.
+        try:
+            import modo
+    
+            item = modo.Scene().renderItem
+        except (ImportError, AttributeError):
+            item = None
+        values = (("first", start), ("last", stop), ("step", 1))
+        if item is not None:
+            for name, value in values:
+                item.channel(name).set(value)
+            return
+        lx.eval("select.Item Render")
+        for name, value in values:
+            lx.eval("item.channel %s %d" % (name, value))
+    
+    
+    def render(params):
+        lx.eval("log.toConsole true")
+        # Keyword arguments, so no job value becomes command text.
+        lx.command("scene.open", filename=params["scene"], type="normal")
+        set_range(params["start"], params["stop"])
+        if params["group"]:
+            lx.command("render.animation", filename="*", group=params["group"])
+        else:
+            lx.eval("!render.animation {*}")
+    
+    
+    def finish(code):
+        # app.quit is the documented way out. If it cannot be called,
+        # exit anyway rather than leave Modo running with nothing left
+        # to do.
+        try:
+            lx.eval("app.quit")
+        except Exception:
+            os._exit(code)
+    
+    
+    def main():
+        try:
+            render(read_params(find_params()))
+        except Exception as e:
+            reason = " ".join((type(e).__name__ + ": " + str(e)).split())
+            emit(traceback.format_exc(), fd=2)
+            emit(FAILED + reason)
+            emit("openjd_fail: " + reason)
+            finish(1)
+            return
+        emit(OK)
+        finish(0)
+    
+    
+    main()

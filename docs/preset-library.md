@@ -172,12 +172,12 @@ the [`sqi-submitter`](dcc-submitters.md) in-application submitters:
 `maya-layer-render`, `maya-scene-render`, `houdini-rop-render`,
 `nuke-write-render`, `nuke-script-render`, `blender-batch-render`,
 `blender-view-layer-render`, `cinema4d-render`, `cinema4d-take-render`,
-`3dsmax-render` and the four After Effects presets. Eleven more have no
+`3dsmax-render` and the four After Effects presets. Thirteen more have no
 in-application submitter and are submitted from the web UI or the API:
 `mistika-boutique-render`, `mistika-vr-render`, `mistika-workflows-render`,
 `katana-render`, `silhouette-render`, `silhouette-render-all`, `fusion-render`,
-`vred-render`, `vred-viewpoint-render`, `keyshot-render` and
-`keyshot-studio-render`.
+`vred-render`, `vred-viewpoint-render`, `keyshot-render`,
+`keyshot-studio-render`, `modo-render` and `modo-pass-group-render`.
 
 Each names its parameters by the [parameter convention
 contract](dcc-submitters.md#the-parameter-convention-contract), so submitter
@@ -188,7 +188,7 @@ declared only where the command takes one: `OutputDir` on the two Maya presets,
 `OutputPath` on Blender, Cinema 4D and 3ds Max, and `OutputFile` on the two
 VRED and the two KeyShot presets. Per-host extras include `Renderer`, `RenderLayer`, `RopPath`,
 `WriteNode`, `Scene`, `ViewLayer`, `Take`, `RenderNode`, `Session`,
-`OutputNode`, `View`, `Studio` and `RenderQueueItem`.
+`OutputNode`, `View`, `Studio`, `PassGroup` and `RenderQueueItem`.
 
 Each preset gates on a capability tag that `sqi-worker` auto-detects from a
 standard install; a manual tag is needed only for a nonstandard install path
@@ -351,6 +351,41 @@ reference does not say whether animation frames start at 0 or 1, so `Frames` is 
 (KeyShot's own quick-start loop starts at 1). On macOS the detected `keyshot_headless` command is the app's
 `keyshot` program with `-headless` put first, the form KeyShot documents there. No KeyShot has executed
 either preset; the detector's install folders are inferred.
+
+### Modo
+
+| Preset | Renders | Shape | Gate |
+|---|---|---|---|
+| `modo-render` | a `.lxo` scene through its render outputs, in the current pass state | `FramesPerTask` frames per task, default 1, at most 1000 | `modo` |
+| `modo-pass-group-render` | one named pass group (`PassGroup`) of a `.lxo` scene | as `modo-render` | `modo` |
+
+**Read this first: Modo is discontinued, and the way these presets start it is untested.** `modo_cl` reads
+its commands from standard input, and the worker leaves a task's standard input as the null device, which is at
+end-of-file from the first read. The presets therefore hand Modo its work with the documented `-cmd:` startup switch,
+and whether `modo_cl` runs that command to the end before it notices the end-of-file, or quits first, has not been
+tried. If it quits first, every task fails, safely: no `SQI_RENDER: OK` line is ever printed. Try one single-frame
+job before a longer one. Modo's last release was 17.1 (November 2024); downloads now need a Foundry support ticket,
+and the end-of-life license is an RLM `uncounted hostid=ANY` key that Modo finds through `foundry_LICENSE`.
+
+Host-script presets like VRED's. Each task runs `modo_cl -dboff:crashreport -cmd:@{<script>} {<params>}`: one
+`-cmd:` command that runs the embedded `render.py` and hands it the path of `params.json` as its argument, each path
+quoted in braces (Foundry documents quotes or braces for a name with spaces; a braced script path directly after `@` is
+not shown anywhere, so it is unverified). The script opens the scene, sets the render item's `first`, `last` and `step`
+from the task's chunk, and runs `render.animation {*}`, or for the pass-group preset `render.animation` with the group
+as a keyword argument. Nothing from the job is ever written into Modo command text or Python source: the scene and the
+pass group reach `lx.command` as keyword arguments, and the frames as integers, all read from an embedded
+`params.json` that `EXPR` builds with `repr_json`. The chunks are `CONTIGUOUS`; `params.json` costs more as the chunk
+grows, which is why `FramesPerTask` stops at 1000 (pinned by `TestPresetModo_ParamsCostAtMaxChunk`).
+
+Both declare [`SQI_LOG_CHECKS`](openjd-extensions.md): a task fails unless the output contains `SQI_RENDER: OK`, and
+fails on a line containing `SQI_RENDER: FAILED:`, `failed with` or `Unknown command:`. Modo documents no exit status,
+so it is not relied on. The checks give their verdict only once Modo exits, and the script ends with `app.quit`,
+but whether Modo then exits in headless mode is undocumented, so the readmes recommend a step timeout. Foundry says
+`-cmd:` runs before licensing and networking start, and whether a scene can be opened and rendered that early is also
+unknown. The detector looks for `modo_cl` under `C:\Program Files\Modo*` and `C:\Program Files\Foundry\Modo\*` on
+Windows and in the `.app` bundle on macOS; on Linux there is no fixed path, so put `modo_cl` on the worker's `PATH`.
+No Modo has executed either preset; the argument names of `scene.open` and `render.animation` used with keywords
+(`filename`, `type`, `group`) are unverified, and a wrong one fails every task.
 
 ### Cinema 4D, 3ds Max and After Effects
 
@@ -520,7 +555,7 @@ but run their script directly, so they need a Linux or macOS worker.
 
 ## Validation tiers
 
-`presets/validation-tiers.yaml` has 45 entries, the 38 presets under
+`presets/validation-tiers.yaml` has 47 entries, the 40 presets under
 `presets/sqi/` plus the seven built-in products documented in
 [`docs/development.md`](development.md#adding-a-product), and states which
 validation tier each has reached. The four `presets/testing/` presets are not
@@ -574,9 +609,9 @@ tier to stand in for. The tiers are:
     frame set, and where it can be read back, their content (the view layer in
     an EXR header, a PNG's size, the frame a Houdini geometry file holds).
 
-  The other twenty-eight presets (Maya, Cinema 4D, 3ds Max, After Effects, the three
+  The other thirty presets (Maya, Cinema 4D, 3ds Max, After Effects, the three
   Mistika products, the eight standalone renderers, Katana, Fusion and the two
-  Silhouette, two VRED and two KeyShot presets) have not reached Tier 2 and carry no `tier2` block.
+  Silhouette, two VRED, two KeyShot and two Modo presets) have not reached Tier 2 and carry no `tier2` block.
 
   A DCC case cannot be required by platform, because CI cannot provide the
   application, so its block says `requires_app: blender` (or `nuke`, `houdini`)
@@ -638,7 +673,7 @@ skip on a platform named in `required_on` is a registry failure.
 ### Tier 3 on Windows
 
 Tier 3 runs on Windows as it does on Linux and macOS, and CI runs it in a
-dedicated job (`preset-harness-windows`). Of the 45 registry entries, 35 have
+dedicated job (`preset-harness-windows`). Of the 47 registry entries, 37 have
 `tier3.required_on: [linux, darwin, windows]`, so a skip on Windows fails the
 registry check for each of them. The other 10 are gated to fewer platforms:
 

@@ -142,7 +142,7 @@ restarts.
 
 ### Built-in detectors
 
-Twenty-four built-ins ship embedded in the worker binary, one YAML file per
+Twenty-five built-ins ship embedded in the worker binary, one YAML file per
 application under
 [`internal/worker/capabilities/builtins/`](https://github.com/uberware/sqi/tree/main/internal/worker/capabilities/builtins):
 
@@ -172,6 +172,7 @@ application under
 | `fusion` | `exe FusionRenderNode` (any OS, if on `PATH`); Windows `path_glob C:\Program Files\Blackmagic Design\Fusion Render Node *\FusionRenderNode.exe`; macOS `path_glob /Applications/Blackmagic Fusion * Render Node/Fusion Render Node.app/Contents/MacOS/Fusion Render Node`; Linux `path_glob /opt/BlackmagicDesign/FusionRenderNode*/FusionRenderNode`. All install paths inferred, none observed. Also supplies a default `FusionRenderNode` command (macOS: the executable is `Fusion Render Node`) | `(?:Fusion Render Node \|FusionRenderNode\|Fusion )(?P<v>[0-9]+(?:\.[0-9]+)?)` against the matched path (none when only `exe FusionRenderNode` matched) |
 | `vred` | `exe VREDCore` (any OS, if on `PATH`); Windows `path_glob C:\Program Files\Autodesk\VREDCore-*\bin\WIN64\VREDCore.exe` (Autodesk's documented folder) and `C:\Program Files\Autodesk\VREDPro-*\bin\WIN64\VREDPro.exe`; Linux `path_glob /opt/Autodesk/VREDCore-*/bin/VREDCore` and `/opt/Autodesk/VREDCluster-*/bin/VREDCore` (the installer takes a target folder; both roots are unverified). VRED does not run on macOS. Also supplies a default `VREDCore` command from a VRED Core install, never from VRED Pro | `VRED(?:Core\|Pro\|Cluster)-([0-9]+\.[0-9]+)` against the matched path, VRED's internal version (17.0 is VRED 2025, 18.0 is VRED 2026; none when only `exe VREDCore` matched) |
 | `keyshot` | `exe keyshot_headless` (any OS, if on `PATH`); Windows `path_glob C:\Program Files\KeyShot*\bin\keyshot_headless.exe`; macOS `path_glob /Applications/KeyShot*.app/Contents/MacOS/keyshot*`. All install paths inferred, none observed; KeyShot has no Linux desktop build, and its manual documents `keyshot -headless` on macOS and `keyshot_headless` on Windows. Also supplies a default `keyshot_headless` command: `keyshot_headless.exe` on Windows, and on macOS the bundle's `keyshot` program, which carries `-headless` (see [Detected commands](#detected-commands)) | `KeyShot ?([0-9]+(?:\.[0-9]+)?)` against the matched path: `12` for a `KeyShot12` folder, a year for `KeyShot 2024` (none when only `exe keyshot_headless` matched) |
+| `modo` | `exe modo_cl` (any OS, if on `PATH`); Windows `path_glob C:\Program Files\Modo*\modo_cl.exe` and `C:\Program Files\Foundry\Modo\*\modo_cl.exe` (the 17.1 and 13.2 documented layouts); macOS `path_glob /Applications/Modo*.app/Contents/MacOS/modo_cl`. All install paths follow Foundry's documentation and none was observed; Linux has no fixed path, so put `modo_cl` on `PATH`. Modo is discontinued. Also supplies a default `modo_cl` command on Windows and macOS | `Modo[ \\/]*([0-9]+\.[0-9]+v[0-9]+)` against the matched path: Modo's own `17.1v1` form, from `Modo17.1v1`, `Modo 17.1v1` or `Foundry\Modo\13.2v1` (none when only `exe modo_cl` matched) |
 
 The three Mistika detectors carry **no `exe` check**: their binaries are
 `mistika`, `vr` and `workflows`, and a bare `PATH` probe for the last two would
@@ -366,7 +367,7 @@ documents). So a command on `PATH` is left entirely alone except `sfxcmd` on a L
 keeps `-nogui`, and `keyshot_headless` on a macOS worker, which keeps `-headless`.
 
 The `nuke`, `blender`, `houdini` (`hython`), `katana`, `fusion`, `silhouette`
-(`sfxcmd`), `vred` (`VREDCore`) and `keyshot` (`keyshot_headless`) built-ins define a command; the others rely on the command being on `PATH`. Blender's has Windows and macOS globs
+(`sfxcmd`), `vred` (`VREDCore`), `keyshot` (`keyshot_headless`) and `modo` (`modo_cl`) built-ins define a command; the others rely on the command being on `PATH`. Blender's has Windows and macOS globs
 only: a Linux install is wherever it was unpacked, or a distro package already on
 `PATH`. Houdini's has Windows and Linux globs only; on macOS put `hython` on
 `PATH` or map it in `worker.commands`. For
@@ -578,7 +579,7 @@ steps:
           anyOf: ["true"]
 ```
 
-The twenty-five DCC reference presets under `presets/sqi/` (see
+The twenty-seven DCC reference presets under `presets/sqi/` (see
 [`docs/dcc-submitters.md`](dcc-submitters.md#reference-presets)) and the eight
 [standalone renderer presets](preset-library.md#standalone-renderer-reference-presets)
 use this syntax, as do the `Transcoding` presets, which gate on

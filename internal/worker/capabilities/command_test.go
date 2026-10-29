@@ -504,6 +504,74 @@ func TestKeyShotDetector_CommandRunsHeadlessOnWindowsAndMacOS(t *testing.T) {
 	}
 }
 
+// TestModoDetector_CommandFindsModoClOnWindowsAndMacOS checks the shipped
+// command globs against a Modo install in each documented Windows layout and in
+// the macOS bundle, that no other program in those folders is taken for
+// modo_cl, and that Linux, which has no fixed path, gets no command and no
+// leading arguments. The layouts are unverified (see modo.yaml).
+func TestModoDetector_CommandFindsModoClOnWindowsAndMacOS(t *testing.T) {
+	d := builtinDetector(t, "modo")
+	if d.Command == nil || d.Command.Name != "modo_cl" {
+		t.Fatalf("the modo detector has no command named modo_cl: %+v", d.Command)
+	}
+	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
+	cases := []struct {
+		name    string
+		goos    string
+		exe     string
+		version string
+		not     []string
+	}{
+		{"windows 17.1 layout", "windows", `C:\Program Files\Modo17.1v1\modo_cl.exe`, "17.1v1", []string{`C:\Program Files\Modo17.1v1\modo.exe`, `C:\Program Files\Modo17.1v1\extra\modo_cl.exe`}},
+		{"windows 13.2 layout", "windows", `C:\Program Files\Foundry\Modo\13.2v1\modo_cl.exe`, "13.2v1", []string{`C:\Program Files\Foundry\Modo\13.2v1\modo.exe`}},
+		{"macos bundle", "darwin", "/Applications/Modo17.1v1.app/Contents/MacOS/modo_cl", "17.1v1", []string{"/Applications/Modo17.1v1.app/Contents/MacOS/modo"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			matches := func(file string) (matched bool, glob string) {
+				for _, g := range d.Command.Globs {
+					if g.OS != "" && g.OS != tc.goos {
+						continue
+					}
+					ok, err := path.Match(norm(g.PathGlob), norm(file))
+					if err != nil {
+						t.Fatalf("bad pattern %q: %v", g.PathGlob, err)
+					}
+					if ok {
+						return true, g.PathGlob
+					}
+				}
+				return false, ""
+			}
+			if ok, _ := matches(tc.exe); !ok {
+				t.Errorf("no %s command glob matches the executable %s", tc.goos, tc.exe)
+			}
+			for _, other := range tc.not {
+				if ok, g := matches(other); ok {
+					t.Errorf("%s glob %q matched %s, which is not modo_cl", tc.goos, g, other)
+				}
+			}
+			env := fakeEnv{goos: tc.goos, globs: map[string][]string{}}
+			for _, g := range d.Command.Globs {
+				env.globs[g.PathGlob] = []string{tc.exe}
+			}
+			got, ok := d.FindCommand(env)
+			if !ok || got.Name != "modo_cl" || got.Path != tc.exe || got.Version != tc.version || len(got.Args) != 0 {
+				t.Errorf("FindCommand = %+v (found %v), want modo_cl %s at %s with no args", got, ok, tc.version, tc.exe)
+			}
+		})
+	}
+	// Linux has no fixed install path: nothing is found, with or without a glob hit.
+	for _, g := range d.Command.Globs {
+		if g.OS == "" || g.OS == "linux" {
+			t.Errorf("command glob %q applies on linux, which has no documented path", g.PathGlob)
+		}
+	}
+	if got, ok := d.FindCommand(fakeEnv{goos: "linux", globs: map[string][]string{}}); ok {
+		t.Errorf("linux FindCommand = %+v, want none", got)
+	}
+}
+
 func TestDetectCommands_ComesFromBuiltinsAndCustomDetectorsAndHonoursDisable(t *testing.T) {
 	custom := Detector{
 		Tag: "inhouse", Checks: []Check{{Exe: "inhouse"}},
