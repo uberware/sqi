@@ -122,4 +122,23 @@ var dccLayouts = []rendererLayout{
 		versioned: `C:\Program Files\Blackmagic Design\Fusion Render Node 19\FusionRenderNode.exe`,
 		version:   "19",
 	},
+	{
+		// Silhouette's sfxcmd runs on all three platforms. The Windows and macOS
+		// folders are the ones Boris FX's Command-Line page documents
+		// (SilhouetteFX) and the BorisFX root is the newer layout the design
+		// lists; neither is observed (see silhouette.yaml). The macOS path is the
+		// sfxcmd inside the .app bundle. The version is the year in the folder.
+		tag: "silhouette",
+		exe: "sfxcmd",
+		installs: []string{
+			`C:\Program Files\BorisFX\Silhouette 2026\sfxcmd.exe`,
+			`C:\Program Files\SilhouetteFX\Silhouette 2026\sfxcmd.exe`,
+			"/Applications/BorisFX/Silhouette 2026/Silhouette.app/Contents/MacOS/sfxcmd",
+			"/Applications/SilhouetteFX/Silhouette 2026/Silhouette.app/Contents/MacOS/sfxcmd",
+			"/opt/BorisFX/Silhouette 2026/sfxcmd",
+			"/opt/SilhouetteFX/Silhouette 2026/sfxcmd",
+		},
+		versioned: `C:\Program Files\SilhouetteFX\Silhouette 2026\sfxcmd.exe`,
+		version:   "2026",
+	},
 }

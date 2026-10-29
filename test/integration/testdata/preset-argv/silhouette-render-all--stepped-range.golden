@@ -1,0 +1,44 @@
+preset: silhouette-render-all
+case:   stepped-range
+params:
+  Frames=1-9:4
+  FramesPerTask=10
+  SceneFile=/mnt/show/seq010/shot0010/roto/shot0010_roto_v007.sfx
+
+step "Render" — 3 tasks
+
+task 1/3  name="Render[Frame=1-1,Frame.End=1,Frame.Start=1]"
+  task params:
+    Frame=1-1
+    Frame.End=1
+    Frame.Start=1
+  command: sfxcmd
+  args:
+    [0]  -all
+    [1]  -range
+    [2]  1-1
+    [3]  /mnt/show/seq010/shot0010/roto/shot0010_roto_v007.sfx
+
+task 2/3  name="Render[Frame=5-5,Frame.End=5,Frame.Start=5]"
+  task params:
+    Frame=5-5
+    Frame.End=5
+    Frame.Start=5
+  command: sfxcmd
+  args:
+    [0]  -all
+    [1]  -range
+    [2]  5-5
+    [3]  /mnt/show/seq010/shot0010/roto/shot0010_roto_v007.sfx
+
+task 3/3  name="Render[Frame=9-9,Frame.End=9,Frame.Start=9]"
+  task params:
+    Frame=9-9
+    Frame.End=9
+    Frame.Start=9
+  command: sfxcmd
+  args:
+    [0]  -all
+    [1]  -range
+    [2]  9-9
+    [3]  /mnt/show/seq010/shot0010/roto/shot0010_roto_v007.sfx

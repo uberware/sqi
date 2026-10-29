@@ -667,6 +667,50 @@ presets:
       case: TestPresetTier3/fusion-render/default
       required_on: [linux, darwin, windows]
 
+  - name: silhouette-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, multi-frame-chunk, stepped-range, target-with-space]
+      caveat: >-
+        argv derived from Boris FX's sfxcmd Command-Line documentation (2022.5
+        and 2026): sfxcmd -session <session> -node <output node> -range
+        <first>-<last> <project>; no Silhouette has executed it. The goldens
+        cover the shipped ten-frames-per-task shape (1-25 as 1-9, 10-17, 18-25),
+        a FramesPerTask of 5, a stepped range splitting into single frames, and
+        a project path, session name and node label each containing a space as
+        one argument. NO FAILURE SIGNAL IS KNOWN for sfxcmd: no line it prints
+        on failure is documented and none was found, so the preset declares no
+        SQI_LOG_CHECKS and a render that exits 0 without writing frames (a Linux
+        report describes exactly that) is reported as a SUCCESS. Its exit codes
+        are also undocumented. Tier 3 runs a stub through a real worker and
+        proves only argv delivery. The detector's install folders (SilhouetteFX
+        and BorisFX roots) are unverified, and the Linux -nogui is supplied by
+        the detector, not the preset.
+    tier3:
+      case: TestPresetTier3/silhouette-render/default
+      required_on: [linux, darwin, windows]
+
+  - name: silhouette-render-all
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, multi-frame-chunk, stepped-range]
+      caveat: >-
+        argv derived from Boris FX's sfxcmd Command-Line documentation: sfxcmd
+        -all -range <first>-<last> <project>; no Silhouette has executed it, and
+        which release added -all is unknown (absent from the 2022.5 page,
+        present in 2026). The goldens cover the shipped ten-frames-per-task
+        shape, a FramesPerTask of 5 and a stepped range splitting into single
+        frames. It declares no Session or OutputNode parameter, so it is a
+        whole-scene product. NO FAILURE SIGNAL IS KNOWN for sfxcmd: the preset
+        declares no SQI_LOG_CHECKS, so a render that exits 0 without writing
+        frames is reported as a SUCCESS, and its exit codes are undocumented.
+        Tier 3 runs a stub through a real worker and proves only argv delivery.
+    tier3:
+      case: TestPresetTier3/silhouette-render-all/default
+      required_on: [linux, darwin, windows]
+
   - name: ffmpeg-transcode
     source: presets/sqi
     tier: 2

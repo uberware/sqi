@@ -172,10 +172,10 @@ the [`sqi-submitter`](dcc-submitters.md) in-application submitters:
 `maya-layer-render`, `maya-scene-render`, `houdini-rop-render`,
 `nuke-write-render`, `nuke-script-render`, `blender-batch-render`,
 `blender-view-layer-render`, `cinema4d-render`, `cinema4d-take-render`,
-`3dsmax-render` and the four After Effects presets. Five more have no
+`3dsmax-render` and the four After Effects presets. Seven more have no
 in-application submitter and are submitted from the web UI or the API:
 `mistika-boutique-render`, `mistika-vr-render`, `mistika-workflows-render`,
-`katana-render` and `fusion-render`.
+`katana-render`, `silhouette-render`, `silhouette-render-all` and `fusion-render`.
 
 Each names its parameters by the [parameter convention
 contract](dcc-submitters.md#the-parameter-convention-contract), so submitter
@@ -185,7 +185,7 @@ project has queued, so they take only `SceneFile`. An output parameter is
 declared only where the command takes one: `OutputDir` on the two Maya presets
 and `OutputPath` on Blender, Cinema 4D and 3ds Max. Per-host extras include
 `Renderer`, `RenderLayer`, `RopPath`, `WriteNode`, `Scene`, `ViewLayer`, `Take`,
-`RenderNode` and `RenderQueueItem`.
+`RenderNode`, `Session`, `OutputNode` and `RenderQueueItem`.
 
 Each preset gates on a capability tag that `sqi-worker` auto-detects from a
 standard install; a manual tag is needed only for a nonstandard install path
@@ -243,6 +243,35 @@ the check never fires and a failed render is caught only by an exit status that
 is itself undocumented. A Fusion 8 report of a successful render exiting
 `-1073741819` is recorded in the readme and not handled. The `fusion`
 detector's install paths on all three platforms are inferred, not observed.
+
+### Silhouette
+
+| Preset | Renders | Shape | Gate |
+|---|---|---|---|
+| `silhouette-render` | one output node (`OutputNode`, a label) of one session (`Session`) of a Silhouette project | `FramesPerTask` frames per task, default 10 | `silhouette` |
+| `silhouette-render-all` | every output node of the project's active session | `FramesPerTask` frames per task, default 10 | `silhouette` |
+
+`silhouette-render` runs `sfxcmd -session <session> -node <output node> -range
+<first>-<last> <project>` and always passes `-node`, because the node `sfxcmd`
+picks without it changed between releases. `silhouette-render-all` runs `sfxcmd
+-all -range <first>-<last> <project>` and declares neither `Session` nor
+`OutputNode`, so a submitter dialog treats it as whole-scene; `-all` needs a
+Silhouette whose `sfxcmd -help` lists it, and which release added it is unknown.
+`SceneFile` is the `.sfx` bundle, which is a directory (`objectType: DIRECTORY`),
+not the `project.sfx` file inside it. `-range` is in session numbering and
+`-start`, which renumbers output files, is never passed; a stepped `Frames` range
+splits into one task per frame.
+
+**Neither preset declares [`SQI_LOG_CHECKS`](openjd-extensions.md), and a failed
+render that exits 0 is reported as a success.** No line `sfxcmd` prints on
+success or failure is documented, a Linux report has it exiting 0 with no frames
+written, and its exit codes are undocumented; a pattern was not guessed. Check
+the output folder, not only the job status. The `silhouette` detector supplies
+`sfxcmd` and, on Linux only, `-nogui` (the first detector to declare arguments),
+whether `sfxcmd` comes from the install or from `PATH`; the bundled `lib`
+folder must be on the worker's `LD_LIBRARY_PATH`. The detector's install folders
+(the documented `SilhouetteFX` layout and a `BorisFX` root) are unverified. A
+floating licence needs the render portion `genarts_LICENSE`, in lower case.
 
 ### Cinema 4D, 3ds Max and After Effects
 
@@ -412,7 +441,7 @@ but run their script directly, so they need a Linux or macOS worker.
 
 ## Validation tiers
 
-`presets/validation-tiers.yaml` has 39 entries, the 32 presets under
+`presets/validation-tiers.yaml` has 41 entries, the 34 presets under
 `presets/sqi/` plus the seven built-in products documented in
 [`docs/development.md`](development.md#adding-a-product), and states which
 validation tier each has reached. The four `presets/testing/` presets are not
@@ -466,9 +495,9 @@ tier to stand in for. The tiers are:
     frame set, and where it can be read back, their content (the view layer in
     an EXR header, a PNG's size, the frame a Houdini geometry file holds).
 
-  The other twenty presets (Maya, Cinema 4D, 3ds Max, After Effects, the three
-  Mistika products and the eight standalone renderers) have not reached Tier 2
-  and carry no `tier2` block.
+  The other twenty-four presets (Maya, Cinema 4D, 3ds Max, After Effects, the three
+  Mistika products, the eight standalone renderers, Katana, Fusion and the two
+  Silhouette presets) have not reached Tier 2 and carry no `tier2` block.
 
   A DCC case cannot be required by platform, because CI cannot provide the
   application, so its block says `requires_app: blender` (or `nuke`, `houdini`)
@@ -530,7 +559,7 @@ skip on a platform named in `required_on` is a registry failure.
 ### Tier 3 on Windows
 
 Tier 3 runs on Windows as it does on Linux and macOS, and CI runs it in a
-dedicated job (`preset-harness-windows`). Of the 39 registry entries, 29 have
+dedicated job (`preset-harness-windows`). Of the 41 registry entries, 31 have
 `tier3.required_on: [linux, darwin, windows]`, so a skip on Windows fails the
 registry check for each of them. The other 10 are gated to fewer platforms:
 

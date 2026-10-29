@@ -1,0 +1,40 @@
+preset: silhouette-render
+case:   multi-frame-chunk
+params:
+  Frames=1-10
+  FramesPerTask=5
+  OutputNode=Output
+  SceneFile=/mnt/show/seq010/shot0010/roto/shot0010_roto_v007.sfx
+  Session=Roto
+
+step "Render" — 2 tasks
+
+task 1/2  name="Render[Frame=1-5,Frame.End=5,Frame.Start=1]"
+  task params:
+    Frame=1-5
+    Frame.End=5
+    Frame.Start=1
+  command: sfxcmd
+  args:
+    [0]  -session
+    [1]  Roto
+    [2]  -node
+    [3]  Output
+    [4]  -range
+    [5]  1-5
+    [6]  /mnt/show/seq010/shot0010/roto/shot0010_roto_v007.sfx
+
+task 2/2  name="Render[Frame=6-10,Frame.End=10,Frame.Start=6]"
+  task params:
+    Frame=6-10
+    Frame.End=10
+    Frame.Start=6
+  command: sfxcmd
+  args:
+    [0]  -session
+    [1]  Roto
+    [2]  -node
+    [3]  Output
+    [4]  -range
+    [5]  6-10
+    [6]  /mnt/show/seq010/shot0010/roto/shot0010_roto_v007.sfx

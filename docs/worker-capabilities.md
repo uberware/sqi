@@ -142,7 +142,7 @@ restarts.
 
 ### Built-in detectors
 
-Twenty-one built-ins ship embedded in the worker binary, one YAML file per
+Twenty-two built-ins ship embedded in the worker binary, one YAML file per
 application under
 [`internal/worker/capabilities/builtins/`](https://github.com/uberware/sqi/tree/main/internal/worker/capabilities/builtins):
 
@@ -168,6 +168,7 @@ application under
 | `threedelight` | `exe renderdl` (any OS); `env DELIGHT`; macOS `path_glob /Applications/3Delight/bin/renderdl`; Windows `path_glob C:\Program Files\3Delight\bin\renderdl.exe` | none |
 | `oiiotool` | `exe oiiotool` (any OS, if on `PATH`) | none (presence only) |
 | `katana` | `exe katana` (any OS, if on `PATH`); Linux `path_glob /opt/Foundry/Katana*/katana` and `/opt/foundry/katana*/katana`; Windows `path_glob C:\Program Files\Katana*\bin\katanaBin.exe`. All install paths unverified; Katana does not run on macOS. Also supplies a default `katana` command (Windows: `katanaBin.exe`) | `[Kk]atana([0-9]+\.[0-9]+v[0-9]+)` against the matched path (none when only `exe katana` matched) |
+| `silhouette` | `exe sfxcmd` (any OS, if on `PATH`); Windows `path_glob C:\Program Files\BorisFX\Silhouette*\sfxcmd.exe` and `C:\Program Files\SilhouetteFX\Silhouette*\sfxcmd.exe`; macOS `path_glob /Applications/BorisFX/Silhouette*/Silhouette.app/Contents/MacOS/sfxcmd` and the `SilhouetteFX` equivalent; Linux `path_glob /opt/BorisFX/Silhouette*/sfxcmd` and `/opt/SilhouetteFX/Silhouette*/sfxcmd`. The `SilhouetteFX` Windows and macOS folders are Boris FX's documented layout, the `BorisFX` roots and Linux paths are unverified. Also supplies a default `sfxcmd` command, which carries `-nogui` on Linux (see [Detected commands](#detected-commands)) | `Silhouette ?([0-9]{4}(?:\.[0-9]+)?)` against the matched path (none when only `exe sfxcmd` matched) |
 | `fusion` | `exe FusionRenderNode` (any OS, if on `PATH`); Windows `path_glob C:\Program Files\Blackmagic Design\Fusion Render Node *\FusionRenderNode.exe`; macOS `path_glob /Applications/Blackmagic Fusion * Render Node/Fusion Render Node.app/Contents/MacOS/Fusion Render Node`; Linux `path_glob /opt/BlackmagicDesign/FusionRenderNode*/FusionRenderNode`. All install paths inferred, none observed. Also supplies a default `FusionRenderNode` command (macOS: the executable is `Fusion Render Node`) | `(?:Fusion Render Node \|FusionRenderNode\|Fusion )(?P<v>[0-9]+(?:\.[0-9]+)?)` against the matched path (none when only `exe FusionRenderNode` matched) |
 
 The three Mistika detectors carry **no `exe` check**: their binaries are
@@ -356,11 +357,13 @@ with them), but never to a `worker.commands` entry, which the operator owns
 whole. If a detector has arguments for the platform but finds no install, they
 still apply to a command on `PATH`; with neither, nothing is registered. Flags
 that depend on a license, such as Nuke's `--nc` for a non-commercial license,
-belong to the operator: put them in `worker.commands`. No built-in detector
-declares arguments yet, so a command on `PATH` is left entirely alone.
+belong to the operator: put them in `worker.commands`. Only the `silhouette` built-in declares
+arguments: `-nogui` on Linux, where `sfxcmd` otherwise needs an X display. So a
+command on `PATH` is left entirely alone except `sfxcmd` on a Linux worker, which
+keeps `-nogui`.
 
-The `nuke`, `blender` and `houdini` (`hython`) built-ins define a command; the
-others rely on the command being on `PATH`. Blender's has Windows and macOS globs
+The `nuke`, `blender`, `houdini` (`hython`), `katana`, `fusion` and `silhouette`
+(`sfxcmd`) built-ins define a command; the others rely on the command being on `PATH`. Blender's has Windows and macOS globs
 only: a Linux install is wherever it was unpacked, or a distro package already on
 `PATH`. Houdini's has Windows and Linux globs only; on macOS put `hython` on
 `PATH` or map it in `worker.commands`. For
@@ -572,7 +575,7 @@ steps:
           anyOf: ["true"]
 ```
 
-The nineteen DCC reference presets under `presets/sqi/` (see
+The twenty-one DCC reference presets under `presets/sqi/` (see
 [`docs/dcc-submitters.md`](dcc-submitters.md#reference-presets)) and the eight
 [standalone renderer presets](preset-library.md#standalone-renderer-reference-presets)
 use this syntax, as do the `Transcoding` presets, which gate on

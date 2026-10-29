@@ -55,6 +55,8 @@ func TestBuild(t *testing.T) {
 		"nuke-write-render",
 		"prman-render",
 		"redshift-standalone-render",
+		"silhouette-render",
+		"silhouette-render-all",
 		"vray-standalone-render",
 	}
 	names := make([]string, len(got))

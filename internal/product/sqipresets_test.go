@@ -193,6 +193,19 @@ func TestSQIReferencePresets(t *testing.T) {
 			params:     []string{"SceneFile", "Frames", "FramesPerTask"},
 			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS", "SQI_LOG_CHECKS"},
 		},
+		// The two silhouette presets declare no SQI_LOG_CHECKS: no failure line
+		// is documented for sfxcmd. silhouette-render-all has no Session or
+		// OutputNode, so it is a whole-scene product.
+		"silhouette-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames", "Session", "OutputNode", "FramesPerTask"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
+		},
+		"silhouette-render-all": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames", "FramesPerTask"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
+		},
 		"ffmpeg-transcode": {
 			category: "Transcoding",
 			params:   []string{"SourceFile", "OutputFile", "VideoCodec", "Quality", "AudioCodec"},

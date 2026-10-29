@@ -294,6 +294,75 @@ func TestFusionDetector_CommandFindsTheExecutableOnEveryPlatform(t *testing.T) {
 	}
 }
 
+// TestSilhouetteDetector_CommandFindsSfxcmdAndSuppliesNogui checks the shipped
+// command globs against a Silhouette 2026 install under each documented root on
+// every platform, and that only Linux carries -nogui, with or without an
+// install. The layouts are unverified (see silhouette.yaml).
+func TestSilhouetteDetector_CommandFindsSfxcmdAndSuppliesNogui(t *testing.T) {
+	d := builtinDetector(t, "silhouette")
+	if d.Command == nil || d.Command.Name != "sfxcmd" {
+		t.Fatalf("the silhouette detector has no command named sfxcmd: %+v", d.Command)
+	}
+	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
+	cases := []struct {
+		name     string
+		goos     string
+		exe      string
+		not      []string
+		wantArgs []string
+	}{
+		{"windows documented root", "windows", `C:\Program Files\SilhouetteFX\Silhouette 2026\sfxcmd.exe`, []string{`C:\Program Files\SilhouetteFX\Silhouette 2026\Silhouette.exe`, `C:\Program Files\SilhouetteFX\Silhouette 2026\sfxcmd.dll`}, nil},
+		{"windows BorisFX root", "windows", `C:\Program Files\BorisFX\Silhouette 2026\sfxcmd.exe`, []string{`C:\Program Files\BorisFX\Silhouette 2026\Silhouette.exe`}, nil},
+		{"macos documented root", "darwin", "/Applications/SilhouetteFX/Silhouette 2026/Silhouette.app/Contents/MacOS/sfxcmd", []string{"/Applications/SilhouetteFX/Silhouette 2026/Silhouette.app/Contents/MacOS/Silhouette"}, nil},
+		{"macos BorisFX root", "darwin", "/Applications/BorisFX/Silhouette 2026/Silhouette.app/Contents/MacOS/sfxcmd", []string{"/Applications/BorisFX/Silhouette 2026/Silhouette.app/Contents/MacOS/Silhouette"}, nil},
+		{"linux BorisFX root", "linux", "/opt/BorisFX/Silhouette 2026/sfxcmd", []string{"/opt/BorisFX/Silhouette 2026/lib/sfxcmd"}, []string{"-nogui"}},
+		{"linux SilhouetteFX root", "linux", "/opt/SilhouetteFX/Silhouette 2026/sfxcmd", []string{"/opt/SilhouetteFX/Silhouette 2026/Silhouette"}, []string{"-nogui"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			matches := func(file string) (matched bool, glob string) {
+				for _, g := range d.Command.Globs {
+					if g.OS != "" && g.OS != tc.goos {
+						continue
+					}
+					ok, err := path.Match(norm(g.PathGlob), norm(file))
+					if err != nil {
+						t.Fatalf("bad pattern %q: %v", g.PathGlob, err)
+					}
+					if ok {
+						return true, g.PathGlob
+					}
+				}
+				return false, ""
+			}
+			if ok, _ := matches(tc.exe); !ok {
+				t.Errorf("no %s command glob matches the executable %s", tc.goos, tc.exe)
+			}
+			for _, other := range tc.not {
+				if ok, g := matches(other); ok {
+					t.Errorf("%s glob %q matched %s, which is not sfxcmd", tc.goos, g, other)
+				}
+			}
+			env := fakeEnv{goos: tc.goos, globs: map[string][]string{}}
+			for _, g := range d.Command.Globs {
+				env.globs[g.PathGlob] = []string{tc.exe}
+			}
+			got, ok := d.FindCommand(env)
+			if !ok || got.Name != "sfxcmd" || got.Path != tc.exe || got.Version != "2026" || !slices.Equal(got.Args, tc.wantArgs) {
+				t.Errorf("FindCommand = %+v (found %v), want sfxcmd 2026 at %s with args %v", got, ok, tc.exe, tc.wantArgs)
+			}
+		})
+	}
+
+	// No install: only Linux still reports the command, so a PATH hit keeps -nogui.
+	for goos, want := range map[string]bool{"linux": true, "darwin": false, "windows": false} {
+		got, ok := d.FindCommand(fakeEnv{goos: goos})
+		if ok != want || (ok && (got.Path != "" || !slices.Equal(got.Args, []string{"-nogui"}))) {
+			t.Errorf("%s, no install: FindCommand = %+v (found %v), want found=%v with no path and -nogui", goos, got, ok, want)
+		}
+	}
+}
+
 func TestDetectCommands_ComesFromBuiltinsAndCustomDetectorsAndHonoursDisable(t *testing.T) {
 	custom := Detector{
 		Tag: "inhouse", Checks: []Check{{Exe: "inhouse"}},
@@ -310,12 +379,14 @@ func TestDetectCommands_ComesFromBuiltinsAndCustomDetectorsAndHonoursDisable(t *
 	if err != nil {
 		t.Fatalf("DetectCommands: %v", err)
 	}
+	// sfxcmd is the silhouette detector: on linux it reports -nogui even with no
+	// install, so a command already on PATH keeps it.
 	var names []string
 	for _, c := range got {
 		names = append(names, c.Name)
 	}
-	if strings.Join(names, ",") != "inhouse,nuke" {
-		t.Errorf("commands = %v, want [inhouse nuke] sorted by name", names)
+	if strings.Join(names, ",") != "inhouse,nuke,sfxcmd" {
+		t.Errorf("commands = %v, want [inhouse nuke sfxcmd] sorted by name", names)
 	}
 
 	got, err = DetectCommands(CapabilitiesConfig{Disable: []string{"nuke"}}, env)
@@ -465,15 +536,21 @@ func TestDetectorValidate_CommandArgs(t *testing.T) {
 	}
 }
 
+// only keeps the named command: DetectCommands also runs the built-in
+// detectors, whose own commands are not what these tests are about.
+func only(cmds []DetectedCommand, name string) []DetectedCommand {
+	return slices.DeleteFunc(slices.Clone(cmds), func(c DetectedCommand) bool { return c.Name != name })
+}
+
 // A detector whose application needs arguments on an OS reports them even when
 // no install was found, so a command already on PATH still gets them.
 func TestDetectCommands_ArgsWithoutInstall(t *testing.T) {
 	cfg := CapabilitiesConfig{Detect: []Detector{{
 		Tag:    "sfx",
-		Checks: []Check{{Exe: "sfxcmd"}},
+		Checks: []Check{{Exe: "sfxtool"}},
 		Command: &CommandSpec{
-			Name:  "sfxcmd",
-			Globs: []CommandGlob{{PathGlob: "/opt/sfx*/sfxcmd", OS: "linux"}},
+			Name:  "sfxtool",
+			Globs: []CommandGlob{{PathGlob: "/opt/sfx*/sfxtool", OS: "linux"}},
 			Args:  map[string][]string{"linux": {"-nogui"}},
 		},
 	}}}
@@ -482,7 +559,8 @@ func TestDetectCommands_ArgsWithoutInstall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].Name != "sfxcmd" || got[0].Path != "" || !slices.Equal(got[0].Args, []string{"-nogui"}) {
+	got = only(got, "sfxtool")
+	if len(got) != 1 || got[0].Name != "sfxtool" || got[0].Path != "" || !slices.Equal(got[0].Args, []string{"-nogui"}) {
 		t.Errorf("DetectCommands on linux = %+v, want one entry with no path and -nogui", got)
 	}
 
@@ -491,8 +569,8 @@ func TestDetectCommands_ArgsWithoutInstall(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, c := range got {
-		if c.Name == "sfxcmd" {
-			t.Errorf("DetectCommands on windows = %+v, want no sfxcmd (no args for windows, no install)", got)
+		if c.Name == "sfxtool" {
+			t.Errorf("DetectCommands on windows = %+v, want no sfxtool (no args for windows, no install)", got)
 		}
 	}
 }
@@ -500,20 +578,21 @@ func TestDetectCommands_ArgsWithoutInstall(t *testing.T) {
 func TestDetectCommands_ArgsAccompanyAFoundInstall(t *testing.T) {
 	cfg := CapabilitiesConfig{Detect: []Detector{{
 		Tag:    "sfx",
-		Checks: []Check{{Exe: "sfxcmd"}},
+		Checks: []Check{{Exe: "sfxtool"}},
 		Command: &CommandSpec{
-			Name:  "sfxcmd",
-			Globs: []CommandGlob{{PathGlob: "/opt/sfx*/sfxcmd", OS: "linux"}},
+			Name:  "sfxtool",
+			Globs: []CommandGlob{{PathGlob: "/opt/sfx*/sfxtool", OS: "linux"}},
 			Args:  map[string][]string{"linux": {"-nogui"}},
 		},
 	}}}
-	env := fakeEnv{goos: "linux", globs: map[string][]string{"/opt/sfx*/sfxcmd": {"/opt/sfx1/sfxcmd"}}}
+	env := fakeEnv{goos: "linux", globs: map[string][]string{"/opt/sfx*/sfxtool": {"/opt/sfx1/sfxtool"}}}
 
 	got, err := DetectCommands(cfg, env)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].Path != "/opt/sfx1/sfxcmd" || !slices.Equal(got[0].Args, []string{"-nogui"}) {
+	got = only(got, "sfxtool")
+	if len(got) != 1 || got[0].Path != "/opt/sfx1/sfxtool" || !slices.Equal(got[0].Args, []string{"-nogui"}) {
 		t.Errorf("DetectCommands = %+v, want the install path and -nogui", got)
 	}
 }

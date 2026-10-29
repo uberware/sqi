@@ -31,6 +31,7 @@ import (
 	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/presettest"
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/worker/capabilities"
 	stubrecord "github.com/uberware/sqi/test/stubproc/record"
 )
 
@@ -616,7 +617,13 @@ func assertObservedMatchesComputed(t *testing.T, snap presettest.Snapshot, recs 
 	var computed, observed [][]string
 	for _, step := range snap.Steps {
 		for _, task := range step.Tasks {
-			computed = append(computed, append([]string{filepath.Base(task.Command)}, foldFilePaths(task.Args, files)...))
+			name := filepath.Base(task.Command)
+			// The real worker puts a detector's arguments for this OS in front of
+			// the job's own (silhouette's -nogui on Linux), for a command it found
+			// on PATH as it finds the stub. Model them from the shipped detector,
+			// so the observation is a witness that the worker really applied them.
+			lead := append([]string{name}, detectorLeadingArgs(t, name)...)
+			computed = append(computed, append(lead, foldFilePaths(task.Args, files)...))
 		}
 	}
 	for _, rec := range recs {
@@ -631,6 +638,22 @@ func assertObservedMatchesComputed(t *testing.T, snap presettest.Snapshot, recs 
 		}
 		t.Error(msg)
 	}
+}
+
+// detectorLeadingArgs returns the arguments a built-in detector supplies for
+// command on this OS: the ones the real worker places before a job's own.
+func detectorLeadingArgs(t *testing.T, command string) []string {
+	t.Helper()
+	detectors, err := capabilities.BuiltinDetectors()
+	if err != nil {
+		t.Fatalf("load built-in detectors: %v", err)
+	}
+	for _, d := range detectors {
+		if d.Command != nil && d.Command.Name == command {
+			return d.Command.Args[runtime.GOOS]
+		}
+	}
+	return nil
 }
 
 // materializedFileNames returns the on-disk basenames of every embedded file in

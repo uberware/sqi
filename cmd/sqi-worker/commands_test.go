@@ -203,6 +203,79 @@ func TestDetectCommandPlan_BuiltInNukeBecomesTheNukeCommand(t *testing.T) {
 	}
 }
 
+// TestDetectCommandPlan_BuiltInSilhouetteKeepsNogui runs the real built-in
+// silhouette detector through to a plan, the end-to-end form of the PATH-hit
+// rule: on Linux an sfxcmd the host already put on PATH still runs with -nogui,
+// whether or not an install is found. Windows has no argument to supply, so an
+// sfxcmd on PATH there is left to the job's own lookup, with no table entry.
+func TestDetectCommandPlan_BuiltInSilhouetteKeepsNogui(t *testing.T) {
+	ds, err := capabilities.BuiltinDetectors()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spec *capabilities.CommandSpec
+	for _, d := range ds {
+		if d.Tag == "silhouette" {
+			spec = d.Command
+		}
+	}
+	if spec == nil {
+		t.Fatal("no built-in silhouette detector supplies a command")
+	}
+	install := func(goos, exe string) fakeCheckEnv {
+		env := fakeCheckEnv{goos: goos, globs: map[string][]string{}}
+		if exe == "" {
+			return env
+		}
+		for _, g := range spec.Globs {
+			env.globs[g.PathGlob] = []string{exe}
+		}
+		return env
+	}
+	sfxOnPath := onPath(map[string]string{"sfxcmd": "/usr/local/bin/sfxcmd"})
+
+	cases := []struct {
+		name     string
+		env      fakeCheckEnv
+		lookPath func(string) (string, error)
+		wantPath string
+		wantArgs []string
+		wantSrc  string
+	}{
+		{"linux, on PATH, no install", install("linux", ""), sfxOnPath, "/usr/local/bin/sfxcmd", sfxArgs, sourcePATH},
+		{"linux, on PATH, with install", install("linux", "/opt/BorisFX/Silhouette 2026/sfxcmd"), sfxOnPath, "/usr/local/bin/sfxcmd", sfxArgs, sourcePATH},
+		{"linux, install only", install("linux", "/opt/BorisFX/Silhouette 2026/sfxcmd"), noPath, "/opt/BorisFX/Silhouette 2026/sfxcmd", sfxArgs, sourceDetected},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan, err := detectCommandPlan(workerconfig.Default(), tc.env, tc.lookPath)
+			if err != nil {
+				t.Fatalf("detectCommandPlan: %v", err)
+			}
+			got, ok := plan.Table["sfxcmd"]
+			if !ok || got.Path != tc.wantPath || !slices.Equal(got.Args, tc.wantArgs) {
+				t.Fatalf("table[sfxcmd] = %+v (present %v), want %s with args %v", got, ok, tc.wantPath, tc.wantArgs)
+			}
+			if r := reportFor(t, plan, "sfxcmd"); r.Source != tc.wantSrc {
+				t.Errorf("report source = %q, want %q", r.Source, tc.wantSrc)
+			}
+		})
+	}
+}
+
+func TestDetectCommandPlan_BuiltInSilhouetteAddsNothingOnWindowsPATH(t *testing.T) {
+	env := fakeCheckEnv{goos: "windows", globs: map[string][]string{}}
+
+	plan, err := detectCommandPlan(workerconfig.Default(), env, onPath(map[string]string{"sfxcmd": `C:	ools\sfxcmd.exe`}))
+	if err != nil {
+		t.Fatalf("detectCommandPlan: %v", err)
+	}
+
+	if got, ok := plan.Table["sfxcmd"]; ok {
+		t.Errorf("table[sfxcmd] = %+v, want no entry (windows supplies no argument)", got)
+	}
+}
+
 func TestCommandPlan_WriteListsEachCommandAndWhereItCameFrom(t *testing.T) {
 	plan := planCommands(commands.Table{"tool": {Path: "/opt/tool", Args: []string{"--nc"}}}, nukeFound, noPath)
 	var buf bytes.Buffer
