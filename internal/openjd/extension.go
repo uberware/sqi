@@ -2,7 +2,10 @@
 
 package openjd
 
-import "sort"
+import (
+	"slices"
+	"sort"
+)
 
 // Origin distinguishes an upstream OpenJD extension from one defined by sqi.
 type Origin string
@@ -148,7 +151,19 @@ const ExtensionLogChecks = "SQI_LOG_CHECKS"
 // extensions the worker enforces at run time. Workers advertise the subset they
 // support at registration; the scheduler withholds a job declaring one from a
 // worker that does not.
+//
+// The slice is computed once, from the read-only registry, and shared: the
+// scheduler calls this for every lease candidate, so it must not allocate.
+// Callers must not modify it.
 func WorkerEnforcedExtensions() []string {
+	return workerEnforcedExtensions
+}
+
+// workerEnforcedExtensions is [WorkerEnforcedExtensions]'s result. Package
+// initialization runs it after registry, which it depends on.
+var workerEnforcedExtensions = computeWorkerEnforcedExtensions()
+
+func computeWorkerEnforcedExtensions() []string {
 	var out []string
 	for name, ext := range registry {
 		if ext.WorkerEnforced {
@@ -156,7 +171,9 @@ func WorkerEnforcedExtensions() []string {
 		}
 	}
 	sort.Strings(out)
-	return out
+	// Cap at the length, so an append by a careless caller copies rather than
+	// writing into a shared backing array.
+	return slices.Clip(out)
 }
 
 // LookupExtension returns the registry entry for name and whether it exists.

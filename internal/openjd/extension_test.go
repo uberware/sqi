@@ -85,6 +85,13 @@ func TestRegistry_WorkerEnforcedExtensions(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("WorkerEnforcedExtensions() = %v, want %v", got, want)
 	}
+	// The scheduler calls it once per lease candidate: it returns a cached slice.
+	if n := testing.AllocsPerRun(100, func() { _ = WorkerEnforcedExtensions() }); n != 0 {
+		t.Errorf("WorkerEnforcedExtensions allocates %v times per call, want 0", n)
+	}
+	if cap(got) != len(got) {
+		t.Errorf("cap = %d, len = %d: an append by a caller would write into the shared array", cap(got), len(got))
+	}
 }
 
 // TestRegistry_StepBlockEntriesAreVendor keeps StepBlock from being set
