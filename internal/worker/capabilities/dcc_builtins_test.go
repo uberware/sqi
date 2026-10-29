@@ -157,4 +157,19 @@ var dccLayouts = []rendererLayout{
 		versioned: `C:\Program Files\Autodesk\VREDCore-18.0\bin\WIN64\VREDCore.exe`,
 		version:   "18.0",
 	},
+	{
+		// KeyShot has Windows and macOS desktop builds. Neither layout is
+		// verified (see keyshot.yaml); the version is the number in the install
+		// folder, which is KeyShot12 for 12 and a year from 2023 on.
+		tag: "keyshot",
+		exe: "keyshot_headless",
+		installs: []string{
+			`C:\Program Files\KeyShot12\bin\keyshot_headless.exe`,
+			`C:\Program Files\KeyShot 2024\bin\keyshot_headless.exe`,
+			"/Applications/KeyShot12.app/Contents/MacOS/keyshot",
+			"/Applications/KeyShot12.app/Contents/MacOS/keyshot_headless",
+		},
+		versioned: `C:\Program Files\KeyShot12\bin\keyshot_headless.exe`,
+		version:   "12",
+	},
 }

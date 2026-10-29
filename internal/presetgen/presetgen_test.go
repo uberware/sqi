@@ -45,6 +45,8 @@ func TestBuild(t *testing.T) {
 		"houdini-rop-render",
 		"husk-usd-render",
 		"katana-render",
+		"keyshot-render",
+		"keyshot-studio-render",
 		"mantra-render",
 		"maya-layer-render",
 		"maya-scene-render",

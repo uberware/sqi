@@ -1550,6 +1550,16 @@ jobs:
             TestPresetVRED_ScriptDrivesVRED
             TestPresetVRED_ScriptDrivesVRED/output_file_with_quotes_and_spaces/globals
             TestPresetVRED_ScriptDrivesVRED/render_fails/modules
+            # The KeyShot host-script presets: the same four checks, plus the
+            # Output File rules refused at submission. ScriptDrivesKeyShot
+            # skips without a working Python 3, so two leaves are named too.
+            TestPresetKeyShot_ParamsCostAtMaxChunk
+            TestPresetKeyShot_ParamsJSONRoundTrips
+            TestPresetKeyShot_ShareOneScript
+            TestPresetKeyShot_OutputFileRules
+            TestPresetKeyShot_ScriptDrivesKeyShot
+            TestPresetKeyShot_ScriptDrivesKeyShot/a_chunk_at_the_scene_size/file
+            TestPresetKeyShot_ScriptDrivesKeyShot/renderImage_returns_False_at_the_second_frame/cwd
             # Outcome cases (expect_status in a preset-cases fixture). The
             # parent passes when every case skips, so the one leaf that runs on
             # linux is named: the `script` built-in with the stub told to exit
@@ -1909,7 +1919,8 @@ jobs:
       # goldens cannot show a missed one (Render() maps the single and the
       # doubled spelling to the same POSIX form). ScriptDrivesVRED skips
       # without Python 3 and one subtest can skip on its own, so two of its
-      # leaves are named as well.
+      # leaves are named as well. The TestPresetKeyShot_ tests are listed for
+      # the same reasons (ScriptDrivesKeyShot skips without Python 3).
       #
       # TestFFmpegPreset_BashSegmentTranscodeJoins runs here but is not
       # listed, and the registry's tier2 required_on omits windows for it: it
@@ -1932,14 +1943,21 @@ jobs:
                       "TestPresetVRED_ShareOneScript " \
                       "TestPresetVRED_ScriptDrivesVRED " \
                       "TestPresetVRED_ScriptDrivesVRED/output_file_with_quotes_and_spaces/globals " \
-                      "TestPresetVRED_ScriptDrivesVRED/render_fails/modules "; do
+                      "TestPresetVRED_ScriptDrivesVRED/render_fails/modules " \
+                      "TestPresetKeyShot_ParamsCostAtMaxChunk " \
+                      "TestPresetKeyShot_ParamsJSONRoundTrips " \
+                      "TestPresetKeyShot_ShareOneScript " \
+                      "TestPresetKeyShot_OutputFileRules " \
+                      "TestPresetKeyShot_ScriptDrivesKeyShot " \
+                      "TestPresetKeyShot_ScriptDrivesKeyShot/a_chunk_at_the_scene_size/file " \
+                      "TestPresetKeyShot_ScriptDrivesKeyShot/renderImage_returns_False_at_the_second_frame/cwd "; do
             if ! grep -q -- "--- PASS: ${name}" preset-harness-windows.log; then
               echo "::error::${name} did not run to a PASS on windows"
               missing=1
             fi
           done
           [ "$missing" -eq 0 ] || exit 1
-          echo "Confirmed tiers 1, 2 and 3, the Python launcher, the After Effects wrapper, the VRED preset tests and the registry check ran on windows."
+          echo "Confirmed tiers 1, 2 and 3, the Python launcher, the After Effects wrapper, the VRED and KeyShot preset tests and the registry check ran on windows."
 
   # Differential-tests internal/openjd/expr against the EXPR reference
   # implementation, the openjd.expr namespace of openjd-model (a re-export

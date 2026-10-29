@@ -527,26 +527,28 @@ visible, since the server enforces the permission either way.
 
 ## Reference presets
 
-sqi ships twenty-three DCC reference products under `presets/sqi/`, published
-through the [preset library](preset-library.md). The directory holds thirty-six
+sqi ships twenty-five DCC reference products under `presets/sqi/`, published
+through the [preset library](preset-library.md). The directory holds thirty-eight
 products in total. The other thirteen are eight [standalone renderer
 presets](preset-library.md#standalone-renderer-reference-presets), which render
 exported scene files without loading the DCC, and five `Transcoding`-category
 [ffmpeg presets](preset-library.md#transcoding-reference-presets). Install the
 DCC presets from **Admin → Preset Library** in the web UI or, without a preset
 index, create them through `POST /api/v1/products` or **Admin → Products**. All
-twenty-three use the product `category` `Rendering`. All but the two After Effects
+twenty-five use the product `category` `Rendering`. All but the two After Effects
 queue presets (one task each) declare `TASK_CHUNKING` to split the frame range;
 the Maya, Blender, After Effects render, Mistika, Katana, Silhouette, Fusion and VRED presets also declare
 `SQI_CHUNK_BOUNDS` to expose each chunk's start and end frame (see
 [OpenJD extensions](openjd-extensions.md)). The Cinema 4D and 3ds Max presets
 declare `EXPR` instead: it computes the same two frames, and leaves the output
 flag out when **Output Path** is empty. The two VRED presets declare `EXPR` as well,
-to build the `params.json` their embedded `render.py` reads inside VRED.
+to build the `params.json` their embedded `render.py` reads inside VRED. The two KeyShot presets
+declare `TASK_CHUNKING`, `EXPR` and `SQI_LOG_CHECKS` but not `SQI_CHUNK_BOUNDS`: their script loops over
+any list of frames, so a chunk may be stepped or gapped, and it needs no bounds.
 
-Fourteen of the twenty-three have a matching `sqi-submitter` host (Maya, Houdini,
+Fourteen of the twenty-five have a matching `sqi-submitter` host (Maya, Houdini,
 Nuke, 3ds Max, Blender, Cinema 4D and After Effects). The three Mistika presets,
-Katana, the two Silhouette presets, Fusion and the two VRED presets have none and are submitted from the web UI or the API.
+Katana, the two Silhouette presets, Fusion, the two VRED presets and the two KeyShot presets have none and are submitted from the web UI or the API.
 
 | Product | Command | Chunking | Parameters | Worker tag |
 |---|---|---|---|---|
@@ -573,6 +575,8 @@ Katana, the two Silhouette presets, Fusion and the two VRED presets have none an
 | `silhouette-render-all` | `sfxcmd -all -range <first>-<last> <project>` (every output node of the active session) | chunks of 10 | `SceneFile` (the `.sfx` bundle, a directory), `Frames`, `FramesPerTask` | `attr.worker.tag.silhouette = "true"` |
 | `vred-render` | `VREDCore <scene> -insecure_python -fast_start -hide_gui -postpython <code>`, the code running an embedded `render.py` that reads the task's frames and output file from an embedded `params.json` | chunks of 10 (`FramesPerTask` at most 1000) | `SceneFile` (`*.vpb`), `Frames`, `FramesPerTask`, `OutputFile` (blank keeps the scene's render filename) | `attr.worker.tag.vred = "true"` |
 | `vred-viewpoint-render` | as `vred-render`, the script also calling `setRenderView(<view>)` | chunks of 10 (`FramesPerTask` at most 1000) | `SceneFile` (`*.vpb`), `Frames`, `View`, `FramesPerTask`, `OutputFile` | `attr.worker.tag.vred = "true"` |
+| `keyshot-render` | `keyshot_headless -progress [-floating_feature <feature>] <scene> -script <script>`, the embedded `render.py` looping over the task's frames (`setAnimationFrame`, `renderImage`) with the sizes and output pattern from an embedded `params.json` | chunks of 10, stepped or gapped lists allowed (`FramesPerTask` at most 1000) | `SceneFile` (`*.bip`), `Frames`, `FramesPerTask`, `OutputFile` (one `#` run for the frame number; the extension picks the format), `Width` and `Height` (0 keeps the scene's), `LicenseFeature` | `attr.worker.tag.keyshot = "true"` |
+| `keyshot-studio-render` | as `keyshot-render`, the script first calling `setActiveStudio(<studio>)` | as `keyshot-render` | `SceneFile` (`*.bip`), `Studio`, `Frames`, `FramesPerTask`, `OutputFile`, `Width`, `Height`, `LicenseFeature` | `attr.worker.tag.keyshot = "true"` |
 
 Maya and Nuke each ship a **single-target** product (`-rl <layer>` /
 `-X <writeNode>`) and a **whole-scene** product that omits that flag: Maya's
@@ -637,11 +641,11 @@ Each preset's `hostRequirements` gates it to workers advertising the matching
 presets also require `attr.worker.os.family` (`windows` for `3dsmax-render`,
 `windows` or `macos` for the matching After Effects variant). At startup
 `sqi-worker` detects a standard Maya, Nuke, Houdini, Blender, Cinema 4D, 3ds
-Max, After Effects, Mistika, Katana, Silhouette (`sfxcmd`), Fusion Render Node or VRED install, on `PATH` or in its usual install
+Max, After Effects, Mistika, Katana, Silhouette (`sfxcmd`), Fusion Render Node, VRED or KeyShot (`keyshot_headless`) install, on `PATH` or in its usual install
 location, and advertises the matching tag (`maya`, plus a version variant such
 as `maya_2025`) with value `"true"`; see [Capability
 auto-detection](worker-capabilities.md#capability-auto-detection-built-in-dcc-detectors).
-That satisfies the `anyOf: ["true"]` requirement each of the twenty-three presets
+That satisfies the `anyOf: ["true"]` requirement each of the twenty-five presets
 declares, so a worker with a standard install needs no per-worker
 configuration. Run `sqi-worker capabilities` (or `start --dry-run`) to see
 which DCCs were found.
@@ -752,6 +756,7 @@ are the **target parameters**: the names that identify one target.
 | Silhouette | an output node of a session (no submitter ships yet; named for one) | `Session` and `OutputNode` (the node's **label**; both strings) | `silhouette-render` | `silhouette-render-all`: it declares neither parameter, so the dialog treats it as whole-scene |
 | Katana | a Render node, named in the project | `RenderNode` (the node's name; a string) | `katana-render` | none: a Render node is the unit, as a ROP is for Houdini |
 | VRED | a viewpoint or camera (no submitter ships yet; named for one) | `View` (the viewpoint's or camera's name; a string) | `vred-viewpoint-render` | `vred-render`: it declares no `View`, so the dialog treats it as whole-scene |
+| KeyShot | a studio of the scene (no submitter ships yet; named for one) | `Studio` (the studio's name; a string) | `keyshot-studio-render` | `keyshot-render`: it declares no `Studio`, so the dialog treats it as whole-scene |
 | After Effects | a `Queued` render-queue item, named after its composition | `RenderQueueItem` (the item's 1-based index; an `INT` parameter, minimum 1; extra values are strings) | `after-effects-render-windows`, `after-effects-render-macos` | `after-effects-queue-render-windows`, `after-effects-queue-render-macos` |
 
 Houdini has a per-target product only: its output target is the ROP the script

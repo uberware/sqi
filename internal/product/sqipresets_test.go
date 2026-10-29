@@ -219,6 +219,20 @@ func TestSQIReferencePresets(t *testing.T) {
 			params:     []string{"SceneFile", "Frames", "View", "FramesPerTask", "OutputFile"},
 			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS", "EXPR", "SQI_LOG_CHECKS"},
 		},
+		// The two KeyShot presets are host-script presets like VRED's, but
+		// declare no SQI_CHUNK_BOUNDS: the script loops over any list of
+		// frames (NONCONTIGUOUS) and reads no bounds. keyshot-render has no
+		// Studio, so it is a whole-scene product.
+		"keyshot-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames", "FramesPerTask", "OutputFile", "Width", "Height", "LicenseFeature"},
+			extensions: []string{"TASK_CHUNKING", "EXPR", "SQI_LOG_CHECKS"},
+		},
+		"keyshot-studio-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Studio", "Frames", "FramesPerTask", "OutputFile", "Width", "Height", "LicenseFeature"},
+			extensions: []string{"TASK_CHUNKING", "EXPR", "SQI_LOG_CHECKS"},
+		},
 		"ffmpeg-transcode": {
 			category: "Transcoding",
 			params:   []string{"SourceFile", "OutputFile", "VideoCodec", "Quality", "AudioCodec"},

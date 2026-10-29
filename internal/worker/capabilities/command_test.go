@@ -429,6 +429,81 @@ func TestVREDDetector_CommandFindsVREDCoreOnWindowsAndLinux(t *testing.T) {
 	}
 }
 
+// TestKeyShotDetector_CommandRunsHeadlessOnWindowsAndMacOS checks the shipped
+// command: keyshot_headless.exe on Windows with no arguments, and on macOS the
+// bundle's `keyshot` program (the form KeyShot's manual documents) with
+// -headless put first, with or without an install. Linux has no KeyShot
+// desktop build, so it gets nothing. The layouts are unverified (see
+// keyshot.yaml).
+func TestKeyShotDetector_CommandRunsHeadlessOnWindowsAndMacOS(t *testing.T) {
+	d := builtinDetector(t, "keyshot")
+	if d.Command == nil || d.Command.Name != "keyshot_headless" {
+		t.Fatalf("the keyshot detector has no command named keyshot_headless: %+v", d.Command)
+	}
+	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
+	cases := []struct {
+		name     string
+		goos     string
+		exe      string
+		version  string
+		not      []string
+		wantArgs []string
+	}{
+		{"windows KeyShot 12", "windows", `C:\Program Files\KeyShot12\bin\keyshot_headless.exe`, "12", []string{
+			`C:\Program Files\KeyShot12\bin\keyshot.exe`,
+			`C:\Program Files\KeyShot12\keyshot_headless.exe`,
+		}, nil},
+		{"windows KeyShot 2024", "windows", `C:\Program Files\KeyShot 2024\bin\keyshot_headless.exe`, "2024", nil, nil},
+		{"macOS KeyShot 12", "darwin", "/Applications/KeyShot12.app/Contents/MacOS/keyshot", "12", []string{
+			"/Applications/KeyShot12.app/Contents/MacOS/keyshot_headless",
+			"/Applications/KeyShot12.app/Contents/MacOS/KeyShot Helper",
+		}, []string{"-headless"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			matches := func(file string) (matched bool, glob string) {
+				for _, g := range d.Command.Globs {
+					if g.OS != "" && g.OS != tc.goos {
+						continue
+					}
+					ok, err := path.Match(norm(g.PathGlob), norm(file))
+					if err != nil {
+						t.Fatalf("bad pattern %q: %v", g.PathGlob, err)
+					}
+					if ok {
+						return true, g.PathGlob
+					}
+				}
+				return false, ""
+			}
+			if ok, _ := matches(tc.exe); !ok {
+				t.Errorf("no %s command glob matches the executable %s", tc.goos, tc.exe)
+			}
+			for _, other := range tc.not {
+				if ok, g := matches(other); ok {
+					t.Errorf("%s glob %q matched %s, which is not the headless command", tc.goos, g, other)
+				}
+			}
+			env := fakeEnv{goos: tc.goos, globs: map[string][]string{}}
+			for _, g := range d.Command.Globs {
+				env.globs[g.PathGlob] = []string{tc.exe}
+			}
+			got, ok := d.FindCommand(env)
+			if !ok || got.Name != "keyshot_headless" || got.Path != tc.exe || got.Version != tc.version || !slices.Equal(got.Args, tc.wantArgs) {
+				t.Errorf("FindCommand = %+v (found %v), want keyshot_headless %s at %s with args %v", got, ok, tc.version, tc.exe, tc.wantArgs)
+			}
+		})
+	}
+
+	// No install: only macOS still reports the command, so a PATH hit keeps -headless.
+	for goos, want := range map[string]bool{"darwin": true, "windows": false, "linux": false} {
+		got, ok := d.FindCommand(fakeEnv{goos: goos})
+		if ok != want || (ok && (got.Path != "" || !slices.Equal(got.Args, []string{"-headless"}))) {
+			t.Errorf("%s, no install: FindCommand = %+v (found %v), want found=%v with no path and -headless", goos, got, ok, want)
+		}
+	}
+}
+
 func TestDetectCommands_ComesFromBuiltinsAndCustomDetectorsAndHonoursDisable(t *testing.T) {
 	custom := Detector{
 		Tag: "inhouse", Checks: []Check{{Exe: "inhouse"}},

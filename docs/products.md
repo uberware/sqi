@@ -317,7 +317,7 @@ products with `source: installed`.
 See [`docs/preset-library.md`](preset-library.md) for the full guide, including
 the index format, configuration, and the browse → preview → install flow.
 
-The official library ships twenty-three DCC `Rendering`-category presets, plus
+The official library ships twenty-five DCC `Rendering`-category presets, plus
 eight [standalone renderer
 presets](preset-library.md#standalone-renderer-reference-presets). Fourteen of
 the DCC presets (`maya-layer-render`, `maya-scene-render`,
@@ -327,11 +327,11 @@ the DCC presets (`maya-layer-render`, `maya-scene-render`,
 `after-effects-render-windows`, `after-effects-render-macos`,
 `after-effects-queue-render-windows`, `after-effects-queue-render-macos`) are
 the targets of the [`sqi-submitter`](dcc-submitters.md) in-application
-submitters. The other nine have no in-application submitter and are submitted
+submitters. The other eleven have no in-application submitter and are submitted
 from the web UI or the API: `mistika-boutique-render`, `mistika-vr-render`,
 `mistika-workflows-render`, `katana-render`, `silhouette-render`,
-`silhouette-render-all`, `fusion-render`, `vred-render` and
-`vred-viewpoint-render`.
+`silhouette-render-all`, `fusion-render`, `vred-render`,
+`vred-viewpoint-render`, `keyshot-render` and `keyshot-studio-render`.
 `3dsmax-render` and the After Effects presets also gate on the worker's OS.
 Parameter names follow a documented, versioned, additive-only convention:
 `SceneFile` and `Frames` on all but the two After Effects queue presets (which

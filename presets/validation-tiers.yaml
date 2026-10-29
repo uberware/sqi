@@ -763,6 +763,69 @@ presets:
       case: TestPresetTier3/vred-viewpoint-render/default
       required_on: [linux, darwin, windows]
 
+  # KeyShot is the second host-script preset family: keyshot_headless runs an
+  # embedded render.py with -script, which loops over the task's frames, and the
+  # per-task values travel in an EXPR-built params.json. NONCONTIGUOUS chunks,
+  # no SQI_CHUNK_BOUNDS. No os.family gate (Windows and macOS are the KeyShot
+  # desktop builds, but the worker tag is the gate), so Tier 3 runs on every OS;
+  # on macOS the real worker puts -headless before the argv and the harness
+  # models that from the detector.
+  - name: keyshot-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, multi-frame-chunk, stepped-range, floating-license, quoting, logged-error, no-success-line]
+      caveat: >-
+        argv from KeyShot's headless manual (keyshot_headless [options]
+        <scene> -script <script>, -progress, -floating_feature <feature>; the
+        flag is spliced in only when License Feature is set, and floating-license
+        shows it). The render.py calls are KeyShot's headless lux reference
+        (2024): renderImage (path, width, height, opts, format; width and height
+        default to the scene's, so 0 leaves them out), setAnimationFrame,
+        getRenderOptions, RenderOptions.setAddToQueue and the
+        RENDER_OUTPUT_* constants. No KeyShot has executed this preset. UNVERIFIED:
+        whether animation frames are 1-based (the reference does not say; the
+        quick start's loop starts at 1, so Frames passes through unchanged);
+        whether renderImage returns a value headless (only an explicit False
+        fails); whether KeyShot sets __file__ for a -script file (the script falls
+        back to an argv entry, then the current folder, which is the worker's
+        session folder) and keeps that folder; whether KeyShot exits after the
+        script ends (the checks apply only once it does, and the step has no
+        timeout, so a KeyShot that stays open would hang the task rather than fail
+        it; the readme recommends a timeout); whether descriptor-1 lines reach the
+        worker on macOS, where the documented form is keyshot -headless. Headless
+        scripting is a Pro feature (9.3 and newer, experimental); a trial
+        watermarks. The detector paths are inferred; on macOS it runs the bundle's
+        keyshot program with -headless in front. The goldens pin params.json in
+        full; quoting is decoded with encoding/json by
+        TestPresetKeyShot_ParamsJSONRoundTrips, the Output File rules (one # run,
+        a known extension) are refused at submission by
+        TestPresetKeyShot_OutputFileRules, and render.py runs under a real Python
+        with a fake lux in TestPresetKeyShot_ScriptDrivesKeyShot. Tier 3 runs a
+        stub as keyshot_headless: it exercises the worker, the embedded files and
+        the log checks, never the script inside KeyShot.
+    tier3:
+      case: TestPresetTier3/keyshot-render/default
+      required_on: [linux, darwin, windows]
+
+  - name: keyshot-studio-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, multi-frame-chunk, stepped-range, target-with-space, floating-license, quoting, logged-error, no-success-line]
+      caveat: >-
+        keyshot-render plus Studio, carried in params.json and passed to
+        lux.setActiveStudio before the first frame; the same sources and the same
+        unverified points (see keyshot-render). What setActiveStudio does with a
+        name the scene lacks, and whether it is honoured for every headless
+        render, is undocumented. quoting puts both quotes, a backslash and a space
+        in Studio and both quotes in Output File's name. Tier 3 runs a stub as
+        keyshot_headless: it exercises the worker, the embedded files and the log
+        checks, never the script inside KeyShot.
+    tier3:
+      case: TestPresetTier3/keyshot-studio-render/default
+      required_on: [linux, darwin, windows]
+
   - name: ffmpeg-transcode
     source: presets/sqi
     tier: 2

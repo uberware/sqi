@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Luxion KeyShot, whose headless mode the presets keyshot-render and
+# keyshot-studio-render run through the bare command `keyshot_headless`.
+# Headless scripting is a KeyShot Pro feature (9.3 or newer, "experimental" per
+# KeyShot). KeyShot has desktop builds for Windows and macOS only.
+#
+# Every path below is unverified: none was observed on a machine, and neither
+# the folder names nor the macOS executables come from KeyShot's manual, which
+# documents the command lines but not install locations.
+#
+# Windows: KeyShot's manual documents a `keyshot_headless` executable that
+# supports stdin and stdout on Windows. It is looked for in a bin folder under
+# C:\Program Files\KeyShot*, the folder a default install is reported to use.
+#
+# macOS: KeyShot's manual gives only `keyshot -headless` for macOS. A
+# third-party source reports a `keyshot_headless` inside the app bundle as well;
+# the manual does not, so the command below uses the documented `keyshot`
+# program with `-headless` put before the job's arguments (the detector's
+# `args`), which works whether or not the bundle holds a keyshot_headless. The
+# tag check below matches any program in the bundle's MacOS folder.
+#
+# The version is the number in the install folder (KeyShot12, KeyShot 2024), so
+# a keyshot_headless found only on PATH carries no version.
+tag: keyshot
+checks:
+  - exe: keyshot_headless                                        # a keyshot_headless the operator or host provides
+  - path_glob: 'C:\Program Files\KeyShot*\bin\keyshot_headless.exe'  # windows
+    os: windows
+  - path_glob: "/Applications/KeyShot*.app/Contents/MacOS/keyshot*"  # macOS (third-party, unverified)
+    os: darwin
+version:
+  from: 'KeyShot ?([0-9]+(?:\.[0-9]+)?)'
+# The presets run a bare `keyshot_headless`, which the Windows installer does
+# not put on PATH, so the worker supplies one from the newest install found
+# here, unless the operator or the host already provides one. On macOS that is
+# the app's `keyshot` program, run with -headless in front of the job's own
+# arguments: a worker whose PATH already holds a keyshot_headless gets -headless
+# too (KeyShot 10's manual shows `keyshot_headless -headless -script`, so it is
+# accepted there), and an operator who wants other arguments gives a
+# `keyshot_headless` entry in worker.commands, which is taken whole.
+command:
+  name: keyshot_headless
+  globs:
+    - path_glob: 'C:\Program Files\KeyShot*\bin\keyshot_headless.exe'  # windows
+      os: windows
+    - path_glob: "/Applications/KeyShot*.app/Contents/MacOS/keyshot"   # macOS (the program KeyShot documents)
+      os: darwin
+  args:
+    darwin: ["-headless"]

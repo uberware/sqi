@@ -142,7 +142,7 @@ restarts.
 
 ### Built-in detectors
 
-Twenty-three built-ins ship embedded in the worker binary, one YAML file per
+Twenty-four built-ins ship embedded in the worker binary, one YAML file per
 application under
 [`internal/worker/capabilities/builtins/`](https://github.com/uberware/sqi/tree/main/internal/worker/capabilities/builtins):
 
@@ -171,6 +171,7 @@ application under
 | `silhouette` | `exe sfxcmd` (any OS, if on `PATH`); Windows `path_glob C:\Program Files\BorisFX\Silhouette*\sfxcmd.exe` and `C:\Program Files\SilhouetteFX\Silhouette*\sfxcmd.exe`; macOS `path_glob /Applications/BorisFX/Silhouette*/Silhouette.app/Contents/MacOS/sfxcmd` and the `SilhouetteFX` equivalent; Linux `path_glob /opt/BorisFX/Silhouette*/sfxcmd` and `/opt/SilhouetteFX/Silhouette*/sfxcmd`. The `SilhouetteFX` Windows and macOS folders are Boris FX's documented layout, the `BorisFX` roots and Linux paths are unverified. Also supplies a default `sfxcmd` command, which carries `-nogui` on Linux (see [Detected commands](#detected-commands)) | `Silhouette ?([0-9]{4}(?:\.[0-9]+)?)` against the matched path (none when only `exe sfxcmd` matched) |
 | `fusion` | `exe FusionRenderNode` (any OS, if on `PATH`); Windows `path_glob C:\Program Files\Blackmagic Design\Fusion Render Node *\FusionRenderNode.exe`; macOS `path_glob /Applications/Blackmagic Fusion * Render Node/Fusion Render Node.app/Contents/MacOS/Fusion Render Node`; Linux `path_glob /opt/BlackmagicDesign/FusionRenderNode*/FusionRenderNode`. All install paths inferred, none observed. Also supplies a default `FusionRenderNode` command (macOS: the executable is `Fusion Render Node`) | `(?:Fusion Render Node \|FusionRenderNode\|Fusion )(?P<v>[0-9]+(?:\.[0-9]+)?)` against the matched path (none when only `exe FusionRenderNode` matched) |
 | `vred` | `exe VREDCore` (any OS, if on `PATH`); Windows `path_glob C:\Program Files\Autodesk\VREDCore-*\bin\WIN64\VREDCore.exe` (Autodesk's documented folder) and `C:\Program Files\Autodesk\VREDPro-*\bin\WIN64\VREDPro.exe`; Linux `path_glob /opt/Autodesk/VREDCore-*/bin/VREDCore` and `/opt/Autodesk/VREDCluster-*/bin/VREDCore` (the installer takes a target folder; both roots are unverified). VRED does not run on macOS. Also supplies a default `VREDCore` command from a VRED Core install, never from VRED Pro | `VRED(?:Core\|Pro\|Cluster)-([0-9]+\.[0-9]+)` against the matched path, VRED's internal version (17.0 is VRED 2025, 18.0 is VRED 2026; none when only `exe VREDCore` matched) |
+| `keyshot` | `exe keyshot_headless` (any OS, if on `PATH`); Windows `path_glob C:\Program Files\KeyShot*\bin\keyshot_headless.exe`; macOS `path_glob /Applications/KeyShot*.app/Contents/MacOS/keyshot*`. All install paths inferred, none observed; KeyShot has no Linux desktop build, and its manual documents `keyshot -headless` on macOS and `keyshot_headless` on Windows. Also supplies a default `keyshot_headless` command: `keyshot_headless.exe` on Windows, and on macOS the bundle's `keyshot` program, which carries `-headless` (see [Detected commands](#detected-commands)) | `KeyShot ?([0-9]+(?:\.[0-9]+)?)` against the matched path: `12` for a `KeyShot12` folder, a year for `KeyShot 2024` (none when only `exe keyshot_headless` matched) |
 
 The three Mistika detectors carry **no `exe` check**: their binaries are
 `mistika`, `vr` and `workflows`, and a bare `PATH` probe for the last two would
@@ -358,13 +359,14 @@ with them), but never to a `worker.commands` entry, which the operator owns
 whole. If a detector has arguments for the platform but finds no install, they
 still apply to a command on `PATH`; with neither, nothing is registered. Flags
 that depend on a license, such as Nuke's `--nc` for a non-commercial license,
-belong to the operator: put them in `worker.commands`. Only the `silhouette` built-in declares
-arguments: `-nogui` on Linux, where `sfxcmd` otherwise needs an X display. So a
-command on `PATH` is left entirely alone except `sfxcmd` on a Linux worker, which
-keeps `-nogui`.
+belong to the operator: put them in `worker.commands`. Only the `silhouette` and `keyshot` built-ins declare
+arguments: `-nogui` for `sfxcmd` on Linux, where it otherwise needs an X display, and `-headless` for
+`keyshot_headless` on macOS, where the detected command is the app's `keyshot` program (the form KeyShot
+documents). So a command on `PATH` is left entirely alone except `sfxcmd` on a Linux worker, which
+keeps `-nogui`, and `keyshot_headless` on a macOS worker, which keeps `-headless`.
 
 The `nuke`, `blender`, `houdini` (`hython`), `katana`, `fusion`, `silhouette`
-(`sfxcmd`) and `vred` (`VREDCore`) built-ins define a command; the others rely on the command being on `PATH`. Blender's has Windows and macOS globs
+(`sfxcmd`), `vred` (`VREDCore`) and `keyshot` (`keyshot_headless`) built-ins define a command; the others rely on the command being on `PATH`. Blender's has Windows and macOS globs
 only: a Linux install is wherever it was unpacked, or a distro package already on
 `PATH`. Houdini's has Windows and Linux globs only; on macOS put `hython` on
 `PATH` or map it in `worker.commands`. For
@@ -576,7 +578,7 @@ steps:
           anyOf: ["true"]
 ```
 
-The twenty-three DCC reference presets under `presets/sqi/` (see
+The twenty-five DCC reference presets under `presets/sqi/` (see
 [`docs/dcc-submitters.md`](dcc-submitters.md#reference-presets)) and the eight
 [standalone renderer presets](preset-library.md#standalone-renderer-reference-presets)
 use this syntax, as do the `Transcoding` presets, which gate on

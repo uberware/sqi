@@ -172,11 +172,12 @@ the [`sqi-submitter`](dcc-submitters.md) in-application submitters:
 `maya-layer-render`, `maya-scene-render`, `houdini-rop-render`,
 `nuke-write-render`, `nuke-script-render`, `blender-batch-render`,
 `blender-view-layer-render`, `cinema4d-render`, `cinema4d-take-render`,
-`3dsmax-render` and the four After Effects presets. Nine more have no
+`3dsmax-render` and the four After Effects presets. Eleven more have no
 in-application submitter and are submitted from the web UI or the API:
 `mistika-boutique-render`, `mistika-vr-render`, `mistika-workflows-render`,
 `katana-render`, `silhouette-render`, `silhouette-render-all`, `fusion-render`,
-`vred-render` and `vred-viewpoint-render`.
+`vred-render`, `vred-viewpoint-render`, `keyshot-render` and
+`keyshot-studio-render`.
 
 Each names its parameters by the [parameter convention
 contract](dcc-submitters.md#the-parameter-convention-contract), so submitter
@@ -185,9 +186,9 @@ presets declare `SceneFile` and `Frames`; the queue presets render whatever the
 project has queued, so they take only `SceneFile`. An output parameter is
 declared only where the command takes one: `OutputDir` on the two Maya presets,
 `OutputPath` on Blender, Cinema 4D and 3ds Max, and `OutputFile` on the two
-VRED presets. Per-host extras include `Renderer`, `RenderLayer`, `RopPath`,
+VRED and the two KeyShot presets. Per-host extras include `Renderer`, `RenderLayer`, `RopPath`,
 `WriteNode`, `Scene`, `ViewLayer`, `Take`, `RenderNode`, `Session`,
-`OutputNode`, `View` and `RenderQueueItem`.
+`OutputNode`, `View`, `Studio` and `RenderQueueItem`.
 
 Each preset gates on a capability tag that `sqi-worker` auto-detects from a
 standard install; a manual tag is needed only for a nonstandard install path
@@ -316,6 +317,40 @@ maps `VREDCore` to `VREDPro.exe` in `worker.commands`. VRED's versions are
 internal: 17.0 is VRED 2025, 18.0 is VRED 2026. The `vred` detector's Windows
 VRED Core folder is Autodesk's documented one; its VRED Pro folder and both
 Linux roots are unverified.
+
+### KeyShot
+
+| Preset | Renders | Shape | Gate |
+|---|---|---|---|
+| `keyshot-render` | a `.bip` scene with KeyShot's headless mode | `FramesPerTask` frames per task, default 10, at most 1000; a chunk may be stepped or gapped | `keyshot` |
+| `keyshot-studio-render` | one named studio (`Studio`) of a `.bip` scene | as `keyshot-render` | `keyshot` |
+
+Host-script presets like VRED's, with one difference: KeyShot's headless scripting has no call that renders
+a frame range, so each task runs `keyshot_headless -progress [-floating_feature <feature>] <scene> -script
+<script>` and the embedded `render.py` loops over the task's frames, calling `lux.setAnimationFrame` and
+`lux.renderImage` for each. The chunks are `NONCONTIGUOUS`, so a stepped or gapped range costs no extra
+launches, and the presets declare no `SQI_CHUNK_BOUNDS`. `-floating_feature` appears only when **License
+Feature** is set (`keyshot2`, `keyshot_enterprise` or `keyshot_network_rendering`). **Output File** holds
+one run of `#` for the frame number, expanded by the script with zero padding; a name with no run or two runs,
+or an extension other than `.jpg`, `.jpeg`, `.png`, `.exr`, `.tif`, `.tiff` or `.psd` (which picks the
+`lux.RENDER_OUTPUT_*` format; TIFF and PSD are 8-bit), is refused at submission (pinned by
+`TestPresetKeyShot_OutputFileRules`). **Width** and **Height** are INT parameters where 0, the default, leaves
+the size to the scene: KeyShot's headless `renderImage` defaults both to the scene's own. The script reads
+everything from an embedded `params.json` that `EXPR` builds with `repr_json`, so no job value is written into
+Python source; `params.json` costs more as the chunk grows, which is why `FramesPerTask` stops at 1000 (pinned
+by `TestPresetKeyShot_ParamsCostAtMaxChunk`).
+
+Both declare [`SQI_LOG_CHECKS`](openjd-extensions.md) with the host-script markers: a task fails unless the
+output contains `SQI_RENDER: OK`, and fails on a line containing `SQI_RENDER: FAILED:`. KeyShot documents no
+exit codes, so its exit status is not relied on. The checks give their verdict only once KeyShot exits, and
+whether it exits when the script ends is undocumented, so the readmes recommend a step timeout. The markers go
+straight to file descriptor 1 (KeyShot documents `keyshot_headless` as supporting stdout on Windows; macOS is
+unverified). **Headless scripting is a KeyShot Pro feature (9.3 and newer, "experimental" per KeyShot), a
+trial watermarks its renders, and KeyShot has no Linux desktop product.** Frame numbering is unverified: the
+reference does not say whether animation frames start at 0 or 1, so `Frames` is passed through unchanged
+(KeyShot's own quick-start loop starts at 1). On macOS the detected `keyshot_headless` command is the app's
+`keyshot` program with `-headless` put first, the form KeyShot documents there. No KeyShot has executed
+either preset; the detector's install folders are inferred.
 
 ### Cinema 4D, 3ds Max and After Effects
 
@@ -485,7 +520,7 @@ but run their script directly, so they need a Linux or macOS worker.
 
 ## Validation tiers
 
-`presets/validation-tiers.yaml` has 43 entries, the 36 presets under
+`presets/validation-tiers.yaml` has 45 entries, the 38 presets under
 `presets/sqi/` plus the seven built-in products documented in
 [`docs/development.md`](development.md#adding-a-product), and states which
 validation tier each has reached. The four `presets/testing/` presets are not
@@ -539,9 +574,9 @@ tier to stand in for. The tiers are:
     frame set, and where it can be read back, their content (the view layer in
     an EXR header, a PNG's size, the frame a Houdini geometry file holds).
 
-  The other twenty-six presets (Maya, Cinema 4D, 3ds Max, After Effects, the three
+  The other twenty-eight presets (Maya, Cinema 4D, 3ds Max, After Effects, the three
   Mistika products, the eight standalone renderers, Katana, Fusion and the two
-  Silhouette and two VRED presets) have not reached Tier 2 and carry no `tier2` block.
+  Silhouette, two VRED and two KeyShot presets) have not reached Tier 2 and carry no `tier2` block.
 
   A DCC case cannot be required by platform, because CI cannot provide the
   application, so its block says `requires_app: blender` (or `nuke`, `houdini`)
@@ -603,7 +638,7 @@ skip on a platform named in `required_on` is a registry failure.
 ### Tier 3 on Windows
 
 Tier 3 runs on Windows as it does on Linux and macOS, and CI runs it in a
-dedicated job (`preset-harness-windows`). Of the 43 registry entries, 33 have
+dedicated job (`preset-harness-windows`). Of the 45 registry entries, 35 have
 `tier3.required_on: [linux, darwin, windows]`, so a skip on Windows fails the
 registry check for each of them. The other 10 are gated to fewer platforms:
 
