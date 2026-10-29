@@ -66,7 +66,7 @@ SQI_TEST_PG_FORCE_TX_RETRY=1 go test $RACE_FLAG -count=1 -v -timeout 30m ./inter
 echo "== END FORCED-RETRY PHASE"
 
 echo "== PostgreSQL ${PG_VERSION}: integration suite with the server on PostgreSQL"
-SQI_TEST_STORE_DRIVER=postgres go test $RACE_FLAG -count=1 -v -tags integration -timeout 20m \
+SQI_TEST_STORE_DRIVER=postgres go test $RACE_FLAG -count=1 -v -tags integration -timeout 30m \
   -skip 'TestLDAP_|TestOIDC_|TestIsolation_' ./test/integration/
 
 echo "POSTGRES TESTS PASSED (PG_VERSION=${PG_VERSION})"

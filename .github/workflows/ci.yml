@@ -1504,7 +1504,7 @@ jobs:
       - name: Run the integration suite
         run: |
           set +e
-          # The Makefile's INTEGRATION_TEST_FLAGS default (-timeout 20m)
+          # The Makefile's INTEGRATION_TEST_FLAGS default (-timeout 30m)
           # covers the backup/restore tests' reconcile-grace waits plus up to
           # ~90s of LDAP and ~180s of Keycloak container readiness.
           make test-integration 2>&1 | tee integration-output.log
