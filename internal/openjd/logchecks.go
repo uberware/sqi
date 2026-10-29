@@ -5,7 +5,9 @@ package openjd
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/uberware/sqi/internal/openjd/logpattern"
@@ -116,13 +118,179 @@ func sqiStepKeys(raw map[string]any) []string {
 	return out
 }
 
+// maxMisplacedStepBlocks is the most misplaced step blocks one template reports.
+// One is enough to reject the template; the cap keeps a template stuffed with
+// them from costing a pointer per copy.
+const maxMisplacedStepBlocks = 16
+
+// stepBlockFrameRole says how the walk in findMisplacedStepBlocks treats the
+// keys of one container.
+type stepBlockFrameRole int
+
+const (
+	// roleAny: a step-block key here is misplaced.
+	roleAny stepBlockFrameRole = iota
+	// roleStepList: the steps list, whose elements are steps.
+	roleStepList
+	// roleStep: a step, where a step-block key is in its proper slot.
+	roleStep
+	// roleVariables: an environment's variables, whose keys are variable names
+	// the author chooses, so a variable named SQI_LOG_CHECKS is not a block.
+	roleVariables
+)
+
+// stepBlockFrame is one container the walk visits. parent indexes the frame it
+// was found in (-1 for a root), and key or idx names it there.
+type stepBlockFrame struct {
+	v      any
+	parent int
+	key    string
+	idx    int
+	isIdx  bool
+	role   stepBlockFrameRole
+}
+
+// findMisplacedStepBlocks returns the JSON pointers of step-block extension
+// keys (SQI_LOG_CHECKS) found anywhere in the template's parameter definitions,
+// job environments or steps other than directly on a step: under script,
+// actions.onRun, an environment, and so on. The decoder reads such a block only
+// from its step-level slot, so one anywhere else would be dropped silently and
+// the step would run with its checks off. A top-level key is reported
+// separately (unknownTopLevelMessage).
+//
+// The walk is iterative (no recursion, whatever the nesting depth) and visits
+// each decoded container once, so its cost is bounded by what the decoder
+// already built. Pointers are built only for the hits, at most
+// maxMisplacedStepBlocks of them (which ones, past the cap, depends on map
+// order; any one rejects the template), and returned sorted.
+func findMisplacedStepBlocks(raw map[string]any) []string {
+	w := &stepBlockWalker{}
+	for _, k := range []string{"parameterDefinitions", "jobEnvironments", "steps"} {
+		role := roleAny
+		if k == "steps" {
+			role = roleStepList
+		}
+		w.push(stepBlockFrame{v: raw[k], parent: -1, key: k, role: role})
+	}
+	for len(w.pending) > 0 {
+		fi := w.pending[len(w.pending)-1]
+		w.pending = w.pending[:len(w.pending)-1]
+		w.visit(fi)
+	}
+	out := make([]string, 0, len(w.hits))
+	for _, h := range w.hits {
+		out = append(out, stepBlockFramePointer(w.frames, h.frame)+"/"+escapePointerToken(h.key))
+	}
+	sort.Strings(out)
+	return out
+}
+
+// stepBlockWalker is findMisplacedStepBlocks's state. frames holds every
+// container found (for parent links); pending indexes those not yet visited.
+type stepBlockWalker struct {
+	frames  []stepBlockFrame
+	pending []int
+	hits    []stepBlockHit
+}
+
+// stepBlockHit is a misplaced key: key, in the container frames[frame].
+type stepBlockHit struct {
+	frame int
+	key   string
+}
+
+// push records f for a visit if its value is a container; scalars hold no keys.
+func (w *stepBlockWalker) push(f stepBlockFrame) {
+	switch f.v.(type) {
+	case map[string]any, map[any]any, []any:
+		w.pending = append(w.pending, len(w.frames))
+		w.frames = append(w.frames, f)
+	}
+}
+
+// visit checks the keys of frames[fi] and queues its child containers.
+func (w *stepBlockWalker) visit(fi int) {
+	switch v := w.frames[fi].v.(type) {
+	case map[string]any:
+		for k, val := range v {
+			w.visitKey(fi, k, val)
+		}
+	case map[any]any:
+		for k, val := range v {
+			w.visitKey(fi, fmt.Sprint(k), val)
+		}
+	case []any:
+		role := roleAny
+		if w.frames[fi].role == roleStepList {
+			role = roleStep
+		}
+		for i, val := range v {
+			w.push(stepBlockFrame{v: val, parent: fi, idx: i, isIdx: true, role: role})
+		}
+	}
+}
+
+func (w *stepBlockWalker) visitKey(fi int, k string, val any) {
+	if isStepBlockName(k) {
+		switch w.frames[fi].role {
+		case roleStep:
+			return // its proper slot; validated on its own
+		case roleVariables:
+			// a variable name, not a block
+		default:
+			if len(w.hits) < maxMisplacedStepBlocks {
+				w.hits = append(w.hits, stepBlockHit{frame: fi, key: k})
+			}
+		}
+	}
+	role := roleAny
+	if k == "variables" {
+		role = roleVariables
+	}
+	w.push(stepBlockFrame{v: val, parent: fi, key: k, role: role})
+}
+
+// isStepBlockName reports whether name is a registered step-block extension.
+func isStepBlockName(name string) bool {
+	ext, ok := registry[name]
+	return ok && ext.StepBlock
+}
+
+// stepBlockFramePointer builds the JSON pointer of frames[fi].
+func stepBlockFramePointer(frames []stepBlockFrame, fi int) string {
+	var segs []string
+	for ; fi >= 0; fi = frames[fi].parent {
+		f := frames[fi]
+		if f.isIdx {
+			segs = append(segs, strconv.Itoa(f.idx))
+		} else {
+			segs = append(segs, escapePointerToken(f.key))
+		}
+	}
+	slices.Reverse(segs)
+	return "/" + strings.Join(segs, "/")
+}
+
+// escapePointerToken escapes one JSON pointer reference token (RFC 6901).
+func escapePointerToken(s string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(s, "~", "~0"), "/", "~1")
+}
+
 // validateLogChecks enforces the SQI_LOG_CHECKS extension/block coupling, the
 // block's own shape, and rejects any SQI_ step key that names no registered
-// step-block extension. Structural (not gated by EnforceLimits), like
+// step-block extension, and any step block found somewhere other than directly
+// on a step. Structural (not gated by EnforceLimits), like
 // validatePathTranslation.
 func validateLogChecks(t *JobTemplate) ValidationErrors {
 	declared := t.hasExtension(ExtensionLogChecks)
 	var errs ValidationErrors
+	for _, ptr := range t.misplacedStepBlocks {
+		name := ptr[strings.LastIndexByte(ptr, '/')+1:]
+		errs = append(errs, ValidationError{
+			Pointer: ptr,
+			Message: name + " is a step-level block and is ignored here; put it directly on the step, as a sibling of script",
+		})
+	}
 	anyBlock := false
 	for i, s := range t.Steps {
 		errs = append(errs, validateSQIStepKeys(t, s, i)...)

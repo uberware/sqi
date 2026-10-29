@@ -66,6 +66,7 @@ func decodeJobTemplate(raw map[string]any) (*JobTemplate, error) {
 	t.Extensions = getStringSlice(raw, "extensions")
 	_, t.ExtensionsSet = raw["extensions"]
 	t.UnknownFields = unknownTopLevelFields(raw)
+	t.misplacedStepBlocks = findMisplacedStepBlocks(raw)
 
 	// RFC 0007's case-insensitive type names and its new parameter types are
 	// an EXPR-extension feature, so every parameter decoder below needs to

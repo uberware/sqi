@@ -29,6 +29,10 @@ type JobTemplate struct {
 	// the decoder so validation can reject them; the spec's job template is a
 	// closed object.
 	UnknownFields []string
+	// misplacedStepBlocks are the JSON pointers of step-block extension keys
+	// (SQI_LOG_CHECKS) the decoder found somewhere other than directly on a
+	// step; see findMisplacedStepBlocks. Carried for validation to reject.
+	misplacedStepBlocks []string
 
 	// PathTranslation is the parsed SQI_PATH_TRANSLATION extension block, or nil
 	// when the extension is not declared.

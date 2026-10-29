@@ -69,6 +69,13 @@ Structural, enforced at submission (`internal/openjd/logchecks.go`,
   the step decoder would otherwise drop it and the step would run with its checks
   off. Other unknown, non-`SQI_` step keys are still silently dropped, as they
   were before this extension; that is a pre-existing divergence, not changed here.
+- A `SQI_LOG_CHECKS` key anywhere else in a step (under `script`,
+  `actions.onRun`, a step environment, and so on), in a job environment, or in a
+  parameter definition is an error at the pointer where it was found ("is a
+  step-level block and is ignored here; put it directly on the step"), whether or
+  not the extension is declared, because the decoder reads the block only from
+  its step-level slot and would otherwise drop it. An environment variable named
+  `SQI_LOG_CHECKS` under `variables` is not a block and is left alone.
 - The block holds only `failOn` and `requireLine`; any other field is an error.
 - Each list must be a list of strings (an unquoted YAML `404` is rejected as
   "must be a string" rather than coerced).

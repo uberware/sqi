@@ -239,6 +239,113 @@ func TestLogChecks_Validate(t *testing.T) {
 	}
 }
 
+// A SQI_LOG_CHECKS block anywhere but directly on a step would be dropped by the
+// decoder, so the step would run with its checks off; validation rejects it at
+// the pointer where it was found.
+func TestLogChecks_MisplacedBlock(t *testing.T) {
+	const header = "specificationVersion: jobtemplate-2023-09\nname: J\nextensions: [SQI_LOG_CHECKS]\n"
+	const checks = "SQI_LOG_CHECKS: {failOn: [x]}"
+	tests := []struct {
+		name        string
+		body        string
+		wantPointer string // "" means the template is valid
+	}{
+		{
+			name: "step level is the proper slot",
+			body: "steps:\n  - name: S\n    " + checks + "\n" +
+				"    script:\n      actions:\n        onRun:\n          command: echo\n",
+		},
+		{
+			name: "under script",
+			body: "steps:\n  - name: S\n    " + checks + "\n" +
+				"    script:\n      " + checks + "\n      actions:\n        onRun:\n          command: echo\n",
+			wantPointer: "/steps/0/script/SQI_LOG_CHECKS",
+		},
+		{
+			name: "under actions.onRun",
+			body: "steps:\n  - name: S\n    " + checks + "\n" +
+				"    script:\n      actions:\n        onRun:\n          command: echo\n          " + checks + "\n",
+			wantPointer: "/steps/0/script/actions/onRun/SQI_LOG_CHECKS",
+		},
+		{
+			name: "under a step environment",
+			body: "steps:\n  - name: S\n    " + checks + "\n" +
+				"    stepEnvironments:\n      - name: E\n        " + checks + "\n" +
+				"        variables: {A: b}\n" +
+				"    script:\n      actions:\n        onRun:\n          command: echo\n",
+			wantPointer: "/steps/0/stepEnvironments/0/SQI_LOG_CHECKS",
+		},
+		{
+			name: "under a job environment",
+			body: "jobEnvironments:\n  - name: E\n    " + checks + "\n    variables: {A: b}\n" +
+				"steps:\n  - name: S\n    " + checks + "\n" +
+				"    script:\n      actions:\n        onRun:\n          command: echo\n",
+			wantPointer: "/jobEnvironments/0/SQI_LOG_CHECKS",
+		},
+		{
+			name: "an environment variable named SQI_LOG_CHECKS is not a block",
+			body: "steps:\n  - name: S\n    " + checks + "\n" +
+				"    stepEnvironments:\n      - name: E\n        variables: {SQI_LOG_CHECKS: '1'}\n" +
+				"    script:\n      actions:\n        onRun:\n          command: echo\n",
+		},
+		{
+			name: "under a second step's script, the first step's block is valid",
+			body: "steps:\n  - name: S\n    " + checks + "\n" +
+				"    script:\n      actions:\n        onRun:\n          command: echo\n" +
+				"  - name: T\n    script:\n      actions:\n        onRun:\n          command: echo\n" +
+				"      " + checks + "\n",
+			wantPointer: "/steps/1/script/SQI_LOG_CHECKS",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpl, err := openjd.Parse([]byte(header+tc.body), openjd.FormatYAML)
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			errs := openjd.Validate(tmpl)
+			if tc.wantPointer == "" {
+				if len(errs) != 0 {
+					t.Fatalf("want valid, got %v", errs)
+				}
+				return
+			}
+			if !lcHas(errs, tc.wantPointer, "SQI_LOG_CHECKS is a step-level block and is ignored here") {
+				t.Fatalf("want a misplaced-block error at %s; got %v", tc.wantPointer, errs)
+			}
+		})
+	}
+}
+
+// TestLogChecks_MisplacedBlockDeepNesting pins that the walk copes with deep
+// nesting (it is iterative) and caps how many misplaced blocks it reports.
+func TestLogChecks_MisplacedBlockDeepNesting(t *testing.T) {
+	const depth = 5000
+	var b strings.Builder
+	b.WriteString(`{"specificationVersion":"jobtemplate-2023-09","name":"J","extensions":["SQI_LOG_CHECKS"],` +
+		`"steps":[{"name":"S","SQI_LOG_CHECKS":{"failOn":["x"]},` +
+		`"script":{"actions":{"onRun":{"command":"echo"}}},"extra":`)
+	for range depth {
+		b.WriteString(`{"SQI_LOG_CHECKS":1,"n":`)
+	}
+	b.WriteString("0")
+	b.WriteString(strings.Repeat("}", depth))
+	b.WriteString("}]}")
+	tmpl, err := openjd.Parse([]byte(b.String()), openjd.FormatJSON)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	var got int
+	for _, e := range openjd.Validate(tmpl) {
+		if strings.Contains(e.Message, "is a step-level block and is ignored here") {
+			got++
+		}
+	}
+	if got != 16 {
+		t.Errorf("reported %d misplaced blocks, want the cap of 16", got)
+	}
+}
+
 func TestLogChecks_TopLevelErrorIsNotTheGenericUnknownField(t *testing.T) {
 	tmpl, err := openjd.Parse([]byte(lcTemplate("[SQI_LOG_CHECKS]", "SQI_LOG_CHECKS:\n  failOn: [x]", "")), openjd.FormatYAML)
 	if err != nil {
