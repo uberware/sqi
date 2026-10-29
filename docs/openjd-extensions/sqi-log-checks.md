@@ -89,7 +89,9 @@ Structural, enforced at submission (`internal/openjd/logchecks.go`,
   226,000 instructions and takes seconds to match a single 4 KiB line. The
   compiled program is therefore capped at **2000** instructions
   (`logpattern.MaxProgramInsts`, `internal/openjd/logpattern`); realistic
-  patterns compile to 10 to 100. A larger pattern is rejected at its own pointer
+  patterns compile to 10 to 100. A bounded repeat costs roughly twice its upper
+  bound, so `.{0,N}` needs N below about 1000 and a two-sided window such as
+  `.{0,500}foo.{0,500}` (2005) is over the cap. A larger pattern is rejected at its own pointer
   (`/steps/N/SQI_LOG_CHECKS/failOn/I`): "pattern compiles to <n> instructions; at
   most 2000 are allowed". The worker enforces the same bound from the same
   constant when it builds the checker.
