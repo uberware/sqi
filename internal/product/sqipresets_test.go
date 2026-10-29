@@ -187,6 +187,12 @@ func TestSQIReferencePresets(t *testing.T) {
 			params:     []string{"SceneFile", "Frames", "RenderNode", "FramesPerTask"},
 			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS", "SQI_LOG_CHECKS"},
 		},
+		// fusion-render passes a chunk's start and end to -start/-end.
+		"fusion-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames", "FramesPerTask"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS", "SQI_LOG_CHECKS"},
+		},
 		"ffmpeg-transcode": {
 			category: "Transcoding",
 			params:   []string{"SourceFile", "OutputFile", "VideoCodec", "Quality", "AudioCodec"},

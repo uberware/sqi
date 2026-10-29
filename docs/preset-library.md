@@ -172,10 +172,10 @@ the [`sqi-submitter`](dcc-submitters.md) in-application submitters:
 `maya-layer-render`, `maya-scene-render`, `houdini-rop-render`,
 `nuke-write-render`, `nuke-script-render`, `blender-batch-render`,
 `blender-view-layer-render`, `cinema4d-render`, `cinema4d-take-render`,
-`3dsmax-render` and the four After Effects presets. Four more have no
+`3dsmax-render` and the four After Effects presets. Five more have no
 in-application submitter and are submitted from the web UI or the API:
-`mistika-boutique-render`, `mistika-vr-render`, `mistika-workflows-render` and
-`katana-render`.
+`mistika-boutique-render`, `mistika-vr-render`, `mistika-workflows-render`,
+`katana-render` and `fusion-render`.
 
 Each names its parameters by the [parameter convention
 contract](dcc-submitters.md#the-parameter-convention-contract), so submitter
@@ -184,8 +184,8 @@ presets declare `SceneFile` and `Frames`; the queue presets render whatever the
 project has queued, so they take only `SceneFile`. An output parameter is
 declared only where the command takes one: `OutputDir` on the two Maya presets
 and `OutputPath` on Blender, Cinema 4D and 3ds Max. Per-host extras include
-`Renderer`, `RenderLayer`, `RopPath`, `WriteNode`, `Scene`, `ViewLayer`, `Take`
-and `RenderQueueItem`.
+`Renderer`, `RenderLayer`, `RopPath`, `WriteNode`, `Scene`, `ViewLayer`, `Take`,
+`RenderNode` and `RenderQueueItem`.
 
 Each preset gates on a capability tag that `sqi-worker` auto-detects from a
 standard install; a manual tag is needed only for a nonstandard install path
@@ -218,6 +218,31 @@ exits when an ImageRead node's file is missing (4.5v5 to 6.0v3); the preset sets
 no timeout, and its readme recommends adding one to the step's `onRun` action.
 The `katana` detector's Linux and Windows install paths are unverified; Katana
 does not run on macOS. See the preset's readme for what has not been verified.
+
+### Fusion
+
+| Preset | Renders | Shape | Gate |
+|---|---|---|---|
+| `fusion-render` | a whole `.comp` with `FusionRenderNode` | `FramesPerTask` frames per task, default 10 | `fusion` |
+
+`fusion-render` has no per-target variant: Fusion's command line cannot pick a
+Saver, so every Saver in the comp writes where the comp says. It runs
+`FusionRenderNode <comp> -render -start <first> -end <last> -quiet -verbose
+-quit`, one argument per flag and value; a stepped `Frames` range splits into
+one task per frame. The Render Node ships inside Fusion Studio and needs a
+Studio licence (a dongle, or a Fusion Server on the subnet); the free edition
+cannot render from the command line. Linux needs an X display (Xvfb), and a
+Fusion GUI open on the machine holds the scripting port and stalls the node.
+
+It declares [`SQI_LOG_CHECKS`](openjd-extensions.md): a task fails when a line of
+standard output contains `The fusion renderer reported that the render failed`
+or `Failed to load the comp`, Deadline's two strings. **It is unverified whether
+they reach standard output with `-verbose`** rather than only a `-log` file
+(Deadline drives the node through its own scripting connection), in which case
+the check never fires and a failed render is caught only by an exit status that
+is itself undocumented. A Fusion 8 report of a successful render exiting
+`-1073741819` is recorded in the readme and not handled. The `fusion`
+detector's install paths on all three platforms are inferred, not observed.
 
 ### Cinema 4D, 3ds Max and After Effects
 
@@ -387,7 +412,7 @@ but run their script directly, so they need a Linux or macOS worker.
 
 ## Validation tiers
 
-`presets/validation-tiers.yaml` has 38 entries, the 31 presets under
+`presets/validation-tiers.yaml` has 39 entries, the 32 presets under
 `presets/sqi/` plus the seven built-in products documented in
 [`docs/development.md`](development.md#adding-a-product), and states which
 validation tier each has reached. The four `presets/testing/` presets are not
@@ -505,7 +530,7 @@ skip on a platform named in `required_on` is a registry failure.
 ### Tier 3 on Windows
 
 Tier 3 runs on Windows as it does on Linux and macOS, and CI runs it in a
-dedicated job (`preset-harness-windows`). Of the 38 registry entries, 28 have
+dedicated job (`preset-harness-windows`). Of the 39 registry entries, 29 have
 `tier3.required_on: [linux, darwin, windows]`, so a skip on Windows fails the
 registry check for each of them. The other 10 are gated to fewer platforms:
 

@@ -1,0 +1,44 @@
+preset: fusion-render
+case:   target-with-space
+params:
+  Frames=1-2
+  FramesPerTask=1
+  SceneFile=/mnt/show/seq010/shot 0010/comp/shot0010_comp_v007.comp
+
+step "Render" — 2 tasks
+  log checks: failOn "The fusion renderer reported that the render failed"
+  log checks: failOn "Failed to load the comp"
+
+task 1/2  name="Render[Frame=1-1,Frame.End=1,Frame.Start=1]"
+  task params:
+    Frame=1-1
+    Frame.End=1
+    Frame.Start=1
+  command: FusionRenderNode
+  args:
+    [0]  /mnt/show/seq010/shot 0010/comp/shot0010_comp_v007.comp
+    [1]  -render
+    [2]  -start
+    [3]  1
+    [4]  -end
+    [5]  1
+    [6]  -quiet
+    [7]  -verbose
+    [8]  -quit
+
+task 2/2  name="Render[Frame=2-2,Frame.End=2,Frame.Start=2]"
+  task params:
+    Frame=2-2
+    Frame.End=2
+    Frame.Start=2
+  command: FusionRenderNode
+  args:
+    [0]  /mnt/show/seq010/shot 0010/comp/shot0010_comp_v007.comp
+    [1]  -render
+    [2]  -start
+    [3]  2
+    [4]  -end
+    [5]  2
+    [6]  -quiet
+    [7]  -verbose
+    [8]  -quit

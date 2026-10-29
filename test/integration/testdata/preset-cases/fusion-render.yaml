@@ -1,0 +1,58 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Fusion Render. Ships FramesPerTask 10, so default's 1-25 becomes three chunks
+# (the balanced split: 1-9, 10-17, 18-25). multi-frame-chunk lowers it to 5 to
+# show the first-last span -start/-end carry; stepped-range shows a gap-bearing
+# range never spanning a frame it excluded: a CONTIGUOUS chunk cannot cross a
+# gap, so 1-9:4 becomes one task per frame.
+#
+# target-with-space puts a space in the comp path; the golden shows it
+# travelling as a single argument.
+#
+# logged-error is an OUTCOME case (TestPresetOutcomes): the stub prints a line
+# the preset's first failOn pattern matches and exits 0, so the only thing that
+# can fail the task is the SQI_LOG_CHECKS check. One frame, so one task.
+cases:
+  - name: default
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/comp/shot0010_comp_v007.comp
+      Frames: "1-25"
+    expect_tasks: 3
+    expect_invocations:
+      FusionRenderNode: 3
+  - name: multi-frame-chunk
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/comp/shot0010_comp_v007.comp
+      Frames: "1-10"
+      FramesPerTask: "5"
+    expect_tasks: 2
+    expect_invocations:
+      FusionRenderNode: 2
+  - name: stepped-range
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/comp/shot0010_comp_v007.comp
+      Frames: "1-9:4"
+    expect_tasks: 3
+    expect_invocations:
+      FusionRenderNode: 3
+  - name: target-with-space
+    params:
+      SceneFile: '/mnt/show/seq010/shot 0010/comp/shot0010_comp_v007.comp'
+      Frames: "1-2"
+      FramesPerTask: "1"
+    expect_tasks: 2
+    expect_invocations:
+      FusionRenderNode: 2
+  - name: logged-error
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/comp/shot0010_comp_v007.comp
+      Frames: "1"
+    expect_tasks: 1
+    # Three, not one: a failed task is retried up to scheduler.default_max_attempts
+    # (3), and every attempt really runs the stub and prints the line.
+    expect_invocations:
+      FusionRenderNode: 3
+    stub_env:
+      SQI_STUB_STDOUT: "The fusion renderer reported that the render failed"
+    expect_status: failed
+    expect_reason: "matched failOn"

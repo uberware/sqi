@@ -1,0 +1,44 @@
+preset: fusion-render
+case:   multi-frame-chunk
+params:
+  Frames=1-10
+  FramesPerTask=5
+  SceneFile=/mnt/show/seq010/shot0010/comp/shot0010_comp_v007.comp
+
+step "Render" — 2 tasks
+  log checks: failOn "The fusion renderer reported that the render failed"
+  log checks: failOn "Failed to load the comp"
+
+task 1/2  name="Render[Frame=1-5,Frame.End=5,Frame.Start=1]"
+  task params:
+    Frame=1-5
+    Frame.End=5
+    Frame.Start=1
+  command: FusionRenderNode
+  args:
+    [0]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v007.comp
+    [1]  -render
+    [2]  -start
+    [3]  1
+    [4]  -end
+    [5]  5
+    [6]  -quiet
+    [7]  -verbose
+    [8]  -quit
+
+task 2/2  name="Render[Frame=6-10,Frame.End=10,Frame.Start=6]"
+  task params:
+    Frame=6-10
+    Frame.End=10
+    Frame.Start=6
+  command: FusionRenderNode
+  args:
+    [0]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v007.comp
+    [1]  -render
+    [2]  -start
+    [3]  6
+    [4]  -end
+    [5]  10
+    [6]  -quiet
+    [7]  -verbose
+    [8]  -quit

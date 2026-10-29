@@ -527,25 +527,25 @@ visible, since the server enforces the permission either way.
 
 ## Reference presets
 
-sqi ships eighteen DCC reference products under `presets/sqi/`, published
-through the [preset library](preset-library.md). The directory holds thirty-one
+sqi ships nineteen DCC reference products under `presets/sqi/`, published
+through the [preset library](preset-library.md). The directory holds thirty-two
 products in total. The other thirteen are eight [standalone renderer
 presets](preset-library.md#standalone-renderer-reference-presets), which render
 exported scene files without loading the DCC, and five `Transcoding`-category
 [ffmpeg presets](preset-library.md#transcoding-reference-presets). Install the
 DCC presets from **Admin → Preset Library** in the web UI or, without a preset
 index, create them through `POST /api/v1/products` or **Admin → Products**. All
-eighteen use the product `category` `Rendering`. All but the two After Effects
+nineteen use the product `category` `Rendering`. All but the two After Effects
 queue presets (one task each) declare `TASK_CHUNKING` to split the frame range;
-the Maya, Blender, After Effects render and Mistika presets also declare
+the Maya, Blender, After Effects render, Mistika, Katana and Fusion presets also declare
 `SQI_CHUNK_BOUNDS` to expose each chunk's start and end frame (see
 [OpenJD extensions](openjd-extensions.md)). The Cinema 4D and 3ds Max presets
 declare `EXPR` instead: it computes the same two frames, and leaves the output
 flag out when **Output Path** is empty.
 
-Fourteen of the eighteen have a matching `sqi-submitter` host (Maya, Houdini,
-Nuke, 3ds Max, Blender, Cinema 4D and After Effects). The three Mistika presets
-and Katana have none and are submitted from the web UI or the API.
+Fourteen of the nineteen have a matching `sqi-submitter` host (Maya, Houdini,
+Nuke, 3ds Max, Blender, Cinema 4D and After Effects). The three Mistika presets,
+Katana and Fusion have none and are submitted from the web UI or the API.
 
 | Product | Command | Chunking | Parameters | Worker tag |
 |---|---|---|---|---|
@@ -567,6 +567,7 @@ and Katana have none and are submitted from the web UI or the API.
 | `mistika-vr-render` | `vr -r <scene> -s/-e <frame range>` | chunks of 10 | `SceneFile` (`*.rnd`), `Frames` | `attr.worker.tag.mistikavr = "true"` |
 | `mistika-workflows-render` | `workflows -r <scene> -s/-e <frame range>` | chunks of 10 | `SceneFile` (`*.rnd`), `Frames` | `attr.worker.tag.mistikaworkflows = "true"` |
 | `katana-render` | `katana --batch --katana-file=<scene> --render-node=<node> -t <first>-<last>` | one frame per task by default (raise `FramesPerTask` to batch) | `SceneFile` (`*.katana`), `Frames`, `RenderNode`, `FramesPerTask` | `attr.worker.tag.katana = "true"` |
+| `fusion-render` | `FusionRenderNode <comp> -render -start <first> -end <last> -quiet -verbose -quit` | chunks of 10 | `SceneFile` (`*.comp`), `Frames`, `FramesPerTask` | `attr.worker.tag.fusion = "true"` |
 
 Maya and Nuke each ship a **single-target** product (`-rl <layer>` /
 `-X <writeNode>`) and a **whole-scene** product that omits that flag: Maya's
@@ -631,11 +632,11 @@ Each preset's `hostRequirements` gates it to workers advertising the matching
 presets also require `attr.worker.os.family` (`windows` for `3dsmax-render`,
 `windows` or `macos` for the matching After Effects variant). At startup
 `sqi-worker` detects a standard Maya, Nuke, Houdini, Blender, Cinema 4D, 3ds
-Max, After Effects or Mistika install, on `PATH` or in its usual install
+Max, After Effects, Mistika, Katana or Fusion Render Node install, on `PATH` or in its usual install
 location, and advertises the matching tag (`maya`, plus a version variant such
 as `maya_2025`) with value `"true"`; see [Capability
 auto-detection](worker-capabilities.md#capability-auto-detection-built-in-dcc-detectors).
-That satisfies the `anyOf: ["true"]` requirement each of the eighteen presets
+That satisfies the `anyOf: ["true"]` requirement each of the nineteen presets
 declares, so a worker with a standard install needs no per-worker
 configuration. Run `sqi-worker capabilities` (or `start --dry-run`) to see
 which DCCs were found.
@@ -742,6 +743,7 @@ are the **target parameters**: the names that identify one target.
 | 3ds Max | none: the host offers no targets | none | none | `3dsmax-render` |
 | Blender | one view layer of one scene, named `<scene> / <view layer>` | `Scene` (the **scene name**, not a path) and `ViewLayer` | `blender-view-layer-render` | `blender-batch-render` |
 | Cinema 4D | a checked take other than the main take | `Take` (the take's name) | `cinema4d-take-render` | `cinema4d-render` |
+| Fusion | none: the command line cannot pick a Saver | none | none | `fusion-render` |
 | Katana | a Render node, named in the project | `RenderNode` (the node's name; a string) | `katana-render` | none: a Render node is the unit, as a ROP is for Houdini |
 | After Effects | a `Queued` render-queue item, named after its composition | `RenderQueueItem` (the item's 1-based index; an `INT` parameter, minimum 1; extra values are strings) | `after-effects-render-windows`, `after-effects-render-macos` | `after-effects-queue-render-windows`, `after-effects-queue-render-macos` |
 

@@ -1,0 +1,138 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: fusion-render
+title: Fusion Render
+description: >-
+  Renders a saved Fusion composition with Fusion Render Node, ten frames per
+  task by default, writing wherever the comp's Savers say.
+readme: |
+  # Fusion Render
+
+  Renders a saved `.comp` with the Fusion Render Node
+  (`FusionRenderNode <comp> -render -start N -end M`). The whole composition
+  renders: Fusion's command line cannot pick a single Saver, so every Saver
+  in the comp writes where the comp says, and there is no per-target variant.
+
+  Each task renders a contiguous slice of the frame range, ten frames per task
+  by default.
+
+  ## Parameters
+
+  - **Comp File** - the `.comp` to render. It must be reachable from every
+    worker that runs the job, and so must the media it loads and the folders
+    its Savers write to.
+  - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
+    `1-100:2` for every second frame.
+  - **Frames Per Task** - the most frames one task renders. A range that does
+    not divide evenly is spread over the same number of tasks in near-equal
+    chunks: `1-12` at 5 is `1-4`, `5-8`, `9-12`.
+
+  ## How work is divided
+
+  The frame range expands into tasks through OpenJD task chunking. The
+  `SQI_CHUNK_BOUNDS` extension gives each task the first and last frame of its
+  own slice, which the command passes as `-start` and `-end`; the last frame is
+  inclusive. A chunk never spans a gap, so a stepped range such as `1-9:4`
+  becomes one task per frame.
+
+  ## How failures are detected
+
+  This preset declares the `SQI_LOG_CHECKS` extension: a task fails when any
+  line of the render node's standard output contains `The fusion renderer
+  reported that the render failed` or `Failed to load the comp`, the two
+  strings Deadline's Fusion plugin treats as a failed render. Fusion's exit
+  status is not relied on alone, since its behaviour on a failed render is not
+  documented. `-verbose` is passed so that the render node is as talkative as
+  it can be on standard output.
+
+  ## Requirements
+
+  - Workers tagged `attr.worker.tag.fusion = true`
+  - A `FusionRenderNode` command the worker can resolve: its `worker.commands`
+    entry, a `FusionRenderNode` on its `PATH`, or the Fusion Render Node
+    install it detects
+  - Fusion Studio. The Render Node ships inside the Fusion Studio download and
+    needs a Studio licence, either a dongle or a Fusion Server on the same
+    subnet. The free edition of Fusion cannot render from the command line.
+  - On Linux, an X display: run the worker under Xvfb if the machine has none.
+  - No Fusion window open on the worker. A Fusion GUI running on the machine
+    holds Fusion's scripting port and stalls the render node.
+
+  `-quiet` is passed so that no pop-up waits on a click that nobody will give,
+  and `-quit` so the render node exits when its frames are done.
+
+  ## What has not been verified
+
+  - No Fusion Render Node has executed this preset. The arguments come from the
+    Fusion 21 manual's command-line page.
+  - Whether the two failure strings reach standard output at all is unknown.
+    They are Deadline's, and Deadline drives the render node through its own
+    scripting connection and reads its log, so they may appear only in the
+    `-log` file, which this preset does not ask for. If they never reach
+    standard output the check never fires, and a failed render is caught only if
+    the render node's exit status is non-zero, which is also undocumented.
+  - An old report from Fusion 8 has a successful render exiting with
+    `-1073741819` on Windows. It is recorded here and not handled; if your
+    version does this, every task would fail.
+  - The install paths the detector looks for on Windows, macOS and Linux are
+    inferred from a pattern across versions, not seen on a machine for
+    Fusion 18 to 21.
+category: Rendering
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: Fusion Render
+  extensions: [TASK_CHUNKING, SQI_CHUNK_BOUNDS, SQI_LOG_CHECKS]
+  parameterDefinitions:
+    - name: SceneFile
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface:
+        control: CHOOSE_INPUT_FILE
+        label: Comp File
+        fileFilters:
+          - label: Fusion compositions
+            patterns: ["*.comp"]
+        fileFilterDefault:
+          label: Fusion compositions
+          patterns: ["*.comp"]
+    - name: Frames
+      type: STRING
+      userInterface: { control: LINE_EDIT, label: Frame Range }
+    - name: FramesPerTask
+      type: INT
+      default: 10
+      minValue: 1
+      userInterface: { control: SPIN_BOX, label: Frames Per Task }
+  steps:
+    - name: Render
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.fusion
+            anyOf: ["true"]
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Frame
+            type: CHUNK[INT]
+            range: "{{Param.Frames}}"
+            chunks:
+              defaultTaskCount: "{{Param.FramesPerTask}}"
+              rangeConstraint: CONTIGUOUS
+      SQI_LOG_CHECKS:
+        failOn:
+          - "The fusion renderer reported that the render failed"
+          - "Failed to load the comp"
+      script:
+        actions:
+          onRun:
+            command: FusionRenderNode
+            args:
+              - "{{Param.SceneFile}}"
+              - "-render"
+              - "-start"
+              - "{{Task.Param.Frame.Start}}"
+              - "-end"
+              - "{{Task.Param.Frame.End}}"
+              - "-quiet"
+              - "-verbose"
+              - "-quit"

@@ -106,4 +106,20 @@ var dccLayouts = []rendererLayout{
 		versioned: "/opt/foundry/katana7.0v1/katana",
 		version:   "7.0v1",
 	},
+	{
+		// Fusion Render Node ships inside Fusion Studio on all three platforms.
+		// Every path is the pattern the design inferred for Fusion 18 to 21 and
+		// is unverified (see fusion.yaml). The version is read from the install
+		// folder, whose name differs per platform; the Windows path stands for
+		// the version check.
+		tag: "fusion",
+		exe: "FusionRenderNode",
+		installs: []string{
+			`C:\Program Files\Blackmagic Design\Fusion Render Node 19\FusionRenderNode.exe`,
+			"/Applications/Blackmagic Fusion 19 Render Node/Fusion Render Node.app/Contents/MacOS/Fusion Render Node",
+			"/opt/BlackmagicDesign/FusionRenderNode19/FusionRenderNode",
+		},
+		versioned: `C:\Program Files\Blackmagic Design\Fusion Render Node 19\FusionRenderNode.exe`,
+		version:   "19",
+	},
 }

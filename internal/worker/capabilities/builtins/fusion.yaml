@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Blackmagic Fusion Render Node, which presets/sqi/fusion-render.yaml runs
+# through the bare command `FusionRenderNode`. It ships inside the Fusion Studio
+# download and runs on Windows, macOS and Linux.
+#
+# Every path here is unverified: none was observed on a machine, and none is
+# documented for Fusion 18 to 21. They are the pattern the P5b design inferred
+# from earlier versions:
+#   Windows  C:\Program Files\Blackmagic Design\Fusion Render Node <ver>\FusionRenderNode.exe
+#   macOS    /Applications/Blackmagic Fusion <ver> Render Node/Fusion Render Node.app/Contents/MacOS/Fusion Render Node
+#   Linux    /opt/BlackmagicDesign/FusionRenderNode<ver>/FusionRenderNode
+# A Render Node installed anywhere else needs the tag set by hand with
+# fusion=true under worker.capability_tags, or a `FusionRenderNode` command in
+# worker.commands.
+#
+# The version is read from the install folder name, which differs on each
+# platform. A Render Node found only on PATH carries no version.
+tag: fusion
+checks:
+  - exe: FusionRenderNode                                        # a FusionRenderNode command the operator provides
+  - path_glob: 'C:\Program Files\Blackmagic Design\Fusion Render Node *\FusionRenderNode.exe'  # windows
+    os: windows
+  - path_glob: "/Applications/Blackmagic Fusion * Render Node/Fusion Render Node.app/Contents/MacOS/Fusion Render Node"  # macOS
+    os: darwin
+  - path_glob: "/opt/BlackmagicDesign/FusionRenderNode*/FusionRenderNode"  # linux
+    os: linux
+version:
+  from: '(?:Fusion Render Node |FusionRenderNode|Fusion )(?P<v>[0-9]+(?:\.[0-9]+)?)'
+# The preset runs a bare `FusionRenderNode`. Only the Windows and Linux
+# executables carry that name; the macOS one is `Fusion Render Node` inside an
+# app bundle, so the worker supplies a `FusionRenderNode` command pointing at it
+# from the newest install found here, unless the operator or the host already
+# provides one.
+command:
+  name: FusionRenderNode
+  globs:
+    - path_glob: 'C:\Program Files\Blackmagic Design\Fusion Render Node *\FusionRenderNode.exe'  # windows
+      os: windows
+    - path_glob: "/Applications/Blackmagic Fusion * Render Node/Fusion Render Node.app/Contents/MacOS/Fusion Render Node"  # macOS
+      os: darwin
+    - path_glob: "/opt/BlackmagicDesign/FusionRenderNode*/FusionRenderNode"  # linux
+      os: linux

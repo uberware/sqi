@@ -41,6 +41,7 @@ func TestBuild(t *testing.T) {
 		"ffmpeg-segment-transcode-powershell",
 		"ffmpeg-sequence-encode",
 		"ffmpeg-transcode",
+		"fusion-render",
 		"houdini-rop-render",
 		"husk-usd-render",
 		"katana-render",

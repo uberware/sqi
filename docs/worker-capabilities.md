@@ -142,7 +142,7 @@ restarts.
 
 ### Built-in detectors
 
-Twenty built-ins ship embedded in the worker binary, one YAML file per
+Twenty-one built-ins ship embedded in the worker binary, one YAML file per
 application under
 [`internal/worker/capabilities/builtins/`](https://github.com/uberware/sqi/tree/main/internal/worker/capabilities/builtins):
 
@@ -168,6 +168,7 @@ application under
 | `threedelight` | `exe renderdl` (any OS); `env DELIGHT`; macOS `path_glob /Applications/3Delight/bin/renderdl`; Windows `path_glob C:\Program Files\3Delight\bin\renderdl.exe` | none |
 | `oiiotool` | `exe oiiotool` (any OS, if on `PATH`) | none (presence only) |
 | `katana` | `exe katana` (any OS, if on `PATH`); Linux `path_glob /opt/Foundry/Katana*/katana` and `/opt/foundry/katana*/katana`; Windows `path_glob C:\Program Files\Katana*\bin\katanaBin.exe`. All install paths unverified; Katana does not run on macOS. Also supplies a default `katana` command (Windows: `katanaBin.exe`) | `[Kk]atana([0-9]+\.[0-9]+v[0-9]+)` against the matched path (none when only `exe katana` matched) |
+| `fusion` | `exe FusionRenderNode` (any OS, if on `PATH`); Windows `path_glob C:\Program Files\Blackmagic Design\Fusion Render Node *\FusionRenderNode.exe`; macOS `path_glob /Applications/Blackmagic Fusion * Render Node/Fusion Render Node.app/Contents/MacOS/Fusion Render Node`; Linux `path_glob /opt/BlackmagicDesign/FusionRenderNode*/FusionRenderNode`. All install paths inferred, none observed. Also supplies a default `FusionRenderNode` command (macOS: the executable is `Fusion Render Node`) | `(?:Fusion Render Node \|FusionRenderNode\|Fusion )(?P<v>[0-9]+(?:\.[0-9]+)?)` against the matched path (none when only `exe FusionRenderNode` matched) |
 
 The three Mistika detectors carry **no `exe` check**: their binaries are
 `mistika`, `vr` and `workflows`, and a bare `PATH` probe for the last two would
@@ -571,7 +572,7 @@ steps:
           anyOf: ["true"]
 ```
 
-The eighteen DCC reference presets under `presets/sqi/` (see
+The nineteen DCC reference presets under `presets/sqi/` (see
 [`docs/dcc-submitters.md`](dcc-submitters.md#reference-presets)) and the eight
 [standalone renderer presets](preset-library.md#standalone-renderer-reference-presets)
 use this syntax, as do the `Transcoding` presets, which gate on

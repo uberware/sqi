@@ -640,6 +640,33 @@ presets:
       case: TestPresetTier3/katana-render/default
       required_on: [linux, darwin, windows]
 
+  - name: fusion-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, multi-frame-chunk, stepped-range, target-with-space, logged-error]
+      caveat: >-
+        argv derived from the Fusion 21 manual's command-line page
+        (FusionRenderNode <comp> -render -start <first> -end <last> -quiet
+        -verbose -quit); no Fusion Render Node has executed it. The goldens
+        cover the shipped ten-frames-per-task shape (1-25 as 1-9, 10-17, 18-25),
+        a FramesPerTask of 5, a stepped range splitting into single frames, and
+        a comp path containing a space as one argument. The two failOn strings
+        (The fusion renderer reported that the render failed, Failed to load the
+        comp) are Deadline's Fusion plugin's. It is UNVERIFIED whether they reach
+        the render node's standard output with -verbose, or appear only in a
+        -log file (Deadline drives the node through its own scripting connection
+        and reads its log), in which case the check never fires and a failed
+        render is caught only by an exit status that is also undocumented. Fusion
+        8 once reported a successful render exiting -1073741819; that is recorded
+        and not handled. Tier 3 runs the stub through a real worker, and the
+        logged-error case proves a task whose process exited 0 still fails on a
+        matching line. Rendering needs a Fusion Studio licence; the detector's
+        install paths on all three platforms are unverified.
+    tier3:
+      case: TestPresetTier3/fusion-render/default
+      required_on: [linux, darwin, windows]
+
   - name: ffmpeg-transcode
     source: presets/sqi
     tier: 2

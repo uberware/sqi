@@ -236,6 +236,64 @@ func TestKatanaDetector_CommandFindsTheExecutableOnEveryPlatform(t *testing.T) {
 	}
 }
 
+// TestFusionDetector_CommandFindsTheExecutableOnEveryPlatform checks the shipped
+// command globs against a Fusion Render Node 19 install on each platform. The
+// layouts are inferred and unverified (see fusion.yaml). The macOS executable
+// is named "Fusion Render Node", with spaces, inside the app bundle, which the
+// preset reaches through the `FusionRenderNode` command the detector supplies;
+// neighboring files must not match.
+func TestFusionDetector_CommandFindsTheExecutableOnEveryPlatform(t *testing.T) {
+	d := builtinDetector(t, "fusion")
+	if d.Command == nil || d.Command.Name != "FusionRenderNode" {
+		t.Fatalf("the fusion detector has no command named FusionRenderNode: %+v", d.Command)
+	}
+	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
+	cases := []struct {
+		goos string
+		exe  string
+		not  []string
+	}{
+		{"windows", `C:\Program Files\Blackmagic Design\Fusion Render Node 19\FusionRenderNode.exe`, []string{`C:\Program Files\Blackmagic Design\Fusion Render Node 19\Fusion.exe`, `C:\Program Files\Blackmagic Design\Fusion Render Node 19\fuscript.exe`}},
+		{"darwin", "/Applications/Blackmagic Fusion 19 Render Node/Fusion Render Node.app/Contents/MacOS/Fusion Render Node", []string{"/Applications/Blackmagic Fusion 19 Render Node/Fusion Render Node.app/Contents/MacOS/fuscript"}},
+		{"linux", "/opt/BlackmagicDesign/FusionRenderNode19/FusionRenderNode", []string{"/opt/BlackmagicDesign/FusionRenderNode19/fuscript", "/opt/BlackmagicDesign/FusionRenderNode19/bin/FusionRenderNode"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.goos, func(t *testing.T) {
+			matches := func(file string) (matched bool, glob string) {
+				for _, g := range d.Command.Globs {
+					if g.OS != "" && g.OS != tc.goos {
+						continue
+					}
+					ok, err := path.Match(norm(g.PathGlob), norm(file))
+					if err != nil {
+						t.Fatalf("bad pattern %q: %v", g.PathGlob, err)
+					}
+					if ok {
+						return true, g.PathGlob
+					}
+				}
+				return false, ""
+			}
+			if ok, _ := matches(tc.exe); !ok {
+				t.Errorf("no %s command glob matches the executable %s", tc.goos, tc.exe)
+			}
+			for _, other := range tc.not {
+				if ok, g := matches(other); ok {
+					t.Errorf("%s glob %q matched %s, which is not the Fusion Render Node executable", tc.goos, g, other)
+				}
+			}
+			env := fakeEnv{goos: tc.goos, globs: map[string][]string{}}
+			for _, g := range d.Command.Globs {
+				env.globs[g.PathGlob] = []string{tc.exe}
+			}
+			got, ok := d.FindCommand(env)
+			if !ok || got.Name != "FusionRenderNode" || got.Path != tc.exe || got.Version != "19" {
+				t.Errorf("FindCommand = %+v (found %v), want FusionRenderNode 19 at %s", got, ok, tc.exe)
+			}
+		})
+	}
+}
+
 func TestDetectCommands_ComesFromBuiltinsAndCustomDetectorsAndHonoursDisable(t *testing.T) {
 	custom := Detector{
 		Tag: "inhouse", Checks: []Check{{Exe: "inhouse"}},
