@@ -216,7 +216,7 @@ so a name with a space stays whole. Foundry documents `-t` with ranges and comma
 lists and no step form, so a stepped `Frames` range splits into one task per
 frame. Every host that renders needs a `katana_r` render licence.
 
-It is the first preset to declare [`SQI_LOG_CHECKS`](openjd-extensions.md): a
+It is the first preset to declare [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md): a
 task fails when a line of Katana's output matches `ERROR +\|`, the pattern
 Deadline's Katana plugin treats as a failed render, because Katana's exit status
 on failure is not documented. Foundry also documents a batch render that never
@@ -240,7 +240,7 @@ Studio licence (a dongle, or a Fusion Server on the subnet); the free edition
 cannot render from the command line. Linux needs an X display (Xvfb), and a
 Fusion GUI open on the machine holds the scripting port and stalls the node.
 
-It declares [`SQI_LOG_CHECKS`](openjd-extensions.md): a task fails when a line of
+It declares [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md): a task fails when a line of
 standard output contains `The fusion renderer reported that the render failed`
 or `Failed to load the comp`, Deadline's two strings. **It is unverified whether
 they reach standard output with `-verbose`** rather than only a `-log` file
@@ -268,7 +268,7 @@ not the `project.sfx` file inside it. `-range` is in session numbering and
 `-start`, which renumbers output files, is never passed; a stepped `Frames` range
 splits into one task per frame.
 
-**Neither preset declares [`SQI_LOG_CHECKS`](openjd-extensions.md), and a failed
+**Neither preset declares [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md), and a failed
 render that exits 0 is reported as a success.** No line `sfxcmd` prints on
 success or failure is documented, a Linux report has it exiting 0 with no frames
 written, and its exit codes are undocumented; a pattern was not guessed. Check
@@ -302,7 +302,7 @@ why `FramesPerTask` stops at 1000 (pinned by
 `TestPresetVRED_ParamsCostAtMaxChunk`). A blank `OutputFile` keeps the scene's
 render filename.
 
-Both declare [`SQI_LOG_CHECKS`](openjd-extensions.md) with the host-script
+Both declare [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md) with the host-script
 markers: a task fails unless the output contains `SQI_RENDER: OK`, and fails on
 a line containing `SQI_RENDER: FAILED:` or `No valid license found`. VRED can
 exit 0 without rendering (after a licence failure, for one), so its exit
@@ -343,7 +343,7 @@ everything from an embedded `params.json` that `EXPR` builds with `repr_json`, s
 Python source; `params.json` costs more as the chunk grows, which is why `FramesPerTask` stops at 1000 (pinned
 by `TestPresetKeyShot_ParamsCostAtMaxChunk`).
 
-Both declare [`SQI_LOG_CHECKS`](openjd-extensions.md) with the host-script markers: a task fails unless the
+Both declare [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md) with the host-script markers: a task fails unless the
 output contains `SQI_RENDER: OK`, and fails on a line containing `SQI_RENDER: FAILED:`. KeyShot documents no
 exit codes, so its exit status is not relied on. The checks give their verdict only once KeyShot exits, and
 whether it exits when the script ends is undocumented, so the readmes recommend a step timeout. The markers go
@@ -380,7 +380,7 @@ pass group reach `lx.command` as keyword arguments, and the frames as integers, 
 `params.json` that `EXPR` builds with `repr_json`. The chunks are `CONTIGUOUS`; `params.json` costs more as the chunk
 grows, which is why `FramesPerTask` stops at 1000 (pinned by `TestPresetModo_ParamsCostAtMaxChunk`).
 
-Both declare [`SQI_LOG_CHECKS`](openjd-extensions.md): a task fails unless the output contains `SQI_RENDER: OK`, and
+Both declare [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md): a task fails unless the output contains `SQI_RENDER: OK`, and
 fails on a line containing `SQI_RENDER: FAILED:`, `failed with` or `Unknown command:`. Modo documents no exit status,
 so it is not relied on. The checks give their verdict only once Modo exits, and the script ends with `app.quit`,
 but whether Modo then exits in headless mode is undocumented, so the readmes recommend a step timeout. Foundry says
@@ -413,7 +413,7 @@ value is written into the command line or Python source: the asset paths and the
 `params.json` that `EXPR` builds with `repr_json`. With no frame parameter its cost is fixed, and every value it quotes
 has a `maxLength` of 1024 (pinned by `TestPresetUnreal_ParamsCostIsFixed`).
 
-Both declare [`SQI_LOG_CHECKS`](openjd-extensions.md): a task fails unless the output contains `SQI_RENDER: OK`, and
+Both declare [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md): a task fails unless the output contains `SQI_RENDER: OK`, and
 fails on a line containing `SQI_RENDER: FAILED:`, `LogPython: Error:` or `Render Executor: Error:`. The exit status is
 not relied on, and `LogPython: Error:` matches any Python error in the editor session (for example one from a
 project's `init_unreal.py`), so such an error fails the task even if the render succeeded. The checks give their

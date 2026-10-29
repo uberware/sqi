@@ -63,3 +63,4 @@ What the worker does at runtime, with file references.
 - [`EXPR`](openjd-extensions/expr.md) — official.
 - [`SQI_PATH_TRANSLATION`](openjd-extensions/path-translation.md) — vendor.
 - [`SQI_CHUNK_BOUNDS`](openjd-extensions/sqi-chunk-bounds.md) — vendor.
+- [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md) — vendor.
