@@ -136,9 +136,9 @@ readme: |
   - Whether text written to file descriptor 1 reaches the worker on macOS.
     If it does not, every task fails for want of `SQI_RENDER: OK`, never the
     other way round.
-  - Whether the macOS bundle ships a `keyshot_headless` beside `keyshot`.
-    One third-party source says so; KeyShot's manual does not. The detector
-    runs `keyshot -headless` either way.
+  - Whether the macOS bundle ships a `keyshot_headless` (a third-party
+    source says so; KeyShot's manual does not), and whether one on `PATH`
+    accepts the `-headless` the worker puts first.
   - The install folders the detector looks for are inferred; none was seen
     on a machine. The worker's version tag takes the number in the folder
     name, whether `KeyShot12` or a year.

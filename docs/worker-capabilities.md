@@ -365,7 +365,11 @@ belong to the operator: put them in `worker.commands`. Only the `silhouette` and
 arguments: `-nogui` for `sfxcmd` on Linux, where it otherwise needs an X display, and `-headless` for
 `keyshot_headless` on macOS, where the detected command is the app's `keyshot` program (the form KeyShot
 documents). So a command on `PATH` is left entirely alone except `sfxcmd` on a Linux worker, which
-keeps `-nogui`, and `keyshot_headless` on a macOS worker, which keeps `-headless`.
+keeps `-nogui`, and `keyshot_headless` on a macOS worker, which keeps `-headless`. That last case is
+**unverified**: a real `keyshot_headless` on a macOS `PATH` (one third-party source says the app bundle
+ships one) runs as `keyshot_headless -headless …`. KeyShot 10's manual shows that form, but no current
+release was checked, and a release that rejects the flag fails every task on that worker. Map
+`keyshot_headless` in `worker.commands` to state the arguments yourself.
 
 The `nuke`, `blender`, `houdini` (`hython`), `katana`, `fusion`, `silhouette`
 (`sfxcmd`), `vred` (`VREDCore`), `keyshot` (`keyshot_headless`), `modo` (`modo_cl`) and `unreal` (`UnrealEditor-Cmd`) built-ins define a command; the others rely on the command being on `PATH`. Blender's has Windows and macOS globs
