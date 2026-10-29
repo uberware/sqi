@@ -391,6 +391,14 @@ capabilities:
             os: linux
 ```
 
+When a custom detector names the same command as a built-in, the built-in's
+install wins if it found one. If the built-in found no install and reports only
+its arguments (`sfxcmd` on Linux, `keyshot_headless` on macOS), the custom
+detector's install fills the path, and the built-in's arguments are kept unless
+the custom detector declares its own `args` for that platform. So a custom
+detector that only points `sfxcmd` at a non-standard install still runs it with
+`-nogui`.
+
 `sqi-worker capabilities` and `sqi-worker start --dry-run` print a **COMMAND**
 table showing what each command name resolves to, with its arguments and where
 the decision came from (`config`, `PATH` or `detected`); the worker also logs each

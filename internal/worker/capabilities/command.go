@@ -147,21 +147,41 @@ func (d Detector) FindCommand(env CheckEnv) (DetectedCommand, bool) {
 
 // DetectCommands returns the commands the active detectors (see
 // [LoadDetectors]) found on env, one per command name, sorted by name. When two
-// detectors name the same command, the first (a built-in) wins.
+// detectors name the same command, the first (a built-in) wins, with one
+// exception: an earlier result that found no install (an empty Path, reported
+// only for its arguments) is filled by the first later detector that did find
+// one. Otherwise a built-in that knows only the application's arguments (the
+// silhouette detector's sfxcmd -nogui on Linux) would hide a studio's custom
+// detector for the same command at a non-standard path, and the worker would
+// lose its default for that command.
+//
+// The merged entry takes the later detector's Path and Version. Its Args are
+// the later detector's own when it declares any for this OS, and otherwise the
+// earlier detector's: the arguments describe the application, not the install,
+// so a custom detector written only to locate the executable keeps them.
 func DetectCommands(cfg CapabilitiesConfig, env CheckEnv) ([]DetectedCommand, error) {
 	detectors, err := LoadDetectors(cfg)
 	if err != nil {
 		return nil, err
 	}
 	var out []DetectedCommand
-	seen := map[string]bool{}
+	index := map[string]int{}
 	for _, d := range detectors {
 		c, ok := d.FindCommand(env)
-		if !ok || seen[c.Name] {
+		if !ok {
 			continue
 		}
-		seen[c.Name] = true
-		out = append(out, c)
+		i, seen := index[c.Name]
+		switch {
+		case !seen:
+			index[c.Name] = len(out)
+			out = append(out, c)
+		case out[i].Path == "" && c.Path != "":
+			if len(c.Args) == 0 {
+				c.Args = out[i].Args
+			}
+			out[i] = c
+		}
 	}
 	slices.SortFunc(out, func(a, b DetectedCommand) int { return strings.Compare(a.Name, b.Name) })
 	return out, nil

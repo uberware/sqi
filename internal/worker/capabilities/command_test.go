@@ -3,6 +3,7 @@
 package capabilities
 
 import (
+	"maps"
 	"path"
 	"regexp"
 	"slices"
@@ -839,6 +840,98 @@ func TestDetectCommands_ArgsWithoutInstall(t *testing.T) {
 			t.Errorf("DetectCommands on windows = %+v, want no sfxtool (no args for windows, no install)", got)
 		}
 	}
+}
+
+// A built-in that reports only arguments for a command (no install found) must
+// not hide a custom detector that locates the same command elsewhere: the
+// custom install fills the path, and the built-in's arguments are kept unless
+// the custom detector declares its own.
+func TestDetectCommands_ArgsOnlyBuiltinDoesNotHideACustomInstall(t *testing.T) {
+	customFor := func(name, glob string, args map[string][]string) Detector {
+		return Detector{
+			Tag: "studio_" + strings.ToLower(name), Checks: []Check{{Exe: name}},
+			Command: &CommandSpec{Name: name, Globs: []CommandGlob{{PathGlob: glob}}, Args: args},
+		}
+	}
+	builtinSfx := func() map[string][]string {
+		m := map[string][]string{}
+		for _, g := range builtinDetector(t, "silhouette").Command.Globs {
+			m[g.PathGlob] = []string{"/opt/BorisFX/Silhouette 2026/sfxcmd"}
+		}
+		return m
+	}
+	cases := []struct {
+		name     string
+		goos     string
+		custom   Detector
+		globs    map[string][]string
+		command  string
+		wantPath string
+		wantArgs []string
+	}{
+		{
+			name:     "custom sfxcmd at a non-standard path keeps the built-in -nogui",
+			goos:     "linux",
+			custom:   customFor("sfxcmd", "/studio/silhouette*/sfxcmd", nil),
+			globs:    map[string][]string{"/studio/silhouette*/sfxcmd": {"/studio/silhouette6/sfxcmd"}},
+			command:  "sfxcmd",
+			wantPath: "/studio/silhouette6/sfxcmd",
+			wantArgs: []string{"-nogui"},
+		},
+		{
+			name:     "custom sfxcmd with its own arguments uses them",
+			goos:     "linux",
+			custom:   customFor("sfxcmd", "/studio/silhouette*/sfxcmd", map[string][]string{"linux": {"-nogui", "-verbose"}}),
+			globs:    map[string][]string{"/studio/silhouette*/sfxcmd": {"/studio/silhouette6/sfxcmd"}},
+			command:  "sfxcmd",
+			wantPath: "/studio/silhouette6/sfxcmd",
+			wantArgs: []string{"-nogui", "-verbose"},
+		},
+		{
+			name:     "custom keyshot_headless on macOS keeps the built-in -headless",
+			goos:     "darwin",
+			custom:   customFor("keyshot_headless", "/Studio/KeyShot/keyshot_headless", nil),
+			globs:    map[string][]string{"/Studio/KeyShot/keyshot_headless": {"/Studio/KeyShot/keyshot_headless"}},
+			command:  "keyshot_headless",
+			wantPath: "/Studio/KeyShot/keyshot_headless",
+			wantArgs: []string{"-headless"},
+		},
+		{
+			name:     "custom detector that finds nothing leaves the built-in's arguments-only entry",
+			goos:     "linux",
+			custom:   customFor("sfxcmd", "/studio/silhouette*/sfxcmd", nil),
+			command:  "sfxcmd",
+			wantPath: "",
+			wantArgs: []string{"-nogui"},
+		},
+		{
+			name:     "a built-in that found an install still wins",
+			goos:     "linux",
+			custom:   customFor("sfxcmd", "/studio/silhouette*/sfxcmd", nil),
+			globs:    mergeGlobs(builtinSfx(), map[string][]string{"/studio/silhouette*/sfxcmd": {"/studio/silhouette6/sfxcmd"}}),
+			command:  "sfxcmd",
+			wantPath: "/opt/BorisFX/Silhouette 2026/sfxcmd",
+			wantArgs: []string{"-nogui"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := DetectCommands(CapabilitiesConfig{Detect: []Detector{tc.custom}}, fakeEnv{goos: tc.goos, globs: tc.globs})
+			if err != nil {
+				t.Fatalf("DetectCommands: %v", err)
+			}
+			got = only(got, tc.command)
+			if len(got) != 1 || got[0].Path != tc.wantPath || !slices.Equal(got[0].Args, tc.wantArgs) {
+				t.Errorf("DetectCommands = %+v, want one %s at %q with args %v", got, tc.command, tc.wantPath, tc.wantArgs)
+			}
+		})
+	}
+}
+
+func mergeGlobs(a, b map[string][]string) map[string][]string {
+	out := maps.Clone(a)
+	maps.Copy(out, b)
+	return out
 }
 
 func TestDetectCommands_ArgsAccompanyAFoundInstall(t *testing.T) {
