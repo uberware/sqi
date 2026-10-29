@@ -317,7 +317,7 @@ products with `source: installed`.
 See [`docs/preset-library.md`](preset-library.md) for the full guide, including
 the index format, configuration, and the browse → preview → install flow.
 
-The official library ships twenty-seven DCC `Rendering`-category presets, plus
+The official library ships twenty-nine DCC `Rendering`-category presets, plus
 eight [standalone renderer
 presets](preset-library.md#standalone-renderer-reference-presets). Fourteen of
 the DCC presets (`maya-layer-render`, `maya-scene-render`,
@@ -327,16 +327,17 @@ the DCC presets (`maya-layer-render`, `maya-scene-render`,
 `after-effects-render-windows`, `after-effects-render-macos`,
 `after-effects-queue-render-windows`, `after-effects-queue-render-macos`) are
 the targets of the [`sqi-submitter`](dcc-submitters.md) in-application
-submitters. The other thirteen have no in-application submitter and are submitted
+submitters. The other fifteen have no in-application submitter and are submitted
 from the web UI or the API: `mistika-boutique-render`, `mistika-vr-render`,
 `mistika-workflows-render`, `katana-render`, `silhouette-render`,
 `silhouette-render-all`, `fusion-render`, `vred-render`,
 `vred-viewpoint-render`, `keyshot-render`, `keyshot-studio-render`,
-`modo-render` and `modo-pass-group-render`.
-`3dsmax-render` and the After Effects presets also gate on the worker's OS.
+`modo-render`, `modo-pass-group-render`, `unreal-mrq-job-render` and
+`unreal-mrq-queue-render`.
+`3dsmax-render`, the After Effects presets and the Unreal presets also gate on the worker's OS.
 Parameter names follow a documented, versioned, additive-only convention:
-`SceneFile` and `Frames` on all but the two After Effects queue presets (which
-take only `SceneFile`), an output parameter only where the command takes one
+`SceneFile` and `Frames` on all but the two After Effects queue presets and the
+two Unreal presets (which take `SceneFile` and no `Frames`), an output parameter only where the command takes one
 (`OutputDir` on the Maya presets, `OutputPath` on Blender, Cinema 4D and
 3ds Max), plus per-host extras like
 `Renderer`/`RopPath`/`WriteNode`/`Scene`/`ViewLayer`/`Take`/`RenderQueueItem`.

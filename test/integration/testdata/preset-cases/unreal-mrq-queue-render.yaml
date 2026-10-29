@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Unreal Movie Render Queue Queue Render: one task renders a saved queue,
+# which params.json names as data. Shapes as unreal-mrq-job-render.yaml; see
+# its header. Windows-only, so Tier 3 and the outcome cases run on Windows only.
+#
+# default leaves the output directory blank, so every job keeps its own;
+# output-directory sets one for the whole queue.
+#
+# quoting puts a single quote, a double quote, a backslash and spaces in the
+# queue asset path, and both quotes and spaces in the output directory;
+# TestPresetUnreal_ParamsJSONRoundTrips decodes params.json and compares the
+# values.
+#
+# logged-error prints Unreal's Python error prefix behind its log prefix;
+# unreal-mrq-job-render's outcome cases cover the other two failOn patterns.
+cases:
+  - name: default
+    params:
+      SceneFile: 'C:\Projects\HeroFilm\HeroFilm.uproject'
+      QueueAsset: /Game/Cinematics/MRQ_HeroQueue
+    expect_tasks: 1
+    expect_invocations:
+      UnrealEditor-Cmd: 1
+    stub_env:
+      SQI_STUB_STDOUT: "SQI_RENDER: OK"
+  - name: output-directory
+    params:
+      SceneFile: 'C:\Projects\HeroFilm\HeroFilm.uproject'
+      QueueAsset: /Game/Cinematics/MRQ_HeroQueue
+      OutputDirectory: 'C:\Renders\HeroFilm\Queue'
+    expect_tasks: 1
+    expect_invocations:
+      UnrealEditor-Cmd: 1
+  - name: quoting
+    params:
+      SceneFile: 'C:\Projects\Hero Film\Hero Film.uproject'
+      QueueAsset: '/Game/Cinematics/it''s the "hero" \ queue'
+      OutputDirectory: 'C:\Renders\Hero Film\it''s the "hero" queue'
+    expect_tasks: 1
+    expect_invocations:
+      UnrealEditor-Cmd: 1
+  - name: logged-error
+    params:
+      SceneFile: 'C:\Projects\HeroFilm\HeroFilm.uproject'
+      QueueAsset: /Game/Cinematics/MRQ_HeroQueue
+    expect_tasks: 1
+    expect_invocations:
+      UnrealEditor-Cmd: 3
+    stub_env:
+      SQI_STUB_STDOUT: "[2026.10.28-12.00.00:000][  0]LogPython: Error: TypeError: the queue asset is not a MoviePipelineQueue"
+    expect_status: failed
+    expect_reason: "matched failOn"
+  - name: no-success-line
+    params:
+      SceneFile: 'C:\Projects\HeroFilm\HeroFilm.uproject'
+      QueueAsset: /Game/Cinematics/MRQ_HeroQueue
+    expect_tasks: 1
+    expect_invocations:
+      UnrealEditor-Cmd: 3
+    expect_status: failed
+    expect_reason: "never printed"

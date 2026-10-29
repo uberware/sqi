@@ -172,23 +172,26 @@ the [`sqi-submitter`](dcc-submitters.md) in-application submitters:
 `maya-layer-render`, `maya-scene-render`, `houdini-rop-render`,
 `nuke-write-render`, `nuke-script-render`, `blender-batch-render`,
 `blender-view-layer-render`, `cinema4d-render`, `cinema4d-take-render`,
-`3dsmax-render` and the four After Effects presets. Thirteen more have no
+`3dsmax-render` and the four After Effects presets. Fifteen more have no
 in-application submitter and are submitted from the web UI or the API:
 `mistika-boutique-render`, `mistika-vr-render`, `mistika-workflows-render`,
 `katana-render`, `silhouette-render`, `silhouette-render-all`, `fusion-render`,
 `vred-render`, `vred-viewpoint-render`, `keyshot-render`,
-`keyshot-studio-render`, `modo-render` and `modo-pass-group-render`.
+`keyshot-studio-render`, `modo-render`, `modo-pass-group-render`,
+`unreal-mrq-job-render` and `unreal-mrq-queue-render`.
 
 Each names its parameters by the [parameter convention
 contract](dcc-submitters.md#the-parameter-convention-contract), so submitter
 pre-fill works without configuration. All but the two After Effects queue
-presets declare `SceneFile` and `Frames`; the queue presets render whatever the
-project has queued, so they take only `SceneFile`. An output parameter is
+presets and the two Unreal presets declare `SceneFile` and `Frames`; the queue
+presets render whatever the project has queued, so they take only `SceneFile`,
+and the Unreal presets render the frame range their Movie Render Queue config
+sets, as one task. An output parameter is
 declared only where the command takes one: `OutputDir` on the two Maya presets,
-`OutputPath` on Blender, Cinema 4D and 3ds Max, and `OutputFile` on the two
-VRED and the two KeyShot presets. Per-host extras include `Renderer`, `RenderLayer`, `RopPath`,
+`OutputPath` on Blender, Cinema 4D and 3ds Max, `OutputFile` on the two
+VRED and the two KeyShot presets, and `OutputDirectory` on the two Unreal presets. Per-host extras include `Renderer`, `RenderLayer`, `RopPath`,
 `WriteNode`, `Scene`, `ViewLayer`, `Take`, `RenderNode`, `Session`,
-`OutputNode`, `View`, `Studio`, `PassGroup` and `RenderQueueItem`.
+`OutputNode`, `View`, `Studio`, `PassGroup`, `LevelSequence`, `Map`, `MovieRenderConfig`, `QueueAsset` and `RenderQueueItem`.
 
 Each preset gates on a capability tag that `sqi-worker` auto-detects from a
 standard install; a manual tag is needed only for a nonstandard install path
@@ -387,6 +390,39 @@ Windows and in the `.app` bundle on macOS; on Linux there is no fixed path, so p
 No Modo has executed either preset; the argument names of `scene.open` and `render.animation` used with keywords
 (`filename`, `type`, `group`) are unverified, and a wrong one fails every task.
 
+### Unreal Engine
+
+| Preset | Renders | Shape | Gate |
+|---|---|---|---|
+| `unreal-mrq-job-render` | one Movie Render Queue job: a level sequence (`LevelSequence`) on a map (`Map`) with a saved config (`MovieRenderConfig`) | one task | `unreal`, Windows |
+| `unreal-mrq-queue-render` | every job of a saved Movie Pipeline Queue asset (`QueueAsset`) | one task | `unreal`, Windows |
+
+Host-script presets like VRED's, and the only P5b presets gated on the worker's OS: Windows is the one OS any vendor
+Unreal render adaptor ships, so both require `attr.worker.os.family` = `windows` and their Tier 3 and outcome cases
+run on Windows only. Each task runs `UnrealEditor-Cmd <project> -log -unattended -stdout -allowstdoutlogverbosity
+-NoLoadingScreen -NoScreenMessages -RenderOffscreen -nohmd -windowed -execcmds=py <one line of Python>`, the command line
+of AWS's Deadline Cloud adaptor for Unreal. The line of Python adds the task's session folder to Python's path and imports
+the embedded `sqi_unreal_render.py`; it holds no comma (Unreal splits `-execcmds` at commas) and no double quote, and a
+session folder whose path would need one (`worker.session_dir`) fails the task, saying so. The script builds the job, or
+copies the saved queue's jobs into the editor's queue, applies `OutputDirectory` when it is not blank, starts the Movie
+Render Queue's PIE executor and returns; the editor keeps running while it renders, as AWS's adaptor relies on, which is
+why the presets use `-execcmds` rather than `-ExecutePythonScript` (reported to quit before an asynchronous render
+completes). When the executor reports back, the script prints `SQI_RENDER: OK` if every job succeeded, or
+`SQI_RENDER: FAILED:` with the reason, and calls `quit_editor()`; a fatal error ends the render the same way. No job
+value is written into the command line or Python source: the asset paths and the output directory come from an embedded
+`params.json` that `EXPR` builds with `repr_json`. With no frame parameter its cost is fixed, and every value it quotes
+has a `maxLength` of 1024 (pinned by `TestPresetUnreal_ParamsCostIsFixed`).
+
+Both declare [`SQI_LOG_CHECKS`](openjd-extensions.md): a task fails unless the output contains `SQI_RENDER: OK`, and
+fails on a line containing `SQI_RENDER: FAILED:`, `LogPython: Error:` or `Render Executor: Error:`. The exit status is
+not relied on. The checks give their verdict only once the editor exits, which it does only when the executor reports
+back, so the readmes recommend a step timeout long enough for the first render on a worker, which compiles the
+project's shaders. The project and its content must be at the same path on every worker, or path-mapped; maps and
+queues must be saved; the project needs the Movie Render Queue and Python Editor Script plug-ins. The detector finds
+only the Epic Games Launcher's default folder, `C:\Program Files\Epic Games\UE_5.*`; an install anywhere else needs an
+`UnrealEditor-Cmd` entry in `worker.commands`. Epic's licence terms for render nodes are the studio's to check. No
+Unreal has executed either preset.
+
 ### Cinema 4D, 3ds Max and After Effects
 
 | Preset | Renders | Shape | Gate |
@@ -555,7 +591,7 @@ but run their script directly, so they need a Linux or macOS worker.
 
 ## Validation tiers
 
-`presets/validation-tiers.yaml` has 47 entries, the 40 presets under
+`presets/validation-tiers.yaml` has 49 entries, the 42 presets under
 `presets/sqi/` plus the seven built-in products documented in
 [`docs/development.md`](development.md#adding-a-product), and states which
 validation tier each has reached. The four `presets/testing/` presets are not
@@ -609,9 +645,9 @@ tier to stand in for. The tiers are:
     frame set, and where it can be read back, their content (the view layer in
     an EXR header, a PNG's size, the frame a Houdini geometry file holds).
 
-  The other thirty presets (Maya, Cinema 4D, 3ds Max, After Effects, the three
+  The other thirty-two presets (Maya, Cinema 4D, 3ds Max, After Effects, the three
   Mistika products, the eight standalone renderers, Katana, Fusion and the two
-  Silhouette, two VRED, two KeyShot and two Modo presets) have not reached Tier 2 and carry no `tier2` block.
+  Silhouette, two VRED, two KeyShot, two Modo and two Unreal presets) have not reached Tier 2 and carry no `tier2` block.
 
   A DCC case cannot be required by platform, because CI cannot provide the
   application, so its block says `requires_app: blender` (or `nuke`, `houdini`)
@@ -673,9 +709,9 @@ skip on a platform named in `required_on` is a registry failure.
 ### Tier 3 on Windows
 
 Tier 3 runs on Windows as it does on Linux and macOS, and CI runs it in a
-dedicated job (`preset-harness-windows`). Of the 47 registry entries, 37 have
+dedicated job (`preset-harness-windows`). Of the 49 registry entries, 37 have
 `tier3.required_on: [linux, darwin, windows]`, so a skip on Windows fails the
-registry check for each of them. The other 10 are gated to fewer platforms:
+registry check for each of them. The other 12 are gated to fewer platforms:
 
 - POSIX-only (`required_on: [linux, darwin]`), gated on
   `attr.worker.os.family anyOf ["linux", "macos"]`: `script` and
@@ -683,8 +719,9 @@ registry check for each of them. The other 10 are gated to fewer platforms:
 - Windows-only (`required_on: [windows]`), gated on
   `attr.worker.os.family anyOf ["windows"]`: `script-powershell`,
   `command-sequence-powershell`, `ffmpeg-segment-transcode-powershell`,
-  `3dsmax-render`, `after-effects-render-windows` and
-  `after-effects-queue-render-windows`. Only the Windows job runs them.
+  `3dsmax-render`, `after-effects-render-windows`,
+  `after-effects-queue-render-windows`, `unreal-mrq-job-render` and
+  `unreal-mrq-queue-render`. Only the Windows job runs them.
 - macOS-only (`required_on: [darwin]`), gated on
   `attr.worker.os.family anyOf ["macos"]`: `after-effects-render-macos` and
   `after-effects-queue-render-macos`. No CI job runs the preset harness on

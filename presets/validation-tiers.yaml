@@ -893,6 +893,83 @@ presets:
       case: TestPresetTier3/modo-pass-group-render/default
       required_on: [linux, darwin, windows]
 
+  # Unreal is the fourth host-script preset family, and the only one with an
+  # OS gate: both presets require attr.worker.os.family = windows (the one OS
+  # any vendor Unreal render adaptor ships), so their Tier-3 claims are
+  # required_on [windows] alone, as for 3dsmax-render. On a Linux or macOS
+  # host Tier 3 and the outcome cases skip as unsatisfiable;
+  # TestPresetTier3RequiredOnMatchesOSGate pins the required_on the gate
+  # implies. One task per job: no frame or chunk parameters, so the EXPR cost
+  # of params.json is fixed.
+  - name: unreal-mrq-job-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, blank-output, target-with-space, quoting, logged-error, python-error, executor-error, no-success-line]
+      caveat: >-
+        argv from AWS's Deadline Cloud adaptor for Unreal (Apache-2.0, read
+        2026-10-28, not copied): UnrealEditor-Cmd <project> -log -unattended
+        -stdout -allowstdoutlogverbosity -NoLoadingScreen -NoScreenMessages
+        -RenderOffscreen -nohmd -windowed and one -execcmds command, which AWS
+        writes as -execcmds=r.HLOD 0,py <script with forward slashes>. AWS's
+        script registers a Slate tick callback and returns, the editor keeps
+        running, and the script calls quit_editor() when it is done; this
+        preset relies on the same behaviour, and on -execcmds rather than
+        -ExecutePythonScript, which a forum report says quits before an
+        asynchronous render completes (not verified here). The -execcmds
+        value is one line of Python with no comma and no double quote,
+        sys.path.append(<session folder>) then import of the embedded
+        sqi_unreal_render.py; a session folder holding a comma, a quote or a
+        backslash fails the task at resolution. How Unreal splits (at commas)
+        and quotes that value is inferred from AWS's form, not from Epic
+        documentation. The script uses the Movie Render Queue Python API as
+        AWS's adaptor and Epic's Python reference show it
+        (MoviePipelineQueueSubsystem, allocate_new_job,
+        MoviePipelinePIEExecutor, its errored, finished and per-job delegates,
+        render_queue_with_executor_instance, SystemLibrary.quit_editor).
+        UNVERIFIED: everything inside Unreal; whether descriptor-1 lines reach
+        the worker (the script also writes them through unreal.log); the exit
+        status (Epic's MoviePipelineDeadline quits the same way on success and
+        failure, so it is not relied on); UE-160482 reported a canceled render
+        as success before 5.3. The step has no timeout, so an editor whose
+        executor never reports, or that does not exit after quit_editor(),
+        hangs the task rather than failing it (the readme recommends one). The
+        goldens pin params.json in full; quoting is decoded with encoding/json
+        by TestPresetUnreal_ParamsJSONRoundTrips, and the script runs under a
+        real Python with a fake unreal module in
+        TestPresetUnreal_ScriptDrivesUnreal. Tier 3 runs a stub as
+        UnrealEditor-Cmd: it exercises the worker, the embedded files and the
+        log checks, never the script inside Unreal. The detector finds only the
+        Launcher default C:\Program Files\Epic Games\UE_5.*, unobserved; for a
+        future detector, the Launcher records each install under
+        HKLM\SOFTWARE\EpicGames\Unreal Engine\<5.x> as InstalledDirectory (as
+        AWS's adaptor reads it), which a registry check cannot read today.
+    tier3:
+      case: TestPresetTier3/unreal-mrq-job-render/default
+      required_on: [windows]
+
+  - name: unreal-mrq-queue-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, output-directory, quoting, logged-error, no-success-line]
+      caveat: >-
+        unreal-mrq-job-render with a saved Movie Pipeline Queue asset in place
+        of the three asset paths: the script loads it with
+        EditorAssetLibrary.load_asset and copies its jobs into the editor's
+        queue (MoviePipelineQueue.copy_from, as AWS's adaptor does), and an
+        Output Directory, when given, replaces every job's. Same sources, the
+        same command line and the same unverified points as
+        unreal-mrq-job-render, including that an editor whose executor never
+        reports would hang the task rather than fail it. quoting puts both
+        quotes, a backslash and spaces in QueueAsset and both quotes in the
+        output directory. Tier 3 runs a stub as UnrealEditor-Cmd: it exercises
+        the worker, the embedded files and the log checks, never the script
+        inside Unreal.
+    tier3:
+      case: TestPresetTier3/unreal-mrq-queue-render/default
+      required_on: [windows]
+
   - name: ffmpeg-transcode
     source: presets/sqi
     tier: 2

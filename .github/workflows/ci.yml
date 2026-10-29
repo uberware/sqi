@@ -1570,6 +1570,19 @@ jobs:
             TestPresetModo_ScriptDrivesModo
             TestPresetModo_ScriptDrivesModo/whole_scene_chunk/args_modo
             TestPresetModo_ScriptDrivesModo/scene_open_fails/file_commands
+            # The Unreal host-script presets. They are Windows-only, so their
+            # Tier 3 and outcome cases skip here and run in
+            # preset-harness-windows; these tests need no Unreal and no OS
+            # gate, so they run on every OS. ScriptDrivesUnreal skips without
+            # a working Python 3, so two leaves are named too.
+            TestPresetUnreal_ParamsCostIsFixed
+            TestPresetUnreal_ParamsJSONRoundTrips
+            TestPresetUnreal_ShareOneScript
+            TestPresetUnreal_ExecCmdsImportsTheScript
+            TestPresetUnreal_SessionFolderThatBreaksExecCmdsIsRefused
+            TestPresetUnreal_ScriptDrivesUnreal
+            TestPresetUnreal_ScriptDrivesUnreal/job_renders_and_quits/import
+            TestPresetUnreal_ScriptDrivesUnreal/a_fatal_error_ends_the_render_once/cwd
             # Outcome cases (expect_status in a preset-cases fixture). The
             # parent passes when every case skips, so the one leaf that runs on
             # linux is named: the `script` built-in with the stub told to exit
@@ -1920,9 +1933,11 @@ jobs:
       # which nothing else extends, goes without one.
       #
       # TestPresetOutcomes is listed so the outcome runner cannot go missing
-      # (it fails when no fixture case sets expect_status). Its only case today
-      # is the `script` built-in, a linux/macos preset, so on this host it
-      # skips; the leaf that executes is asserted by the linux integration job.
+      # (it fails when no fixture case sets expect_status). The parent passes
+      # when every case skips, and the Unreal presets' outcome cases are
+      # Windows-only (their step requires attr.worker.os.family = windows) and
+      # no registry claim covers them, so one of their leaves is named here;
+      # the linux integration job names the leaf that runs there.
       #
       # The TestPresetVRED_ tests are listed because params.json escapes a
       # Windows path's backslashes, which only this host produces, and the
@@ -1931,7 +1946,8 @@ jobs:
       # without Python 3 and one subtest can skip on its own, so two of its
       # leaves are named as well. The TestPresetKeyShot_ tests are listed for
       # the same reasons (ScriptDrivesKeyShot skips without Python 3), and so
-      # are the TestPresetModo_ tests (ScriptDrivesModo skips likewise).
+      # are the TestPresetModo_ and TestPresetUnreal_ tests (ScriptDrivesModo
+      # and ScriptDrivesUnreal skip likewise).
       #
       # TestFFmpegPreset_BashSegmentTranscodeJoins runs here but is not
       # listed, and the registry's tier2 required_on omits windows for it: it
@@ -1948,6 +1964,7 @@ jobs:
                       "TestPresetAfterEffects_WrapperFailsOnLoggedError " \
                       "TestPresetAfterEffects_WrapperFailsOnLoggedError/logged-error-exit-0/after-effects-render-windows " \
                       "TestPresetOutcomes " \
+                      "TestPresetOutcomes/unreal-mrq-job-render/logged-error " \
                       "TestPresetPythonSequence_LauncherContract " \
                       "TestPresetVRED_ParamsCostAtMaxChunk " \
                       "TestPresetVRED_ParamsJSONRoundTrips " \
@@ -1968,14 +1985,22 @@ jobs:
                       "TestPresetModo_CommandNamesTheScriptAndItsParams " \
                       "TestPresetModo_ScriptDrivesModo " \
                       "TestPresetModo_ScriptDrivesModo/whole_scene_chunk/args_modo " \
-                      "TestPresetModo_ScriptDrivesModo/scene_open_fails/file_commands "; do
+                      "TestPresetModo_ScriptDrivesModo/scene_open_fails/file_commands " \
+                      "TestPresetUnreal_ParamsCostIsFixed " \
+                      "TestPresetUnreal_ParamsJSONRoundTrips " \
+                      "TestPresetUnreal_ShareOneScript " \
+                      "TestPresetUnreal_ExecCmdsImportsTheScript " \
+                      "TestPresetUnreal_SessionFolderThatBreaksExecCmdsIsRefused " \
+                      "TestPresetUnreal_ScriptDrivesUnreal " \
+                      "TestPresetUnreal_ScriptDrivesUnreal/job_renders_and_quits/import " \
+                      "TestPresetUnreal_ScriptDrivesUnreal/a_fatal_error_ends_the_render_once/cwd "; do
             if ! grep -q -- "--- PASS: ${name}" preset-harness-windows.log; then
               echo "::error::${name} did not run to a PASS on windows"
               missing=1
             fi
           done
           [ "$missing" -eq 0 ] || exit 1
-          echo "Confirmed tiers 1, 2 and 3, the Python launcher, the After Effects wrapper, the VRED, KeyShot and Modo preset tests and the registry check ran on windows."
+          echo "Confirmed tiers 1, 2 and 3, the Python launcher, the After Effects wrapper, the Unreal outcome cases, the VRED, KeyShot, Modo and Unreal preset tests and the registry check ran on windows."
 
   # Differential-tests internal/openjd/expr against the EXPR reference
   # implementation, the openjd.expr namespace of openjd-model (a re-export

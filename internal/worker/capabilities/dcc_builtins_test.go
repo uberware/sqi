@@ -187,4 +187,16 @@ var dccLayouts = []rendererLayout{
 		versioned: `C:\Program Files\Modo17.1v1\modo_cl.exe`,
 		version:   "17.1v1",
 	},
+	{
+		// Unreal Engine 5: only the Epic Games Launcher's default folder is
+		// looked for (see unreal.yaml), and only on Windows. The version is the
+		// UE_5.<minor> folder's.
+		tag: "unreal",
+		exe: "UnrealEditor-Cmd",
+		installs: []string{
+			`C:\Program Files\Epic Games\UE_5.6\Engine\Binaries\Win64\UnrealEditor-Cmd.exe`,
+		},
+		versioned: `C:\Program Files\Epic Games\UE_5.6\Engine\Binaries\Win64\UnrealEditor-Cmd.exe`,
+		version:   "5.6",
+	},
 }

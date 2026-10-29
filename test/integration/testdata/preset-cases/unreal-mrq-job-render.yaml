@@ -1,0 +1,118 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Unreal Movie Render Queue Job Render. One task per job: no frame or chunk
+# parameters, so there is no multi-frame-chunk or stepped-range case. The
+# preset is Windows-only (its step requires attr.worker.os.family = windows),
+# so its Tier 3 and outcome cases run on Windows only and skip elsewhere; the
+# paths are Windows paths for the same reason. They hold backslashes, so
+# params.json must escape them on every OS.
+#
+# default sets an output directory; blank-output leaves it out, so
+# params.json carries "" and the config's own output directory applies (the
+# preset tests RawParam: under EXPR a blank PATH binds as '.').
+#
+# target-with-space puts spaces in the project path and the three asset paths
+# that identify the target.
+#
+# quoting puts a single quote, a double quote, a backslash and spaces in the
+# level sequence, and both quotes and spaces in the output directory, so
+# params.json must escape them; TestPresetUnreal_ParamsJSONRoundTrips decodes
+# it and compares the values.
+#
+# The outcome cases have the stub print one line and exit 0, so only the log
+# checks can fail the task: the script's own FAILED line, Unreal's Python
+# error prefix and AWS's executor error prefix, each behind Unreal's log
+# prefix to show the patterns are unanchored, and no success line at all. A
+# failed task is retried, so each outcome case runs the stub three times.
+cases:
+  - name: default
+    params:
+      SceneFile: 'C:\Projects\HeroFilm\HeroFilm.uproject'
+      LevelSequence: /Game/Cinematics/Hero/SEQ_Hero
+      Map: /Game/Maps/Hero
+      MovieRenderConfig: /Game/Cinematics/MRQ_Final
+      OutputDirectory: 'C:\Renders\HeroFilm\SEQ_Hero'
+    expect_tasks: 1
+    expect_invocations:
+      UnrealEditor-Cmd: 1
+    stub_env:
+      SQI_STUB_STDOUT: "SQI_RENDER: OK"
+  - name: blank-output
+    params:
+      SceneFile: 'C:\Projects\HeroFilm\HeroFilm.uproject'
+      LevelSequence: /Game/Cinematics/Hero/SEQ_Hero
+      Map: /Game/Maps/Hero
+      MovieRenderConfig: /Game/Cinematics/MRQ_Final
+    expect_tasks: 1
+    expect_invocations:
+      UnrealEditor-Cmd: 1
+  - name: target-with-space
+    params:
+      SceneFile: 'C:\Projects\Hero Film\Hero Film.uproject'
+      LevelSequence: /Game/Cinematics/Hero Shot/SEQ Hero
+      Map: /Game/Maps/Hero Set
+      MovieRenderConfig: /Game/Cinematics/MRQ Final
+      OutputDirectory: 'C:\Renders\Hero Film\SEQ Hero'
+    expect_tasks: 1
+    expect_invocations:
+      UnrealEditor-Cmd: 1
+  - name: quoting
+    params:
+      SceneFile: 'C:\Projects\Hero Film\Hero Film.uproject'
+      LevelSequence: '/Game/Cinematics/it''s the "hero" \ seq'
+      Map: /Game/Maps/Hero
+      MovieRenderConfig: /Game/Cinematics/MRQ_Final
+      OutputDirectory: 'C:\Renders\Hero Film\it''s the "hero" shot'
+    expect_tasks: 1
+    expect_invocations:
+      UnrealEditor-Cmd: 1
+  - name: logged-error
+    params:
+      SceneFile: 'C:\Projects\HeroFilm\HeroFilm.uproject'
+      LevelSequence: /Game/Cinematics/Hero/SEQ_Hero
+      Map: /Game/Maps/Hero
+      MovieRenderConfig: /Game/Cinematics/MRQ_Final
+    expect_tasks: 1
+    expect_invocations:
+      UnrealEditor-Cmd: 3
+    stub_env:
+      SQI_STUB_STDOUT: "[2026.10.28-12.00.00:000][  0]LogPython: SQI_RENDER: FAILED: ValueError: no Movie Render Queue config asset at /Game/Cinematics/MRQ_Final"
+    expect_status: failed
+    expect_reason: "matched failOn"
+  - name: python-error
+    params:
+      SceneFile: 'C:\Projects\HeroFilm\HeroFilm.uproject'
+      LevelSequence: /Game/Cinematics/Hero/SEQ_Hero
+      Map: /Game/Maps/Hero
+      MovieRenderConfig: /Game/Cinematics/MRQ_Final
+    expect_tasks: 1
+    expect_invocations:
+      UnrealEditor-Cmd: 3
+    stub_env:
+      SQI_STUB_STDOUT: "[2026.10.28-12.00.00:000][  0]LogPython: Error: Traceback (most recent call last):"
+    expect_status: failed
+    expect_reason: "matched failOn"
+  - name: executor-error
+    params:
+      SceneFile: 'C:\Projects\HeroFilm\HeroFilm.uproject'
+      LevelSequence: /Game/Cinematics/Hero/SEQ_Hero
+      Map: /Game/Maps/Hero
+      MovieRenderConfig: /Game/Cinematics/MRQ_Final
+    expect_tasks: 1
+    expect_invocations:
+      UnrealEditor-Cmd: 3
+    stub_env:
+      SQI_STUB_STDOUT: "Render Executor: Error: the render could not start"
+    expect_status: failed
+    expect_reason: "matched failOn"
+  - name: no-success-line
+    params:
+      SceneFile: 'C:\Projects\HeroFilm\HeroFilm.uproject'
+      LevelSequence: /Game/Cinematics/Hero/SEQ_Hero
+      Map: /Game/Maps/Hero
+      MovieRenderConfig: /Game/Cinematics/MRQ_Final
+    expect_tasks: 1
+    expect_invocations:
+      UnrealEditor-Cmd: 3
+    expect_status: failed
+    expect_reason: "never printed"

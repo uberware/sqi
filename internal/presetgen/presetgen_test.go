@@ -61,6 +61,8 @@ func TestBuild(t *testing.T) {
 		"redshift-standalone-render",
 		"silhouette-render",
 		"silhouette-render-all",
+		"unreal-mrq-job-render",
+		"unreal-mrq-queue-render",
 		"vray-standalone-render",
 		"vred-render",
 		"vred-viewpoint-render",

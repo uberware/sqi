@@ -572,6 +572,63 @@ func TestModoDetector_CommandFindsModoClOnWindowsAndMacOS(t *testing.T) {
 	}
 }
 
+// TestUnrealDetector_CommandFindsTheNewestLauncherInstallOnWindows checks the
+// shipped command glob against the Epic Games Launcher's default layout: it
+// finds UnrealEditor-Cmd.exe and no other program in that folder, picks the
+// newest of several engine versions by number (5.10 is newer than 5.6), and
+// applies on Windows only, since the presets are Windows-only and no other OS
+// has a Launcher default here. The layout is unverified (see unreal.yaml).
+func TestUnrealDetector_CommandFindsTheNewestLauncherInstallOnWindows(t *testing.T) {
+	d := builtinDetector(t, "unreal")
+	if d.Command == nil || d.Command.Name != "UnrealEditor-Cmd" {
+		t.Fatalf("the unreal detector has no command named UnrealEditor-Cmd: %+v", d.Command)
+	}
+	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
+	matches := func(file string) bool {
+		for _, g := range d.Command.Globs {
+			if g.OS != "windows" {
+				t.Errorf("command glob %q applies on %q; only windows has a Launcher default", g.PathGlob, g.OS)
+				continue
+			}
+			ok, err := path.Match(norm(g.PathGlob), norm(file))
+			if err != nil {
+				t.Fatalf("bad pattern %q: %v", g.PathGlob, err)
+			}
+			if ok {
+				return true
+			}
+		}
+		return false
+	}
+	const ue56 = `C:\Program Files\Epic Games\UE_5.6\Engine\Binaries\Win64\UnrealEditor-Cmd.exe`
+	const ue510 = `C:\Program Files\Epic Games\UE_5.10\Engine\Binaries\Win64\UnrealEditor-Cmd.exe`
+	if !matches(ue56) {
+		t.Errorf("no command glob matches %s", ue56)
+	}
+	for _, other := range []string{
+		`C:\Program Files\Epic Games\UE_5.6\Engine\Binaries\Win64\UnrealEditor.exe`,
+		`C:\Program Files\Epic Games\UE_5.6\Engine\Binaries\Linux\UnrealEditor-Cmd`,
+		`C:\Program Files\Epic Games\UE_4.27\Engine\Binaries\Win64\UnrealEditor-Cmd.exe`,
+	} {
+		if matches(other) {
+			t.Errorf("a command glob matched %s, which is not a UE 5 UnrealEditor-Cmd.exe", other)
+		}
+	}
+	env := fakeEnv{goos: "windows", globs: map[string][]string{}}
+	for _, g := range d.Command.Globs {
+		env.globs[g.PathGlob] = []string{ue56, ue510}
+	}
+	got, ok := d.FindCommand(env)
+	if !ok || got.Name != "UnrealEditor-Cmd" || got.Path != ue510 || got.Version != "5.10" || len(got.Args) != 0 {
+		t.Errorf("FindCommand = %+v (found %v), want UnrealEditor-Cmd 5.10 at %s with no args", got, ok, ue510)
+	}
+	for _, goos := range []string{"linux", "darwin"} {
+		if got, ok := d.FindCommand(fakeEnv{goos: goos, globs: env.globs}); ok {
+			t.Errorf("%s FindCommand = %+v, want none", goos, got)
+		}
+	}
+}
+
 func TestDetectCommands_ComesFromBuiltinsAndCustomDetectorsAndHonoursDisable(t *testing.T) {
 	custom := Detector{
 		Tag: "inhouse", Checks: []Check{{Exe: "inhouse"}},

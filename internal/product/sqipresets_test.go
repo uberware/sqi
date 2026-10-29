@@ -247,6 +247,20 @@ func TestSQIReferencePresets(t *testing.T) {
 			params:     []string{"SceneFile", "Frames", "PassGroup", "FramesPerTask"},
 			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS", "EXPR", "SQI_LOG_CHECKS"},
 		},
+		// The two Unreal presets are host-script presets with one task and no
+		// frame parameters, so no TASK_CHUNKING. The job preset's target
+		// parameters are LevelSequence, Map and MovieRenderConfig; the queue
+		// preset declares none of them, so it is a whole-scene product.
+		"unreal-mrq-job-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "LevelSequence", "Map", "MovieRenderConfig", "OutputDirectory"},
+			extensions: []string{"EXPR", "SQI_LOG_CHECKS"},
+		},
+		"unreal-mrq-queue-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "QueueAsset", "OutputDirectory"},
+			extensions: []string{"EXPR", "SQI_LOG_CHECKS"},
+		},
 		"ffmpeg-transcode": {
 			category: "Transcoding",
 			params:   []string{"SourceFile", "OutputFile", "VideoCodec", "Quality", "AudioCodec"},

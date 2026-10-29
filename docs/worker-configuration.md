@@ -1193,10 +1193,10 @@ expr:
 
 ## `capabilities` — Software auto-detection
 
-Configures software detection. Twenty-five built-in detectors (Maya, Nuke,
+Configures software detection. Twenty-six built-in detectors (Maya, Nuke,
 Houdini, Blender, Cinema 4D, 3ds Max, After Effects, Mistika Boutique/Ultima,
 Mistika VR, Mistika Workflows, ffmpeg, the standalone renderers Arnold kick,
-V-Ray, husk, Redshift, RenderMan, 3Delight and Mantra, Katana, Fusion, Silhouette, VRED, KeyShot, Modo, and oiiotool) run at
+V-Ray, husk, Redshift, RenderMan, 3Delight and Mantra, Katana, Fusion, Silhouette, VRED, KeyShot, Modo, Unreal Engine 5, and oiiotool) run at
 startup with no configuration and advertise a `key=true` tag for each tool
 found. You can add custom detectors for in-house tools. Full reference,
 including the detector schema and the tag/version model:
