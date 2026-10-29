@@ -387,7 +387,9 @@ func (e *Executor) completeSucceeded(ctx context.Context, msg *protocol.AssignMs
 }
 
 // failLogChecks publishes the terminal "failed" status for a task whose process
-// exited 0 but whose output failed its SQI_LOG_CHECKS.
+// exited 0 but whose output failed its SQI_LOG_CHECKS. The reason reaches the
+// task's failure_reason (through the status message) and the worker's
+// diagnostic log; it is not written to the task log.
 func (e *Executor) failLogChecks(ctx context.Context, msg *protocol.AssignMsg, sessID string, result processResult, reason string, lp *int) {
 	exitCode := result.ExitCode
 	e.logger.InfoContext(

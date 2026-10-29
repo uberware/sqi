@@ -118,8 +118,10 @@ match wins, then the first `requireLine` pattern no line matched. A non-zero
 exit still fails the task even when every check passed. A task failed by the
 checks stages no outputs.
 
-**Failure reasons.** The reason lands in the task's `failure_reason` and the task
-log, in exactly these forms:
+**Failure reasons.** The reason is recorded as the task's failure reason
+(`failure_reason`, shown in the web UI and the API) and in the worker's
+diagnostic log. It is not written to the task log, which holds the process's
+own output, matched line included. It takes exactly these forms:
 
     log line matched failOn pattern "<pattern>": "<line>"
     the task never printed a line matching requireLine pattern "<pattern>"
