@@ -78,7 +78,10 @@ readme: |
   Modo's output contains `SQI_RENDER: OK`, and fails when a line contains
   `SQI_RENDER: FAILED:`, `failed with` or `Unknown command:`. Modo documents
   no exit status, so it is not relied on. The script writes its two lines
-  straight to the process's standard output (file descriptor 1).
+  straight to the process's standard output (file descriptor 1). `failed with`
+  is broad: it matches any line of Modo's output that contains it, for example
+  one reporting that a texture or a plug-in failed to load, so such a line
+  fails the task even if the render succeeded.
 
   ## Set a step timeout
 

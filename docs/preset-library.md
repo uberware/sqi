@@ -382,7 +382,8 @@ grows, which is why `FramesPerTask` stops at 1000 (pinned by `TestPresetModo_Par
 
 Both declare [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md): a task fails unless the output contains `SQI_RENDER: OK`, and
 fails on a line containing `SQI_RENDER: FAILED:`, `failed with` or `Unknown command:`. Modo documents no exit status,
-so it is not relied on. The checks give their verdict only once Modo exits, and the script ends with `app.quit`,
+so it is not relied on. `failed with` is broad: any Modo output line containing it (a texture or plug-in that failed
+to load, for example) fails the task even if the render succeeded. The checks give their verdict only once Modo exits, and the script ends with `app.quit`,
 but whether Modo then exits in headless mode is undocumented, so the readmes recommend a step timeout. Foundry says
 `-cmd:` runs before licensing and networking start, and whether a scene can be opened and rendered that early is also
 unknown. The detector looks for `modo_cl` under `C:\Program Files\Modo*` and `C:\Program Files\Foundry\Modo\*` on
