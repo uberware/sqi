@@ -2,16 +2,22 @@
 
 package integration
 
-// vred_preset_test.go — what the VRED presets' golden files cannot show on
+// preset_vred_test.go — what the VRED presets' golden files cannot show on
 // their own: that params.json is JSON a script can decode, that its cost stays
 // inside the worker's EXPR limits at the largest chunk the presets allow, and
 // what the embedded render.py asks VRED to do with it.
 //
 // Untagged, like the rest of the preset harness, so `make test-cover` runs it.
+// Every test is named TestPresetVRED_* so the preset harness's -run regex
+// (make test-preset-harness, and CI's preset-harness-windows job) selects it:
+// params.json's escaping differs by host, and only a Windows run can show a
+// backslash it failed to escape (the goldens' host-path rewrite maps both the
+// single and the doubled spelling to one POSIX form, so they cannot).
 
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -76,13 +82,13 @@ func decodeVREDParams(t *testing.T, data string) vredParams {
 	return p
 }
 
-// TestVREDPreset_ParamsCostAtMaxChunk pins params.json's cost where it is
+// TestPresetVRED_ParamsCostAtMaxChunk pins params.json's cost where it is
 // highest. It reads Task.Param.Frame, so it is evaluated at phase 3 on the
 // worker, against the worker's EXPR limits, and grows with the chunk: the
 // largest chunk the presets accept (FramesPerTask = maxValue) must resolve
 // under the worker defaults and list every frame. One past the maximum must be
 // refused at submission, or the maximum bounds nothing.
-func TestVREDPreset_ParamsCostAtMaxChunk(t *testing.T) {
+func TestPresetVRED_ParamsCostAtMaxChunk(t *testing.T) {
 	for _, preset := range vredPresets {
 		t.Run(preset, func(t *testing.T) {
 			params := map[string]string{
@@ -109,20 +115,24 @@ func TestVREDPreset_ParamsCostAtMaxChunk(t *testing.T) {
 			}
 
 			params["FramesPerTask"] = "1001"
-			if _, err := captureVRED(t, preset, params); err == nil {
-				t.Errorf("FramesPerTask 1001 was accepted; the declared maximum of %d must be enforced", vredMaxFramesPerTask)
+			// The refusal must be the maxValue bound itself, not some other
+			// failure a larger chunk happened to provoke (an EXPR limit, say).
+			_, err = captureVRED(t, preset, params)
+			wantRefusal := fmt.Sprintf("/parameterValues/FramesPerTask: value 1001 is above maximum %d", vredMaxFramesPerTask)
+			if err == nil || !strings.Contains(err.Error(), wantRefusal) {
+				t.Errorf("FramesPerTask 1001: err = %v, want the parameter binding refusal %q", err, wantRefusal)
 			}
 		})
 	}
 }
 
-// TestVREDPreset_ParamsJSONRoundTrips runs each preset's `quoting` fixture case
+// TestPresetVRED_ParamsJSONRoundTrips runs each preset's `quoting` fixture case
 // (a single quote, a double quote and spaces in Output File's name, and in
 // vred-viewpoint-render also a backslash in View) and decodes params.json with
 // encoding/json: every value must come back exactly as given. A path comes
 // back in the worker's own form, since under EXPR phase 3 renders PATH values
 // host-native, so on Windows the JSON also carries escaped backslashes.
-func TestVREDPreset_ParamsJSONRoundTrips(t *testing.T) {
+func TestPresetVRED_ParamsJSONRoundTrips(t *testing.T) {
 	for _, preset := range vredPresets {
 		t.Run(preset, func(t *testing.T) {
 			cases, err := presettest.LoadCases(filepath.Join(presetCaseDir, preset+".yaml"))
@@ -164,10 +174,10 @@ func TestVREDPreset_ParamsJSONRoundTrips(t *testing.T) {
 	}
 }
 
-// TestVREDPresets_ShareOneScript keeps the two presets' render.py byte for byte
+// TestPresetVRED_ShareOneScript keeps the two presets' render.py byte for byte
 // the same, so a fix to one cannot miss the other. The script reads "view"
 // only when params.json carries it.
-func TestVREDPresets_ShareOneScript(t *testing.T) {
+func TestPresetVRED_ShareOneScript(t *testing.T) {
 	var first string
 	for i, preset := range vredPresets {
 		tmpl, err := presettest.PresetTemplate(presettest.SourcePresets, preset)
@@ -297,13 +307,13 @@ func canonicalJSON(t *testing.T, data []byte) string {
 	return string(b)
 }
 
-// TestVREDPreset_ScriptDrivesVRED runs the shipped render.py, as resolved for a
+// TestPresetVRED_ScriptDrivesVRED runs the shipped render.py, as resolved for a
 // real task, under a real Python with VRED faked, and pins the calls it makes:
 // the task's first and last frame with a frame step of 1, the view and the
 // render filename only when given, the success line and terminateVred after a
 // render, and on any error the failure line, openjd_fail and crashVred(1)
 // with no success line.
-func TestVREDPreset_ScriptDrivesVRED(t *testing.T) {
+func TestPresetVRED_ScriptDrivesVRED(t *testing.T) {
 	python := findPython3(t)
 	if python == "" {
 		t.Skip("no working Python 3 on PATH (tried python3, python)")
@@ -338,7 +348,7 @@ func TestVREDPreset_ScriptDrivesVRED(t *testing.T) {
 		wantFail string
 	}{
 		{
-			name: "chunk with the scene's own output", preset: "vred-render",
+			name: "chunk keeping the scene output", preset: "vred-render",
 			params: map[string]string{"SceneFile": scene, "Frames": "1-10"},
 			want:   concat(head(1, 10), []any{[]any{"startRenderToFile", true}, []any{"terminateVred"}}),
 			wantOK: true,
@@ -354,7 +364,7 @@ func TestVREDPreset_ScriptDrivesVRED(t *testing.T) {
 			wantOK: true,
 		},
 		{
-			name: "view with quotes and a backslash, negative frames", preset: "vred-viewpoint-render",
+			name: "view with quotes and a backslash at negative frames", preset: "vred-viewpoint-render",
 			params: map[string]string{"SceneFile": scene, "Frames": "-5--1", "View": view},
 			want: concat(head(-5, -1), []any{
 				[]any{"setRenderView", view},

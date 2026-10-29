@@ -295,7 +295,7 @@ written into Python source; it calls VRED's Python API v1 render settings
 the render filename) and `startRenderToFile`. `params.json` is evaluated on the
 worker, against its `EXPR` limits, and costs more as the chunk grows, which is
 why `FramesPerTask` stops at 1000 (pinned by
-`TestVREDPreset_ParamsCostAtMaxChunk`). A blank `OutputFile` keeps the scene's
+`TestPresetVRED_ParamsCostAtMaxChunk`). A blank `OutputFile` keeps the scene's
 render filename.
 
 Both declare [`SQI_LOG_CHECKS`](openjd-extensions.md) with the host-script
@@ -305,7 +305,10 @@ exit 0 without rendering (after a licence failure, for one), so its exit
 status is not relied on. The script writes both markers straight to file
 descriptor 1; **whether that reaches the worker from VRED, a windowed program
 on Windows, is unverified**, and if it does not, every task fails rather than
-passing silently. Autodesk marks `startRenderToFile` as VRED Professional only,
+passing silently. The checks give their verdict only when VRED exits, and
+whether it exits after `terminateVred()` under `-hide_gui` is undocumented; the
+presets set no timeout, so their readmes recommend adding one to the step's
+`onRun` action. Autodesk marks `startRenderToFile` as VRED Professional only,
 although AWS's VRED samples call it under VRED Core. `-insecure_python` turns
 off the Python sandbox of VRED 2024 and later. Linux needs an X server (Mesa
 under Xvfb on a machine without a GPU). A Windows worker with only VRED Pro

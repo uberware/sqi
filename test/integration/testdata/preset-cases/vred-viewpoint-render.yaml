@@ -9,7 +9,7 @@
 # View, and both quotes and spaces in Output File's file name, so params.json
 # must escape them on every OS (the backslash is in View because a POSIX
 # path parameter cannot carry one that survives as a separator on Windows);
-# TestVREDPreset_ParamsJSONRoundTrips decodes it and compares the values.
+# TestPresetVRED_ParamsJSONRoundTrips decodes it and compares the values.
 #
 # logged-error prints the script's own failure line, the other failOn pattern
 # (vred-render's logged-error prints VRED's licence message).

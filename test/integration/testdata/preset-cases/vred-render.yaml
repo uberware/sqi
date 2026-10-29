@@ -12,7 +12,7 @@
 #
 # quoting puts a space in a directory and in the file name and both quote
 # characters in the file name of Output File (and a space in the scene path),
-# so params.json must escape them; TestVREDPreset_ParamsJSONRoundTrips decodes
+# so params.json must escape them; TestPresetVRED_ParamsJSONRoundTrips decodes
 # it with encoding/json and compares the values. The quotes stay in the last
 # path segment so the golden's host-path rewrite (presettest.hostPathReplacer,
 # keyed on the parameter's parent folder) still applies on Windows, where the

@@ -732,9 +732,13 @@ presets:
         descriptor-1 lines reach the worker from windowed VRED on Windows is
         unknown (if not, every task fails for want of SQI_RENDER: OK). The
         goldens pin params.json in full; quoting is decoded with encoding/json
-        by TestVREDPreset_ParamsJSONRoundTrips, and render.py's parameter
+        by TestPresetVRED_ParamsJSONRoundTrips, and render.py's parameter
         handling runs under a real Python with stub VRED modules in
-        TestVREDPreset_ScriptDrivesVRED. The Linux install roots are guesses.
+        TestPresetVRED_ScriptDrivesVRED. Whether VRED exits after
+        terminateVred() under -hide_gui is undocumented; the checks apply only
+        once the process exits and the step has no timeout, so a VRED that stays
+        open would hang the task rather than fail it (the readme recommends a
+        timeout). The Linux install roots are guesses.
         Tier 3 runs a stub as VREDCore: it exercises the worker, the embedded
         files and the log checks, never the script inside VRED.
     tier3:
@@ -749,8 +753,9 @@ presets:
       caveat: >-
         vred-render plus View, carried in params.json and passed to
         setRenderView; the same sources and the same unverified points (see
-        vred-render). What setRenderView does with a name the scene lacks is
-        undocumented. quoting puts both quotes, a backslash and a space in View
+        vred-render), including that a VRED which does not exit after
+        terminateVred() would hang the task rather than fail it. What
+        setRenderView does with a name the scene lacks is undocumented. quoting puts both quotes, a backslash and a space in View
         and both quotes in Output File's name. Tier 3 runs a stub as VREDCore:
         it exercises the worker, the embedded files and the log checks, never
         the script inside VRED.

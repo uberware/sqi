@@ -66,6 +66,15 @@ readme: |
   not relied on. The script writes its two lines straight to the process's
   standard output (file descriptor 1), past VRED's own Python console.
 
+  ## Set a step timeout
+
+  The log checks give their verdict only once VRED has exited. If VRED keeps
+  running after the script quits it, or hangs while rendering, the task waits
+  with it and keeps its worker busy indefinitely. This preset sets no timeout,
+  because a sensible limit depends on the scene. Add a `timeout` (in seconds)
+  to the step's `onRun` action in a copy of the preset, longer than your
+  slowest chunk.
+
   ## Requirements
 
   - Workers tagged `attr.worker.tag.vred = true`. The worker tags a VRED Core
@@ -96,6 +105,9 @@ readme: |
     Professional only; AWS's samples call it under VRED Core.
   - What `crashVred(1)` exits with is undocumented; the failure line, not the
     exit status, is what fails the task.
+  - Whether VRED exits after `terminateVred()` under `-hide_gui` is not
+    documented. The checks are applied only when the process exits, so a VRED
+    that stays open would hang the task, not fail it (see the timeout above).
   - How VRED numbers the files of an animation rendered to Output File is not
     documented here; check the first task's output before a long run.
   - The Linux install paths the detector looks for are guesses: the installer
