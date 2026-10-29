@@ -65,7 +65,8 @@ readme: |
   animation frame, renders to the
   numbered file with the scene's render options and `setAddToQueue(False)`,
   and checks the image file exists and is not empty. A file already there with
-  that name is deleted first, so an old frame cannot pass for a new one. After
+  that name is deleted first, so an old frame cannot pass for a new one; a
+  failed render leaves the frame missing. After
   the last frame it prints `SQI_RENDER: OK`; on any error it prints
   `SQI_RENDER: FAILED:` with the reason and stops.
 

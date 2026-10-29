@@ -415,8 +415,9 @@ has a `maxLength` of 1024 (pinned by `TestPresetUnreal_ParamsCostIsFixed`).
 
 Both declare [`SQI_LOG_CHECKS`](openjd-extensions.md): a task fails unless the output contains `SQI_RENDER: OK`, and
 fails on a line containing `SQI_RENDER: FAILED:`, `LogPython: Error:` or `Render Executor: Error:`. The exit status is
-not relied on. The checks give their verdict only once the editor exits, which it does only when the executor reports
-back, so the readmes recommend a step timeout long enough for the first render on a worker, which compiles the
+not relied on, and `LogPython: Error:` matches any Python error in the editor session (for example one from a
+project's `init_unreal.py`), so such an error fails the task even if the render succeeded. The checks give their
+verdict only once the editor exits, which it does only when the executor reports back, so the readmes recommend a step timeout long enough for the first render on a worker, which compiles the
 project's shaders. The project and its content must be at the same path on every worker, or path-mapped; maps and
 queues must be saved; the project needs the Movie Render Queue and Python Editor Script plug-ins. The detector finds
 only the Epic Games Launcher's default folder, `C:\Program Files\Epic Games\UE_5.*`; an install anywhere else needs an

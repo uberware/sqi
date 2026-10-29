@@ -108,6 +108,13 @@ func TestLogChecks_Validate(t *testing.T) {
 			wantMessage: "at least one of failOn or requireLine",
 		},
 		{
+			name:        "non-mapping block",
+			extensions:  declared,
+			stepExtra:   "    SQI_LOG_CHECKS: 5",
+			wantPointer: "/steps/0/SQI_LOG_CHECKS",
+			wantMessage: "must be a mapping with failOn and/or requireLine",
+		},
+		{
 			name:        "bad regex",
 			extensions:  declared,
 			stepExtra:   block("{failOn: ['(']}"),

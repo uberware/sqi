@@ -980,6 +980,34 @@ func TestListWorkers_Search(t *testing.T) {
 	}
 }
 
+func TestListWorkers_ReturnsIndependentCopies(t *testing.T) {
+	st := New()
+	if _, _, err := st.RegisterWorker(ctx(), store.Worker{
+		ID: "w1", Status: store.WorkerStatusOnline,
+		Tags: map[string]string{"k": "v"}, Extensions: []string{"SQI_LOG_CHECKS"},
+	}); err != nil {
+		t.Fatalf("RegisterWorker: %v", err)
+	}
+
+	first, err := st.ListWorkers(ctx(), store.ListWorkersOptions{})
+	if err != nil || len(first.Items) != 1 {
+		t.Fatalf("ListWorkers: %v, %d items", err, len(first.Items))
+	}
+	first.Items[0].Extensions[0] = "MUTATED"
+	first.Items[0].Tags["k"] = "MUTATED"
+
+	second, err := st.ListWorkers(ctx(), store.ListWorkersOptions{})
+	if err != nil || len(second.Items) != 1 {
+		t.Fatalf("ListWorkers: %v, %d items", err, len(second.Items))
+	}
+	if got := second.Items[0].Extensions[0]; got != "SQI_LOG_CHECKS" {
+		t.Errorf("Extensions aliased the store's copy: got %q", got)
+	}
+	if got := second.Items[0].Tags["k"]; got != "v" {
+		t.Errorf("Tags aliased the store's copy: got %q", got)
+	}
+}
+
 // ── job.go ────────────────────────────────────────────────────────────────────
 
 func TestUpdateJob(t *testing.T) {

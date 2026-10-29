@@ -42,7 +42,8 @@ readme: |
   strings Deadline's Fusion plugin treats as a failed render. Fusion's exit
   status is not relied on alone, since its behaviour on a failed render is not
   documented. `-verbose` is passed so that the render node is as talkative as
-  it can be on standard output.
+  it can be on standard output. Whether these lines reach standard output at
+  all is unverified; see "What has not been verified" below.
 
   ## Requirements
 

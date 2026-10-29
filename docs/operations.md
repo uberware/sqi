@@ -344,7 +344,7 @@ and fails (`open source database: ... no such table: farms`); in a directory
 that holds some other sqi database, it backs that one up without complaint. So
 check the result: the backup should be close to the live file's size (`VACUUM
 INTO` compacts it, so it can be smaller), and any sqi database, even one with
-no jobs, is several hundred kilobytes (385 KB for an empty farm at schema 38).
+no jobs, is several hundred kilobytes (385 KB for an empty farm at schema 39).
 The new binary's `sqi-server migrate status --db <backup>` checks it without
 changing it: on SQLite, `migrate status` only reads the database. Do not run
 the *old* binary's `migrate status` on it: in v0.3.0 and earlier it opens the
@@ -663,7 +663,7 @@ access granted to its account
 `restore` prints what it did:
 
 ```
-restored a schema-38 backup; schema is now 38
+restored a schema-39 backup; schema is now 39
 previous database file moved to /var/lib/sqi/sqi.db.pre-restore-20261013T143216Z
 fenced 1 attempt(s): their tasks are ready again
 NATS data directory moved to /var/lib/sqi/nats.pre-restore-20261013T143216Z
@@ -711,7 +711,7 @@ sudo systemctl start sqi-server
 ```
 
 ```
-restored a schema-38 backup; schema is now 38
+restored a schema-39 backup; schema is now 39
 fenced 0 attempt(s): their tasks are ready again
 NATS data directory moved to /var/lib/sqi/nats.pre-restore-20261013T143307Z
 ```

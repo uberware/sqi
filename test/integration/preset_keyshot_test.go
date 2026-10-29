@@ -245,9 +245,10 @@ func TestPresetKeyShot_OutputFileRules(t *testing.T) {
 // without writing; "none" makes it return None after writing, as a headless
 // renderImage might). mode "file" runs the script as a file with __file__ set
 // and lux importable; mode "cwd" executes its text with no __file__ in a
-// namespace holding lux, from the script's folder; mode "argv" does the same
-// from another folder with the script named on sys.argv, so all three of the
-// script's ways of finding params.json are exercised. Markers go to file
+// namespace holding lux, from the script's folder with sys.argv holding no
+// script path; mode "argv" does the same from another folder with the script
+// named on sys.argv, so each of the script's three ways of finding params.json
+// is exercised by exactly one mode. Markers go to file
 // descriptor 1, which is this process's stdout.
 const keyshotRunner = `import json, os, runpy, sys, types
 
@@ -308,9 +309,10 @@ else:
     with open(script, encoding="utf-8") as f:
         source = f.read()
     if mode == "cwd":
+        sys.argv = [""]
         os.chdir(os.path.dirname(script))
     else:
-        sys.argv.append(script)
+        sys.argv = ["", script]
     exec(compile(source, "<keyshot>", "exec"), {"lux": lux, "__name__": "__main__"})
 
 with open(record, "w", encoding="utf-8") as f:

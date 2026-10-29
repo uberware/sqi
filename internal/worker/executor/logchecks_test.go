@@ -91,7 +91,8 @@ func TestExecutor_LogChecks_RequireLine(t *testing.T) {
 
 	// Review focus: the marker behind a host log prefix still satisfies it.
 	present := runChecked(t, linesAssign(
-		"working|[2026.10.28-12.00.00:000][  0]LogPython: SQI_RENDER: OK", nil, checks))
+		"working|[2026.10.28-12.00.00:000][  0]LogPython: SQI_RENDER: OK", nil, checks,
+	))
 	if present.Status != "succeeded" {
 		t.Errorf("present: status = %q (%q), want succeeded", present.Status, present.Message)
 	}

@@ -55,7 +55,12 @@ task 1/2  name="Render[Frame=1-5,Frame.End=5,Frame.Start=1]"
         # the embedded files, are fallbacks.
         found = []
         try:
-            found.extend(str(a) for a in lx.args())
+            for a in lx.args():
+                a = str(a)
+                # Modo may hand an argument over in braces: {path}.
+                if a.startswith("{") and a.endswith("}"):
+                    a = a[1:-1]
+                found.append(a)
         except Exception:
             pass
         here = globals().get("__file__")
@@ -106,6 +111,9 @@ task 1/2  name="Render[Frame=1-5,Frame.End=5,Frame.Start=1]"
         # Keyword arguments, so no job value becomes command text.
         lx.command("scene.open", filename=params["scene"], type="normal")
         set_range(params["start"], params["stop"])
+        # The group name is a job value, so it goes in as a keyword argument; the
+        # whole-scene form has none, so its command text is a literal. Whether the two
+        # forms are equivalent in Modo is unverified.
         if params["group"]:
             lx.command("render.animation", filename="*", group=params["group"])
         else:
@@ -181,7 +189,12 @@ task 2/2  name="Render[Frame=6-10,Frame.End=10,Frame.Start=6]"
         # the embedded files, are fallbacks.
         found = []
         try:
-            found.extend(str(a) for a in lx.args())
+            for a in lx.args():
+                a = str(a)
+                # Modo may hand an argument over in braces: {path}.
+                if a.startswith("{") and a.endswith("}"):
+                    a = a[1:-1]
+                found.append(a)
         except Exception:
             pass
         here = globals().get("__file__")
@@ -232,6 +245,9 @@ task 2/2  name="Render[Frame=6-10,Frame.End=10,Frame.Start=6]"
         # Keyword arguments, so no job value becomes command text.
         lx.command("scene.open", filename=params["scene"], type="normal")
         set_range(params["start"], params["stop"])
+        # The group name is a job value, so it goes in as a keyword argument; the
+        # whole-scene form has none, so its command text is a literal. Whether the two
+        # forms are equivalent in Modo is unverified.
         if params["group"]:
             lx.command("render.animation", filename="*", group=params["group"])
         else:

@@ -242,7 +242,8 @@ func TestPresetModo_CommandNamesTheScriptAndItsParams(t *testing.T) {
 // nothing. locate says how the script can find params.json, and ONLY that way
 // works: "file" runs the script as a file with __file__ set, from the empty
 // folder, with no argument; "args" executes its text with no __file__, from the
-// empty folder, and lx.args() returns params.json's path; "cwd" executes its
+// empty folder, and lx.args() returns params.json's path; "braced" is "args"
+// with the path wrapped in braces, as Modo may pass an argument; "cwd" executes its
 // text with no __file__, no argument and sys.argv holding no script path, from
 // the script's own folder; "none" is the same from the empty folder, so nothing
 // finds it. api "modo" provides a modo module with Scene().renderItem; "commands"
@@ -278,6 +279,8 @@ def lx_command(name, **kw):
 
 
 def lx_args():
+    if locate == "braced":
+        return ("{" + params_path + "}",)
     return (params_path,) if locate == "args" else ()
 
 
@@ -324,10 +327,10 @@ type modoRun struct{ locate, api string }
 
 func (r modoRun) name() string { return r.locate + "_" + r.api }
 
-// modoRuns are the ways every scenario is run: each of the script's three ways
+// modoRuns are the ways every scenario is run: each of the script's ways
 // of finding params.json with the modo module present, and the command
 // fallback with the script found beside it.
-var modoRuns = []modoRun{{"file", "modo"}, {"args", "modo"}, {"cwd", "modo"}, {"file", "commands"}}
+var modoRuns = []modoRun{{"file", "modo"}, {"args", "modo"}, {"braced", "modo"}, {"cwd", "modo"}, {"file", "commands"}}
 
 // runModoScript writes the task's resolved render.py and params.json (or
 // paramsOverride) into a fresh folder and runs the script under modoRunner. It

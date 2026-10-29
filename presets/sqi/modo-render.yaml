@@ -101,9 +101,9 @@ readme: |
   ## What has not been verified
 
   - No Modo has executed this preset. The command line and the commands in the
-    script follow Foundry's headless page and its command and Python
-    reference, and the open-source scripts and Deadline's Modo plug-in that
-    drive `modo_cl` the same way.
+    script follow Foundry's headless page, its Python tutorial, open-source
+    scripts and Deadline's Modo plug-in that drive `modo_cl` the same way. No
+    Foundry command-reference page for them was found.
   - Whether `modo_cl` runs the `-cmd:` script before it reads standard input
     (see the top of this readme).
   - Foundry says `-cmd:` runs before licensing and networking have started.
@@ -219,7 +219,12 @@ template:
                   # the embedded files, are fallbacks.
                   found = []
                   try:
-                      found.extend(str(a) for a in lx.args())
+                      for a in lx.args():
+                          a = str(a)
+                          # Modo may hand an argument over in braces: {path}.
+                          if a.startswith("{") and a.endswith("}"):
+                              a = a[1:-1]
+                          found.append(a)
                   except Exception:
                       pass
                   here = globals().get("__file__")
@@ -270,6 +275,9 @@ template:
                   # Keyword arguments, so no job value becomes command text.
                   lx.command("scene.open", filename=params["scene"], type="normal")
                   set_range(params["start"], params["stop"])
+                  # The group name is a job value, so it goes in as a keyword argument; the
+                  # whole-scene form has none, so its command text is a literal. Whether the two
+                  # forms are equivalent in Modo is unverified.
                   if params["group"]:
                       lx.command("render.animation", filename="*", group=params["group"])
                   else:

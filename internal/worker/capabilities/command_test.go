@@ -784,7 +784,7 @@ func TestDetectorValidate_CommandArgs(t *testing.T) {
 		{"valid", map[string][]string{"linux": {"-nogui"}, "windows": {"-nogui", "-x"}}, ""},
 		{"all three platforms", map[string][]string{"linux": {"a"}, "darwin": {"a"}, "windows": {"a"}}, ""},
 		{"unknown os", map[string][]string{"beos": {"-nogui"}}, "beos"},
-		{"empty os key", map[string][]string{"": {"-nogui"}}, "os"},
+		{"empty os key", map[string][]string{"": {"-nogui"}}, `invalid os ""`},
 		{"empty argument", map[string][]string{"linux": {"-nogui", ""}}, "empty"},
 	}
 	for _, tc := range cases {

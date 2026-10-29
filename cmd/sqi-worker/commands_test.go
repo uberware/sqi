@@ -266,7 +266,7 @@ func TestDetectCommandPlan_BuiltInSilhouetteKeepsNogui(t *testing.T) {
 func TestDetectCommandPlan_BuiltInSilhouetteAddsNothingOnWindowsPATH(t *testing.T) {
 	env := fakeCheckEnv{goos: "windows", globs: map[string][]string{}}
 
-	plan, err := detectCommandPlan(workerconfig.Default(), env, onPath(map[string]string{"sfxcmd": `C:	ools\sfxcmd.exe`}))
+	plan, err := detectCommandPlan(workerconfig.Default(), env, onPath(map[string]string{"sfxcmd": `C:\tools\sfxcmd.exe`}))
 	if err != nil {
 		t.Fatalf("detectCommandPlan: %v", err)
 	}

@@ -74,7 +74,7 @@ func compilePatterns(list string, patterns []string) ([]*regexp.Regexp, error) {
 
 // observe checks one scrubbed output line. It is safe for concurrent use.
 func (c *logChecker) observe(line string) {
-	if c == nil || strings.HasPrefix(line, redactedEnvDirective) {
+	if c == nil || strings.HasPrefix(strings.TrimSpace(line), redactedEnvDirective) {
 		return
 	}
 	for _, re := range c.failOn {

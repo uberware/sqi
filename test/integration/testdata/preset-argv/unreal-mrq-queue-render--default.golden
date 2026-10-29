@@ -72,8 +72,9 @@ task 1/1  name="Render"
     
     def find_params():
         # params.json sits beside this script, in the task's session
-        # folder. The current folder, where the worker starts Unreal, is
-        # a fallback, in case the script's own location is unknown.
+        # folder. The current folder is a fallback, in case the script's
+        # own location is unknown; that the worker's starting folder
+        # survives Unreal's startup is unverified (Unreal may reset it).
         found = []
         here = globals().get("__file__")
         if here:

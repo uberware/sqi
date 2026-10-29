@@ -70,6 +70,7 @@ func (s *Store) ListWorkers(_ context.Context, opts store.ListWorkersOptions) (s
 	for _, w := range s.workers {
 		if filterWorker(w, opts) {
 			w.Tags = copyMap(w.Tags)
+			w.Extensions = slices.Clone(w.Extensions)
 			workers = append(workers, w)
 		}
 	}

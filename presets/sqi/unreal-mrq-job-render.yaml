@@ -60,14 +60,20 @@ readme: |
   the output contains `SQI_RENDER: OK`, and fails when a line contains
   `SQI_RENDER: FAILED:`, `LogPython: Error:` or `Render Executor: Error:`.
   The editor's exit status is not relied on, since Epic's plug-in quits with
-  the same call whether the render worked or not.
+  the same call whether the render worked or not. `LogPython: Error:` matches
+  any Python error in the editor session, for example one from a project's or
+  plug-in's `init_unreal.py`, so such an error fails the task even if the
+  render succeeded.
 
   ## Set a step timeout
 
   The checks give their verdict only once the editor has exited, and the
   editor exits only when the script calls `quit_editor()` after the executor
   reports back. If the executor never reports, or the editor stays open, the
-  task waits with it and keeps its worker busy indefinitely. This preset sets
+  task waits with it and keeps its worker busy indefinitely. Likely causes are
+  the Python Editor Script plug-in being disabled (so `py` is an unknown
+  console command and the editor idles), an error before `main()`, and a
+  project that never reaches `-execcmds`. This preset sets
   no timeout, because a sensible limit depends on the shot. Add a `timeout`
   (in seconds) to the step's `onRun` action in a copy of the preset, longer
   than your slowest render, and allow for shader compilation: the first render
@@ -235,8 +241,9 @@ template:
 
               def find_params():
                   # params.json sits beside this script, in the task's session
-                  # folder. The current folder, where the worker starts Unreal, is
-                  # a fallback, in case the script's own location is unknown.
+                  # folder. The current folder is a fallback, in case the script's
+                  # own location is unknown; that the worker's starting folder
+                  # survives Unreal's startup is unverified (Unreal may reset it).
                   found = []
                   here = globals().get("__file__")
                   if here:

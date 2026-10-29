@@ -146,6 +146,12 @@ func TestLogChecker(t *testing.T) {
 			wantFailed: false,
 		},
 		{
+			name:       "an indented redacted-env directive line is not scanned",
+			failOn:     []string{"SECRET"},
+			lines:      []string{"  \topenjd_redacted_env: SECRET=hunter2"},
+			wantFailed: false,
+		},
+		{
 			name:       "no lines at all",
 			failOn:     []string{"bad"},
 			wantFailed: false,
