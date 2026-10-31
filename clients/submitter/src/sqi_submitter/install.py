@@ -205,7 +205,10 @@ def _is_foreign_hook(target: Path) -> bool:
     """True when ``target`` is a startup file the host fixes the name of, and it is not ours."""
     if target.name not in HOOK_FILES or not target.is_file():
         return False
-    return HOOK_MARKER.encode("utf-8") not in target.read_bytes()
+    # The marker is a whole line, as _lines_to_add reads it: a studio file that merely mentions
+    # the marker text in a comment or a string is still the studio's.
+    text = target.read_bytes().decode("utf-8-sig", errors="replace")
+    return not any(line.strip() == HOOK_MARKER for line in text.splitlines())
 
 
 def _lines_to_add(hook: Path) -> str:
@@ -239,14 +242,14 @@ def _no_destination_hint(host: str) -> str:
             "Could not tell where your Documents folder is. Copy the files above into "
             "<Documents>/UnrealEngine/Python (create it if needed; the Editor runs "
             "init_unreal.py from there at startup), or pass --dest DIR. If you already have "
-            "an init_unreal.py there, add the lines of the shipped one to it instead."
+            "an init_unreal.py there, do not copy over it: append the lines printed below to it."
         )
     if host == "katana":
         return (
             "Could not tell where your home folder is (Katana does not run on macOS). Copy the "
             "files above into <home>/.katana/Startup (create it if needed; Katana runs init.py "
             "from there at startup), or pass --dest DIR. If you already have an init.py there, "
-            "add the lines of the shipped one to it instead."
+            "do not copy over it: append the lines printed below to it."
         )
     if host == "keyshot":
         return (
@@ -259,7 +262,8 @@ def _no_destination_hint(host: str) -> str:
             "SFX_USER_PATH is not set, so there is no known user scripts folder. Copy the "
             "files above into the scripts folder under your Silhouette user folder "
             "($(SFX_USER_PATH)/scripts; create it if needed), or pass --dest DIR. If you "
-            "already have an sfxuser.py there, add the lines of the shipped one to it instead."
+            "already have an sfxuser.py there, do not copy over it: append the lines printed below "
+            "to it."
         )
     if host == "modo":
         return (
@@ -311,6 +315,16 @@ def install_host(host: str, dest: Path | None, out: TextIO, err: TextIO | None =
             with resources.as_file(root.joinpath(rel)) as path:
                 print(f"  {path}", file=out)
         print(_no_destination_hint(host), file=out)
+        for rel in files:
+            name = PurePosixPath(rel).name
+            if name in HOOK_FILES:
+                # The artist may already own a file of this name: copying the shipped hook over
+                # it, or pasting it whole, would bring back its marker and its __future__ line.
+                print(
+                    f"If you already have {name} there, append these lines to it instead:", file=out
+                )
+                with resources.as_file(root.joinpath(rel)) as path:
+                    print(_lines_to_add(path), file=out)
         print(_NEXT_STEP[host], file=out)
         return 0
 

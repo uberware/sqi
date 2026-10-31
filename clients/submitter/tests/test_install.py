@@ -505,3 +505,80 @@ def test_install_host_copies_the_keyshot_script(tmp_path: Path) -> None:
     assert install.install_host("keyshot", dest, out) == 0
     assert (dest / "sqi_keyshot_submit.py").is_file()
     assert [p.name for p in dest.iterdir()] == ["sqi_keyshot_submit.py"]  # no hook file
+
+
+@pytest.mark.parametrize(
+    ("host", "name", "module"),
+    [
+        ("unreal", "init_unreal.py", "sqi_unreal_submit"),
+        ("katana", "init.py", "sqi_katana_submit"),
+        ("silhouette", "sfxuser.py", "sqi_silhouette_submit"),
+    ],
+)
+def test_no_destination_prints_the_hook_lines_to_append(
+    monkeypatch: pytest.MonkeyPatch, host: str, name: str, module: str
+) -> None:
+    """With no default folder the artist may already own the hook-named file: show the lines.
+
+    Copying the shipped hook verbatim over it would bring back the ``__future__`` import
+    (a SyntaxError mid-file) and the marker (a later install would overwrite their file).
+    """
+    monkeypatch.setattr(install, "default_destination", lambda host, platform, env: None)
+    out = io.StringIO()
+    assert install.install_host(host, None, out) == 0
+    text = out.getvalue()
+    heading = f"If you already have {name} there, append these lines to it instead:\n"
+    assert text.count(heading) == 1
+    printed = text.split(heading, 1)[1]
+    assert f"import {module}" in printed
+    assert install.HOOK_MARKER not in text
+    assert "from __future__" not in text
+    compile(
+        "import os\nSTUDIO = os.environ.get('STUDIO')\n" + printed.split("\nRestart", 1)[0],
+        name,
+        "exec",
+    )
+
+
+def test_no_destination_hint_for_other_hosts_prints_no_hook_lines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(install, "default_destination", lambda host, platform, env: None)
+    out = io.StringIO()
+    assert install.install_host("keyshot", None, out) == 0
+    assert "append these lines" not in out.getvalue()
+
+
+@pytest.mark.parametrize(
+    "studio",
+    [
+        '# files carrying "# sqi-submitter hook" are replaced by sqi\nprint("studio")\n',
+        'MARKER = "# sqi-submitter hook"\n',
+        "x = 1  # sqi-submitter hook\n",
+    ],
+)
+def test_install_host_mentioning_the_marker_is_still_a_foreign_hook(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, studio: str
+) -> None:
+    """Only a line that is the marker marks a file as ours, not text that mentions it."""
+    _package_with(tmp_path, monkeypatch, {"hosts/blender/init.py": _HOOK_TEXT})
+    monkeypatch.setattr(install, "HOST_FILES", {"blender": ["hosts/blender/init.py"]})
+    dest = tmp_path / "startup"
+    dest.mkdir()
+    (dest / "init.py").write_text(studio, encoding="utf-8")
+    out = io.StringIO()
+    assert install.install_host("blender", dest, out) == 0
+    assert (dest / "init.py").read_text(encoding="utf-8") == studio
+    assert "kept your existing" in out.getvalue()
+
+
+def test_install_host_replaces_a_hook_with_crlf_line_endings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _package_with(tmp_path, monkeypatch, {"hosts/blender/init.py": _HOOK_TEXT})
+    monkeypatch.setattr(install, "HOST_FILES", {"blender": ["hosts/blender/init.py"]})
+    dest = tmp_path / "startup"
+    dest.mkdir()
+    (dest / "init.py").write_bytes(f"{install.HOOK_MARKER}\r\nold\r\n".encode())
+    assert install.install_host("blender", dest, io.StringIO()) == 0
+    assert (dest / "init.py").read_text(encoding="utf-8") == _HOOK_TEXT
