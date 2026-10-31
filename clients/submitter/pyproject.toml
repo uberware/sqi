@@ -136,6 +136,8 @@ module = [
   "PyQt5",
   "PyQt5.*",
   "sqi_katana_submit",
+  # KeyShot's scripting module (the handoff file imports it inside function bodies).
+  "lux",
 ]
 ignore_missing_imports = true
 

@@ -442,3 +442,66 @@ def test_install_host_guidance_for_the_real_katana_hook_is_valid_to_append(
             assert node.annotation is None
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             assert node.returns is None
+
+
+def _documents(platform: str, home: Path) -> tuple[dict[str, str], Path]:
+    """The environment for ``platform`` and the Documents folder it implies, created."""
+    env = {"USERPROFILE": str(home)} if platform == "win32" else {"HOME": str(home)}
+    documents = home / "Documents"
+    documents.mkdir(parents=True)
+    return env, documents
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_default_destination_keyshot(platform: str, tmp_path: Path) -> None:
+    """Exactly one ``KeyShot*`` folder in Documents gives its ``Scripts``; else nothing."""
+    env, documents = _documents(platform, tmp_path)
+    assert install.default_destination("keyshot", platform, env) is None  # none
+    (documents / "Unrelated").mkdir()
+    assert install.default_destination("keyshot", platform, env) is None  # none that match
+    (documents / "KeyShot 2024").mkdir()
+    assert install.default_destination("keyshot", platform, env) == (
+        documents / "KeyShot 2024" / "Scripts"
+    )
+    (documents / "KeyShot 11").mkdir()
+    assert install.default_destination("keyshot", platform, env) is None  # ambiguous
+
+
+def test_default_destination_keyshot_ignores_a_file_named_like_the_folder(tmp_path: Path) -> None:
+    env, documents = _documents("win32", tmp_path)
+    (documents / "KeyShot notes.txt").write_text("x", encoding="utf-8")
+    assert install.default_destination("keyshot", "win32", env) is None
+
+
+@pytest.mark.parametrize(
+    ("platform", "env"),
+    [
+        ("linux", {"HOME": "/home/a"}),  # KeyShot has no Linux desktop product
+        ("win32", {}),
+        ("win32", {"HOME": "/home/a"}),
+        ("darwin", {}),
+        ("darwin", {"USERPROFILE": "C:/Users/a"}),
+    ],
+)
+def test_default_destination_keyshot_without_a_place_is_none(
+    platform: str, env: dict[str, str]
+) -> None:
+    assert install.default_destination("keyshot", platform, env) is None
+
+
+def test_keyshot_next_step_and_no_destination_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(install, "default_destination", lambda host, platform, env: None)
+    out = io.StringIO()
+    assert install.install_host("keyshot", None, out) == 0
+    text = out.getvalue()
+    assert "sqi_keyshot_submit.py" in text
+    assert "Scripts" in text
+    assert "In KeyShot open Window > Scripting Console and run sqi_keyshot_submit." in text
+
+
+def test_install_host_copies_the_keyshot_script(tmp_path: Path) -> None:
+    dest = tmp_path / "Scripts"
+    out = io.StringIO()
+    assert install.install_host("keyshot", dest, out) == 0
+    assert (dest / "sqi_keyshot_submit.py").is_file()
+    assert [p.name for p in dest.iterdir()] == ["sqi_keyshot_submit.py"]  # no hook file

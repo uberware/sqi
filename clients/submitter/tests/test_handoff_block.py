@@ -25,6 +25,7 @@ HANDOFF_HOST_FILES: list[Path] = [
     HOSTS_DIR / "cinema4d" / "sqi_submit.pyp",
     HOSTS_DIR / "unreal" / "sqi_unreal_submit.py",
     HOSTS_DIR / "katana" / "sqi_katana_submit.py",
+    HOSTS_DIR / "keyshot" / "sqi_keyshot_submit.py",
 ]
 
 # The Python files Tasks 2-6 add (handoff modules and the startup hooks that call them). Each
@@ -34,6 +35,7 @@ NEW_HANDOFF_FILES: list[Path] = [
     HOSTS_DIR / "unreal" / "init_unreal.py",
     HOSTS_DIR / "katana" / "sqi_katana_submit.py",
     HOSTS_DIR / "katana" / "init.py",
+    HOSTS_DIR / "keyshot" / "sqi_keyshot_submit.py",
 ]
 
 BEGIN = "# --- sqi handoff begin ---"
