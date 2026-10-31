@@ -66,6 +66,7 @@ def test_wheel_contains_every_host_file(wheel: dict[str, bytes]) -> None:
         "silhouette",
         "modo",
         "fusion",
+        "vred",
     }
     # index.cfg is not Python: it ships only because nothing excludes it.
     assert "hosts/modo/sqi/index.cfg" in host_files
@@ -73,6 +74,8 @@ def test_wheel_contains_every_host_file(wheel: dict[str, bytes]) -> None:
     assert "hosts/aftereffects/json2.js" in host_files
     # A Lua file whose name has spaces: the wheel and the copy must both carry it intact.
     assert "hosts/fusion/Submit to sqi.lua" in host_files
+    # VRED's plugin sits in a folder named for the plugin, as VRED loads it.
+    assert "hosts/vred/SubmitToSqi/SubmitToSqi.py" in host_files
     missing = [f for f in host_files + REQUIRED if f"sqi_submitter/{f}" not in names]
     assert missing == []
 

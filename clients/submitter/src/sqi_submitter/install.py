@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""``sqi-submit install-host``: copy a handoff host's files into place.
+"""``sqi-submit install-host``: copy a host's files into place.
 
 The files for Blender, Cinema 4D, After Effects, Unreal, Katana, KeyShot, Silhouette, Modo and
 Fusion ship inside this wheel as package data and use only the host's own standard library, so
-installing is a file copy: no pip into the host's Python. Where the documented location needs
-admin rights (After Effects) or is not knowable (Blender's add-on is installed through its UI,
-Cinema 4D's preferences folder is versioned) the command prints what to do instead of guessing.
+installing is a file copy: no pip into the host's Python. VRED's plugin is the exception: it
+runs ``sqi_submitter`` inside VRED's own Python, so that package has to be installed there too
+(see the VRED docs). Where the documented location needs admin rights (After Effects) or is not
+knowable (Blender's add-on is installed through its UI, Cinema 4D's preferences folder is
+versioned) the command prints what to do instead of guessing.
 """
 
 from __future__ import annotations
@@ -44,6 +46,9 @@ HOST_FILES: dict[str, list[str]] = {
     # Fusion bundles Lua but not Python: one Lua comp script, no hook file. The name has spaces
     # (it is the menu entry), and lands flat in the user's Scripts/Comp folder.
     "fusion": ["hosts/fusion/Submit to sqi.lua"],
+    # VRED is in-process: this plugin may import sqi_submitter (installed into VRED's Python),
+    # so it is not a handoff file. It lands as <dest>/SubmitToSqi/SubmitToSqi.py.
+    "vred": ["hosts/vred/SubmitToSqi/SubmitToSqi.py"],
 }
 
 # Taken from HOST_FILES once, at import, so the two cannot drift; a patched HOST_FILES
@@ -59,6 +64,7 @@ HOOK_FILES: frozenset[str] = frozenset({"init_unreal.py", "init.py", "sfxuser.py
 
 _C4D_PREFS_GLOB = "Maxon Cinema 4D *"
 _KEYSHOT_GLOB = "KeyShot*"
+_VRED_GLOB = "VRED-*"
 
 _NEXT_STEP = {
     "blender": "In Blender: Edit > Preferences > Add-ons > Install from Disk, choose the file "
@@ -73,6 +79,7 @@ _NEXT_STEP = {
     "silhouette": "Restart Silhouette; Submit to sqi… appears in the Actions menu.",
     "modo": "Restart Modo; run sqi.submit from the command entry, or map it to a key.",
     "fusion": "In Fusion choose Script > Submit to sqi.",
+    "vred": "Turn VRED's Python sandbox off, restart VRED; Submit to sqi… appears in the sqi menu.",
 }
 
 
@@ -153,7 +160,8 @@ def default_destination(host: str, platform: str, env: Mapping[str, str]) -> Pat
     Support/Luxology`` on macOS and ``~/.luxology`` on Linux. Fusion's is ``Scripts/Comp`` in
     its per-user ``Blackmagic Design/Fusion`` folder: under ``%APPDATA%`` on Windows, ``~/Library/
     Application Support`` on macOS and ``~/.fusion`` on Linux (where the vendor folder is spelled
-    ``BlackmagicDesign``).
+    ``BlackmagicDesign``). VRED's is ``ScriptPlugins`` in its one ``VRED-*`` folder under
+    ``Documents/Autodesk`` (Windows only: VRED Pro has no other platform).
     """
     if host == "unreal":
         home = env.get("USERPROFILE" if platform == "win32" else "HOME")
@@ -179,6 +187,13 @@ def default_destination(host: str, platform: str, env: Mapping[str, str]) -> Pat
         return _modo_scripts_folder(platform, env)
     if host == "fusion":
         return _fusion_scripts_folder(platform, env)
+    if host == "vred":
+        # VRED Pro, the edition with a UI, runs on Windows only. Its per-user plugin folder is
+        # versioned (VRED-<internal version>), so it is named only when exactly one exists.
+        if platform != "win32" or not env.get("USERPROFILE"):
+            return None
+        found = _only_folder(Path(env["USERPROFILE"]) / "Documents" / "Autodesk", _VRED_GLOB)
+        return found / "ScriptPlugins" if found else None
     if host != "cinema4d":
         return None
     root = _cinema4d_prefs_root(platform, env)
@@ -260,6 +275,13 @@ def _no_destination_hint(host: str) -> str:
             "Scripts/Comp folder of your Fusion user folder (the Scripts: path map in Fusion's "
             "Preferences shows it; for example %APPDATA%/Blackmagic Design/Fusion/Scripts/Comp "
             "on Windows; create it if needed), or pass --dest DIR."
+        )
+    if host == "vred":
+        return (
+            "Could not tell which VRED folder to use (VRED is Windows-only, and its folder is "
+            "versioned). Copy the SubmitToSqi folder shown above into the ScriptPlugins folder "
+            "of your VRED folder (<Documents>/Autodesk/VRED-<version>/ScriptPlugins; create it "
+            "if needed), or pass --dest DIR."
         )
     return (
         "The After Effects scripts folder is under the program folder and needs "

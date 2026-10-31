@@ -149,6 +149,10 @@ module = [
   "lxu.*",
   "modo",
   "modo.*",
+  # VRED's render-settings module, imported by the script plugin inside function bodies.
+  "vrRenderSettings",
+  "vrKernelServices",
+  "vrKernelServices.*",
 ]
 ignore_missing_imports = true
 
