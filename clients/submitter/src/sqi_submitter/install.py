@@ -106,6 +106,16 @@ def _is_foreign_hook(target: Path) -> bool:
     return HOOK_MARKER.encode("utf-8") not in target.read_bytes()
 
 
+def _lines_to_add(hook: Path) -> str:
+    """The shipped hook without its marker line.
+
+    The marker names the file sqi itself installs. Printed for the artist to append, it would
+    make their own file look like ours, and the next install would overwrite it.
+    """
+    lines = hook.read_text(encoding="utf-8").splitlines()
+    return "\n".join(line for line in lines if line.strip() != HOOK_MARKER).strip("\n")
+
+
 def _no_destination_hint(host: str) -> str:
     if host == "blender":
         return "Blender add-ons are installed through its UI, so nothing was copied."
@@ -157,7 +167,7 @@ def install_host(host: str, dest: Path | None, out: TextIO, err: TextIO | None =
                         f"kept your existing {target}; to add sqi, append these lines to it:",
                         file=out,
                     )
-                    print(path.read_text(encoding="utf-8").rstrip("\n"), file=out)
+                    print(_lines_to_add(path), file=out)
                     continue
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(path, target)

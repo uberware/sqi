@@ -255,7 +255,9 @@ def test_install_host_keeps_a_foreign_hook_file(
     assert (dest / "init.py").read_text(encoding="utf-8") == 'print("studio")'
     text = out.getvalue()
     assert f"kept your existing {dest / 'init.py'}; to add sqi, append these lines to it:" in text
-    assert _HOOK_TEXT in text
+    assert "import sqi_katana_submit" in text
+    # The marker names the file sqi itself installs; the lines for the artist must not carry it.
+    assert install.HOOK_MARKER not in text
 
 
 def test_install_host_creates_a_missing_hook_file(
@@ -281,3 +283,28 @@ def test_install_host_replaces_its_own_hook_file(
     assert install.install_host("blender", dest, out) == 0
     assert (dest / "init.py").read_text(encoding="utf-8") == _HOOK_TEXT
     assert "kept your existing" not in out.getvalue()
+
+
+def test_install_host_foreign_hook_stays_foreign_after_appending_printed_lines(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _package_with(tmp_path, monkeypatch, {"hosts/blender/init.py": _HOOK_TEXT})
+    monkeypatch.setattr(install, "HOST_FILES", {"blender": ["hosts/blender/init.py"]})
+    dest = tmp_path / "startup"
+    dest.mkdir()
+    studio = 'print("studio")'
+    (dest / "init.py").write_text(studio, encoding="utf-8")
+    out = io.StringIO()
+    assert install.install_host("blender", dest, out) == 0
+    # The artist does what the guidance says: appends the printed lines to their own file.
+    printed = out.getvalue().split("append these lines to it:\n", 1)[1]
+    printed = printed.split("In Blender:", 1)[0]
+    with (dest / "init.py").open("a", encoding="utf-8") as handle:
+        handle.write("\n" + printed)
+    appended = (dest / "init.py").read_text(encoding="utf-8")
+    assert "import sqi_katana_submit" in appended
+    again = io.StringIO()
+    assert install.install_host("blender", dest, again) == 0
+    assert (dest / "init.py").read_text(encoding="utf-8") == appended
+    assert appended.startswith(studio)
+    assert "kept your existing" in again.getvalue()

@@ -7,8 +7,9 @@ so each carries a verbatim copy of the text between the two markers below.
 ``tests/test_handoff_block.py::test_block_identical_in_every_host`` keeps the
 copies identical to this file. Edit the block here first, then re-copy it.
 
-The block is standard library only and stays compatible with Python 3.9. Its
-imports sit inside the markers so a copy is complete without any import outside
+The block is standard library only and stays compatible with Python 3.7
+(Katana 4-5 and Silhouette 2022 ship it; ``test_handoff_hosts_parse_as_python37`` pins the
+hosts). Its imports sit inside the markers so a copy is complete without any import outside
 them. Windows-only calls are guarded so it imports and runs on every platform.
 """
 
