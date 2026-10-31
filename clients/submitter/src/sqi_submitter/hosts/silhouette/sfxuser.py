@@ -17,4 +17,6 @@ try:
 
     sqi_silhouette_submit.register()
 except Exception as _sqi_error:  # a broken sqi install must not stop the code after it
-    print("sqi: Submit to sqi… was not added: " + str(_sqi_error))
+    # ASCII only: a narrow-encoding console must not raise inside this guard.
+    _sqi_message = "sqi: Submit to sqi... was not added: " + str(_sqi_error)
+    print(_sqi_message.encode("ascii", "replace").decode("ascii"))

@@ -134,6 +134,7 @@ def launch(command: str, context_path: str) -> None:
 
 _UNSAVED_MESSAGE = "Save your scene before submitting — the farm renders the file on disk."
 _SAVE_FAILED_MESSAGE = "KeyShot could not save the scene, so nothing was submitted."
+_READ_FAILED = "sqi could not read the scene: "
 
 
 def _frame_range(info: Any) -> str | None:
@@ -210,7 +211,8 @@ def _warn(text: str) -> None:
 
         lux.getMessageBox(msg=text, title="sqi", type=lux.MESSAGE_BOX_WARNING)
     except Exception:
-        print("sqi: " + text)
+        # ASCII only: a narrow-encoding console raises UnicodeEncodeError on the em dash.
+        print("sqi: " + text.encode("ascii", "replace").decode("ascii"))
 
 
 def submit() -> bool:
@@ -221,7 +223,13 @@ def submit() -> bool:
     """
     import lux
 
-    if _scene_path(lux) is None:
+    try:
+        scene_path = _scene_path(lux)
+    except Exception as exc:
+        # The scene-info call has not been run on a real install: whatever it raises is shown.
+        _warn(_READ_FAILED + str(exc))
+        return False
+    if scene_path is None:
         _warn(_UNSAVED_MESSAGE)
         return False
     try:
@@ -231,8 +239,15 @@ def submit() -> bool:
         _warn(_SAVE_FAILED_MESSAGE)
         return False
     try:
+        data = read_scene()
+    except Exception as exc:
+        # read_scene calls KeyShot APIs that have not been run on a real install: whatever they
+        # raise is shown to the artist, not left to reach KeyShot's console.
+        _warn(_READ_FAILED + str(exc))
+        return False
+    try:
         command = resolve_submit_command("")
-        launch(command, write_context(read_scene()))
+        launch(command, write_context(data))
     except (RuntimeError, OSError) as exc:
         _warn(str(exc))
         return False

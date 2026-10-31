@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,6 +21,11 @@ HOOK = KATANA_DIR / "init.py"
 
 UNSAVED = "Save your scene before submitting — the farm renders the file on disk."
 SAVE_FAILED = "Katana could not save the project, so nothing was submitted."
+
+
+def _ascii(text: str) -> str:
+    """What the console fallback prints: ASCII only, so a narrow console cannot raise."""
+    return text.encode("ascii", "replace").decode("ascii")
 
 
 class Param:
@@ -205,7 +211,10 @@ def test_katana_read_scene_render_nodes(
     assert [t.name for t in adapter.render_targets()] == ["Beauty", "Utility"]
 
 
-def test_katana_node_name_with_space(katana: Katana, tmp_path: Path) -> None:
+def test_katana_node_name_with_space(
+    katana: Katana, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
     katana.nodes = [Node("Beauty Pass")]
     module = _module()
     adapter = load_context(module.write_context(module.read_scene()))
@@ -291,6 +300,39 @@ def test_katana_save_failure_submits_nothing(
     assert katana.warnings == [SAVE_FAILED]
 
 
+@pytest.mark.parametrize("error", [AttributeError("GetKatanaFileName"), ValueError("x")])
+def test_katana_scene_check_failure_is_shown_not_raised(
+    katana: Katana, monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    """``GetKatanaFileName`` is an unverified Katana API: whatever it raises is shown."""
+    module = _module()
+    _stub_launch(module, monkeypatch, katana.events)
+
+    def broken() -> str:
+        raise error
+
+    katana.module.FarmAPI.GetKatanaFileName = broken
+    assert module.submit() is False
+    assert katana.events == []  # nothing written, nothing launched
+    assert katana.warnings == [f"sqi could not read the scene: {error}"]
+
+
+@pytest.mark.parametrize("error", [AttributeError("GetAllNodesByType"), ValueError("x")])
+def test_katana_scene_read_failure_is_shown_not_raised(
+    katana: Katana, monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    module = _module()
+    _stub_launch(module, monkeypatch, katana.events)
+
+    def broken() -> object:
+        raise error
+
+    monkeypatch.setattr(module, "read_scene", broken)
+    assert module.submit() is False
+    assert katana.events == []
+    assert katana.warnings == [f"sqi could not read the scene: {error}"]
+
+
 @pytest.mark.parametrize("error", [RuntimeError("sqi-submit was not found."), OSError("denied")])
 def test_katana_launch_problems_are_shown_not_raised(
     katana: Katana, monkeypatch: pytest.MonkeyPatch, error: Exception
@@ -333,7 +375,7 @@ def test_katana_message_without_qt_is_printed(
     monkeypatch.setitem(sys.modules, "PySide6", None)
     katana.file_name = ""
     assert _module().submit() is False
-    assert UNSAVED in capsys.readouterr().out
+    assert _ascii(UNSAVED) in capsys.readouterr().out
 
 
 def test_katana_install_menu_adds_the_sqi_menu(
@@ -407,6 +449,32 @@ def test_katana_hook_without_dunder_file_uses_the_user_startup_folder(
     exec(compile(HOOK.read_text(encoding="utf-8"), "init.py", "exec"), namespace)
     assert str(tmp_path / ".katana" / "Startup") in sys.path
     assert [kind for kind, _func in registered] == ["onStartupComplete"]
+
+
+def test_katana_hook_failure_does_not_break_startup(
+    fake_host_module: FakeHost, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A broken sqi install must not stop the studio's own startup code after the hook."""
+    fake_host_module("Katana", Callbacks=_callbacks()[0])
+    monkeypatch.setitem(sys.modules, "sqi_katana_submit", None)  # the import raises
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    namespace: dict[str, Any] = {"__name__": "init"}
+    exec(compile(HOOK.read_text(encoding="utf-8"), "init.py", "exec"), namespace)
+    assert "was not added" in capsys.readouterr().out
+
+
+def test_katana_hook_is_valid_to_append_to_a_studio_file() -> None:
+    """The hook's lines land after a studio's own file, with no ``__future__`` import."""
+    text = HOOK.read_text(encoding="utf-8")
+    lines = [
+        line
+        for line in text.splitlines()
+        if line.strip() != install.HOOK_MARKER and not line.startswith("from __future__")
+    ]
+    studio = "import os\n\nSTUDIO = os.environ.get('STUDIO')\n"
+    compile(studio + "\n".join(lines) + "\n", "init.py", "exec")
+    for node in ast.walk(ast.parse("\n".join(lines))):
+        assert not isinstance(node, ast.AnnAssign)
 
 
 def test_katana_module_imports_without_katana(monkeypatch: pytest.MonkeyPatch) -> None:

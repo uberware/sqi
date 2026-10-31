@@ -135,6 +135,7 @@ def launch(command: str, context_path: str) -> None:
 
 _UNSAVED_MESSAGE = "Save your scene before submitting — the farm renders the file on disk."
 _SAVE_FAILED_MESSAGE = "Silhouette could not save the project, so nothing was submitted."
+_READ_FAILED = "sqi could not read the scene: "
 
 # The ``type`` of a node that writes the render (the one ``sfxcmd -node`` names by label).
 _OUTPUT_NODE_TYPE = "OutputNode"
@@ -242,7 +243,8 @@ def _warn(text: str) -> None:
             raise RuntimeError("no QApplication")
         widgets.QMessageBox.warning(None, "sqi", text)
     except Exception:
-        print("sqi: " + text)
+        # ASCII only: a narrow-encoding console raises UnicodeEncodeError on the em dash.
+        print("sqi: " + text.encode("ascii", "replace").decode("ascii"))
 
 
 def submit() -> bool:
@@ -253,7 +255,13 @@ def submit() -> bool:
     """
     import fx
 
-    if _project_path(fx) is None:
+    try:
+        project_path = _project_path(fx)
+    except Exception as exc:
+        # The project call has not been run on a real install: whatever it raises is shown.
+        _warn(_READ_FAILED + str(exc))
+        return False
+    if project_path is None:
         _warn(_UNSAVED_MESSAGE)
         return False
     try:
@@ -264,8 +272,15 @@ def submit() -> bool:
         _warn(_SAVE_FAILED_MESSAGE)
         return False
     try:
+        data = read_scene()
+    except Exception as exc:
+        # read_scene calls Silhouette APIs that have not been run on a real install: whatever
+        # they raise is shown to the artist, not left to reach Silhouette's console.
+        _warn(_READ_FAILED + str(exc))
+        return False
+    try:
         command = resolve_submit_command("")
-        launch(command, write_context(read_scene()))
+        launch(command, write_context(data))
     except (RuntimeError, OSError) as exc:
         _warn(str(exc))
         return False

@@ -136,6 +136,7 @@ def launch(command: str, context_path: str) -> None:
 
 _UNSAVED_MESSAGE = "Save your scene before submitting — the farm renders the file on disk."
 _SAVE_FAILED_MESSAGE = "Katana could not save the project, so nothing was submitted."
+_READ_FAILED = "sqi could not read the scene: "
 # The Render node's farm group is ``farmGlobalSettings`` in the node reference (4.0 to 9.0);
 # ``farmSettings`` is the name the RenderScript node uses for the same three parameters.
 _FARM_GROUPS = ("farmGlobalSettings", "farmSettings")
@@ -244,7 +245,8 @@ def _warn(text: str) -> None:
     try:
         _qt_widgets().QMessageBox.warning(None, "sqi", text)
     except Exception:
-        print("sqi: " + text)
+        # ASCII only: a narrow-encoding console raises UnicodeEncodeError on the em dash.
+        print("sqi: " + text.encode("ascii", "replace").decode("ascii"))
 
 
 def submit() -> bool:
@@ -255,7 +257,12 @@ def submit() -> bool:
     """
     from Katana import FarmAPI, KatanaFile
 
-    path = FarmAPI.GetKatanaFileName()
+    try:
+        path = FarmAPI.GetKatanaFileName()
+    except Exception as exc:
+        # The file-name call has not been run on a real install: whatever it raises is shown.
+        _warn(_READ_FAILED + str(exc))
+        return False
     if not path:
         _warn(_UNSAVED_MESSAGE)
         return False
@@ -266,8 +273,15 @@ def submit() -> bool:
         _warn(_SAVE_FAILED_MESSAGE)
         return False
     try:
+        data = read_scene()
+    except Exception as exc:
+        # read_scene calls Katana APIs that have not been run on a real install: whatever they
+        # raise is shown to the artist, not left to reach Katana's console.
+        _warn(_READ_FAILED + str(exc))
+        return False
+    try:
         command = resolve_submit_command("")
-        launch(command, write_context(read_scene()))
+        launch(command, write_context(data))
     except (RuntimeError, OSError) as exc:
         _warn(str(exc))
         return False
@@ -283,7 +297,7 @@ def install_menu(**_kwargs: Any) -> None:
 
     menu_bar = MainWindow.CurrentMainWindow().findChild(MainMenu.MainMenu)
     if menu_bar is None:
-        print("sqi: Katana's menu bar was not found, so Submit to sqi… was not added.")
+        print("sqi: Katana's menu bar was not found, so Submit to sqi... was not added.")
         return
     action = menu_bar.addMenu("sqi").addAction("Submit to sqi…")
     action.triggered.connect(lambda *_checked: submit())

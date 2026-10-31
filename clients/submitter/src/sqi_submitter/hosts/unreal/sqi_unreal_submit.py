@@ -142,10 +142,10 @@ _MENU_COMMAND = "import sqi_unreal_submit; sqi_unreal_submit.submit()"
 def asset_path_problem(path: str) -> str | None:
     """Why ``path`` cannot name an asset another machine can load, or ``None`` if it can."""
     if not path or path.startswith("/Temp/") or path.startswith("/Engine/Transient"):
-        return "it is not saved"
+        return "is not saved"
     if path.startswith("/"):
         return None
-    return "it is not an asset path"
+    return "is not an asset path"
 
 
 def job_target(job: Any) -> tuple[dict[str, object] | None, str | None]:
@@ -233,13 +233,19 @@ def submit() -> bool:
     """
     import unreal
 
-    if _any_dirty():
-        unreal.EditorLoadingAndSavingUtils.save_dirty_packages_with_dialog(True, True)
-        if _any_dirty():
-            _show(_SAVE_FIRST, unreal.AppMsgType.OK)
-            return False
     try:
+        if _any_dirty():
+            unreal.EditorLoadingAndSavingUtils.save_dirty_packages_with_dialog(True, True)
+            if _any_dirty():
+                _show(_SAVE_FIRST, unreal.AppMsgType.OK)
+                return False
         data, reasons = read_scene()
+    except Exception as exc:
+        # These call Editor APIs that have not been run on a real install: whatever they raise
+        # is shown to the artist, not left to reach the Editor's log.
+        _show(f"sqi could not read the scene: {exc}", unreal.AppMsgType.OK)
+        return False
+    try:
         if reasons:
             answer = _show(_REFUSAL_HEAD + "\n".join(reasons), unreal.AppMsgType.OK_CANCEL)
             if answer != unreal.AppReturnType.OK:

@@ -26,6 +26,11 @@ UNSAVED = "Save your scene before submitting — the farm renders the file on di
 SAVE_FAILED = "KeyShot could not save the scene, so nothing was submitted."
 
 
+def _ascii(text: str) -> str:
+    """What the console fallback prints: ASCII only, so a narrow console cannot raise."""
+    return text.encode("ascii", "replace").decode("ascii")
+
+
 class Lux:
     """The fake ``lux`` module plus a record of every call the script makes on it."""
 
@@ -203,6 +208,39 @@ def test_keyshot_save_failure_submits_nothing(lux: Lux, monkeypatch: pytest.Monk
     assert lux.boxes == [(SAVE_FAILED, "sqi", Lux.MESSAGE_BOX_WARNING)]
 
 
+@pytest.mark.parametrize("error", [AttributeError("getSceneInfo"), ValueError("x")])
+def test_keyshot_scene_check_failure_is_shown_not_raised(
+    lux: Lux, monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    """``getSceneInfo`` is read for the scene check: whatever it raises is shown."""
+    module = _module()
+    _stub_launch(module, monkeypatch, lux.events)
+
+    def broken() -> dict[str, object]:
+        raise error
+
+    monkeypatch.setattr(lux.module, "getSceneInfo", broken)
+    assert module.submit() is False
+    assert lux.events == []  # nothing written, nothing launched
+    assert lux.boxes == [(f"sqi could not read the scene: {error}", "sqi", Lux.MESSAGE_BOX_WARNING)]
+
+
+@pytest.mark.parametrize("error", [AttributeError("getStudios"), ValueError("x")])
+def test_keyshot_scene_read_failure_is_shown_not_raised(
+    lux: Lux, monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    module = _module()
+    _stub_launch(module, monkeypatch, lux.events)
+
+    def broken() -> object:
+        raise error
+
+    monkeypatch.setattr(module, "read_scene", broken)
+    assert module.submit() is False
+    assert lux.events == []
+    assert lux.boxes == [(f"sqi could not read the scene: {error}", "sqi", Lux.MESSAGE_BOX_WARNING)]
+
+
 @pytest.mark.parametrize("error", [RuntimeError("sqi-submit was not found."), OSError("denied")])
 def test_keyshot_launch_problems_are_shown_not_raised(
     lux: Lux, monkeypatch: pytest.MonkeyPatch, error: Exception
@@ -225,7 +263,7 @@ def test_keyshot_message_without_a_message_box_is_printed(
     lux.scene = {"name": "", "file": ""}
     lux.box_error = RuntimeError("no GUI in headless mode")
     assert _module().submit() is False
-    assert UNSAVED in capsys.readouterr().out
+    assert _ascii(UNSAVED) in capsys.readouterr().out
 
 
 def test_keyshot_main_runs_submit(lux: Lux, monkeypatch: pytest.MonkeyPatch) -> None:

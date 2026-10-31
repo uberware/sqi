@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -200,23 +201,23 @@ def test_unreal_job_on_unsaved_map_is_excluded(unreal: Unreal) -> None:
     unreal.jobs = [_job("Scratch", map_path="/Temp/Untitled_1.Untitled_1"), _job("Fine")]
     data, reasons = _module().read_scene()
     assert [t["name"] for t in data["targets"]] == ["Fine"]
-    assert reasons == ["Scratch: its map it is not saved"]
+    assert reasons == ["Scratch: its map is not saved"]
 
 
 def test_unreal_job_on_unsaved_sequence_is_excluded(unreal: Unreal) -> None:
     unreal.jobs = [_job("Seq", sequence="/Engine/Transient.Seq")]
     data, reasons = _module().read_scene()
     assert data["targets"] == []
-    assert reasons == ["Seq: its level sequence it is not saved"]
+    assert reasons == ["Seq: its level sequence is not saved"]
 
 
 @pytest.mark.parametrize(
     ("path", "problem"),
     [
-        ("", "it is not saved"),
-        ("/Temp/x", "it is not saved"),
-        ("/Engine/Transient.x", "it is not saved"),
-        ("Game/x", "it is not an asset path"),
+        ("", "is not saved"),
+        ("/Temp/x", "is not saved"),
+        ("/Engine/Transient.x", "is not saved"),
+        ("Game/x", "is not an asset path"),
         ("/Game/x", None),
         ("/MyPlugin/x", None),
     ],
@@ -292,6 +293,40 @@ def test_unreal_refusals_ok_launches_the_rest(
     assert len(lines) == 3 and lines[1].startswith("Edited: ") and lines[2].startswith("Scratch: ")
 
 
+@pytest.mark.parametrize("error", [AttributeError("get_dirty_map_packages"), ValueError("bad")])
+def test_unreal_scene_check_failure_is_shown_not_raised(
+    unreal: Unreal, monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    """The dirty-package check and the save call unverified Editor APIs: failures are shown."""
+    module = _module()
+    unreal.jobs = [_job()]
+    _stub_launch(module, monkeypatch, unreal.events)
+
+    def broken() -> list[object]:
+        raise error
+
+    unreal.module.EditorLoadingAndSavingUtils.get_dirty_map_packages = broken
+    assert module.submit() is False
+    assert unreal.events == []  # nothing written, nothing launched
+    assert unreal.messages == [("sqi", f"sqi could not read the scene: {error}", "MSG_OK")]
+
+
+@pytest.mark.parametrize("error", [AttributeError("MoviePipelineQueueSubsystem"), ValueError("x")])
+def test_unreal_scene_read_failure_is_shown_not_raised(
+    unreal: Unreal, monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    module = _module()
+    _stub_launch(module, monkeypatch, unreal.events)
+
+    def broken() -> object:
+        raise error
+
+    monkeypatch.setattr(module, "read_scene", broken)
+    assert module.submit() is False
+    assert unreal.events == []
+    assert unreal.messages == [("sqi", f"sqi could not read the scene: {error}", "MSG_OK")]
+
+
 @pytest.mark.parametrize("error", [RuntimeError("sqi-submit was not found."), OSError("denied")])
 def test_unreal_launch_problems_are_shown_not_raised(
     unreal: Unreal, monkeypatch: pytest.MonkeyPatch, error: Exception
@@ -338,6 +373,31 @@ def test_unreal_hook_registers_menu(monkeypatch: pytest.MonkeyPatch) -> None:
     load_host_file(HOOK)
     assert calls == ["register_menu"]
     assert install.HOOK_MARKER in HOOK.read_text(encoding="utf-8").splitlines()
+
+
+def test_unreal_hook_failure_does_not_break_startup(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A broken sqi install must not stop the studio's own startup code after the hook."""
+    monkeypatch.setitem(sys.modules, "sqi_unreal_submit", None)  # the import raises
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    namespace: dict[str, Any] = {"__name__": "init"}
+    exec(compile(HOOK.read_text(encoding="utf-8"), "init_unreal.py", "exec"), namespace)
+    assert "was not added" in capsys.readouterr().out
+
+
+def test_unreal_hook_is_valid_to_append_to_a_studio_file() -> None:
+    """The hook's lines land after a studio's own file, with no ``__future__`` import."""
+    text = HOOK.read_text(encoding="utf-8")
+    lines = [
+        line
+        for line in text.splitlines()
+        if line.strip() != install.HOOK_MARKER and not line.startswith("from __future__")
+    ]
+    studio = "import os\n\nSTUDIO = os.environ.get('STUDIO')\n"
+    compile(studio + "\n".join(lines) + "\n", "init_unreal.py", "exec")
+    for node in ast.walk(ast.parse("\n".join(lines))):
+        assert not isinstance(node, ast.AnnAssign)
 
 
 def test_unreal_module_imports_without_unreal(monkeypatch: pytest.MonkeyPatch) -> None:

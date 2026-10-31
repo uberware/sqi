@@ -25,6 +25,11 @@ UNSAVED = "Save your scene before submitting — the farm renders the file on di
 SAVE_FAILED = "Silhouette could not save the project, so nothing was submitted."
 
 
+def _ascii(text: str) -> str:
+    """What the console fallback prints: ASCII only, so a narrow console cannot raise."""
+    return text.encode("ascii", "replace").decode("ascii")
+
+
 class Node:
     def __init__(self, label: str, kind: str = "OutputNode") -> None:
         self.label = label
@@ -184,7 +189,7 @@ def test_silhouette_unsaved_project_refused(
     _stub_launch(module, monkeypatch, fx.events)
     assert module.submit() is False
     assert fx.events == []  # not saved, not written, not launched
-    assert UNSAVED in capsys.readouterr().out
+    assert _ascii(UNSAVED) in capsys.readouterr().out
 
 
 def test_silhouette_no_project_refused(fx: Fx, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -225,7 +230,46 @@ def test_silhouette_save_failure_submits_nothing(
     _stub_launch(module, monkeypatch, fx.events)
     assert module.submit() is False
     assert fx.events == ["save"]
-    assert SAVE_FAILED in capsys.readouterr().out
+    assert _ascii(SAVE_FAILED) in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("error", [AttributeError("activeProject"), ValueError("x")])
+def test_silhouette_scene_check_failure_is_shown_not_raised(
+    fx: Fx,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    error: Exception,
+) -> None:
+    """``activeProject`` is an unverified API on the scene check: whatever it raises is shown."""
+    module = _module()
+    _stub_launch(module, monkeypatch, fx.events)
+
+    def broken() -> object:
+        raise error
+
+    monkeypatch.setattr(fx.module, "activeProject", broken)
+    assert module.submit() is False
+    assert fx.events == []  # nothing written, nothing launched
+    assert f"sqi could not read the scene: {error}" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("error", [AttributeError("sessions"), ValueError("x")])
+def test_silhouette_scene_read_failure_is_shown_not_raised(
+    fx: Fx,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    error: Exception,
+) -> None:
+    module = _module()
+    _stub_launch(module, monkeypatch, fx.events)
+
+    def broken() -> object:
+        raise error
+
+    monkeypatch.setattr(module, "read_scene", broken)
+    assert module.submit() is False
+    assert fx.events == []
+    assert f"sqi could not read the scene: {error}" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("error", [RuntimeError("sqi-submit was not found."), OSError("denied")])
@@ -273,7 +317,7 @@ def test_silhouette_message_without_a_running_qt_is_printed(
     fx.project.path = ""
     assert _module().submit() is False
     assert shown == []
-    assert UNSAVED in capsys.readouterr().out
+    assert _ascii(UNSAVED) in capsys.readouterr().out
 
 
 def test_silhouette_register_adds_action(fx: Fx, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -337,7 +381,7 @@ def test_silhouette_hook_failure_does_not_break_startup(
     """A broken sqi install must not stop the artist's own ``sfxuser`` code after it."""
     monkeypatch.setitem(sys.modules, "sqi_silhouette_submit", None)  # the import raises
     load_host_file(HOOK)
-    assert "sqi" in capsys.readouterr().out
+    assert "was not added" in capsys.readouterr().out
 
 
 def test_silhouette_hook_is_valid_to_append_to_a_studio_file() -> None:

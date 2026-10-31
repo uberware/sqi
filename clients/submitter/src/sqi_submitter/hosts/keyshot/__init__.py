@@ -1,2 +1,2 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Katana handoff module and startup hook (must not import ``sqi_submitter``)."""
+"""KeyShot handoff script (must not import ``sqi_submitter``); it needs no startup hook."""
