@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """``sqi-submit install-host``: copy a handoff host's files into place.
 
-The files for Blender, Cinema 4D and After Effects ship inside this wheel as package data
+The files for Blender, Cinema 4D, After Effects and Unreal ship inside this wheel as package data
 and use only the host's own standard library, so installing is a file copy: no pip into the
 host's Python. Where the documented location needs admin rights (After Effects) or is not
 knowable (Blender's add-on is installed through its UI, Cinema 4D's preferences folder is
@@ -33,6 +33,7 @@ HOST_FILES: dict[str, list[str]] = {
     "blender": ["hosts/blender/sqi_blender_addon.py"],
     "cinema4d": ["hosts/cinema4d/sqi_submit.pyp"],
     "aftereffects": ["hosts/aftereffects/Submit to sqi.jsx", "hosts/aftereffects/json2.js"],
+    "unreal": ["hosts/unreal/sqi_unreal_submit.py", "hosts/unreal/init_unreal.py"],
 }
 
 # Taken from HOST_FILES once, at import, so the two cannot drift; a patched HOST_FILES
@@ -54,6 +55,7 @@ _NEXT_STEP = {
     "aftereffects": "Copy the files above into After Effects' Scripts/ScriptUI Panels folder "
     "(it needs administrator rights), restart After Effects, then open the panel from the "
     "Window menu.",
+    "unreal": "Restart the Unreal Editor; Submit to sqi… appears in the Tools menu.",
 }
 
 
@@ -85,9 +87,14 @@ def default_destination(host: str, platform: str, env: Mapping[str, str]) -> Pat
     """The per-user folder to copy into, or ``None`` when the artist must do it.
 
     Blender (installed through its UI) and After Effects (under Program Files, needs admin)
-    always return ``None``. Cinema 4D's preferences folder carries a version suffix we cannot
-    know, so it is returned only when exactly one ``Maxon Cinema 4D *`` folder exists.
+    always return ``None``. Unreal's is ``Documents/UnrealEngine/Python`` under the user's
+    profile, which the Editor puts on its Python path. Cinema 4D's preferences folder carries
+    a version suffix we cannot know, so it is returned only when exactly one
+    ``Maxon Cinema 4D *`` folder exists.
     """
+    if host == "unreal":
+        home = env.get("USERPROFILE" if platform == "win32" else "HOME")
+        return Path(home) / "Documents" / "UnrealEngine" / "Python" if home else None
     if host != "cinema4d":
         return None
     root = _cinema4d_prefs_root(platform, env)
@@ -124,6 +131,13 @@ def _no_destination_hint(host: str) -> str:
             "Could not tell which Cinema 4D preferences folder to use. In Cinema 4D choose "
             "Preferences > Open Preferences Folder, copy the files above into its plugins "
             "folder (or pass --dest DIR)."
+        )
+    if host == "unreal":
+        return (
+            "Could not tell where your Documents folder is. Copy the files above into "
+            "<Documents>/UnrealEngine/Python (create it if needed; the Editor runs "
+            "init_unreal.py from there at startup), or pass --dest DIR. If you already have "
+            "an init_unreal.py there, add the lines of the shipped one to it instead."
         )
     return (
         "The After Effects scripts folder is under the program folder and needs "

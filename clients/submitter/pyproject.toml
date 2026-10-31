@@ -121,6 +121,9 @@ module = [
   "pymxs",
   "pymxs.*",
   "qtmax",
+  "unreal",
+  # The startup hooks import the handoff module that sits beside them in the host's folder.
+  "sqi_unreal_submit",
 ]
 ignore_missing_imports = true
 

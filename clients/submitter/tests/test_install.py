@@ -99,6 +99,43 @@ def test_default_destination_cinema4d_missing_env_is_none() -> None:
     assert install.default_destination("cinema4d", "win32", {}) is None
 
 
+@pytest.mark.parametrize(
+    ("platform", "env", "expected"),
+    [
+        (
+            "win32",
+            {"USERPROFILE": "C:/Users/a"},
+            Path("C:/Users/a") / "Documents" / "UnrealEngine" / "Python",
+        ),
+        (
+            "darwin",
+            {"HOME": "/Users/a"},
+            Path("/Users/a") / "Documents" / "UnrealEngine" / "Python",
+        ),
+        ("linux", {"HOME": "/home/a"}, Path("/home/a") / "Documents" / "UnrealEngine" / "Python"),
+        ("win32", {"HOME": "/home/a"}, None),
+        ("win32", {}, None),
+        ("darwin", {"USERPROFILE": "C:/Users/a"}, None),
+        ("linux", {}, None),
+    ],
+)
+def test_default_destination_unreal(
+    platform: str, env: dict[str, str], expected: Path | None
+) -> None:
+    assert install.default_destination("unreal", platform, env) == expected
+
+
+def test_unreal_next_step_and_no_destination_hint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(install, "default_destination", lambda host, platform, env: None)
+    out = io.StringIO()
+    assert install.install_host("unreal", None, out) == 0
+    text = out.getvalue()
+    assert "init_unreal.py" in text and "sqi_unreal_submit.py" in text
+    assert "Restart the Unreal Editor; Submit to sqi… appears in the Tools menu." in text
+
+
 def test_install_host_uses_default_destination(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

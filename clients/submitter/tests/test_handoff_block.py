@@ -23,11 +23,15 @@ HOSTS_DIR = Path(block.__file__).parent
 HANDOFF_HOST_FILES: list[Path] = [
     HOSTS_DIR / "blender" / "sqi_blender_addon.py",
     HOSTS_DIR / "cinema4d" / "sqi_submit.pyp",
+    HOSTS_DIR / "unreal" / "sqi_unreal_submit.py",
 ]
 
 # The Python files Tasks 2-6 add (handoff modules and the startup hooks that call them). Each
 # must still parse on Python 3.7: Katana 4-5 and Silhouette 2022 ship it.
-NEW_HANDOFF_FILES: list[Path] = []
+NEW_HANDOFF_FILES: list[Path] = [
+    HOSTS_DIR / "unreal" / "sqi_unreal_submit.py",
+    HOSTS_DIR / "unreal" / "init_unreal.py",
+]
 
 BEGIN = "# --- sqi handoff begin ---"
 END = "# --- sqi handoff end ---"
