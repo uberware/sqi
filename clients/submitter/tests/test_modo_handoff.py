@@ -56,7 +56,7 @@ class Lx:
         self.selected: str | None = None
         self.scene = Scene("/p/shot.lxo")
         self.groups = [SimpleNamespace(name="Beauty"), SimpleNamespace(name="Fog")]
-        # A plain (non-render) group exists in the scene but is not a render pass group.
+        # A plain (non-render) group: only reachable through items(), which sqi must not use.
         self.plain_groups = [SimpleNamespace(name="Lights")]
         outer = self
 
@@ -131,8 +131,14 @@ def _stub_launch(module: Any, monkeypatch: pytest.MonkeyPatch, events: list[str]
 
 
 def test_modo_read_scene_pass_groups(lx: Lx) -> None:
+    """Targets come from ``scene.renderPassGroups``, never from ``scene.items()``.
+
+    sqi does no filtering of its own: leaving non-render groups out is delegated to Modo's
+    ``renderPassGroups`` and is unverified on a real install. The fake's ``items()`` includes a
+    plain group, so reading through it instead would put "Lights" in the targets.
+    """
     data = _module().read_scene()
-    assert [t["name"] for t in data["targets"]] == ["Beauty", "Fog"]  # not the plain "Lights"
+    assert [t["name"] for t in data["targets"]] == ["Beauty", "Fog"]
     for target in data["targets"]:
         assert target["kind"] == "pass_group"
         assert target["output_path"] is None and target["locked"] == []
@@ -195,6 +201,23 @@ def test_modo_unchanged_scene_is_not_saved(lx: Lx, monkeypatch: pytest.MonkeyPat
     _stub_launch(module, monkeypatch, lx.events)
     assert module.submit() is True
     assert lx.events == ["write:2", "launch:sqi:ctx.json"]
+
+
+@pytest.mark.parametrize("error", [AttributeError("renderPassGroups"), ValueError("no channel")])
+def test_modo_scene_read_failure_is_shown_not_raised(
+    lx: Lx, monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    """``read_scene`` calls Modo APIs unverified on a real install: any failure is shown."""
+    module = _module()
+    _stub_launch(module, monkeypatch, lx.events)  # records write/launch if they are reached
+
+    def broken() -> dict[str, object]:
+        raise error
+
+    monkeypatch.setattr(module, "read_scene", broken)
+    assert module.submit() is False
+    assert lx.events == []  # nothing written, nothing launched
+    assert lx.dialogs() == [f"sqi could not read the scene: {error}"]
 
 
 def test_modo_save_failure_submits_nothing(lx: Lx, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -313,7 +336,7 @@ def test_modo_next_step_and_no_destination_hint(monkeypatch: pytest.MonkeyPatch)
     assert install.install_host("modo", None, out) == 0
     text = out.getvalue()
     assert "index.cfg" in text and "sqi_modo_submit.py" in text
-    assert "Restart Modo; run sqi.submit (or use the sqi menu entry)." in text
+    assert "Restart Modo; run sqi.submit from the command entry, or map it to a key." in text
 
 
 def test_install_modo_copies_the_kit_tree(tmp_path: Path) -> None:

@@ -166,7 +166,9 @@ def _frame_range() -> str | None:
 
     Finds the render item the way Foundry's ChangeRenderFrameRange sample does (walk the scene's
     items for type ``polyRender``), selects it, and reads its channels. ``None`` when the scene
-    has no render item.
+    has no render item. Side effect: the render item becomes the artist's selected item. The
+    sample's ``item.id ?`` query takes no index (it follows the ``item.type ? n`` cursor), so
+    that form is kept.
     """
     import lx
 
@@ -251,8 +253,15 @@ def submit() -> bool:
         _alert(_SAVE_FAILED_MESSAGE)
         return False
     try:
+        data = read_scene()
+    except Exception as exc:
+        # read_scene calls Modo APIs that have not been run on a real install: whatever they
+        # raise is shown to the artist, not left to reach Modo's console.
+        _alert(f"sqi could not read the scene: {exc}")
+        return False
+    try:
         command = resolve_submit_command("")
-        launch(command, write_context(read_scene()))
+        launch(command, write_context(data))
     except (RuntimeError, OSError) as exc:
         _alert(str(exc))
         return False

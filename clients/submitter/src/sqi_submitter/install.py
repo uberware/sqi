@@ -68,7 +68,7 @@ _NEXT_STEP = {
     "katana": "Restart Katana; Submit to sqi… appears in the sqi menu.",
     "keyshot": "In KeyShot open Window > Scripting Console and run sqi_keyshot_submit.",
     "silhouette": "Restart Silhouette; Submit to sqi… appears in the Actions menu.",
-    "modo": "Restart Modo; run sqi.submit (or use the sqi menu entry).",
+    "modo": "Restart Modo; run sqi.submit from the command entry, or map it to a key.",
 }
 
 
