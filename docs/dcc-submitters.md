@@ -487,7 +487,8 @@ fixed by Unreal.
 2. Run `sqi-submit install-host unreal`. It copies both files into
    `Documents\UnrealEngine\Python` under your profile (`%USERPROFILE%` on
    Windows, `$HOME` elsewhere), creating the folder if needed. That is a folder
-   the Editor adds to its Python path.
+   the Editor adds to its Python path. If your Documents folder is redirected
+   (OneDrive, folder redirection), pass `--dest` with the real path.
 3. Restart the Editor. **Tools → Submit to sqi…** appears in the level
    editor's main menu.
 
@@ -570,17 +571,20 @@ whole-scene Katana product.
 
 ### VRED
 
-VRED Pro runs the dialog **in-process**, as Maya does: VRED bundles PySide (6
-from VRED 2024, 2 before), so `sqi-submitter` is installed into VRED's Python and
-a VRED **script plugin** adds the menu. The order matters.
+VRED Pro runs the dialog **in-process**, as Maya does: VRED is documented to
+bundle PySide (6 from VRED 2024, 2 before), so `sqi-submitter` is installed into
+VRED's Python and a VRED **script plugin** adds the menu. The order matters, and
+several of the statements below come from documentation and reports rather than
+an install; see the checklist's list of what is unverified.
 
 1. **Turn VRED's Python sandbox off first.** In VRED, open **Edit →
    Preferences → General Settings → Script**, untick **Enable Python Sandbox**,
-   and restart VRED. With the sandbox on, VRED blocks the imports the submitter
-   needs.
+   and restart VRED. The sandbox is reported to block the imports the submitter
+   needs; verify on your install.
 2. **Install `sqi-submitter` into VRED's Python,** not the `[qt]` extra (VRED
-   supplies Qt, and a second PySide6 in the process breaks it). VRED ships a
-   full Python under its install folder, so from a command prompt:
+   is documented to supply Qt, and a second PySide6 in the process would be
+   expected to break it). VRED is reported to ship a full Python under its
+   install folder (verify the path on your install), so from a command prompt:
 
    ```sh
    "<VRED install>\lib\python\python.exe" -m pip install --target %USERPROFILE%\.sqi\vred-site sqi-submitter
@@ -606,7 +610,8 @@ a VRED **script plugin** adds the menu. The order matters.
    under `%USERPROFILE%\Documents\Autodesk`, it copies the plugin to
    `<that folder>\ScriptPlugins\SubmitToSqi\SubmitToSqi.py`; otherwise it prints
    the path and what to do. VRED Pro is Windows-only, so there is no default
-   destination elsewhere.
+   destination elsewhere. If your Documents folder is redirected (OneDrive,
+   folder redirection), pass `--dest` with the real path.
 5. Restart VRED. **sqi → Submit to sqi…** appears in the menu bar.
 
 If the import fails when you click, VRED shows a message box that names both
@@ -639,7 +644,8 @@ file, so there is no hook and no menu entry.
    `KeyShot`, or `KeyShot 2024`), it copies the script into that folder's
    `Scripts` folder. With none, or with several (`KeyShot` and `KeyShot 2024`),
    or on Linux, it prints the file's path and asks you to copy it into your
-   KeyShot `Scripts` folder or pass `--dest`.
+   KeyShot `Scripts` folder or pass `--dest`. If your Documents folder is
+   redirected (OneDrive, folder redirection), pass `--dest` with the real path.
 3. In KeyShot open **Window → Scripting Console** and run `sqi_keyshot_submit`.
 
 The targets are the scene's **studios**, named after the studio. KeyShot has a
@@ -676,7 +682,10 @@ as for Unreal and Katana: it copies `sqi_silhouette_submit.py`, prints `kept you
 existing <...>/sfxuser.py; to add sqi, append these lines to it:` and the hook's
 lines without the marker or the `from __future__` line. Append them to your
 file. The hook catches its own errors, so a broken sqi install prints one line
-to Silhouette's console and never stops your code that follows it.
+to Silhouette's console and never stops your code that follows it. Silhouette
+imports one `sfxuser` and searches `SFX_SCRIPT_PATH` before
+`$SFX_USER_PATH/scripts`, so a studio `sfxuser.py` on `SFX_SCRIPT_PATH` hides the
+one sqi installed.
 
 The targets are the **output nodes of every session**, one per
 `<session> / <node>` pair, each carrying `Session` and `OutputNode` (their
@@ -811,7 +820,13 @@ existing <path>; to add sqi, append these lines to it:` and then the shipped
 hook with the marker line and any `from __future__` line removed, and still
 copies the module beside it. Append those lines to your file; the marker is
 left out on purpose, so your file is not mistaken for sqi's and replaced by the
-next install. A file that does carry the marker is replaced like any other.
+next install. A file that does carry the marker is replaced like any other: the
+marker counts only when it is a line of its own, so a file of yours that merely
+mentions the text in a comment or a string is still yours. When there is no
+default destination (nothing is copied), the command cannot look at your
+folder, so for each of the three hook files it prints `If you already have
+<name> there, append these lines to it instead:` and the same lines; do not
+copy the shipped hook over a file of yours.
 
 Exit codes: **0** success (including "printed instructions instead of
 copying"); **1** a file could not be copied into the destination (`--dest`, or
@@ -1856,12 +1871,17 @@ support):**
   `lib\python` is a supported route, that VRED's Python version is the one the
   `--python-version` fallback assumes (3.11 for VRED 2026), and that a PySide
   other than VRED's is never loaded.
+- **What VRED bundles.** That VRED supplies PySide (6 from 2024, 2 before),
+  ships a full Python with pip or `ensurepip` under its install folder, and that
+  its sandbox is what blocks the import: all documented or reported, none seen
+  on an install.
 - **Plugin in a subfolder.** That VRED loads `ScriptPlugins/SubmitToSqi/SubmitToSqi.py`
   (Autodesk documents the `ScriptPlugins` folder; a forum thread says every
   `.py` in it is a plugin; subfolders are not documented), and the
   `Documents\Autodesk\VRED-<version>` folder name `install-host` looks for.
 - That VRED puts `vrFileIOService`, `vrCameraService` and `vrMainWindow` in
-  `builtins` (the plugin reads them from there, as AWS's submitter does) and
+  `builtins` (the plugin reads them from there, as AWS's submitter does, and
+  falls back to its own module globals) and
   makes `vrRenderSettings` an importable module; and
   `onDestroyVREDScriptPlugin` as the unload callback.
 - `vrFileIOService.getFileName()` and `saveFile(path)` (returns a bool).
@@ -2018,7 +2038,9 @@ support):**
 - The Lua itself is tested: its pure functions run under Lua 5.1 in CI and
   under a stock Lua on a developer machine, against fakes for `comp`,
   `fusion`, `io.popen` and `os.execute`. What Fusion's embedded Lua (5.1 or
-  LuaJIT) does with the glue is not.
+  LuaJIT) does with the glue is not. CI installs `lua5.1` and sets
+  `SQI_REQUIRE_LUA=1`, so a missing interpreter fails the Lua tests there
+  instead of skipping them.
 - **`COMPB_Modified`.** It is not in the documented comp attribute list; the
   evidence is one forum dump of `comp:GetAttrs()`. The script saves the comp
   unless the attribute is exactly `false`, so an absent attribute rewrites an

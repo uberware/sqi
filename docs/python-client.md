@@ -17,7 +17,8 @@ contract is the OpenAPI spec described in [`api.md`](./api.md).
 > **Related: `sqi-submitter`.** Building a scripted pipeline tool, a batch
 > submission script, or any headless automation? Use `sqi-sdk` directly, as
 > below. Building an in-application submitter for Maya, Houdini, Nuke, 3ds Max,
-> Blender, Cinema 4D, or After Effects? See
+> Blender, Cinema 4D, After Effects, Unreal, Katana, VRED, KeyShot, Silhouette,
+> Fusion, or Modo? See
 > [`docs/dcc-submitters.md`](dcc-submitters.md) — the `sqi-submitter` package
 > depends on `sqi-sdk` and adds the Qt form, scene-context extraction, and
 > pre-fill on top of it.
