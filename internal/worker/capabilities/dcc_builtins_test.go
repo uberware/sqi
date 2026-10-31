@@ -90,4 +90,113 @@ var dccLayouts = []rendererLayout{
 		versioned: `C:\Program Files\Adobe\Adobe After Effects 2026\Support Files\aerender.exe`,
 		version:   "2026",
 	},
+	{
+		// Katana runs on Linux and Windows only. Every path is unverified (see
+		// katana.yaml): the two Linux layouts are the installer's documented
+		// example and Deadline's default, the Windows one an inferred default.
+		// The version is read from the install folder, in either
+		// letter case.
+		tag: "katana",
+		exe: "katana",
+		installs: []string{
+			"/opt/Foundry/Katana7.0v1/katana",
+			"/opt/foundry/katana7.0v1/katana",
+			`C:\Program Files\Katana7.0v1\bin\katanaBin.exe`,
+		},
+		versioned: "/opt/foundry/katana7.0v1/katana",
+		version:   "7.0v1",
+	},
+	{
+		// Fusion Render Node ships inside Fusion Studio on all three platforms.
+		// Every path is the pattern inferred for Fusion 18 to 21 and is
+		// unverified (see fusion.yaml). The version is read from the install
+		// folder, whose name differs per platform; the Windows path stands for
+		// the version check.
+		tag: "fusion",
+		exe: "FusionRenderNode",
+		installs: []string{
+			`C:\Program Files\Blackmagic Design\Fusion Render Node 19\FusionRenderNode.exe`,
+			"/Applications/Blackmagic Fusion 19 Render Node/Fusion Render Node.app/Contents/MacOS/Fusion Render Node",
+			"/opt/BlackmagicDesign/FusionRenderNode19/FusionRenderNode",
+		},
+		versioned: `C:\Program Files\Blackmagic Design\Fusion Render Node 19\FusionRenderNode.exe`,
+		version:   "19",
+	},
+	{
+		// Silhouette's sfxcmd runs on all three platforms. The Windows and macOS
+		// folders are the ones Boris FX's Command-Line page documents
+		// (SilhouetteFX) and the BorisFX root is a newer layout;
+		// neither is observed (see silhouette.yaml). The macOS path is the
+		// sfxcmd inside the .app bundle. The version is the year in the folder.
+		tag: "silhouette",
+		exe: "sfxcmd",
+		installs: []string{
+			`C:\Program Files\BorisFX\Silhouette 2026\sfxcmd.exe`,
+			`C:\Program Files\SilhouetteFX\Silhouette 2026\sfxcmd.exe`,
+			"/Applications/BorisFX/Silhouette 2026/Silhouette.app/Contents/MacOS/sfxcmd",
+			"/Applications/SilhouetteFX/Silhouette 2026/Silhouette.app/Contents/MacOS/sfxcmd",
+			"/opt/BorisFX/Silhouette 2026/sfxcmd",
+			"/opt/SilhouetteFX/Silhouette 2026/sfxcmd",
+		},
+		versioned: `C:\Program Files\SilhouetteFX\Silhouette 2026\sfxcmd.exe`,
+		version:   "2026",
+	},
+	{
+		// VRED Core runs on Windows and Linux. The Windows folder is the one
+		// Autodesk's VRED Core page gives; both Linux roots are unverified (see
+		// vred.yaml). A VRED Pro install is not tagged (see
+		// TestVREDDetector_DoesNotTagVREDPro). The version is VRED's internal
+		// one (18.0 is VRED 2026).
+		tag: "vred",
+		exe: "VREDCore",
+		installs: []string{
+			`C:\Program Files\Autodesk\VREDCore-18.0\bin\WIN64\VREDCore.exe`,
+			"/opt/Autodesk/VREDCore-18.0/bin/VREDCore",
+			"/opt/Autodesk/VREDCluster-18.0/bin/VREDCore",
+		},
+		versioned: `C:\Program Files\Autodesk\VREDCore-18.0\bin\WIN64\VREDCore.exe`,
+		version:   "18.0",
+	},
+	{
+		// KeyShot has Windows and macOS desktop builds. Neither layout is
+		// verified (see keyshot.yaml); the version is the number in the install
+		// folder, which is KeyShot12 for 12 and a year from 2023 on.
+		tag: "keyshot",
+		exe: "keyshot_headless",
+		installs: []string{
+			`C:\Program Files\KeyShot12\bin\keyshot_headless.exe`,
+			`C:\Program Files\KeyShot 2024\bin\keyshot_headless.exe`,
+			"/Applications/KeyShot12.app/Contents/MacOS/keyshot",
+			"/Applications/KeyShot12.app/Contents/MacOS/keyshot_headless",
+		},
+		versioned: `C:\Program Files\KeyShot12\bin\keyshot_headless.exe`,
+		version:   "12",
+	},
+	{
+		// Modo is discontinued (17.1 final). Foundry documents two Windows
+		// layouts (Modo<ver> for 17.1, Foundry\Modo\<ver> for 13.2) and the macOS
+		// bundle's modo_cl; Linux has no fixed path, only PATH (see modo.yaml).
+		// The version is Modo's own 17.1v1 form.
+		tag: "modo",
+		exe: "modo_cl",
+		installs: []string{
+			`C:\Program Files\Modo17.1v1\modo_cl.exe`,
+			`C:\Program Files\Foundry\Modo\13.2v1\modo_cl.exe`,
+			"/Applications/Modo17.1v1.app/Contents/MacOS/modo_cl",
+		},
+		versioned: `C:\Program Files\Modo17.1v1\modo_cl.exe`,
+		version:   "17.1v1",
+	},
+	{
+		// Unreal Engine 5: only the Epic Games Launcher's default folder is
+		// looked for (see unreal.yaml), and only on Windows. The version is the
+		// UE_5.<minor> folder's.
+		tag: "unreal",
+		exe: "UnrealEditor-Cmd",
+		installs: []string{
+			`C:\Program Files\Epic Games\UE_5.6\Engine\Binaries\Win64\UnrealEditor-Cmd.exe`,
+		},
+		versioned: `C:\Program Files\Epic Games\UE_5.6\Engine\Binaries\Win64\UnrealEditor-Cmd.exe`,
+		version:   "5.6",
+	},
 }

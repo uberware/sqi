@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Boris FX Silhouette, whose command-line renderer sfxcmd the presets
+# silhouette-render and silhouette-render-all run through the bare command
+# `sfxcmd`. Silhouette runs on Windows, macOS and Linux.
+#
+# Boris FX's Command-Line page (2026) gives the Windows install folder as
+# C:\Program Files\SilhouetteFX\Silhouette[version] and the macOS one as
+# /Applications/SilhouetteFX/Silhouette[version]/Silhouette.app/Contents/MacOS,
+# and says the Linux location is chosen by the user at install time. Newer
+# installers may use a BorisFX root instead, and it is unknown which release
+# switched, so both roots are searched on every platform. Every path below is
+# unverified. The executable inside the folder is sfxcmd (sfxcmd.exe on
+# Windows). A Linux install elsewhere, such as /opt/silhouette6, needs the tag
+# set by hand with silhouette=true under worker.capability_tags, or an `sfxcmd`
+# command in worker.commands.
+#
+# The version is the year in the install folder ("Silhouette 2026"), so an
+# sfxcmd found only on PATH carries no version.
+#
+# On Linux the command carries -nogui (Boris FX: "For Linux systems without
+# X-Windows installed, -nogui allows Silhouette to not use X-Windows"). It is
+# supplied whether sfxcmd comes from this detector or from PATH. The bundled
+# lib folder must also be on LD_LIBRARY_PATH, which is the worker host's setup.
+tag: silhouette
+checks:
+  - exe: sfxcmd                                                  # an sfxcmd on PATH or from worker.commands
+  - path_glob: 'C:\Program Files\BorisFX\Silhouette*\sfxcmd.exe'     # windows
+    os: windows
+  - path_glob: 'C:\Program Files\SilhouetteFX\Silhouette*\sfxcmd.exe'  # windows (documented)
+    os: windows
+  - path_glob: "/Applications/BorisFX/Silhouette*/Silhouette.app/Contents/MacOS/sfxcmd"     # macOS
+    os: darwin
+  - path_glob: "/Applications/SilhouetteFX/Silhouette*/Silhouette.app/Contents/MacOS/sfxcmd"  # macOS (documented)
+    os: darwin
+  - path_glob: "/opt/BorisFX/Silhouette*/sfxcmd"                 # linux
+    os: linux
+  - path_glob: "/opt/SilhouetteFX/Silhouette*/sfxcmd"            # linux
+    os: linux
+version:
+  from: "Silhouette ?([0-9]{4}(?:\\.[0-9]+)?)"
+# The worker supplies an `sfxcmd` command from the newest install found here,
+# unless the operator or the host already provides one.
+command:
+  name: sfxcmd
+  globs:
+    - path_glob: 'C:\Program Files\BorisFX\Silhouette*\sfxcmd.exe'     # windows
+      os: windows
+    - path_glob: 'C:\Program Files\SilhouetteFX\Silhouette*\sfxcmd.exe'  # windows
+      os: windows
+    - path_glob: "/Applications/BorisFX/Silhouette*/Silhouette.app/Contents/MacOS/sfxcmd"     # macOS
+      os: darwin
+    - path_glob: "/Applications/SilhouetteFX/Silhouette*/Silhouette.app/Contents/MacOS/sfxcmd"  # macOS
+      os: darwin
+    - path_glob: "/opt/BorisFX/Silhouette*/sfxcmd"               # linux
+      os: linux
+    - path_glob: "/opt/SilhouetteFX/Silhouette*/sfxcmd"          # linux
+      os: linux
+  args:
+    linux: ["-nogui"]

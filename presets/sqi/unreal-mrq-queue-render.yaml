@@ -1,0 +1,412 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: unreal-mrq-queue-render
+title: Unreal Movie Render Queue Queue Render
+description: >-
+  Renders every job of a saved Movie Pipeline Queue asset in an Unreal Engine 5
+  project, as a single task on a Windows worker. The editor runs the preset's
+  own Python script. The preset has not been run in Unreal.
+readme: |
+  # Unreal Movie Render Queue Queue Render
+
+  Renders every job of a saved Movie Pipeline Queue asset with
+  `UnrealEditor-Cmd` and the Movie Render Queue's PIE executor. Each job
+  renders its own sequence on its own saved map with its own settings, as
+  Epic describes for a queue, and the whole queue is one task in one editor
+  session. Use Unreal Movie Render Queue Job Render instead to render one
+  sequence with a config. Windows workers only.
+
+  ## Parameters
+
+  - **Project File** - the `.uproject` to open. The project and all of its
+    content must be on the worker at this path, or reach it through path
+    mapping.
+  - **Queue Asset** - the saved Movie Pipeline Queue to render, as an asset
+    path such as `/Game/Cinematics/MRQ_HeroQueue`. Save the queue, and every
+    map its jobs use, before submitting: Unreal loads the saved assets.
+  - **Output Directory** - optional. Blank keeps each job's own output
+    directory; otherwise every job of the queue is written here instead.
+
+  ## How the render runs
+
+  Each task runs `UnrealEditor-Cmd` on the project with `-log -unattended
+  -stdout -allowstdoutlogverbosity -NoLoadingScreen -NoScreenMessages
+  -RenderOffscreen -nohmd -windowed` and one `-execcmds` startup command. That
+  command is a line of Python that adds the task's session folder to Python's
+  path and imports the preset's embedded `sqi_unreal_render.py`. No job value
+  is written into the command line or into Python source: the script reads the
+  queue's asset path and the output directory from `params.json`,
+  which is built with the `EXPR` extension and its JSON quoting.
+
+  The script copies the saved queue's jobs into the editor's queue, leaving
+  the asset itself unchanged, starts the render with the Movie Render Queue's
+  PIE executor, and returns. The editor keeps running while the executor
+  renders. When the executor reports that it has finished, the script prints
+  `SQI_RENDER: OK` if every job succeeded, or `SQI_RENDER: FAILED:` with the
+  reason, and then calls `quit_editor()`. A fatal render error ends the task
+  the same way, as Epic's own render-farm plug-in does.
+
+  The preset uses `-execcmds` rather than `-ExecutePythonScript`, because a
+  render the editor runs in the background must outlive the script that
+  starts it, and the editor is reported to quit after an
+  `-ExecutePythonScript` script before such a render completes. AWS's
+  Deadline Cloud adaptor for Unreal starts its script with `-execcmds` too.
+
+  ## How failures are detected
+
+  This preset declares the `SQI_LOG_CHECKS` extension. A task fails unless
+  the output contains `SQI_RENDER: OK`, and fails when a line contains
+  `SQI_RENDER: FAILED:`, `LogPython: Error:` or `Render Executor: Error:`.
+  The editor's exit status is not relied on, since Epic's plug-in quits with
+  the same call whether the render worked or not. `LogPython: Error:` matches
+  any Python error in the editor session, for example one from a project's or
+  plug-in's `init_unreal.py`, so such an error fails the task even if the
+  render succeeded.
+
+  ## Set a step timeout
+
+  The checks give their verdict only once the editor has exited, and the
+  editor exits only when the script calls `quit_editor()` after the executor
+  reports back. If the executor never reports, or the editor stays open, the
+  task waits with it and keeps its worker busy indefinitely. Likely causes are
+  the Python Editor Script plug-in being disabled (so `py` is an unknown
+  console command and the editor idles), an error before `main()`, and a
+  project that never reaches `-execcmds`. This preset sets no timeout,
+  because a sensible limit depends on the queue. Add a `timeout`
+  (in seconds) to the step's `onRun` action in a copy of the preset, longer
+  than your slowest queue, and allow for shader compilation: the first render
+  of a project on a worker compiles its shaders and can take a very long time.
+
+  ## Requirements
+
+  - Windows workers tagged `attr.worker.tag.unreal = true`; the preset also
+    requires `attr.worker.os.family` = `windows`. The worker tags an Unreal
+    Engine 5 install it finds in the Epic Games Launcher's default folder,
+    `C:\Program Files\Epic Games\UE_5.x`.
+  - A resolvable `UnrealEditor-Cmd`: the worker supplies it from the newest
+    install in that default folder. An install anywhere else, such as a custom
+    Launcher folder or a source build, needs an `UnrealEditor-Cmd` entry in
+    the worker's `worker.commands`.
+  - The Movie Render Queue and Python Editor Script plug-ins enabled in the
+    project.
+  - A worker session folder (`worker.session_dir`) whose path holds no comma,
+    quote or backslash other than the Windows separators, since its path is
+    part of the `-execcmds` command. A task fails at once, saying so, when it
+    does.
+  - Epic's licence terms for render nodes are the studio's to check.
+
+  ## What has not been verified
+
+  - No Unreal has executed this preset. The command line follows AWS's
+    Deadline Cloud adaptor for Unreal, and the script uses the Movie Render
+    Queue's Python API as that adaptor and Epic's Python reference use it.
+  - That the editor stays running after the `-execcmds` script returns until
+    the render finishes. AWS's adaptor depends on the same behaviour.
+  - How Unreal splits and quotes the `-execcmds` value: the preset assumes
+    commands are split at commas and that a value holding no double quote
+    reaches the Python plug-in whole.
+  - Whether text written to file descriptor 1 reaches the worker. The script
+    also writes both lines through Unreal's log, which `-stdout` copies to
+    the output; if neither arrives, every task fails, never the other way
+    round.
+  - Whether the executor reports a canceled render as a failure: Epic issue
+    UE-160482 says it reported success before Unreal 5.3.
+  - Whether the editor exits after `quit_editor()` (see the timeout above).
+  - Rendering on Linux or macOS, which no vendor adaptor ships.
+category: Rendering
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: Unreal Movie Render Queue Queue Render
+  extensions: [EXPR, SQI_LOG_CHECKS]
+  parameterDefinitions:
+    - name: SceneFile
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface:
+        control: CHOOSE_INPUT_FILE
+        label: Project File
+        fileFilters:
+          - label: Unreal projects
+            patterns: ["*.uproject"]
+        fileFilterDefault:
+          label: Unreal projects
+          patterns: ["*.uproject"]
+    - name: QueueAsset
+      type: STRING
+      minLength: 1
+      maxLength: 1024
+      userInterface: { control: LINE_EDIT, label: Queue Asset }
+    - name: OutputDirectory
+      type: PATH
+      objectType: DIRECTORY
+      dataFlow: OUT
+      default: ""
+      maxLength: 1024
+      userInterface: { control: CHOOSE_DIRECTORY, label: Output Directory }
+  steps:
+    - name: Render
+      hostRequirements:
+        attributes:
+          - name: attr.worker.os.family
+            anyOf: ["windows"]
+          - name: attr.worker.tag.unreal
+            anyOf: ["true"]
+      SQI_LOG_CHECKS:
+        failOn: ['SQI_RENDER: FAILED:', 'LogPython: Error:', 'Render Executor: Error:']
+        requireLine: ['SQI_RENDER: OK']
+      script:
+        let:
+          # The -execcmds startup command: one line of Python, with no comma
+          # (Unreal splits -execcmds at commas) and no double quote (Unreal
+          # quotes the value in double quotes), that puts the session folder on
+          # Python's path and imports the embedded script. Only the script's
+          # own path, in the worker's session folder, appears in it, written
+          # with forward slashes; a folder that would break that quoting fails
+          # the task here, with a reason, instead of reaching Unreal garbled.
+          - script_path = Task.File.render.as_posix()
+          - >-
+            execcmds = "-execcmds=py __import__('sys').path.append(__import__('os').path.dirname("
+            + repr_py(script_path) + ")) or __import__('sqi_unreal_render')"
+            if not (',' in script_path or "'" in script_path or '"' in script_path or '\\' in script_path)
+            else fail('the worker session folder ' + script_path + ' holds a comma, a quote or a backslash, which an Unreal -execcmds command cannot carry; set worker.session_dir to a folder without one')
+        embeddedFiles:
+          # The script's parameters, as data. EXPR has no dictionary type, so
+          # the JSON object is joined from strings, every value through
+          # repr_json. The blank test reads RawParam: under EXPR an empty PATH
+          # binds as '.'.
+          - name: params
+            type: TEXT
+            filename: params.json
+            data: |
+              {{ '{"queue": ' + repr_json(Param.QueueAsset) + ', "output_directory": ' + repr_json(string(Param.OutputDirectory) if RawParam.OutputDirectory != '' else '') + '}' }}
+          - name: render
+            type: TEXT
+            filename: sqi_unreal_render.py
+            data: |
+              # sqi Unreal presets: renders a Movie Render Queue job or a saved
+              # queue in the editor. The editor imports it from its -execcmds
+              # startup command; its parameters come from params.json, never
+              # from its own text. It starts the render and returns. Unreal
+              # reports the outcome later, through the executor's delegates, and
+              # only then does the script print its verdict and quit the editor.
+              import json
+              import os
+              import traceback
+
+              import unreal
+
+              OK = "SQI_RENDER: OK"
+              FAILED = "SQI_RENDER: FAILED: "
+
+              # What the delegates need once main() has returned: the executor
+              # (Unreal holds it while it renders; this keeps a reference too),
+              # the failures reported so far, and whether a verdict was given.
+              STATE = dict(executor=None, failures=[], done=False)
+
+
+              def emit(line, fd=1):
+                  # Straight to the file descriptor the worker reads, past
+                  # whatever Unreal does with sys.stdout. A failed write is
+                  # ignored: the task then fails for want of the OK line.
+                  try:
+                      os.write(fd, (line + "\n").encode("utf-8", "replace"))
+                  except (OSError, UnicodeError):
+                      pass
+
+
+              def say(line):
+                  # Both ways out: descriptor 1, and Unreal's log, which -stdout
+                  # copies to the output behind a LogPython: prefix. The checks
+                  # match anywhere in a line, so either copy counts.
+                  emit(line)
+                  try:
+                      unreal.log(line)
+                  except Exception:
+                      pass
+
+
+              def find_params():
+                  # params.json sits beside this script, in the task's session
+                  # folder. The current folder is a fallback, in case the script's
+                  # own location is unknown; that the worker's starting folder
+                  # survives Unreal's startup is unverified (Unreal may reset it).
+                  found = []
+                  here = globals().get("__file__")
+                  if here:
+                      found.append(os.path.join(os.path.dirname(os.path.abspath(here)), "params.json"))
+                  found.append(os.path.join(os.getcwd(), "params.json"))
+                  for path in found:
+                      if os.path.isfile(path):
+                          return path
+                  raise IOError("params.json not found; looked at " + ", ".join(found))
+
+
+              def read_params(path):
+                  with open(path, encoding="utf-8") as f:
+                      p = json.load(f)
+                  # A queue preset's file names a queue; a job preset's names the
+                  # three assets of its one job.
+                  keys = ["queue"] if "queue" in p else ["sequence", "map", "config"]
+                  params = dict()
+                  for key in keys + ["output_directory"]:
+                      value = p.get(key, "")
+                      if not isinstance(value, str):
+                          raise ValueError("params.json: " + key + " is not a string")
+                      if key != "output_directory" and not value:
+                          raise ValueError("params.json: " + key + " is empty")
+                      params[key] = value
+                  return params
+
+
+              def object_path(path):
+                  # A soft object path names an asset as Package.Asset; a bare package
+                  # path such as /Game/Maps/Hero names the package, not the asset in it.
+                  # Content Browser paths leave the asset name off, and it is the
+                  # package's last segment, so add it. A path that names its asset is
+                  # kept as it is.
+                  leaf = path.rsplit("/", 1)[-1]
+                  return path if "." in leaf else path + "." + leaf
+
+
+              def build_queue(subsystem, params):
+                  # The editor's own queue, emptied, then filled with the one job
+                  # these parameters describe or with a copy of the saved queue's
+                  # jobs (the saved asset itself is never changed).
+                  queue = subsystem.get_queue()
+                  queue.delete_all_jobs()
+                  if "queue" in params:
+                      saved = unreal.EditorAssetLibrary.load_asset(params["queue"])
+                      if saved is None:
+                          raise ValueError("no Movie Pipeline Queue asset at " + params["queue"])
+                      queue.copy_from(saved)
+                  else:
+                      config = unreal.EditorAssetLibrary.load_asset(params["config"])
+                      if config is None:
+                          raise ValueError("no Movie Render Queue config asset at " + params["config"])
+                      job = queue.allocate_new_job(unreal.MoviePipelineExecutorJob)
+                      job.sequence = unreal.SoftObjectPath(object_path(params["sequence"]))
+                      job.map = unreal.SoftObjectPath(object_path(params["map"]))
+                      job.set_configuration(config)
+                      job.job_name = params["sequence"].rsplit("/", 1)[-1].split(".")[0]
+                  jobs = list(queue.get_jobs())
+                  if not jobs:
+                      raise ValueError("the queue holds no jobs")
+                  return jobs
+
+
+              def apply_output(jobs, directory):
+                  # Blank keeps every job's own output directory.
+                  if not directory:
+                      return
+                  os.makedirs(directory, exist_ok=True)
+                  path = unreal.DirectoryPath()
+                  path.set_editor_property("path", directory.replace("\\", "/"))
+                  for job in jobs:
+                      setting = job.get_configuration().find_or_add_setting_by_class(unreal.MoviePipelineOutputSetting)
+                      setting.output_directory = path
+
+
+              def reason_of(e):
+                  return " ".join((type(e).__name__ + ": " + str(e)).split())
+
+
+              def finish(code):
+                  # quit_editor is how Unreal's own scripts end the editor. If it
+                  # cannot be called, exit anyway rather than leave the editor
+                  # running with nothing left to do.
+                  try:
+                      unreal.SystemLibrary.quit_editor()
+                  except Exception:
+                      os._exit(code)
+
+
+              def conclude(reason=None):
+                  # One verdict per task, whichever delegate comes first.
+                  if STATE["done"]:
+                      return
+                  STATE["done"] = True
+                  if reason is None and STATE["failures"]:
+                      reason = "; ".join(STATE["failures"])
+                  if reason is None:
+                      say(OK)
+                      finish(0)
+                      return
+                  reason = " ".join(reason.split())
+                  say(FAILED + reason)
+                  emit("openjd_fail: " + reason)
+                  finish(1)
+
+
+              def crash(e):
+                  emit(traceback.format_exc(), fd=2)
+                  conclude(reason_of(e))
+
+
+              def on_errored(executor, pipeline, is_fatal, error_text):
+                  try:
+                      text = " ".join(str(error_text).split())
+                      if not is_fatal:
+                          say("sqi: Movie Render Queue reported a non-fatal error: " + text)
+                          return
+                      # A fatal error ends the render; Epic's own render-farm
+                      # plug-in quits the editor on this delegate too.
+                      STATE["failures"].append("Movie Render Queue error: " + text)
+                      conclude()
+                  except Exception as e:
+                      crash(e)
+
+
+              def on_job_finished(output):
+                  try:
+                      if not getattr(output, "success", True):
+                          job = getattr(output, "job", None)
+                          name = str(getattr(job, "job_name", "") or "?")
+                          STATE["failures"].append("job " + name + " did not succeed")
+                  except Exception as e:
+                      crash(e)
+
+
+              def on_finished(executor, success):
+                  try:
+                      if not success and not STATE["failures"]:
+                          STATE["failures"].append("Movie Render Queue reported that the render did not succeed")
+                      conclude()
+                  except Exception as e:
+                      crash(e)
+
+
+              def main():
+                  try:
+                      params = read_params(find_params())
+                      unreal.AssetRegistryHelpers.get_asset_registry().wait_for_completion()
+                      subsystem = unreal.get_editor_subsystem(unreal.MoviePipelineQueueSubsystem)
+                      apply_output(build_queue(subsystem, params), params["output_directory"])
+                      executor = unreal.MoviePipelinePIEExecutor()
+                      STATE["executor"] = executor
+                      executor.on_executor_errored_delegate.add_callable(on_errored)
+                      executor.on_executor_finished_delegate.add_callable(on_finished)
+                      per_job = getattr(executor, "on_individual_job_work_finished_delegate", None)
+                      if per_job is not None:
+                          per_job.add_callable(on_job_finished)
+                      subsystem.render_queue_with_executor_instance(executor)
+                  except Exception as e:
+                      crash(e)
+
+
+              main()
+        actions:
+          onRun:
+            command: UnrealEditor-Cmd
+            args:
+              - "{{ Param.SceneFile }}"
+              - "-log"
+              - "-unattended"
+              - "-stdout"
+              - "-allowstdoutlogverbosity"
+              - "-NoLoadingScreen"
+              - "-NoScreenMessages"
+              - "-RenderOffscreen"
+              - "-nohmd"
+              - "-windowed"
+              - "{{ execcmds }}"

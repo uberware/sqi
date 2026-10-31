@@ -12,6 +12,50 @@ import (
 	"github.com/uberware/sqi/internal/store/storetest"
 )
 
+// TestRegisterWorker_ExtensionsRoundTrip pins migration 00039 and every SQL
+// site that carries the worker-enforced extensions a worker advertises: column
+// list, INSERT, ON CONFLICT update, scan and argument list. A miss in any one
+// reads back as "advertised nothing", which the scheduler reads as "does not
+// enforce SQI_LOG_CHECKS" and so withholds checked jobs from a worker that
+// would have run them.
+func TestRegisterWorker_ExtensionsRoundTrip(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning},
+				stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusReady}})
+			now := time.Now().UTC()
+			reg := func(ext []string) store.Worker {
+				t.Helper()
+				w, _, err := st.RegisterWorker(t.Context(), store.Worker{
+					ID: "w-ext", FarmID: g.Farm.ID, Hostname: "node", Status: store.WorkerStatusOnline,
+					LastHeartbeatAt: &now, Extensions: ext,
+				})
+				if err != nil {
+					t.Fatalf("RegisterWorker: %v", err)
+				}
+				return w
+			}
+
+			want := []string{"SQI_LOG_CHECKS", "SQI_OTHER"}
+			if got := reg(want).Extensions; !slices.Equal(got, want) {
+				t.Errorf("RegisterWorker returned Extensions %v, want %v", got, want)
+			}
+			if got := mustWorker(t, st, "w-ext").Extensions; !slices.Equal(got, want) {
+				t.Errorf("GetWorker Extensions = %v, want %v", got, want)
+			}
+
+			// Re-registration overwrites: an upgraded or downgraded binary
+			// advertises a different set.
+			if got := reg(nil).Extensions; len(got) != 0 {
+				t.Errorf("after re-registering with none, Extensions = %v, want empty", got)
+			}
+			if got := mustWorker(t, st, "w-ext").Extensions; len(got) != 0 {
+				t.Errorf("after re-registering with none, GetWorker Extensions = %v, want empty", got)
+			}
+		})
+	}
+}
+
 func registerInstance(t *testing.T, st store.Store, farmID, instance string) []store.Task {
 	t.Helper()
 	now := time.Now().UTC()

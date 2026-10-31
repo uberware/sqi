@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/worker/capabilities"
+	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
 // ── helpers ─────────────────────────────────────────────────────────────────
@@ -356,5 +358,38 @@ func TestSetupReconnectHook_ReregistersOnReconnect(t *testing.T) {
 			t.Fatal("LastRegisteredAt still zero 5s after reconnect re-registration")
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestRegister_AdvertisesWorkerEnforcedExtensions asserts the RegisterMsg lists
+// the extensions this worker enforces, so the scheduler will lease it jobs that
+// declare them.
+func TestRegister_AdvertisesWorkerEnforcedExtensions(t *testing.T) {
+	url := startTestNATS(t)
+	nc := connectNATS(t, url)
+
+	sub, err := nc.SubscribeSync(bus.WorkerRegisterSubject("worker-ext"))
+	if err != nil {
+		t.Fatalf("SubscribeSync: %v", err)
+	}
+	if err := nc.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	reg := newRegistrar(t, nc, "worker-ext", minimalCfg(), capabilities.Capabilities{OS: "linux"})
+	if err := reg.Register(context.Background()); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	msg, err := sub.NextMsg(2 * time.Second)
+	if err != nil {
+		t.Fatalf("expected a register message: %v", err)
+	}
+	var rm protocol.RegisterMsg
+	if err := json.Unmarshal(msg.Data, &rm); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if want := protocol.WorkerEnforcedExtensions(); !slices.Equal(rm.Extensions, want) {
+		t.Errorf("Extensions = %v, want %v", rm.Extensions, want)
 	}
 }

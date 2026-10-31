@@ -66,6 +66,7 @@ func decodeJobTemplate(raw map[string]any) (*JobTemplate, error) {
 	t.Extensions = getStringSlice(raw, "extensions")
 	_, t.ExtensionsSet = raw["extensions"]
 	t.UnknownFields = unknownTopLevelFields(raw)
+	t.misplacedStepBlocks = findMisplacedStepBlocks(raw)
 
 	// RFC 0007's case-insensitive type names and its new parameter types are
 	// an EXPR-extension feature, so every parameter decoder below needs to
@@ -149,13 +150,17 @@ var knownTopLevelFields = map[string]struct{}{
 // does not declare the extension, where an unregistered name is an error. A
 // registry entry is a scoring and gating device, not a license to carry the
 // name as a top-level field.
+//
+// A StepBlock extension (SQI_LOG_CHECKS) is never a legal top-level key: its
+// block belongs on a step. It is returned here so validation rejects it, and
+// reports it as a misplaced step block rather than as a generic unknown field.
 func unknownTopLevelFields(raw map[string]any) []string {
 	var out []string
 	for k := range raw {
 		if _, known := knownTopLevelFields[k]; known {
 			continue
 		}
-		if ext, isExt := LookupExtension(k); isExt && ext.Status == StatusSupported {
+		if ext, isExt := LookupExtension(k); isExt && ext.Status == StatusSupported && !ext.StepBlock {
 			continue
 		}
 		out = append(out, k)
@@ -686,6 +691,14 @@ func decodeStepTemplate(raw map[string]any, exprDeclared bool) (StepTemplate, er
 		return s, err
 	}
 	s.Let = lets
+
+	// SQI_ vendor blocks. Every SQI_-prefixed key is recorded so validation can
+	// reject one that names no step-block extension; the decoder otherwise
+	// drops step keys it does not know.
+	s.SQIKeys = sqiStepKeys(raw)
+	if v, ok := raw[ExtensionLogChecks]; ok {
+		s.LogChecks = decodeLogChecks(v)
+	}
 
 	return s, nil
 }

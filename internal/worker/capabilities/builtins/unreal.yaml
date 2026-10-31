@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Epic's Unreal Engine 5, whose UnrealEditor-Cmd the presets
+# unreal-mrq-job-render and unreal-mrq-queue-render run through the bare
+# command `UnrealEditor-Cmd`. The presets are Windows-only.
+#
+# Windows: the Epic Games Launcher installs each engine version to
+# C:\Program Files\Epic Games\UE_5.<minor>\ by default, with the editor's
+# command-line program at Engine\Binaries\Win64\UnrealEditor-Cmd.exe below it.
+# That is the only location looked for, and it is unverified.
+#
+# Not found: an install in a custom Launcher folder, or a source build. Give
+# the worker an `UnrealEditor-Cmd` entry in worker.commands (and the tag
+# unreal=true under worker.capability_tags) for those. The Launcher records
+# each install in the registry, under
+# HKLM\SOFTWARE\EpicGames\Unreal Engine\<5.x> as the value InstalledDirectory
+# (as AWS's adaptor reads it), but a detector `registry:` check can only test
+# that a fixed key exists. It reads neither the value nor the version subkeys,
+# so the detector cannot use that layout.
+#
+# The version is the engine's 5.<minor> from the UE_5.<minor> folder name. An
+# UnrealEditor-Cmd found only on PATH carries a version only when it sits in
+# such a folder.
+tag: unreal
+checks:
+  - exe: UnrealEditor-Cmd                                        # an UnrealEditor-Cmd the operator provides
+  - path_glob: 'C:\Program Files\Epic Games\UE_5.*\Engine\Binaries\Win64\UnrealEditor-Cmd.exe'  # windows (Launcher default)
+    os: windows
+version:
+  from: 'UE_(5\.[0-9]+)'
+# The presets run a bare `UnrealEditor-Cmd`, which no installer puts on PATH,
+# so the worker supplies one from the newest Launcher install found here,
+# unless the operator or the host already provides one.
+command:
+  name: UnrealEditor-Cmd
+  globs:
+    - path_glob: 'C:\Program Files\Epic Games\UE_5.*\Engine\Binaries\Win64\UnrealEditor-Cmd.exe'  # windows
+      os: windows

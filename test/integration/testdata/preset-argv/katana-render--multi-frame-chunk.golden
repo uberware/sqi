@@ -1,0 +1,36 @@
+preset: katana-render
+case:   multi-frame-chunk
+params:
+  Frames=1-10
+  FramesPerTask=5
+  RenderNode=beauty
+  SceneFile=/mnt/show/seq010/shot0010/lookdev/shot0010_lookdev_v007.katana
+
+step "Render" — 2 tasks
+  log checks: failOn "ERROR +\\|"
+
+task 1/2  name="Render[Frame=1-5,Frame.End=5,Frame.Start=1]"
+  task params:
+    Frame=1-5
+    Frame.End=5
+    Frame.Start=1
+  command: katana
+  args:
+    [0]  --batch
+    [1]  --katana-file=/mnt/show/seq010/shot0010/lookdev/shot0010_lookdev_v007.katana
+    [2]  --render-node=beauty
+    [3]  -t
+    [4]  1-5
+
+task 2/2  name="Render[Frame=6-10,Frame.End=10,Frame.Start=6]"
+  task params:
+    Frame=6-10
+    Frame.End=10
+    Frame.Start=6
+  command: katana
+  args:
+    [0]  --batch
+    [1]  --katana-file=/mnt/show/seq010/shot0010/lookdev/shot0010_lookdev_v007.katana
+    [2]  --render-node=beauty
+    [3]  -t
+    [4]  6-10

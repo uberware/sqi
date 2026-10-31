@@ -203,6 +203,35 @@ type RegisterMsg struct {
 	// but a RENAMED one must bump the version, because old and new workers
 	// would otherwise disagree about the key with nothing to notice it.
 	ExprLimits ExprLimits `json:"expr_limits,omitzero"`
+
+	// Extensions lists the worker-enforced OpenJD extensions this worker
+	// implements (see [ExtensionLogChecks]). The server withholds a job that
+	// declares one of them from a worker that does not list it, because a job
+	// whose checks nobody enforces would pass or fail on the process exit status
+	// alone and silently drop the guarantee its author asked for.
+	//
+	// A REGISTRATION-payload field, not a [ProtocolVersion] change, for the
+	// reason ExprLimits above gives: an older server ignores it, and an older
+	// worker omits it and so is read as enforcing nothing.
+	Extensions []string `json:"extensions,omitempty"`
+}
+
+// ExtensionLogChecks is the name of the sqi-defined step-level log-check
+// extension, as a worker advertises it in [RegisterMsg.Extensions].
+//
+// It duplicates internal/openjd's ExtensionLogChecks because no production file
+// under internal/worker may import internal/openjd (which imports the store).
+// TestProtocolAndRegistryAgreeOnWorkerEnforcedExtensions in internal/scheduler,
+// which imports both, pins the two to the same set.
+const ExtensionLogChecks = "SQI_LOG_CHECKS"
+
+// WorkerEnforcedExtensions returns the worker-enforced extensions this worker
+// binary implements: what it advertises in [RegisterMsg.Extensions]. Keep it in
+// step with internal/worker/executor, and sorted: the test that pins it to
+// openjd's registry compares the two in order. It returns a fresh slice on each
+// call.
+func WorkerEnforcedExtensions() []string {
+	return []string{ExtensionLogChecks}
 }
 
 // ExprLimits is a worker's self-reported OpenJD EXPR evaluation caps.
@@ -509,6 +538,22 @@ type AssignMsg struct {
 	// Staging is the manifest of job-level PATH parameters to stage locally,
 	// present only when the stage_locally delivery is enabled.
 	Staging []StageEntry `json:"staging,omitempty"`
+
+	// LogChecks is the step's SQI_LOG_CHECKS block, present only when the step
+	// carries one. The server only leases such a task to a worker that
+	// advertised [ExtensionLogChecks]. Additive and omitted when nil, so an
+	// unchecked assignment's wire bytes are unchanged and [ProtocolVersion]
+	// does not move.
+	LogChecks *LogChecks `json:"log_checks,omitempty"`
+}
+
+// LogChecks is the wire form of a step's SQI_LOG_CHECKS block: RE2 patterns
+// matched unanchored against each line the step's onRun action writes. A task
+// fails when any line matches a FailOn pattern, or when no line matched a
+// RequireLine pattern by the time the process exited.
+type LogChecks struct {
+	FailOn      []string `json:"fail_on,omitempty"`
+	RequireLine []string `json:"require_line,omitempty"`
 }
 
 // IsolationSpec names the OS identity a task must run as. It is resolved

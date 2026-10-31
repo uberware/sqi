@@ -55,9 +55,16 @@ type commandPlan struct {
 //  3. the newest install a detector found, as a default.
 //
 // A default only fills a gap. It never replaces an entry the operator wrote or
-// shadows a command the studio's own setup provides, and it carries no
-// arguments: flags such as Nuke's --nc depend on the license, which is the
-// operator's to state in worker.commands.
+// shadows a command the studio's own setup provides.
+//
+// A detector may declare arguments the application's own invocation requires on
+// an OS (a flag that keeps it from opening a window on a headless worker). They
+// are applied to a detected default and to a command found on PATH, where the
+// worker registers that PATH result with the arguments so the studio's choice of
+// executable stands, and never to an operator entry, which is the operator's
+// whole say. A detector carries no license flag: Nuke's --nc depends on the
+// license, which is the operator's to state in worker.commands, so Nuke's
+// detector declares no arguments and a PATH hit for it is left alone.
 //
 // The returned Table is a copy; operator is not changed.
 func planCommands(operator commands.Table, detected []capabilities.DetectedCommand, lookPath func(string) (string, error)) commandPlan {
@@ -73,11 +80,21 @@ func planCommands(operator commands.Table, detected []capabilities.DetectedComma
 			continue
 		}
 		if found, err := lookPath(d.Name); err == nil {
-			plan.Reports = append(plan.Reports, commandReport{Name: d.Name, Path: found, Source: sourcePATH})
+			r := commandReport{Name: d.Name, Path: found, Source: sourcePATH}
+			if len(d.Args) > 0 {
+				plan.Table[d.Name] = commands.Command{Path: found, Args: d.Args}
+				r.Args = d.Args
+			}
+			plan.Reports = append(plan.Reports, r)
 			continue
 		}
-		plan.Table[d.Name] = commands.Command{Path: d.Path}
-		plan.Reports = append(plan.Reports, commandReport{Name: d.Name, Path: d.Path, Source: sourceDetected, Version: d.Version})
+		if d.Path == "" {
+			continue // arguments for a command nothing provides
+		}
+		plan.Table[d.Name] = commands.Command{Path: d.Path, Args: d.Args}
+		plan.Reports = append(plan.Reports, commandReport{
+			Name: d.Name, Path: d.Path, Args: d.Args, Source: sourceDetected, Version: d.Version,
+		})
 	}
 	slices.SortFunc(plan.Reports, func(a, b commandReport) int { return strings.Compare(a.Name, b.Name) })
 	return plan

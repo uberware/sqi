@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Silhouette Render. SceneFile is the .sfx bundle, a directory. Ships
+# FramesPerTask 10, so default's 1-25 becomes three chunks (the balanced split:
+# 1-9, 10-17, 18-25). multi-frame-chunk lowers it to 5 to show the first-last
+# span -range carries; stepped-range shows a gap-bearing range never spanning a
+# frame it excluded: a CONTIGUOUS chunk cannot cross a gap, so 1-9:4 becomes one
+# task per frame.
+#
+# target-with-space puts a space in the bundle path, the session name and the
+# output node label; the golden shows each travelling as a single argument.
+#
+# The preset declares no SQI_LOG_CHECKS (no failure line is documented for
+# sfxcmd), so there is no outcome case.
+cases:
+  - name: default
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/roto/shot0010_roto_v007.sfx
+      Frames: "1-25"
+      Session: Roto
+      OutputNode: Output
+    expect_tasks: 3
+    expect_invocations:
+      sfxcmd: 3
+  - name: multi-frame-chunk
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/roto/shot0010_roto_v007.sfx
+      Frames: "1-10"
+      Session: Roto
+      OutputNode: Output
+      FramesPerTask: "5"
+    expect_tasks: 2
+    expect_invocations:
+      sfxcmd: 2
+  - name: stepped-range
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/roto/shot0010_roto_v007.sfx
+      Frames: "1-9:4"
+      Session: Roto
+      OutputNode: Output
+    expect_tasks: 3
+    expect_invocations:
+      sfxcmd: 3
+  - name: target-with-space
+    params:
+      SceneFile: '/mnt/show/seq010/shot 0010/roto/shot0010_roto_v007.sfx'
+      Frames: "1-2"
+      Session: 'Hero Roto'
+      OutputNode: 'Final Matte'
+      FramesPerTask: "1"
+    expect_tasks: 2
+    expect_invocations:
+      sfxcmd: 2

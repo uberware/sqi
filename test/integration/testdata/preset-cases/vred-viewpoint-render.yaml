@@ -1,0 +1,82 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# VRED Viewpoint Render: VRED Render plus the View it renders, which
+# params.json carries as data. Shapes as vred-render.yaml; see its header.
+#
+# target-with-space puts a space in the scene path and the view name.
+#
+# quoting puts a single quote, a double quote, a backslash and a space in
+# View, and both quotes and spaces in Output File's file name, so params.json
+# must escape them on every OS (the backslash is in View because a POSIX
+# path parameter cannot carry one that survives as a separator on Windows);
+# TestPresetVRED_ParamsJSONRoundTrips decodes it and compares the values.
+#
+# logged-error prints the script's own failure line, the other failOn pattern
+# (vred-render's logged-error prints VRED's licence message).
+cases:
+  - name: default
+    params:
+      SceneFile: /mnt/show/cars/hero_car_v012.vpb
+      Frames: "1-25"
+      View: Front
+    expect_tasks: 3
+    expect_invocations:
+      VREDCore: 3
+    stub_env:
+      SQI_STUB_STDOUT: "SQI_RENDER: OK"
+  - name: multi-frame-chunk
+    params:
+      SceneFile: /mnt/show/cars/hero_car_v012.vpb
+      Frames: "1-10"
+      View: Front
+      FramesPerTask: "5"
+    expect_tasks: 2
+    expect_invocations:
+      VREDCore: 2
+  - name: stepped-range
+    params:
+      SceneFile: /mnt/show/cars/hero_car_v012.vpb
+      Frames: "1-9:4"
+      View: Front
+    expect_tasks: 3
+    expect_invocations:
+      VREDCore: 3
+  - name: target-with-space
+    params:
+      SceneFile: '/mnt/show/cars/hero car v012.vpb'
+      Frames: "1-2"
+      View: 'Driver Seat Close Up'
+    expect_tasks: 1
+    expect_invocations:
+      VREDCore: 1
+  - name: quoting
+    params:
+      SceneFile: /mnt/show/cars/hero_car_v012.vpb
+      Frames: "1-2"
+      View: 'Cam ''A'' "wide" \ left'
+      OutputFile: '/mnt/renders/hero car/it''s the "hero" shot.png'
+    expect_tasks: 1
+    expect_invocations:
+      VREDCore: 1
+  - name: logged-error
+    params:
+      SceneFile: /mnt/show/cars/hero_car_v012.vpb
+      Frames: "1"
+      View: Front
+    expect_tasks: 1
+    expect_invocations:
+      VREDCore: 3
+    stub_env:
+      SQI_STUB_STDOUT: "SQI_RENDER: FAILED: RuntimeError: no viewpoint or camera named Front"
+    expect_status: failed
+    expect_reason: "matched failOn"
+  - name: no-success-line
+    params:
+      SceneFile: /mnt/show/cars/hero_car_v012.vpb
+      Frames: "1"
+      View: Front
+    expect_tasks: 1
+    expect_invocations:
+      VREDCore: 3
+    expect_status: failed
+    expect_reason: "never printed"

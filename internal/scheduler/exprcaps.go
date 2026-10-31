@@ -345,12 +345,12 @@ const extensionsKey = "extensions"
 // hoists it out of the candidate loop. The template scan below likewise only
 // ever runs on a farm that is already misconfigured.
 //
-// Both callers matter and neither may be dropped: [Scheduler.leaseGatesPass] is
-// the bound (the task is never handed over), and [Scheduler.evaluateSchedulability]
-// is what the operator sees (the same reason, written onto the task by the
-// unschedulable sweep). A bound with no explanation is a silent stall; an
-// explanation with no bound is the warning-nobody-reads this program has
-// repeatedly found is not a bound at all.
+// It is reached through [workerCompatBlock], whose two callers may not be
+// dropped: [Scheduler.leaseGatesPass] is the bound (the task is never handed
+// over), and [Scheduler.evaluateSchedulability] is what the operator sees (the
+// same reason, written onto the task by the unschedulable sweep). A bound with
+// no explanation is a silent stall; an explanation with no bound is a warning
+// nobody reads and is not a bound at all.
 func exprCapsBlock(workerShortfall string, job store.Job) string {
 	if workerShortfall == "" || !jobUsesEXPR(job) {
 		return ""

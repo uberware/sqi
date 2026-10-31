@@ -14,7 +14,7 @@ import (
 
 const workerCols = `
 	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
-	os, os_version, arch, version, cpu_count, ram_mb, gpu_info, tags, expr_limits, status,
+	os, os_version, arch, version, cpu_count, ram_mb, gpu_info, tags, expr_limits, extensions, status,
 	last_heartbeat_at, registered_at, updated_at, instance_id, disabled`
 
 // sqlWorkerHasWorkInFlight is true when the worker row's id holds an assigned
@@ -34,9 +34,9 @@ const (
 	sqlUpsertWorker = `
 INSERT INTO workers (
 	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
-	os, os_version, arch, version, cpu_count, ram_mb, gpu_info, tags, expr_limits, status,
+	os, os_version, arch, version, cpu_count, ram_mb, gpu_info, tags, expr_limits, extensions, status,
 	last_heartbeat_at, registered_at, updated_at, instance_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET
 	farm_id           = excluded.farm_id,
 	queue_id          = excluded.queue_id,
@@ -53,6 +53,7 @@ ON CONFLICT (id) DO UPDATE SET
 	gpu_info          = excluded.gpu_info,
 	tags              = excluded.tags,
 	expr_limits       = excluded.expr_limits,
+	extensions        = excluded.extensions,
 	status            = excluded.status,
 	last_heartbeat_at = excluded.last_heartbeat_at,
 	updated_at        = excluded.updated_at,
@@ -121,13 +122,13 @@ RETURNING ` + workerCols
 func scanWorker(row scanner) (store.Worker, error) {
 	var w store.Worker
 	var farmID, queueID, lastHeartbeat sql.NullString
-	var gpuJSON, tagsJSON, exprJSON, status string
+	var gpuJSON, tagsJSON, exprJSON, extJSON, status string
 	var registeredAt, updatedAt string
 	var disabled dbBool
 
 	if err := row.Scan(
 		&w.ID, &farmID, &queueID, &w.Name, &w.Hostname, &w.IPAddress, &w.ComputeLocation,
-		&w.OS, &w.OSVersion, &w.Arch, &w.Version, &w.CPUCount, &w.RAMMb, &gpuJSON, &tagsJSON, &exprJSON, &status,
+		&w.OS, &w.OSVersion, &w.Arch, &w.Version, &w.CPUCount, &w.RAMMb, &gpuJSON, &tagsJSON, &exprJSON, &extJSON, &status,
 		&lastHeartbeat, &registeredAt, &updatedAt, &w.InstanceID, &disabled,
 	); err != nil {
 		return store.Worker{}, err
@@ -159,6 +160,12 @@ func scanWorker(row scanner) (store.Worker, error) {
 	}
 	w.ExprLimits = exprLimits
 
+	extensions, err := unmarshalJSON(extJSON, []string(nil))
+	if err != nil {
+		return store.Worker{}, err
+	}
+	w.Extensions = extensions
+
 	return w, nil
 }
 
@@ -169,27 +176,36 @@ func scanWorker(row scanner) (store.Worker, error) {
 // worker needs all of them, so a new JSON column added to only one copy would
 // still compile and would silently drop that column on the paths it was not
 // added to.
-func workerJSONCols(w store.Worker) (gpuJSON, tagsJSON, exprJSON string, err error) {
+func workerJSONCols(w store.Worker) (gpuJSON, tagsJSON, exprJSON, extJSON string, err error) {
 	if gpuJSON, err = marshalJSON(w.GPUInfo); err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
 	if tagsJSON, err = marshalJSON(w.Tags); err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
 	if exprJSON, err = marshalJSON(w.ExprLimits); err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
-	return gpuJSON, tagsJSON, exprJSON, nil
+	// A nil slice marshals as "null"; the column holds a list, '[]' when empty,
+	// matching what its default gives a row that predates it.
+	exts := w.Extensions
+	if exts == nil {
+		exts = []string{}
+	}
+	if extJSON, err = marshalJSON(exts); err != nil {
+		return "", "", "", "", err
+	}
+	return gpuJSON, tagsJSON, exprJSON, extJSON, nil
 }
 
 func workerBindArgs(w store.Worker, now string) ([]any, error) {
-	gpuJSON, tagsJSON, exprJSON, err := workerJSONCols(w)
+	gpuJSON, tagsJSON, exprJSON, extJSON, err := workerJSONCols(w)
 	if err != nil {
 		return nil, err
 	}
 	return []any{
 		w.ID, nullString(w.FarmID), nullString(w.QueueID), w.Name, w.Hostname, w.IPAddress, w.ComputeLocation,
-		w.OS, w.OSVersion, w.Arch, w.Version, w.CPUCount, w.RAMMb, gpuJSON, tagsJSON, exprJSON, string(w.Status),
+		w.OS, w.OSVersion, w.Arch, w.Version, w.CPUCount, w.RAMMb, gpuJSON, tagsJSON, exprJSON, extJSON, string(w.Status),
 		nullTimeToText(w.LastHeartbeatAt), now, now,
 	}, nil
 }

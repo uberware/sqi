@@ -29,6 +29,10 @@ type JobTemplate struct {
 	// the decoder so validation can reject them; the spec's job template is a
 	// closed object.
 	UnknownFields []string
+	// misplacedStepBlocks are the JSON pointers of step-block extension keys
+	// (SQI_LOG_CHECKS) the decoder found somewhere other than directly on a
+	// step; see findMisplacedStepBlocks. Carried for validation to reject.
+	misplacedStepBlocks []string
 
 	// PathTranslation is the parsed SQI_PATH_TRANSLATION extension block, or nil
 	// when the extension is not declared.
@@ -377,6 +381,15 @@ type StepTemplate struct {
 	// list is distinguishable from an omitted one -- 3.6 constrains a
 	// DEFINED let: block to at least one element.
 	LetSet bool
+	// LogChecks is the step's parsed SQI_LOG_CHECKS block, or nil when the step
+	// has none.
+	LogChecks *LogChecks
+	// SQIKeys is every SQI_-prefixed key the step carried, sorted. The decoder
+	// drops step keys it does not know, which is harmless for a misspelling of
+	// a base-spec key but would silently disable a check the author asked for;
+	// validation uses this list to reject an SQI_ key that names no registered
+	// step-block extension.
+	SQIKeys []string
 }
 
 // StepScript is the executable definition attached to a [StepTemplate].

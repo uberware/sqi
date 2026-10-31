@@ -1,0 +1,102 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Modo Render. A host-script preset: the argv is fixed (-dboff:crashreport and
+# one -cmd:@{render.py} {params.json} entry whose two session paths fold to
+# placeholders in the goldens), and everything per task travels in params.json,
+# which the goldens show in full. default (1-4 at the shipped 1 frame per task)
+# shows one task per frame; multi-frame-chunk shows consecutive frames in one
+# task; stepped-range shows a gap-bearing range never spanning a frame it
+# excluded.
+#
+# Every case that Tier 3 or TestPresetOutcomes runs states what the stub
+# prints: the preset's requireLine wants SQI_RENDER: OK, which a real Modo
+# prints from render.py, so default sets it or the job could only fail.
+#
+# quoting puts a space in a directory and in the file name and both quote
+# characters in the scene's file name, so params.json must escape them;
+# TestPresetModo_ParamsJSONRoundTrips decodes it with encoding/json and
+# compares the values. The quotes stay in the last path segment so the golden's
+# host-path rewrite (presettest.hostPathReplacer, keyed on the parameter's
+# parent folder) still applies on Windows, where the path reaches params.json
+# with doubled backslashes.
+#
+# logged-error, unknown-command, failed-with, no-success-line: outcome cases,
+# one for each failOn pattern and one for the missing success line. One frame,
+# so one task, run three times (scheduler.default_max_attempts) before the job
+# fails.
+cases:
+  - name: default
+    params:
+      SceneFile: /mnt/show/shots/hero/hero_v012.lxo
+      Frames: "1-4"
+    expect_tasks: 4
+    expect_invocations:
+      modo_cl: 4
+    stub_env:
+      SQI_STUB_STDOUT: "SQI_RENDER: OK"
+  - name: multi-frame-chunk
+    params:
+      SceneFile: /mnt/show/shots/hero/hero_v012.lxo
+      Frames: "1-10"
+      FramesPerTask: "5"
+    expect_tasks: 2
+    expect_invocations:
+      modo_cl: 2
+  - name: stepped-range
+    params:
+      SceneFile: /mnt/show/shots/hero/hero_v012.lxo
+      Frames: "1-9:4"
+      FramesPerTask: "3"
+    expect_tasks: 3
+    expect_invocations:
+      modo_cl: 3
+  - name: quoting
+    params:
+      SceneFile: '/mnt/show/shots/hero shot/it''s the "hero" scene.lxo'
+      Frames: "1-2"
+      FramesPerTask: "2"
+    expect_tasks: 1
+    expect_invocations:
+      modo_cl: 1
+  - name: logged-error
+    params:
+      SceneFile: /mnt/show/shots/hero/hero_v012.lxo
+      Frames: "1"
+    expect_tasks: 1
+    expect_invocations:
+      modo_cl: 3
+    stub_env:
+      SQI_STUB_STDOUT: "SQI_RENDER: FAILED: RuntimeError: scene.open failed"
+    expect_status: failed
+    expect_reason: "matched failOn"
+  - name: unknown-command
+    params:
+      SceneFile: /mnt/show/shots/hero/hero_v012.lxo
+      Frames: "1"
+    expect_tasks: 1
+    expect_invocations:
+      modo_cl: 3
+    stub_env:
+      SQI_STUB_STDOUT: "Unknown command: @{/tmp/render.py}"
+    expect_status: failed
+    expect_reason: "matched failOn"
+  - name: failed-with
+    params:
+      SceneFile: /mnt/show/shots/hero/hero_v012.lxo
+      Frames: "1"
+    expect_tasks: 1
+    expect_invocations:
+      modo_cl: 3
+    stub_env:
+      SQI_STUB_STDOUT: "render.animation failed with error code: 1"
+    expect_status: failed
+    expect_reason: "matched failOn"
+  - name: no-success-line
+    params:
+      SceneFile: /mnt/show/shots/hero/hero_v012.lxo
+      Frames: "1"
+    expect_tasks: 1
+    expect_invocations:
+      modo_cl: 3
+    expect_status: failed
+    expect_reason: "never printed"

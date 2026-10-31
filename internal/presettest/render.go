@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
 // Placeholders substituted into a rendered snapshot in place of values that
@@ -31,7 +33,11 @@ var uuidPattern = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{
 // gives "C:\Users\...\Temp\presettest-sessions-1\...". Matching only "/"
 // would redact the bare "presettest-sessions-1" token and leave the volatile
 // prefix and suffix around it in the golden.
-var sessionDirPattern = regexp.MustCompile(`(?:[A-Za-z]:)?(?:/private)?(?:[\\/][^\s"']*)?presettest-sessions-[0-9]+(?:[\\/][^\s"']*)?`)
+//
+// Braces end a path as quotes and whitespace do: Modo's -cmd:@{script} {params}
+// quotes each path in braces, and a pattern that ran on through them would
+// swallow the closing brace and the second path.
+var sessionDirPattern = regexp.MustCompile(`(?:[A-Za-z]:)?(?:/private)?(?:[\\/][^\s"'{}]*)?presettest-sessions-[0-9]+(?:[\\/][^\s"'{}]*)?`)
 
 // Render returns the golden-file text for s: a header naming the preset, the
 // case, the bound parameters and any template patch, then every step, every
@@ -59,6 +65,7 @@ func Render(s Snapshot) string {
 
 	for _, step := range s.Steps {
 		fmt.Fprintf(&b, "\nstep %q — %s\n", step.Name, plural(len(step.Tasks), "task"))
+		renderLogChecks(&b, step.LogChecks)
 		for i, task := range step.Tasks {
 			fmt.Fprintf(&b, "\ntask %d/%d  name=%q\n", i+1, len(step.Tasks), normalize(hostPaths, task.Name))
 			if len(task.Params) > 0 {
@@ -83,6 +90,23 @@ func Render(s Snapshot) string {
 		}
 	}
 	return b.String()
+}
+
+// renderLogChecks writes a step's SQI_LOG_CHECKS block, one line per pattern,
+// directly under the step header. A step with no checks writes nothing.
+// Patterns are quoted with %q so a regex's own backslashes and quotes are
+// unambiguous; they are not normalized, since a pattern is never a path or an
+// id.
+func renderLogChecks(b *strings.Builder, lc *protocol.LogChecks) {
+	if lc == nil {
+		return
+	}
+	for _, p := range lc.FailOn {
+		fmt.Fprintf(b, "  log checks: failOn %q\n", p)
+	}
+	for _, p := range lc.RequireLine {
+		fmt.Fprintf(b, "  log checks: requireLine %q\n", p)
+	}
 }
 
 // normalize replaces per-run and per-host values with stable placeholders.
@@ -121,6 +145,11 @@ func normalize(hostPaths *strings.Replacer, s string) string {
 // DERIVES in that directory -- "..._seg_00000.mp4", which appears in argv and
 // inside the generated concat list -- converts along with it.
 //
+// The escaped spellings are needed because the single-backslash pattern cannot
+// match inside a doubled one and would leave a half-converted path in the
+// golden. The longest-first ordering below makes the escaped form win wherever
+// both could apply.
+//
 // On a POSIX host filepath.FromSlash is the identity, so every pair is dropped
 // and this returns nil: the rendered text there is left unchanged.
 func hostPathReplacer(params map[string]string) *strings.Replacer {
@@ -134,6 +163,14 @@ func hostPathReplacer(params map[string]string) *strings.Replacer {
 		}
 		seen[host] = true
 		rewrites = append(rewrites, rewrite{host: host, posix: posix})
+		// The same path as repr_json and repr_py write it into a script's data
+		// (params.json, VRED's -postpython, Unreal's -execcmds): every
+		// backslash doubled. Python's repr and JSON agree on that, and on
+		// nothing else a path of ours contains, so one spelling covers both.
+		if esc := strings.ReplaceAll(host, `\`, `\\`); esc != host && !seen[esc] {
+			seen[esc] = true
+			rewrites = append(rewrites, rewrite{host: esc, posix: posix})
+		}
 	}
 	for _, k := range sortedKeys(params) {
 		v := params[k]

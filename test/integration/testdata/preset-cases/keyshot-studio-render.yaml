@@ -1,0 +1,100 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# KeyShot Studio Render: KeyShot Render plus the Studio it activates, which
+# params.json carries as data. Shapes as keyshot-render.yaml; see its header.
+#
+# target-with-space puts a space in the scene path and the studio name.
+#
+# quoting puts a single quote, a double quote, a backslash and a space in
+# Studio, and both quotes and spaces in Output File's file name, so
+# params.json must escape them on every OS (the backslash is in Studio because
+# a POSIX path parameter cannot carry one that survives as a separator on
+# Windows); TestPresetKeyShot_ParamsJSONRoundTrips decodes it and compares the
+# values.
+#
+# logged-error prints a failure line naming the studio, as the script's
+# setActiveStudio error would.
+cases:
+  - name: default
+    params:
+      SceneFile: /mnt/show/product/chair_v004.bip
+      Studio: Front
+      Frames: "1-25"
+      OutputFile: /mnt/renders/chair/beauty.####.png
+    expect_tasks: 3
+    expect_invocations:
+      keyshot_headless: 3
+    stub_env:
+      SQI_STUB_STDOUT: "SQI_RENDER: OK"
+  - name: multi-frame-chunk
+    params:
+      SceneFile: /mnt/show/product/chair_v004.bip
+      Studio: Front
+      Frames: "1-10"
+      FramesPerTask: "5"
+      OutputFile: /mnt/renders/chair/beauty.####.png
+    expect_tasks: 2
+    expect_invocations:
+      keyshot_headless: 2
+  - name: stepped-range
+    params:
+      SceneFile: /mnt/show/product/chair_v004.bip
+      Studio: Front
+      Frames: "1-19:2"
+      FramesPerTask: "4"
+      OutputFile: /mnt/renders/chair/beauty.####.png
+    expect_tasks: 3
+    expect_invocations:
+      keyshot_headless: 3
+  - name: target-with-space
+    params:
+      SceneFile: '/mnt/show/product/chair v004.bip'
+      Studio: 'Driver Seat Close Up'
+      Frames: "1-2"
+      OutputFile: /mnt/renders/chair/beauty.####.png
+    expect_tasks: 1
+    expect_invocations:
+      keyshot_headless: 1
+  - name: floating-license
+    params:
+      SceneFile: /mnt/show/product/chair_v004.bip
+      Studio: Front
+      Frames: "1-2"
+      OutputFile: /mnt/renders/chair/beauty.####.tif
+      LicenseFeature: keyshot2
+    expect_tasks: 1
+    expect_invocations:
+      keyshot_headless: 1
+  - name: quoting
+    params:
+      SceneFile: /mnt/show/product/chair_v004.bip
+      Studio: 'Cam ''A'' "wide" \ left'
+      Frames: "1-2"
+      OutputFile: '/mnt/renders/hero car/it''s the "hero" shot.####.png'
+    expect_tasks: 1
+    expect_invocations:
+      keyshot_headless: 1
+  - name: logged-error
+    params:
+      SceneFile: /mnt/show/product/chair_v004.bip
+      Studio: Front
+      Frames: "1"
+      OutputFile: /mnt/renders/chair/beauty.####.png
+    expect_tasks: 1
+    expect_invocations:
+      keyshot_headless: 3
+    stub_env:
+      SQI_STUB_STDOUT: "SQI_RENDER: FAILED: RuntimeError: no studio named Front"
+    expect_status: failed
+    expect_reason: "matched failOn"
+  - name: no-success-line
+    params:
+      SceneFile: /mnt/show/product/chair_v004.bip
+      Studio: Front
+      Frames: "1"
+      OutputFile: /mnt/renders/chair/beauty.####.png
+    expect_tasks: 1
+    expect_invocations:
+      keyshot_headless: 3
+    expect_status: failed
+    expect_reason: "never printed"

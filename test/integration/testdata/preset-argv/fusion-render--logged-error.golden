@@ -1,0 +1,27 @@
+preset: fusion-render
+case:   logged-error
+params:
+  Frames=1
+  FramesPerTask=10
+  SceneFile=/mnt/show/seq010/shot0010/comp/shot0010_comp_v007.comp
+
+step "Render" — 1 task
+  log checks: failOn "The fusion renderer reported that the render failed"
+  log checks: failOn "Failed to load the comp"
+
+task 1/1  name="Render[Frame=1-1,Frame.End=1,Frame.Start=1]"
+  task params:
+    Frame=1-1
+    Frame.End=1
+    Frame.Start=1
+  command: FusionRenderNode
+  args:
+    [0]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v007.comp
+    [1]  -render
+    [2]  -start
+    [3]  1
+    [4]  -end
+    [5]  1
+    [6]  -quiet
+    [7]  -verbose
+    [8]  -quit

@@ -138,8 +138,8 @@ func (s *Scheduler) evaluateSchedulability(ctx context.Context, task store.Task,
 			lastReason = reason
 			continue
 		}
-		if exprReason := exprCapsBlock(s.workerExprShortfall(w), job); exprReason != "" {
-			lastReason = exprReason
+		if compatReason := workerCompatBlock(s.workerExprShortfall(w), w, job); compatReason != "" {
+			lastReason = compatReason
 			continue
 		}
 		return "" // at least one eligible worker — schedulable

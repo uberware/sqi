@@ -22,3 +22,23 @@ cases:
     expect_tasks: 1
     expect_invocations:
       sqi-stub-command: 1
+
+  # An outcome case (TestPresetOutcomes), not a new argv: the same command, with
+  # the stub told to exit 3. The worker's environment carries stub_env, /bin/sh
+  # passes it to the stub, and the stub's exit status becomes the shell's. If
+  # stub_env never reached the stub the job would complete, so this also asserts
+  # the plumbing every later outcome case depends on.
+  - name: stub-fails
+    params:
+      Command: "sqi-stub-command --frame 1"
+    stub_inner: true
+    expect_tasks: 1
+    # Three, not one: a failed task is retried up to scheduler.default_max_attempts
+    # (3), and every attempt really runs the stub. An outcome case that fails the
+    # job states the attempt count, not the task count.
+    expect_invocations:
+      sqi-stub-command: 3
+    stub_env:
+      SQI_STUB_EXIT: "3"
+    expect_status: failed
+    expect_reason: "exited with code 3"

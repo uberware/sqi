@@ -1,0 +1,129 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: silhouette-render
+title: Silhouette Render
+description: >-
+  Renders one named output node of one session of a saved Silhouette project
+  with sfxcmd, ten frames per task by default.
+readme: |
+  # Silhouette Render
+
+  Renders one output node of one session of a saved Silhouette project with
+  Boris FX's command-line renderer (`sfxcmd -session <name> -node <label>
+  -range <first>-<last>`). Use Silhouette Render All instead to render every
+  output node of the project's active session in one job.
+
+  Each task renders a contiguous slice of the frame range, ten frames per task
+  by default.
+
+  ## Parameters
+
+  - **Project** - the Silhouette project to render. A `.sfx` project is a
+    bundle, which is a directory: choose the `.sfx` folder itself, not the
+    `project.sfx` file inside it. It must be reachable from every worker that
+    runs the job.
+  - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
+    `1-100:2` for every second frame. Frame numbers are in the session's own
+    numbering, which need not start at 1.
+  - **Session** - the name of the session to render, passed as `-session`.
+  - **Output Node** - the label of the output node to render, passed as
+    `-node`. It is the node's label, not its type. The flag is always passed,
+    because which node `sfxcmd` picks when it is left out has changed between
+    releases (the first Output node in 2022.5, the selected one in 2026).
+  - **Frames Per Task** - the most frames one task renders. Silhouette loads
+    the whole project for every task, so raise this to render several frames
+    per load. A range that does not divide evenly is spread over the same
+    number of tasks in near-equal chunks: `1-12` at 5 is `1-4`, `5-8`, `9-12`.
+
+  ## How work is divided
+
+  The frame range expands into tasks through OpenJD task chunking. The
+  `SQI_CHUNK_BOUNDS` extension gives each task the first and last frame of its
+  own slice, which the command passes as `-range first-last`; the last frame is
+  inclusive. A chunk never spans a gap, so a stepped range such as `1-9:4`
+  becomes one task per frame. `-start` is never passed: it renumbers the output
+  files, and the frames should keep their session numbers.
+
+  ## Requirements
+
+  - Workers tagged `attr.worker.tag.silhouette = true`
+  - An `sfxcmd` command the worker can resolve: its `worker.commands` entry, an
+    `sfxcmd` on its `PATH`, or the Silhouette install it detects
+  - A Silhouette licence that allows `sfxcmd` to render. A floating licence has
+    a render portion that `sfxcmd` uses, named `genarts_LICENSE`, in lower case.
+  - On Linux, `sfxcmd` runs with `-nogui`, which the worker adds by itself
+    whether it found `sfxcmd` on `PATH` or in the install. An `sfxcmd` entry
+    in `worker.commands` replaces that, arguments included, so it must list
+    `-nogui` itself. Silhouette's bundled
+    `lib` folder must be on the worker's `LD_LIBRARY_PATH`, or `sfxcmd` stops
+    with a missing-library error. The preset does not set it.
+
+  ## What has not been verified
+
+  - No Silhouette has executed this preset. The arguments come from Boris FX's
+    command-line documentation for 2022.5 and 2026.
+  - A failed render can be reported as a success. This preset does not declare
+    the `SQI_LOG_CHECKS` extension, because no line that `sfxcmd` prints on
+    failure is documented. A task fails only if `sfxcmd` exits non-zero.
+    `sfxcmd` is reported to exit 0 with no frames written on Linux, which
+    would show as a finished task. Check the output folder, not just the job
+    status.
+  - `sfxcmd`'s exit codes are not documented.
+  - A negative first frame is passed as `-range -5-10`; whether `sfxcmd` reads
+    that is unknown.
+  - The install folders the detector looks for are the two documented layouts
+    (`SilhouetteFX` and `BorisFX`), both unverified, and Linux is placed under
+    `/opt`.
+category: Rendering
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: Silhouette Render
+  extensions: [TASK_CHUNKING, SQI_CHUNK_BOUNDS]
+  parameterDefinitions:
+    - name: SceneFile
+      type: PATH
+      objectType: DIRECTORY
+      dataFlow: IN
+      userInterface: { control: CHOOSE_DIRECTORY, label: Project }
+    - name: Frames
+      type: STRING
+      userInterface: { control: LINE_EDIT, label: Frame Range }
+    - name: Session
+      type: STRING
+      minLength: 1
+      userInterface: { control: LINE_EDIT, label: Session }
+    - name: OutputNode
+      type: STRING
+      minLength: 1
+      userInterface: { control: LINE_EDIT, label: Output Node }
+    - name: FramesPerTask
+      type: INT
+      default: 10
+      minValue: 1
+      userInterface: { control: SPIN_BOX, label: Frames Per Task }
+  steps:
+    - name: Render
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.silhouette
+            anyOf: ["true"]
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Frame
+            type: CHUNK[INT]
+            range: "{{Param.Frames}}"
+            chunks:
+              defaultTaskCount: "{{Param.FramesPerTask}}"
+              rangeConstraint: CONTIGUOUS
+      script:
+        actions:
+          onRun:
+            command: sfxcmd
+            args:
+              - "-session"
+              - "{{Param.Session}}"
+              - "-node"
+              - "{{Param.OutputNode}}"
+              - "-range"
+              - "{{Task.Param.Frame.Start}}-{{Task.Param.Frame.End}}"
+              - "{{Param.SceneFile}}"

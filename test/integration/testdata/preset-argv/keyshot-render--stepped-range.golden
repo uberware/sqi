@@ -1,0 +1,521 @@
+preset: keyshot-render
+case:   stepped-range
+params:
+  Frames=1-19:2
+  FramesPerTask=4
+  Height=0
+  LicenseFeature=
+  OutputFile=/mnt/renders/chair/beauty.####.png
+  SceneFile=/mnt/show/product/chair_v004.bip
+  Width=0
+
+step "Render" — 3 tasks
+  log checks: failOn "SQI_RENDER: FAILED:"
+  log checks: requireLine "SQI_RENDER: OK"
+
+task 1/3  name="Render[Frame=1-7:2]"
+  task params:
+    Frame=1-7:2
+  command: keyshot_headless
+  args:
+    [0]  -progress
+    [1]  /mnt/show/product/chair_v004.bip
+    [2]  -script
+    [3]  <WORKDIR>
+  embedded file "params" (params.json):
+    {"frames": [1, 3, 5, 7], "output": "/mnt/renders/chair/beauty.####.png", "width": 0, "height": 0}
+  embedded file "render" (render.py):
+    # sqi KeyShot presets: renders this task's frames. KeyShot runs it
+    # with -script after loading the scene; its parameters come from
+    # params.json beside it, never from its own text.
+    import io
+    import json
+    import os
+    import sys
+    import traceback
+    
+    OK = "SQI_RENDER: OK"
+    FAILED = "SQI_RENDER: FAILED: "
+    
+    # The image format each output extension selects: the suffix of the
+    # lux.RENDER_OUTPUT_* constant renderImage takes. The extension must
+    # match the format. TIFF and PSD are rendered at 8 bits.
+    FORMATS = {
+        ".jpg": "JPEG",
+        ".jpeg": "JPEG",
+        ".png": "PNG",
+        ".exr": "EXR",
+        ".tif": "TIFF8",
+        ".tiff": "TIFF8",
+        ".psd": "PSD8",
+    }
+    
+    
+    def emit(line, fd=1):
+        # Straight to the file descriptor the worker reads, past
+        # whatever KeyShot does with sys.stdout. A failed write is
+        # ignored: the task then fails for want of the OK line.
+        try:
+            os.write(fd, (line + "\n").encode("utf-8", "replace"))
+        except OSError:
+            pass
+    
+    
+    def params_dir():
+        # KeyShot does not document __file__ for a -script file, so fall
+        # back to the command line, then to the current folder, which is
+        # where the worker starts KeyShot and writes the files.
+        here = globals().get("__file__")
+        if here:
+            return os.path.dirname(os.path.abspath(here))
+        for arg in sys.argv:
+            if os.path.basename(arg) == "render.py":
+                return os.path.dirname(os.path.abspath(arg))
+        return os.getcwd()
+    
+    
+    def get_lux():
+        # lux is a global in KeyShot's scripts; import it if it is not.
+        found = globals().get("lux")
+        if found is not None:
+            return found
+        import importlib
+    
+        return importlib.import_module("lux")
+    
+    
+    def output_format(pattern):
+        ext = os.path.splitext(pattern)[1].lower()
+        if ext not in FORMATS:
+            raise ValueError("unsupported output extension %r in %s" % (ext, pattern))
+        return FORMATS[ext]
+    
+    
+    def expand_output(pattern, frame):
+        # One run of # in the file name (not the folders) becomes the
+        # frame number, zero-padded to the run's length.
+        folder, name = os.path.split(pattern)
+        runs = []
+        i = 0
+        while i < len(name):
+            if name[i] == "#":
+                j = i
+                while j < len(name) and name[j] == "#":
+                    j += 1
+                runs.append((i, j))
+                i = j
+            else:
+                i += 1
+        if len(runs) != 1:
+            raise ValueError("the output file name needs exactly one run of #, found %d: %s" % (len(runs), name))
+        start, stop = runs[0]
+        number = str(frame).zfill(stop - start)
+        return os.path.join(folder, name[:start] + number + name[stop:])
+    
+    
+    def read_params(path):
+        with io.open(path, encoding="utf-8") as f:
+            p = json.load(f)
+        frames = sorted(set(int(n) for n in p["frames"]))
+        if not frames:
+            raise ValueError("the task has no frames")
+        pattern = p["output"]
+        output_format(pattern)
+        expand_output(pattern, frames[0])
+        return dict(
+            frames=frames,
+            pattern=pattern,
+            width=int(p.get("width") or 0),
+            height=int(p.get("height") or 0),
+            studio=p.get("studio") or "",
+        )
+    
+    
+    def prepare(path):
+        # Make the folder, and clear an old file of the same name so it
+        # cannot pass for this render's output.
+        folder = os.path.dirname(path)
+        if folder and not os.path.isdir(folder):
+            try:
+                os.makedirs(folder)
+            except OSError:
+                if not os.path.isdir(folder):
+                    raise
+        if os.path.isfile(path):
+            os.remove(path)
+    
+    
+    def render(lux, params):
+        if params["studio"]:
+            lux.setActiveStudio(params["studio"])
+        image_format = getattr(lux, "RENDER_OUTPUT_" + output_format(params["pattern"]))
+        size = {}
+        if params["width"] > 0:
+            size["width"] = params["width"]
+        if params["height"] > 0:
+            size["height"] = params["height"]
+        opts = lux.getRenderOptions()
+        opts.setAddToQueue(False)
+        for frame in params["frames"]:
+            path = expand_output(params["pattern"], frame)
+            prepare(path)
+            lux.setAnimationFrame(frame)
+            done = lux.renderImage(path, opts=opts, format=image_format, **size)
+            if done is False:
+                raise RuntimeError("KeyShot did not render frame %d" % frame)
+            if not os.path.isfile(path) or os.path.getsize(path) == 0:
+                raise RuntimeError("frame %d was rendered but %s was not written" % (frame, path))
+    
+    
+    def main():
+        try:
+            params = read_params(os.path.join(params_dir(), "params.json"))
+            render(get_lux(), params)
+        except Exception as e:
+            reason = " ".join((type(e).__name__ + ": " + str(e)).split())
+            emit(traceback.format_exc(), fd=2)
+            emit(FAILED + reason)
+            emit("openjd_fail: " + reason)
+            return
+        emit(OK)
+    
+    
+    main()
+
+task 2/3  name="Render[Frame=9-13:2]"
+  task params:
+    Frame=9-13:2
+  command: keyshot_headless
+  args:
+    [0]  -progress
+    [1]  /mnt/show/product/chair_v004.bip
+    [2]  -script
+    [3]  <WORKDIR>
+  embedded file "params" (params.json):
+    {"frames": [9, 11, 13], "output": "/mnt/renders/chair/beauty.####.png", "width": 0, "height": 0}
+  embedded file "render" (render.py):
+    # sqi KeyShot presets: renders this task's frames. KeyShot runs it
+    # with -script after loading the scene; its parameters come from
+    # params.json beside it, never from its own text.
+    import io
+    import json
+    import os
+    import sys
+    import traceback
+    
+    OK = "SQI_RENDER: OK"
+    FAILED = "SQI_RENDER: FAILED: "
+    
+    # The image format each output extension selects: the suffix of the
+    # lux.RENDER_OUTPUT_* constant renderImage takes. The extension must
+    # match the format. TIFF and PSD are rendered at 8 bits.
+    FORMATS = {
+        ".jpg": "JPEG",
+        ".jpeg": "JPEG",
+        ".png": "PNG",
+        ".exr": "EXR",
+        ".tif": "TIFF8",
+        ".tiff": "TIFF8",
+        ".psd": "PSD8",
+    }
+    
+    
+    def emit(line, fd=1):
+        # Straight to the file descriptor the worker reads, past
+        # whatever KeyShot does with sys.stdout. A failed write is
+        # ignored: the task then fails for want of the OK line.
+        try:
+            os.write(fd, (line + "\n").encode("utf-8", "replace"))
+        except OSError:
+            pass
+    
+    
+    def params_dir():
+        # KeyShot does not document __file__ for a -script file, so fall
+        # back to the command line, then to the current folder, which is
+        # where the worker starts KeyShot and writes the files.
+        here = globals().get("__file__")
+        if here:
+            return os.path.dirname(os.path.abspath(here))
+        for arg in sys.argv:
+            if os.path.basename(arg) == "render.py":
+                return os.path.dirname(os.path.abspath(arg))
+        return os.getcwd()
+    
+    
+    def get_lux():
+        # lux is a global in KeyShot's scripts; import it if it is not.
+        found = globals().get("lux")
+        if found is not None:
+            return found
+        import importlib
+    
+        return importlib.import_module("lux")
+    
+    
+    def output_format(pattern):
+        ext = os.path.splitext(pattern)[1].lower()
+        if ext not in FORMATS:
+            raise ValueError("unsupported output extension %r in %s" % (ext, pattern))
+        return FORMATS[ext]
+    
+    
+    def expand_output(pattern, frame):
+        # One run of # in the file name (not the folders) becomes the
+        # frame number, zero-padded to the run's length.
+        folder, name = os.path.split(pattern)
+        runs = []
+        i = 0
+        while i < len(name):
+            if name[i] == "#":
+                j = i
+                while j < len(name) and name[j] == "#":
+                    j += 1
+                runs.append((i, j))
+                i = j
+            else:
+                i += 1
+        if len(runs) != 1:
+            raise ValueError("the output file name needs exactly one run of #, found %d: %s" % (len(runs), name))
+        start, stop = runs[0]
+        number = str(frame).zfill(stop - start)
+        return os.path.join(folder, name[:start] + number + name[stop:])
+    
+    
+    def read_params(path):
+        with io.open(path, encoding="utf-8") as f:
+            p = json.load(f)
+        frames = sorted(set(int(n) for n in p["frames"]))
+        if not frames:
+            raise ValueError("the task has no frames")
+        pattern = p["output"]
+        output_format(pattern)
+        expand_output(pattern, frames[0])
+        return dict(
+            frames=frames,
+            pattern=pattern,
+            width=int(p.get("width") or 0),
+            height=int(p.get("height") or 0),
+            studio=p.get("studio") or "",
+        )
+    
+    
+    def prepare(path):
+        # Make the folder, and clear an old file of the same name so it
+        # cannot pass for this render's output.
+        folder = os.path.dirname(path)
+        if folder and not os.path.isdir(folder):
+            try:
+                os.makedirs(folder)
+            except OSError:
+                if not os.path.isdir(folder):
+                    raise
+        if os.path.isfile(path):
+            os.remove(path)
+    
+    
+    def render(lux, params):
+        if params["studio"]:
+            lux.setActiveStudio(params["studio"])
+        image_format = getattr(lux, "RENDER_OUTPUT_" + output_format(params["pattern"]))
+        size = {}
+        if params["width"] > 0:
+            size["width"] = params["width"]
+        if params["height"] > 0:
+            size["height"] = params["height"]
+        opts = lux.getRenderOptions()
+        opts.setAddToQueue(False)
+        for frame in params["frames"]:
+            path = expand_output(params["pattern"], frame)
+            prepare(path)
+            lux.setAnimationFrame(frame)
+            done = lux.renderImage(path, opts=opts, format=image_format, **size)
+            if done is False:
+                raise RuntimeError("KeyShot did not render frame %d" % frame)
+            if not os.path.isfile(path) or os.path.getsize(path) == 0:
+                raise RuntimeError("frame %d was rendered but %s was not written" % (frame, path))
+    
+    
+    def main():
+        try:
+            params = read_params(os.path.join(params_dir(), "params.json"))
+            render(get_lux(), params)
+        except Exception as e:
+            reason = " ".join((type(e).__name__ + ": " + str(e)).split())
+            emit(traceback.format_exc(), fd=2)
+            emit(FAILED + reason)
+            emit("openjd_fail: " + reason)
+            return
+        emit(OK)
+    
+    
+    main()
+
+task 3/3  name="Render[Frame=15-19:2]"
+  task params:
+    Frame=15-19:2
+  command: keyshot_headless
+  args:
+    [0]  -progress
+    [1]  /mnt/show/product/chair_v004.bip
+    [2]  -script
+    [3]  <WORKDIR>
+  embedded file "params" (params.json):
+    {"frames": [15, 17, 19], "output": "/mnt/renders/chair/beauty.####.png", "width": 0, "height": 0}
+  embedded file "render" (render.py):
+    # sqi KeyShot presets: renders this task's frames. KeyShot runs it
+    # with -script after loading the scene; its parameters come from
+    # params.json beside it, never from its own text.
+    import io
+    import json
+    import os
+    import sys
+    import traceback
+    
+    OK = "SQI_RENDER: OK"
+    FAILED = "SQI_RENDER: FAILED: "
+    
+    # The image format each output extension selects: the suffix of the
+    # lux.RENDER_OUTPUT_* constant renderImage takes. The extension must
+    # match the format. TIFF and PSD are rendered at 8 bits.
+    FORMATS = {
+        ".jpg": "JPEG",
+        ".jpeg": "JPEG",
+        ".png": "PNG",
+        ".exr": "EXR",
+        ".tif": "TIFF8",
+        ".tiff": "TIFF8",
+        ".psd": "PSD8",
+    }
+    
+    
+    def emit(line, fd=1):
+        # Straight to the file descriptor the worker reads, past
+        # whatever KeyShot does with sys.stdout. A failed write is
+        # ignored: the task then fails for want of the OK line.
+        try:
+            os.write(fd, (line + "\n").encode("utf-8", "replace"))
+        except OSError:
+            pass
+    
+    
+    def params_dir():
+        # KeyShot does not document __file__ for a -script file, so fall
+        # back to the command line, then to the current folder, which is
+        # where the worker starts KeyShot and writes the files.
+        here = globals().get("__file__")
+        if here:
+            return os.path.dirname(os.path.abspath(here))
+        for arg in sys.argv:
+            if os.path.basename(arg) == "render.py":
+                return os.path.dirname(os.path.abspath(arg))
+        return os.getcwd()
+    
+    
+    def get_lux():
+        # lux is a global in KeyShot's scripts; import it if it is not.
+        found = globals().get("lux")
+        if found is not None:
+            return found
+        import importlib
+    
+        return importlib.import_module("lux")
+    
+    
+    def output_format(pattern):
+        ext = os.path.splitext(pattern)[1].lower()
+        if ext not in FORMATS:
+            raise ValueError("unsupported output extension %r in %s" % (ext, pattern))
+        return FORMATS[ext]
+    
+    
+    def expand_output(pattern, frame):
+        # One run of # in the file name (not the folders) becomes the
+        # frame number, zero-padded to the run's length.
+        folder, name = os.path.split(pattern)
+        runs = []
+        i = 0
+        while i < len(name):
+            if name[i] == "#":
+                j = i
+                while j < len(name) and name[j] == "#":
+                    j += 1
+                runs.append((i, j))
+                i = j
+            else:
+                i += 1
+        if len(runs) != 1:
+            raise ValueError("the output file name needs exactly one run of #, found %d: %s" % (len(runs), name))
+        start, stop = runs[0]
+        number = str(frame).zfill(stop - start)
+        return os.path.join(folder, name[:start] + number + name[stop:])
+    
+    
+    def read_params(path):
+        with io.open(path, encoding="utf-8") as f:
+            p = json.load(f)
+        frames = sorted(set(int(n) for n in p["frames"]))
+        if not frames:
+            raise ValueError("the task has no frames")
+        pattern = p["output"]
+        output_format(pattern)
+        expand_output(pattern, frames[0])
+        return dict(
+            frames=frames,
+            pattern=pattern,
+            width=int(p.get("width") or 0),
+            height=int(p.get("height") or 0),
+            studio=p.get("studio") or "",
+        )
+    
+    
+    def prepare(path):
+        # Make the folder, and clear an old file of the same name so it
+        # cannot pass for this render's output.
+        folder = os.path.dirname(path)
+        if folder and not os.path.isdir(folder):
+            try:
+                os.makedirs(folder)
+            except OSError:
+                if not os.path.isdir(folder):
+                    raise
+        if os.path.isfile(path):
+            os.remove(path)
+    
+    
+    def render(lux, params):
+        if params["studio"]:
+            lux.setActiveStudio(params["studio"])
+        image_format = getattr(lux, "RENDER_OUTPUT_" + output_format(params["pattern"]))
+        size = {}
+        if params["width"] > 0:
+            size["width"] = params["width"]
+        if params["height"] > 0:
+            size["height"] = params["height"]
+        opts = lux.getRenderOptions()
+        opts.setAddToQueue(False)
+        for frame in params["frames"]:
+            path = expand_output(params["pattern"], frame)
+            prepare(path)
+            lux.setAnimationFrame(frame)
+            done = lux.renderImage(path, opts=opts, format=image_format, **size)
+            if done is False:
+                raise RuntimeError("KeyShot did not render frame %d" % frame)
+            if not os.path.isfile(path) or os.path.getsize(path) == 0:
+                raise RuntimeError("frame %d was rendered but %s was not written" % (frame, path))
+    
+    
+    def main():
+        try:
+            params = read_params(os.path.join(params_dir(), "params.json"))
+            render(get_lux(), params)
+        except Exception as e:
+            reason = " ".join((type(e).__name__ + ": " + str(e)).split())
+            emit(traceback.format_exc(), fd=2)
+            emit(FAILED + reason)
+            emit("openjd_fail: " + reason)
+            return
+        emit(OK)
+    
+    
+    main()

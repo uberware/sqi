@@ -18,7 +18,7 @@ func TestPostgresFS_HoldsTheBaselineAndLaterMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"00037_baseline.sql", "00038_task_logs_unique_seq.sql"}
+	want := []string{"00037_baseline.sql", "00038_task_logs_unique_seq.sql", "00039_worker_extensions.sql"}
 	if !slices.Equal(names, want) {
 		t.Fatalf("PostgresFS = %v, want %v", names, want)
 	}
@@ -38,8 +38,8 @@ func TestNewProvider_SQLiteUpReachesTheLatestVersion(t *testing.T) {
 		t.Fatalf("Up: %v", err)
 	}
 	v, err := p.GetDBVersion(t.Context())
-	if err != nil || v != 38 {
-		t.Fatalf("version = %d, %v; want 38", v, err)
+	if err != nil || v != 39 {
+		t.Fatalf("version = %d, %v; want 39", v, err)
 	}
 }
 

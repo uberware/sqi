@@ -172,19 +172,26 @@ the [`sqi-submitter`](dcc-submitters.md) in-application submitters:
 `maya-layer-render`, `maya-scene-render`, `houdini-rop-render`,
 `nuke-write-render`, `nuke-script-render`, `blender-batch-render`,
 `blender-view-layer-render`, `cinema4d-render`, `cinema4d-take-render`,
-`3dsmax-render` and the four After Effects presets. Three more have no
+`3dsmax-render` and the four After Effects presets. Fifteen more have no
 in-application submitter and are submitted from the web UI or the API:
-`mistika-boutique-render`, `mistika-vr-render` and `mistika-workflows-render`.
+`mistika-boutique-render`, `mistika-vr-render`, `mistika-workflows-render`,
+`katana-render`, `silhouette-render`, `silhouette-render-all`, `fusion-render`,
+`vred-render`, `vred-viewpoint-render`, `keyshot-render`,
+`keyshot-studio-render`, `modo-render`, `modo-pass-group-render`,
+`unreal-mrq-job-render` and `unreal-mrq-queue-render`.
 
 Each names its parameters by the [parameter convention
 contract](dcc-submitters.md#the-parameter-convention-contract), so submitter
 pre-fill works without configuration. All but the two After Effects queue
-presets declare `SceneFile` and `Frames`; the queue presets render whatever the
-project has queued, so they take only `SceneFile`. An output parameter is
-declared only where the command takes one: `OutputDir` on the two Maya presets
-and `OutputPath` on Blender, Cinema 4D and 3ds Max. Per-host extras include
-`Renderer`, `RenderLayer`, `RopPath`, `WriteNode`, `Scene`, `ViewLayer`, `Take`
-and `RenderQueueItem`.
+presets and the two Unreal presets declare `SceneFile` and `Frames`; the queue
+presets render whatever the project has queued, so they take only `SceneFile`,
+and the Unreal presets render the frame range their Movie Render Queue config
+sets, as one task. An output parameter is
+declared only where the command takes one: `OutputDir` on the two Maya presets,
+`OutputPath` on Blender, Cinema 4D and 3ds Max, `OutputFile` on the two
+VRED and the two KeyShot presets, and `OutputDirectory` on the two Unreal presets. Per-host extras include `Renderer`, `RenderLayer`, `RopPath`,
+`WriteNode`, `Scene`, `ViewLayer`, `Take`, `RenderNode`, `Session`,
+`OutputNode`, `View`, `Studio`, `PassGroup`, `LevelSequence`, `Map`, `MovieRenderConfig`, `QueueAsset` and `RenderQueueItem`.
 
 Each preset gates on a capability tag that `sqi-worker` auto-detects from a
 standard install; a manual tag is needed only for a nonstandard install path
@@ -194,6 +201,233 @@ See [`docs/dcc-submitters.md`](dcc-submitters.md) for the full reference,
 including the chunking behavior and worker requirements per preset.
 `TestBuiltinDetectors_CoverPresets` fails if a shipped preset requires a
 software tag that no built-in detector emits.
+
+### Katana
+
+| Preset | Renders | Shape | Gate |
+|---|---|---|---|
+| `katana-render` | one named Render node (`RenderNode`) of a `.katana` project with `katana --batch` | `FramesPerTask` frames per task, default 1 | `katana` |
+
+`katana-render` has no whole-scene variant, because a Render node is the unit of
+work, as a ROP is for Houdini. It runs `katana --batch
+--katana-file=<scene> --render-node=<node> -t <first>-<last>`, with each of
+`--katana-file=` and `--render-node=` one argument holding the `=` and the value,
+so a name with a space stays whole. Foundry documents `-t` with ranges and comma
+lists and no step form, so a stepped `Frames` range splits into one task per
+frame. Every host that renders needs a `katana_r` render licence.
+
+It declares [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md): a
+task fails when a line of Katana's output matches `ERROR +\|`, the pattern
+Deadline's Katana plugin treats as a failed render, because Katana's exit status
+on failure is not documented. Foundry also documents a batch render that never
+exits when an ImageRead node's file is missing (4.5v5 to 6.0v3); the preset sets
+no timeout, and its readme recommends adding one to the step's `onRun` action.
+The `katana` detector's Linux and Windows install paths are unverified; Katana
+does not run on macOS. See the preset's readme for what has not been verified.
+
+### Fusion
+
+| Preset | Renders | Shape | Gate |
+|---|---|---|---|
+| `fusion-render` | a whole `.comp` with `FusionRenderNode` | `FramesPerTask` frames per task, default 10 | `fusion` |
+
+`fusion-render` has no per-target variant: Fusion's command line cannot pick a
+Saver, so every Saver in the comp writes where the comp says. It runs
+`FusionRenderNode <comp> -render -start <first> -end <last> -quiet -verbose
+-quit`, one argument per flag and value; a stepped `Frames` range splits into
+one task per frame. The Render Node ships inside Fusion Studio and needs a
+Studio licence (a dongle, or a Fusion Server on the subnet); the free edition
+cannot render from the command line. Linux needs an X display (Xvfb), and a
+Fusion GUI open on the machine holds the scripting port and stalls the node.
+
+It declares [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md): a task fails when a line of
+standard output contains `The fusion renderer reported that the render failed`
+or `Failed to load the comp`, Deadline's two strings. **It is unverified whether
+they reach standard output with `-verbose`** rather than only a `-log` file
+(Deadline drives the node through its own scripting connection), in which case
+the check never fires and a failed render is caught only by an exit status that
+is itself undocumented. A Fusion 8 report of a successful render exiting
+`-1073741819` is noted in the readme; the preset does not handle it. The `fusion`
+detector's install paths on all three platforms are inferred, not observed.
+
+### Silhouette
+
+| Preset | Renders | Shape | Gate |
+|---|---|---|---|
+| `silhouette-render` | one output node (`OutputNode`, a label) of one session (`Session`) of a Silhouette project | `FramesPerTask` frames per task, default 10 | `silhouette` |
+| `silhouette-render-all` | every output node of the project's active session | `FramesPerTask` frames per task, default 10 | `silhouette` |
+
+`silhouette-render` runs `sfxcmd -session <session> -node <output node> -range
+<first>-<last> <project>` and always passes `-node`, because the node `sfxcmd`
+picks without it changed between releases. `silhouette-render-all` runs `sfxcmd
+-all -range <first>-<last> <project>` and declares neither `Session` nor
+`OutputNode`, so a submitter dialog treats it as whole-scene; `-all` needs a
+Silhouette whose `sfxcmd -help` lists it, and which release added it is unknown.
+`SceneFile` is the `.sfx` bundle, which is a directory (`objectType: DIRECTORY`),
+not the `project.sfx` file inside it. `-range` is in session numbering and
+`-start`, which renumbers output files, is never passed; a stepped `Frames` range
+splits into one task per frame.
+
+**Neither preset declares [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md), and a failed
+render that exits 0 is reported as a success.** No line `sfxcmd` prints on
+success or failure is documented, a Linux report has it exiting 0 with no frames
+written, and its exit codes are undocumented. Check
+the output folder, not only the job status. The `silhouette` detector supplies
+`sfxcmd` and, on Linux only, `-nogui`,
+whether `sfxcmd` comes from the install or from `PATH`; the bundled `lib`
+folder must be on the worker's `LD_LIBRARY_PATH`. The detector's install folders
+(the documented `SilhouetteFX` layout and a `BorisFX` root) are unverified. A
+floating licence needs the render portion `genarts_LICENSE`, in lower case.
+
+### VRED
+
+| Preset | Renders | Shape | Gate |
+|---|---|---|---|
+| `vred-render` | a `.vpb` scene's saved view with VRED Core | `FramesPerTask` frames per task, default 10, at most 1000 | `vred` |
+| `vred-viewpoint-render` | one named viewpoint or camera (`View`) of a `.vpb` scene | `FramesPerTask` frames per task, default 10, at most 1000 | `vred` |
+
+Both are **host-script** presets: each task runs `VREDCore <scene>
+-insecure_python -fast_start -hide_gui -postpython <code>`, where `<code>` is a
+constant Python expression that only executes the preset's embedded `render.py`
+(its path written with `EXPR`'s `repr_py`). Autodesk's command-line reference
+documents `-postpython` as Python commands run after the scene loads, not a
+file name. The script reads the scene, the task's frames, the optional
+`OutputFile` and (for the viewpoint preset) `View` from an embedded
+`params.json` that `EXPR` builds with `repr_json`, so no job value is ever
+written into Python source; it calls VRED's Python API v1 render settings
+(animation on, clip range off, first and last frame, frame step 1, the view,
+the render filename) and `startRenderToFile`. `params.json` is evaluated on the
+worker, against its `EXPR` limits, and costs more as the chunk grows, which is
+why `FramesPerTask` stops at 1000 (pinned by
+`TestPresetVRED_ParamsCostAtMaxChunk`). A blank `OutputFile` keeps the scene's
+render filename.
+
+Both declare [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md) with the host-script
+markers: a task fails unless the output contains `SQI_RENDER: OK`, and fails on
+a line containing `SQI_RENDER: FAILED:` or `No valid license found`. VRED can
+exit 0 without rendering (after a licence failure, for one), so its exit
+status is not relied on. The script writes both markers straight to file
+descriptor 1; **whether that reaches the worker from VRED, a windowed program
+on Windows, is unverified**, and if it does not, every task fails rather than
+passing silently. The checks give their verdict only when VRED exits, and
+whether it exits after `terminateVred()` under `-hide_gui` is undocumented; the
+presets set no timeout, so their readmes recommend adding one to the step's
+`onRun` action. **Whether `startRenderToFile` returns only once every frame is
+written is unverified**: the script prints `SQI_RENDER: OK` when it returns and
+does not check the files, so an early return would succeed with frames
+missing. Autodesk marks `startRenderToFile` as VRED Professional only,
+although AWS's VRED samples call it under VRED Core. `-insecure_python` turns
+off the Python sandbox of VRED 2024 and later. Linux needs an X server (Mesa
+under Xvfb on a machine without a GPU). A VRED Pro install is not tagged, since it
+supplies no `VREDCore`; a Windows worker with only VRED Pro maps `VREDCore` to
+`VREDPro.exe` in `worker.commands`, which tags it too. VRED's versions are
+internal: 17.0 is VRED 2025, 18.0 is VRED 2026. The `vred` detector's Windows
+VRED Core folder is Autodesk's documented one; both Linux roots are
+unverified.
+
+### KeyShot
+
+| Preset | Renders | Shape | Gate |
+|---|---|---|---|
+| `keyshot-render` | a `.bip` scene with KeyShot's headless mode | `FramesPerTask` frames per task, default 10, at most 1000; a chunk may be stepped or gapped | `keyshot` |
+| `keyshot-studio-render` | one named studio (`Studio`) of a `.bip` scene | as `keyshot-render` | `keyshot` |
+
+Host-script presets like VRED's, with one difference: KeyShot's headless scripting has no call that renders
+a frame range, so each task runs `keyshot_headless -progress [-floating_feature <feature>] <scene> -script
+<script>` and the embedded `render.py` loops over the task's frames, calling `lux.setAnimationFrame` and
+`lux.renderImage` for each. The chunks are `NONCONTIGUOUS`, so a stepped or gapped range costs no extra
+launches, and the presets declare no `SQI_CHUNK_BOUNDS`. `-floating_feature` appears only when **License
+Feature** is set (`keyshot2`, `keyshot_enterprise` or `keyshot_network_rendering`). **Output File** holds
+one run of `#` for the frame number, expanded by the script with zero padding; a name with no run or two runs,
+or an extension other than `.jpg`, `.jpeg`, `.png`, `.exr`, `.tif`, `.tiff` or `.psd` (which picks the
+`lux.RENDER_OUTPUT_*` format; TIFF and PSD are 8-bit), is refused at submission (pinned by
+`TestPresetKeyShot_OutputFileRules`). **Width** and **Height** are INT parameters where 0, the default, leaves
+the size to the scene: KeyShot's headless `renderImage` defaults both to the scene's own. The script reads
+everything from an embedded `params.json` that `EXPR` builds with `repr_json`, so no job value is written into
+Python source; `params.json` costs more as the chunk grows, which is why `FramesPerTask` stops at 1000 (pinned
+by `TestPresetKeyShot_ParamsCostAtMaxChunk`).
+
+Both declare [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md) with the host-script markers: a task fails unless the
+output contains `SQI_RENDER: OK`, and fails on a line containing `SQI_RENDER: FAILED:`. KeyShot documents no
+exit codes, so its exit status is not relied on. The checks give their verdict only once KeyShot exits, and
+whether it exits when the script ends is undocumented, so the readmes recommend a step timeout. The markers go
+straight to file descriptor 1 (KeyShot documents `keyshot_headless` as supporting stdout on Windows; macOS is
+unverified). **Headless scripting is a KeyShot Pro feature (9.3 and newer, "experimental" per KeyShot), a
+trial watermarks its renders, and KeyShot has no Linux desktop product.** Frame numbering is unverified: the
+reference does not say whether animation frames start at 0 or 1, so `Frames` is passed through unchanged
+(KeyShot's own quick-start loop starts at 1). On macOS the detected `keyshot_headless` command is the app's
+`keyshot` program with `-headless` put first, the form KeyShot documents there. No KeyShot has executed
+either preset; the detector's install folders are inferred.
+
+### Modo
+
+| Preset | Renders | Shape | Gate |
+|---|---|---|---|
+| `modo-render` | a `.lxo` scene through its render outputs, in the current pass state | `FramesPerTask` frames per task, default 1, at most 1000 | `modo` |
+| `modo-pass-group-render` | one named pass group (`PassGroup`) of a `.lxo` scene | as `modo-render` | `modo` |
+
+**Read this first: Modo is discontinued, and the way these presets start it is untested.** `modo_cl` reads
+its commands from standard input, and the worker leaves a task's standard input as the null device, which is at
+end-of-file from the first read. The presets therefore hand Modo its work with the documented `-cmd:` startup switch,
+and whether `modo_cl` runs that command to the end before it notices the end-of-file, or quits first, has not been
+tried. If it quits first, every task fails, safely: no `SQI_RENDER: OK` line is ever printed. Try one single-frame
+job before a longer one. Modo's last release was 17.1 (November 2024); downloads now need a Foundry support ticket,
+and the end-of-life license is an RLM `uncounted hostid=ANY` key that Modo finds through `foundry_LICENSE`.
+
+Host-script presets like VRED's. Each task runs `modo_cl -dboff:crashreport -cmd:@{<script>} {<params>}`: one
+`-cmd:` command that runs the embedded `render.py` and hands it the path of `params.json` as its argument, each path
+quoted in braces (Foundry documents quotes or braces for a name with spaces; a braced script path directly after `@` is
+not shown anywhere, so it is unverified). The script opens the scene, sets the render item's `first`, `last` and `step`
+from the task's chunk, and runs `render.animation {*}`, or for the pass-group preset `render.animation` with the group
+as a keyword argument. Nothing from the job is ever written into Modo command text or Python source: the scene and the
+pass group reach `lx.command` as keyword arguments, and the frames as integers, all read from an embedded
+`params.json` that `EXPR` builds with `repr_json`. The chunks are `CONTIGUOUS`; `params.json` costs more as the chunk
+grows, which is why `FramesPerTask` stops at 1000 (pinned by `TestPresetModo_ParamsCostAtMaxChunk`).
+
+Both declare [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md): a task fails unless the output contains `SQI_RENDER: OK`, and
+fails on a line containing `SQI_RENDER: FAILED:`, `failed with` or `Unknown command:`. Modo documents no exit status,
+so it is not relied on. `failed with` is broad: any Modo output line containing it (a texture or plug-in that failed
+to load, for example) fails the task even if the render succeeded. The checks give their verdict only once Modo exits, and the script ends with `app.quit`,
+but whether Modo then exits in headless mode is undocumented, so the readmes recommend a step timeout. Foundry says
+`-cmd:` runs before licensing and networking start, and whether a scene can be opened and rendered that early is also
+unknown. The detector looks for `modo_cl` under `C:\Program Files\Modo*` and `C:\Program Files\Foundry\Modo\*` on
+Windows and in the `.app` bundle on macOS; on Linux there is no fixed path, so put `modo_cl` on the worker's `PATH`.
+No Modo has executed either preset; the argument names of `scene.open` and `render.animation` used with keywords
+(`filename`, `type`, `group`) are unverified, and a wrong one fails every task.
+
+### Unreal Engine
+
+| Preset | Renders | Shape | Gate |
+|---|---|---|---|
+| `unreal-mrq-job-render` | one Movie Render Queue job: a level sequence (`LevelSequence`) on a map (`Map`) with a saved config (`MovieRenderConfig`) | one task | `unreal`, Windows |
+| `unreal-mrq-queue-render` | every job of a saved Movie Pipeline Queue asset (`QueueAsset`) | one task | `unreal`, Windows |
+
+Host-script presets like VRED's, gated on the worker's OS: Windows is the one OS any vendor
+Unreal render adaptor ships, so both require `attr.worker.os.family` = `windows` and their Tier 3 and outcome cases
+run on Windows only. Each task runs `UnrealEditor-Cmd <project> -log -unattended -stdout -allowstdoutlogverbosity
+-NoLoadingScreen -NoScreenMessages -RenderOffscreen -nohmd -windowed -execcmds=py <one line of Python>`, the command line
+of AWS's Deadline Cloud adaptor for Unreal. The line of Python adds the task's session folder to Python's path and imports
+the embedded `sqi_unreal_render.py`; it holds no comma (Unreal splits `-execcmds` at commas) and no double quote, and a
+session folder whose path would need one (`worker.session_dir`) fails the task, saying so. The script builds the job, or
+copies the saved queue's jobs into the editor's queue, applies `OutputDirectory` when it is not blank, starts the Movie
+Render Queue's PIE executor and returns; the editor keeps running while it renders, as AWS's adaptor relies on, which is
+why the presets use `-execcmds` rather than `-ExecutePythonScript` (it can quit before an asynchronous render
+completes). When the executor reports back, the script prints `SQI_RENDER: OK` if every job succeeded, or
+`SQI_RENDER: FAILED:` with the reason, and calls `quit_editor()`; a fatal error ends the render the same way. No job
+value is written into the command line or Python source: the asset paths and the output directory come from an embedded
+`params.json` that `EXPR` builds with `repr_json`. With no frame parameter its cost is fixed, and every value it quotes
+has a `maxLength` of 1024 (pinned by `TestPresetUnreal_ParamsCostIsFixed`).
+
+Both declare [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md): a task fails unless the output contains `SQI_RENDER: OK`, and
+fails on a line containing `SQI_RENDER: FAILED:`, `LogPython: Error:` or `Render Executor: Error:`. The exit status is
+not relied on, and `LogPython: Error:` matches any Python error in the editor session (for example one from a
+project's `init_unreal.py`), so such an error fails the task even if the render succeeded. The checks give their
+verdict only once the editor exits, which it does only when the executor reports back, so the readmes recommend a step timeout long enough for the first render on a worker, which compiles the
+project's shaders. The project and its content must be at the same path on every worker, or path-mapped; maps and
+queues must be saved; the project needs the Movie Render Queue and Python Editor Script plug-ins. The detector finds
+only the Epic Games Launcher's default folder, `C:\Program Files\Epic Games\UE_5.*`; an install anywhere else needs an
+`UnrealEditor-Cmd` entry in `worker.commands`. Epic's licence terms for render nodes are the studio's to check. No
+Unreal has executed either preset.
 
 ### Cinema 4D, 3ds Max and After Effects
 
@@ -363,7 +597,7 @@ but run their script directly, so they need a Linux or macOS worker.
 
 ## Validation tiers
 
-`presets/validation-tiers.yaml` has 37 entries, the 30 presets under
+`presets/validation-tiers.yaml` has 49 entries, the 42 presets under
 `presets/sqi/` plus the seven built-in products documented in
 [`docs/development.md`](development.md#adding-a-product), and states which
 validation tier each has reached. The four `presets/testing/` presets are not
@@ -417,9 +651,9 @@ tier to stand in for. The tiers are:
     frame set, and where it can be read back, their content (the view layer in
     an EXR header, a PNG's size, the frame a Houdini geometry file holds).
 
-  The other twenty presets (Maya, Cinema 4D, 3ds Max, After Effects, the three
-  Mistika products and the eight standalone renderers) have not reached Tier 2
-  and carry no `tier2` block.
+  The other thirty-two presets (Maya, Cinema 4D, 3ds Max, After Effects, the three
+  Mistika products, the eight standalone renderers, Katana, Fusion and the two
+  Silhouette, two VRED, two KeyShot, two Modo and two Unreal presets) have not reached Tier 2 and carry no `tier2` block.
 
   A DCC case cannot be required by platform, because CI cannot provide the
   application, so its block says `requires_app: blender` (or `nuke`, `houdini`)
@@ -481,9 +715,9 @@ skip on a platform named in `required_on` is a registry failure.
 ### Tier 3 on Windows
 
 Tier 3 runs on Windows as it does on Linux and macOS, and CI runs it in a
-dedicated job (`preset-harness-windows`). Of the 37 registry entries, 27 have
+dedicated job (`preset-harness-windows`). Of the 49 registry entries, 37 have
 `tier3.required_on: [linux, darwin, windows]`, so a skip on Windows fails the
-registry check for each of them. The other 10 are gated to fewer platforms:
+registry check for each of them. The other 12 are gated to fewer platforms:
 
 - POSIX-only (`required_on: [linux, darwin]`), gated on
   `attr.worker.os.family anyOf ["linux", "macos"]`: `script` and
@@ -491,8 +725,9 @@ registry check for each of them. The other 10 are gated to fewer platforms:
 - Windows-only (`required_on: [windows]`), gated on
   `attr.worker.os.family anyOf ["windows"]`: `script-powershell`,
   `command-sequence-powershell`, `ffmpeg-segment-transcode-powershell`,
-  `3dsmax-render`, `after-effects-render-windows` and
-  `after-effects-queue-render-windows`. Only the Windows job runs them.
+  `3dsmax-render`, `after-effects-render-windows`,
+  `after-effects-queue-render-windows`, `unreal-mrq-job-render` and
+  `unreal-mrq-queue-render`. Only the Windows job runs them.
 - macOS-only (`required_on: [darwin]`), gated on
   `attr.worker.os.family anyOf ["macos"]`: `after-effects-render-macos` and
   `after-effects-queue-render-macos`. No CI job runs the preset harness on

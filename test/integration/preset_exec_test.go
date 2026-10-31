@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"sort"
@@ -31,6 +32,7 @@ import (
 	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/presettest"
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/worker/capabilities"
 	stubrecord "github.com/uberware/sqi/test/stubproc/record"
 )
 
@@ -264,18 +266,40 @@ func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseN
 
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
-	env := newTier3Env(t, names, workerTagEnv(t, entry)...)
+	// The case's stub_env goes to the worker, not the stub: task processes
+	// inherit the worker's environment, so SQI_STUB_EXIT=3 here reaches the stub
+	// through the real worker (and through /bin/sh for a stub_inner case). An
+	// outcome case that did not arrive would complete instead of failing.
+	extra := append(workerTagEnv(t, entry), stubEnvPairs(c)...)
+	env := newTier3Env(t, names, extra...)
 	startRealWorkerAnyOS(t, ts, farmID, queueID, env.env...)
 
 	jobID := submitPresetJob(t, ts, farmID, queueID, presetCaseTemplate(t, entry, c), c.Params)
 	// Job statuses are "completed"/"failed"/"canceled"/"paused" (store.JobStatus)
 	// -- "succeeded" is a TASK status, not a job one.
-	if status := pollJobStatus(t, ts, jobID, []string{"completed", "failed", "canceled"}, presetJobTimeout); status != "completed" {
-		t.Fatalf("job status = %q, want completed (first task failure_reason: %q)",
-			status, firstTaskFailureReason(t, ts, jobID))
+	wantStatus := c.ExpectStatus
+	if wantStatus == "" {
+		wantStatus = presettest.StatusCompleted
+	}
+	status := pollJobStatus(t, ts, jobID, []string{"completed", "failed", "canceled"}, presetJobTimeout)
+	reason := firstTaskFailureReason(t, ts, jobID)
+	if status != wantStatus {
+		t.Fatalf("job status = %q, want %s (first task failure_reason: %q)", status, wantStatus, reason)
+	}
+	failing := wantStatus == presettest.StatusFailed
+	if failing && !strings.Contains(reason, c.ExpectReason) {
+		t.Fatalf("first task failure_reason = %q, want it to contain %q", reason, c.ExpectReason)
 	}
 
 	recs := env.records(t)
+	// A job that failed may never have invoked the stub (a check that fires
+	// before the command, a worker that could not start it), and a failed
+	// job's tasks need not all have run, so the observed-vs-computed set
+	// comparison below is not meaningful for it. Counts still are, whenever the
+	// fixture states them.
+	if failing && len(recs) == 0 && len(c.ExpectInvocations) == 0 {
+		return
+	}
 	// Both assertions below are vacuous on an empty recording:
 	// assertInvocationCounts returns early when the fixture names no expected
 	// invocations (which Case's doc comment permits), and
@@ -286,16 +310,81 @@ func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseN
 		t.Fatalf("stub recorded nothing; Tier 3 observed only that the job completed")
 	}
 	assertInvocationCounts(t, c, recs)
+	// Whatever the stub recorded is checked against the computed argv, failing
+	// job or not (this point is reached only with at least one recording). A
+	// failed task is retried, so the same argv is recorded once per attempt;
+	// both comparisons are over sets, which absorb the repeats. A failed job
+	// need not have run every task, so for one the check is one-sided: nothing
+	// observed may be absent from the computed set, but a computed argv that
+	// was never observed is not an error.
 	if !c.StubInner {
-		assertObservedMatchesComputed(t, snap, recs)
+		assertObservedMatchesComputed(t, snap, recs, failing)
 	} else if len(c.ExpectInnerArgv) > 0 {
 		got := make([][]string, len(recs))
 		for i, rec := range recs {
 			got[i] = rec.Args
 		}
-		for _, msg := range presettest.ArgvSetDiff(c.ExpectInnerArgv, got) {
+		diff := presettest.ArgvSetDiff
+		if failing {
+			diff = presettest.ArgvUnexpected // a failed job need not have run every task
+		}
+		for _, msg := range diff(c.ExpectInnerArgv, got) {
 			t.Error(msg)
 		}
+	}
+}
+
+// stubEnvPairs returns the case's stub_env as KEY=VALUE entries, sorted so the
+// worker's environment does not depend on map order.
+func stubEnvPairs(c presettest.Case) []string {
+	keys := make([]string, 0, len(c.StubEnv))
+	for k := range c.StubEnv {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]string, len(keys))
+	for i, k := range keys {
+		out[i] = k + "=" + c.StubEnv[k]
+	}
+	return out
+}
+
+// TestPresetOutcomes runs every fixture case that states an outcome
+// (expect_status) through a real server and a real worker, with the stub
+// behaving as the case's stub_env says, and asserts the job's status and
+// failure reason rather than an argv. It is how a preset's failure handling --
+// an SQI_LOG_CHECKS pattern, a wrapper's exit status -- is tested without the
+// vendor application: "the stub prints this line and exits 0, the job fails".
+//
+// Tier 1 still snapshots every one of these cases (assertRegistryCasesMatchFixture
+// requires the registry to claim them), so the argv an outcome case runs under
+// is as reviewed as any other.
+func TestPresetOutcomes(t *testing.T) {
+	reg, err := presettest.LoadRegistry()
+	if err != nil {
+		t.Fatalf("LoadRegistry: %v", err)
+	}
+	ran := 0
+	for _, entry := range reg.Presets {
+		cases, err := presettest.LoadCases(filepath.Join(presetCaseDir, entry.Name+".yaml"))
+		if err != nil {
+			t.Fatalf("%s: LoadCases: %v", entry.Name, err)
+		}
+		for _, c := range cases {
+			if c.ExpectStatus == "" {
+				continue
+			}
+			ran++
+			caseName := "TestPresetOutcomes/" + entry.Name + "/" + c.Name
+			t.Run(entry.Name+"/"+c.Name, func(t *testing.T) {
+				runTier3Case(t, entry, c, caseName)
+			})
+		}
+	}
+	// A fixture rename or a loader regression that dropped the key would
+	// otherwise leave this test green having run nothing.
+	if ran == 0 {
+		t.Fatal("no fixture case sets expect_status; TestPresetOutcomes ran nothing")
 	}
 }
 
@@ -509,7 +598,12 @@ func assertInvocationCounts(t *testing.T, c presettest.Case, recs []stubrecord.R
 // three-chunk preset's bounds never appeared.
 //
 // Order is not asserted — tasks are leased concurrently, so the run order is
-// genuinely nondeterministic. Set equality is the real claim.
+// genuinely nondeterministic. Set equality is the real claim. It is a set, not
+// a multiset, so a failed task's retries (the same argv once per attempt) do
+// not matter; assertInvocationCounts is what counts attempts.
+//
+// subsetOnly relaxes the first direction for a job that failed: its tasks need
+// not all have run, so only "nothing observed that was not computed" is checked.
 //
 // Arguments that are absolute paths to one of this preset's MATERIALIZED
 // EMBEDDED FILES are folded to a placeholder first. They cannot be compared
@@ -519,21 +613,50 @@ func assertInvocationCounts(t *testing.T, c presettest.Case, recs []stubrecord.R
 // script or a concat list — python, houdini-rop-render, and both runnable
 // segment-transcode variants — i.e. the presets whose argv most needs
 // an independent witness.
-func assertObservedMatchesComputed(t *testing.T, snap presettest.Snapshot, recs []stubrecord.Record) {
+func assertObservedMatchesComputed(t *testing.T, snap presettest.Snapshot, recs []stubrecord.Record, subsetOnly bool) {
 	t.Helper()
 	files := materializedFileNames(snap)
 	var computed, observed [][]string
 	for _, step := range snap.Steps {
 		for _, task := range step.Tasks {
-			computed = append(computed, append([]string{filepath.Base(task.Command)}, foldFilePaths(task.Args, files)...))
+			name := filepath.Base(task.Command)
+			// The real worker puts a detector's arguments for this OS in front of
+			// the job's own (silhouette's -nogui on Linux), for a command it found
+			// on PATH as it finds the stub. Model them from the shipped detector,
+			// so the observation is a witness that the worker really applied them.
+			lead := append([]string{name}, detectorLeadingArgs(t, name)...)
+			computed = append(computed, append(lead, foldFilePaths(task.Args, files)...))
 		}
 	}
 	for _, rec := range recs {
 		observed = append(observed, append([]string{rec.Command}, foldFilePaths(rec.Args, files)...))
 	}
-	for _, msg := range presettest.ArgvSetDiff(computed, observed) {
+	// A failed job need not have run every task, so an expected argv that never
+	// appeared is not an error there; one that appeared and was not expected
+	// still is.
+	diff := presettest.ArgvSetDiff
+	if subsetOnly {
+		diff = presettest.ArgvUnexpected
+	}
+	for _, msg := range diff(computed, observed) {
 		t.Error(msg)
 	}
+}
+
+// detectorLeadingArgs returns the arguments a built-in detector supplies for
+// command on this OS: the ones the real worker places before a job's own.
+func detectorLeadingArgs(t *testing.T, command string) []string {
+	t.Helper()
+	detectors, err := capabilities.BuiltinDetectors()
+	if err != nil {
+		t.Fatalf("load built-in detectors: %v", err)
+	}
+	for _, d := range detectors {
+		if d.Command != nil && d.Command.Name == command {
+			return d.Command.Args[runtime.GOOS]
+		}
+	}
+	return nil
 }
 
 // materializedFileNames returns the on-disk basenames of every embedded file in
@@ -556,6 +679,12 @@ func materializedFileNames(snap presettest.Snapshot) map[string]bool {
 
 // foldFilePaths replaces every argument that is an absolute path to one of files
 // with a stable placeholder. See [assertObservedMatchesComputed].
+//
+// A path quoted inside an argument is folded too: a host-script preset hands
+// the application code that names its script (VRED's -postpython carries
+// '<session>/render.py' as a Python literal, doubled backslashes and all on
+// Windows), so the session directory sits in the middle of the argument rather
+// than being all of it.
 func foldFilePaths(args []string, files map[string]bool) []string {
 	out := make([]string, len(args))
 	for i, a := range args {
@@ -564,9 +693,28 @@ func foldFilePaths(args []string, files map[string]bool) []string {
 			out[i] = "<FILE:" + base + ">"
 			continue
 		}
-		out[i] = a
+		out[i] = foldQuotedFilePaths(a, files)
 	}
 	return out
+}
+
+// foldQuotedFilePaths replaces each single-quoted absolute path to one of files
+// inside s ('/tmp/.../render.py', 'C:\\Users\\...\\render.py') with
+// '<FILE:name>'. Single quotes only: that is how repr_py writes a path holding
+// no quote, and a session directory holds none.
+//
+// A brace-quoted path is folded the same way ({/tmp/.../render.py},
+// {C:\Users\...\render.py}): that is how Modo's -cmd:@ argument quotes the
+// script and the parameters file, with single backslashes since no Python
+// literal is involved. A session directory holds no brace either.
+func foldQuotedFilePaths(s string, files map[string]bool) string {
+	for name := range files {
+		quoted := regexp.MustCompile(`'(?:[A-Za-z]:)?[\\/][^']*[\\/]` + regexp.QuoteMeta(name) + `'`)
+		s = quoted.ReplaceAllString(s, "'<FILE:"+name+">'")
+		braced := regexp.MustCompile(`\{(?:[A-Za-z]:)?[\\/][^{}]*[\\/]` + regexp.QuoteMeta(name) + `\}`)
+		s = braced.ReplaceAllString(s, "{<FILE:"+name+">}")
+	}
+	return s
 }
 
 // TestPresetTier3_StubFailureSurfacesAsFailedTask proves the harness can see a

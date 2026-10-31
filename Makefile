@@ -65,8 +65,10 @@ endif
 
 # Per-package timeout for `make test` and `make test-cover`. go test's default
 # is 10m, and ./test/integration/ runs every preset's Tier-3 case and the
-# real-ffmpeg Tier-2 cases untagged, under -race, in one package.
-TEST_TIMEOUT ?= 20m
+# real-ffmpeg Tier-2 cases untagged, under -race, in one package. On a Windows
+# host that package needs more than 20 minutes because each preset outcome case
+# waits out three retry attempts.
+TEST_TIMEOUT ?= 30m
 
 # PostgreSQL major version for `make test-postgres` (16 or 18; CI runs both).
 PG_VERSION ?= 18
@@ -208,10 +210,11 @@ test-cover-html: test-cover ## Open HTML coverage report in the browser
 	go tool cover -html=$(COVERAGE_OUT)
 
 .PHONY: test-integration
-# INTEGRATION_TEST_FLAGS defaults to a 20 m timeout because the backup/restore
-# runbook tests wait out a reconcile grace, which puts test/integration too
-# close to go test's 10 m default. CI uses this default too.
-INTEGRATION_TEST_FLAGS ?= -timeout 20m
+# INTEGRATION_TEST_FLAGS defaults to a 30 m timeout, the same as TEST_TIMEOUT:
+# the backup/restore runbook tests wait out a reconcile grace and the preset
+# outcome cases wait out their retry attempts, which puts test/integration well
+# past go test's 10 m default. CI uses this default too.
+INTEGRATION_TEST_FLAGS ?= -timeout 30m
 test-integration: ## Run integration tests (tagged 'integration')
 	go test $(TEST_FLAGS) -tags integration -v $(INTEGRATION_TEST_FLAGS) ./test/...
 

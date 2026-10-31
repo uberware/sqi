@@ -1,0 +1,85 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Modo Pass Group Render: Modo Render plus the PassGroup it renders, which
+# params.json carries as data. Shapes as modo-render.yaml; see its header.
+#
+# target-with-space puts a space in the scene path and the pass group name.
+#
+# quoting puts a single quote, a double quote, a backslash and a space in
+# PassGroup, and both quotes and spaces in the scene's file name, so
+# params.json must escape them on every OS (the backslash is in PassGroup
+# because a POSIX path parameter cannot carry one that survives as a separator
+# on Windows); TestPresetModo_ParamsJSONRoundTrips decodes it and compares the
+# values.
+#
+# logged-error prints Modo's own "failed with" wording; modo-render's outcome
+# cases cover the script's own FAILED line and "Unknown command:" as well.
+cases:
+  - name: default
+    params:
+      SceneFile: /mnt/show/shots/hero/hero_v012.lxo
+      Frames: "1-4"
+      PassGroup: Beauty
+    expect_tasks: 4
+    expect_invocations:
+      modo_cl: 4
+    stub_env:
+      SQI_STUB_STDOUT: "SQI_RENDER: OK"
+  - name: multi-frame-chunk
+    params:
+      SceneFile: /mnt/show/shots/hero/hero_v012.lxo
+      Frames: "1-10"
+      PassGroup: Beauty
+      FramesPerTask: "5"
+    expect_tasks: 2
+    expect_invocations:
+      modo_cl: 2
+  - name: stepped-range
+    params:
+      SceneFile: /mnt/show/shots/hero/hero_v012.lxo
+      Frames: "1-9:4"
+      PassGroup: Beauty
+      FramesPerTask: "3"
+    expect_tasks: 3
+    expect_invocations:
+      modo_cl: 3
+  - name: target-with-space
+    params:
+      SceneFile: '/mnt/show/shots/hero shot/hero v012.lxo'
+      Frames: "1-2"
+      PassGroup: 'Beauty And Shadow'
+      FramesPerTask: "2"
+    expect_tasks: 1
+    expect_invocations:
+      modo_cl: 1
+  - name: quoting
+    params:
+      SceneFile: '/mnt/show/shots/hero shot/it''s the "hero" scene.lxo'
+      Frames: "1-2"
+      PassGroup: 'Group ''A'' "wide" \ left'
+      FramesPerTask: "2"
+    expect_tasks: 1
+    expect_invocations:
+      modo_cl: 1
+  - name: logged-error
+    params:
+      SceneFile: /mnt/show/shots/hero/hero_v012.lxo
+      Frames: "1"
+      PassGroup: Beauty
+    expect_tasks: 1
+    expect_invocations:
+      modo_cl: 3
+    stub_env:
+      SQI_STUB_STDOUT: "render.animation failed with error code: 1"
+    expect_status: failed
+    expect_reason: "matched failOn"
+  - name: no-success-line
+    params:
+      SceneFile: /mnt/show/shots/hero/hero_v012.lxo
+      Frames: "1"
+      PassGroup: Beauty
+    expect_tasks: 1
+    expect_invocations:
+      modo_cl: 3
+    expect_status: failed
+    expect_reason: "never printed"

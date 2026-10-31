@@ -723,6 +723,7 @@ func TestHandleWorkerRegister_EveryWireFieldReachesTheStore(t *testing.T) {
 			AssignmentRetainedBytes: 4_444_444,
 			LetRetainedBytes:        5_555_555,
 		},
+		Extensions: []string{protocol.ExtensionLogChecks},
 	}
 
 	msg := &fakeJSMsg{subject: bus.WorkerRegisterSubject(sent.WorkerID), data: workerMsgJSON(t, sent)}
@@ -770,6 +771,7 @@ func TestHandleWorkerRegister_EveryWireFieldReachesTheStore(t *testing.T) {
 			"expr_limits.let_retained_bytes",
 			w.ExprLimits.LetRetainedBytes, sent.ExprLimits.LetRetainedBytes,
 		},
+		{"extensions", strings.Join(w.Extensions, ","), strings.Join(sent.Extensions, ",")},
 	}
 	for _, f := range fields {
 		t.Run(f.name, func(t *testing.T) {
@@ -822,7 +824,7 @@ func TestHandleWorkerRegister_EveryWireFieldReachesTheStore(t *testing.T) {
 var persistedRegisterFields = []string{
 	"WorkerID", "InstanceID", "FarmID", "QueueID", "Name", "Hostname", "IPAddress",
 	"ComputeLocation", "OS", "OSVersion", "Arch", "WorkerVersion", "CPUCount", "RAMMb",
-	"GPUInfo", "Tags", "ExprLimits",
+	"GPUInfo", "Tags", "ExprLimits", "Extensions",
 }
 
 // ── small helpers, one per dimension, so a row reads as its own mutation ──

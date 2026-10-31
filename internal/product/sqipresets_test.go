@@ -180,6 +180,87 @@ func TestSQIReferencePresets(t *testing.T) {
 			params:     []string{"SceneFile", "Frames"},
 			extensions: []string{"EXPR"},
 		},
+		// DCC presets with SQI_LOG_CHECKS. katana-render passes a chunk's start
+		// and end to -t, so it also declares SQI_CHUNK_BOUNDS.
+		"katana-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames", "RenderNode", "FramesPerTask"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS", "SQI_LOG_CHECKS"},
+		},
+		// fusion-render passes a chunk's start and end to -start/-end.
+		"fusion-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames", "FramesPerTask"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS", "SQI_LOG_CHECKS"},
+		},
+		// The two silhouette presets declare no SQI_LOG_CHECKS: no failure line
+		// is documented for sfxcmd. silhouette-render-all has no Session or
+		// OutputNode, so it is a whole-scene product.
+		"silhouette-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames", "Session", "OutputNode", "FramesPerTask"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
+		},
+		"silhouette-render-all": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames", "FramesPerTask"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
+		},
+		// The two VRED presets are host-script presets: EXPR builds the
+		// params.json their embedded render.py reads. vred-render has no View,
+		// so it is a whole-scene product.
+		"vred-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames", "FramesPerTask", "OutputFile"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS", "EXPR", "SQI_LOG_CHECKS"},
+		},
+		"vred-viewpoint-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames", "View", "FramesPerTask", "OutputFile"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS", "EXPR", "SQI_LOG_CHECKS"},
+		},
+		// The two KeyShot presets are host-script presets like VRED's, but
+		// declare no SQI_CHUNK_BOUNDS: the script loops over any list of
+		// frames (NONCONTIGUOUS) and reads no bounds. keyshot-render has no
+		// Studio, so it is a whole-scene product.
+		"keyshot-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames", "FramesPerTask", "OutputFile", "Width", "Height", "LicenseFeature"},
+			extensions: []string{"TASK_CHUNKING", "EXPR", "SQI_LOG_CHECKS"},
+		},
+		"keyshot-studio-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Studio", "Frames", "FramesPerTask", "OutputFile", "Width", "Height", "LicenseFeature"},
+			extensions: []string{"TASK_CHUNKING", "EXPR", "SQI_LOG_CHECKS"},
+		},
+		// The two Modo presets are host-script presets with CONTIGUOUS chunks
+		// like VRED's, and declare SQI_CHUNK_BOUNDS although nothing reads
+		// the bounds under EXPR. modo-render has no PassGroup, so it is a
+		// whole-scene product.
+		"modo-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames", "FramesPerTask"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS", "EXPR", "SQI_LOG_CHECKS"},
+		},
+		"modo-pass-group-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames", "PassGroup", "FramesPerTask"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS", "EXPR", "SQI_LOG_CHECKS"},
+		},
+		// The two Unreal presets are host-script presets with one task and no
+		// frame parameters, so no TASK_CHUNKING. The job preset's target
+		// parameters are LevelSequence, Map and MovieRenderConfig; the queue
+		// preset declares none of them, so it is a whole-scene product.
+		"unreal-mrq-job-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "LevelSequence", "Map", "MovieRenderConfig", "OutputDirectory"},
+			extensions: []string{"EXPR", "SQI_LOG_CHECKS"},
+		},
+		"unreal-mrq-queue-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "QueueAsset", "OutputDirectory"},
+			extensions: []string{"EXPR", "SQI_LOG_CHECKS"},
+		},
 		"ffmpeg-transcode": {
 			category: "Transcoding",
 			params:   []string{"SourceFile", "OutputFile", "VideoCodec", "Quality", "AudioCodec"},

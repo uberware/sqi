@@ -1,0 +1,241 @@
+preset: unreal-mrq-queue-render
+case:   output-directory
+params:
+  OutputDirectory=C:\Renders\HeroFilm\Queue
+  QueueAsset=/Game/Cinematics/MRQ_HeroQueue
+  SceneFile=C:\Projects\HeroFilm\HeroFilm.uproject
+
+step "Render" — 1 task
+  log checks: failOn "SQI_RENDER: FAILED:"
+  log checks: failOn "LogPython: Error:"
+  log checks: failOn "Render Executor: Error:"
+  log checks: requireLine "SQI_RENDER: OK"
+
+task 1/1  name="Render"
+  command: UnrealEditor-Cmd
+  args:
+    [0]  C:\Projects\HeroFilm\HeroFilm.uproject
+    [1]  -log
+    [2]  -unattended
+    [3]  -stdout
+    [4]  -allowstdoutlogverbosity
+    [5]  -NoLoadingScreen
+    [6]  -NoScreenMessages
+    [7]  -RenderOffscreen
+    [8]  -nohmd
+    [9]  -windowed
+    [10]  -execcmds=py __import__('sys').path.append(__import__('os').path.dirname('<WORKDIR>')) or __import__('sqi_unreal_render')
+  embedded file "params" (params.json):
+    {"queue": "/Game/Cinematics/MRQ_HeroQueue", "output_directory": "C:\\Renders\\HeroFilm\\Queue"}
+  embedded file "render" (sqi_unreal_render.py):
+    # sqi Unreal presets: renders a Movie Render Queue job or a saved
+    # queue in the editor. The editor imports it from its -execcmds
+    # startup command; its parameters come from params.json, never
+    # from its own text. It starts the render and returns. Unreal
+    # reports the outcome later, through the executor's delegates, and
+    # only then does the script print its verdict and quit the editor.
+    import json
+    import os
+    import traceback
+    
+    import unreal
+    
+    OK = "SQI_RENDER: OK"
+    FAILED = "SQI_RENDER: FAILED: "
+    
+    # What the delegates need once main() has returned: the executor
+    # (Unreal holds it while it renders; this keeps a reference too),
+    # the failures reported so far, and whether a verdict was given.
+    STATE = dict(executor=None, failures=[], done=False)
+    
+    
+    def emit(line, fd=1):
+        # Straight to the file descriptor the worker reads, past
+        # whatever Unreal does with sys.stdout. A failed write is
+        # ignored: the task then fails for want of the OK line.
+        try:
+            os.write(fd, (line + "\n").encode("utf-8", "replace"))
+        except (OSError, UnicodeError):
+            pass
+    
+    
+    def say(line):
+        # Both ways out: descriptor 1, and Unreal's log, which -stdout
+        # copies to the output behind a LogPython: prefix. The checks
+        # match anywhere in a line, so either copy counts.
+        emit(line)
+        try:
+            unreal.log(line)
+        except Exception:
+            pass
+    
+    
+    def find_params():
+        # params.json sits beside this script, in the task's session
+        # folder. The current folder is a fallback, in case the script's
+        # own location is unknown; that the worker's starting folder
+        # survives Unreal's startup is unverified (Unreal may reset it).
+        found = []
+        here = globals().get("__file__")
+        if here:
+            found.append(os.path.join(os.path.dirname(os.path.abspath(here)), "params.json"))
+        found.append(os.path.join(os.getcwd(), "params.json"))
+        for path in found:
+            if os.path.isfile(path):
+                return path
+        raise IOError("params.json not found; looked at " + ", ".join(found))
+    
+    
+    def read_params(path):
+        with open(path, encoding="utf-8") as f:
+            p = json.load(f)
+        # A queue preset's file names a queue; a job preset's names the
+        # three assets of its one job.
+        keys = ["queue"] if "queue" in p else ["sequence", "map", "config"]
+        params = dict()
+        for key in keys + ["output_directory"]:
+            value = p.get(key, "")
+            if not isinstance(value, str):
+                raise ValueError("params.json: " + key + " is not a string")
+            if key != "output_directory" and not value:
+                raise ValueError("params.json: " + key + " is empty")
+            params[key] = value
+        return params
+    
+    
+    def object_path(path):
+        # A soft object path names an asset as Package.Asset; a bare package
+        # path such as /Game/Maps/Hero names the package, not the asset in it.
+        # Content Browser paths leave the asset name off, and it is the
+        # package's last segment, so add it. A path that names its asset is
+        # kept as it is.
+        leaf = path.rsplit("/", 1)[-1]
+        return path if "." in leaf else path + "." + leaf
+    
+    
+    def build_queue(subsystem, params):
+        # The editor's own queue, emptied, then filled with the one job
+        # these parameters describe or with a copy of the saved queue's
+        # jobs (the saved asset itself is never changed).
+        queue = subsystem.get_queue()
+        queue.delete_all_jobs()
+        if "queue" in params:
+            saved = unreal.EditorAssetLibrary.load_asset(params["queue"])
+            if saved is None:
+                raise ValueError("no Movie Pipeline Queue asset at " + params["queue"])
+            queue.copy_from(saved)
+        else:
+            config = unreal.EditorAssetLibrary.load_asset(params["config"])
+            if config is None:
+                raise ValueError("no Movie Render Queue config asset at " + params["config"])
+            job = queue.allocate_new_job(unreal.MoviePipelineExecutorJob)
+            job.sequence = unreal.SoftObjectPath(object_path(params["sequence"]))
+            job.map = unreal.SoftObjectPath(object_path(params["map"]))
+            job.set_configuration(config)
+            job.job_name = params["sequence"].rsplit("/", 1)[-1].split(".")[0]
+        jobs = list(queue.get_jobs())
+        if not jobs:
+            raise ValueError("the queue holds no jobs")
+        return jobs
+    
+    
+    def apply_output(jobs, directory):
+        # Blank keeps every job's own output directory.
+        if not directory:
+            return
+        os.makedirs(directory, exist_ok=True)
+        path = unreal.DirectoryPath()
+        path.set_editor_property("path", directory.replace("\\", "/"))
+        for job in jobs:
+            setting = job.get_configuration().find_or_add_setting_by_class(unreal.MoviePipelineOutputSetting)
+            setting.output_directory = path
+    
+    
+    def reason_of(e):
+        return " ".join((type(e).__name__ + ": " + str(e)).split())
+    
+    
+    def finish(code):
+        # quit_editor is how Unreal's own scripts end the editor. If it
+        # cannot be called, exit anyway rather than leave the editor
+        # running with nothing left to do.
+        try:
+            unreal.SystemLibrary.quit_editor()
+        except Exception:
+            os._exit(code)
+    
+    
+    def conclude(reason=None):
+        # One verdict per task, whichever delegate comes first.
+        if STATE["done"]:
+            return
+        STATE["done"] = True
+        if reason is None and STATE["failures"]:
+            reason = "; ".join(STATE["failures"])
+        if reason is None:
+            say(OK)
+            finish(0)
+            return
+        reason = " ".join(reason.split())
+        say(FAILED + reason)
+        emit("openjd_fail: " + reason)
+        finish(1)
+    
+    
+    def crash(e):
+        emit(traceback.format_exc(), fd=2)
+        conclude(reason_of(e))
+    
+    
+    def on_errored(executor, pipeline, is_fatal, error_text):
+        try:
+            text = " ".join(str(error_text).split())
+            if not is_fatal:
+                say("sqi: Movie Render Queue reported a non-fatal error: " + text)
+                return
+            # A fatal error ends the render; Epic's own render-farm
+            # plug-in quits the editor on this delegate too.
+            STATE["failures"].append("Movie Render Queue error: " + text)
+            conclude()
+        except Exception as e:
+            crash(e)
+    
+    
+    def on_job_finished(output):
+        try:
+            if not getattr(output, "success", True):
+                job = getattr(output, "job", None)
+                name = str(getattr(job, "job_name", "") or "?")
+                STATE["failures"].append("job " + name + " did not succeed")
+        except Exception as e:
+            crash(e)
+    
+    
+    def on_finished(executor, success):
+        try:
+            if not success and not STATE["failures"]:
+                STATE["failures"].append("Movie Render Queue reported that the render did not succeed")
+            conclude()
+        except Exception as e:
+            crash(e)
+    
+    
+    def main():
+        try:
+            params = read_params(find_params())
+            unreal.AssetRegistryHelpers.get_asset_registry().wait_for_completion()
+            subsystem = unreal.get_editor_subsystem(unreal.MoviePipelineQueueSubsystem)
+            apply_output(build_queue(subsystem, params), params["output_directory"])
+            executor = unreal.MoviePipelinePIEExecutor()
+            STATE["executor"] = executor
+            executor.on_executor_errored_delegate.add_callable(on_errored)
+            executor.on_executor_finished_delegate.add_callable(on_finished)
+            per_job = getattr(executor, "on_individual_job_work_finished_delegate", None)
+            if per_job is not None:
+                per_job.add_callable(on_job_finished)
+            subsystem.render_queue_with_executor_instance(executor)
+        except Exception as e:
+            crash(e)
+    
+    
+    main()

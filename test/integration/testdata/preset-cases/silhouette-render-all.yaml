@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Silhouette Render All, the whole-scene variant: no Session or OutputNode
+# parameter, `-all` renders every output node of the active session. SceneFile
+# is the .sfx bundle, a directory. Ships FramesPerTask 10, so default's 1-25
+# becomes three chunks (1-9, 10-17, 18-25). multi-frame-chunk lowers it to 5 to
+# show the first-last span -range carries; stepped-range shows a CONTIGUOUS
+# chunk never crossing a gap, so 1-9:4 becomes one task per frame.
+#
+# The preset declares no SQI_LOG_CHECKS (no failure line is documented for
+# sfxcmd), so there is no outcome case.
+cases:
+  - name: default
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/roto/shot0010_roto_v007.sfx
+      Frames: "1-25"
+    expect_tasks: 3
+    expect_invocations:
+      sfxcmd: 3
+  - name: multi-frame-chunk
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/roto/shot0010_roto_v007.sfx
+      Frames: "1-10"
+      FramesPerTask: "5"
+    expect_tasks: 2
+    expect_invocations:
+      sfxcmd: 2
+  - name: stepped-range
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/roto/shot0010_roto_v007.sfx
+      Frames: "1-9:4"
+    expect_tasks: 3
+    expect_invocations:
+      sfxcmd: 3

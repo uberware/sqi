@@ -1,0 +1,138 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: katana-render
+title: Katana Render
+description: >-
+  Renders one named Render node of a saved Katana project in batch mode, one
+  frame per task by default.
+readme: |
+  # Katana Render
+
+  Renders a single named Render node of a saved `.katana` project with Katana's
+  batch mode (`katana --batch`). A Render node is the unit of work here, as a
+  ROP is for Houdini, so there is no whole-scene variant: submit one job per
+  Render node.
+
+  Each task renders a contiguous slice of the frame range, one frame per task
+  by default.
+
+  ## Parameters
+
+  - **Scene File** - the `.katana` project to render. It must be reachable from
+    every worker that runs the job.
+  - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
+    `1-100:2` for every second frame.
+  - **Render Node** - the name of the Render node to render, passed to Katana
+    as `--render-node=`. A name containing a space reaches Katana as one
+    argument.
+  - **Frames Per Task** - the most frames one task renders. Katana loads the
+    whole project for every task, so raise this to render several frames per
+    load. A range that does not divide evenly is spread over the same number
+    of tasks in near-equal chunks: `1-12` at 5 is `1-4`, `5-8`, `9-12`.
+
+  ## How work is divided
+
+  The frame range expands into tasks through OpenJD task chunking. The
+  `SQI_CHUNK_BOUNDS` extension gives each task the first and last frame of its
+  own slice, which the command passes to Katana's `-t` as `first-last`; the
+  last frame is inclusive. A chunk never spans a gap, so a stepped range such
+  as `1-9:4` becomes one task per frame.
+
+  ## How failures are detected
+
+  This preset declares the `SQI_LOG_CHECKS` extension: a task fails when any
+  line of Katana's output matches `ERROR +\|`, the pattern Deadline's Katana
+  plugin treats as a failed render. Katana's exit status is not relied on
+  alone, since its behaviour on a failed render is not documented.
+
+  ## Set a step timeout
+
+  Foundry documents a batch render that never exits when a file read by an
+  ImageRead node is missing, reported for releases 4.5v5 to 6.0v3. A task in
+  that state keeps its worker busy indefinitely and prints no error line for
+  the check above to catch. This preset sets no timeout, because a sensible
+  limit depends on the shot. Add a `timeout` (in seconds) to the step's
+  `onRun` action in a copy of the preset, longer than your slowest frame.
+
+  ## Requirements
+
+  - Workers tagged `attr.worker.tag.katana = true`
+  - A `katana` command the worker can resolve: its `worker.commands` entry, a
+    `katana` on its `PATH`, or the Katana install it detects
+  - A `katana_r` render licence for every host that renders, which Foundry
+    requires for batch rendering
+  - Any renderer plug-in the project uses must work under the worker's own
+    environment. This preset does not set up plug-in search paths or
+    licence variables.
+
+  ## What has not been verified
+
+  - No Katana has executed this preset. The arguments come from Foundry's
+    batch mode documentation, and the `-t` form is the one Deadline's Katana
+    plugin uses.
+  - Katana's exit status on a failed render is unknown, and so is the output a
+    failure prints. The `ERROR +\|` check is taken from Deadline's plugin.
+  - Foundry's batch mode documentation shows `-t` with ranges and comma lists
+    and no step form, so a stepped range is split into single frames instead.
+  - Whether `katana --version` works is unknown, so the detector reads the
+    version from the install folder name only.
+  - The Linux and Windows install paths the detector looks for are the
+    installer's documented example and Deadline's default, not paths seen on
+    a machine. Katana does not run on macOS.
+category: Rendering
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: Katana Render
+  extensions: [TASK_CHUNKING, SQI_CHUNK_BOUNDS, SQI_LOG_CHECKS]
+  parameterDefinitions:
+    - name: SceneFile
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface:
+        control: CHOOSE_INPUT_FILE
+        label: Scene File
+        fileFilters:
+          - label: Katana projects
+            patterns: ["*.katana"]
+        fileFilterDefault:
+          label: Katana projects
+          patterns: ["*.katana"]
+    - name: Frames
+      type: STRING
+      userInterface: { control: LINE_EDIT, label: Frame Range }
+    - name: RenderNode
+      type: STRING
+      minLength: 1
+      userInterface: { control: LINE_EDIT, label: Render Node }
+    - name: FramesPerTask
+      type: INT
+      default: 1
+      minValue: 1
+      userInterface: { control: SPIN_BOX, label: Frames Per Task }
+  steps:
+    - name: Render
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.katana
+            anyOf: ["true"]
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Frame
+            type: CHUNK[INT]
+            range: "{{Param.Frames}}"
+            chunks:
+              defaultTaskCount: "{{Param.FramesPerTask}}"
+              rangeConstraint: CONTIGUOUS
+      SQI_LOG_CHECKS:
+        failOn: ['ERROR +\|']
+      script:
+        actions:
+          onRun:
+            command: katana
+            args:
+              - "--batch"
+              - "--katana-file={{Param.SceneFile}}"
+              - "--render-node={{Param.RenderNode}}"
+              - "-t"
+              - "{{Task.Param.Frame.Start}}-{{Task.Param.Frame.End}}"

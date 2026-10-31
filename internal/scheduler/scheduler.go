@@ -928,6 +928,7 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 		GPUInfo:         store.GPUInfo(m.GPUInfo),
 		Tags:            m.Tags,
 		ExprLimits:      store.WorkerExprLimits(m.ExprLimits),
+		Extensions:      slices.Clone(m.Extensions),
 		Status:          store.WorkerStatusOnline,
 		LastHeartbeatAt: &now,
 	}

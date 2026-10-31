@@ -875,7 +875,7 @@ so version N is the same schema on both. Every later schema change ships as a
 pair of files with the same version, and `TestSchemaParity` fails when the two
 backends' newest versions, tables, columns (names, order, types and
 nullability), indexes or foreign keys differ. The newest pair is
-`00038_task_logs_unique_seq`. Migrations are forward-only: there is no
+`00039_worker_extensions`. Migrations are forward-only: there is no
 `migrate down`, and a binary refuses a database whose version is above the
 newest migration it embeds (`migrations.CheckVersion` against
 `migrations.MaxVersion`, run in `sqlite.Open` and `postgres.Open` whether or

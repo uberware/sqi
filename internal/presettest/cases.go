@@ -8,10 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/uberware/sqi/internal/product"
+	"github.com/uberware/sqi/internal/store"
 )
 
 // Source directories the tier registry and the harness know about.
@@ -72,6 +74,23 @@ type Case struct {
 	// Legal only with StubInner: otherwise the observed-vs-computed cross-check
 	// already compares argv.
 	ExpectInnerArgv [][]string `yaml:"expect_inner_argv"`
+
+	// StubEnv is extra environment for the worker process, and so for the stub
+	// every task it runs: the case says what the "vendor application" does
+	// (SQI_STUB_EXIT, SQI_STUB_STDOUT, ...). Every key must start SQI_STUB_, so
+	// a fixture can configure the stub and nothing else (PATH, for one, is the
+	// harness's own).
+	StubEnv map[string]string `yaml:"stub_env"`
+
+	// ExpectStatus is the job status Tier 3 must observe: "completed" (the
+	// default when empty) or "failed". A case that sets it is an OUTCOME case,
+	// which TestPresetOutcomes runs; it says what the job does, not what its
+	// argv is.
+	ExpectStatus string `yaml:"expect_status"`
+
+	// ExpectReason is a substring of the first task failure reason. Legal only
+	// with ExpectStatus "failed".
+	ExpectReason string `yaml:"expect_reason"`
 }
 
 type caseFile struct {
@@ -102,9 +121,36 @@ func LoadCases(path string) ([]Case, error) {
 		if len(c.ExpectInnerArgv) > 0 && !c.StubInner {
 			return nil, fmt.Errorf("presettest: %s case %q declares expect_inner_argv without stub_inner", path, c.Name)
 		}
+		if err := validateOutcomeFields(c); err != nil {
+			return nil, fmt.Errorf("presettest: %s case %q: %w", path, c.Name, err)
+		}
 		seen[c.Name] = true
 	}
 	return cf.Cases, nil
+}
+
+// Job statuses an outcome case may expect.
+const (
+	StatusCompleted = string(store.JobStatusCompleted)
+	StatusFailed    = string(store.JobStatusFailed)
+)
+
+// validateOutcomeFields rejects the outcome keys that cannot mean what they say.
+func validateOutcomeFields(c Case) error {
+	switch c.ExpectStatus {
+	case "", StatusCompleted, StatusFailed:
+	default:
+		return fmt.Errorf("expect_status %q is not %q or %q", c.ExpectStatus, StatusCompleted, StatusFailed)
+	}
+	if c.ExpectReason != "" && c.ExpectStatus != StatusFailed {
+		return errors.New("expect_reason is legal only with expect_status: failed")
+	}
+	for k := range c.StubEnv {
+		if !strings.HasPrefix(k, "SQI_STUB_") {
+			return fmt.Errorf("stub_env key %q must start with SQI_STUB_", k)
+		}
+	}
+	return nil
 }
 
 // PresetTemplate returns the raw OpenJD template of one preset or built-in

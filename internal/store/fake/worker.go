@@ -25,7 +25,7 @@ func (s *Store) RegisterWorker(_ context.Context, worker store.Worker) (store.Wo
 	defer s.mu.Unlock()
 
 	existing, isUpdate := s.workers[worker.ID]
-	worker.Tags = copyMap(worker.Tags)
+	worker = cloneWorker(worker)
 	worker.Disabled = existing.Disabled // false for a new worker
 	var reclaimed []store.Task
 	if isUpdate {
@@ -50,7 +50,7 @@ func (s *Store) GetWorker(_ context.Context, id string) (store.Worker, error) {
 		return store.Worker{}, store.ErrNotFound
 	}
 
-	worker.Tags = copyMap(worker.Tags)
+	worker = cloneWorker(worker)
 	return worker, nil
 }
 
@@ -67,7 +67,7 @@ func (s *Store) ListWorkers(_ context.Context, opts store.ListWorkersOptions) (s
 	workers := make([]store.Worker, 0, len(s.workers))
 	for _, w := range s.workers {
 		if filterWorker(w, opts) {
-			w.Tags = copyMap(w.Tags)
+			w = cloneWorker(w)
 			workers = append(workers, w)
 		}
 	}
@@ -92,7 +92,7 @@ func (s *Store) SetWorkerDisabled(_ context.Context, id string, disabled bool) (
 	worker.Disabled = disabled
 	worker.UpdatedAt = time.Now().UTC()
 	s.workers[id] = worker
-	worker.Tags = copyMap(worker.Tags)
+	worker = cloneWorker(worker)
 	return worker, nil
 }
 
@@ -133,7 +133,7 @@ func (s *Store) ListStaleWorkers(_ context.Context, before time.Time) ([]store.W
 			continue
 		}
 		if heartbeatBefore(w, before) {
-			w.Tags = copyMap(w.Tags)
+			w = cloneWorker(w)
 			workers = append(workers, w)
 		}
 	}
@@ -216,7 +216,7 @@ func (s *Store) DeleteOfflineWorkersBefore(_ context.Context, cutoff time.Time) 
 		if !heartbeatBefore(w, cutoff) {
 			continue
 		}
-		w.Tags = copyMap(w.Tags)
+		w = cloneWorker(w)
 		removed = append(removed, w)
 		delete(s.workers, id)
 	}
@@ -277,4 +277,12 @@ func cmpWorker(a, b store.Worker, field store.WorkerSortField, dir store.SortDir
 		n = cmp.Compare(a.Hostname, b.Hostname)
 	}
 	return withIDTieBreak(n, dir, a.ID, b.ID)
+}
+
+// cloneWorker returns w with its map and slice fields copied, so a worker the
+// fake returns or stores shares no backing storage with its caller.
+func cloneWorker(w store.Worker) store.Worker {
+	w.Tags = copyMap(w.Tags)
+	w.Extensions = copySlice(w.Extensions)
+	return w
 }

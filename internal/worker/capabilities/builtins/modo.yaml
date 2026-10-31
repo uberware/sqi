@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Foundry Modo, whose headless program modo_cl the presets modo-render and
+# modo-pass-group-render run through the bare command `modo_cl`. Modo is
+# discontinued: 17.1 is the final release (Foundry, 2024-11-07), and
+# downloads need a Foundry support ticket.
+#
+# Windows: two layouts are documented. The Modo 17.1 documentation installs to
+# C:\Program Files\Modo<version>\ and the 13.2 documentation (and Deadline's
+# Modo plugin) to C:\Program Files\Foundry\Modo\<version>\; both are looked
+# for. Foundry's headless page says modo_cl.exe is "run just like any other
+# command line program"; neither folder is confirmed on an installed copy.
+#
+# macOS: Foundry's headless page gives modo.app/Contents/MacOS/modo_cl. The
+# application folder name (Modo17.1v1.app or similar) is a guess, hence the
+# wildcard. All paths on macOS must be absolute (Foundry).
+#
+# Linux: the installer goes wherever the operator pointed it, and Foundry
+# documents no default, so there is no fixed path. Put modo_cl on PATH (the
+# check below finds it), or give the worker a `modo_cl` entry in
+# worker.commands.
+#
+# The version is Modo's own "17.1v1" form, read from the install folder
+# (Modo17.1v1, Modo 17.1v1 or Foundry\Modo\13.2v1). A modo_cl found only on PATH
+# carries no version.
+tag: modo
+checks:
+  - exe: modo_cl                                                 # a modo_cl the operator or host provides
+  - path_glob: 'C:\Program Files\Modo*\modo_cl.exe'              # windows (17.1 layout)
+    os: windows
+  - path_glob: 'C:\Program Files\Foundry\Modo\*\modo_cl.exe'     # windows (13.2 layout)
+    os: windows
+  - path_glob: "/Applications/Modo*.app/Contents/MacOS/modo_cl"  # macOS (unverified folder name)
+    os: darwin
+version:
+  from: 'Modo[ \\/]*([0-9]+\.[0-9]+v[0-9]+)'
+# The presets run a bare `modo_cl`, which no installer puts on PATH, so the
+# worker supplies one from the newest install found here, unless the operator or
+# the host already provides one. Linux has no glob: put modo_cl on PATH.
+command:
+  name: modo_cl
+  globs:
+    - path_glob: 'C:\Program Files\Modo*\modo_cl.exe'              # windows
+      os: windows
+    - path_glob: 'C:\Program Files\Foundry\Modo\*\modo_cl.exe'     # windows
+      os: windows
+    - path_glob: "/Applications/Modo*.app/Contents/MacOS/modo_cl"  # macOS
+      os: darwin

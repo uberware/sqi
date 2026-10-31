@@ -1,0 +1,55 @@
+preset: silhouette-render
+case:   default
+params:
+  Frames=1-25
+  FramesPerTask=10
+  OutputNode=Output
+  SceneFile=/mnt/show/seq010/shot0010/roto/shot0010_roto_v007.sfx
+  Session=Roto
+
+step "Render" — 3 tasks
+
+task 1/3  name="Render[Frame=1-9,Frame.End=9,Frame.Start=1]"
+  task params:
+    Frame=1-9
+    Frame.End=9
+    Frame.Start=1
+  command: sfxcmd
+  args:
+    [0]  -session
+    [1]  Roto
+    [2]  -node
+    [3]  Output
+    [4]  -range
+    [5]  1-9
+    [6]  /mnt/show/seq010/shot0010/roto/shot0010_roto_v007.sfx
+
+task 2/3  name="Render[Frame=10-17,Frame.End=17,Frame.Start=10]"
+  task params:
+    Frame=10-17
+    Frame.End=17
+    Frame.Start=10
+  command: sfxcmd
+  args:
+    [0]  -session
+    [1]  Roto
+    [2]  -node
+    [3]  Output
+    [4]  -range
+    [5]  10-17
+    [6]  /mnt/show/seq010/shot0010/roto/shot0010_roto_v007.sfx
+
+task 3/3  name="Render[Frame=18-25,Frame.End=25,Frame.Start=18]"
+  task params:
+    Frame=18-25
+    Frame.End=25
+    Frame.Start=18
+  command: sfxcmd
+  args:
+    [0]  -session
+    [1]  Roto
+    [2]  -node
+    [3]  Output
+    [4]  -range
+    [5]  18-25
+    [6]  /mnt/show/seq010/shot0010/roto/shot0010_roto_v007.sfx

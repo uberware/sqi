@@ -1,0 +1,411 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: keyshot-studio-render
+title: KeyShot Studio Render
+description: >-
+  Renders a frame range of one named studio of a saved KeyShot scene
+  headless, ten frames per task by default, one numbered image file per frame.
+readme: |
+  # KeyShot Studio Render
+
+  Renders frames of one named studio of a saved `.bip` scene with KeyShot's
+  headless mode, using the scene's own render settings, and writes one image
+  file per frame. Each task starts KeyShot once, loads the scene, makes the
+  studio active and renders its share of the frames, ten per task by default.
+  Use KeyShot Render instead to render the studio the scene was saved with.
+
+  ## Parameters
+
+  - **Scene File** - the `.bip` scene to render. It must be reachable from
+    every worker that runs the job.
+  - **Studio** - the name of the studio to render, passed to KeyShot's
+    `setActiveStudio` before the first frame. A name with spaces, quotes or
+    backslashes reaches KeyShot unchanged.
+  - **Frames** - the animation frames to render, in OpenJD range syntax, e.g.
+    `1-100`, `1-100:2` for every second frame or `1-10,20,30`. They are passed
+    to KeyShot as the animation frame numbers, unchanged.
+  - **Frames Per Task** - the most frames one task renders, at most 1000.
+    KeyShot loads the whole scene for every task, so several frames per load
+    pays. A range that does not divide evenly is spread over the same number
+    of tasks in near-equal chunks: `1-12` at 5 is `1-4,5-8,9-12`.
+  - **Output File** - where each frame is written, with one run of `#`
+    characters in the file name standing for the frame number, e.g.
+    `/renders/hero/beauty.####.png` gives `beauty.0001.png`. A name with no
+    run, or with two runs, is refused when the job is submitted. The
+    extension picks the image format: `.jpg` or `.jpeg`, `.png`, `.exr`,
+    `.tif` or `.tiff` (8-bit), `.psd` (8-bit). Any other extension is refused
+    at submission. The folder is created if it does not exist.
+  - **Width** and **Height** - the image size in pixels. 0, the default,
+    keeps the scene's own size (KeyShot's `renderImage` defaults to the scene
+    width and height). Either can be set on its own.
+  - **License Feature** - the FlexLM feature to check a floating license out
+    on: `keyshot2` (KeyShot Pro), `keyshot_enterprise` or
+    `keyshot_network_rendering`. Leave it empty to use whatever license the
+    worker's KeyShot is already configured with, which is the usual case for
+    a node-locked license or a subscription.
+
+  ## How work is divided
+
+  The frame range expands into tasks through OpenJD task chunking. KeyShot's
+  headless scripting has no call that renders a frame range, so each task
+  loops over its own frames. A chunk may therefore hold a stepped or gapped
+  list such as `1-19:2` or `1-3,7,8`, and a stepped range costs no extra
+  KeyShot launches.
+
+  ## How the render runs
+
+  Each task runs
+  `keyshot_headless -progress [-floating_feature <feature>] <scene> -script render.py`.
+  The `-floating_feature` flag appears only when License Feature is set. The
+  script is the preset's embedded `render.py`. No job value is ever written
+  into Python source: the script reads the task's frames, the output pattern
+  and the sizes from a `params.json` written beside it, built with the `EXPR`
+  extension and its JSON quoting.
+
+  The script first makes the studio active. For each frame it sets the
+  animation frame, renders to the numbered file with the scene's render
+  options and `setAddToQueue(False)`, and checks the image file exists and is
+  not empty. A file already there with that name is deleted first, so an old
+  frame cannot pass for a new one. After the last frame it prints
+  `SQI_RENDER: OK`; on any error it prints `SQI_RENDER: FAILED:` with the
+  reason and stops.
+
+  Building `params.json` is metered against the worker's `EXPR` limits and
+  grows with the frames in one task; the maximum of 1000 stays well inside
+  the worker defaults.
+
+  ## How failures are detected
+
+  This preset declares the `SQI_LOG_CHECKS` extension. A task fails unless
+  KeyShot's output contains `SQI_RENDER: OK`, and fails when a line contains
+  `SQI_RENDER: FAILED:`. KeyShot documents no exit codes, so its exit status
+  is not relied on. The script writes its two lines straight to the process's
+  standard output (file descriptor 1), which KeyShot documents
+  `keyshot_headless` as supporting on Windows.
+
+  ## Set a step timeout
+
+  The log checks give their verdict only once KeyShot has exited. If KeyShot
+  keeps running after the script ends, or hangs while rendering, the task
+  waits with it and keeps its worker busy indefinitely. This preset sets no
+  timeout, because a sensible limit depends on the scene. Add a `timeout` (in
+  seconds) to the step's `onRun` action in a copy of the preset, longer than
+  your slowest chunk.
+
+  ## Requirements
+
+  - Workers tagged `attr.worker.tag.keyshot = true`, on Windows or macOS. The
+    worker tags a KeyShot install it finds.
+  - A `keyshot_headless` command the worker can resolve: its `worker.commands`
+    entry, a `keyshot_headless` on its `PATH`, or the KeyShot install it
+    detects. On macOS that is the app's `keyshot` program with `-headless`
+    put first, the form KeyShot documents there; a `keyshot_headless` on a
+    macOS worker's `PATH` gets `-headless` too. Give the worker a
+    `keyshot_headless` entry in `worker.commands` to state the arguments
+    yourself.
+  - KeyShot Pro 9.3 or newer: KeyShot documents headless scripting as a Pro
+    feature, available from 9.3, and describes it as experimental. A trial
+    watermarks its renders. KeyShot has no Linux desktop product; its Linux
+    offering is the separate network-rendering product, which this preset
+    does not drive.
+  - A license the worker can use unattended. KeyShot reads a node-locked
+    license, a floating license server or a subscription from its settings
+    file. The flags for those (`-floating_license_server`, `-xlic`,
+    `-subscription`) are not job parameters: set them with `worker.commands`
+    arguments or KeyShot's `-generateconfig`.
+
+  ## What has not been verified
+
+  - No KeyShot has executed this preset. The command line and the `lux`
+    calls follow KeyShot's headless manual and its headless scripting
+    reference (2024), which documents `keyshot_headless`, `-script`,
+    `-progress` and `-floating_feature`, and `lux.renderImage`,
+    `setAnimationFrame`, `getRenderOptions` and `RenderOptions.setAddToQueue`.
+  - Whether `setActiveStudio` is honoured for a headless render of every
+    scene, and what it does with a name the scene lacks (it may raise, or
+    render the saved studio without an error).
+  - Frame numbering. KeyShot's reference does not say whether animation frames
+    start at 0 or 1. Its own scripting quick start renders frames with
+    `range(1, frames + 1)`, so the preset treats them as 1-based and passes
+    Frames through unchanged. Check the first output against the scene's
+    animation before a long run.
+  - Whether `lux.renderImage` returns a value in headless mode. The script
+    treats only an explicit `False` as a failure, and otherwise relies on the
+    file check.
+  - Whether the script finds `params.json`. KeyShot does not document
+    whether it sets `__file__` for a script given to `-script`. The script
+    uses `__file__` when set, then a command-line entry named `render.py`,
+    then the current folder, which is where the worker starts KeyShot and
+    writes the files; if KeyShot changes its working folder first, every task
+    fails with a missing `params.json`.
+  - Whether KeyShot exits after the script ends (see the timeout above;
+    KeyShot's manual does not say), and whether a script error alone changes
+    its exit status.
+  - Whether text written to file descriptor 1 reaches the worker on macOS.
+    If it does not, every task fails for want of `SQI_RENDER: OK`, never the
+    other way round.
+  - Whether the macOS bundle ships a `keyshot_headless` (a third-party
+    source says so; KeyShot's manual does not), and whether one on `PATH`
+    accepts the `-headless` the worker puts first.
+  - The install folders the detector looks for are inferred, not confirmed on
+    an installed copy. The worker's version tag takes the number in the folder
+    name, whether `KeyShot12` or a year.
+  - `-floating_feature` also accepts a core count after the feature name,
+    which this preset does not expose.
+category: Rendering
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: KeyShot Studio Render
+  extensions: [TASK_CHUNKING, EXPR, SQI_LOG_CHECKS]
+  parameterDefinitions:
+    - name: SceneFile
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface:
+        control: CHOOSE_INPUT_FILE
+        label: Scene File
+        fileFilters:
+          - label: KeyShot scenes
+            patterns: ["*.bip"]
+        fileFilterDefault:
+          label: KeyShot scenes
+          patterns: ["*.bip"]
+    - name: Studio
+      type: STRING
+      minLength: 1
+      userInterface: { control: LINE_EDIT, label: Studio }
+    - name: Frames
+      type: STRING
+      userInterface: { control: LINE_EDIT, label: Frame Range }
+    - name: FramesPerTask
+      type: INT
+      default: 10
+      minValue: 1
+      maxValue: 1000
+      userInterface: { control: SPIN_BOX, label: Frames Per Task }
+    - name: OutputFile
+      type: PATH
+      objectType: FILE
+      dataFlow: OUT
+      userInterface: { control: CHOOSE_OUTPUT_FILE, label: Output File }
+    - name: Width
+      type: INT
+      default: 0
+      minValue: 0
+      userInterface: { control: SPIN_BOX, label: Width (0 = scene) }
+    - name: Height
+      type: INT
+      default: 0
+      minValue: 0
+      userInterface: { control: SPIN_BOX, label: Height (0 = scene) }
+    - name: LicenseFeature
+      type: STRING
+      default: ""
+      allowedValues: ["", keyshot2, keyshot_enterprise, keyshot_network_rendering]
+      userInterface: { control: DROPDOWN_LIST, label: License Feature }
+  steps:
+    - name: Render
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.keyshot
+            anyOf: ["true"]
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Frame
+            type: CHUNK[INT]
+            range: "{{Param.Frames}}"
+            chunks:
+              defaultTaskCount: "{{Param.FramesPerTask}}"
+              rangeConstraint: NONCONTIGUOUS
+      SQI_LOG_CHECKS:
+        failOn: ['SQI_RENDER: FAILED:']
+        requireLine: ['SQI_RENDER: OK']
+      script:
+        let:
+          # The output pattern must hold exactly one run of # (the frame
+          # number) and end in an extension KeyShot can write; the script
+          # expands the run once per frame. A bad one fails the job at
+          # submission rather than the first task.
+          - pad = Param.OutputFile.name.count('#')
+          - "named = Param.OutputFile if pad > 0 and '#' * pad in Param.OutputFile.name else fail('Output File must contain exactly one run of # characters marking the frame number, e.g. beauty.####.png')"
+          - "output = named if named.suffix.lower() in ['.jpg', '.jpeg', '.png', '.exr', '.tif', '.tiff', '.psd'] else fail('Output File must end in .jpg, .jpeg, .png, .exr, .tif, .tiff or .psd: the extension picks the image format')"
+        embeddedFiles:
+          # The script's parameters, as data. EXPR has no dictionary type, so
+          # the JSON object is joined from strings, every string value through
+          # repr_json.
+          - name: params
+            type: TEXT
+            filename: params.json
+            data: |
+              {{ '{"frames": ' + repr_json(list(Task.Param.Frame)) + ', "output": ' + repr_json(string(output)) + ', "width": ' + string(Param.Width) + ', "height": ' + string(Param.Height) + ', "studio": ' + repr_json(Param.Studio) + '}' }}
+          - name: render
+            type: TEXT
+            filename: render.py
+            data: |
+              # sqi KeyShot presets: renders this task's frames. KeyShot runs it
+              # with -script after loading the scene; its parameters come from
+              # params.json beside it, never from its own text.
+              import io
+              import json
+              import os
+              import sys
+              import traceback
+
+              OK = "SQI_RENDER: OK"
+              FAILED = "SQI_RENDER: FAILED: "
+
+              # The image format each output extension selects: the suffix of the
+              # lux.RENDER_OUTPUT_* constant renderImage takes. The extension must
+              # match the format. TIFF and PSD are rendered at 8 bits.
+              FORMATS = {
+                  ".jpg": "JPEG",
+                  ".jpeg": "JPEG",
+                  ".png": "PNG",
+                  ".exr": "EXR",
+                  ".tif": "TIFF8",
+                  ".tiff": "TIFF8",
+                  ".psd": "PSD8",
+              }
+
+
+              def emit(line, fd=1):
+                  # Straight to the file descriptor the worker reads, past
+                  # whatever KeyShot does with sys.stdout. A failed write is
+                  # ignored: the task then fails for want of the OK line.
+                  try:
+                      os.write(fd, (line + "\n").encode("utf-8", "replace"))
+                  except OSError:
+                      pass
+
+
+              def params_dir():
+                  # KeyShot does not document __file__ for a -script file, so fall
+                  # back to the command line, then to the current folder, which is
+                  # where the worker starts KeyShot and writes the files.
+                  here = globals().get("__file__")
+                  if here:
+                      return os.path.dirname(os.path.abspath(here))
+                  for arg in sys.argv:
+                      if os.path.basename(arg) == "render.py":
+                          return os.path.dirname(os.path.abspath(arg))
+                  return os.getcwd()
+
+
+              def get_lux():
+                  # lux is a global in KeyShot's scripts; import it if it is not.
+                  found = globals().get("lux")
+                  if found is not None:
+                      return found
+                  import importlib
+
+                  return importlib.import_module("lux")
+
+
+              def output_format(pattern):
+                  ext = os.path.splitext(pattern)[1].lower()
+                  if ext not in FORMATS:
+                      raise ValueError("unsupported output extension %r in %s" % (ext, pattern))
+                  return FORMATS[ext]
+
+
+              def expand_output(pattern, frame):
+                  # One run of # in the file name (not the folders) becomes the
+                  # frame number, zero-padded to the run's length.
+                  folder, name = os.path.split(pattern)
+                  runs = []
+                  i = 0
+                  while i < len(name):
+                      if name[i] == "#":
+                          j = i
+                          while j < len(name) and name[j] == "#":
+                              j += 1
+                          runs.append((i, j))
+                          i = j
+                      else:
+                          i += 1
+                  if len(runs) != 1:
+                      raise ValueError("the output file name needs exactly one run of #, found %d: %s" % (len(runs), name))
+                  start, stop = runs[0]
+                  number = str(frame).zfill(stop - start)
+                  return os.path.join(folder, name[:start] + number + name[stop:])
+
+
+              def read_params(path):
+                  with io.open(path, encoding="utf-8") as f:
+                      p = json.load(f)
+                  frames = sorted(set(int(n) for n in p["frames"]))
+                  if not frames:
+                      raise ValueError("the task has no frames")
+                  pattern = p["output"]
+                  output_format(pattern)
+                  expand_output(pattern, frames[0])
+                  return dict(
+                      frames=frames,
+                      pattern=pattern,
+                      width=int(p.get("width") or 0),
+                      height=int(p.get("height") or 0),
+                      studio=p.get("studio") or "",
+                  )
+
+
+              def prepare(path):
+                  # Make the folder, and clear an old file of the same name so it
+                  # cannot pass for this render's output.
+                  folder = os.path.dirname(path)
+                  if folder and not os.path.isdir(folder):
+                      try:
+                          os.makedirs(folder)
+                      except OSError:
+                          if not os.path.isdir(folder):
+                              raise
+                  if os.path.isfile(path):
+                      os.remove(path)
+
+
+              def render(lux, params):
+                  if params["studio"]:
+                      lux.setActiveStudio(params["studio"])
+                  image_format = getattr(lux, "RENDER_OUTPUT_" + output_format(params["pattern"]))
+                  size = {}
+                  if params["width"] > 0:
+                      size["width"] = params["width"]
+                  if params["height"] > 0:
+                      size["height"] = params["height"]
+                  opts = lux.getRenderOptions()
+                  opts.setAddToQueue(False)
+                  for frame in params["frames"]:
+                      path = expand_output(params["pattern"], frame)
+                      prepare(path)
+                      lux.setAnimationFrame(frame)
+                      done = lux.renderImage(path, opts=opts, format=image_format, **size)
+                      if done is False:
+                          raise RuntimeError("KeyShot did not render frame %d" % frame)
+                      if not os.path.isfile(path) or os.path.getsize(path) == 0:
+                          raise RuntimeError("frame %d was rendered but %s was not written" % (frame, path))
+
+
+              def main():
+                  try:
+                      params = read_params(os.path.join(params_dir(), "params.json"))
+                      render(get_lux(), params)
+                  except Exception as e:
+                      reason = " ".join((type(e).__name__ + ": " + str(e)).split())
+                      emit(traceback.format_exc(), fd=2)
+                      emit(FAILED + reason)
+                      emit("openjd_fail: " + reason)
+                      return
+                  emit(OK)
+
+
+              main()
+        actions:
+          onRun:
+            command: keyshot_headless
+            args:
+              - "-progress"
+              # Spliced in only when a license feature is chosen.
+              - "{{ ['-floating_feature', Param.LicenseFeature] if RawParam.LicenseFeature != '' else [] }}"
+              - "{{Param.SceneFile}}"
+              - "-script"
+              - "{{Task.File.render}}"

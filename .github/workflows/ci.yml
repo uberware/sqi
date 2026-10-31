@@ -1504,7 +1504,7 @@ jobs:
       - name: Run the integration suite
         run: |
           set +e
-          # The Makefile's INTEGRATION_TEST_FLAGS default (-timeout 20m)
+          # The Makefile's INTEGRATION_TEST_FLAGS default (-timeout 30m)
           # covers the backup/restore tests' reconcile-grace waits plus up to
           # ~90s of LDAP and ~180s of Keycloak container readiness.
           make test-integration 2>&1 | tee integration-output.log
@@ -1539,6 +1539,62 @@ jobs:
             # logging an error and exiting 0, on a macOS variant.
             TestPresetAfterEffects_WrapperFailsOnLoggedError
             TestPresetAfterEffects_WrapperFailsOnLoggedError/logged-error-exit-0/after-effects-render-macos
+            # The VRED host-script presets: params.json's cost at the largest
+            # chunk, its JSON round trip with quotes and a backslash, and the
+            # embedded render.py under a real Python with VRED faked (it skips
+            # without a working Python 3, and a subtest skips on a temp dir
+            # holding a quote, so two leaves are named too).
+            TestPresetVRED_ParamsCostAtMaxChunk
+            TestPresetVRED_ParamsJSONRoundTrips
+            TestPresetVRED_ShareOneScript
+            TestPresetVRED_ScriptDrivesVRED
+            TestPresetVRED_ScriptDrivesVRED/output_file_with_quotes_and_spaces/globals
+            TestPresetVRED_ScriptDrivesVRED/render_fails/modules
+            # The KeyShot host-script presets: the same four checks, plus the
+            # Output File rules refused at submission. ScriptDrivesKeyShot
+            # skips without a working Python 3, so two leaves are named too.
+            TestPresetKeyShot_ParamsCostAtMaxChunk
+            TestPresetKeyShot_ParamsJSONRoundTrips
+            TestPresetKeyShot_ShareOneScript
+            TestPresetKeyShot_OutputFileRules
+            TestPresetKeyShot_ScriptDrivesKeyShot
+            TestPresetKeyShot_ScriptDrivesKeyShot/a_chunk_at_the_scene_size/file
+            TestPresetKeyShot_ScriptDrivesKeyShot/renderImage_returns_False_at_the_second_frame/cwd
+            # The Modo host-script presets: the same checks, plus the -cmd:
+            # argument's shape. ScriptDrivesModo skips without a working
+            # Python 3, so two leaves are named too.
+            TestPresetModo_ParamsCostAtMaxChunk
+            TestPresetModo_ParamsJSONRoundTrips
+            TestPresetModo_ShareOneScript
+            TestPresetModo_CommandNamesTheScriptAndItsParams
+            TestPresetModo_ScriptDrivesModo
+            TestPresetModo_ScriptDrivesModo/whole_scene_chunk/args_modo
+            TestPresetModo_ScriptDrivesModo/scene_open_fails/file_commands
+            # The Unreal host-script presets. They are Windows-only, so their
+            # Tier 3 and outcome cases skip here and run in
+            # preset-harness-windows; these tests need no Unreal and no OS
+            # gate, so they run on every OS. ScriptDrivesUnreal skips without
+            # a working Python 3, so two leaves are named too.
+            TestPresetUnreal_ParamsCostIsFixed
+            TestPresetUnreal_ParamsJSONRoundTrips
+            TestPresetUnreal_ShareOneScript
+            TestPresetUnreal_ExecCmdsImportsTheScript
+            TestPresetUnreal_SessionFolderThatBreaksExecCmdsIsRefused
+            TestPresetUnreal_ScriptDrivesUnreal
+            TestPresetUnreal_ScriptDrivesUnreal/job_renders_and_quits/import
+            TestPresetUnreal_ScriptDrivesUnreal/a_fatal_error_ends_the_render_once/cwd
+            # Outcome cases (expect_status in a preset-cases fixture). The
+            # parent passes when every case skips, so leaves that run on linux
+            # are named: the `script` built-in with the stub told to exit 3,
+            # which fails the job only if stub_env reached the stub through
+            # the real worker and /bin/sh; and one SQI_LOG_CHECKS verdict of
+            # each kind, a stub that exits 0 failed by a failOn line (Katana)
+            # and by a missing requireLine line (VRED), which only the
+            # worker's log checker can do.
+            TestPresetOutcomes
+            TestPresetOutcomes/script/stub-fails
+            TestPresetOutcomes/katana-render/logged-error
+            TestPresetOutcomes/vred-render/no-success-line
           )
           missing=0
           for name in "${expected[@]}"; do
@@ -1881,6 +1937,23 @@ jobs:
       # TestPresetTier3Xyz would satisfy the check. Only the ffmpeg name,
       # which nothing else extends, goes without one.
       #
+      # TestPresetOutcomes is listed so the outcome runner cannot go missing
+      # (it fails when no fixture case sets expect_status). The parent passes
+      # when every case skips, and the Unreal presets' outcome cases are
+      # Windows-only (their step requires attr.worker.os.family = windows) and
+      # no registry claim covers them, so one of their leaves is named here;
+      # the linux integration job names the leaf that runs there.
+      #
+      # The TestPresetVRED_ tests are listed because params.json escapes a
+      # Windows path's backslashes, which only this host produces, and the
+      # goldens cannot show a missed one (Render() maps the single and the
+      # doubled spelling to the same POSIX form). ScriptDrivesVRED skips
+      # without Python 3 and one subtest can skip on its own, so two of its
+      # leaves are named as well. The TestPresetKeyShot_ tests are listed for
+      # the same reasons (ScriptDrivesKeyShot skips without Python 3), and so
+      # are the TestPresetModo_ and TestPresetUnreal_ tests (ScriptDrivesModo
+      # and ScriptDrivesUnreal skip likewise).
+      #
       # TestFFmpegPreset_BashSegmentTranscodeJoins runs here but is not
       # listed, and the registry's tier2 required_on omits windows for it: it
       # skips when the worker process cannot find bash.exe on PATH, and no
@@ -1895,14 +1968,44 @@ jobs:
                       "TestScriptPowerShell_ExitStatus " \
                       "TestPresetAfterEffects_WrapperFailsOnLoggedError " \
                       "TestPresetAfterEffects_WrapperFailsOnLoggedError/logged-error-exit-0/after-effects-render-windows " \
-                      "TestPresetPythonSequence_LauncherContract "; do
+                      "TestPresetOutcomes " \
+                      "TestPresetOutcomes/unreal-mrq-job-render/logged-error " \
+                      "TestPresetPythonSequence_LauncherContract " \
+                      "TestPresetVRED_ParamsCostAtMaxChunk " \
+                      "TestPresetVRED_ParamsJSONRoundTrips " \
+                      "TestPresetVRED_ShareOneScript " \
+                      "TestPresetVRED_ScriptDrivesVRED " \
+                      "TestPresetVRED_ScriptDrivesVRED/output_file_with_quotes_and_spaces/globals " \
+                      "TestPresetVRED_ScriptDrivesVRED/render_fails/modules " \
+                      "TestPresetKeyShot_ParamsCostAtMaxChunk " \
+                      "TestPresetKeyShot_ParamsJSONRoundTrips " \
+                      "TestPresetKeyShot_ShareOneScript " \
+                      "TestPresetKeyShot_OutputFileRules " \
+                      "TestPresetKeyShot_ScriptDrivesKeyShot " \
+                      "TestPresetKeyShot_ScriptDrivesKeyShot/a_chunk_at_the_scene_size/file " \
+                      "TestPresetKeyShot_ScriptDrivesKeyShot/renderImage_returns_False_at_the_second_frame/cwd " \
+                      "TestPresetModo_ParamsCostAtMaxChunk " \
+                      "TestPresetModo_ParamsJSONRoundTrips " \
+                      "TestPresetModo_ShareOneScript " \
+                      "TestPresetModo_CommandNamesTheScriptAndItsParams " \
+                      "TestPresetModo_ScriptDrivesModo " \
+                      "TestPresetModo_ScriptDrivesModo/whole_scene_chunk/args_modo " \
+                      "TestPresetModo_ScriptDrivesModo/scene_open_fails/file_commands " \
+                      "TestPresetUnreal_ParamsCostIsFixed " \
+                      "TestPresetUnreal_ParamsJSONRoundTrips " \
+                      "TestPresetUnreal_ShareOneScript " \
+                      "TestPresetUnreal_ExecCmdsImportsTheScript " \
+                      "TestPresetUnreal_SessionFolderThatBreaksExecCmdsIsRefused " \
+                      "TestPresetUnreal_ScriptDrivesUnreal " \
+                      "TestPresetUnreal_ScriptDrivesUnreal/job_renders_and_quits/import " \
+                      "TestPresetUnreal_ScriptDrivesUnreal/a_fatal_error_ends_the_render_once/cwd "; do
             if ! grep -q -- "--- PASS: ${name}" preset-harness-windows.log; then
               echo "::error::${name} did not run to a PASS on windows"
               missing=1
             fi
           done
           [ "$missing" -eq 0 ] || exit 1
-          echo "Confirmed tiers 1, 2 and 3, the Python launcher, the After Effects wrapper and the registry check ran on windows."
+          echo "Confirmed tiers 1, 2 and 3, the Python launcher, the After Effects wrapper, the Unreal outcome cases, the VRED, KeyShot, Modo and Unreal preset tests and the registry check ran on windows."
 
   # Differential-tests internal/openjd/expr against the EXPR reference
   # implementation, the openjd.expr namespace of openjd-model (a re-export

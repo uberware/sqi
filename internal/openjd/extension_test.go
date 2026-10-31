@@ -3,6 +3,7 @@
 package openjd
 
 import (
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -56,6 +57,50 @@ func TestLookupExtension_ChunkBoundsVendor(t *testing.T) {
 	}
 	if ext.DocPath != "docs/openjd-extensions/sqi-chunk-bounds.md" {
 		t.Errorf("DocPath = %q", ext.DocPath)
+	}
+}
+
+func TestRegistry_LogChecksVendor(t *testing.T) {
+	ext, ok := LookupExtension("SQI_LOG_CHECKS")
+	if !ok {
+		t.Fatal("SQI_LOG_CHECKS not registered")
+	}
+	if ext.Origin != OriginVendor {
+		t.Errorf("Origin = %q, want %q", ext.Origin, OriginVendor)
+	}
+	if ext.Status != StatusSupported {
+		t.Errorf("Status = %q, want %q", ext.Status, StatusSupported)
+	}
+	if !ext.StepBlock || !ext.WorkerEnforced {
+		t.Errorf("StepBlock = %v, WorkerEnforced = %v, want both true", ext.StepBlock, ext.WorkerEnforced)
+	}
+	if ext.DocPath != "docs/openjd-extensions/sqi-log-checks.md" {
+		t.Errorf("DocPath = %q", ext.DocPath)
+	}
+}
+
+func TestRegistry_WorkerEnforcedExtensions(t *testing.T) {
+	got := WorkerEnforcedExtensions()
+	want := []string{"SQI_LOG_CHECKS"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("WorkerEnforcedExtensions() = %v, want %v", got, want)
+	}
+	// The scheduler calls it once per lease candidate: it returns a cached slice.
+	if n := testing.AllocsPerRun(100, func() { _ = WorkerEnforcedExtensions() }); n != 0 {
+		t.Errorf("WorkerEnforcedExtensions allocates %v times per call, want 0", n)
+	}
+	if cap(got) != len(got) {
+		t.Errorf("cap = %d, len = %d: an append by a caller would write into the shared array", cap(got), len(got))
+	}
+}
+
+// TestRegistry_StepBlockEntriesAreVendor keeps StepBlock from being set
+// on an extension whose block lives at the top level (SQI_PATH_TRANSLATION).
+func TestRegistry_StepBlockEntriesAreVendor(t *testing.T) {
+	for name, ext := range registry {
+		if ext.StepBlock && ext.Origin != OriginVendor {
+			t.Errorf("%s has StepBlock but is not a vendor extension", name)
+		}
 	}
 }
 
@@ -118,7 +163,7 @@ func TestValidateExtensions_RegisteredButNotSupported(t *testing.T) {
 // check runs on the one path every extension flows through.
 func TestValidateExtensions_SupportedStillPass(t *testing.T) {
 	for _, name := range []string{
-		"TASK_CHUNKING", "REDACTED_ENV_VARS", "SQI_PATH_TRANSLATION", "SQI_CHUNK_BOUNDS", "EXPR",
+		"TASK_CHUNKING", "REDACTED_ENV_VARS", "SQI_PATH_TRANSLATION", "SQI_CHUNK_BOUNDS", "EXPR", "SQI_LOG_CHECKS",
 	} {
 		t.Run(name, func(t *testing.T) {
 			tmpl := &JobTemplate{

@@ -1,0 +1,89 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# KeyShot Render: a frame range through keyshot_headless, with an embedded
+# render.py that loops over the task's frames and an EXPR-built params.json.
+# The preset is NONCONTIGUOUS (one launch can render a stepped or gapped list),
+# so a chunk is spelled as an OpenJD range (1-9, 1-5, 1-19:2). The default case
+# prints the success line the preset requires, so Tier 3 completes.
+#
+# floating-license sets License Feature, the one parameter that adds an
+# argument (-floating_feature <feature>); every other case leaves it out.
+# That case also sets Width and Height, and an .exr extension.
+#
+# quoting puts a single quote, a double quote and spaces in Output File's file
+# name, so params.json must escape them on every OS;
+# TestPresetKeyShot_ParamsJSONRoundTrips decodes it and compares the values.
+#
+# Output File's two refusals (no # run, two runs, an unknown extension) are
+# submission errors, not task outcomes; TestPresetKeyShot_OutputFileRules
+# covers them.
+cases:
+  - name: default
+    params:
+      SceneFile: /mnt/show/product/chair_v004.bip
+      Frames: "1-25"
+      OutputFile: /mnt/renders/chair/beauty.####.png
+    expect_tasks: 3
+    expect_invocations:
+      keyshot_headless: 3
+    stub_env:
+      SQI_STUB_STDOUT: "SQI_RENDER: OK"
+  - name: multi-frame-chunk
+    params:
+      SceneFile: /mnt/show/product/chair_v004.bip
+      Frames: "1-10"
+      FramesPerTask: "5"
+      OutputFile: /mnt/renders/chair/beauty.####.png
+    expect_tasks: 2
+    expect_invocations:
+      keyshot_headless: 2
+  - name: stepped-range
+    params:
+      SceneFile: /mnt/show/product/chair_v004.bip
+      Frames: "1-19:2"
+      FramesPerTask: "4"
+      OutputFile: /mnt/renders/chair/beauty.####.png
+    expect_tasks: 3
+    expect_invocations:
+      keyshot_headless: 3
+  - name: floating-license
+    params:
+      SceneFile: /mnt/show/product/chair_v004.bip
+      Frames: "1-2"
+      OutputFile: /mnt/renders/chair/beauty.####.exr
+      Width: "1280"
+      Height: "720"
+      LicenseFeature: keyshot_enterprise
+    expect_tasks: 1
+    expect_invocations:
+      keyshot_headless: 1
+  - name: quoting
+    params:
+      SceneFile: /mnt/show/product/chair_v004.bip
+      Frames: "1-2"
+      OutputFile: '/mnt/renders/hero car/it''s the "hero" shot.####.png'
+    expect_tasks: 1
+    expect_invocations:
+      keyshot_headless: 1
+  - name: logged-error
+    params:
+      SceneFile: /mnt/show/product/chair_v004.bip
+      Frames: "1"
+      OutputFile: /mnt/renders/chair/beauty.####.png
+    expect_tasks: 1
+    expect_invocations:
+      keyshot_headless: 3
+    stub_env:
+      SQI_STUB_STDOUT: "SQI_RENDER: FAILED: RuntimeError: KeyShot did not render frame 1"
+    expect_status: failed
+    expect_reason: "matched failOn"
+  - name: no-success-line
+    params:
+      SceneFile: /mnt/show/product/chair_v004.bip
+      Frames: "1"
+      OutputFile: /mnt/renders/chair/beauty.####.png
+    expect_tasks: 1
+    expect_invocations:
+      keyshot_headless: 3
+    expect_status: failed
+    expect_reason: "never printed"

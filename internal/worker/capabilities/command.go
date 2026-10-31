@@ -37,12 +37,23 @@ type CommandSpec struct {
 	// labels the result: it never adds a version tag. A detector whose tag is
 	// presence only (Blender) uses it to pick between installs.
 	Version VersionSpec `yaml:"version"`
+	// Args are arguments the application's own invocation requires on an OS,
+	// keyed by GOOS (linux, darwin or windows), put before the arguments a job
+	// supplies: a flag without which the program opens a window or waits for
+	// input on a headless worker. They are literal strings, not format strings.
+	// They must never be a license flag: which license a worker holds is the
+	// operator's to state in worker.commands.
+	Args map[string][]string `yaml:"args"`
 }
 
 // DetectedCommand is an executable a detector found for a command name.
 type DetectedCommand struct {
 	Name string
+	// Path is empty when the detector has arguments for this OS but no install
+	// was found: the arguments still apply to a command the host provides.
 	Path string
+	// Args are the detector's arguments for this OS; see [CommandSpec.Args].
+	Args []string
 	// Version is read from Path by the detector's version regex; empty when it
 	// has none or Path does not carry one.
 	Version string
@@ -71,6 +82,23 @@ func (s CommandSpec) validate(tag string) error {
 			return fmt.Errorf("detector %q: command %q glob %d: invalid os %q", tag, s.Name, i, g.OS)
 		}
 	}
+	return s.validateArgs(tag)
+}
+
+// validateArgs checks Args the way an operator's worker.commands arguments are
+// meant to read: keyed by a real platform, and no empty argument, which would
+// reach the program as an empty string.
+func (s CommandSpec) validateArgs(tag string) error {
+	for goos, args := range s.Args {
+		if goos == "" || !validOS[goos] {
+			return fmt.Errorf("detector %q: command %q args: invalid os %q (want linux, darwin or windows)", tag, s.Name, goos)
+		}
+		for i, a := range args {
+			if a == "" {
+				return fmt.Errorf("detector %q: command %q args for %s: argument %d is empty", tag, s.Name, goos, i)
+			}
+		}
+	}
 	return nil
 }
 
@@ -78,11 +106,13 @@ func (s CommandSpec) validate(tag string) error {
 // newest version among the installs its globs match on env's platform. Two
 // installs of one version (Nuke's 17.1v1 and 17.1v2 both run as Nuke17.1) are
 // ordered by path, so the later release directory wins. It reports false when
-// the detector has no command or nothing matches.
+// the detector has no command, or nothing matches and it has no arguments for
+// this platform. With arguments and no match it reports them with an empty Path.
 func (d Detector) FindCommand(env CheckEnv) (DetectedCommand, bool) {
 	if d.Command == nil {
 		return DetectedCommand{}, false
 	}
+	args := slices.Clone(d.Command.Args[env.GOOS()])
 	var paths []string
 	for _, g := range d.Command.Globs {
 		if g.OS != "" && g.OS != env.GOOS() {
@@ -95,6 +125,9 @@ func (d Detector) FindCommand(env CheckEnv) (DetectedCommand, bool) {
 		}
 	}
 	if len(paths) == 0 {
+		if len(args) > 0 {
+			return DetectedCommand{Name: d.Command.Name, Args: args}, true
+		}
 		return DetectedCommand{}, false
 	}
 	versionOf := d.extractVersion
@@ -109,26 +142,46 @@ func (d Detector) FindCommand(env CheckEnv) (DetectedCommand, bool) {
 			best, bestVersion = p, v
 		}
 	}
-	return DetectedCommand{Name: d.Command.Name, Path: best, Version: bestVersion}, true
+	return DetectedCommand{Name: d.Command.Name, Path: best, Args: args, Version: bestVersion}, true
 }
 
 // DetectCommands returns the commands the active detectors (see
 // [LoadDetectors]) found on env, one per command name, sorted by name. When two
-// detectors name the same command, the first (a built-in) wins.
+// detectors name the same command, the first (a built-in) wins, with one
+// exception: an earlier result that found no install (an empty Path, reported
+// only for its arguments) is filled by the first later detector that did find
+// one. Otherwise a built-in that knows only the application's arguments (the
+// silhouette detector's sfxcmd -nogui on Linux) would hide a studio's custom
+// detector for the same command at a non-standard path, and the worker would
+// lose its default for that command.
+//
+// The merged entry takes the later detector's Path and Version. Its Args are
+// the later detector's own when it declares any for this OS, and otherwise the
+// earlier detector's: the arguments describe the application, not the install,
+// so a custom detector written only to locate the executable keeps them.
 func DetectCommands(cfg CapabilitiesConfig, env CheckEnv) ([]DetectedCommand, error) {
 	detectors, err := LoadDetectors(cfg)
 	if err != nil {
 		return nil, err
 	}
 	var out []DetectedCommand
-	seen := map[string]bool{}
+	index := map[string]int{}
 	for _, d := range detectors {
 		c, ok := d.FindCommand(env)
-		if !ok || seen[c.Name] {
+		if !ok {
 			continue
 		}
-		seen[c.Name] = true
-		out = append(out, c)
+		i, seen := index[c.Name]
+		switch {
+		case !seen:
+			index[c.Name] = len(out)
+			out = append(out, c)
+		case out[i].Path == "" && c.Path != "":
+			if len(c.Args) == 0 {
+				c.Args = out[i].Args
+			}
+			out[i] = c
+		}
 	}
 	slices.SortFunc(out, func(a, b DetectedCommand) int { return strings.Compare(a.Name, b.Name) })
 	return out, nil

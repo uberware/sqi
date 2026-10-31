@@ -14,25 +14,34 @@ import (
 // are checked: a missing argv and an unexpected one are different regressions.
 // Arguments are joined on NUL, so "a b" never equals ["a", "b"].
 func ArgvSetDiff(want, got [][]string) []string {
+	msgs := append(argvSetMinus(got, want, "expected argv never observed: %q"), ArgvUnexpected(want, got)...)
+	sort.Strings(msgs)
+	return msgs
+}
+
+// ArgvUnexpected is the one-sided [ArgvSetDiff]: it reports only the argvs in
+// got that are not in want, sorted. It suits a failed job, which need not have
+// run every task, so an expected argv that never appeared is not an error there.
+func ArgvUnexpected(want, got [][]string) []string {
+	return argvSetMinus(want, got, "observed argv not expected: %q")
+}
+
+// argvSetMinus returns one message, formatted with format, per distinct argv in
+// from that is absent from minus, sorted.
+func argvSetMinus(minus, from [][]string, format string) []string {
 	key := func(argv []string) string { return strings.Join(argv, "\x00") }
-	wantSet := make(map[string][]string, len(want))
-	for _, a := range want {
-		wantSet[key(a)] = a
-	}
-	gotSet := make(map[string][]string, len(got))
-	for _, a := range got {
-		gotSet[key(a)] = a
+	skip := make(map[string]struct{}, len(minus)+len(from))
+	for _, a := range minus {
+		skip[key(a)] = struct{}{}
 	}
 	var msgs []string
-	for k, a := range wantSet {
-		if _, ok := gotSet[k]; !ok {
-			msgs = append(msgs, fmt.Sprintf("expected argv never observed: %q", a))
+	for _, a := range from {
+		k := key(a)
+		if _, ok := skip[k]; ok {
+			continue
 		}
-	}
-	for k, a := range gotSet {
-		if _, ok := wantSet[k]; !ok {
-			msgs = append(msgs, fmt.Sprintf("observed argv not expected: %q", a))
-		}
+		skip[k] = struct{}{} // report each distinct argv once
+		msgs = append(msgs, fmt.Sprintf(format, a))
 	}
 	sort.Strings(msgs)
 	return msgs

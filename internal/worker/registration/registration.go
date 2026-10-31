@@ -204,6 +204,9 @@ func (r *Registrar) Register(ctx context.Context) error {
 			AssignmentRetainedBytes: r.exprLimits.AssignmentRetainedBytes,
 			LetRetainedBytes:        r.exprLimits.LetRetainedBytes,
 		},
+		// The extensions this binary enforces itself, so the scheduler will lease
+		// it a job that declares one.
+		Extensions: protocol.WorkerEnforcedExtensions(),
 	}
 
 	data, err := json.Marshal(msg)
