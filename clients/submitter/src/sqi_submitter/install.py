@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """``sqi-submit install-host``: copy a handoff host's files into place.
 
-The files for Blender, Cinema 4D, After Effects, Unreal, Katana, KeyShot, Silhouette and Modo ship
-inside this wheel as package data and use only the host's own standard library, so installing
-is a file copy: no pip into the host's Python. Where the documented location needs admin rights
-(After Effects) or is not knowable (Blender's add-on is installed through its UI, Cinema 4D's
-preferences folder is versioned) the command prints what to do instead of guessing.
+The files for Blender, Cinema 4D, After Effects, Unreal, Katana, KeyShot, Silhouette, Modo and
+Fusion ship inside this wheel as package data and use only the host's own standard library, so
+installing is a file copy: no pip into the host's Python. Where the documented location needs
+admin rights (After Effects) or is not knowable (Blender's add-on is installed through its UI,
+Cinema 4D's preferences folder is versioned) the command prints what to do instead of guessing.
 """
 
 from __future__ import annotations
@@ -41,6 +41,9 @@ HOST_FILES: dict[str, list[str]] = {
     "silhouette": ["hosts/silhouette/sqi_silhouette_submit.py", "hosts/silhouette/sfxuser.py"],
     # Modo loads a kit (a folder with index.cfg), copied as <dest>/sqi/...; it has no hook file.
     "modo": ["hosts/modo/sqi/index.cfg", "hosts/modo/sqi/lxserv/sqi_modo_submit.py"],
+    # Fusion bundles Lua but not Python: one Lua comp script, no hook file. The name has spaces
+    # (it is the menu entry), and lands flat in the user's Scripts/Comp folder.
+    "fusion": ["hosts/fusion/Submit to sqi.lua"],
 }
 
 # Taken from HOST_FILES once, at import, so the two cannot drift; a patched HOST_FILES
@@ -69,6 +72,7 @@ _NEXT_STEP = {
     "keyshot": "In KeyShot open Window > Scripting Console and run sqi_keyshot_submit.",
     "silhouette": "Restart Silhouette; Submit to sqi… appears in the Actions menu.",
     "modo": "Restart Modo; run sqi.submit from the command entry, or map it to a key.",
+    "fusion": "In Fusion choose Script > Submit to sqi.",
 }
 
 
@@ -116,6 +120,20 @@ def _modo_scripts_folder(platform: str, env: Mapping[str, str]) -> Path | None:
     return Path(home) / ".luxology" / "Scripts"
 
 
+def _fusion_scripts_folder(platform: str, env: Mapping[str, str]) -> Path | None:
+    """Fusion's per-user ``Scripts/Comp`` folder (the ``Scripts:/Comp`` path map)."""
+    leaf = Path("Blackmagic Design") / "Fusion" / "Scripts" / "Comp"
+    if platform == "win32":
+        appdata = env.get("APPDATA")
+        return Path(appdata) / leaf if appdata else None
+    home = env.get("HOME")
+    if not home:
+        return None
+    if platform == "darwin":
+        return Path(home) / "Library" / "Application Support" / leaf
+    return Path(home) / ".fusion" / leaf
+
+
 def default_destination(host: str, platform: str, env: Mapping[str, str]) -> Path | None:
     """The per-user folder to copy into, or ``None`` when the artist must do it.
 
@@ -129,7 +147,9 @@ def default_destination(host: str, platform: str, env: Mapping[str, str]) -> Pat
     ``Scripts`` folder of its one ``KeyShot*`` folder in Documents (Windows and macOS only: KeyShot
     has no Linux desktop product), under the same one-folder rule. Modo's is ``Scripts`` in its
     per-user ``Luxology`` folder: ``%APPDATA%/Luxology`` on Windows, ``~/Library/Application
-    Support/Luxology`` on macOS and ``~/.luxology`` on Linux.
+    Support/Luxology`` on macOS and ``~/.luxology`` on Linux. Fusion's is ``Scripts/Comp`` in
+    its per-user ``Blackmagic Design/Fusion`` folder: under ``%APPDATA%`` on Windows, ``~/Library/
+    Application Support`` on macOS and ``~/.fusion`` on Linux.
     """
     if host == "unreal":
         home = env.get("USERPROFILE" if platform == "win32" else "HOME")
@@ -153,6 +173,8 @@ def default_destination(host: str, platform: str, env: Mapping[str, str]) -> Pat
         return found / "Scripts" if found else None
     if host == "modo":
         return _modo_scripts_folder(platform, env)
+    if host == "fusion":
+        return _fusion_scripts_folder(platform, env)
     if host != "cinema4d":
         return None
     root = _cinema4d_prefs_root(platform, env)
@@ -227,6 +249,13 @@ def _no_destination_hint(host: str) -> str:
             "user folder (%APPDATA%/Luxology on Windows, ~/Library/Application "
             "Support/Luxology on macOS, ~/.luxology on Linux; create it if needed), or pass "
             "--dest DIR."
+        )
+    if host == "fusion":
+        return (
+            "Could not tell where Fusion's per-user folder is. Copy the file above into the "
+            "Scripts/Comp folder of your Fusion user folder (the Scripts: path map in Fusion's "
+            "Preferences shows it; for example %APPDATA%/Blackmagic Design/Fusion/Scripts/Comp "
+            "on Windows; create it if needed), or pass --dest DIR."
         )
     return (
         "The After Effects scripts folder is under the program folder and needs "
