@@ -4,9 +4,8 @@
 # through the bare command `FusionRenderNode`. It ships inside the Fusion Studio
 # download and runs on Windows, macOS and Linux.
 #
-# Every path here is unverified: none was observed on a machine, and none is
-# documented for Fusion 18 to 21. They are the pattern the P5b design inferred
-# from earlier versions:
+# Every path here is unverified and none is documented for Fusion 18 to 21.
+# They follow the pattern of earlier versions:
 #   Windows  C:\Program Files\Blackmagic Design\Fusion Render Node <ver>\FusionRenderNode.exe
 #   macOS    /Applications/Blackmagic Fusion <ver> Render Node/Fusion Render Node.app/Contents/MacOS/Fusion Render Node
 #   Linux    /opt/BlackmagicDesign/FusionRenderNode<ver>/FusionRenderNode

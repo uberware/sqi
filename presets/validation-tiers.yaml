@@ -605,16 +605,16 @@ presets:
       case: TestPresetTier3/after-effects-queue-render-macos/default
       required_on: [darwin]
 
-  # P5b-1: DCC breadth presets, each declaring SQI_LOG_CHECKS. Every argv is
-  # derived from vendor documentation and no application has executed any of
-  # them; Tier 3 drives a stub through the real worker path, including the
-  # outcome case that proves the log check fails a task whose process exited 0.
+  # DCC presets that declare SQI_LOG_CHECKS (Silhouette declares none). Every
+  # argv is derived from vendor documentation and no application has executed
+  # any of them; Tier 3 drives a stub through the real worker path, including
+  # the outcome case that proves the log check fails a task whose process
+  # exited 0.
   #
   # required_on must name exactly the platforms the template's os.family
   # requirements admit (TestPresetTier3RequiredOnMatchesOSGate). Katana runs on
-  # Linux and Windows only, but the preset carries no os.family gate, as its
-  # detector has no macOS entry rather than a refusal, so it is required on all
-  # three.
+  # Linux and Windows only, but the preset carries no os.family gate (its
+  # detector has no macOS entry), so it is required on all three.
   - name: katana-render
     source: presets/sqi
     tier: 1
@@ -629,8 +629,8 @@ presets:
         into single frames because Foundry documents no step form for -t, and a
         scene path and Render node name that each contain a space as one
         argument. The failOn pattern (ERROR +\|) is Deadline's Katana plugin's,
-        not observed from a real failing render, so what Katana prints and
-        which exit status it returns on failure are unverified. Tier 3 runs the
+        so what Katana prints and which exit status it returns on failure are
+        unverified. Tier 3 runs the
         stub through a real worker, and the logged-error case proves a task
         whose process exited 0 still fails on a matching line. The Foundry-
         documented batch render that hangs on a missing ImageRead file is not
@@ -653,13 +653,12 @@ presets:
         a FramesPerTask of 5, a stepped range splitting into single frames, and
         a comp path containing a space as one argument. The two failOn strings
         (The fusion renderer reported that the render failed, Failed to load the
-        comp) are Deadline's Fusion plugin's. It is UNVERIFIED whether they reach
+        comp) are Deadline's Fusion plugin's. Unverified: whether they reach
         the render node's standard output with -verbose, or appear only in a
-        -log file (Deadline drives the node through its own scripting connection
-        and reads its log), in which case the check never fires and a failed
-        render is caught only by an exit status that is also undocumented. Fusion
-        8 once reported a successful render exiting -1073741819; that is recorded
-        and not handled. Tier 3 runs the stub through a real worker, and the
+        -log file, in which case the check never fires and a failed render is
+        caught only by an exit status that is also undocumented. A successful
+        Fusion 8 render is reported to exit -1073741819 on Windows; the preset
+        does not handle that. Tier 3 runs the stub through a real worker, and the
         logged-error case proves a task whose process exited 0 still fails on a
         matching line. Rendering needs a Fusion Studio licence; the detector's
         install paths on all three platforms are unverified.
@@ -679,11 +678,10 @@ presets:
         cover the shipped ten-frames-per-task shape (1-25 as 1-9, 10-17, 18-25),
         a FramesPerTask of 5, a stepped range splitting into single frames, and
         a project path, session name and node label each containing a space as
-        one argument. NO FAILURE SIGNAL IS KNOWN for sfxcmd: no line it prints
-        on failure is documented and none was found, so the preset declares no
-        SQI_LOG_CHECKS and a render that exits 0 without writing frames (a Linux
-        report describes exactly that) is reported as a SUCCESS. Its exit codes
-        are also undocumented. Tier 3 runs a stub through a real worker and
+        one argument. No failure signal is documented for sfxcmd: no line it
+        prints on failure is known, so the preset declares no SQI_LOG_CHECKS and
+        a render that exits 0 without writing frames is reported as a success.
+        Its exit codes are also undocumented. Tier 3 runs a stub through a real worker and
         proves only argv delivery. The detector's install folders (SilhouetteFX
         and BorisFX roots) are unverified, and the Linux -nogui is supplied by
         the detector, not the preset.
@@ -703,18 +701,19 @@ presets:
         present in 2026). The goldens cover the shipped ten-frames-per-task
         shape, a FramesPerTask of 5 and a stepped range splitting into single
         frames. It declares no Session or OutputNode parameter, so it is a
-        whole-scene product. NO FAILURE SIGNAL IS KNOWN for sfxcmd: the preset
-        declares no SQI_LOG_CHECKS, so a render that exits 0 without writing
-        frames is reported as a SUCCESS, and its exit codes are undocumented.
+        whole-scene product. No failure signal is documented for sfxcmd: the
+        preset declares no SQI_LOG_CHECKS, so a render that exits 0 without
+        writing frames is reported as a success, and its exit codes are
+        undocumented.
         Tier 3 runs a stub through a real worker and proves only argv delivery.
     tier3:
       case: TestPresetTier3/silhouette-render-all/default
       required_on: [linux, darwin, windows]
 
-  # VRED is the first host-script preset: VREDCore runs an embedded render.py
-  # through -postpython, and the per-task values travel in an EXPR-built
-  # params.json. No os.family gate (VRED Core runs on Windows and Linux; the
-  # detector has no macOS entry), so Tier 3 runs on every OS, as Katana's.
+  # VRED is a host-script preset: VREDCore runs an embedded render.py through
+  # -postpython, and the per-task values travel in an EXPR-built params.json.
+  # No os.family gate (VRED Core runs on Windows and Linux; the detector has no
+  # macOS entry), so Tier 3 runs on every OS, as Katana's.
   - name: vred-render
     source: presets/sqi
     tier: 1
@@ -728,9 +727,9 @@ presets:
         executes the embedded render.py. The render.py calls are Autodesk's
         Python API v1 (vrRenderSettings, vrController), which marks
         startRenderToFile as VRED Professional only although AWS calls it under
-        VRED Core. No VRED has executed this preset. Whether the script's
-        descriptor-1 lines reach the worker from windowed VRED on Windows is
-        unknown (if not, every task fails for want of SQI_RENDER: OK). The
+        VRED Core. No VRED has executed this preset. Unverified: whether the
+        script's descriptor-1 lines reach the worker from windowed VRED on
+        Windows (if not, every task fails for want of SQI_RENDER: OK). The
         goldens pin params.json in full; quoting is decoded with encoding/json
         by TestPresetVRED_ParamsJSONRoundTrips, and render.py's parameter
         handling runs under a real Python with stub VRED modules in
@@ -738,9 +737,9 @@ presets:
         terminateVred() under -hide_gui is undocumented; the checks apply only
         once the process exits and the step has no timeout, so a VRED that stays
         open would hang the task rather than fail it (the readme recommends a
-        timeout). The Linux install roots are guesses.
-        Tier 3 runs a stub as VREDCore: it exercises the worker, the embedded
-        files and the log checks, never the script inside VRED.
+        timeout). The Linux install roots are unverified. Tier 3 runs a stub as
+        VREDCore: it exercises the worker, the embedded files and the log
+        checks, never the script inside VRED.
     tier3:
       case: TestPresetTier3/vred-render/default
       required_on: [linux, darwin, windows]
@@ -755,8 +754,9 @@ presets:
         setRenderView; the same sources and the same unverified points (see
         vred-render), including that a VRED which does not exit after
         terminateVred() would hang the task rather than fail it. What
-        setRenderView does with a name the scene lacks is undocumented. quoting puts both quotes, a backslash and a space in View
-        and both quotes in Output File's name. Tier 3 runs a stub as VREDCore:
+        setRenderView does with a name the scene lacks is undocumented. quoting
+        puts both quotes, a backslash and a space in View and both quotes in
+        Output File's name. Tier 3 runs a stub as VREDCore:
         it exercises the worker, the embedded files and the log checks, never
         the script inside VRED.
     tier3:
@@ -783,7 +783,7 @@ presets:
         (2024): renderImage (path, width, height, opts, format; width and height
         default to the scene's, so 0 leaves them out), setAnimationFrame,
         getRenderOptions, RenderOptions.setAddToQueue and the
-        RENDER_OUTPUT_* constants. No KeyShot has executed this preset. UNVERIFIED:
+        RENDER_OUTPUT_* constants. No KeyShot has executed this preset. Unverified:
         whether animation frames are 1-based (the reference does not say; the
         quick start's loop starts at 1, so Frames passes through unchanged);
         whether renderImage returns a value headless (only an explicit False
@@ -839,20 +839,20 @@ presets:
     tier1:
       cases: [default, multi-frame-chunk, stepped-range, quoting, logged-error, unknown-command, failed-with, no-success-line]
       caveat: >-
-        TOP RISK, UNTESTED: modo_cl reads commands from standard input and the
+        Untested risk: modo_cl reads commands from standard input and the
         worker leaves a task's input as the null device, at end-of-file from the
         first read. If modo_cl treats that as quit before the -cmd: command has
-        finished, every task fails, safely: no SQI_RENDER: OK is ever printed.
+        finished, every task fails and no SQI_RENDER: OK is printed.
         Modo is discontinued (17.1 final); its end-of-life license is an RLM
         uncounted hostid=ANY key found through foundry_LICENSE. argv from
         Foundry's headless SDK page (modo_cl, -cmd:@script {args}, app.quit,
         -dboff:crashreport from Deadline's Modo plug-in), with the script path and
         the params.json path each quoted in braces as Foundry's Macros page
         documents for a name with spaces; a braced script path directly after
-        @ is NOT shown in any source, and nothing was run. The script uses
+        @ is not shown in any source, and the preset has not been run. The script uses
         Modo's Python (lx.eval, lx.command with keyword arguments so that no job
         value becomes command text, lx.args, the modo module's Scene.renderItem
-        with a select.Item Render fallback). UNVERIFIED: the keyword names of
+        with a select.Item Render fallback). Unverified: the keyword names of
         scene.open (filename, type); that -cmd: runs before licensing and
         networking start (Foundry's words) and a scene can then be opened and
         rendered; whether the script sees its location (lx.args first, then
@@ -865,7 +865,7 @@ presets:
         Python with a fake lx and modo in TestPresetModo_ScriptDrivesModo. Tier 3
         runs a stub as modo_cl: it exercises the worker, the embedded files and
         the log checks, never the script inside Modo. The detector paths follow
-        Foundry's 17.1 and 13.2 documentation and were not seen on a machine;
+        Foundry's 17.1 and 13.2 documentation and are unconfirmed on a machine;
         Linux has no fixed path (put modo_cl on PATH).
     tier3:
       case: TestPresetTier3/modo-render/default
@@ -881,10 +881,10 @@ presets:
         render.animation as its group argument through lx.command (the scripts
         this follows write render.animation {*} group:<name> as command text; the
         keyword names group and, for the output argument, filename with the value
-        * are UNVERIFIED). Same sources, and the same unverified points, as
-        modo-render, including the top risk that modo_cl treats the null device on
+        * are unverified). Same sources, and the same unverified points, as
+        modo-render, including the risk that modo_cl treats the null device on
         standard input as end-of-file and quits before -cmd: has finished (every
-        task then fails safely) and that a Modo which does not exit after
+        task then fails) and that a Modo which does not exit after
         app.quit would hang the task rather than fail it. quoting puts both
         quotes, a backslash and a space in PassGroup and both quotes in the
         scene's file name. Tier 3 runs a stub as modo_cl: it exercises the worker,
@@ -893,9 +893,8 @@ presets:
       case: TestPresetTier3/modo-pass-group-render/default
       required_on: [linux, darwin, windows]
 
-  # Unreal is the fourth host-script preset family, and the only one with an
-  # OS gate: both presets require attr.worker.os.family = windows (the one OS
-  # any vendor Unreal render adaptor ships), so their Tier-3 claims are
+  # Unreal is a host-script preset family with an OS gate: both presets
+  # require attr.worker.os.family = windows, so their Tier-3 claims are
   # required_on [windows] alone, as for 3dsmax-render. On a Linux or macOS
   # host Tier 3 and the outcome cases skip as unsatisfiable;
   # TestPresetTier3RequiredOnMatchesOSGate pins the required_on the gate
@@ -907,16 +906,15 @@ presets:
     tier1:
       cases: [default, blank-output, target-with-space, quoting, logged-error, python-error, executor-error, no-success-line]
       caveat: >-
-        argv from AWS's Deadline Cloud adaptor for Unreal (Apache-2.0, read
-        2026-10-28, not copied): UnrealEditor-Cmd <project> -log -unattended
+        argv from AWS's Deadline Cloud adaptor for Unreal: UnrealEditor-Cmd <project> -log -unattended
         -stdout -allowstdoutlogverbosity -NoLoadingScreen -NoScreenMessages
         -RenderOffscreen -nohmd -windowed and one -execcmds command, which AWS
         writes as -execcmds=r.HLOD 0,py <script with forward slashes>. AWS's
         script registers a Slate tick callback and returns, the editor keeps
         running, and the script calls quit_editor() when it is done; this
         preset relies on the same behaviour, and on -execcmds rather than
-        -ExecutePythonScript, which a forum report says quits before an
-        asynchronous render completes (not verified here). The -execcmds
+        -ExecutePythonScript, which is reported to quit before an
+        asynchronous render completes (unverified). The -execcmds
         value is one line of Python with no comma and no double quote,
         sys.path.append(<session folder>) then import of the embedded
         sqi_unreal_render.py; a session folder holding a comma, a quote or a
@@ -927,10 +925,10 @@ presets:
         (MoviePipelineQueueSubsystem, allocate_new_job,
         MoviePipelinePIEExecutor, its errored, finished and per-job delegates,
         render_queue_with_executor_instance, SystemLibrary.quit_editor).
-        UNVERIFIED: everything inside Unreal; whether descriptor-1 lines reach
+        Unverified: everything inside Unreal; whether descriptor-1 lines reach
         the worker (the script also writes them through unreal.log); the exit
         status (Epic's MoviePipelineDeadline quits the same way on success and
-        failure, so it is not relied on); UE-160482 reported a canceled render
+        failure, so it is not relied on); UE-160482 reports a canceled render
         as success before 5.3. The step has no timeout, so an editor whose
         executor never reports, or that does not exit after quit_editor(),
         hangs the task rather than failing it (the readme recommends one). The
@@ -940,10 +938,10 @@ presets:
         TestPresetUnreal_ScriptDrivesUnreal. Tier 3 runs a stub as
         UnrealEditor-Cmd: it exercises the worker, the embedded files and the
         log checks, never the script inside Unreal. The detector finds only the
-        Launcher default C:\Program Files\Epic Games\UE_5.*, unobserved; for a
-        future detector, the Launcher records each install under
+        Launcher default C:\Program Files\Epic Games\UE_5.*, which is
+        unverified. The Launcher records each install under
         HKLM\SOFTWARE\EpicGames\Unreal Engine\<5.x> as InstalledDirectory (as
-        AWS's adaptor reads it), which a registry check cannot read today.
+        AWS's adaptor reads it), which a registry check cannot read.
     tier3:
       case: TestPresetTier3/unreal-mrq-job-render/default
       required_on: [windows]

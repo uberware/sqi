@@ -10,7 +10,7 @@
 # name; the golden shows each travelling inside a single
 # --katana-file=/--render-node= argument.
 #
-# logged-error is an OUTCOME case (TestPresetOutcomes): the stub prints a line
+# logged-error is an outcome case (TestPresetOutcomes): the stub prints a line
 # the preset's failOn pattern (ERROR +\|) matches and exits 0, so the only thing
 # that can fail the task is the SQI_LOG_CHECKS check. One frame, so one task.
 cases:

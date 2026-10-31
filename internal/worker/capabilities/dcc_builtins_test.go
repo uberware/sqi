@@ -93,8 +93,8 @@ var dccLayouts = []rendererLayout{
 	{
 		// Katana runs on Linux and Windows only. Every path is unverified (see
 		// katana.yaml): the two Linux layouts are the installer's documented
-		// example and Deadline's default, the Windows one the design's reading
-		// of the default. The version is read from the install folder, in either
+		// example and Deadline's default, the Windows one an inferred default.
+		// The version is read from the install folder, in either
 		// letter case.
 		tag: "katana",
 		exe: "katana",
@@ -108,8 +108,8 @@ var dccLayouts = []rendererLayout{
 	},
 	{
 		// Fusion Render Node ships inside Fusion Studio on all three platforms.
-		// Every path is the pattern the design inferred for Fusion 18 to 21 and
-		// is unverified (see fusion.yaml). The version is read from the install
+		// Every path is the pattern inferred for Fusion 18 to 21 and is
+		// unverified (see fusion.yaml). The version is read from the install
 		// folder, whose name differs per platform; the Windows path stands for
 		// the version check.
 		tag: "fusion",
@@ -125,8 +125,8 @@ var dccLayouts = []rendererLayout{
 	{
 		// Silhouette's sfxcmd runs on all three platforms. The Windows and macOS
 		// folders are the ones Boris FX's Command-Line page documents
-		// (SilhouetteFX) and the BorisFX root is the newer layout the design
-		// lists; neither is observed (see silhouette.yaml). The macOS path is the
+		// (SilhouetteFX) and the BorisFX root is a newer layout;
+		// neither is observed (see silhouette.yaml). The macOS path is the
 		// sfxcmd inside the .app bundle. The version is the year in the folder.
 		tag: "silhouette",
 		exe: "sfxcmd",
@@ -142,15 +142,15 @@ var dccLayouts = []rendererLayout{
 		version:   "2026",
 	},
 	{
-		// VRED Core runs on Windows and Linux, VRED Pro on Windows. The Windows
-		// VRED Core folder is the one Autodesk's VRED Core page gives; the VRED
-		// Pro folder and both Linux roots are unverified (see vred.yaml). The
-		// version is VRED's internal one (18.0 is VRED 2026).
+		// VRED Core runs on Windows and Linux. The Windows folder is the one
+		// Autodesk's VRED Core page gives; both Linux roots are unverified (see
+		// vred.yaml). A VRED Pro install is not tagged (see
+		// TestVREDDetector_DoesNotTagVREDPro). The version is VRED's internal
+		// one (18.0 is VRED 2026).
 		tag: "vred",
 		exe: "VREDCore",
 		installs: []string{
 			`C:\Program Files\Autodesk\VREDCore-18.0\bin\WIN64\VREDCore.exe`,
-			`C:\Program Files\Autodesk\VREDPro-18.0\bin\WIN64\VREDPro.exe`,
 			"/opt/Autodesk/VREDCore-18.0/bin/VREDCore",
 			"/opt/Autodesk/VREDCluster-18.0/bin/VREDCore",
 		},

@@ -1584,12 +1584,17 @@ jobs:
             TestPresetUnreal_ScriptDrivesUnreal/job_renders_and_quits/import
             TestPresetUnreal_ScriptDrivesUnreal/a_fatal_error_ends_the_render_once/cwd
             # Outcome cases (expect_status in a preset-cases fixture). The
-            # parent passes when every case skips, so the one leaf that runs on
-            # linux is named: the `script` built-in with the stub told to exit
-            # 3, which fails the job only if stub_env reached the stub through
-            # the real worker and /bin/sh.
+            # parent passes when every case skips, so leaves that run on linux
+            # are named: the `script` built-in with the stub told to exit 3,
+            # which fails the job only if stub_env reached the stub through
+            # the real worker and /bin/sh; and one SQI_LOG_CHECKS verdict of
+            # each kind, a stub that exits 0 failed by a failOn line (Katana)
+            # and by a missing requireLine line (VRED), which only the
+            # worker's log checker can do.
             TestPresetOutcomes
             TestPresetOutcomes/script/stub-fails
+            TestPresetOutcomes/katana-render/logged-error
+            TestPresetOutcomes/vred-render/no-success-line
           )
           missing=0
           for name in "${expected[@]}"; do

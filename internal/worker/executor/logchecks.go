@@ -6,12 +6,12 @@ import (
 	"context"
 	"fmt"
 	"regexp"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"unicode/utf8"
 
 	"github.com/uberware/sqi/internal/openjd/logpattern"
+	"github.com/uberware/sqi/internal/worker/openjd"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
@@ -19,28 +19,22 @@ import (
 // quotes. The line is already in the task log; the reason only has to identify it.
 const maxReasonLineBytes = 200
 
-// redactedEnvDirective is the OpenJD directive that defines a redacted
-// environment variable. Its line carries the secret in the clear (nothing has
-// registered the value for scrubbing yet when the line is read), so the checker
-// never scans it: a failOn pattern that happened to match it would otherwise put
-// the secret in the failure reason.
-const redactedEnvDirective = "openjd_redacted_env:"
-
 // logChecker enforces one task's SQI_LOG_CHECKS: it observes every line the
 // onRun process writes and, once the process has exited, gives a verdict.
 //
 // observe is called from the stdout and stderr readers concurrently. The
 // compiled patterns are immutable, a requireLine match is a lock-free flag, and
-// only the first failOn match takes the lock.
+// only the first failOn match takes the lock. Once a failOn pattern has matched
+// the verdict is settled, so later lines are not matched at all.
 type logChecker struct {
 	failOn  []*regexp.Regexp
 	require []*regexp.Regexp
 	// seen[i] is set once some line has matched require[i].
 	seen []atomic.Bool
 
+	failed     atomic.Bool
 	mu         sync.Mutex
 	failReason string
-	failed     bool
 }
 
 // newLogChecker compiles c. A nil c means the step declared no checks and
@@ -78,8 +72,13 @@ func compilePatterns(list string, patterns []string) ([]*regexp.Regexp, error) {
 }
 
 // observe checks one scrubbed output line. It is safe for concurrent use.
+//
+// An openjd_redacted_env directive line carries its secret in the clear
+// (nothing has registered the value for scrubbing yet when the line is read),
+// so the checker never scans it: a failOn pattern that happened to match it
+// would otherwise put the secret in the failure reason.
 func (c *logChecker) observe(line string) {
-	if c == nil || strings.HasPrefix(strings.TrimSpace(line), redactedEnvDirective) {
+	if c == nil || c.failed.Load() || openjd.IsRedactedEnvDirective(line) {
 		return
 	}
 	for _, re := range c.failOn {
@@ -99,11 +98,11 @@ func (c *logChecker) observe(line string) {
 func (c *logChecker) recordFailure(pattern, line string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.failed {
+	if c.failed.Load() {
 		return
 	}
-	c.failed = true
 	c.failReason = fmt.Sprintf("log line matched failOn pattern %q: %q", pattern, truncateLine(line))
+	c.failed.Store(true)
 }
 
 // verdict reports whether the checks failed and why: the first failOn match if
@@ -114,7 +113,7 @@ func (c *logChecker) verdict() (reason string, failed bool) {
 		return "", false
 	}
 	c.mu.Lock()
-	reason, failed = c.failReason, c.failed
+	reason, failed = c.failReason, c.failed.Load()
 	c.mu.Unlock()
 	if failed {
 		return reason, true

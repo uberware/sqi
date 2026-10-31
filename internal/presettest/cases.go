@@ -13,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/uberware/sqi/internal/product"
+	"github.com/uberware/sqi/internal/store"
 )
 
 // Source directories the tier registry and the harness know about.
@@ -128,10 +129,10 @@ func LoadCases(path string) ([]Case, error) {
 	return cf.Cases, nil
 }
 
-// Job statuses an outcome case may expect (store.JobStatus values).
+// Job statuses an outcome case may expect.
 const (
-	StatusCompleted = "completed"
-	StatusFailed    = "failed"
+	StatusCompleted = string(store.JobStatusCompleted)
+	StatusFailed    = string(store.JobStatusFailed)
 )
 
 // validateOutcomeFields rejects the outcome keys that cannot mean what they say.

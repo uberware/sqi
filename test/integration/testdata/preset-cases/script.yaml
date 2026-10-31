@@ -23,10 +23,10 @@ cases:
     expect_invocations:
       sqi-stub-command: 1
 
-  # An OUTCOME case (TestPresetOutcomes), not a new argv: the same command, with
+  # An outcome case (TestPresetOutcomes), not a new argv: the same command, with
   # the stub told to exit 3. The worker's environment carries stub_env, /bin/sh
   # passes it to the stub, and the stub's exit status becomes the shell's. If
-  # stub_env never reached the stub the job would complete, so this also proves
+  # stub_env never reached the stub the job would complete, so this also asserts
   # the plumbing every later outcome case depends on.
   - name: stub-fails
     params:

@@ -2,7 +2,7 @@
 
 package integration
 
-// preset_modo_test.go — what the Modo presets' golden files cannot show on
+// preset_modo_test.go: what the Modo presets' golden files cannot show on
 // their own: that params.json is JSON a script can decode, that its cost stays
 // inside the worker's EXPR limits at the largest chunk the presets allow, that
 // the -cmd: argument names the script and its parameters file and carries no
@@ -27,7 +27,6 @@ import (
 	"testing"
 
 	"github.com/uberware/sqi/internal/presettest"
-	"github.com/uberware/sqi/internal/store"
 )
 
 // modoPresets are the two Modo presets, which share one render.py and one
@@ -38,37 +37,11 @@ var modoPresets = []string{"modo-render", "modo-pass-group-render"}
 // their readmes state.
 const modoMaxFramesPerTask = 1000
 
-// captureModo expands one Modo preset under params through the production
-// pipeline (presettest.Capture, which resolves phase 3 against the WORKER's
-// default EXPR limits) and returns the snapshot.
-func captureModo(t *testing.T, preset string, params map[string]string) (presettest.Snapshot, error) {
-	t.Helper()
-	tmpl, err := presettest.PresetTemplate(presettest.SourcePresets, preset)
-	if err != nil {
-		t.Fatalf("PresetTemplate %s: %v", preset, err)
-	}
-	return presettest.Capture(t.Context(), tmpl, presettest.Options{Params: params, Format: store.TemplateFormatYAML})
-}
-
 // modoParams is params.json as the script reads it.
 type modoParams struct {
 	Scene  string `json:"scene"`
 	Frames []int  `json:"frames"`
 	Group  string `json:"group"`
-}
-
-// decodeModoParams decodes params.json strictly: an unknown key is an error,
-// so a key the script does not read cannot slip in unnoticed. modo-render's
-// has no "group"; the pass-group preset's has.
-func decodeModoParams(t *testing.T, data string) modoParams {
-	t.Helper()
-	dec := json.NewDecoder(strings.NewReader(data))
-	dec.DisallowUnknownFields()
-	var p modoParams
-	if err := dec.Decode(&p); err != nil {
-		t.Fatalf("params.json is not the JSON object the script expects: %v\n%s", err, data)
-	}
-	return p
 }
 
 // TestPresetModo_ParamsCostAtMaxChunk pins params.json's cost where it is
@@ -90,14 +63,14 @@ func TestPresetModo_ParamsCostAtMaxChunk(t *testing.T) {
 			if preset == "modo-render" {
 				delete(params, "PassGroup")
 			}
-			snap, err := captureModo(t, preset, params)
+			snap, err := capturePreset(t, preset, params)
 			if err != nil {
 				t.Fatalf("a %d-frame chunk must resolve under the worker's default EXPR limits: %v", modoMaxFramesPerTask, err)
 			}
 			if len(snap.Steps) != 1 || len(snap.Steps[0].Tasks) != 1 {
 				t.Fatalf("1-1000 at %d frames per task must be one task, got %+v", modoMaxFramesPerTask, snap.Steps)
 			}
-			p := decodeModoParams(t, taskFile(t, snap.Steps[0].Tasks[0], "params"))
+			p := decodeStrict[modoParams](t, taskFile(t, snap.Steps[0].Tasks[0], "params"))
 			if len(p.Frames) != modoMaxFramesPerTask || p.Frames[0] != 1 || p.Frames[len(p.Frames)-1] != 1000 {
 				t.Errorf("params.json frames: %d entries from %v, want the %d frames 1 to 1000",
 					len(p.Frames), p.Frames[:min(3, len(p.Frames))], modoMaxFramesPerTask)
@@ -106,7 +79,7 @@ func TestPresetModo_ParamsCostAtMaxChunk(t *testing.T) {
 			params["FramesPerTask"] = "1001"
 			// The refusal must be the maxValue bound itself, not some other
 			// failure a larger chunk happened to provoke (an EXPR limit, say).
-			_, err = captureModo(t, preset, params)
+			_, err = capturePreset(t, preset, params)
 			wantRefusal := fmt.Sprintf("/parameterValues/FramesPerTask: value 1001 is above maximum %d", modoMaxFramesPerTask)
 			if err == nil || !strings.Contains(err.Error(), wantRefusal) {
 				t.Errorf("FramesPerTask 1001: err = %v, want the parameter binding refusal %q", err, wantRefusal)
@@ -141,12 +114,12 @@ func TestPresetModo_ParamsJSONRoundTrips(t *testing.T) {
 			if !strings.ContainsAny(params["SceneFile"], `'"`) || !strings.Contains(params["SceneFile"], " ") {
 				t.Fatalf("quoting case's SceneFile %q needs both quotes and a space", params["SceneFile"])
 			}
-			snap, err := captureModo(t, preset, params)
+			snap, err := capturePreset(t, preset, params)
 			if err != nil {
 				t.Fatalf("Capture: %v", err)
 			}
 			for _, task := range snap.Steps[0].Tasks {
-				p := decodeModoParams(t, taskFile(t, task, "params"))
+				p := decodeStrict[modoParams](t, taskFile(t, task, "params"))
 				if want := filepath.FromSlash(params["SceneFile"]); p.Scene != want {
 					t.Errorf("scene = %q, want %q", p.Scene, want)
 				}
@@ -165,21 +138,7 @@ func TestPresetModo_ParamsJSONRoundTrips(t *testing.T) {
 // the same, so a fix to one cannot miss the other. The script reads "group"
 // only when params.json carries it.
 func TestPresetModo_ShareOneScript(t *testing.T) {
-	var first string
-	for i, preset := range modoPresets {
-		tmpl, err := presettest.PresetTemplate(presettest.SourcePresets, preset)
-		if err != nil {
-			t.Fatal(err)
-		}
-		script := embeddedFileData(t, tmpl, "render")
-		if i == 0 {
-			first = script
-			continue
-		}
-		if script != first {
-			t.Errorf("%s's render.py differs from %s's", preset, modoPresets[0])
-		}
-	}
+	assertPresetsShareFile(t, modoPresets, "render")
 }
 
 // modoCommand matches the one -cmd: argument: the script and its parameters
@@ -203,7 +162,7 @@ func TestPresetModo_CommandNamesTheScriptAndItsParams(t *testing.T) {
 				if c.Name != "quoting" {
 					continue
 				}
-				snap, err := captureModo(t, preset, c.Params)
+				snap, err := capturePreset(t, preset, c.Params)
 				if err != nil {
 					t.Fatalf("Capture: %v", err)
 				}
@@ -239,7 +198,7 @@ func TestPresetModo_CommandNamesTheScriptAndItsParams(t *testing.T) {
 // rewritten after each one so the record survives the script's os._exit.
 //
 // argv: locate, api, script, record, what to fail, and a folder holding
-// nothing. locate says how the script can find params.json, and ONLY that way
+// nothing. locate says how the script can find params.json, and only that way
 // works: "file" runs the script as a file with __file__ set, from the empty
 // folder, with no argument; "args" executes its text with no __file__, from the
 // empty folder, and lx.args() returns params.json's path; "braced" is "args"
@@ -517,7 +476,7 @@ func TestPresetModo_ScriptDrivesModo(t *testing.T) {
 		},
 	}
 	for _, tc := range tests {
-		snap, err := captureModo(t, tc.preset, tc.params)
+		snap, err := capturePreset(t, tc.preset, tc.params)
 		if err != nil {
 			t.Fatalf("%s: Capture: %v", tc.name, err)
 		}

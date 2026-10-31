@@ -51,7 +51,9 @@ readme: |
   - A Silhouette licence that allows `sfxcmd` to render. A floating licence has
     a render portion that `sfxcmd` uses, named `genarts_LICENSE`, in lower case.
   - On Linux, `sfxcmd` runs with `-nogui`, which the worker adds by itself
-    whether it found `sfxcmd` on `PATH` or in the install. Silhouette's bundled
+    whether it found `sfxcmd` on `PATH` or in the install. An `sfxcmd` entry
+    in `worker.commands` replaces that, arguments included, so it must list
+    `-nogui` itself. Silhouette's bundled
     `lib` folder must be on the worker's `LD_LIBRARY_PATH`, or `sfxcmd` stops
     with a missing-library error. The preset does not set it.
 
@@ -61,16 +63,16 @@ readme: |
     command-line documentation for 2022.5 and 2026.
   - A failed render can be reported as a success. This preset does not declare
     the `SQI_LOG_CHECKS` extension, because no line that `sfxcmd` prints on
-    failure is documented, and none is guessed. A task fails only if `sfxcmd`
-    exits non-zero. A Linux report has `sfxcmd` exiting 0 with no frames
-    written, and that would show here as a finished task. Check the output
-    folder, not just the job status.
+    failure is documented. A task fails only if `sfxcmd` exits non-zero.
+    `sfxcmd` is reported to exit 0 with no frames written on Linux, which
+    would show as a finished task. Check the output folder, not just the job
+    status.
   - `sfxcmd`'s exit codes are not documented.
   - A negative first frame is passed as `-range -5-10`; whether `sfxcmd` reads
     that is unknown.
   - The install folders the detector looks for are the two documented layouts
-    (`SilhouetteFX` and `BorisFX`), neither seen on a machine, and Linux is
-    placed under `/opt`.
+    (`SilhouetteFX` and `BorisFX`), both unverified, and Linux is placed under
+    `/opt`.
 category: Rendering
 version: 1.0.0
 template:

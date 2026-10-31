@@ -171,8 +171,8 @@ func computeWorkerEnforcedExtensions() []string {
 		}
 	}
 	sort.Strings(out)
-	// Cap at the length, so an append by a careless caller copies rather than
-	// writing into a shared backing array.
+	// Cap at the length, so an append by a caller copies rather than writing
+	// into the shared backing array.
 	return slices.Clip(out)
 }
 

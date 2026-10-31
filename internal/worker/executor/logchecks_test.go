@@ -89,7 +89,7 @@ func TestExecutor_LogChecks_RequireLine(t *testing.T) {
 		t.Errorf("missing: message = %q, want %q", missing.Message, want)
 	}
 
-	// Review focus: the marker behind a host log prefix still satisfies it.
+	// The marker behind a host log prefix still satisfies it.
 	present := runChecked(t, linesAssign(
 		"working|[2026.10.28-12.00.00:000][  0]LogPython: SQI_RENDER: OK", nil, checks,
 	))
@@ -120,7 +120,7 @@ func TestExecutor_LogChecks_ExitStatusWins(t *testing.T) {
 	}
 }
 
-// Review focus 1: checks do not override cancel or timeout.
+// Checks do not override cancel or timeout.
 func TestExecutor_LogChecks_DoNotOverrideCancel(t *testing.T) {
 	skipOnWindows(t)
 	capture := &captureOutput{}
@@ -180,7 +180,7 @@ func TestExecutor_LogChecks_ReasonIsRedacted(t *testing.T) {
 	}
 }
 
-// With no LogChecks, statuses are what they always were.
+// Without LogChecks, statuses follow the exit code alone.
 func TestExecutor_LogChecks_AbsentChangesNothing(t *testing.T) {
 	skipOnWindows(t)
 	ok := runChecked(t, makeAssign("stdout", map[string]string{"SQI_TEST_OUTPUT": "ERROR looks bad but nobody checks"}))
@@ -231,7 +231,7 @@ func TestExecutor_LogChecks_VerdictFailureDoesNotStageOut(t *testing.T) {
 	// Control: with no check the task reaches stage-out, which fails.
 	control := run(nil)
 	if control.Status != "failed" || !strings.Contains(control.Message, "staging") {
-		t.Fatalf("control: status = %q, message = %q; want a stage-out failure (the premise of this test)",
+		t.Fatalf("control: status = %q, message = %q; want a stage-out failure",
 			control.Status, control.Message)
 	}
 

@@ -164,9 +164,8 @@ func TestRender_GoldensAreHostNeutral(t *testing.T) {
 
 // TestRender_LogChecks pins how a step's SQI_LOG_CHECKS block reaches a golden:
 // one line per pattern, directly under the step header, quoted with %q so a
-// pattern's own backslashes and quotes are unambiguous. A step without checks
-// renders exactly as it did before the field existed (the existing goldens are
-// the proof of that; the second half repeats it for a bare snapshot).
+// pattern's own backslashes and quotes are unambiguous. A step with no checks,
+// or an empty block, renders no log checks line.
 func TestRender_LogChecks(t *testing.T) {
 	task := presettest.TaskSnapshot{Name: "Render", Command: "renderer"}
 	snap := presettest.Snapshot{
@@ -201,7 +200,7 @@ func TestRender_LogChecks(t *testing.T) {
 	}
 }
 
-// TestCapture_CarriesLogChecks proves the snapshot takes the checks from the
+// TestCapture_CarriesLogChecks asserts the snapshot takes the checks from the
 // real assignment rather than from the harness's own reading of the template.
 func TestCapture_CarriesLogChecks(t *testing.T) {
 	const tmpl = `
@@ -236,9 +235,8 @@ steps:
 
 // TestHostPathReplacer_EscapedForms covers the spellings a host script's data
 // takes. repr_json and repr_py write a Windows path with every backslash
-// doubled (into params.json, VRED's -postpython, Unreal's -execcmds); a
-// replacer that knew only the single-backslash form would match inside the
-// doubled text and leave a half-converted path in the golden. On POSIX
+// doubled (into params.json, VRED's -postpython, Unreal's -execcmds), and the
+// replacer converts both that and the single-backslash form. On POSIX
 // filepath.FromSlash is the identity, so the host spellings equal the golden's
 // own and the same assertions hold for the untouched text.
 func TestHostPathReplacer_EscapedForms(t *testing.T) {

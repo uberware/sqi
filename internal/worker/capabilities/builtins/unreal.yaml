@@ -2,14 +2,12 @@
 #
 # Epic's Unreal Engine 5, whose UnrealEditor-Cmd the presets
 # unreal-mrq-job-render and unreal-mrq-queue-render run through the bare
-# command `UnrealEditor-Cmd`. The presets are Windows-only, the one OS any
-# vendor render adaptor ships for (AWS's Deadline Cloud adaptor for Unreal).
+# command `UnrealEditor-Cmd`. The presets are Windows-only.
 #
 # Windows: the Epic Games Launcher installs each engine version to
 # C:\Program Files\Epic Games\UE_5.<minor>\ by default, with the editor's
 # command-line program at Engine\Binaries\Win64\UnrealEditor-Cmd.exe below it.
-# That is the only location looked for. Neither the folder nor the executable
-# was observed on a machine.
+# That is the only location looked for, and it is unverified.
 #
 # Not found: an install in a custom Launcher folder, or a source build. Give
 # the worker an `UnrealEditor-Cmd` entry in worker.commands (and the tag
@@ -17,9 +15,8 @@
 # each install in the registry, under
 # HKLM\SOFTWARE\EpicGames\Unreal Engine\<5.x> as the value InstalledDirectory
 # (as AWS's adaptor reads it), but a detector `registry:` check can only test
-# that a fixed key exists: it can read neither the value nor the version
-# subkeys, so a detector built on that layout needs a detector-language change
-# first.
+# that a fixed key exists. It reads neither the value nor the version subkeys,
+# so the detector cannot use that layout.
 #
 # The version is the engine's 5.<minor> from the UE_5.<minor> folder name. An
 # UnrealEditor-Cmd found only on PATH carries a version only when it sits in

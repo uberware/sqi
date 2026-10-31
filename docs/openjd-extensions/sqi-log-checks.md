@@ -67,8 +67,7 @@ Structural, enforced at submission (`internal/openjd/logchecks.go`,
   defined as a step-level block and that the template declares. Anything else
   (for example a misspelt `SQI_LOG_CHECK`) is an error naming the key, because
   the step decoder would otherwise drop it and the step would run with its checks
-  off. Other unknown, non-`SQI_` step keys are still silently dropped, as they
-  were before this extension; that is a pre-existing divergence, not changed here.
+  off. Other unknown, non-`SQI_` step keys are silently dropped.
 - A `SQI_LOG_CHECKS` key anywhere else in a step (under `script`,
   `actions.onRun`, a step environment, and so on), in a job environment, or in a
   parameter definition is an error at the pointer where it was found ("is a
@@ -94,7 +93,21 @@ Structural, enforced at submission (`internal/openjd/logchecks.go`,
   `.{0,500}foo.{0,500}` (2005) is over the cap. A larger pattern is rejected at its own pointer
   (`/steps/N/SQI_LOG_CHECKS/failOn/I`): "pattern compiles to <n> instructions; at
   most 2000 are allowed". The worker enforces the same bound from the same
-  constant when it builds the checker.
+  constant when it builds the checker. Measuring a program means building it,
+  so a pattern is first sized from its parse, the way Go's own parser estimates
+  a program, without expanding its repeats: the estimate is never above the real
+  size and falls at most 2 short of it, and a pattern estimated at more than twice the cap (4000) is
+  refused unbuilt, with "pattern compiles to about <n> instructions; at most
+  2000 are allowed".
+- All of a template's patterns together may compile to at most **128,000**
+  instructions, one step's worst case (two full lists at the cap), so a step
+  valid on its own is valid in any template. The bound keeps validation cost
+  independent of the number of steps, since each pattern is built to be
+  measured. The pattern that goes over is rejected at its pointer ("pattern takes the
+  template's SQI_LOG_CHECKS patterns over 128000 compiled instructions in total,
+  the most allowed; later patterns are not checked"), and no later pattern is
+  built. The worker builds only its own step's patterns, so it needs no such
+  total.
 
 ## Worker behavior
 The scheduler copies the step's block into the task assignment
@@ -109,7 +122,7 @@ failure reason never leaks a redacted environment value. The
 the secret in the clear before the value is registered for scrubbing.
 
 **Pieces of a long line.** The worker delivers a line longer than 64 KiB in
-pieces (P5b-0). Each piece is checked on its own, as if it were a line, so a
+pieces. Each piece is checked on its own, as if it were a line, so a
 pattern that would match across a split point does not match, and a marker that
 a split cuts in two is not seen.
 
@@ -118,10 +131,10 @@ on cleaning up, and killing early could leave partial outputs worse than letting
 the process finish. The first matching line is remembered and the task is failed
 once the process exits. A process that hangs is the step timeout's job.
 
-**Outcome order.** The executor's existing decisions are unchanged and come
-first: a process that could not start, an `openjd_fail`, a cancel, a worker
-shutdown, a timeout, and a non-zero exit all decide the task exactly as before,
-even when the output also matched a `failOn` pattern. Only a task that would
+**Outcome order.** The executor's own decisions come first: a process that could
+not start, an `openjd_fail`, a cancel, a worker shutdown, a timeout, and a
+non-zero exit each decide the task, even when the output also matched a `failOn`
+pattern. Only a task that would
 otherwise have **succeeded** is then judged by the checks: the first `failOn`
 match wins, then the first `requireLine` pattern no line matched. A non-zero
 exit still fails the task even when every check passed. A task failed by the
@@ -142,8 +155,8 @@ template), fails the task before it starts, with
 `invalid SQI_LOG_CHECKS pattern: <error>`.
 
 ### Scheduling gate
-A worker built before this extension would run a checked task and report its exit
-status alone, which is exactly the outcome the author declared the extension to
+A worker that does not enforce this extension would run a checked task and report
+its exit status alone, which is the outcome the author declared the extension to
 prevent. So a job that declares `SQI_LOG_CHECKS` is only ever given to a worker
 that enforces it:
 
@@ -152,7 +165,9 @@ that enforces it:
   row (migration `00039`, `workers.extensions`).
 - The scheduler's lease gate (`internal/scheduler/extcaps.go`,
   `workerExtensionBlock`) withholds a job that declares a worker-enforced
-  extension from a worker that does not list it.
+  extension from a worker that does not list it. The gate is per job, not per
+  step: every task of a declaring job is withheld, including those of steps
+  with no block.
 - When no online worker enforces it, the unschedulable sweep writes the reason
   onto the task: `no eligible online worker: worker does not enforce
   SQI_LOG_CHECKS; upgrade sqi-worker`. The sweep only runs when

@@ -66,8 +66,8 @@ endif
 # Per-package timeout for `make test` and `make test-cover`. go test's default
 # is 10m, and ./test/integration/ runs every preset's Tier-3 case and the
 # real-ffmpeg Tier-2 cases untagged, under -race, in one package. On a Windows
-# host that package takes over 20 minutes (the preset outcome cases wait out
-# three retry attempts each).
+# host that package needs more than 20 minutes because each preset outcome case
+# waits out three retry attempts.
 TEST_TIMEOUT ?= 30m
 
 # PostgreSQL major version for `make test-postgres` (16 or 18; CI runs both).

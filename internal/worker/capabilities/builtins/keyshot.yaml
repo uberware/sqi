@@ -5,16 +5,16 @@
 # Headless scripting is a KeyShot Pro feature (9.3 or newer, "experimental" per
 # KeyShot). KeyShot has desktop builds for Windows and macOS only.
 #
-# Every path below is unverified: none was observed on a machine, and neither
-# the folder names nor the macOS executables come from KeyShot's manual, which
-# documents the command lines but not install locations.
+# Every path below is unverified: neither the folder names nor the macOS
+# executables come from KeyShot's manual, which documents the command lines but
+# not install locations.
 #
 # Windows: KeyShot's manual documents a `keyshot_headless` executable that
 # supports stdin and stdout on Windows. It is looked for in a bin folder under
-# C:\Program Files\KeyShot*, the folder a default install is reported to use.
+# C:\Program Files\KeyShot*, the folder a default install is expected to use.
 #
 # macOS: KeyShot's manual gives only `keyshot -headless` for macOS. A
-# third-party source reports a `keyshot_headless` inside the app bundle as well;
+# third-party source lists a `keyshot_headless` inside the app bundle as well;
 # the manual does not, so the command below uses the documented `keyshot`
 # program with `-headless` put before the job's arguments (the detector's
 # `args`), which works whether or not the bundle holds a keyshot_headless. The

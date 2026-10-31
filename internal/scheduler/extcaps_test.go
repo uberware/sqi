@@ -37,7 +37,7 @@ const logChecksTemplateJSON = `{
 // A rename on one side alone would make every worker look unsupporting, or
 // every checked job look ungated.
 func TestProtocolAndRegistryAgreeOnWorkerEnforcedExtensions(t *testing.T) {
-	want := []string{protocol.ExtensionLogChecks}
+	want := protocol.WorkerEnforcedExtensions()
 	if got := openjd.WorkerEnforcedExtensions(); !slices.Equal(got, want) {
 		t.Fatalf("openjd.WorkerEnforcedExtensions() = %v, want %v", got, want)
 	}

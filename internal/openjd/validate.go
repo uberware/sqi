@@ -122,7 +122,7 @@ func validateExtensions(t *JobTemplate) ValidationErrors {
 // unknownTopLevelMessage explains why a top-level key was rejected. A key that
 // names a step-block extension is a misplaced block, not a typo, and says so.
 func unknownTopLevelMessage(field string) string {
-	if ext, ok := LookupExtension(field); ok && ext.StepBlock {
+	if isStepBlockName(field) {
 		return field + " is a step-level block; put it on a step, not at the top level of the template"
 	}
 	return "unknown field; the job template schema defines no such key"

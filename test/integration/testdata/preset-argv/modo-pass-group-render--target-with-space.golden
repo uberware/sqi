@@ -111,9 +111,10 @@ task 1/1  name="Render[Frame=1-2,Frame.End=2,Frame.Start=1]"
         # Keyword arguments, so no job value becomes command text.
         lx.command("scene.open", filename=params["scene"], type="normal")
         set_range(params["start"], params["stop"])
-        # The group name is a job value, so it goes in as a keyword argument; the
-        # whole-scene form has none, so its command text is a literal. Whether the two
-        # forms are equivalent in Modo is unverified.
+        # The group name is a job value, so it goes in as a keyword
+        # argument; the whole-scene form has none, so its command text
+        # is a literal. Whether the two forms are equivalent in Modo
+        # is unverified.
         if params["group"]:
             lx.command("render.animation", filename="*", group=params["group"])
         else:

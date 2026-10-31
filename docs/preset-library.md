@@ -216,7 +216,7 @@ so a name with a space stays whole. Foundry documents `-t` with ranges and comma
 lists and no step form, so a stepped `Frames` range splits into one task per
 frame. Every host that renders needs a `katana_r` render licence.
 
-It is the first preset to declare [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md): a
+It declares [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md): a
 task fails when a line of Katana's output matches `ERROR +\|`, the pattern
 Deadline's Katana plugin treats as a failed render, because Katana's exit status
 on failure is not documented. Foundry also documents a batch render that never
@@ -247,7 +247,7 @@ they reach standard output with `-verbose`** rather than only a `-log` file
 (Deadline drives the node through its own scripting connection), in which case
 the check never fires and a failed render is caught only by an exit status that
 is itself undocumented. A Fusion 8 report of a successful render exiting
-`-1073741819` is recorded in the readme and not handled. The `fusion`
+`-1073741819` is noted in the readme; the preset does not handle it. The `fusion`
 detector's install paths on all three platforms are inferred, not observed.
 
 ### Silhouette
@@ -271,9 +271,9 @@ splits into one task per frame.
 **Neither preset declares [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md), and a failed
 render that exits 0 is reported as a success.** No line `sfxcmd` prints on
 success or failure is documented, a Linux report has it exiting 0 with no frames
-written, and its exit codes are undocumented; a pattern was not guessed. Check
+written, and its exit codes are undocumented. Check
 the output folder, not only the job status. The `silhouette` detector supplies
-`sfxcmd` and, on Linux only, `-nogui` (the first detector to declare arguments),
+`sfxcmd` and, on Linux only, `-nogui`,
 whether `sfxcmd` comes from the install or from `PATH`; the bundled `lib`
 folder must be on the worker's `LD_LIBRARY_PATH`. The detector's install folders
 (the documented `SilhouetteFX` layout and a `BorisFX` root) are unverified. A
@@ -286,7 +286,7 @@ floating licence needs the render portion `genarts_LICENSE`, in lower case.
 | `vred-render` | a `.vpb` scene's saved view with VRED Core | `FramesPerTask` frames per task, default 10, at most 1000 | `vred` |
 | `vred-viewpoint-render` | one named viewpoint or camera (`View`) of a `.vpb` scene | `FramesPerTask` frames per task, default 10, at most 1000 | `vred` |
 
-The first **host-script** presets: each task runs `VREDCore <scene>
+Both are **host-script** presets: each task runs `VREDCore <scene>
 -insecure_python -fast_start -hide_gui -postpython <code>`, where `<code>` is a
 constant Python expression that only executes the preset's embedded `render.py`
 (its path written with `EXPR`'s `repr_py`). Autodesk's command-line reference
@@ -312,14 +312,18 @@ on Windows, is unverified**, and if it does not, every task fails rather than
 passing silently. The checks give their verdict only when VRED exits, and
 whether it exits after `terminateVred()` under `-hide_gui` is undocumented; the
 presets set no timeout, so their readmes recommend adding one to the step's
-`onRun` action. Autodesk marks `startRenderToFile` as VRED Professional only,
+`onRun` action. **Whether `startRenderToFile` returns only once every frame is
+written is unverified**: the script prints `SQI_RENDER: OK` when it returns and
+does not check the files, so an early return would succeed with frames
+missing. Autodesk marks `startRenderToFile` as VRED Professional only,
 although AWS's VRED samples call it under VRED Core. `-insecure_python` turns
 off the Python sandbox of VRED 2024 and later. Linux needs an X server (Mesa
-under Xvfb on a machine without a GPU). A Windows worker with only VRED Pro
-maps `VREDCore` to `VREDPro.exe` in `worker.commands`. VRED's versions are
+under Xvfb on a machine without a GPU). A VRED Pro install is not tagged, since it
+supplies no `VREDCore`; a Windows worker with only VRED Pro maps `VREDCore` to
+`VREDPro.exe` in `worker.commands`, which tags it too. VRED's versions are
 internal: 17.0 is VRED 2025, 18.0 is VRED 2026. The `vred` detector's Windows
-VRED Core folder is Autodesk's documented one; its VRED Pro folder and both
-Linux roots are unverified.
+VRED Core folder is Autodesk's documented one; both Linux roots are
+unverified.
 
 ### KeyShot
 
@@ -398,7 +402,7 @@ No Modo has executed either preset; the argument names of `scene.open` and `rend
 | `unreal-mrq-job-render` | one Movie Render Queue job: a level sequence (`LevelSequence`) on a map (`Map`) with a saved config (`MovieRenderConfig`) | one task | `unreal`, Windows |
 | `unreal-mrq-queue-render` | every job of a saved Movie Pipeline Queue asset (`QueueAsset`) | one task | `unreal`, Windows |
 
-Host-script presets like VRED's, and the only P5b presets gated on the worker's OS: Windows is the one OS any vendor
+Host-script presets like VRED's, gated on the worker's OS: Windows is the one OS any vendor
 Unreal render adaptor ships, so both require `attr.worker.os.family` = `windows` and their Tier 3 and outcome cases
 run on Windows only. Each task runs `UnrealEditor-Cmd <project> -log -unattended -stdout -allowstdoutlogverbosity
 -NoLoadingScreen -NoScreenMessages -RenderOffscreen -nohmd -windowed -execcmds=py <one line of Python>`, the command line
@@ -407,7 +411,7 @@ the embedded `sqi_unreal_render.py`; it holds no comma (Unreal splits `-execcmds
 session folder whose path would need one (`worker.session_dir`) fails the task, saying so. The script builds the job, or
 copies the saved queue's jobs into the editor's queue, applies `OutputDirectory` when it is not blank, starts the Movie
 Render Queue's PIE executor and returns; the editor keeps running while it renders, as AWS's adaptor relies on, which is
-why the presets use `-execcmds` rather than `-ExecutePythonScript` (reported to quit before an asynchronous render
+why the presets use `-execcmds` rather than `-ExecutePythonScript` (it can quit before an asynchronous render
 completes). When the executor reports back, the script prints `SQI_RENDER: OK` if every job succeeded, or
 `SQI_RENDER: FAILED:` with the reason, and calls `quit_editor()`; a fatal error ends the render the same way. No job
 value is written into the command line or Python source: the asset paths and the output directory come from an embedded

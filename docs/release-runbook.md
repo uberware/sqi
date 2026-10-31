@@ -252,7 +252,10 @@ PyPI packages:
 - the forty-two `presets/sqi/*.yaml` reference presets (Maya layer + scene, Nuke
   write + script, Houdini ROP, Blender batch + view layer, Cinema 4D scene +
   take, 3ds Max, After Effects render + queue render in Windows and macOS
-  variants, Mistika Boutique + VR + Workflows, Katana, Silhouette render + render-all, Fusion, VRED render + viewpoint render, KeyShot render + studio render, Modo render + pass group render, Unreal Movie Render Queue job + queue render; the standalone renderers Arnold
+  variants, Mistika Boutique + VR + Workflows, Katana, Silhouette render +
+  render-all, Fusion, VRED render + viewpoint render, KeyShot render + studio
+  render, Modo render + pass group render, Unreal Movie Render Queue job +
+  queue render; the standalone renderers Arnold
   kick + kick tile, V-Ray, husk, Redshift, RenderMan, 3Delight and Mantra;
   ffmpeg transcode, sequence-encode, and segment-transcode
   bash/PowerShell/EXPR);

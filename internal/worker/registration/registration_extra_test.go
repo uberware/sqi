@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -388,7 +389,7 @@ func TestRegister_AdvertisesWorkerEnforcedExtensions(t *testing.T) {
 	if err := json.Unmarshal(msg.Data, &rm); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(rm.Extensions) != 1 || rm.Extensions[0] != "SQI_LOG_CHECKS" {
-		t.Errorf("Extensions = %v, want [SQI_LOG_CHECKS]", rm.Extensions)
+	if want := protocol.WorkerEnforcedExtensions(); !slices.Equal(rm.Extensions, want) {
+		t.Errorf("Extensions = %v, want %v", rm.Extensions, want)
 	}
 }

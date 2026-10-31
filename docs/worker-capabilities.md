@@ -170,10 +170,10 @@ application under
 | `katana` | `exe katana` (any OS, if on `PATH`); Linux `path_glob /opt/Foundry/Katana*/katana` and `/opt/foundry/katana*/katana`; Windows `path_glob C:\Program Files\Katana*\bin\katanaBin.exe`. All install paths unverified; Katana does not run on macOS. Also supplies a default `katana` command (Windows: `katanaBin.exe`) | `[Kk]atana([0-9]+\.[0-9]+v[0-9]+)` against the matched path (none when only `exe katana` matched) |
 | `silhouette` | `exe sfxcmd` (any OS, if on `PATH`); Windows `path_glob C:\Program Files\BorisFX\Silhouette*\sfxcmd.exe` and `C:\Program Files\SilhouetteFX\Silhouette*\sfxcmd.exe`; macOS `path_glob /Applications/BorisFX/Silhouette*/Silhouette.app/Contents/MacOS/sfxcmd` and the `SilhouetteFX` equivalent; Linux `path_glob /opt/BorisFX/Silhouette*/sfxcmd` and `/opt/SilhouetteFX/Silhouette*/sfxcmd`. The `SilhouetteFX` Windows and macOS folders are Boris FX's documented layout, the `BorisFX` roots and Linux paths are unverified. Also supplies a default `sfxcmd` command, which carries `-nogui` on Linux (see [Detected commands](#detected-commands)) | `Silhouette ?([0-9]{4}(?:\.[0-9]+)?)` against the matched path (none when only `exe sfxcmd` matched) |
 | `fusion` | `exe FusionRenderNode` (any OS, if on `PATH`); Windows `path_glob C:\Program Files\Blackmagic Design\Fusion Render Node *\FusionRenderNode.exe`; macOS `path_glob /Applications/Blackmagic Fusion * Render Node/Fusion Render Node.app/Contents/MacOS/Fusion Render Node`; Linux `path_glob /opt/BlackmagicDesign/FusionRenderNode*/FusionRenderNode`. All install paths inferred, none observed. Also supplies a default `FusionRenderNode` command (macOS: the executable is `Fusion Render Node`) | `(?:Fusion Render Node \|FusionRenderNode\|Fusion )(?P<v>[0-9]+(?:\.[0-9]+)?)` against the matched path (none when only `exe FusionRenderNode` matched) |
-| `vred` | `exe VREDCore` (any OS, if on `PATH`); Windows `path_glob C:\Program Files\Autodesk\VREDCore-*\bin\WIN64\VREDCore.exe` (Autodesk's documented folder) and `C:\Program Files\Autodesk\VREDPro-*\bin\WIN64\VREDPro.exe`; Linux `path_glob /opt/Autodesk/VREDCore-*/bin/VREDCore` and `/opt/Autodesk/VREDCluster-*/bin/VREDCore` (the installer takes a target folder; both roots are unverified). VRED does not run on macOS. Also supplies a default `VREDCore` command from a VRED Core install, never from VRED Pro | `VRED(?:Core\|Pro\|Cluster)-([0-9]+\.[0-9]+)` against the matched path, VRED's internal version (17.0 is VRED 2025, 18.0 is VRED 2026; none when only `exe VREDCore` matched) |
+| `vred` | `exe VREDCore` (any OS, if on `PATH`); Windows `path_glob C:\Program Files\Autodesk\VREDCore-*\bin\WIN64\VREDCore.exe` (Autodesk's documented folder); Linux `path_glob /opt/Autodesk/VREDCore-*/bin/VREDCore` and `/opt/Autodesk/VREDCluster-*/bin/VREDCore` (the installer takes a target folder; both roots are unverified). VRED does not run on macOS. A VRED Pro install is not tagged: it supplies no `VREDCore`, so a Pro-only worker maps `VREDCore` to `VREDPro.exe` in `worker.commands`, which tags it. Also supplies a default `VREDCore` command from a VRED Core install | `VRED(?:Core\|Cluster)-([0-9]+\.[0-9]+)` against the matched path, VRED's internal version (17.0 is VRED 2025, 18.0 is VRED 2026; none when only `exe VREDCore` matched) |
 | `keyshot` | `exe keyshot_headless` (any OS, if on `PATH`); Windows `path_glob C:\Program Files\KeyShot*\bin\keyshot_headless.exe`; macOS `path_glob /Applications/KeyShot*.app/Contents/MacOS/keyshot*`. All install paths inferred, none observed; KeyShot has no Linux desktop build, and its manual documents `keyshot -headless` on macOS and `keyshot_headless` on Windows. Also supplies a default `keyshot_headless` command: `keyshot_headless.exe` on Windows, and on macOS the bundle's `keyshot` program, which carries `-headless` (see [Detected commands](#detected-commands)) | `KeyShot ?([0-9]+(?:\.[0-9]+)?)` against the matched path: `12` for a `KeyShot12` folder, a year for `KeyShot 2024` (none when only `exe keyshot_headless` matched) |
 | `modo` | `exe modo_cl` (any OS, if on `PATH`); Windows `path_glob C:\Program Files\Modo*\modo_cl.exe` and `C:\Program Files\Foundry\Modo\*\modo_cl.exe` (the 17.1 and 13.2 documented layouts); macOS `path_glob /Applications/Modo*.app/Contents/MacOS/modo_cl`. All install paths follow Foundry's documentation and none was observed; Linux has no fixed path, so put `modo_cl` on `PATH`. Modo is discontinued. Also supplies a default `modo_cl` command on Windows and macOS | `Modo[ \\/]*([0-9]+\.[0-9]+v[0-9]+)` against the matched path: Modo's own `17.1v1` form, from `Modo17.1v1`, `Modo 17.1v1` or `Foundry\Modo\13.2v1` (none when only `exe modo_cl` matched) |
-| `unreal` | `exe UnrealEditor-Cmd` (any OS, if on `PATH`); Windows `path_glob C:\Program Files\Epic Games\UE_5.*\Engine\Binaries\Win64\UnrealEditor-Cmd.exe`, the Epic Games Launcher's default folder and the **only** location looked for (unobserved). An install in a custom Launcher folder or a source build is not found: give the worker an `UnrealEditor-Cmd` entry in `worker.commands` (and the tag by hand). The Launcher records installs under `HKLM\SOFTWARE\EpicGames\Unreal Engine\<5.x>` (`InstalledDirectory`), but a `registry` check cannot read a value or enumerate subkeys. Also supplies a default `UnrealEditor-Cmd` command from the newest Launcher install, Windows only | `UE_(5\.[0-9]+)` against the matched path: `5.6` from `UE_5.6` (none when only `exe UnrealEditor-Cmd` matched outside such a folder) |
+| `unreal` | `exe UnrealEditor-Cmd` (any OS, if on `PATH`); Windows `path_glob C:\Program Files\Epic Games\UE_5.*\Engine\Binaries\Win64\UnrealEditor-Cmd.exe`, the Epic Games Launcher's default folder and the only location looked for (unobserved). An install in a custom Launcher folder or a source build is not found: give the worker an `UnrealEditor-Cmd` entry in `worker.commands`, which also advertises the tag. The Launcher records installs under `HKLM\SOFTWARE\EpicGames\Unreal Engine\<5.x>` (`InstalledDirectory`), but a `registry` check cannot read a value or enumerate subkeys. Also supplies a default `UnrealEditor-Cmd` command from the newest Launcher install, Windows only | `UE_(5\.[0-9]+)` against the matched path: `5.6` from `UE_5.6` (none when only `exe UnrealEditor-Cmd` matched outside such a folder) |
 
 The three Mistika detectors carry **no `exe` check**: their binaries are
 `mistika`, `vr` and `workflows`, and a bare `PATH` probe for the last two would
@@ -352,24 +352,28 @@ worker decides where it resolves, in this order:
    numeric version (16.0 beats 9.0), and two installs of one version, such as
    `Nuke17.1v1` and `Nuke17.1v2`, are ordered by path so the later release wins.
 
-A detected default carries **no arguments** unless the detector declares
+A detected default carries no arguments unless the detector declares
 `command.args` for the platform: arguments the application's own invocation
 requires, such as a flag that keeps it from opening a window. Those are applied to
-the detected default **and** to a command found on `PATH` (the worker keeps the
+the detected default and to a command found on `PATH` (the worker keeps the
 `PATH` executable and adds the arguments, and the table reports source `PATH`
 with them), but never to a `worker.commands` entry, which the operator owns
 whole. If a detector has arguments for the platform but finds no install, they
 still apply to a command on `PATH`; with neither, nothing is registered. Flags
 that depend on a license, such as Nuke's `--nc` for a non-commercial license,
-belong to the operator: put them in `worker.commands`. Only the `silhouette` and `keyshot` built-ins declare
-arguments: `-nogui` for `sfxcmd` on Linux, where it otherwise needs an X display, and `-headless` for
-`keyshot_headless` on macOS, where the detected command is the app's `keyshot` program (the form KeyShot
-documents). So a command on `PATH` is left entirely alone except `sfxcmd` on a Linux worker, which
-keeps `-nogui`, and `keyshot_headless` on a macOS worker, which keeps `-headless`. That last case is
-**unverified**: a real `keyshot_headless` on a macOS `PATH` (one third-party source says the app bundle
-ships one) runs as `keyshot_headless -headless …`. KeyShot 10's manual shows that form, but no current
-release was checked, and a release that rejects the flag fails every task on that worker. Map
-`keyshot_headless` in `worker.commands` to state the arguments yourself.
+belong to the operator: put them in `worker.commands`.
+
+Only the `silhouette` and `keyshot` built-ins declare arguments: `-nogui` for
+`sfxcmd` on Linux, where it otherwise needs an X display, and `-headless` for
+`keyshot_headless` on macOS, where the detected command is the app's `keyshot`
+program (the form KeyShot documents). A command on `PATH` is therefore left
+alone except `sfxcmd` on a Linux worker, which keeps `-nogui`, and
+`keyshot_headless` on a macOS worker, which keeps `-headless`. The macOS case is
+unverified: a `keyshot_headless` on a macOS `PATH` runs as
+`keyshot_headless -headless …`. KeyShot 10's manual shows that form, no current
+release was checked, and a release that rejects the flag fails every task on
+that worker. Map `keyshot_headless` in `worker.commands` to state the arguments
+yourself.
 
 The `nuke`, `blender`, `houdini` (`hython`), `katana`, `fusion`, `silhouette`
 (`sfxcmd`), `vred` (`VREDCore`), `keyshot` (`keyshot_headless`), `modo` (`modo_cl`) and `unreal` (`UnrealEditor-Cmd`) built-ins define a command; the others rely on the command being on `PATH`. Blender's has Windows and macOS globs

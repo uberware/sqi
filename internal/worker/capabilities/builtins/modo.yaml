@@ -3,13 +3,13 @@
 # Foundry Modo, whose headless program modo_cl the presets modo-render and
 # modo-pass-group-render run through the bare command `modo_cl`. Modo is
 # discontinued: 17.1 is the final release (Foundry, 2024-11-07), and
-# downloads now need a Foundry support ticket.
+# downloads need a Foundry support ticket.
 #
 # Windows: two layouts are documented. The Modo 17.1 documentation installs to
 # C:\Program Files\Modo<version>\ and the 13.2 documentation (and Deadline's
 # Modo plugin) to C:\Program Files\Foundry\Modo\<version>\; both are looked
 # for. Foundry's headless page says modo_cl.exe is "run just like any other
-# command line program"; neither folder was observed on a machine.
+# command line program"; neither folder is confirmed on an installed copy.
 #
 # macOS: Foundry's headless page gives modo.app/Contents/MacOS/modo_cl. The
 # application folder name (Modo17.1v1.app or similar) is a guess, hence the

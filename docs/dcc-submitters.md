@@ -542,7 +542,8 @@ the Maya, Blender, After Effects render, Mistika, Katana, Silhouette, Fusion, VR
 [OpenJD extensions](openjd-extensions.md)). The Cinema 4D and 3ds Max presets
 declare `EXPR` instead: it computes the same two frames, and leaves the output
 flag out when **Output Path** is empty. The two VRED presets declare `EXPR` as well,
-to build the `params.json` their embedded `render.py` reads inside VRED. The two KeyShot presets
+to build the `params.json` their embedded `render.py` reads inside VRED; like the Modo presets
+below, they declare the bounds but nothing reads them. The two KeyShot presets
 declare `TASK_CHUNKING`, `EXPR` and `SQI_LOG_CHECKS` but not `SQI_CHUNK_BOUNDS`: their script loops over
 any list of frames, so a chunk may be stepped or gapped, and it needs no bounds. The two Modo presets declare
 `TASK_CHUNKING`, `SQI_CHUNK_BOUNDS`, `EXPR` and `SQI_LOG_CHECKS`; they declare the bounds but nothing reads them, since under `EXPR` the
@@ -761,12 +762,12 @@ are the **target parameters**: the names that identify one target.
 | Blender | one view layer of one scene, named `<scene> / <view layer>` | `Scene` (the **scene name**, not a path) and `ViewLayer` | `blender-view-layer-render` | `blender-batch-render` |
 | Cinema 4D | a checked take other than the main take | `Take` (the take's name) | `cinema4d-take-render` | `cinema4d-render` |
 | Fusion | none: the command line cannot pick a Saver | none | none | `fusion-render` |
-| Silhouette | an output node of a session (no submitter ships yet; named for one) | `Session` and `OutputNode` (the node's **label**; both strings) | `silhouette-render` | `silhouette-render-all`: it declares neither parameter, so the dialog treats it as whole-scene |
+| Silhouette | an output node of a session (no submitter ships; named for one) | `Session` and `OutputNode` (the node's **label**; both strings) | `silhouette-render` | `silhouette-render-all`: it declares neither parameter, so the dialog treats it as whole-scene |
 | Katana | a Render node, named in the project | `RenderNode` (the node's name; a string) | `katana-render` | none: a Render node is the unit, as a ROP is for Houdini |
-| VRED | a viewpoint or camera (no submitter ships yet; named for one) | `View` (the viewpoint's or camera's name; a string) | `vred-viewpoint-render` | `vred-render`: it declares no `View`, so the dialog treats it as whole-scene |
-| KeyShot | a studio of the scene (no submitter ships yet; named for one) | `Studio` (the studio's name; a string) | `keyshot-studio-render` | `keyshot-render`: it declares no `Studio`, so the dialog treats it as whole-scene |
-| Modo | a pass group (no submitter ships yet; named for one) | `PassGroup` (the group's name; a string) | `modo-pass-group-render` | `modo-render`: it declares no `PassGroup`, so the dialog treats it as whole-scene |
-| Unreal | a Movie Render Queue job (no submitter ships yet; named for one) | `LevelSequence`, `Map` and `MovieRenderConfig` (asset paths such as `/Game/Maps/Hero`; strings) | `unreal-mrq-job-render` | `unreal-mrq-queue-render`: it declares none of them, only `QueueAsset`, so the dialog treats it as whole-scene |
+| VRED | a viewpoint or camera (no submitter ships; named for one) | `View` (the viewpoint's or camera's name; a string) | `vred-viewpoint-render` | `vred-render`: it declares no `View`, so the dialog treats it as whole-scene |
+| KeyShot | a studio of the scene (no submitter ships; named for one) | `Studio` (the studio's name; a string) | `keyshot-studio-render` | `keyshot-render`: it declares no `Studio`, so the dialog treats it as whole-scene |
+| Modo | a pass group (no submitter ships; named for one) | `PassGroup` (the group's name; a string) | `modo-pass-group-render` | `modo-render`: it declares no `PassGroup`, so the dialog treats it as whole-scene |
+| Unreal | a Movie Render Queue job (no submitter ships; named for one) | `LevelSequence`, `Map` and `MovieRenderConfig` (asset paths such as `/Game/Maps/Hero`; strings) | `unreal-mrq-job-render` | `unreal-mrq-queue-render`: it declares none of them, only `QueueAsset`, so the dialog treats it as whole-scene |
 | After Effects | a `Queued` render-queue item, named after its composition | `RenderQueueItem` (the item's 1-based index; an `INT` parameter, minimum 1; extra values are strings) | `after-effects-render-windows`, `after-effects-render-macos` | `after-effects-queue-render-windows`, `after-effects-queue-render-macos` |
 
 Houdini has a per-target product only: its output target is the ROP the script

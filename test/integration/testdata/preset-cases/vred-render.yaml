@@ -18,7 +18,7 @@
 # keyed on the parameter's parent folder) still applies on Windows, where the
 # path reaches params.json with doubled backslashes.
 #
-# logged-error, no-success-line: OUTCOME cases. One frame, so one task, run
+# logged-error, no-success-line: outcome cases. One frame, so one task, run
 # three times (scheduler.default_max_attempts) before the job fails.
 cases:
   - name: default

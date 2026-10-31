@@ -2,7 +2,7 @@
 
 package integration
 
-// preset_keyshot_test.go — what the KeyShot presets' golden files cannot show
+// preset_keyshot_test.go: what the KeyShot presets' golden files cannot show
 // on their own: that params.json is JSON a script can decode, that its cost
 // stays inside the worker's EXPR limits at the largest chunk the presets
 // allow, that a bad Output File is refused at submission, and what the
@@ -27,7 +27,6 @@ import (
 	"testing"
 
 	"github.com/uberware/sqi/internal/presettest"
-	"github.com/uberware/sqi/internal/store"
 )
 
 // keyshotPresets are the two KeyShot presets, which share one render.py and one
@@ -37,18 +36,6 @@ var keyshotPresets = []string{"keyshot-render", "keyshot-studio-render"}
 // keyshotMaxFramesPerTask is the FramesPerTask maxValue both presets declare
 // and their readmes state.
 const keyshotMaxFramesPerTask = 1000
-
-// captureKeyShot expands one KeyShot preset under params through the
-// production pipeline (presettest.Capture, which resolves phase 3 against the
-// WORKER's default EXPR limits) and returns the snapshot.
-func captureKeyShot(t *testing.T, preset string, params map[string]string) (presettest.Snapshot, error) {
-	t.Helper()
-	tmpl, err := presettest.PresetTemplate(presettest.SourcePresets, preset)
-	if err != nil {
-		t.Fatalf("PresetTemplate %s: %v", preset, err)
-	}
-	return presettest.Capture(t.Context(), tmpl, presettest.Options{Params: params, Format: store.TemplateFormatYAML})
-}
 
 // keyshotBaseParams are the parameters a valid job of preset needs.
 func keyshotBaseParams(preset string) map[string]string {
@@ -72,19 +59,6 @@ type keyshotParams struct {
 	Studio string `json:"studio"`
 }
 
-// decodeKeyShotParams decodes params.json strictly: an unknown key is an error,
-// so a key the script does not read cannot slip in unnoticed.
-func decodeKeyShotParams(t *testing.T, data string) keyshotParams {
-	t.Helper()
-	dec := json.NewDecoder(strings.NewReader(data))
-	dec.DisallowUnknownFields()
-	var p keyshotParams
-	if err := dec.Decode(&p); err != nil {
-		t.Fatalf("params.json is not the JSON object the script expects: %v\n%s", err, data)
-	}
-	return p
-}
-
 // TestPresetKeyShot_ParamsCostAtMaxChunk pins params.json's cost where it is
 // highest. It reads Task.Param.Frame, so it is evaluated at phase 3 on the
 // worker, against the worker's EXPR limits, and grows with the chunk: the
@@ -97,14 +71,14 @@ func TestPresetKeyShot_ParamsCostAtMaxChunk(t *testing.T) {
 			params := keyshotBaseParams(preset)
 			params["Frames"] = "1-1000"
 			params["FramesPerTask"] = "1000"
-			snap, err := captureKeyShot(t, preset, params)
+			snap, err := capturePreset(t, preset, params)
 			if err != nil {
 				t.Fatalf("a %d-frame chunk must resolve under the worker's default EXPR limits: %v", keyshotMaxFramesPerTask, err)
 			}
 			if len(snap.Steps) != 1 || len(snap.Steps[0].Tasks) != 1 {
 				t.Fatalf("1-1000 at %d frames per task must be one task, got %+v", keyshotMaxFramesPerTask, snap.Steps)
 			}
-			p := decodeKeyShotParams(t, taskFile(t, snap.Steps[0].Tasks[0], "params"))
+			p := decodeStrict[keyshotParams](t, taskFile(t, snap.Steps[0].Tasks[0], "params"))
 			if len(p.Frames) != keyshotMaxFramesPerTask || p.Frames[0] != 1 || p.Frames[len(p.Frames)-1] != 1000 {
 				t.Errorf("params.json frames: %d entries from %v, want the %d frames 1 to 1000",
 					len(p.Frames), p.Frames[:min(3, len(p.Frames))], keyshotMaxFramesPerTask)
@@ -113,7 +87,7 @@ func TestPresetKeyShot_ParamsCostAtMaxChunk(t *testing.T) {
 			params["FramesPerTask"] = "1001"
 			// The refusal must be the maxValue bound itself, not some other
 			// failure a larger chunk happened to provoke (an EXPR limit, say).
-			_, err = captureKeyShot(t, preset, params)
+			_, err = capturePreset(t, preset, params)
 			wantRefusal := fmt.Sprintf("/parameterValues/FramesPerTask: value 1001 is above maximum %d", keyshotMaxFramesPerTask)
 			if err == nil || !strings.Contains(err.Error(), wantRefusal) {
 				t.Errorf("FramesPerTask 1001: err = %v, want the parameter binding refusal %q", err, wantRefusal)
@@ -147,12 +121,12 @@ func TestPresetKeyShot_ParamsJSONRoundTrips(t *testing.T) {
 			if !strings.ContainsAny(params["OutputFile"], `'"`) || !strings.Contains(params["OutputFile"], " ") {
 				t.Fatalf("quoting case's OutputFile %q needs both quotes and a space", params["OutputFile"])
 			}
-			snap, err := captureKeyShot(t, preset, params)
+			snap, err := capturePreset(t, preset, params)
 			if err != nil {
 				t.Fatalf("Capture: %v", err)
 			}
 			for _, task := range snap.Steps[0].Tasks {
-				p := decodeKeyShotParams(t, taskFile(t, task, "params"))
+				p := decodeStrict[keyshotParams](t, taskFile(t, task, "params"))
 				if want := filepath.FromSlash(params["OutputFile"]); p.Output != want {
 					t.Errorf("output = %q, want %q", p.Output, want)
 				}
@@ -171,21 +145,7 @@ func TestPresetKeyShot_ParamsJSONRoundTrips(t *testing.T) {
 // byte the same, so a fix to one cannot miss the other. The script reads
 // "studio" only when params.json carries it.
 func TestPresetKeyShot_ShareOneScript(t *testing.T) {
-	var first string
-	for i, preset := range keyshotPresets {
-		tmpl, err := presettest.PresetTemplate(presettest.SourcePresets, preset)
-		if err != nil {
-			t.Fatal(err)
-		}
-		script := embeddedFileData(t, tmpl, "render")
-		if i == 0 {
-			first = script
-			continue
-		}
-		if script != first {
-			t.Errorf("%s's render.py differs from %s's", preset, keyshotPresets[0])
-		}
-	}
+	assertPresetsShareFile(t, keyshotPresets, "render")
 }
 
 // TestPresetKeyShot_OutputFileRules pins what Output File accepts. The frame
@@ -223,7 +183,7 @@ func TestPresetKeyShot_OutputFileRules(t *testing.T) {
 			t.Run(preset+"/"+strings.ReplaceAll(tc.output, "/", "_"), func(t *testing.T) {
 				params := keyshotBaseParams(preset)
 				params["OutputFile"] = tc.output
-				_, err := captureKeyShot(t, preset, params)
+				_, err := capturePreset(t, preset, params)
 				switch {
 				case tc.wantErr == "" && err != nil:
 					t.Errorf("Output File %q must be accepted: %v", tc.output, err)
@@ -563,7 +523,7 @@ func TestPresetKeyShot_ScriptDrivesKeyShot(t *testing.T) {
 		params := keyshotBaseParams(tc.preset)
 		params["Frames"] = tc.frames
 		maps.Copy(params, tc.params)
-		snap, err := captureKeyShot(t, tc.preset, params)
+		snap, err := capturePreset(t, tc.preset, params)
 		if err != nil {
 			t.Fatalf("%s: Capture: %v", tc.name, err)
 		}

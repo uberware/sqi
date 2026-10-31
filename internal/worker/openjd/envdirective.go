@@ -42,6 +42,13 @@ type EnvOp struct {
 	Redacted bool
 }
 
+// IsRedactedEnvDirective reports whether line, with surrounding whitespace
+// trimmed as [ParseEnvDirective] trims it, starts an openjd_redacted_env
+// directive, well-formed or not. Such a line carries a secret in the clear.
+func IsRedactedEnvDirective(line string) bool {
+	return strings.HasPrefix(strings.TrimSpace(line), prefixRedactedEnv)
+}
+
 // ParseEnvDirective classifies a single stdout line as one of the three OpenJD
 // environment directives — openjd_env, openjd_redacted_env, openjd_unset_env —
 // and returns the parsed mutation. ok is false when the line is not a valid

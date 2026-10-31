@@ -4,7 +4,7 @@ title: Unreal Movie Render Queue Job Render
 description: >-
   Renders one level sequence on one map with one Movie Render Queue config in
   an Unreal Engine 5 project, as a single task on a Windows worker. The editor
-  runs the preset's own Python script, and this preset has never run in Unreal.
+  runs the preset's own Python script. The preset has not been run in Unreal.
 readme: |
   # Unreal Movie Render Queue Job Render
 
@@ -21,9 +21,12 @@ readme: |
     content must be on the worker at this path, or reach it through path
     mapping.
   - **Level Sequence** - the sequence to render, as an asset path such as
-    `/Game/Cinematics/Hero/SEQ_Hero`.
+    `/Game/Cinematics/Hero/SEQ_Hero` or its object path
+    `/Game/Cinematics/Hero/SEQ_Hero.SEQ_Hero`. A path without the
+    `.SEQ_Hero` part is given it, as the Movie Render Queue needs.
   - **Map** - the map the sequence plays in, as an asset path such as
-    `/Game/Maps/Hero`. Save it before submitting: Unreal loads the saved map.
+    `/Game/Maps/Hero` (or `/Game/Maps/Hero.Hero`). Save it before
+    submitting: Unreal loads the saved map.
   - **Movie Render Config** - a saved Movie Render Queue config asset, such as
     `/Game/Cinematics/MRQ_Final`, which sets the outputs, the frame range and
     the quality.
@@ -50,7 +53,7 @@ readme: |
 
   The preset uses `-execcmds` rather than `-ExecutePythonScript`, because a
   render the editor runs in the background must outlive the script that
-  starts it, and a forum report says the editor quits after an
+  starts it, and the editor is reported to quit after an
   `-ExecutePythonScript` script before such a render completes. AWS's
   Deadline Cloud adaptor for Unreal starts its script with `-execcmds` too.
 
@@ -73,8 +76,8 @@ readme: |
   task waits with it and keeps its worker busy indefinitely. Likely causes are
   the Python Editor Script plug-in being disabled (so `py` is an unknown
   console command and the editor idles), an error before `main()`, and a
-  project that never reaches `-execcmds`. This preset sets
-  no timeout, because a sensible limit depends on the shot. Add a `timeout`
+  project that never reaches `-execcmds`. This preset sets no timeout,
+  because a sensible limit depends on the shot. Add a `timeout`
   (in seconds) to the step's `onRun` action in a copy of the preset, longer
   than your slowest render, and allow for shader compilation: the first render
   of a project on a worker compiles its shaders and can take a very long time.
@@ -111,6 +114,10 @@ readme: |
     also writes both lines through Unreal's log, which `-stdout` copies to
     the output; if neither arrives, every task fails, never the other way
     round.
+  - That the Movie Render Queue needs the object path
+    (`/Game/Maps/Hero.Hero`) rather than the package path a user is likely
+    to paste: Epic's command-line examples use the object path, so the
+    script adds the asset name to a path that lacks one.
   - Whether the executor reports a canceled render as a failure: Epic issue
     UE-160482 says it reported success before Unreal 5.3.
   - Whether the editor exits after `quit_editor()` (see the timeout above).
@@ -272,6 +279,16 @@ template:
                   return params
 
 
+              def object_path(path):
+                  # A soft object path names an asset as Package.Asset; a bare package
+                  # path such as /Game/Maps/Hero names the package, not the asset in it.
+                  # Content Browser paths leave the asset name off, and it is the
+                  # package's last segment, so add it. A path that names its asset is
+                  # kept as it is.
+                  leaf = path.rsplit("/", 1)[-1]
+                  return path if "." in leaf else path + "." + leaf
+
+
               def build_queue(subsystem, params):
                   # The editor's own queue, emptied, then filled with the one job
                   # these parameters describe or with a copy of the saved queue's
@@ -288,8 +305,8 @@ template:
                       if config is None:
                           raise ValueError("no Movie Render Queue config asset at " + params["config"])
                       job = queue.allocate_new_job(unreal.MoviePipelineExecutorJob)
-                      job.sequence = unreal.SoftObjectPath(params["sequence"])
-                      job.map = unreal.SoftObjectPath(params["map"])
+                      job.sequence = unreal.SoftObjectPath(object_path(params["sequence"]))
+                      job.map = unreal.SoftObjectPath(object_path(params["map"]))
                       job.set_configuration(config)
                       job.job_name = params["sequence"].rsplit("/", 1)[-1].split(".")[0]
                   jobs = list(queue.get_jobs())

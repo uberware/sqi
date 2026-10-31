@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/uberware/sqi/internal/openjd"
 )
@@ -317,8 +318,8 @@ func TestLogChecks_MisplacedBlock(t *testing.T) {
 	}
 }
 
-// TestLogChecks_MisplacedBlockDeepNesting pins that the walk copes with deep
-// nesting (it is iterative) and caps how many misplaced blocks it reports.
+// TestLogChecks_MisplacedBlockDeepNesting asserts that the walk handles deep
+// nesting and caps how many misplaced blocks it reports.
 func TestLogChecks_MisplacedBlockDeepNesting(t *testing.T) {
 	const depth = 5000
 	var b strings.Builder
@@ -343,6 +344,91 @@ func TestLogChecks_MisplacedBlockDeepNesting(t *testing.T) {
 	}
 	if got != 16 {
 		t.Errorf("reported %d misplaced blocks, want the cap of 16", got)
+	}
+}
+
+// lcStepsJSON renders a JSON template of steps steps, each carrying the same
+// failOn and requireLine lists.
+func lcStepsJSON(steps int, failOn, requireLine []string) []byte {
+	quote := func(ps []string) string {
+		q := make([]string, len(ps))
+		for i, p := range ps {
+			q[i] = fmt.Sprintf("%q", p)
+		}
+		return "[" + strings.Join(q, ",") + "]"
+	}
+	block := fmt.Sprintf(`"SQI_LOG_CHECKS":{"failOn":%s,"requireLine":%s}`, quote(failOn), quote(requireLine))
+	var b strings.Builder
+	b.WriteString(`{"specificationVersion":"jobtemplate-2023-09","name":"J","extensions":["SQI_LOG_CHECKS"],"steps":[`)
+	for i := range steps {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `{"name":"S%d",%s,"script":{"actions":{"onRun":{"command":"echo"}}}}`, i, block)
+	}
+	b.WriteString("]}")
+	return []byte(b.String())
+}
+
+// lcBudgetErrors returns the template-budget errors among errs.
+func lcBudgetErrors(errs openjd.ValidationErrors) openjd.ValidationErrors {
+	var out openjd.ValidationErrors
+	for _, e := range errs {
+		if strings.Contains(e.Message, "compiled instructions in total") {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// The template-wide instruction budget is one step's worst case: a step of two
+// full lists at the size limit is valid alone, a second one is over, and the
+// overrun is reported once, where it happens.
+func TestLogChecks_TemplateInstructionBudget(t *testing.T) {
+	full := make([]string, 32)
+	for i := range full {
+		full[i] = "a{998}a{1000}" // exactly at the per-pattern limit
+	}
+	tmpl, err := openjd.Parse(lcStepsJSON(1, full, full), openjd.FormatJSON)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if errs := openjd.Validate(tmpl); len(errs) != 0 {
+		t.Fatalf("one step at the worst case: want valid, got %v", errs)
+	}
+
+	tmpl, err = openjd.Parse(lcStepsJSON(3, full, full), openjd.FormatJSON)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	got := lcBudgetErrors(openjd.Validate(tmpl))
+	if len(got) != 1 || got[0].Pointer != "/steps/1/SQI_LOG_CHECKS/failOn/0" {
+		t.Fatalf("want one budget error at /steps/1/SQI_LOG_CHECKS/failOn/0, got %v", got)
+	}
+}
+
+// Validation cost is bounded by the instruction budget however many patterns a
+// submission carries: once the budget is spent, no further pattern is built.
+func TestLogChecks_ValidationCostIsBounded(t *testing.T) {
+	near := make([]string, 32)
+	for i := range near {
+		near[i] = ".{0,999}.{0,999}" // estimated 3996: just under the build ceiling
+	}
+	body := lcStepsJSON(900, near, near)
+	if len(body) < 1<<20 {
+		t.Fatalf("template is %d bytes; the test wants at least 1 MiB", len(body))
+	}
+	tmpl, err := openjd.Parse(body, openjd.FormatJSON)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	start := time.Now()
+	errs := openjd.Validate(tmpl)
+	if d := time.Since(start); d > 10*time.Second {
+		t.Errorf("Validate took %v; the budget should bound it well below that", d)
+	}
+	if n := len(lcBudgetErrors(errs)); n != 1 {
+		t.Errorf("reported the budget %d times, want once", n)
 	}
 }
 

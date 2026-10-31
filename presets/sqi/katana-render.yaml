@@ -70,8 +70,7 @@ readme: |
     batch mode documentation, and the `-t` form is the one Deadline's Katana
     plugin uses.
   - Katana's exit status on a failed render is unknown, and so is the output a
-    failure prints. The `ERROR +\|` check is taken from Deadline's plugin, not
-    observed.
+    failure prints. The `ERROR +\|` check is taken from Deadline's plugin.
   - Foundry's batch mode documentation shows `-t` with ranges and comma lists
     and no step form, so a stepped range is split into single frames instead.
   - Whether `katana --version` works is unknown, so the detector reads the

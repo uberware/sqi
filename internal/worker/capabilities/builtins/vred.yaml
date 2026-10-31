@@ -7,9 +7,12 @@
 #
 # Windows: C:\Program Files\Autodesk\VREDCore-<ver>\bin\WIN64\VREDCore.exe is
 # the folder Autodesk's "VRED Core" basics page gives as the usual location
-# (shown there for 13.1). The VRED Pro path beside it follows the same layout
-# and is the example AWS's vred_render job bundle uses; neither was observed on
-# a machine.
+# (shown there for 13.1). It is unverified.
+#
+# A VRED Pro install is not tagged. The presets run `VREDCore`, which a VRED
+# Pro install does not supply, so tagging one would hand a Pro-only worker
+# VRED jobs that all fail. Running VREDPro.exe in its place is the operator's
+# choice: a `VREDCore` entry in worker.commands, which also advertises the tag.
 #
 # Linux: the installer (VREDCore-<year>.sh --target <dir>) takes its install
 # folder as an argument, and Autodesk documents only "{VRED-Cluster-Root}/bin".
@@ -28,19 +31,15 @@ checks:
   - exe: VREDCore                                                # a VREDCore command the operator provides
   - path_glob: 'C:\Program Files\Autodesk\VREDCore-*\bin\WIN64\VREDCore.exe'  # windows (VRED Core)
     os: windows
-  - path_glob: 'C:\Program Files\Autodesk\VREDPro-*\bin\WIN64\VREDPro.exe'    # windows (VRED Pro)
-    os: windows
   - path_glob: "/opt/Autodesk/VREDCore-*/bin/VREDCore"           # linux (unverified)
     os: linux
   - path_glob: "/opt/Autodesk/VREDCluster-*/bin/VREDCore"        # linux (AWS sample's example, unverified)
     os: linux
 version:
-  from: 'VRED(?:Core|Pro|Cluster)-([0-9]+\.[0-9]+)'
+  from: 'VRED(?:Core|Cluster)-([0-9]+\.[0-9]+)'
 # The presets run a bare `VREDCore`, which no installer puts on PATH, so the
 # worker supplies one from the newest VRED Core install found here, unless the
-# operator or the host already provides one. A VRED Pro install is tagged but
-# never becomes `VREDCore`: running VREDPro.exe in its place is the operator's
-# decision (a `VREDCore` entry in worker.commands).
+# operator or the host already provides one.
 command:
   name: VREDCore
   globs:

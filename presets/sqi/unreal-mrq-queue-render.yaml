@@ -4,7 +4,7 @@ title: Unreal Movie Render Queue Queue Render
 description: >-
   Renders every job of a saved Movie Pipeline Queue asset in an Unreal Engine 5
   project, as a single task on a Windows worker. The editor runs the preset's
-  own Python script, and this preset has never run in Unreal.
+  own Python script. The preset has not been run in Unreal.
 readme: |
   # Unreal Movie Render Queue Queue Render
 
@@ -47,7 +47,7 @@ readme: |
 
   The preset uses `-execcmds` rather than `-ExecutePythonScript`, because a
   render the editor runs in the background must outlive the script that
-  starts it, and a forum report says the editor quits after an
+  starts it, and the editor is reported to quit after an
   `-ExecutePythonScript` script before such a render completes. AWS's
   Deadline Cloud adaptor for Unreal starts its script with `-execcmds` too.
 
@@ -70,8 +70,8 @@ readme: |
   task waits with it and keeps its worker busy indefinitely. Likely causes are
   the Python Editor Script plug-in being disabled (so `py` is an unknown
   console command and the editor idles), an error before `main()`, and a
-  project that never reaches `-execcmds`. This preset sets
-  no timeout, because a sensible limit depends on the queue. Add a `timeout`
+  project that never reaches `-execcmds`. This preset sets no timeout,
+  because a sensible limit depends on the queue. Add a `timeout`
   (in seconds) to the step's `onRun` action in a copy of the preset, longer
   than your slowest queue, and allow for shader compilation: the first render
   of a project on a worker compiles its shaders and can take a very long time.
@@ -259,6 +259,16 @@ template:
                   return params
 
 
+              def object_path(path):
+                  # A soft object path names an asset as Package.Asset; a bare package
+                  # path such as /Game/Maps/Hero names the package, not the asset in it.
+                  # Content Browser paths leave the asset name off, and it is the
+                  # package's last segment, so add it. A path that names its asset is
+                  # kept as it is.
+                  leaf = path.rsplit("/", 1)[-1]
+                  return path if "." in leaf else path + "." + leaf
+
+
               def build_queue(subsystem, params):
                   # The editor's own queue, emptied, then filled with the one job
                   # these parameters describe or with a copy of the saved queue's
@@ -275,8 +285,8 @@ template:
                       if config is None:
                           raise ValueError("no Movie Render Queue config asset at " + params["config"])
                       job = queue.allocate_new_job(unreal.MoviePipelineExecutorJob)
-                      job.sequence = unreal.SoftObjectPath(params["sequence"])
-                      job.map = unreal.SoftObjectPath(params["map"])
+                      job.sequence = unreal.SoftObjectPath(object_path(params["sequence"]))
+                      job.map = unreal.SoftObjectPath(object_path(params["map"]))
                       job.set_configuration(config)
                       job.job_name = params["sequence"].rsplit("/", 1)[-1].split(".")[0]
                   jobs = list(queue.get_jobs())

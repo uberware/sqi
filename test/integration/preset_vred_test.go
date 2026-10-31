@@ -2,7 +2,7 @@
 
 package integration
 
-// preset_vred_test.go — what the VRED presets' golden files cannot show on
+// preset_vred_test.go: what the VRED presets' golden files cannot show on
 // their own: that params.json is JSON a script can decode, that its cost stays
 // inside the worker's EXPR limits at the largest chunk the presets allow, and
 // what the embedded render.py asks VRED to do with it.
@@ -26,7 +26,6 @@ import (
 	"testing"
 
 	"github.com/uberware/sqi/internal/presettest"
-	"github.com/uberware/sqi/internal/store"
 )
 
 // vredPresets are the two VRED presets, which share one render.py and one
@@ -36,18 +35,6 @@ var vredPresets = []string{"vred-render", "vred-viewpoint-render"}
 // vredMaxFramesPerTask is the FramesPerTask maxValue both presets declare and
 // their readmes state.
 const vredMaxFramesPerTask = 1000
-
-// captureVRED expands one VRED preset under params through the production
-// pipeline (presettest.Capture, which resolves phase 3 against the WORKER's
-// default EXPR limits) and returns the snapshot.
-func captureVRED(t *testing.T, preset string, params map[string]string) (presettest.Snapshot, error) {
-	t.Helper()
-	tmpl, err := presettest.PresetTemplate(presettest.SourcePresets, preset)
-	if err != nil {
-		t.Fatalf("PresetTemplate %s: %v", preset, err)
-	}
-	return presettest.Capture(t.Context(), tmpl, presettest.Options{Params: params, Format: store.TemplateFormatYAML})
-}
 
 // vredParams is params.json as the script reads it.
 type vredParams struct {
@@ -69,19 +56,6 @@ func taskFile(t *testing.T, task presettest.TaskSnapshot, name string) string {
 	return ""
 }
 
-// decodeVREDParams decodes params.json strictly: an unknown key is an error, so
-// a key the script does not read cannot slip in unnoticed.
-func decodeVREDParams(t *testing.T, data string) vredParams {
-	t.Helper()
-	dec := json.NewDecoder(strings.NewReader(data))
-	dec.DisallowUnknownFields()
-	var p vredParams
-	if err := dec.Decode(&p); err != nil {
-		t.Fatalf("params.json is not the JSON object the script expects: %v\n%s", err, data)
-	}
-	return p
-}
-
 // TestPresetVRED_ParamsCostAtMaxChunk pins params.json's cost where it is
 // highest. It reads Task.Param.Frame, so it is evaluated at phase 3 on the
 // worker, against the worker's EXPR limits, and grows with the chunk: the
@@ -101,14 +75,14 @@ func TestPresetVRED_ParamsCostAtMaxChunk(t *testing.T) {
 			if preset == "vred-render" {
 				delete(params, "View")
 			}
-			snap, err := captureVRED(t, preset, params)
+			snap, err := capturePreset(t, preset, params)
 			if err != nil {
 				t.Fatalf("a %d-frame chunk must resolve under the worker's default EXPR limits: %v", vredMaxFramesPerTask, err)
 			}
 			if len(snap.Steps) != 1 || len(snap.Steps[0].Tasks) != 1 {
 				t.Fatalf("1-1000 at %d frames per task must be one task, got %+v", vredMaxFramesPerTask, snap.Steps)
 			}
-			p := decodeVREDParams(t, taskFile(t, snap.Steps[0].Tasks[0], "params"))
+			p := decodeStrict[vredParams](t, taskFile(t, snap.Steps[0].Tasks[0], "params"))
 			if len(p.Frames) != vredMaxFramesPerTask || p.Frames[0] != 1 || p.Frames[len(p.Frames)-1] != 1000 {
 				t.Errorf("params.json frames: %d entries from %v, want the %d frames 1 to 1000",
 					len(p.Frames), p.Frames[:min(3, len(p.Frames))], vredMaxFramesPerTask)
@@ -117,7 +91,7 @@ func TestPresetVRED_ParamsCostAtMaxChunk(t *testing.T) {
 			params["FramesPerTask"] = "1001"
 			// The refusal must be the maxValue bound itself, not some other
 			// failure a larger chunk happened to provoke (an EXPR limit, say).
-			_, err = captureVRED(t, preset, params)
+			_, err = capturePreset(t, preset, params)
 			wantRefusal := fmt.Sprintf("/parameterValues/FramesPerTask: value 1001 is above maximum %d", vredMaxFramesPerTask)
 			if err == nil || !strings.Contains(err.Error(), wantRefusal) {
 				t.Errorf("FramesPerTask 1001: err = %v, want the parameter binding refusal %q", err, wantRefusal)
@@ -151,12 +125,12 @@ func TestPresetVRED_ParamsJSONRoundTrips(t *testing.T) {
 			if !strings.ContainsAny(params["OutputFile"], `'"`) || !strings.Contains(params["OutputFile"], " ") {
 				t.Fatalf("quoting case's OutputFile %q needs both quotes and a space", params["OutputFile"])
 			}
-			snap, err := captureVRED(t, preset, params)
+			snap, err := capturePreset(t, preset, params)
 			if err != nil {
 				t.Fatalf("Capture: %v", err)
 			}
 			for _, task := range snap.Steps[0].Tasks {
-				p := decodeVREDParams(t, taskFile(t, task, "params"))
+				p := decodeStrict[vredParams](t, taskFile(t, task, "params"))
 				if want := filepath.FromSlash(params["SceneFile"]); p.Scene != want {
 					t.Errorf("scene = %q, want %q", p.Scene, want)
 				}
@@ -178,21 +152,7 @@ func TestPresetVRED_ParamsJSONRoundTrips(t *testing.T) {
 // the same, so a fix to one cannot miss the other. The script reads "view"
 // only when params.json carries it.
 func TestPresetVRED_ShareOneScript(t *testing.T) {
-	var first string
-	for i, preset := range vredPresets {
-		tmpl, err := presettest.PresetTemplate(presettest.SourcePresets, preset)
-		if err != nil {
-			t.Fatal(err)
-		}
-		script := embeddedFileData(t, tmpl, "render")
-		if i == 0 {
-			first = script
-			continue
-		}
-		if script != first {
-			t.Errorf("%s's render.py differs from %s's", preset, vredPresets[0])
-		}
-	}
+	assertPresetsShareFile(t, vredPresets, "render")
 }
 
 // vredRunner stands in for VRED: it installs recording fakes of the API v1
@@ -391,7 +351,7 @@ func TestPresetVRED_ScriptDrivesVRED(t *testing.T) {
 		},
 	}
 	for _, tc := range tests {
-		snap, err := captureVRED(t, tc.preset, tc.params)
+		snap, err := capturePreset(t, tc.preset, tc.params)
 		if err != nil {
 			t.Fatalf("%s: Capture: %v", tc.name, err)
 		}

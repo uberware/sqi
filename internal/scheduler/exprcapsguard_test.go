@@ -52,20 +52,20 @@ func TestDispatchHasOneGatedPath(t *testing.T) {
 			"function that builds the payload, so the gate cannot be bypassed", gates)
 	}
 
-	// The operator-visible half: the sweep must consult the same gate, or a
-	// task no worker may be given sits ready with nothing said about it.
-	if blocked := productionCallersOf(t, "exprCapsBlock"); len(blocked) != 2 ||
-		!slices.Contains(blocked, "leaseGatesPass") || !slices.Contains(blocked, "evaluateSchedulability") {
-		t.Fatalf("exprCapsBlock is called from %v; want exactly [leaseGatesPass "+
-			"evaluateSchedulability]: the first is the bound, the second is what the "+
-			"operator sees", blocked)
+	// The operator-visible half: the sweep must consult the same gates, or a
+	// task no worker may be given sits ready with nothing said about it. Both
+	// cross-binary gates -- the EXPR caps (exprcaps.go) and the worker-enforced
+	// extensions (extcaps.go) -- are reached only through workerCompatBlock, so
+	// the bound and the explanation cannot consult different sets.
+	for _, gate := range []string{"exprCapsBlock", "workerExtensionBlock"} {
+		if blocked := productionCallersOf(t, gate); len(blocked) != 1 || blocked[0] != "workerCompatBlock" {
+			t.Fatalf("%s is called from %v; want exactly [workerCompatBlock], which runs every "+
+				"cross-binary gate for both of its callers", gate, blocked)
+		}
 	}
-
-	// The worker-enforced extension gate (extcaps.go) has the same two halves:
-	// the bound in leaseGatesPass and the explanation in evaluateSchedulability.
-	if blocked := productionCallersOf(t, "workerExtensionBlock"); len(blocked) != 2 ||
+	if blocked := productionCallersOf(t, "workerCompatBlock"); len(blocked) != 2 ||
 		!slices.Contains(blocked, "leaseGatesPass") || !slices.Contains(blocked, "evaluateSchedulability") {
-		t.Fatalf("workerExtensionBlock is called from %v; want exactly [leaseGatesPass "+
+		t.Fatalf("workerCompatBlock is called from %v; want exactly [leaseGatesPass "+
 			"evaluateSchedulability]: the first is the bound, the second is what the "+
 			"operator sees", blocked)
 	}

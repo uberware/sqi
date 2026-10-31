@@ -2,7 +2,7 @@
 
 package integration
 
-// preset_unreal_test.go — what the Unreal presets' golden files cannot show
+// preset_unreal_test.go: what the Unreal presets' golden files cannot show
 // on their own: that params.json is JSON a script can decode, that its cost is
 // fixed and inside the worker's EXPR limits, that the -execcmds argument is
 // one comma-free line of Python importing the embedded script and carrying no
@@ -31,7 +31,6 @@ import (
 	"testing"
 
 	"github.com/uberware/sqi/internal/presettest"
-	"github.com/uberware/sqi/internal/store"
 )
 
 // unrealPresets are the two Unreal presets, which share one script and one
@@ -45,18 +44,6 @@ const unrealMaxLength = 1024
 // unrealScriptFile is the embedded script's file name, which the -execcmds
 // command imports as a module.
 const unrealScriptFile = "sqi_unreal_render.py"
-
-// captureUnreal expands one Unreal preset under params through the production
-// pipeline (presettest.Capture, which resolves phase 3 against the WORKER's
-// default EXPR limits) and returns the snapshot.
-func captureUnreal(t *testing.T, preset string, params map[string]string) (presettest.Snapshot, error) {
-	t.Helper()
-	tmpl, err := presettest.PresetTemplate(presettest.SourcePresets, preset)
-	if err != nil {
-		t.Fatalf("PresetTemplate %s: %v", preset, err)
-	}
-	return presettest.Capture(t.Context(), tmpl, presettest.Options{Params: params, Format: store.TemplateFormatYAML})
-}
 
 // unrealParams is params.json as the script reads it: the job preset's three
 // asset paths, or the queue preset's queue, and the output directory.
@@ -73,12 +60,7 @@ type unrealParams struct {
 // that each preset's file carries exactly its own keys.
 func decodeUnrealParams(t *testing.T, preset, data string) unrealParams {
 	t.Helper()
-	dec := json.NewDecoder(strings.NewReader(data))
-	dec.DisallowUnknownFields()
-	var p unrealParams
-	if err := dec.Decode(&p); err != nil {
-		t.Fatalf("params.json is not the JSON object the script expects: %v\n%s", err, data)
-	}
+	p := decodeStrict[unrealParams](t, data)
 	job := p.Sequence != nil && p.Map != nil && p.Config != nil && p.Queue == nil
 	queue := p.Sequence == nil && p.Map == nil && p.Config == nil && p.Queue != nil
 	if p.OutputDirectory == nil || (preset == unrealPresets[0] && !job) || (preset == unrealPresets[1] && !queue) {
@@ -119,7 +101,7 @@ func TestPresetUnreal_ParamsCostIsFixed(t *testing.T) {
 				params[key] = long("/Game/" + key + "/")
 			}
 			params["OutputDirectory"] = long(`C:\Renders\`)
-			snap, err := captureUnreal(t, preset, params)
+			snap, err := capturePreset(t, preset, params)
 			if err != nil {
 				t.Fatalf("params.json at every value's maxLength must resolve under the worker's default EXPR limits: %v", err)
 			}
@@ -138,7 +120,7 @@ func TestPresetUnreal_ParamsCostIsFixed(t *testing.T) {
 			}
 
 			params[assetKeys[0]] += "x"
-			_, err = captureUnreal(t, preset, params)
+			_, err = capturePreset(t, preset, params)
 			wantRefusal := fmt.Sprintf("/parameterValues/%s: value length %d is above maximum %d",
 				assetKeys[0], unrealMaxLength+1, unrealMaxLength)
 			if err == nil || !strings.Contains(err.Error(), wantRefusal) {
@@ -176,7 +158,7 @@ func TestPresetUnreal_ParamsJSONRoundTrips(t *testing.T) {
 				!strings.ContainsAny(params["OutputDirectory"], `'"`) {
 				t.Fatalf("quoting case needs quotes, a backslash and a space in the asset path and quotes in OutputDirectory: %v", params)
 			}
-			snap, err := captureUnreal(t, preset, params)
+			snap, err := capturePreset(t, preset, params)
 			if err != nil {
 				t.Fatalf("Capture: %v", err)
 			}
@@ -200,21 +182,7 @@ func TestPresetUnreal_ParamsJSONRoundTrips(t *testing.T) {
 // the same, so a fix to one cannot miss the other. The script tells the two
 // apart by params.json's keys.
 func TestPresetUnreal_ShareOneScript(t *testing.T) {
-	var first string
-	for i, preset := range unrealPresets {
-		tmpl, err := presettest.PresetTemplate(presettest.SourcePresets, preset)
-		if err != nil {
-			t.Fatal(err)
-		}
-		script := embeddedFileData(t, tmpl, "render")
-		if i == 0 {
-			first = script
-			continue
-		}
-		if script != first {
-			t.Errorf("%s's script differs from %s's", preset, unrealPresets[0])
-		}
-	}
+	assertPresetsShareFile(t, unrealPresets, "render")
 }
 
 // unrealExecCmds matches the -execcmds argument: one Python expression that
@@ -245,7 +213,7 @@ func TestPresetUnreal_ExecCmdsImportsTheScript(t *testing.T) {
 				if c.Name != "quoting" && c.Name != "default" {
 					continue
 				}
-				snap, err := captureUnreal(t, preset, c.Params)
+				snap, err := capturePreset(t, preset, c.Params)
 				if err != nil {
 					t.Fatalf("%s: Capture: %v", c.Name, err)
 				}
@@ -301,7 +269,7 @@ func TestPresetUnreal_SessionFolderThatBreaksExecCmdsIsRefused(t *testing.T) {
 				t.Skipf("the temporary directory did not follow the environment: %s", os.TempDir())
 			}
 			for _, preset := range unrealPresets {
-				_, err := captureUnreal(t, preset, unrealBaseParams(preset))
+				_, err := capturePreset(t, preset, unrealBaseParams(preset))
 				want := "holds a comma, a quote or a backslash, which an Unreal -execcmds command cannot carry; set worker.session_dir to a folder without one"
 				if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), name) {
 					t.Errorf("%s with a session folder under %q: err = %v, want the refusal %q naming the folder", preset, tmp, err, want)
@@ -319,7 +287,7 @@ func TestPresetUnreal_SessionFolderThatBreaksExecCmdsIsRefused(t *testing.T) {
 //
 // argv: locate, events, fail, script, record, elsewhere (an empty folder),
 // bootstrap, assets. locate says how the script can find params.json, and
-// ONLY that way works: "import" runs the preset's own -execcmds Python
+// only that way works: "import" runs the preset's own -execcmds Python
 // (bootstrap) from the empty folder, so the script is imported as a module and
 // has __file__; "cwd" executes the script's text with no __file__ from its own
 // folder; "none" does the same from the empty folder, so nothing finds it.
@@ -628,6 +596,17 @@ func runUnrealScript(t *testing.T, python string, task presettest.TaskSnapshot, 
 // which differ per run.
 var unrealNotFound = regexp.MustCompile(`params\.json not found; looked at [^"]*`)
 
+// unrealObjectPath is the object path the script hands the movie pipeline for
+// an asset path: Package.Asset, the asset named after the package's last
+// segment unless the path already names it.
+func unrealObjectPath(path string) string {
+	leaf := path[strings.LastIndex(path, "/")+1:]
+	if strings.Contains(leaf, ".") {
+		return path
+	}
+	return path + "." + leaf
+}
+
 // TestPresetUnreal_ScriptDrivesUnreal runs the shipped script, as resolved for
 // a real task, under a real Python with the unreal module faked, and pins the
 // calls it makes: the editor's queue emptied and filled with the job the
@@ -673,7 +652,7 @@ func TestPresetUnreal_ScriptDrivesUnreal(t *testing.T) {
 	built := func(sequence, name string) []call {
 		return append(append([]call{}, start...),
 			call{"load_asset", cfg}, call{"allocate_new_job", "MoviePipelineExecutorJob"},
-			call{"set", "sequence", sequence}, call{"set", "map", mapA}, call{"set_configuration", cfg},
+			call{"set", "sequence", unrealObjectPath(sequence)}, call{"set", "map", mapA + ".Hero"}, call{"set_configuration", cfg},
 			call{"set", "job_name", name}, call{"get_jobs"})
 	}
 	copied := append(append([]call{}, start...), call{"load_asset", queueA}, call{"copy_from", queueA}, call{"get_jobs"})
@@ -743,6 +722,12 @@ func TestPresetUnreal_ScriptDrivesUnreal(t *testing.T) {
 			wantOK: true,
 		},
 		{
+			name: "an object path is kept as it is", preset: job, params: jobParams(seq+".SEQ_Hero", ""),
+			events: []string{"finished:1"},
+			want:   join(built(seq+".SEQ_Hero", "SEQ_Hero"), started, events("finished:1"), ok),
+			wantOK: true,
+		},
+		{
 			name: "queue renders every job to the output directory", preset: queue, params: queueParams(`C:\Renders\Queue`),
 			assets: twoJobs, events: []string{"job:1:Hero A", "job:1:Hero B", "finished:1"},
 			want:   join(copied, output("Hero A", "Hero B"), started, events("job:1:Hero A", "job:1:Hero B", "finished:1"), ok),
@@ -806,8 +791,8 @@ func TestPresetUnreal_ScriptDrivesUnreal(t *testing.T) {
 			want: join(start, []call{
 				{"load_asset", cfg},
 				{"allocate_new_job", "MoviePipelineExecutorJob"},
-				{"set", "sequence", seq},
-				{"set", "map", mapA},
+				{"set", "sequence", seq + ".SEQ_Hero"},
+				{"set", "map", mapA + ".Hero"},
 				{"set_configuration", cfg},
 			}, failed("RuntimeError: the fake set_configuration failed")),
 			wantFail: "RuntimeError: the fake set_configuration failed",
@@ -839,7 +824,7 @@ func TestPresetUnreal_ScriptDrivesUnreal(t *testing.T) {
 		},
 	}
 	for _, tc := range tests {
-		snap, err := captureUnreal(t, tc.preset, tc.params)
+		snap, err := capturePreset(t, tc.preset, tc.params)
 		if err != nil {
 			t.Fatalf("%s: Capture: %v", tc.name, err)
 		}

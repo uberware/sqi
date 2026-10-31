@@ -75,11 +75,12 @@ readme: |
   ## Requirements
 
   - Workers tagged `attr.worker.tag.vred = true`. The worker tags a VRED Core
-    or VRED Pro install it finds.
+    install it finds, but not a VRED Pro one, which supplies no `VREDCore`.
   - A `VREDCore` command the worker can resolve: its `worker.commands` entry,
     a `VREDCore` on its `PATH`, or the VRED Core install it detects. On a
     Windows worker with only VRED Pro, map `VREDCore` to `VREDPro.exe` in
-    `worker.commands`; the worker never does that by itself.
+    `worker.commands`, which also tags the worker; the worker never does that
+    by itself.
   - A VRED render licence on every worker that renders.
   - `-insecure_python` is passed because VRED 2024 and later run scene Python
     in a sandbox by default, and the script must read `params.json`.
@@ -91,6 +92,11 @@ readme: |
 
   ## What has not been verified
 
+  - Whether `startRenderToFile` returns only once every frame is written.
+    The script prints `SQI_RENDER: OK` as soon as it returns and nothing
+    checks the files, so if it returns early, `terminateVred()` ends the
+    render and the task succeeds with frames missing. Check the first task's
+    output for every frame before relying on this preset.
   - No VRED has executed this preset. The command line is the one AWS's VRED
     samples use; Autodesk's command-line reference documents `-postpython`
     as running Python commands (or a base64 script) after the scene loads,
@@ -107,8 +113,8 @@ readme: |
     that stays open would hang the task, not fail it (see the timeout above).
   - How VRED numbers the files of an animation rendered to Output File is not
     documented here; check the first task's output before a long run.
-  - The Linux install paths the detector looks for are guesses: the installer
-    takes a target folder and Autodesk documents no default.
+  - The Linux install paths the detector looks for are unverified: the
+    installer takes a target folder and Autodesk documents no default.
 category: Rendering
 version: 1.0.0
 template:
@@ -272,7 +278,7 @@ template:
               - "-fast_start"
               - "-hide_gui"
               - "-postpython"
-              # Python CODE, not a path: -postpython runs commands. It executes
+              # Python code, not a path: -postpython runs commands. It executes
               # render.py with __file__ set, in one namespace of its own built
               # from VRED's globals, so the script finds params.json beside it
               # and its functions see one another. One expression, so it runs

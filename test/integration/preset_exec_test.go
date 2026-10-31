@@ -266,7 +266,7 @@ func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseN
 
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
-	// The case's stub_env goes to the WORKER, not the stub: task processes
+	// The case's stub_env goes to the worker, not the stub: task processes
 	// inherit the worker's environment, so SQI_STUB_EXIT=3 here reaches the stub
 	// through the real worker (and through /bin/sh for a stub_inner case). An
 	// outcome case that did not arrive would complete instead of failing.
@@ -324,10 +324,11 @@ func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseN
 		for i, rec := range recs {
 			got[i] = rec.Args
 		}
-		for _, msg := range presettest.ArgvSetDiff(c.ExpectInnerArgv, got) {
-			if failing && strings.HasPrefix(msg, "expected argv never observed") {
-				continue // a failed job need not have run every task
-			}
+		diff := presettest.ArgvSetDiff
+		if failing {
+			diff = presettest.ArgvUnexpected // a failed job need not have run every task
+		}
+		for _, msg := range diff(c.ExpectInnerArgv, got) {
 			t.Error(msg)
 		}
 	}
@@ -350,7 +351,7 @@ func stubEnvPairs(c presettest.Case) []string {
 
 // TestPresetOutcomes runs every fixture case that states an outcome
 // (expect_status) through a real server and a real worker, with the stub
-// behaving as the case's stub_env says, and asserts the JOB'S status and
+// behaving as the case's stub_env says, and asserts the job's status and
 // failure reason rather than an argv. It is how a preset's failure handling --
 // an SQI_LOG_CHECKS pattern, a wrapper's exit status -- is tested without the
 // vendor application: "the stub prints this line and exits 0, the job fails".
@@ -630,13 +631,14 @@ func assertObservedMatchesComputed(t *testing.T, snap presettest.Snapshot, recs 
 	for _, rec := range recs {
 		observed = append(observed, append([]string{rec.Command}, foldFilePaths(rec.Args, files)...))
 	}
-	for _, msg := range presettest.ArgvSetDiff(computed, observed) {
-		// A failed job need not have run every task, so an expected argv that
-		// never appeared is not an error there; one that appeared and was not
-		// expected still is.
-		if subsetOnly && strings.HasPrefix(msg, "expected argv never observed") {
-			continue
-		}
+	// A failed job need not have run every task, so an expected argv that never
+	// appeared is not an error there; one that appeared and was not expected
+	// still is.
+	diff := presettest.ArgvSetDiff
+	if subsetOnly {
+		diff = presettest.ArgvUnexpected
+	}
+	for _, msg := range diff(computed, observed) {
 		t.Error(msg)
 	}
 }
@@ -678,7 +680,7 @@ func materializedFileNames(snap presettest.Snapshot) map[string]bool {
 // foldFilePaths replaces every argument that is an absolute path to one of files
 // with a stable placeholder. See [assertObservedMatchesComputed].
 //
-// A path QUOTED INSIDE an argument is folded too: a host-script preset hands
+// A path quoted inside an argument is folded too: a host-script preset hands
 // the application code that names its script (VRED's -postpython carries
 // '<session>/render.py' as a Python literal, doubled backslashes and all on
 // Windows), so the session directory sits in the middle of the argument rather
@@ -701,7 +703,7 @@ func foldFilePaths(args []string, files map[string]bool) []string {
 // '<FILE:name>'. Single quotes only: that is how repr_py writes a path holding
 // no quote, and a session directory holds none.
 //
-// A BRACE-quoted path is folded the same way ({/tmp/.../render.py},
+// A brace-quoted path is folded the same way ({/tmp/.../render.py},
 // {C:\Users\...\render.py}): that is how Modo's -cmd:@ argument quotes the
 // script and the parameters file, with single backslashes since no Python
 // literal is involved. A session directory holds no brace either.

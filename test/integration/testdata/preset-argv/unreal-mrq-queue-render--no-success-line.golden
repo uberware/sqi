@@ -103,6 +103,16 @@ task 1/1  name="Render"
         return params
     
     
+    def object_path(path):
+        # A soft object path names an asset as Package.Asset; a bare package
+        # path such as /Game/Maps/Hero names the package, not the asset in it.
+        # Content Browser paths leave the asset name off, and it is the
+        # package's last segment, so add it. A path that names its asset is
+        # kept as it is.
+        leaf = path.rsplit("/", 1)[-1]
+        return path if "." in leaf else path + "." + leaf
+    
+    
     def build_queue(subsystem, params):
         # The editor's own queue, emptied, then filled with the one job
         # these parameters describe or with a copy of the saved queue's
@@ -119,8 +129,8 @@ task 1/1  name="Render"
             if config is None:
                 raise ValueError("no Movie Render Queue config asset at " + params["config"])
             job = queue.allocate_new_job(unreal.MoviePipelineExecutorJob)
-            job.sequence = unreal.SoftObjectPath(params["sequence"])
-            job.map = unreal.SoftObjectPath(params["map"])
+            job.sequence = unreal.SoftObjectPath(object_path(params["sequence"]))
+            job.map = unreal.SoftObjectPath(object_path(params["map"]))
             job.set_configuration(config)
             job.job_name = params["sequence"].rsplit("/", 1)[-1].split(".")[0]
         jobs = list(queue.get_jobs())

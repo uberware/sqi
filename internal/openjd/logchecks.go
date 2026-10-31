@@ -5,6 +5,7 @@ package openjd
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strconv"
@@ -21,6 +22,13 @@ const (
 	maxLogCheckPatterns = 32
 	// maxLogCheckPatternBytes is the longest a single pattern may be.
 	maxLogCheckPatternBytes = 1024
+	// maxLogCheckTemplateInsts bounds the programs all of a template's patterns
+	// compile to, together. Validation builds each pattern's program to measure
+	// it, so without a template-wide bound the cost of a submission grows with
+	// its number of steps. It is one step's worst case (two full lists of
+	// patterns at the size limit), so any step that is valid on its own is valid
+	// in any template.
+	maxLogCheckTemplateInsts = 2 * maxLogCheckPatterns * logpattern.MaxProgramInsts
 )
 
 // LogChecks is the parsed SQI_LOG_CHECKS block of one step.
@@ -62,12 +70,7 @@ func decodeLogChecks(v any) *LogChecks {
 		lc.problems = append(lc.problems, logCheckProblem{message: "must be a mapping with failOn and/or requireLine"})
 		return lc
 	}
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
+	for _, k := range slices.Sorted(maps.Keys(m)) {
 		switch k {
 		case "failOn":
 			lc.FailOn = decodeLogCheckList(lc, m[k], "/failOn")
@@ -292,13 +295,14 @@ func validateLogChecks(t *JobTemplate) ValidationErrors {
 		})
 	}
 	anyBlock := false
+	budget := maxLogCheckTemplateInsts
 	for i, s := range t.Steps {
 		errs = append(errs, validateSQIStepKeys(t, s, i)...)
 		if s.LogChecks == nil || !declared {
 			continue
 		}
 		anyBlock = true
-		errs = append(errs, validateLogChecksBlock(s.LogChecks, fmt.Sprintf("/steps/%d/%s", i, ExtensionLogChecks))...)
+		errs = append(errs, validateLogChecksBlock(s.LogChecks, fmt.Sprintf("/steps/%d/%s", i, ExtensionLogChecks), &budget)...)
 	}
 	if declared && !anyBlock {
 		errs = append(errs, ValidationError{
@@ -334,8 +338,10 @@ func validateSQIStepKeys(t *JobTemplate, s StepTemplate, idx int) ValidationErro
 	return errs
 }
 
-// validateLogChecksBlock checks one decoded block. ptr is its JSON pointer.
-func validateLogChecksBlock(lc *LogChecks, ptr string) ValidationErrors {
+// validateLogChecksBlock checks one decoded block. ptr is its JSON pointer and
+// budget the template's remaining instruction budget (see
+// validateLogCheckPatterns).
+func validateLogChecksBlock(lc *LogChecks, ptr string, budget *int) ValidationErrors {
 	var errs ValidationErrors
 	for _, p := range lc.problems {
 		errs = append(errs, ValidationError{Pointer: ptr + p.suffix, Message: p.message})
@@ -346,8 +352,8 @@ func validateLogChecksBlock(lc *LogChecks, ptr string) ValidationErrors {
 			Message: "requires at least one of failOn or requireLine to hold a pattern",
 		})
 	}
-	errs = append(errs, validateLogCheckPatterns(lc.FailOn, ptr+"/failOn")...)
-	errs = append(errs, validateLogCheckPatterns(lc.RequireLine, ptr+"/requireLine")...)
+	errs = append(errs, validateLogCheckPatterns(lc.FailOn, ptr+"/failOn", budget)...)
+	errs = append(errs, validateLogCheckPatterns(lc.RequireLine, ptr+"/requireLine", budget)...)
 	return errs
 }
 
@@ -355,7 +361,14 @@ func validateLogChecksBlock(lc *LogChecks, ptr string) ValidationErrors {
 // RE2-syntax and compiled-program-size (logpattern.MaxProgramInsts) limits. The
 // size limit is the one the worker enforces too, so a pattern accepted here is
 // never refused at runtime.
-func validateLogCheckPatterns(patterns []string, ptr string) ValidationErrors {
+//
+// budget is what the template's patterns may still compile to, in
+// instructions, shared by every list (maxLogCheckTemplateInsts). Each pattern
+// that would be built is charged its estimated size before it is built; once
+// the budget is spent, the error is reported once and no further pattern is
+// built, so validation costs at most the budget however long the template.
+// A negative budget means it has been spent and reported.
+func validateLogCheckPatterns(patterns []string, ptr string, budget *int) ValidationErrors {
 	var errs ValidationErrors
 	if len(patterns) > maxLogCheckPatterns {
 		errs = append(errs, ValidationError{
@@ -374,15 +387,44 @@ func validateLogCheckPatterns(patterns []string, ptr string) ValidationErrors {
 				Message: fmt.Sprintf("pattern is %d bytes; at most %d bytes are allowed", len(p), maxLogCheckPatternBytes),
 			})
 		default:
-			var tooLarge *logpattern.TooLargeError
-			_, err := logpattern.Compile(p)
-			switch {
-			case errors.As(err, &tooLarge):
-				errs = append(errs, ValidationError{Pointer: pp, Message: "pattern " + tooLarge.Error()})
-			case err != nil:
-				errs = append(errs, ValidationError{Pointer: pp, Message: "invalid regular expression: " + err.Error()})
+			if e, ok := compileLogCheckPattern(p, pp, budget); !ok {
+				errs = append(errs, e)
 			}
 		}
 	}
 	return errs
+}
+
+// compileLogCheckPattern checks one pattern against RE2 syntax and the size
+// bound, charging budget (see validateLogCheckPatterns) for a pattern it
+// builds. It returns the error to report, and false, when there is one.
+func compileLogCheckPattern(p, ptr string, budget *int) (ValidationError, bool) {
+	if *budget < 0 {
+		return ValidationError{}, true
+	}
+	n, err := logpattern.Estimate(p)
+	if err != nil {
+		return ValidationError{Pointer: ptr, Message: "invalid regular expression: " + err.Error()}, false
+	}
+	// A pattern over logpattern.EstimateCeiling is refused unbuilt, so only
+	// the rest are charged.
+	if n <= logpattern.EstimateCeiling {
+		if n > *budget {
+			*budget = -1
+			return ValidationError{
+				Pointer: ptr,
+				Message: fmt.Sprintf("pattern takes the template's SQI_LOG_CHECKS patterns over %d compiled instructions in total, the most allowed; later patterns are not checked", maxLogCheckTemplateInsts),
+			}, false
+		}
+		*budget -= n
+	}
+	var tooLarge *logpattern.TooLargeError
+	_, err = logpattern.Compile(p)
+	switch {
+	case errors.As(err, &tooLarge):
+		return ValidationError{Pointer: ptr, Message: "pattern " + tooLarge.Error()}, false
+	case err != nil:
+		return ValidationError{Pointer: ptr, Message: "invalid regular expression: " + err.Error()}, false
+	}
+	return ValidationError{}, true
 }

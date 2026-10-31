@@ -36,7 +36,7 @@ var uuidPattern = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{
 //
 // Braces end a path as quotes and whitespace do: Modo's -cmd:@{script} {params}
 // quotes each path in braces, and a pattern that ran on through them would
-// swallow the closing brace and the second path, hiding the argument's shape.
+// swallow the closing brace and the second path.
 var sessionDirPattern = regexp.MustCompile(`(?:[A-Za-z]:)?(?:/private)?(?:[\\/][^\s"'{}]*)?presettest-sessions-[0-9]+(?:[\\/][^\s"'{}]*)?`)
 
 // Render returns the golden-file text for s: a header naming the preset, the
@@ -93,11 +93,10 @@ func Render(s Snapshot) string {
 }
 
 // renderLogChecks writes a step's SQI_LOG_CHECKS block, one line per pattern,
-// directly under the step header. A step with no checks writes nothing, which
-// is what keeps every golden written before the extension existed byte for byte
-// what it was. Patterns are quoted with %q so a regex's own backslashes and
-// quotes are unambiguous; they are not normalized, since a pattern is never a
-// path or an id.
+// directly under the step header. A step with no checks writes nothing.
+// Patterns are quoted with %q so a regex's own backslashes and quotes are
+// unambiguous; they are not normalized, since a pattern is never a path or an
+// id.
 func renderLogChecks(b *strings.Builder, lc *protocol.LogChecks) {
 	if lc == nil {
 		return
@@ -146,10 +145,10 @@ func normalize(hostPaths *strings.Replacer, s string) string {
 // DERIVES in that directory -- "..._seg_00000.mp4", which appears in argv and
 // inside the generated concat list -- converts along with it.
 //
-// The escaped spellings matter because the single-backslash pattern cannot
-// match inside a doubled one: it would at best convert a fragment and leave a
-// half-converted path in the golden. The longest-first ordering below makes the
-// escaped form win wherever both could apply.
+// The escaped spellings are needed because the single-backslash pattern cannot
+// match inside a doubled one and would leave a half-converted path in the
+// golden. The longest-first ordering below makes the escaped form win wherever
+// both could apply.
 //
 // On a POSIX host filepath.FromSlash is the identity, so every pair is dropped
 // and this returns nil: the rendered text there is left unchanged.

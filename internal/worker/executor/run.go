@@ -211,7 +211,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	}
 
 	// ── Execute process ───────────────────────────────────────────────────────
-	result := e.execProcess(taskCtx, msg, sess, run, lookup, resolvedRun, resolvedEnvVars, checker)
+	result := e.execProcess(taskCtx, msg, sess, run, lookup, resolvedRun, resolvedEnvVars, checker.wrap(e.outputHandler))
 
 	// ── Flush buffered log output ───────────────────────────────────
 	e.flushTaskLogs(ctx, msg, sess.ID)
@@ -257,9 +257,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 			slog.Int("pid", result.PID),
 			slog.Duration("duration", result.duration()),
 		)
-		e.statusPub.Terminal(context.Background(), msg, sess.ID, "failed", &exitCode, openjdFailReason, lp, result.EndedAt)
-		e.m.TasksTotal.WithLabelValues("failed").Inc()
-		e.m.ExecDuration.WithLabelValues("failed").Observe(result.duration().Seconds())
+		e.publishTerminal(msg, sess.ID, "failed", &exitCode, openjdFailReason, lp, result)
 
 	case result.Canceled:
 		// Task was killed due to context cancellation.  If DrainAndShutdown set
@@ -277,9 +275,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 				slog.Int("pid", result.PID),
 				slog.Duration("duration", result.duration()),
 			)
-			e.statusPub.Terminal(context.Background(), msg, sess.ID, "failed", nil, protocol.MessageWorkerShutdown, lp, result.EndedAt)
-			e.m.TasksTotal.WithLabelValues("failed").Inc()
-			e.m.ExecDuration.WithLabelValues("failed").Observe(result.duration().Seconds())
+			e.publishTerminal(msg, sess.ID, "failed", nil, protocol.MessageWorkerShutdown, lp, result)
 		} else {
 			// Per-task server cancel.
 			e.logger.InfoContext(
@@ -290,9 +286,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 				slog.Int("pid", result.PID),
 				slog.Duration("duration", result.duration()),
 			)
-			e.statusPub.Terminal(context.Background(), msg, sess.ID, "canceled", nil, "", lp, result.EndedAt)
-			e.m.TasksTotal.WithLabelValues("canceled").Inc()
-			e.m.ExecDuration.WithLabelValues("canceled").Observe(result.duration().Seconds())
+			e.publishTerminal(msg, sess.ID, "canceled", nil, "", lp, result)
 		}
 
 	case result.TimedOut:
@@ -309,9 +303,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 			slog.Int("timeout_seconds", msg.OnRun.TimeoutSeconds),
 			slog.Duration("duration", result.duration()),
 		)
-		e.statusPub.Terminal(context.Background(), msg, sess.ID, "failed", &exitCode, reason, lp, result.EndedAt)
-		e.m.TasksTotal.WithLabelValues("failed").Inc()
-		e.m.ExecDuration.WithLabelValues("failed").Observe(result.duration().Seconds())
+		e.publishTerminal(msg, sess.ID, "failed", &exitCode, reason, lp, result)
 
 	case result.Err != nil:
 		// Process failed to start or produced an unexpected wait error.
@@ -328,9 +320,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 			slog.String("session_id", sess.ID),
 			slog.Any("error", result.Err),
 		)
-		e.statusPub.Terminal(context.Background(), msg, sess.ID, "failed", &exitCode, reason, lp, result.EndedAt)
-		e.m.TasksTotal.WithLabelValues("failed").Inc()
-		e.m.ExecDuration.WithLabelValues("failed").Observe(result.duration().Seconds())
+		e.publishTerminal(msg, sess.ID, "failed", &exitCode, reason, lp, result)
 
 	case result.ExitCode != 0:
 		// Non-zero exit code → failure.
@@ -346,9 +336,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 			slog.Int("pid", result.PID),
 			slog.Duration("duration", result.duration()),
 		)
-		e.statusPub.Terminal(context.Background(), msg, sess.ID, "failed", &exitCode, reason, lp, result.EndedAt)
-		e.m.TasksTotal.WithLabelValues("failed").Inc()
-		e.m.ExecDuration.WithLabelValues("failed").Observe(result.duration().Seconds())
+		e.publishTerminal(msg, sess.ID, "failed", &exitCode, reason, lp, result)
 
 	case checkFailed:
 		// The process would have succeeded, but its output failed the step's
@@ -365,8 +353,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 
 // completeSucceeded stages a successful task's outputs out and publishes its
 // terminal "succeeded" status, or the "failed" one stageOutputs publishes when
-// staging out fails. Extracted from runTask to keep its cyclomatic complexity
-// within the project limit.
+// staging out fails.
 func (e *Executor) completeSucceeded(ctx context.Context, msg *protocol.AssignMsg, sessID, scratchDir string, result processResult, lp *int, failed *bool) {
 	if !e.stageOutputs(ctx, msg, sessID, scratchDir, failed) {
 		e.m.ExecDuration.WithLabelValues("failed").Observe(result.duration().Seconds())
@@ -381,9 +368,7 @@ func (e *Executor) completeSucceeded(ctx context.Context, msg *protocol.AssignMs
 		slog.Int("pid", result.PID),
 		slog.Duration("duration", result.duration()),
 	)
-	e.statusPub.Terminal(context.Background(), msg, sessID, "succeeded", &zero, "", lp, result.EndedAt)
-	e.m.TasksTotal.WithLabelValues("succeeded").Inc()
-	e.m.ExecDuration.WithLabelValues("succeeded").Observe(result.duration().Seconds())
+	e.publishTerminal(msg, sessID, "succeeded", &zero, "", lp, result)
 }
 
 // failLogChecks publishes the terminal "failed" status for a task whose process
@@ -401,9 +386,15 @@ func (e *Executor) failLogChecks(ctx context.Context, msg *protocol.AssignMsg, s
 		slog.Int("pid", result.PID),
 		slog.Duration("duration", result.duration()),
 	)
-	e.statusPub.Terminal(context.Background(), msg, sessID, "failed", &exitCode, reason, lp, result.EndedAt)
-	e.m.TasksTotal.WithLabelValues("failed").Inc()
-	e.m.ExecDuration.WithLabelValues("failed").Observe(result.duration().Seconds())
+	e.publishTerminal(msg, sessID, "failed", &exitCode, reason, lp, result)
+}
+
+// publishTerminal publishes a task's terminal status and records it in the
+// task metrics under the same status label.
+func (e *Executor) publishTerminal(msg *protocol.AssignMsg, sessID, status string, exitCode *int, reason string, lp *int, result processResult) {
+	e.statusPub.Terminal(context.Background(), msg, sessID, status, exitCode, reason, lp, result.EndedAt)
+	e.m.TasksTotal.WithLabelValues(status).Inc()
+	e.m.ExecDuration.WithLabelValues(status).Observe(result.duration().Seconds())
 }
 
 // resolveAssignment resolves the OpenJD {{...}} format strings for a task:
@@ -585,8 +576,9 @@ func (e *Executor) failResolution(ctx context.Context, msg *protocol.AssignMsg, 
 // [processResult.TimedOut] / [processResult.Canceled] for forced termination.
 // resolvedRun is the OnRun action with its format strings already resolved by
 // the caller; envVars is the merged, format-string-resolved environment-variable
-// map to apply on top of the inherited process environment.
-func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, sess *session.Session, run *taskRun, lookup *pathmap.Lookup, resolvedRun *protocol.Action, envVars map[string]string, checker *logChecker) processResult {
+// map to apply on top of the inherited process environment; handler receives
+// every scrubbed output line.
+func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, sess *session.Session, run *taskRun, lookup *pathmap.Lookup, resolvedRun *protocol.Action, envVars map[string]string, handler OutputHandler) processResult {
 	// Apply path-delivery transformations: swap_in_place substitutes paths in
 	// the action, command_flags appends rendered flag strings, and environment
 	// sets the configured variable.  translation_file is handled at session/
@@ -715,10 +707,9 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	// deadlocks (if one pipe fills up waiting for the other to be drained,
 	// both sides block indefinitely).
 	//
-	// With SQI_LOG_CHECKS the handler is wrapped so the checker sees each line
+	// With SQI_LOG_CHECKS the caller wraps handler so the checker sees each line
 	// after redaction (scanOutput scrubs before it calls the handler), the same
 	// text the task log shows.
-	handler := checker.wrap(e.outputHandler)
 	var readWg sync.WaitGroup
 	readWg.Add(2)
 	go func() {
@@ -1112,7 +1103,7 @@ func hasDelivery(ds []protocol.PathDelivery, kind string) bool {
 // preExecValidate runs the pre-exec steps that sit between resolveAssignment
 // and the process launch: (1) compiling the step's SQI_LOG_CHECKS, (2) the s3://
 // path guard and (3) step embedded-file materialization. Combining them keeps
-// runTask's cyclomatic complexity within the project limit. Returns the log
+// runTask's cyclomatic complexity within the project limit. It returns the log
 // checker (nil when the step has no checks) and true when all steps pass; false
 // when any failed the task (caller must return).
 func (e *Executor) preExecValidate(

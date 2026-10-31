@@ -122,6 +122,51 @@ func TestDetectorValidate_Command(t *testing.T) {
 	}
 }
 
+// assertCommandGlobsPick checks that d's command globs for goos match exe and
+// none of others; what names the executable in the error. Paths compare with
+// forward slashes, so one pattern serves every platform's separator.
+func assertCommandGlobsPick(t *testing.T, d Detector, goos, exe string, others []string, what string) {
+	t.Helper()
+	if commandGlobMatch(t, d, goos, exe) == "" {
+		t.Errorf("no %s command glob matches the executable %s", goos, exe)
+	}
+	for _, other := range others {
+		if g := commandGlobMatch(t, d, goos, other); g != "" {
+			t.Errorf("%s glob %q matched %s, which is not %s", goos, g, other, what)
+		}
+	}
+}
+
+// commandGlobMatch returns the first of d's command globs that applies on goos
+// and matches file, or "" when none does.
+func commandGlobMatch(t *testing.T, d Detector, goos, file string) string {
+	t.Helper()
+	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
+	for _, g := range d.Command.Globs {
+		if g.OS != "" && g.OS != goos {
+			continue
+		}
+		ok, err := path.Match(norm(g.PathGlob), norm(file))
+		if err != nil {
+			t.Fatalf("bad pattern %q: %v", g.PathGlob, err)
+		}
+		if ok {
+			return g.PathGlob
+		}
+	}
+	return ""
+}
+
+// envWithCommandAt returns a fakeEnv on goos in which every one of d's command
+// globs finds files.
+func envWithCommandAt(d Detector, goos string, files ...string) fakeEnv {
+	env := fakeEnv{goos: goos, globs: map[string][]string{}}
+	for _, g := range d.Command.Globs {
+		env.globs[g.PathGlob] = files
+	}
+	return env
+}
+
 // TestNukeDetector_CommandFindsTheExecutableOnEveryPlatform checks the shipped
 // command globs against the default install of Nuke 17.1v2 on each platform,
 // laid out as Foundry documents it (Linux: /usr/local/Nuke17.1v2/Nuke17.1;
@@ -132,7 +177,6 @@ func TestNukeDetector_CommandFindsTheExecutableOnEveryPlatform(t *testing.T) {
 	if d.Command == nil || d.Command.Name != "nuke" {
 		t.Fatalf("the nuke detector has no command named nuke: %+v", d.Command)
 	}
-	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
 	cases := []struct {
 		goos string
 		exe  string
@@ -144,34 +188,8 @@ func TestNukeDetector_CommandFindsTheExecutableOnEveryPlatform(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.goos, func(t *testing.T) {
-			matches := func(file string) (matched bool, glob string) {
-				for _, g := range d.Command.Globs {
-					if g.OS != "" && g.OS != tc.goos {
-						continue
-					}
-					ok, err := path.Match(norm(g.PathGlob), norm(file))
-					if err != nil {
-						t.Fatalf("bad pattern %q: %v", g.PathGlob, err)
-					}
-					if ok {
-						return true, g.PathGlob
-					}
-				}
-				return false, ""
-			}
-			if ok, _ := matches(tc.exe); !ok {
-				t.Errorf("no %s command glob matches the executable %s", tc.goos, tc.exe)
-			}
-			for _, other := range tc.not {
-				if ok, g := matches(other); ok {
-					t.Errorf("%s glob %q matched %s, which is not the Nuke executable", tc.goos, g, other)
-				}
-			}
-			env := fakeEnv{goos: tc.goos, globs: map[string][]string{}}
-			for _, g := range d.Command.Globs {
-				env.globs[g.PathGlob] = []string{tc.exe}
-			}
-			got, ok := d.FindCommand(env)
+			assertCommandGlobsPick(t, d, tc.goos, tc.exe, tc.not, "the Nuke executable")
+			got, ok := d.FindCommand(envWithCommandAt(d, tc.goos, tc.exe))
 			if !ok || got.Name != "nuke" || got.Path != tc.exe || got.Version != "17.1" {
 				t.Errorf("FindCommand = %+v (found %v), want nuke 17.1 at %s", got, ok, tc.exe)
 			}
@@ -189,7 +207,6 @@ func TestKatanaDetector_CommandFindsTheExecutableOnEveryPlatform(t *testing.T) {
 	if d.Command == nil || d.Command.Name != "katana" {
 		t.Fatalf("the katana detector has no command named katana: %+v", d.Command)
 	}
-	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
 	cases := []struct {
 		name string
 		goos string
@@ -202,34 +219,8 @@ func TestKatanaDetector_CommandFindsTheExecutableOnEveryPlatform(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			matches := func(file string) (matched bool, glob string) {
-				for _, g := range d.Command.Globs {
-					if g.OS != "" && g.OS != tc.goos {
-						continue
-					}
-					ok, err := path.Match(norm(g.PathGlob), norm(file))
-					if err != nil {
-						t.Fatalf("bad pattern %q: %v", g.PathGlob, err)
-					}
-					if ok {
-						return true, g.PathGlob
-					}
-				}
-				return false, ""
-			}
-			if ok, _ := matches(tc.exe); !ok {
-				t.Errorf("no %s command glob matches the executable %s", tc.goos, tc.exe)
-			}
-			for _, other := range tc.not {
-				if ok, g := matches(other); ok {
-					t.Errorf("%s glob %q matched %s, which is not the Katana executable", tc.goos, g, other)
-				}
-			}
-			env := fakeEnv{goos: tc.goos, globs: map[string][]string{}}
-			for _, g := range d.Command.Globs {
-				env.globs[g.PathGlob] = []string{tc.exe}
-			}
-			got, ok := d.FindCommand(env)
+			assertCommandGlobsPick(t, d, tc.goos, tc.exe, tc.not, "the Katana executable")
+			got, ok := d.FindCommand(envWithCommandAt(d, tc.goos, tc.exe))
 			if !ok || got.Name != "katana" || got.Path != tc.exe || got.Version != "7.0v1" {
 				t.Errorf("FindCommand = %+v (found %v), want katana 7.0v1 at %s", got, ok, tc.exe)
 			}
@@ -248,7 +239,6 @@ func TestFusionDetector_CommandFindsTheExecutableOnEveryPlatform(t *testing.T) {
 	if d.Command == nil || d.Command.Name != "FusionRenderNode" {
 		t.Fatalf("the fusion detector has no command named FusionRenderNode: %+v", d.Command)
 	}
-	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
 	cases := []struct {
 		goos string
 		exe  string
@@ -260,34 +250,8 @@ func TestFusionDetector_CommandFindsTheExecutableOnEveryPlatform(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.goos, func(t *testing.T) {
-			matches := func(file string) (matched bool, glob string) {
-				for _, g := range d.Command.Globs {
-					if g.OS != "" && g.OS != tc.goos {
-						continue
-					}
-					ok, err := path.Match(norm(g.PathGlob), norm(file))
-					if err != nil {
-						t.Fatalf("bad pattern %q: %v", g.PathGlob, err)
-					}
-					if ok {
-						return true, g.PathGlob
-					}
-				}
-				return false, ""
-			}
-			if ok, _ := matches(tc.exe); !ok {
-				t.Errorf("no %s command glob matches the executable %s", tc.goos, tc.exe)
-			}
-			for _, other := range tc.not {
-				if ok, g := matches(other); ok {
-					t.Errorf("%s glob %q matched %s, which is not the Fusion Render Node executable", tc.goos, g, other)
-				}
-			}
-			env := fakeEnv{goos: tc.goos, globs: map[string][]string{}}
-			for _, g := range d.Command.Globs {
-				env.globs[g.PathGlob] = []string{tc.exe}
-			}
-			got, ok := d.FindCommand(env)
+			assertCommandGlobsPick(t, d, tc.goos, tc.exe, tc.not, "the Fusion Render Node executable")
+			got, ok := d.FindCommand(envWithCommandAt(d, tc.goos, tc.exe))
 			if !ok || got.Name != "FusionRenderNode" || got.Path != tc.exe || got.Version != "19" {
 				t.Errorf("FindCommand = %+v (found %v), want FusionRenderNode 19 at %s", got, ok, tc.exe)
 			}
@@ -304,7 +268,6 @@ func TestSilhouetteDetector_CommandFindsSfxcmdAndSuppliesNogui(t *testing.T) {
 	if d.Command == nil || d.Command.Name != "sfxcmd" {
 		t.Fatalf("the silhouette detector has no command named sfxcmd: %+v", d.Command)
 	}
-	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
 	cases := []struct {
 		name     string
 		goos     string
@@ -321,34 +284,8 @@ func TestSilhouetteDetector_CommandFindsSfxcmdAndSuppliesNogui(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			matches := func(file string) (matched bool, glob string) {
-				for _, g := range d.Command.Globs {
-					if g.OS != "" && g.OS != tc.goos {
-						continue
-					}
-					ok, err := path.Match(norm(g.PathGlob), norm(file))
-					if err != nil {
-						t.Fatalf("bad pattern %q: %v", g.PathGlob, err)
-					}
-					if ok {
-						return true, g.PathGlob
-					}
-				}
-				return false, ""
-			}
-			if ok, _ := matches(tc.exe); !ok {
-				t.Errorf("no %s command glob matches the executable %s", tc.goos, tc.exe)
-			}
-			for _, other := range tc.not {
-				if ok, g := matches(other); ok {
-					t.Errorf("%s glob %q matched %s, which is not sfxcmd", tc.goos, g, other)
-				}
-			}
-			env := fakeEnv{goos: tc.goos, globs: map[string][]string{}}
-			for _, g := range d.Command.Globs {
-				env.globs[g.PathGlob] = []string{tc.exe}
-			}
-			got, ok := d.FindCommand(env)
+			assertCommandGlobsPick(t, d, tc.goos, tc.exe, tc.not, "sfxcmd")
+			got, ok := d.FindCommand(envWithCommandAt(d, tc.goos, tc.exe))
 			if !ok || got.Name != "sfxcmd" || got.Path != tc.exe || got.Version != "2026" || !slices.Equal(got.Args, tc.wantArgs) {
 				t.Errorf("FindCommand = %+v (found %v), want sfxcmd 2026 at %s with args %v", got, ok, tc.exe, tc.wantArgs)
 			}
@@ -374,22 +311,6 @@ func TestVREDDetector_CommandFindsVREDCoreOnWindowsAndLinux(t *testing.T) {
 	if d.Command == nil || d.Command.Name != "VREDCore" {
 		t.Fatalf("the vred detector has no command named VREDCore: %+v", d.Command)
 	}
-	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
-	matches := func(goos, file string) (matched bool, glob string) {
-		for _, g := range d.Command.Globs {
-			if g.OS != "" && g.OS != goos {
-				continue
-			}
-			ok, err := path.Match(norm(g.PathGlob), norm(file))
-			if err != nil {
-				t.Fatalf("bad pattern %q: %v", g.PathGlob, err)
-			}
-			if ok {
-				return true, g.PathGlob
-			}
-		}
-		return false, ""
-	}
 	cases := []struct {
 		name string
 		goos string
@@ -406,27 +327,46 @@ func TestVREDDetector_CommandFindsVREDCoreOnWindowsAndLinux(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if ok, _ := matches(tc.goos, tc.exe); !ok {
-				t.Errorf("no %s command glob matches the executable %s", tc.goos, tc.exe)
-			}
-			for _, other := range tc.not {
-				if ok, g := matches(tc.goos, other); ok {
-					t.Errorf("%s glob %q matched %s, which is not a VRED Core executable", tc.goos, g, other)
-				}
-			}
-			env := fakeEnv{goos: tc.goos, globs: map[string][]string{}}
-			for _, g := range d.Command.Globs {
-				env.globs[g.PathGlob] = []string{tc.exe}
-			}
-			got, ok := d.FindCommand(env)
+			assertCommandGlobsPick(t, d, tc.goos, tc.exe, tc.not, "a VRED Core executable")
+			got, ok := d.FindCommand(envWithCommandAt(d, tc.goos, tc.exe))
 			if !ok || got.Name != "VREDCore" || got.Path != tc.exe || got.Version != "18.0" || len(got.Args) != 0 {
 				t.Errorf("FindCommand = %+v (found %v), want VREDCore 18.0 at %s with no args", got, ok, tc.exe)
 			}
 		})
 	}
 	// VRED Core does not run on macOS, so no glob may apply there.
-	if ok, g := matches("darwin", "/Applications/Autodesk/VREDCore-18.0/bin/VREDCore"); ok {
+	if g := commandGlobMatch(t, d, "darwin", "/Applications/Autodesk/VREDCore-18.0/bin/VREDCore"); g != "" {
 		t.Errorf("darwin glob %q matched; VRED Core has no macOS build", g)
+	}
+}
+
+// TestVREDDetector_DoesNotTagVREDPro pins that no check matches a VRED Pro
+// install: the presets run VREDCore, which VRED Pro does not supply, so a tag
+// for it would send a Pro-only worker VRED jobs that all fail. The VRED Core
+// install beside it still matches, so the test cannot pass on a broken glob.
+func TestVREDDetector_DoesNotTagVREDPro(t *testing.T) {
+	d := builtinDetector(t, "vred")
+	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
+	matches := func(file string) string {
+		for _, c := range d.Checks {
+			if c.PathGlob == "" || (c.OS != "" && c.OS != "windows") {
+				continue
+			}
+			ok, err := path.Match(norm(c.PathGlob), norm(file))
+			if err != nil {
+				t.Fatalf("bad pattern %q: %v", c.PathGlob, err)
+			}
+			if ok {
+				return c.PathGlob
+			}
+		}
+		return ""
+	}
+	if g := matches(`C:\Program Files\Autodesk\VREDPro-18.0\bin\WIN64\VREDPro.exe`); g != "" {
+		t.Errorf("check %q tags a VRED Pro install", g)
+	}
+	if matches(`C:\Program Files\Autodesk\VREDCore-18.0\bin\WIN64\VREDCore.exe`) == "" {
+		t.Error("no check tags the VRED Core install")
 	}
 }
 
@@ -441,7 +381,6 @@ func TestKeyShotDetector_CommandRunsHeadlessOnWindowsAndMacOS(t *testing.T) {
 	if d.Command == nil || d.Command.Name != "keyshot_headless" {
 		t.Fatalf("the keyshot detector has no command named keyshot_headless: %+v", d.Command)
 	}
-	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
 	cases := []struct {
 		name     string
 		goos     string
@@ -462,34 +401,8 @@ func TestKeyShotDetector_CommandRunsHeadlessOnWindowsAndMacOS(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			matches := func(file string) (matched bool, glob string) {
-				for _, g := range d.Command.Globs {
-					if g.OS != "" && g.OS != tc.goos {
-						continue
-					}
-					ok, err := path.Match(norm(g.PathGlob), norm(file))
-					if err != nil {
-						t.Fatalf("bad pattern %q: %v", g.PathGlob, err)
-					}
-					if ok {
-						return true, g.PathGlob
-					}
-				}
-				return false, ""
-			}
-			if ok, _ := matches(tc.exe); !ok {
-				t.Errorf("no %s command glob matches the executable %s", tc.goos, tc.exe)
-			}
-			for _, other := range tc.not {
-				if ok, g := matches(other); ok {
-					t.Errorf("%s glob %q matched %s, which is not the headless command", tc.goos, g, other)
-				}
-			}
-			env := fakeEnv{goos: tc.goos, globs: map[string][]string{}}
-			for _, g := range d.Command.Globs {
-				env.globs[g.PathGlob] = []string{tc.exe}
-			}
-			got, ok := d.FindCommand(env)
+			assertCommandGlobsPick(t, d, tc.goos, tc.exe, tc.not, "the headless command")
+			got, ok := d.FindCommand(envWithCommandAt(d, tc.goos, tc.exe))
 			if !ok || got.Name != "keyshot_headless" || got.Path != tc.exe || got.Version != tc.version || !slices.Equal(got.Args, tc.wantArgs) {
 				t.Errorf("FindCommand = %+v (found %v), want keyshot_headless %s at %s with args %v", got, ok, tc.version, tc.exe, tc.wantArgs)
 			}
@@ -515,7 +428,6 @@ func TestModoDetector_CommandFindsModoClOnWindowsAndMacOS(t *testing.T) {
 	if d.Command == nil || d.Command.Name != "modo_cl" {
 		t.Fatalf("the modo detector has no command named modo_cl: %+v", d.Command)
 	}
-	norm := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
 	cases := []struct {
 		name    string
 		goos    string
@@ -529,34 +441,8 @@ func TestModoDetector_CommandFindsModoClOnWindowsAndMacOS(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			matches := func(file string) (matched bool, glob string) {
-				for _, g := range d.Command.Globs {
-					if g.OS != "" && g.OS != tc.goos {
-						continue
-					}
-					ok, err := path.Match(norm(g.PathGlob), norm(file))
-					if err != nil {
-						t.Fatalf("bad pattern %q: %v", g.PathGlob, err)
-					}
-					if ok {
-						return true, g.PathGlob
-					}
-				}
-				return false, ""
-			}
-			if ok, _ := matches(tc.exe); !ok {
-				t.Errorf("no %s command glob matches the executable %s", tc.goos, tc.exe)
-			}
-			for _, other := range tc.not {
-				if ok, g := matches(other); ok {
-					t.Errorf("%s glob %q matched %s, which is not modo_cl", tc.goos, g, other)
-				}
-			}
-			env := fakeEnv{goos: tc.goos, globs: map[string][]string{}}
-			for _, g := range d.Command.Globs {
-				env.globs[g.PathGlob] = []string{tc.exe}
-			}
-			got, ok := d.FindCommand(env)
+			assertCommandGlobsPick(t, d, tc.goos, tc.exe, tc.not, "modo_cl")
+			got, ok := d.FindCommand(envWithCommandAt(d, tc.goos, tc.exe))
 			if !ok || got.Name != "modo_cl" || got.Path != tc.exe || got.Version != tc.version || len(got.Args) != 0 {
 				t.Errorf("FindCommand = %+v (found %v), want modo_cl %s at %s with no args", got, ok, tc.version, tc.exe)
 			}
@@ -615,10 +501,7 @@ func TestUnrealDetector_CommandFindsTheNewestLauncherInstallOnWindows(t *testing
 			t.Errorf("a command glob matched %s, which is not a UE 5 UnrealEditor-Cmd.exe", other)
 		}
 	}
-	env := fakeEnv{goos: "windows", globs: map[string][]string{}}
-	for _, g := range d.Command.Globs {
-		env.globs[g.PathGlob] = []string{ue56, ue510}
-	}
+	env := envWithCommandAt(d, "windows", ue56, ue510)
 	got, ok := d.FindCommand(env)
 	if !ok || got.Name != "UnrealEditor-Cmd" || got.Path != ue510 || got.Version != "5.10" || len(got.Args) != 0 {
 		t.Errorf("FindCommand = %+v (found %v), want UnrealEditor-Cmd 5.10 at %s with no args", got, ok, ue510)

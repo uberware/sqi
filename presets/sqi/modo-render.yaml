@@ -8,15 +8,14 @@ description: >-
 readme: |
   # Modo Render
 
-  **Read this first.** `modo_cl` reads its commands from standard input, and
-  the worker leaves a task's standard input as the null device, which is at
-  end-of-file from the first read. This preset therefore hands Modo its work
-  with the documented `-cmd:` startup switch instead. Whether `modo_cl` runs
-  that command to the end before it notices the empty input, or treats the
-  end-of-file as a request to quit, has not been tested. If it quits first,
-  every task fails safely: no `SQI_RENDER: OK` line is ever printed, so no task
-  can report a success it did not earn. Try one single-frame job before any
-  longer one.
+  `modo_cl` reads its commands from standard input, and the worker leaves a
+  task's standard input as the null device, which is at end-of-file from the
+  first read. This preset therefore hands Modo its work with the documented
+  `-cmd:` startup switch instead. Whether `modo_cl` runs that command to the
+  end before it notices the empty input, or treats the end-of-file as a
+  request to quit, is untested. If it quits first, every task fails: no
+  `SQI_RENDER: OK` line is printed, so no task reports a success. Try one
+  single-frame job before any longer one.
 
   Modo is also discontinued. 17.1 was the last release (Foundry, November
   2024), the self-service download has ended and downloads now go through a
@@ -106,7 +105,7 @@ readme: |
   - No Modo has executed this preset. The command line and the commands in the
     script follow Foundry's headless page, its Python tutorial, open-source
     scripts and Deadline's Modo plug-in that drive `modo_cl` the same way. No
-    Foundry command-reference page for them was found.
+    Foundry command-reference page documents them.
   - Whether `modo_cl` runs the `-cmd:` script before it reads standard input
     (see the top of this readme).
   - Foundry says `-cmd:` runs before licensing and networking have started.
@@ -130,7 +129,7 @@ readme: |
     If it does not, every task fails for want of `SQI_RENDER: OK`, never the
     other way round.
   - The install folders the detector looks for follow Foundry's documentation
-    for 17.1 and 13.2; none was seen on a machine.
+    for 17.1 and 13.2; none is confirmed on an installed copy.
 category: Rendering
 version: 1.0.0
 template:
@@ -278,9 +277,10 @@ template:
                   # Keyword arguments, so no job value becomes command text.
                   lx.command("scene.open", filename=params["scene"], type="normal")
                   set_range(params["start"], params["stop"])
-                  # The group name is a job value, so it goes in as a keyword argument; the
-                  # whole-scene form has none, so its command text is a literal. Whether the two
-                  # forms are equivalent in Modo is unverified.
+                  # The group name is a job value, so it goes in as a keyword
+                  # argument; the whole-scene form has none, so its command text
+                  # is a literal. Whether the two forms are equivalent in Modo
+                  # is unverified.
                   if params["group"]:
                       lx.command("render.animation", filename="*", group=params["group"])
                   else:

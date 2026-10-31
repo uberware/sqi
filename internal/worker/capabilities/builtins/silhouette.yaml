@@ -4,28 +4,24 @@
 # silhouette-render and silhouette-render-all run through the bare command
 # `sfxcmd`. Silhouette runs on Windows, macOS and Linux.
 #
-# What is documented and what is not. Boris FX's Command-Line page (2026) gives
-# the Windows install folder as C:\Program Files\SilhouetteFX\Silhouette[version]
-# and the macOS one as /Applications/SilhouetteFX/Silhouette[version]/Silhouette.app/Contents/MacOS,
+# Boris FX's Command-Line page (2026) gives the Windows install folder as
+# C:\Program Files\SilhouetteFX\Silhouette[version] and the macOS one as
+# /Applications/SilhouetteFX/Silhouette[version]/Silhouette.app/Contents/MacOS,
 # and says the Linux location is chosen by the user at install time. Newer
-# installers are reported under a BorisFX root instead (the P5b design lists
-# both), and no source settles which release switched. So both roots are
-# searched on every platform, and every path below is unverified: none was
-# observed on a machine. The executable inside the folder is sfxcmd (sfxcmd.exe
-# on Windows). A Linux install elsewhere, such as the /opt/silhouette6 a Deadline
-# forum report shows for an old release, needs the tag set by hand with
-# silhouette=true under worker.capability_tags, or an `sfxcmd` command in
-# worker.commands.
+# installers may use a BorisFX root instead, and it is unknown which release
+# switched, so both roots are searched on every platform. Every path below is
+# unverified. The executable inside the folder is sfxcmd (sfxcmd.exe on
+# Windows). A Linux install elsewhere, such as /opt/silhouette6, needs the tag
+# set by hand with silhouette=true under worker.capability_tags, or an `sfxcmd`
+# command in worker.commands.
 #
 # The version is the year in the install folder ("Silhouette 2026"), so an
 # sfxcmd found only on PATH carries no version.
 #
 # On Linux the command carries -nogui (Boris FX: "For Linux systems without
 # X-Windows installed, -nogui allows Silhouette to not use X-Windows"). It is
-# the application's own requirement rather than a licence choice, so it is
 # supplied whether sfxcmd comes from this detector or from PATH. The bundled
-# lib folder must also be on LD_LIBRARY_PATH; that is the worker host's setup
-# and the presets' readmes say so.
+# lib folder must also be on LD_LIBRARY_PATH, which is the worker host's setup.
 tag: silhouette
 checks:
   - exe: sfxcmd                                                  # an sfxcmd on PATH or from worker.commands
@@ -39,7 +35,7 @@ checks:
     os: darwin
   - path_glob: "/opt/BorisFX/Silhouette*/sfxcmd"                 # linux
     os: linux
-  - path_glob: "/opt/SilhouetteFX/Silhouette*/sfxcmd"            # linux (seen in a Deadline forum report)
+  - path_glob: "/opt/SilhouetteFX/Silhouette*/sfxcmd"            # linux
     os: linux
 version:
   from: "Silhouette ?([0-9]{4}(?:\\.[0-9]+)?)"

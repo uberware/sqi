@@ -225,6 +225,15 @@ type RegisterMsg struct {
 // which imports both, pins the two to the same set.
 const ExtensionLogChecks = "SQI_LOG_CHECKS"
 
+// WorkerEnforcedExtensions returns the worker-enforced extensions this worker
+// binary implements: what it advertises in [RegisterMsg.Extensions]. Keep it in
+// step with internal/worker/executor, and sorted: the test that pins it to
+// openjd's registry compares the two in order. It returns a fresh slice on each
+// call.
+func WorkerEnforcedExtensions() []string {
+	return []string{ExtensionLogChecks}
+}
+
 // ExprLimits is a worker's self-reported OpenJD EXPR evaluation caps.
 //
 // It mirrors store.WorkerExprLimits field for field and json tag for tag; the

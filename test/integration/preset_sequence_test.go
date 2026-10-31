@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/presettest"
 )
 
@@ -117,22 +116,5 @@ func findPython3(t *testing.T) string {
 			}
 		}
 	}
-	return ""
-}
-
-// embeddedFileData returns the data of the first step's embedded file called
-// name, read from the parsed template so a test always runs the shipped bytes.
-func embeddedFileData(t *testing.T, tmpl, name string) string {
-	t.Helper()
-	parsed, err := openjd.Parse([]byte(tmpl), openjd.FormatYAML)
-	if err != nil {
-		t.Fatalf("openjd.Parse: %v", err)
-	}
-	for _, f := range parsed.Steps[0].Script.EmbeddedFiles {
-		if f.Name == name {
-			return f.Data
-		}
-	}
-	t.Fatalf("template declares no embedded file named %s", name)
 	return ""
 }

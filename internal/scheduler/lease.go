@@ -377,15 +377,10 @@ func (s *Scheduler) leaseGatesPass(
 	// but only while that sweep is enabled (Config.UnschedulableGrace > 0, the
 	// default; <= 0 is a legitimate "off" setting, and with it off such a task
 	// waits with nothing written on it). See exprcaps.go for why this is a skip
-	// and not a submit-time rejection.
-	if exprCapsBlock(exprShortfall, job) != "" {
-		return d, false, nil
-	}
-
-	// Worker-enforced extensions (SQI_LOG_CHECKS): never hand a job declaring
-	// one to a worker that did not advertise enforcing it. Same skip-and-explain
-	// shape as the EXPR gate above; extcaps.go has the reason.
-	if workerExtensionBlock(worker, job) != "" {
+	// and not a submit-time rejection. Worker-enforced extensions
+	// (SQI_LOG_CHECKS) are gated the same way: a job declaring one never goes to
+	// a worker that did not advertise enforcing it (extcaps.go).
+	if workerCompatBlock(exprShortfall, worker, job) != "" {
 		return d, false, nil
 	}
 
