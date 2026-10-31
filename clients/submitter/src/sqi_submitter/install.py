@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """``sqi-submit install-host``: copy a handoff host's files into place.
 
-The files for Blender, Cinema 4D, After Effects, Unreal, Katana and KeyShot ship inside this
-wheel as package data and use only the host's own standard library, so installing is a file copy:
-no pip into the host's Python. Where the documented location needs admin rights (After Effects)
-or is not knowable (Blender's add-on is installed through its UI, Cinema 4D's preferences folder
-is versioned) the command prints what to do instead of guessing.
+The files for Blender, Cinema 4D, After Effects, Unreal, Katana, KeyShot and Silhouette ship
+inside this wheel as package data and use only the host's own standard library, so installing
+is a file copy: no pip into the host's Python. Where the documented location needs admin rights
+(After Effects) or is not knowable (Blender's add-on is installed through its UI, Cinema 4D's
+preferences folder is versioned) the command prints what to do instead of guessing.
 """
 
 from __future__ import annotations
@@ -37,17 +37,20 @@ HOST_FILES: dict[str, list[str]] = {
     "katana": ["hosts/katana/sqi_katana_submit.py", "hosts/katana/init.py"],
     # KeyShot runs no startup file: the script is run from its Scripting Console.
     "keyshot": ["hosts/keyshot/sqi_keyshot_submit.py"],
+    # Silhouette's startup script imports a module named sfxuser from its script search path.
+    "silhouette": ["hosts/silhouette/sqi_silhouette_submit.py", "hosts/silhouette/sfxuser.py"],
 }
 
 # Taken from HOST_FILES once, at import, so the two cannot drift; a patched HOST_FILES
 # (tests swap in stand-in files) leaves the set of hosts this command accepts unchanged.
 KNOWN_HOSTS: tuple[str, ...] = tuple(HOST_FILES)
 
-# Startup files whose *name the host fixes* (Unreal's init_unreal.py, Katana's init.py), so a
+# Startup files whose *name the host fixes* (Unreal's init_unreal.py, Katana's init.py,
+# Silhouette's sfxuser.py), so a
 # studio may already have its own. A shipped one carries HOOK_MARKER; install never overwrites
 # a file of such a name that lacks the marker, it prints the lines to append instead.
 HOOK_MARKER = "# sqi-submitter hook"
-HOOK_FILES: frozenset[str] = frozenset({"init_unreal.py", "init.py"})
+HOOK_FILES: frozenset[str] = frozenset({"init_unreal.py", "init.py", "sfxuser.py"})
 
 _C4D_PREFS_GLOB = "Maxon Cinema 4D *"
 _KEYSHOT_GLOB = "KeyShot*"
@@ -62,6 +65,7 @@ _NEXT_STEP = {
     "unreal": "Restart the Unreal Editor; Submit to sqi… appears in the Tools menu.",
     "katana": "Restart Katana; Submit to sqi… appears in the sqi menu.",
     "keyshot": "In KeyShot open Window > Scripting Console and run sqi_keyshot_submit.",
+    "silhouette": "Restart Silhouette; Submit to sqi… appears in the Actions menu.",
 }
 
 
@@ -105,7 +109,8 @@ def default_destination(host: str, platform: str, env: Mapping[str, str]) -> Pat
     profile, which the Editor puts on its Python path. Katana's is ``.katana/Startup`` under the
     home folder on Windows and Linux (``None`` on macOS), where Katana runs ``init.py`` at
     startup. Cinema 4D's preferences folder carries a version suffix we cannot know, so it is
-    returned only when exactly one ``Maxon Cinema 4D *`` folder exists. KeyShot's is the
+    returned only when exactly one ``Maxon Cinema 4D *`` folder exists. Silhouette's is
+    ``scripts`` under ``SFX_USER_PATH`` when that variable is set, else ``None``. KeyShot's is the
     ``Scripts`` folder of its one ``KeyShot*`` folder in Documents (Windows and macOS only: KeyShot
     has no Linux desktop product), under the same one-folder rule.
     """
@@ -118,6 +123,11 @@ def default_destination(host: str, platform: str, env: Mapping[str, str]) -> Pat
             return None
         home = env.get("USERPROFILE" if platform == "win32" else "HOME")
         return Path(home) / ".katana" / "Startup" if home else None
+    if host == "silhouette":
+        # Silhouette searches $(SFX_USER_PATH)/scripts for scripts; the variable is the only
+        # place that folder is knowable from, so without it the artist chooses.
+        user_path = env.get("SFX_USER_PATH")
+        return Path(user_path) / "scripts" if user_path else None
     if host == "keyshot":
         if platform not in ("win32", "darwin"):
             return None
@@ -183,6 +193,13 @@ def _no_destination_hint(host: str) -> str:
             "Could not tell which KeyShot folder to use. Copy the file above into the Scripts "
             "folder of your KeyShot folder under Documents (for example "
             "<Documents>/KeyShot 2024/Scripts; create it if needed), or pass --dest DIR."
+        )
+    if host == "silhouette":
+        return (
+            "SFX_USER_PATH is not set, so there is no known user scripts folder. Copy the "
+            "files above into the scripts folder under your Silhouette user folder "
+            "($(SFX_USER_PATH)/scripts; create it if needed), or pass --dest DIR. If you "
+            "already have an sfxuser.py there, add the lines of the shipped one to it instead."
         )
     return (
         "The After Effects scripts folder is under the program folder and needs "

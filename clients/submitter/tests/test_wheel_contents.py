@@ -63,6 +63,7 @@ def test_wheel_contains_every_host_file(wheel: dict[str, bytes]) -> None:
         "unreal",
         "katana",
         "keyshot",
+        "silhouette",
     }
     assert "hosts/aftereffects/Submit to sqi.jsx" in host_files
     assert "hosts/aftereffects/json2.js" in host_files

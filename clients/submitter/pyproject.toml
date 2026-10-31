@@ -138,6 +138,11 @@ module = [
   "sqi_katana_submit",
   # KeyShot's scripting module (the handoff file imports it inside function bodies).
   "lux",
+  # Silhouette's scripting module (the handoff file imports it inside function bodies), its
+  # bundled Qt binding, and the handoff module its sfxuser.py hook imports.
+  "fx",
+  "PySide2",
+  "sqi_silhouette_submit",
 ]
 ignore_missing_imports = true
 
