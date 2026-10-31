@@ -475,7 +475,7 @@ def test_fusion_missing_render_range_gives_no_range(lua: str, tmp_path: Path) ->
 
 @pytest.mark.parametrize(
     ("windows", "search"),
-    [(False, "popen:command -v sqi-submit"), (True, "popen:where sqi-submit")],
+    [(False, "popen:command -v sqi-submit"), (True, "popen:where $PATH:sqi-submit")],
 )
 def test_fusion_finds_sqi_submit_on_path(
     lua: str, tmp_path: Path, windows: bool, search: str

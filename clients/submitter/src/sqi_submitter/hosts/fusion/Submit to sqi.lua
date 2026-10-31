@@ -314,9 +314,10 @@ local function settings_path(is_windows)
         .. "submitter.json"
 end
 
--- The first line `where sqi-submit` (Windows) or `command -v sqi-submit` (POSIX) prints.
+-- The first line `where $PATH:sqi-submit` (Windows; plain `where` searches the current directory
+-- before PATH, so a stray sqi-submit.exe there would win) or `command -v sqi-submit` (POSIX) prints.
 local function find_on_path(is_windows)
-    local command = is_windows and "where sqi-submit 2>nul" or "command -v sqi-submit 2>/dev/null"
+    local command = is_windows and "where $PATH:sqi-submit 2>nul" or "command -v sqi-submit 2>/dev/null"
     local ok, found = pcall(function()
         local pipe = io.popen(command)
         if pipe == nil then
