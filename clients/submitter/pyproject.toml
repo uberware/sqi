@@ -124,6 +124,18 @@ module = [
   "unreal",
   # The startup hooks import the handoff module that sits beside them in the host's folder.
   "sqi_unreal_submit",
+  # Katana's own modules (the handoff file imports them inside function bodies), the Qt binding
+  # it picks by Katana's version, and the handoff module its startup hook imports.
+  "Katana",
+  "KatanaInfo",
+  "NodegraphAPI",
+  "FarmAPI",
+  "KatanaFile",
+  "UI4",
+  "UI4.*",
+  "PyQt5",
+  "PyQt5.*",
+  "sqi_katana_submit",
 ]
 ignore_missing_imports = true
 

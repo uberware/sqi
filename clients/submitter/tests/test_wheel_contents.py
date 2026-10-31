@@ -56,7 +56,7 @@ def wheel(tmp_path_factory: pytest.TempPathFactory) -> dict[str, bytes]:
 def test_wheel_contains_every_host_file(wheel: dict[str, bytes]) -> None:
     names = set(wheel)
     host_files = [f for files in install.HOST_FILES.values() for f in files]
-    assert set(install.HOST_FILES) == {"blender", "cinema4d", "aftereffects", "unreal"}
+    assert set(install.HOST_FILES) == {"blender", "cinema4d", "aftereffects", "unreal", "katana"}
     assert "hosts/aftereffects/Submit to sqi.jsx" in host_files
     assert "hosts/aftereffects/json2.js" in host_files
     missing = [f for f in host_files + REQUIRED if f"sqi_submitter/{f}" not in names]

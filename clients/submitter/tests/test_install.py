@@ -383,3 +383,62 @@ def test_install_host_guidance_drops_future_imports(
     assert install.install_host("blender", dest, out) == 0
     assert "__future__" not in out.getvalue()
     assert "import sqi_x" in out.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("platform", "env", "expected"),
+    [
+        ("win32", {"USERPROFILE": "C:/Users/a"}, Path("C:/Users/a") / ".katana" / "Startup"),
+        ("linux", {"HOME": "/home/a"}, Path("/home/a") / ".katana" / "Startup"),
+        ("darwin", {"HOME": "/Users/a"}, None),  # Katana does not run on macOS
+        ("win32", {"HOME": "/home/a"}, None),
+        ("win32", {}, None),
+        ("linux", {"USERPROFILE": "C:/Users/a"}, None),
+        ("linux", {}, None),
+    ],
+)
+def test_default_destination_katana(
+    platform: str, env: dict[str, str], expected: Path | None
+) -> None:
+    assert install.default_destination("katana", platform, env) == expected
+
+
+def test_katana_next_step_and_no_destination_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(install, "default_destination", lambda host, platform, env: None)
+    out = io.StringIO()
+    assert install.install_host("katana", None, out) == 0
+    text = out.getvalue()
+    assert "init.py" in text and "sqi_katana_submit.py" in text
+    assert "macOS" in text
+    assert "Restart Katana; Submit to sqi… appears in the sqi menu." in text
+
+
+def test_install_host_guidance_for_the_real_katana_hook_is_valid_to_append(
+    tmp_path: Path,
+) -> None:
+    """The printed lines are appended after a studio's own code, with no ``__future__`` import.
+
+    They must compile there and must not lean on ``from __future__ import annotations``.
+    """
+    import ast
+
+    dest = tmp_path / "Startup"
+    dest.mkdir()
+    studio = "import os\n\nSTUDIO = os.environ.get('STUDIO')\nprint(STUDIO)\n"
+    (dest / "init.py").write_text(studio, encoding="utf-8")
+    out = io.StringIO()
+    assert install.install_host("katana", dest, out) == 0
+    text = out.getvalue()
+    assert (dest / "init.py").read_text(encoding="utf-8") == studio
+    assert (dest / "sqi_katana_submit.py").is_file()
+    assert "from __future__" not in text
+    printed = text.split("append these lines to it:\n", 1)[1]
+    printed = printed.split("\nRestart Katana", 1)[0]
+    assert "import sqi_katana_submit" in printed and "install_menu" in printed
+    compile(studio + "\n" + printed + "\n", "init.py", "exec")
+    for node in ast.walk(ast.parse(printed)):
+        assert not isinstance(node, ast.AnnAssign)
+        if isinstance(node, ast.arg):
+            assert node.annotation is None
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            assert node.returns is None

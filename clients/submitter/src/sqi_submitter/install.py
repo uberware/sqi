@@ -34,6 +34,7 @@ HOST_FILES: dict[str, list[str]] = {
     "cinema4d": ["hosts/cinema4d/sqi_submit.pyp"],
     "aftereffects": ["hosts/aftereffects/Submit to sqi.jsx", "hosts/aftereffects/json2.js"],
     "unreal": ["hosts/unreal/sqi_unreal_submit.py", "hosts/unreal/init_unreal.py"],
+    "katana": ["hosts/katana/sqi_katana_submit.py", "hosts/katana/init.py"],
 }
 
 # Taken from HOST_FILES once, at import, so the two cannot drift; a patched HOST_FILES
@@ -56,6 +57,7 @@ _NEXT_STEP = {
     "(it needs administrator rights), restart After Effects, then open the panel from the "
     "Window menu.",
     "unreal": "Restart the Unreal Editor; Submit to sqi… appears in the Tools menu.",
+    "katana": "Restart Katana; Submit to sqi… appears in the sqi menu.",
 }
 
 
@@ -88,13 +90,21 @@ def default_destination(host: str, platform: str, env: Mapping[str, str]) -> Pat
 
     Blender (installed through its UI) and After Effects (under Program Files, needs admin)
     always return ``None``. Unreal's is ``Documents/UnrealEngine/Python`` under the user's
-    profile, which the Editor puts on its Python path. Cinema 4D's preferences folder carries
+    profile, which the Editor puts on its Python path. Katana's is ``.katana/Startup`` under the
+    home folder on Windows and Linux (``None`` on macOS), where Katana runs ``init.py`` at
+    startup. Cinema 4D's preferences folder carries
     a version suffix we cannot know, so it is returned only when exactly one
     ``Maxon Cinema 4D *`` folder exists.
     """
     if host == "unreal":
         home = env.get("USERPROFILE" if platform == "win32" else "HOME")
         return Path(home) / "Documents" / "UnrealEngine" / "Python" if home else None
+    if host == "katana":
+        # Katana does not run on macOS, so there is nothing to install there.
+        if platform not in ("win32", "linux"):
+            return None
+        home = env.get("USERPROFILE" if platform == "win32" else "HOME")
+        return Path(home) / ".katana" / "Startup" if home else None
     if host != "cinema4d":
         return None
     root = _cinema4d_prefs_root(platform, env)
@@ -145,6 +155,13 @@ def _no_destination_hint(host: str) -> str:
             "<Documents>/UnrealEngine/Python (create it if needed; the Editor runs "
             "init_unreal.py from there at startup), or pass --dest DIR. If you already have "
             "an init_unreal.py there, add the lines of the shipped one to it instead."
+        )
+    if host == "katana":
+        return (
+            "Could not tell where your home folder is (Katana does not run on macOS). Copy the "
+            "files above into <home>/.katana/Startup (create it if needed; Katana runs init.py "
+            "from there at startup), or pass --dest DIR. If you already have an init.py there, "
+            "add the lines of the shipped one to it instead."
         )
     return (
         "The After Effects scripts folder is under the program folder and needs "
