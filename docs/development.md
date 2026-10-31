@@ -1533,8 +1533,10 @@ clients/submitter/
   src/sqi_submitter/
     core/                   no Qt, no DCC imports — session, form model, pre-fill, HostAdapter
     qt/                      Qt only, imported lazily (PySide6, falls back to PySide2)
-    hosts/{maya,houdini,nuke,max}/       adapter + launch glue (in-process hosts)
-    hosts/{blender,cinema4d,aftereffects}/   one self-contained host file each (handoff hosts)
+    hosts/{maya,houdini,nuke,max,vred}/  adapter + launch glue (in-process hosts)
+    hosts/{blender,cinema4d,aftereffects,unreal,katana,keyshot,silhouette,fusion,modo}/
+                                         one self-contained host file each, plus a
+                                         startup hook or kit where needed (handoff hosts)
     cli.py, install.py                   sqi-submit, sqi-submit install-host
   tests/                     pytest; tests/integration/ is env-gated (see below)
 presets/sqi/                 the forty-two reference preset YAML fixtures (twenty-nine DCC render

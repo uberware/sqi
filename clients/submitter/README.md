@@ -5,14 +5,16 @@ task and render farm manager.
 
 `sqi-submitter` is a Python framework for building DCC (Digital Content Creation)
 integrations on top of [`sqi-sdk`](../python). It provides one Qt submit dialog,
-host adapters for Maya, Houdini, Nuke, and 3ds Max, and a handoff for Blender,
-Cinema 4D, and After Effects, for submitting OpenJD job templates to an `sqi`
-farm directly from within your application.
+host adapters for Maya, Houdini, Nuke, 3ds Max, and VRED, and a handoff for
+Blender, Cinema 4D, After Effects, Unreal Engine, Katana, KeyShot, Silhouette,
+Fusion, and Modo, for submitting OpenJD job templates to an `sqi` farm directly
+from within your application.
 
-Every host opens the same dialog. Maya, Houdini, Nuke, and 3ds Max open it in
-their own process. Blender, Cinema 4D, and After Effects write a small context
-file and start `sqi-submit --context FILE`, which opens it; their host files
-are installed with `sqi-submit install-host`.
+Every host opens the same dialog. Maya, Houdini, Nuke, 3ds Max, and VRED open it
+in their own process. The other nine write a small context file and start
+`sqi-submit --context FILE`, which opens it; their host files (Python for all
+but After Effects, which is ExtendScript, and Fusion, which is Lua) are
+installed with `sqi-submit install-host`.
 
 ## Installation
 
@@ -62,11 +64,17 @@ sqi-submit --server http://localhost:8080
 
 Inside a DCC, wire the host's launch glue per
 [`docs/dcc-submitters.md`](../../docs/dcc-submitters.md#installation-per-host).
-For Blender, Cinema 4D, and After Effects, install the host file with:
+For the handoff hosts, and for VRED's script plugin, install the host files
+with:
 
 ```sh
-sqi-submit install-host blender        # or cinema4d, aftereffects
+sqi-submit install-host blender        # or cinema4d, aftereffects, unreal, katana,
+                                       # keyshot, silhouette, fusion, modo, vred
 ```
+
+Unreal, Katana, and Silhouette run a startup file whose name the host fixes
+(`init_unreal.py`, `init.py`, `sfxuser.py`). `install-host` never overwrites one
+of your own: it keeps it and prints the lines to append to it instead.
 
 The handoff context file that those hosts write is documented in
 [The handoff contract](../../docs/dcc-submitters.md#the-handoff-contract); its

@@ -73,13 +73,14 @@ built-in `script` product — no farm/queue creation needed. See
 [Submit a job from a product](api.md#submit-a-job-from-a-product) for the REST
 call, or the [Python client](python-client.md) for scripted submission.
 
-### Submitting from inside Maya, Houdini, Nuke, 3ds Max, Blender, Cinema 4D or After Effects
+### Submitting from inside your DCC
 
 Rather than the web UI, artists can submit directly from the DCC they're
 already working in. The [`sqi-submitter`](dcc-submitters.md) Python package
 adds the same in-application submit dialog to Maya, Houdini, Nuke, 3ds Max,
-Blender, Cinema 4D and After Effects (Blender, Cinema 4D and After Effects hand
-the open scene to a separate `sqi-submit` window), driven by the same product
+VRED, Blender, Cinema 4D, After Effects, Unreal Engine, Katana, KeyShot,
+Silhouette, Fusion and Modo (all but the first five hand the open scene to a
+separate `sqi-submit` window), driven by the same product
 catalog — including the ready-to-install reference render presets — with scene
 path, frame range, and render-target pre-fill. See
 [DCC submitters](dcc-submitters.md) for installation per host.

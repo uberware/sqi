@@ -21,7 +21,7 @@ Long-form documentation for `sqi-server` operators and contributors.
 
 - `products.md` — products as a catalog layer over OpenJD templates
 - `preset-library.md` — the community preset library and its index format
-- `dcc-submitters.md` — in-application submitters for Maya, Houdini, Nuke, 3ds Max, Blender, Cinema 4D, and After Effects
+- `dcc-submitters.md` — in-application submitters for Maya, Houdini, Nuke, 3ds Max, VRED, Blender, Cinema 4D, After Effects, Unreal Engine, Katana, KeyShot, Silhouette, Fusion, and Modo
 - `compute-locations.md` — compute-location entities and worker affinity
 
 **Storage**
