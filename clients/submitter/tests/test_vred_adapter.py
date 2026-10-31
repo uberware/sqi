@@ -403,6 +403,93 @@ def test_vred_plugin_warn_prints_when_there_is_no_qt(capsys: pytest.CaptureFixtu
     assert "something to read" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("site", [False, True])
+def test_vred_plugin_reports_any_import_failure_not_just_import_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, site: bool
+) -> None:
+    """VRED's sandbox or a wrong-Python install can raise more than ImportError."""
+    plugin = _plugin()
+    settings = tmp_path / "settings.json"
+    if site:
+        settings.write_text(json.dumps({"sqi_submitter_site": str(tmp_path)}), encoding="utf-8")
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.delenv("SQI_SUBMITTER_SITE", raising=False)
+
+    def broken() -> object:
+        raise RuntimeError("blocked by the sandbox")
+
+    monkeypatch.setattr(plugin, "_import_menu", broken)
+    loaded, message = plugin.load_submitter(str(settings))
+    assert loaded is None
+    assert message is not None
+    assert "blocked by the sandbox" in message
+
+
+def test_vred_plugin_click_shows_the_message_for_a_non_import_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin = _plugin()
+    shown: list[str] = []
+
+    def broken() -> object:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(plugin, "_import_menu", broken)
+    monkeypatch.setattr(plugin, "_warn", shown.append)
+    monkeypatch.setenv("SQI_SUBMITTER_SETTINGS", "no-such-file.json")
+    monkeypatch.delenv("SQI_SUBMITTER_SITE", raising=False)
+    plugin.on_submit_clicked()  # must not raise
+    assert len(shown) == 1 and "denied" in shown[0]
+
+
+def test_vred_plugin_finds_services_injected_as_module_globals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If VRED injects its services into the plugin's namespace instead of builtins."""
+    import builtins
+
+    plugin = _plugin()
+    for name in ("vrFileIOService", "vrCameraService", "vrMainWindow"):
+        monkeypatch.delattr(builtins, name, raising=False)
+    window = object()
+    monkeypatch.setitem(vars(plugin), "vrFileIOService", "io")
+    monkeypatch.setitem(vars(plugin), "vrCameraService", "cams")
+    monkeypatch.setitem(vars(plugin), "vrMainWindow", window)
+    monkeypatch.setitem(sys.modules, "vrRenderSettings", ModuleType("vrRenderSettings"))
+    opened: list[Any] = []
+    monkeypatch.setattr(
+        plugin, "load_submitter", lambda path: (SimpleNamespace(open_submitter=opened.append), None)
+    )
+    plugin.on_submit_clicked()
+    [services] = opened
+    assert (services.file_io, services.cameras, services.main_window) == ("io", "cams", window)
+
+
+@pytest.mark.parametrize("route", ["builtins", "globals"])
+def test_vred_plugin_registers_the_menu_for_either_injection_route(
+    monkeypatch: pytest.MonkeyPatch, route: str
+) -> None:
+    import builtins
+
+    plugin = _plugin()
+    monkeypatch.delattr(builtins, "vrMainWindow", raising=False)
+    window = object()
+    if route == "builtins":
+        monkeypatch.setattr(builtins, "vrMainWindow", window, raising=False)
+    else:
+        monkeypatch.setitem(vars(plugin), "vrMainWindow", window)
+    registered: list[object] = []
+    monkeypatch.setattr(plugin, "register_menu", registered.append)
+    plugin._register_in_vred()
+    assert registered == [window]
+
+
+def test_vred_plugin_warn_prints_ascii_only(capsys: pytest.CaptureFixture[str]) -> None:
+    """A narrow-encoding console must not raise on the em dash inside the guard."""
+    _plugin()._warn("Save your scene " + chr(0x2014) + " now")
+    assert capsys.readouterr().out == "sqi: Save your scene ? now\n"
+
+
 def test_vred_plugin_adds_the_sqi_menu_and_removes_it(monkeypatch: pytest.MonkeyPatch) -> None:
     class Signal:
         def __init__(self) -> None:

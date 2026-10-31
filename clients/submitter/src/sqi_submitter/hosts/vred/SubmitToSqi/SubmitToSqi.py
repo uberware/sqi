@@ -73,7 +73,7 @@ def load_submitter(settings_path: str) -> tuple[object | None, str | None]:
     """
     try:
         return _import_menu(), None
-    except ImportError as first:
+    except Exception as first:  # VRED's sandbox or a wrong-Python install may raise any error
         reason = str(first)
     site = _configured_site(settings_path)
     if site:
@@ -81,7 +81,7 @@ def load_submitter(settings_path: str) -> tuple[object | None, str | None]:
             sys.path.insert(0, site)
         try:
             return _import_menu(), None
-        except ImportError as second:
+        except Exception as second:
             reason = str(second)
     return None, MISSING_MESSAGE.format(reason=reason)
 
@@ -97,21 +97,40 @@ def _message_box() -> Any:
     return None
 
 
+def _print(text: str) -> None:
+    """Print to VRED's terminal, ASCII only: a narrow-encoding console must not raise here."""
+    print(("sqi: " + text).encode("ascii", "replace").decode("ascii"))
+
+
+def _lookup(name: str) -> Any:
+    """One of VRED's injected names, or ``None``: from ``builtins``, else this module's globals.
+
+    The scripting guide does not say which of the two VRED injects into, so both are read.
+    """
+    value = getattr(builtins, name, None)
+    if value is None:
+        value = globals().get(name)
+    return value
+
+
 def _warn(text: str) -> None:
     """Show ``text`` to the artist, falling back to VRED's terminal."""
     box = _message_box()
     if box is not None:
         try:
-            box.warning(getattr(builtins, "vrMainWindow", None), DIALOG_TITLE, text)
+            box.warning(_lookup("vrMainWindow"), DIALOG_TITLE, text)
             return
         except Exception:  # a dialog that cannot be shown must not hide the message
             pass
-    print("sqi: " + text)
+    _print(text)
 
 
 def _builtin(name: str) -> Any:
     """One of VRED's injected services; AttributeError when this is not VRED."""
-    return getattr(builtins, name)
+    value = _lookup(name)
+    if value is None:
+        raise AttributeError(name)
+    return value
 
 
 def _services() -> Any:
@@ -166,13 +185,13 @@ def onDestroyVREDScriptPlugin() -> None:
 
 
 def _register_in_vred() -> None:
-    window = getattr(builtins, "vrMainWindow", None)
+    window = _lookup("vrMainWindow")
     if window is None:
         return  # not inside VRED (a test, or a plain interpreter)
     try:
         register_menu(window)
     except Exception as exc:  # a menu that cannot be added must not stop VRED loading plugins
-        print("sqi: the Submit to sqi menu was not added: " + str(exc))
+        _print("the Submit to sqi menu was not added: " + str(exc))
 
 
 _register_in_vred()
