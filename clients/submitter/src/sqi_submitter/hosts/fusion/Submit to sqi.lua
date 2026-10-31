@@ -285,16 +285,16 @@ local function read_file(path)
     return text
 end
 
--- Tells the artist something: Fusion's AskUser dialog, else the Console.
+-- Tells the artist something: always on Fusion's Console, then in an AskUser dialog. The
+-- Console line comes first and unconditionally because AskUser's control table is unverified:
+-- a dialog that is accepted but shows nothing must not leave the artist with no message.
 function sqi_message(text)
-    local shown = pcall(function()
+    print(SQI_TITLE .. ": " .. text)
+    pcall(function()
         return comp:AskUser(SQI_TITLE, {
             { "Message", "Text", Name = "", Default = text, Lines = 4, Wrap = true, ReadOnly = true },
         })
     end)
-    if not shown then
-        print(SQI_TITLE .. ": " .. text)
-    end
 end
 
 -- ~/.sqi/submitter.json, or $SQI_SUBMITTER_SETTINGS when set (as the Python hosts read it).

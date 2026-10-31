@@ -396,10 +396,11 @@ def test_fusion_unsaved_comp_is_refused(lua: str, tmp_path: Path) -> None:
     got = run_lua(lua, _entry(tmp_path, filename=""), {"SQI_SETTINGS": ""})
     assert got["ok"] == "false"
     assert _events(got) == [f"ask:Submit to sqi|{UNSAVED}"]
-    assert got["printed"] == ""
+    # The Console always gets it first: AskUser may accept the control table and show nothing.
+    assert got["printed"] == f"Submit to sqi: {UNSAVED}"
 
 
-def test_fusion_messages_fall_back_to_print(lua: str, tmp_path: Path) -> None:
+def test_fusion_messages_reach_the_console_without_askuser(lua: str, tmp_path: Path) -> None:
     got = run_lua(lua, _entry(tmp_path, filename="", ask_user=False), {"SQI_SETTINGS": ""})
     assert got["ok"] == "false"
     assert _events(got) == []
@@ -587,7 +588,7 @@ def test_fusion_script_does_nothing_without_a_comp(lua: str) -> None:
         (
             "linux",
             {"HOME": "/home/a"},
-            Path("/home/a") / ".fusion" / "Blackmagic Design" / "Fusion" / "Scripts" / "Comp",
+            Path("/home/a") / ".fusion" / "BlackmagicDesign" / "Fusion" / "Scripts" / "Comp",
         ),
         ("win32", {}, None),
         ("win32", {"HOME": "/home/a"}, None),

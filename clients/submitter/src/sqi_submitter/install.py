@@ -123,6 +123,9 @@ def _modo_scripts_folder(platform: str, env: Mapping[str, str]) -> Path | None:
 def _fusion_scripts_folder(platform: str, env: Mapping[str, str]) -> Path | None:
     """Fusion's per-user ``Scripts/Comp`` folder (the ``Scripts:/Comp`` path map)."""
     leaf = Path("Blackmagic Design") / "Fusion" / "Scripts" / "Comp"
+    # Linux spells the vendor folder without the space, as the Fusion Render Node's own
+    # install folder does (/opt/BlackmagicDesign/...).
+    linux_leaf = Path("BlackmagicDesign") / "Fusion" / "Scripts" / "Comp"
     if platform == "win32":
         appdata = env.get("APPDATA")
         return Path(appdata) / leaf if appdata else None
@@ -131,7 +134,7 @@ def _fusion_scripts_folder(platform: str, env: Mapping[str, str]) -> Path | None
         return None
     if platform == "darwin":
         return Path(home) / "Library" / "Application Support" / leaf
-    return Path(home) / ".fusion" / leaf
+    return Path(home) / ".fusion" / linux_leaf
 
 
 def default_destination(host: str, platform: str, env: Mapping[str, str]) -> Path | None:
@@ -149,7 +152,8 @@ def default_destination(host: str, platform: str, env: Mapping[str, str]) -> Pat
     per-user ``Luxology`` folder: ``%APPDATA%/Luxology`` on Windows, ``~/Library/Application
     Support/Luxology`` on macOS and ``~/.luxology`` on Linux. Fusion's is ``Scripts/Comp`` in
     its per-user ``Blackmagic Design/Fusion`` folder: under ``%APPDATA%`` on Windows, ``~/Library/
-    Application Support`` on macOS and ``~/.fusion`` on Linux.
+    Application Support`` on macOS and ``~/.fusion`` on Linux (where the vendor folder is spelled
+    ``BlackmagicDesign``).
     """
     if host == "unreal":
         home = env.get("USERPROFILE" if platform == "win32" else "HOME")
