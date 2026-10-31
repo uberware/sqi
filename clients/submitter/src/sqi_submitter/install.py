@@ -15,10 +15,18 @@ import shutil
 import sys
 from collections.abc import Mapping
 from importlib import resources
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TextIO
 
-__all__ = ["HOST_FILES", "KNOWN_HOSTS", "default_destination", "install_host"]
+__all__ = [
+    "HOOK_FILES",
+    "HOOK_MARKER",
+    "HOST_FILES",
+    "KNOWN_HOSTS",
+    "default_destination",
+    "dest_relative",
+    "install_host",
+]
 
 # Package-relative files per host.
 HOST_FILES: dict[str, list[str]] = {
@@ -31,6 +39,12 @@ HOST_FILES: dict[str, list[str]] = {
 # (tests swap in stand-in files) leaves the set of hosts this command accepts unchanged.
 KNOWN_HOSTS: tuple[str, ...] = tuple(HOST_FILES)
 
+# Startup files whose *name the host fixes* (Unreal's init_unreal.py, Katana's init.py), so a
+# studio may already have its own. A shipped one carries HOOK_MARKER; install never overwrites
+# a file of such a name that lacks the marker, it prints the lines to append instead.
+HOOK_MARKER = "# sqi-submitter hook"
+HOOK_FILES: frozenset[str] = frozenset({"init_unreal.py", "init.py"})
+
 _C4D_PREFS_GLOB = "Maxon Cinema 4D *"
 
 _NEXT_STEP = {
@@ -41,6 +55,20 @@ _NEXT_STEP = {
     "(it needs administrator rights), restart After Effects, then open the panel from the "
     "Window menu.",
 }
+
+
+def dest_relative(host: str, rel: str) -> PurePosixPath:
+    """Where ``rel`` (a package-relative file of ``host``) lands, relative to the destination.
+
+    A file under ``hosts/<host>/`` keeps its path relative to that folder, so a host that
+    needs a folder tree (Modo's kit, Fusion's Scripts) gets one. Any other file is copied
+    flat under its basename.
+    """
+    path = PurePosixPath(rel)
+    try:
+        return path.relative_to(PurePosixPath("hosts") / host)
+    except ValueError:
+        return PurePosixPath(path.name)
 
 
 def _cinema4d_prefs_root(platform: str, env: Mapping[str, str]) -> Path | None:
@@ -69,6 +97,13 @@ def default_destination(host: str, platform: str, env: Mapping[str, str]) -> Pat
     if len(matches) != 1:
         return None
     return matches[0] / "plugins"
+
+
+def _is_foreign_hook(target: Path) -> bool:
+    """True when ``target`` is a startup file the host fixes the name of, and it is not ours."""
+    if target.name not in HOOK_FILES or not target.is_file():
+        return False
+    return HOOK_MARKER.encode("utf-8") not in target.read_bytes()
 
 
 def _no_destination_hint(host: str) -> str:
@@ -115,8 +150,16 @@ def install_host(host: str, dest: Path | None, out: TextIO, err: TextIO | None =
     try:
         dest.mkdir(parents=True, exist_ok=True)
         for rel in files:
-            target = dest / Path(rel).name
+            target = dest.joinpath(*dest_relative(host, rel).parts)
             with resources.as_file(root.joinpath(rel)) as path:
+                if _is_foreign_hook(target):
+                    print(
+                        f"kept your existing {target}; to add sqi, append these lines to it:",
+                        file=out,
+                    )
+                    print(path.read_text(encoding="utf-8").rstrip("\n"), file=out)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(path, target)
             copied.append(target)
             print(f"copied {target}", file=out)

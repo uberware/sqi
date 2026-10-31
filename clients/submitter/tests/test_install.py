@@ -6,7 +6,7 @@ from __future__ import annotations
 import io
 import shutil
 from importlib import resources
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -198,3 +198,86 @@ def test_cli_dialog_without_qt_names_the_install_command(
     (shown,) = native_messages  # pytest's stderr is not a terminal
     assert shown.startswith("No Qt binding found")
     assert shown.endswith(str(tmp_path / ".sqi" / "submit-error.log"))
+
+
+def test_dest_relative_keeps_tree_under_host_folder() -> None:
+    assert install.dest_relative("modo", "hosts/modo/sqi/lxserv/a.py") == PurePosixPath(
+        "sqi/lxserv/a.py"
+    )
+    assert install.dest_relative("cinema4d", "hosts/cinema4d/sqi_submit.pyp") == PurePosixPath(
+        "sqi_submit.pyp"
+    )
+    assert install.dest_relative("blender", "hosts/__init__.py") == PurePosixPath("__init__.py")
+
+
+def _package_with(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, files: dict[str, str]) -> None:
+    """Make install read its package data from a throwaway tree holding ``files``."""
+    root = tmp_path / "pkg"
+    for rel, text in files.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(resources, "files", lambda _package: root)
+
+
+def test_install_host_copies_a_tree(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _package_with(
+        tmp_path,
+        monkeypatch,
+        {"hosts/blender/sqi/lxserv/a.py": "a\n", "hosts/blender/index.cfg": "cfg\n"},
+    )
+    monkeypatch.setattr(
+        install,
+        "HOST_FILES",
+        {"blender": ["hosts/blender/sqi/lxserv/a.py", "hosts/blender/index.cfg"]},
+    )
+    dest = tmp_path / "kit"
+    out = io.StringIO()
+    assert install.install_host("blender", dest, out) == 0
+    assert (dest / "sqi" / "lxserv" / "a.py").read_text(encoding="utf-8") == "a\n"
+    assert (dest / "index.cfg").read_text(encoding="utf-8") == "cfg\n"
+    assert str(dest / "sqi" / "lxserv" / "a.py") in out.getvalue()
+
+
+_HOOK_TEXT = f"{install.HOOK_MARKER}\nimport sqi_katana_submit\n"
+
+
+def test_install_host_keeps_a_foreign_hook_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _package_with(tmp_path, monkeypatch, {"hosts/blender/init.py": _HOOK_TEXT})
+    monkeypatch.setattr(install, "HOST_FILES", {"blender": ["hosts/blender/init.py"]})
+    dest = tmp_path / "startup"
+    dest.mkdir()
+    (dest / "init.py").write_text('print("studio")', encoding="utf-8")
+    out = io.StringIO()
+    assert install.install_host("blender", dest, out) == 0
+    assert (dest / "init.py").read_text(encoding="utf-8") == 'print("studio")'
+    text = out.getvalue()
+    assert f"kept your existing {dest / 'init.py'}; to add sqi, append these lines to it:" in text
+    assert _HOOK_TEXT in text
+
+
+def test_install_host_creates_a_missing_hook_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _package_with(tmp_path, monkeypatch, {"hosts/blender/init.py": _HOOK_TEXT})
+    monkeypatch.setattr(install, "HOST_FILES", {"blender": ["hosts/blender/init.py"]})
+    out = io.StringIO()
+    assert install.install_host("blender", tmp_path / "fresh", out) == 0
+    assert (tmp_path / "fresh" / "init.py").read_text(encoding="utf-8") == _HOOK_TEXT
+    assert "kept your existing" not in out.getvalue()
+
+
+def test_install_host_replaces_its_own_hook_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _package_with(tmp_path, monkeypatch, {"hosts/blender/init.py": _HOOK_TEXT})
+    monkeypatch.setattr(install, "HOST_FILES", {"blender": ["hosts/blender/init.py"]})
+    dest = tmp_path / "startup"
+    dest.mkdir()
+    (dest / "init.py").write_text(f"{install.HOOK_MARKER}\nold\n", encoding="utf-8")
+    out = io.StringIO()
+    assert install.install_host("blender", dest, out) == 0
+    assert (dest / "init.py").read_text(encoding="utf-8") == _HOOK_TEXT
+    assert "kept your existing" not in out.getvalue()

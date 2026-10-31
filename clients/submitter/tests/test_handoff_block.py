@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import ctypes
 import json
 import os
@@ -23,6 +24,10 @@ HANDOFF_HOST_FILES: list[Path] = [
     HOSTS_DIR / "blender" / "sqi_blender_addon.py",
     HOSTS_DIR / "cinema4d" / "sqi_submit.pyp",
 ]
+
+# The Python files Tasks 2-6 add (handoff modules and the startup hooks that call them). Each
+# must still parse on Python 3.7: Katana 4-5 and Silhouette 2022 ship it.
+NEW_HANDOFF_FILES: list[Path] = []
 
 BEGIN = "# --- sqi handoff begin ---"
 END = "# --- sqi handoff end ---"
@@ -311,3 +316,10 @@ def test_block_identical_in_every_host() -> None:
     canonical = _extract(HOSTS_DIR / "_handoff_block.py")
     for host_file in HANDOFF_HOST_FILES:
         assert _extract(host_file) == canonical, f"{host_file} drifted from _handoff_block.py"
+
+
+def test_handoff_hosts_parse_as_python37() -> None:
+    for path in NEW_HANDOFF_FILES:
+        text = path.read_text(encoding="utf-8")
+        ast.parse(text, filename=str(path), feature_version=(3, 7))
+        assert "from __future__ import annotations" in text, f"{path} needs the __future__ import"

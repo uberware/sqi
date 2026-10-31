@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The canonical handoff launch block for hosts that cannot run Qt.
 
-Blender and Cinema 4D bundle their own Python and cannot import ``sqi_submitter``,
+Every Python handoff host (Blender, Cinema 4D, Unreal, Katana, KeyShot, Silhouette and
+Modo) runs the host's own Python and cannot import ``sqi_submitter``,
 so each carries a verbatim copy of the text between the two markers below.
 ``tests/test_handoff_block.py::test_block_identical_in_every_host`` keeps the
 copies identical to this file. Edit the block here first, then re-copy it.
