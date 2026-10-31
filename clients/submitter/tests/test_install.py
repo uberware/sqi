@@ -345,3 +345,41 @@ def test_install_host_foreign_hook_stays_foreign_after_appending_printed_lines(
     assert (dest / "init.py").read_text(encoding="utf-8") == appended
     assert appended.startswith(studio)
     assert "kept your existing" in again.getvalue()
+
+
+def test_install_host_guidance_for_the_real_unreal_hook_is_valid_to_append(
+    tmp_path: Path,
+) -> None:
+    """The printed lines go to the end of a studio's own file, after its imports and code.
+
+    A ``from __future__`` line there is a SyntaxError, so the guidance must not carry one.
+    """
+    dest = tmp_path / "Python"
+    dest.mkdir()
+    studio = "import os\n\nSTUDIO = os.environ.get('STUDIO')\nprint(STUDIO)\n"
+    (dest / "init_unreal.py").write_text(studio, encoding="utf-8")
+    out = io.StringIO()
+    assert install.install_host("unreal", dest, out) == 0
+    text = out.getvalue()
+    assert (dest / "init_unreal.py").read_text(encoding="utf-8") == studio
+    assert (dest / "sqi_unreal_submit.py").is_file()
+    assert "from __future__" not in text
+    printed = text.split("append these lines to it:\n", 1)[1]
+    printed = printed.split("\nRestart the Unreal Editor", 1)[0]
+    assert "import sqi_unreal_submit" in printed and "register_menu()" in printed
+    compile(studio + "\n" + printed + "\n", "init_unreal.py", "exec")
+
+
+def test_install_host_guidance_drops_future_imports(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    hook = f"from __future__ import annotations\n{install.HOOK_MARKER}\nimport sqi_x\n"
+    _package_with(tmp_path, monkeypatch, {"hosts/blender/init.py": hook})
+    monkeypatch.setattr(install, "HOST_FILES", {"blender": ["hosts/blender/init.py"]})
+    dest = tmp_path / "startup"
+    dest.mkdir()
+    (dest / "init.py").write_text("x = 1\n", encoding="utf-8")
+    out = io.StringIO()
+    assert install.install_host("blender", dest, out) == 0
+    assert "__future__" not in out.getvalue()
+    assert "import sqi_x" in out.getvalue()

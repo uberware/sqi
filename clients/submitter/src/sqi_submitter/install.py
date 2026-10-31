@@ -114,13 +114,20 @@ def _is_foreign_hook(target: Path) -> bool:
 
 
 def _lines_to_add(hook: Path) -> str:
-    """The shipped hook without its marker line.
+    """The shipped hook as lines to append to an artist's own startup file.
 
     The marker names the file sqi itself installs. Printed for the artist to append, it would
-    make their own file look like ours, and the next install would overwrite it.
+    make their own file look like ours, and the next install would overwrite it. A
+    ``from __future__`` import is a SyntaxError anywhere but the top of a file, which is not
+    where these lines land, so it is left out too (a shipped hook must not need one).
     """
     lines = hook.read_text(encoding="utf-8").splitlines()
-    return "\n".join(line for line in lines if line.strip() != HOOK_MARKER).strip("\n")
+    keep = [
+        line
+        for line in lines
+        if line.strip() != HOOK_MARKER and not line.lstrip().startswith("from __future__ import")
+    ]
+    return "\n".join(keep).strip("\n")
 
 
 def _no_destination_hint(host: str) -> str:
