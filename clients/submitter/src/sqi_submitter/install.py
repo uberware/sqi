@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """``sqi-submit install-host``: copy a handoff host's files into place.
 
-The files for Blender, Cinema 4D, After Effects, Unreal, Katana, KeyShot and Silhouette ship
+The files for Blender, Cinema 4D, After Effects, Unreal, Katana, KeyShot, Silhouette and Modo ship
 inside this wheel as package data and use only the host's own standard library, so installing
 is a file copy: no pip into the host's Python. Where the documented location needs admin rights
 (After Effects) or is not knowable (Blender's add-on is installed through its UI, Cinema 4D's
@@ -39,6 +39,8 @@ HOST_FILES: dict[str, list[str]] = {
     "keyshot": ["hosts/keyshot/sqi_keyshot_submit.py"],
     # Silhouette's startup script imports a module named sfxuser from its script search path.
     "silhouette": ["hosts/silhouette/sqi_silhouette_submit.py", "hosts/silhouette/sfxuser.py"],
+    # Modo loads a kit (a folder with index.cfg), copied as <dest>/sqi/...; it has no hook file.
+    "modo": ["hosts/modo/sqi/index.cfg", "hosts/modo/sqi/lxserv/sqi_modo_submit.py"],
 }
 
 # Taken from HOST_FILES once, at import, so the two cannot drift; a patched HOST_FILES
@@ -66,6 +68,7 @@ _NEXT_STEP = {
     "katana": "Restart Katana; Submit to sqi… appears in the sqi menu.",
     "keyshot": "In KeyShot open Window > Scripting Console and run sqi_keyshot_submit.",
     "silhouette": "Restart Silhouette; Submit to sqi… appears in the Actions menu.",
+    "modo": "Restart Modo; run sqi.submit (or use the sqi menu entry).",
 }
 
 
@@ -101,6 +104,18 @@ def _only_folder(root: Path, pattern: str) -> Path | None:
     return matches[0] if len(matches) == 1 else None
 
 
+def _modo_scripts_folder(platform: str, env: Mapping[str, str]) -> Path | None:
+    if platform == "win32":
+        appdata = env.get("APPDATA")
+        return Path(appdata) / "Luxology" / "Scripts" if appdata else None
+    home = env.get("HOME")
+    if not home:
+        return None
+    if platform == "darwin":
+        return Path(home) / "Library" / "Application Support" / "Luxology" / "Scripts"
+    return Path(home) / ".luxology" / "Scripts"
+
+
 def default_destination(host: str, platform: str, env: Mapping[str, str]) -> Path | None:
     """The per-user folder to copy into, or ``None`` when the artist must do it.
 
@@ -112,7 +127,9 @@ def default_destination(host: str, platform: str, env: Mapping[str, str]) -> Pat
     returned only when exactly one ``Maxon Cinema 4D *`` folder exists. Silhouette's is
     ``scripts`` under ``SFX_USER_PATH`` when that variable is set, else ``None``. KeyShot's is the
     ``Scripts`` folder of its one ``KeyShot*`` folder in Documents (Windows and macOS only: KeyShot
-    has no Linux desktop product), under the same one-folder rule.
+    has no Linux desktop product), under the same one-folder rule. Modo's is ``Scripts`` in its
+    per-user ``Luxology`` folder: ``%APPDATA%/Luxology`` on Windows, ``~/Library/Application
+    Support/Luxology`` on macOS and ``~/.luxology`` on Linux.
     """
     if host == "unreal":
         home = env.get("USERPROFILE" if platform == "win32" else "HOME")
@@ -134,6 +151,8 @@ def default_destination(host: str, platform: str, env: Mapping[str, str]) -> Pat
         home = env.get("USERPROFILE" if platform == "win32" else "HOME")
         found = _only_folder(Path(home) / "Documents", _KEYSHOT_GLOB) if home else None
         return found / "Scripts" if found else None
+    if host == "modo":
+        return _modo_scripts_folder(platform, env)
     if host != "cinema4d":
         return None
     root = _cinema4d_prefs_root(platform, env)
@@ -200,6 +219,14 @@ def _no_destination_hint(host: str) -> str:
             "files above into the scripts folder under your Silhouette user folder "
             "($(SFX_USER_PATH)/scripts; create it if needed), or pass --dest DIR. If you "
             "already have an sfxuser.py there, add the lines of the shipped one to it instead."
+        )
+    if host == "modo":
+        return (
+            "Could not tell where Modo's per-user folder is. Copy the sqi folder (index.cfg and "
+            "lxserv/sqi_modo_submit.py) shown above into the Scripts folder of your Luxology "
+            "user folder (%APPDATA%/Luxology on Windows, ~/Library/Application "
+            "Support/Luxology on macOS, ~/.luxology on Linux; create it if needed), or pass "
+            "--dest DIR."
         )
     return (
         "The After Effects scripts folder is under the program folder and needs "

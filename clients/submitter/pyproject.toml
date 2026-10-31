@@ -143,6 +143,12 @@ module = [
   "fx",
   "PySide2",
   "sqi_silhouette_submit",
+  # Modo's scripting modules (the handoff file imports them inside function bodies).
+  "lx",
+  "lxu",
+  "lxu.*",
+  "modo",
+  "modo.*",
 ]
 ignore_missing_imports = true
 

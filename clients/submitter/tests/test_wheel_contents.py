@@ -64,7 +64,10 @@ def test_wheel_contains_every_host_file(wheel: dict[str, bytes]) -> None:
         "katana",
         "keyshot",
         "silhouette",
+        "modo",
     }
+    # index.cfg is not Python: it ships only because nothing excludes it.
+    assert "hosts/modo/sqi/index.cfg" in host_files
     assert "hosts/aftereffects/Submit to sqi.jsx" in host_files
     assert "hosts/aftereffects/json2.js" in host_files
     missing = [f for f in host_files + REQUIRED if f"sqi_submitter/{f}" not in names]

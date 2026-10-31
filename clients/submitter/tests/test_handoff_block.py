@@ -27,6 +27,7 @@ HANDOFF_HOST_FILES: list[Path] = [
     HOSTS_DIR / "katana" / "sqi_katana_submit.py",
     HOSTS_DIR / "keyshot" / "sqi_keyshot_submit.py",
     HOSTS_DIR / "silhouette" / "sqi_silhouette_submit.py",
+    HOSTS_DIR / "modo" / "sqi" / "lxserv" / "sqi_modo_submit.py",
 ]
 
 # The Python files Tasks 2-6 add (handoff modules and the startup hooks that call them). Each
@@ -39,6 +40,7 @@ NEW_HANDOFF_FILES: list[Path] = [
     HOSTS_DIR / "keyshot" / "sqi_keyshot_submit.py",
     HOSTS_DIR / "silhouette" / "sqi_silhouette_submit.py",
     HOSTS_DIR / "silhouette" / "sfxuser.py",
+    HOSTS_DIR / "modo" / "sqi" / "lxserv" / "sqi_modo_submit.py",
 ]
 
 BEGIN = "# --- sqi handoff begin ---"
