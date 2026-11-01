@@ -25,6 +25,13 @@ HOOK = UNREAL_DIR / "init_unreal.py"
 
 STILL_DIRTY = "Save your changes before submitting — the farm renders the saved project."
 REFUSAL_HEAD = "These queue jobs cannot render on the farm and were left out:\n"
+NO_JOBS = (
+    "The Movie Render Queue has no enabled jobs. Add or enable a job (or load a saved queue) "
+    "in Window > Cinematics > Movie Render Queue, then submit again."
+)
+NONE_RENDERABLE_HEAD = (
+    "None of the queue's enabled jobs can render on the farm, so nothing was submitted:"
+)
 
 
 class Path_:
@@ -284,6 +291,51 @@ def test_unreal_refusals_ok_launches_the_rest(
     lines = text.split("\n")
     assert lines[0] + "\n" == REFUSAL_HEAD
     assert len(lines) == 3 and lines[1].startswith("Edited: ") and lines[2].startswith("Scratch: ")
+
+
+def test_unreal_empty_queue_launches_nothing(
+    unreal: Unreal, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    stub_launch(module, monkeypatch, unreal.events)
+    assert module.submit() is False
+    assert unreal.events == []
+    assert unreal.messages == [("sqi", NO_JOBS, "MSG_OK")]
+
+
+def test_unreal_all_jobs_disabled_launches_nothing(
+    unreal: Unreal, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    unreal.jobs = [_job("Off", enabled=False)]
+    stub_launch(module, monkeypatch, unreal.events)
+    assert module.submit() is False
+    assert unreal.events == []
+    assert unreal.messages == [("sqi", NO_JOBS, "MSG_OK")]
+
+
+def test_unreal_all_jobs_refused_launches_nothing(
+    unreal: Unreal, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With every enabled job refused there is nothing to continue with, so no Cancel choice."""
+    module = _module()
+    unreal.jobs = [
+        _job("Edited", config=None),
+        _job("Scratch", map_path="/Temp/m.m"),
+        _job("Off", enabled=False),
+    ]
+    stub_launch(module, monkeypatch, unreal.events)
+    assert module.submit() is False
+    assert unreal.events == []
+    assert unreal.messages == [
+        (
+            "sqi",
+            NONE_RENDERABLE_HEAD
+            + "\nEdited: its render settings are not saved as a config asset"
+            + "\nScratch: its map is not saved",
+            "MSG_OK",
+        )
+    ]
 
 
 @pytest.mark.parametrize("error", [AttributeError("get_dirty_map_packages"), ValueError("bad")])

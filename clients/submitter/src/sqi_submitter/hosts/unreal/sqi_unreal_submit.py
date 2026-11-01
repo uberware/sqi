@@ -138,6 +138,13 @@ def launch(command: str, context_path: str) -> None:
 
 _SAVE_FIRST = "Save your changes before submitting — the farm renders the saved project."
 _REFUSAL_HEAD = "These queue jobs cannot render on the farm and were left out:\n"
+_NO_JOBS = (
+    "The Movie Render Queue has no enabled jobs. Add or enable a job (or load a saved queue) "
+    "in Window > Cinematics > Movie Render Queue, then submit again."
+)
+_NONE_RENDERABLE_HEAD = (
+    "None of the queue's enabled jobs can render on the farm, so nothing was submitted:"
+)
 _TOOLS_MENU = "LevelEditor.MainMenu.Tools"
 _MENU_COMMAND = "import sqi_unreal_submit; sqi_unreal_submit.submit()"
 
@@ -245,6 +252,14 @@ def submit() -> bool:
         # These call Editor APIs that have not been run on a real install: whatever they raise
         # is shown to the artist, not left to reach the Editor's log.
         _show(f"sqi could not read the scene: {exc}", unreal.AppMsgType.OK)
+        return False
+    targets = data["targets"]
+    if not targets:
+        # Nothing to submit: say why and stop, rather than open a dialog with an empty list.
+        if reasons:
+            _show("\n".join([_NONE_RENDERABLE_HEAD, *reasons]), unreal.AppMsgType.OK)
+        else:
+            _show(_NO_JOBS, unreal.AppMsgType.OK)
         return False
     try:
         if reasons:

@@ -520,6 +520,14 @@ stop:
 - the job's map or level sequence is not a saved asset (an untitled map, or a
   path under `/Temp/`).
 
+If nothing is left to submit, the submitter launches nothing and says why in a
+message with only **OK**. An empty queue, or one whose jobs are all disabled,
+gets "The Movie Render Queue has no enabled jobs. Add or enable a job (or load
+a saved queue) in Window > Cinematics > Movie Render Queue, then submit again."
+When every enabled job is one of the refused kinds above, the message is "None
+of the queue's enabled jobs can render on the farm, so nothing was submitted:"
+followed by each job and its reason.
+
 `unreal-mrq-job-render` is the per-target product: each ticked job becomes one
 job, with `LevelSequence`, `Map` and `MovieRenderConfig` filled from the queue
 job. `unreal-mrq-queue-render` renders a saved queue asset as one task. It is
@@ -1728,6 +1736,11 @@ After installing per [Installation per host](#installation-per-host):
    before the dialog. **OK** opens the dialog with the other jobs; **Cancel**
    launches nothing. A job whose config asset was saved and then edited in the
    queue is also left out.
+   With every enabled job refused, the message instead begins "None of the
+   queue's enabled jobs can render on the farm, so nothing was submitted:" and
+   has only **OK**; nothing launches. An empty queue, or one with every job
+   disabled, shows "The Movie Render Queue has no enabled jobs. ..." with only
+   **OK**, and also launches nothing.
 4. **Unsaved changes.** Make a map or asset dirty and submit. The Editor's save
    dialog appears, then the sqi dialog. Decline to save: "Save your changes
    before submitting — the farm renders the saved project." and no dialog.
