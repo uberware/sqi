@@ -12,11 +12,9 @@ step "Render" — 1 task
   log checks: failOn "Unknown command:"
   log checks: requireLine "SQI_RENDER: OK"
 
-task 1/1  name="Render[Frame=1-1,Frame.End=1,Frame.Start=1]"
+task 1/1  name="Render[Frame=1-1]"
   task params:
     Frame=1-1
-    Frame.End=1
-    Frame.Start=1
   command: modo_cl
   args:
     [0]  -dboff:crashreport

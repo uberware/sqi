@@ -898,16 +898,18 @@ DCC presets from **Admin → Preset Library** in the web UI or, without a preset
 index, create them through `POST /api/v1/products` or **Admin → Products**. All
 twenty-nine use the product `category` `Rendering`. All but the two After Effects
 queue presets and the two Unreal presets (one task each) declare `TASK_CHUNKING` to split the frame range;
-the Maya, Blender, After Effects render, Mistika, Katana, Silhouette, Fusion, VRED and Modo presets also declare
+the Maya, Blender, After Effects render, Mistika, Katana, Silhouette and Fusion presets also declare
 `SQI_CHUNK_BOUNDS` to expose each chunk's start and end frame (see
 [OpenJD extensions](openjd-extensions.md)). The Cinema 4D and 3ds Max presets
 declare `EXPR` instead: it computes the same two frames, and leaves the output
-flag out when **Output Path** is empty. The two VRED presets declare `EXPR` as well,
-to build the `params.json` their embedded `render.py` reads inside VRED; like the Modo presets
-below, they declare the bounds but nothing reads them. The two KeyShot presets
+flag out when **Output Path** is empty. (`SQI_CHUNK_BOUNDS` is rejected in a
+template that declares `EXPR`, because a `CHUNK[INT]` is then a `range_expr`
+and `.Start`/`.End` do not resolve.) The two VRED presets declare `TASK_CHUNKING`, `EXPR`
+and `SQI_LOG_CHECKS`: `EXPR` builds the `params.json` their embedded `render.py` reads inside VRED,
+and that script takes its first and last frame from it. The two KeyShot presets
 declare `TASK_CHUNKING`, `EXPR` and `SQI_LOG_CHECKS` but not `SQI_CHUNK_BOUNDS`: their script loops over
 any list of frames, so a chunk may be stepped or gapped, and it needs no bounds. The two Modo presets declare
-`TASK_CHUNKING`, `SQI_CHUNK_BOUNDS`, `EXPR` and `SQI_LOG_CHECKS`; they declare the bounds but nothing reads them, since under `EXPR` the
+`TASK_CHUNKING`, `EXPR` and `SQI_LOG_CHECKS`; under `EXPR` the
 script takes its first and last frame from `params.json`. The two Unreal presets declare only `EXPR` and
 `SQI_LOG_CHECKS`: each renders one Movie Render Queue job or saved queue as one task, with its own frame range,
 and `EXPR` builds the `params.json` their embedded script reads inside the editor.

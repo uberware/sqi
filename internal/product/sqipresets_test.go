@@ -207,17 +207,18 @@ func TestSQIReferencePresets(t *testing.T) {
 			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
 		},
 		// The two VRED presets are host-script presets: EXPR builds the
-		// params.json their embedded render.py reads. vred-render has no View,
+		// params.json their embedded render.py reads. They declare no
+		// SQI_CHUNK_BOUNDS, which is an error under EXPR. vred-render has no View,
 		// so it is a whole-scene product.
 		"vred-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames", "FramesPerTask", "OutputFile"},
-			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS", "EXPR", "SQI_LOG_CHECKS"},
+			extensions: []string{"TASK_CHUNKING", "EXPR", "SQI_LOG_CHECKS"},
 		},
 		"vred-viewpoint-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames", "View", "FramesPerTask", "OutputFile"},
-			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS", "EXPR", "SQI_LOG_CHECKS"},
+			extensions: []string{"TASK_CHUNKING", "EXPR", "SQI_LOG_CHECKS"},
 		},
 		// The two KeyShot presets are host-script presets like VRED's, but
 		// declare no SQI_CHUNK_BOUNDS: the script loops over any list of
@@ -234,18 +235,17 @@ func TestSQIReferencePresets(t *testing.T) {
 			extensions: []string{"TASK_CHUNKING", "EXPR", "SQI_LOG_CHECKS"},
 		},
 		// The two Modo presets are host-script presets with CONTIGUOUS chunks
-		// like VRED's, and declare SQI_CHUNK_BOUNDS although nothing reads
-		// the bounds under EXPR. modo-render has no PassGroup, so it is a
+		// like VRED's. modo-render has no PassGroup, so it is a
 		// whole-scene product.
 		"modo-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames", "FramesPerTask"},
-			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS", "EXPR", "SQI_LOG_CHECKS"},
+			extensions: []string{"TASK_CHUNKING", "EXPR", "SQI_LOG_CHECKS"},
 		},
 		"modo-pass-group-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames", "PassGroup", "FramesPerTask"},
-			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS", "EXPR", "SQI_LOG_CHECKS"},
+			extensions: []string{"TASK_CHUNKING", "EXPR", "SQI_LOG_CHECKS"},
 		},
 		// The two Unreal presets are host-script presets with one task and no
 		// frame parameters, so no TASK_CHUNKING. The job preset's target

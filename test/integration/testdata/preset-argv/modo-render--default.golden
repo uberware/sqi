@@ -11,11 +11,9 @@ step "Render" — 4 tasks
   log checks: failOn "Unknown command:"
   log checks: requireLine "SQI_RENDER: OK"
 
-task 1/4  name="Render[Frame=1-1,Frame.End=1,Frame.Start=1]"
+task 1/4  name="Render[Frame=1-1]"
   task params:
     Frame=1-1
-    Frame.End=1
-    Frame.Start=1
   command: modo_cl
   args:
     [0]  -dboff:crashreport
@@ -146,11 +144,9 @@ task 1/4  name="Render[Frame=1-1,Frame.End=1,Frame.Start=1]"
     
     main()
 
-task 2/4  name="Render[Frame=2-2,Frame.End=2,Frame.Start=2]"
+task 2/4  name="Render[Frame=2-2]"
   task params:
     Frame=2-2
-    Frame.End=2
-    Frame.Start=2
   command: modo_cl
   args:
     [0]  -dboff:crashreport
@@ -281,11 +277,9 @@ task 2/4  name="Render[Frame=2-2,Frame.End=2,Frame.Start=2]"
     
     main()
 
-task 3/4  name="Render[Frame=3-3,Frame.End=3,Frame.Start=3]"
+task 3/4  name="Render[Frame=3-3]"
   task params:
     Frame=3-3
-    Frame.End=3
-    Frame.Start=3
   command: modo_cl
   args:
     [0]  -dboff:crashreport
@@ -416,11 +410,9 @@ task 3/4  name="Render[Frame=3-3,Frame.End=3,Frame.Start=3]"
     
     main()
 
-task 4/4  name="Render[Frame=4-4,Frame.End=4,Frame.Start=4]"
+task 4/4  name="Render[Frame=4-4]"
   task params:
     Frame=4-4
-    Frame.End=4
-    Frame.Start=4
   command: modo_cl
   args:
     [0]  -dboff:crashreport

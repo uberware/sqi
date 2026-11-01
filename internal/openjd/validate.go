@@ -193,7 +193,9 @@ func validatePathTranslation(t *JobTemplate) ValidationErrors {
 // it is declared: TASK_CHUNKING must also be declared, and every CHUNK[INT] task
 // parameter must be CONTIGUOUS (rangeConstraint is required, so this only rejects
 // the literal NONCONTIGUOUS value), because .Start/.End are undefined across the
-// gaps of a NONCONTIGUOUS chunk.
+// gaps of a NONCONTIGUOUS chunk. Declaring it alongside EXPR is also an error:
+// under EXPR a CHUNK[INT] is a range_expr, so .Start/.End never resolve and the
+// extension would do nothing.
 // Runs unconditionally (not gated by EnforceLimits).
 func validateChunkBounds(t *JobTemplate) ValidationErrors {
 	if !t.hasExtension("SQI_CHUNK_BOUNDS") {
@@ -204,6 +206,12 @@ func validateChunkBounds(t *JobTemplate) ValidationErrors {
 		errs = append(errs, ValidationError{
 			Pointer: "/extensions",
 			Message: "SQI_CHUNK_BOUNDS requires the TASK_CHUNKING extension to also be declared",
+		})
+	}
+	if t.hasExtension("EXPR") {
+		errs = append(errs, ValidationError{
+			Pointer: "/extensions",
+			Message: "SQI_CHUNK_BOUNDS has no effect under EXPR; use min() and max() of the chunk",
 		})
 	}
 	for i, s := range t.Steps {

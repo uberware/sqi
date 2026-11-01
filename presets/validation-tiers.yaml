@@ -830,7 +830,7 @@ presets:
   # stdin, which the worker leaves as the null device, so the preset runs an
   # embedded render.py through the documented -cmd: startup command and the
   # per-task values travel in an EXPR-built params.json. CONTIGUOUS chunks,
-  # SQI_CHUNK_BOUNDS declared but unread (EXPR). No os.family gate (Modo ran on
+  # no SQI_CHUNK_BOUNDS (an error under EXPR). No os.family gate (Modo ran on
   # Windows, macOS and Linux; the worker tag is the gate), so Tier 3 runs on
   # every OS.
   - name: modo-render
