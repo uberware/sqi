@@ -43,6 +43,21 @@ readme: |
     or `/Users/Shared/Adobe` on macOS. It runs After Effects in its
     non-royalty-bearing, render-only mode; Adobe's network rendering page gives
     the licensing terms.
+
+  ## What has not been verified
+
+  - No After Effects has executed this preset. The arguments come from Adobe's
+    "Automated rendering and network rendering" page, which says that with no
+    `-comp`, `aerender` renders the saved queue and ignores `-s`, `-e`, `-i`
+    and `-output`.
+  - The `aerender ERROR` marker, and `aerender` exiting 0 when a render fails,
+    come from Adobe community and Thinkbox forum reports, not Adobe's
+    documentation. The marker has not been checked against a real failing
+    render.
+  - The install folder names the detector looks for. Adobe's page still spells
+    them "Adobe After Effects CC"; the detector assumes the current "Adobe
+    After Effects <year>" form, so an install in a folder named otherwise needs
+    `aerender` on `PATH` or a `worker.commands` entry.
 category: Rendering
 version: 1.0.0
 template:
