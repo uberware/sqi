@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import ast
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,7 +12,12 @@ import pytest
 
 from sqi_submitter import install
 from sqi_submitter.core.handoff import load_context
-from tests.conftest import FakeHost, assert_no_sqi_submitter_import, load_host_file
+from tests.conftest import (
+    FakeHost,
+    assert_no_sqi_submitter_import,
+    load_host_file,
+    stub_launch,
+)
 
 UNREAL_DIR = Path(__file__).resolve().parents[1] / "src" / "sqi_submitter" / "hosts" / "unreal"
 MODULE = UNREAL_DIR / "sqi_unreal_submit.py"
@@ -148,17 +152,6 @@ def _module() -> Any:
     return load_host_file(MODULE)
 
 
-def _stub_launch(module: Any, monkeypatch: pytest.MonkeyPatch, events: list[str]) -> None:
-    monkeypatch.setattr(module, "resolve_submit_command", lambda _c: "sqi")
-
-    def write(data: dict[str, Any]) -> str:
-        events.append(f"write:{len(data['targets'])}")
-        return "ctx.json"
-
-    monkeypatch.setattr(module, "write_context", write)
-    monkeypatch.setattr(module, "launch", lambda cmd, ctx: events.append(f"launch:{cmd}:{ctx}"))
-
-
 def test_unreal_read_scene_enabled_jobs_only(
     unreal: Unreal, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -232,7 +225,7 @@ def test_unreal_dirty_packages_saved_with_dialog_then_launch(
     module = _module()
     unreal.jobs = [_job()]
     unreal.map_dirty = ["map"]
-    _stub_launch(module, monkeypatch, unreal.events)
+    stub_launch(module, monkeypatch, unreal.events)
     assert module.submit() is True
     assert unreal.events == ["save:True:True", "write:1", "launch:sqi:ctx.json"]
     assert unreal.messages == []
@@ -241,7 +234,7 @@ def test_unreal_dirty_packages_saved_with_dialog_then_launch(
 def test_unreal_clean_project_is_not_saved(unreal: Unreal, monkeypatch: pytest.MonkeyPatch) -> None:
     module = _module()
     unreal.jobs = [_job()]
-    _stub_launch(module, monkeypatch, unreal.events)
+    stub_launch(module, monkeypatch, unreal.events)
     assert module.submit() is True
     assert unreal.events == ["write:1", "launch:sqi:ctx.json"]
 
@@ -251,7 +244,7 @@ def test_unreal_still_dirty_refuses(unreal: Unreal, monkeypatch: pytest.MonkeyPa
     unreal.jobs = [_job()]
     unreal.content_dirty = ["asset"]
     unreal.save_clears = False
-    _stub_launch(module, monkeypatch, unreal.events)
+    stub_launch(module, monkeypatch, unreal.events)
     assert module.submit() is False
     assert unreal.events == ["save:True:True"]  # nothing written, nothing launched
     assert unreal.messages == [("sqi", STILL_DIRTY, "MSG_OK")]
@@ -263,7 +256,7 @@ def test_unreal_refusals_cancel_stops_launch(
     module = _module()
     unreal.jobs = [_job("Edited", config=None), _job("Fine")]
     unreal.answer = "CANCEL"
-    _stub_launch(module, monkeypatch, unreal.events)
+    stub_launch(module, monkeypatch, unreal.events)
     assert module.submit() is False
     assert unreal.events == []
     assert unreal.messages == [
@@ -284,7 +277,7 @@ def test_unreal_refusals_ok_launches_the_rest(
         _job("Scratch", map_path="/Temp/m.m"),
         _job("Fine"),
     ]
-    _stub_launch(module, monkeypatch, unreal.events)
+    stub_launch(module, monkeypatch, unreal.events)
     assert module.submit() is True
     assert unreal.events == ["write:1", "launch:sqi:ctx.json"]
     [(_title, text, _kind)] = unreal.messages
@@ -300,7 +293,7 @@ def test_unreal_scene_check_failure_is_shown_not_raised(
     """The dirty-package check and the save call unverified Editor APIs: failures are shown."""
     module = _module()
     unreal.jobs = [_job()]
-    _stub_launch(module, monkeypatch, unreal.events)
+    stub_launch(module, monkeypatch, unreal.events)
 
     def broken() -> list[object]:
         raise error
@@ -316,7 +309,7 @@ def test_unreal_scene_read_failure_is_shown_not_raised(
     unreal: Unreal, monkeypatch: pytest.MonkeyPatch, error: Exception
 ) -> None:
     module = _module()
-    _stub_launch(module, monkeypatch, unreal.events)
+    stub_launch(module, monkeypatch, unreal.events)
 
     def broken() -> object:
         raise error
@@ -384,20 +377,6 @@ def test_unreal_hook_failure_does_not_break_startup(
     namespace: dict[str, Any] = {"__name__": "init"}
     exec(compile(HOOK.read_text(encoding="utf-8"), "init_unreal.py", "exec"), namespace)
     assert "was not added" in capsys.readouterr().out
-
-
-def test_unreal_hook_is_valid_to_append_to_a_studio_file() -> None:
-    """The hook's lines land after a studio's own file, with no ``__future__`` import."""
-    text = HOOK.read_text(encoding="utf-8")
-    lines = [
-        line
-        for line in text.splitlines()
-        if line.strip() != install.HOOK_MARKER and not line.startswith("from __future__")
-    ]
-    studio = "import os\n\nSTUDIO = os.environ.get('STUDIO')\n"
-    compile(studio + "\n".join(lines) + "\n", "init_unreal.py", "exec")
-    for node in ast.walk(ast.parse("\n".join(lines))):
-        assert not isinstance(node, ast.AnnAssign)
 
 
 def test_unreal_module_imports_without_unreal(monkeypatch: pytest.MonkeyPatch) -> None:

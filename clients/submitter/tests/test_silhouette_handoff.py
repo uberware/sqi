@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import ast
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,7 +12,13 @@ import pytest
 
 from sqi_submitter import install
 from sqi_submitter.core.handoff import load_context
-from tests.conftest import FakeHost, assert_no_sqi_submitter_import, load_host_file
+from tests.conftest import (
+    FakeHost,
+    ascii_fallback,
+    assert_no_sqi_submitter_import,
+    load_host_file,
+    stub_launch,
+)
 
 SILHOUETTE_DIR = (
     Path(__file__).resolve().parents[1] / "src" / "sqi_submitter" / "hosts" / "silhouette"
@@ -23,11 +28,6 @@ HOOK = SILHOUETTE_DIR / "sfxuser.py"
 
 UNSAVED = "Save your scene before submitting — the farm renders the file on disk."
 SAVE_FAILED = "Silhouette could not save the project, so nothing was submitted."
-
-
-def _ascii(text: str) -> str:
-    """What the console fallback prints: ASCII only, so a narrow console cannot raise."""
-    return text.encode("ascii", "replace").decode("ascii")
 
 
 class Node:
@@ -104,17 +104,6 @@ def _module() -> Any:
     return load_host_file(MODULE)
 
 
-def _stub_launch(module: Any, monkeypatch: pytest.MonkeyPatch, events: list[str]) -> None:
-    monkeypatch.setattr(module, "resolve_submit_command", lambda _c: "sqi")
-
-    def write(data: dict[str, Any]) -> str:
-        events.append(f"write:{len(data['targets'])}")
-        return "ctx.json"
-
-    monkeypatch.setattr(module, "write_context", write)
-    monkeypatch.setattr(module, "launch", lambda cmd, ctx: events.append(f"launch:{cmd}:{ctx}"))
-
-
 def _fake_qt(fake_host_module: FakeHost, binding: str, shown: list[str], app: bool = True) -> None:
     def warning(parent: object, title: str, text: str) -> None:
         shown.append(f"{binding}:{title}:{text}")
@@ -186,16 +175,16 @@ def test_silhouette_unsaved_project_refused(
     assert fx.project is not None
     fx.project.path = ""
     fx.project.is_modified = True
-    _stub_launch(module, monkeypatch, fx.events)
+    stub_launch(module, monkeypatch, fx.events)
     assert module.submit() is False
     assert fx.events == []  # not saved, not written, not launched
-    assert _ascii(UNSAVED) in capsys.readouterr().out
+    assert ascii_fallback(UNSAVED) in capsys.readouterr().out
 
 
 def test_silhouette_no_project_refused(fx: Fx, monkeypatch: pytest.MonkeyPatch) -> None:
     module = _module()
     fx.project = None
-    _stub_launch(module, monkeypatch, fx.events)
+    stub_launch(module, monkeypatch, fx.events)
     assert module.submit() is False
     assert fx.events == []
 
@@ -206,7 +195,7 @@ def test_silhouette_modified_project_saved_before_launch(
     module = _module()
     assert fx.project is not None
     fx.project.is_modified = True
-    _stub_launch(module, monkeypatch, fx.events)
+    stub_launch(module, monkeypatch, fx.events)
     assert module.submit() is True
     assert fx.events == ["save", "write:3", "launch:sqi:ctx.json"]
 
@@ -215,7 +204,7 @@ def test_silhouette_unmodified_project_is_not_saved(
     fx: Fx, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module = _module()
-    _stub_launch(module, monkeypatch, fx.events)
+    stub_launch(module, monkeypatch, fx.events)
     assert module.submit() is True
     assert fx.events == ["write:3", "launch:sqi:ctx.json"]
 
@@ -227,10 +216,10 @@ def test_silhouette_save_failure_submits_nothing(
     assert fx.project is not None
     fx.project.is_modified = True
     fx.project.save_error = RuntimeError("disk full")
-    _stub_launch(module, monkeypatch, fx.events)
+    stub_launch(module, monkeypatch, fx.events)
     assert module.submit() is False
     assert fx.events == ["save"]
-    assert _ascii(SAVE_FAILED) in capsys.readouterr().out
+    assert ascii_fallback(SAVE_FAILED) in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("error", [AttributeError("activeProject"), ValueError("x")])
@@ -242,7 +231,7 @@ def test_silhouette_scene_check_failure_is_shown_not_raised(
 ) -> None:
     """``activeProject`` is an unverified API on the scene check: whatever it raises is shown."""
     module = _module()
-    _stub_launch(module, monkeypatch, fx.events)
+    stub_launch(module, monkeypatch, fx.events)
 
     def broken() -> object:
         raise error
@@ -261,7 +250,7 @@ def test_silhouette_scene_read_failure_is_shown_not_raised(
     error: Exception,
 ) -> None:
     module = _module()
-    _stub_launch(module, monkeypatch, fx.events)
+    stub_launch(module, monkeypatch, fx.events)
 
     def broken() -> object:
         raise error
@@ -317,7 +306,7 @@ def test_silhouette_message_without_a_running_qt_is_printed(
     fx.project.path = ""
     assert _module().submit() is False
     assert shown == []
-    assert _ascii(UNSAVED) in capsys.readouterr().out
+    assert ascii_fallback(UNSAVED) in capsys.readouterr().out
 
 
 def test_silhouette_register_adds_action(fx: Fx, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -382,20 +371,6 @@ def test_silhouette_hook_failure_does_not_break_startup(
     monkeypatch.setitem(sys.modules, "sqi_silhouette_submit", None)  # the import raises
     load_host_file(HOOK)
     assert "was not added" in capsys.readouterr().out
-
-
-def test_silhouette_hook_is_valid_to_append_to_a_studio_file() -> None:
-    """The hook's lines land after a studio's own ``sfxuser.py``, with no ``__future__`` import."""
-    text = HOOK.read_text(encoding="utf-8")
-    lines = [
-        line
-        for line in text.splitlines()
-        if line.strip() != install.HOOK_MARKER and not line.startswith("from __future__")
-    ]
-    studio = "import os\n\nSTUDIO = os.environ.get('STUDIO')\n"
-    compile(studio + "\n".join(lines) + "\n", "sfxuser.py", "exec")
-    for node in ast.walk(ast.parse("\n".join(lines))):
-        assert not isinstance(node, ast.AnnAssign)
 
 
 def test_silhouette_files_have_no_sqi_submitter_import() -> None:

@@ -16,35 +16,33 @@ from types import SimpleNamespace
 
 import pytest
 
+from sqi_submitter import install
 from sqi_submitter.hosts import _handoff_block as block
+from tests.conftest import HANDOFF_BEGIN as BEGIN
+from tests.conftest import HOSTS_DIR, handoff_host_files
 
-HOSTS_DIR = Path(block.__file__).parent
+HANDOFF_HOST_FILES = handoff_host_files()
 
-HANDOFF_HOST_FILES: list[Path] = [
-    HOSTS_DIR / "blender" / "sqi_blender_addon.py",
-    HOSTS_DIR / "cinema4d" / "sqi_submit.pyp",
-    HOSTS_DIR / "unreal" / "sqi_unreal_submit.py",
-    HOSTS_DIR / "katana" / "sqi_katana_submit.py",
-    HOSTS_DIR / "keyshot" / "sqi_keyshot_submit.py",
-    HOSTS_DIR / "silhouette" / "sqi_silhouette_submit.py",
-    HOSTS_DIR / "modo" / "sqi" / "lxserv" / "sqi_modo_submit.py",
-]
+# Hosts whose Python file runs sqi_submitter inside the host, so it carries no launch block.
+IN_PROCESS_HOSTS = {"vred"}
 
-# The Python files Tasks 2-6 add (handoff modules and the startup hooks that call them). Each
-# must still parse on Python 3.7: Katana 4-5 and Silhouette 2022 ship it.
-NEW_HANDOFF_FILES: list[Path] = [
-    HOSTS_DIR / "unreal" / "sqi_unreal_submit.py",
-    HOSTS_DIR / "unreal" / "init_unreal.py",
-    HOSTS_DIR / "katana" / "sqi_katana_submit.py",
-    HOSTS_DIR / "katana" / "init.py",
-    HOSTS_DIR / "keyshot" / "sqi_keyshot_submit.py",
-    HOSTS_DIR / "silhouette" / "sqi_silhouette_submit.py",
-    HOSTS_DIR / "silhouette" / "sfxuser.py",
-    HOSTS_DIR / "modo" / "sqi" / "lxserv" / "sqi_modo_submit.py",
-]
+# Handoff hosts whose files need not parse on Python 3.7 (Katana 4-5 and Silhouette 2022 ship
+# it), with the reason.
+NOT_PY37_HOSTS = {"blender": "the add-on evaluates list[...] annotations, so needs 3.9+"}
 
-BEGIN = "# --- sqi handoff begin ---"
 END = "# --- sqi handoff end ---"
+
+
+def _python_host_files() -> list[tuple[str, Path]]:
+    """Each Python file ``install-host`` ships for a handoff host, with its host."""
+    return [
+        (host, HOSTS_DIR.parent / rel)
+        for host, files in install.HOST_FILES.items()
+        if host not in IN_PROCESS_HOSTS
+        for rel in files
+        if rel.endswith((".py", ".pyp"))
+    ]
+
 
 NOT_FOUND = (
     "sqi-submit was not found. Install it on this machine with: "
@@ -332,8 +330,19 @@ def test_block_identical_in_every_host() -> None:
         assert _extract(host_file) == canonical, f"{host_file} drifted from _handoff_block.py"
 
 
+def test_every_handoff_python_file_carries_the_block_or_is_a_hook() -> None:
+    """A shipped host file that lost (or never got) the block would escape the check above."""
+    found = set(HANDOFF_HOST_FILES)
+    for host, path in _python_host_files():
+        hook = install.HOOK_MARKER in path.read_text(encoding="utf-8").splitlines()
+        assert path in found or hook, f"{host}: {path.name} has no launch block and is no hook"
+    assert len(found) >= 7  # blender, cinema4d, unreal, katana, keyshot, silhouette, modo
+
+
 def test_handoff_hosts_parse_as_python37() -> None:
-    for path in NEW_HANDOFF_FILES:
+    for host, path in _python_host_files():
+        if host in NOT_PY37_HOSTS:
+            continue
         text = path.read_text(encoding="utf-8")
         ast.parse(text, filename=str(path), feature_version=(3, 7))
         assert "from __future__ import annotations" in text, f"{path} needs the __future__ import"

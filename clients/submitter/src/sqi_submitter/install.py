@@ -21,7 +21,6 @@ from pathlib import Path, PurePosixPath
 from typing import TextIO
 
 __all__ = [
-    "HOOK_FILES",
     "HOOK_MARKER",
     "HOST_FILES",
     "KNOWN_HOSTS",
@@ -55,12 +54,11 @@ HOST_FILES: dict[str, list[str]] = {
 # (tests swap in stand-in files) leaves the set of hosts this command accepts unchanged.
 KNOWN_HOSTS: tuple[str, ...] = tuple(HOST_FILES)
 
-# Startup files whose *name the host fixes* (Unreal's init_unreal.py, Katana's init.py,
-# Silhouette's sfxuser.py), so a
-# studio may already have its own. A shipped one carries HOOK_MARKER; install never overwrites
-# a file of such a name that lacks the marker, it prints the lines to append instead.
+# A whole line that marks a shipped file as a *hook*: a startup file whose name the host fixes
+# (Unreal's init_unreal.py, Katana's init.py, Silhouette's sfxuser.py), so a studio may already
+# have its own. Install never overwrites a file in a hook's place that lacks the marker; it
+# prints the lines to append instead.
 HOOK_MARKER = "# sqi-submitter hook"
-HOOK_FILES: frozenset[str] = frozenset({"init_unreal.py", "init.py", "sfxuser.py"})
 
 _C4D_PREFS_GLOB = "Maxon Cinema 4D *"
 _KEYSHOT_GLOB = "KeyShot*"
@@ -105,6 +103,10 @@ def _cinema4d_prefs_root(platform: str, env: Mapping[str, str]) -> Path | None:
         home = env.get("HOME")
         return Path(home) / "Library" / "Preferences" / "Maxon" if home else None
     return None
+
+
+def _home(platform: str, env: Mapping[str, str]) -> str | None:
+    return env.get("USERPROFILE" if platform == "win32" else "HOME")
 
 
 def _only_folder(root: Path, pattern: str) -> Path | None:
@@ -164,13 +166,13 @@ def default_destination(host: str, platform: str, env: Mapping[str, str]) -> Pat
     ``Documents/Autodesk`` (Windows only: VRED Pro has no other platform).
     """
     if host == "unreal":
-        home = env.get("USERPROFILE" if platform == "win32" else "HOME")
+        home = _home(platform, env)
         return Path(home) / "Documents" / "UnrealEngine" / "Python" if home else None
     if host == "katana":
         # Katana does not run on macOS, so there is nothing to install there.
         if platform not in ("win32", "linux"):
             return None
-        home = env.get("USERPROFILE" if platform == "win32" else "HOME")
+        home = _home(platform, env)
         return Path(home) / ".katana" / "Startup" if home else None
     if host == "silhouette":
         # Silhouette searches $(SFX_USER_PATH)/scripts for scripts; the variable is the only
@@ -180,7 +182,7 @@ def default_destination(host: str, platform: str, env: Mapping[str, str]) -> Pat
     if host == "keyshot":
         if platform not in ("win32", "darwin"):
             return None
-        home = env.get("USERPROFILE" if platform == "win32" else "HOME")
+        home = _home(platform, env)
         found = _only_folder(Path(home) / "Documents", _KEYSHOT_GLOB) if home else None
         return found / "Scripts" if found else None
     if host == "modo":
@@ -201,14 +203,17 @@ def default_destination(host: str, platform: str, env: Mapping[str, str]) -> Pat
     return found / "plugins" if found else None
 
 
-def _is_foreign_hook(target: Path) -> bool:
-    """True when ``target`` is a startup file the host fixes the name of, and it is not ours."""
-    if target.name not in HOOK_FILES or not target.is_file():
-        return False
-    # The marker is a whole line, as _lines_to_add reads it: a studio file that merely mentions
-    # the marker text in a comment or a string is still the studio's.
-    text = target.read_bytes().decode("utf-8-sig", errors="replace")
-    return not any(line.strip() == HOOK_MARKER for line in text.splitlines())
+def _is_marker(line: str) -> bool:
+    return line.strip() == HOOK_MARKER
+
+
+def _is_hook(path: Path) -> bool:
+    """True when ``path`` carries the marker as a whole line, as ``_lines_to_add`` reads it.
+
+    A studio file that merely mentions the marker text in a comment or a string is not ours.
+    """
+    text = path.read_bytes().decode("utf-8-sig", errors="replace")
+    return any(_is_marker(line) for line in text.splitlines())
 
 
 def _lines_to_add(hook: Path) -> str:
@@ -223,75 +228,63 @@ def _lines_to_add(hook: Path) -> str:
     keep = [
         line
         for line in lines
-        if line.strip() != HOOK_MARKER and not line.lstrip().startswith("from __future__ import")
+        if not _is_marker(line) and not line.lstrip().startswith("from __future__ import")
     ]
     return "\n".join(keep).strip("\n")
 
 
-def _no_destination_hint(host: str) -> str:
-    if host == "blender":
-        return "Blender add-ons are installed through its UI, so nothing was copied."
-    if host == "cinema4d":
-        return (
-            "Could not tell which Cinema 4D preferences folder to use. In Cinema 4D choose "
-            "Preferences > Open Preferences Folder, copy the files above into its plugins "
-            "folder (or pass --dest DIR)."
-        )
-    if host == "unreal":
-        return (
-            "Could not tell where your Documents folder is. Copy the files above into "
-            "<Documents>/UnrealEngine/Python (create it if needed; the Editor runs "
-            "init_unreal.py from there at startup), or pass --dest DIR. If you already have "
-            "an init_unreal.py there, do not copy over it: append the lines printed below to it."
-        )
-    if host == "katana":
-        return (
-            "Could not tell where your home folder is (Katana does not run on macOS). Copy the "
-            "files above into <home>/.katana/Startup (create it if needed; Katana runs init.py "
-            "from there at startup), or pass --dest DIR. If you already have an init.py there, "
-            "do not copy over it: append the lines printed below to it."
-        )
-    if host == "keyshot":
-        return (
-            "Could not tell which KeyShot folder to use. Copy the file above into the Scripts "
-            "folder of your KeyShot folder under Documents (for example "
-            "<Documents>/KeyShot 2024/Scripts; create it if needed), or pass --dest DIR."
-        )
-    if host == "silhouette":
-        return (
-            "SFX_USER_PATH is not set, so there is no known user scripts folder. Copy the "
-            "files above into the scripts folder under your Silhouette user folder "
-            "($(SFX_USER_PATH)/scripts; create it if needed), or pass --dest DIR. If you "
-            "already have an sfxuser.py there, do not copy over it: append the lines printed below "
-            "to it."
-        )
-    if host == "modo":
-        return (
-            "Could not tell where Modo's per-user folder is. Copy the sqi folder (index.cfg and "
-            "lxserv/sqi_modo_submit.py) shown above into the Scripts folder of your Luxology "
-            "user folder (%APPDATA%/Luxology on Windows, ~/Library/Application "
-            "Support/Luxology on macOS, ~/.luxology on Linux; create it if needed), or pass "
-            "--dest DIR."
-        )
-    if host == "fusion":
-        return (
-            "Could not tell where Fusion's per-user folder is. Copy the file above into the "
-            "Scripts/Comp folder of your Fusion user folder (the Scripts: path map in Fusion's "
-            "Preferences shows it; for example %APPDATA%/Blackmagic Design/Fusion/Scripts/Comp "
-            "on Windows; create it if needed), or pass --dest DIR."
-        )
-    if host == "vred":
-        return (
-            "Could not tell which VRED folder to use (VRED is Windows-only, and its folder is "
-            "versioned). Copy the SubmitToSqi folder shown above into the ScriptPlugins folder "
-            "of your VRED folder (<Documents>/Autodesk/VRED-<version>/ScriptPlugins; create it "
-            "if needed), or pass --dest DIR."
-        )
-    return (
+_NO_DESTINATION_HINT = {
+    "blender": "Blender add-ons are installed through its UI, so nothing was copied.",
+    "cinema4d": (
+        "Could not tell which Cinema 4D preferences folder to use. In Cinema 4D choose "
+        "Preferences > Open Preferences Folder, copy the files above into its plugins "
+        "folder (or pass --dest DIR)."
+    ),
+    "aftereffects": (
         "The After Effects scripts folder is under the program folder and needs "
         "administrator rights, so nothing was copied. Destination pattern: "
         "<After Effects install>/Support Files/Scripts/ScriptUI Panels."
-    )
+    ),
+    "unreal": (
+        "Could not tell where your Documents folder is. Copy the files above into "
+        "<Documents>/UnrealEngine/Python (create it if needed; the Editor runs "
+        "init_unreal.py from there at startup), or pass --dest DIR."
+    ),
+    "katana": (
+        "Could not tell where your home folder is (Katana does not run on macOS). Copy the "
+        "files above into <home>/.katana/Startup (create it if needed; Katana runs init.py "
+        "from there at startup), or pass --dest DIR."
+    ),
+    "keyshot": (
+        "Could not tell which KeyShot folder to use. Copy the file above into the Scripts "
+        "folder of your KeyShot folder under Documents (for example "
+        "<Documents>/KeyShot 2024/Scripts; create it if needed), or pass --dest DIR."
+    ),
+    "silhouette": (
+        "SFX_USER_PATH is not set, so there is no known user scripts folder. Copy the "
+        "files above into the scripts folder under your Silhouette user folder "
+        "($(SFX_USER_PATH)/scripts; create it if needed), or pass --dest DIR."
+    ),
+    "modo": (
+        "Could not tell where Modo's per-user folder is. Copy the sqi folder (index.cfg and "
+        "lxserv/sqi_modo_submit.py) shown above into the Scripts folder of your Luxology "
+        "user folder (%APPDATA%/Luxology on Windows, ~/Library/Application "
+        "Support/Luxology on macOS, ~/.luxology on Linux; create it if needed), or pass "
+        "--dest DIR."
+    ),
+    "fusion": (
+        "Could not tell where Fusion's per-user folder is. Copy the file above into the "
+        "Scripts/Comp folder of your Fusion user folder (the Scripts: path map in Fusion's "
+        "Preferences shows it; for example %APPDATA%/Blackmagic Design/Fusion/Scripts/Comp "
+        "on Windows; create it if needed), or pass --dest DIR."
+    ),
+    "vred": (
+        "Could not tell which VRED folder to use (VRED is Windows-only, and its folder is "
+        "versioned). Copy the SubmitToSqi folder shown above into the ScriptPlugins folder "
+        "of your VRED folder (<Documents>/Autodesk/VRED-<version>/ScriptPlugins; create it "
+        "if needed), or pass --dest DIR."
+    ),
+}
 
 
 def install_host(host: str, dest: Path | None, out: TextIO, err: TextIO | None = None) -> int:
@@ -314,17 +307,18 @@ def install_host(host: str, dest: Path | None, out: TextIO, err: TextIO | None =
         for rel in files:
             with resources.as_file(root.joinpath(rel)) as path:
                 print(f"  {path}", file=out)
-        print(_no_destination_hint(host), file=out)
+        print(_NO_DESTINATION_HINT[host], file=out)
         for rel in files:
-            name = PurePosixPath(rel).name
-            if name in HOOK_FILES:
+            with resources.as_file(root.joinpath(rel)) as path:
+                if not _is_hook(path):
+                    continue
                 # The artist may already own a file of this name: copying the shipped hook over
                 # it, or pasting it whole, would bring back its marker and its __future__ line.
                 print(
-                    f"If you already have {name} there, append these lines to it instead:", file=out
+                    f"If you already have {path.name} there, append these lines to it instead:",
+                    file=out,
                 )
-                with resources.as_file(root.joinpath(rel)) as path:
-                    print(_lines_to_add(path), file=out)
+                print(_lines_to_add(path), file=out)
         print(_NEXT_STEP[host], file=out)
         return 0
 
@@ -334,7 +328,7 @@ def install_host(host: str, dest: Path | None, out: TextIO, err: TextIO | None =
         for rel in files:
             target = dest.joinpath(*dest_relative(host, rel).parts)
             with resources.as_file(root.joinpath(rel)) as path:
-                if _is_foreign_hook(target):
+                if _is_hook(path) and target.is_file() and not _is_hook(target):
                     print(
                         f"kept your existing {target}; to add sqi, append these lines to it:",
                         file=out,

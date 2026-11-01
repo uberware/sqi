@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import io
 import shutil
 from importlib import resources
@@ -11,7 +12,7 @@ from pathlib import Path, PurePosixPath
 import pytest
 
 from sqi_submitter import cli, install
-from tests.conftest import no_qt
+from tests.conftest import HOSTS_DIR, no_qt
 
 # Small package files standing in for each host's real files.
 _STAND_INS: dict[str, list[str]] = {
@@ -279,11 +280,16 @@ def test_install_host_copies_a_tree(monkeypatch: pytest.MonkeyPatch, tmp_path: P
 _HOOK_TEXT = f"{install.HOOK_MARKER}\nimport sqi_katana_submit\n"
 
 
+def _stand_in_hook(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str = _HOOK_TEXT) -> None:
+    """Make "blender" ship one file, ``init.py``, holding ``text``."""
+    _package_with(tmp_path, monkeypatch, {"hosts/blender/init.py": text})
+    monkeypatch.setattr(install, "HOST_FILES", {"blender": ["hosts/blender/init.py"]})
+
+
 def test_install_host_keeps_a_foreign_hook_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _package_with(tmp_path, monkeypatch, {"hosts/blender/init.py": _HOOK_TEXT})
-    monkeypatch.setattr(install, "HOST_FILES", {"blender": ["hosts/blender/init.py"]})
+    _stand_in_hook(tmp_path, monkeypatch)
     dest = tmp_path / "startup"
     dest.mkdir()
     (dest / "init.py").write_text('print("studio")', encoding="utf-8")
@@ -300,8 +306,7 @@ def test_install_host_keeps_a_foreign_hook_file(
 def test_install_host_creates_a_missing_hook_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _package_with(tmp_path, monkeypatch, {"hosts/blender/init.py": _HOOK_TEXT})
-    monkeypatch.setattr(install, "HOST_FILES", {"blender": ["hosts/blender/init.py"]})
+    _stand_in_hook(tmp_path, monkeypatch)
     out = io.StringIO()
     assert install.install_host("blender", tmp_path / "fresh", out) == 0
     assert (tmp_path / "fresh" / "init.py").read_text(encoding="utf-8") == _HOOK_TEXT
@@ -311,8 +316,7 @@ def test_install_host_creates_a_missing_hook_file(
 def test_install_host_replaces_its_own_hook_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _package_with(tmp_path, monkeypatch, {"hosts/blender/init.py": _HOOK_TEXT})
-    monkeypatch.setattr(install, "HOST_FILES", {"blender": ["hosts/blender/init.py"]})
+    _stand_in_hook(tmp_path, monkeypatch)
     dest = tmp_path / "startup"
     dest.mkdir()
     (dest / "init.py").write_text(f"{install.HOOK_MARKER}\nold\n", encoding="utf-8")
@@ -325,8 +329,7 @@ def test_install_host_replaces_its_own_hook_file(
 def test_install_host_foreign_hook_stays_foreign_after_appending_printed_lines(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _package_with(tmp_path, monkeypatch, {"hosts/blender/init.py": _HOOK_TEXT})
-    monkeypatch.setattr(install, "HOST_FILES", {"blender": ["hosts/blender/init.py"]})
+    _stand_in_hook(tmp_path, monkeypatch)
     dest = tmp_path / "startup"
     dest.mkdir()
     studio = 'print("studio")'
@@ -347,35 +350,75 @@ def test_install_host_foreign_hook_stays_foreign_after_appending_printed_lines(
     assert "kept your existing" in again.getvalue()
 
 
-def test_install_host_guidance_for_the_real_unreal_hook_is_valid_to_append(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("host", "hook", "call"),
+    [
+        ("unreal", "init_unreal.py", "register_menu()"),
+        ("katana", "init.py", "install_menu"),
+        ("silhouette", "sfxuser.py", "register()"),
+    ],
+)
+def test_install_host_guidance_for_a_real_hook_is_valid_to_append(
+    tmp_path: Path, host: str, hook: str, call: str
 ) -> None:
     """The printed lines go to the end of a studio's own file, after its imports and code.
 
-    A ``from __future__`` line there is a SyntaxError, so the guidance must not carry one.
+    A ``from __future__`` line there is a SyntaxError, and without it an annotation is
+    evaluated when the line runs (an error on Python 3.7), so the lines may carry neither.
     """
-    dest = tmp_path / "Python"
+    dest = tmp_path / "startup"
     dest.mkdir()
     studio = "import os\n\nSTUDIO = os.environ.get('STUDIO')\nprint(STUDIO)\n"
-    (dest / "init_unreal.py").write_text(studio, encoding="utf-8")
+    (dest / hook).write_text(studio, encoding="utf-8")
     out = io.StringIO()
-    assert install.install_host("unreal", dest, out) == 0
-    text = out.getvalue()
-    assert (dest / "init_unreal.py").read_text(encoding="utf-8") == studio
-    assert (dest / "sqi_unreal_submit.py").is_file()
-    assert "from __future__" not in text
-    printed = text.split("append these lines to it:\n", 1)[1]
-    printed = printed.split("\nRestart the Unreal Editor", 1)[0]
-    assert "import sqi_unreal_submit" in printed and "register_menu()" in printed
-    compile(studio + "\n" + printed + "\n", "init_unreal.py", "exec")
+    assert install.install_host(host, dest, out) == 0
+    assert (dest / hook).read_text(encoding="utf-8") == studio
+    lines = install._lines_to_add(HOSTS_DIR / host / hook)
+    assert f"append these lines to it:\n{lines}\n" in out.getvalue()
+    assert f"import sqi_{host}_submit" in lines and call in lines
+    assert "from __future__" not in lines and install.HOOK_MARKER not in lines
+    compile(studio + "\n" + lines + "\n", hook, "exec")
+    for node in ast.walk(ast.parse(lines)):
+        assert not isinstance(node, ast.AnnAssign)
+        if isinstance(node, ast.arg):
+            assert node.annotation is None
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            assert node.returns is None
+
+
+def test_shipped_hooks_are_the_files_carrying_the_marker() -> None:
+    """The marker alone makes a shipped file a hook; only these three files carry it."""
+    root = resources.files("sqi_submitter")
+    hooks = {
+        rel
+        for files in install.HOST_FILES.values()
+        for rel in files
+        if install.HOOK_MARKER in root.joinpath(rel).read_text(encoding="utf-8").splitlines()
+    }
+    assert hooks == {
+        "hosts/unreal/init_unreal.py",
+        "hosts/katana/init.py",
+        "hosts/silhouette/sfxuser.py",
+    }
+
+
+@pytest.mark.parametrize("host", install.KNOWN_HOSTS)
+def test_every_host_has_guidance_when_no_destination_is_known(
+    monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    """Each host needs its own hint and next step, or this path fails only for its artists."""
+    monkeypatch.setattr(install, "default_destination", lambda host, platform, env: None)
+    out = io.StringIO()
+    assert install.install_host(host, None, out) == 0
+    for rel in install.HOST_FILES[host]:
+        assert PurePosixPath(rel).name in out.getvalue()
 
 
 def test_install_host_guidance_drops_future_imports(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     hook = f"from __future__ import annotations\n{install.HOOK_MARKER}\nimport sqi_x\n"
-    _package_with(tmp_path, monkeypatch, {"hosts/blender/init.py": hook})
-    monkeypatch.setattr(install, "HOST_FILES", {"blender": ["hosts/blender/init.py"]})
+    _stand_in_hook(tmp_path, monkeypatch, hook)
     dest = tmp_path / "startup"
     dest.mkdir()
     (dest / "init.py").write_text("x = 1\n", encoding="utf-8")
@@ -411,37 +454,6 @@ def test_katana_next_step_and_no_destination_hint(monkeypatch: pytest.MonkeyPatc
     assert "init.py" in text and "sqi_katana_submit.py" in text
     assert "macOS" in text
     assert "Restart Katana; Submit to sqi… appears in the sqi menu." in text
-
-
-def test_install_host_guidance_for_the_real_katana_hook_is_valid_to_append(
-    tmp_path: Path,
-) -> None:
-    """The printed lines are appended after a studio's own code, with no ``__future__`` import.
-
-    They must compile there and must not lean on ``from __future__ import annotations``.
-    """
-    import ast
-
-    dest = tmp_path / "Startup"
-    dest.mkdir()
-    studio = "import os\n\nSTUDIO = os.environ.get('STUDIO')\nprint(STUDIO)\n"
-    (dest / "init.py").write_text(studio, encoding="utf-8")
-    out = io.StringIO()
-    assert install.install_host("katana", dest, out) == 0
-    text = out.getvalue()
-    assert (dest / "init.py").read_text(encoding="utf-8") == studio
-    assert (dest / "sqi_katana_submit.py").is_file()
-    assert "from __future__" not in text
-    printed = text.split("append these lines to it:\n", 1)[1]
-    printed = printed.split("\nRestart Katana", 1)[0]
-    assert "import sqi_katana_submit" in printed and "install_menu" in printed
-    compile(studio + "\n" + printed + "\n", "init.py", "exec")
-    for node in ast.walk(ast.parse(printed)):
-        assert not isinstance(node, ast.AnnAssign)
-        if isinstance(node, ast.arg):
-            assert node.annotation is None
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            assert node.returns is None
 
 
 def _documents(platform: str, home: Path) -> tuple[dict[str, str], Path]:
@@ -561,8 +573,7 @@ def test_install_host_mentioning_the_marker_is_still_a_foreign_hook(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, studio: str
 ) -> None:
     """Only a line that is the marker marks a file as ours, not text that mentions it."""
-    _package_with(tmp_path, monkeypatch, {"hosts/blender/init.py": _HOOK_TEXT})
-    monkeypatch.setattr(install, "HOST_FILES", {"blender": ["hosts/blender/init.py"]})
+    _stand_in_hook(tmp_path, monkeypatch)
     dest = tmp_path / "startup"
     dest.mkdir()
     (dest / "init.py").write_text(studio, encoding="utf-8")
@@ -575,8 +586,7 @@ def test_install_host_mentioning_the_marker_is_still_a_foreign_hook(
 def test_install_host_replaces_a_hook_with_crlf_line_endings(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _package_with(tmp_path, monkeypatch, {"hosts/blender/init.py": _HOOK_TEXT})
-    monkeypatch.setattr(install, "HOST_FILES", {"blender": ["hosts/blender/init.py"]})
+    _stand_in_hook(tmp_path, monkeypatch)
     dest = tmp_path / "startup"
     dest.mkdir()
     (dest / "init.py").write_bytes(f"{install.HOOK_MARKER}\r\nold\r\n".encode())

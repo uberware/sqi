@@ -540,9 +540,9 @@ def test_vred_plugin_adds_the_sqi_menu_and_removes_it(monkeypatch: pytest.Monkey
 
 def test_vred_plugin_does_not_leak_into_the_handoff_files() -> None:
     from sqi_submitter.install import HOST_FILES
-    from tests.test_handoff_block import HANDOFF_HOST_FILES
+    from tests.conftest import handoff_host_files
 
-    assert PLUGIN not in HANDOFF_HOST_FILES
+    assert PLUGIN not in handoff_host_files()
     assert HOST_FILES["vred"] == ["hosts/vred/SubmitToSqi/SubmitToSqi.py"]
 
 

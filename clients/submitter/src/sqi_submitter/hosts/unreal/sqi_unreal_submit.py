@@ -141,7 +141,7 @@ _MENU_COMMAND = "import sqi_unreal_submit; sqi_unreal_submit.submit()"
 
 def asset_path_problem(path: str) -> str | None:
     """Why ``path`` cannot name an asset another machine can load, or ``None`` if it can."""
-    if not path or path.startswith("/Temp/") or path.startswith("/Engine/Transient"):
+    if not path or path.startswith(("/Temp/", "/Engine/Transient")):
         return "is not saved"
     if path.startswith("/"):
         return None
@@ -161,12 +161,10 @@ def job_target(job: Any) -> tuple[dict[str, object] | None, str | None]:
         return None, name + ": its render settings are not saved as a config asset"
     map_path = str(job.map.export_text())
     sequence = str(job.sequence.export_text())
-    problem = asset_path_problem(map_path)
-    if problem is not None:
-        return None, name + ": its map " + problem
-    problem = asset_path_problem(sequence)
-    if problem is not None:
-        return None, name + ": its level sequence " + problem
+    for label, value in (("map", map_path), ("level sequence", sequence)):
+        problem = asset_path_problem(value)
+        if problem is not None:
+            return None, f"{name}: its {label} {problem}"
     target: dict[str, object] = {
         "name": name,
         "kind": "mrq_job",

@@ -10,11 +10,31 @@ import types
 from collections.abc import Callable, Iterator
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+import sqi_submitter.hosts
+
 FakeHost = Callable[..., types.ModuleType]
 """The ``fake_host_module`` fixture: ``install(name, **attrs)`` returns the fake module."""
+
+HOSTS_DIR = Path(sqi_submitter.hosts.__file__).parent
+HANDOFF_BEGIN = "# --- sqi handoff begin ---"
+
+
+def handoff_host_files() -> list[Path]:
+    """Every host file carrying the shared launch block, found by its begin marker.
+
+    Found rather than listed, so a new handoff host cannot be left out of the checks on it.
+    """
+    return sorted(
+        path
+        for path in HOSTS_DIR.rglob("*")
+        if path.suffix in (".py", ".pyp")
+        and path.name != "_handoff_block.py"
+        and HANDOFF_BEGIN in path.read_text(encoding="utf-8")
+    )
 
 
 def assert_no_sqi_submitter_import(path: Path) -> None:
@@ -24,6 +44,23 @@ def assert_no_sqi_submitter_import(path: Path) -> None:
             assert not [a for a in node.names if a.name.split(".")[0] == "sqi_submitter"]
         if isinstance(node, ast.ImportFrom):
             assert (node.module or "").split(".")[0] != "sqi_submitter"
+
+
+def ascii_fallback(text: str) -> str:
+    """What a handoff host prints on a narrow console: ASCII only, so it cannot raise."""
+    return text.encode("ascii", "replace").decode("ascii")
+
+
+def stub_launch(module: Any, monkeypatch: pytest.MonkeyPatch, events: list[str]) -> None:
+    """Replace a handoff host's command lookup, context write and launch with recorders."""
+    monkeypatch.setattr(module, "resolve_submit_command", lambda _c: "sqi")
+
+    def write(data: dict[str, Any]) -> str:
+        events.append(f"write:{len(data['targets'])}")
+        return "ctx.json"
+
+    monkeypatch.setattr(module, "write_context", write)
+    monkeypatch.setattr(module, "launch", lambda cmd, ctx: events.append(f"launch:{cmd}:{ctx}"))
 
 
 def no_qt(monkeypatch: pytest.MonkeyPatch) -> None:

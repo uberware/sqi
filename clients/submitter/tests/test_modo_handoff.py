@@ -16,7 +16,12 @@ import pytest
 
 from sqi_submitter import install
 from sqi_submitter.core.handoff import load_context
-from tests.conftest import FakeHost, assert_no_sqi_submitter_import, load_host_file
+from tests.conftest import (
+    FakeHost,
+    assert_no_sqi_submitter_import,
+    load_host_file,
+    stub_launch,
+)
 
 KIT_DIR = Path(__file__).resolve().parents[1] / "src" / "sqi_submitter" / "hosts" / "modo" / "sqi"
 MODULE = KIT_DIR / "lxserv" / "sqi_modo_submit.py"
@@ -119,17 +124,6 @@ def _module() -> Any:
     return load_host_file(MODULE)
 
 
-def _stub_launch(module: Any, monkeypatch: pytest.MonkeyPatch, events: list[str]) -> None:
-    monkeypatch.setattr(module, "resolve_submit_command", lambda _c: "sqi")
-
-    def write(data: dict[str, Any]) -> str:
-        events.append(f"write:{len(data['targets'])}")
-        return "ctx.json"
-
-    monkeypatch.setattr(module, "write_context", write)
-    monkeypatch.setattr(module, "launch", lambda cmd, ctx: events.append(f"launch:{cmd}:{ctx}"))
-
-
 def test_modo_read_scene_pass_groups(lx: Lx) -> None:
     """Targets come from ``scene.renderPassGroups``, never from ``scene.items()``.
 
@@ -180,7 +174,7 @@ def test_modo_unsaved_scene_refused(lx: Lx, monkeypatch: pytest.MonkeyPatch) -> 
     module = _module()
     lx.scene.path = ""
     lx.scene.changes = 3
-    _stub_launch(module, monkeypatch, lx.events)
+    stub_launch(module, monkeypatch, lx.events)
     assert module.submit() is False
     assert lx.events == []  # not saved, not written, not launched
     assert lx.dialogs() == [UNSAVED]
@@ -190,7 +184,7 @@ def test_modo_unsaved_scene_refused(lx: Lx, monkeypatch: pytest.MonkeyPatch) -> 
 def test_modo_changed_scene_saved_before_launch(lx: Lx, monkeypatch: pytest.MonkeyPatch) -> None:
     module = _module()
     lx.scene.changes = 2
-    _stub_launch(module, monkeypatch, lx.events)
+    stub_launch(module, monkeypatch, lx.events)
     assert module.submit() is True
     assert lx.events == ["save", "write:2", "launch:sqi:ctx.json"]
     assert lx.dialogs() == []
@@ -198,7 +192,7 @@ def test_modo_changed_scene_saved_before_launch(lx: Lx, monkeypatch: pytest.Monk
 
 def test_modo_unchanged_scene_is_not_saved(lx: Lx, monkeypatch: pytest.MonkeyPatch) -> None:
     module = _module()
-    _stub_launch(module, monkeypatch, lx.events)
+    stub_launch(module, monkeypatch, lx.events)
     assert module.submit() is True
     assert lx.events == ["write:2", "launch:sqi:ctx.json"]
 
@@ -209,7 +203,7 @@ def test_modo_scene_read_failure_is_shown_not_raised(
 ) -> None:
     """``read_scene`` calls Modo APIs unverified on a real install: any failure is shown."""
     module = _module()
-    _stub_launch(module, monkeypatch, lx.events)  # records write/launch if they are reached
+    stub_launch(module, monkeypatch, lx.events)  # records write/launch if they are reached
 
     def broken() -> dict[str, object]:
         raise error
@@ -224,7 +218,7 @@ def test_modo_save_failure_submits_nothing(lx: Lx, monkeypatch: pytest.MonkeyPat
     module = _module()
     lx.scene.changes = 1
     lx.save_error = RuntimeError("disk full")
-    _stub_launch(module, monkeypatch, lx.events)
+    stub_launch(module, monkeypatch, lx.events)
     assert module.submit() is False
     assert lx.events == ["save"]
     assert lx.dialogs() == [SAVE_FAILED]

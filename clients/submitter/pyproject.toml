@@ -136,9 +136,6 @@ module = [
   # it picks by Katana's version, and the handoff module its startup hook imports.
   "Katana",
   "KatanaInfo",
-  "NodegraphAPI",
-  "FarmAPI",
-  "KatanaFile",
   "UI4",
   "UI4.*",
   "PyQt5",
@@ -157,10 +154,6 @@ module = [
   "lxu.*",
   "modo",
   "modo.*",
-  # VRED's render-settings module, imported by the script plugin inside function bodies.
-  "vrRenderSettings",
-  "vrKernelServices",
-  "vrKernelServices.*",
 ]
 ignore_missing_imports = true
 

@@ -1371,11 +1371,11 @@ hosts share (`hosts/_handoff_block.py`; a test keeps the copies identical), add
 the file to `HOST_FILES` in `install.py` so `sqi-submit install-host` ships it,
 and write a section in this doc with a manual checklist. If the host runs a
 startup file whose **name the host fixes** (as Unreal, Katana and Silhouette
-do), ship a tiny hook under that name instead of a full startup script: put the
-marker line `# sqi-submitter hook` in it and add its file name to `HOOK_FILES`
-in `install.py`. `install-host` never overwrites a file of such a name that
-lacks the marker, since it is the studio's own; it prints the hook's lines for
-the artist to append. Keep a hook free of `from __future__` dependencies and of
+do), ship a tiny hook under that name instead of a full startup script, with
+the marker line `# sqi-submitter hook` in it. The marker alone makes it a hook:
+`install-host` never overwrites a file in its place that lacks the marker,
+since it is the studio's own, and prints the hook's lines for the artist to
+append instead. Keep a hook free of `from __future__` dependencies and of
 annotations, because the appended lines may land mid-file.
 
 ---
@@ -2026,7 +2026,7 @@ support):**
 **Verified only against fakes or documentation:**
 
 - **`os.execute` launch and the console flash, the riskiest items.** That
-  Fusion's Lua exposes `os.execute` and `io.popen` (no source says a Comp
+  Fusion's Lua exposes `os.execute` (no source says a Comp
   script is sandboxed, and none says it is not), that `start "" "<exe>"
   --context "<file>"` returns at once on Windows and
   `'<exe>' --context '<file>' >/dev/null 2>&1 &` on macOS and Linux, and that
@@ -2037,7 +2037,7 @@ support):**
   not shown in a message box.
 - The Lua itself is tested: its pure functions run under Lua 5.1 in CI and
   under a stock Lua on a developer machine, against fakes for `comp`,
-  `fusion`, `io.popen` and `os.execute`. What Fusion's embedded Lua (5.1 or
+  `fusion` and `os.execute`. What Fusion's embedded Lua (5.1 or
   LuaJIT) does with the glue is not. CI installs `lua5.1` and sets
   `SQI_REQUIRE_LUA=1`, so a missing interpreter fails the Lua tests there
   instead of skipping them.
@@ -2210,7 +2210,8 @@ names a file that exists:
 2. `sqi_submit_command` in `~/.sqi/submitter.json` (override the file with
    `$SQI_SUBMITTER_SETTINGS`). Every handoff host reads it except After Effects.
 3. `sqi-submit` on the host's `PATH`. Every handoff host except After Effects
-   (Fusion looks it up with `where` or `command -v`). This is
+   (Fusion walks `PATH` itself, trying each `PATHEXT` extension on Windows,
+   rather than start a shell to run `where`). This is
    unreliable inside macOS GUI applications, which do not inherit the shell's
    `PATH`; on macOS set it in step 1 or 2.
 

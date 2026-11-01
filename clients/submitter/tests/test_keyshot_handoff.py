@@ -11,7 +11,13 @@ from typing import Any
 import pytest
 
 from sqi_submitter.core.handoff import load_context
-from tests.conftest import FakeHost, assert_no_sqi_submitter_import, load_host_file
+from tests.conftest import (
+    FakeHost,
+    ascii_fallback,
+    assert_no_sqi_submitter_import,
+    load_host_file,
+    stub_launch,
+)
 
 MODULE = (
     Path(__file__).resolve().parents[1]
@@ -24,11 +30,6 @@ MODULE = (
 
 UNSAVED = "Save your scene before submitting — the farm renders the file on disk."
 SAVE_FAILED = "KeyShot could not save the scene, so nothing was submitted."
-
-
-def _ascii(text: str) -> str:
-    """What the console fallback prints: ASCII only, so a narrow console cannot raise."""
-    return text.encode("ascii", "replace").decode("ascii")
 
 
 class Lux:
@@ -102,17 +103,6 @@ def _module() -> Any:
     return load_host_file(MODULE)
 
 
-def _stub_launch(module: Any, monkeypatch: pytest.MonkeyPatch, events: list[str]) -> None:
-    monkeypatch.setattr(module, "resolve_submit_command", lambda _c: "sqi")
-
-    def write(data: dict[str, Any]) -> str:
-        events.append(f"write:{len(data['targets'])}")
-        return "ctx.json"
-
-    monkeypatch.setattr(module, "write_context", write)
-    monkeypatch.setattr(module, "launch", lambda cmd, ctx: events.append(f"launch:{cmd}:{ctx}"))
-
-
 def test_keyshot_read_scene_studios(lux: Lux) -> None:
     module = _module()
     data = module.read_scene()
@@ -173,7 +163,7 @@ def test_keyshot_unsaved_scene_refused(lux: Lux, monkeypatch: pytest.MonkeyPatch
     module = _module()
     lux.scene = {"name": "", "file": ""}
     lux.changed = True
-    _stub_launch(module, monkeypatch, lux.events)
+    stub_launch(module, monkeypatch, lux.events)
     assert module.submit() is False
     assert lux.events == []  # not saved, not written, not launched
     assert lux.boxes == [(UNSAVED, "sqi", Lux.MESSAGE_BOX_WARNING)]
@@ -184,7 +174,7 @@ def test_keyshot_changed_scene_saved_before_launch(
 ) -> None:
     module = _module()
     lux.changed = True
-    _stub_launch(module, monkeypatch, lux.events)
+    stub_launch(module, monkeypatch, lux.events)
     assert module.submit() is True
     assert lux.events == ["save", "write:2", "launch:sqi:ctx.json"]
     assert lux.boxes == []
@@ -192,7 +182,7 @@ def test_keyshot_changed_scene_saved_before_launch(
 
 def test_keyshot_unchanged_scene_is_not_saved(lux: Lux, monkeypatch: pytest.MonkeyPatch) -> None:
     module = _module()
-    _stub_launch(module, monkeypatch, lux.events)
+    stub_launch(module, monkeypatch, lux.events)
     assert module.submit() is True
     assert lux.events == ["write:2", "launch:sqi:ctx.json"]
     assert "saveFile" not in lux.calls
@@ -202,7 +192,7 @@ def test_keyshot_save_failure_submits_nothing(lux: Lux, monkeypatch: pytest.Monk
     module = _module()
     lux.changed = True
     lux.save_error = RuntimeError("disk full")
-    _stub_launch(module, monkeypatch, lux.events)
+    stub_launch(module, monkeypatch, lux.events)
     assert module.submit() is False
     assert lux.events == ["save"]
     assert lux.boxes == [(SAVE_FAILED, "sqi", Lux.MESSAGE_BOX_WARNING)]
@@ -214,7 +204,7 @@ def test_keyshot_scene_check_failure_is_shown_not_raised(
 ) -> None:
     """``getSceneInfo`` is read for the scene check: whatever it raises is shown."""
     module = _module()
-    _stub_launch(module, monkeypatch, lux.events)
+    stub_launch(module, monkeypatch, lux.events)
 
     def broken() -> dict[str, object]:
         raise error
@@ -230,7 +220,7 @@ def test_keyshot_scene_read_failure_is_shown_not_raised(
     lux: Lux, monkeypatch: pytest.MonkeyPatch, error: Exception
 ) -> None:
     module = _module()
-    _stub_launch(module, monkeypatch, lux.events)
+    stub_launch(module, monkeypatch, lux.events)
 
     def broken() -> object:
         raise error
@@ -263,7 +253,7 @@ def test_keyshot_message_without_a_message_box_is_printed(
     lux.scene = {"name": "", "file": ""}
     lux.box_error = RuntimeError("no GUI in headless mode")
     assert _module().submit() is False
-    assert _ascii(UNSAVED) in capsys.readouterr().out
+    assert ascii_fallback(UNSAVED) in capsys.readouterr().out
 
 
 def test_keyshot_main_runs_submit(lux: Lux, monkeypatch: pytest.MonkeyPatch) -> None:

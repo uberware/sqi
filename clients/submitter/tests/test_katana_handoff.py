@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import ast
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,7 +12,13 @@ import pytest
 
 from sqi_submitter import install
 from sqi_submitter.core.handoff import load_context
-from tests.conftest import FakeHost, assert_no_sqi_submitter_import, load_host_file
+from tests.conftest import (
+    FakeHost,
+    ascii_fallback,
+    assert_no_sqi_submitter_import,
+    load_host_file,
+    stub_launch,
+)
 
 KATANA_DIR = Path(__file__).resolve().parents[1] / "src" / "sqi_submitter" / "hosts" / "katana"
 MODULE = KATANA_DIR / "sqi_katana_submit.py"
@@ -21,11 +26,6 @@ HOOK = KATANA_DIR / "init.py"
 
 UNSAVED = "Save your scene before submitting — the farm renders the file on disk."
 SAVE_FAILED = "Katana could not save the project, so nothing was submitted."
-
-
-def _ascii(text: str) -> str:
-    """What the console fallback prints: ASCII only, so a narrow console cannot raise."""
-    return text.encode("ascii", "replace").decode("ascii")
 
 
 class Param:
@@ -165,17 +165,6 @@ def _module() -> Any:
     return load_host_file(MODULE)
 
 
-def _stub_launch(module: Any, monkeypatch: pytest.MonkeyPatch, events: list[str]) -> None:
-    monkeypatch.setattr(module, "resolve_submit_command", lambda _c: "sqi")
-
-    def write(data: dict[str, Any]) -> str:
-        events.append(f"write:{len(data['targets'])}")
-        return "ctx.json"
-
-    monkeypatch.setattr(module, "write_context", write)
-    monkeypatch.setattr(module, "launch", lambda cmd, ctx: events.append(f"launch:{cmd}:{ctx}"))
-
-
 @pytest.mark.parametrize("group", ["farmGlobalSettings", "farmSettings"])
 def test_katana_read_scene_render_nodes(
     katana: Katana, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, group: str
@@ -262,7 +251,7 @@ def test_katana_unsaved_project_refused(katana: Katana, monkeypatch: pytest.Monk
     module = _module()
     katana.file_name = ""
     katana.dirty = True
-    _stub_launch(module, monkeypatch, katana.events)
+    stub_launch(module, monkeypatch, katana.events)
     assert module.submit() is False
     assert katana.events == []  # not saved, not written, not launched
     assert katana.warnings == [UNSAVED]
@@ -274,7 +263,7 @@ def test_katana_dirty_project_saved_before_launch(
     module = _module()
     katana.nodes = [Node("Beauty")]
     katana.dirty = True
-    _stub_launch(module, monkeypatch, katana.events)
+    stub_launch(module, monkeypatch, katana.events)
     assert module.submit() is True
     assert katana.events == ["save:D:/shots/s010.katana", "write:1", "launch:sqi:ctx.json"]
     assert katana.warnings == []
@@ -283,7 +272,7 @@ def test_katana_dirty_project_saved_before_launch(
 def test_katana_clean_project_is_not_saved(katana: Katana, monkeypatch: pytest.MonkeyPatch) -> None:
     module = _module()
     katana.nodes = [Node("Beauty")]
-    _stub_launch(module, monkeypatch, katana.events)
+    stub_launch(module, monkeypatch, katana.events)
     assert module.submit() is True
     assert katana.events == ["write:1", "launch:sqi:ctx.json"]
 
@@ -294,7 +283,7 @@ def test_katana_save_failure_submits_nothing(
     module = _module()
     katana.dirty = True
     katana.save_error = RuntimeError("disk full")
-    _stub_launch(module, monkeypatch, katana.events)
+    stub_launch(module, monkeypatch, katana.events)
     assert module.submit() is False
     assert katana.events == ["save:D:/shots/s010.katana"]
     assert katana.warnings == [SAVE_FAILED]
@@ -306,7 +295,7 @@ def test_katana_scene_check_failure_is_shown_not_raised(
 ) -> None:
     """``GetKatanaFileName`` is an unverified Katana API: whatever it raises is shown."""
     module = _module()
-    _stub_launch(module, monkeypatch, katana.events)
+    stub_launch(module, monkeypatch, katana.events)
 
     def broken() -> str:
         raise error
@@ -322,7 +311,7 @@ def test_katana_scene_read_failure_is_shown_not_raised(
     katana: Katana, monkeypatch: pytest.MonkeyPatch, error: Exception
 ) -> None:
     module = _module()
-    _stub_launch(module, monkeypatch, katana.events)
+    stub_launch(module, monkeypatch, katana.events)
 
     def broken() -> object:
         raise error
@@ -375,7 +364,7 @@ def test_katana_message_without_qt_is_printed(
     monkeypatch.setitem(sys.modules, "PySide6", None)
     katana.file_name = ""
     assert _module().submit() is False
-    assert _ascii(UNSAVED) in capsys.readouterr().out
+    assert ascii_fallback(UNSAVED) in capsys.readouterr().out
 
 
 def test_katana_install_menu_adds_the_sqi_menu(
@@ -461,20 +450,6 @@ def test_katana_hook_failure_does_not_break_startup(
     namespace: dict[str, Any] = {"__name__": "init"}
     exec(compile(HOOK.read_text(encoding="utf-8"), "init.py", "exec"), namespace)
     assert "was not added" in capsys.readouterr().out
-
-
-def test_katana_hook_is_valid_to_append_to_a_studio_file() -> None:
-    """The hook's lines land after a studio's own file, with no ``__future__`` import."""
-    text = HOOK.read_text(encoding="utf-8")
-    lines = [
-        line
-        for line in text.splitlines()
-        if line.strip() != install.HOOK_MARKER and not line.startswith("from __future__")
-    ]
-    studio = "import os\n\nSTUDIO = os.environ.get('STUDIO')\n"
-    compile(studio + "\n".join(lines) + "\n", "init.py", "exec")
-    for node in ast.walk(ast.parse("\n".join(lines))):
-        assert not isinstance(node, ast.AnnAssign)
 
 
 def test_katana_module_imports_without_katana(monkeypatch: pytest.MonkeyPatch) -> None:

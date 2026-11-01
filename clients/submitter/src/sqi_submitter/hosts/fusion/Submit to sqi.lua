@@ -314,31 +314,44 @@ local function settings_path(is_windows)
         .. "submitter.json"
 end
 
--- The first line `where $PATH:sqi-submit` (Windows; plain `where` searches the current directory
--- before PATH, so a stray sqi-submit.exe there would win) or `command -v sqi-submit` (POSIX) prints.
-local function find_on_path(is_windows)
-    local command = is_windows and "where $PATH:sqi-submit 2>nul" or "command -v sqi-submit 2>/dev/null"
-    local ok, found = pcall(function()
-        local pipe = io.popen(command)
-        if pipe == nil then
-            return nil
+-- The first sqi-submit in the folders of path_var (the PATH value) that exists(path) says is
+-- there, or nil. Searched here rather than through `where` or `command -v`: starting a shell
+-- from Fusion on Windows can flash a console window. Only PATH is searched, never the current
+-- folder, so an empty entry is skipped. Windows tries each PATHEXT extension in turn
+-- (sqi-submit.exe is what pip installs) and strips the quotes PATH may put around a folder.
+function sqi_find_on_path(is_windows, path_var, pathext, exists)
+    if path_var == nil then
+        return nil
+    end
+    local names = { "sqi-submit" }
+    if is_windows then
+        names = {}
+        local exts = (pathext ~= nil and pathext ~= "") and pathext or ".COM;.EXE;.BAT;.CMD"
+        for ext in exts:gmatch("[^;]+") do
+            names[#names + 1] = "sqi-submit" .. ext
         end
-        local text = pipe:read("*a")
-        pipe:close()
-        return text
-    end)
-    if not ok or type(found) ~= "string" then
-        return nil
     end
-    local line = found:match("^[^\r\n]+")
-    if line == nil then
-        return nil
+    for dir in path_var:gmatch(is_windows and "[^;]+" or "[^:]+") do
+        if is_windows then
+            dir = dir:gsub("^\"(.*)\"$", "%1")
+        end
+        if dir ~= "" then
+            local sep = "/"
+            if is_windows and not (dir:find("/", 1, true) and not dir:find("\\", 1, true)) then
+                sep = "\\"
+            end
+            if dir:sub(-1) == sep then
+                sep = ""
+            end
+            for _, name in ipairs(names) do
+                local candidate = dir .. sep .. name
+                if exists(candidate) then
+                    return candidate
+                end
+            end
+        end
     end
-    line = line:gsub("^%s+", ""):gsub("%s+$", "")
-    if line == "" then
-        return nil
-    end
-    return line
+    return nil
 end
 
 -- Finds sqi-submit as the Python block does: the settings file, then PATH.
@@ -348,7 +361,7 @@ local function resolve_command(is_windows)
     if configured ~= nil and configured ~= "" and file_exists(configured) then
         return configured
     end
-    return find_on_path(is_windows)
+    return sqi_find_on_path(is_windows, os.getenv("PATH"), os.getenv("PATHEXT"), file_exists)
 end
 
 -- Opens a new private file for the context and returns its path and handle, or nil. On POSIX

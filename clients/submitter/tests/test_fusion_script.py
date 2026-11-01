@@ -4,10 +4,10 @@
 Fusion bundles Lua but not Python, so the submitter is one self-contained Lua file. Its pure
 functions (JSON writing, frame ranges, settings parsing, launch strings) and its entry point
 run here under a stock Lua interpreter (``lua5.1``, ``luajit`` or ``lua`` on ``PATH``) with a
-fake ``comp``, ``io.popen`` and ``os.execute``. The Lua-run tests skip without an interpreter
-unless ``SQI_REQUIRE_LUA=1``, which turns that skip into a failure (CI sets it: a test that
-only ever skips verifies nothing). What no interpreter can show -- Fusion's own attribute
-values, the AskUser dialog, the real launch -- is on the manual checklist.
+fake ``comp`` and ``os.execute``. The Lua-run tests skip without an interpreter unless
+``SQI_REQUIRE_LUA=1``, which turns that skip into a failure (CI sets it: a test that only ever
+skips verifies nothing). What no interpreter can show -- Fusion's own attribute values, the
+AskUser dialog, the real launch -- is on the manual checklist.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -87,45 +88,24 @@ def run_lua(lua_path: str, body: str, extra_env: dict[str, str] | None = None) -
 # -- source scans (need no Lua) ------------------------------------------------------------
 
 
-def _code_only(text: str) -> str:
-    """The source without ``--`` comments and string literals (enough for the scan below)."""
-    text = re.sub(r"--\[(=*)\[.*?\]\1\]", "", text, flags=re.DOTALL)
-    text = re.sub(r"\[(=*)\[.*?\]\1\]", '""', text, flags=re.DOTALL)
-    out: list[str] = []
-    for raw in text.splitlines():
-        line = re.sub(r'"(?:\\.|[^"\\])*"', '""', raw)
-        line = re.sub(r"'(?:\\.|[^'\\])*'", "''", line)
-        out.append(re.sub(r"--.*", "", line))
-    return "\n".join(out)
-
-
-def _lua52_violations(text: str) -> list[str]:
-    code = _code_only(text)
-    found = []
-    if re.search(r"\bgoto\b", code):
-        found.append("goto")
-    if "//" in code:
-        found.append("//")
-    if re.search(r"\butf8\.", code):
-        found.append("utf8.")
-    return found
-
-
-def test_lua52_scanner_catches_newer_syntax() -> None:
-    """The scan below must not be vacuous, and must not trip on strings or comments."""
-    assert _lua52_violations("goto done\n::done::") == ["goto"]
-    assert _lua52_violations("local x = 7 // 2") == ["//"]
-    assert _lua52_violations("local n = utf8.len(s)") == ["utf8."]
-    assert _lua52_violations('local url = "http://x" -- goto // utf8.len\n') == []
-    assert _lua52_violations("--[[ goto // utf8. ]] local ok = 1") == []
-
-
-def test_fusion_script_has_spdx_and_no_lua52_syntax() -> None:
+def test_fusion_script_has_spdx_and_is_ascii() -> None:
     text = SCRIPT.read_text(encoding="utf-8")
     assert text.startswith("-- SPDX-License-Identifier: AGPL-3.0-or-later\n")
-    assert _lua52_violations(text) == []
     # Fusion reads the file as bytes: keep it ASCII so no editor or code page can change it.
     assert text.isascii()
+
+
+def test_fusion_script_loads_under_lua51(lua: str) -> None:
+    """Fusion runs Lua 5.1 (or LuaJIT, which reports 5.1), so the script must load under it.
+
+    A newer Lua also accepts ``goto``, ``//`` and the ``utf8`` library, so loading the script
+    there shows nothing about Fusion. CI installs ``lua5.1``; elsewhere this skips.
+    """
+    version = run_lua(lua, 'out("version", _VERSION)')["version"]
+    if version != "Lua 5.1":
+        if os.environ.get("SQI_REQUIRE_LUA") == "1":
+            pytest.fail(f"SQI_REQUIRE_LUA=1 needs Lua 5.1 or LuaJIT, but {lua} is {version}")
+        pytest.skip(f"{lua} is {version}, not Lua 5.1 or LuaJIT")
 
 
 def test_fusion_host_package_docstring_names_fusion_and_lua() -> None:
@@ -287,6 +267,42 @@ out("asked", asked[1])
     assert got["asked"] == "C:\\Py\\Scripts\\sqi-submitw.exe"
 
 
+def test_fusion_find_on_path(lua: str) -> None:
+    body = r"""
+local asked = {}
+local function only(want)
+  return function(p) asked[#asked + 1] = p; return p == want end
+end
+out("posix", sqi_find_on_path(false, "/a::/b/", nil, only("/b/sqi-submit")))
+out("posix_asked", table.concat(asked, "|"))
+asked = {}
+out("win", sqi_find_on_path(true, 'C:\\a;;"C:\\Program Files\\b"', ".COM;.EXE",
+  only("C:\\Program Files\\b\\sqi-submit.EXE")))
+out("win_asked", table.concat(asked, "|"))
+out("win_default", sqi_find_on_path(true, "C:\\a", nil, only("C:\\a\\sqi-submit.EXE")))
+out("win_slash", sqi_find_on_path(true, "C:/a", "", only("C:/a/sqi-submit.EXE")))
+out("none", tostring(sqi_find_on_path(false, "/a:/b", nil, only("/c/sqi-submit"))))
+out("no_path", tostring(sqi_find_on_path(false, nil, nil, only("/a/sqi-submit"))))
+"""
+    got = run_lua(lua, body)
+    assert got["posix"] == "/b/sqi-submit"
+    # An empty entry would be the current folder: it is skipped, never searched.
+    assert got["posix_asked"] == "/a/sqi-submit|/b/sqi-submit"
+    assert got["win"] == "C:\\Program Files\\b\\sqi-submit.EXE"
+    assert got["win_asked"] == "|".join(
+        [
+            "C:\\a\\sqi-submit.COM",
+            "C:\\a\\sqi-submit.EXE",
+            "C:\\Program Files\\b\\sqi-submit.COM",
+            "C:\\Program Files\\b\\sqi-submit.EXE",
+        ]
+    )
+    assert got["win_default"] == "C:\\a\\sqi-submit.EXE"  # PATHEXT unset: the Windows default
+    assert got["win_slash"] == "C:/a/sqi-submit.EXE"
+    assert got["none"] == "nil"
+    assert got["no_path"] == "nil"
+
+
 def test_fusion_launch_command(lua: str) -> None:
     win_exe = lit("C:\\Program Files\\sqi\\sqi-submitw.exe")
     win_ctx = lit("C:\\Users\\a\\AppData\\Local\\Temp\\sqi-handoff-1-2.json")
@@ -333,7 +349,7 @@ def _entry(
     end: str = "1100",
     save_result: str = "true",
     windows: bool = False,
-    popen_output: str = "",
+    path: str = "",
     ask_user: bool = True,
     execute_result: str = "0",
     version: str = "19.1",
@@ -351,7 +367,7 @@ local function ev(s) events[#events + 1] = s end
 local real_getenv = os.getenv
 local env = {{
   HOME = {lit(str(tmp_path))}, USERPROFILE = {lit(str(tmp_path))}, TEMP = {lit(str(tmp_path))},
-  SQI_SUBMITTER_SETTINGS = os.getenv("SQI_SETTINGS"),
+  SQI_SUBMITTER_SETTINGS = os.getenv("SQI_SETTINGS"), PATH = {lit(path)},
 }}
 os.getenv = function(k) return env[k] end
 local tmpcount = 0
@@ -361,10 +377,7 @@ os.tmpname = function()
   io.open(p, "wb"):close()
   return p
 end
-io.popen = function(cmd)
-  ev("popen:" .. cmd)
-  return {{ read = function() return {lit(popen_output)} end, close = function() end }}
-end
+io.popen = function(cmd) ev("popen:" .. cmd) end
 os.execute = function(cmd) ev("exec:" .. cmd); return {execute_result} end
 local printed = {{}}
 print = function(...) printed[#printed + 1] = table.concat({{...}}, " ") end
@@ -392,6 +405,18 @@ def _events(got: dict[str, str]) -> list[str]:
     return got["events"].split("<>") if got["events"] else []
 
 
+def _on_path(tmp_path: Path, name: str = "sqi-submit", folder: str = "bin") -> Path:
+    """Create an empty ``folder/name`` under ``tmp_path`` and return it."""
+    exe = tmp_path / folder / name
+    exe.parent.mkdir()
+    exe.write_bytes(b"")
+    return exe
+
+
+# A POSIX PATH is split on ':', which also splits a Windows drive-letter folder.
+_POSIX_PATH = pytest.mark.skipif(sys.platform == "win32", reason="POSIX PATH on a Windows host")
+
+
 def test_fusion_unsaved_comp_is_refused(lua: str, tmp_path: Path) -> None:
     got = run_lua(lua, _entry(tmp_path, filename=""), {"SQI_SETTINGS": ""})
     assert got["ok"] == "false"
@@ -413,14 +438,14 @@ def test_fusion_modified_comp_is_saved_then_launched(lua: str, tmp_path: Path) -
     settings = tmp_path / "settings.json"
     settings.write_text(json.dumps({"sqi_submit_command": str(exe)}), encoding="utf-8")
     scene = str(tmp_path / "shot.comp")
-    got = run_lua(lua, _entry(tmp_path), {"SQI_SETTINGS": str(settings)})
+    # The settings file wins over an sqi-submit on PATH.
+    on_path = _on_path(tmp_path)
+    got = run_lua(lua, _entry(tmp_path, path=str(on_path.parent)), {"SQI_SETTINGS": str(settings)})
     assert got["ok"] == "true"
     events = _events(got)
     assert events[0] == f"save:{scene}"
     assert len(events) == 2
     assert events[1].startswith("exec:")
-    # The settings file wins: no PATH search ran.
-    assert not [e for e in events if e.startswith("popen:")]
     context = tmp_path / "lua_tmp1"
     assert f"--context '{context}'" in events[1]
     assert events[1].startswith(f"exec:'{exe}' --context ")
@@ -473,27 +498,19 @@ def test_fusion_missing_render_range_gives_no_range(lua: str, tmp_path: Path) ->
     assert load_context(tmp_path / "lua_tmp1").scene_context().frame_range is None
 
 
-@pytest.mark.parametrize(
-    ("windows", "search"),
-    [(False, "popen:command -v sqi-submit"), (True, "popen:where $PATH:sqi-submit")],
-)
-def test_fusion_finds_sqi_submit_on_path(
-    lua: str, tmp_path: Path, windows: bool, search: str
-) -> None:
-    found = "/opt/bin/sqi-submit" if not windows else "C:\\Tools\\sqi-submit.exe"
-    got = run_lua(
-        lua,
-        _entry(tmp_path, windows=windows, popen_output=found + "\r\n/other/sqi-submit\n"),
-        {"SQI_SETTINGS": ""},
-    )
+@pytest.mark.parametrize("windows", [pytest.param(False, marks=_POSIX_PATH), True])
+def test_fusion_finds_sqi_submit_on_path(lua: str, tmp_path: Path, windows: bool) -> None:
+    (tmp_path / "empty").mkdir()
+    exe = _on_path(tmp_path, "sqi-submit.EXE" if windows else "sqi-submit")
+    path = (";" if windows else ":").join([str(tmp_path / "empty"), str(exe.parent)])
+    got = run_lua(lua, _entry(tmp_path, windows=windows, path=path), {"SQI_SETTINGS": ""})
     assert got["ok"] == "true"
     events = _events(got)
-    assert next(e for e in events if e.startswith("popen:")).startswith(search)
-    launch = events[-1]
+    assert not [e for e in events if e.startswith("popen:")]  # no shell started to search
     if windows:
-        assert launch.startswith('exec:start "" "C:\\Tools\\sqi-submit.exe" --context "')
+        assert events[-1].startswith(f'exec:start "" "{exe}" --context "')
     else:
-        assert launch.startswith("exec:'/opt/bin/sqi-submit' --context '")
+        assert events[-1].startswith(f"exec:'{exe}' --context '")
 
 
 def test_fusion_windows_launch_prefers_the_windowed_exe(lua: str, tmp_path: Path) -> None:
@@ -525,7 +542,7 @@ def test_fusion_windows_context_file_is_named_under_temp(lua: str, tmp_path: Pat
 
 
 def test_fusion_not_found_names_the_fix(lua: str, tmp_path: Path) -> None:
-    got = run_lua(lua, _entry(tmp_path, popen_output=""), {"SQI_SETTINGS": ""})
+    got = run_lua(lua, _entry(tmp_path), {"SQI_SETTINGS": ""})
     assert got["ok"] == "false"
     events = _events(got)
     assert [e for e in events if e.startswith("exec:")] == []
@@ -533,21 +550,21 @@ def test_fusion_not_found_names_the_fix(lua: str, tmp_path: Path) -> None:
     assert "sqi_submit_command" in events[-1]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows forbids a quote in a folder name")
 def test_fusion_path_with_a_quote_is_refused(lua: str, tmp_path: Path) -> None:
-    got = run_lua(
-        lua, _entry(tmp_path, popen_output='/opt/bin/say "hi"/sqi-submit\n'), {"SQI_SETTINGS": ""}
-    )
+    exe = _on_path(tmp_path, folder='say "hi"')
+    got = run_lua(lua, _entry(tmp_path, path=str(exe.parent)), {"SQI_SETTINGS": ""})
     assert got["ok"] == "false"
     events = _events(got)
     assert [e for e in events if e.startswith("exec:")] == []
     assert "quote" in events[-1]
 
 
+@_POSIX_PATH
 def test_fusion_failed_launch_is_reported(lua: str, tmp_path: Path) -> None:
+    exe = _on_path(tmp_path)
     got = run_lua(
-        lua,
-        _entry(tmp_path, popen_output="/opt/bin/sqi-submit\n", execute_result="1"),
-        {"SQI_SETTINGS": ""},
+        lua, _entry(tmp_path, path=str(exe.parent), execute_result="1"), {"SQI_SETTINGS": ""}
     )
     assert got["ok"] == "false"
     assert "could not be started" in _events(got)[-1]
@@ -606,7 +623,7 @@ def test_default_destination_fusion(
 def test_fusion_files_and_hook_rules() -> None:
     assert install.HOST_FILES["fusion"] == ["hosts/fusion/Submit to sqi.lua"]
     assert "fusion" in install.KNOWN_HOSTS
-    assert "Submit to sqi.lua" not in install.HOOK_FILES  # a name of ours, not a host-fixed one
+    assert install.HOOK_MARKER not in SCRIPT.read_text(encoding="utf-8")  # a script, no hook
 
 
 def test_fusion_next_step_and_no_destination_hint(monkeypatch: pytest.MonkeyPatch) -> None:
