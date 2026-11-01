@@ -37,9 +37,12 @@ NOT_FOUND_MESSAGE = (
 
 
 def _settings_command() -> str:
-    path = os.environ.get("SQI_SUBMITTER_SETTINGS") or os.path.join(
-        os.path.expanduser("~"), ".sqi", "submitter.json"
+    # Match sqi-submit's Path.home(): on Windows that is USERPROFILE. Python 3.7's expanduser
+    # prefers HOME, which is often a network share there.
+    home = (os.environ.get("USERPROFILE") if sys.platform == "win32" else None) or (
+        os.path.expanduser("~")
     )
+    path = os.environ.get("SQI_SUBMITTER_SETTINGS") or os.path.join(home, ".sqi", "submitter.json")
     try:
         # utf-8-sig: PowerShell 5 writes UTF-8 with a BOM, which plain utf-8 rejects.
         with open(path, encoding="utf-8-sig") as handle:

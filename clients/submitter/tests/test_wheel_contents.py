@@ -2,10 +2,10 @@
 """The built wheel carries every file a host install copies or loads.
 
 The other tests read the source tree, so they cannot see a file the build leaves out:
-the host files are not Python (``.pyp``, ``.jsx``, ``.js``, ``.ms``, ``.xml``, ``.json``)
-and hatch includes them only because nothing ignores them. This builds a real wheel into
-a temporary directory with the build backend (``hatchling``, in the ``dev`` extra) and
-reads it back.
+the host files are not Python (``.pyp``, ``.jsx``, ``.js``, ``.lua``, ``.ms``, ``.xml``,
+``.json``) and hatch includes them only because nothing ignores them. This builds a real
+wheel into a temporary directory with the build backend (``hatchling``, in the ``dev``
+extra) and reads it back.
 """
 
 from __future__ import annotations
@@ -56,9 +56,26 @@ def wheel(tmp_path_factory: pytest.TempPathFactory) -> dict[str, bytes]:
 def test_wheel_contains_every_host_file(wheel: dict[str, bytes]) -> None:
     names = set(wheel)
     host_files = [f for files in install.HOST_FILES.values() for f in files]
-    assert set(install.HOST_FILES) == {"blender", "cinema4d", "aftereffects"}
+    assert set(install.HOST_FILES) == {
+        "blender",
+        "cinema4d",
+        "aftereffects",
+        "unreal",
+        "katana",
+        "keyshot",
+        "silhouette",
+        "modo",
+        "fusion",
+        "vred",
+    }
+    # index.cfg is not Python: it ships only because nothing excludes it.
+    assert "hosts/modo/sqi/index.cfg" in host_files
     assert "hosts/aftereffects/Submit to sqi.jsx" in host_files
     assert "hosts/aftereffects/json2.js" in host_files
+    # A Lua file whose name has spaces: the wheel and the copy must both carry it intact.
+    assert "hosts/fusion/Submit to sqi.lua" in host_files
+    # VRED's plugin sits in a folder named for the plugin, as VRED loads it.
+    assert "hosts/vred/SubmitToSqi/SubmitToSqi.py" in host_files
     missing = [f for f in host_files + REQUIRED if f"sqi_submitter/{f}" not in names]
     assert missing == []
 

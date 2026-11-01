@@ -1,13 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The canonical handoff launch block for hosts that cannot run Qt.
 
-Blender and Cinema 4D bundle their own Python and cannot import ``sqi_submitter``,
+Every Python handoff host (Blender, Cinema 4D, Unreal, Katana, KeyShot, Silhouette and
+Modo) runs the host's own Python and cannot import ``sqi_submitter``,
 so each carries a verbatim copy of the text between the two markers below.
 ``tests/test_handoff_block.py::test_block_identical_in_every_host`` keeps the
 copies identical to this file. Edit the block here first, then re-copy it.
 
-The block is standard library only and stays compatible with Python 3.9. Its
-imports sit inside the markers so a copy is complete without any import outside
+The block is standard library only and stays compatible with Python 3.7
+(Katana 4-5 and Silhouette 2022 ship it; ``test_handoff_hosts_parse_as_python37`` pins the
+hosts). Its imports sit inside the markers so a copy is complete without any import outside
 them. Windows-only calls are guarded so it imports and runs on every platform.
 """
 
@@ -29,9 +31,12 @@ NOT_FOUND_MESSAGE = (
 
 
 def _settings_command() -> str:
-    path = os.environ.get("SQI_SUBMITTER_SETTINGS") or os.path.join(
-        os.path.expanduser("~"), ".sqi", "submitter.json"
+    # Match sqi-submit's Path.home(): on Windows that is USERPROFILE. Python 3.7's expanduser
+    # prefers HOME, which is often a network share there.
+    home = (os.environ.get("USERPROFILE") if sys.platform == "win32" else None) or (
+        os.path.expanduser("~")
     )
+    path = os.environ.get("SQI_SUBMITTER_SETTINGS") or os.path.join(home, ".sqi", "submitter.json")
     try:
         # utf-8-sig: PowerShell 5 writes UTF-8 with a BOM, which plain utf-8 rejects.
         with open(path, encoding="utf-8-sig") as handle:

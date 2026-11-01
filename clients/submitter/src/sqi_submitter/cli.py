@@ -39,8 +39,12 @@ def _build_parser() -> argparse.ArgumentParser:
     # no flag): always show a startup failure natively. Not for users.
     parser.add_argument("--detached", action="store_true", help=argparse.SUPPRESS)
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
+    from sqi_submitter.install import KNOWN_HOSTS
+
     install = sub.add_parser("install-host", help="install the sqi submitter into a host")
-    install.add_argument("host", help="host to install into: blender, cinema4d or aftereffects")
+    install.add_argument(
+        "host", help=f"host to install into: {', '.join(KNOWN_HOSTS[:-1])} or {KNOWN_HOSTS[-1]}"
+    )
     install.add_argument("--dest", default=None, help="install into this directory")
     return parser
 

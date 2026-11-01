@@ -2251,7 +2251,14 @@ jobs:
       - name: Install local sqi-sdk + submitter with dev extras
         run: pip install -e ../python -e '.[dev]'
 
+      # The Fusion submitter is Lua; its tests run the script under a real interpreter.
+      - name: Install Lua 5.1 (Fusion submitter tests)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends lua5.1
+
       - name: Unit tests with coverage gate
+        env:
+          # A missing interpreter fails the Lua tests instead of skipping them.
+          SQI_REQUIRE_LUA: "1"
         run: pytest
 
   # ── Submitter client: Qt widget tests ────────────────────────────────────────

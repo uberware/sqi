@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sqi-submitter"
-description = "DCC submitter framework for sqi (Maya, Houdini, Nuke, 3ds Max, Blender, Cinema 4D, After Effects) on top of sqi-sdk"
+description = "DCC submitter framework for sqi (Maya, Houdini, Nuke, 3ds Max, VRED, Blender, Cinema 4D, After Effects, Unreal, Katana, KeyShot, Silhouette, Fusion, Modo) on top of sqi-sdk"
 readme = "README.md"
 requires-python = ">=3.9"
 license = "AGPL-3.0-or-later"
@@ -26,6 +26,13 @@ keywords = [
   "blender",
   "cinema4d",
   "aftereffects",
+  "unreal",
+  "katana",
+  "vred",
+  "keyshot",
+  "silhouette",
+  "fusion",
+  "modo",
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -60,7 +67,8 @@ dev = [
 sqi-submit = "sqi_submitter.cli:main"
 
 # The same entry point with no console: on Windows it runs pythonw.exe, so a host that
-# launches the dialog (Blender, Cinema 4D, After Effects) leaves no console window open.
+# launches the dialog (Blender, Cinema 4D, After Effects, Unreal, Katana, KeyShot, Silhouette,
+# Fusion, Modo) leaves no console window open.
 [project.gui-scripts]
 sqi-submitw = "sqi_submitter.cli:main"
 
@@ -121,6 +129,31 @@ module = [
   "pymxs",
   "pymxs.*",
   "qtmax",
+  "unreal",
+  # The startup hooks import the handoff module that sits beside them in the host's folder.
+  "sqi_unreal_submit",
+  # Katana's own modules (the handoff file imports them inside function bodies), the Qt binding
+  # it picks by Katana's version, and the handoff module its startup hook imports.
+  "Katana",
+  "KatanaInfo",
+  "UI4",
+  "UI4.*",
+  "PyQt5",
+  "PyQt5.*",
+  "sqi_katana_submit",
+  # KeyShot's scripting module (the handoff file imports it inside function bodies).
+  "lux",
+  # Silhouette's scripting module (the handoff file imports it inside function bodies), its
+  # bundled Qt binding, and the handoff module its sfxuser.py hook imports.
+  "fx",
+  "PySide2",
+  "sqi_silhouette_submit",
+  # Modo's scripting modules (the handoff file imports them inside function bodies).
+  "lx",
+  "lxu",
+  "lxu.*",
+  "modo",
+  "modo.*",
 ]
 ignore_missing_imports = true
 

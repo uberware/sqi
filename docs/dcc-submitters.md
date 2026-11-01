@@ -1,7 +1,8 @@
 # DCC submitters
 
 `sqi-submitter` is a Python package that adds in-application job submission to
-Maya, Houdini, Nuke, 3ds Max, Blender, Cinema 4D and After Effects, on top of
+Maya, Houdini, Nuke, 3ds Max, VRED, Blender, Cinema 4D, After Effects, Unreal
+Engine, Katana, KeyShot, Silhouette, Fusion and Modo, on top of
 [`sqi-sdk`](python-client.md). It is a separate PyPI package
 (`pip install sqi-submitter`) because it needs a DCC host or a Qt binding,
 while `sqi-sdk` is a scripting library with no UI.
@@ -13,14 +14,18 @@ while `sqi-sdk` is a scripting library with no UI.
 Every host opens the **same submit dialog**. What differs is how it gets
 opened:
 
-- **In-process.** Maya, Houdini, Nuke and 3ds Max run Python and bundle a Qt
-  binding, so `sqi-submitter` is installed into the host's Python and the host
-  opens the dialog itself from a menu item or shelf tool.
-- **Handoff.** Blender, Cinema 4D and After Effects either bundle no Qt or
-  cannot host `sqi_submitter` at all. A small self-contained file in the host
-  reads the open scene, writes a **context file** (JSON), and starts
-  `sqi-submit --context FILE` as a separate process. That process opens the
-  same dialog, filled from the file. See [The handoff contract](#the-handoff-contract).
+- **In-process.** Maya, Houdini, Nuke, 3ds Max and VRED run Python and bundle a
+  Qt binding, so `sqi-submitter` is installed into the host's Python and the
+  host opens the dialog itself from a menu item or shelf tool.
+- **Handoff.** Blender, Cinema 4D, After Effects, Unreal Engine, Katana,
+  KeyShot, Silhouette, Fusion and Modo either bundle no Qt, bundle one this
+  package does not cover, or cannot host `sqi_submitter` at all. A small
+  self-contained file in the host reads the open scene, writes a **context
+  file** (JSON), and starts `sqi-submit --context FILE` as a separate process.
+  That process opens the same dialog, filled from the file. The host file is
+  Python for every handoff host but two: After Effects is ExtendScript and
+  Fusion is Lua (Fusion bundles Lua, not Python). See [The handoff
+  contract](#the-handoff-contract).
 
 | Host | Opens the dialog | Installed as | Targets (per-target products) |
 |---|---|---|---|
@@ -28,9 +33,16 @@ opened:
 | Houdini | in-process | package JSON + shelf tool | ROP nodes |
 | Nuke | in-process | `menu.py` on `NUKE_PATH` | Write nodes |
 | 3ds Max | in-process | Autodesk application package | none (whole-scene only) |
+| VRED | in-process | a script plugin, plus `sqi-submitter` installed into VRED's Python (`sqi-submit install-host vred`) | viewpoints |
 | Blender | handoff | one add-on file (`sqi-submit install-host blender`) | scene and view layer pairs |
 | Cinema 4D | handoff | one `.pyp` plug-in file (`sqi-submit install-host cinema4d`) | checked takes |
 | After Effects | handoff | a ScriptUI panel `.jsx` plus `json2.js` | `Queued` render-queue items |
+| Unreal Engine | handoff | a module plus the `init_unreal.py` startup hook (`sqi-submit install-host unreal`) | enabled Movie Render Queue jobs |
+| Katana | handoff | a module plus the `init.py` startup hook (`sqi-submit install-host katana`) | Render nodes |
+| KeyShot | handoff | one script file, run from the Scripting Console (`sqi-submit install-host keyshot`) | studios |
+| Silhouette | handoff | a module plus the `sfxuser.py` startup hook (`sqi-submit install-host silhouette`) | output nodes of each session |
+| Fusion | handoff | one Lua comp script (`sqi-submit install-host fusion`) | none (whole-comp only) |
+| Modo | handoff | a kit folder `sqi/` (`sqi-submit install-host modo`) | render pass groups |
 
 The package is layered so the parts that need Qt or a DCC's Python API stay
 out of the parts that don't:
@@ -41,8 +53,11 @@ sqi_submitter/
             the handoff context file reader, multi-target submission
   qt/       Qt only (PySide6, falling back to PySide2) — the generic dialog
   hosts/    one subpackage per DCC
-    maya/ houdini/ nuke/ max/           adapter + launch glue (in-process)
+    maya/ houdini/ nuke/ max/ vred/     adapter + launch glue (in-process)
     blender/ cinema4d/ aftereffects/    one self-contained host file each (handoff)
+    unreal/ katana/ keyshot/ silhouette/ fusion/ modo/
+                                        the same, plus a startup hook or a kit where the
+                                        host needs one (Fusion's file is Lua)
   cli.py    the sqi-submit command
   install.py  sqi-submit install-host
 ```
@@ -55,10 +70,14 @@ widget and validation rules), scene-context pre-fill (`prefill`), the
 a `HostAdapter` backed by a file). `qt` builds the one dialog from the same
 form model.
 
-The files under `hosts/blender`, `hosts/cinema4d` and `hosts/aftereffects` are
-**not importable library code**. Each runs inside a host that cannot import
-`sqi_submitter`, so each is a single file that uses only that host's standard
-library and ships in the wheel as package data.
+The files under `hosts/blender`, `hosts/cinema4d`, `hosts/aftereffects`,
+`hosts/unreal`, `hosts/katana`, `hosts/keyshot`, `hosts/silhouette`,
+`hosts/fusion` and `hosts/modo` are **not importable library code**. Each runs
+inside a host that cannot import `sqi_submitter`, so each is a single file (or,
+for the hosts that fix the name of a startup file, a module plus a tiny hook;
+for Modo, a kit folder) that uses only that host's standard library and ships
+in the wheel as package data. `hosts/vred` is the exception: its script plugin
+runs `sqi_submitter` inside VRED's own Python.
 
 The submitter is **product-driven** and hard-codes no per-DCC fields. It
 fetches the product catalog (`GET /api/v1/products`), lets the artist pick a
@@ -79,15 +98,17 @@ does when a scene has more than one render target.
 There are two install shapes, matching the two ways the dialog opens (see the
 [host table](#overview)).
 
-- **In-process hosts (Maya, Houdini, Nuke, 3ds Max):** install `sqi-submitter`
-  into the Python the DCC uses: its bundled interpreter, or a shared site
-  directory the DCC is configured to see. It depends only on `sqi-sdk`. No Qt
-  install is needed inside these hosts, since each bundles PySide. **Do not
-  install the `[qt]` extra there:** the dialog prefers PySide6 over PySide2, so
-  a PySide6 installed into a host that bundles PySide2 (for example 3ds Max
-  2024) would be picked over the binding the host's own windows use.
-- **Handoff hosts (Blender, Cinema 4D, After Effects):** nothing is installed
-  into the host's Python. Copy one self-contained file into the host
+- **In-process hosts (Maya, Houdini, Nuke, 3ds Max, VRED):** install
+  `sqi-submitter` into the Python the DCC uses: its bundled interpreter, or a
+  shared site directory the DCC is configured to see. It depends only on
+  `sqi-sdk`. No Qt install is needed inside these hosts, since each bundles
+  PySide. **Do not install the `[qt]` extra there:** the dialog prefers PySide6
+  over PySide2, so a PySide6 installed into a host that bundles PySide2 (for
+  example 3ds Max 2024) would be picked over the binding the host's own windows
+  use.
+- **Handoff hosts (Blender, Cinema 4D, After Effects, Unreal Engine, Katana,
+  KeyShot, Silhouette, Fusion, Modo):** nothing is installed into the host's
+  Python. Copy one self-contained file (or the few files) into the host
   (`sqi-submit install-host` does it where it can), and install
   `sqi-submitter[qt]` on the same machine as an ordinary command-line tool, for
   example with `pipx`, so the `sqi-submit` command exists. See [`sqi-submit
@@ -452,30 +473,370 @@ targets](#submitting-several-targets).
 > render-only marker file, and the product must match the worker's OS
 > (`windows` or `macos`). See [Reference presets](#reference-presets).
 
+### Unreal Engine
+
+The Unreal Editor hands its Movie Render Queue to `sqi-submit`. The host side
+is Python in the Editor's own interpreter, in two files: `sqi_unreal_submit.py`
+(which never imports `sqi_submitter`) and `init_unreal.py`, a tiny **startup
+hook** that imports it and adds the menu entry. The Editor runs any
+`init_unreal.py` it finds on its Python path at startup, so the hook's name is
+fixed by Unreal.
+
+1. Install `sqi-submit` on the machine, outside the Editor's Python:
+   `pipx install "sqi-submitter[qt]"`.
+2. Run `sqi-submit install-host unreal`. It copies both files into
+   `Documents\UnrealEngine\Python` under your profile (`%USERPROFILE%` on
+   Windows, `$HOME` elsewhere), creating the folder if needed. That is a folder
+   the Editor adds to its Python path. If your Documents folder is redirected
+   (OneDrive, folder redirection), pass `--dest` with the real path.
+3. Restart the Editor. **Tools → Submit to sqi…** appears in the level
+   editor's main menu.
+
+**If you already have an `init_unreal.py` there,** `install-host` does not
+overwrite it. A file of that name without the line `# sqi-submitter hook` is
+yours, so the command copies `sqi_unreal_submit.py`, leaves `init_unreal.py`
+untouched, and prints:
+
+```
+kept your existing <...>/init_unreal.py; to add sqi, append these lines to it:
+```
+
+followed by the lines of the shipped hook, minus the marker and minus its
+`from __future__` line (which is only valid at the top of a file). Append them
+to your file. A file that does carry the marker is sqi's own and is replaced on
+the next install; if it was edited since, the edited copy is kept beside it as
+`init_unreal.py.sqi-old`.
+
+The targets are the **enabled jobs** in the Movie Render Queue, each named after
+the job. The scene is the project (`.uproject`). Before it launches, the
+submitter saves what is unsaved, through the Editor's own save dialog; if
+anything is still unsaved afterwards it stops with "Save your changes before
+submitting — the farm renders the saved project." A queue job that another
+machine could not render is left out, and a dialog names each one and why
+before anything launches, with **OK** to go on without them and **Cancel** to
+stop:
+
+- the job's render settings were edited in the queue but not saved as a Movie
+  Render Pipeline config asset (the job has no config asset to point at);
+- the job's map or level sequence is not a saved asset (an untitled map, or a
+  path under `/Temp/`).
+
+`unreal-mrq-job-render` is the per-target product: each ticked job becomes one
+job, with `LevelSequence`, `Map` and `MovieRenderConfig` filled from the queue
+job. `unreal-mrq-queue-render` renders a saved queue asset as one task. It is
+not pre-filled: the handoff context has no scene-level field for a queue
+asset, so the product is always listed and you type the saved queue's asset
+path (such as `/Game/Cinematics/MyQueue`) into **Queue Asset**. Neither product
+has a **Frame Range**: each queue job renders the range in its own config.
+
+> **For a submitted job to run,** the rendering worker needs the `unreal=true`
+> capability tag and runs on Windows (both presets require
+> `attr.worker.os.family = "windows"`). Without a tagged worker the job stays
+> `ready`. See [Reference presets](#reference-presets).
+
+### Katana
+
+Katana hands the open project to `sqi-submit`, on every Katana version (Katana
+7.5 and earlier run PyQt5, which this package's Qt shim does not cover, so one
+standard-library-only file serves them all). The host side is
+`sqi_katana_submit.py` plus `init.py`, a startup hook that puts its own folder
+on `sys.path`, imports the module and registers the menu from Katana's
+`onStartupComplete` callback.
+
+1. Install `sqi-submit` on the machine: `pipx install "sqi-submitter[qt]"`.
+2. Run `sqi-submit install-host katana`. It copies both files into
+   `~/.katana/Startup` (`%USERPROFILE%\.katana\Startup` on Windows), creating
+   it if needed. On macOS, where Katana does not run, it has no default
+   destination and prints the files' paths; pass `--dest`. If `KATANA_USER_RESOURCE_DIRECTORY` points your user
+   resources somewhere else, pass `--dest <that folder>/Startup`.
+3. Restart Katana. A **sqi** menu with **Submit to sqi…** is added to the main
+   menu bar once startup completes.
+
+**If you already have an `init.py` there,** `install-host` keeps it, exactly as
+for Unreal: it copies `sqi_katana_submit.py`, prints `kept your existing
+<...>/init.py; to add sqi, append these lines to it:` and the hook's lines
+without the marker or the `from __future__` line. Append them to your `init.py`,
+and keep your `init.py` in the same folder as `sqi_katana_submit.py`, since the
+appended lines add their own folder to `sys.path`.
+
+Every Render node that is **not bypassed** is a target, named after the node.
+Its frame range is the node's farm **Set Active Frame Range** when that is on,
+and the project's In/Out time otherwise. An unsaved project is refused with
+"Save your scene before submitting"; a changed one is saved first.
+`katana-render` is the per-target product (`RenderNode`); there is no
+whole-scene Katana product.
+
+> **For a submitted job to run,** the rendering worker needs the `katana=true`
+> capability tag and Katana's `katana` command. Without a tagged worker the job
+> stays `ready`. See [Reference presets](#reference-presets).
+
+### VRED
+
+VRED Pro runs the dialog **in-process**, as Maya does: VRED bundles PySide (6
+from VRED 2024, 2 before), so `sqi-submitter` is installed into VRED's Python
+and a VRED **script plugin** adds the menu. Follow the steps in order. Several
+statements below come from Autodesk's documentation and user reports and are
+unverified on an install; the [VRED checklist](#vred-checklist) lists them.
+
+1. **Turn VRED's Python sandbox off first.** In VRED, open **Edit →
+   Preferences → General Settings → Script**, untick **Enable Python Sandbox**,
+   and restart VRED. The sandbox is reported to block the imports the submitter
+   needs; check this on your install.
+2. **Install `sqi-submitter` into VRED's Python,** not the `[qt]` extra (VRED
+   supplies its own Qt, and a second PySide6 in the process can conflict with
+   it). VRED ships a full Python under its install folder (check the path on
+   your install), so from a command prompt:
+
+   ```sh
+   "<VRED install>\lib\python\python.exe" -m pip install --target %USERPROFILE%\.sqi\vred-site sqi-submitter
+   ```
+
+   If that interpreter has no pip (`-m ensurepip` restores it), or you install
+   from another machine, fetch the wheels for VRED's Python version instead:
+   `pip install --python-version 3.11 --only-binary=:all: --target
+   %USERPROFILE%\.sqi\vred-site sqi-submitter` (3.11 is VRED 2026's; match the
+   `sys.version` in VRED's own Python console).
+3. **Tell the plugin where it went.** Set `sqi_submitter_site` in
+   `~/.sqi/submitter.json` to that folder, escaping the backslashes:
+
+   ```json
+   { "sqi_submitter_site": "C:\\Users\\you\\.sqi\\vred-site" }
+   ```
+
+   The environment variable `SQI_SUBMITTER_SITE` does the same and wins. The
+   plugin tries a plain `import sqi_submitter` first, so an install into VRED's
+   own `site-packages` needs no setting.
+4. Run `sqi-submit install-host vred` (any ordinary install of `sqi-submitter`
+   will do; the command needs no Qt). When it finds exactly one `VRED-*` folder
+   under `%USERPROFILE%\Documents\Autodesk`, it copies the plugin to
+   `<that folder>\ScriptPlugins\SubmitToSqi\SubmitToSqi.py`; otherwise it prints
+   the path and what to do. VRED Pro is Windows-only, so there is no default
+   destination elsewhere. If your Documents folder is redirected (OneDrive,
+   folder redirection), pass `--dest` with the real path.
+5. Restart VRED. **sqi → Submit to sqi…** appears in the menu bar.
+
+If the import fails when you click, VRED shows a message box that names both
+causes (the sandbox and the install), the settings key, and the import error;
+VRED itself still starts.
+
+The targets are the scene's **viewpoints**, named after the viewpoint, each
+with `View` filled in. `vred-viewpoint-render` is the per-target product and
+`vred-render` the whole-scene one. **Frame Range** is the render settings'
+start to stop (with `:step` when the step is above 1) when **Animation** is on,
+and blank otherwise; the render settings' clip-range option is not read. An
+untitled scene is refused with "Save your scene before submitting". VRED has no
+call that reports unsaved changes, so the submitter reads the `*` that VRED puts
+in its window title, and the dialog's **Save scene before submit** box saves
+through `vrFileIOService`.
+
+> **For a submitted job to run,** the rendering worker needs the `vred=true`
+> capability tag and VRED's `VREDCore` on its `PATH`. Without a tagged worker
+> the job stays `ready`. See [Reference presets](#reference-presets).
+
+### KeyShot
+
+KeyShot hands the open scene to `sqi-submit`. The host side is one script,
+`sqi_keyshot_submit.py`, that you run from KeyShot. KeyShot runs no startup
+file, so there is no hook and no menu entry.
+
+1. Install `sqi-submit` on the machine: `pipx install "sqi-submitter[qt]"`.
+2. Run `sqi-submit install-host keyshot`. On Windows and macOS, when your
+   `Documents` folder holds exactly one folder named `KeyShot*` (for example
+   `KeyShot`, or `KeyShot 2024`), it copies the script into that folder's
+   `Scripts` folder. With none, or with several (`KeyShot` and `KeyShot 2024`),
+   or on Linux, it prints the file's path and asks you to copy it into your
+   KeyShot `Scripts` folder or pass `--dest`. If your Documents folder is
+   redirected (OneDrive, folder redirection), pass `--dest` with the real path.
+3. In KeyShot open **Window → Scripting Console** and run `sqi_keyshot_submit`.
+
+The targets are the scene's **studios**, named after the studio. KeyShot has a
+single animation timeline, so every target carries the same frame range,
+`1-<frame count>` from the animation (`1` for a single frame, blank when KeyShot
+reports no frame count). An unsaved
+scene is refused with "Save your scene before submitting"; a changed one is
+saved first. `keyshot-studio-render` is the per-target product (`Studio`);
+`keyshot-render` the whole-scene one. **Output File** is not pre-filled, since
+the presets need a `#` run for the frame number that the scene does not hold:
+type it into the dialog.
+
+> **For a submitted job to run,** the rendering worker needs the
+> `keyshot=true` capability tag and `keyshot_headless` on its `PATH`. Without a
+> tagged worker the job stays `ready`. See [Reference presets](#reference-presets).
+
+### Silhouette
+
+Silhouette hands the open project to `sqi-submit`. The host side is
+`sqi_silhouette_submit.py` plus `sfxuser.py`, a startup hook: Silhouette's
+startup script imports a module of that name from its user script folder.
+
+1. Install `sqi-submit` on the machine: `pipx install "sqi-submitter[qt]"`.
+2. Run `sqi-submit install-host silhouette`. It needs the `SFX_USER_PATH`
+   environment variable. With it set, the command copies both files into
+   `$SFX_USER_PATH/scripts`, creating the folder if needed. Without it, there is
+   no default destination: the command prints the files' paths and the
+   `$(SFX_USER_PATH)/scripts` pattern, and you copy them yourself or pass
+   `--dest`.
+3. Restart Silhouette. **Submit to sqi…** is added as an action (look in the
+   **Actions** menu).
+
+**If you already have an `sfxuser.py` there,** `install-host` keeps it, exactly
+as for Unreal and Katana: it copies `sqi_silhouette_submit.py`, prints `kept your
+existing <...>/sfxuser.py; to add sqi, append these lines to it:` and the hook's
+lines without the marker or the `from __future__` line. Append them to your
+file. The hook catches its own errors, so a broken sqi install prints one line
+to Silhouette's console and never stops your code that follows it. Silhouette
+imports one `sfxuser` and searches `SFX_SCRIPT_PATH` before
+`$SFX_USER_PATH/scripts`, so a studio `sfxuser.py` on `SFX_SCRIPT_PATH` hides the
+one sqi installed.
+
+The targets are the **output nodes of every session**, one per
+`<session> / <node>` pair, each carrying `Session` and `OutputNode` (their
+labels) and its own session's frame range (the session's start frame for its
+duration). The scene path is the **`.sfx` bundle directory**, not the
+`project.sfx` file inside it: `sfxcmd` must be given the directory.
+`silhouette-render` is the per-target product and `silhouette-render-all` the
+whole-scene one. An unsaved project is refused with "Save your scene before
+submitting"; a changed one is saved first. Silhouette offers no documented
+message box, so messages appear in a Qt message box from Silhouette's own
+bundled Qt (or in the console when there is none).
+
+> **For a submitted job to run,** the rendering worker needs the
+> `silhouette=true` capability tag and `sfxcmd` on its `PATH`. Without a tagged
+> worker the job stays `ready`. See [Reference presets](#reference-presets).
+
+### Fusion
+
+Fusion hands the open comp to `sqi-submit`. The host file is Lua. Fusion
+bundles Lua but not Python (a Python install has to be added to it separately
+and version-matched to the Fusion build), so a Lua script is the one host file
+that works on every Fusion, as ExtendScript does for After Effects. It is
+`Submit to sqi.lua`, one file, with its own small JSON writer.
+
+1. Install `sqi-submit` on the machine: `pipx install "sqi-submitter[qt]"`.
+2. Run `sqi-submit install-host fusion`. It copies the script into the
+   `Scripts/Comp` folder of your Fusion profile, creating it if needed:
+   `%APPDATA%\Blackmagic Design\Fusion\Scripts\Comp` on Windows,
+   `~/Library/Application Support/Blackmagic Design/Fusion/Scripts/Comp` on
+   macOS, and `~/.fusion/BlackmagicDesign/Fusion/Scripts/Comp` on Linux. The
+   Linux spelling of the vendor folder (no space) is unconfirmed: check
+   **Preferences → Path Map → `Scripts:`** in Fusion, and pass `--dest` if your
+   install uses a different one.
+3. In Fusion choose **Script → Submit to sqi**.
+
+Fusion has no per-host setting for the program. The script finds `sqi-submit`
+from `sqi_submit_command` in `~/.sqi/submitter.json` (override the file with
+`$SQI_SUBMITTER_SETTINGS`), then on `PATH`; on Windows it prefers the windowed
+`sqi-submitw.exe` beside a located `sqi-submit.exe`. A path to `sqi-submit` or
+the context file that contains a double quote, or on Windows a `%`, is refused
+with a message, and nothing is launched. The script reports problems in Fusion's
+Console and in a message dialog.
+
+The submission is the **whole comp**: the render command line cannot pick a
+Saver, so Fusion offers no targets and `fusion-render` is a whole-scene
+product. **Frame Range** is the comp's render range. An unsaved comp is refused
+with "Save your scene before submitting"; a changed one is saved first. Unlike
+the Python hosts, the context file goes straight into the system temp folder
+(`%TEMP%` on Windows, an `os.tmpname` file on macOS and Linux), not into a
+`sqi-handoff` subfolder.
+
+> **For a submitted job to run,** the rendering worker needs the `fusion=true`
+> capability tag and Fusion's `FusionRenderNode`. Without a tagged worker the
+> job stays `ready`. See [Reference presets](#reference-presets).
+
+### Modo
+
+Modo hands the open scene to `sqi-submit`. The host side is a **kit**: a folder
+named `sqi` holding `index.cfg` and `lxserv/sqi_modo_submit.py`. Modo imports
+every Python module in a kit's `lxserv` folder at startup, and the module
+blesses a command, `sqi.submit`.
+
+1. Install `sqi-submit` on the machine: `pipx install "sqi-submitter[qt]"`.
+2. Run `sqi-submit install-host modo`. It copies the kit to
+   `<Scripts folder>/sqi/`, where the Scripts folder is `Scripts` inside your
+   per-user Luxology folder (`%APPDATA%\Luxology` on Windows, `~/Library/
+   Application Support/Luxology` on macOS, `~/.luxology` on Linux), creating
+   folders as needed.
+3. Restart Modo, then run **`sqi.submit`** from the command entry, or map it to
+   a key. No menu entry ships: Foundry's documentation shows no way to add one
+   from a kit.
+
+Whether Modo finds a kit under the user `Scripts` folder, rather than in a
+Kits folder, has not been confirmed: it heads the [Modo
+checklist](#modo-checklist). If the `sqi.submit` command does not exist after a
+restart, copy the `sqi` folder to a folder Modo loads kits from (the Foundry
+Kits page lists them) with `--dest`.
+
+The targets are the scene's **render pass groups**, named after the group, each
+with `PassGroup` filled in and the render item's first-to-last frame range.
+Reading that range selects the scene's render item, which changes your item
+selection. `modo-pass-group-render` is the per-target product and `modo-render`
+the whole-scene one. An unsaved scene is refused with "Save your scene before
+submitting"; a changed one is saved first. If the scene cannot be read, a
+dialog says "sqi could not read the scene" with the error, and nothing is
+launched.
+
+> **For a submitted job to run,** the rendering worker needs the `modo=true`
+> capability tag and `modo_cl` on its `PATH`. Without a tagged worker the job
+> stays `ready`. See [Reference presets](#reference-presets).
+
 ### `sqi-submit install-host`
 
 ```
-sqi-submit install-host {blender,cinema4d,aftereffects} [--dest DIR]
+sqi-submit install-host {blender,cinema4d,aftereffects,unreal,katana,vred,keyshot,silhouette,fusion,modo} [--dest DIR]
 ```
 
-Copies a handoff host's files out of the installed wheel into the host's
-per-user location, or into `--dest DIR` (created if missing), and prints what it
-did and the next step. The files are package data, so this works with no Qt
-binding installed.
+Copies a host's files out of the installed wheel into the host's per-user
+location, or into `--dest DIR` (created if missing), and prints what it did and
+the next step. The files are package data, so this works with no Qt binding
+installed. (`vred` is the one host here that is not a handoff host; the command
+installs its script plugin the same way, and the plugin additionally needs
+`sqi-submitter` in VRED's Python, see [VRED](#vred).)
 
-| Host | Files | Default destination | Without `--dest` |
+| Host | Files | Default destination | Without a default destination |
 |---|---|---|---|
 | `blender` | `sqi_blender_addon.py` | none | prints the file's path and the install steps; copies nothing |
-| `cinema4d` | `sqi_submit.pyp` | the `plugins` folder under the user's `Maxon Cinema 4D *` preferences folder (`%APPDATA%\Maxon` on Windows, `~/Library/Preferences/Maxon` on macOS), **only when exactly one such folder exists** | copies it; with none or several (or on Linux), prints the path and asks you to copy it or pass `--dest` |
+| `cinema4d` | `sqi_submit.pyp` | the `plugins` folder under the user's `Maxon Cinema 4D *` preferences folder (`%APPDATA%\Maxon` on Windows, `~/Library/Preferences/Maxon` on macOS), **only when exactly one such folder exists** | with none or several (or on Linux), prints the path and asks you to copy it or pass `--dest` |
 | `aftereffects` | `Submit to sqi.jsx`, `json2.js` | none (needs administrator rights) | prints both paths and the destination pattern; copies nothing |
+| `unreal` | `sqi_unreal_submit.py`, `init_unreal.py` (hook) | `Documents/UnrealEngine/Python` under the user's profile (`%USERPROFILE%` on Windows, `$HOME` elsewhere) | only when that variable is missing: prints the paths and asks you to copy them or pass `--dest` |
+| `katana` | `sqi_katana_submit.py`, `init.py` (hook) | `.katana/Startup` under the home folder, on Windows and Linux | on macOS, or with no home folder, prints the paths and asks you to copy them or pass `--dest` |
+| `vred` | `SubmitToSqi/SubmitToSqi.py` | `ScriptPlugins` in the one `VRED-*` folder under `%USERPROFILE%\Documents\Autodesk`, **only when exactly one exists** (Windows only) | with none or several, prints the path and asks you to copy the `SubmitToSqi` folder or pass `--dest` |
+| `keyshot` | `sqi_keyshot_submit.py` | `Scripts` in the one `KeyShot*` folder under `Documents`, **only when exactly one exists** (Windows and macOS) | with none, several or on Linux, prints the path and asks you to copy it or pass `--dest` |
+| `silhouette` | `sqi_silhouette_submit.py`, `sfxuser.py` (hook) | `scripts` under `$SFX_USER_PATH`, **only when that variable is set** | prints the paths and the `$(SFX_USER_PATH)/scripts` pattern; copies nothing |
+| `fusion` | `Submit to sqi.lua` | `Scripts/Comp` in the user's `Blackmagic Design/Fusion` profile (`%APPDATA%` on Windows, `~/Library/Application Support` on macOS, `~/.fusion/BlackmagicDesign/Fusion` on Linux) | only when the environment variable is missing: prints the path and asks you to copy it or pass `--dest` |
+| `modo` | the `sqi/` kit: `index.cfg`, `lxserv/sqi_modo_submit.py` | `Scripts` in the user's `Luxology` folder (`%APPDATA%\Luxology`, `~/Library/Application Support/Luxology`, `~/.luxology`) | only when the environment variable is missing: prints the paths and asks you to copy the folder or pass `--dest` |
 
-With `--dest`, every host's files are copied into that one directory, and the
-command prints `copied <path>` for each file, then the host's next step. The
-copy overwrites a file of the same name.
+With `--dest`, the host's files are copied into that one directory, and the
+command prints `copied <path>` for each file, then the host's next step. Most
+hosts' files land flat. A host that needs a folder keeps its folder: Modo's
+kit is copied as `<dir>/sqi/index.cfg` and `<dir>/sqi/lxserv/sqi_modo_submit.py`,
+and VRED's plugin as `<dir>/SubmitToSqi/SubmitToSqi.py`, so `--dest` names the
+folder that holds the kit or the plugin folder, not the kit itself. The copy
+overwrites a file of the same name, with one exception.
+
+**Startup files whose name the host fixes are never overwritten.** Unreal runs
+a file called `init_unreal.py`, Katana `init.py` and Silhouette `sfxuser.py`,
+so you may already have one. The copies sqi ships carry the line
+`# sqi-submitter hook`. When the target of one of these three already exists
+and does not carry that line, it is yours: `install-host` leaves it alone,
+prints `kept your existing <path>; to add sqi, append these lines to it:` and
+then the shipped hook with the marker line and any `from __future__` line
+removed, and still copies the module beside it. Append those lines to your
+file. The marker is left out so your file is not mistaken for sqi's and
+replaced by the next install. Once your file imports the sqi module, a later
+install prints `kept your existing <path>; it already loads sqi` instead, so
+the lines are never added twice. A file that does carry the marker is replaced
+like any other, and when it differs from the shipped hook (you edited it) the
+old copy is kept as `<name>.sqi-old` first. The marker counts only when it is a
+line of its own, so a file of yours that mentions the text in a comment or a
+string is still yours. When there is no default destination (nothing is
+copied), the command cannot look at your folder, so for each of the three hook
+files it prints `If you already have <name> there, append these lines to it
+instead:` and the same lines; do not copy the shipped hook over a file of
+yours.
 
 Exit codes: **0** success (including "printed instructions instead of
 copying"); **1** a file could not be copied into the destination (`--dest`, or
-Cinema 4D's detected folder): the destination could not be written, or this
+a default folder the command found): the destination could not be written, or this
 build is missing one of the host's files. The message names the folder and the
 reason, and says how many files were already copied. **2** unknown host (the
 message, on standard error, lists the known hosts). With no destination nothing
@@ -551,9 +912,10 @@ script takes its first and last frame from `params.json`. The two Unreal presets
 `SQI_LOG_CHECKS`: each renders one Movie Render Queue job or saved queue as one task, with its own frame range,
 and `EXPR` builds the `params.json` their embedded script reads inside the editor.
 
-Fourteen of the twenty-nine have a matching `sqi-submitter` host (Maya, Houdini,
-Nuke, 3ds Max, Blender, Cinema 4D and After Effects). The three Mistika presets,
-Katana, the two Silhouette presets, Fusion, the two VRED presets, the two KeyShot presets, the two Modo presets and the two Unreal presets have none and are submitted from the web UI or the API.
+Twenty-six of the twenty-nine have a matching `sqi-submitter` host (Maya,
+Houdini, Nuke, 3ds Max, VRED, Blender, Cinema 4D, After Effects, Unreal Engine,
+Katana, KeyShot, Silhouette, Fusion and Modo). The three Mistika presets have
+none and are submitted from the web UI or the API.
 
 | Product | Command | Chunking | Parameters | Worker tag |
 |---|---|---|---|---|
@@ -761,13 +1123,13 @@ are the **target parameters**: the names that identify one target.
 | 3ds Max | none: the host offers no targets | none | none | `3dsmax-render` |
 | Blender | one view layer of one scene, named `<scene> / <view layer>` | `Scene` (the **scene name**, not a path) and `ViewLayer` | `blender-view-layer-render` | `blender-batch-render` |
 | Cinema 4D | a checked take other than the main take | `Take` (the take's name) | `cinema4d-take-render` | `cinema4d-render` |
-| Fusion | none: the command line cannot pick a Saver | none | none | `fusion-render` |
-| Silhouette | an output node of a session (no submitter ships; named for one) | `Session` and `OutputNode` (the node's **label**; both strings) | `silhouette-render` | `silhouette-render-all`: it declares neither parameter, so the dialog treats it as whole-scene |
-| Katana | a Render node, named in the project | `RenderNode` (the node's name; a string) | `katana-render` | none: a Render node is the unit, as a ROP is for Houdini |
-| VRED | a viewpoint or camera (no submitter ships; named for one) | `View` (the viewpoint's or camera's name; a string) | `vred-viewpoint-render` | `vred-render`: it declares no `View`, so the dialog treats it as whole-scene |
-| KeyShot | a studio of the scene (no submitter ships; named for one) | `Studio` (the studio's name; a string) | `keyshot-studio-render` | `keyshot-render`: it declares no `Studio`, so the dialog treats it as whole-scene |
-| Modo | a pass group (no submitter ships; named for one) | `PassGroup` (the group's name; a string) | `modo-pass-group-render` | `modo-render`: it declares no `PassGroup`, so the dialog treats it as whole-scene |
-| Unreal | a Movie Render Queue job (no submitter ships; named for one) | `LevelSequence`, `Map` and `MovieRenderConfig` (asset paths such as `/Game/Maps/Hero`; strings) | `unreal-mrq-job-render` | `unreal-mrq-queue-render`: it declares none of them, only `QueueAsset`, so the dialog treats it as whole-scene |
+| Fusion | none: the command line cannot pick a Saver, so the submitter offers no targets | none | none | `fusion-render` |
+| Silhouette | an output node of a session, named `<session> / <node>` | `Session` and `OutputNode` (the node's **label**; both strings) | `silhouette-render` | `silhouette-render-all`: it declares neither parameter, so the dialog treats it as whole-scene |
+| Katana | a Render node that is not bypassed, named in the project | `RenderNode` (the node's name; a string) | `katana-render` | none: a Render node is the unit, as a ROP is for Houdini |
+| VRED | a viewpoint, named after it | `View` (the viewpoint's name; a string) | `vred-viewpoint-render` | `vred-render`: it declares no `View`, so the dialog treats it as whole-scene |
+| KeyShot | a studio of the scene | `Studio` (the studio's name; a string) | `keyshot-studio-render` | `keyshot-render`: it declares no `Studio`, so the dialog treats it as whole-scene |
+| Modo | a render pass group | `PassGroup` (the group's name; a string) | `modo-pass-group-render` | `modo-render`: it declares no `PassGroup`, so the dialog treats it as whole-scene |
+| Unreal | an enabled Movie Render Queue job that has a saved config, map and level sequence, named after the job | `LevelSequence`, `Map` and `MovieRenderConfig` (asset paths such as `/Game/Maps/Hero`; strings) | `unreal-mrq-job-render` | `unreal-mrq-queue-render`: it declares none of them, only `QueueAsset`, so the dialog treats it as whole-scene |
 | After Effects | a `Queued` render-queue item, named after its composition | `RenderQueueItem` (the item's 1-based index; an `INT` parameter, minimum 1; extra values are strings) | `after-effects-render-windows`, `after-effects-render-macos` | `after-effects-queue-render-windows`, `after-effects-queue-render-macos` |
 
 Houdini has a per-target product only: its output target is the ROP the script
@@ -777,6 +1139,14 @@ for job names; only the `extra` values reach the product's parameters.
 After Effects targets also carry `FramesPerTask` and `Frames` on **movie**
 targets only, and lock both there (see below). A key that only some targets
 carry, or that any target locks, is not a target parameter.
+
+**Unreal's `QueueAsset` is typed by the artist, never pre-filled.** The handoff
+context (version 1) has no scene-level extras, so there is nowhere to carry the
+asset path of a saved Movie Pipeline Queue. `unreal-mrq-queue-render` is
+therefore always listed, and its **Queue Asset** field starts empty. A queue
+job with no saved config asset, or on an unsaved map or level sequence, is left
+out of the targets and named in a message before `sqi-submit` launches (see
+[Unreal Engine](#unreal-engine)).
 
 A parameter named `Scene` always gets the scene name: extras win over
 convention aliases (below), and `scene` is not a `scene_path` alias.
@@ -989,8 +1359,8 @@ The minimal example is `MiniAdapter` in
 scene and target.
 
 **Launch-glue checklist** for a new in-process host (see [Installation per
-host](#installation-per-host) for the four existing examples: Maya, Houdini,
-Nuke and 3ds Max):
+host](#installation-per-host) for the five existing examples: Maya, Houdini,
+Nuke, 3ds Max and VRED):
 
 1. An adapter module under `hosts/<name>/adapter.py`.
 2. A menu/launch entry point (`hosts/<name>/menu.py`) that calls
@@ -1002,10 +1372,17 @@ Nuke and 3ds Max):
 
 For a **handoff** host, instead: one self-contained file that reads the scene
 into a version 1 context file and launches `sqi-submit --context`, using only
-the host's standard library. Copy the launch block that Blender and Cinema 4D
-share (`hosts/_handoff_block.py`; a test keeps the copies identical), add the
-file to `HOST_FILES` in `install.py` so `sqi-submit install-host` ships it,
-and write a section in this doc with a manual checklist.
+the host's standard library. Copy the launch block that the Python handoff
+hosts share (`hosts/_handoff_block.py`; a test keeps the copies identical), add
+the file to `HOST_FILES` in `install.py` so `sqi-submit install-host` ships it,
+and write a section in this doc with a manual checklist. If the host runs a
+startup file whose **name the host fixes** (as Unreal, Katana and Silhouette
+do), ship a tiny hook under that name instead of a full startup script, with
+the marker line `# sqi-submitter hook` in it. The marker alone makes it a hook:
+`install-host` never overwrites a file in its place that lacks the marker,
+since it is the studio's own, and prints the hook's lines for the artist to
+append instead. Keep a hook free of `from __future__` dependencies and of
+annotations, because the appended lines may land mid-file.
 
 ---
 
@@ -1044,7 +1421,9 @@ After installing per [Installation per host](#installation-per-host):
 4. **Pre-fill is correct.** `SceneFile` is not shown (it is taken from the open
    file). `Frames` matches the current frame range (or the ticked target's), and
    the target parameter (`RenderLayer`/`RopPath`/`WriteNode`/`Scene` and
-   `ViewLayer`/`Take`/`RenderQueueItem`) matches the ticked unit.
+   `ViewLayer`/`Take`/`RenderQueueItem`/`RenderNode`/`View`/`Studio`/`Session`
+   and `OutputNode`/`PassGroup`/`LevelSequence`, `Map` and `MovieRenderConfig`)
+   matches the ticked unit.
 5. **Several targets.** Tick two. The target parameters are greyed out ("From
    each target"). Submit: two jobs appear in the web UI, named `<job name> -
    <target name>`, each with its own target parameter and frame range. Edit
@@ -1334,14 +1713,425 @@ After installing per [Installation per host](#installation-per-host):
 - The context file location `<tmp>/sqi-handoff`, and that
   `AllowSetForegroundWindow(ASFW_ANY)` (Windows) brings the window forward.
 
+### Unreal Engine checklist
+
+**Check by hand (Unreal Engine 5.3 or later, on Windows):**
+
+1. **The menu appears.** Run `sqi-submit install-host unreal`, restart the
+   Editor and open the **Tools** menu. **Submit to sqi…** is listed, with no
+   `sqi:` warning in the Output Log. This is the first thing to check (see
+   below).
+2. A queue of three jobs, one of them disabled: the dialog lists the two enabled
+   jobs by job name, with `LevelSequence`, `Map` and `MovieRenderConfig`
+   filled in as asset paths. Confirm the exact text the Editor produces (for
+   example `/Game/Maps/Hero.Hero`) is what a worker's Unreal accepts.
+3. **Refused jobs.** Edit a queue job's settings without saving them as a
+   config asset; put a job on an untitled map; give a job a level sequence that
+   was never saved. Each is named, with its reason, in the message that appears
+   before the dialog. **OK** opens the dialog with the other jobs; **Cancel**
+   launches nothing. A job whose config asset was saved and then edited in the
+   queue is also left out.
+4. **Unsaved changes.** Make a map or asset dirty and submit. The Editor's save
+   dialog appears, then the sqi dialog. Decline to save: "Save your changes
+   before submitting — the farm renders the saved project." and no dialog.
+5. `unreal-mrq-job-render` with two jobs ticked: two jobs, each with its own
+   `LevelSequence`, `Map` and `MovieRenderConfig`. `unreal-mrq-queue-render` is
+   always listed (it is whole-scene) and **Queue Asset** starts empty; typing a
+   saved queue's asset path submits one task.
+6. `sqi-submit` not found (rename it or clear `PATH`): a message box names the
+   fix and nothing hangs.
+7. **Window focus.** The dialog comes to the front on Windows with no console
+   window alongside it.
+8. **An existing `init_unreal.py`.** Put your own file there first and run
+   `install-host unreal`: your file is untouched, the module is copied and the
+   hook's lines are printed. Append them, restart, and confirm the menu
+   appears. Run `install-host unreal` again: it reports that your file already
+   loads sqi. Over the sqi-installed file (the marker line present) it is
+   replaced without complaint.
+
+**Verified only against fakes or documentation:**
+
+- **Asynchronous menu registration, the riskiest item.** `init_unreal.py` runs
+  during Editor startup and `register_menu()` calls
+  `ToolMenus.get().find_menu("LevelEditor.MainMenu.Tools")` at once. Whether
+  `ToolMenus` and the Tools menu already exist at that point, or appear later
+  and so need registration deferred, is not known; if the menu is not found
+  only a log warning is written and nothing is added. The entry itself
+  (`ToolMenuEntry(name=..., type=MultiBlockType.MENU_ENTRY)`, `set_label`,
+  `set_string_command(ToolMenuStringCommandType.PYTHON, "", ...)`,
+  `add_menu_entry("sqi", entry)`, `refresh_all_widgets()`) follows Epic's API
+  reference and has not been run.
+- **Refused-job detection.** That `job.get_preset_origin()` is null for a job
+  whose settings were edited after loading a config (documented as returning the
+  preset only while unmodified) and for a job with no config; that
+  `SoftObjectPath.export_text()` exists (it is not on that class's own
+  documentation page and is assumed to come from the struct base class) and
+  returns a path such as `/Game/Maps/Hero.Hero`; and that an unsaved map or
+  sequence reads as a path under `/Temp/` or `/Engine/Transient`, or one that
+  does not start with `/`. A job with an empty name is listed as "Unnamed job".
+- `MoviePipelineQueueSubsystem.get_queue()` and `get_jobs()`;
+  `job.is_enabled()`; `job.job_name`.
+- `EditorLoadingAndSavingUtils.get_dirty_map_packages()`,
+  `get_dirty_content_packages()` and `save_dirty_packages_with_dialog(True, True)`
+  (and that the save-dialog result is not consulted: the dirty check runs
+  again instead).
+- `EditorDialog.show_message(title, message, message_type)` with
+  `AppMsgType.OK` and `OK_CANCEL`, and `AppReturnType.OK`.
+- `Paths.get_project_file_path()` made absolute with
+  `convert_relative_path_to_full`, and `SystemLibrary.get_engine_version()`
+  (the version is read up to the first `-`).
+- That `Documents/UnrealEngine/Python` is on the Editor's Python path and is
+  scanned for `init_unreal.py`.
+
+### Katana checklist
+
+**Check by hand (Katana 4 to 7 on PyQt5, and Katana 8 or later on PySide6):**
+
+1. **The menu appears.** Run `sqi-submit install-host katana`, restart Katana
+   and look for a **sqi** menu in the main menu bar, with no error in the
+   Python console at startup.
+2. A project with three Render nodes, one bypassed: the dialog lists the other
+   two by node name, each with `RenderNode` filled in.
+3. Frame ranges. A Render node with **Set Active Frame Range** on shows its own
+   farm range; with it off, the project's In/Out time. The project's own range
+   is the pre-filled **Frame Range** for a node without a target.
+4. An unsaved project shows "Save your scene before submitting" in a message
+   box and does not start `sqi-submit`. A changed project is saved, then the
+   dialog opens. Make the save fail (a read-only file): "Katana could not save
+   the project, so nothing was submitted."
+5. `sqi-submit` not found (rename it or clear `PATH`): the message names the fix
+   in a message box.
+6. **An existing `init.py`.** Put your own file in `~/.katana/Startup` first
+   and run `install-host katana`: it is kept, the module is copied and the
+   hook's lines are printed. Append them (with the studio file beside
+   `sqi_katana_submit.py`), restart and confirm the menu appears.
+7. With `KATANA_USER_RESOURCE_DIRECTORY` set to another folder, install with
+   `--dest <folder>/Startup` and confirm the menu appears.
+8. **Window focus.** The dialog comes to the front on each OS, with no console
+   window alongside it on Windows.
+
+**Verified only against fakes or documentation:**
+
+- **The startup callback, the riskiest item.**
+  `Callbacks.addCallback(Callbacks.Type.onStartupComplete, fn)` called from
+  `init.py`, and that Katana calls the callback with keyword arguments. If the
+  callback never fires, the menu is silently absent.
+- **The menu bar.** `UI4.App.MainWindow.CurrentMainWindow()`, finding the bar
+  with `findChild(UI4.App.MainMenu.MainMenu)`, and `addMenu("sqi").addAction(...)`.
+  These names come from a studio's published Katana script, not from Foundry's
+  developer guide.
+- That Katana runs `init.py` from `~/.katana/Startup` (Foundry documents a
+  `Startup` folder under a resources path and the user's `.katana` folder, not
+  that folder verbatim), and runs it with `execfile` (the hook falls back to
+  `~/.katana/Startup` when `__file__` is undefined).
+- The Render node's farm group. The Render node reference documents
+  `farmGlobalSettings.setActiveFrameRange` and
+  `farmGlobalSettings.activeFrameRange.start`/`end`; the submitter also tries
+  `farmSettings`, the RenderScript node's name for the same parameters. That
+  the toggle's "on" value reads as `Yes`, `true`, `1` or a nonzero number is a
+  guess: the docs say only "enabled".
+- `FarmAPI.GetKatanaFileName()`, `KatanaFile.IsFileDirty()`, `KatanaFile.Save(path)`,
+  `NodegraphAPI.GetInTime()`/`GetOutTime()`/`GetAllNodesByType("Render")` and
+  `node.isBypassed()`.
+- The message box's Qt binding, chosen from `KatanaInfo.version` (PySide6 from
+  Katana 8, PyQt5 before). On any failure the message goes to the console
+  instead. The host version comes from `KATANA_RELEASE` (not found in Foundry's
+  documentation), then `KatanaInfo.version`, else it is blank.
+
+### VRED checklist
+
+**Check by hand (VRED Pro 2024 or later, on Windows; and the oldest release you
+support):**
+
+1. **The sandbox.** With **Enable Python Sandbox** ticked, restart VRED and
+   click **sqi → Submit to sqi…**: a message names the sandbox and the install.
+   Untick it, restart, and click again. (This is the first thing to check, see
+   below.)
+2. **The install.** Install `sqi-submitter` into VRED's Python as in
+   [VRED](#vred), set `sqi_submitter_site`, restart VRED and confirm the dialog
+   opens from the menu with no error in VRED's terminal. Repeat with
+   `SQI_SUBMITTER_SITE` instead of the settings key, and with no setting but an
+   install into VRED's own `site-packages`.
+3. **Plugin location.** After `install-host vred`, **sqi** is in the menu bar.
+   If VRED does not load a plugin from the `SubmitToSqi` subfolder, copy
+   `SubmitToSqi.py` flat into `ScriptPlugins` and report it.
+4. **Reload Script Plugins** does not duplicate the **sqi** menu.
+5. Viewpoints: the dialog lists the scene's viewpoints (not the cameras that
+   have none), each with `View` filled in. `vred-viewpoint-render` with two
+   ticked submits two jobs.
+6. Frame range with **Animation** on, off, and with a step above 1 (shows as
+   `a-b:step`); and with the render clip range turned on (see below).
+7. Unsaved changes. Modify the scene, submit with **Save scene before submit**
+   ticked: the file on disk is current. An untitled scene is refused. A project
+   whose name contains `*` reads as modified, which only costs a redundant save.
+8. The dialog is parented to VRED's main window (it stays above VRED; closing it
+   does not close VRED).
+9. The Python-version question. Install with the `--python-version` route and
+   confirm the wheels import in VRED's Python.
+
+**Verified only against fakes or documentation:**
+
+- **The sandbox and the in-process import, the riskiest item.** That unticking
+  **Edit → Preferences → General Settings → Script → Enable Python Sandbox** is
+  enough for `import sqi_submitter` (and its httpx dependency) from the site
+  folder to work, that `python.exe -m pip install --target` into VRED's
+  `lib\python` is a supported route, that VRED's Python version is the one the
+  `--python-version` fallback assumes (3.11 for VRED 2026), and that a PySide
+  other than VRED's is never loaded.
+- **What VRED bundles.** That VRED supplies PySide (6 from 2024, 2 before),
+  ships a full Python with pip or `ensurepip` under its install folder, and that
+  its sandbox is what blocks the import: all documented or reported, none
+  confirmed on an install.
+- **Plugin in a subfolder.** That VRED loads `ScriptPlugins/SubmitToSqi/SubmitToSqi.py`
+  (Autodesk documents the `ScriptPlugins` folder; a forum thread says every
+  `.py` in it is a plugin; subfolders are not documented), and the
+  `Documents\Autodesk\VRED-<version>` folder name `install-host` looks for.
+- That VRED puts `vrFileIOService`, `vrCameraService` and `vrMainWindow` in
+  `builtins` (the plugin reads them from there and falls back to its own module
+  globals; AWS's VRED submitter reads them from `builtins`) and makes
+  `vrRenderSettings` an importable module; and `onDestroyVREDScriptPlugin` as
+  the unload callback.
+- `vrFileIOService.getFileName()` and `saveFile(path)` (returns a bool).
+- **Modified-scene detection.** VRED has no unsaved-changes call, so the
+  submitter looks for `*` in `vrMainWindow.windowTitle()`.
+- `vrCameraService.getAllViewpoints()` and each viewpoint's `getName()` (not
+  found in Autodesk's documentation; AWS's VRED submitter calls them).
+- `vrRenderSettings.getRenderAnimation()`, `getRenderStartFrame()`,
+  `getRenderStopFrame()`, `getRenderFrameStep()` and `getRenderFilename()`.
+  **`getRenderUseClipRange()` is not read**, so a scene that renders its clip
+  range may show a different frame range here than VRED renders.
+- `vrMainWindow.menuBar()` and `addMenu`, and the `QMessageBox` from VRED's
+  PySide.
+
+### KeyShot checklist
+
+**Check by hand (Windows and macOS):**
+
+1. **The frame base.** Open an animation whose first frame you know, run the
+   script and submit; the first output frame of the render must be the scene's
+   first frame. The submitter sends `1-<frame count>` (see below).
+2. **Running it.** Run `sqi_keyshot_submit` from **Window → Scripting
+   Console**. Also check whether the **Scripts** panel lists the file after
+   `install-host keyshot` and runs it from there.
+3. The destination. With one `KeyShot*` folder under `Documents`, the script
+   lands in its `Scripts` folder. With two (`KeyShot` and `KeyShot 2024`) the
+   command prints guidance and copies nothing. With a redirected Documents
+   folder (OneDrive), check where the script went.
+4. Studios. A scene with two studios lists both by name, each with `Studio`
+   filled in. `keyshot-studio-render` with two ticked submits two jobs.
+5. An unsaved scene shows "Save your scene before submitting" in a message box
+   and does not start `sqi-submit`. A changed scene is saved without a dialog,
+   then the dialog opens. Make the save fail: "KeyShot could not save the scene,
+   so nothing was submitted."
+6. **Output File is blank** and the `#` run must be typed; submit with one.
+7. `sqi-submit` not found: the message names the fix.
+8. Window focus on Windows and macOS (the dialog should come to the front).
+
+**Verified only against fakes or documentation:**
+
+- **The frame base and `__main__`, the riskiest items.** No KeyShot document
+  says whether frame numbers start at 0 or 1; the submitter assumes 1 (AWS's
+  KeyShot submitter and KeyShot's quick start count from 1). The script ends in
+  `if __name__ == "__main__": main()`: that KeyShot runs it as `__main__` from
+  the Scripting Console and the Scripts panel is assumed, not documented (AWS's
+  KeyShot submitter ends the same way).
+- `lux.getSceneInfo()["file"]` as the open file, empty or absent for a scene
+  never saved (the docs list the keys without their names; AWS reads `file`).
+- `lux.getAnimationInfo()["frames"]` as the frame count.
+- `lux.getStudios()` yielding names (the docs say "names or instances");
+  instances are not handled.
+- `lux.isSceneChanged()`, and `lux.saveFile()` with no argument saving in
+  place (headless it may throw, which counts as a failed save).
+- `lux.getMessageBox(msg=, title=, type=lux.MESSAGE_BOX_WARNING)`; the title
+  does not show on macOS. Without it the message is printed.
+- `lux.getKeyShotDisplayVersion()` as `(major, minor)`.
+- The user `Scripts` folder: AWS documents `Documents/KeyShot/Scripts`
+  (unversioned); `install-host` matches any one `KeyShot*` folder.
+
+### Silhouette checklist
+
+**Check by hand (Windows, macOS and Linux):**
+
+1. **The startup route.** Set `SFX_USER_PATH` (in the environment Silhouette
+   starts from), run `sqi-submit install-host silhouette`, restart Silhouette
+   and look for **Submit to sqi…** (the **Actions** menu is expected), with no
+   `sqi:` line in the console. This is the first thing to check (see below).
+2. With `SFX_USER_PATH` unset, `install-host silhouette` copies nothing and
+   prints the files and the `$(SFX_USER_PATH)/scripts` pattern.
+3. A project with two sessions, one with two Output nodes: the dialog lists
+   `<session> / <node>` for every output node, each with `Session` and
+   `OutputNode` filled in with the labels, and each with its own session's
+   frame range (a session starting at 1001 reads `1001-…`). Nodes that are not
+   Output nodes are not listed.
+4. **The scene is the bundle.** Submit `silhouette-render` and confirm the job
+   renders on a worker: the scene path is the `.sfx` folder, not the
+   `project.sfx` inside it.
+5. An unsaved project shows "Save your scene before submitting". A changed
+   project is saved without a dialog. Make the save fail: "Silhouette could not
+   save the project, so nothing was submitted."
+6. Messages appear in a Qt message box over Silhouette (not behind it).
+7. **An existing `sfxuser.py`.** Put your own file in the scripts folder first
+   and run `install-host silhouette`: it is kept, the module is copied and the
+   hook's lines are printed. Append them, restart and confirm the action
+   appears.
+
+**Verified only against fakes or documentation:**
+
+- **The startup loading route, the riskiest item.** That Silhouette's startup
+  script imports `sfxuser` from `$(SFX_USER_PATH)/scripts`. This rests on the
+  search order given in the Boris FX scripting wiki and a Boris FX staff reply
+  on their forum, and has not been run. Boris FX's current documentation does
+  not define `SFX_USER_PATH` or give its default per OS, so there is no default
+  destination without it.
+- `fx.Action` subclassing with the label as the constructor argument,
+  `available()` and `execute()`, `fx.addAction()`, and which menu the action
+  lands in (the **Actions** menu is a guess).
+- `fx.activeProject().path` being the `project.sfx` file inside the bundle
+  (AYON's Silhouette integration strips it the same way), and being empty for a
+  project never saved.
+- `project.is_modified` (a property, not a call) and `project.save()` with no
+  arguments.
+- `project.sessions`, `session.label`, `session.startFrame`,
+  `session.duration` (the frame range is `startFrame` to `startFrame +
+  duration - 1`), `session.nodes`, `node.label` and `node.type == "OutputNode"`,
+  and `fx.activeSession()`.
+- The message box: `fx` has no documented message call, so the submitter shows
+  a `QMessageBox` from Silhouette's bundled Qt (PySide6 from 2026, else
+  PySide2) on the GUI thread, or prints when there is no `QApplication`. The
+  host version is not read and is sent as blank.
+
+### Fusion checklist
+
+**Check by hand (Fusion 18 or later, on Windows, macOS and Linux):**
+
+1. **Launching.** After `install-host fusion`, **Script → Submit to sqi** exists.
+   Choose it on a saved comp: the dialog opens and Fusion stays responsive.
+   This is the first thing to check (see below).
+2. **Console flash on Windows.** Watch for a console window flashing when the
+   script starts `sqi-submit` (`start`); finding it on `PATH` runs nothing. With
+   `sqi-submitw.exe` beside `sqi-submit.exe`, no console stays open with the
+   dialog.
+3. An unsaved comp shows "Save your scene before submitting". A changed comp is
+   saved without a dialog and the file on disk is current. Make the save fail
+   (a read-only file): "Fusion could not save the comp, so nothing was
+   submitted."
+4. **Frame Range** pre-fills with the comp's render range; a comp with no
+   render range leaves it blank.
+5. Messages reach Fusion's **Console** and appear in a dialog; check that the
+   dialog shows the text (see below).
+6. **Linux profile folder.** In Fusion open **Preferences → Path Map** and read
+   `Scripts:`. Compare it with the folder `install-host` copied into
+   (`~/.fusion/BlackmagicDesign/Fusion/Scripts/Comp`); if Fusion uses
+   `Blackmagic Design` (with a space) instead, the default is wrong for that
+   install and needs fixing.
+7. `sqi-submit` not found (rename it or clear `PATH`): the message names the
+   fix. A path to `sqi-submit` that contains a `%` on Windows is refused with a
+   message, not launched.
+8. A comp path with non-ASCII characters (Windows especially) loads in the
+   dialog.
+
+**Verified only against fakes or documentation:**
+
+- **`os.execute` launch and the console flash, the riskiest items.** That
+  Fusion's Lua exposes `os.execute` (no documentation says whether a Comp
+  script is sandboxed), that `start "" "<exe>"
+  --context "<file>"` returns at once on Windows and
+  `'<exe>' --context '<file>' >/dev/null 2>&1 &` on macOS and Linux, and that
+  the `cmd` window does not flash on Windows. The script reports a Fusion
+  without `os.execute` as "This Fusion build does not allow scripts to run
+  programs". The launch line has no `--detached` flag, so a startup failure of
+  `sqi-submit` itself (no Qt installed, say) is logged to `submit-error.log` but
+  not shown in a message box.
+- The Lua itself is tested: its pure functions run under Lua 5.1 in CI and
+  under a stock Lua on a developer machine, against fakes for `comp`,
+  `fusion` and `os.execute`. What Fusion's embedded Lua (5.1 or
+  LuaJIT) does with the glue is not. CI installs `lua5.1` and sets
+  `SQI_REQUIRE_LUA=1`, so a missing interpreter fails the Lua tests there
+  instead of skipping them.
+- **`COMPB_Modified`.** It is not in the documented comp attribute list; it
+  appears in a forum post's dump of `comp:GetAttrs()`. The script saves the comp
+  unless the attribute is exactly `false`, so an absent attribute rewrites an
+  unchanged file.
+- `comp:Save(path)`: documented only as "Save the composition". The argument
+  and return value are undocumented; the script passes the comp's own path and
+  treats a raised error or an explicit `false` as a failure.
+- `comp:AskUser(title, controls)` with a single read-only `Text` control: the
+  control table shape is from the common AskUser pattern. A wrong shape leaves
+  the message on the Console only (it is printed there first, every time).
+- `COMPS_FileName`, `COMPN_RenderStart`/`COMPN_RenderEnd`, `comp:GetAttrs()`
+  and `fusion.Version`.
+- **The Linux profile folder spelling.** `~/.fusion/BlackmagicDesign/...` is the
+  vendor folder as the Fusion Render Node's own install folder spells it
+  (`/opt/BlackmagicDesign/...`); AYON's Fusion integration spells the profile
+  folder `Blackmagic Design` (with a space), as Windows and macOS do.
+  Blackmagic's documentation does not say which is right.
+- Whether Fusion hands Lua UTF-8 paths on Windows. A path in the ANSI code page
+  is passed through as the script is given it, and `sqi-submit` then rejects
+  the context file as invalid UTF-8.
+- The context file location: the system temp folder directly (`%TEMP%\sqi-handoff-<time>-<random>.json`,
+  or an `os.tmpname` file), not the `sqi-handoff` subfolder the Python hosts use.
+
+### Modo checklist
+
+**Check by hand (Windows, macOS and Linux):**
+
+1. **The kit loads.** After `sqi-submit install-host modo` and a restart, the
+   command `sqi.submit` exists (open the command entry and type it). If it does
+   not, copy the `sqi` folder to a folder Modo loads kits from and repeat. This
+   is the first thing to check (see below).
+2. There is **no menu entry**: confirm the command can be mapped to a key
+   (**System → Input Editor**).
+3. A scene with two pass groups: the dialog lists both by name, each with
+   `PassGroup` filled in. Groups that are not render pass groups are not
+   listed. `modo-pass-group-render` with two ticked submits two jobs.
+4. **Frame range.** Set the render item's **First**, **Last** and **Step** and
+   confirm the pre-filled **Frame Range** is `first-last`. A scene with no
+   render item pre-fills nothing. Reading the range selects the render item, so
+   the artist's item selection changes; note whether that interrupts work.
+5. An unsaved scene shows "Save your scene before submitting" in a Modo dialog.
+   A changed scene is saved without a dialog, then the sqi dialog opens. Make
+   the save fail: "Modo could not save the scene, so nothing was submitted."
+6. If the scene cannot be read, a dialog says "sqi could not read the scene"
+   with the error, and nothing is launched.
+7. `sqi-submit` not found: the message names the fix.
+8. Window focus: the dialog comes to the front over Modo.
+
+**Verified only against fakes or documentation:**
+
+- **The kit load and the menu entry, the riskiest items.** Foundry documents a
+  kit as a folder with `index.cfg`, and Python servers as `*.py` files in an
+  `lxserv` subdirectory anywhere on the script path. That Modo finds a kit
+  under the user `Scripts` folder (rather than a Kits folder), that
+  `<import>kit_sqi:lxserv</import>` resolves there, and that the `Scripts`
+  subfolder of the per-user `Luxology` folder is the right place, none of it
+  has been run. No menu entry is shipped: the Kits documentation does not show
+  how a kit adds one.
+- **Pass groups.** `modo.Scene().renderPassGroups` is from community code, not
+  Foundry's documentation, and the least certain name here. The submitter does
+  not filter its result, so it relies on Modo returning only render pass
+  groups.
+- The render item: item type `polyRender`, found by looping
+  `query sceneservice item.N ?` and `item.type ? <i>`, then `item.id ?` with no
+  index and `select.item`, and its `polyRender$first`/`$last` channels read
+  with `item.channel <name> ?`. Foundry's sample only sets these channels; the
+  `?` read form is standard command-query syntax.
+- `lxu.select.SceneSelection().current().Filename()` (an unnamed scene raises)
+  and `.HasChanged()`, and `lx.eval("scene.save")`.
+- `lxu.command.BasicCommand` with `basic_Execute(self, msg, flags)` and
+  `lx.bless(...)`; the command class is defined when the module loads.
+- The `dialog.setup`, `dialog.title`, `dialog.msg` and `dialog.open` commands
+  for the messages (braces in the text are swapped for parentheses). The host
+  version is not read and is sent as blank.
+
 ---
 
 ## The handoff contract
 
-A host that cannot run the Qt dialog in its own process, such as Blender and
-Cinema 4D (which bundle no Qt and no `sqi_submitter`) or After Effects (scripted
-in ExtendScript), does not need an adapter or any sqi library. It does three
-things:
+A host that cannot run the Qt dialog in its own process, such as Blender,
+Cinema 4D, Unreal, Katana, KeyShot, Silhouette and Modo (which bundle no
+`sqi_submitter`, and sometimes no Qt this package covers), After Effects
+(scripted in ExtendScript) or Fusion (scripted in Lua), does not need an
+adapter or any sqi library. It does three things:
 
 1. Saves the open scene.
 2. Writes a **context file**, a small JSON document describing the scene and its
@@ -1358,7 +2148,7 @@ instead can use [the three REST calls](#the-rest-calls) directly.
 | Field | Type | Meaning |
 |---|---|---|
 | `version` | `1` | Required. Any other value is refused. |
-| `host.name` | string | Lowercase token for the host (`blender`, `cinema4d`, `aftereffects`). Drives the **Suggested** product group and the per-host remembered settings (`last_product.<name>`, `last_targets.<name>.<scene path>`). Matching ignores case, spaces, `-` and `_`. |
+| `host.name` | string | Lowercase token for the host (`blender`, `cinema4d`, `aftereffects`, `unreal`, `katana`, `keyshot`, `silhouette`, `fusion`, `modo`). Drives the **Suggested** product group and the per-host remembered settings (`last_product.<name>`, `last_targets.<name>.<scene path>`). Matching ignores case, spaces, `-` and `_`. |
 | `host.display_name` | string | Human name for the host. |
 | `host.version` | string or `null` | The host's version. Informational. |
 | `scene.path` | string | Required, non-empty. The saved scene file; the farm renders this file on disk. |
@@ -1399,12 +2189,16 @@ in [Submitting several targets](#submitting-several-targets).
   happens, or that `sqi-submit` never reads, are not cleaned up: the shipped hosts
   write them to `<temp folder>/sqi-handoff/` (Python's `tempfile.gettempdir()`;
   After Effects' `Folder.temp`).
-- Blender and Cinema 4D keep the file private to the artist, because on Linux
+- The Python hosts (Blender, Cinema 4D, Unreal, Katana, KeyShot, Silhouette and
+  Modo) keep the file private to the artist, because on Linux
   the temp folder is the shared `/tmp` and the file names the server the API key
   is sent to. The folder is created `0700` (an existing one this user owns is
   tightened to `0700`), and each file is created exclusively, `0600`. If
   `sqi-handoff` is a symlink, not a directory, or owned by another user, they
-  write to a fresh private `<temp folder>/sqi-handoff-<random>/` instead.
+  write to a fresh private `<temp folder>/sqi-handoff-<random>/` instead. Fusion
+  writes straight into the temp folder instead: an `os.tmpname` file (created
+  `0600`) on macOS and Linux, and `%TEMP%\sqi-handoff-<time>-<random>.json` on
+  Windows, a per-user folder already.
 - A UTF-8 byte order mark at the start of the file is accepted.
 
 The JSON Schema for version 1 is
@@ -1418,17 +2212,23 @@ Each handoff host resolves the command in this order and uses the first that
 names a file that exists:
 
 1. A path the artist set in the host: Blender's add-on preference
-   **sqi-submit path**; After Effects' **Locate sqi-submit…** button. Cinema 4D
-   has no such setting.
+   **sqi-submit path**; After Effects' **Locate sqi-submit…** button. Cinema 4D,
+   Unreal, Katana, KeyShot, Silhouette, Fusion and Modo have no such setting, so
+   for them resolution starts at step 2.
 2. `sqi_submit_command` in `~/.sqi/submitter.json` (override the file with
-   `$SQI_SUBMITTER_SETTINGS`). Blender and Cinema 4D read it; After Effects does
-   not.
-3. `sqi-submit` on the host's `PATH`. Blender and Cinema 4D only. This is
+   `$SQI_SUBMITTER_SETTINGS`). Every handoff host reads it except After Effects.
+3. `sqi-submit` on the host's `PATH`. Every handoff host except After Effects
+   (Fusion searches `PATH` itself: on Windows it tries each `PATHEXT`
+   extension without starting a shell, and on macOS and Linux it skips
+   anything that is not an executable file). This is
    unreliable inside macOS GUI applications, which do not inherit the shell's
    `PATH`; on macOS set it in step 1 or 2.
 
 A configured path that does not exist is skipped without complaint. If nothing
-is found, Blender reports (in its status bar) and Cinema 4D shows (in a dialog):
+is found, Blender reports (in its status bar) and Cinema 4D shows (in a dialog),
+as do Unreal, Katana, KeyShot, Silhouette and Modo in their own message boxes
+(Fusion words the last part as `then set its full path as sqi_submit_command in
+~/.sqi/submitter.json`, since it has no plug-in setting):
 
 ```
 sqi-submit was not found. Install it on this machine with: pip install "sqi-submitter[qt]" — then set its full path in the sqi add-on/plugin settings, or as sqi_submit_command in ~/.sqi/submitter.json.
@@ -1464,7 +2264,11 @@ macOS and Linux they start it in a new session. After Effects uses
 `cmd /c start "" "<exe>" --context "<file>" --detached` on Windows and
 `"<exe>" --context "<file>" --detached >/dev/null 2>&1 &` on macOS, and refuses
 a path that contains a character it cannot quote. `--detached` is a hidden flag
-for this launch (see below); the Python hosts do not pass it. Because an older
+for this launch (see below); the Python hosts do not pass it. Fusion's Lua uses
+`os.execute` with `start "" "<exe>" --context "<file>"` on Windows and
+`'<exe>' --context '<file>' >/dev/null 2>&1 &` elsewhere, also without
+`--detached`, and refuses a path that contains a double quote (or, on Windows,
+a `%`). Because an older
 `sqi-submit` rejects that flag, After Effects first checks `sqi-submit
 --version` (see [After Effects](#after-effects)). The child inherits the host's environment. The
 dialog calls `show()`, `raise_()` and `activateWindow()`. There is no macOS app
@@ -1502,17 +2306,18 @@ error, it still prints the message to stderr, and also:
   argument with no shell, and waits for it to close. With no display, or none of
   the four installed, Linux only logs, as do other platforms.
 
-It exits 1 either way. Every handoff host (Blender, Cinema 4D, After Effects)
+It exits 1 either way. Every handoff host (Blender, Cinema 4D, After Effects,
+Unreal, Katana, KeyShot, Silhouette, Fusion and Modo)
 launches `sqi-submit` detached and relies on this to report a failed launch.
 On Windows, `sqi-submitw` has no stderr at all, so a failure always gets the
-native box. Blender and Cinema 4D start it with the host's own stderr on macOS
+native box. The Python hosts start it with the host's own stderr on macOS
 and Linux, so a Blender started from a terminal gets the message in that
 terminal, and one started from a desktop icon or menu (whose stderr is not a
 terminal) gets the native box. After Effects passes the hidden `--detached`
 flag for the case where it falls back to the console `sqi-submit.exe`, because
 `cmd /c start` then gives it a console of its own (a real terminal) that closes
-when it exits. A Python host falling back to that console program on Windows
-does not pass the flag, so there a failure is logged but not shown. `--detached` is that
+when it exits. A Python host, or Fusion, falling back to that console program on
+Windows does not pass the flag, so there a failure is logged but not shown. `--detached` is that
 host-launch flag, not an option for users. Run from a terminal, `sqi-submit`
 prints only; a non-interactive caller with stderr redirected (a script, CI)
 gets the modal box before it exits 1. A bad context file is not a
@@ -1594,8 +2399,14 @@ panel writes it (a smaller one is in the test fixture
 3. Resolve and launch `sqi-submit --context FILE` as described. For a Python
    host, copy the block between the `sqi handoff` markers in
    `sqi_submitter/hosts/_handoff_block.py`; it is standard library only and
-   Python 3.9 compatible, and a test keeps the copies in Blender and Cinema 4D
-   identical to it.
+   Python 3.9 compatible, and a test keeps the copies in the Python handoff
+   hosts identical to it. The host file itself must also parse as Python 3.7
+   (Katana 4 to 5 and Silhouette 2022 ship it), start with `from __future__
+   import annotations`, and import the host's own modules inside functions. A
+   host that cannot run Python at all writes the same file from its own language
+   (After Effects in ExtendScript, Fusion in Lua).
+   If the host runs a startup file whose name it fixes, ship a hook rather than
+   overwriting the artist's own (see [Writing a new adapter](#writing-a-new-adapter)).
 4. Do not wait for the process. The dialog is the artist's from here on.
 
 ### The REST calls

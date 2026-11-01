@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import ctypes
 import json
 import os
@@ -15,17 +16,33 @@ from types import SimpleNamespace
 
 import pytest
 
+from sqi_submitter import install
 from sqi_submitter.hosts import _handoff_block as block
+from tests.conftest import HANDOFF_BEGIN as BEGIN
+from tests.conftest import HOSTS_DIR, handoff_host_files
 
-HOSTS_DIR = Path(block.__file__).parent
+HANDOFF_HOST_FILES = handoff_host_files()
 
-HANDOFF_HOST_FILES: list[Path] = [
-    HOSTS_DIR / "blender" / "sqi_blender_addon.py",
-    HOSTS_DIR / "cinema4d" / "sqi_submit.pyp",
-]
+# Hosts whose Python file runs sqi_submitter inside the host, so it carries no launch block.
+IN_PROCESS_HOSTS = {"vred"}
 
-BEGIN = "# --- sqi handoff begin ---"
+# Handoff hosts whose files need not parse on Python 3.7 (Katana 4-5 and Silhouette 2022 ship
+# it), with the reason.
+NOT_PY37_HOSTS = {"blender": "the add-on evaluates list[...] annotations, so needs 3.9+"}
+
 END = "# --- sqi handoff end ---"
+
+
+def _python_host_files() -> list[tuple[str, Path]]:
+    """Each Python file ``install-host`` ships for a handoff host, with its host."""
+    return [
+        (host, HOSTS_DIR.parent / rel)
+        for host, files in install.HOST_FILES.items()
+        if host not in IN_PROCESS_HOSTS
+        for rel in files
+        if rel.endswith((".py", ".pyp"))
+    ]
+
 
 NOT_FOUND = (
     "sqi-submit was not found. Install it on this machine with: "
@@ -99,6 +116,23 @@ def test_resolve_submit_command_reads_settings_file_with_bom(
         b"\xef\xbb\xbf" + json.dumps({"sqi_submit_command": from_file}).encode("utf-8")
     )
     assert block.resolve_submit_command("") == from_file
+
+
+def test_settings_file_is_found_under_userprofile_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """sqi-submit reads USERPROFILE on Windows; a HOME set there (Python 3.7 ranks it first in
+    ``expanduser``) must not send the host to a different settings file."""
+    from_profile = _fake_exe(tmp_path, "from-profile")
+    settings = tmp_path / "profile" / ".sqi" / "submitter.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({"sqi_submit_command": from_profile}), encoding="utf-8")
+    monkeypatch.delenv("SQI_SUBMITTER_SETTINGS", raising=False)
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "profile"))
+    monkeypatch.setenv("HOME", str(tmp_path / "network-home"))
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    assert block.resolve_submit_command("") == from_profile
 
 
 def test_resolve_submit_command_not_found_message(isolated: Path) -> None:
@@ -311,3 +345,21 @@ def test_block_identical_in_every_host() -> None:
     canonical = _extract(HOSTS_DIR / "_handoff_block.py")
     for host_file in HANDOFF_HOST_FILES:
         assert _extract(host_file) == canonical, f"{host_file} drifted from _handoff_block.py"
+
+
+def test_every_handoff_python_file_carries_the_block_or_is_a_hook() -> None:
+    """Every Python file a handoff host ships carries the launch block or is a hook."""
+    found = set(HANDOFF_HOST_FILES)
+    for host, path in _python_host_files():
+        hook = install.HOOK_MARKER in path.read_text(encoding="utf-8").splitlines()
+        assert path in found or hook, f"{host}: {path.name} has no launch block and is no hook"
+    assert len(found) >= 7  # blender, cinema4d, unreal, katana, keyshot, silhouette, modo
+
+
+def test_handoff_hosts_parse_as_python37() -> None:
+    for host, path in _python_host_files():
+        if host in NOT_PY37_HOSTS:
+            continue
+        text = path.read_text(encoding="utf-8")
+        ast.parse(text, filename=str(path), feature_version=(3, 7))
+        assert "from __future__ import annotations" in text, f"{path} needs the __future__ import"

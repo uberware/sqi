@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Report a failed ``sqi-submit`` launch where the artist can see it.
 
-A handoff host (Blender, Cinema 4D, After Effects) starts ``sqi-submit`` detached, with
-no console, so a message printed to stderr alone reaches nobody. A failure is therefore
-also appended to ``submit-error.log`` next to the submitter settings and, when stderr is
-not a terminal (or the launch passed ``--detached``), shown in a native message box
+A handoff host (Blender, Cinema 4D, After Effects, Unreal, Katana, KeyShot, Silhouette,
+Fusion or Modo) starts ``sqi-submit`` detached, with no console, so a message printed
+to stderr alone reaches nobody. A failure is therefore also appended to
+``submit-error.log`` next to the submitter settings and, when stderr is not a terminal
+(or the launch passed ``--detached``), shown in a native message box
 (Windows), dialog (macOS) or, on a Linux desktop, the first of ``zenity``, ``kdialog``,
 ``xmessage`` and ``notify-send`` that is installed.
 

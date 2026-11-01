@@ -189,3 +189,27 @@ def test_group_products_ignores_separators() -> None:
         suggested, rest = group_products(ps, token)
         assert [p.name for p in suggested] == [expected]
         assert len(rest) == 3
+
+
+def test_group_products_each_host_token_finds_only_its_presets() -> None:
+    """Each host token below finds its own presets by name, and no others."""
+    expected = {
+        "unreal": ["unreal-mrq-job-render", "unreal-mrq-queue-render"],
+        "katana": ["katana-render"],
+        "vred": ["vred-render", "vred-viewpoint-render"],
+        "keyshot": ["keyshot-render", "keyshot-studio-render"],
+        "silhouette": ["silhouette-render", "silhouette-render-all"],
+        "fusion": ["fusion-render"],
+        "modo": ["modo-render", "modo-pass-group-render"],
+    }
+    names = [name for group in expected.values() for name in group] + [
+        "maya-scene-render",
+        "nuke-write-render",
+        "houdini-rop-render",
+        "python",
+    ]
+    ps = [Product(name=name) for name in names]
+    for token, wanted in expected.items():
+        suggested, rest = group_products(ps, token)
+        assert sorted(p.name for p in suggested) == sorted(wanted), token
+        assert len(suggested) + len(rest) == len(ps)
