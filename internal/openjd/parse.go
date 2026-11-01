@@ -169,6 +169,29 @@ func unknownTopLevelFields(raw map[string]any) []string {
 	return out
 }
 
+// knownStepFields are the keys the 2023-09 step template schema defines.
+// Step-block extensions (SQI_LOG_CHECKS) are not listed: they are recorded as
+// unknown fields and accepted by validateUnknownStepFields when supported and
+// declared.
+var knownStepFields = map[string]struct{}{
+	"name": {}, "description": {}, "let": {}, "dependencies": {},
+	"stepEnvironments": {}, "hostRequirements": {}, "parameterSpace": {},
+	"script": {},
+}
+
+// unknownStepFields returns the sorted keys of a step's raw mapping that the
+// step template schema does not define.
+func unknownStepFields(raw map[string]any) []string {
+	var out []string
+	for k := range raw {
+		if _, known := knownStepFields[k]; !known {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // ─── job parameter decoder ───────────────────────────────────────────────────
 
 func decodeJobParameter(raw map[string]any, exprDeclared bool) (JobParameter, error) {
@@ -692,10 +715,10 @@ func decodeStepTemplate(raw map[string]any, exprDeclared bool) (StepTemplate, er
 	}
 	s.Let = lets
 
-	// SQI_ vendor blocks. Every SQI_-prefixed key is recorded so validation can
-	// reject one that names no step-block extension; the decoder otherwise
-	// drops step keys it does not know.
-	s.SQIKeys = sqiStepKeys(raw)
+	// Every key the step schema does not define is recorded so validation can
+	// reject it (or, for a declared step-block extension, accept it); the
+	// decoder otherwise drops step keys it does not know.
+	s.UnknownFields = unknownStepFields(raw)
 	if v, ok := raw[ExtensionLogChecks]; ok {
 		s.LogChecks = decodeLogChecks(v)
 	}

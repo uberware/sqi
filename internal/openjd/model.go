@@ -384,12 +384,12 @@ type StepTemplate struct {
 	// LogChecks is the step's parsed SQI_LOG_CHECKS block, or nil when the step
 	// has none.
 	LogChecks *LogChecks
-	// SQIKeys is every SQI_-prefixed key the step carried, sorted. The decoder
-	// drops step keys it does not know, which is harmless for a misspelling of
-	// a base-spec key but would silently disable a check the author asked for;
-	// validation uses this list to reject an SQI_ key that names no registered
-	// step-block extension.
-	SQIKeys []string
+	// UnknownFields is every key the step carried that the step template schema
+	// does not define, sorted. The decoder drops them, which would silently lose
+	// a misspelled setting or disable a check the author asked for; validation
+	// uses this list to reject every such key except a declared, supported
+	// step-block extension (SQI_LOG_CHECKS).
+	UnknownFields []string
 }
 
 // StepScript is the executable definition attached to a [StepTemplate].

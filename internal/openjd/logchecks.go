@@ -109,18 +109,6 @@ func decodeLogCheckList(lc *LogChecks, v any, suffix string) []string {
 	return out
 }
 
-// sqiStepKeys returns the sorted SQI_-prefixed keys of a step's raw mapping.
-func sqiStepKeys(raw map[string]any) []string {
-	var out []string
-	for k := range raw {
-		if strings.HasPrefix(k, "SQI_") {
-			out = append(out, k)
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
 // maxMisplacedStepBlocks is the most misplaced step blocks one template reports.
 // One is enough to reject the template; the cap keeps a template stuffed with
 // them from costing a pointer per copy.
@@ -297,7 +285,7 @@ func validateLogChecks(t *JobTemplate) ValidationErrors {
 	anyBlock := false
 	budget := maxLogCheckTemplateInsts
 	for i, s := range t.Steps {
-		errs = append(errs, validateSQIStepKeys(t, s, i)...)
+		errs = append(errs, validateUnknownStepFields(t, s, i)...)
 		if s.LogChecks == nil || !declared {
 			continue
 		}
@@ -313,16 +301,23 @@ func validateLogChecks(t *JobTemplate) ValidationErrors {
 	return errs
 }
 
-// validateSQIStepKeys checks each SQI_-prefixed key of one step. A key is
-// accepted only if it names a registered, supported step-block extension that
-// the template declares; anything else is an error, because the decoder would
-// otherwise drop a misspelled block and run the step with its checks off.
-func validateSQIStepKeys(t *JobTemplate, s StepTemplate, idx int) ValidationErrors {
+// validateUnknownStepFields checks each key of one step that the step schema
+// does not define. A key is accepted only if it names a registered, supported
+// step-block extension that the template declares. Anything else is an error,
+// because the decoder would otherwise drop it: a misspelled base-spec key
+// silently loses its setting, and a misspelled block runs the step with its
+// checks off.
+func validateUnknownStepFields(t *JobTemplate, s StepTemplate, idx int) ValidationErrors {
 	var errs ValidationErrors
-	for _, key := range s.SQIKeys {
-		ptr := fmt.Sprintf("/steps/%d/%s", idx, key)
+	for _, key := range s.UnknownFields {
+		ptr := fmt.Sprintf("/steps/%d/%s", idx, escapePointerToken(key))
 		ext, ok := LookupExtension(key)
 		switch {
+		case !strings.HasPrefix(key, "SQI_"):
+			errs = append(errs, ValidationError{
+				Pointer: ptr,
+				Message: "unknown field; the step template schema defines no such key",
+			})
 		case !ok || ext.Status != StatusSupported || !ext.StepBlock:
 			errs = append(errs, ValidationError{
 				Pointer: ptr,
