@@ -636,12 +636,12 @@ tier to stand in for. The tiers are:
   and its output is inspected. Eleven entries have a `tier2` block, each naming
   a test that runs the real program end to end:
   - The five ffmpeg presets and the `python-sequence` built-in.
-    `test/integration/ffmpeg_presets_test.go` runs real ffmpeg and decodes the
+    `test/integration/preset_ffmpeg_test.go` runs real ffmpeg and decodes the
     file it produced, and `TestPresetPythonSequence_LauncherContract` runs
     `python-sequence`'s launcher under a real Python.
   - Five DCC presets: `blender-batch-render`, `blender-view-layer-render`,
     `nuke-write-render`, `nuke-script-render` and `houdini-rop-render`.
-    `test/integration/dcc_presets_test.go` builds a scene with the application
+    `test/integration/preset_dcc_test.go` builds a scene with the application
     itself (`test/integration/testdata/dcc/`), submits the shipped preset
     through a real server and worker, and checks the files it renders: the exact
     frame set, and where it can be read back, their content (the view layer in

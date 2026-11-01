@@ -2,7 +2,7 @@
 
 package integration
 
-// dcc_presets_test.go — executes the Blender, Nuke and Houdini reference
+// preset_dcc_test.go — executes the Blender, Nuke and Houdini reference
 // presets through a real sqi-server and a real sqi-worker against the REAL
 // applications, then asserts on the files they render.
 //
@@ -18,7 +18,7 @@ package integration
 // Each case builds its own scene with the application (testdata/dcc/*.py), so no
 // binary fixture lives in the repository.
 //
-// NOT tagged `integration`, like ffmpeg_presets_test.go, so the CI `test` job
+// NOT tagged `integration`, like preset_ffmpeg_test.go, so the CI `test` job
 // compiles, lints and runs it.
 //
 // They skip when the application is absent, which means A LOCAL PASS PROVES

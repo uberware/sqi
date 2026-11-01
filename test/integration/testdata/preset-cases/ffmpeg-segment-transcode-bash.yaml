@@ -3,7 +3,7 @@
 # FFmpeg Segment Transcode (Bash). Two steps: Transcode fans out into
 # ceil(DurationSeconds / SegmentSeconds) slices, then Join runs once.
 #
-# `default` uses the same 6s/2s geometry as ffmpeg_presets_test.go, so the two
+# `default` uses the same 6s/2s geometry as preset_ffmpeg_test.go, so the two
 # suites describe the same job: 3 slices + 1 join = 4 tasks.
 #
 # `uneven-tail` is the second expansion shape required of any preset with a
