@@ -1,0 +1,30 @@
+preset: after-effects-render
+case:   logged-error
+params:
+  Frames=1
+  FramesPerTask=10
+  RenderQueueItem=2
+  SceneFile=C:\Show Files\spot\o'brien_v002.aep
+
+step "Render" — 1 task
+  log checks: failOn "(?i)aerender ERROR"
+
+task 1/1  name="Render[Frame=1-1,Frame.End=1,Frame.Start=1]"
+  task params:
+    Frame=1-1
+    Frame.End=1
+    Frame.Start=1
+  command: aerender
+  args:
+    [0]  -project
+    [1]  C:\Show Files\spot\o'brien_v002.aep
+    [2]  -rqindex
+    [3]  2
+    [4]  -s
+    [5]  1
+    [6]  -e
+    [7]  1
+    [8]  -v
+    [9]  ERRORS_AND_PROGRESS
+    [10]  -close
+    [11]  DO_NOT_SAVE_CHANGES

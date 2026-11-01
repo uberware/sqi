@@ -469,9 +469,8 @@ image-sequence items only. See [Submitting several
 targets](#submitting-several-targets).
 
 > **For a submitted job to run,** the rendering worker needs the
-> `aftereffects=true` capability tag, `aerender` on its `PATH`, and a
-> render-only marker file, and the product must match the worker's OS
-> (`windows` or `macos`). See [Reference presets](#reference-presets).
+> `aftereffects=true` capability tag, an `aerender` it can resolve, and a
+> render-only marker file, and it must run Windows or macOS. See [Reference presets](#reference-presets).
 
 ### Unreal Engine
 
@@ -888,16 +887,16 @@ visible, since the server enforces the permission either way.
 
 ## Reference presets
 
-sqi ships twenty-nine DCC reference products under `presets/sqi/`, published
-through the [preset library](preset-library.md). The directory holds forty-two
+sqi ships twenty-seven DCC reference products under `presets/sqi/`, published
+through the [preset library](preset-library.md). The directory holds forty
 products in total. The other thirteen are eight [standalone renderer
 presets](preset-library.md#standalone-renderer-reference-presets), which render
 exported scene files without loading the DCC, and five `Transcoding`-category
 [ffmpeg presets](preset-library.md#transcoding-reference-presets). Install the
 DCC presets from **Admin → Preset Library** in the web UI or, without a preset
 index, create them through `POST /api/v1/products` or **Admin → Products**. All
-twenty-nine use the product `category` `Rendering`. All but the two After Effects
-queue presets and the two Unreal presets (one task each) declare `TASK_CHUNKING` to split the frame range;
+twenty-seven use the product `category` `Rendering`. All but the After Effects
+queue preset and the two Unreal presets (one task each) declare `TASK_CHUNKING` to split the frame range;
 the Maya, Blender, After Effects render, Mistika, Katana, Silhouette and Fusion presets also declare
 `SQI_CHUNK_BOUNDS` to expose each chunk's start and end frame (see
 [OpenJD extensions](openjd-extensions.md)). The Cinema 4D and 3ds Max presets
@@ -914,7 +913,7 @@ script takes its first and last frame from `params.json`. The two Unreal presets
 `SQI_LOG_CHECKS`: each renders one Movie Render Queue job or saved queue as one task, with its own frame range,
 and `EXPR` builds the `params.json` their embedded script reads inside the editor.
 
-Twenty-six of the twenty-nine have a matching `sqi-submitter` host (Maya,
+Twenty-four of the twenty-seven have a matching `sqi-submitter` host (Maya,
 Houdini, Nuke, 3ds Max, VRED, Blender, Cinema 4D, After Effects, Unreal Engine,
 Katana, KeyShot, Silhouette, Fusion and Modo). The three Mistika presets have
 none and are submitted from the web UI or the API.
@@ -931,10 +930,8 @@ none and are submitted from the web UI or the API.
 | `cinema4d-render` | `Commandline -nogui -render <scene> -frame <start> <end> [-oimage <path>]` | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `OutputPath` | `attr.worker.tag.cinema4d = "true"` |
 | `cinema4d-take-render` | `Commandline -nogui -render <scene> -frame <start> <end> -take <take> [-oimage <path>]` | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `Take`, `OutputPath` | `attr.worker.tag.cinema4d = "true"` |
 | `3dsmax-render` | `3dsmaxcmd -v:5 -rfw:0 -start:<n> -end:<n> [-outputName:<path>] <scene>` | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `OutputPath` | `attr.worker.tag.3dsmax = "true"` and `attr.worker.os.family = "windows"` |
-| `after-effects-render-windows` | `aerender -project <scene> -rqindex <n> -s <start> -e <end> -v ERRORS_AND_PROGRESS -close DO_NOT_SAVE_CHANGES`, run through an embedded PowerShell wrapper | up to `FramesPerTask` per task, default 10 | `SceneFile`, `Frames`, `RenderQueueItem`, `FramesPerTask` | `attr.worker.tag.aftereffects = "true"` and `attr.worker.os.family = "windows"` |
-| `after-effects-render-macos` | the same `aerender` arguments, run through an embedded POSIX `sh` wrapper | up to `FramesPerTask` per task, default 10 | `SceneFile`, `Frames`, `RenderQueueItem`, `FramesPerTask` | `attr.worker.tag.aftereffects = "true"` and `attr.worker.os.family = "macos"` |
-| `after-effects-queue-render-windows` | `aerender -project <scene> -v ERRORS_AND_PROGRESS -close DO_NOT_SAVE_CHANGES` (renders the saved queue as is), through the PowerShell wrapper | one task for the whole queue | `SceneFile` | `attr.worker.tag.aftereffects = "true"` and `attr.worker.os.family = "windows"` |
-| `after-effects-queue-render-macos` | the same queue render, through the `sh` wrapper | one task for the whole queue | `SceneFile` | `attr.worker.tag.aftereffects = "true"` and `attr.worker.os.family = "macos"` |
+| `after-effects-render` | `aerender -project <scene> -rqindex <n> -s <start> -e <end> -v ERRORS_AND_PROGRESS -close DO_NOT_SAVE_CHANGES` | up to `FramesPerTask` per task, default 10 | `SceneFile`, `Frames`, `RenderQueueItem`, `FramesPerTask` | `attr.worker.tag.aftereffects = "true"` and `attr.worker.os.family = "windows"` or `"macos"` |
+| `after-effects-queue-render` | `aerender -project <scene> -v ERRORS_AND_PROGRESS -close DO_NOT_SAVE_CHANGES` (renders the saved queue as is) | one task for the whole queue | `SceneFile` | `attr.worker.tag.aftereffects = "true"` and `attr.worker.os.family = "windows"` or `"macos"` |
 | `mistika-boutique-render` | `mistika -r <scene> -s/-e <frame range>` | chunks of 10 | `SceneFile` (`*.rnd`), `Frames` | `attr.worker.tag.mistika = "true"` |
 | `mistika-vr-render` | `vr -r <scene> -s/-e <frame range>` | chunks of 10 | `SceneFile` (`*.rnd`), `Frames` | `attr.worker.tag.mistikavr = "true"` |
 | `mistika-workflows-render` | `workflows -r <scene> -s/-e <frame range>` | chunks of 10 | `SceneFile` (`*.rnd`), `Frames` | `attr.worker.tag.mistikaworkflows = "true"` |
@@ -959,12 +956,9 @@ renders rather than a flag that can be left out. Blender, Cinema 4D and After
 Effects each ship a **per-target** and a **whole-scene** product:
 `blender-view-layer-render` renders one named view layer, `blender-batch-render`
 the scene as saved; `cinema4d-take-render` renders one named take,
-`cinema4d-render` names no take; `after-effects-render-*` renders one
-render-queue item in frame chunks, `after-effects-queue-render-*` everything
+`cinema4d-render` names no take; `after-effects-render` renders one
+render-queue item in frame chunks, `after-effects-queue-render` everything
 the saved project has queued, as one task. 3ds Max ships only `3dsmax-render`.
-Each After Effects preset has a Windows and a macOS variant with the same
-parameters and `aerender` arguments; only the wrapper script differs. Pick the
-one that matches your render nodes.
 
 Maya, Blender, Cinema 4D and 3ds Max default to one frame per task (chunk size
 1). Their start and end frame arguments come from the chunk: its
@@ -990,15 +984,13 @@ and these presets render up to ten frames per task, so a movie longer than ten
 frames needs the step's `chunks.defaultTaskCount` raised to cover the whole
 range. How Mistika writes a movie from a partial `-s`/`-e` range is unverified.
 
-**After Effects runs `aerender` through a wrapper, and a movie output must be
-one task.** `aerender` is reported to exit 0 when a render fails, so the four
-After Effects presets run it through a small embedded script (PowerShell on
-Windows, POSIX `sh` on macOS). The wrapper passes `aerender`'s output to the
-task log unchanged and fails the task when `aerender` exits non-zero or when
-any output line contains `aerender ERROR`, in any letter case. A failure that
-does neither is still reported as a success. Each render node needs `aerender`
-on its `PATH` (and `powershell` on Windows; macOS runs the wrapper with
-`/bin/sh`), and Adobe's render-only marker, an empty file named
+**After Effects checks `aerender`'s output, and a movie output must be one
+task.** `aerender` is reported to exit 0 when a render fails, so both After
+Effects presets declare `SQI_LOG_CHECKS` and also fail the task when any output
+line contains `aerender ERROR`, in any letter case. A failure that does neither
+is still reported as a success. Each render node needs an `aerender` the worker
+can resolve (the `aftereffects` detector supplies one from a default install),
+and Adobe's render-only marker, an empty file named
 `ae_render_only_node.txt` in `C:\Users\Public\Documents\Adobe` (Windows) or
 `/Users/Shared/Adobe` (macOS). After Effects cannot render one movie file from
 several machines, so when the render-queue item writes a movie, set
@@ -1012,13 +1004,13 @@ Effects submitter does, by locking a movie target's range and frame count
 Each preset's `hostRequirements` gates it to workers advertising the matching
 `attr.worker.tag.<name>` capability tag. `3dsmax-render`, the After Effects
 presets and the two Unreal presets also require `attr.worker.os.family` (`windows` for `3dsmax-render`
-and the Unreal presets, `windows` or `macos` for the matching After Effects variant). At startup
+and the Unreal presets, `windows` or `macos` for the After Effects presets). At startup
 `sqi-worker` detects a standard Maya, Nuke, Houdini, Blender, Cinema 4D, 3ds
 Max, After Effects, Mistika, Katana, Silhouette (`sfxcmd`), Fusion Render Node, VRED, KeyShot (`keyshot_headless`), Modo (`modo_cl`) or Unreal Engine 5 (`UnrealEditor-Cmd`, in the Epic Games Launcher's default folder only) install, on `PATH` or in its usual install
 location, and advertises the matching tag (`maya`, plus a version variant such
 as `maya_2025`) with value `"true"`; see [Capability
 auto-detection](worker-capabilities.md#capability-auto-detection-built-in-dcc-detectors).
-That satisfies the `anyOf: ["true"]` requirement each of the twenty-nine presets
+That satisfies the `anyOf: ["true"]` requirement each of the twenty-seven presets
 declares, so a worker with a standard install needs no per-worker
 configuration. Run `sqi-worker capabilities` (or `start --dry-run`) to see
 which DCCs were found.
@@ -1032,12 +1024,13 @@ installed under the SGO layout, but the preset invokes the bare command, so
 the binary must also be on the worker's `PATH`. If your SGO install is not on
 `PATH`, add it, or duplicate the preset and give `command:` an absolute path.
 
-The Cinema 4D, 3ds Max and After Effects detectors have the same gap. They tag
-a worker from where the application is installed (and, for 3ds Max and After
-Effects, from the command on `PATH`), but a registry or install-location match
-does not put `Commandline`, `3dsmaxcmd` or `aerender` on the worker's `PATH`,
-and the presets invoke the bare command. Add the install folder to `PATH` on
-each such node.
+The Cinema 4D and 3ds Max detectors have the same gap. They tag a worker from
+where the application is installed (and, for 3ds Max, from the command on
+`PATH`), but a registry or install-location match does not put `Commandline` or
+`3dsmaxcmd` on the worker's `PATH`, and the presets invoke the bare command.
+Add the install folder to `PATH` on each such node. The After Effects detector
+does not have the gap: it supplies an `aerender` command from the install it
+finds.
 
 Manual tags are needed only when a DCC is installed somewhere the built-in
 detectors do not check, or for in-house tools they do not cover. Add a
@@ -1132,7 +1125,7 @@ are the **target parameters**: the names that identify one target.
 | KeyShot | a studio of the scene | `Studio` (the studio's name; a string) | `keyshot-studio-render` | `keyshot-render`: it declares no `Studio`, so the dialog treats it as whole-scene |
 | Modo | a render pass group | `PassGroup` (the group's name; a string) | `modo-pass-group-render` | `modo-render`: it declares no `PassGroup`, so the dialog treats it as whole-scene |
 | Unreal | an enabled Movie Render Queue job that has a saved config, map and level sequence, named after the job | `LevelSequence`, `Map` and `MovieRenderConfig` (asset paths such as `/Game/Maps/Hero`; strings) | `unreal-mrq-job-render` | `unreal-mrq-queue-render`: it declares none of them, only `QueueAsset`, so the dialog treats it as whole-scene |
-| After Effects | a `Queued` render-queue item, named after its composition | `RenderQueueItem` (the item's 1-based index; an `INT` parameter, minimum 1; extra values are strings) | `after-effects-render-windows`, `after-effects-render-macos` | `after-effects-queue-render-windows`, `after-effects-queue-render-macos` |
+| After Effects | a `Queued` render-queue item, named after its composition | `RenderQueueItem` (the item's 1-based index; an `INT` parameter, minimum 1; extra values are strings) | `after-effects-render` | `after-effects-queue-render` |
 
 Houdini has a per-target product only: its output target is the ROP the script
 renders, not a flag that can be left out. A target's name is for display and
@@ -1412,8 +1405,8 @@ After installing per [Installation per host](#installation-per-host):
    command / panel button.
 2. **Dialog opens with a suggested product.** The product picker shows a
    **Suggested** group containing the host's reference presets (Maya suggests
-   `maya-layer-render` and `maya-scene-render`; After Effects suggests the four
-   `after-effects-*` presets) and an **All** group with every other product.
+   `maya-layer-render` and `maya-scene-render`; After Effects suggests
+   `after-effects-render` and `after-effects-queue-render`) and an **All** group with every other product.
 3. **Target checklist appears for a per-target product only.** Pick a per-target
    product (see the [table](#the-parameter-convention-contract)): the targets
    are listed as a checklist and the line under the picker reads "One job per

@@ -167,12 +167,13 @@ copies show the **Update available** badge.
 
 ## DCC reference presets
 
-The official library ships fourteen `Rendering`-category presets as targets for
+The official library ships twelve `Rendering`-category presets as targets for
 the [`sqi-submitter`](dcc-submitters.md) in-application submitters:
 `maya-layer-render`, `maya-scene-render`, `houdini-rop-render`,
 `nuke-write-render`, `nuke-script-render`, `blender-batch-render`,
 `blender-view-layer-render`, `cinema4d-render`, `cinema4d-take-render`,
-`3dsmax-render` and the four After Effects presets. Fifteen more have no
+`3dsmax-render`, `after-effects-render` and `after-effects-queue-render`.
+Fifteen more have no
 in-application submitter and are submitted from the web UI or the API:
 `mistika-boutique-render`, `mistika-vr-render`, `mistika-workflows-render`,
 `katana-render`, `silhouette-render`, `silhouette-render-all`, `fusion-render`,
@@ -182,8 +183,8 @@ in-application submitter and are submitted from the web UI or the API:
 
 Each names its parameters by the [parameter convention
 contract](dcc-submitters.md#the-parameter-convention-contract), so submitter
-pre-fill works without configuration. All but the two After Effects queue
-presets and the two Unreal presets declare `SceneFile` and `Frames`; the queue
+pre-fill works without configuration. All but the After Effects queue
+preset and the two Unreal presets declare `SceneFile` and `Frames`; the queue
 presets render whatever the project has queued, so they take only `SceneFile`,
 and the Unreal presets render the frame range their Movie Render Queue config
 sets, as one task. An output parameter is
@@ -436,35 +437,30 @@ Unreal has executed either preset.
 | `cinema4d-render` | a `.c4d` scene with Maxon's `Commandline`, using the scene's render settings | one frame per task by default | `cinema4d` |
 | `cinema4d-take-render` | one named take of a `.c4d` scene (`Take`) | one frame per task by default | `cinema4d` |
 | `3dsmax-render` | a `.max` scene with `3dsmaxcmd` | one frame per task by default | `threedsmax`, and `attr.worker.os.family` = `windows` |
-| `after-effects-render-windows` | one render-queue item (`RenderQueueItem`) of an `.aep` project with `aerender` | up to `FramesPerTask` frames per task, default 10 | `aftereffects`, and `attr.worker.os.family` = `windows` |
-| `after-effects-render-macos` | the same, on macOS | up to `FramesPerTask` frames per task, default 10 | `aftereffects`, and `attr.worker.os.family` = `macos` |
-| `after-effects-queue-render-windows` | everything the saved project has queued | one task for the whole queue | `aftereffects`, and `attr.worker.os.family` = `windows` |
-| `after-effects-queue-render-macos` | the same, on macOS | one task for the whole queue | `aftereffects`, and `attr.worker.os.family` = `macos` |
+| `after-effects-render` | one render-queue item (`RenderQueueItem`) of an `.aep` project with `aerender` | up to `FramesPerTask` frames per task, default 10 | `aftereffects`, and `attr.worker.os.family` = `windows` or `macos` |
+| `after-effects-queue-render` | everything the saved project has queued | one task for the whole queue | `aftereffects`, and `attr.worker.os.family` = `windows` or `macos` |
 
-`3dsmax-render` is Windows-only because 3ds Max runs only on Windows. The two
-Cinema 4D presets carry no OS gate. Each Cinema 4D render node must be licensed
+`3dsmax-render` is Windows-only because 3ds Max runs only on Windows, and the
+two After Effects presets run on Windows and macOS, the platforms After Effects
+ships for. The two Cinema 4D presets carry no OS gate. Each Cinema 4D render node must be licensed
 before it can render. The `cinema4d` detector has no `exe` check, only
 install-location globs, so a Cinema 4D installed elsewhere needs the tag set by
 hand (see [built-in detectors](worker-capabilities.md#built-in-detectors)).
 
 A detector can tag a worker from the install location alone, but the presets
-run the bare commands `Commandline`, `3dsmaxcmd` and `aerender`, so each must
-also be on the worker's `PATH` for the job to run.
+run the bare commands `Commandline` and `3dsmaxcmd`, so each must also be on the
+worker's `PATH` for the job to run. The `aftereffects` detector also supplies an
+`aerender` command from the install it finds, so `aerender` need not be on
+`PATH` (see [detected commands](worker-capabilities.md#detected-commands)).
 
-**The After Effects wrapper.** `aerender` is reported to exit with status 0 when
-a render fails, so all four After Effects presets run it through a small script
-embedded in the preset: PowerShell on Windows, POSIX `sh` on macOS. The wrapper
-passes `aerender`'s output to the task log unchanged and fails the task when
-`aerender` exits non-zero or when any line of its output contains
+**After Effects failures.** `aerender` is reported to exit with status 0 when a
+render fails, so both After Effects presets declare
+[`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md) and also fail the task when any line of `aerender`'s output contains
 `aerender ERROR`, matched case-insensitively. That marker comes from user
 reports and has not been checked against a real failing render; a failure that
 neither exits non-zero nor prints the marker is still reported as a success.
-The Windows and macOS variants pass identical arguments to `aerender` and
-differ only in the wrapper script, which the variant's `os.family` gate
-selects.
 
-Each After Effects render node needs `aerender` on its `PATH`, `powershell`
-(Windows) or `sh` (macOS) on its `PATH`, and Adobe's render-only marker: an empty
+Each After Effects render node needs Adobe's render-only marker: an empty
 file named `ae_render_only_node.txt` in `C:\Users\Public\Documents\Adobe` on
 Windows or `/Users/Shared/Adobe` on macOS, which runs After Effects in its
 non-royalty-bearing, render-only mode.
@@ -597,7 +593,7 @@ but run their script directly, so they need a Linux or macOS worker.
 
 ## Validation tiers
 
-`presets/validation-tiers.yaml` has 49 entries, the 42 presets under
+`presets/validation-tiers.yaml` has 47 entries, the 40 presets under
 `presets/sqi/` plus the seven built-in products documented in
 [`docs/development.md`](development.md#adding-a-product), and states which
 validation tier each has reached. The four `presets/testing/` presets are not
@@ -624,7 +620,7 @@ tier to stand in for. The tiers are:
     OpenJD step (`1-19:2`, where Foundry documents `1-19x2`). That Nuke reads
     `-F 1-1` as the single frame 1 is shown by the Tier-2 case, not here.
   - The presets that pass a chunk's first and last frame (Maya, Blender,
-    Cinema 4D, 3ds Max, the two per-item After Effects presets and the three
+    Cinema 4D, 3ds Max, `after-effects-render` and the three
     Mistika presets) and V-Ray's `-frames=START-END` never render a frame the
     range excluded: a stepped or listed range splits into one chunk per run of
     consecutive frames, so a stepped range yields one single-frame chunk per
@@ -651,7 +647,7 @@ tier to stand in for. The tiers are:
     frame set, and where it can be read back, their content (the view layer in
     an EXR header, a PNG's size, the frame a Houdini geometry file holds).
 
-  The other thirty-two presets (Maya, Cinema 4D, 3ds Max, After Effects, the three
+  The other thirty presets (Maya, Cinema 4D, 3ds Max, After Effects, the three
   Mistika products, the eight standalone renderers, Katana, Fusion and the two
   Silhouette, two VRED, two KeyShot, two Modo and two Unreal presets) have not reached Tier 2 and carry no `tier2` block.
 
@@ -715,9 +711,9 @@ skip on a platform named in `required_on` is a registry failure.
 ### Tier 3 on Windows
 
 Tier 3 runs on Windows as it does on Linux and macOS, and CI runs it in a
-dedicated job (`preset-harness-windows`). Of the 49 registry entries, 37 have
+dedicated job (`preset-harness-windows`). Of the 47 registry entries, 37 have
 `tier3.required_on: [linux, darwin, windows]`, so a skip on Windows fails the
-registry check for each of them. The other 12 are gated to fewer platforms:
+registry check for each of them. The other 10 are gated to fewer platforms:
 
 - POSIX-only (`required_on: [linux, darwin]`), gated on
   `attr.worker.os.family anyOf ["linux", "macos"]`: `script` and
@@ -725,16 +721,12 @@ registry check for each of them. The other 12 are gated to fewer platforms:
 - Windows-only (`required_on: [windows]`), gated on
   `attr.worker.os.family anyOf ["windows"]`: `script-powershell`,
   `command-sequence-powershell`, `ffmpeg-segment-transcode-powershell`,
-  `3dsmax-render`, `after-effects-render-windows`,
-  `after-effects-queue-render-windows`, `unreal-mrq-job-render` and
-  `unreal-mrq-queue-render`. Only the Windows job runs them.
-- macOS-only (`required_on: [darwin]`), gated on
-  `attr.worker.os.family anyOf ["macos"]`: `after-effects-render-macos` and
-  `after-effects-queue-render-macos`. No CI job runs the preset harness on
-  macOS, so these two Tier-3 claims are not exercised in CI.
-  `TestPresetAfterEffects_WrapperFailsOnLoggedError` runs their `sh` wrapper
-  under Linux with the OS gate stripped; the Windows job runs the same test
-  against the PowerShell wrapper.
+  `3dsmax-render`, `unreal-mrq-job-render` and `unreal-mrq-queue-render`.
+  Only the Windows job runs them.
+- Windows and macOS (`required_on: [windows, darwin]`), gated on
+  `attr.worker.os.family anyOf ["windows", "macos"]`: `after-effects-render`
+  and `after-effects-queue-render`. Only the Windows job runs them; no CI job
+  runs the preset harness on macOS.
 
 `TestPresetTier3RequiredOnMatchesOSGate` fails any entry whose
 `tier3.required_on` differs from the platforms its template's

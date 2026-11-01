@@ -490,120 +490,58 @@ presets:
       case: TestPresetTier3/3dsmax-render/default
       required_on: [windows]
 
-  # Windows-only by hostRequirements (attr.worker.os.family anyOf ["windows"]),
-  # so both After Effects Windows entries' Tier-3 claims are required_on
-  # [windows] alone. Tier 3 runs the real powershell and stubs aerender
-  # (stub_inner), and expect_inner_argv pins the argv the wrapper forwards.
-  # TestPresetAfterEffects_WrapperFailsOnLoggedError, which is not a registry
-  # case, tests the wrapper's exit status.
-  - name: after-effects-render-windows
+  # Windows and macOS only by hostRequirements (attr.worker.os.family anyOf
+  # ["windows", "macos"]), so both After Effects entries' Tier-3 claims are
+  # required_on [windows, darwin], and no CI job runs Tier 3 on macOS. The
+  # outcome cases prove the SQI_LOG_CHECKS pattern fails a task whose aerender
+  # exited 0, in the marker's own letter case and in others.
+  - name: after-effects-render
     source: presets/sqi
     tier: 1
     tier1:
-      cases: [default, movie-one-task, stepped-range]
+      cases: [default, movie-one-task, stepped-range, logged-error, logged-error-other-case]
       caveat: >-
         argv derived from Adobe's "Automated rendering and network rendering"
         page (Wayback copy of 2026-05-27): aerender -project <scene> -rqindex
         <n> -s <start> -e <end> -v ERRORS_AND_PROGRESS -close
-        DO_NOT_SAVE_CHANGES, passed through an embedded PowerShell wrapper the
-        goldens print in full (its leading UTF-8 BOM is invisible there).
-        aerender is reported to exit 0 when a render fails (in Adobe community
-        and Thinkbox forum reports, not Adobe's documentation), so the wrapper
-        also fails the task when any output line contains "aerender ERROR" in
-        any letter case. That marker comes from the same reports and is
-        unverified against a real failing render. The goldens show the scene
-        path with a space and an apostrophe as one argument, 1-20 at ten frames
-        per task as 1-10 and 11-20, a 240-frame movie kept whole by Frames Per
-        Task 240, and 1-9:4 as frames 1, 5 and 9. No After Effects has executed
-        it. Unverified: how -s/-e number frames in a comp whose display start
-        is not 0; that -s/-e override the -rqindex item's own time span, which
-        Adobe implies ("like with the -comp flag") rather than states. Nothing
-        in the preset keeps a movie output to one task: the artist must set
-        Frames Per Task to at least the frame count and enter the range without
-        a step or gaps, since a stepped or listed range always splits at each
-        gap.
+        DO_NOT_SAVE_CHANGES. aerender is reported to exit 0 when a render fails
+        (in Adobe community and Thinkbox forum reports, not Adobe's
+        documentation), so the preset's SQI_LOG_CHECKS also fails the task when
+        any output line contains "aerender ERROR" in any letter case. That
+        marker comes from the same reports and is unverified against a real
+        failing render. The goldens show the scene path with a space and an
+        apostrophe as one argument, 1-20 at ten frames per task as 1-10 and
+        11-20, a 240-frame movie kept whole by Frames Per Task 240, and 1-9:4
+        as frames 1, 5 and 9. No After Effects has executed it. Unverified:
+        how -s/-e number frames in a comp whose display start is not 0; that
+        -s/-e override the -rqindex item's own time span, which Adobe implies
+        ("like with the -comp flag") rather than states. Nothing in the preset
+        keeps a movie output to one task: the artist must set Frames Per Task
+        to at least the frame count and enter the range without a step or
+        gaps, since a stepped or listed range always splits at each gap.
     tier3:
-      case: TestPresetTier3/after-effects-render-windows/default
-      required_on: [windows]
+      case: TestPresetTier3/after-effects-render/default
+      required_on: [windows, darwin]
 
-  - name: after-effects-queue-render-windows
+  - name: after-effects-queue-render
     source: presets/sqi
     tier: 1
     tier1:
-      cases: [default]
+      cases: [default, logged-error, logged-error-other-case]
       caveat: >-
         argv derived from Adobe's "Automated rendering and network rendering"
         page (Wayback copy of 2026-05-27): aerender -project <scene> -v
         ERRORS_AND_PROGRESS -close DO_NOT_SAVE_CHANGES, which renders the
         saved queue as is (Adobe: with no -comp, -s, -e, -i and -output are
-        ignored), passed through the same embedded PowerShell wrapper as
-        after-effects-render-windows, whose "aerender ERROR" failure marker is
-        equally unverified against a real failing render. The golden shows the
-        scene path with a space and an apostrophe as one argument. No After
-        Effects has executed it. The whole queue is one task on one machine, so
-        frame numbering and movie splitting do not arise.
+        ignored). It shares after-effects-render's SQI_LOG_CHECKS pattern,
+        whose "aerender ERROR" marker is equally unverified against a real
+        failing render. The golden shows the scene path with a space and an
+        apostrophe as one argument. No After Effects has executed it. The
+        whole queue is one task on one machine, so frame numbering and movie
+        splitting do not arise.
     tier3:
-      case: TestPresetTier3/after-effects-queue-render-windows/default
-      required_on: [windows]
-
-  # macOS-only by hostRequirements (attr.worker.os.family anyOf ["macos"]),
-  # so both After Effects macOS entries' Tier-3 claims are required_on
-  # [darwin] alone, and no CI job runs Tier 3 on macOS. Tier 3 runs the real
-  # /bin/sh and stubs aerender (stub_inner), and expect_inner_argv pins the
-  # argv the wrapper forwards. Linux CI runs the same sh wrapper, with the
-  # os.family gate stripped, in
-  # TestPresetAfterEffects_WrapperFailsOnLoggedError, which is not a registry
-  # case and tests the wrapper's exit status on both OSes.
-  - name: after-effects-render-macos
-    source: presets/sqi
-    tier: 1
-    tier1:
-      cases: [default, movie-one-task, stepped-range]
-      caveat: >-
-        argv derived from Adobe's "Automated rendering and network rendering"
-        page (Wayback copy of 2026-05-27): aerender -project <scene> -rqindex
-        <n> -s <start> -e <end> -v ERRORS_AND_PROGRESS -close
-        DO_NOT_SAVE_CHANGES, the same argv as after-effects-render-windows,
-        passed through an embedded POSIX sh wrapper run by /bin/sh, which the
-        goldens print in full. The wrapper fails the task on the same
-        "aerender ERROR" marker as the Windows wrapper, equally unverified
-        against a real failing render. The goldens show the scene path with a
-        space and an apostrophe as one argument, 1-20 at ten frames per task as
-        1-10 and 11-20, a 240-frame movie kept whole by Frames Per Task 240,
-        and 1-9:4 as frames 1, 5 and 9. No After Effects has executed it, and
-        the wrapper has run only under Linux's dash, never macOS's /bin/sh.
-        Unverified: how -s/-e number frames in a comp whose display start is
-        not 0; that -s/-e override the -rqindex item's own time span, which
-        Adobe implies ("like with the -comp flag") rather than states. Nothing
-        in the preset keeps a movie output to one task: the artist must set
-        Frames Per Task to at least the frame count and enter the range without
-        a step or gaps, since a stepped or listed range always splits at each
-        gap.
-    tier3:
-      case: TestPresetTier3/after-effects-render-macos/default
-      required_on: [darwin]
-
-  - name: after-effects-queue-render-macos
-    source: presets/sqi
-    tier: 1
-    tier1:
-      cases: [default]
-      caveat: >-
-        argv derived from Adobe's "Automated rendering and network rendering"
-        page (Wayback copy of 2026-05-27): aerender -project <scene> -v
-        ERRORS_AND_PROGRESS -close DO_NOT_SAVE_CHANGES, which renders the
-        saved queue as is (Adobe: with no -comp, -s, -e, -i and -output are
-        ignored), the same argv as after-effects-queue-render-windows, passed
-        through the same embedded POSIX sh wrapper as
-        after-effects-render-macos, whose "aerender ERROR" failure marker is
-        equally unverified against a real failing render. The golden shows the
-        scene path with a space and an apostrophe as one argument. No After
-        Effects has executed it, and the wrapper has run only under Linux's
-        dash, never macOS's /bin/sh. The whole queue is one task on one machine, so
-        frame numbering and movie splitting do not arise.
-    tier3:
-      case: TestPresetTier3/after-effects-queue-render-macos/default
-      required_on: [darwin]
+      case: TestPresetTier3/after-effects-queue-render/default
+      required_on: [windows, darwin]
 
   # DCC presets that declare SQI_LOG_CHECKS (Silhouette declares none). Every
   # argv is derived from vendor documentation and no application has executed

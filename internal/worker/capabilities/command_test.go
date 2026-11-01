@@ -259,6 +259,41 @@ func TestFusionDetector_CommandFindsTheExecutableOnEveryPlatform(t *testing.T) {
 	}
 }
 
+// TestAfterEffectsDetector_CommandFindsAerenderOnWindowsAndMacOS checks the
+// shipped command globs against an After Effects 2026 install on the two
+// platforms After Effects runs on. The folder names are unverified (see
+// aftereffects.yaml). aerender sits in the install's Support Files folder on
+// Windows and in the application folder on macOS, beside files that must not
+// match.
+func TestAfterEffectsDetector_CommandFindsAerenderOnWindowsAndMacOS(t *testing.T) {
+	d := builtinDetector(t, "aftereffects")
+	if d.Command == nil || d.Command.Name != "aerender" {
+		t.Fatalf("the aftereffects detector has no command named aerender: %+v", d.Command)
+	}
+	for _, g := range d.Command.Globs {
+		if g.OS != "windows" && g.OS != "darwin" {
+			t.Errorf("command glob %q applies on %q; After Effects runs on windows and darwin only", g.PathGlob, g.OS)
+		}
+	}
+	cases := []struct {
+		goos string
+		exe  string
+		not  []string
+	}{
+		{"windows", `C:\Program Files\Adobe\Adobe After Effects 2026\Support Files\aerender.exe`, []string{`C:\Program Files\Adobe\Adobe After Effects 2026\Support Files\AfterFX.exe`, `C:\Program Files\Adobe\Adobe After Effects 2026\aerender.exe`}},
+		{"darwin", "/Applications/Adobe After Effects 2026/aerender", []string{"/Applications/Adobe After Effects 2026/Adobe After Effects 2026.app"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.goos, func(t *testing.T) {
+			assertCommandGlobsPick(t, d, tc.goos, tc.exe, tc.not, "aerender")
+			got, ok := d.FindCommand(envWithCommandAt(d, tc.goos, tc.exe))
+			if !ok || got.Name != "aerender" || got.Path != tc.exe || got.Version != "2026" {
+				t.Errorf("FindCommand = %+v (found %v), want aerender 2026 at %s", got, ok, tc.exe)
+			}
+		})
+	}
+}
+
 // TestSilhouetteDetector_CommandFindsSfxcmdAndSuppliesNogui checks the shipped
 // command globs against a Silhouette 2026 install under each documented root on
 // every platform, and that only Linux carries -nogui, with or without an

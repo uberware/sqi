@@ -5,10 +5,12 @@ package product
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/uberware/sqi/internal/fsutil"
+	"github.com/uberware/sqi/internal/openjd"
 )
 
 // presetExpectation is what one shipped preset under presets/sqi must satisfy:
@@ -29,6 +31,9 @@ type presetExpectation struct {
 	// extensions field only skips the positive check below, so it cannot prove
 	// the key is absent.
 	noExtensions bool
+	// osFamily, when set, is the attr.worker.os.family anyOf every step must
+	// require, in order.
+	osFamily []string
 }
 
 // The reference presets (presets/sqi/) are authored in this repo and published
@@ -88,35 +93,27 @@ func TestSQIReferencePresets(t *testing.T) {
 			params:     []string{"SceneFile", "Frames", "OutputPath", "Take"},
 			extensions: []string{"TASK_CHUNKING", "EXPR"},
 		},
-		"after-effects-render-windows": {
+		// The two After Effects presets run aerender directly on Windows and
+		// macOS workers. aerender can exit 0 when a render fails, so both declare
+		// SQI_LOG_CHECKS. The whole-queue preset is one task and needs nothing
+		// else; the per-item one passes a chunk's start and end.
+		"after-effects-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames", "RenderQueueItem", "FramesPerTask"},
-			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS", "SQI_LOG_CHECKS"},
+			osFamily:   []string{"windows", "macos"},
 		},
-		// The whole-queue variant is one task, and its wrapper script is an
-		// embedded file, which base OpenJD carries without an extension.
-		"after-effects-queue-render-windows": {
-			category:     "Rendering",
-			params:       []string{"SceneFile"},
-			noExtensions: true,
-		},
-		// The macOS variants differ from the Windows ones only in their gate
-		// and wrapper (aftereffectspair_test.go), so their expectations match.
-		"after-effects-render-macos": {
+		"after-effects-queue-render": {
 			category:   "Rendering",
-			params:     []string{"SceneFile", "Frames", "RenderQueueItem", "FramesPerTask"},
-			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
-		},
-		"after-effects-queue-render-macos": {
-			category:     "Rendering",
-			params:       []string{"SceneFile"},
-			noExtensions: true,
+			params:     []string{"SceneFile"},
+			extensions: []string{"SQI_LOG_CHECKS"},
+			osFamily:   []string{"windows", "macos"},
 		},
 		// The three Mistika presets invoke the renderer as `-s START -e
 		// END`, so they need a chunk's bounds rather than the chunk itself
 		// and declare SQI_CHUNK_BOUNDS. So do the two Maya presets, the two
-		// Blender presets, vray-standalone-render and both after-effects-render
-		// variants. Houdini and the two Nuke presets take a frame list
+		// Blender presets, vray-standalone-render and after-effects-render.
+		// Houdini and the two Nuke presets take a frame list
 		// directly; husk-usd-render computes its start and count with EXPR,
 		// and the two Cinema 4D presets and 3dsmax-render their start and end,
 		// because they also need EXPR to leave out a blank output path; the
@@ -334,6 +331,35 @@ func TestSQIReferencePresets(t *testing.T) {
 			if exp.noExtensions && strings.Contains(p.Template, "extensions:") {
 				t.Errorf("template declares %q but must declare no extensions at all", "extensions:")
 			}
+			if exp.osFamily != nil {
+				assertStepsOSFamily(t, p.Template, exp.osFamily)
+			}
 		})
+	}
+}
+
+// assertStepsOSFamily fails unless every step of template requires
+// attr.worker.os.family anyOf exactly want.
+func assertStepsOSFamily(t *testing.T, template string, want []string) {
+	t.Helper()
+	tmpl, err := openjd.Parse([]byte(template), openjd.FormatYAML)
+	if err != nil {
+		t.Fatalf("openjd.Parse: %v", err)
+	}
+	if len(tmpl.Steps) == 0 {
+		t.Fatal("template declares no steps")
+	}
+	for _, step := range tmpl.Steps {
+		var got []string
+		if step.HostRequirements != nil {
+			for _, attr := range step.HostRequirements.Attributes {
+				if attr.Name == "attr.worker.os.family" {
+					got = attr.AnyOf
+				}
+			}
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("step %q: attr.worker.os.family anyOf = %v, want %v", step.Name, got, want)
+		}
 	}
 }

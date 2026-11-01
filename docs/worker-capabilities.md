@@ -154,7 +154,7 @@ application under
 | `blender` | `exe blender` (any OS, if on `PATH`); macOS `path_glob /Applications/Blender.app`; Windows `path_glob C:\Program Files\Blender Foundation\Blender *\blender.exe` and `registry HKLM\SOFTWARE\BlenderFoundation\Blender` (older installers; the MSI and winget write neither the key nor a `PATH` entry, so the glob is what finds them) | none (presence only, no `_<version>` tags) |
 | `cinema4d` | Linux `path_glob /opt/maxon/cinema4dr*/bin/Commandline`; macOS `path_glob /Applications/Maxon Cinema 4D */Commandline.app`; Windows `path_glob C:\Program Files\Maxon Cinema 4D *\Commandline.exe` | `Maxon Cinema 4D (?P<v>[0-9]{4})` against the matched path (a Linux match carries no year, so no version) |
 | `threedsmax` | `exe 3dsmaxcmd` (any OS, if on `PATH`); Windows `registry HKLM\SOFTWARE\Autodesk\3dsMax`; Windows `path_glob C:\Program Files\Autodesk\3ds Max *\3dsmaxcmd.exe` | `3ds Max (?P<v>[0-9]{4})` against the matched path |
-| `aftereffects` | `exe aerender` (any OS, if on `PATH`); macOS `path_glob /Applications/Adobe After Effects */aerender`; Windows `path_glob C:\Program Files\Adobe\Adobe After Effects *\Support Files\aerender.exe` | `After Effects (?P<v>[0-9]{4})` against the matched path |
+| `aftereffects` | `exe aerender` (any OS, if on `PATH`); macOS `path_glob /Applications/Adobe After Effects */aerender`; Windows `path_glob C:\Program Files\Adobe\Adobe After Effects *\Support Files\aerender.exe`. Also supplies a default `aerender` command on Windows and macOS | `After Effects (?P<v>[0-9]{4})` against the matched path |
 | `ffmpeg` | `exe ffmpeg` (any OS, if on `PATH`); no install glob or registry probe | none (presence only) |
 | `mistika` | Linux `path_glob /home/mistika/SGO Apps/Mistika Ultima*/bin/mistika`; macOS `path_glob /Applications/SGO Apps/Mistika Boutique.app*/Contents/MacOS/mistika`; Windows `path_glob C:\Program Files\SGO Apps\Mistika Boutique*\bin\mistika.exe` | `Mistika (?:Ultima\|Boutique) ?(?P<v>[0-9]+\.[0-9]+)` against the matched path |
 | `mistikavr` | Linux `path_glob /home/mistika/SGO Apps/Mistika VR*/bin/vr`; macOS `path_glob /Applications/SGO Apps/Mistika VR.app*/Contents/MacOS/vr`; Windows `path_glob C:\Program Files\SGO Apps\Mistika VR*\bin\vr.exe` | `Mistika VR ?(?P<v>[0-9]+\.[0-9]+)` against the matched path |
@@ -189,8 +189,11 @@ installed elsewhere by hand with `cinema4d=true` under
 `worker.capability_tags`. The `threedsmax` and `aftereffects` detectors do probe
 `PATH` for `3dsmaxcmd` and `aerender`, names specific to the product. For all
 three, a match on an install location (or, for `threedsmax`, the registry) tags the
-worker even when the command is not on `PATH`, but the presets invoke the bare
-command, so it must be on the worker's `PATH` for the job to run. A `threedsmax`
+worker even when the command is not on `PATH`. The `aftereffects` detector then
+supplies an `aerender` command from that install (see
+[Detected commands](#detected-commands)); the Cinema 4D and 3ds Max presets
+invoke the bare command, so it must be on the worker's `PATH` for the job to
+run. A `threedsmax`
 registry match carries no year, so it tags the worker without a version.
 
 Each standalone-renderer detector checks `PATH` for the command its preset
@@ -375,7 +378,7 @@ release was checked, and a release that rejects the flag fails every task on
 that worker. Map `keyshot_headless` in `worker.commands` to state the arguments
 yourself.
 
-The `nuke`, `blender`, `houdini` (`hython`), `katana`, `fusion`, `silhouette`
+The `nuke`, `blender`, `houdini` (`hython`), `aftereffects` (`aerender`), `katana`, `fusion`, `silhouette`
 (`sfxcmd`), `vred` (`VREDCore`), `keyshot` (`keyshot_headless`), `modo` (`modo_cl`) and `unreal` (`UnrealEditor-Cmd`) built-ins define a command; the others rely on the command being on `PATH`. Blender's has Windows and macOS globs
 only: a Linux install is wherever it was unpacked, or a distro package already on
 `PATH`. Houdini's has Windows and Linux globs only; on macOS put `hython` on
@@ -596,7 +599,7 @@ steps:
           anyOf: ["true"]
 ```
 
-The twenty-nine DCC reference presets under `presets/sqi/` (see
+The twenty-seven DCC reference presets under `presets/sqi/` (see
 [`docs/dcc-submitters.md`](dcc-submitters.md#reference-presets)) and the eight
 [standalone renderer presets](preset-library.md#standalone-renderer-reference-presets)
 use this syntax, as do the `Transcoding` presets, which gate on
