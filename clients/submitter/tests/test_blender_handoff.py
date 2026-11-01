@@ -177,6 +177,23 @@ def test_blender_launch_problems_are_reported_not_raised(
     assert seen == [({"ERROR"}, str(error))]
 
 
+def test_blender_not_found_names_the_preference(
+    fake_host_module: FakeHost, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_bpy(fake_host_module, dirty=False)
+    addon = _addon()
+
+    def missing(_configured: str) -> str:
+        raise RuntimeError(addon.NOT_FOUND_MESSAGE)
+
+    monkeypatch.setattr(addon, "resolve_submit_command", missing)
+    seen, report = _reports()
+    assert addon.submit_scene(report, "") == {"CANCELLED"}
+    [(level, message)] = seen
+    assert level == {"ERROR"}
+    assert message == addon.NOT_FOUND_MESSAGE + " Or set it in Edit > Preferences > Add-ons > sqi."
+
+
 def test_blender_context_write_failure_is_reported(
     fake_host_module: FakeHost, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -287,7 +287,7 @@ def test_vred_plugin_reports_missing_sqi_submitter(
     assert "sandbox" in message.lower()
     assert "sqi-submitter" in message
     assert "pip install" in message
-    assert "sqi_submitter_site" in message
+    assert '"sqi_submitter_site.vred"' in message
     assert "%USERPROFILE%\\.sqi\\vred-site" in message  # real backslashes, not escapes
 
 
@@ -312,7 +312,7 @@ def test_vred_plugin_adds_configured_site_to_path(
     site = tmp_path / "vred-site"
     site.mkdir()
     settings = tmp_path / "submitter.json"
-    settings.write_text(json.dumps({"sqi_submitter_site": str(site)}), encoding="utf-8")
+    settings.write_text(json.dumps({"sqi_submitter_site.vred": str(site)}), encoding="utf-8")
     plugin = _plugin()
     outcomes: list[object] = [ImportError("no sqi_submitter"), "the-menu-module"]
     seen_paths: list[bool] = []
@@ -328,6 +328,26 @@ def test_vred_plugin_adds_configured_site_to_path(
     loaded, message = plugin.load_submitter(str(settings))
     assert (loaded, message) == ("the-menu-module", None)
     assert seen_paths == [False, True]  # the site was added between the two attempts
+
+
+def test_vred_site_key_is_per_host(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Only ``sqi_submitter_site.vred`` is read: a bare ``sqi_submitter_site`` is ignored."""
+    monkeypatch.delenv("SQI_SUBMITTER_SITE", raising=False)
+    plugin = _plugin()
+    settings = tmp_path / "submitter.json"
+    settings.write_text(json.dumps({"sqi_submitter_site": "/bare"}), encoding="utf-8")
+    assert plugin._configured_site(str(settings)) == ""
+    settings.write_text(
+        json.dumps(
+            {
+                "sqi_submitter_site": "/bare",
+                "sqi_submitter_site.katana": "/katana",
+                "sqi_submitter_site.vred": "/vred",
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert plugin._configured_site(str(settings)) == "/vred"
 
 
 @pytest.mark.usefixtures("restore_sys_path")
@@ -420,7 +440,9 @@ def test_vred_plugin_reports_any_import_failure_not_just_import_error(
     plugin = _plugin()
     settings = tmp_path / "settings.json"
     if site:
-        settings.write_text(json.dumps({"sqi_submitter_site": str(tmp_path)}), encoding="utf-8")
+        settings.write_text(
+            json.dumps({"sqi_submitter_site.vred": str(tmp_path)}), encoding="utf-8"
+        )
     monkeypatch.setattr(sys, "path", list(sys.path))
     monkeypatch.delenv("SQI_SUBMITTER_SITE", raising=False)
 

@@ -595,11 +595,12 @@ unverified on an install; the [VRED checklist](#vred-checklist) lists them.
    `pip install --python-version 3.11 --only-binary=:all: --target
    %USERPROFILE%\.sqi\vred-site sqi-submitter` (3.11 is VRED 2026's; match the
    `sys.version` in VRED's own Python console).
-3. **Tell the plugin where it went.** Set `sqi_submitter_site` in
-   `~/.sqi/submitter.json` to that folder, escaping the backslashes:
+3. **Tell the plugin where it went.** Set `sqi_submitter_site.vred` in
+   `~/.sqi/submitter.json` to that folder, escaping the backslashes. The key is
+   per host, so a bare `sqi_submitter_site` is ignored:
 
    ```json
-   { "sqi_submitter_site": "C:\\Users\\you\\.sqi\\vred-site" }
+   { "sqi_submitter_site.vred": "C:\\Users\\you\\.sqi\\vred-site" }
    ```
 
    The environment variable `SQI_SUBMITTER_SITE` does the same and wins. The
@@ -1670,7 +1671,8 @@ After installing per [Installation per host](#installation-per-host):
    from the scene's output setting.
 7. **sqi-submit path** set to a bad path, then cleared with `sqi-submit` on
    `PATH`: the first falls through to `PATH` or the settings file; with none
-   found the "sqi-submit was not found" message shows in Blender's status bar.
+   found the "sqi-submit was not found" message shows in Blender's status bar,
+   ending with the hint to set it under Edit > Preferences > Add-ons > sqi.
 8. **The child's environment.** The dialog opens and submits when started from
    Blender. Blender passes its environment to the process it starts, and
    `PYTHONHOME`/`PYTHONPATH` set by the host could break a Python-based
@@ -1843,7 +1845,7 @@ support):**
    Untick it, restart, and click again. (This is the first thing to check, see
    below.)
 2. **The install.** Install `sqi-submitter` into VRED's Python as in
-   [VRED](#vred), set `sqi_submitter_site`, restart VRED and confirm the dialog
+   [VRED](#vred), set `sqi_submitter_site.vred`, restart VRED and confirm the dialog
    opens from the menu with no error in VRED's terminal. Repeat with
    `SQI_SUBMITTER_SITE` instead of the settings key, and with no setting but an
    install into VRED's own `site-packages`.
@@ -2222,12 +2224,14 @@ names a file that exists:
 A configured path that does not exist is skipped without complaint. If nothing
 is found, Blender reports (in its status bar) and Cinema 4D shows (in a dialog),
 as do Unreal, Katana, KeyShot, Silhouette and Modo in their own message boxes
-(Fusion words the last part as `then set its full path as sqi_submit_command in
-~/.sqi/submitter.json`, since it has no plug-in setting):
+(Fusion's script carries the same text):
 
 ```
-sqi-submit was not found. Install it on this machine with: pip install "sqi-submitter[qt]" — then set its full path in the sqi add-on/plugin settings, or as sqi_submit_command in ~/.sqi/submitter.json.
+sqi-submit was not found. Install it on this machine with: pip install "sqi-submitter[qt]" — then set its full path as sqi_submit_command in ~/.sqi/submitter.json.
 ```
+
+Blender appends ` Or set it in Edit > Preferences > Add-ons > sqi.`, since it
+alone has a preference for the path.
 
 After Effects shows its own message instead, since it only knows the located
 path: `sqi-submit was not found. Install it with pip install "sqi-submitter[qt]"

@@ -29,8 +29,8 @@ import tempfile
 
 NOT_FOUND_MESSAGE = (
     "sqi-submit was not found. Install it on this machine with: "
-    'pip install "sqi-submitter[qt]" — then set its full path in the sqi '
-    "add-on/plugin settings, or as sqi_submit_command in ~/.sqi/submitter.json."
+    'pip install "sqi-submitter[qt]" — then set its full path as '
+    "sqi_submit_command in ~/.sqi/submitter.json."
 )
 
 
@@ -145,6 +145,7 @@ bl_info = {
 
 __all__ = ["bl_info", "read_scene", "register", "submit_scene", "unregister"]
 
+_PREFERENCE_HINT = " Or set it in Edit > Preferences > Add-ons > sqi."
 _UNSAVED_MESSAGE = "Save your scene before submitting — the farm renders the file on disk."
 
 _classes: list[Any] = []  # registered bpy.types classes, in registration order
@@ -213,7 +214,10 @@ def submit_scene(report: Callable[[set[str], str], None], configured: str) -> se
         command = resolve_submit_command(configured)
         launch(command, write_context(read_scene()))
     except (RuntimeError, OSError) as exc:  # OSError: writing the context or launching
-        report({"ERROR"}, str(exc))
+        message = str(exc)
+        if message == NOT_FOUND_MESSAGE:
+            message += _PREFERENCE_HINT
+        report({"ERROR"}, message)
         return {"CANCELLED"}
     return {"FINISHED"}
 

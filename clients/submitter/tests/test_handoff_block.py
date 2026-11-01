@@ -46,8 +46,8 @@ def _python_host_files() -> list[tuple[str, Path]]:
 
 NOT_FOUND = (
     "sqi-submit was not found. Install it on this machine with: "
-    'pip install "sqi-submitter[qt]" \u2014 then set its full path in the sqi '
-    "add-on/plugin settings, or as sqi_submit_command in ~/.sqi/submitter.json."
+    'pip install "sqi-submitter[qt]" \u2014 then set its full path as '
+    "sqi_submit_command in ~/.sqi/submitter.json."
 )
 
 

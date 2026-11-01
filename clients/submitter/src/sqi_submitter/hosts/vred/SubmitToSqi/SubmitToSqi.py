@@ -33,7 +33,7 @@ MISSING_MESSAGE = (
     "2. Install sqi-submitter into VRED's Python (not the [qt] extra: VRED supplies Qt). For "
     "example, from a command prompt: <VRED install>\\lib\\python\\python.exe -m pip install "
     "--target %USERPROFILE%\\.sqi\\vred-site sqi-submitter, then set "
-    '"sqi_submitter_site" to that folder in ~/.sqi/submitter.json (or set the environment '
+    '"sqi_submitter_site.vred" to that folder in ~/.sqi/submitter.json (or set the environment '
     "variable SQI_SUBMITTER_SITE). See the VRED section of the sqi submitter documentation."
 )
 
@@ -55,7 +55,7 @@ def _configured_site(settings_path: str) -> str:
     try:
         # utf-8-sig: PowerShell 5 writes UTF-8 with a BOM, which plain utf-8 rejects.
         with open(settings_path, encoding="utf-8-sig") as handle:
-            value = json.load(handle).get("sqi_submitter_site")
+            value = json.load(handle).get("sqi_submitter_site.vred")
     except (OSError, ValueError, AttributeError):
         return ""
     return value if isinstance(value, str) else ""

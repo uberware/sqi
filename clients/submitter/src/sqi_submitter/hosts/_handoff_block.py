@@ -25,8 +25,8 @@ import tempfile
 
 NOT_FOUND_MESSAGE = (
     "sqi-submit was not found. Install it on this machine with: "
-    'pip install "sqi-submitter[qt]" — then set its full path in the sqi '
-    "add-on/plugin settings, or as sqi_submit_command in ~/.sqi/submitter.json."
+    'pip install "sqi-submitter[qt]" — then set its full path as '
+    "sqi_submit_command in ~/.sqi/submitter.json."
 )
 
 

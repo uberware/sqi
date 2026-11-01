@@ -213,3 +213,14 @@ def test_group_products_each_host_token_finds_only_its_presets() -> None:
         suggested, rest = group_products(ps, token)
         assert sorted(p.name for p in suggested) == sorted(wanted), token
         assert len(suggested) + len(rest) == len(ps)
+
+
+def test_settings_reads_a_file_with_a_bom(tmp_path: Path) -> None:
+    """PowerShell 5 writes UTF-8 with a BOM; the settings file must still be read."""
+    path = tmp_path / "s.json"
+    path.write_bytes(b"\xef\xbb\xbf" + b'{"a": 1}')
+    settings = Settings(path=str(path))
+    assert settings.get("a") == 1
+    settings.set("b", 2)
+    assert Settings(path=str(path)).get("a") == 1
+    assert Settings(path=str(path)).get("b") == 2
