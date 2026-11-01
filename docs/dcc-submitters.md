@@ -1268,6 +1268,24 @@ control is stored in the OpenJD document. The web submission form
 a labeled text field, since a browser cannot browse the farm filesystem. Both
 read the same `control` and `label` hints.
 
+### List parameters
+
+A `LIST[*]` parameter's value is the JSON array text (`'["sh010","sh020"]'`), in
+the form model and in a submitter's `extra` as on the wire. The Qt dialog
+renders a `LINE_EDIT_LIST` control as a multi-line field with one item per line:
+blank lines are dropped, each line is trimmed, and lines of a `LIST[INT]`,
+`LIST[FLOAT]` or `LIST[BOOL]` parameter become numbers or booleans where they
+read as one (a line that does not stays text, so validation can name it). An
+empty field leaves the value empty. Other list controls fall back to a plain
+text field holding the JSON.
+
+`FormModel.validate()` (`_validate_field` in `core/schema.py`) checks a list the
+way the web form does: the text must be a JSON array (`Must be a list`), the
+parameter's `min_length`/`max_length` count **items** (`Must have at least 1
+item`, `Must have at most 2 items`), and each element is checked against the
+parameter's `item` constraints (`Item 1: Must be at most 3 characters`). The SDK
+exposes `item` as `ProductParameter.item`, a `ProductParameterItem`.
+
 ---
 
 ## Customizing for your pipeline

@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from sqi_client.models import (
     CurrentTask,
     EffectiveRetryPolicy,
@@ -751,3 +753,65 @@ def test_path_file_filter_from_dict() -> None:
     assert f == PathFileFilter(label="Maya Scene", patterns=["*.ma", "*.mb"])
     # Missing fields fall back to type defaults.
     assert PathFileFilter.from_dict({}) == PathFileFilter(label="", patterns=[])
+
+
+def test_product_parameter_from_dict_with_list_item() -> None:
+    from sqi_client.models import ProductParameter, ProductParameterItem
+
+    param = ProductParameter.from_dict(
+        {
+            "name": "Shots",
+            "type": "LIST[STRING]",
+            "min_length": 1,
+            "max_length": 1000,
+            "item": {
+                "min_length": 1,
+                "max_length": 1024,
+                "min_value": None,
+                "max_value": None,
+                "allowed_values": None,
+            },
+        }
+    )
+    assert param.item == ProductParameterItem(min_length=1, max_length=1024)
+    assert param.min_length == 1
+    assert param.max_length == 1000
+
+
+def test_product_parameter_item_numeric_bounds_and_allowed_values() -> None:
+    from sqi_client.models import ProductParameter, ProductParameterItem
+
+    param = ProductParameter.from_dict(
+        {
+            "name": "Frames",
+            "type": "LIST[INT]",
+            "item": {"min_value": "1", "max_value": "10", "allowed_values": ["1", "2"]},
+        }
+    )
+    assert param.item == ProductParameterItem(
+        min_value="1", max_value="10", allowed_values=["1", "2"]
+    )
+
+
+def test_product_parameter_item_recurses_for_nested_lists() -> None:
+    from sqi_client.models import ProductParameter
+
+    param = ProductParameter.from_dict(
+        {
+            "name": "Groups",
+            "type": "LIST[LIST[INT]]",
+            "item": {"min_length": 1, "item": {"min_value": "0"}},
+        }
+    )
+    assert param.item is not None
+    assert param.item.min_length == 1
+    assert param.item.item is not None
+    assert param.item.item.min_value == "0"
+    assert param.item.item.item is None
+
+
+@pytest.mark.parametrize("raw", [{"name": "Frames", "type": "INT"}, {"item": None}, {"item": 3}])
+def test_product_parameter_item_is_none_for_a_scalar(raw: dict[str, Any]) -> None:
+    from sqi_client.models import ProductParameter
+
+    assert ProductParameter.from_dict({"name": "Frames", "type": "INT", **raw}).item is None

@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
+from typing import Any
 
 from sqi_submitter.core.schema import FormField, FormModel
 from sqi_submitter.qt._compat import QtWidgets, require_qt
@@ -87,7 +89,9 @@ def _find_editor(root: QtWidgets.QWidget, name: str) -> QtWidgets.QWidget | None
 
 def _write_value(w: QtWidgets.QWidget, f: FormField) -> None:
     if isinstance(w, QtWidgets.QPlainTextEdit):
-        w.setPlainText(f.value or "")
+        w.setPlainText(
+            _list_lines(f.value or "") if f.widget == "LINE_EDIT_LIST" else f.value or ""
+        )
     elif isinstance(w, QtWidgets.QLineEdit):
         w.setText(f.value or "")
     elif isinstance(w, QtWidgets.QComboBox):
@@ -149,6 +153,8 @@ def _make_editor(f: FormField, commit: Commit, parent: QtWidgets.QWidget) -> QtW
     kind = f.widget
     if kind == "MULTILINE_EDIT":
         return _multiline_edit(f, commit, parent)
+    if kind == "LINE_EDIT_LIST":
+        return _line_edit_list(f, commit, parent)
     if kind == "SPIN_BOX" and f.parameter.type == "INT":
         return _int_spin_box(f, commit, parent)
     if kind == "SPIN_BOX":
@@ -167,6 +173,50 @@ def _multiline_edit(
     w = QtWidgets.QPlainTextEdit(f.value or "", parent)
     w.textChanged.connect(lambda: commit(w.toPlainText()))
     return w
+
+
+def _line_edit_list(
+    f: FormField, commit: Commit, parent: QtWidgets.QWidget
+) -> QtWidgets.QPlainTextEdit:
+    """One item per line; the model holds the JSON array text (``""`` when empty)."""
+    element_type = f.parameter.type.removeprefix("LIST[").removesuffix("]")
+    w = QtWidgets.QPlainTextEdit(_list_lines(f.value or ""), parent)
+    w.textChanged.connect(lambda: commit(_lines_to_json(w.toPlainText(), element_type)))
+    return w
+
+
+def _list_lines(value: str) -> str:
+    """JSON array text as editor lines; text that is not a JSON array shows as written."""
+    try:
+        parsed = json.loads(value)
+    except ValueError:
+        return value
+    if not isinstance(parsed, list):
+        return value
+    return "\n".join(e if isinstance(e, str) else json.dumps(e) for e in parsed)
+
+
+def _lines_to_json(text: str, element_type: str) -> str:
+    """Editor lines as JSON array text, blank lines dropped; ``""`` for no items.
+
+    A line that does not read as the list's element type stays a string, so the
+    form model's validation can name it.
+    """
+    items = [_line_value(line.strip(), element_type) for line in text.splitlines() if line.strip()]
+    return json.dumps(items) if items else ""
+
+
+def _line_value(line: str, element_type: str) -> Any:
+    try:
+        if element_type == "INT":
+            return int(line)
+        if element_type == "FLOAT":
+            return float(line)
+    except ValueError:
+        return line
+    if element_type == "BOOL" and line in ("true", "false"):
+        return line == "true"
+    return line
 
 
 def _int_spin_box(f: FormField, commit: Commit, parent: QtWidgets.QWidget) -> QtWidgets.QSpinBox:

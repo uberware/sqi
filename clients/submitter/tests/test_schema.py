@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Form model tests (widget resolution, defaults, validation, grouping)."""
 
+from __future__ import annotations
+
 from typing import Any
 
 import pytest
 
-from sqi_client.models import ParameterUserInterface, ProductParameter
+from sqi_client.models import ParameterUserInterface, ProductParameter, ProductParameterItem
 from sqi_submitter.core.schema import FormModel
 
 
@@ -152,3 +154,94 @@ def test_labeled_path_keeps_label() -> None:
     field = FormModel.from_parameters([param]).fields[0]
     assert field.widget == "CHOOSE_DIRECTORY"
     assert field.label == "Output Directory"
+
+
+def _list_error(
+    type_: str, value: str, item: ProductParameterItem | None = None, **kw: Any
+) -> str | None:
+    model = FormModel.from_parameters([_p(name="L", type_=type_, item=item, **kw)])
+    model.set_value("L", value)
+    model.validate()
+    return model.fields[0].error
+
+
+@pytest.mark.parametrize(
+    ("value", "error"),
+    [
+        ("[]", "Must have at least 1 item"),
+        ('["a","b","c"]', "Must have at most 2 items"),
+        ('["abcd"]', "Item 1: Must be at most 3 characters"),
+        ('["a","abcd"]', "Item 2: Must be at most 3 characters"),
+        ('["a",""]', "Item 2: Must be at least 1 characters"),
+        ("not json", "Must be a list"),
+        ('{"a": 1}', "Must be a list"),
+        ('"a"', "Must be a list"),
+        ('["a"]', None),
+        ('["a","bcd"]', None),
+        ("[1]", "Item 1: Must be text"),
+    ],
+)
+def test_list_string_validation(value: str, error: str | None) -> None:
+    item = ProductParameterItem(min_length=1, max_length=3)
+    assert _list_error("LIST[STRING]", value, item, min_length=1, max_length=2) == error
+
+
+def test_list_length_bounds_are_item_counts_not_characters() -> None:
+    # A 2-item list is far longer than 2 characters; only the item count counts.
+    assert _list_error("LIST[STRING]", '["abcdef","ghijkl"]', None, max_length=2) is None
+
+
+def test_list_message_is_singular_for_one_item() -> None:
+    assert _list_error("LIST[STRING]", '["a","b"]', None, max_length=1) == (
+        "Must have at most 1 item"
+    )
+
+
+@pytest.mark.parametrize(
+    ("value", "error"),
+    [
+        ("[1, 5, 10]", None),
+        ("[0]", "Item 1: Must be at least 1"),
+        ("[1, 11]", "Item 2: Must be at most 10"),
+        ('[1, "x"]', "Item 2: Must be an integer"),
+        ("[1.5]", "Item 1: Must be an integer"),
+        ("[true]", "Item 1: Must be an integer"),
+    ],
+)
+def test_list_int_items_are_checked_as_integers(value: str, error: str | None) -> None:
+    item = ProductParameterItem(min_value="1", max_value="10")
+    assert _list_error("LIST[INT]", value, item) == error
+
+
+def test_list_float_items_are_checked_as_numbers() -> None:
+    item = ProductParameterItem(min_value="0.5")
+    assert _list_error("LIST[FLOAT]", "[1, 2.5]", item) is None
+    assert _list_error("LIST[FLOAT]", "[0.25]", item) == "Item 1: Must be at least 0.5"
+    assert _list_error("LIST[FLOAT]", '["x"]', item) == "Item 1: Must be a number"
+
+
+def test_list_item_allowed_values() -> None:
+    item = ProductParameterItem(allowed_values=["a", "b"])
+    assert _list_error("LIST[STRING]", '["a","b"]', item) is None
+    assert _list_error("LIST[STRING]", '["a","c"]', item) == "Item 2: Not an allowed value"
+
+
+def test_list_without_item_constraints_checks_only_the_list() -> None:
+    assert _list_error("LIST[PATH]", '["/a","/b"]') is None
+
+
+def test_nested_list_validates_each_inner_list() -> None:
+    item = ProductParameterItem(min_length=1, item=ProductParameterItem(min_value="0"))
+    assert _list_error("LIST[LIST[INT]]", "[[1,2],[3]]", item) is None
+    assert _list_error("LIST[LIST[INT]]", "[[1],[]]", item) == "Item 2: Must have at least 1 item"
+    assert _list_error("LIST[LIST[INT]]", "[[1],[-1]]", item) == (
+        "Item 2: Item 1: Must be at least 0"
+    )
+    assert _list_error("LIST[LIST[INT]]", "[1]", item) == "Item 1: Must be a list"
+
+
+def test_empty_list_value_follows_the_required_rule() -> None:
+    assert _list_error("LIST[STRING]", "") == "Required"
+    model = FormModel.from_parameters([_p(name="L", type_="LIST[STRING]", default='["a"]')])
+    model.set_value("L", "")
+    assert model.validate()
