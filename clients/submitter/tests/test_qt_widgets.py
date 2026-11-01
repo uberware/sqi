@@ -278,3 +278,18 @@ def test_line_edit_list_shows_unparseable_model_text_as_is(app: object) -> None:
     edit = form.findChild(QtWidgets.QPlainTextEdit, "field_Shots")
     assert edit is not None
     assert edit.toPlainText() == "not json"
+
+
+def test_line_edit_list_bool_lines_become_booleans(app: object) -> None:
+    model = _list_model("LIST[BOOL]")
+    form = build_form(model)
+    edit = form.findChild(QtWidgets.QPlainTextEdit, "field_Shots")
+    assert edit is not None
+    edit.setPlainText("true\nfalse")
+    assert model.values()["Shots"] == "[true, false]"
+    assert model.validate() is True
+    # A line that is not true/false stays text, and validation names it.
+    edit.setPlainText("true\nmaybe")
+    assert model.values()["Shots"] == '[true, "maybe"]'
+    assert model.validate() is False
+    assert model.errors()["Shots"] == "Item 2: Must be true or false"

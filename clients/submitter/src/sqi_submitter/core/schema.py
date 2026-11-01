@@ -211,6 +211,8 @@ def _check_element(
         err = _check_number(element, element_type, item)
     elif element_type in ("STRING", "PATH"):
         err = _check_text(element, item)
+    elif element_type == "BOOL":
+        err = None if isinstance(element, bool) else "Must be true or false"
     else:
         err = None
     if err is None and item is not None and item.allowed_values:

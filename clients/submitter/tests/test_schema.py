@@ -245,3 +245,17 @@ def test_empty_list_value_follows_the_required_rule() -> None:
     model = FormModel.from_parameters([_p(name="L", type_="LIST[STRING]", default='["a"]')])
     model.set_value("L", "")
     assert model.validate()
+
+
+@pytest.mark.parametrize(
+    ("value", "error"),
+    [
+        ("[true, false]", None),
+        ('["maybe"]', "Item 1: Must be true or false"),
+        ('["True"]', "Item 1: Must be true or false"),
+        ('[true, "false"]', "Item 2: Must be true or false"),
+        ("[1]", "Item 1: Must be true or false"),
+    ],
+)
+def test_list_bool_items_must_be_json_booleans(value: str, error: str | None) -> None:
+    assert _list_error("LIST[BOOL]", value) == error
