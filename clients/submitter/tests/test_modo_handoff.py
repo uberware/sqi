@@ -55,6 +55,7 @@ class Lx:
         self.commands: list[str] = []
         self.blessed: list[tuple[type, str]] = []
         self.save_error: Exception | None = None
+        self.save_keeps_changes = False  # a save that returns without saving
         self.items = ["mesh", "polyRender", "light"]
         self.channels = {"polyRender$first": 1001, "polyRender$last": 1010}
         self.current_item = -1
@@ -84,6 +85,8 @@ class Lx:
                 outer.events.append("save")
                 if outer.save_error is not None:
                     raise outer.save_error
+                if not outer.save_keeps_changes:
+                    outer.scene.changes = 0
                 return None
             return None
 
@@ -147,6 +150,8 @@ def test_modo_frame_range_from_render_item(lx: Lx) -> None:
     assert _module().read_scene()["scene"]["frame_range"] == "1001-1010"
     lx.channels = {"polyRender$first": 5, "polyRender$last": 5}
     assert _module().read_scene()["scene"]["frame_range"] == "5"
+    lx.channels = {"polyRender$first": 10, "polyRender$last": 5}
+    assert _module().read_scene()["scene"]["frame_range"] == "5-10"  # ends in order
 
 
 def test_modo_frame_range_without_a_render_item(lx: Lx) -> None:
@@ -222,6 +227,39 @@ def test_modo_save_failure_submits_nothing(lx: Lx, monkeypatch: pytest.MonkeyPat
     assert module.submit() is False
     assert lx.events == ["save"]
     assert lx.dialogs() == [SAVE_FAILED]
+
+
+def test_modo_save_that_returns_but_leaves_it_changed_submits_nothing(
+    lx: Lx, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    lx.scene.changes = 1
+    lx.save_keeps_changes = True
+    stub_launch(module, monkeypatch, lx.events)
+    assert module.submit() is False
+    assert lx.events == ["save"]
+    assert lx.dialogs() == [SAVE_FAILED]
+
+
+@pytest.mark.parametrize("broken", ["selection", "method"])
+def test_modo_scene_check_failure_is_a_read_failure_not_unsaved(
+    lx: Lx, monkeypatch: pytest.MonkeyPatch, broken: str
+) -> None:
+    """Only ``Filename()`` failing means an unnamed scene; a broken API reads as a failure."""
+    module = _module()
+    stub_launch(module, monkeypatch, lx.events)
+    if broken == "selection":
+
+        def selection() -> object:
+            raise AttributeError("SceneSelection")
+
+        monkeypatch.setattr(sys.modules["lxu.select"], "SceneSelection", selection)
+    else:
+        lx.scene = SimpleNamespace(HasChanged=lambda: 0)  # type: ignore[assignment]
+    assert module.submit() is False
+    assert lx.events == []
+    [dialog] = lx.dialogs()
+    assert dialog.startswith("sqi could not read the scene: ")
 
 
 @pytest.mark.parametrize("error", [RuntimeError("sqi-submit was not found."), OSError("denied")])

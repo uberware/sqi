@@ -39,9 +39,12 @@ NOT_FOUND_MESSAGE = (
 
 
 def _settings_command() -> str:
-    path = os.environ.get("SQI_SUBMITTER_SETTINGS") or os.path.join(
-        os.path.expanduser("~"), ".sqi", "submitter.json"
+    # The home sqi-submit reads (Path.home()): on Windows that is USERPROFILE, which Python 3.7's
+    # expanduser ranks below HOME, often set to a network share there.
+    home = (os.environ.get("USERPROFILE") if sys.platform == "win32" else None) or (
+        os.path.expanduser("~")
     )
+    path = os.environ.get("SQI_SUBMITTER_SETTINGS") or os.path.join(home, ".sqi", "submitter.json")
     try:
         # utf-8-sig: PowerShell 5 writes UTF-8 with a BOM, which plain utf-8 rejects.
         with open(path, encoding="utf-8-sig") as handle:
@@ -136,6 +139,7 @@ def launch(command: str, context_path: str) -> None:
 
 _UNSAVED_MESSAGE = "Save your scene before submitting — the farm renders the file on disk."
 _SAVE_FAILED_MESSAGE = "Modo could not save the scene, so nothing was submitted."
+_READ_FAILED = "sqi could not read the scene: "
 
 # The item type of the scene's render item, which owns the ``first``/``last`` frame channels.
 _RENDER_ITEM_TYPE = "polyRender"
@@ -145,11 +149,14 @@ def _scene_path() -> str | None:
     """The current scene's file, or ``None`` for a scene never saved.
 
     ``Scene.Filename`` reports an unnamed scene as a failure, which Python sees as an exception.
+    Only that call is read that way: failing to reach the scene or the method (a wrong API name)
+    raises to the caller, which shows it as a read failure, not as an unsaved scene.
     """
     import lxu.select
 
+    filename = lxu.select.SceneSelection().current().Filename
     try:
-        path = lxu.select.SceneSelection().current().Filename()
+        path = filename()
     except Exception:
         return None
     return path if isinstance(path, str) and path else None
@@ -162,7 +169,8 @@ def _scene_changed() -> bool:
 
 
 def _frame_range() -> str | None:
-    """The render item's ``first`` to ``last`` frames as ``"S-E"`` (``"S"`` for one frame).
+    """The render item's ``first`` and ``last`` frames as ``"S-E"``, lower end first (``"S"``
+    for one frame).
 
     Finds the render item the way Foundry's ChangeRenderFrameRange sample does (walk the scene's
     items for type ``polyRender``), selects it, and reads its channels. ``None`` when the scene
@@ -178,7 +186,8 @@ def _frame_range() -> str | None:
         lx.eval(f"select.item {lx.eval('query sceneservice item.id ?')}")
         first = int(lx.eval("item.channel polyRender$first ?"))
         last = int(lx.eval("item.channel polyRender$last ?"))
-        return str(first) if last <= first else f"{first}-{last}"
+        lo, hi = sorted((first, last))
+        return str(lo) if lo == hi else f"{lo}-{hi}"
     return None
 
 
@@ -243,13 +252,25 @@ def submit() -> bool:
     """
     import lx
 
-    if _scene_path() is None:
+    try:
+        scene_path = _scene_path()
+    except Exception as exc:
+        # The scene calls have not been run on a real install: whatever they raise is shown.
+        _alert(_READ_FAILED + str(exc))
+        return False
+    if scene_path is None:
         _alert(_UNSAVED_MESSAGE)
         return False
     try:
         if _scene_changed():
             lx.eval("scene.save")
+            # A failed save may return instead of raising; the scene is then still changed.
+            saved = not _scene_changed()
+        else:
+            saved = True
     except Exception:
+        saved = False
+    if not saved:
         _alert(_SAVE_FAILED_MESSAGE)
         return False
     try:
@@ -257,7 +278,7 @@ def submit() -> bool:
     except Exception as exc:
         # read_scene calls Modo APIs that have not been run on a real install: whatever they
         # raise is shown to the artist, not left to reach Modo's console.
-        _alert(f"sqi could not read the scene: {exc}")
+        _alert(_READ_FAILED + str(exc))
         return False
     try:
         command = resolve_submit_command("")

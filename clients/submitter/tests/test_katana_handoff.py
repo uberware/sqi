@@ -74,9 +74,11 @@ class Katana:
         self.file_name = "D:/shots/s010.katana"
         self.dirty = False
         self.save_error: Exception | None = None
+        self.save_keeps_dirty = False  # a save that returns without saving
         self.events: list[str] = []
         self.warnings: list[str] = []
         self.menu_bar: Any = None
+        self.window: Any = None  # set below; None stands for a session with no main window
         monkeypatch.delenv("KATANA_RELEASE", raising=False)
         monkeypatch.setitem(sys.modules, "KatanaInfo", SimpleNamespace(version="7.5.2"))
 
@@ -84,6 +86,8 @@ class Katana:
             self.events.append("save:" + path)
             if self.save_error is not None:
                 raise self.save_error
+            if not self.save_keeps_dirty:
+                self.dirty = False
 
         def nodes_by_type(kind: str) -> list[Node]:
             assert kind == "Render"
@@ -114,10 +118,11 @@ class Katana:
                 assert kind is MainMenu
                 return owner.menu_bar
 
+        self.window = Window()
         fake_host_module(
             "UI4.App",
             MainMenu=SimpleNamespace(MainMenu=MainMenu),
-            MainWindow=SimpleNamespace(CurrentMainWindow=Window),
+            MainWindow=SimpleNamespace(CurrentMainWindow=lambda: self.window),
         )
 
 
@@ -289,6 +294,18 @@ def test_katana_save_failure_submits_nothing(
     assert katana.warnings == [SAVE_FAILED]
 
 
+def test_katana_save_that_returns_but_leaves_it_dirty_submits_nothing(
+    katana: Katana, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    katana.dirty = True
+    katana.save_keeps_dirty = True
+    stub_launch(module, monkeypatch, katana.events)
+    assert module.submit() is False
+    assert katana.events == ["save:D:/shots/s010.katana"]
+    assert katana.warnings == [SAVE_FAILED]
+
+
 @pytest.mark.parametrize("error", [AttributeError("GetKatanaFileName"), ValueError("x")])
 def test_katana_scene_check_failure_is_shown_not_raised(
     katana: Katana, monkeypatch: pytest.MonkeyPatch, error: Exception
@@ -394,6 +411,18 @@ def test_katana_install_menu_without_a_menu_bar_prints(
 ) -> None:
     _module().install_menu()
     assert "menu bar" in capsys.readouterr().out
+
+
+def test_katana_install_menu_without_a_ui_is_quiet(
+    katana: Katana, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``katana --batch`` runs the user's Startup folder too: no traceback, no log line."""
+    module = _module()
+    katana.window = None  # Katana up, but no main window
+    module.install_menu()
+    monkeypatch.setitem(sys.modules, "UI4.App", None)  # no UI4 at all
+    module.install_menu()
+    assert capsys.readouterr().out == ""
 
 
 def _callbacks() -> tuple[SimpleNamespace, list[tuple[object, object]]]:

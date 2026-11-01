@@ -378,7 +378,12 @@ os.tmpname = function()
   return p
 end
 io.popen = function(cmd) ev("popen:" .. cmd) end
-os.execute = function(cmd) ev("exec:" .. cmd); return {execute_result} end
+local real_execute = os.execute
+os.execute = function(cmd)
+  -- The PATH search's executable probe runs for real, against the files the test made.
+  if cmd:sub(1, 5) == "test " then return real_execute(cmd) end
+  ev("exec:" .. cmd); return {execute_result}
+end
 local printed = {{}}
 print = function(...) printed[#printed + 1] = table.concat({{...}}, " ") end
 fusion = {{ Version = {version} }}
@@ -405,11 +410,14 @@ def _events(got: dict[str, str]) -> list[str]:
     return got["events"].split("<>") if got["events"] else []
 
 
-def _on_path(tmp_path: Path, name: str = "sqi-submit", folder: str = "bin") -> Path:
-    """Create an empty ``folder/name`` under ``tmp_path`` and return it."""
+def _on_path(
+    tmp_path: Path, name: str = "sqi-submit", folder: str = "bin", mode: int = 0o755
+) -> Path:
+    """Create an empty ``folder/name`` under ``tmp_path`` (executable by default), return it."""
     exe = tmp_path / folder / name
     exe.parent.mkdir()
     exe.write_bytes(b"")
+    exe.chmod(mode)
     return exe
 
 
@@ -506,11 +514,46 @@ def test_fusion_finds_sqi_submit_on_path(lua: str, tmp_path: Path, windows: bool
     got = run_lua(lua, _entry(tmp_path, windows=windows, path=path), {"SQI_SETTINGS": ""})
     assert got["ok"] == "true"
     events = _events(got)
-    assert not [e for e in events if e.startswith("popen:")]  # no shell started to search
+    assert not [e for e in events if e.startswith("popen:")]  # no `where` or `command -v`
     if windows:
         assert events[-1].startswith(f'exec:start "" "{exe}" --context "')
     else:
         assert events[-1].startswith(f"exec:'{exe}' --context '")
+
+
+@_POSIX_PATH
+@pytest.mark.parametrize("blocker", ["file", "folder"])
+def test_fusion_path_search_skips_what_cannot_run(lua: str, tmp_path: Path, blocker: str) -> None:
+    """A non-executable file or a folder named sqi-submit earlier on PATH does not win."""
+    if blocker == "file":
+        first = _on_path(tmp_path, folder="first", mode=0o644)
+    else:
+        first = tmp_path / "first" / "sqi-submit"
+        first.mkdir(parents=True)
+    exe = _on_path(tmp_path)
+    path = f"{first.parent}:{exe.parent}"
+    got = run_lua(lua, _entry(tmp_path, path=path), {"SQI_SETTINGS": ""})
+    assert got["ok"] == "true"
+    assert _events(got)[-1].startswith(f"exec:'{exe}' --context '")
+
+
+def test_fusion_settings_path(lua: str) -> None:
+    """The home sqi-submit itself reads: USERPROFILE on Windows even when HOME is set there."""
+    body = r"""
+local env = { HOME = "/net/home/a", USERPROFILE = "C:\\Users\\a" }
+os.getenv = function(k) return env[k] end
+out("win", sqi_settings_path(true))
+out("posix", sqi_settings_path(false))
+env.SQI_SUBMITTER_SETTINGS = "/etc/sqi.json"
+out("override", sqi_settings_path(true))
+env = {}
+out("none", tostring(sqi_settings_path(false)))
+"""
+    got = run_lua(lua, body)
+    assert got["win"] == "C:\\Users\\a\\.sqi\\submitter.json"
+    assert got["posix"] == "/net/home/a/.sqi/submitter.json"
+    assert got["override"] == "/etc/sqi.json"
+    assert got["none"] == "nil"
 
 
 def test_fusion_windows_launch_prefers_the_windowed_exe(lua: str, tmp_path: Path) -> None:

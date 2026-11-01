@@ -504,7 +504,8 @@ kept your existing <...>/init_unreal.py; to add sqi, append these lines to it:
 followed by the lines of the shipped hook, minus the marker and minus its
 `from __future__` line (which is only valid at the top of a file). Append them
 to your file. A file that does carry the marker is sqi's own and is replaced on
-the next install.
+the next install; if it was edited since, the edited copy is kept beside it as
+`init_unreal.py.sqi-old`.
 
 The targets are the **enabled jobs** in the Movie Render Queue, each named after
 the job. The scene is the project (`.uproject`). Before it launches, the
@@ -820,9 +821,13 @@ existing <path>; to add sqi, append these lines to it:` and then the shipped
 hook with the marker line and any `from __future__` line removed, and still
 copies the module beside it. Append those lines to your file; the marker is
 left out on purpose, so your file is not mistaken for sqi's and replaced by the
-next install. A file that does carry the marker is replaced like any other: the
-marker counts only when it is a line of its own, so a file of yours that merely
-mentions the text in a comment or a string is still yours. When there is no
+next install. Once your file imports the sqi module, a later install prints
+`kept your existing <path>; it already loads sqi` instead, so the lines are
+never added twice. A file that does carry the marker is replaced like any other,
+and when it differs from the shipped hook (you edited it) the old copy is kept
+as `<name>.sqi-old` first. The marker counts only when it is a line of its own,
+so a file of yours that merely mentions the text in a comment or a string is
+still yours. When there is no
 default destination (nothing is copied), the command cannot look at your
 folder, so for each of the three hook files it prints `If you already have
 <name> there, append these lines to it instead:` and the same lines; do not
@@ -1739,8 +1744,9 @@ After installing per [Installation per host](#installation-per-host):
 8. **An existing `init_unreal.py`.** Put your own file there first and run
    `install-host unreal`: your file is untouched, the module is copied and the
    hook's lines are printed. Append them, restart, and confirm the menu
-   appears. Run `install-host unreal` again over the sqi-installed file (the
-   marker line present): it is replaced without complaint.
+   appears. Run `install-host unreal` again: it reports that your file already
+   loads sqi. Over the sqi-installed file (the marker line present) it is
+   replaced without complaint.
 
 **Verified only against fakes or documentation:**
 
@@ -2001,7 +2007,7 @@ support):**
    Choose it on a saved comp: the dialog opens and Fusion stays responsive.
    This is the first thing to check (see below).
 2. **Console flash on Windows.** Watch for a console window flashing when the
-   script looks for `sqi-submit` (`where`) and when it starts it (`start`). With
+   script starts `sqi-submit` (`start`); finding it on `PATH` runs nothing. With
    `sqi-submitw.exe` beside `sqi-submit.exe`, no console stays open with the
    dialog.
 3. An unsaved comp shows "Save your scene before submitting". A changed comp is
@@ -2210,8 +2216,9 @@ names a file that exists:
 2. `sqi_submit_command` in `~/.sqi/submitter.json` (override the file with
    `$SQI_SUBMITTER_SETTINGS`). Every handoff host reads it except After Effects.
 3. `sqi-submit` on the host's `PATH`. Every handoff host except After Effects
-   (Fusion walks `PATH` itself, trying each `PATHEXT` extension on Windows,
-   rather than start a shell to run `where`). This is
+   (Fusion walks `PATH` itself, trying each `PATHEXT` extension on Windows and
+   skipping anything not executable on macOS and Linux, rather than start a
+   shell to run `where`). This is
    unreliable inside macOS GUI applications, which do not inherit the shell's
    `PATH`; on macOS set it in step 1 or 2.
 

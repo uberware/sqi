@@ -50,6 +50,7 @@ class Project:
         self.sessions = sessions
         self.is_modified = False
         self.save_error: Exception | None = None
+        self.save_keeps_changes = False  # a save that returns without saving
         self._events = events
 
     def save(self, *args: object) -> None:
@@ -57,6 +58,8 @@ class Project:
         self._events.append("save")
         if self.save_error is not None:
             raise self.save_error
+        if not self.save_keeps_changes:
+            self.is_modified = False
 
 
 class Fx:
@@ -216,6 +219,19 @@ def test_silhouette_save_failure_submits_nothing(
     assert fx.project is not None
     fx.project.is_modified = True
     fx.project.save_error = RuntimeError("disk full")
+    stub_launch(module, monkeypatch, fx.events)
+    assert module.submit() is False
+    assert fx.events == ["save"]
+    assert ascii_fallback(SAVE_FAILED) in capsys.readouterr().out
+
+
+def test_silhouette_save_that_returns_but_leaves_it_modified_submits_nothing(
+    fx: Fx, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module = _module()
+    assert fx.project is not None
+    fx.project.is_modified = True
+    fx.project.save_keeps_changes = True
     stub_launch(module, monkeypatch, fx.events)
     assert module.submit() is False
     assert fx.events == ["save"]

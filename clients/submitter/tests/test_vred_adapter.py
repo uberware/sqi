@@ -116,9 +116,18 @@ def test_vred_scene_context_animation_range(
     assert ctx.frame_range == expected
 
 
-def test_vred_scene_context_single_frame_range_is_one_number() -> None:
-    ctx = FakeVred(start=5, stop=5).adapter().scene_context()
-    assert ctx.frame_range == "5"
+@pytest.mark.parametrize(
+    ("start", "stop", "step", "expected"),
+    [
+        (5, 5, 1, "5"),
+        (5, 5, 2, "5"),  # "5:2" is no range expression
+        (-5, -5, 2, "-5"),
+        (100, 1, 2, "1-100:2"),  # ends in order
+    ],
+)
+def test_vred_scene_context_range_edges(start: int, stop: int, step: int, expected: str) -> None:
+    ctx = FakeVred(start=start, stop=stop, step=step).adapter().scene_context()
+    assert ctx.frame_range == expected
 
 
 def test_vred_scene_context_path_output_and_renderer() -> None:

@@ -135,9 +135,9 @@ def _builtin(name: str) -> Any:
 
 def _services() -> Any:
     """The VRED objects the adapter reads, as the submitter's ``VREDServices``."""
-    menu_module = importlib.import_module("sqi_submitter.hosts.vred.adapter")
+    adapter_module = importlib.import_module("sqi_submitter.hosts.vred.adapter")
     vr_render_settings = importlib.import_module("vrRenderSettings")
-    return menu_module.VREDServices(
+    return adapter_module.VREDServices(
         file_io=_builtin("vrFileIOService"),
         cameras=_builtin("vrCameraService"),
         render_settings=vr_render_settings,

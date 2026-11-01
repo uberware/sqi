@@ -39,9 +39,12 @@ NOT_FOUND_MESSAGE = (
 
 
 def _settings_command() -> str:
-    path = os.environ.get("SQI_SUBMITTER_SETTINGS") or os.path.join(
-        os.path.expanduser("~"), ".sqi", "submitter.json"
+    # The home sqi-submit reads (Path.home()): on Windows that is USERPROFILE, which Python 3.7's
+    # expanduser ranks below HOME, often set to a network share there.
+    home = (os.environ.get("USERPROFILE") if sys.platform == "win32" else None) or (
+        os.path.expanduser("~")
     )
+    path = os.environ.get("SQI_SUBMITTER_SETTINGS") or os.path.join(home, ".sqi", "submitter.json")
     try:
         # utf-8-sig: PowerShell 5 writes UTF-8 with a BOM, which plain utf-8 rejects.
         with open(path, encoding="utf-8-sig") as handle:
@@ -269,7 +272,13 @@ def submit() -> bool:
     try:
         if KatanaFile.IsFileDirty():
             KatanaFile.Save(path)
+            # A failed save may return instead of raising; the project is then still dirty.
+            saved = not KatanaFile.IsFileDirty()
+        else:
+            saved = True
     except Exception:
+        saved = False
+    if not saved:
         _warn(_SAVE_FAILED_MESSAGE)
         return False
     try:
@@ -292,10 +301,17 @@ def install_menu(**_kwargs: Any) -> None:
     """Add **sqi > Submit to sqi...** to Katana's main menu bar.
 
     Registered as an ``onStartupComplete`` callback, which Katana calls with keyword arguments.
+    A session with no UI (``katana --batch`` on a farm machine with this user's Startup folder)
+    has no menu to add to, so it returns quietly rather than print into every render log.
     """
-    from UI4.App import MainMenu, MainWindow
-
-    menu_bar = MainWindow.CurrentMainWindow().findChild(MainMenu.MainMenu)
+    try:
+        from UI4.App import MainMenu, MainWindow
+    except ImportError:
+        return
+    window = MainWindow.CurrentMainWindow()
+    if window is None:
+        return
+    menu_bar = window.findChild(MainMenu.MainMenu)
     if menu_bar is None:
         print("sqi: Katana's menu bar was not found, so Submit to sqi... was not added.")
         return

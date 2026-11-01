@@ -319,11 +319,28 @@ def test_install_host_replaces_its_own_hook_file(
     _stand_in_hook(tmp_path, monkeypatch)
     dest = tmp_path / "startup"
     dest.mkdir()
-    (dest / "init.py").write_text(f"{install.HOOK_MARKER}\nold\n", encoding="utf-8")
+    previous = f"{install.HOOK_MARKER}\nold\nprint('a studio edit')\n"
+    (dest / "init.py").write_text(previous, encoding="utf-8")
     out = io.StringIO()
     assert install.install_host("blender", dest, out) == 0
     assert (dest / "init.py").read_text(encoding="utf-8") == _HOOK_TEXT
     assert "kept your existing" not in out.getvalue()
+    # sqi's own file, but edited since: the edits are kept beside it.
+    backup = dest / "init.py.sqi-old"
+    assert backup.read_text(encoding="utf-8") == previous
+    assert f"saved the previous init.py as {backup}" in out.getvalue()
+
+
+def test_install_host_reinstalling_an_unchanged_hook_keeps_no_backup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _stand_in_hook(tmp_path, monkeypatch)
+    dest = tmp_path / "startup"
+    assert install.install_host("blender", dest, io.StringIO()) == 0
+    out = io.StringIO()
+    assert install.install_host("blender", dest, out) == 0
+    assert [p.name for p in dest.iterdir()] == ["init.py"]
+    assert "saved the previous" not in out.getvalue()
 
 
 def test_install_host_foreign_hook_stays_foreign_after_appending_printed_lines(
@@ -347,7 +364,9 @@ def test_install_host_foreign_hook_stays_foreign_after_appending_printed_lines(
     assert install.install_host("blender", dest, again) == 0
     assert (dest / "init.py").read_text(encoding="utf-8") == appended
     assert appended.startswith(studio)
-    assert "kept your existing" in again.getvalue()
+    # The lines are in already: asking for them again would add a second sqi menu.
+    assert f"kept your existing {dest / 'init.py'}; it already loads sqi" in again.getvalue()
+    assert "append these lines" not in again.getvalue()
 
 
 @pytest.mark.parametrize(

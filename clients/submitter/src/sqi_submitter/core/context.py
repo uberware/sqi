@@ -35,6 +35,6 @@ class RenderTarget:
 
 
 def frame_range_str(start: float, end: float) -> str:
-    """Format a start/end pair using the ``Frames`` convention ("1-100", "5")."""
-    lo, hi = int(start), int(end)
+    """Format a start/end pair using the ``Frames`` convention ("1-100", "5"), lower end first."""
+    lo, hi = sorted((int(start), int(end)))
     return str(lo) if lo == hi else f"{lo}-{hi}"

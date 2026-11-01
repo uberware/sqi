@@ -85,8 +85,8 @@ def dest_relative(host: str, rel: str) -> PurePosixPath:
     """Where ``rel`` (a package-relative file of ``host``) lands, relative to the destination.
 
     A file under ``hosts/<host>/`` keeps its path relative to that folder, so a host that
-    needs a folder tree (Modo's kit, Fusion's Scripts) gets one. Any other file is copied
-    flat under its basename.
+    needs a folder tree (Modo's kit, VRED's ``SubmitToSqi`` folder) gets one. Any other file is
+    copied flat under its basename.
     """
     path = PurePosixPath(rel)
     try:
@@ -233,6 +233,19 @@ def _lines_to_add(hook: Path) -> str:
     return "\n".join(keep).strip("\n")
 
 
+def _already_added(target: Path, hook: Path) -> bool:
+    """True when ``target`` already imports the sqi modules the hook does (the lines are in)."""
+
+    def sqi_imports(text: str) -> set[str]:
+        return {
+            line.strip() for line in text.splitlines() if line.strip().startswith("import sqi_")
+        }
+
+    wanted = sqi_imports(hook.read_text(encoding="utf-8"))
+    have = sqi_imports(target.read_bytes().decode("utf-8-sig", errors="replace"))
+    return bool(wanted) and wanted <= have
+
+
 _NO_DESTINATION_HINT = {
     "blender": "Blender add-ons are installed through its UI, so nothing was copied.",
     "cinema4d": (
@@ -328,13 +341,22 @@ def install_host(host: str, dest: Path | None, out: TextIO, err: TextIO | None =
         for rel in files:
             target = dest.joinpath(*dest_relative(host, rel).parts)
             with resources.as_file(root.joinpath(rel)) as path:
-                if _is_hook(path) and target.is_file() and not _is_hook(target):
-                    print(
-                        f"kept your existing {target}; to add sqi, append these lines to it:",
-                        file=out,
-                    )
-                    print(_lines_to_add(path), file=out)
+                hook_in_place = _is_hook(path) and target.is_file()
+                if hook_in_place and not _is_hook(target):
+                    if _already_added(target, path):
+                        print(f"kept your existing {target}; it already loads sqi", file=out)
+                    else:
+                        print(
+                            f"kept your existing {target}; to add sqi, append these lines to it:",
+                            file=out,
+                        )
+                        print(_lines_to_add(path), file=out)
                     continue
+                if hook_in_place and target.read_bytes() != path.read_bytes():
+                    # sqi's own hook, but not as shipped: keep any edits made to it.
+                    backup = target.with_name(target.name + ".sqi-old")
+                    shutil.copyfile(target, backup)
+                    print(f"saved the previous {target.name} as {backup}", file=out)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(path, target)
             copied.append(target)

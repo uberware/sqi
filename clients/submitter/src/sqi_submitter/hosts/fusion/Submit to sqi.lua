@@ -244,6 +244,11 @@ local function unsafe_reason(is_windows, path)
     return nil
 end
 
+-- A POSIX shell word for path: single-quoted, with each ' written as '\''.
+local function sh_quote(path)
+    return "'" .. path:gsub("'", function() return "'\\''" end) .. "'"
+end
+
 -- The command line that starts sqi-submit without blocking Fusion, or nil plus a message
 -- when a path could not be quoted safely (nothing is ever escaped around a quote).
 function sqi_launch_command(is_windows, exe, context_path)
@@ -254,10 +259,7 @@ function sqi_launch_command(is_windows, exe, context_path)
     if is_windows then
         return "start \"\" \"" .. exe .. "\" --context \"" .. context_path .. "\""
     end
-    local function single(path)
-        return "'" .. path:gsub("'", function() return "'\\''" end) .. "'"
-    end
-    return single(exe) .. " --context " .. single(context_path) .. " >/dev/null 2>&1 &"
+    return sh_quote(exe) .. " --context " .. sh_quote(context_path) .. " >/dev/null 2>&1 &"
 end
 
 -- -- Fusion glue (needs a real Fusion; the manual checklist covers it) ----------------------
@@ -273,6 +275,23 @@ local function file_exists(path)
     end
     handle:close()
     return true
+end
+
+-- Whether os.execute's result means success: Lua 5.1 returns the status number, LuaJIT (with
+-- 5.2 compatibility) true.
+local function ran_ok(status)
+    return status == 0 or status == true
+end
+
+-- POSIX: path is a regular file this user may run. Lua alone can only tell that it opens, so a
+-- folder or a non-executable sqi-submit earlier on PATH would win, and its launch fail silently.
+-- No console can flash on POSIX, so the shell's test is safe to start here.
+local function posix_executable(path)
+    if not file_exists(path) then
+        return false
+    end
+    local quoted = sh_quote(path)
+    return ran_ok(os.execute("test -f " .. quoted .. " && test -x " .. quoted))
 end
 
 local function read_file(path)
@@ -297,16 +316,14 @@ function sqi_message(text)
     end)
 end
 
--- ~/.sqi/submitter.json, or $SQI_SUBMITTER_SETTINGS when set (as the Python hosts read it).
-local function settings_path(is_windows)
+-- ~/.sqi/submitter.json, or $SQI_SUBMITTER_SETTINGS when set (as the Python hosts read it). The
+-- home is the one sqi-submit reads: USERPROFILE on Windows, where HOME may be a network share.
+function sqi_settings_path(is_windows)
     local override = os.getenv("SQI_SUBMITTER_SETTINGS")
     if override ~= nil and override ~= "" then
         return override
     end
-    local home = os.getenv("HOME")
-    if home == nil or home == "" then
-        home = os.getenv("USERPROFILE")
-    end
+    local home = os.getenv(is_windows and "USERPROFILE" or "HOME")
     if home == nil or home == "" then
         return nil
     end
@@ -356,12 +373,13 @@ end
 
 -- Finds sqi-submit as the Python block does: the settings file, then PATH.
 local function resolve_command(is_windows)
-    local path = settings_path(is_windows)
+    local path = sqi_settings_path(is_windows)
     local configured = path and sqi_parse_settings(read_file(path))
     if configured ~= nil and configured ~= "" and file_exists(configured) then
         return configured
     end
-    return sqi_find_on_path(is_windows, os.getenv("PATH"), os.getenv("PATHEXT"), file_exists)
+    local exists = is_windows and file_exists or posix_executable
+    return sqi_find_on_path(is_windows, os.getenv("PATH"), os.getenv("PATHEXT"), exists)
 end
 
 -- Opens a new private file for the context and returns its path and handle, or nil. On POSIX
@@ -477,8 +495,7 @@ function sqi_submit()
         sqi_message(reason)
         return false
     end
-    local status = os.execute(command)
-    if status ~= 0 and status ~= true then
+    if not ran_ok(os.execute(command)) then
         os.remove(path)
         sqi_message(SQI_MSG.launchFailed .. command)
         return false

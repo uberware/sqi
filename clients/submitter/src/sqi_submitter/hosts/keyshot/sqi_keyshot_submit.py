@@ -37,9 +37,12 @@ NOT_FOUND_MESSAGE = (
 
 
 def _settings_command() -> str:
-    path = os.environ.get("SQI_SUBMITTER_SETTINGS") or os.path.join(
-        os.path.expanduser("~"), ".sqi", "submitter.json"
+    # The home sqi-submit reads (Path.home()): on Windows that is USERPROFILE, which Python 3.7's
+    # expanduser ranks below HOME, often set to a network share there.
+    home = (os.environ.get("USERPROFILE") if sys.platform == "win32" else None) or (
+        os.path.expanduser("~")
     )
+    path = os.environ.get("SQI_SUBMITTER_SETTINGS") or os.path.join(home, ".sqi", "submitter.json")
     try:
         # utf-8-sig: PowerShell 5 writes UTF-8 with a BOM, which plain utf-8 rejects.
         with open(path, encoding="utf-8-sig") as handle:
@@ -235,7 +238,13 @@ def submit() -> bool:
     try:
         if lux.isSceneChanged():
             lux.saveFile()
+            # A failed save may return instead of raising; the scene is then still changed.
+            saved = not lux.isSceneChanged()
+        else:
+            saved = True
     except Exception:
+        saved = False
+    if not saved:
         _warn(_SAVE_FAILED_MESSAGE)
         return False
     try:

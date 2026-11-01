@@ -21,3 +21,4 @@ def test_render_target_carries_extra_params() -> None:
 def test_frame_range_str_formats_whole_floats_as_ints() -> None:
     assert frame_range_str(1.0, 100.0) == "1-100"
     assert frame_range_str(5, 5) == "5"
+    assert frame_range_str(100, 1) == "1-100"  # a reversed range is not a range expression

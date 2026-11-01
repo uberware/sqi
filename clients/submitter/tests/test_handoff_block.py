@@ -118,6 +118,23 @@ def test_resolve_submit_command_reads_settings_file_with_bom(
     assert block.resolve_submit_command("") == from_file
 
 
+def test_settings_file_is_found_under_userprofile_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """sqi-submit reads USERPROFILE on Windows; a HOME set there (Python 3.7 ranks it first in
+    ``expanduser``) must not send the host to a different settings file."""
+    from_profile = _fake_exe(tmp_path, "from-profile")
+    settings = tmp_path / "profile" / ".sqi" / "submitter.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({"sqi_submit_command": from_profile}), encoding="utf-8")
+    monkeypatch.delenv("SQI_SUBMITTER_SETTINGS", raising=False)
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "profile"))
+    monkeypatch.setenv("HOME", str(tmp_path / "network-home"))
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    assert block.resolve_submit_command("") == from_profile
+
+
 def test_resolve_submit_command_not_found_message(isolated: Path) -> None:
     with pytest.raises(RuntimeError) as excinfo:
         block.resolve_submit_command("")

@@ -42,9 +42,11 @@ class VREDAdapter(HostAdapter):
         settings = self._services.render_settings
         if not settings.getRenderAnimation():
             return None
-        frames = frame_range_str(settings.getRenderStartFrame(), settings.getRenderStopFrame())
+        start, stop = settings.getRenderStartFrame(), settings.getRenderStopFrame()
+        frames = frame_range_str(start, stop)
         step = int(settings.getRenderFrameStep())
-        return f"{frames}:{step}" if step > 1 else frames
+        # "5:2" is no range expression: a step belongs only on a range of two or more frames.
+        return f"{frames}:{step}" if step > 1 and int(start) != int(stop) else frames
 
     def scene_context(self) -> SceneContext:
         output = str(self._services.render_settings.getRenderFilename() or "") or None

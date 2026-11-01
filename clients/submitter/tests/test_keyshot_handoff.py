@@ -48,6 +48,7 @@ class Lux:
         self.studios: list[str] = ["Hero", "Detail Shot"]
         self.changed = False
         self.save_error: Exception | None = None
+        self.save_keeps_changes = False  # a save that returns without saving
         self.box_error: Exception | None = None
         self.module = fake_host_module(
             "lux",
@@ -84,6 +85,8 @@ class Lux:
         self.events.append("save")
         if self.save_error is not None:
             raise self.save_error
+        if not self.save_keeps_changes:
+            self.changed = False
 
     def _get_message_box(self, msg: str, title: str = "", type: int = 1) -> None:
         self.calls.append("getMessageBox")
@@ -192,6 +195,18 @@ def test_keyshot_save_failure_submits_nothing(lux: Lux, monkeypatch: pytest.Monk
     module = _module()
     lux.changed = True
     lux.save_error = RuntimeError("disk full")
+    stub_launch(module, monkeypatch, lux.events)
+    assert module.submit() is False
+    assert lux.events == ["save"]
+    assert lux.boxes == [(SAVE_FAILED, "sqi", Lux.MESSAGE_BOX_WARNING)]
+
+
+def test_keyshot_save_that_returns_but_leaves_it_changed_submits_nothing(
+    lux: Lux, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    lux.changed = True
+    lux.save_keeps_changes = True
     stub_launch(module, monkeypatch, lux.events)
     assert module.submit() is False
     assert lux.events == ["save"]
