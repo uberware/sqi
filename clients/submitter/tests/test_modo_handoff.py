@@ -118,7 +118,7 @@ class Lx:
 
 @pytest.fixture
 def lx(fake_host_module: FakeHost, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Lx:
-    # Tests that write a context file must never touch the real temp folder.
+    # Context files are written under tmp_path, not the real temp folder.
     monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
     return Lx(fake_host_module)
 
@@ -128,11 +128,11 @@ def _module() -> Any:
 
 
 def test_modo_read_scene_pass_groups(lx: Lx) -> None:
-    """Targets come from ``scene.renderPassGroups``, never from ``scene.items()``.
+    """Targets come from ``scene.renderPassGroups``, not from ``scene.items()``.
 
-    sqi does no filtering of its own: leaving non-render groups out is delegated to Modo's
-    ``renderPassGroups`` and is unverified on a real install. The fake's ``items()`` includes a
-    plain group, so reading through it instead would put "Lights" in the targets.
+    sqi does not filter groups itself: it relies on ``renderPassGroups`` to leave out non-render
+    groups, which is unverified on a real install. The fake's ``items()`` includes a plain group,
+    so reading through it would put "Lights" in the targets.
     """
     data = _module().read_scene()
     assert [t["name"] for t in data["targets"]] == ["Beauty", "Fog"]

@@ -4,7 +4,7 @@
 Install it with ``sqi-submit install-host silhouette``, which copies this file and a small
 ``sfxuser.py`` hook into the user ``scripts`` folder (``$(SFX_USER_PATH)/scripts``). Silhouette's
 startup script imports a module named ``sfxuser`` from its script search path, and the hook
-registers **Submit to sqi...** in the Actions menu. This file uses only Silhouette's own Python
+registers Submit to sqi... in the Actions menu. This file uses only Silhouette's own Python
 and the standard library and never imports ``sqi_submitter``: it writes a small context file
 describing the project and its output nodes and runs ``sqi-submit --context FILE``, whose Qt
 dialog does the rest.
@@ -38,8 +38,8 @@ NOT_FOUND_MESSAGE = (
 
 
 def _settings_command() -> str:
-    # The home sqi-submit reads (Path.home()): on Windows that is USERPROFILE, which Python 3.7's
-    # expanduser ranks below HOME, often set to a network share there.
+    # Match sqi-submit's Path.home(): on Windows that is USERPROFILE. Python 3.7's expanduser
+    # prefers HOME, which is often a network share there.
     home = (os.environ.get("USERPROFILE") if sys.platform == "win32" else None) or (
         os.path.expanduser("~")
     )
@@ -297,7 +297,7 @@ def submit() -> bool:
 
 
 def register() -> None:
-    """Add **Submit to sqi...** to Silhouette's Actions menu."""
+    """Add Submit to sqi... to Silhouette's Actions menu."""
     import fx
 
     class SubmitAction(fx.Action):  # type: ignore[misc]

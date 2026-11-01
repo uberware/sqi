@@ -39,8 +39,8 @@ NOT_FOUND_MESSAGE = (
 
 
 def _settings_command() -> str:
-    # The home sqi-submit reads (Path.home()): on Windows that is USERPROFILE, which Python 3.7's
-    # expanduser ranks below HOME, often set to a network share there.
+    # Match sqi-submit's Path.home(): on Windows that is USERPROFILE. Python 3.7's expanduser
+    # prefers HOME, which is often a network share there.
     home = (os.environ.get("USERPROFILE") if sys.platform == "win32" else None) or (
         os.path.expanduser("~")
     )
@@ -172,11 +172,11 @@ def _frame_range() -> str | None:
     """The render item's ``first`` and ``last`` frames as ``"S-E"``, lower end first (``"S"``
     for one frame).
 
-    Finds the render item the way Foundry's ChangeRenderFrameRange sample does (walk the scene's
+    Finds the render item as Foundry's ChangeRenderFrameRange sample does (walk the scene's
     items for type ``polyRender``), selects it, and reads its channels. ``None`` when the scene
     has no render item. Side effect: the render item becomes the artist's selected item. The
-    sample's ``item.id ?`` query takes no index (it follows the ``item.type ? n`` cursor), so
-    that form is kept.
+    ``item.id ?`` query takes no index: it reads the item the preceding ``item.type ? n`` query
+    moved to.
     """
     import lx
 

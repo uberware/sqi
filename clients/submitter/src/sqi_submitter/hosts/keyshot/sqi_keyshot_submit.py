@@ -2,7 +2,7 @@
 """sqi Submitter for KeyShot: a script that hands the open scene's studios to the sqi dialog.
 
 Install it with ``sqi-submit install-host keyshot``, which copies this file into KeyShot's user
-``Scripts`` folder. Then in KeyShot open **Window > Scripting Console** and run
+``Scripts`` folder. Then in KeyShot open Window > Scripting Console and run
 ``sqi_keyshot_submit``. KeyShot runs a script as ``__main__``, so the guard at the bottom calls
 ``main()``; importing the file does nothing. This file uses only KeyShot's own Python and the
 standard library and never imports ``sqi_submitter``: it writes a small context file describing
@@ -37,8 +37,8 @@ NOT_FOUND_MESSAGE = (
 
 
 def _settings_command() -> str:
-    # The home sqi-submit reads (Path.home()): on Windows that is USERPROFILE, which Python 3.7's
-    # expanduser ranks below HOME, often set to a network share there.
+    # Match sqi-submit's Path.home(): on Windows that is USERPROFILE. Python 3.7's expanduser
+    # prefers HOME, which is often a network share there.
     home = (os.environ.get("USERPROFILE") if sys.platform == "win32" else None) or (
         os.path.expanduser("~")
     )
@@ -143,9 +143,9 @@ _READ_FAILED = "sqi could not read the scene: "
 def _frame_range(info: Any) -> str | None:
     """The animation's frames as ``"1-N"`` (``"1"`` for one frame), or ``None`` for none.
 
-    ``lux.getAnimationInfo()`` returns a dict whose ``frames`` entry is the frame count. KeyShot's
-    reference does not say whether frames are numbered from 0 or 1; AWS's submitter and KeyShot's
-    own quick start both count from 1, so this does too.
+    ``lux.getAnimationInfo()`` returns a dict whose ``frames`` entry is the frame count. Frames
+    are numbered from 1, as in KeyShot's quick start; the scripting reference does not state the
+    base.
     """
     count = info.get("frames") if isinstance(info, dict) else None
     if not isinstance(count, int) or isinstance(count, bool) or count < 1:

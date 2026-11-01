@@ -4,7 +4,7 @@ the sqi dialog.
 
 Install it with ``sqi-submit install-host unreal``, which copies this file and its startup hook
 ``init_unreal.py`` into ``Documents/UnrealEngine/Python`` (a folder the Editor puts on
-``sys.path`` and scans for ``init_unreal.py``), then restart the Editor; **Submit to sqi...**
+``sys.path`` and scans for ``init_unreal.py``), then restart the Editor; Submit to sqi...
 appears in the Tools menu. This file uses only the Editor's own Python and the standard library
 and never imports ``sqi_submitter``: it writes a small context file describing the enabled queue
 jobs and runs ``sqi-submit --context FILE``, whose Qt dialog does the rest.
@@ -38,8 +38,8 @@ NOT_FOUND_MESSAGE = (
 
 
 def _settings_command() -> str:
-    # The home sqi-submit reads (Path.home()): on Windows that is USERPROFILE, which Python 3.7's
-    # expanduser ranks below HOME, often set to a network share there.
+    # Match sqi-submit's Path.home(): on Windows that is USERPROFILE. Python 3.7's expanduser
+    # prefers HOME, which is often a network share there.
     home = (os.environ.get("USERPROFILE") if sys.platform == "win32" else None) or (
         os.path.expanduser("~")
     )
@@ -260,7 +260,7 @@ def submit() -> bool:
 
 
 def register_menu() -> None:
-    """Add **Submit to sqi...** to the Level Editor's Tools menu."""
+    """Add Submit to sqi... to the Level Editor's Tools menu."""
     import unreal
 
     menus = unreal.ToolMenus.get()

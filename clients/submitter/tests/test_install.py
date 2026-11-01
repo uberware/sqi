@@ -383,7 +383,7 @@ def test_install_host_guidance_for_a_real_hook_is_valid_to_append(
     """The printed lines go to the end of a studio's own file, after its imports and code.
 
     A ``from __future__`` line there is a SyntaxError, and without it an annotation is
-    evaluated when the line runs (an error on Python 3.7), so the lines may carry neither.
+    evaluated when the line runs (an error on Python 3.7), so the lines must carry neither.
     """
     dest = tmp_path / "startup"
     dest.mkdir()
@@ -425,7 +425,7 @@ def test_shipped_hooks_are_the_files_carrying_the_marker() -> None:
 def test_every_host_has_guidance_when_no_destination_is_known(
     monkeypatch: pytest.MonkeyPatch, host: str
 ) -> None:
-    """Each host needs its own hint and next step, or this path fails only for its artists."""
+    """With no default destination, every host's output names each file it ships."""
     monkeypatch.setattr(install, "default_destination", lambda host, platform, env: None)
     out = io.StringIO()
     assert install.install_host(host, None, out) == 0
@@ -551,8 +551,8 @@ def test_no_destination_prints_the_hook_lines_to_append(
 ) -> None:
     """With no default folder the artist may already own the hook-named file: show the lines.
 
-    Copying the shipped hook verbatim over it would bring back the ``__future__`` import
-    (a SyntaxError mid-file) and the marker (a later install would overwrite their file).
+    The lines carry neither the ``__future__`` import (a SyntaxError mid-file) nor the marker
+    (with it, a later install would overwrite the artist's file).
     """
     monkeypatch.setattr(install, "default_destination", lambda host, platform, env: None)
     out = io.StringIO()
@@ -591,7 +591,7 @@ def test_no_destination_hint_for_other_hosts_prints_no_hook_lines(
 def test_install_host_mentioning_the_marker_is_still_a_foreign_hook(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, studio: str
 ) -> None:
-    """Only a line that is the marker marks a file as ours, not text that mentions it."""
+    """Only a whole line equal to the marker makes a file sqi's; a mention does not."""
     _stand_in_hook(tmp_path, monkeypatch)
     dest = tmp_path / "startup"
     dest.mkdir()

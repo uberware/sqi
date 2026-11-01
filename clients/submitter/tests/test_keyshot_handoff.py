@@ -72,7 +72,7 @@ class Lux:
         return self.animation
 
     def _get_studios(self) -> Iterator[str]:
-        """The documented default "yields names": a generator, not a list."""
+        """KeyShot documents the default form as yielding names, so this returns an iterator."""
         self.calls.append("getStudios")
         return iter(self.studios)
 
@@ -97,7 +97,7 @@ class Lux:
 
 @pytest.fixture
 def lux(fake_host_module: FakeHost, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Lux:
-    # Tests that write a context file must never touch the real temp folder.
+    # Context files are written under tmp_path, not the real temp folder.
     monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
     return Lux(fake_host_module)
 

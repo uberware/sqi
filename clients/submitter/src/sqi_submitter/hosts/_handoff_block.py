@@ -31,8 +31,8 @@ NOT_FOUND_MESSAGE = (
 
 
 def _settings_command() -> str:
-    # The home sqi-submit reads (Path.home()): on Windows that is USERPROFILE, which Python 3.7's
-    # expanduser ranks below HOME, often set to a network share there.
+    # Match sqi-submit's Path.home(): on Windows that is USERPROFILE. Python 3.7's expanduser
+    # prefers HOME, which is often a network share there.
     home = (os.environ.get("USERPROFILE") if sys.platform == "win32" else None) or (
         os.path.expanduser("~")
     )

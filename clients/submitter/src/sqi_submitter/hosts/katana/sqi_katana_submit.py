@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""sqi Submitter for Katana: one **sqi > Submit to sqi...** menu entry that hands the project's
+"""sqi Submitter for Katana: one sqi > Submit to sqi... menu entry that hands the project's
 Render nodes to the sqi dialog.
 
 Install it with ``sqi-submit install-host katana``, which copies this file and its startup hook
@@ -39,8 +39,8 @@ NOT_FOUND_MESSAGE = (
 
 
 def _settings_command() -> str:
-    # The home sqi-submit reads (Path.home()): on Windows that is USERPROFILE, which Python 3.7's
-    # expanduser ranks below HOME, often set to a network share there.
+    # Match sqi-submit's Path.home(): on Windows that is USERPROFILE. Python 3.7's expanduser
+    # prefers HOME, which is often a network share there.
     home = (os.environ.get("USERPROFILE") if sys.platform == "win32" else None) or (
         os.path.expanduser("~")
     )
@@ -229,8 +229,8 @@ def read_scene() -> dict[str, object]:
 def _qt_widgets() -> Any:
     """Katana's own ``QtWidgets``: PySide6 from Katana 8, PyQt5 before.
 
-    The developer guide has the binding chosen from the version, not by try/except, since a
-    stray installed binding would import into the wrong Katana.
+    The binding is chosen from the version, as Katana's developer guide does: a try/except
+    could import a stray installed binding into the wrong Katana.
     """
     import KatanaInfo
 
@@ -298,7 +298,7 @@ def submit() -> bool:
 
 
 def install_menu(**_kwargs: Any) -> None:
-    """Add **sqi > Submit to sqi...** to Katana's main menu bar.
+    """Add sqi > Submit to sqi... to Katana's main menu bar.
 
     Registered as an ``onStartupComplete`` callback, which Katana calls with keyword arguments.
     A session with no UI (``katana --batch`` on a farm machine with this user's Startup folder)

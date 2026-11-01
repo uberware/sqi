@@ -65,8 +65,8 @@ class VREDAdapter(HostAdapter):
         return targets
 
     def is_scene_modified(self) -> bool:
-        # vrFileIOService has no unsaved-changes query; VRED shows one as a "*" in the window
-        # title, which is also what AWS's own VRED submitter reads.
+        # vrFileIOService has no unsaved-changes query; VRED marks unsaved changes with a "*" in
+        # the window title.
         return "*" in str(self._services.main_window.windowTitle())
 
     def save_scene(self) -> bool:

@@ -4,10 +4,10 @@
 Fusion bundles Lua but not Python, so the submitter is one self-contained Lua file. Its pure
 functions (JSON writing, frame ranges, settings parsing, launch strings) and its entry point
 run here under a stock Lua interpreter (``lua5.1``, ``luajit`` or ``lua`` on ``PATH``) with a
-fake ``comp`` and ``os.execute``. The Lua-run tests skip without an interpreter unless
-``SQI_REQUIRE_LUA=1``, which turns that skip into a failure (CI sets it: a test that only ever
-skips verifies nothing). What no interpreter can show -- Fusion's own attribute values, the
-AskUser dialog, the real launch -- is on the manual checklist.
+fake ``comp`` and ``os.execute``. The Lua-run tests skip without an interpreter;
+``SQI_REQUIRE_LUA=1``, which CI sets, turns that skip into a failure. Fusion's own attribute
+values, the AskUser dialog and the real launch are on the Fusion checklist in
+``docs/dcc-submitters.md``.
 """
 
 from __future__ import annotations
@@ -99,7 +99,8 @@ def test_fusion_script_loads_under_lua51(lua: str) -> None:
     """Fusion runs Lua 5.1 (or LuaJIT, which reports 5.1), so the script must load under it.
 
     A newer Lua also accepts ``goto``, ``//`` and the ``utf8`` library, so loading the script
-    there shows nothing about Fusion. CI installs ``lua5.1``; elsewhere this skips.
+    there proves nothing about Fusion. Under another version this skips, or fails with
+    ``SQI_REQUIRE_LUA=1``.
     """
     version = run_lua(lua, 'out("version", _VERSION)')["version"]
     if version != "Lua 5.1":
@@ -139,7 +140,7 @@ def test_fusion_json_string_escapes(lua: str) -> None:
     assert got["utf8"] == '"caf\u00e9 \u65e5\u672c"'  # bytes >= 0x80 pass through unchanged
     assert got["del"] == '"a\x7fb"'
     assert got["empty"] == '""'
-    # And every one of them is JSON that reads back to the input.
+    # Each is JSON that reads back to the input.
     for key, value in cases.items():
         assert json.loads(got[key]) == value, key
 
@@ -429,7 +430,7 @@ def test_fusion_unsaved_comp_is_refused(lua: str, tmp_path: Path) -> None:
     got = run_lua(lua, _entry(tmp_path, filename=""), {"SQI_SETTINGS": ""})
     assert got["ok"] == "false"
     assert _events(got) == [f"ask:Submit to sqi|{UNSAVED}"]
-    # The Console always gets it first: AskUser may accept the control table and show nothing.
+    # The Console always gets the message: AskUser may accept the control table and show nothing.
     assert got["printed"] == f"Submit to sqi: {UNSAVED}"
 
 
@@ -538,7 +539,8 @@ def test_fusion_path_search_skips_what_cannot_run(lua: str, tmp_path: Path, bloc
 
 
 def test_fusion_settings_path(lua: str) -> None:
-    """The home sqi-submit itself reads: USERPROFILE on Windows even when HOME is set there."""
+    """The settings file sits under the home sqi-submit reads: USERPROFILE on Windows, even with
+    HOME set."""
     body = r"""
 local env = { HOME = "/net/home/a", USERPROFILE = "C:\\Users\\a" }
 os.getenv = function(k) return env[k] end

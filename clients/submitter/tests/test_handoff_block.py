@@ -348,7 +348,7 @@ def test_block_identical_in_every_host() -> None:
 
 
 def test_every_handoff_python_file_carries_the_block_or_is_a_hook() -> None:
-    """A shipped host file that lost (or never got) the block would escape the check above."""
+    """Every Python file a handoff host ships carries the launch block or is a hook."""
     found = set(HANDOFF_HOST_FILES)
     for host, path in _python_host_files():
         hook = install.HOOK_MARKER in path.read_text(encoding="utf-8").splitlines()

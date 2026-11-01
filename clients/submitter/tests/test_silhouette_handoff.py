@@ -94,10 +94,10 @@ class Fx:
 
 @pytest.fixture
 def fx(fake_host_module: FakeHost, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Fx:
-    # Tests that write a context file must never touch the real temp folder.
+    # Context files are written under tmp_path, not the real temp folder.
     monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
-    # No Qt unless a test fakes one: an earlier dialog test can leave a real QApplication alive,
-    # and a real modal QMessageBox would then block the run forever.
+    # No Qt unless a test fakes one: another test can leave a real QApplication alive, and a real
+    # modal QMessageBox would then block the run.
     monkeypatch.setitem(sys.modules, "PySide6", None)
     monkeypatch.setitem(sys.modules, "PySide2", None)
     return Fx(fake_host_module)
@@ -128,7 +128,7 @@ def _fake_qt(fake_host_module: FakeHost, binding: str, shown: list[str], app: bo
     ],
 )
 def test_silhouette_scene_path_is_the_bundle(path: str, expected: str) -> None:
-    """A file path inside the bundle would fail every render, whatever OS made the path."""
+    """The scene path is the ``.sfx`` bundle folder ``sfxcmd`` needs, for either OS's paths."""
     assert _module().bundle_path(path) == expected
 
 
@@ -297,7 +297,7 @@ def test_silhouette_launch_problems_are_shown_not_raised(
 def test_silhouette_messages_use_the_bundled_qt(
     fx: Fx, fake_host_module: FakeHost, monkeypatch: pytest.MonkeyPatch, binding: str
 ) -> None:
-    """Silhouette 2026 bundles PySide6, 2022 PySide2; whichever imports is the one shown."""
+    """Silhouette bundles PySide6 from 2026, PySide2 before; the message uses whichever imports."""
     shown: list[str] = []
     _fake_qt(fake_host_module, binding, shown)
     if binding == "PySide2":
@@ -339,7 +339,7 @@ def test_silhouette_register_adds_action(fx: Fx, monkeypatch: pytest.MonkeyPatch
     action = fx.actions[0]
     assert isinstance(action, fx.module.Action)
     assert action.label == "Submit to sqi…"
-    assert action.available() is True  # the guide: an Action implements available() and execute()
+    assert action.available() is True  # a Silhouette Action implements available() and execute()
     action.execute()
     assert calls == ["submit"]
 

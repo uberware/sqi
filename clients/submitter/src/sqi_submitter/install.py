@@ -54,7 +54,7 @@ HOST_FILES: dict[str, list[str]] = {
 # (tests swap in stand-in files) leaves the set of hosts this command accepts unchanged.
 KNOWN_HOSTS: tuple[str, ...] = tuple(HOST_FILES)
 
-# A whole line that marks a shipped file as a *hook*: a startup file whose name the host fixes
+# A whole line that marks a shipped file as a hook: a startup file whose name the host fixes
 # (Unreal's init_unreal.py, Katana's init.py, Silhouette's sfxuser.py), so a studio may already
 # have its own. Install never overwrites a file in a hook's place that lacks the marker; it
 # prints the lines to append instead.
@@ -132,8 +132,7 @@ def _modo_scripts_folder(platform: str, env: Mapping[str, str]) -> Path | None:
 def _fusion_scripts_folder(platform: str, env: Mapping[str, str]) -> Path | None:
     """Fusion's per-user ``Scripts/Comp`` folder (the ``Scripts:/Comp`` path map)."""
     leaf = Path("Blackmagic Design") / "Fusion" / "Scripts" / "Comp"
-    # Linux spells the vendor folder without the space, as the Fusion Render Node's own
-    # install folder does (/opt/BlackmagicDesign/...).
+    # On Linux the vendor folder name has no space.
     linux_leaf = Path("BlackmagicDesign") / "Fusion" / "Scripts" / "Comp"
     if platform == "win32":
         appdata = env.get("APPDATA")
@@ -153,7 +152,7 @@ def default_destination(host: str, platform: str, env: Mapping[str, str]) -> Pat
     always return ``None``. Unreal's is ``Documents/UnrealEngine/Python`` under the user's
     profile, which the Editor puts on its Python path. Katana's is ``.katana/Startup`` under the
     home folder on Windows and Linux (``None`` on macOS), where Katana runs ``init.py`` at
-    startup. Cinema 4D's preferences folder carries a version suffix we cannot know, so it is
+    startup. Cinema 4D's preferences folder carries a version suffix that cannot be known, so it is
     returned only when exactly one ``Maxon Cinema 4D *`` folder exists. Silhouette's is
     ``scripts`` under ``SFX_USER_PATH`` when that variable is set, else ``None``. KeyShot's is the
     ``Scripts`` folder of its one ``KeyShot*`` folder in Documents (Windows and macOS only: KeyShot

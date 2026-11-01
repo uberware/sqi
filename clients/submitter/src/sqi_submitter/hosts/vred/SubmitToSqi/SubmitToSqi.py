@@ -6,9 +6,10 @@ package has to be importable there (VRED supplies Qt itself; never install the `
 into it). The import happens lazily, on the first click, so a VRED without it still starts
 and the artist gets a message naming the fix instead of a traceback in VRED's terminal.
 
-VRED puts its V2 services (``vrFileIOService``, ``vrCameraService``, ``vrMainWindow``) in
-``builtins`` and makes ``vrRenderSettings`` an importable module. Both are read only when the
-menu is used or built, so this file loads in a plain interpreter too.
+VRED injects its V2 services (``vrFileIOService``, ``vrCameraService``, ``vrMainWindow``) as
+names this file reads from ``builtins`` or its own globals, and makes ``vrRenderSettings`` an
+importable module. Both are read only when the menu is used or built, so this file loads in a
+plain interpreter too.
 """
 
 from __future__ import annotations

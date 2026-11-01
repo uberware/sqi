@@ -359,7 +359,7 @@ def test_katana_launch_problems_are_shown_not_raised(
 def test_katana_messages_use_the_binding_for_the_katana_version(
     katana: Katana, monkeypatch: pytest.MonkeyPatch, version: str, binding: str
 ) -> None:
-    """Katana 8 moved to PySide6; the guide says to choose by version, never by try/except."""
+    """Katana 8 and later use PySide6, earlier releases PyQt5; the version picks the binding."""
     monkeypatch.setitem(sys.modules, "KatanaInfo", SimpleNamespace(version=version))
     shown: list[str] = []
     other = "PySide6" if binding == "PyQt5" else "PyQt5"

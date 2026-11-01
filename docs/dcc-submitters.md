@@ -512,7 +512,7 @@ the job. The scene is the project (`.uproject`). Before it launches, the
 submitter saves what is unsaved, through the Editor's own save dialog; if
 anything is still unsaved afterwards it stops with "Save your changes before
 submitting — the farm renders the saved project." A queue job that another
-machine could not render is **left out**, and a dialog names each one and why
+machine could not render is left out, and a dialog names each one and why
 before anything launches, with **OK** to go on without them and **Cancel** to
 stop:
 
@@ -524,7 +524,7 @@ stop:
 `unreal-mrq-job-render` is the per-target product: each ticked job becomes one
 job, with `LevelSequence`, `Map` and `MovieRenderConfig` filled from the queue
 job. `unreal-mrq-queue-render` renders a saved queue asset as one task. It is
-**not pre-filled**: the handoff context has no scene-level field for a queue
+not pre-filled: the handoff context has no scene-level field for a queue
 asset, so the product is always listed and you type the saved queue's asset
 path (such as `/Game/Cinematics/MyQueue`) into **Queue Asset**. Neither product
 has a **Frame Range**: each queue job renders the range in its own config.
@@ -546,8 +546,8 @@ on `sys.path`, imports the module and registers the menu from Katana's
 1. Install `sqi-submit` on the machine: `pipx install "sqi-submitter[qt]"`.
 2. Run `sqi-submit install-host katana`. It copies both files into
    `~/.katana/Startup` (`%USERPROFILE%\.katana\Startup` on Windows), creating
-   it if needed. On macOS it has no default destination and prints the files'
-   paths; pass `--dest`. If `KATANA_USER_RESOURCE_DIRECTORY` points your user
+   it if needed. On macOS, where Katana does not run, it has no default
+   destination and prints the files' paths; pass `--dest`. If `KATANA_USER_RESOURCE_DIRECTORY` points your user
    resources somewhere else, pass `--dest <that folder>/Startup`.
 3. Restart Katana. A **sqi** menu with **Submit to sqi…** is added to the main
    menu bar once startup completes.
@@ -572,20 +572,20 @@ whole-scene Katana product.
 
 ### VRED
 
-VRED Pro runs the dialog **in-process**, as Maya does: VRED is documented to
-bundle PySide (6 from VRED 2024, 2 before), so `sqi-submitter` is installed into
-VRED's Python and a VRED **script plugin** adds the menu. The order matters, and
-several of the statements below come from documentation and reports rather than
-an install; see the checklist's list of what is unverified.
+VRED Pro runs the dialog **in-process**, as Maya does: VRED bundles PySide (6
+from VRED 2024, 2 before), so `sqi-submitter` is installed into VRED's Python
+and a VRED **script plugin** adds the menu. Follow the steps in order. Several
+statements below come from Autodesk's documentation and user reports and are
+unverified on an install; the [VRED checklist](#vred-checklist) lists them.
 
 1. **Turn VRED's Python sandbox off first.** In VRED, open **Edit →
    Preferences → General Settings → Script**, untick **Enable Python Sandbox**,
    and restart VRED. The sandbox is reported to block the imports the submitter
-   needs; verify on your install.
+   needs; check this on your install.
 2. **Install `sqi-submitter` into VRED's Python,** not the `[qt]` extra (VRED
-   is documented to supply Qt, and a second PySide6 in the process would be
-   expected to break it). VRED is reported to ship a full Python under its
-   install folder (verify the path on your install), so from a command prompt:
+   supplies its own Qt, and a second PySide6 in the process can conflict with
+   it). VRED ships a full Python under its install folder (check the path on
+   your install), so from a command prompt:
 
    ```sh
    "<VRED install>\lib\python\python.exe" -m pip install --target %USERPROFILE%\.sqi\vred-site sqi-submitter
@@ -651,7 +651,8 @@ file, so there is no hook and no menu entry.
 
 The targets are the scene's **studios**, named after the studio. KeyShot has a
 single animation timeline, so every target carries the same frame range,
-`1-<frame count>` from the animation, and a still scene yields `1`. An unsaved
+`1-<frame count>` from the animation (`1` for a single frame, blank when KeyShot
+reports no frame count). An unsaved
 scene is refused with "Save your scene before submitting"; a changed one is
 saved first. `keyshot-studio-render` is the per-target product (`Studio`);
 `keyshot-render` the whole-scene one. **Output File** is not pre-filled, since
@@ -669,8 +670,8 @@ Silhouette hands the open project to `sqi-submit`. The host side is
 startup script imports a module of that name from its user script folder.
 
 1. Install `sqi-submit` on the machine: `pipx install "sqi-submitter[qt]"`.
-2. Run `sqi-submit install-host silhouette`. **It needs the `SFX_USER_PATH`
-   environment variable.** With it set, the command copies both files into
+2. Run `sqi-submit install-host silhouette`. It needs the `SFX_USER_PATH`
+   environment variable. With it set, the command copies both files into
    `$SFX_USER_PATH/scripts`, creating the folder if needed. Without it, there is
    no default destination: the command prints the files' paths and the
    `$(SFX_USER_PATH)/scripts` pattern, and you copy them yourself or pass
@@ -705,7 +706,7 @@ bundled Qt (or in the console when there is none).
 
 ### Fusion
 
-Fusion hands the open comp to `sqi-submit`. **The host file is Lua.** Fusion
+Fusion hands the open comp to `sqi-submit`. The host file is Lua. Fusion
 bundles Lua but not Python (a Python install has to be added to it separately
 and version-matched to the Fusion build), so a Lua script is the one host file
 that works on every Fusion, as ExtendScript does for After Effects. It is
@@ -726,8 +727,8 @@ Fusion has no per-host setting for the program. The script finds `sqi-submit`
 from `sqi_submit_command` in `~/.sqi/submitter.json` (override the file with
 `$SQI_SUBMITTER_SETTINGS`), then on `PATH`; on Windows it prefers the windowed
 `sqi-submitw.exe` beside a located `sqi-submit.exe`. A path to `sqi-submit` or
-the temp folder that contains a double quote, or on Windows a `%`, is refused
-with a message rather than launched. The script reports problems in Fusion's
+the context file that contains a double quote, or on Windows a `%`, is refused
+with a message, and nothing is launched. The script reports problems in Fusion's
 Console and in a message dialog.
 
 The submission is the **whole comp**: the render command line cannot pick a
@@ -735,7 +736,7 @@ Saver, so Fusion offers no targets and `fusion-render` is a whole-scene
 product. **Frame Range** is the comp's render range. An unsaved comp is refused
 with "Save your scene before submitting"; a changed one is saved first. Unlike
 the Python hosts, the context file goes straight into the system temp folder
-(`%TEMP%` on Windows, a `os.tmpname` file on macOS and Linux), not into a
+(`%TEMP%` on Windows, an `os.tmpname` file on macOS and Linux), not into a
 `sqi-handoff` subfolder.
 
 > **For a submitted job to run,** the rendering worker needs the `fusion=true`
@@ -756,11 +757,11 @@ blesses a command, `sqi.submit`.
    Application Support/Luxology` on macOS, `~/.luxology` on Linux), creating
    folders as needed.
 3. Restart Modo, then run **`sqi.submit`** from the command entry, or map it to
-   a key. **No menu entry ships**: Foundry's documentation shows no way to add
-   one from a kit, so none was invented.
+   a key. No menu entry ships: Foundry's documentation shows no way to add one
+   from a kit.
 
 Whether Modo finds a kit under the user `Scripts` folder, rather than in a
-Kits folder, has **not been confirmed**: it heads the [Modo
+Kits folder, has not been confirmed: it heads the [Modo
 checklist](#modo-checklist). If the `sqi.submit` command does not exist after a
 restart, copy the `sqi` folder to a folder Modo loads kits from (the Foundry
 Kits page lists them) with `--dest`.
@@ -806,32 +807,32 @@ installs its script plugin the same way, and the plugin additionally needs
 
 With `--dest`, the host's files are copied into that one directory, and the
 command prints `copied <path>` for each file, then the host's next step. Most
-hosts' files land flat. **A host that needs a folder keeps its folder:** Modo's
+hosts' files land flat. A host that needs a folder keeps its folder: Modo's
 kit is copied as `<dir>/sqi/index.cfg` and `<dir>/sqi/lxserv/sqi_modo_submit.py`,
 and VRED's plugin as `<dir>/SubmitToSqi/SubmitToSqi.py`, so `--dest` names the
 folder that holds the kit or the plugin folder, not the kit itself. The copy
 overwrites a file of the same name, with one exception.
 
-**Startup files the host names are never overwritten.** Unreal runs a file
-called `init_unreal.py`, Katana `init.py` and Silhouette `sfxuser.py`, so you
-may already have one. The copies sqi ships carry the line `# sqi-submitter
-hook`. When the target of one of these three already exists and does **not**
-carry that line, it is yours: `install-host` leaves it alone, prints `kept your
-existing <path>; to add sqi, append these lines to it:` and then the shipped
-hook with the marker line and any `from __future__` line removed, and still
-copies the module beside it. Append those lines to your file; the marker is
-left out on purpose, so your file is not mistaken for sqi's and replaced by the
-next install. Once your file imports the sqi module, a later install prints
-`kept your existing <path>; it already loads sqi` instead, so the lines are
-never added twice. A file that does carry the marker is replaced like any other,
-and when it differs from the shipped hook (you edited it) the old copy is kept
-as `<name>.sqi-old` first. The marker counts only when it is a line of its own,
-so a file of yours that merely mentions the text in a comment or a string is
-still yours. When there is no
-default destination (nothing is copied), the command cannot look at your
-folder, so for each of the three hook files it prints `If you already have
-<name> there, append these lines to it instead:` and the same lines; do not
-copy the shipped hook over a file of yours.
+**Startup files whose name the host fixes are never overwritten.** Unreal runs
+a file called `init_unreal.py`, Katana `init.py` and Silhouette `sfxuser.py`,
+so you may already have one. The copies sqi ships carry the line
+`# sqi-submitter hook`. When the target of one of these three already exists
+and does not carry that line, it is yours: `install-host` leaves it alone,
+prints `kept your existing <path>; to add sqi, append these lines to it:` and
+then the shipped hook with the marker line and any `from __future__` line
+removed, and still copies the module beside it. Append those lines to your
+file. The marker is left out so your file is not mistaken for sqi's and
+replaced by the next install. Once your file imports the sqi module, a later
+install prints `kept your existing <path>; it already loads sqi` instead, so
+the lines are never added twice. A file that does carry the marker is replaced
+like any other, and when it differs from the shipped hook (you edited it) the
+old copy is kept as `<name>.sqi-old` first. The marker counts only when it is a
+line of its own, so a file of yours that mentions the text in a comment or a
+string is still yours. When there is no default destination (nothing is
+copied), the command cannot look at your folder, so for each of the three hook
+files it prints `If you already have <name> there, append these lines to it
+instead:` and the same lines; do not copy the shipped hook over a file of
+yours.
 
 Exit codes: **0** success (including "printed instructions instead of
 copying"); **1** a file could not be copied into the destination (`--dest`, or
@@ -1759,7 +1760,7 @@ After installing per [Installation per host](#installation-per-host):
   (`ToolMenuEntry(name=..., type=MultiBlockType.MENU_ENTRY)`, `set_label`,
   `set_string_command(ToolMenuStringCommandType.PYTHON, "", ...)`,
   `add_menu_entry("sqi", entry)`, `refresh_all_widgets()`) follows Epic's API
-  pages, not a run.
+  reference and has not been run.
 - **Refused-job detection.** That `job.get_preset_origin()` is null for a job
   whose settings were edited after loading a config (documented as returning the
   preset only while unmodified) and for a job with no config; that
@@ -1829,7 +1830,7 @@ After installing per [Installation per host](#installation-per-host):
   `farmSettings`, the RenderScript node's name for the same parameters. That
   the toggle's "on" value reads as `Yes`, `true`, `1` or a nonzero number is a
   guess: the docs say only "enabled".
-- `FarmAPI.GetKatanaFileName()`, `KatanaFile.IsFileDirty()`, `KatanaFile.Save()`,
+- `FarmAPI.GetKatanaFileName()`, `KatanaFile.IsFileDirty()`, `KatanaFile.Save(path)`,
   `NodegraphAPI.GetInTime()`/`GetOutTime()`/`GetAllNodesByType("Render")` and
   `node.isBypassed()`.
 - The message box's Qt binding, chosen from `KatanaInfo.version` (PySide6 from
@@ -1879,22 +1880,22 @@ support):**
   other than VRED's is never loaded.
 - **What VRED bundles.** That VRED supplies PySide (6 from 2024, 2 before),
   ships a full Python with pip or `ensurepip` under its install folder, and that
-  its sandbox is what blocks the import: all documented or reported, none seen
-  on an install.
+  its sandbox is what blocks the import: all documented or reported, none
+  confirmed on an install.
 - **Plugin in a subfolder.** That VRED loads `ScriptPlugins/SubmitToSqi/SubmitToSqi.py`
   (Autodesk documents the `ScriptPlugins` folder; a forum thread says every
   `.py` in it is a plugin; subfolders are not documented), and the
   `Documents\Autodesk\VRED-<version>` folder name `install-host` looks for.
 - That VRED puts `vrFileIOService`, `vrCameraService` and `vrMainWindow` in
-  `builtins` (the plugin reads them from there, as AWS's submitter does, and
-  falls back to its own module globals) and
-  makes `vrRenderSettings` an importable module; and
-  `onDestroyVREDScriptPlugin` as the unload callback.
+  `builtins` (the plugin reads them from there and falls back to its own module
+  globals; AWS's VRED submitter reads them from `builtins`) and makes
+  `vrRenderSettings` an importable module; and `onDestroyVREDScriptPlugin` as
+  the unload callback.
 - `vrFileIOService.getFileName()` and `saveFile(path)` (returns a bool).
 - **Modified-scene detection.** VRED has no unsaved-changes call, so the
   submitter looks for `*` in `vrMainWindow.windowTitle()`.
-- `vrCameraService.getAllViewpoints()` and each viewpoint's `getName()` (not on
-  the documentation pages that could be read; AWS's submitter uses them).
+- `vrCameraService.getAllViewpoints()` and each viewpoint's `getName()` (not
+  found in Autodesk's documentation; AWS's VRED submitter calls them).
 - `vrRenderSettings.getRenderAnimation()`, `getRenderStartFrame()`,
   `getRenderStopFrame()`, `getRenderFrameStep()` and `getRenderFilename()`.
   **`getRenderUseClipRange()` is not read**, so a scene that renders its clip
@@ -1929,11 +1930,11 @@ support):**
 **Verified only against fakes or documentation:**
 
 - **The frame base and `__main__`, the riskiest items.** No KeyShot document
-  says whether frame numbers start at 0 or 1; the submitter assumes 1, as
-  AWS's submitter and KeyShot's own quick start do. And the script ends in
+  says whether frame numbers start at 0 or 1; the submitter assumes 1 (AWS's
+  KeyShot submitter and KeyShot's quick start count from 1). The script ends in
   `if __name__ == "__main__": main()`: that KeyShot runs it as `__main__` from
-  the Scripting Console and the Scripts panel is assumed (AWS's submitter ends
-  the same way), not documented.
+  the Scripting Console and the Scripts panel is assumed, not documented (AWS's
+  KeyShot submitter ends the same way).
 - `lux.getSceneInfo()["file"]` as the open file, empty or absent for a scene
   never saved (the docs list the keys without their names; AWS reads `file`).
 - `lux.getAnimationInfo()["frames"]` as the frame count.
@@ -1977,11 +1978,11 @@ support):**
 **Verified only against fakes or documentation:**
 
 - **The startup loading route, the riskiest item.** That Silhouette's startup
-  script imports `sfxuser` from `$(SFX_USER_PATH)/scripts`. The evidence is the
-  Boris FX scripting wiki's search-order sentence and a reply from Boris FX
-  staff on their forum, not a run. `SFX_USER_PATH` itself is not defined in any
-  current document and its default value per OS is unknown, which is why there
-  is no default destination without it.
+  script imports `sfxuser` from `$(SFX_USER_PATH)/scripts`. This rests on the
+  search order given in the Boris FX scripting wiki and a Boris FX staff reply
+  on their forum, and has not been run. Boris FX's current documentation does
+  not define `SFX_USER_PATH` or give its default per OS, so there is no default
+  destination without it.
 - `fx.Action` subclassing with the label as the constructor argument,
   `available()` and `execute()`, `fx.addAction()`, and which menu the action
   lands in (the **Actions** menu is a guess).
@@ -2032,8 +2033,8 @@ support):**
 **Verified only against fakes or documentation:**
 
 - **`os.execute` launch and the console flash, the riskiest items.** That
-  Fusion's Lua exposes `os.execute` (no source says a Comp
-  script is sandboxed, and none says it is not), that `start "" "<exe>"
+  Fusion's Lua exposes `os.execute` (no documentation says whether a Comp
+  script is sandboxed), that `start "" "<exe>"
   --context "<file>"` returns at once on Windows and
   `'<exe>' --context '<file>' >/dev/null 2>&1 &` on macOS and Linux, and that
   the `cmd` window does not flash on Windows. The script reports a Fusion
@@ -2047,8 +2048,8 @@ support):**
   LuaJIT) does with the glue is not. CI installs `lua5.1` and sets
   `SQI_REQUIRE_LUA=1`, so a missing interpreter fails the Lua tests there
   instead of skipping them.
-- **`COMPB_Modified`.** It is not in the documented comp attribute list; the
-  evidence is one forum dump of `comp:GetAttrs()`. The script saves the comp
+- **`COMPB_Modified`.** It is not in the documented comp attribute list; it
+  appears in a forum post's dump of `comp:GetAttrs()`. The script saves the comp
   unless the attribute is exactly `false`, so an absent attribute rewrites an
   unchanged file.
 - `comp:Save(path)`: documented only as "Save the composition". The argument
@@ -2062,8 +2063,8 @@ support):**
 - **The Linux profile folder spelling.** `~/.fusion/BlackmagicDesign/...` is the
   vendor folder as the Fusion Render Node's own install folder spells it
   (`/opt/BlackmagicDesign/...`); AYON's Fusion integration spells the profile
-  folder `Blackmagic Design` (with a space), as Windows and macOS do. Nothing
-  from Blackmagic settles it.
+  folder `Blackmagic Design` (with a space), as Windows and macOS do.
+  Blackmagic's documentation does not say which is right.
 - Whether Fusion hands Lua UTF-8 paths on Windows. A path in the ANSI code page
   is passed through as the script is given it, and `sqi-submit` then rejects
   the context file as invalid UTF-8.
@@ -2103,11 +2104,12 @@ support):**
   under the user `Scripts` folder (rather than a Kits folder), that
   `<import>kit_sqi:lxserv</import>` resolves there, and that the `Scripts`
   subfolder of the per-user `Luxology` folder is the right place, none of it
-  has been run. **No menu entry is shipped:** the Kits documentation does not
-  show how a kit adds one.
+  has been run. No menu entry is shipped: the Kits documentation does not show
+  how a kit adds one.
 - **Pass groups.** `modo.Scene().renderPassGroups` is from community code, not
-  Foundry's documentation, and the least certain name here. Whether it yields
-  only render pass groups is delegated to Modo.
+  Foundry's documentation, and the least certain name here. The submitter does
+  not filter its result, so it relies on Modo returning only render pass
+  groups.
 - The render item: item type `polyRender`, found by looping
   `query sceneservice item.N ?` and `item.type ? <i>`, then `item.id ?` with no
   index and `select.item`, and its `polyRender$first`/`$last` channels read
@@ -2216,9 +2218,9 @@ names a file that exists:
 2. `sqi_submit_command` in `~/.sqi/submitter.json` (override the file with
    `$SQI_SUBMITTER_SETTINGS`). Every handoff host reads it except After Effects.
 3. `sqi-submit` on the host's `PATH`. Every handoff host except After Effects
-   (Fusion walks `PATH` itself, trying each `PATHEXT` extension on Windows and
-   skipping anything not executable on macOS and Linux, rather than start a
-   shell to run `where`). This is
+   (Fusion searches `PATH` itself: on Windows it tries each `PATHEXT`
+   extension without starting a shell, and on macOS and Linux it skips
+   anything that is not an executable file). This is
    unreliable inside macOS GUI applications, which do not inherit the shell's
    `PATH`; on macOS set it in step 1 or 2.
 

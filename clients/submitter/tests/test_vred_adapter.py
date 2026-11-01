@@ -168,7 +168,7 @@ def test_vred_save_scene_saves_in_place() -> None:
 
 
 def test_vred_save_scene_reports_failure() -> None:
-    """saveFile returning False (read-only file, full disk) must not submit a stale scene."""
+    """save_scene reports False when saveFile does (read-only file, full disk)."""
     vred = FakeVred(save_result=False)
     assert vred.adapter().save_scene() is False
     assert vred.saved == ["D:/shows/a/shot_010.vpb"]
@@ -269,7 +269,7 @@ def _plugin() -> ModuleType:
 
 
 def test_vred_plugin_loads_outside_vred() -> None:
-    """VRED's globals are absent in a plain interpreter: loading must register nothing."""
+    """The plugin loads in a plain interpreter, where VRED's globals are absent."""
     module = _plugin()
     assert callable(module.load_submitter)
     assert callable(module.onDestroyVREDScriptPlugin)
@@ -280,7 +280,7 @@ def test_vred_plugin_reports_missing_sqi_submitter(
 ) -> None:
     monkeypatch.delenv("SQI_SUBMITTER_SITE", raising=False)
     plugin = _plugin()
-    monkeypatch.setitem(sys.modules, "sqi_submitter", None)  # the import now fails
+    monkeypatch.setitem(sys.modules, "sqi_submitter", None)  # makes the import fail
     loaded, message = plugin.load_submitter(str(tmp_path / "absent.json"))
     assert loaded is None
     assert message is not None
@@ -396,7 +396,7 @@ def test_vred_plugin_click_opens_the_submitter_with_vreds_services(
 
 
 def test_vred_plugin_click_reports_a_missing_vred_api(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Outside VRED (or on a build that renamed a service) the artist sees why, not a traceback."""
+    """Outside VRED, or with a service renamed, the artist sees a message naming VRED."""
     plugin = _plugin()
     shown: list[str] = []
     monkeypatch.setattr(plugin, "load_submitter", lambda path: (SimpleNamespace(), None))
@@ -454,7 +454,7 @@ def test_vred_plugin_click_shows_the_message_for_a_non_import_error(
 def test_vred_plugin_finds_services_injected_as_module_globals(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """If VRED injects its services into the plugin's namespace instead of builtins."""
+    """The plugin finds services VRED injects into its module namespace instead of builtins."""
     import builtins
 
     plugin = _plugin()
@@ -494,7 +494,7 @@ def test_vred_plugin_registers_the_menu_for_either_injection_route(
 
 
 def test_vred_plugin_warn_prints_ascii_only(capsys: pytest.CaptureFixture[str]) -> None:
-    """A narrow-encoding console must not raise on the em dash inside the guard."""
+    """A narrow-encoding console gets ASCII: an em dash prints as "?" instead of raising."""
     _plugin()._warn("Save your scene " + chr(0x2014) + " now")
     assert capsys.readouterr().out == "sqi: Save your scene ? now\n"
 

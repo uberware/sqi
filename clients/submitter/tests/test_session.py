@@ -191,8 +191,8 @@ def test_group_products_ignores_separators() -> None:
         assert len(rest) == 3
 
 
-def test_group_products_p5b_tokens() -> None:
-    """Each P5b host token finds its own presets by name, and nobody else's."""
+def test_group_products_each_host_token_finds_only_its_presets() -> None:
+    """Each host token below finds its own presets by name, and no others."""
     expected = {
         "unreal": ["unreal-mrq-job-render", "unreal-mrq-queue-render"],
         "katana": ["katana-render"],

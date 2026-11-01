@@ -12,8 +12,7 @@
 -- whole submitter. Keep it to Lua 5.1: no goto, no `//`, no utf8 library. The functions down
 -- to "Fusion glue" are pure or take their dependencies as arguments, and the tests run them
 -- under a stock Lua without Fusion. The glue needs a real Fusion: the manual checklist covers
--- it. Fusion's own Lua build is what runs this file, so keep to the standard os/io/string
--- libraries only.
+-- it. Fusion's own Lua build runs this file, so use only Lua's standard libraries.
 
 SQI_MSG = {
     -- The sentence every sqi host uses (\226\128\148 is an em dash in UTF-8).
