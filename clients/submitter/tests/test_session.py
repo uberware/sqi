@@ -194,7 +194,7 @@ def test_group_products_ignores_separators() -> None:
 def test_group_products_each_host_token_finds_only_its_presets() -> None:
     """Each host token below finds its own presets by name, and no others."""
     expected = {
-        "unreal": ["unreal-mrq-job-render", "unreal-mrq-queue-render"],
+        "unreal": ["unreal-mrq-job-render", "unreal-mrq-queue-render", "unreal-mrq-shot-render"],
         "katana": ["katana-render"],
         "vred": ["vred-render", "vred-viewpoint-render"],
         "keyshot": ["keyshot-render", "keyshot-studio-render"],

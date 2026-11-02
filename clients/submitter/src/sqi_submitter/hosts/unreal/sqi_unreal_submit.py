@@ -145,6 +145,8 @@ _NO_JOBS = (
 _NONE_RENDERABLE_HEAD = (
     "None of the queue's enabled jobs can render on the farm, so nothing was submitted:"
 )
+_MAX_SHOTS = 1000  # the unreal-mrq-shot-render preset's limits on Shots
+_MAX_SHOT_NAME = 256
 _TOOLS_MENU = "LevelEditor.MainMenu.Tools"
 _MENU_COMMAND = "import sqi_unreal_submit; sqi_unreal_submit.submit()"
 
@@ -156,6 +158,48 @@ def asset_path_problem(path: str) -> str | None:
     if path.startswith("/"):
         return None
     return "is not an asset path"
+
+
+def _object_path(path: str) -> str:
+    """``Package.Asset`` for a path that may name only the package (``/Game/Seq/S1``)."""
+    leaf = path.rsplit("/", 1)[-1]
+    return path if "." in leaf else path + "." + leaf
+
+
+def _asset_name(path: str) -> str:
+    """The asset's own name: ``/Game/Cinematics/SEQ_Hero.SEQ_Hero`` is ``SEQ_Hero``."""
+    return path.rsplit("/", 1)[-1].split(".")[0]
+
+
+def enabled_shots(job: Any, sequence: str) -> tuple[list[str], str | None]:
+    """The names of the job's enabled shots, or ``([], "<why they cannot be sent>")``.
+
+    The job's shot list is rebuilt from its level sequence first, as the farm does before it
+    picks a shot, so both sides see the same entries. A shot is named by its camera cut's
+    outer name, or after the sequence when it has none; a name repeated by several camera cuts
+    is one shot.
+    """
+    import unreal
+
+    asset = unreal.EditorAssetLibrary.load_asset(_object_path(sequence))
+    if asset is None:
+        return [], "its level sequence could not be loaded"
+    unreal.MoviePipelineLibrary.update_job_shot_list_from_sequence(asset, job)
+    fallback = _asset_name(sequence)
+    names: list[str] = []
+    for entry in job.shot_info:
+        if not entry.enabled:
+            continue
+        name = str(entry.outer_name or "") or fallback
+        if name not in names:
+            names.append(name)
+    if not names:
+        return [], "no enabled shots"
+    if len(names) > _MAX_SHOTS:
+        return [], f"more than {_MAX_SHOTS} shots"
+    if any(len(name) > _MAX_SHOT_NAME for name in names):
+        return [], f"shot name longer than {_MAX_SHOT_NAME} characters"
+    return names, None
 
 
 def job_target(job: Any) -> tuple[dict[str, object] | None, str | None]:
@@ -175,6 +219,9 @@ def job_target(job: Any) -> tuple[dict[str, object] | None, str | None]:
         problem = asset_path_problem(value)
         if problem is not None:
             return None, f"{name}: its {label} {problem}"
+    shots, shots_problem = enabled_shots(job, sequence)
+    if shots_problem is not None:
+        return None, f"{name}: {shots_problem}"
     target: dict[str, object] = {
         "name": name,
         "kind": "mrq_job",
@@ -184,6 +231,7 @@ def job_target(job: Any) -> tuple[dict[str, object] | None, str | None]:
             "LevelSequence": sequence,
             "Map": map_path,
             "MovieRenderConfig": str(config.get_path_name()),
+            "Shots": json.dumps(shots),
         },
         "locked": [],
     }

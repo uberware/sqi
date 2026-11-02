@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -44,6 +45,11 @@ class Path_:
         return self.text
 
 
+def _shot(outer_name: str, *, enabled: bool = True) -> SimpleNamespace:
+    """A ``MoviePipelineExecutorShot`` entry of a job's ``shot_info``."""
+    return SimpleNamespace(outer_name=outer_name, enabled=enabled)
+
+
 def _job(
     name: str = "Hero",
     *,
@@ -51,7 +57,12 @@ def _job(
     map_path: str = "/Game/Maps/Hero.Hero",
     config: str | None = "/Game/Cfg/Hi.Hi",
     enabled: bool = True,
+    shots: list[SimpleNamespace] | None = None,
 ) -> SimpleNamespace:
+    """A queue job whose shot list is empty until ``update_job_shot_list_from_sequence`` runs.
+
+    ``shots`` is what the sequence yields on that call (default: one enabled shot, ``sh010``).
+    """
     origin = SimpleNamespace(get_path_name=lambda: config) if config is not None else None
     return SimpleNamespace(
         job_name=name,
@@ -59,6 +70,8 @@ def _job(
         map=Path_(map_path),
         is_enabled=lambda: enabled,
         get_preset_origin=lambda: origin,
+        shot_info=[],
+        sequence_shots=[_shot("sh010")] if shots is None else shots,
     )
 
 
@@ -123,6 +136,18 @@ class Unreal:
         queue = SimpleNamespace(get_jobs=lambda: self.jobs)
         subsystem = SimpleNamespace(get_queue=lambda: queue)
         self.warnings: list[str] = []
+        self.loaded: list[str] = []
+        self.missing_assets: set[str] = set()
+        self.updates: list[tuple[Any, SimpleNamespace]] = []
+
+        def load_asset(path: str) -> object | None:
+            self.loaded.append(path)
+            return None if path in self.missing_assets else SimpleNamespace(path=path)
+
+        def update_shots(sequence: Any, job: SimpleNamespace) -> None:
+            self.updates.append((sequence, job))
+            job.shot_info = list(job.sequence_shots)
+
         self.module = fake_host_module(
             "unreal",
             MoviePipelineQueueSubsystem=type("MoviePipelineQueueSubsystem", (), {}),
@@ -140,6 +165,8 @@ class Unreal:
                 get_dirty_content_packages=lambda: self.content_dirty,
                 save_dirty_packages_with_dialog=save,
             ),
+            EditorAssetLibrary=SimpleNamespace(load_asset=load_asset),
+            MoviePipelineLibrary=SimpleNamespace(update_job_shot_list_from_sequence=update_shots),
             EditorDialog=SimpleNamespace(show_message=show),
             AppMsgType=SimpleNamespace(OK="MSG_OK", OK_CANCEL="MSG_OK_CANCEL"),
             AppReturnType=SimpleNamespace(OK="OK", CANCEL="CANCEL"),
@@ -176,6 +203,7 @@ def test_unreal_read_scene_enabled_jobs_only(
             "LevelSequence": "/Game/Seq/S1.S1",
             "Map": "/Game/Maps/Hero.Hero",
             "MovieRenderConfig": "/Game/Cfg/Hi.Hi",
+            "Shots": json.dumps(["sh010"]),
         }
     assert data["host"] == {"name": "unreal", "display_name": "Unreal Editor", "version": "5.4.2"}
     assert data["scene"] == {
@@ -187,6 +215,114 @@ def test_unreal_read_scene_enabled_jobs_only(
     adapter = load_context(module.write_context(data))
     assert adapter.host_name == "unreal"
     assert [t.name for t in adapter.render_targets()] == ["A", "B"]
+
+
+def _shots_of(unreal: Unreal, job: SimpleNamespace) -> list[str]:
+    unreal.jobs = [job]
+    data, reasons = _module().read_scene()
+    assert reasons == []
+    [target] = data["targets"]
+    extra = target["extra"]
+    assert isinstance(extra, dict)
+    return list(json.loads(extra["Shots"]))
+
+
+def test_unreal_target_carries_enabled_shots_in_order(unreal: Unreal) -> None:
+    job = _job(shots=[_shot("sh010"), _shot("sh015", enabled=False), _shot("sh020")])
+    unreal.jobs = [job]
+    data, reasons = _module().read_scene()
+    assert reasons == []
+    [target] = data["targets"]
+    assert target["extra"]["Shots"] == json.dumps(["sh010", "sh020"])
+
+
+def test_unreal_shots_drop_duplicates_keeping_the_first(unreal: Unreal) -> None:
+    job = _job(shots=[_shot("sh020"), _shot("sh010"), _shot("sh020"), _shot("sh010")])
+    assert _shots_of(unreal, job) == ["sh020", "sh010"]
+
+
+def test_unreal_shot_without_outer_name_is_named_after_the_sequence(unreal: Unreal) -> None:
+    job = _job(sequence="/Game/Cinematics/SEQ_Hero.SEQ_Hero", shots=[_shot(""), _shot("sh020")])
+    assert _shots_of(unreal, job) == ["SEQ_Hero", "sh020"]
+
+
+def test_unreal_sequence_name_stands_in_for_a_bare_package_path(unreal: Unreal) -> None:
+    job = _job(sequence="/Game/Cinematics/SEQ_Hero", shots=[_shot("")])
+    assert _shots_of(unreal, job) == ["SEQ_Hero"]
+
+
+def test_unreal_shot_list_is_rebuilt_from_the_sequence_before_reading(unreal: Unreal) -> None:
+    job = _job(sequence="/Game/Seq/S1.S1", shots=[_shot("sh010")])
+    assert job.shot_info == []
+    assert _shots_of(unreal, job) == ["sh010"]  # empty until the update ran
+    assert unreal.loaded == ["/Game/Seq/S1.S1"]
+    [(sequence, updated)] = unreal.updates
+    assert sequence.path == "/Game/Seq/S1.S1" and updated is job
+
+
+def test_unreal_bare_package_sequence_is_loaded_as_package_dot_asset(unreal: Unreal) -> None:
+    _shots_of(unreal, _job(sequence="/Game/Seq/S1"))
+    assert unreal.loaded == ["/Game/Seq/S1.S1"]
+
+
+def test_unreal_job_with_every_shot_disabled_is_refused(unreal: Unreal) -> None:
+    unreal.jobs = [
+        _job("Off", shots=[_shot("sh010", enabled=False), _shot("sh020", enabled=False)]),
+        _job("Fine"),
+    ]
+    data, reasons = _module().read_scene()
+    assert [t["name"] for t in data["targets"]] == ["Fine"]
+    assert reasons == ["Off: no enabled shots"]
+
+
+def test_unreal_job_with_no_shots_at_all_is_refused(unreal: Unreal) -> None:
+    unreal.jobs = [_job("Empty", shots=[])]
+    data, reasons = _module().read_scene()
+    assert data["targets"] == []
+    assert reasons == ["Empty: no enabled shots"]
+
+
+def test_unreal_job_whose_sequence_cannot_be_loaded_is_refused(unreal: Unreal) -> None:
+    unreal.missing_assets = {"/Game/Seq/Gone.Gone"}
+    unreal.jobs = [_job("Gone", sequence="/Game/Seq/Gone.Gone")]
+    data, reasons = _module().read_scene()
+    assert data["targets"] == []
+    assert reasons == ["Gone: its level sequence could not be loaded"]
+    assert unreal.updates == []
+
+
+def test_unreal_shot_name_over_the_preset_limit_is_refused(unreal: Unreal) -> None:
+    unreal.jobs = [_job("Long", shots=[_shot("a" * 256), _shot("b" * 257)]), _job("Fine")]
+    data, reasons = _module().read_scene()
+    assert [t["name"] for t in data["targets"]] == ["Fine"]
+    assert reasons == ["Long: shot name longer than 256 characters"]
+
+
+def test_unreal_shot_name_of_exactly_the_limit_is_kept(unreal: Unreal) -> None:
+    assert _shots_of(unreal, _job(shots=[_shot("a" * 256)])) == ["a" * 256]
+
+
+def test_unreal_more_shots_than_the_preset_limit_is_refused(unreal: Unreal) -> None:
+    unreal.jobs = [_job("Many", shots=[_shot(f"sh{n:04d}") for n in range(1001)])]
+    data, reasons = _module().read_scene()
+    assert data["targets"] == []
+    assert reasons == ["Many: more than 1000 shots"]
+
+
+def test_unreal_exactly_the_shot_count_limit_is_kept(unreal: Unreal) -> None:
+    names = [f"sh{n:04d}" for n in range(1000)]
+    assert _shots_of(unreal, _job(shots=[_shot(n) for n in names])) == names
+
+
+def test_unreal_shot_refusal_is_shown_through_submit(
+    unreal: Unreal, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    unreal.jobs = [_job("Off", shots=[_shot("sh010", enabled=False)])]
+    stub_launch(module, monkeypatch, unreal.events)
+    assert module.submit() is False
+    assert unreal.events == []
+    assert unreal.messages == [("sqi", NONE_RENDERABLE_HEAD + "\nOff: no enabled shots", "MSG_OK")]
 
 
 def test_unreal_job_without_saved_config_is_excluded_and_named(unreal: Unreal) -> None:

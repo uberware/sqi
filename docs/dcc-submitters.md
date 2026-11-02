@@ -518,7 +518,13 @@ stop:
 - the job's render settings were edited in the queue but not saved as a Movie
   Render Pipeline config asset (the job has no config asset to point at);
 - the job's map or level sequence is not a saved asset (an untitled map, or a
-  path under `/Temp/`).
+  path under `/Temp/`);
+- the job has no enabled shot ("no enabled shots"): every entry of its shot list
+  is switched off in the queue, or the sequence has none;
+- the job has more shots than `unreal-mrq-shot-render` accepts ("more than 1000
+  shots"), or a shot name longer than its 256-character limit ("shot name longer
+  than 256 characters"). The submitter names the limit here rather than let the
+  server reject the job without saying which target caused it.
 
 If nothing is left to submit, the submitter launches nothing and says why in a
 message with only **OK**. An empty queue, or one whose jobs are all disabled,
@@ -528,9 +534,28 @@ When every enabled job is one of the refused kinds above, the message is "None
 of the queue's enabled jobs can render on the farm, so nothing was submitted:"
 followed by each job and its reason.
 
-`unreal-mrq-job-render` is the per-target product: each ticked job becomes one
-job, with `LevelSequence`, `Map` and `MovieRenderConfig` filled from the queue
-job. `unreal-mrq-queue-render` renders a saved queue asset as one task. It is
+Each target also carries its **shots**. Before reading them the submitter loads
+the job's level sequence and calls `update_job_shot_list_from_sequence` on the
+job, as the farm's script does, so both sides see the same shot list; this
+refreshes the shot list shown in the open Movie Render Queue. The enabled
+entries become the target's `Shots`, in queue order. An entry is named by the
+outer name of its camera cut, or after the level sequence (`SEQ_Hero` for
+`/Game/Cinematics/SEQ_Hero.SEQ_Hero`) when it has none, and a name that appears
+twice is listed once.
+
+Two products are per-target for a queue job, and the dialog lists both: pick
+the one that suits the job.
+
+- `unreal-mrq-job-render` makes one job per ticked queue job, rendered as one
+  task, with `LevelSequence`, `Map` and `MovieRenderConfig` filled from the
+  queue job. It ignores the shots.
+- `unreal-mrq-shot-render` makes one job per ticked queue job as well, with the
+  same three values and **Shots** filled with the job's enabled shots, one
+  list entry each; the job renders one task per shot, so the shots of a
+  sequence render side by side on several workers. **Shots** belongs to the
+  target: edit the queue to change it, not the list in the dialog.
+
+`unreal-mrq-queue-render` renders a saved queue asset as one task. It is
 not pre-filled: the handoff context has no scene-level field for a queue
 asset, so the product is always listed and you type the saved queue's asset
 path (such as `/Game/Cinematics/MyQueue`) into **Queue Asset**. Neither product
@@ -1134,7 +1159,7 @@ are the **target parameters**: the names that identify one target.
 | VRED | a viewpoint, named after it | `View` (the viewpoint's name; a string) | `vred-viewpoint-render` | `vred-render`: it declares no `View`, so the dialog treats it as whole-scene |
 | KeyShot | a studio of the scene | `Studio` (the studio's name; a string) | `keyshot-studio-render` | `keyshot-render`: it declares no `Studio`, so the dialog treats it as whole-scene |
 | Modo | a render pass group | `PassGroup` (the group's name; a string) | `modo-pass-group-render` | `modo-render`: it declares no `PassGroup`, so the dialog treats it as whole-scene |
-| Unreal | an enabled Movie Render Queue job that has a saved config, map and level sequence, named after the job | `LevelSequence`, `Map` and `MovieRenderConfig` (asset paths such as `/Game/Maps/Hero`; strings) | `unreal-mrq-job-render` | `unreal-mrq-queue-render`: it declares none of them, only `QueueAsset`, so the dialog treats it as whole-scene |
+| Unreal | an enabled Movie Render Queue job that has a saved config, map and level sequence and at least one enabled shot, named after the job | `LevelSequence`, `Map` and `MovieRenderConfig` (asset paths such as `/Game/Maps/Hero`; strings), and `Shots` (a list of the job's enabled shot names, written as JSON array text) | `unreal-mrq-job-render` and `unreal-mrq-shot-render` (it declares `Shots` as well) | `unreal-mrq-queue-render`: it declares none of them, only `QueueAsset`, so the dialog treats it as whole-scene |
 | After Effects | a `Queued` render-queue item, named after its composition | `RenderQueueItem` (the item's 1-based index; an `INT` parameter, minimum 1; extra values are strings) | `after-effects-render` | `after-effects-queue-render` |
 
 Houdini has a per-target product only: its output target is the ROP the script
@@ -1749,12 +1774,21 @@ After installing per [Installation per host](#installation-per-host):
    jobs by job name, with `LevelSequence`, `Map` and `MovieRenderConfig`
    filled in as asset paths. Confirm the exact text the Editor produces (for
    example `/Game/Maps/Hero.Hero`) is what a worker's Unreal accepts.
+   **Shots.** Pick `unreal-mrq-shot-render`: **Shots** lists the job's enabled
+   shots, one entry each, in the order of the queue's shot list. Switch a shot
+   off in the Movie Render Queue and submit again: it is gone. Confirm a shot
+   whose camera cut has no outer name appears under the level sequence's name,
+   and that this is the name the worker's `shot_info` produces (the preset
+   fails the task naming the shots the sequence has when it is not). Confirm
+   `update_job_shot_list_from_sequence` does not switch off shots you left
+   enabled.
 3. **Refused jobs.** Edit a queue job's settings without saving them as a
    config asset; put a job on an untitled map; give a job a level sequence that
    was never saved. Each is named, with its reason, in the message that appears
    before the dialog. **OK** opens the dialog with the other jobs; **Cancel**
    launches nothing. A job whose config asset was saved and then edited in the
-   queue is also left out.
+   queue is also left out. A job with every shot switched off is refused too:
+   "<job>: no enabled shots".
    With every enabled job refused, the message instead begins "None of the
    queue's enabled jobs can render on the farm, so nothing was submitted:" and
    has only **OK**; nothing launches. An empty queue, or one with every job
@@ -1764,7 +1798,8 @@ After installing per [Installation per host](#installation-per-host):
    dialog appears, then the sqi dialog. Decline to save: "Save your changes
    before submitting — the farm renders the saved project." and no dialog.
 5. `unreal-mrq-job-render` with two jobs ticked: two jobs, each with its own
-   `LevelSequence`, `Map` and `MovieRenderConfig`. `unreal-mrq-queue-render` is
+   `LevelSequence`, `Map` and `MovieRenderConfig`; `unreal-mrq-shot-render` the
+   same, plus each job's own **Shots**. `unreal-mrq-queue-render` is
    always listed (it is whole-scene) and **Queue Asset** starts empty; typing a
    saved queue's asset path submits one task.
 6. `sqi-submit` not found (rename it or clear `PATH`): a message box names the
