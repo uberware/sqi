@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Blackmagic Fusion Render Node, which presets/sqi/fusion-render.yaml runs
-# through the bare command `FusionRenderNode`. It ships inside the Fusion Studio
-# download and runs on Windows, macOS and Linux.
+# Blackmagic Fusion Render Node, which presets/sqi/fusion-render.yaml and
+# presets/sqi/fusion-saver-render.yaml run through the bare command
+# `FusionRenderNode`. It ships inside the Fusion Studio download and runs on
+# Windows, macOS and Linux.
 #
 # Every path here is unverified and none is documented for Fusion 18 to 21.
 # They follow the pattern of earlier versions:

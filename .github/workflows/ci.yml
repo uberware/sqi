@@ -1498,7 +1498,15 @@ jobs:
           sudo apt-get install -y --no-install-recommends ffmpeg
           ffmpeg -version | head -1
 
+      # The Fusion Saver preset's render.lua runs under a real Lua 5.1 in
+      # TestPresetFusion_ScriptDrivesFusion; SQI_REQUIRE_LUA=1 below turns its
+      # skip without an interpreter into a failure.
+      - name: Install Lua 5.1 (the Fusion Saver preset's script tests)
+        run: sudo apt-get install -y --no-install-recommends lua5.1
+
       - name: Run the integration suite
+        env:
+          SQI_REQUIRE_LUA: "1"
         run: |
           set +e
           # The Makefile's INTEGRATION_TEST_FLAGS default (-timeout 30m)
@@ -1576,6 +1584,20 @@ jobs:
             TestPresetUnreal_ScriptDrivesUnreal/job_renders_and_quits/import
             TestPresetUnreal_ScriptDrivesUnreal/a_fatal_error_ends_the_render_once/cwd
             TestPresetUnreal_ScriptDrivesUnreal/shot-missing/import
+            # The Fusion Saver host-script preset: the same checks as Modo's,
+            # with the embedded render.lua under a real Lua 5.1 and Fusion
+            # faked. SQI_REQUIRE_LUA=1 makes ScriptDrivesFusion fail rather
+            # than skip without one; its two refusals of a wrong Saver name
+            # are named too.
+            TestPresetFusion_ParamsCostAtMaxChunk
+            TestPresetFusion_ParamsJSONRoundTrips
+            TestPresetFusion_CommandNamesTheScript
+            TestPresetTier3_FoldsALuaLongBracketScriptPath
+            TestPresetFusion_ScriptDrivesFusion
+            TestPresetFusion_ScriptDrivesFusion/renders-one-saver
+            TestPresetFusion_ScriptDrivesFusion/saver-missing
+            TestPresetFusion_ScriptDrivesFusion/not-a-saver
+            TestPresetFusion_ScriptDrivesFusion/render-fails
             # Outcome cases (expect_status in a preset-cases fixture). The
             # parent passes when every case skips, so leaves that run on linux
             # are named: the `script` built-in with the stub told to exit 3,
@@ -1945,7 +1967,11 @@ jobs:
       # leaves are named as well. The TestPresetKeyShot_ tests are listed for
       # the same reasons (ScriptDrivesKeyShot skips without Python 3), and so
       # are the TestPresetModo_ and TestPresetUnreal_ tests (ScriptDrivesModo
-      # and ScriptDrivesUnreal skip likewise).
+      # and ScriptDrivesUnreal skip likewise). The TestPresetFusion_ tests are
+      # listed for the same escaping reason, except ScriptDrivesFusion: it
+      # needs a Lua 5.1, which this image does not provide, so it skips here
+      # and is required in the integration-tests job instead, where
+      # SQI_REQUIRE_LUA=1 is set.
       #
       # TestFFmpegPreset_BashSegmentTranscodeJoins runs here but is not
       # listed, and the registry's tier2 required_on omits windows for it: it
@@ -1993,14 +2019,18 @@ jobs:
                       "TestPresetUnreal_ScriptDrivesUnreal " \
                       "TestPresetUnreal_ScriptDrivesUnreal/job_renders_and_quits/import " \
                       "TestPresetUnreal_ScriptDrivesUnreal/a_fatal_error_ends_the_render_once/cwd " \
-                      "TestPresetUnreal_ScriptDrivesUnreal/shot-missing/import "; do
+                      "TestPresetUnreal_ScriptDrivesUnreal/shot-missing/import " \
+                      "TestPresetFusion_ParamsCostAtMaxChunk " \
+                      "TestPresetFusion_ParamsJSONRoundTrips " \
+                      "TestPresetFusion_CommandNamesTheScript " \
+                      "TestPresetTier3_FoldsALuaLongBracketScriptPath "; do
             if ! grep -q -- "--- PASS: ${name}" preset-harness-windows.log; then
               echo "::error::${name} did not run to a PASS on windows"
               missing=1
             fi
           done
           [ "$missing" -eq 0 ] || exit 1
-          echo "Confirmed tiers 1, 2 and 3, the Python launcher, the Unreal and After Effects outcome cases, the VRED, KeyShot, Modo and Unreal preset tests and the registry check ran on windows."
+          echo "Confirmed tiers 1, 2 and 3, the Python launcher, the Unreal and After Effects outcome cases, the VRED, KeyShot, Modo, Unreal and Fusion Saver preset tests and the registry check ran on windows."
 
   # Differential-tests internal/openjd/expr against the EXPR reference
   # implementation, the openjd.expr namespace of openjd-model (a re-export

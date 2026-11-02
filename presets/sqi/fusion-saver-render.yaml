@@ -1,0 +1,509 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: fusion-saver-render
+title: Fusion Saver Render
+description: >-
+  Renders one Saver of a saved Fusion composition with Fusion Render Node, ten
+  frames per task by default. The Render Node runs the preset's own Lua
+  script. The preset has not been run in Fusion.
+readme: |
+  # Fusion Saver Render
+
+  Renders one Saver of a saved `.comp` with the Fusion Render Node. Every
+  other Saver in the comp is switched off for the render, so only the chosen
+  one writes, to wherever its own settings say. Fusion's command line cannot
+  pick a Saver, so each task runs a small Lua script inside the Render Node
+  that does. Use Fusion Render instead to render every Saver in the comp.
+
+  Each task renders a contiguous slice of the frame range, ten frames per task
+  by default.
+
+  ## Parameters
+
+  - **Comp File** - the `.comp` to render. It must be reachable from every
+    worker that runs the job, and so must the media it loads and the folder
+    the Saver writes to.
+  - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
+    `1-100:2` for every second frame.
+  - **Saver** - the name of the Saver tool to render, exactly as the comp
+    names it (`Saver1`, `MainOut`), at most 256 characters.
+  - **Frames Per Task** - the most frames one task renders, at most 10000.
+    A range that does not divide evenly is spread over the same number of
+    tasks in near-equal chunks: `1-12` at 5 is `1-4`, `5-8`, `9-12`.
+
+  ## How work is divided
+
+  The frame range expands into tasks through OpenJD task chunking. A chunk
+  never spans a gap, so a stepped range such as `1-9:4` becomes one task per
+  frame, and each task renders its first to last frame.
+
+  ## How the render runs
+
+  Each task runs `FusionRenderNode -quiet -verbose -execute <code>`. The code
+  is one line of Lua, `dofile` of the preset's embedded `render.lua` from the
+  task's session folder, with the script's path in a Lua long bracket so no
+  character of it is read as an escape. No job value is ever written into the
+  command line or into Lua source: the script reads the comp, the Saver and
+  the task's first and last frame from a `params.json` written beside it,
+  built with the `EXPR` extension and its JSON quoting, so a Saver name holding
+  quotes, backslashes or non-ASCII letters reaches Fusion unchanged.
+
+  The script loads the comp with `LoadComp` and looks the Saver up by name. If
+  the comp has no tool by that name, or the tool is not a Saver, the task
+  fails with a reason that lists the comp's Savers, and nothing renders. It
+  never falls back to rendering the whole comp. Otherwise it puts every other
+  Saver in pass-through (`TOOLB_PassThrough`), takes the chosen one out of
+  pass-through, and calls `Render` for the task's frames, waiting for it to
+  finish. The comp is never saved, so the file on disk keeps its Savers as
+  they were. The script then prints `SQI_RENDER: OK`, or `SQI_RENDER: FAILED:`
+  with the reason, and quits the Render Node with `fusion:Quit()`.
+
+  Building `params.json` is metered against the worker's `EXPR` limits. It
+  carries only the chunk's first and last frame, and the largest chunk a job
+  can hold stays inside the worker defaults.
+
+  ## How failures are detected
+
+  This preset declares the `SQI_LOG_CHECKS` extension. A task fails unless the
+  Render Node's output contains `SQI_RENDER: OK`, and fails when a line
+  contains `SQI_RENDER: FAILED:`, `The fusion renderer reported that the
+  render failed` or `Failed to load the comp`, the last two the strings
+  Deadline's Fusion plugin treats as a failed render. Fusion's exit status is
+  not relied on, since its behaviour on a failed render is not documented. The
+  script writes its lines to standard output (`io.stdout`) and through
+  `print` to Fusion's console; the checks match anywhere in a line, so either
+  copy counts.
+
+  ## Set a step timeout
+
+  The log checks give their verdict only once the Render Node has exited. If
+  it keeps running after the script quits it, or hangs while rendering, the
+  task waits with it and keeps its worker busy indefinitely. This preset sets
+  no timeout, because a sensible limit depends on the comp. Add a `timeout`
+  (in seconds) to the step's `onRun` action in a copy of the preset, longer
+  than your slowest chunk.
+
+  ## Requirements
+
+  - Workers tagged `attr.worker.tag.fusion = true`
+  - A `FusionRenderNode` command the worker can resolve: its `worker.commands`
+    entry, a `FusionRenderNode` on its `PATH`, or the Fusion Render Node
+    install it detects
+  - Fusion Studio 18 or later. The Render Node ships inside the Fusion Studio
+    download and needs a Studio licence, either a dongle or a Fusion Server on
+    the same subnet. The free edition of Fusion cannot render from the command
+    line.
+  - On Linux, an X display: run the worker under Xvfb if the machine has none.
+  - No Fusion window open on the worker. A Fusion GUI running on the machine
+    holds Fusion's scripting port and stalls the render node.
+
+  ## What has not been verified
+
+  - No Fusion Render Node has executed this preset. The command line follows
+    the Fusion manual's command-line page, and the script uses the Fusion
+    scripting API (`LoadComp`, `FindTool`, `GetToolList`, `GetAttrs`,
+    `SetAttrs`, `Render`, `Quit`) as Blackmagic's scripting guide documents
+    it.
+  - When `-execute` runs its code (before or after the Render Node is ready
+    to load a comp), and whether the Render Node exits on its own afterwards
+    and with what status.
+  - Whether text written to `io.stdout` reaches the worker. If neither it nor
+    the console copy arrives, every task fails for want of `SQI_RENDER: OK`,
+    never the other way round.
+  - Whether `fusion:Quit()` ends the Render Node, and whether it asks to save
+    the comp the script changed. The checks are applied only when the process
+    exits, so a Render Node that stays open would hang the task, not fail it
+    (see the timeout above). If `Quit` cannot be called, the script ends the
+    process with `os.exit`.
+  - `LoadComp`'s signature: the script passes the comp's path alone.
+  - Savers inside groups: whether `FindTool` and `GetToolList` see them. A
+    Saver they do not see cannot be chosen, and is not put in pass-through.
+  - The install paths the detector looks for on Windows, macOS and Linux
+    follow the pattern of earlier versions and are unverified for Fusion 18 to
+    21.
+category: Rendering
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: Fusion Saver Render
+  extensions: [TASK_CHUNKING, EXPR, SQI_LOG_CHECKS]
+  parameterDefinitions:
+    - name: SceneFile
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface:
+        control: CHOOSE_INPUT_FILE
+        label: Comp File
+        fileFilters:
+          - label: Fusion compositions
+            patterns: ["*.comp"]
+        fileFilterDefault:
+          label: Fusion compositions
+          patterns: ["*.comp"]
+    - name: Frames
+      type: STRING
+      userInterface: { control: LINE_EDIT, label: Frame Range }
+    - name: Saver
+      type: STRING
+      minLength: 1
+      maxLength: 256
+      userInterface: { control: LINE_EDIT, label: Saver }
+    - name: FramesPerTask
+      type: INT
+      default: 10
+      minValue: 1
+      maxValue: 10000
+      userInterface: { control: SPIN_BOX, label: Frames Per Task }
+  steps:
+    - name: Render
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.fusion
+            anyOf: ["true"]
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Frame
+            type: CHUNK[INT]
+            range: "{{Param.Frames}}"
+            chunks:
+              defaultTaskCount: "{{Param.FramesPerTask}}"
+              rangeConstraint: CONTIGUOUS
+      SQI_LOG_CHECKS:
+        failOn:
+          - 'SQI_RENDER: FAILED:'
+          - 'The fusion renderer reported that the render failed'
+          - 'Failed to load the comp'
+        requireLine: ['SQI_RENDER: OK']
+      script:
+        embeddedFiles:
+          # The script's parameters, as data. EXPR has no dictionary type, so
+          # the JSON object is joined from strings, every string through
+          # repr_json. Under EXPR a CHUNK[INT] is a range_expr, so the first
+          # and last frame are its min() and max().
+          - name: params
+            type: TEXT
+            filename: params.json
+            data: |
+              {{ '{"comp": ' + repr_json(string(Param.SceneFile)) + ', "saver": ' + repr_json(Param.Saver) + ', "start": ' + string(min(Task.Param.Frame)) + ', "end": ' + string(max(Task.Param.Frame)) + '}' }}
+          - name: render
+            type: TEXT
+            filename: render.lua
+            data: |
+              -- sqi Fusion Saver preset: renders one Saver of a comp over this
+              -- task's frames. The Render Node runs it from its -execute code;
+              -- its parameters come from params.json beside it, never from its
+              -- own text. Lua 5.1, which Fusion's Lua follows, and only Lua's
+              -- standard libraries.
+
+              local OK = "SQI_RENDER: OK"
+              local FAILED = "SQI_RENDER: FAILED: "
+
+              -- One line to standard output, which the worker reads, and through
+              -- print to Fusion's console. The checks match anywhere in a line, so
+              -- either copy counts. A failed write is ignored: the task then fails
+              -- for want of the OK line.
+              local function say(line)
+                  pcall(function()
+                      io.stdout:write(line, "\n")
+                      io.stdout:flush()
+                  end)
+                  pcall(print, line)
+              end
+
+              -- A JSON string literal for s, to quote a name in a message: quote
+              -- and backslash escaped, bytes below 0x20 as \u00XX, every other byte
+              -- as it is, so UTF-8 stays UTF-8.
+              local function quote(s)
+                  local parts = { "\"" }
+                  for i = 1, #s do
+                      local b = string.byte(s, i)
+                      if b == 34 then
+                          parts[#parts + 1] = "\\\""
+                      elseif b == 92 then
+                          parts[#parts + 1] = "\\\\"
+                      elseif b < 32 then
+                          parts[#parts + 1] = string.format("\\u%04x", b)
+                      else
+                          parts[#parts + 1] = string.char(b)
+                      end
+                  end
+                  parts[#parts + 1] = "\""
+                  return table.concat(parts)
+              end
+
+              -- A Unicode code point as UTF-8 bytes (Lua 5.1 has no utf8 library).
+              local function utf8_encode(cp)
+                  if cp < 128 then
+                      return string.char(cp)
+                  elseif cp < 2048 then
+                      return string.char(192 + math.floor(cp / 64), 128 + cp % 64)
+                  elseif cp < 65536 then
+                      return string.char(
+                          224 + math.floor(cp / 4096),
+                          128 + math.floor(cp / 64) % 64,
+                          128 + cp % 64
+                      )
+                  end
+                  return string.char(
+                      240 + math.floor(cp / 262144),
+                      128 + math.floor(cp / 4096) % 64,
+                      128 + math.floor(cp / 64) % 64,
+                      128 + cp % 64
+                  )
+              end
+
+              local JSON_SIMPLE_ESCAPES = {
+                  ["\""] = "\"", ["\\"] = "\\", ["/"] = "/",
+                  b = "\b", f = "\f", n = "\n", r = "\r", t = "\t",
+              }
+
+              -- Reads the JSON string whose opening quote is at text[pos]. Returns
+              -- the decoded string and the position after the closing quote, or nil
+              -- if the string is malformed or unterminated. repr_json writes every
+              -- non-ASCII character as \uXXXX, which this turns back into UTF-8.
+              local function read_json_string(text, pos)
+                  local parts = {}
+                  local i = pos + 1
+                  local n = #text
+                  while i <= n do
+                      local c = text:sub(i, i)
+                      if c == "\"" then
+                          return table.concat(parts), i + 1
+                      elseif c == "\\" then
+                          local e = text:sub(i + 1, i + 1)
+                          if e == "u" then
+                              local hex = text:match("^%x%x%x%x", i + 2)
+                              if hex == nil then
+                                  return nil
+                              end
+                              local cp = tonumber(hex, 16)
+                              i = i + 6
+                              if cp >= 55296 and cp <= 56319 then
+                                  -- A high surrogate: combine it with the low one that
+                                  -- must follow.
+                                  local low = text:match("^\\u(%x%x%x%x)", i)
+                                  local lowcp = low and tonumber(low, 16) or 0
+                                  if lowcp >= 56320 and lowcp <= 57343 then
+                                      cp = 65536 + (cp - 55296) * 1024 + (lowcp - 56320)
+                                      i = i + 6
+                                  else
+                                      cp = 65533
+                                  end
+                              elseif cp >= 56320 and cp <= 57343 then
+                                  cp = 65533
+                              end
+                              parts[#parts + 1] = utf8_encode(cp)
+                          else
+                              local simple = JSON_SIMPLE_ESCAPES[e]
+                              if simple == nil then
+                                  return nil
+                              end
+                              parts[#parts + 1] = simple
+                              i = i + 2
+                          end
+                      else
+                          parts[#parts + 1] = c
+                          i = i + 1
+                      end
+                  end
+                  return nil
+              end
+
+              -- params.json: one JSON object whose values are strings and whole
+              -- numbers. Anything else is refused.
+              local function parse_params(text)
+                  local bad = "params.json is not the JSON object this script expects"
+                  local p = {}
+                  local pos = text:match("^%s*{%s*()")
+                  if pos == nil then
+                      error(bad, 0)
+                  end
+                  if text:sub(pos, pos) == "}" then
+                      return p
+                  end
+                  while true do
+                      if text:sub(pos, pos) ~= "\"" then
+                          error(bad, 0)
+                      end
+                      local key, after = read_json_string(text, pos)
+                      if key == nil then
+                          error(bad, 0)
+                      end
+                      pos = text:match("^%s*:%s*()", after)
+                      if pos == nil then
+                          error(bad, 0)
+                      end
+                      local value
+                      if text:sub(pos, pos) == "\"" then
+                          value, after = read_json_string(text, pos)
+                          if value == nil then
+                              error(bad, 0)
+                          end
+                      else
+                          local digits
+                          digits, after = text:match("^(%-?%d+)()", pos)
+                          if digits == nil then
+                              error(bad, 0)
+                          end
+                          value = tonumber(digits)
+                      end
+                      p[key] = value
+                      pos = text:match("^%s*()", after)
+                      local c = text:sub(pos, pos)
+                      if c == "}" then
+                          return p
+                      end
+                      if c ~= "," then
+                          error(bad, 0)
+                      end
+                      pos = text:match("^,%s*()", pos)
+                  end
+              end
+
+              -- The folder this file is in, from the chunk name dofile gave it.
+              local function script_folder()
+                  local info = debug and debug.getinfo and debug.getinfo(1, "S")
+                  local source = info and info.source
+                  if type(source) ~= "string" or source:sub(1, 1) ~= "@" then
+                      error("cannot tell which folder render.lua is in", 0)
+                  end
+                  return source:sub(2):match("^(.*[/\\])") or ""
+              end
+
+              local function read_params()
+                  local path = script_folder() .. "params.json"
+                  local f = io.open(path, "rb")
+                  if f == nil then
+                      error("cannot open " .. path, 0)
+                  end
+                  local text = f:read("*a")
+                  f:close()
+                  local p = parse_params(text)
+                  for _, key in ipairs({ "comp", "saver" }) do
+                      if type(p[key]) ~= "string" or p[key] == "" then
+                          error("params.json: " .. key .. " is not a non-empty string", 0)
+                      end
+                  end
+                  for _, key in ipairs({ "start", "end" }) do
+                      if type(p[key]) ~= "number" then
+                          error("params.json: " .. key .. " is not a whole number", 0)
+                      end
+                  end
+                  if p.start > p["end"] then
+                      error("params.json: start is after end", 0)
+                  end
+                  return p
+              end
+
+              local function attrs_of(tool)
+                  local ok, attrs = pcall(function()
+                      return tool:GetAttrs()
+                  end)
+                  if ok and type(attrs) == "table" then
+                      return attrs
+                  end
+                  return {}
+              end
+
+              -- The comp's Savers, sorted by name, as { name, tool } records.
+              local function savers_of(comp)
+                  local list = {}
+                  for _, tool in pairs(comp:GetToolList(false, "Saver") or {}) do
+                      local name = attrs_of(tool).TOOLS_Name
+                      if type(name) == "string" then
+                          list[#list + 1] = { name = name, tool = tool }
+                      end
+                  end
+                  table.sort(list, function(a, b)
+                      return a.name < b.name
+                  end)
+                  return list
+              end
+
+              local function names_of(savers)
+                  local quoted = {}
+                  for i, saver in ipairs(savers) do
+                      quoted[i] = quote(saver.name)
+                  end
+                  if #quoted == 0 then
+                      return "none"
+                  end
+                  return table.concat(quoted, ", ")
+              end
+
+              -- Loads the comp, renders the one Saver over the task's frames, and
+              -- raises on any failure. A name that is not one of the comp's Savers
+              -- fails the task: rendering every Saver instead would write outputs
+              -- nobody asked for. The comp is never saved.
+              local function render(app, p)
+                  local comp = app:LoadComp(p.comp)
+                  if comp == nil then
+                      error("Fusion could not load the comp " .. p.comp, 0)
+                  end
+                  local savers = savers_of(comp)
+                  local tool = comp:FindTool(p.saver)
+                  if tool == nil then
+                      error("the comp has no tool named " .. quote(p.saver) .. "; its Savers are " .. names_of(savers), 0)
+                  end
+                  local kind = attrs_of(tool).TOOLS_RegID
+                  if kind ~= "Saver" then
+                      error("the tool " .. quote(p.saver) .. " is a " .. tostring(kind)
+                          .. ", not a Saver; the comp's Savers are " .. names_of(savers), 0)
+                  end
+                  for _, saver in ipairs(savers) do
+                      saver.tool:SetAttrs({ TOOLB_PassThrough = saver.name ~= p.saver })
+                  end
+                  local ok = comp:Render({ Start = p.start, End = p["end"], Wait = true })
+                  if not ok then
+                      error("Fusion reported that the render did not succeed (Render returned " .. tostring(ok) .. ")", 0)
+                  end
+              end
+
+              -- Quit is how a script ends Fusion. If it cannot be called, exit
+              -- anyway rather than leave the Render Node running with nothing left
+              -- to do.
+              local function finish(app, code)
+                  local ok = app ~= nil and pcall(function()
+                      app:Quit()
+                  end)
+                  if not ok then
+                      os.exit(code)
+                  end
+              end
+
+              local function main()
+                  local app = fusion or fu
+                  local ok, err = xpcall(function()
+                      if app == nil then
+                          error("no fusion object: render.lua must run inside Fusion", 0)
+                      end
+                      render(app, read_params())
+                  end, function(e)
+                      pcall(function()
+                          io.stderr:write(debug.traceback(tostring(e), 2), "\n")
+                      end)
+                      return e
+                  end)
+                  if ok then
+                      say(OK)
+                      finish(app, 0)
+                      return
+                  end
+                  local reason = (tostring(err):gsub("%s+", " "))
+                  say(FAILED .. reason)
+                  say("openjd_fail: " .. reason)
+                  finish(app, 1)
+              end
+
+              main()
+        actions:
+          onRun:
+            command: FusionRenderNode
+            args:
+              - "-quiet"
+              - "-verbose"
+              - "-execute"
+              # Lua code, not a path: -execute runs a script. It only runs the
+              # embedded render.lua, whose path sits in a long bracket, where a
+              # backslash is not an escape.
+              - "dofile([==[{{ Task.File.render }}]==])"

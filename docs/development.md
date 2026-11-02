@@ -1539,7 +1539,7 @@ clients/submitter/
                                          startup hook or kit where needed (handoff hosts)
     cli.py, install.py                   sqi-submit, sqi-submit install-host
   tests/                     pytest; tests/integration/ is env-gated (see below)
-presets/sqi/                 the forty-one reference preset YAML fixtures (twenty-eight DCC render
+presets/sqi/                 the forty-two reference preset YAML fixtures (twenty-nine DCC render
                               presets, eight standalone renderer presets, five ffmpeg
                               transcode presets), validated by
                               internal/product/sqipresets_test.go against a per-preset

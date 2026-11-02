@@ -604,6 +604,47 @@ presets:
       case: TestPresetTier3/fusion-render/default
       required_on: [linux, darwin, windows]
 
+  # fusion-saver-render is a host-script preset: FusionRenderNode runs an
+  # embedded render.lua through -execute, and the per-task values travel in an
+  # EXPR-built params.json. CONTIGUOUS chunks, no SQI_CHUNK_BOUNDS (an error
+  # under EXPR). No os.family gate, so Tier 3 runs on every OS.
+  - name: fusion-saver-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, multi-frame-chunk, stepped-range, quoting, logged-error, no-success-line]
+      caveat: >-
+        argv from the Fusion manual's command-line page (FusionRenderNode
+        -quiet -verbose -execute <code>), the code being only
+        dofile([==[<session>/render.lua]==]), so no job value reaches the
+        command line or Lua source. The render.lua calls are the Fusion
+        scripting API (fusion:LoadComp with the path alone, comp:FindTool,
+        comp:GetToolList(false, "Saver"), GetAttrs' TOOLS_Name and
+        TOOLS_RegID, SetAttrs with TOOLB_PassThrough on every other Saver and
+        off on the chosen one, comp:Render{Start, End, Wait = true},
+        fusion:Quit); the comp is never saved. No Fusion Render Node has
+        executed this preset. Unverified: when -execute runs its code and
+        whether the Render Node exits afterwards; whether io.stdout reaches
+        the worker (the script also prints to Fusion's console; if neither
+        arrives every task fails for want of SQI_RENDER: OK); whether
+        fusion:Quit() ends the Render Node or asks to save the changed comp
+        (the checks apply only once it exits, and the step has no timeout, so
+        a Render Node that stays open would hang the task rather than fail it;
+        the readme recommends a timeout); LoadComp's signature; whether
+        FindTool and GetToolList see Savers inside groups. The goldens pin
+        params.json in full; quoting is decoded with encoding/json by
+        TestPresetFusion_ParamsJSONRoundTrips, and render.lua runs under a
+        stock Lua 5.1 with a fake fusion and comp in
+        TestPresetFusion_ScriptDrivesFusion, including a Saver the comp lacks
+        and a tool that is not a Saver, each failing the task with the comp's
+        Savers named and nothing rendered. Tier 3 runs a stub as
+        FusionRenderNode: it exercises the worker, the embedded files and the
+        log checks, never the script inside Fusion. Rendering needs a Fusion
+        Studio licence; the detector's install paths are unverified.
+    tier3:
+      case: TestPresetTier3/fusion-saver-render/default
+      required_on: [linux, darwin, windows]
+
   - name: silhouette-render
     source: presets/sqi
     tier: 1

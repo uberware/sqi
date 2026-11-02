@@ -317,7 +317,7 @@ products with `source: installed`.
 See [`docs/preset-library.md`](preset-library.md) for the full guide, including
 the index format, configuration, and the browse → preview → install flow.
 
-The official library ships twenty-eight DCC `Rendering`-category presets, plus
+The official library ships twenty-nine DCC `Rendering`-category presets, plus
 eight [standalone renderer
 presets](preset-library.md#standalone-renderer-reference-presets). Twelve of
 the DCC presets (`maya-layer-render`, `maya-scene-render`,
@@ -325,10 +325,10 @@ the DCC presets (`maya-layer-render`, `maya-scene-render`,
 `blender-batch-render`, `blender-view-layer-render`, `cinema4d-render`,
 `cinema4d-take-render`, `3dsmax-render` and the two After Effects presets
 `after-effects-render` and `after-effects-queue-render`) are the targets of the [`sqi-submitter`](dcc-submitters.md) in-application
-submitters. The other sixteen have no in-application submitter and are submitted
+submitters. The other seventeen have no in-application submitter and are submitted
 from the web UI or the API: `mistika-boutique-render`, `mistika-vr-render`,
 `mistika-workflows-render`, `katana-render`, `silhouette-render`,
-`silhouette-render-all`, `fusion-render`, `vred-render`,
+`silhouette-render-all`, `fusion-render`, `fusion-saver-render`, `vred-render`,
 `vred-viewpoint-render`, `keyshot-render`, `keyshot-studio-render`,
 `modo-render`, `modo-pass-group-render`, `unreal-mrq-job-render`,
 `unreal-mrq-queue-render` and `unreal-mrq-shot-render`.

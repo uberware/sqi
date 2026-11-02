@@ -40,6 +40,7 @@ func TestBuild(t *testing.T) {
 		"ffmpeg-sequence-encode",
 		"ffmpeg-transcode",
 		"fusion-render",
+		"fusion-saver-render",
 		"houdini-rop-render",
 		"husk-usd-render",
 		"katana-render",

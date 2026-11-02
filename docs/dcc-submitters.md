@@ -921,17 +921,17 @@ visible, since the server enforces the permission either way.
 
 ## Reference presets
 
-sqi ships twenty-eight DCC reference products under `presets/sqi/`, published
-through the [preset library](preset-library.md). The directory holds forty-one
+sqi ships twenty-nine DCC reference products under `presets/sqi/`, published
+through the [preset library](preset-library.md). The directory holds forty-two
 products in total. The other thirteen are eight [standalone renderer
 presets](preset-library.md#standalone-renderer-reference-presets), which render
 exported scene files without loading the DCC, and five `Transcoding`-category
 [ffmpeg presets](preset-library.md#transcoding-reference-presets). Install the
 DCC presets from **Admin → Preset Library** in the web UI or, without a preset
 index, create them through `POST /api/v1/products` or **Admin → Products**. All
-twenty-eight use the product `category` `Rendering`. All but the After Effects
+twenty-nine use the product `category` `Rendering`. All but the After Effects
 queue preset and the three Unreal presets (one task each, or one per shot) declare `TASK_CHUNKING` to split the frame range;
-the Maya, Blender, After Effects render, Mistika, Katana, Silhouette and Fusion presets also declare
+the Maya, Blender, After Effects render, Mistika, Katana and Silhouette presets and `fusion-render` also declare
 `SQI_CHUNK_BOUNDS` to expose each chunk's start and end frame (see
 [OpenJD extensions](openjd-extensions.md)). The Cinema 4D and 3ds Max presets
 declare `EXPR` instead: it computes the same two frames, and leaves the output
@@ -943,11 +943,12 @@ and that script takes its first and last frame from it. The two KeyShot presets
 declare `TASK_CHUNKING`, `EXPR` and `SQI_LOG_CHECKS` but not `SQI_CHUNK_BOUNDS`: their script loops over
 any list of frames, so a chunk may be stepped or gapped, and it needs no bounds. The two Modo presets declare
 `TASK_CHUNKING`, `EXPR` and `SQI_LOG_CHECKS`; under `EXPR` the
-script takes its first and last frame from `params.json`. The three Unreal presets declare only `EXPR` and
+script takes its first and last frame from `params.json`. `fusion-saver-render` declares the same three,
+and its embedded `render.lua` takes its first and last frame from `params.json` too. The three Unreal presets declare only `EXPR` and
 `SQI_LOG_CHECKS`: each renders one Movie Render Queue job or saved queue as one task, or one shot of a job per task,
 with its own frame range, and `EXPR` builds the `params.json` their embedded script reads inside the editor.
 
-Twenty-five of the twenty-eight have a matching `sqi-submitter` host (Maya,
+Twenty-six of the twenty-nine have a matching `sqi-submitter` host (Maya,
 Houdini, Nuke, 3ds Max, VRED, Blender, Cinema 4D, After Effects, Unreal Engine,
 Katana, KeyShot, Silhouette, Fusion and Modo). The three Mistika presets have
 none and are submitted from the web UI or the API.
@@ -971,6 +972,7 @@ none and are submitted from the web UI or the API.
 | `mistika-workflows-render` | `workflows -r <scene> -s/-e <frame range>` | chunks of 10 | `SceneFile` (`*.rnd`), `Frames` | `attr.worker.tag.mistikaworkflows = "true"` |
 | `katana-render` | `katana --batch --katana-file=<scene> --render-node=<node> -t <first>-<last>` | one frame per task by default (raise `FramesPerTask` to batch) | `SceneFile` (`*.katana`), `Frames`, `RenderNode`, `FramesPerTask` | `attr.worker.tag.katana = "true"` |
 | `fusion-render` | `FusionRenderNode <comp> -render -start <first> -end <last> -quiet -verbose -quit` | chunks of 10 | `SceneFile` (`*.comp`), `Frames`, `FramesPerTask` | `attr.worker.tag.fusion = "true"` |
+| `fusion-saver-render` | `FusionRenderNode -quiet -verbose -execute <code>`, the code running an embedded `render.lua` that loads the comp named in an embedded `params.json`, puts every other Saver in pass-through and renders the task's frames | chunks of 10 (`FramesPerTask` at most 10000) | `SceneFile` (`*.comp`), `Frames`, `Saver`, `FramesPerTask` | `attr.worker.tag.fusion = "true"` |
 | `silhouette-render` | `sfxcmd -session <session> -node <output node> -range <first>-<last> <project>` | chunks of 10 | `SceneFile` (the `.sfx` bundle, a directory), `Frames`, `Session`, `OutputNode`, `FramesPerTask` | `attr.worker.tag.silhouette = "true"` |
 | `silhouette-render-all` | `sfxcmd -all -range <first>-<last> <project>` (every output node of the active session) | chunks of 10 | `SceneFile` (the `.sfx` bundle, a directory), `Frames`, `FramesPerTask` | `attr.worker.tag.silhouette = "true"` |
 | `vred-render` | `VREDCore <scene> -insecure_python -fast_start -hide_gui -postpython <code>`, the code running an embedded `render.py` that reads the task's frames and output file from an embedded `params.json` | chunks of 10 (`FramesPerTask` at most 1000) | `SceneFile` (`*.vpb`), `Frames`, `FramesPerTask`, `OutputFile` (blank keeps the scene's render filename) | `attr.worker.tag.vred = "true"` |
@@ -1045,7 +1047,7 @@ Max, After Effects, Mistika, Katana, Silhouette (`sfxcmd`), Fusion Render Node, 
 location, and advertises the matching tag (`maya`, plus a version variant such
 as `maya_2025`) with value `"true"`; see [Capability
 auto-detection](worker-capabilities.md#capability-auto-detection-built-in-dcc-detectors).
-That satisfies the `anyOf: ["true"]` requirement each of the twenty-eight presets
+That satisfies the `anyOf: ["true"]` requirement each of the twenty-nine presets
 declares, so a worker with a standard install needs no per-worker
 configuration. Run `sqi-worker capabilities` (or `start --dry-run`) to see
 which DCCs were found.

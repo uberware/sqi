@@ -173,11 +173,11 @@ the [`sqi-submitter`](dcc-submitters.md) in-application submitters:
 `nuke-write-render`, `nuke-script-render`, `blender-batch-render`,
 `blender-view-layer-render`, `cinema4d-render`, `cinema4d-take-render`,
 `3dsmax-render`, `after-effects-render` and `after-effects-queue-render`.
-Sixteen more have no
+Seventeen more have no
 in-application submitter and are submitted from the web UI or the API:
 `mistika-boutique-render`, `mistika-vr-render`, `mistika-workflows-render`,
 `katana-render`, `silhouette-render`, `silhouette-render-all`, `fusion-render`,
-`vred-render`, `vred-viewpoint-render`, `keyshot-render`,
+`fusion-saver-render`, `vred-render`, `vred-viewpoint-render`, `keyshot-render`,
 `keyshot-studio-render`, `modo-render`, `modo-pass-group-render`,
 `unreal-mrq-job-render`, `unreal-mrq-queue-render` and
 `unreal-mrq-shot-render`.
@@ -193,7 +193,7 @@ declared only where the command takes one: `OutputDir` on the two Maya presets,
 `OutputPath` on Blender, Cinema 4D and 3ds Max, `OutputFile` on the two
 VRED and the two KeyShot presets, and `OutputDirectory` on the three Unreal presets. Per-host extras include `Renderer`, `RenderLayer`, `RopPath`,
 `WriteNode`, `Scene`, `ViewLayer`, `Take`, `RenderNode`, `Session`,
-`OutputNode`, `View`, `Studio`, `PassGroup`, `LevelSequence`, `Map`, `MovieRenderConfig`, `QueueAsset`, `Shots` and `RenderQueueItem`.
+`OutputNode`, `Saver`, `View`, `Studio`, `PassGroup`, `LevelSequence`, `Map`, `MovieRenderConfig`, `QueueAsset`, `Shots` and `RenderQueueItem`.
 
 Each preset gates on a capability tag that `sqi-worker` auto-detects from a
 standard install; a manual tag is needed only for a nonstandard install path
@@ -232,8 +232,9 @@ does not run on macOS. See the preset's readme for what has not been verified.
 | Preset | Renders | Shape | Gate |
 |---|---|---|---|
 | `fusion-render` | a whole `.comp` with `FusionRenderNode` | `FramesPerTask` frames per task, default 10 | `fusion` |
+| `fusion-saver-render` | one Saver (`Saver`) of a `.comp`, chosen by an embedded Lua script | `FramesPerTask` frames per task, default 10 (at most 10000) | `fusion` |
 
-`fusion-render` has no per-target variant: Fusion's command line cannot pick a
+`fusion-render` renders the whole comp: Fusion's command line cannot pick a
 Saver, so every Saver in the comp writes where the comp says. It runs
 `FusionRenderNode <comp> -render -start <first> -end <last> -quiet -verbose
 -quit`, one argument per flag and value; a stepped `Frames` range splits into
@@ -251,6 +252,34 @@ the check never fires and a failed render is caught only by an exit status that
 is itself undocumented. A Fusion 8 report of a successful render exiting
 `-1073741819` is noted in the readme; the preset does not handle it. The `fusion`
 detector's install paths on all three platforms are inferred, not observed.
+
+`fusion-saver-render` is a host-script preset like VRED's. Each task runs
+`FusionRenderNode -quiet -verbose -execute "dofile([==[<render.lua>]==])"`: one line
+of Lua that runs the preset's embedded `render.lua` from the task's session folder,
+the path in a Lua long bracket so no character of it is an escape. No job value is
+written into the command line or into Lua source: the comp, the Saver and the task's
+first and last frame (the chunk's `min()` and `max()` under `EXPR`, which is why it
+declares no `SQI_CHUNK_BOUNDS`) come from a `params.json` that `EXPR` builds with
+`repr_json`. The script finds it beside itself through `debug.getinfo`, and decodes
+JSON's `\uXXXX` escapes, so a Saver name with quotes, backslashes or non-ASCII
+letters reaches Fusion unchanged. It loads the comp with `fusion:LoadComp`, looks the
+Saver up with `FindTool`, puts every other Saver (from `GetToolList(false, "Saver")`)
+in pass-through with `TOOLB_PassThrough` and takes the chosen one out of it, renders
+with `comp:Render{Start, End, Wait = true}`, and never saves the comp. A name the comp
+lacks, or a tool that is not a Saver, fails the task with a reason listing the comp's
+Savers; it never falls back to rendering every Saver. The script then prints
+`SQI_RENDER: OK`, or `SQI_RENDER: FAILED:` with the reason, to `io.stdout` and through
+`print`, and calls `fusion:Quit()`.
+
+It declares [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md): a task fails
+unless the output contains `SQI_RENDER: OK`, and fails on `SQI_RENDER: FAILED:` and on
+`fusion-render`'s two strings. It needs Fusion Studio 18 or later and, like every
+host-script preset, a step timeout the readme recommends adding. Unverified: when
+`-execute` runs its code and whether the Render Node exits afterwards, whether
+`io.stdout` reaches the worker, whether `fusion:Quit()` ends the Render Node (or asks
+to save the changed comp), `LoadComp`'s signature, and Savers inside groups. Its
+`render.lua` runs under a stock Lua 5.1 with Fusion faked in
+`TestPresetFusion_ScriptDrivesFusion`; no Fusion has executed it.
 
 ### Silhouette
 
@@ -607,7 +636,7 @@ but run their script directly, so they need a Linux or macOS worker.
 
 ## Validation tiers
 
-`presets/validation-tiers.yaml` has 48 entries, the 41 presets under
+`presets/validation-tiers.yaml` has 49 entries, the 42 presets under
 `presets/sqi/` plus the seven built-in products documented in
 [`docs/development.md`](development.md#adding-a-product), and states which
 validation tier each has reached. The four `presets/testing/` presets are not
@@ -661,8 +690,8 @@ tier to stand in for. The tiers are:
     frame set, and where it can be read back, their content (the view layer in
     an EXR header, a PNG's size, the frame a Houdini geometry file holds).
 
-  The other thirty-one presets (Maya, Cinema 4D, 3ds Max, After Effects, the three
-  Mistika products, the eight standalone renderers, Katana, Fusion and the two
+  The other thirty-two presets (Maya, Cinema 4D, 3ds Max, After Effects, the three
+  Mistika products, the eight standalone renderers, Katana, the two Fusion and the two
   Silhouette, two VRED, two KeyShot, two Modo and three Unreal presets) have not reached Tier 2 and carry no `tier2` block.
 
   A DCC case cannot be required by platform, because CI cannot provide the
@@ -725,7 +754,7 @@ skip on a platform named in `required_on` is a registry failure.
 ### Tier 3 on Windows
 
 Tier 3 runs on Windows as it does on Linux and macOS, and CI runs it in a
-dedicated job (`preset-harness-windows`). Of the 48 registry entries, 37 have
+dedicated job (`preset-harness-windows`). Of the 49 registry entries, 38 have
 `tier3.required_on: [linux, darwin, windows]`, so a skip on Windows fails the
 registry check for each of them. The other 11 are gated to fewer platforms:
 

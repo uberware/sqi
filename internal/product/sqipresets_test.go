@@ -195,6 +195,16 @@ func TestSQIReferencePresets(t *testing.T) {
 			params:     []string{"SceneFile", "Frames", "FramesPerTask"},
 			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS", "SQI_LOG_CHECKS"},
 		},
+		// fusion-saver-render is a host-script preset: EXPR builds the
+		// params.json its embedded render.lua reads, which names the one Saver
+		// to render and the chunk's first and last frame. It declares no
+		// SQI_CHUNK_BOUNDS, which is an error under EXPR.
+		"fusion-saver-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames", "Saver", "FramesPerTask"},
+			extensions: []string{"TASK_CHUNKING", "EXPR", "SQI_LOG_CHECKS"},
+			taskParams: []string{"Frame:CHUNK[INT]"},
+		},
 		// The two silhouette presets declare no SQI_LOG_CHECKS: no failure line
 		// is documented for sfxcmd. silhouette-render-all has no Session or
 		// OutputNode, so it is a whole-scene product.

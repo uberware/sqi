@@ -707,12 +707,19 @@ func foldFilePaths(args []string, files map[string]bool) []string {
 // {C:\Users\...\render.py}): that is how Modo's -cmd:@ argument quotes the
 // script and the parameters file, with single backslashes since no Python
 // literal is involved. A session directory holds no brace either.
+//
+// So is a path in a Lua long bracket ([==[/tmp/.../render.lua]==],
+// [==[C:\Users\...\render.lua]==]): that is how the Fusion preset's -execute
+// code names its script, with single backslashes, since a long bracket has no
+// escapes.
 func foldQuotedFilePaths(s string, files map[string]bool) string {
 	for name := range files {
 		quoted := regexp.MustCompile(`'(?:[A-Za-z]:)?[\\/][^']*[\\/]` + regexp.QuoteMeta(name) + `'`)
 		s = quoted.ReplaceAllString(s, "'<FILE:"+name+">'")
 		braced := regexp.MustCompile(`\{(?:[A-Za-z]:)?[\\/][^{}]*[\\/]` + regexp.QuoteMeta(name) + `\}`)
 		s = braced.ReplaceAllString(s, "{<FILE:"+name+">}")
+		bracketed := regexp.MustCompile(`\[==\[(?:[A-Za-z]:)?[\\/][^\]]*[\\/]` + regexp.QuoteMeta(name) + `\]==\]`)
+		s = bracketed.ReplaceAllString(s, "[==[<FILE:"+name+">]==]")
 	}
 	return s
 }

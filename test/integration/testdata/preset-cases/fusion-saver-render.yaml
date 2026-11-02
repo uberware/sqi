@@ -1,0 +1,82 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Fusion Saver Render. A host-script preset: the argv is fixed except for the
+# script path, and everything per task travels in params.json, which the
+# goldens show in full. default (1-25 at the shipped 10 frames per task) shows
+# the near-equal chunks 1-9, 10-17, 18-25 as start and end frames;
+# multi-frame-chunk lowers it to 5; stepped-range shows a gap-bearing range
+# never spanning a frame it excluded: a CONTIGUOUS chunk cannot cross a gap, so
+# 1-9:4 becomes one task per frame.
+#
+# Every case that Tier 3 or TestPresetOutcomes runs states what the stub
+# prints: the preset's requireLine wants SQI_RENDER: OK, which a real Fusion
+# prints from render.lua, so default sets it or the job could only fail.
+#
+# quoting puts a double quote, a backslash, spaces and a non-ASCII letter in
+# the Saver's name, and a space in a directory and both quote characters in the
+# comp's file name, so params.json must escape them (repr_json writes the
+# letter as é); TestPresetFusion_ParamsJSONRoundTrips decodes it with
+# encoding/json and compares the values. The quotes stay in the last path
+# segment so the golden's host-path rewrite (presettest.hostPathReplacer, keyed
+# on the parameter's parent folder) still applies on Windows.
+#
+# logged-error, no-success-line: outcome cases. One frame, so one task, run
+# three times (scheduler.default_max_attempts) before the job fails.
+cases:
+  - name: default
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/comp/shot0010_comp_v007.comp
+      Frames: "1-25"
+      Saver: MainOut
+    expect_tasks: 3
+    expect_invocations:
+      FusionRenderNode: 3
+    stub_env:
+      SQI_STUB_STDOUT: "SQI_RENDER: OK"
+  - name: multi-frame-chunk
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/comp/shot0010_comp_v007.comp
+      Frames: "1-10"
+      Saver: MainOut
+      FramesPerTask: "5"
+    expect_tasks: 2
+    expect_invocations:
+      FusionRenderNode: 2
+  - name: stepped-range
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/comp/shot0010_comp_v007.comp
+      Frames: "1-9:4"
+      Saver: MainOut
+    expect_tasks: 3
+    expect_invocations:
+      FusionRenderNode: 3
+  - name: quoting
+    params:
+      SceneFile: '/mnt/show/seq010/shot 0010/comp/it''s the "hero" comp.comp'
+      Frames: "1-2"
+      Saver: 'Out "A" \ é'
+    expect_tasks: 1
+    expect_invocations:
+      FusionRenderNode: 1
+  - name: logged-error
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/comp/shot0010_comp_v007.comp
+      Frames: "1"
+      Saver: MainOut
+    expect_tasks: 1
+    expect_invocations:
+      FusionRenderNode: 3
+    stub_env:
+      SQI_STUB_STDOUT: "The fusion renderer reported that the render failed"
+    expect_status: failed
+    expect_reason: "matched failOn"
+  - name: no-success-line
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/comp/shot0010_comp_v007.comp
+      Frames: "1"
+      Saver: MainOut
+    expect_tasks: 1
+    expect_invocations:
+      FusionRenderNode: 3
+    expect_status: failed
+    expect_reason: "never printed"

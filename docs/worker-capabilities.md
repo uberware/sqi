@@ -599,7 +599,7 @@ steps:
           anyOf: ["true"]
 ```
 
-The twenty-eight DCC reference presets under `presets/sqi/` (see
+The twenty-nine DCC reference presets under `presets/sqi/` (see
 [`docs/dcc-submitters.md`](dcc-submitters.md#reference-presets)) and the eight
 [standalone renderer presets](preset-library.md#standalone-renderer-reference-presets)
 use this syntax, as do the `Transcoding` presets, which gate on
