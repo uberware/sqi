@@ -493,7 +493,7 @@ def test_unreal_all_jobs_refused_launches_nothing(
 def test_unreal_scene_check_failure_is_shown_not_raised(
     unreal: Unreal, monkeypatch: pytest.MonkeyPatch, error: Exception
 ) -> None:
-    """The dirty-package check and the save call unverified Editor APIs: failures are shown."""
+    """The dirty-package check and the save call Editor APIs run only on 5.8: failures are shown."""
     module = _module()
     unreal.jobs = [_job()]
     stub_launch(module, monkeypatch, unreal.events)

@@ -180,9 +180,10 @@ def enabled_shots(job: Any, sequence: str) -> tuple[list[str], str | None]:
     """The names of the job's enabled shots, or ``([], "<why they cannot be sent>")``.
 
     The job's shot list is rebuilt from its level sequence first, as the farm does before it
-    picks a shot, so both sides see the same entries. A shot is named by its camera cut's
-    outer name, or after the sequence when it has none; a name repeated by several camera cuts
-    is one shot.
+    picks a shot, so both sides see the same entries. A shot is named by its outer name: its
+    section's name in the shot track, or "no shot" in a sequence without one (Unreal 5.8). An
+    entry with no outer name, which 5.8 never gives, is named after the sequence. A name
+    repeated by several camera cuts is one shot.
     """
     import unreal
 
@@ -313,8 +314,8 @@ def submit() -> bool:
                 return False
         data, reasons = read_scene()
     except Exception as exc:
-        # These call Editor APIs that have not been run on a real install: whatever they raise
-        # is shown to the artist, not left to reach the Editor's log.
+        # These call Editor APIs run only on Unreal 5.8, which may differ in other versions:
+        # whatever they raise is shown to the artist, not left to reach the Editor's log.
         _show(f"sqi could not read the scene: {exc}", unreal.AppMsgType.OK)
         return False
     targets = data["targets"]

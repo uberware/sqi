@@ -548,10 +548,10 @@ Each target also carries its **shots**. Before reading them the submitter loads
 the job's level sequence and calls `update_job_shot_list_from_sequence` on the
 job, as the farm's script does, so both sides see the same shot list; this
 refreshes the shot list shown in the open Movie Render Queue. The enabled
-entries become the target's `Shots`, in queue order. An entry is named by the
-outer name of its camera cut, or after the level sequence (`SEQ_Hero` for
-`/Game/Cinematics/SEQ_Hero.SEQ_Hero`) when it has none, and a name that appears
-twice is listed once. If reading the shots raises an error, the job is still
+entries become the target's `Shots`, in queue order. An entry is named by its
+outer name, which is its section's name in the sequence's shot track (such as
+`SH010`); a sequence with no shot track has one entry, which the Movie Render
+Queue names `no shot`. A name that appears twice is listed once. If reading the shots raises an error, the job is still
 offered without them and the error is logged as an Editor warning: the job and
 queue presets do not need the shots. **Shots** is then typed in the dialog for
 `unreal-mrq-shot-render`, since not every target supplies it.
@@ -575,7 +575,7 @@ path (such as `/Game/Cinematics/MyQueue`) into **Queue Asset**. Neither product
 has a **Frame Range**: each queue job renders the range in its own config.
 
 > **For a submitted job to run,** the rendering worker needs the `unreal=true`
-> capability tag and runs on Windows (both presets require
+> capability tag and runs on Windows (all three presets require
 > `attr.worker.os.family = "windows"`). Without a tagged worker the job stays
 > `ready`. See [Reference presets](#reference-presets).
 
@@ -1855,10 +1855,10 @@ After installing per [Installation per host](#installation-per-host):
    example `/Game/Maps/Hero.Hero`) is what a worker's Unreal accepts.
    **Shots.** Pick `unreal-mrq-shot-render`: **Shots** lists the job's enabled
    shots, one entry each, in the order of the queue's shot list. Switch a shot
-   off in the Movie Render Queue and submit again: it is gone. Confirm a shot
-   whose camera cut has no outer name appears under the level sequence's name,
-   and that this is the name the worker's `shot_info` produces (the preset
-   fails the task naming the shots the sequence has when it is not). Confirm
+   off in the Movie Render Queue and submit again: it is gone. Confirm a level
+   sequence with no shot track appears as one shot, `no shot`, and that the
+   job renders on a worker under that name (the preset fails the task naming
+   the shots the sequence has when it is not). Confirm
    `update_job_shot_list_from_sequence` does not switch off shots you left
    enabled.
 3. **Refused jobs.** Edit a queue job's settings without saving them as a
@@ -1892,39 +1892,29 @@ After installing per [Installation per host](#installation-per-host):
    loads sqi. Over the sqi-installed file (the marker line present) it is
    replaced without complaint.
 
+**Run on Unreal Engine 5.8.4, on Windows 11:** items 1 to 8 pass, except item
+3's job whose config asset was edited in the queue (see below). In
+particular, `register_menu()` finds the Tools menu when `init_unreal.py` runs
+at Editor startup, so registration needs no deferring, and
+`Documents/UnrealEngine/Python` is on the Editor's Python path and scanned for
+`init_unreal.py`. `SoftObjectPath.export_text()` returns object paths such as
+`/Game/Maps/Hero.Hero`, which the worker's Unreal accepts.
+
 **Verified only against fakes or documentation:**
 
-- **Asynchronous menu registration, the riskiest item.** `init_unreal.py` runs
-  during Editor startup and `register_menu()` calls
-  `ToolMenus.get().find_menu("LevelEditor.MainMenu.Tools")` at once. Whether
-  `ToolMenus` and the Tools menu already exist at that point, or appear later
-  and so need registration deferred, is not known; if the menu is not found
-  only a log warning is written and nothing is added. The entry itself
-  (`ToolMenuEntry(name=..., type=MultiBlockType.MENU_ENTRY)`, `set_label`,
-  `set_string_command(ToolMenuStringCommandType.PYTHON, "", ...)`,
-  `add_menu_entry("sqi", entry)`, `refresh_all_widgets()`) follows Epic's API
-  reference and has not been run.
-- **Refused-job detection.** That `job.get_preset_origin()` is null for a job
-  whose settings were edited after loading a config (documented as returning the
-  preset only while unmodified) and for a job with no config; that
-  `SoftObjectPath.export_text()` exists (it is not on that class's own
-  documentation page and is assumed to come from the struct base class) and
-  returns a path such as `/Game/Maps/Hero.Hero`; and that an unsaved map or
-  sequence reads as a path under `/Temp/` or `/Engine/Transient`, or one that
-  does not start with `/`. A job with an empty name is listed as "Unnamed job".
-- `MoviePipelineQueueSubsystem.get_queue()` and `get_jobs()`;
-  `job.is_enabled()`; `job.job_name`.
-- `EditorLoadingAndSavingUtils.get_dirty_map_packages()`,
-  `get_dirty_content_packages()` and `save_dirty_packages_with_dialog(True, True)`
-  (and that the save-dialog result is not consulted: the dirty check runs
-  again instead).
-- `EditorDialog.show_message(title, message, message_type)` with
-  `AppMsgType.OK` and `OK_CANCEL`, and `AppReturnType.OK`.
-- `Paths.get_project_file_path()` made absolute with
-  `convert_relative_path_to_full`, and `SystemLibrary.get_engine_version()`
-  (the version is read up to the first `-`).
-- That `Documents/UnrealEngine/Python` is on the Editor's Python path and is
-  scanned for `init_unreal.py`.
+- Unreal Engine versions before 5.8.
+- **A config edited in the queue.** That `job.get_preset_origin()` is null for
+  a job whose settings were edited in the Movie Render Queue window after
+  loading a config (documented as returning the preset only while
+  unmodified). An edit made from Python does not clear it on 5.8, and the
+  Movie Render Queue copies the preset back over such an edit when the render
+  starts, so that job is offered and renders its saved config.
+- That a map that was never saved, or a level sequence that was never saved,
+  reads as a path under `/Temp/` or `/Engine/Transient`, or one that does not
+  start with `/`. The 5.8 run gave jobs such paths from Python, and the
+  submitter refused them. A job with an empty name is listed as "Unnamed job".
+- `SystemLibrary.get_engine_version()` (the version is read up to the first
+  `-`).
 
 ### Katana checklist
 
