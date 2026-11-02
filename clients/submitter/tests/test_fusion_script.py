@@ -23,8 +23,11 @@ from pathlib import Path
 
 import pytest
 
+from sqi_client.models import ProductParameter
 from sqi_submitter import install
+from sqi_submitter.core.context import SceneContext
 from sqi_submitter.core.handoff import load_context
+from sqi_submitter.core.targets import is_per_target, per_target_models, target_parameters
 
 HOST_DIR = Path(__file__).resolve().parents[1] / "src" / "sqi_submitter" / "hosts" / "fusion"
 SCRIPT = HOST_DIR / "Submit to sqi.lua"
@@ -186,6 +189,150 @@ f:close()
     assert document["scene"]["frame_range"] is None
     assert document["host"]["version"] is None
     assert load_context(target).scene_context().frame_range is None
+
+
+def _tool(
+    name: str | None,
+    *,
+    pass_through: bool | None = None,
+    clip: str | None = None,
+    broken: bool = False,
+) -> str:
+    """A Lua fake Saver: a table whose ``GetAttrs`` returns the attributes the script reads."""
+    if broken:
+        return "{ GetAttrs = function(self) error('no attributes') end }"
+    fields = []
+    if name is not None:
+        fields.append(f"TOOLS_Name = {lit(name)}")
+    if pass_through is not None:
+        fields.append(f"TOOLB_PassThrough = {str(pass_through).lower()}")
+    if clip is not None:
+        fields.append(f"TOOLST_Clip_Name = {{ {lit(clip)} }}")
+    return "{ GetAttrs = function(self) return { " + ", ".join(fields) + " } end }"
+
+
+def test_fusion_saver_targets_skip_pass_through_and_keep_order(lua: str) -> None:
+    tools = [
+        _tool("Saver2", pass_through=False, clip="C:\\out\\b.0001.exr"),
+        _tool("Disabled", pass_through=True, clip="C:\\out\\off.exr"),
+        _tool("Saver1"),
+        _tool("Zed", pass_through=False),
+        _tool(None),  # a tool with no name cannot be chosen
+        _tool("Unreadable", broken=True),  # nor one whose attributes cannot be read
+        _tool("Last", pass_through=False, clip="/out/last.mov"),
+    ]
+    body = f"""
+local targets = sqi_saver_targets({{ {", ".join(tools)} }})
+out("count", #targets)
+for i, t in ipairs(targets) do
+  out("name" .. i, t.name)
+  out("clip" .. i, tostring(t.clip))
+end
+"""
+    got = run_lua(lua, body)
+    assert got["count"] == "4"
+    assert [got[f"name{i}"] for i in range(1, 5)] == ["Saver2", "Saver1", "Zed", "Last"]
+    assert [got[f"clip{i}"] for i in range(1, 5)] == [
+        "C:\\out\\b.0001.exr",
+        "nil",
+        "nil",
+        "/out/last.mov",
+    ]
+
+
+@pytest.mark.parametrize("savers", ["nil", "{}"])
+def test_fusion_saver_targets_none_gives_no_targets(lua: str, savers: str) -> None:
+    got = run_lua(lua, f'out("count", #sqi_saver_targets({savers}))')
+    assert got["count"] == "0"
+
+
+@pytest.mark.parametrize("targets", ["", ", nil", ", {}"])
+def test_fusion_context_json_without_targets_has_an_empty_list(
+    lua: str, tmp_path: Path, targets: str
+) -> None:
+    target = tmp_path / "context.json"
+    body = f"""
+local f = assert(io.open(os.getenv("SQI_OUT"), "wb"))
+f:write(sqi_context_json({lit("/p/shot.comp")}, "1-2", nil{targets}))
+f:close()
+"""
+    run_lua(lua, body, {"SQI_OUT": str(target)})
+    assert json.loads(target.read_text(encoding="utf-8"))["targets"] == []
+
+
+# A name that needs every kind of escaping: quotes, a backslash, a tab, non-ASCII.
+HARD_NAME = 'Sa\u00ffver "q" \\ \t \u65e5\u672c'
+
+
+def test_fusion_targets_round_trip_through_the_context(lua: str, tmp_path: Path) -> None:
+    target = tmp_path / "context.json"
+    clip = "C:\\out\\\u00e9.0001.exr"
+    tools = [
+        _tool("Saver1", pass_through=False, clip=clip),
+        _tool(HARD_NAME, pass_through=False),
+        _tool("Off", pass_through=True),
+    ]
+    body = f"""
+local targets = sqi_saver_targets({{ {", ".join(tools)} }})
+local f = assert(io.open(os.getenv("SQI_OUT"), "wb"))
+f:write(sqi_context_json({lit("/p/shot.comp")}, "1-100", "19.1", targets))
+f:close()
+"""
+    run_lua(lua, body, {"SQI_OUT": str(target)})
+    document = json.loads(target.read_text(encoding="utf-8"))
+    assert document["targets"] == [
+        {
+            "name": "Saver1",
+            "kind": "saver",
+            "frame_range": None,
+            "output_path": clip,
+            "extra": {"Saver": "Saver1"},
+            "locked": [],
+        },
+        {
+            "name": HARD_NAME,
+            "kind": "saver",
+            "frame_range": None,
+            "output_path": None,
+            "extra": {"Saver": HARD_NAME},
+            "locked": [],
+        },
+    ]
+    first, second = load_context(target).render_targets()
+    assert (first.name, first.kind, first.output_path) == ("Saver1", "saver", clip)
+    assert first.frame_range is None
+    assert first.extra == {"Saver": "Saver1"}
+    assert first.locked == frozenset()
+    assert second.name == HARD_NAME
+    assert second.extra == {"Saver": HARD_NAME}
+
+
+def test_fusion_savers_bind_only_the_saver_product(lua: str, tmp_path: Path) -> None:
+    """With Savers listed, ``fusion-render`` stays whole-comp and ``fusion-saver-render`` splits."""
+    target = tmp_path / "context.json"
+    tools = [_tool("Saver1", pass_through=False), _tool("Saver2", pass_through=False)]
+    body = f"""
+local targets = sqi_saver_targets({{ {", ".join(tools)} }})
+local f = assert(io.open(os.getenv("SQI_OUT"), "wb"))
+f:write(sqi_context_json({lit("/p/shot.comp")}, "1-100", nil, targets))
+f:close()
+"""
+    run_lua(lua, body, {"SQI_OUT": str(target)})
+    targets = load_context(target).render_targets()
+    assert len(targets) == 2
+
+    def param(name: str, type_: str = "STRING") -> ProductParameter:
+        return ProductParameter(name=name, type=type_)
+
+    whole = [param("SceneFile", "PATH"), param("Frames"), param("FramesPerTask", "INT")]
+    per_saver = [*whole, param("Saver")]
+    assert not is_per_target(whole, targets)
+    assert is_per_target(per_saver, targets)
+    assert target_parameters(per_saver, targets) == frozenset({"Saver"})
+    models = per_target_models(
+        per_saver, SceneContext(scene_path="/p/shot.comp", frame_range="1-100"), targets, {}
+    )
+    assert [model.values()["Saver"] for _, model in models] == ["Saver1", "Saver2"]
 
 
 @pytest.mark.parametrize(
@@ -354,10 +501,23 @@ def _entry(
     ask_user: bool = True,
     execute_result: str = "0",
     version: str = "19.1",
+    tool_list: str | None = None,
 ) -> str:
-    """Lua that runs ``sqi_submit()`` with a fake ``comp`` and records what it did."""
+    """Lua that runs ``sqi_submit()`` with a fake ``comp`` and records what it did.
+
+    ``tool_list`` is the Lua expression ``comp:GetToolList`` returns; None leaves that method off
+    the fake comp, as a Fusion without it would.
+    """
     scene = filename if filename is not None else str(tmp_path / "shot.comp")
     attrs = f"COMPS_FileName = {lit(scene)}, COMPB_Modified = {modified}"
+    get_tool_list = (
+        ""
+        if tool_list is None
+        else f"""comp.GetToolList = function(self, selected, kind)
+  toollist_args = tostring(selected) .. ":" .. tostring(kind)
+  return {tool_list}
+end"""
+    )
     if start != "nil":
         attrs += f", COMPN_RenderStart = {start}"
     if end != "nil":
@@ -385,6 +545,7 @@ os.execute = function(cmd)
   if cmd:sub(1, 5) == "test " then return real_execute(cmd) end
   ev("exec:" .. cmd); return {execute_result}
 end
+local toollist_args = ""
 local printed = {{}}
 print = function(...) printed[#printed + 1] = table.concat({{...}}, " ") end
 fusion = {{ Version = {version} }}
@@ -392,6 +553,7 @@ comp = {{
   GetAttrs = function(self) return {{ {attrs} }} end,
   Save = function(self, p) ev("save:" .. tostring(p)); return {save_result} end,
 }}
+{get_tool_list}
 {
         '''comp.AskUser = function(self, title, controls)
   ev("ask:" .. title .. "|" .. controls[1].Default)
@@ -404,6 +566,7 @@ local ok = sqi_submit()
 out("ok", tostring(ok))
 out("events", table.concat(events, "\\n"):gsub("\\n", "<>"))
 out("printed", table.concat(printed, "<>"))
+out("toollist", toollist_args)
 """
 
 
@@ -505,6 +668,42 @@ def test_fusion_missing_render_range_gives_no_range(lua: str, tmp_path: Path) ->
     got = run_lua(lua, _entry(tmp_path, start="nil"), {"SQI_SETTINGS": str(settings)})
     assert got["ok"] == "true"
     assert load_context(tmp_path / "lua_tmp1").scene_context().frame_range is None
+
+
+def _settings_with_exe(tmp_path: Path) -> Path:
+    exe = tmp_path / "sqi-submit"
+    exe.write_bytes(b"")
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"sqi_submit_command": str(exe)}), encoding="utf-8")
+    return settings
+
+
+def test_fusion_submit_lists_the_comps_savers(lua: str, tmp_path: Path) -> None:
+    settings = _settings_with_exe(tmp_path)
+    tools = f"{{ {_tool('Saver1', pass_through=False)}, {_tool('Off', pass_through=True)} }}"
+    got = run_lua(lua, _entry(tmp_path, tool_list=tools), {"SQI_SETTINGS": str(settings)})
+    assert got["ok"] == "true"
+    assert got["toollist"] == "false:Saver"  # every Saver, not just the selected tools
+    (target,) = load_context(tmp_path / "lua_tmp1").render_targets()
+    assert target.name == "Saver1"
+    assert target.extra == {"Saver": "Saver1"}
+
+
+@pytest.mark.parametrize("tool_list", ["nil", "{}", "error('boom')"])
+def test_fusion_submit_goes_ahead_without_savers(lua: str, tmp_path: Path, tool_list: str) -> None:
+    settings = _settings_with_exe(tmp_path)
+    got = run_lua(lua, _entry(tmp_path, tool_list=tool_list), {"SQI_SETTINGS": str(settings)})
+    assert got["ok"] == "true"
+    assert load_context(tmp_path / "lua_tmp1").render_targets() == []
+
+
+def test_fusion_submit_goes_ahead_when_get_tool_list_is_missing(lua: str, tmp_path: Path) -> None:
+    settings = _settings_with_exe(tmp_path)
+    got = run_lua(lua, _entry(tmp_path), {"SQI_SETTINGS": str(settings)})  # no GetToolList
+    assert got["ok"] == "true"
+    assert got["toollist"] == ""
+    assert load_context(tmp_path / "lua_tmp1").render_targets() == []
+    assert "Savers" in got["printed"]  # the Console says why the dialog lists none
 
 
 @pytest.mark.parametrize("windows", [pytest.param(False, marks=_POSIX_PATH), True])

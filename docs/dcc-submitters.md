@@ -41,7 +41,7 @@ opened:
 | Katana | handoff | a module plus the `init.py` startup hook (`sqi-submit install-host katana`) | Render nodes |
 | KeyShot | handoff | one script file, run from the Scripting Console (`sqi-submit install-host keyshot`) | studios |
 | Silhouette | handoff | a module plus the `sfxuser.py` startup hook (`sqi-submit install-host silhouette`) | output nodes of each session |
-| Fusion | handoff | one Lua comp script (`sqi-submit install-host fusion`) | none (whole-comp only) |
+| Fusion | handoff | one Lua comp script (`sqi-submit install-host fusion`) | Savers that are not in pass-through |
 | Modo | handoff | a kit folder `sqi/` (`sqi-submit install-host modo`) | render pass groups |
 
 The package is layered so the parts that need Qt or a DCC's Python API stay
@@ -764,9 +764,18 @@ the context file that contains a double quote, or on Windows a `%`, is refused
 with a message, and nothing is launched. The script reports problems in Fusion's
 Console and in a message dialog.
 
-The submission is the **whole comp**: the render command line cannot pick a
-Saver, so Fusion offers no targets and `fusion-render` is a whole-scene
-product. **Frame Range** is the comp's render range. An unsaved comp is refused
+The script lists the comp's **Savers** as targets, from
+`comp:GetToolList(false, "Saver")`, in the order Fusion returns them. A Saver in
+pass-through (`TOOLB_PassThrough`) writes nothing and is left out. Each target
+supplies the `Saver` parameter, so `fusion-saver-render` is a per-target
+product: tick the Savers to render and the dialog submits one job per Saver.
+`fusion-render` has no `Saver` parameter, so it stays a whole-scene product and
+renders every Saver the comp writes, whatever is ticked. A Saver's first output
+file (`TOOLST_Clip_Name`) is shown as the target's output path when Fusion
+reports one. If Fusion cannot list the Savers (the call raises, or the method
+is missing), the script says so on the Console and submits with no targets, so
+the dialog behaves as a whole-comp host and `fusion-render` still works.
+**Frame Range** is the comp's render range. An unsaved comp is refused
 with "Save your scene before submitting"; a changed one is saved first. Unlike
 the Python hosts, the context file goes straight into the system temp folder
 (`%TEMP%` on Windows, an `os.tmpname` file on macOS and Linux), not into a
@@ -1155,7 +1164,7 @@ are the **target parameters**: the names that identify one target.
 | 3ds Max | none: the host offers no targets | none | none | `3dsmax-render` |
 | Blender | one view layer of one scene, named `<scene> / <view layer>` | `Scene` (the **scene name**, not a path) and `ViewLayer` | `blender-view-layer-render` | `blender-batch-render` |
 | Cinema 4D | a checked take other than the main take | `Take` (the take's name) | `cinema4d-take-render` | `cinema4d-render` |
-| Fusion | none: the command line cannot pick a Saver, so the submitter offers no targets | none | none | `fusion-render` |
+| Fusion | a Saver that is not in pass-through, named after the tool | `Saver` (the Saver tool's name; a string) | `fusion-saver-render` | `fusion-render`: it declares no `Saver`, so the dialog treats it as whole-scene |
 | Silhouette | an output node of a session, named `<session> / <node>` | `Session` and `OutputNode` (the node's **label**; both strings) | `silhouette-render` | `silhouette-render-all`: it declares neither parameter, so the dialog treats it as whole-scene |
 | Katana | a Render node that is not bypassed, named in the project | `RenderNode` (the node's name; a string) | `katana-render` | none: a Render node is the unit, as a ROP is for Houdini |
 | VRED | a viewpoint, named after it | `View` (the viewpoint's name; a string) | `vred-viewpoint-render` | `vred-render`: it declares no `View`, so the dialog treats it as whole-scene |
@@ -2095,8 +2104,27 @@ support):**
    message, not launched.
 8. A comp path with non-ASCII characters (Windows especially) loads in the
    dialog.
+9. **Saver targets.** In a comp with three Savers, one of them in pass-through
+   (select it and press Ctrl+P), choose `fusion-saver-render`: the dialog lists
+   the two active Savers by their tool names, in the comp's order. Choose
+   `fusion-render`: no checklist appears. A Saver whose name has non-ASCII
+   letters appears with its name intact. A comp with no Savers lists none and
+   still submits.
 
 **Verified only against fakes or documentation:**
+
+- **`comp:GetToolList(false, "Saver")`.** The signature (first argument "selected
+  only", second the tool's registry ID), that it returns a Lua table indexed
+  from 1, and that it finds Savers inside groups are from Blackmagic's scripting
+  documentation and the same call in `fusion-saver-render`'s script, not from a
+  run. The script calls it under `pcall`: an error gives no targets and a
+  Console line, never a failed submission.
+- **The Saver attributes.** `TOOLS_Name` (the tool's name), `TOOLB_PassThrough`
+  (true when the tool is switched off) and `TOOLST_Clip_Name` (a table of the
+  tool's output file names, read at its first entry) come from the attribute
+  names Fusion's scripting documentation lists, unverified against a running
+  Fusion. If `TOOLB_PassThrough` is spelled otherwise, a disabled Saver is
+  offered as a target; if `TOOLST_Clip_Name` is, the target has no output path.
 
 - **`os.execute` launch and the console flash, the riskiest items.** That
   Fusion's Lua exposes `os.execute` (no documentation says whether a Comp

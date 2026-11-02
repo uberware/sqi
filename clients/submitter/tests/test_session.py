@@ -199,7 +199,7 @@ def test_group_products_each_host_token_finds_only_its_presets() -> None:
         "vred": ["vred-render", "vred-viewpoint-render"],
         "keyshot": ["keyshot-render", "keyshot-studio-render"],
         "silhouette": ["silhouette-render", "silhouette-render-all"],
-        "fusion": ["fusion-render"],
+        "fusion": ["fusion-render", "fusion-saver-render"],
         "modo": ["modo-render", "modo-pass-group-render"],
     }
     names = [name for group in expected.values() for name in group] + [
