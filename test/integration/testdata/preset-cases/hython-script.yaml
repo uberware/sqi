@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Hython Script: each task runs hython on the embedded launcher, which loads the
+# hip and runs the script. The argv carries the hip, the script file, and the
+# chunk's start, end and frames. default is one frame per task (1-3, three
+# tasks); chunked splits 1-10 at four frames per task into 1-4, 5-7 and 8-10.
+cases:
+  - name: default
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/fx/shot0010_fx.hip
+      Script: "print('hello')"
+      Frames: "1-3"
+      FramesPerTask: "1"
+    expect_tasks: 3
+    expect_invocations:
+      hython: 3
+  - name: chunked
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/fx/shot0010_fx.hip
+      Script: "print('hello')"
+      Frames: "1-10"
+      FramesPerTask: "4"
+    expect_tasks: 3
+    expect_invocations:
+      hython: 3

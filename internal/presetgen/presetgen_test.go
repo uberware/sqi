@@ -43,6 +43,7 @@ func TestBuild(t *testing.T) {
 		"fusion-saver-render",
 		"houdini-rop-render",
 		"husk-usd-render",
+		"hython-script",
 		"katana-render",
 		"keyshot-render",
 		"keyshot-studio-render",

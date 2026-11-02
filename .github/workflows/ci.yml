@@ -1533,6 +1533,10 @@ jobs:
             # Skips without a working Python 3. Runs the Houdini preset's
             # driver against every chunk spelling sqi emits.
             TestHoudiniROPRender_DriverRendersEachRange
+            # Skips without a working Python 3. Runs the hython-script
+            # launcher under a stub hou: argv order, SQI_FRAME* variables, hip
+            # load, first setFrame, and exception/exit-code propagation.
+            TestHythonScript_LauncherRunsTheScript
             # The VRED host-script presets: params.json's cost at the largest
             # chunk, its JSON round trip with quotes and a backslash, and the
             # embedded render.py under a real Python with VRED faked (it skips

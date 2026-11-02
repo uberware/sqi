@@ -1,0 +1,126 @@
+preset: hython-script
+case:   chunked
+params:
+  Frames=1-10
+  FramesPerTask=4
+  SceneFile=/mnt/show/seq010/shot0010/fx/shot0010_fx.hip
+  Script=print('hello')
+
+step "Run" — 3 tasks
+
+task 1/3  name="Run[Frame=1-4,Frame.End=4,Frame.Start=1]"
+  task params:
+    Frame=1-4
+    Frame.End=4
+    Frame.Start=1
+  command: hython
+  args:
+    [0]  <WORKDIR>
+    [1]  /mnt/show/seq010/shot0010/fx/shot0010_fx.hip
+    [2]  <WORKDIR>
+    [3]  1
+    [4]  4
+    [5]  1-4
+  embedded file "launcher" (launcher.py):
+    # sqi hython-script launcher: sets the four SQI_FRAME* variables,
+    # loads the hip, moves the playbar to the task's first frame and
+    # runs the user's script in this process, so the script sees the
+    # loaded Houdini session. An exception or SystemExit leaves
+    # hython with a non-zero exit status, which fails the task.
+    import os
+    import runpy
+    import sys
+    
+    hip, script, start, end, frames = sys.argv[1:6]
+    os.environ["SQI_FRAME"] = start
+    os.environ["SQI_FRAME_START"] = start
+    os.environ["SQI_FRAME_END"] = end
+    os.environ["SQI_FRAMES"] = frames
+    
+    import hou
+    
+    hou.hipFile.load(hip, ignore_load_warnings=True)
+    hou.setFrame(int(start))
+    
+    sys.argv = [script]
+    runpy.run_path(script, run_name="__main__")
+  embedded file "script" (script.py):
+    print('hello')
+
+task 2/3  name="Run[Frame=5-7,Frame.End=7,Frame.Start=5]"
+  task params:
+    Frame=5-7
+    Frame.End=7
+    Frame.Start=5
+  command: hython
+  args:
+    [0]  <WORKDIR>
+    [1]  /mnt/show/seq010/shot0010/fx/shot0010_fx.hip
+    [2]  <WORKDIR>
+    [3]  5
+    [4]  7
+    [5]  5-7
+  embedded file "launcher" (launcher.py):
+    # sqi hython-script launcher: sets the four SQI_FRAME* variables,
+    # loads the hip, moves the playbar to the task's first frame and
+    # runs the user's script in this process, so the script sees the
+    # loaded Houdini session. An exception or SystemExit leaves
+    # hython with a non-zero exit status, which fails the task.
+    import os
+    import runpy
+    import sys
+    
+    hip, script, start, end, frames = sys.argv[1:6]
+    os.environ["SQI_FRAME"] = start
+    os.environ["SQI_FRAME_START"] = start
+    os.environ["SQI_FRAME_END"] = end
+    os.environ["SQI_FRAMES"] = frames
+    
+    import hou
+    
+    hou.hipFile.load(hip, ignore_load_warnings=True)
+    hou.setFrame(int(start))
+    
+    sys.argv = [script]
+    runpy.run_path(script, run_name="__main__")
+  embedded file "script" (script.py):
+    print('hello')
+
+task 3/3  name="Run[Frame=8-10,Frame.End=10,Frame.Start=8]"
+  task params:
+    Frame=8-10
+    Frame.End=10
+    Frame.Start=8
+  command: hython
+  args:
+    [0]  <WORKDIR>
+    [1]  /mnt/show/seq010/shot0010/fx/shot0010_fx.hip
+    [2]  <WORKDIR>
+    [3]  8
+    [4]  10
+    [5]  8-10
+  embedded file "launcher" (launcher.py):
+    # sqi hython-script launcher: sets the four SQI_FRAME* variables,
+    # loads the hip, moves the playbar to the task's first frame and
+    # runs the user's script in this process, so the script sees the
+    # loaded Houdini session. An exception or SystemExit leaves
+    # hython with a non-zero exit status, which fails the task.
+    import os
+    import runpy
+    import sys
+    
+    hip, script, start, end, frames = sys.argv[1:6]
+    os.environ["SQI_FRAME"] = start
+    os.environ["SQI_FRAME_START"] = start
+    os.environ["SQI_FRAME_END"] = end
+    os.environ["SQI_FRAMES"] = frames
+    
+    import hou
+    
+    hou.hipFile.load(hip, ignore_load_warnings=True)
+    hou.setFrame(int(start))
+    
+    sys.argv = [script]
+    runpy.run_path(script, run_name="__main__")
+  embedded file "script" (script.py):
+    print('hello')

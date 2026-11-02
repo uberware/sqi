@@ -159,6 +159,11 @@ func TestSQIReferencePresets(t *testing.T) {
 			params:     []string{"SceneFile", "Frames", "Renderer"},
 			extensions: []string{"TASK_CHUNKING", "EXPR"},
 		},
+		"hython-script": {
+			category:   "General",
+			params:     []string{"SceneFile", "Script", "Frames", "FramesPerTask"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
+		},
 		"redshift-standalone-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames"},

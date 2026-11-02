@@ -531,3 +531,113 @@ func TestPresetDCC_Houdini_ROPRender(t *testing.T) {
 		})
 	}
 }
+
+// TestPresetDCC_Houdini_HythonScript runs hython-script under a real hython. The
+// script each task runs writes one JSON file per frame of its chunk holding
+// hou.frame(), the hip's name and SQI_FRAME_START, so the files on disk show
+// that the launcher loaded the hip, that hou.frame() starts at the task's first
+// frame, and that every frame of a range is covered by exactly one task. A
+// script that raises must fail the job: that is the property the launcher
+// relies on hython for.
+func TestPresetDCC_Houdini_HythonScript(t *testing.T) {
+	const caseName = "TestPresetDCC_Houdini_HythonScript"
+	trackOutcome(t, caseName)
+	hython := requireDCC(t, caseName, "Houdini", "hython")
+
+	dir := t.TempDir()
+	hip := savedPath(t, runDCC(t, hython, dccTestdata(t, "houdini_scene.py"),
+		filepath.Join(dir, "test shot"), filepath.ToSlash(filepath.Join(dir, "geo"))))
+
+	ts := startServer(t)
+	farmID, queueID := seedFarmAndQueue(t, ts)
+	startRealWorkerAnyOS(t, ts, farmID, queueID)
+
+	// scriptFor builds a script body that records, for each frame of the task's
+	// chunk, what hou saw. The output directory is embedded with %q, which is a
+	// valid Python string literal for any path.
+	scriptFor := func(out string) string {
+		return fmt.Sprintf(`import json, os
+import hou
+
+for f in range(int(os.environ["SQI_FRAME_START"]), int(os.environ["SQI_FRAME_END"]) + 1):
+    with open(os.path.join(%q, "frame.%%d.json" %% f), "w") as fh:
+        json.dump({
+            "hou_frame": hou.frame(),
+            "hip": hou.hipFile.basename(),
+            "start": os.environ["SQI_FRAME_START"],
+        }, fh)
+`, filepath.ToSlash(out))
+	}
+	type frameFile struct {
+		HouFrame float64 `json:"hou_frame"`
+		Hip      string  `json:"hip"`
+		Start    string  `json:"start"`
+	}
+	// readFrames reads back the file for each frame, keyed by frame.
+	readFrames := func(t *testing.T, out string, frames []int) map[int]frameFile {
+		t.Helper()
+		got := map[int]frameFile{}
+		for _, f := range frames {
+			data, err := os.ReadFile(filepath.Join(out, fmt.Sprintf("frame.%d.json", f)))
+			if err != nil {
+				t.Fatalf("frame %d: %v", f, err)
+			}
+			var ff frameFile
+			if err := json.Unmarshal(data, &ff); err != nil {
+				t.Fatalf("frame %d: %v", f, err)
+			}
+			got[f] = ff
+		}
+		return got
+	}
+	wantHip := filepath.Base(hip)
+
+	t.Run("one frame per task", func(t *testing.T) {
+		out := t.TempDir()
+		job := runDCCJob(t, ts, farmID, queueID, "hython-script", map[string]string{
+			"SceneFile": hip, "Script": scriptFor(out), "Frames": "1-3", "FramesPerTask": "1",
+		})
+		assertTaskCount(t, ts, job, 3)
+		assertExactFiles(t, out, frameNames("frame.%d.json", 1, 2, 3))
+		for f, ff := range readFrames(t, out, seq(1, 3)) {
+			if ff.HouFrame != float64(f) || ff.Hip != wantHip || ff.Start != strconv.Itoa(f) {
+				t.Errorf("frame %d: saw %+v, want hou_frame %d, hip %q, start %d", f, ff, f, wantHip, f)
+			}
+		}
+	})
+
+	t.Run("chunks", func(t *testing.T) {
+		out := t.TempDir()
+		job := runDCCJob(t, ts, farmID, queueID, "hython-script", map[string]string{
+			"SceneFile": hip, "Script": scriptFor(out), "Frames": "1-10", "FramesPerTask": "4",
+		})
+		assertTaskCount(t, ts, job, 3)
+		assertExactFiles(t, out, frameNames("frame.%d.json", seq(1, 10)...))
+		// 1-10 at 4 balances into 1-4, 5-7 and 8-10; hou.frame() is the first
+		// frame of the chunk, whatever frame the script is on.
+		chunkStart := func(f int) int {
+			switch {
+			case f <= 4:
+				return 1
+			case f <= 7:
+				return 5
+			default:
+				return 8
+			}
+		}
+		for f, ff := range readFrames(t, out, seq(1, 10)) {
+			if want := chunkStart(f); ff.HouFrame != float64(want) || ff.Start != strconv.Itoa(want) || ff.Hip != wantHip {
+				t.Errorf("frame %d: saw %+v, want hou_frame and start %d, hip %q", f, ff, want, wantHip)
+			}
+		}
+	})
+
+	t.Run("script error fails the job", func(t *testing.T) {
+		report := runDCCJobExpectingFailure(t, ts, farmID, queueID, "hython-script", map[string]string{
+			"SceneFile": hip, "Script": `raise RuntimeError("boom")`, "Frames": "1", "FramesPerTask": "1",
+		})
+		if !strings.Contains(report, "boom") {
+			t.Errorf("failed task report does not show the script's exception:\n%s", report)
+		}
+	})
+}

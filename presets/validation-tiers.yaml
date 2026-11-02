@@ -315,6 +315,37 @@ presets:
       case: TestPresetTier3/husk-usd-render/default
       required_on: [linux, darwin, windows]
 
+  - name: hython-script
+    source: presets/sqi
+    tier: 2
+    tier1:
+      cases: [default, chunked]
+      caveat: >-
+        argv is hython, the embedded launcher, the hip, the embedded script,
+        then the chunk's start, end and frames (the default case's first task
+        gets 1 1 1-1; 1-10 at 4 balances into 1-4, 5-7 and 8-10).
+        TestHythonScript_LauncherRunsTheScript runs the shipped launcher under a
+        real Python with a stub hou module and shows the argv order the
+        launcher reads, the four SQI_FRAME* variables, one hipFile.load with
+        ignore_load_warnings, setFrame at the first frame, the script running
+        as __main__ with sys.argv[0] its own path, and an exception or
+        SystemExit reaching the exit status. Tier 2 runs the preset under a
+        real hython (Houdini 22.0.466, Apprentice, Windows) against a saved
+        hipnc and shows that the hip loads, that hou.frame() starts at the
+        task's first frame (one frame per task, and 1-10 at 4 giving chunk
+        starts 1, 5 and 8), that SQI_FRAME_START reaches the script, that
+        every frame of a range is covered by exactly one task, and that an
+        exception in the script fails the job. Not shown: a hip file that
+        needs plugins or a license beyond Apprentice, a simulation cooked
+        across a chunk, a .hip or .hiplc, Houdini on Linux or macOS, any
+        Houdini but 22.0.466, or a worker run as another user.
+    tier2:
+      case: TestPresetDCC_Houdini_HythonScript
+      requires_app: houdini
+    tier3:
+      case: TestPresetTier3/hython-script/default
+      required_on: [linux, darwin, windows]
+
   - name: redshift-standalone-render
     source: presets/sqi
     tier: 1
