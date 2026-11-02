@@ -467,7 +467,7 @@ presets:
 
   # Windows-only by hostRequirements (attr.worker.os.family anyOf ["windows"]),
   # so this entry's Tier-3 claim is required_on [windows] alone.
-  # TestThreeDSMaxRender_IsWindowsOnly pins the gate, and
+  # TestSQIReferencePresets pins the gate, and
   # TestPresetTier3RequiredOnMatchesOSGate the required_on it implies.
   - name: 3dsmax-render
     source: presets/sqi

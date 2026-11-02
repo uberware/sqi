@@ -21,6 +21,7 @@ from tests.conftest import (
     assert_no_sqi_submitter_import,
     load_host_file,
     stub_launch,
+    stub_open_for_adapter,
 )
 
 KATANA_DIR = Path(__file__).resolve().parents[1] / "src" / "sqi_submitter" / "hosts" / "katana"
@@ -528,15 +529,7 @@ def test_katana_8_opens_in_process(katana: Katana, monkeypatch: pytest.MonkeyPat
     """The real menu glue opens the dialog over the adapter; nothing is written or launched."""
     _katana_8(monkeypatch)
     monkeypatch.delitem(sys.modules, IN_PROCESS_MENU)  # the real glue imports
-    calls: list[tuple[Any, Any]] = []
-
-    def fake_open(adapter: Any, server_url: Any = None, parent: Any = None) -> None:
-        calls.append((adapter, parent))
-
-    # Stub the module: importing the real qt.dialog fails without a Qt binding (CI has none).
-    monkeypatch.setitem(
-        sys.modules, "sqi_submitter.qt.dialog", SimpleNamespace(open_for_adapter=fake_open)
-    )
+    calls = stub_open_for_adapter(monkeypatch)
     module = _module()
     katana.nodes = [Node("Beauty")]
     katana.dirty = True  # the dialog saves it, through the adapter, when the artist submits

@@ -20,7 +20,6 @@ package integration
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -52,22 +51,6 @@ type fusionParams struct {
 // fusionExecute matches the one -execute argument: Lua that runs render.lua,
 // its path in a long bracket so no character of it is an escape.
 var fusionExecute = regexp.MustCompile(`^dofile\(\[==\[(.+)\]==\]\)$`)
-
-// fusionCase returns the preset's fixture case called name.
-func fusionCase(t *testing.T, name string) presettest.Case {
-	t.Helper()
-	cases, err := presettest.LoadCases(filepath.Join(presetCaseDir, fusionSaverPreset+".yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range cases {
-		if c.Name == name {
-			return c
-		}
-	}
-	t.Fatalf("%s.yaml has no %s case", fusionSaverPreset, name)
-	return presettest.Case{}
-}
 
 // TestPresetFusion_ParamsCostAtMaxChunk pins params.json's cost where it is
 // highest. It reads Task.Param.Frame, so it is evaluated at phase 3 on the
@@ -112,8 +95,8 @@ func TestPresetFusion_ParamsCostAtMaxChunk(t *testing.T) {
 // form, since under EXPR phase 3 renders PATH values host-native, so on
 // Windows the JSON also carries escaped backslashes.
 func TestPresetFusion_ParamsJSONRoundTrips(t *testing.T) {
-	params := fusionCase(t, "quoting").Params
-	if !strings.ContainsAny(params["Saver"], `"\`) || !strings.Contains(params["Saver"], " ") || !strings.ContainsFunc(params["Saver"], func(r rune) bool { return r > 127 }) {
+	params := presetCase(t, fusionSaverPreset, "quoting").Params
+	if !strings.Contains(params["Saver"], `"`) || !strings.Contains(params["Saver"], `\`) || !strings.Contains(params["Saver"], " ") || !strings.ContainsFunc(params["Saver"], func(r rune) bool { return r > 127 }) {
 		t.Fatalf("quoting case's Saver %q needs a quote, a backslash, a space and a non-ASCII letter", params["Saver"])
 	}
 	snap, err := capturePreset(t, fusionSaverPreset, params)
@@ -221,16 +204,6 @@ func luaLiteral(s string) string {
 	}
 	b.WriteByte('"')
 	return b.String()
-}
-
-// mustMarshal is json.Marshal that fails the test on an error.
-func mustMarshal(t *testing.T, v any) []byte {
-	t.Helper()
-	data, err := json.Marshal(v)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return data
 }
 
 // fusionTool is one tool of the fake comp.
@@ -382,13 +355,13 @@ local chunk = assert((loadstring or load)(code, "=execute"))
 chunk()
 `
 
-// runFusionScript writes the task's resolved render.lua and params.json (or
-// paramsOverride) into a fresh folder, points the task's own -execute code at
+// runFusionScript writes the task's resolved render.lua and params.json into a
+// fresh folder, points the task's own -execute code at
 // that render.lua, and runs it under fusionRunner from a different, empty
 // folder, so the script must find params.json beside itself. It returns the
 // calls the fakes recorded, as canonical JSON, and what the script wrote to
 // stdout.
-func runFusionScript(t *testing.T, lua string, task presettest.TaskSnapshot, mode, paramsOverride string) (calls, stdout string) {
+func runFusionScript(t *testing.T, lua string, task presettest.TaskSnapshot, mode string) (calls, stdout string) {
 	t.Helper()
 	dir := t.TempDir()
 	taskDir := filepath.Join(dir, "task")
@@ -397,10 +370,6 @@ func runFusionScript(t *testing.T, lua string, task presettest.TaskSnapshot, mod
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			t.Fatal(err)
 		}
-	}
-	params := taskFile(t, task, "params")
-	if paramsOverride != "" {
-		params = paramsOverride
 	}
 	if !fusionExecute.MatchString(task.Args[len(task.Args)-1]) {
 		t.Fatalf("-execute code %q is not dofile([==[<script>]==])", task.Args[len(task.Args)-1])
@@ -416,7 +385,7 @@ func runFusionScript(t *testing.T, lua string, task presettest.TaskSnapshot, mod
 	record := filepath.Join(dir, "calls.json")
 	for path, data := range map[string]string{
 		script:                                taskFile(t, task, "render"),
-		filepath.Join(taskDir, "params.json"): params,
+		filepath.Join(taskDir, "params.json"): taskFile(t, task, "params"),
 		runner:                                fmt.Sprintf(fusionRunner, strings.Join(specs, ", ")),
 		codeFile:                              code,
 	} {
@@ -468,13 +437,11 @@ func TestPresetFusion_ScriptDrivesFusion(t *testing.T) {
 		frames   string
 		mode     string
 		want     []any
-		wantOK   bool
 		wantFail string
 	}{
 		{
 			name: "renders-one-saver", saver: fusionQuotedSaver, frames: "3-7", mode: "ok",
-			want:   append(append([]any{load}, selectQuoted...), render(3, 7), quit),
-			wantOK: true,
+			want: append(append([]any{load}, selectQuoted...), render(3, 7), quit),
 		},
 		{
 			name: "negative-frames", saver: "MainOut", frames: "-5--1", mode: "ok",
@@ -482,7 +449,6 @@ func TestPresetFusion_ScriptDrivesFusion(t *testing.T) {
 				load, pass("MainOut", false), pass(fusionQuotedSaver, true), pass("Saver1", true),
 				render(-5, -1), quit,
 			},
-			wantOK: true,
 		},
 		{
 			name: "saver-missing", saver: "Saver9", frames: "1-2", mode: "ok",
@@ -517,12 +483,12 @@ func TestPresetFusion_ScriptDrivesFusion(t *testing.T) {
 				t.Fatalf("frames %s must be one task, got %d", tc.frames, len(snap.Steps[0].Tasks))
 			}
 			wantJSON := canonicalJSON(t, mustMarshal(t, tc.want))
-			calls, stdout := runFusionScript(t, lua, snap.Steps[0].Tasks[0], tc.mode, "")
+			calls, stdout := runFusionScript(t, lua, snap.Steps[0].Tasks[0], tc.mode)
 			if calls != wantJSON {
 				t.Errorf("Fusion calls:\n  got  %s\n  want %s", calls, wantJSON)
 			}
-			if gotOK := strings.Contains(stdout, "SQI_RENDER: OK\n"); gotOK != tc.wantOK {
-				t.Errorf("success line printed = %v, want %v; stdout:\n%s", gotOK, tc.wantOK, stdout)
+			if gotOK, wantOK := strings.Contains(stdout, "SQI_RENDER: OK\n"), tc.wantFail == ""; gotOK != wantOK {
+				t.Errorf("success line printed = %v, want %v; stdout:\n%s", gotOK, wantOK, stdout)
 			}
 			if tc.wantFail == "" {
 				if strings.Contains(stdout, "SQI_RENDER: FAILED:") {

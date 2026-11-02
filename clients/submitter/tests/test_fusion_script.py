@@ -148,15 +148,21 @@ def test_fusion_json_string_escapes(lua: str) -> None:
         assert json.loads(got[key]) == value, key
 
 
-def test_fusion_context_json_round_trips(lua: str, tmp_path: Path) -> None:
-    scene = 'C:\\shows\\\u00e9 "x"\\shot.comp'
+def _context_file(lua: str, tmp_path: Path, args: str, prelude: str = "") -> Path:
+    """Run ``prelude`` then write ``sqi_context_json(<args>)`` to a file; return the file."""
     target = tmp_path / "context.json"
-    body = f"""
+    body = f"""{prelude}
 local f = assert(io.open(os.getenv("SQI_OUT"), "wb"))
-f:write(sqi_context_json({lit(scene)}, "1-100", "19.1"))
+f:write(sqi_context_json({args}))
 f:close()
 """
     run_lua(lua, body, {"SQI_OUT": str(target)})
+    return target
+
+
+def test_fusion_context_json_round_trips(lua: str, tmp_path: Path) -> None:
+    scene = 'C:\\shows\\\u00e9 "x"\\shot.comp'
+    target = _context_file(lua, tmp_path, f'{lit(scene)}, "1-100", "19.1"')
     document = json.loads(target.read_text(encoding="utf-8"))
     assert document == {
         "version": 1,
@@ -178,13 +184,7 @@ f:close()
 
 
 def test_fusion_context_json_allows_unknown_range_and_version(lua: str, tmp_path: Path) -> None:
-    target = tmp_path / "context.json"
-    body = f"""
-local f = assert(io.open(os.getenv("SQI_OUT"), "wb"))
-f:write(sqi_context_json({lit("/p/shot.comp")}, nil, nil))
-f:close()
-"""
-    run_lua(lua, body, {"SQI_OUT": str(target)})
+    target = _context_file(lua, tmp_path, f"{lit('/p/shot.comp')}, nil, nil")
     document = json.loads(target.read_text(encoding="utf-8"))
     assert document["scene"]["frame_range"] is None
     assert document["host"]["version"] is None
@@ -250,13 +250,7 @@ def test_fusion_saver_targets_none_gives_no_targets(lua: str, savers: str) -> No
 def test_fusion_context_json_without_targets_has_an_empty_list(
     lua: str, tmp_path: Path, targets: str
 ) -> None:
-    target = tmp_path / "context.json"
-    body = f"""
-local f = assert(io.open(os.getenv("SQI_OUT"), "wb"))
-f:write(sqi_context_json({lit("/p/shot.comp")}, "1-2", nil{targets}))
-f:close()
-"""
-    run_lua(lua, body, {"SQI_OUT": str(target)})
+    target = _context_file(lua, tmp_path, f'{lit("/p/shot.comp")}, "1-2", nil{targets}')
     assert json.loads(target.read_text(encoding="utf-8"))["targets"] == []
 
 
@@ -265,20 +259,18 @@ HARD_NAME = 'Sa\u00ffver "q" \\ \t \u65e5\u672c'
 
 
 def test_fusion_targets_round_trip_through_the_context(lua: str, tmp_path: Path) -> None:
-    target = tmp_path / "context.json"
     clip = "C:\\out\\\u00e9.0001.exr"
     tools = [
         _tool("Saver1", pass_through=False, clip=clip),
         _tool(HARD_NAME, pass_through=False),
         _tool("Off", pass_through=True),
     ]
-    body = f"""
-local targets = sqi_saver_targets({{ {", ".join(tools)} }})
-local f = assert(io.open(os.getenv("SQI_OUT"), "wb"))
-f:write(sqi_context_json({lit("/p/shot.comp")}, "1-100", "19.1", targets))
-f:close()
-"""
-    run_lua(lua, body, {"SQI_OUT": str(target)})
+    target = _context_file(
+        lua,
+        tmp_path,
+        f'{lit("/p/shot.comp")}, "1-100", "19.1", targets',
+        prelude=f"local targets = sqi_saver_targets({{ {', '.join(tools)} }})",
+    )
     document = json.loads(target.read_text(encoding="utf-8"))
     assert document["targets"] == [
         {
@@ -309,15 +301,13 @@ f:close()
 
 def test_fusion_savers_bind_only_the_saver_product(lua: str, tmp_path: Path) -> None:
     """With Savers listed, ``fusion-render`` stays whole-comp and ``fusion-saver-render`` splits."""
-    target = tmp_path / "context.json"
     tools = [_tool("Saver1", pass_through=False), _tool("Saver2", pass_through=False)]
-    body = f"""
-local targets = sqi_saver_targets({{ {", ".join(tools)} }})
-local f = assert(io.open(os.getenv("SQI_OUT"), "wb"))
-f:write(sqi_context_json({lit("/p/shot.comp")}, "1-100", nil, targets))
-f:close()
-"""
-    run_lua(lua, body, {"SQI_OUT": str(target)})
+    target = _context_file(
+        lua,
+        tmp_path,
+        f'{lit("/p/shot.comp")}, "1-100", nil, targets',
+        prelude=f"local targets = sqi_saver_targets({{ {', '.join(tools)} }})",
+    )
     targets = load_context(target).render_targets()
     assert len(targets) == 2
 
@@ -604,11 +594,17 @@ def test_fusion_messages_reach_the_console_without_askuser(lua: str, tmp_path: P
     assert got["printed"].endswith(UNSAVED)
 
 
-def test_fusion_modified_comp_is_saved_then_launched(lua: str, tmp_path: Path) -> None:
+def _settings_with_exe(tmp_path: Path) -> Path:
     exe = tmp_path / "sqi-submit"
     exe.write_bytes(b"")
     settings = tmp_path / "settings.json"
     settings.write_text(json.dumps({"sqi_submit_command": str(exe)}), encoding="utf-8")
+    return settings
+
+
+def test_fusion_modified_comp_is_saved_then_launched(lua: str, tmp_path: Path) -> None:
+    settings = _settings_with_exe(tmp_path)
+    exe = tmp_path / "sqi-submit"
     scene = str(tmp_path / "shot.comp")
     # The settings file wins over an sqi-submit on PATH.
     on_path = _on_path(tmp_path)
@@ -628,10 +624,7 @@ def test_fusion_modified_comp_is_saved_then_launched(lua: str, tmp_path: Path) -
 
 
 def test_fusion_unmodified_comp_is_not_saved(lua: str, tmp_path: Path) -> None:
-    settings = tmp_path / "settings.json"
-    exe = tmp_path / "sqi-submit"
-    exe.write_bytes(b"")
-    settings.write_text(json.dumps({"sqi_submit_command": str(exe)}), encoding="utf-8")
+    settings = _settings_with_exe(tmp_path)
     got = run_lua(lua, _entry(tmp_path, modified="false"), {"SQI_SETTINGS": str(settings)})
     assert got["ok"] == "true"
     assert [e for e in _events(got) if e.startswith("save:")] == []
@@ -652,30 +645,16 @@ def test_fusion_failed_save_submits_nothing(lua: str, tmp_path: Path, result: st
 
 
 def test_fusion_frames_come_from_the_render_range(lua: str, tmp_path: Path) -> None:
-    exe = tmp_path / "sqi-submit"
-    exe.write_bytes(b"")
-    settings = tmp_path / "settings.json"
-    settings.write_text(json.dumps({"sqi_submit_command": str(exe)}), encoding="utf-8")
+    settings = _settings_with_exe(tmp_path)
     run_lua(lua, _entry(tmp_path, start="5.0", end="2.0"), {"SQI_SETTINGS": str(settings)})
     assert load_context(tmp_path / "lua_tmp1").scene_context().frame_range == "2-5"
 
 
 def test_fusion_missing_render_range_gives_no_range(lua: str, tmp_path: Path) -> None:
-    exe = tmp_path / "sqi-submit"
-    exe.write_bytes(b"")
-    settings = tmp_path / "settings.json"
-    settings.write_text(json.dumps({"sqi_submit_command": str(exe)}), encoding="utf-8")
+    settings = _settings_with_exe(tmp_path)
     got = run_lua(lua, _entry(tmp_path, start="nil"), {"SQI_SETTINGS": str(settings)})
     assert got["ok"] == "true"
     assert load_context(tmp_path / "lua_tmp1").scene_context().frame_range is None
-
-
-def _settings_with_exe(tmp_path: Path) -> Path:
-    exe = tmp_path / "sqi-submit"
-    exe.write_bytes(b"")
-    settings = tmp_path / "settings.json"
-    settings.write_text(json.dumps({"sqi_submit_command": str(exe)}), encoding="utf-8")
-    return settings
 
 
 def test_fusion_submit_lists_the_comps_savers(lua: str, tmp_path: Path) -> None:

@@ -4,8 +4,6 @@
 from __future__ import annotations
 
 import json
-import sys
-from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -13,7 +11,7 @@ import pytest
 import respx
 
 from sqi_submitter.core import FormModel, HostAdapter, SubmitterSession, prefill, submit_form
-from tests.conftest import FakeHost
+from tests.conftest import FakeHost, stub_open_for_adapter
 from tests.test_katana_handoff import Katana, Node
 
 BASE = "http://test-server:8080"
@@ -158,15 +156,7 @@ def test_katana_contract_full_flow(katana: Katana) -> None:
 def test_katana_menu_parents_to_main_window(
     katana: Katana, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    calls: list[tuple[Any, Any]] = []
-
-    def fake_open(adapter: Any, server_url: Any = None, parent: Any = None) -> None:
-        calls.append((adapter, parent))
-
-    # Stub the module: importing the real qt.dialog fails without a Qt binding (CI has none).
-    monkeypatch.setitem(
-        sys.modules, "sqi_submitter.qt.dialog", SimpleNamespace(open_for_adapter=fake_open)
-    )
+    calls = stub_open_for_adapter(monkeypatch)
     from sqi_submitter.hosts.katana import menu
     from sqi_submitter.hosts.katana.adapter import KatanaAdapter
 

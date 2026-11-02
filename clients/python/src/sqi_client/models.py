@@ -240,6 +240,13 @@ def _str_list(value: Any) -> list[str]:
     return [str(item) for item in value]
 
 
+def _opt_str_list(value: Any) -> list[str] | None:
+    """A list of strings, or ``None`` when ``value`` is not a list (absent stays absent)."""
+    if not isinstance(value, list):
+        return None
+    return [_as_str(item) for item in value]
+
+
 def _as_datetime(value: Any) -> datetime:
     if isinstance(value, str):
         try:
@@ -1285,11 +1292,7 @@ class ProductParameterItem:
             max_length=_opt_int(data.get("max_length")),
             min_value=_opt_str(data.get("min_value")),
             max_value=_opt_str(data.get("max_value")),
-            allowed_values=(
-                [_as_str(v) for v in data["allowed_values"]]
-                if isinstance(data.get("allowed_values"), list)
-                else None
-            ),
+            allowed_values=_opt_str_list(data.get("allowed_values")),
             item=ProductParameterItem.from_dict(inner) if isinstance(inner, Mapping) else None,
         )
 
@@ -1331,11 +1334,7 @@ class ProductParameter:
             type=_as_str(data.get("type")),
             description=_as_str(data.get("description")),
             default=_opt_str(data.get("default")),
-            allowed_values=(
-                [_as_str(v) for v in data["allowed_values"]]
-                if isinstance(data.get("allowed_values"), list)
-                else None
-            ),
+            allowed_values=_opt_str_list(data.get("allowed_values")),
             min_value=_opt_str(data.get("min_value")),
             max_value=_opt_str(data.get("max_value")),
             min_length=_opt_int(data.get("min_length")),

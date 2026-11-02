@@ -45,7 +45,12 @@ NOT_FOUND_MESSAGE = (
 )
 
 
-def _settings_command() -> str:
+class SubmitCommandNotFound(RuntimeError):
+    """``sqi-submit`` is in none of the places ``resolve_submit_command`` looks."""
+
+
+def _settings_value(key: str) -> str:
+    """The string ``key`` holds in ``~/.sqi/submitter.json``, or ``""``."""
     # Match sqi-submit's Path.home(): on Windows that is USERPROFILE. Python 3.7's expanduser
     # prefers HOME, which is often a network share there.
     home = (os.environ.get("USERPROFILE") if sys.platform == "win32" else None) or (
@@ -55,7 +60,7 @@ def _settings_command() -> str:
     try:
         # utf-8-sig: PowerShell 5 writes UTF-8 with a BOM, which plain utf-8 rejects.
         with open(path, encoding="utf-8-sig") as handle:
-            value = json.load(handle).get("sqi_submit_command")
+            value = json.load(handle).get(key)
     except (OSError, ValueError, AttributeError):
         return ""
     return value if isinstance(value, str) else ""
@@ -65,13 +70,13 @@ def resolve_submit_command(configured: str) -> str:
     """Find ``sqi-submit``: the host's own setting, the settings file, then PATH."""
     if configured and os.path.exists(configured):
         return configured
-    from_file = _settings_command()
+    from_file = _settings_value("sqi_submit_command")
     if from_file and os.path.exists(from_file):
         return from_file
     found = shutil.which("sqi-submit")
     if found:
         return found
-    raise RuntimeError(NOT_FOUND_MESSAGE)
+    raise SubmitCommandNotFound(NOT_FOUND_MESSAGE)
 
 
 def _handoff_folder() -> str:
@@ -293,29 +298,12 @@ def _warn(text: str) -> None:
         _print(text)
 
 
-def _settings_path() -> str:
-    # The same file _settings_command reads, found the same way.
-    home = (os.environ.get("USERPROFILE") if sys.platform == "win32" else None) or (
-        os.path.expanduser("~")
-    )
-    return os.environ.get("SQI_SUBMITTER_SETTINGS") or os.path.join(home, ".sqi", "submitter.json")
-
-
 def _configured_site() -> str:
     """The folder sqi_submitter was installed into for Katana's Python, or ``""``.
 
     ``$SQI_SUBMITTER_SITE``, else ``sqi_submitter_site.katana`` in the settings file.
     """
-    from_env = os.environ.get("SQI_SUBMITTER_SITE", "")
-    if from_env:
-        return from_env
-    try:
-        # utf-8-sig: PowerShell 5 writes UTF-8 with a BOM, which plain utf-8 rejects.
-        with open(_settings_path(), encoding="utf-8-sig") as handle:
-            value = json.load(handle).get("sqi_submitter_site.katana")
-    except (OSError, ValueError, AttributeError):
-        return ""
-    return value if isinstance(value, str) else ""
+    return os.environ.get("SQI_SUBMITTER_SITE", "") or _settings_value("sqi_submitter_site.katana")
 
 
 def _import_menu() -> Any:

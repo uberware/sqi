@@ -145,17 +145,36 @@ def _validate_field(f: FormField) -> str | None:
         except ValueError:
             return "Must be a number"
     if p.type in ("INT", "FLOAT"):
-        if p.min_value is not None and num < float(p.min_value):
-            return f"Must be at least {p.min_value}"
-        if p.max_value is not None and num > float(p.max_value):
-            return f"Must be at most {p.max_value}"
-    if p.min_length is not None and len(v) < p.min_length:
-        return f"Must be at least {p.min_length} characters"
-    if p.max_length is not None and len(v) > p.max_length:
-        return f"Must be at most {p.max_length} characters"
+        err = _check_range(num, p.min_value, p.max_value)
+        if err is not None:
+            return err
+    err = _check_length(v, p.min_length, p.max_length)
+    if err is not None:
+        return err
     if p.allowed_values and v not in p.allowed_values:
         return "Not an allowed value"
     return None
+
+
+def _check_range(num: float, lo: str | None, hi: str | None) -> str | None:
+    if lo is not None and num < float(lo):
+        return f"Must be at least {lo}"
+    if hi is not None and num > float(hi):
+        return f"Must be at most {hi}"
+    return None
+
+
+def _check_length(text: str, lo: int | None, hi: int | None) -> str | None:
+    if lo is not None and len(text) < lo:
+        return f"Must be at least {lo} characters"
+    if hi is not None and len(text) > hi:
+        return f"Must be at most {hi} characters"
+    return None
+
+
+def list_element_type(list_type: str) -> str:
+    """The element type of a ``LIST[...]`` type: ``LIST[LIST[INT]]`` gives ``LIST[INT]``."""
+    return list_type[len("LIST[") : -1]
 
 
 def _validate_list(p: ProductParameter, text: str) -> str | None:
@@ -184,7 +203,7 @@ def _check_list(
         return f"Must have at least {min_items} {_items(min_items)}"
     if max_items is not None and len(value) > max_items:
         return f"Must have at most {max_items} {_items(max_items)}"
-    element_type = list_type[len("LIST[") : -1]
+    element_type = list_element_type(list_type)
     for i, element in enumerate(value, start=1):
         err = _check_element(element, element_type, item)
         if err is not None:
@@ -200,13 +219,9 @@ def _check_element(
     element: Any, element_type: str, item: ProductParameterItem | None
 ) -> str | None:
     if element_type.startswith("LIST["):
-        return _check_list(
-            element,
-            element_type,
-            item.min_length if item else None,
-            item.max_length if item else None,
-            item.item if item else None,
-        )
+        if item is None:
+            return _check_list(element, element_type, None, None, None)
+        return _check_list(element, element_type, item.min_length, item.max_length, item.item)
     if element_type in ("INT", "FLOAT"):
         err = _check_number(element, element_type, item)
     elif element_type in ("STRING", "PATH"):
@@ -229,20 +244,14 @@ def _check_number(element: Any, element_type: str, item: ProductParameterItem | 
             return "Must be an integer"
     elif not is_number:
         return "Must be a number"
-    if item is not None:
-        if item.min_value is not None and element < float(item.min_value):
-            return f"Must be at least {item.min_value}"
-        if item.max_value is not None and element > float(item.max_value):
-            return f"Must be at most {item.max_value}"
-    return None
+    if item is None:
+        return None
+    return _check_range(element, item.min_value, item.max_value)
 
 
 def _check_text(element: Any, item: ProductParameterItem | None) -> str | None:
     if not isinstance(element, str):
         return "Must be text"
-    if item is not None:
-        if item.min_length is not None and len(element) < item.min_length:
-            return f"Must be at least {item.min_length} characters"
-        if item.max_length is not None and len(element) > item.max_length:
-            return f"Must be at most {item.max_length} characters"
-    return None
+    if item is None:
+        return None
+    return _check_length(element, item.min_length, item.max_length)

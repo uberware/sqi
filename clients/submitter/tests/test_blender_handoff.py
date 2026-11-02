@@ -184,7 +184,7 @@ def test_blender_not_found_names_the_preference(
     addon = _addon()
 
     def missing(_configured: str) -> str:
-        raise RuntimeError(addon.NOT_FOUND_MESSAGE)
+        raise addon.SubmitCommandNotFound(addon.NOT_FOUND_MESSAGE)
 
     monkeypatch.setattr(addon, "resolve_submit_command", missing)
     seen, report = _reports()

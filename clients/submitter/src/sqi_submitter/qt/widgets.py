@@ -7,7 +7,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from sqi_submitter.core.schema import FormField, FormModel
+from sqi_submitter.core.schema import FormField, FormModel, list_element_type
 from sqi_submitter.qt._compat import QtWidgets, require_qt
 
 _FILE_PICKERS = {"CHOOSE_INPUT_FILE", "CHOOSE_OUTPUT_FILE", "CHOOSE_DIRECTORY"}
@@ -179,7 +179,7 @@ def _line_edit_list(
     f: FormField, commit: Commit, parent: QtWidgets.QWidget
 ) -> QtWidgets.QPlainTextEdit:
     """One item per line; the model holds the JSON array text (``""`` when empty)."""
-    element_type = f.parameter.type.removeprefix("LIST[").removesuffix("]")
+    element_type = list_element_type(f.parameter.type)
     w = QtWidgets.QPlainTextEdit(_list_lines(f.value or ""), parent)
     w.textChanged.connect(lambda: commit(_lines_to_json(w.toPlainText(), element_type)))
     return w

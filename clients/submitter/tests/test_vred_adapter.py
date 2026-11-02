@@ -22,7 +22,7 @@ from sqi_submitter.core import (
     prefill,
     submit_form,
 )
-from tests.conftest import load_host_file
+from tests.conftest import load_host_file, stub_open_for_adapter
 
 BASE = "http://test-server:8080"
 PLUGIN = (
@@ -240,15 +240,7 @@ def test_vred_contract_full_flow() -> None:
 
 
 def test_vred_menu_parents_to_main_window(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[Any, Any]] = []
-
-    def fake_open(adapter: Any, server_url: Any = None, parent: Any = None) -> None:
-        calls.append((adapter, parent))
-
-    # Stub the module: importing the real qt.dialog fails without a Qt binding (CI has none).
-    monkeypatch.setitem(
-        sys.modules, "sqi_submitter.qt.dialog", SimpleNamespace(open_for_adapter=fake_open)
-    )
+    calls = stub_open_for_adapter(monkeypatch)
     from sqi_submitter.hosts.vred import menu
     from sqi_submitter.hosts.vred.adapter import VREDAdapter
 

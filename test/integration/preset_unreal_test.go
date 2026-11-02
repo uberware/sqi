@@ -121,11 +121,7 @@ func unrealShots(t *testing.T, shots ...string) string {
 	if shots == nil {
 		shots = []string{}
 	}
-	b, err := json.Marshal(shots)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b)
+	return string(mustMarshal(t, shots))
 }
 
 // TestPresetUnreal_ParamsCostIsFixed pins params.json's cost. The presets have
@@ -194,19 +190,7 @@ func TestPresetUnreal_ParamsCostIsFixed(t *testing.T) {
 func TestPresetUnreal_ParamsJSONRoundTrips(t *testing.T) {
 	for _, preset := range unrealPresets {
 		t.Run(preset, func(t *testing.T) {
-			cases, err := presettest.LoadCases(filepath.Join(presetCaseDir, preset+".yaml"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			var params map[string]string
-			for _, c := range cases {
-				if c.Name == "quoting" {
-					params = c.Params
-				}
-			}
-			if params == nil {
-				t.Fatalf("%s.yaml has no quoting case", preset)
-			}
+			params := presetCase(t, preset, "quoting").Params
 			asset := params["LevelSequence"] + params["QueueAsset"]
 			if !strings.ContainsAny(asset, `'"`) || !strings.Contains(asset, `\`) || !strings.Contains(asset, " ") ||
 				!strings.ContainsAny(params["OutputDirectory"], `'"`) {
@@ -928,14 +912,7 @@ func TestPresetUnreal_ScriptDrivesUnreal(t *testing.T) {
 		return p
 	}
 	sequenceShots := func(names ...string) string {
-		if names == nil {
-			names = []string{}
-		}
-		b, err := json.Marshal(map[string][]string{seqObject: names})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return string(b)
+		return string(mustMarshal(t, map[string]json.RawMessage{seqObject: json.RawMessage(unrealShots(t, names...))}))
 	}
 	selected := func(enabled ...call) []call {
 		return append([]call{{"load_asset", seqObject}, {"update_job_shot_list_from_sequence", seqObject, "SEQ_Hero"}}, enabled...)

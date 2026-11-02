@@ -32,7 +32,8 @@ type presetExpectation struct {
 	// the key is absent.
 	noExtensions bool
 	// osFamily, when set, is the attr.worker.os.family anyOf every step must
-	// require, in order.
+	// require, in order. A Windows-only preset sets it so a Linux worker
+	// carrying a hand-set tag cannot lease work it cannot run.
 	osFamily []string
 	// taskParams, when set, are the task parameters every step must declare,
 	// as name:TYPE in order. The params check above reads the template's
@@ -87,6 +88,7 @@ func TestSQIReferencePresets(t *testing.T) {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames", "OutputPath"},
 			extensions: []string{"TASK_CHUNKING", "EXPR"},
+			osFamily:   []string{"windows"},
 		},
 		"cinema4d-render": {
 			category:   "Rendering",
@@ -267,11 +269,13 @@ func TestSQIReferencePresets(t *testing.T) {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "LevelSequence", "Map", "MovieRenderConfig", "OutputDirectory"},
 			extensions: []string{"EXPR", "SQI_LOG_CHECKS"},
+			osFamily:   []string{"windows"},
 		},
 		"unreal-mrq-queue-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "QueueAsset", "OutputDirectory"},
 			extensions: []string{"EXPR", "SQI_LOG_CHECKS"},
+			osFamily:   []string{"windows"},
 		},
 		// The shot preset is the job preset with one task per shot: a Shots
 		// list job parameter and a Shot task parameter ranging over it.
@@ -279,6 +283,7 @@ func TestSQIReferencePresets(t *testing.T) {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "LevelSequence", "Map", "MovieRenderConfig", "Shots", "OutputDirectory"},
 			extensions: []string{"EXPR", "SQI_LOG_CHECKS"},
+			osFamily:   []string{"windows"},
 			taskParams: []string{"Shot:STRING"},
 		},
 		"ffmpeg-transcode": {
@@ -354,24 +359,30 @@ func TestSQIReferencePresets(t *testing.T) {
 			if exp.noExtensions && strings.Contains(p.Template, "extensions:") {
 				t.Errorf("template declares %q but must declare no extensions at all", "extensions:")
 			}
+			if exp.osFamily == nil && exp.taskParams == nil {
+				return
+			}
+			tmpl, err := openjd.Parse([]byte(p.Template), openjd.FormatYAML)
+			if err != nil {
+				t.Fatalf("openjd.Parse: %v", err)
+			}
+			if len(tmpl.Steps) == 0 {
+				t.Fatal("template declares no steps")
+			}
 			if exp.osFamily != nil {
-				assertStepsOSFamily(t, p.Template, exp.osFamily)
+				assertStepsOSFamily(t, tmpl, exp.osFamily)
 			}
 			if exp.taskParams != nil {
-				assertStepsTaskParams(t, p.Template, exp.taskParams)
+				assertStepsTaskParams(t, tmpl, exp.taskParams)
 			}
 		})
 	}
 }
 
-// assertStepsTaskParams fails unless every step of template declares exactly
-// the task parameters want, each written name:TYPE, in order.
-func assertStepsTaskParams(t *testing.T, template string, want []string) {
+// assertStepsTaskParams fails unless every step of tmpl declares exactly the
+// task parameters want, each written name:TYPE, in order.
+func assertStepsTaskParams(t *testing.T, tmpl *openjd.JobTemplate, want []string) {
 	t.Helper()
-	tmpl, err := openjd.Parse([]byte(template), openjd.FormatYAML)
-	if err != nil {
-		t.Fatalf("openjd.Parse: %v", err)
-	}
 	for _, step := range tmpl.Steps {
 		var got []string
 		if step.ParameterSpace != nil {
@@ -385,17 +396,10 @@ func assertStepsTaskParams(t *testing.T, template string, want []string) {
 	}
 }
 
-// assertStepsOSFamily fails unless every step of template requires
+// assertStepsOSFamily fails unless every step of tmpl requires
 // attr.worker.os.family anyOf exactly want.
-func assertStepsOSFamily(t *testing.T, template string, want []string) {
+func assertStepsOSFamily(t *testing.T, tmpl *openjd.JobTemplate, want []string) {
 	t.Helper()
-	tmpl, err := openjd.Parse([]byte(template), openjd.FormatYAML)
-	if err != nil {
-		t.Fatalf("openjd.Parse: %v", err)
-	}
-	if len(tmpl.Steps) == 0 {
-		t.Fatal("template declares no steps")
-	}
 	for _, step := range tmpl.Steps {
 		var got []string
 		if step.HostRequirements != nil {

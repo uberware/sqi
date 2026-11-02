@@ -98,19 +98,7 @@ func TestPresetModo_ParamsCostAtMaxChunk(t *testing.T) {
 func TestPresetModo_ParamsJSONRoundTrips(t *testing.T) {
 	for _, preset := range modoPresets {
 		t.Run(preset, func(t *testing.T) {
-			cases, err := presettest.LoadCases(filepath.Join(presetCaseDir, preset+".yaml"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			var params map[string]string
-			for _, c := range cases {
-				if c.Name == "quoting" {
-					params = c.Params
-				}
-			}
-			if params == nil {
-				t.Fatalf("%s.yaml has no quoting case", preset)
-			}
+			params := presetCase(t, preset, "quoting").Params
 			if !strings.ContainsAny(params["SceneFile"], `'"`) || !strings.Contains(params["SceneFile"], " ") {
 				t.Fatalf("quoting case's SceneFile %q needs both quotes and a space", params["SceneFile"])
 			}

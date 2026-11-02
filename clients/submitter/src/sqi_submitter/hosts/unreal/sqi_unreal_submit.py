@@ -37,7 +37,12 @@ NOT_FOUND_MESSAGE = (
 )
 
 
-def _settings_command() -> str:
+class SubmitCommandNotFound(RuntimeError):
+    """``sqi-submit`` is in none of the places ``resolve_submit_command`` looks."""
+
+
+def _settings_value(key: str) -> str:
+    """The string ``key`` holds in ``~/.sqi/submitter.json``, or ``""``."""
     # Match sqi-submit's Path.home(): on Windows that is USERPROFILE. Python 3.7's expanduser
     # prefers HOME, which is often a network share there.
     home = (os.environ.get("USERPROFILE") if sys.platform == "win32" else None) or (
@@ -47,7 +52,7 @@ def _settings_command() -> str:
     try:
         # utf-8-sig: PowerShell 5 writes UTF-8 with a BOM, which plain utf-8 rejects.
         with open(path, encoding="utf-8-sig") as handle:
-            value = json.load(handle).get("sqi_submit_command")
+            value = json.load(handle).get(key)
     except (OSError, ValueError, AttributeError):
         return ""
     return value if isinstance(value, str) else ""
@@ -57,13 +62,13 @@ def resolve_submit_command(configured: str) -> str:
     """Find ``sqi-submit``: the host's own setting, the settings file, then PATH."""
     if configured and os.path.exists(configured):
         return configured
-    from_file = _settings_command()
+    from_file = _settings_value("sqi_submit_command")
     if from_file and os.path.exists(from_file):
         return from_file
     found = shutil.which("sqi-submit")
     if found:
         return found
-    raise RuntimeError(NOT_FOUND_MESSAGE)
+    raise SubmitCommandNotFound(NOT_FOUND_MESSAGE)
 
 
 def _handoff_folder() -> str:
@@ -187,11 +192,13 @@ def enabled_shots(job: Any, sequence: str) -> tuple[list[str], str | None]:
     unreal.MoviePipelineLibrary.update_job_shot_list_from_sequence(asset, job)
     fallback = _asset_name(sequence)
     names: list[str] = []
+    seen: set[str] = set()
     for entry in job.shot_info:
         if not entry.enabled:
             continue
         name = str(entry.outer_name or "") or fallback
-        if name not in names:
+        if name not in seen:
+            seen.add(name)
             names.append(name)
     if not names:
         return [], "no enabled shots"

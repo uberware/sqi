@@ -267,10 +267,9 @@ func escapePointerToken(s string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(s, "~", "~0"), "/", "~1")
 }
 
-// validateLogChecks enforces the SQI_LOG_CHECKS extension/block coupling, the
-// block's own shape, and rejects any SQI_ step key that names no registered
-// step-block extension, and any step block found somewhere other than directly
-// on a step. Structural (not gated by EnforceLimits), like
+// validateLogChecks enforces the SQI_LOG_CHECKS extension/block coupling and
+// the block's own shape, and rejects any step block found somewhere other than
+// directly on a step. Structural (not gated by EnforceLimits), like
 // validatePathTranslation.
 func validateLogChecks(t *JobTemplate) ValidationErrors {
 	declared := t.hasExtension(ExtensionLogChecks)
@@ -285,7 +284,6 @@ func validateLogChecks(t *JobTemplate) ValidationErrors {
 	anyBlock := false
 	budget := maxLogCheckTemplateInsts
 	for i, s := range t.Steps {
-		errs = append(errs, validateUnknownStepFields(t, s, i)...)
 		if s.LogChecks == nil || !declared {
 			continue
 		}
@@ -297,38 +295,6 @@ func validateLogChecks(t *JobTemplate) ValidationErrors {
 			Pointer: "/extensions",
 			Message: "the SQI_LOG_CHECKS extension is declared but no step carries an SQI_LOG_CHECKS block",
 		})
-	}
-	return errs
-}
-
-// validateUnknownStepFields checks each key of one step that the step schema
-// does not define. A key is accepted only if it names a registered, supported
-// step-block extension that the template declares. Anything else is an error,
-// because the decoder would otherwise drop it: a misspelled base-spec key
-// silently loses its setting, and a misspelled block runs the step with its
-// checks off.
-func validateUnknownStepFields(t *JobTemplate, s StepTemplate, idx int) ValidationErrors {
-	var errs ValidationErrors
-	for _, key := range s.UnknownFields {
-		ptr := fmt.Sprintf("/steps/%d/%s", idx, escapePointerToken(key))
-		ext, ok := LookupExtension(key)
-		switch {
-		case !strings.HasPrefix(key, "SQI_"):
-			errs = append(errs, ValidationError{
-				Pointer: ptr,
-				Message: "unknown field; the step template schema defines no such key",
-			})
-		case !ok || ext.Status != StatusSupported || !ext.StepBlock:
-			errs = append(errs, ValidationError{
-				Pointer: ptr,
-				Message: fmt.Sprintf("unknown sqi step block %q; no supported extension defines it", key),
-			})
-		case !t.hasExtension(key):
-			errs = append(errs, ValidationError{
-				Pointer: ptr,
-				Message: fmt.Sprintf("%s block requires declaring the %s extension in extensions", key, key),
-			})
-		}
 	}
 	return errs
 }

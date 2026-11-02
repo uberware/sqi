@@ -63,6 +63,22 @@ def stub_launch(module: Any, monkeypatch: pytest.MonkeyPatch, events: list[str])
     monkeypatch.setattr(module, "launch", lambda cmd, ctx: events.append(f"launch:{cmd}:{ctx}"))
 
 
+def stub_open_for_adapter(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, Any]]:
+    """Stub ``sqi_submitter.qt.dialog``; return the ``(adapter, parent)`` of each open.
+
+    The real module fails to import without a Qt binding, and CI has none.
+    """
+    calls: list[tuple[Any, Any]] = []
+
+    def fake_open(adapter: Any, server_url: Any = None, parent: Any = None) -> None:
+        calls.append((adapter, parent))
+
+    monkeypatch.setitem(
+        sys.modules, "sqi_submitter.qt.dialog", types.SimpleNamespace(open_for_adapter=fake_open)
+    )
+    return calls
+
+
 def no_qt(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make the run look Qt-less: no binding, and importing the dialog fails."""
     import sqi_submitter.qt as qt_package

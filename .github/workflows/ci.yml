@@ -1492,17 +1492,14 @@ jobs:
       # adds does not exclude them: `make test-integration` runs
       # TestZZPresetTierRegistrySatisfied too, and the registry's tier2 blocks
       # require the real-ffmpeg cases to run, not skip.
-      - name: Install ffmpeg (the registry's tier-2 claims require it)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg
-          ffmpeg -version | head -1
-
       # The Fusion Saver preset's render.lua runs under a real Lua 5.1 in
       # TestPresetFusion_ScriptDrivesFusion; SQI_REQUIRE_LUA=1 below turns its
       # skip without an interpreter into a failure.
-      - name: Install Lua 5.1 (the Fusion Saver preset's script tests)
-        run: sudo apt-get install -y --no-install-recommends lua5.1
+      - name: Install ffmpeg and Lua 5.1 (tier-2 claims and the Fusion Saver script tests)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg lua5.1
+          ffmpeg -version | head -1
 
       - name: Run the integration suite
         env:

@@ -229,11 +229,7 @@ def _shots_of(unreal: Unreal, job: SimpleNamespace) -> list[str]:
 
 def test_unreal_target_carries_enabled_shots_in_order(unreal: Unreal) -> None:
     job = _job(shots=[_shot("sh010"), _shot("sh015", enabled=False), _shot("sh020")])
-    unreal.jobs = [job]
-    data, reasons = _module().read_scene()
-    assert reasons == []
-    [target] = data["targets"]
-    assert target["extra"]["Shots"] == json.dumps(["sh010", "sh020"])
+    assert _shots_of(unreal, job) == ["sh010", "sh020"]
 
 
 def test_unreal_shots_drop_duplicates_keeping_the_first(unreal: Unreal) -> None:
