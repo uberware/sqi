@@ -1536,7 +1536,9 @@ clients/submitter/
     hosts/{maya,houdini,nuke,max,vred}/  adapter + launch glue (in-process hosts)
     hosts/{blender,cinema4d,aftereffects,unreal,katana,keyshot,silhouette,fusion,modo}/
                                          one self-contained host file each, plus a
-                                         startup hook or kit where needed (handoff hosts)
+                                         startup hook or kit where needed (handoff hosts);
+                                         katana/ also has an adapter + menu glue, which
+                                         its host file loads in-process on Katana 8+
     cli.py, install.py                   sqi-submit, sqi-submit install-host
   tests/                     pytest; tests/integration/ is env-gated (see below)
 presets/sqi/                 the forty-two reference preset YAML fixtures (twenty-nine DCC render

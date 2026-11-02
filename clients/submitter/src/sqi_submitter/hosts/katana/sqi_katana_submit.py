@@ -5,9 +5,15 @@ Render nodes to the sqi dialog.
 Install it with ``sqi-submit install-host katana``, which copies this file and its startup hook
 ``init.py`` into ``~/.katana/Startup`` (Katana runs ``init.py`` from there at startup), then
 restart Katana. This file uses only Katana's own Python and the standard library and never
-imports ``sqi_submitter``: it writes a small context file describing the project's Render nodes
-and runs ``sqi-submit --context FILE``, whose Qt dialog does the rest. Katana 4 and 5 ship
-Python 3.7, so this file parses as 3.7.
+imports ``sqi_submitter`` by name: it writes a small context file describing the project's
+Render nodes and runs ``sqi-submit --context FILE``, whose Qt dialog does the rest. Katana 4 and
+5 ship Python 3.7, so this file parses as 3.7.
+
+On Katana 8 and later, when ``sqi_submitter`` is installed for Katana's own Python (on its path,
+or in the folder named by ``$SQI_SUBMITTER_SITE`` or the ``sqi_submitter_site.katana`` setting),
+the click opens the dialog inside Katana instead. The Katana version is checked first, so an
+earlier Katana never imports ``sqi_submitter``, whatever is on its path; if the import fails the
+handoff runs as before.
 
 ``Katana``, ``KatanaInfo``, ``UI4`` and the Qt binding are imported inside function bodies only,
 so the module imports (and its project reading can be tested) without Katana. The block between
@@ -17,6 +23,7 @@ it there and re-copy it.
 
 from __future__ import annotations
 
+import importlib
 from typing import Any
 
 # isort: split
@@ -177,6 +184,32 @@ def node_frame_range(node: Any, in_time: int, out_time: int) -> str:
     return _frames(in_time, out_time)
 
 
+def render_node_targets() -> list[tuple[str, str]]:
+    """``(name, frames)`` for every Render node that is not bypassed, in node-graph order."""
+    from Katana import NodegraphAPI
+
+    in_time, out_time = NodegraphAPI.GetInTime(), NodegraphAPI.GetOutTime()
+    return [
+        (node.getName(), node_frame_range(node, in_time, out_time))
+        for node in NodegraphAPI.GetAllNodesByType("Render")
+        if not node.isBypassed()
+    ]
+
+
+def save_project(path: str) -> bool:
+    """Save the project to ``path`` if it has unsaved changes; whether it is saved afterwards."""
+    from Katana import KatanaFile
+
+    try:
+        if not KatanaFile.IsFileDirty():
+            return True
+        KatanaFile.Save(path)
+        # A failed save may return instead of raising; the project is then still dirty.
+        return not KatanaFile.IsFileDirty()
+    except Exception:
+        return False
+
+
 def _katana_version() -> str | None:
     release = os.environ.get("KATANA_RELEASE")
     if release:
@@ -189,6 +222,16 @@ def _katana_version() -> str | None:
         return None
 
 
+def _katana_major() -> int | None:
+    """Katana's major release (8 for 8.0v1) from ``KatanaInfo.version``; ``None`` if unknown."""
+    try:
+        import KatanaInfo
+
+        return int(str(KatanaInfo.version).split(".")[0])
+    except (ImportError, AttributeError, ValueError):
+        return None
+
+
 def read_scene() -> dict[str, object]:
     """Describe the project as a version-1 handoff context document.
 
@@ -197,21 +240,17 @@ def read_scene() -> dict[str, object]:
     from Katana import FarmAPI, NodegraphAPI
 
     in_time, out_time = NodegraphAPI.GetInTime(), NodegraphAPI.GetOutTime()
-    targets: list[dict[str, object]] = []
-    for node in NodegraphAPI.GetAllNodesByType("Render"):
-        if node.isBypassed():
-            continue
-        name = node.getName()
-        targets.append(
-            {
-                "name": name,
-                "kind": "render_node",
-                "frame_range": node_frame_range(node, in_time, out_time),
-                "output_path": None,
-                "extra": {"RenderNode": name},
-                "locked": [],
-            }
-        )
+    targets: list[dict[str, object]] = [
+        {
+            "name": name,
+            "kind": "render_node",
+            "frame_range": frames,
+            "output_path": None,
+            "extra": {"RenderNode": name},
+            "locked": [],
+        }
+        for name, frames in render_node_targets()
+    ]
     return {
         "version": 1,
         "host": {"name": "katana", "display_name": "Katana", "version": _katana_version()},
@@ -232,9 +271,7 @@ def _qt_widgets() -> Any:
     The binding is chosen from the version, as Katana's developer guide does: a try/except
     could import a stray installed binding into the wrong Katana.
     """
-    import KatanaInfo
-
-    if int(KatanaInfo.version.split(".")[0]) >= 8:
+    if (_katana_major() or 0) >= 8:
         from PySide6 import QtWidgets
 
         return QtWidgets
@@ -243,22 +280,107 @@ def _qt_widgets() -> Any:
     return PyQtWidgets
 
 
+def _print(text: str) -> None:
+    """Print to Katana's console, ASCII only: a narrow-encoding console raises on the em dash."""
+    print("sqi: " + text.encode("ascii", "replace").decode("ascii"))
+
+
 def _warn(text: str) -> None:
     """Show ``text`` in a Qt warning box, or print it when Katana's Qt cannot be loaded."""
     try:
         _qt_widgets().QMessageBox.warning(None, "sqi", text)
     except Exception:
-        # ASCII only: a narrow-encoding console raises UnicodeEncodeError on the em dash.
-        print("sqi: " + text.encode("ascii", "replace").decode("ascii"))
+        _print(text)
+
+
+def _settings_path() -> str:
+    # The same file _settings_command reads, found the same way.
+    home = (os.environ.get("USERPROFILE") if sys.platform == "win32" else None) or (
+        os.path.expanduser("~")
+    )
+    return os.environ.get("SQI_SUBMITTER_SETTINGS") or os.path.join(home, ".sqi", "submitter.json")
+
+
+def _configured_site() -> str:
+    """The folder sqi_submitter was installed into for Katana's Python, or ``""``.
+
+    ``$SQI_SUBMITTER_SITE``, else ``sqi_submitter_site.katana`` in the settings file.
+    """
+    from_env = os.environ.get("SQI_SUBMITTER_SITE", "")
+    if from_env:
+        return from_env
+    try:
+        # utf-8-sig: PowerShell 5 writes UTF-8 with a BOM, which plain utf-8 rejects.
+        with open(_settings_path(), encoding="utf-8-sig") as handle:
+            value = json.load(handle).get("sqi_submitter_site.katana")
+    except (OSError, ValueError, AttributeError):
+        return ""
+    return value if isinstance(value, str) else ""
+
+
+def _import_menu() -> Any:
+    # By string name: this file is also loaded where sqi_submitter is not installed.
+    importlib.import_module("sqi_submitter")  # the package itself, before any submodule of it
+    return importlib.import_module("sqi_submitter.hosts.katana.menu")
+
+
+def _load_in_process() -> Any | None:
+    """sqi_submitter's Katana menu glue, or ``None`` when it does not import here.
+
+    When the first import fails and a site folder is configured, the folder is put on
+    ``sys.path`` and the import retried once; if that fails too, the reason is printed.
+    """
+    try:
+        return _import_menu()
+    except Exception:  # not installed for this Python, or installed broken: hand off
+        pass
+    site = _configured_site()
+    if not site:
+        return None
+    if site not in sys.path:
+        sys.path.insert(0, site)
+    try:
+        return _import_menu()
+    except Exception as exc:
+        _print(
+            "sqi_submitter could not be loaded from " + site + " (" + str(exc) + "), "
+            "so the separate submit window is used."
+        )
+        return None
+
+
+def _open_in_process() -> bool:
+    """Open the submit dialog inside Katana 8 or later; whether it opened.
+
+    The version is checked before anything is imported, so an earlier Katana (on PyQt5, where
+    sqi_submitter's Qt cannot run) never imports sqi_submitter, whatever is on its path.
+    """
+    if (_katana_major() or 0) < 8:
+        return False
+    menu = _load_in_process()
+    if menu is None:
+        return False
+    try:
+        menu.open_submitter()
+    except Exception as exc:  # the dialog must not take a traceback into Katana's console
+        _print(
+            "the submit dialog failed to open in Katana (" + str(exc) + "), so the "
+            "separate submit window is used."
+        )
+        return False
+    return True
 
 
 def submit() -> bool:
-    """Save if needed, write the context file and launch ``sqi-submit``.
+    """Open the submit dialog: inside Katana when it can, else through ``sqi-submit``.
 
-    Anything the artist must act on is shown in a dialog rather than raised into Katana's
-    console. Returns whether the dialog was launched.
+    The handoff saves if needed, writes the context file and launches ``sqi-submit``. Anything
+    the artist must act on is shown in a dialog rather than raised into Katana's console.
+    Returns whether a dialog was opened or launched.
     """
-    from Katana import FarmAPI, KatanaFile
+    if _open_in_process():
+        return True
+    from Katana import FarmAPI
 
     try:
         path = FarmAPI.GetKatanaFileName()
@@ -269,16 +391,7 @@ def submit() -> bool:
     if not path:
         _warn(_UNSAVED_MESSAGE)
         return False
-    try:
-        if KatanaFile.IsFileDirty():
-            KatanaFile.Save(path)
-            # A failed save may return instead of raising; the project is then still dirty.
-            saved = not KatanaFile.IsFileDirty()
-        else:
-            saved = True
-    except Exception:
-        saved = False
-    if not saved:
+    if not save_project(path):
         _warn(_SAVE_FAILED_MESSAGE)
         return False
     try:

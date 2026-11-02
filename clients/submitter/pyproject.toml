@@ -132,7 +132,8 @@ module = [
   "unreal",
   # The startup hooks import the handoff module that sits beside them in the host's folder.
   "sqi_unreal_submit",
-  # Katana's own modules (the handoff file imports them inside function bodies), the Qt binding
+  # Katana's own modules (the handoff file and the in-process adapter and menu glue import them
+  # inside function bodies), the Qt binding
   # it picks by Katana's version, and the handoff module its startup hook imports.
   "Katana",
   "KatanaInfo",

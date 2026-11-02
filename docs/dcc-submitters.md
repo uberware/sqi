@@ -26,6 +26,10 @@ opened:
   Python for every handoff host but two: After Effects is ExtendScript and
   Fusion is Lua (Fusion bundles Lua, not Python). See [The handoff
   contract](#the-handoff-contract).
+- **Both.** Katana hands off on every version, and on Katana 8 or later it can
+  also open the dialog in-process: when `sqi-submitter` is installed for
+  Katana's own Python, the same menu entry opens the dialog inside Katana. See
+  [Katana](#katana).
 
 | Host | Opens the dialog | Installed as | Targets (per-target products) |
 |---|---|---|---|
@@ -38,7 +42,7 @@ opened:
 | Cinema 4D | handoff | one `.pyp` plug-in file (`sqi-submit install-host cinema4d`) | checked takes |
 | After Effects | handoff | a ScriptUI panel `.jsx` plus `json2.js` | `Queued` render-queue items |
 | Unreal Engine | handoff | a module plus the `init_unreal.py` startup hook (`sqi-submit install-host unreal`) | enabled Movie Render Queue jobs |
-| Katana | handoff | a module plus the `init.py` startup hook (`sqi-submit install-host katana`) | Render nodes |
+| Katana | handoff; in-process on Katana 8 or later when `sqi-submitter` is installed for Katana's Python | a module plus the `init.py` startup hook (`sqi-submit install-host katana`), optionally plus `sqi-submitter` in a site folder for Katana's Python | Render nodes |
 | KeyShot | handoff | one script file, run from the Scripting Console (`sqi-submit install-host keyshot`) | studios |
 | Silhouette | handoff | a module plus the `sfxuser.py` startup hook (`sqi-submit install-host silhouette`) | output nodes of each session |
 | Fusion | handoff | one Lua comp script (`sqi-submit install-host fusion`) | Savers that are not in pass-through |
@@ -77,7 +81,10 @@ inside a host that cannot import `sqi_submitter`, so each is a single file (or,
 for the hosts that fix the name of a startup file, a module plus a tiny hook;
 for Modo, a kit folder) that uses only that host's standard library and ships
 in the wheel as package data. `hosts/vred` is the exception: its script plugin
-runs `sqi_submitter` inside VRED's own Python.
+runs `sqi_submitter` inside VRED's own Python. `hosts/katana` holds both kinds:
+the handoff module and hook, and an importable adapter and menu glue
+(`adapter.py`, `menu.py`) that the handoff module loads by name on Katana 8 or
+later when `sqi_submitter` imports there.
 
 The submitter is **product-driven** and hard-codes no per-DCC fields. It
 fetches the product catalog (`GET /api/v1/products`), lets the artist pick a
@@ -112,7 +119,10 @@ There are two install shapes, matching the two ways the dialog opens (see the
   (`sqi-submit install-host` does it where it can), and install
   `sqi-submitter[qt]` on the same machine as an ordinary command-line tool, for
   example with `pipx`, so the `sqi-submit` command exists. See [`sqi-submit
-  install-host`](#sqi-submit-install-host).
+  install-host`](#sqi-submit-install-host). Katana 8 or later can also run
+  the dialog in-process, with `sqi-submitter` (never the `[qt]` extra)
+  installed into a site folder for Katana's Python; see
+  [Katana](#in-process-on-katana-8-or-later).
 
 ```sh
 pip install sqi-submitter
@@ -570,10 +580,12 @@ has a **Frame Range**: each queue job renders the range in its own config.
 
 Katana hands the open project to `sqi-submit`, on every Katana version (Katana
 7.5 and earlier run PyQt5, which this package's Qt shim does not cover, so one
-standard-library-only file serves them all). The host side is
-`sqi_katana_submit.py` plus `init.py`, a startup hook that puts its own folder
-on `sys.path`, imports the module and registers the menu from Katana's
-`onStartupComplete` callback.
+standard-library-only file serves them all). On Katana 8 or later, which runs
+PySide6, the same menu entry can instead open the dialog **in-process**, inside
+Katana; see [In-process on Katana 8 or later](#in-process-on-katana-8-or-later)
+below. The host side is `sqi_katana_submit.py` plus `init.py`, a startup hook
+that puts its own folder on `sys.path`, imports the module and registers the
+menu from Katana's `onStartupComplete` callback.
 
 1. Install `sqi-submit` on the machine: `pipx install "sqi-submitter[qt]"`.
 2. Run `sqi-submit install-host katana`. It copies both files into
@@ -597,6 +609,50 @@ and the project's In/Out time otherwise. An unsaved project is refused with
 "Save your scene before submitting"; a changed one is saved first.
 `katana-render` is the per-target product (`RenderNode`); there is no
 whole-scene Katana product.
+
+#### In-process on Katana 8 or later
+
+This is optional: without it, Katana 8 hands off exactly as earlier versions
+do. With it, **Submit to sqi…** opens the dialog inside Katana, parented to
+Katana's main window, with no separate `sqi-submit` process.
+
+1. **Install `sqi-submitter` for Katana's Python into a folder of its own,**
+   never the `[qt]` extra (Katana supplies PySide6, and a second copy in the
+   process can conflict with it). Katana's interpreter is not meant for pip, so
+   fetch the wheels for its Python version from any `pip`:
+
+   ```sh
+   pip install --python-version 3.11 --only-binary=:all: --target ~/.sqi/katana-site sqi-submitter
+   ```
+
+   (`%USERPROFILE%\.sqi\katana-site` on Windows.) 3.11 is Katana 8's; match the
+   `sys.version` in Katana's own Python tab.
+2. **Tell Katana where it went.** Set `sqi_submitter_site.katana` in
+   `~/.sqi/submitter.json` to that folder (escape backslashes on Windows). The
+   key is per host, so a bare `sqi_submitter_site` or VRED's key is ignored:
+
+   ```json
+   { "sqi_submitter_site.katana": "/home/you/.sqi/katana-site" }
+   ```
+
+   The environment variable `SQI_SUBMITTER_SITE` does the same and wins. A
+   plain `import sqi_submitter` is tried first, so a `sqi_submitter` already on
+   Katana's path needs no setting.
+3. Install the host files as above (`sqi-submit install-host katana`) and
+   restart Katana. Nothing in the hook changes: the choice is made in
+   `sqi_katana_submit.py` at each click.
+
+At each click the module reads Katana's major version from `KatanaInfo.version`
+**before importing anything** from `sqi_submitter`. Below 8, or when the
+version cannot be read, it hands off, so Katana 7.5 and earlier never import
+`sqi_submitter` even when a stray PySide6 or `sqi_submitter` is on their path.
+On 8 or later it imports `sqi_submitter.hosts.katana.menu`; if that fails, it
+adds the configured folder to `sys.path` and tries once more. When nothing is
+configured and the import fails, it hands off quietly. When a configured folder
+still fails, or the dialog fails to open, it prints the reason to Katana's
+console and hands off. In the dialog, the targets, frame ranges and unsaved
+project handling are the same as in the handoff, and the dialog's **Save scene
+before submit** box saves through `KatanaFile.Save`.
 
 > **For a submitted job to run,** the rendering worker needs the `katana=true`
 > capability tag and Katana's `katana` command. Without a tagged worker the job
@@ -832,7 +888,10 @@ location, or into `--dest DIR` (created if missing), and prints what it did and
 the next step. The files are package data, so this works with no Qt binding
 installed. (`vred` is the one host here that is not a handoff host; the command
 installs its script plugin the same way, and the plugin additionally needs
-`sqi-submitter` in VRED's Python, see [VRED](#vred).)
+`sqi-submitter` in VRED's Python, see [VRED](#vred). Katana's files are the
+same for both of its modes: its optional in-process mode needs only
+`sqi-submitter` in a site folder for Katana's Python, see
+[Katana](#in-process-on-katana-8-or-later).)
 
 | Host | Files | Default destination | Without a default destination |
 |---|---|---|---|
@@ -1885,6 +1944,29 @@ After installing per [Installation per host](#installation-per-host):
 8. **Window focus.** The dialog comes to the front on each OS, with no console
    window alongside it on Windows.
 
+**Check by hand, in-process (Katana 8 or later):**
+
+9. **The dialog opens inside Katana.** Install `sqi-submitter` into
+   `~/.sqi/katana-site` as in [In-process on Katana 8 or
+   later](#in-process-on-katana-8-or-later), set `sqi_submitter_site.katana`,
+   restart and click **Submit to sqi…**: the dialog opens as a child of
+   Katana's main window (it stays above it and closes with it), and no
+   `sqi-submit` process starts. Items 2 and 3 hold in it.
+10. A changed project with **Save scene before submit** ticked is saved before
+    the job is sent; a project whose save fails (a read-only file) is not
+    submitted, and the dialog says so.
+11. **The fallback.** Point `sqi_submitter_site.katana` at an empty folder:
+    the click prints the import error in Katana's console and the separate
+    `sqi-submit` window opens instead. Remove the setting: it hands off with
+    nothing printed.
+12. **Katana 7.5 or earlier with the same setting** (and the same
+    `katana-site` folder) hands off, and `sqi_submitter` does not appear in
+    `sys.modules` in Katana's Python tab afterwards.
+13. That Katana's own Python accepts the wheels fetched with
+    `--python-version 3.11` (it is 3.11 on Katana 8; check `sys.version`), and
+    that the dialog's Qt is Katana's PySide6 (`sqi_submitter.qt._compat.QT_BINDING`
+    is `PySide6`).
+
 **Verified only against fakes or documentation:**
 
 - **The startup callback, the riskiest item.**
@@ -1912,6 +1994,9 @@ After installing per [Installation per host](#installation-per-host):
   Katana 8, PyQt5 before). On any failure the message goes to the console
   instead. The host version comes from `KATANA_RELEASE` (not found in Foundry's
   documentation), then `KatanaInfo.version`, else it is blank.
+- The in-process choice reads the major version from `KatanaInfo.version` only
+  (a `KATANA_RELEASE` alone does not enable it), and parents the dialog to
+  `UI4.App.MainWindow.CurrentMainWindow()`.
 
 ### VRED checklist
 
