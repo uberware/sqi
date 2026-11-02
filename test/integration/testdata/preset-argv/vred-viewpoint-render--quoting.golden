@@ -12,11 +12,9 @@ step "Render" — 1 task
   log checks: failOn "No valid license found"
   log checks: requireLine "SQI_RENDER: OK"
 
-task 1/1  name="Render[Frame=1-2,Frame.End=2,Frame.Start=1]"
+task 1/1  name="Render[Frame=1-2]"
   task params:
     Frame=1-2
-    Frame.End=2
-    Frame.Start=1
   command: VREDCore
   args:
     [0]  /mnt/show/cars/hero_car_v012.vpb

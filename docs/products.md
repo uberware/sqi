@@ -319,25 +319,24 @@ the index format, configuration, and the browse → preview → install flow.
 
 The official library ships twenty-nine DCC `Rendering`-category presets, plus
 eight [standalone renderer
-presets](preset-library.md#standalone-renderer-reference-presets). Fourteen of
+presets](preset-library.md#standalone-renderer-reference-presets). Twelve of
 the DCC presets (`maya-layer-render`, `maya-scene-render`,
 `houdini-rop-render`, `nuke-write-render`, `nuke-script-render`,
 `blender-batch-render`, `blender-view-layer-render`, `cinema4d-render`,
-`cinema4d-take-render`, `3dsmax-render` and the four After Effects presets
-`after-effects-render-windows`, `after-effects-render-macos`,
-`after-effects-queue-render-windows`, `after-effects-queue-render-macos`) are
-the targets of the [`sqi-submitter`](dcc-submitters.md) in-application
-submitters. The other fifteen have no in-application submitter and are submitted
-from the web UI or the API: `mistika-boutique-render`, `mistika-vr-render`,
-`mistika-workflows-render`, `katana-render`, `silhouette-render`,
-`silhouette-render-all`, `fusion-render`, `vred-render`,
-`vred-viewpoint-render`, `keyshot-render`, `keyshot-studio-render`,
-`modo-render`, `modo-pass-group-render`, `unreal-mrq-job-render` and
-`unreal-mrq-queue-render`.
+`cinema4d-take-render`, `3dsmax-render` and the two After Effects presets
+`after-effects-render` and `after-effects-queue-render`) are the targets of the [`sqi-submitter`](dcc-submitters.md) in-application
+submitters. Fourteen more also have a submitter host (twenty-six of the twenty-nine in
+all): `katana-render`, `silhouette-render`, `silhouette-render-all`,
+`fusion-render`, `fusion-saver-render`, `vred-render`, `vred-viewpoint-render`,
+`keyshot-render`, `keyshot-studio-render`, `modo-render`,
+`modo-pass-group-render`, `unreal-mrq-job-render`, `unreal-mrq-queue-render` and
+`unreal-mrq-shot-render`. Only the three Mistika presets
+(`mistika-boutique-render`, `mistika-vr-render` and `mistika-workflows-render`)
+have no in-application submitter and are submitted from the web UI or the API.
 `3dsmax-render`, the After Effects presets and the Unreal presets also gate on the worker's OS.
 Parameter names follow a documented, versioned, additive-only convention:
-`SceneFile` and `Frames` on all but the two After Effects queue presets and the
-two Unreal presets (which take `SceneFile` and no `Frames`), an output parameter only where the command takes one
+`SceneFile` and `Frames` on all but the After Effects queue preset and the
+three Unreal presets (which take `SceneFile` and no `Frames`), an output parameter only where the command takes one
 (`OutputDir` on the Maya presets, `OutputPath` on Blender, Cinema 4D and
 3ds Max), plus per-host extras like
 `Renderer`/`RopPath`/`WriteNode`/`Scene`/`ViewLayer`/`Take`/`RenderQueueItem`.

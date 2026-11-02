@@ -32,12 +32,17 @@ import tempfile
 
 NOT_FOUND_MESSAGE = (
     "sqi-submit was not found. Install it on this machine with: "
-    'pip install "sqi-submitter[qt]" — then set its full path in the sqi '
-    "add-on/plugin settings, or as sqi_submit_command in ~/.sqi/submitter.json."
+    'pip install "sqi-submitter[qt]" — then set its full path as '
+    "sqi_submit_command in ~/.sqi/submitter.json."
 )
 
 
-def _settings_command() -> str:
+class SubmitCommandNotFound(RuntimeError):
+    """``sqi-submit`` is in none of the places ``resolve_submit_command`` looks."""
+
+
+def _settings_value(key: str) -> str:
+    """The string ``key`` holds in ``~/.sqi/submitter.json``, or ``""``."""
     # Match sqi-submit's Path.home(): on Windows that is USERPROFILE. Python 3.7's expanduser
     # prefers HOME, which is often a network share there.
     home = (os.environ.get("USERPROFILE") if sys.platform == "win32" else None) or (
@@ -47,7 +52,7 @@ def _settings_command() -> str:
     try:
         # utf-8-sig: PowerShell 5 writes UTF-8 with a BOM, which plain utf-8 rejects.
         with open(path, encoding="utf-8-sig") as handle:
-            value = json.load(handle).get("sqi_submit_command")
+            value = json.load(handle).get(key)
     except (OSError, ValueError, AttributeError):
         return ""
     return value if isinstance(value, str) else ""
@@ -57,13 +62,13 @@ def resolve_submit_command(configured: str) -> str:
     """Find ``sqi-submit``: the host's own setting, the settings file, then PATH."""
     if configured and os.path.exists(configured):
         return configured
-    from_file = _settings_command()
+    from_file = _settings_value("sqi_submit_command")
     if from_file and os.path.exists(from_file):
         return from_file
     found = shutil.which("sqi-submit")
     if found:
         return found
-    raise RuntimeError(NOT_FOUND_MESSAGE)
+    raise SubmitCommandNotFound(NOT_FOUND_MESSAGE)
 
 
 def _handoff_folder() -> str:
@@ -138,6 +143,15 @@ def launch(command: str, context_path: str) -> None:
 
 _SAVE_FIRST = "Save your changes before submitting — the farm renders the saved project."
 _REFUSAL_HEAD = "These queue jobs cannot render on the farm and were left out:\n"
+_NO_JOBS = (
+    "The Movie Render Queue has no enabled jobs. Add or enable a job (or load a saved queue) "
+    "in Window > Cinematics > Movie Render Queue, then submit again."
+)
+_NONE_RENDERABLE_HEAD = (
+    "None of the queue's enabled jobs can render on the farm, so nothing was submitted:"
+)
+_MAX_SHOTS = 1000  # the unreal-mrq-shot-render preset's limits on Shots
+_MAX_SHOT_NAME = 256
 _TOOLS_MENU = "LevelEditor.MainMenu.Tools"
 _MENU_COMMAND = "import sqi_unreal_submit; sqi_unreal_submit.submit()"
 
@@ -149,6 +163,51 @@ def asset_path_problem(path: str) -> str | None:
     if path.startswith("/"):
         return None
     return "is not an asset path"
+
+
+def _object_path(path: str) -> str:
+    """``Package.Asset`` for a path that may name only the package (``/Game/Seq/S1``)."""
+    leaf = path.rsplit("/", 1)[-1]
+    return path if "." in leaf else path + "." + leaf
+
+
+def _asset_name(path: str) -> str:
+    """The asset's own name: ``/Game/Cinematics/SEQ_Hero.SEQ_Hero`` is ``SEQ_Hero``."""
+    return path.rsplit("/", 1)[-1].split(".")[0]
+
+
+def enabled_shots(job: Any, sequence: str) -> tuple[list[str], str | None]:
+    """The names of the job's enabled shots, or ``([], "<why they cannot be sent>")``.
+
+    The job's shot list is rebuilt from its level sequence first, as the farm does before it
+    picks a shot, so both sides see the same entries. A shot is named by its outer name: its
+    section's name in the shot track, or "no shot" in a sequence without one (Unreal 5.8). An
+    entry with no outer name, which 5.8 never gives, is named after the sequence. A name
+    repeated by several camera cuts is one shot.
+    """
+    import unreal
+
+    asset = unreal.EditorAssetLibrary.load_asset(_object_path(sequence))
+    if asset is None:
+        return [], "its level sequence could not be loaded"
+    unreal.MoviePipelineLibrary.update_job_shot_list_from_sequence(asset, job)
+    fallback = _asset_name(sequence)
+    names: list[str] = []
+    seen: set[str] = set()
+    for entry in job.shot_info:
+        if not entry.enabled:
+            continue
+        name = str(entry.outer_name or "") or fallback
+        if name not in seen:
+            seen.add(name)
+            names.append(name)
+    if not names:
+        return [], "no enabled shots"
+    if len(names) > _MAX_SHOTS:
+        return [], f"more than {_MAX_SHOTS} shots"
+    if any(len(name) > _MAX_SHOT_NAME for name in names):
+        return [], f"shot name longer than {_MAX_SHOT_NAME} characters"
+    return names, None
 
 
 def job_target(job: Any) -> tuple[dict[str, object] | None, str | None]:
@@ -168,16 +227,29 @@ def job_target(job: Any) -> tuple[dict[str, object] | None, str | None]:
         problem = asset_path_problem(value)
         if problem is not None:
             return None, f"{name}: its {label} {problem}"
+    extra: dict[str, str] = {
+        "LevelSequence": sequence,
+        "Map": map_path,
+        "MovieRenderConfig": str(config.get_path_name()),
+    }
+    try:
+        shots, shots_problem = enabled_shots(job, sequence)
+    except Exception as exc:
+        # The shot read calls Editor APIs no other product needs: if they fail, the job is
+        # still offered, without Shots, rather than blocking the job and queue presets too.
+        import unreal
+
+        unreal.log_warning(f"sqi: could not read the shots of {name}: {exc}")
+    else:
+        if shots_problem is not None:
+            return None, f"{name}: {shots_problem}"
+        extra["Shots"] = json.dumps(shots)
     target: dict[str, object] = {
         "name": name,
         "kind": "mrq_job",
         "frame_range": None,
         "output_path": None,
-        "extra": {
-            "LevelSequence": sequence,
-            "Map": map_path,
-            "MovieRenderConfig": str(config.get_path_name()),
-        },
+        "extra": extra,
         "locked": [],
     }
     return target, None
@@ -242,9 +314,17 @@ def submit() -> bool:
                 return False
         data, reasons = read_scene()
     except Exception as exc:
-        # These call Editor APIs that have not been run on a real install: whatever they raise
-        # is shown to the artist, not left to reach the Editor's log.
+        # These call Editor APIs run only on Unreal 5.8, which may differ in other versions:
+        # whatever they raise is shown to the artist, not left to reach the Editor's log.
         _show(f"sqi could not read the scene: {exc}", unreal.AppMsgType.OK)
+        return False
+    targets = data["targets"]
+    if not targets:
+        # Nothing to submit: say why and stop, rather than open a dialog with an empty list.
+        if reasons:
+            _show("\n".join([_NONE_RENDERABLE_HEAD, *reasons]), unreal.AppMsgType.OK)
+        else:
+            _show(_NO_JOBS, unreal.AppMsgType.OK)
         return False
     try:
         if reasons:

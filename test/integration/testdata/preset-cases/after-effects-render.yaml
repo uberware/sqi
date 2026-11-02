@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# After Effects Render. Gated to Windows and macOS workers by hostRequirements,
+# so its Tier-3 and outcome cases run on those two platforms only.
+#
+# `default` is two tasks at the default ten frames per task, with a scene path
+# holding a space and an apostrophe; the golden shows it travelling as one
+# argument. `movie-one-task` follows the preset readme's movie rule: Frames Per
+# Task at least the frame count keeps the whole range one aerender invocation.
+# `stepped-range` shows a stepped range splitting into one single-frame task
+# per frame, so -s and -e never span a frame the range excluded.
+#
+# logged-error and logged-error-other-case are outcome cases
+# (TestPresetOutcomes): the stub prints a line the preset's failOn pattern
+# matches and exits 0, so the only thing that can fail the task is the
+# SQI_LOG_CHECKS check. The second spells the marker in other letter cases,
+# which the pattern's (?i) must still match. One frame, so one task, run three
+# times: a failed task is retried up to scheduler.default_max_attempts (3), and
+# every attempt runs the stub and prints the line.
+cases:
+  - name: default
+    params:
+      SceneFile: 'C:\Show Files\spot\o''brien_v002.aep'
+      RenderQueueItem: "2"
+      Frames: "1-20"
+    expect_tasks: 2
+    expect_invocations:
+      aerender: 2
+  - name: movie-one-task
+    params:
+      SceneFile: 'C:\Show Files\spot\o''brien_v002.aep'
+      RenderQueueItem: "2"
+      Frames: "1-240"
+      FramesPerTask: "240"
+    expect_tasks: 1
+    expect_invocations:
+      aerender: 1
+  - name: stepped-range
+    params:
+      SceneFile: 'C:\Show Files\spot\o''brien_v002.aep'
+      RenderQueueItem: "2"
+      Frames: "1-9:4"
+    expect_tasks: 3
+    expect_invocations:
+      aerender: 3
+  - name: logged-error
+    params:
+      SceneFile: 'C:\Show Files\spot\o''brien_v002.aep'
+      RenderQueueItem: "2"
+      Frames: "1"
+    expect_tasks: 1
+    expect_invocations:
+      aerender: 3
+    stub_env:
+      SQI_STUB_STDOUT: "aerender ERROR: Unable to render"
+    expect_status: failed
+    expect_reason: "matched failOn"
+  - name: logged-error-other-case
+    params:
+      SceneFile: 'C:\Show Files\spot\o''brien_v002.aep'
+      RenderQueueItem: "2"
+      Frames: "1"
+    expect_tasks: 1
+    expect_invocations:
+      aerender: 3
+    stub_env:
+      SQI_STUB_STDOUT: "AERENDER error: x"
+    expect_status: failed
+    expect_reason: "matched failOn"

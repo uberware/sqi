@@ -2,7 +2,7 @@
 
 package integration
 
-// ffmpeg_presets_test.go — executes the shipped ffmpeg reference presets
+// preset_ffmpeg_test.go — executes the shipped ffmpeg reference presets
 // (presets/sqi/ffmpeg-*.yaml) through a real sqi-server and a real sqi-worker,
 // then asserts on the VIDEO THEY PRODUCE.
 //

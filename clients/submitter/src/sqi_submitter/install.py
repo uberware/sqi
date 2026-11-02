@@ -5,9 +5,11 @@ The files for Blender, Cinema 4D, After Effects, Unreal, Katana, KeyShot, Silhou
 Fusion ship inside this wheel as package data and use only the host's own standard library, so
 installing is a file copy: no pip into the host's Python. VRED's plugin is the exception: it
 runs ``sqi_submitter`` inside VRED's own Python, so that package has to be installed there too
-(see the VRED docs). Where the documented location needs admin rights (After Effects) or is not
-knowable (Blender's add-on is installed through its UI, Cinema 4D's preferences folder is
-versioned) the command prints what to do instead of guessing.
+(see the VRED docs). Katana 8 and later can optionally do the same: with ``sqi_submitter``
+installed for Katana's Python, the Katana module opens the dialog in Katana, and without it
+hands off as on every other version. Where the documented location needs admin rights (After
+Effects) or is not knowable (Blender's add-on is installed through its UI, Cinema 4D's
+preferences folder is versioned) the command prints what to do instead of guessing.
 """
 
 from __future__ import annotations
@@ -72,7 +74,9 @@ _NEXT_STEP = {
     "(it needs administrator rights), restart After Effects, then open the panel from the "
     "Window menu.",
     "unreal": "Restart the Unreal Editor; Submit to sqi… appears in the Tools menu.",
-    "katana": "Restart Katana; Submit to sqi… appears in the sqi menu.",
+    "katana": "Restart Katana; Submit to sqi… appears in the sqi menu. On Katana 8 or later "
+    "it opens the dialog inside Katana once sqi-submitter is installed for Katana's Python "
+    "(optional; see the Katana section of the submitter docs).",
     "keyshot": "In KeyShot open Window > Scripting Console and run sqi_keyshot_submit.",
     "silhouette": "Restart Silhouette; Submit to sqi… appears in the Actions menu.",
     "modo": "Restart Modo; run sqi.submit from the command entry, or map it to a key.",

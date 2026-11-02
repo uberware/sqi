@@ -121,29 +121,9 @@ type Snapshot struct {
 // Nothing is reimplemented, so a golden built from this is a statement about
 // the server and the worker rather than about the harness.
 func Capture(ctx context.Context, rawTemplate string, opts Options) (Snapshot, error) {
-	format := opts.Format
-	if format == "" {
-		format = store.TemplateFormatYAML
-	}
-
-	if err := refuseEnvironments(rawTemplate, format); err != nil {
-		return Snapshot{}, err
-	}
-
-	st := fake.New()
-	farmID, queueID, err := seedPrereqs(ctx, st)
+	st, queueID, result, err := submit(ctx, rawTemplate, opts)
 	if err != nil {
 		return Snapshot{}, err
-	}
-
-	result, err := openjd.NewSubmitter(st).Submit(ctx, rawTemplate, format, openjd.SubmitOptions{
-		FarmID:     farmID,
-		QueueID:    queueID,
-		Owner:      "presettest",
-		Parameters: opts.Params,
-	})
-	if err != nil {
-		return Snapshot{}, fmt.Errorf("presettest: submit: %w", err)
 	}
 
 	mgr, cleanupRoot, err := newSessionManager()
@@ -193,6 +173,41 @@ func refuseEnvironments(rawTemplate string, format store.TemplateFormat) error {
 		}
 	}
 	return nil
+}
+
+// Submit runs step 1 of Capture alone: the template submitted under
+// opts.Params to a fresh in-memory store, returning the jobs, steps and tasks
+// it created. A test that needs only the expansion uses it to skip resolving
+// every task.
+func Submit(ctx context.Context, rawTemplate string, opts Options) (*openjd.SubmitResult, error) {
+	_, _, result, err := submit(ctx, rawTemplate, opts)
+	return result, err
+}
+
+// submit is Submit, also returning the store and the queue the job went to.
+func submit(ctx context.Context, rawTemplate string, opts Options) (st *fake.Store, queueID string, result *openjd.SubmitResult, err error) {
+	format := opts.Format
+	if format == "" {
+		format = store.TemplateFormatYAML
+	}
+	if err := refuseEnvironments(rawTemplate, format); err != nil {
+		return nil, "", nil, err
+	}
+	st = fake.New()
+	farmID, queueID, err := seedPrereqs(ctx, st)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	result, err = openjd.NewSubmitter(st).Submit(ctx, rawTemplate, format, openjd.SubmitOptions{
+		FarmID:     farmID,
+		QueueID:    queueID,
+		Owner:      "presettest",
+		Parameters: opts.Params,
+	})
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("presettest: submit: %w", err)
+	}
+	return st, queueID, result, nil
 }
 
 // seedPrereqs creates the farm and queue rows Submit requires.

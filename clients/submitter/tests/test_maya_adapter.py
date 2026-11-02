@@ -56,6 +56,13 @@ def test_scene_context_extracts_basics(fake_host_module: Any) -> None:
     assert ctx.renderer == "arnold"
 
 
+def test_scene_context_keeps_an_absolute_images_rule(fake_host_module: Any) -> None:
+    _install_fake_cmds(fake_host_module, workspace_images="/renders/shot_010")
+    from sqi_submitter.hosts.maya.adapter import MayaAdapter
+
+    assert MayaAdapter().scene_context().output_path == "/renders/shot_010"
+
+
 def test_render_targets_are_renderable_unreferenced_layers(fake_host_module: Any) -> None:
     def getAttr(attr: str) -> bool:
         if attr.endswith(".renderable"):

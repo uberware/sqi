@@ -473,6 +473,7 @@ def test_katana_next_step_and_no_destination_hint(monkeypatch: pytest.MonkeyPatc
     assert "init.py" in text and "sqi_katana_submit.py" in text
     assert "macOS" in text
     assert "Restart Katana; Submit to sqi… appears in the sqi menu." in text
+    assert "On Katana 8 or later it opens the dialog inside Katana" in text
 
 
 def _documents(platform: str, home: Path) -> tuple[dict[str, str], Path]:

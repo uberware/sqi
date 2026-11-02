@@ -81,9 +81,112 @@ def test_blender_read_scene_targets(fake_host_module: FakeHost) -> None:
         {"Scene": "Scene", "ViewLayer": "fx"},
         {"Scene": "Shot2", "ViewLayer": "ViewLayer"},
     ]
-    # Each target carries its own scene's frame range and output.
+    # Each target carries its own scene's frame range and output; the two layers that would
+    # share /renders/d/ each get a folder of their own, the lone layer keeps its scene's.
     assert [t["frame_range"] for t in targets] == ["1-48", "1-48", "10"]
-    assert [t["output_path"] for t in targets] == ["/renders/d/", "/renders/d/", "/renders/e/"]
+    assert [t["output_path"] for t in targets] == [
+        "/renders/d/ViewLayer/",
+        "/renders/d/fx/",
+        "/renders/e/",
+    ]
+    assert data["scene"]["output_path"] == "/renders/d/"  # whole-scene output is untouched
+
+
+def _install_scenes(fake_host_module: FakeHost, *scenes: tuple[str, str, list[str]]) -> None:
+    """A fake bpy whose scenes are ``(name, render filepath, view layer names)``."""
+    built = [
+        SimpleNamespace(
+            name=name,
+            frame_start=1,
+            frame_end=4,
+            render=SimpleNamespace(filepath=filepath, engine="CYCLES"),
+            view_layers=[SimpleNamespace(name=layer) for layer in layers],
+        )
+        for name, filepath, layers in scenes
+    ]
+    fake_host_module(
+        "bpy",
+        app=SimpleNamespace(version_string="5.2.2"),
+        data=SimpleNamespace(filepath="/shows/d/shot.blend", is_dirty=False, scenes=built),
+        context=SimpleNamespace(scene=built[0]),
+        ops=SimpleNamespace(wm=SimpleNamespace(save_mainfile=lambda: None)),
+    )
+
+
+def _outputs() -> dict[str, object]:
+    targets: list[dict[str, Any]] = _addon().read_scene()["targets"]
+    return {str(t["name"]): t["output_path"] for t in targets}
+
+
+@pytest.mark.parametrize(
+    ("filepath", "expected"),
+    [
+        ("//renders/shot_####", ["//renders/Fg/shot_####", "//renders/Bg/shot_####"]),
+        ("//shot_", ["//Fg/shot_", "//Bg/shot_"]),
+        ("/tmp/", ["/tmp/Fg/", "/tmp/Bg/"]),
+        ("shot_####", ["Fg/shot_####", "Bg/shot_####"]),
+        ("C:\\renders\\shot_####", ["C:\\renders\\Fg\\shot_####", "C:\\renders\\Bg\\shot_####"]),
+    ],
+)
+def test_blender_layers_sharing_an_output_get_a_layer_folder(
+    fake_host_module: FakeHost, filepath: str, expected: list[str]
+) -> None:
+    _install_scenes(fake_host_module, ("Shot", filepath, ["Fg", "Bg"]))
+    assert list(_outputs().values()) == expected
+
+
+def test_blender_unshared_outputs_are_unchanged(fake_host_module: FakeHost) -> None:
+    _install_scenes(
+        fake_host_module,
+        ("Shot", "//renders/shot_####", ["Fg"]),
+        ("Alt", "//renders/alt_####", ["AltLayer"]),
+    )
+    assert _outputs() == {
+        "Shot / Fg": "//renders/shot_####",
+        "Alt / AltLayer": "//renders/alt_####",
+    }
+
+
+def test_blender_scenes_sharing_an_output_keep_distinct_layer_names(
+    fake_host_module: FakeHost,
+) -> None:
+    _install_scenes(
+        fake_host_module,
+        ("Shot", "//renders/img_####", ["Fg"]),
+        ("Alt", "//renders/img_####", ["Bg"]),
+    )
+    assert _outputs() == {
+        "Shot / Fg": "//renders/Fg/img_####",
+        "Alt / Bg": "//renders/Bg/img_####",
+    }
+
+
+def test_blender_scenes_sharing_an_output_and_a_layer_name_get_scene_folders(
+    fake_host_module: FakeHost,
+) -> None:
+    _install_scenes(
+        fake_host_module,
+        ("Shot", "//renders/img_####", ["ViewLayer", "Fg"]),
+        ("Alt", "//renders/img_####", ["ViewLayer"]),
+    )
+    assert _outputs() == {
+        "Shot / ViewLayer": "//renders/Shot/ViewLayer/img_####",
+        "Shot / Fg": "//renders/Shot/Fg/img_####",
+        "Alt / ViewLayer": "//renders/Alt/ViewLayer/img_####",
+    }
+
+
+def test_blender_layer_folder_names_are_safe_path_parts(fake_host_module: FakeHost) -> None:
+    # A separator would nest folders, a reserved Windows character would fail to create the
+    # folder, and a '#' would become part of Blender's frame number.
+    _install_scenes(
+        fake_host_module, ("Shot", "//r/s_", ["a/b\\c", 'x:*?"<>|#', "Bg 'quoted' layer"])
+    )
+    assert list(_outputs().values()) == [
+        "//r/a_b_c/s_",
+        "//r/x________/s_",
+        "//r/Bg 'quoted' layer/s_",
+    ]
 
 
 def test_blender_read_scene_is_a_valid_context_file(
@@ -175,6 +278,23 @@ def test_blender_launch_problems_are_reported_not_raised(
     seen, report = _reports()
     assert addon.submit_scene(report, "") == {"CANCELLED"}
     assert seen == [({"ERROR"}, str(error))]
+
+
+def test_blender_not_found_names_the_preference(
+    fake_host_module: FakeHost, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_bpy(fake_host_module, dirty=False)
+    addon = _addon()
+
+    def missing(_configured: str) -> str:
+        raise addon.SubmitCommandNotFound(addon.NOT_FOUND_MESSAGE)
+
+    monkeypatch.setattr(addon, "resolve_submit_command", missing)
+    seen, report = _reports()
+    assert addon.submit_scene(report, "") == {"CANCELLED"}
+    [(level, message)] = seen
+    assert level == {"ERROR"}
+    assert message == addon.NOT_FOUND_MESSAGE + " Or set it in Edit > Preferences > Add-ons > sqi."
 
 
 def test_blender_context_write_failure_is_reported(

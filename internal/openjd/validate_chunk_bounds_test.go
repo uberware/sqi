@@ -78,3 +78,28 @@ steps:
 		})
 	}
 }
+
+func TestValidateChunkBounds_RejectedUnderEXPR(t *testing.T) {
+	const tmpl = `
+specificationVersion: jobtemplate-2023-09
+name: J
+extensions: [TASK_CHUNKING, EXPR, SQI_CHUNK_BOUNDS]
+steps:
+  - name: Render
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Frame
+          type: CHUNK[INT]
+          range: "1-10"
+          chunks: { defaultTaskCount: 10, rangeConstraint: CONTIGUOUS }
+    script: { actions: { onRun: { command: r } } }
+`
+	errs := validateYAML(t, tmpl)
+	const want = "SQI_CHUNK_BOUNDS has no effect under EXPR; use min() and max() of the chunk"
+	for _, e := range errs {
+		if e.Pointer == "/extensions" && e.Message == want {
+			return
+		}
+	}
+	t.Fatalf("want an /extensions error %q, got %v", want, errs)
+}

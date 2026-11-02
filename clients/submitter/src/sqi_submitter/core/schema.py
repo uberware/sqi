@@ -8,10 +8,12 @@ required, numeric parsing, min/max, length limits, and allowed values.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
-from sqi_client.models import ProductParameter
+from sqi_client.models import ProductParameter, ProductParameterItem
 from sqi_submitter.core.mapping import is_scene_path_param
 
 
@@ -130,6 +132,8 @@ def _validate_field(f: FormField) -> str | None:
     p, v = f.parameter, f.value
     if v is None or v == "":
         return "Required" if f.required else None
+    if p.type.startswith("LIST["):
+        return _validate_list(p, v)
     if p.type == "INT":
         try:
             num: float = int(v)
@@ -141,14 +145,113 @@ def _validate_field(f: FormField) -> str | None:
         except ValueError:
             return "Must be a number"
     if p.type in ("INT", "FLOAT"):
-        if p.min_value is not None and num < float(p.min_value):
-            return f"Must be at least {p.min_value}"
-        if p.max_value is not None and num > float(p.max_value):
-            return f"Must be at most {p.max_value}"
-    if p.min_length is not None and len(v) < p.min_length:
-        return f"Must be at least {p.min_length} characters"
-    if p.max_length is not None and len(v) > p.max_length:
-        return f"Must be at most {p.max_length} characters"
+        err = _check_range(num, p.min_value, p.max_value)
+        if err is not None:
+            return err
+    err = _check_length(v, p.min_length, p.max_length)
+    if err is not None:
+        return err
     if p.allowed_values and v not in p.allowed_values:
         return "Not an allowed value"
     return None
+
+
+def _check_range(num: float, lo: str | None, hi: str | None) -> str | None:
+    if lo is not None and num < float(lo):
+        return f"Must be at least {lo}"
+    if hi is not None and num > float(hi):
+        return f"Must be at most {hi}"
+    return None
+
+
+def _check_length(text: str, lo: int | None, hi: int | None) -> str | None:
+    if lo is not None and len(text) < lo:
+        return f"Must be at least {lo} characters"
+    if hi is not None and len(text) > hi:
+        return f"Must be at most {hi} characters"
+    return None
+
+
+def list_element_type(list_type: str) -> str:
+    """The element type of a ``LIST[...]`` type: ``LIST[LIST[INT]]`` gives ``LIST[INT]``."""
+    return list_type[len("LIST[") : -1]
+
+
+def _validate_list(p: ProductParameter, text: str) -> str | None:
+    """Check a ``LIST[*]`` value: JSON array text, its length, then each element.
+
+    ``min_length``/``max_length`` on the parameter count items; the same keys on
+    ``item`` bound a string element's characters or an inner list's items.
+    """
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return "Must be a list"
+    return _check_list(parsed, p.type, p.min_length, p.max_length, p.item)
+
+
+def _check_list(
+    value: Any,
+    list_type: str,
+    min_items: int | None,
+    max_items: int | None,
+    item: ProductParameterItem | None,
+) -> str | None:
+    if not isinstance(value, list):
+        return "Must be a list"
+    if min_items is not None and len(value) < min_items:
+        return f"Must have at least {min_items} {_items(min_items)}"
+    if max_items is not None and len(value) > max_items:
+        return f"Must have at most {max_items} {_items(max_items)}"
+    element_type = list_element_type(list_type)
+    for i, element in enumerate(value, start=1):
+        err = _check_element(element, element_type, item)
+        if err is not None:
+            return f"Item {i}: {err}"
+    return None
+
+
+def _items(n: int) -> str:
+    return "item" if n == 1 else "items"
+
+
+def _check_element(
+    element: Any, element_type: str, item: ProductParameterItem | None
+) -> str | None:
+    if element_type.startswith("LIST["):
+        if item is None:
+            return _check_list(element, element_type, None, None, None)
+        return _check_list(element, element_type, item.min_length, item.max_length, item.item)
+    if element_type in ("INT", "FLOAT"):
+        err = _check_number(element, element_type, item)
+    elif element_type in ("STRING", "PATH"):
+        err = _check_text(element, item)
+    elif element_type == "BOOL":
+        err = None if isinstance(element, bool) else "Must be true or false"
+    else:
+        err = None
+    if err is None and item is not None and item.allowed_values:
+        shown = element if isinstance(element, str) else json.dumps(element)
+        if shown not in item.allowed_values:
+            return "Not an allowed value"
+    return err
+
+
+def _check_number(element: Any, element_type: str, item: ProductParameterItem | None) -> str | None:
+    is_number = isinstance(element, (int, float)) and not isinstance(element, bool)
+    if element_type == "INT":
+        if not is_number or (isinstance(element, float) and not element.is_integer()):
+            return "Must be an integer"
+    elif not is_number:
+        return "Must be a number"
+    if item is None:
+        return None
+    return _check_range(element, item.min_value, item.max_value)
+
+
+def _check_text(element: Any, item: ProductParameterItem | None) -> str | None:
+    if not isinstance(element, str):
+        return "Must be text"
+    if item is None:
+        return None
+    return _check_length(element, item.min_length, item.max_length)

@@ -1,0 +1,50 @@
+preset: after-effects-render
+case:   default
+params:
+  Frames=1-20
+  FramesPerTask=10
+  RenderQueueItem=2
+  SceneFile=C:\Show Files\spot\o'brien_v002.aep
+
+step "Render" — 2 tasks
+  log checks: failOn "(?i)aerender ERROR"
+
+task 1/2  name="Render[Frame=1-10,Frame.End=10,Frame.Start=1]"
+  task params:
+    Frame=1-10
+    Frame.End=10
+    Frame.Start=1
+  command: aerender
+  args:
+    [0]  -project
+    [1]  C:\Show Files\spot\o'brien_v002.aep
+    [2]  -rqindex
+    [3]  2
+    [4]  -s
+    [5]  1
+    [6]  -e
+    [7]  10
+    [8]  -v
+    [9]  ERRORS_AND_PROGRESS
+    [10]  -close
+    [11]  DO_NOT_SAVE_CHANGES
+
+task 2/2  name="Render[Frame=11-20,Frame.End=20,Frame.Start=11]"
+  task params:
+    Frame=11-20
+    Frame.End=20
+    Frame.Start=11
+  command: aerender
+  args:
+    [0]  -project
+    [1]  C:\Show Files\spot\o'brien_v002.aep
+    [2]  -rqindex
+    [3]  2
+    [4]  -s
+    [5]  11
+    [6]  -e
+    [7]  20
+    [8]  -v
+    [9]  ERRORS_AND_PROGRESS
+    [10]  -close
+    [11]  DO_NOT_SAVE_CHANGES

@@ -5,10 +5,12 @@ package product
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/uberware/sqi/internal/fsutil"
+	"github.com/uberware/sqi/internal/openjd"
 )
 
 // presetExpectation is what one shipped preset under presets/sqi must satisfy:
@@ -29,6 +31,15 @@ type presetExpectation struct {
 	// extensions field only skips the positive check below, so it cannot prove
 	// the key is absent.
 	noExtensions bool
+	// osFamily, when set, is the attr.worker.os.family anyOf every step must
+	// require, in order. A Windows-only preset sets it so a Linux worker
+	// carrying a hand-set tag cannot lease work it cannot run.
+	osFamily []string
+	// taskParams, when set, are the task parameters every step must declare,
+	// as name:TYPE in order. The params check above reads the template's
+	// text, so it cannot tell a task parameter from a job parameter whose
+	// name starts the same way.
+	taskParams []string
 }
 
 // The reference presets (presets/sqi/) are authored in this repo and published
@@ -77,6 +88,7 @@ func TestSQIReferencePresets(t *testing.T) {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames", "OutputPath"},
 			extensions: []string{"TASK_CHUNKING", "EXPR"},
+			osFamily:   []string{"windows"},
 		},
 		"cinema4d-render": {
 			category:   "Rendering",
@@ -88,35 +100,27 @@ func TestSQIReferencePresets(t *testing.T) {
 			params:     []string{"SceneFile", "Frames", "OutputPath", "Take"},
 			extensions: []string{"TASK_CHUNKING", "EXPR"},
 		},
-		"after-effects-render-windows": {
+		// The two After Effects presets run aerender directly on Windows and
+		// macOS workers. aerender can exit 0 when a render fails, so both declare
+		// SQI_LOG_CHECKS. The whole-queue preset is one task and needs nothing
+		// else; the per-item one passes a chunk's start and end.
+		"after-effects-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames", "RenderQueueItem", "FramesPerTask"},
-			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS", "SQI_LOG_CHECKS"},
+			osFamily:   []string{"windows", "macos"},
 		},
-		// The whole-queue variant is one task, and its wrapper script is an
-		// embedded file, which base OpenJD carries without an extension.
-		"after-effects-queue-render-windows": {
-			category:     "Rendering",
-			params:       []string{"SceneFile"},
-			noExtensions: true,
-		},
-		// The macOS variants differ from the Windows ones only in their gate
-		// and wrapper (aftereffectspair_test.go), so their expectations match.
-		"after-effects-render-macos": {
+		"after-effects-queue-render": {
 			category:   "Rendering",
-			params:     []string{"SceneFile", "Frames", "RenderQueueItem", "FramesPerTask"},
-			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
-		},
-		"after-effects-queue-render-macos": {
-			category:     "Rendering",
-			params:       []string{"SceneFile"},
-			noExtensions: true,
+			params:     []string{"SceneFile"},
+			extensions: []string{"SQI_LOG_CHECKS"},
+			osFamily:   []string{"windows", "macos"},
 		},
 		// The three Mistika presets invoke the renderer as `-s START -e
 		// END`, so they need a chunk's bounds rather than the chunk itself
 		// and declare SQI_CHUNK_BOUNDS. So do the two Maya presets, the two
-		// Blender presets, vray-standalone-render and both after-effects-render
-		// variants. Houdini and the two Nuke presets take a frame list
+		// Blender presets, vray-standalone-render and after-effects-render.
+		// Houdini and the two Nuke presets take a frame list
 		// directly; husk-usd-render computes its start and count with EXPR,
 		// and the two Cinema 4D presets and 3dsmax-render their start and end,
 		// because they also need EXPR to leave out a blank output path; the
@@ -193,6 +197,16 @@ func TestSQIReferencePresets(t *testing.T) {
 			params:     []string{"SceneFile", "Frames", "FramesPerTask"},
 			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS", "SQI_LOG_CHECKS"},
 		},
+		// fusion-saver-render is a host-script preset: EXPR builds the
+		// params.json its embedded render.lua reads, which names the one Saver
+		// to render and the chunk's first and last frame. It declares no
+		// SQI_CHUNK_BOUNDS, which is an error under EXPR.
+		"fusion-saver-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames", "Saver", "FramesPerTask"},
+			extensions: []string{"TASK_CHUNKING", "EXPR", "SQI_LOG_CHECKS"},
+			taskParams: []string{"Frame:CHUNK[INT]"},
+		},
 		// The two silhouette presets declare no SQI_LOG_CHECKS: no failure line
 		// is documented for sfxcmd. silhouette-render-all has no Session or
 		// OutputNode, so it is a whole-scene product.
@@ -207,17 +221,18 @@ func TestSQIReferencePresets(t *testing.T) {
 			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
 		},
 		// The two VRED presets are host-script presets: EXPR builds the
-		// params.json their embedded render.py reads. vred-render has no View,
+		// params.json their embedded render.py reads. They declare no
+		// SQI_CHUNK_BOUNDS, which is an error under EXPR. vred-render has no View,
 		// so it is a whole-scene product.
 		"vred-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames", "FramesPerTask", "OutputFile"},
-			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS", "EXPR", "SQI_LOG_CHECKS"},
+			extensions: []string{"TASK_CHUNKING", "EXPR", "SQI_LOG_CHECKS"},
 		},
 		"vred-viewpoint-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames", "View", "FramesPerTask", "OutputFile"},
-			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS", "EXPR", "SQI_LOG_CHECKS"},
+			extensions: []string{"TASK_CHUNKING", "EXPR", "SQI_LOG_CHECKS"},
 		},
 		// The two KeyShot presets are host-script presets like VRED's, but
 		// declare no SQI_CHUNK_BOUNDS: the script loops over any list of
@@ -234,18 +249,17 @@ func TestSQIReferencePresets(t *testing.T) {
 			extensions: []string{"TASK_CHUNKING", "EXPR", "SQI_LOG_CHECKS"},
 		},
 		// The two Modo presets are host-script presets with CONTIGUOUS chunks
-		// like VRED's, and declare SQI_CHUNK_BOUNDS although nothing reads
-		// the bounds under EXPR. modo-render has no PassGroup, so it is a
+		// like VRED's. modo-render has no PassGroup, so it is a
 		// whole-scene product.
 		"modo-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames", "FramesPerTask"},
-			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS", "EXPR", "SQI_LOG_CHECKS"},
+			extensions: []string{"TASK_CHUNKING", "EXPR", "SQI_LOG_CHECKS"},
 		},
 		"modo-pass-group-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames", "PassGroup", "FramesPerTask"},
-			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS", "EXPR", "SQI_LOG_CHECKS"},
+			extensions: []string{"TASK_CHUNKING", "EXPR", "SQI_LOG_CHECKS"},
 		},
 		// The two Unreal presets are host-script presets with one task and no
 		// frame parameters, so no TASK_CHUNKING. The job preset's target
@@ -255,11 +269,22 @@ func TestSQIReferencePresets(t *testing.T) {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "LevelSequence", "Map", "MovieRenderConfig", "OutputDirectory"},
 			extensions: []string{"EXPR", "SQI_LOG_CHECKS"},
+			osFamily:   []string{"windows"},
 		},
 		"unreal-mrq-queue-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "QueueAsset", "OutputDirectory"},
 			extensions: []string{"EXPR", "SQI_LOG_CHECKS"},
+			osFamily:   []string{"windows"},
+		},
+		// The shot preset is the job preset with one task per shot: a Shots
+		// list job parameter and a Shot task parameter ranging over it.
+		"unreal-mrq-shot-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "LevelSequence", "Map", "MovieRenderConfig", "Shots", "OutputDirectory"},
+			extensions: []string{"EXPR", "SQI_LOG_CHECKS"},
+			osFamily:   []string{"windows"},
+			taskParams: []string{"Shot:STRING"},
 		},
 		"ffmpeg-transcode": {
 			category: "Transcoding",
@@ -334,6 +359,58 @@ func TestSQIReferencePresets(t *testing.T) {
 			if exp.noExtensions && strings.Contains(p.Template, "extensions:") {
 				t.Errorf("template declares %q but must declare no extensions at all", "extensions:")
 			}
+			if exp.osFamily == nil && exp.taskParams == nil {
+				return
+			}
+			tmpl, err := openjd.Parse([]byte(p.Template), openjd.FormatYAML)
+			if err != nil {
+				t.Fatalf("openjd.Parse: %v", err)
+			}
+			if len(tmpl.Steps) == 0 {
+				t.Fatal("template declares no steps")
+			}
+			if exp.osFamily != nil {
+				assertStepsOSFamily(t, tmpl, exp.osFamily)
+			}
+			if exp.taskParams != nil {
+				assertStepsTaskParams(t, tmpl, exp.taskParams)
+			}
 		})
+	}
+}
+
+// assertStepsTaskParams fails unless every step of tmpl declares exactly the
+// task parameters want, each written name:TYPE, in order.
+func assertStepsTaskParams(t *testing.T, tmpl *openjd.JobTemplate, want []string) {
+	t.Helper()
+	for _, step := range tmpl.Steps {
+		var got []string
+		if step.ParameterSpace != nil {
+			for _, def := range step.ParameterSpace.TaskParameterDefinitions {
+				got = append(got, def.Name+":"+string(def.Type))
+			}
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("step %q: task parameters = %v, want %v", step.Name, got, want)
+		}
+	}
+}
+
+// assertStepsOSFamily fails unless every step of tmpl requires
+// attr.worker.os.family anyOf exactly want.
+func assertStepsOSFamily(t *testing.T, tmpl *openjd.JobTemplate, want []string) {
+	t.Helper()
+	for _, step := range tmpl.Steps {
+		var got []string
+		if step.HostRequirements != nil {
+			for _, attr := range step.HostRequirements.Attributes {
+				if attr.Name == "attr.worker.os.family" {
+					got = attr.AnyOf
+				}
+			}
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("step %q: attr.worker.os.family anyOf = %v, want %v", step.Name, got, want)
+		}
 	}
 }

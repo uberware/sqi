@@ -43,6 +43,10 @@ Example:
 - Every `CHUNK[INT]` parameter must be `CONTIGUOUS` (the default). A
   `NONCONTIGUOUS` chunk is rejected, because `.Start`/`.End` are undefined across
   the gaps of a non-contiguous set.
+- `SQI_CHUNK_BOUNDS` cannot be combined with `EXPR` (`/extensions`: "has no
+  effect under EXPR; use min() and max() of the chunk"). Under `EXPR` a
+  `CHUNK[INT]` is a `range_expr`, so `.Start`/`.End` do not resolve; take
+  `min()` and `max()` of the chunk instead.
 
 See `internal/openjd/validate.go` (`validateChunkBounds`).
 
