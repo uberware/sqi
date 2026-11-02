@@ -43,7 +43,7 @@ _FIXTURES = Path(__file__).parent / "fixtures"
 
 def load(name: str) -> dict[str, Any]:
     """Load a JSON wire fixture by file stem."""
-    data: dict[str, Any] = json.loads((_FIXTURES / f"{name}.json").read_text())
+    data: dict[str, Any] = json.loads((_FIXTURES / f"{name}.json").read_text(encoding="utf-8"))
     return data
 
 

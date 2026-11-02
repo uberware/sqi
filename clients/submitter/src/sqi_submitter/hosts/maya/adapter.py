@@ -21,7 +21,8 @@ class MayaAdapter(HostAdapter):
         renderer = cmds.getAttr("defaultRenderGlobals.currentRenderer") or None
         root = cmds.workspace(query=True, rootDirectory=True)
         images = cmds.workspace(fileRuleEntry="images")
-        output = os.path.join(root, images) if root and images else None
+        # Maya writes forward slashes on every OS; join must not add a Windows backslash.
+        output = os.path.join(root, images).replace(os.sep, "/") if root and images else None
         return SceneContext(
             scene_path=scene,
             frame_range=frame_range_str(start, end),
