@@ -646,7 +646,9 @@ on a shared farm set **run as user** on the queue.
 with Houdini's own `usdrecord`, ten frames per task by default; it is not a
 substitute for `husk-usd-render` at final quality. **Output Image Pattern**
 marks the frame number with one run of `#`, as in `preview.####.png`, and the
-launcher creates any missing output folders. **Renderer**, **Camera** and
+launcher creates any missing output folders. A negative first frame works: the
+sign takes one place of the padding, so frame -2 at four digits is `-002`.
+**Renderer**, **Camera** and
 **Image Width** are optional. Storm, the default renderer, needs an OpenGL
 context, so a worker with no GPU or display should use `Karma CPU`. The task
 starts `hython` with a small launcher instead of Houdini's `usdrecord`
@@ -658,17 +660,22 @@ default. **Operations** is a list of `oiiotool` arguments, one per line, applied
 between reading and writing; leave it empty to convert by the output's file
 extension. `oiiotool` does not create missing folders, so the output folder
 must already exist. The worker finds Houdini's copy, `hoiiotool`, when
-`oiiotool` is not on `PATH`.
+`oiiotool` is not on `PATH`, on Windows and on Linux (the Linux path is inferred
+from Houdini's layout, not measured).
 
 **Frame patterns.** `usdrecord-render` and `oiiotool-process` take a pattern
 whose file name has exactly one run of `#`, and the length of the run is the
 frame number's padding. A pattern with no run, or with two, is rejected at
-submission. `oiiotool` reads each `#` as four digits, so sqi rewrites the run
-as the same number of `@` before it reaches `oiiotool`, where each `@` is one
-digit: `shot.####.exr` becomes `shot.@@@@.exr`. A `#` in a folder of an
-`oiiotool-process` pattern is also rejected, because `oiiotool` would expand
-it. Anything written under **Operations** is passed through as written,
-including a second input sequence, which must use the `@` form.
+submission. `usdrecord` reads a `#` anywhere in the path as a frame
+placeholder and formats the path with Python's `str.format`, so
+`usdrecord-render` also rejects a `#` in a folder and any `{` or `}`.
+`oiiotool` reads each `#` as four digits, so sqi rewrites the run as the same
+number of `@` before it reaches `oiiotool`, where each `@` is one digit:
+`shot.####.exr` becomes `shot.@@@@.exr`. `oiiotool` expands `#` and `@` as
+wildcards anywhere in an argument, so `oiiotool-process` also rejects a `#` in
+a folder and an `@` anywhere in either pattern. Anything written under
+**Operations** is passed through as written, including a second input sequence,
+which must use the `@` form.
 
 All three are verified at Tier 2 as well as Tier 1 and Tier 3. See [Validation
 tiers](#validation-tiers) and each preset's caveat in

@@ -128,8 +128,10 @@ type ExprLimits struct {
 // first. The policy bound, TemplateRetainedBytes, has a wide range.
 //
 // Each floor leaves at least 4x headroom over the most any reference preset in
-// presets/sqi/ needs, so no operator can tighten a limit far enough to reject
-// sqi's own templates. TestExprLimits_FloorsAcceptReferencePresets measures
+// presets/sqi/ needs at its default parameter values, so no operator can
+// tighten a limit far enough to reject sqi's own templates at those defaults.
+// A parameter that grows the work, such as a long list or a high slice count,
+// can need more. TestExprLimits_FloorsAcceptReferencePresets measures
 // this on every run. Currently the largest needs are 15 operations and 390
 // live bytes in one evaluation (ffmpeg-segment-transcode-expr), and 38
 // positions and 512 retained let bytes in one template

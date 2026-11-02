@@ -334,8 +334,11 @@ presets:
         hipnc and shows that the hip loads, that hou.frame() starts at the
         task's first frame (one frame per task, and 1-10 at 4 giving chunk
         starts 1, 5 and 8), that SQI_FRAME_START reaches the script, that
-        every frame of a range is covered by exactly one task, and that an
-        exception in the script fails the job. Not shown: a hip file that
+        every frame of a range was written and that the last writer of each
+        was the right chunk, and that an exception in the script fails the
+        job. That each frame belongs to exactly one task comes from the Tier 1
+        goldens, not from Tier 2. An empty script is refused at submission
+        (minLength 1). Not shown: a hip file that
         needs plugins or a license beyond Apprentice, a simulation cooked
         across a chunk, a .hip or .hiplc, Houdini on Linux or macOS, any
         Houdini but 22.0.466, or a worker run as another user.
@@ -350,12 +353,15 @@ presets:
     source: presets/sqi
     tier: 2
     tier1:
-      cases: [default, options, stepped-range]
+      cases: [default, options, stepped-range, negative-range]
       caveat: >-
         argv is hython, the embedded launcher, then usdrecord's own arguments:
-        --renderer and --camera only when set, --imageWidth, --frames MIN:MAX
-        over the chunk (the default case shows 1:10 and 11:20; a stepped range
-        gives 1:1, 5:5 and 9:9), the stage, and the output pattern. The options
+        --renderer and --camera only when set, --imageWidth, --frames=MIN:MAX
+        over the chunk as one argument (the default case shows 1:10 and 11:20;
+        a stepped range gives 1:1, 5:5 and 9:9; negative-range gives -2:2), the
+        stage, and the output pattern. The frames are one argument because
+        argparse reads a separate -2:-1 as an option and exits 2 (measured,
+        Houdini 22.0.466). The options
         case shows the renderer name Karma CPU as one argument. The launcher
         runs $HFS/bin/usdrecord under hython because Houdini's usdrecord.cmd
         runs hython on an unquoted %HFS%, which fails with can't open file
@@ -369,9 +375,13 @@ presets:
         usdrecord does not create the output folder (measured: a missing folder
         fails the task with Failed to write image), so the launcher creates the
         pattern's folder first; Tier 2 writes into a nested folder that does not
-        exist beforehand. A pattern with no # or two runs is rejected at
-        submission. Not shown:
-        Houdini on Linux or macOS, any Houdini but 22.0.466, a worker with no
+        exist beforehand. Tier 2 also runs --frames -2--1 with a four-digit pad
+        and shows that exactly neg.-002.png and neg.-001.png are written (the
+        sign takes one place of the padding). A pattern with no # or two runs,
+        a # in a folder (usdrecord checks the whole path for placeholders, so
+        it would exit 2), or a { or } anywhere (usdrecord formats the path with
+        str.format) is rejected at submission. Not shown: Houdini on Linux or
+        macOS, any Houdini but 22.0.466, a worker with no
         GPU rendering with Storm, the other renderers (Karma XPU, Houdini VK,
         GL), a plain OpenUSD usdrecord, or the sub-frame ###.### pattern.
     tier2:
@@ -394,19 +404,22 @@ presets:
         oiiotool reads each # as four digits and each @ as one (measured,
         OIIO 2.5.18: #### gave 16 digits and ###### gave 24). Only the file
         name is rewritten: the windows-path case shows C:\... patterns intact,
-        and a # in a folder is rejected at submission, as are patterns with no
-        # or two runs. The default case shows an empty Operations list leaving
-        no empty argument. Tier 2 runs the preset with a real oiiotool on
-        Ubuntu's openimageio-tools in CI and, on the Windows development host,
-        with Houdini 22.0.466's hoiiotool (OIIO 2.5.18) found through the
-        detector's command default. It shows that --frames 1-12 at 10 per task
+        and a # in a folder or an @ anywhere (oiiotool expands both as
+        wildcards; measured, OIIO 2.5.18) is rejected at submission, as are
+        patterns with no # or two runs. The default case shows an empty Operations list leaving
+        no empty argument. Tier 2 ran the preset with Houdini 22.0.466's
+        hoiiotool (OIIO 2.5.18) found through the detector's command default on
+        the Windows development host and, in CI, with Ubuntu's
+        openimageio-tools (2.5.19.1 on Ubuntu 26.04; the runner image decides
+        the version). It shows that --frames 1-12 at 10 per task
         writes exactly conv.0001.jpg to conv.0012.jpg from an input folder
         whose name has a space, and that --resize 4x4 over 2-3 writes exactly
         small.002.png and small.003.png at 4x4 with a three-digit pad. oiiotool
         does not create the output folder (measured: the task fails with Could
         not open file), so it must exist; Tier 2 creates it first. Not shown:
         EXR or DPX colour handling, --colorconvert against a real OCIO config,
-        compositing a second input sequence, any OIIO but 2.5.18, and macOS.
+        compositing a second input sequence, any OIIO other than 2.5.18 and
+        the Ubuntu package version CI installs, and macOS.
         Negative frames were measured by hand with hoiiotool 2.5.18 (--frames
         -2--1 with @@@@ wrote -002 and -001); no test pins them.
     tier2:

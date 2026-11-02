@@ -374,8 +374,10 @@ length of the run is the frame number's padding: `shot.####.exr` is
 `shot.0007.exr` for frame 7. A pattern with no run, or with two separate runs,
 is rejected when you submit the job. `oiiotool` reads each `#` as four digits,
 so sqi rewrites the run to the same number of `@`, where each `@` is one digit,
-before it reaches `oiiotool`: `shot.####.exr` becomes `shot.@@@@.exr`. For
-`oiiotool-process` a `#` in a folder name is also rejected.
+before it reaches `oiiotool`: `shot.####.exr` becomes `shot.@@@@.exr`. A `#`
+in a folder name is also rejected, because both tools read it as a placeholder
+or wildcard. `usdrecord-render` additionally rejects `{` and `}` anywhere in
+the path, and `oiiotool-process` an `@` anywhere in either pattern.
 
 Key points about installed products:
 
