@@ -173,14 +173,15 @@ the [`sqi-submitter`](dcc-submitters.md) in-application submitters:
 `nuke-write-render`, `nuke-script-render`, `blender-batch-render`,
 `blender-view-layer-render`, `cinema4d-render`, `cinema4d-take-render`,
 `3dsmax-render`, `after-effects-render` and `after-effects-queue-render`.
-Seventeen more have no
-in-application submitter and are submitted from the web UI or the API:
-`mistika-boutique-render`, `mistika-vr-render`, `mistika-workflows-render`,
-`katana-render`, `silhouette-render`, `silhouette-render-all`, `fusion-render`,
-`fusion-saver-render`, `vred-render`, `vred-viewpoint-render`, `keyshot-render`,
-`keyshot-studio-render`, `modo-render`, `modo-pass-group-render`,
-`unreal-mrq-job-render`, `unreal-mrq-queue-render` and
-`unreal-mrq-shot-render`.
+Fourteen more also have a `sqi-submitter` host (twenty-six of the twenty-nine
+DCC presets in all): `katana-render`, `silhouette-render`,
+`silhouette-render-all`, `fusion-render`, `fusion-saver-render`, `vred-render`,
+`vred-viewpoint-render`, `keyshot-render`, `keyshot-studio-render`,
+`modo-render`, `modo-pass-group-render`, `unreal-mrq-job-render`,
+`unreal-mrq-queue-render` and `unreal-mrq-shot-render`. Only the three Mistika
+presets (`mistika-boutique-render`, `mistika-vr-render` and
+`mistika-workflows-render`) have no in-application submitter and are submitted
+from the web UI or the API.
 
 Each names its parameters by the [parameter convention
 contract](dcc-submitters.md#the-parameter-convention-contract), so submitter
@@ -232,7 +233,7 @@ does not run on macOS. See the preset's readme for what has not been verified.
 | Preset | Renders | Shape | Gate |
 |---|---|---|---|
 | `fusion-render` | a whole `.comp` with `FusionRenderNode` | `FramesPerTask` frames per task, default 10 | `fusion` |
-| `fusion-saver-render` | one Saver (`Saver`) of a `.comp`, chosen by an embedded Lua script | `FramesPerTask` frames per task, default 10 (at most 10000) | `fusion` |
+| `fusion-saver-render` | one Saver (`Saver`) of a `.comp`, chosen by an embedded Lua script | `FramesPerTask` frames per task, default 10 (at most 1000) | `fusion` |
 
 `fusion-render` renders the whole comp: Fusion's command line cannot pick a
 Saver, so every Saver in the comp writes where the comp says. It runs

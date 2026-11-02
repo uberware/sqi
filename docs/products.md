@@ -325,13 +325,14 @@ the DCC presets (`maya-layer-render`, `maya-scene-render`,
 `blender-batch-render`, `blender-view-layer-render`, `cinema4d-render`,
 `cinema4d-take-render`, `3dsmax-render` and the two After Effects presets
 `after-effects-render` and `after-effects-queue-render`) are the targets of the [`sqi-submitter`](dcc-submitters.md) in-application
-submitters. The other seventeen have no in-application submitter and are submitted
-from the web UI or the API: `mistika-boutique-render`, `mistika-vr-render`,
-`mistika-workflows-render`, `katana-render`, `silhouette-render`,
-`silhouette-render-all`, `fusion-render`, `fusion-saver-render`, `vred-render`,
-`vred-viewpoint-render`, `keyshot-render`, `keyshot-studio-render`,
-`modo-render`, `modo-pass-group-render`, `unreal-mrq-job-render`,
-`unreal-mrq-queue-render` and `unreal-mrq-shot-render`.
+submitters. Fourteen more also have a submitter host (twenty-six of the twenty-nine in
+all): `katana-render`, `silhouette-render`, `silhouette-render-all`,
+`fusion-render`, `fusion-saver-render`, `vred-render`, `vred-viewpoint-render`,
+`keyshot-render`, `keyshot-studio-render`, `modo-render`,
+`modo-pass-group-render`, `unreal-mrq-job-render`, `unreal-mrq-queue-render` and
+`unreal-mrq-shot-render`. Only the three Mistika presets
+(`mistika-boutique-render`, `mistika-vr-render` and `mistika-workflows-render`)
+have no in-application submitter and are submitted from the web UI or the API.
 `3dsmax-render`, the After Effects presets and the Unreal presets also gate on the worker's OS.
 Parameter names follow a documented, versioned, additive-only convention:
 `SceneFile` and `Frames` on all but the After Effects queue preset and the

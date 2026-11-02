@@ -638,6 +638,9 @@ Katana's main window, with no separate `sqi-submit` process.
    The environment variable `SQI_SUBMITTER_SITE` does the same and wins. A
    plain `import sqi_submitter` is tried first, so a `sqi_submitter` already on
    Katana's path needs no setting.
+   `SQI_SUBMITTER_SITE` is one environment variable shared by Katana and VRED,
+   so a machine running both would point both at one folder; the settings keys
+   `sqi_submitter_site.katana` and `sqi_submitter_site.vred` are per host.
 3. Install the host files as above (`sqi-submit install-host katana`) and
    restart Katana. Nothing in the hook changes: the choice is made in
    `sqi_katana_submit.py` at each click.
@@ -695,6 +698,9 @@ unverified on an install; the [VRED checklist](#vred-checklist) lists them.
    The environment variable `SQI_SUBMITTER_SITE` does the same and wins. The
    plugin tries a plain `import sqi_submitter` first, so an install into VRED's
    own `site-packages` needs no setting.
+   `SQI_SUBMITTER_SITE` is one environment variable shared by VRED and Katana,
+   so a machine running both would point both at one folder; the settings keys
+   `sqi_submitter_site.vred` and `sqi_submitter_site.katana` are per host.
 4. Run `sqi-submit install-host vred` (any ordinary install of `sqi-submitter`
    will do; the command needs no Qt). When it finds exactly one `VRED-*` folder
    under `%USERPROFILE%\Documents\Autodesk`, it copies the plugin to
@@ -1040,7 +1046,7 @@ none and are submitted from the web UI or the API.
 | `mistika-workflows-render` | `workflows -r <scene> -s/-e <frame range>` | chunks of 10 | `SceneFile` (`*.rnd`), `Frames` | `attr.worker.tag.mistikaworkflows = "true"` |
 | `katana-render` | `katana --batch --katana-file=<scene> --render-node=<node> -t <first>-<last>` | one frame per task by default (raise `FramesPerTask` to batch) | `SceneFile` (`*.katana`), `Frames`, `RenderNode`, `FramesPerTask` | `attr.worker.tag.katana = "true"` |
 | `fusion-render` | `FusionRenderNode <comp> -render -start <first> -end <last> -quiet -verbose -quit` | chunks of 10 | `SceneFile` (`*.comp`), `Frames`, `FramesPerTask` | `attr.worker.tag.fusion = "true"` |
-| `fusion-saver-render` | `FusionRenderNode -quiet -verbose -execute <code>`, the code running an embedded `render.lua` that loads the comp named in an embedded `params.json`, puts every other Saver in pass-through and renders the task's frames | chunks of 10 (`FramesPerTask` at most 10000) | `SceneFile` (`*.comp`), `Frames`, `Saver`, `FramesPerTask` | `attr.worker.tag.fusion = "true"` |
+| `fusion-saver-render` | `FusionRenderNode -quiet -verbose -execute <code>`, the code running an embedded `render.lua` that loads the comp named in an embedded `params.json`, puts every other Saver in pass-through and renders the task's frames | chunks of 10 (`FramesPerTask` at most 1000) | `SceneFile` (`*.comp`), `Frames`, `Saver`, `FramesPerTask` | `attr.worker.tag.fusion = "true"` |
 | `silhouette-render` | `sfxcmd -session <session> -node <output node> -range <first>-<last> <project>` | chunks of 10 | `SceneFile` (the `.sfx` bundle, a directory), `Frames`, `Session`, `OutputNode`, `FramesPerTask` | `attr.worker.tag.silhouette = "true"` |
 | `silhouette-render-all` | `sfxcmd -all -range <first>-<last> <project>` (every output node of the active session) | chunks of 10 | `SceneFile` (the `.sfx` bundle, a directory), `Frames`, `FramesPerTask` | `attr.worker.tag.silhouette = "true"` |
 | `vred-render` | `VREDCore <scene> -insecure_python -fast_start -hide_gui -postpython <code>`, the code running an embedded `render.py` that reads the task's frames and output file from an embedded `params.json` | chunks of 10 (`FramesPerTask` at most 1000) | `SceneFile` (`*.vpb`), `Frames`, `FramesPerTask`, `OutputFile` (blank keeps the scene's render filename) | `attr.worker.tag.vred = "true"` |

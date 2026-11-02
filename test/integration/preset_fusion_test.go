@@ -39,7 +39,7 @@ const fusionSaverPreset = "fusion-saver-render"
 
 // fusionMaxFramesPerTask is the FramesPerTask maxValue the preset declares and
 // its readme states.
-const fusionMaxFramesPerTask = 10000
+const fusionMaxFramesPerTask = 1000
 
 // fusionParams is params.json as the script reads it.
 type fusionParams struct {
@@ -69,14 +69,10 @@ func fusionCase(t *testing.T, name string) presettest.Case {
 	return presettest.Case{}
 }
 
-// fusionMaxRangeFrames is the most values sqi accepts in one task parameter's
-// range, so the most frames one chunk can hold whatever FramesPerTask says.
-const fusionMaxRangeFrames = 1024
-
 // TestPresetFusion_ParamsCostAtMaxChunk pins params.json's cost where it is
 // highest. It reads Task.Param.Frame, so it is evaluated at phase 3 on the
 // worker, against the worker's EXPR limits: the largest chunk the preset can
-// produce (FramesPerTask = maxValue over the longest range sqi accepts, 1024
+// produce (FramesPerTask = maxValue over a range of that many frames, 1000
 // frames) must resolve under the worker defaults, with the longest Saver name,
 // and carry the chunk's first and last frame. One past the maximum must be
 // refused at submission by the maxValue bound itself, or the maximum bounds
@@ -84,20 +80,20 @@ const fusionMaxRangeFrames = 1024
 func TestPresetFusion_ParamsCostAtMaxChunk(t *testing.T) {
 	params := map[string]string{
 		"SceneFile":     "/mnt/show/seq010/shot0010/comp/shot0010_comp_v007.comp",
-		"Frames":        fmt.Sprintf("1-%d", fusionMaxRangeFrames),
+		"Frames":        fmt.Sprintf("1-%d", fusionMaxFramesPerTask),
 		"FramesPerTask": strconv.Itoa(fusionMaxFramesPerTask),
 		"Saver":         strings.Repeat("S", 256),
 	}
 	snap, err := capturePreset(t, fusionSaverPreset, params)
 	if err != nil {
-		t.Fatalf("a %d-frame chunk must resolve under the worker's default EXPR limits: %v", fusionMaxRangeFrames, err)
+		t.Fatalf("a %d-frame chunk must resolve under the worker's default EXPR limits: %v", fusionMaxFramesPerTask, err)
 	}
 	if len(snap.Steps) != 1 || len(snap.Steps[0].Tasks) != 1 {
-		t.Fatalf("1-%d at %d frames per task must be one task, got %+v", fusionMaxRangeFrames, fusionMaxFramesPerTask, snap.Steps)
+		t.Fatalf("1-%d at %d frames per task must be one task, got %+v", fusionMaxFramesPerTask, fusionMaxFramesPerTask, snap.Steps)
 	}
 	p := decodeStrict[fusionParams](t, taskFile(t, snap.Steps[0].Tasks[0], "params"))
-	if p.Start != 1 || p.End != fusionMaxRangeFrames || p.Saver != params["Saver"] {
-		t.Errorf("params.json = start %d, end %d, saver %q; want 1, %d and the 256-character name", p.Start, p.End, p.Saver, fusionMaxRangeFrames)
+	if p.Start != 1 || p.End != fusionMaxFramesPerTask || p.Saver != params["Saver"] {
+		t.Errorf("params.json = start %d, end %d, saver %q; want 1, %d and the 256-character name", p.Start, p.End, p.Saver, fusionMaxFramesPerTask)
 	}
 
 	params["FramesPerTask"] = strconv.Itoa(fusionMaxFramesPerTask + 1)

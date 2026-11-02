@@ -26,7 +26,7 @@ readme: |
     `1-100:2` for every second frame.
   - **Saver** - the name of the Saver tool to render, exactly as the comp
     names it (`Saver1`, `MainOut`), at most 256 characters.
-  - **Frames Per Task** - the most frames one task renders, at most 10000.
+  - **Frames Per Task** - the most frames one task renders, at most 1000.
     A range that does not divide evenly is spread over the same number of
     tasks in near-equal chunks: `1-12` at 5 is `1-4`, `5-8`, `9-12`.
 
@@ -152,7 +152,7 @@ template:
       type: INT
       default: 10
       minValue: 1
-      maxValue: 10000
+      maxValue: 1000
       userInterface: { control: SPIN_BOX, label: Frames Per Task }
   steps:
     - name: Render
