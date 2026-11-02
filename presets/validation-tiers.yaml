@@ -381,6 +381,40 @@ presets:
       case: TestPresetTier3/usdrecord-render/default
       required_on: [linux, darwin, windows]
 
+  - name: oiiotool-process
+    source: presets/sqi
+    tier: 2
+    tier1:
+      cases: [default, operations, padding-and-step, windows-path]
+      caveat: >-
+        argv is oiiotool --frames MIN-MAX over the chunk (the default case shows
+        1-10 and 11-20), the input pattern, the Operations list as separate
+        arguments, -o and the output pattern. The pattern's # run reaches
+        oiiotool as the same number of @ (in.####.exr is in.@@@@.exr), because
+        oiiotool reads each # as four digits and each @ as one (measured,
+        OIIO 2.5.18: #### gave 16 digits and ###### gave 24). Only the file
+        name is rewritten: the windows-path case shows C:\... patterns intact,
+        and a # in a folder is rejected at submission, as are patterns with no
+        # or two runs. The default case shows an empty Operations list leaving
+        no empty argument. Tier 2 runs the preset with a real oiiotool on
+        Ubuntu's openimageio-tools in CI and, on the Windows development host,
+        with Houdini 22.0.466's hoiiotool (OIIO 2.5.18) found through the
+        detector's command default. It shows that --frames 1-12 at 10 per task
+        writes exactly conv.0001.jpg to conv.0012.jpg from an input folder
+        whose name has a space, and that --resize 4x4 over 2-3 writes exactly
+        small.002.png and small.003.png at 4x4 with a three-digit pad. oiiotool
+        does not create the output folder (measured: the task fails with Could
+        not open file), so it must exist; Tier 2 creates it first. Not shown:
+        EXR or DPX colour handling, --colorconvert against a real OCIO config,
+        compositing a second input sequence, negative frames at the task level,
+        any OIIO but 2.5.18, and macOS.
+    tier2:
+      case: TestOIIOToolPreset_ProcessesASequence
+      required_on: [linux]
+    tier3:
+      case: TestPresetTier3/oiiotool-process/default
+      required_on: [linux, darwin, windows]
+
   - name: redshift-standalone-render
     source: presets/sqi
     tier: 1

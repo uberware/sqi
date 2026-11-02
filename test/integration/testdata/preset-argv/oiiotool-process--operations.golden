@@ -1,0 +1,26 @@
+preset: oiiotool-process
+case:   operations
+params:
+  Frames=1
+  FramesPerTask=10
+  InputFile=/mnt/show/seq010/shot0010/comp/in.####.exr
+  Operations=["--resize", "50%", "--colorconvert", "linear", "sRGB"]
+  OutputFile=/mnt/show/seq010/shot0010/review/out.####.jpg
+
+step "Process" — 1 task
+
+task 1/1  name="Process[Frame=1-1]"
+  task params:
+    Frame=1-1
+  command: oiiotool
+  args:
+    [0]  --frames
+    [1]  1-1
+    [2]  /mnt/show/seq010/shot0010/comp/in.@@@@.exr
+    [3]  --resize
+    [4]  50%
+    [5]  --colorconvert
+    [6]  linear
+    [7]  sRGB
+    [8]  -o
+    [9]  /mnt/show/seq010/shot0010/review/out.@@@@.jpg

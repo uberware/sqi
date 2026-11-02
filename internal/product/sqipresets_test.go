@@ -169,6 +169,11 @@ func TestSQIReferencePresets(t *testing.T) {
 			params:     []string{"SceneFile", "OutputFile", "Frames", "FramesPerTask", "Renderer", "Camera", "ImageWidth"},
 			extensions: []string{"TASK_CHUNKING", "EXPR"},
 		},
+		"oiiotool-process": {
+			category:   "Image Processing",
+			params:     []string{"InputFile", "OutputFile", "Frames", "FramesPerTask", "Operations"},
+			extensions: []string{"TASK_CHUNKING", "EXPR"},
+		},
 		"redshift-standalone-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames"},

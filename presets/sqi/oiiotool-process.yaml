@@ -1,0 +1,161 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: oiiotool-process
+title: OIIO Tool Process
+description: >-
+  Converts or processes an image sequence with OpenImageIO's oiiotool: format
+  conversion, resizing, colour conversion and more.
+readme: |
+  # OIIO Tool Process
+
+  Runs OpenImageIO's `oiiotool` over an image sequence: convert it to another
+  format, resize it, convert its colour space, burn in text, or any other chain
+  of `oiiotool` operations. Each task handles a run of consecutive frames in one
+  `oiiotool` launch.
+
+  ## Parameters
+
+  - **Input Sequence Pattern** - the frames to read, e.g.
+    `/mnt/show/comp/shot.####.exr`. It must be reachable from every worker that
+    runs the job.
+  - **Output Sequence Pattern** - where the frames are written, e.g.
+    `/mnt/show/review/shot.####.jpg`. The file type comes from the extension.
+    `oiiotool` does not create missing folders, so the output folder must
+    already exist.
+  - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
+    `1-100:2` for every second frame.
+  - **Frames per Task** - the most consecutive frames one task processes, ten by
+    default. A range that does not divide evenly is split into near-equal
+    chunks: `1-12` at 5 is `1-4`, `5-8` and `9-12`.
+  - **Operations** - the `oiiotool` operations to apply between reading and
+    writing, one argument per line. Leave it empty to convert by the output's
+    file extension alone.
+
+  ## Frame patterns
+
+  The file name of each pattern must contain exactly one run of `#`, and the
+  length of the run is the frame number's padding: `shot.####.exr` is
+  `shot.0007.exr` for frame 7. A pattern with no `#`, with two separate runs, or
+  with a `#` in a folder name is rejected when you submit the job.
+
+  `oiiotool` itself reads each `#` as four digits, so `######` would mean 24.
+  To keep your padding exact, sqi hands `oiiotool` the `@` form, where each `@`
+  is one digit: `shot.####.exr` reaches it as `shot.@@@@.exr`. A negative frame
+  keeps its sign inside the padding, so frame -2 at four digits is `-002`.
+
+  ## Operations
+
+  Write one `oiiotool` argument per line, in the order `oiiotool` takes them. A
+  resize and a colour conversion are these five lines:
+
+  ```
+  --resize
+  50%
+  --colorconvert
+  linear
+  sRGB
+  ```
+
+  Each line is passed as one argument, so a value with spaces needs no quoting.
+  An empty list converts the sequence by the output's extension.
+
+  Anything you write here is `oiiotool`'s to interpret. Its `{...}` expressions,
+  such as `{FRAME_NUMBER}`, and any `#` or `@` in an operation are expanded by
+  `oiiotool` itself, with `#` meaning four digits. A second input sequence, for
+  compositing, goes in as an operation in `oiiotool`'s own `@` form, e.g.
+  `plate.@@@@.exr`; sqi does not rewrite it.
+
+  ## How work is divided
+
+  Each task processes a contiguous chunk of the frame range, ten frames by
+  default. `oiiotool` loops over the chunk's frames itself. A stepped range such
+  as `1-100:2` runs one task per frame, so no frame the range leaves out is
+  processed.
+
+  ## Requirements
+
+  - Workers tagged `attr.worker.tag.oiiotool = true`
+  - `oiiotool` on the worker's `PATH`, or Houdini's copy of it (`hoiiotool`),
+    which the worker finds automatically on Windows and Linux
+category: Image Processing
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: OIIO Tool Process
+  extensions: [TASK_CHUNKING, EXPR]
+  parameterDefinitions:
+    - name: InputFile
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface:
+        control: CHOOSE_INPUT_FILE
+        label: Input Sequence Pattern
+        fileFilters:
+          - label: Images
+            patterns: ["*.exr", "*.png", "*.jpg", "*.tif", "*.dpx"]
+        fileFilterDefault:
+          label: Images
+          patterns: ["*.exr", "*.png", "*.jpg", "*.tif", "*.dpx"]
+    - name: OutputFile
+      type: PATH
+      objectType: FILE
+      dataFlow: OUT
+      userInterface:
+        control: CHOOSE_OUTPUT_FILE
+        label: Output Sequence Pattern
+        fileFilters:
+          - label: Images
+            patterns: ["*.exr", "*.png", "*.jpg", "*.tif", "*.dpx"]
+        fileFilterDefault:
+          label: Images
+          patterns: ["*.exr", "*.png", "*.jpg", "*.tif", "*.dpx"]
+    - name: Frames
+      type: STRING
+      userInterface: { control: LINE_EDIT, label: Frame Range }
+    - name: FramesPerTask
+      type: INT
+      default: 10
+      minValue: 1
+      userInterface: { control: SPIN_BOX, label: Frames per Task }
+    - name: Operations
+      type: LIST[STRING]
+      default: []
+      maxLength: 64
+      item:
+        minLength: 1
+        maxLength: 1024
+      userInterface: { control: LINE_EDIT_LIST, label: Operations }
+  steps:
+    - name: Process
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.oiiotool
+            anyOf: ["true"]
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Frame
+            type: CHUNK[INT]
+            range: "{{Param.Frames}}"
+            chunks:
+              defaultTaskCount: "{{Param.FramesPerTask}}"
+              rangeConstraint: CONTIGUOUS
+      script:
+        let:
+          # oiiotool reads each # as four digits (measured, OIIO 2.5.18), so
+          # the pattern's # run is rewritten as the same number of @, which
+          # stand for one digit each. Only the file name is rewritten: a # in a
+          # folder would be expanded by oiiotool, so that is refused.
+          - ipad = Param.InputFile.name.count('#')
+          - "input = Param.InputFile.parent / Param.InputFile.name.replace('#' * ipad, '@' * ipad) if ipad > 0 and '#' * ipad in Param.InputFile.name and '#' not in string(Param.InputFile.parent) else fail('Input Sequence Pattern must contain exactly one run of # characters marking the frame number, e.g. shot.####.exr, and no # in its folders')"
+          - opad = Param.OutputFile.name.count('#')
+          - "output = Param.OutputFile.parent / Param.OutputFile.name.replace('#' * opad, '@' * opad) if opad > 0 and '#' * opad in Param.OutputFile.name and '#' not in string(Param.OutputFile.parent) else fail('Output Sequence Pattern must contain exactly one run of # characters marking the frame number, e.g. shot.####.exr, and no # in its folders')"
+        actions:
+          onRun:
+            command: oiiotool
+            args:
+              - "--frames"
+              - "{{ min(Task.Param.Frame) }}-{{ max(Task.Param.Frame) }}"
+              - "{{ input }}"
+              - "{{ Param.Operations }}"
+              - "-o"
+              - "{{ output }}"

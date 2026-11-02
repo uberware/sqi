@@ -1,0 +1,43 @@
+preset: oiiotool-process
+case:   padding-and-step
+params:
+  Frames=1001-1009:4
+  FramesPerTask=10
+  InputFile=/mnt/show/seq010/shot0010/comp/in.######.exr
+  Operations=[]
+  OutputFile=/mnt/show/seq010/shot0010/review/out.######.exr
+
+step "Process" — 3 tasks
+
+task 1/3  name="Process[Frame=1001-1001]"
+  task params:
+    Frame=1001-1001
+  command: oiiotool
+  args:
+    [0]  --frames
+    [1]  1001-1001
+    [2]  /mnt/show/seq010/shot0010/comp/in.@@@@@@.exr
+    [3]  -o
+    [4]  /mnt/show/seq010/shot0010/review/out.@@@@@@.exr
+
+task 2/3  name="Process[Frame=1005-1005]"
+  task params:
+    Frame=1005-1005
+  command: oiiotool
+  args:
+    [0]  --frames
+    [1]  1005-1005
+    [2]  /mnt/show/seq010/shot0010/comp/in.@@@@@@.exr
+    [3]  -o
+    [4]  /mnt/show/seq010/shot0010/review/out.@@@@@@.exr
+
+task 3/3  name="Process[Frame=1009-1009]"
+  task params:
+    Frame=1009-1009
+  command: oiiotool
+  args:
+    [0]  --frames
+    [1]  1009-1009
+    [2]  /mnt/show/seq010/shot0010/comp/in.@@@@@@.exr
+    [3]  -o
+    [4]  /mnt/show/seq010/shot0010/review/out.@@@@@@.exr

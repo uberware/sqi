@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# OIIO Tool Process: oiiotool is handed each pattern with its # run rewritten
+# as the same number of @ (one digit each), and the chunk's first and last
+# frame as --frames. default has no operations and passes no empty argument;
+# operations passes five arguments through; padding-and-step uses six-digit
+# patterns over a stepped range, one task per frame; windows-path shows native
+# Windows patterns with only the # run changed.
+cases:
+  - name: default
+    params:
+      InputFile: /mnt/show/seq010/shot0010/comp/in.####.exr
+      OutputFile: /mnt/show/seq010/shot0010/review/out.####.jpg
+      Frames: "1-20"
+      FramesPerTask: "10"
+    expect_tasks: 2
+    expect_invocations:
+      oiiotool: 2
+  - name: operations
+    params:
+      InputFile: /mnt/show/seq010/shot0010/comp/in.####.exr
+      OutputFile: /mnt/show/seq010/shot0010/review/out.####.jpg
+      Frames: "1"
+      Operations: '["--resize", "50%", "--colorconvert", "linear", "sRGB"]'
+    expect_tasks: 1
+    expect_invocations:
+      oiiotool: 1
+  - name: padding-and-step
+    params:
+      InputFile: /mnt/show/seq010/shot0010/comp/in.######.exr
+      OutputFile: /mnt/show/seq010/shot0010/review/out.######.exr
+      Frames: "1001-1009:4"
+    expect_tasks: 3
+    expect_invocations:
+      oiiotool: 3
+  - name: windows-path
+    params:
+      InputFile: 'C:\comp\shot0010\in.####.exr'
+      OutputFile: 'C:\review\shot0010\out.####.png'
+      Frames: "1"
+    expect_tasks: 1
+    expect_invocations:
+      oiiotool: 1

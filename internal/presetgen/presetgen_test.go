@@ -57,6 +57,7 @@ func TestBuild(t *testing.T) {
 		"modo-render",
 		"nuke-script-render",
 		"nuke-write-render",
+		"oiiotool-process",
 		"prman-render",
 		"redshift-standalone-render",
 		"silhouette-render",

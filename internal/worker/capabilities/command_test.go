@@ -197,6 +197,42 @@ func TestNukeDetector_CommandFindsTheExecutableOnEveryPlatform(t *testing.T) {
 	}
 }
 
+// TestOIIOToolDetector_CommandFindsHoudinisCopy checks the shipped command
+// globs against Houdini 22.0.466's bundled OpenImageIO tool, which is named
+// hoiiotool and lives beside hython in $HFS/bin. The presets run `oiiotool`,
+// which the command default stands in for; its neighbors must not match. The
+// Windows layout was measured on a real install; the Linux one is inferred from
+// the shared $HFS/bin layout.
+func TestOIIOToolDetector_CommandFindsHoudinisCopy(t *testing.T) {
+	d := builtinDetector(t, "oiiotool")
+	if d.Command == nil || d.Command.Name != "oiiotool" {
+		t.Fatalf("the oiiotool detector has no command named oiiotool: %+v", d.Command)
+	}
+	cases := []struct {
+		goos string
+		exe  string
+		not  []string
+	}{
+		{"linux", "/opt/hfs22.0.466/bin/hoiiotool", []string{"/opt/hfs22.0.466/bin/iconvert"}},
+		{
+			"windows", `C:\Program Files\Side Effects Software\Houdini 22.0.466\bin\hoiiotool.exe`,
+			[]string{
+				`C:\Program Files\Side Effects Software\Houdini 22.0.466\bin\iconvert.exe`,
+				`C:\Program Files\Side Effects Software\Houdini 22.0.466\bin\hython.exe`,
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.goos, func(t *testing.T) {
+			assertCommandGlobsPick(t, d, tc.goos, tc.exe, tc.not, "Houdini's hoiiotool")
+			got, ok := d.FindCommand(envWithCommandAt(d, tc.goos, tc.exe))
+			if !ok || got.Name != "oiiotool" || got.Path != tc.exe || got.Version != "22.0" {
+				t.Errorf("FindCommand = %+v (found %v), want oiiotool 22.0 at %s", got, ok, tc.exe)
+			}
+		})
+	}
+}
+
 // TestKatanaDetector_CommandFindsTheExecutableOnEveryPlatform checks the shipped
 // command globs against a Katana 7.0v1 install on the two platforms Katana runs
 // on, in both Linux letter cases. The layouts are unverified (see katana.yaml).

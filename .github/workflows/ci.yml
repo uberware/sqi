@@ -183,12 +183,13 @@ jobs:
 
       # The preset tests are untagged, so `make test-cover` runs
       # TestZZPresetTierRegistrySatisfied here, and the registry's tier2
-      # blocks require the real-ffmpeg cases to run, not skip.
-      - name: Install ffmpeg (the registry's tier-2 claims require it)
+      # blocks require the real-ffmpeg and real-oiiotool cases to run, not skip.
+      - name: Install ffmpeg and oiiotool (the registry's tier-2 claims require them)
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg
+          sudo apt-get install -y --no-install-recommends ffmpeg openimageio-tools
           ffmpeg -version | head -1
+          oiiotool --help | head -2
 
       # `make test-cover` runs the suite with -race (RACE=on, the Makefile
       # default), writes coverage.out, and fails below COVERAGE_MIN. The
@@ -866,9 +867,10 @@ jobs:
       # ffmpeg: test-postgres.sh's last phase runs the whole
       # ./test/integration/ package (all but the LDAP, OIDC and isolation
       # tests), and presets/validation-tiers.yaml requires the ffmpeg presets'
-      # tier-2 cases on linux, so TestZZPresetTierRegistrySatisfied fails
-      # without it. The version line fails if the install did not happen.
-      - name: Install PostgreSQL ${{ matrix.pg }} client tools and ffmpeg
+      # and oiiotool-process's tier-2 cases on linux, so
+      # TestZZPresetTierRegistrySatisfied fails without them. The version lines
+      # fail if the install did not happen.
+      - name: Install PostgreSQL ${{ matrix.pg }} client tools, ffmpeg and oiiotool
         run: |
           sudo install -d /usr/share/postgresql-common/pgdg
           sudo curl -fsSo /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
@@ -876,9 +878,10 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/pgdg.list
           sudo apt-get update
           sudo apt-get install -y postgresql-client-${{ matrix.pg }}
-          sudo apt-get install -y --no-install-recommends ffmpeg
+          sudo apt-get install -y --no-install-recommends ffmpeg openimageio-tools
           echo "/usr/lib/postgresql/${{ matrix.pg }}/bin" >> "$GITHUB_PATH"
           ffmpeg -version | head -1
+          oiiotool --help | head -2
 
       # Asserts the suite ran to its last line, each named test passed, at
       # least one `/postgres` subtest passed and none was skipped, over the
@@ -1491,15 +1494,16 @@ jobs:
       # The preset tests are untagged, so the `integration` build tag this job
       # adds does not exclude them: `make test-integration` runs
       # TestZZPresetTierRegistrySatisfied too, and the registry's tier2 blocks
-      # require the real-ffmpeg cases to run, not skip.
+      # require the real-ffmpeg and real-oiiotool cases to run, not skip.
       # The Fusion Saver preset's render.lua runs under a real Lua 5.1 in
       # TestPresetFusion_ScriptDrivesFusion; SQI_REQUIRE_LUA=1 below turns its
       # skip without an interpreter into a failure.
-      - name: Install ffmpeg and Lua 5.1 (tier-2 claims and the Fusion Saver script tests)
+      - name: Install ffmpeg, oiiotool and Lua 5.1 (tier-2 claims and the Fusion Saver script tests)
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg lua5.1
+          sudo apt-get install -y --no-install-recommends ffmpeg openimageio-tools lua5.1
           ffmpeg -version | head -1
+          oiiotool --help | head -2
 
       - name: Run the integration suite
         env:
