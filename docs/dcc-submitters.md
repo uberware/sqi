@@ -896,16 +896,16 @@ visible, since the server enforces the permission either way.
 
 ## Reference presets
 
-sqi ships twenty-seven DCC reference products under `presets/sqi/`, published
-through the [preset library](preset-library.md). The directory holds forty
+sqi ships twenty-eight DCC reference products under `presets/sqi/`, published
+through the [preset library](preset-library.md). The directory holds forty-one
 products in total. The other thirteen are eight [standalone renderer
 presets](preset-library.md#standalone-renderer-reference-presets), which render
 exported scene files without loading the DCC, and five `Transcoding`-category
 [ffmpeg presets](preset-library.md#transcoding-reference-presets). Install the
 DCC presets from **Admin → Preset Library** in the web UI or, without a preset
 index, create them through `POST /api/v1/products` or **Admin → Products**. All
-twenty-seven use the product `category` `Rendering`. All but the After Effects
-queue preset and the two Unreal presets (one task each) declare `TASK_CHUNKING` to split the frame range;
+twenty-eight use the product `category` `Rendering`. All but the After Effects
+queue preset and the three Unreal presets (one task each, or one per shot) declare `TASK_CHUNKING` to split the frame range;
 the Maya, Blender, After Effects render, Mistika, Katana, Silhouette and Fusion presets also declare
 `SQI_CHUNK_BOUNDS` to expose each chunk's start and end frame (see
 [OpenJD extensions](openjd-extensions.md)). The Cinema 4D and 3ds Max presets
@@ -918,11 +918,11 @@ and that script takes its first and last frame from it. The two KeyShot presets
 declare `TASK_CHUNKING`, `EXPR` and `SQI_LOG_CHECKS` but not `SQI_CHUNK_BOUNDS`: their script loops over
 any list of frames, so a chunk may be stepped or gapped, and it needs no bounds. The two Modo presets declare
 `TASK_CHUNKING`, `EXPR` and `SQI_LOG_CHECKS`; under `EXPR` the
-script takes its first and last frame from `params.json`. The two Unreal presets declare only `EXPR` and
-`SQI_LOG_CHECKS`: each renders one Movie Render Queue job or saved queue as one task, with its own frame range,
-and `EXPR` builds the `params.json` their embedded script reads inside the editor.
+script takes its first and last frame from `params.json`. The three Unreal presets declare only `EXPR` and
+`SQI_LOG_CHECKS`: each renders one Movie Render Queue job or saved queue as one task, or one shot of a job per task,
+with its own frame range, and `EXPR` builds the `params.json` their embedded script reads inside the editor.
 
-Twenty-four of the twenty-seven have a matching `sqi-submitter` host (Maya,
+Twenty-five of the twenty-eight have a matching `sqi-submitter` host (Maya,
 Houdini, Nuke, 3ds Max, VRED, Blender, Cinema 4D, After Effects, Unreal Engine,
 Katana, KeyShot, Silhouette, Fusion and Modo). The three Mistika presets have
 none and are submitted from the web UI or the API.
@@ -956,6 +956,7 @@ none and are submitted from the web UI or the API.
 | `modo-pass-group-render` | as `modo-render`, the script running `render.animation` for one pass group | chunks of 1 (`FramesPerTask` at most 1000) | `SceneFile` (`*.lxo`), `Frames`, `PassGroup`, `FramesPerTask` | `attr.worker.tag.modo = "true"` |
 | `unreal-mrq-job-render` | `UnrealEditor-Cmd <project> -log -unattended -stdout -allowstdoutlogverbosity -NoLoadingScreen -NoScreenMessages -RenderOffscreen -nohmd -windowed -execcmds=py <import of the embedded script>`, the script building one Movie Render Queue job from an embedded `params.json` and rendering it with the PIE executor | one task (the config's frame range) | `SceneFile` (`*.uproject`, label Project File), `LevelSequence`, `Map`, `MovieRenderConfig`, `OutputDirectory` (blank keeps the config's) | `attr.worker.tag.unreal = "true"` and `attr.worker.os.family = "windows"` |
 | `unreal-mrq-queue-render` | as `unreal-mrq-job-render`, the script copying the jobs of a saved Movie Pipeline Queue asset into the editor's queue | one task for the whole queue | `SceneFile` (`*.uproject`), `QueueAsset`, `OutputDirectory` (blank keeps each job's) | `attr.worker.tag.unreal = "true"` and `attr.worker.os.family = "windows"` |
+| `unreal-mrq-shot-render` | as `unreal-mrq-job-render`, the script rebuilding the job's shot list from the sequence and enabling only the task's shot | one task per shot in `Shots` | as `unreal-mrq-job-render`, plus `Shots` (`LIST[STRING]`, 1 to 1000 names) | `attr.worker.tag.unreal = "true"` and `attr.worker.os.family = "windows"` |
 
 Maya and Nuke each ship a **single-target** product (`-rl <layer>` /
 `-X <writeNode>`) and a **whole-scene** product that omits that flag: Maya's
@@ -1012,14 +1013,14 @@ Effects submitter does, by locking a movie target's range and frame count
 
 Each preset's `hostRequirements` gates it to workers advertising the matching
 `attr.worker.tag.<name>` capability tag. `3dsmax-render`, the After Effects
-presets and the two Unreal presets also require `attr.worker.os.family` (`windows` for `3dsmax-render`
+presets and the three Unreal presets also require `attr.worker.os.family` (`windows` for `3dsmax-render`
 and the Unreal presets, `windows` or `macos` for the After Effects presets). At startup
 `sqi-worker` detects a standard Maya, Nuke, Houdini, Blender, Cinema 4D, 3ds
 Max, After Effects, Mistika, Katana, Silhouette (`sfxcmd`), Fusion Render Node, VRED, KeyShot (`keyshot_headless`), Modo (`modo_cl`) or Unreal Engine 5 (`UnrealEditor-Cmd`, in the Epic Games Launcher's default folder only) install, on `PATH` or in its usual install
 location, and advertises the matching tag (`maya`, plus a version variant such
 as `maya_2025`) with value `"true"`; see [Capability
 auto-detection](worker-capabilities.md#capability-auto-detection-built-in-dcc-detectors).
-That satisfies the `anyOf: ["true"]` requirement each of the twenty-seven presets
+That satisfies the `anyOf: ["true"]` requirement each of the twenty-eight presets
 declares, so a worker with a standard install needs no per-worker
 configuration. Run `sqi-worker capabilities` (or `start --dry-run`) to see
 which DCCs were found.

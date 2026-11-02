@@ -1563,15 +1563,19 @@ jobs:
             # Tier 3 and outcome cases skip here and run in
             # preset-harness-windows; these tests need no Unreal and no OS
             # gate, so they run on every OS. ScriptDrivesUnreal skips without
-            # a working Python 3, so two leaves are named too.
+            # a working Python 3, so three leaves are named too, one of them
+            # the shot preset's refusal of a shot its sequence lacks.
             TestPresetUnreal_ParamsCostIsFixed
             TestPresetUnreal_ParamsJSONRoundTrips
+            TestPresetUnreal_OneTaskPerShot
+            TestPresetUnreal_ShotListBounds
             TestPresetUnreal_ShareOneScript
             TestPresetUnreal_ExecCmdsImportsTheScript
             TestPresetUnreal_SessionFolderThatBreaksExecCmdsIsRefused
             TestPresetUnreal_ScriptDrivesUnreal
             TestPresetUnreal_ScriptDrivesUnreal/job_renders_and_quits/import
             TestPresetUnreal_ScriptDrivesUnreal/a_fatal_error_ends_the_render_once/cwd
+            TestPresetUnreal_ScriptDrivesUnreal/shot-missing/import
             # Outcome cases (expect_status in a preset-cases fixture). The
             # parent passes when every case skips, so leaves that run on linux
             # are named: the `script` built-in with the stub told to exit 3,
@@ -1981,12 +1985,15 @@ jobs:
                       "TestPresetModo_ScriptDrivesModo/scene_open_fails/file_commands " \
                       "TestPresetUnreal_ParamsCostIsFixed " \
                       "TestPresetUnreal_ParamsJSONRoundTrips " \
+                      "TestPresetUnreal_OneTaskPerShot " \
+                      "TestPresetUnreal_ShotListBounds " \
                       "TestPresetUnreal_ShareOneScript " \
                       "TestPresetUnreal_ExecCmdsImportsTheScript " \
                       "TestPresetUnreal_SessionFolderThatBreaksExecCmdsIsRefused " \
                       "TestPresetUnreal_ScriptDrivesUnreal " \
                       "TestPresetUnreal_ScriptDrivesUnreal/job_renders_and_quits/import " \
-                      "TestPresetUnreal_ScriptDrivesUnreal/a_fatal_error_ends_the_render_once/cwd "; do
+                      "TestPresetUnreal_ScriptDrivesUnreal/a_fatal_error_ends_the_render_once/cwd " \
+                      "TestPresetUnreal_ScriptDrivesUnreal/shot-missing/import "; do
             if ! grep -q -- "--- PASS: ${name}" preset-harness-windows.log; then
               echo "::error::${name} did not run to a PASS on windows"
               missing=1

@@ -594,7 +594,7 @@ fewer:
 - Linux and macOS: `script`, `command-sequence`, `ffmpeg-segment-transcode-bash`
 - Windows: `script-powershell`, `command-sequence-powershell`,
   `ffmpeg-segment-transcode-powershell`, `3dsmax-render`,
-  `unreal-mrq-job-render`, `unreal-mrq-queue-render`
+  `unreal-mrq-job-render`, `unreal-mrq-queue-render`, `unreal-mrq-shot-render`
 - Windows and macOS: `after-effects-render`, `after-effects-queue-render`
 
 A pass on one OS proves nothing about another OS's entries, so CI runs the
@@ -1539,7 +1539,7 @@ clients/submitter/
                                          startup hook or kit where needed (handoff hosts)
     cli.py, install.py                   sqi-submit, sqi-submit install-host
   tests/                     pytest; tests/integration/ is env-gated (see below)
-presets/sqi/                 the forty reference preset YAML fixtures (twenty-seven DCC render
+presets/sqi/                 the forty-one reference preset YAML fixtures (twenty-eight DCC render
                               presets, eight standalone renderer presets, five ffmpeg
                               transcode presets), validated by
                               internal/product/sqipresets_test.go against a per-preset

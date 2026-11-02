@@ -906,6 +906,34 @@ presets:
       case: TestPresetTier3/unreal-mrq-queue-render/default
       required_on: [windows]
 
+  - name: unreal-mrq-shot-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, quoting, logged-error, python-error, executor-error, no-success-line]
+      caveat: >-
+        unreal-mrq-job-render's job as one task per entry of a Shots
+        LIST[STRING] (a STRING task parameter Shot ranging over {{ Param.Shots
+        }}), each task's params.json naming its shot. The script calls
+        MoviePipelineLibrary.update_job_shot_list_from_sequence, as Epic's
+        Python reference names it, and enables only the shot_info entries
+        whose outer_name is the task's shot (an entry with no outer name is
+        named after the sequence asset); a shot the sequence lacks fails the
+        task, listing the shots it has, and nothing renders. It warns when
+        the config's output file name format has no {shot_name}. Same sources,
+        the same command line and the same unverified points as
+        unreal-mrq-job-render, and unverified besides: how that call rebuilds
+        the shot list, several camera cuts sharing one name (all of them
+        render), and Movie Render Graph configs. quoting puts a double quote,
+        a backslash, spaces and a non-ASCII letter in the shot; the script's
+        handling of the shot list runs under a fake unreal module in
+        TestPresetUnreal_ScriptDrivesUnreal. Tier 3 runs a stub as
+        UnrealEditor-Cmd: it exercises the worker, the embedded files and the
+        log checks, never the script inside Unreal.
+    tier3:
+      case: TestPresetTier3/unreal-mrq-shot-render/default
+      required_on: [windows]
+
   - name: ffmpeg-transcode
     source: presets/sqi
     tier: 2

@@ -34,6 +34,11 @@ type presetExpectation struct {
 	// osFamily, when set, is the attr.worker.os.family anyOf every step must
 	// require, in order.
 	osFamily []string
+	// taskParams, when set, are the task parameters every step must declare,
+	// as name:TYPE in order. The params check above reads the template's
+	// text, so it cannot tell a task parameter from a job parameter whose
+	// name starts the same way.
+	taskParams []string
 }
 
 // The reference presets (presets/sqi/) are authored in this repo and published
@@ -258,6 +263,14 @@ func TestSQIReferencePresets(t *testing.T) {
 			params:     []string{"SceneFile", "QueueAsset", "OutputDirectory"},
 			extensions: []string{"EXPR", "SQI_LOG_CHECKS"},
 		},
+		// The shot preset is the job preset with one task per shot: a Shots
+		// list job parameter and a Shot task parameter ranging over it.
+		"unreal-mrq-shot-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "LevelSequence", "Map", "MovieRenderConfig", "Shots", "OutputDirectory"},
+			extensions: []string{"EXPR", "SQI_LOG_CHECKS"},
+			taskParams: []string{"Shot:STRING"},
+		},
 		"ffmpeg-transcode": {
 			category: "Transcoding",
 			params:   []string{"SourceFile", "OutputFile", "VideoCodec", "Quality", "AudioCodec"},
@@ -334,7 +347,31 @@ func TestSQIReferencePresets(t *testing.T) {
 			if exp.osFamily != nil {
 				assertStepsOSFamily(t, p.Template, exp.osFamily)
 			}
+			if exp.taskParams != nil {
+				assertStepsTaskParams(t, p.Template, exp.taskParams)
+			}
 		})
+	}
+}
+
+// assertStepsTaskParams fails unless every step of template declares exactly
+// the task parameters want, each written name:TYPE, in order.
+func assertStepsTaskParams(t *testing.T, template string, want []string) {
+	t.Helper()
+	tmpl, err := openjd.Parse([]byte(template), openjd.FormatYAML)
+	if err != nil {
+		t.Fatalf("openjd.Parse: %v", err)
+	}
+	for _, step := range tmpl.Steps {
+		var got []string
+		if step.ParameterSpace != nil {
+			for _, def := range step.ParameterSpace.TaskParameterDefinitions {
+				got = append(got, def.Name+":"+string(def.Type))
+			}
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("step %q: task parameters = %v, want %v", step.Name, got, want)
+		}
 	}
 }
 
