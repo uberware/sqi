@@ -162,29 +162,69 @@ def _frame_range(start: float, end: float) -> str:
     return str(lo) if lo == hi else f"{lo}-{hi}"
 
 
+# Characters that cannot appear in a folder name on some OS, plus '#', which Blender would
+# read as part of the frame number.
+_UNSAFE_IN_FOLDER = '/\\:*?"<>|#'
+
+
+def _folder_name(name: str) -> str:
+    return "".join("_" if c in _UNSAFE_IN_FOLDER else c for c in name)
+
+
+def _in_folder(filepath: str, folders: list[str]) -> str:
+    """``filepath`` with ``folders`` inserted before its file prefix, in its own separator."""
+    cut = max(filepath.rfind("/"), filepath.rfind("\\"))
+    sep = filepath[cut] if cut >= 0 else "/"
+    head, tail = filepath[: cut + 1], filepath[cut + 1 :]
+    return head + "".join(_folder_name(f) + sep for f in folders) + tail
+
+
+def _layer_outputs(layers: list[tuple[str, str, str]]) -> list[str]:
+    """The output of each ``(scene, layer, filepath)``, distinct where filepaths are shared.
+
+    A view layer whose scene's output no other listed layer shares keeps it as it is. Layers
+    that would share one each write into a folder named after the layer, or after the scene
+    and then the layer when two of them have the same layer name, so one job never
+    overwrites another's frames.
+    """
+    sharing: dict[str, list[str]] = {}
+    for _scene, layer, filepath in layers:
+        sharing.setdefault(filepath, []).append(layer)
+    outputs = []
+    for scene, layer, filepath in layers:
+        names = sharing[filepath]
+        if len(names) == 1:
+            outputs.append(filepath)
+        elif len(set(names)) == len(names):
+            outputs.append(_in_folder(filepath, [layer]))
+        else:
+            outputs.append(_in_folder(filepath, [scene, layer]))
+    return outputs
+
+
 def read_scene() -> dict[str, object]:
     """Describe the open scene as a version-1 handoff context document.
 
     Every scene's view layers are targets, each with its scene's frame range and output, and
     ``extra`` carrying the scene and layer names that ``blender-view-layer-render`` pre-fills.
+    Layers that would share an output get a folder each (see ``_layer_outputs``).
     """
     import bpy
 
     scene = bpy.context.scene
-    targets: list[dict[str, object]] = []
-    for each in bpy.data.scenes:
-        frame_range = _frame_range(each.frame_start, each.frame_end)
-        for layer in each.view_layers:
-            targets.append(
-                {
-                    "name": f"{each.name} / {layer.name}",
-                    "kind": "view_layer",
-                    "frame_range": frame_range,
-                    "output_path": each.render.filepath,
-                    "extra": {"Scene": each.name, "ViewLayer": layer.name},
-                    "locked": [],
-                }
-            )
+    pairs = [(each, layer) for each in bpy.data.scenes for layer in each.view_layers]
+    outputs = _layer_outputs([(s.name, layer.name, s.render.filepath) for s, layer in pairs])
+    targets: list[dict[str, object]] = [
+        {
+            "name": f"{each.name} / {layer.name}",
+            "kind": "view_layer",
+            "frame_range": _frame_range(each.frame_start, each.frame_end),
+            "output_path": output,
+            "extra": {"Scene": each.name, "ViewLayer": layer.name},
+            "locked": [],
+        }
+        for (each, layer), output in zip(pairs, outputs)
+    ]
     return {
         "version": 1,
         "host": {

@@ -356,6 +356,20 @@ the context file and starts `sqi-submit`. An unsaved scene is refused with
 view layer pair, are the targets: `blender-view-layer-render` is per-target and
 `blender-batch-render` is whole-scene.
 
+Each view layer target pre-fills **Output Path** from its scene's output
+setting. When several layers would share that path, each job would overwrite
+the frames of the one before it, so the add-on gives every one of them a folder
+named after the layer, inserted before the file prefix: with two layers `Fg`
+and `Bg` in a scene that writes `//renders/shot_####`, they render to
+`//renders/Fg/shot_####` and `//renders/Bg/shot_####`. When two of the layers
+sharing a path also share a name (`ViewLayer` in two scenes), the folder is the
+scene and then the layer, `//renders/<scene>/<layer>/...`. A layer whose path
+no other layer shares keeps it unchanged. In a folder name, `/ \ : * ? " < > |`
+and `#` become `_`: the first nine are not allowed in a Windows folder name, and
+Blender would read a `#` as part of the frame number. An **Output Path** you
+type in the dialog applies to every ticked layer, so tick one layer at a time
+to give each its own.
+
 If `sqi-submit` is not on Blender's `PATH`, set its full path in the add-on's
 preferences (**sqi-submit path**) or as `sqi_submit_command` in
 `~/.sqi/submitter.json`; see [How `sqi-submit` is
@@ -1797,7 +1811,9 @@ After installing per [Installation per host](#installation-per-host):
    `<scene> / <view layer>` for every one. A view layer with **Use for
    Rendering** off is still listed. Pick `blender-view-layer-render` and tick
    two: two jobs, each with the right `Scene` and `ViewLayer`. A scene or layer
-   name containing a space or quotes renders correctly.
+   name containing a space or quotes renders correctly. Two layers of one scene
+   pre-fill `<scene output folder>/<layer>/<file prefix>`, so neither job
+   overwrites the other's frames; a scene with one layer keeps its own output.
 6. `blender-batch-render` is whole-scene: no checklist, `OutputPath` pre-fills
    from the scene's output setting.
 7. **sqi-submit path** set to a bad path, then cleared with `sqi-submit` on
