@@ -75,7 +75,8 @@ readme: |
 
   - Workers tagged `attr.worker.tag.oiiotool = true`
   - `oiiotool` on the worker's `PATH`, or Houdini's copy of it (`hoiiotool`),
-    which the worker finds automatically on Windows and Linux
+    which the worker finds on Windows, and on Linux at the standard `/opt/hfs*`
+    install (inferred from Houdini's layout, not yet measured)
 category: Image Processing
 version: 1.0.0
 template:

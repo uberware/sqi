@@ -16,7 +16,7 @@ package integration
 // the oiiotool on PATH, or else Houdini's bundled hoiiotool through the
 // worker's command default, and skips when neither exists, which means A LOCAL
 // PASS PROVES NOTHING ON ITS OWN: look for the
-// "--- PASS: TestOIIOToolPreset_ProcessesASequence" line.
+// "--- PASS: TestPresetOIIOTool_ProcessesASequence" line.
 
 import (
 	"context"
@@ -28,13 +28,13 @@ import (
 	"time"
 )
 
-// TestOIIOToolPreset_ProcessesASequence runs oiiotool-process over a twelve
+// TestPresetOIIOTool_ProcessesASequence runs oiiotool-process over a twelve
 // frame sequence the test writes with oiiotool itself. The input folder has a
 // space in its name. Each subtest asserts on the exact set of files written,
 // which shows that the pattern's padding was honored, that no frame outside
 // the range was written, and that each task covered only its own chunk.
-func TestOIIOToolPreset_ProcessesASequence(t *testing.T) {
-	const caseName = "TestOIIOToolPreset_ProcessesASequence"
+func TestPresetOIIOTool_ProcessesASequence(t *testing.T) {
+	const caseName = "TestPresetOIIOTool_ProcessesASequence"
 	trackOutcome(t, caseName)
 	exe, ok := locateDCC(t, "oiiotool")
 	if !ok {
