@@ -346,6 +346,40 @@ presets:
       case: TestPresetTier3/hython-script/default
       required_on: [linux, darwin, windows]
 
+  - name: usdrecord-render
+    source: presets/sqi
+    tier: 2
+    tier1:
+      cases: [default, options, stepped-range]
+      caveat: >-
+        argv is hython, the embedded launcher, then usdrecord's own arguments:
+        --renderer and --camera only when set, --imageWidth, --frames MIN:MAX
+        over the chunk (the default case shows 1:10 and 11:20; a stepped range
+        gives 1:1, 5:5 and 9:9), the stage, and the output pattern. The options
+        case shows the renderer name Karma CPU as one argument. The launcher
+        runs $HFS/bin/usdrecord under hython because Houdini's usdrecord.cmd
+        runs hython on an unquoted %HFS%, which fails with can't open file
+        'C:\Program' on the default install path (measured, Houdini 22.0.466,
+        Windows). Tier 2 runs the preset under that Houdini (Apprentice,
+        Windows, an NVIDIA GPU) with the stage in a folder whose name has a
+        space, and shows that --frames 1-12 at 10 per task writes exactly
+        preview.0001.png to preview.0012.png at the requested width with the
+        default renderer (Storm), and that Karma CPU with a camera named cam
+        writes exactly karma.003.png for one frame with a three-digit pad.
+        usdrecord does not create the output folder (measured: a missing folder
+        fails the task with Failed to write image), so Tier 2 creates it first
+        and the readme says it must exist. A pattern with no # or two runs is
+        rejected at submission. Not shown:
+        Houdini on Linux or macOS, any Houdini but 22.0.466, a worker with no
+        GPU rendering with Storm, the other renderers (Karma XPU, Houdini VK,
+        GL), a plain OpenUSD usdrecord, or the sub-frame ###.### pattern.
+    tier2:
+      case: TestPresetDCC_Houdini_USDRecord
+      requires_app: houdini
+    tier3:
+      case: TestPresetTier3/usdrecord-render/default
+      required_on: [linux, darwin, windows]
+
   - name: redshift-standalone-render
     source: presets/sqi
     tier: 1

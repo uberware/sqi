@@ -64,6 +64,7 @@ func TestBuild(t *testing.T) {
 		"unreal-mrq-job-render",
 		"unreal-mrq-queue-render",
 		"unreal-mrq-shot-render",
+		"usdrecord-render",
 		"vray-standalone-render",
 		"vred-render",
 		"vred-viewpoint-render",

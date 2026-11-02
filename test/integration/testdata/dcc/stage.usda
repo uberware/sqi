@@ -1,0 +1,35 @@
+#usda 1.0
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# A 20-frame stage for the usdrecord-render test: a cube sliding along x, and a
+# camera named cam looking at it down -z.
+(
+    defaultPrim = "World"
+    startTimeCode = 1
+    endTimeCode = 20
+    timeCodesPerSecond = 24
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Cube "Cube"
+    {
+        double size = 2
+        color3f[] primvars:displayColor = [(0.9, 0.3, 0.2)]
+        double3 xformOp:translate.timeSamples = {
+            1: (-3, 0, 0),
+            20: (3, 0, 0),
+        }
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Camera "cam"
+    {
+        float focalLength = 35
+        float horizontalAperture = 36
+        float verticalAperture = 20.25
+        float2 clippingRange = (0.1, 100)
+        double3 xformOp:translate = (0, 0, 12)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

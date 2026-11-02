@@ -164,6 +164,11 @@ func TestSQIReferencePresets(t *testing.T) {
 			params:     []string{"SceneFile", "Script", "Frames", "FramesPerTask"},
 			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
 		},
+		"usdrecord-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "OutputFile", "Frames", "FramesPerTask", "Renderer", "Camera", "ImageWidth"},
+			extensions: []string{"TASK_CHUNKING", "EXPR"},
+		},
 		"redshift-standalone-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames"},

@@ -641,3 +641,87 @@ for f in range(int(os.environ["SQI_FRAME_START"]), int(os.environ["SQI_FRAME_END
 		}
 	})
 }
+
+// TestPresetDCC_Houdini_USDRecord runs usdrecord-render under a real hython,
+// which runs Houdini's usdrecord on a 20-frame stage. The stage is copied to a
+// directory with a space in its name: that is what Houdini's own usdrecord.cmd
+// wrapper cannot launch, and the reason the preset runs hython directly. The
+// frame images are read back, so the files show that the `#` run is the frame
+// padding, that each task covers exactly its frames, that the renderer name
+// "Karma CPU" reaches usdrecord as one argument, and that --imageWidth is
+// applied.
+func TestPresetDCC_Houdini_USDRecord(t *testing.T) {
+	const caseName = "TestPresetDCC_Houdini_USDRecord"
+	trackOutcome(t, caseName)
+	requireDCC(t, caseName, "Houdini", "hython")
+
+	dir := filepath.Join(t.TempDir(), "test shot")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stage := filepath.Join(dir, "stage.usda")
+	data, err := os.ReadFile(dccTestdata(t, "stage.usda"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stage, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ts := startServer(t)
+	farmID, queueID := seedFarmAndQueue(t, ts)
+	startRealWorkerAnyOS(t, ts, farmID, queueID)
+
+	// assertPNGWidths checks each file decodes as a PNG of the given width.
+	assertPNGWidths := func(t *testing.T, out string, names []string, width int) {
+		t.Helper()
+		for _, name := range names {
+			f, err := os.Open(filepath.Join(out, name))
+			if err != nil {
+				t.Errorf("open %s: %v", name, err)
+				continue
+			}
+			cfg, err := png.DecodeConfig(f)
+			_ = f.Close()
+			if err != nil {
+				t.Errorf("%s is not a PNG: %v", name, err)
+			} else if cfg.Width != width {
+				t.Errorf("%s is %d pixels wide, want %d", name, cfg.Width, width)
+			}
+		}
+	}
+
+	// usdrecord does not create the folder it writes into (measured), so the
+	// output folders exist before the jobs run.
+	mkOut := func(t *testing.T, name string) string {
+		t.Helper()
+		out := filepath.Join(dir, name)
+		if err := os.MkdirAll(out, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	t.Run("storm", func(t *testing.T) {
+		out := mkOut(t, "out")
+		job := runDCCJob(t, ts, farmID, queueID, "usdrecord-render", map[string]string{
+			"SceneFile": stage, "OutputFile": filepath.Join(out, "preview.####.png"),
+			"Frames": "1-12", "FramesPerTask": "10", "ImageWidth": "64",
+		})
+		assertTaskCount(t, ts, job, 2)
+		names := frameNames("preview.%04d.png", seq(1, 12)...)
+		assertExactFiles(t, out, names)
+		assertPNGWidths(t, out, names, 64)
+	})
+
+	t.Run("karma cpu", func(t *testing.T) {
+		out := mkOut(t, "karma")
+		job := runDCCJob(t, ts, farmID, queueID, "usdrecord-render", map[string]string{
+			"SceneFile": stage, "OutputFile": filepath.Join(out, "karma.###.png"),
+			"Frames": "3", "Renderer": "Karma CPU", "Camera": "cam", "ImageWidth": "32",
+		})
+		assertTaskCount(t, ts, job, 1)
+		assertExactFiles(t, out, []string{"karma.003.png"})
+		assertPNGWidths(t, out, []string{"karma.003.png"}, 32)
+	})
+}
