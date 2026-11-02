@@ -365,8 +365,9 @@ unverified.
 | `keyshot-studio-render` | one named studio (`Studio`) of a `.bip` scene | as `keyshot-render` | `keyshot` |
 
 Host-script presets like VRED's, with one difference: KeyShot's headless scripting has no call that renders
-a frame range, so each task runs `keyshot_headless -progress [-floating_feature <feature>] <scene> -script
-<script>` and the embedded `render.py` loops over the task's frames, calling `lux.setAnimationFrame` and
+a frame range, so each task runs
+`keyshot_headless -progress [-floating_feature <feature>] <scene> -script <script>` and the embedded `render.py`
+loops over the task's frames, calling `lux.setAnimationFrame` and
 `lux.renderImage` for each. The chunks are `NONCONTIGUOUS`, so a stepped or gapped range costs no extra
 launches, and the presets declare no `SQI_CHUNK_BOUNDS`. `-floating_feature` appears only when **License
 Feature** is set (`keyshot2`, `keyshot_enterprise` or `keyshot_network_rendering`). **Output File** holds
