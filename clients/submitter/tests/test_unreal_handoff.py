@@ -287,6 +287,25 @@ def test_unreal_job_whose_sequence_cannot_be_loaded_is_refused(unreal: Unreal) -
     assert unreal.updates == []
 
 
+def test_unreal_failing_shot_read_offers_the_job_without_shots(unreal: Unreal) -> None:
+    def broken(_sequence: object, _job: object) -> None:
+        raise AttributeError("update_job_shot_list_from_sequence")
+
+    unreal.module.MoviePipelineLibrary.update_job_shot_list_from_sequence = broken
+    unreal.jobs = [_job("Hero")]
+    data, reasons = _module().read_scene()
+    assert reasons == []
+    [target] = data["targets"]
+    assert target["name"] == "Hero"
+    extra = target["extra"]
+    assert isinstance(extra, dict)
+    assert "Shots" not in extra
+    assert extra["LevelSequence"] == "/Game/Seq/S1.S1"
+    assert unreal.warnings == [
+        "sqi: could not read the shots of Hero: update_job_shot_list_from_sequence"
+    ]
+
+
 def test_unreal_shot_name_over_the_preset_limit_is_refused(unreal: Unreal) -> None:
     unreal.jobs = [_job("Long", shots=[_shot("a" * 256), _shot("b" * 257)]), _job("Fine")]
     data, reasons = _module().read_scene()

@@ -32,12 +32,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/google/uuid"
-
-	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/presettest"
-	"github.com/uberware/sqi/internal/store"
-	"github.com/uberware/sqi/internal/store/fake"
 )
 
 // The three Unreal presets, which share one script and one command line; their
@@ -301,18 +296,7 @@ func TestPresetUnreal_ShotListBounds(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		st := fake.New()
-		farm, err := st.CreateFarm(t.Context(), store.Farm{ID: uuid.NewString(), Name: "farm"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		queue, err := st.CreateQueue(t.Context(), store.Queue{ID: uuid.NewString(), FarmID: farm.ID, Name: "queue"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		result, err := openjd.NewSubmitter(st).Submit(t.Context(), tmpl, store.TemplateFormatYAML, openjd.SubmitOptions{
-			FarmID: farm.ID, QueueID: queue.ID, Owner: "test", Parameters: params,
-		})
+		result, err := presettest.Submit(t.Context(), tmpl, presettest.Options{Params: params})
 		if err != nil {
 			t.Fatalf("the largest Shots the bounds allow must be accepted at submission: %v", err)
 		}

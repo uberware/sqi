@@ -551,7 +551,10 @@ refreshes the shot list shown in the open Movie Render Queue. The enabled
 entries become the target's `Shots`, in queue order. An entry is named by the
 outer name of its camera cut, or after the level sequence (`SEQ_Hero` for
 `/Game/Cinematics/SEQ_Hero.SEQ_Hero`) when it has none, and a name that appears
-twice is listed once.
+twice is listed once. If reading the shots raises an error, the job is still
+offered without them and the error is logged as an Editor warning: the job and
+queue presets do not need the shots. **Shots** is then typed in the dialog for
+`unreal-mrq-shot-render`, since it is no longer filled from every target.
 
 Two products are per-target for a queue job, and the dialog lists both: pick
 the one that suits the job.

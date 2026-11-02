@@ -226,20 +226,29 @@ def job_target(job: Any) -> tuple[dict[str, object] | None, str | None]:
         problem = asset_path_problem(value)
         if problem is not None:
             return None, f"{name}: its {label} {problem}"
-    shots, shots_problem = enabled_shots(job, sequence)
-    if shots_problem is not None:
-        return None, f"{name}: {shots_problem}"
+    extra: dict[str, str] = {
+        "LevelSequence": sequence,
+        "Map": map_path,
+        "MovieRenderConfig": str(config.get_path_name()),
+    }
+    try:
+        shots, shots_problem = enabled_shots(job, sequence)
+    except Exception as exc:
+        # The shot read calls Editor APIs no other product needs: if they fail, the job is
+        # still offered, without Shots, rather than blocking the job and queue presets too.
+        import unreal
+
+        unreal.log_warning(f"sqi: could not read the shots of {name}: {exc}")
+    else:
+        if shots_problem is not None:
+            return None, f"{name}: {shots_problem}"
+        extra["Shots"] = json.dumps(shots)
     target: dict[str, object] = {
         "name": name,
         "kind": "mrq_job",
         "frame_range": None,
         "output_path": None,
-        "extra": {
-            "LevelSequence": sequence,
-            "Map": map_path,
-            "MovieRenderConfig": str(config.get_path_name()),
-            "Shots": json.dumps(shots),
-        },
+        "extra": extra,
         "locked": [],
     }
     return target, None
