@@ -662,7 +662,7 @@ def test_fusion_submit_lists_the_comps_savers(lua: str, tmp_path: Path) -> None:
     tools = f"{{ {_tool('Saver1', pass_through=False)}, {_tool('Off', pass_through=True)} }}"
     got = run_lua(lua, _entry(tmp_path, tool_list=tools), {"SQI_SETTINGS": str(settings)})
     assert got["ok"] == "true"
-    assert got["toollist"] == "false:Saver"  # every Saver, not just the selected tools
+    assert got["toollist"] == "false:Saver"  # every Saver, not only the selected tools
     (target,) = load_context(tmp_path / "lua_tmp1").render_targets()
     assert target.name == "Saver1"
     assert target.extra == {"Saver": "Saver1"}

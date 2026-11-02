@@ -9,7 +9,7 @@ readme: |
 
   Renders whatever the saved `.aep` project has queued in its render queue, on
   one machine, as a single task. Each queued item renders with its own render
-  settings, output module and time span, exactly as the project was saved.
+  settings, output module and time span, as the project was saved.
   Use After Effects Render instead to split one queue item's frames across
   machines.
 

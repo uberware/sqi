@@ -1584,8 +1584,8 @@ jobs:
             # The Fusion Saver host-script preset: the same checks as Modo's,
             # with the embedded render.lua under a real Lua 5.1 and Fusion
             # faked. SQI_REQUIRE_LUA=1 makes ScriptDrivesFusion fail rather
-            # than skip without one; its two refusals of a wrong Saver name
-            # are named too.
+            # than skip without one; four of its leaves are named too, the two
+            # refusals of a wrong Saver name among them.
             TestPresetFusion_ParamsCostAtMaxChunk
             TestPresetFusion_ParamsJSONRoundTrips
             TestPresetFusion_CommandNamesTheScript

@@ -4,16 +4,16 @@ Render nodes to the sqi dialog.
 
 Install it with ``sqi-submit install-host katana``, which copies this file and its startup hook
 ``init.py`` into ``~/.katana/Startup`` (Katana runs ``init.py`` from there at startup), then
-restart Katana. This file uses only Katana's own Python and the standard library and never
-imports ``sqi_submitter`` by name: it writes a small context file describing the project's
+restart Katana. This file uses only Katana's own Python and the standard library and has no
+import statement for ``sqi_submitter``: it writes a small context file describing the project's
 Render nodes and runs ``sqi-submit --context FILE``, whose Qt dialog does the rest. Katana 4 and
 5 ship Python 3.7, so this file parses as 3.7.
 
 On Katana 8 and later, when ``sqi_submitter`` is installed for Katana's own Python (on its path,
 or in the folder named by ``$SQI_SUBMITTER_SITE`` or the ``sqi_submitter_site.katana`` setting),
-the click opens the dialog inside Katana instead. The Katana version is checked first, so an
-earlier Katana never imports ``sqi_submitter``, whatever is on its path; if the import fails the
-handoff runs as before.
+the click imports it with ``importlib`` and opens the dialog inside Katana instead. The Katana
+version is checked first, so an earlier Katana never imports ``sqi_submitter``, whatever is on
+its path. If the import or the dialog fails, the click hands off.
 
 ``Katana``, ``KatanaInfo``, ``UI4`` and the Qt binding are imported inside function bodies only,
 so the module imports (and its project reading can be tested) without Katana. The block between

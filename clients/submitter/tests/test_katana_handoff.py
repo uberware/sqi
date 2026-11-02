@@ -680,7 +680,7 @@ def test_katana_broken_site_prints_and_hands_off(
     assert seen == [False, True]
     out = capsys.readouterr().out
     assert str(site) in out and "No module named 'httpx'" in out
-    assert katana.events == ["write:1", "launch:sqi:ctx.json"]  # the handoff still runs
+    assert katana.events == ["write:1", "launch:sqi:ctx.json"]  # it hands off
 
 
 def test_katana_8_dialog_that_fails_to_open_hands_off(
@@ -711,9 +711,9 @@ def test_katana_unknown_version_hands_off(katana: Katana, monkeypatch: pytest.Mo
     assert katana.events == ["write:0", "launch:sqi:ctx.json"]
 
 
-def test_katana_hook_is_unchanged() -> None:
-    """The in-process mode lives in the module: the hook still only imports it and registers
-    its menu, so a studio's own copy of the hook (install never overwrites one) keeps working."""
+def test_katana_hook_only_imports_the_module() -> None:
+    """The in-process mode lives in the module: the hook only imports it and registers its
+    menu, so a studio's own copy of the hook (install never overwrites one) gets that mode too."""
     imported: set[str] = set()
     for node in ast.walk(ast.parse(HOOK.read_text(encoding="utf-8"))):
         if isinstance(node, ast.Import):

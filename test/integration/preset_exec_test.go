@@ -699,7 +699,7 @@ func foldFilePaths(args []string, files map[string]bool) []string {
 }
 
 // foldQuotedFilePaths replaces each absolute path to one of files embedded in
-// s with <FILE:name>, leaving whatever quotes it intact. A path ends at
+// s with <FILE:name>, leaving the quotes around it intact. A path ends at
 // whitespace, a quote, a brace or a square bracket, as presettest's
 // sessionDirPattern does, which covers every way a preset quotes a script
 // path: a repr_py string ('C:\\Users\\...\\render.py'), Modo's -cmd:@

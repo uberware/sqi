@@ -493,7 +493,7 @@ presets:
   # Windows and macOS only by hostRequirements (attr.worker.os.family anyOf
   # ["windows", "macos"]), so both After Effects entries' Tier-3 claims are
   # required_on [windows, darwin], and no CI job runs Tier 3 on macOS. The
-  # outcome cases prove the SQI_LOG_CHECKS pattern fails a task whose aerender
+  # outcome cases show the SQI_LOG_CHECKS pattern failing a task whose aerender
   # exited 0, in the marker's own letter case and in others.
   - name: after-effects-render
     source: presets/sqi

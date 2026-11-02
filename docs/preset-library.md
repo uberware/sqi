@@ -274,8 +274,8 @@ Savers; it never falls back to rendering every Saver. The script then prints
 
 It declares [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md): a task fails
 unless the output contains `SQI_RENDER: OK`, and fails on `SQI_RENDER: FAILED:` and on
-`fusion-render`'s two strings. It needs Fusion Studio 18 or later and, like every
-host-script preset, a step timeout the readme recommends adding. Unverified: when
+`fusion-render`'s two strings. It needs Fusion Studio 18 or later, and the readme
+recommends adding a step timeout, as for every host-script preset. Unverified: when
 `-execute` runs its code and whether the Render Node exits afterwards, whether
 `io.stdout` reaches the worker, whether `fusion:Quit()` ends the Render Node (or asks
 to save the changed comp), `LoadComp`'s signature, and Savers inside groups. Its
@@ -456,11 +456,11 @@ The shot preset makes one task per entry of `Shots`, a `LIST[STRING]` of 1 to 10
 names must fit; pinned by `TestPresetUnreal_ShotListBounds`), through a `STRING` task parameter `Shot` ranging over
 `{{ Param.Shots }}`. The three presets share one script byte for byte. With a `shot` in `params.json`, it rebuilds the
 job's shot list with `MoviePipelineLibrary.update_job_shot_list_from_sequence` and enables only the entries whose outer
-name is the task's shot (an entry with no outer name is named after the sequence asset). A shot the sequence no longer
-has fails the task with a reason listing the shots it does have, and nothing renders. The script warns, without failing,
+name is the task's shot (an entry with no outer name is named after the sequence asset). A shot the sequence does not
+have fails the task with a reason listing the shots it does have, and nothing renders. The script warns, without failing,
 when the config's output file name format has no `{shot_name}`, since every shot renders with the same config; the
 readme suggests `{sequence_name}/{shot_name}/{shot_name}.{frame_number}`. Each shot pays the editor's start-up and the
-project's and map's loading. Unverified besides the points below: how that call rebuilds the shot list, several camera
+project's and map's loading. Also unverified: how that call rebuilds the shot list, several camera
 cuts sharing one shot name (all of them render), and configs built with the Movie Render Graph.
 
 All three declare [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md): a task fails unless the output contains `SQI_RENDER: OK`, and
@@ -497,9 +497,9 @@ worker's `PATH` for the job to run. The `aftereffects` detector also supplies an
 `aerender` command from the install it finds, so `aerender` need not be on
 `PATH` (see [detected commands](worker-capabilities.md#detected-commands)).
 
-**After Effects failures.** `aerender` is reported to exit with status 0 when a
-render fails, so both After Effects presets declare
-[`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md) and also fail the task when any line of `aerender`'s output contains
+**After Effects failures.** `aerender` is reported to exit with status 0 when a render
+fails, so both After Effects presets declare
+[`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md): besides a non-zero exit, a task fails when any line of `aerender`'s output contains
 `aerender ERROR`, matched case-insensitively. That marker comes from user
 reports and has not been checked against a real failing render; a failure that
 neither exits non-zero nor prints the marker is still reported as a success.

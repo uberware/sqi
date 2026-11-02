@@ -479,8 +479,8 @@ image-sequence items only. See [Submitting several
 targets](#submitting-several-targets).
 
 > **For a submitted job to run,** the rendering worker needs the
-> `aftereffects=true` capability tag, an `aerender` it can resolve, and a
-> render-only marker file, and it must run Windows or macOS. See [Reference presets](#reference-presets).
+> `aftereffects=true` capability tag, an `aerender` it can resolve and a
+> render-only marker file, and must run Windows or macOS. See [Reference presets](#reference-presets).
 
 ### Unreal Engine
 
@@ -533,8 +533,8 @@ stop:
   is switched off in the queue, or the sequence has none;
 - the job has more shots than `unreal-mrq-shot-render` accepts ("more than 1000
   shots"), or a shot name longer than its 256-character limit ("shot name longer
-  than 256 characters"). The submitter names the limit here rather than let the
-  server reject the job without saying which target caused it.
+  than 256 characters"). The submitter checks these limits itself so that the
+  refusal names the target.
 
 If nothing is left to submit, the submitter launches nothing and says why in a
 message with only **OK**. An empty queue, or one whose jobs are all disabled,
@@ -554,7 +554,7 @@ outer name of its camera cut, or after the level sequence (`SEQ_Hero` for
 twice is listed once. If reading the shots raises an error, the job is still
 offered without them and the error is logged as an Editor warning: the job and
 queue presets do not need the shots. **Shots** is then typed in the dialog for
-`unreal-mrq-shot-render`, since it is no longer filled from every target.
+`unreal-mrq-shot-render`, since not every target supplies it.
 
 Two products are per-target for a queue job, and the dialog lists both: pick
 the one that suits the job.
@@ -649,7 +649,7 @@ Katana's main window, with no separate `sqi-submit` process.
    `sqi_katana_submit.py` at each click.
 
 At each click the module reads Katana's major version from `KatanaInfo.version`
-**before importing anything** from `sqi_submitter`. Below 8, or when the
+before importing anything from `sqi_submitter`. Below 8, or when the
 version cannot be read, it hands off, so Katana 7.5 and earlier never import
 `sqi_submitter` even when a stray PySide6 or `sqi_submitter` is on their path.
 On 8 or later it imports `sqi_submitter.hosts.katana.menu`; if that fails, it
@@ -1099,9 +1099,9 @@ frames needs the step's `chunks.defaultTaskCount` raised to cover the whole
 range. How Mistika writes a movie from a partial `-s`/`-e` range is unverified.
 
 **After Effects checks `aerender`'s output, and a movie output must be one
-task.** `aerender` is reported to exit 0 when a render fails, so both After
-Effects presets declare `SQI_LOG_CHECKS` and also fail the task when any output
-line contains `aerender ERROR`, in any letter case. A failure that does neither
+task.** `aerender` is reported to exit 0 when a render fails, so both After Effects
+presets declare `SQI_LOG_CHECKS`: besides a non-zero exit, a task fails when
+any output line contains `aerender ERROR`, in any letter case. A failure that does neither
 is still reported as a success. Each render node needs an `aerender` the worker
 can resolve (the `aftereffects` detector supplies one from a default install),
 and Adobe's render-only marker, an empty file named
@@ -2209,9 +2209,9 @@ support):**
 
 - **`comp:GetToolList(false, "Saver")`.** The signature (first argument "selected
   only", second the tool's registry ID), that it returns a Lua table indexed
-  from 1, and that it finds Savers inside groups are from Blackmagic's scripting
-  documentation and the same call in `fusion-saver-render`'s script, not from a
-  run. The script calls it under `pcall`: an error gives no targets and a
+  from 1, and that it finds Savers inside groups come from Blackmagic's scripting
+  documentation (`fusion-saver-render`'s script makes the same call) and have not
+  been checked against a running Fusion. The script calls it under `pcall`: an error gives no targets and a
   Console line, never a failed submission.
 - **The Saver attributes.** `TOOLS_Name` (the tool's name), `TOOLB_PassThrough`
   (true when the tool is switched off) and `TOOLST_Clip_Name` (a table of the

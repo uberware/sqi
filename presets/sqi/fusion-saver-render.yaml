@@ -41,7 +41,7 @@ readme: |
   Each task runs `FusionRenderNode -quiet -verbose -execute <code>`. The code
   is one line of Lua, `dofile` of the preset's embedded `render.lua` from the
   task's session folder, with the script's path in a Lua long bracket so no
-  character of it is read as an escape. No job value is ever written into the
+  character of it is read as an escape. No job value is written into the
   command line or into Lua source: the script reads the comp, the Saver and
   the task's first and last frame from a `params.json` written beside it,
   built with the `EXPR` extension and its JSON quoting, so a Saver name holding

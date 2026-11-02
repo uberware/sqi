@@ -328,8 +328,8 @@ template:
                   # One shot of the job: its shot list rebuilt from the sequence,
                   # then only the entries named after the shot left enabled. An
                   # entry is named by its outer name, or after the sequence when it
-                  # has none. A shot the sequence no longer has fails the task,
-                  # naming the shots it has, rather than render every shot.
+                  # has none. A shot the sequence lacks fails the task, naming
+                  # the shots it has, rather than render every shot.
                   shot = params["shot"]
                   sequence = unreal.EditorAssetLibrary.load_asset(object_path(params["sequence"]))
                   if sequence is None:

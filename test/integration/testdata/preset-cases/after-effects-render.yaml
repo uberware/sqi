@@ -16,7 +16,7 @@
 # SQI_LOG_CHECKS check. The second spells the marker in other letter cases,
 # which the pattern's (?i) must still match. One frame, so one task, run three
 # times: a failed task is retried up to scheduler.default_max_attempts (3), and
-# every attempt really runs the stub and prints the line.
+# every attempt runs the stub and prints the line.
 cases:
   - name: default
     params:

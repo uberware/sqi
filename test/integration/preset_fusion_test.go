@@ -2,8 +2,8 @@
 
 package integration
 
-// preset_fusion_test.go: what the fusion-saver-render golden files cannot show
-// on their own: that params.json is JSON a script can decode, that its cost
+// preset_fusion_test.go checks what the fusion-saver-render golden files cannot
+// show on their own: that params.json is JSON a script can decode, that its cost
 // stays inside the worker's EXPR limits at the largest chunk the preset allows,
 // that the -execute argument names the script and carries no job value, and
 // what the embedded render.lua asks Fusion to do.
@@ -16,7 +16,7 @@ package integration
 //
 // TestPresetFusion_ScriptDrivesFusion runs render.lua under a stock Lua 5.1
 // (lua5.1, luajit or lua on PATH). It skips without one; SQI_REQUIRE_LUA=1,
-// which CI's integration job sets, turns that skip into a failure.
+// which CI's integration-tests job sets, turns that skip into a failure.
 
 import (
 	"bytes"
@@ -356,11 +356,10 @@ chunk()
 `
 
 // runFusionScript writes the task's resolved render.lua and params.json into a
-// fresh folder, points the task's own -execute code at
-// that render.lua, and runs it under fusionRunner from a different, empty
-// folder, so the script must find params.json beside itself. It returns the
-// calls the fakes recorded, as canonical JSON, and what the script wrote to
-// stdout.
+// fresh folder, writes -execute code of the task's form naming that render.lua,
+// and runs it under fusionRunner from a different, empty folder, so the script
+// must find params.json beside itself. It returns the calls the fakes recorded,
+// as canonical JSON, and what the script wrote to stdout.
 func runFusionScript(t *testing.T, lua string, task presettest.TaskSnapshot, mode string) (calls, stdout string) {
 	t.Helper()
 	dir := t.TempDir()
