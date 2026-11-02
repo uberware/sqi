@@ -616,6 +616,64 @@ These presets are verified at Tier 1 and Tier 3 only. See [Validation
 tiers](#validation-tiers) and each preset's caveat in
 `presets/validation-tiers.yaml`.
 
+## Houdini and image-processing reference presets
+
+Three more presets are general-purpose utilities rather than renders of a
+scene. They live in `presets/sqi/*.yaml` like the others and have no
+in-application submitter; submit them from the web UI or the API. Two run
+Houdini's `hython` and gate on the `houdini` capability tag; the third runs
+OpenImageIO's `oiiotool` and gates on the `oiiotool` tag. Both tags are set by
+built-in detectors (see [worker capability
+tags](worker-capabilities.md#built-in-detectors)).
+
+| Preset | Category | Does | Shape | Worker tag |
+|---|---|---|---|---|
+| `hython-script` | General | loads a hip file and runs your Python script in that Houdini session | frame range per task | `houdini` |
+| `usdrecord-render` | Rendering | renders image frames of a USD stage with Houdini's `usdrecord` | frame range per task | `houdini` |
+| `oiiotool-process` | Image Processing | converts or processes an image sequence with `oiiotool` | frame range per task | `oiiotool` |
+
+**`hython-script`.** Each task loads the hip file with `hython` and runs the
+script in that same session, so the script can use `hou`. The script reads its
+frames from `SQI_FRAME_START`, `SQI_FRAME_END`, `SQI_FRAMES` and `SQI_FRAME`,
+and the playbar starts at the task's first frame. The script runs once per task,
+however many frames the task covers. A simulation must be cooked from its first
+frame, so set **Frames per Task** to at least the number of frames in the range.
+An exception, or a non-zero `SystemExit`, fails the task. The script runs as
+the account the worker runs under, which is arbitrary code execution by design;
+on a shared farm set **run as user** on the queue.
+
+**`usdrecord-render`.** Renders review frames and turntables from a USD stage
+with Houdini's own `usdrecord`, ten frames per task by default; it is not a
+substitute for `husk-usd-render` at final quality. **Output Image Pattern**
+marks the frame number with one run of `#`, as in `preview.####.png`, and the
+launcher creates any missing output folders. **Renderer**, **Camera** and
+**Image Width** are optional. Storm, the default renderer, needs an OpenGL
+context, so a worker with no GPU or display should use `Karma CPU`. The task
+starts `hython` with a small launcher instead of Houdini's `usdrecord`
+command, because on Windows that command cannot start when Houdini is installed
+under a folder whose name has a space, which is the default.
+
+**`oiiotool-process`.** Runs one `oiiotool` launch per chunk of frames, ten by
+default. **Operations** is a list of `oiiotool` arguments, one per line, applied
+between reading and writing; leave it empty to convert by the output's file
+extension. `oiiotool` does not create missing folders, so the output folder
+must already exist. The worker finds Houdini's copy, `hoiiotool`, when
+`oiiotool` is not on `PATH`.
+
+**Frame patterns.** `usdrecord-render` and `oiiotool-process` take a pattern
+whose file name has exactly one run of `#`, and the length of the run is the
+frame number's padding. A pattern with no run, or with two, is rejected at
+submission. `oiiotool` reads each `#` as four digits, so sqi rewrites the run
+as the same number of `@` before it reaches `oiiotool`, where each `@` is one
+digit: `shot.####.exr` becomes `shot.@@@@.exr`. A `#` in a folder of an
+`oiiotool-process` pattern is also rejected, because `oiiotool` would expand
+it. Anything written under **Operations** is passed through as written,
+including a second input sequence, which must use the `@` form.
+
+All three are verified at Tier 2 as well as Tier 1 and Tier 3. See [Validation
+tiers](#validation-tiers) and each preset's caveat in
+`presets/validation-tiers.yaml` for what each tier did and did not show.
+
 ## Testing presets
 
 The official library also ships four `Testing`-category presets for
@@ -638,7 +696,7 @@ but run their script directly, so they need a Linux or macOS worker.
 
 ## Validation tiers
 
-`presets/validation-tiers.yaml` has 49 entries, the 42 presets under
+`presets/validation-tiers.yaml` has 52 entries, the 45 presets under
 `presets/sqi/` plus the seven built-in products documented in
 [`docs/development.md`](development.md#adding-a-product), and states which
 validation tier each has reached. The four `presets/testing/` presets are not
@@ -678,7 +736,7 @@ tier to stand in for. The tiers are:
   than "the template still expands the way it did when this was reviewed."
 
 - **Tier 2: real application.** The real application runs the resolved command
-  and its output is inspected. Eleven entries have a `tier2` block, each naming
+  and its output is inspected. Fourteen entries have a `tier2` block, each naming
   a test that runs the real program end to end:
   - The five ffmpeg presets and the `python-sequence` built-in.
     `test/integration/preset_ffmpeg_test.go` runs real ffmpeg and decodes the
@@ -691,6 +749,10 @@ tier to stand in for. The tiers are:
     through a real server and worker, and checks the files it renders: the exact
     frame set, and where it can be read back, their content (the view layer in
     an EXR header, a PNG's size, the frame a Houdini geometry file holds).
+  - Three utility presets: `hython-script` and `usdrecord-render` under a real
+    Houdini 22.0.466 (`make test-dcc`, `requires_app: houdini`), and
+    `oiiotool-process` under a real `oiiotool`, which CI installs from
+    Ubuntu's `openimageio-tools` (`required_on: [linux]`).
 
   The other thirty-two presets (Maya, Cinema 4D, 3ds Max, After Effects, the three
   Mistika products, the eight standalone renderers, Katana, the two Fusion and the two
@@ -756,7 +818,7 @@ skip on a platform named in `required_on` is a registry failure.
 ### Tier 3 on Windows
 
 Tier 3 runs on Windows as it does on Linux and macOS, and CI runs it in a
-dedicated job (`preset-harness-windows`). Of the 49 registry entries, 38 have
+dedicated job (`preset-harness-windows`). Of the 52 registry entries, 41 have
 `tier3.required_on: [linux, darwin, windows]`, so a skip on Windows fails the
 registry check for each of them. The other 11 are gated to fewer platforms:
 

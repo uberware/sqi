@@ -1013,11 +1013,13 @@ visible, since the server enforces the permission either way.
 ## Reference presets
 
 sqi ships twenty-nine DCC reference products under `presets/sqi/`, published
-through the [preset library](preset-library.md). The directory holds forty-two
-products in total. The other thirteen are eight [standalone renderer
+through the [preset library](preset-library.md). The directory holds forty-five
+products in total. The other sixteen are eight [standalone renderer
 presets](preset-library.md#standalone-renderer-reference-presets), which render
-exported scene files without loading the DCC, and five `Transcoding`-category
-[ffmpeg presets](preset-library.md#transcoding-reference-presets). Install the
+exported scene files without loading the DCC, five `Transcoding`-category
+[ffmpeg presets](preset-library.md#transcoding-reference-presets), and three
+[Houdini and image-processing
+presets](preset-library.md#houdini-and-image-processing-reference-presets). Install the
 DCC presets from **Admin → Preset Library** in the web UI or, without a preset
 index, create them through `POST /api/v1/products` or **Admin → Products**. All
 twenty-nine use the product `category` `Rendering`. All but the After Effects

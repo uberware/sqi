@@ -1541,9 +1541,10 @@ clients/submitter/
                                          its host file loads in-process on Katana 8+
     cli.py, install.py                   sqi-submit, sqi-submit install-host
   tests/                     pytest; tests/integration/ is env-gated (see below)
-presets/sqi/                 the forty-two reference preset YAML fixtures (twenty-nine DCC render
+presets/sqi/                 the forty-five reference preset YAML fixtures (twenty-nine DCC render
                               presets, eight standalone renderer presets, five ffmpeg
-                              transcode presets), validated by
+                              transcode presets, three Houdini and image-processing
+                              presets), validated by
                               internal/product/sqipresets_test.go against a per-preset
                               `want` map of expected category/params/extensions
 presets/testing/             the four test/QA preset fixtures (test-render, test-steps;

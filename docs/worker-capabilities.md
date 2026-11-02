@@ -379,10 +379,11 @@ that worker. Map `keyshot_headless` in `worker.commands` to state the arguments
 yourself.
 
 The `nuke`, `blender`, `houdini` (`hython`), `aftereffects` (`aerender`), `katana`, `fusion`, `silhouette`
-(`sfxcmd`), `vred` (`VREDCore`), `keyshot` (`keyshot_headless`), `modo` (`modo_cl`) and `unreal` (`UnrealEditor-Cmd`) built-ins define a command; the others rely on the command being on `PATH`. Blender's has Windows and macOS globs
+(`sfxcmd`), `vred` (`VREDCore`), `keyshot` (`keyshot_headless`), `modo` (`modo_cl`), `unreal` (`UnrealEditor-Cmd`) and `oiiotool` (Houdini's `hoiiotool`) built-ins define a command; the others rely on the command being on `PATH`. Blender's has Windows and macOS globs
 only: a Linux install is wherever it was unpacked, or a distro package already on
 `PATH`. Houdini's has Windows and Linux globs only; on macOS put `hython` on
-`PATH` or map it in `worker.commands`. For
+`PATH` or map it in `worker.commands`; the `oiiotool` one has the same Windows and
+Linux globs and the same macOS gap. For
 Blender the version is read only to pick the newest install, so its tag stays
 presence only. Turning a detector off with `capabilities.disable` turns off its
 command default too. A custom detector can add one:
