@@ -99,6 +99,7 @@ template:
           patterns: ["*.hip", "*.hiplc", "*.hipnc"]
     - name: Script
       type: STRING
+      minLength: 1
       userInterface:
         control: MULTILINE_EDIT
         label: Python Script
