@@ -240,6 +240,13 @@ def _str_list(value: Any) -> list[str]:
     return [str(item) for item in value]
 
 
+def _opt_str_list(value: Any) -> list[str] | None:
+    """A list of strings, or ``None`` when ``value`` is not a list (absent stays absent)."""
+    if not isinstance(value, list):
+        return None
+    return [_as_str(item) for item in value]
+
+
 def _as_datetime(value: Any) -> datetime:
     if isinstance(value, str):
         try:
@@ -1258,6 +1265,39 @@ class PathFileFilter:
 
 
 @dataclass(frozen=True)
+class ProductParameterItem:
+    """Per-element constraints of a ``LIST[*]`` parameter (RFC 0007's ``item:`` block).
+
+    ``item`` is the inner level and is present only for ``LIST[LIST[INT]]``.
+    """
+
+    min_length: int | None = None
+    max_length: int | None = None
+    min_value: str | None = None
+    max_value: str | None = None
+    allowed_values: list[str] | None = None
+    item: ProductParameterItem | None = None
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> ProductParameterItem:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
+        inner = data.get("item")
+        return cls(
+            min_length=_opt_int(data.get("min_length")),
+            max_length=_opt_int(data.get("max_length")),
+            min_value=_opt_str(data.get("min_value")),
+            max_value=_opt_str(data.get("max_value")),
+            allowed_values=_opt_str_list(data.get("allowed_values")),
+            item=ProductParameterItem.from_dict(inner) if isinstance(inner, Mapping) else None,
+        )
+
+
+@dataclass(frozen=True)
 class ProductParameter:
     """A parsed job parameter from a product's template (with UI hints)."""
 
@@ -1275,6 +1315,7 @@ class ProductParameter:
     user_interface: ParameterUserInterface | None = None
     file_filters: list[PathFileFilter] | None = None
     file_filter_default: PathFileFilter | None = None
+    item: ProductParameterItem | None = None
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> ProductParameter:
@@ -1287,16 +1328,13 @@ class ProductParameter:
         ui = data.get("user_interface")
         raw_filters = data.get("file_filters")
         default_filter = data.get("file_filter_default")
+        item = data.get("item")
         return cls(
             name=_as_str(data.get("name")),
             type=_as_str(data.get("type")),
             description=_as_str(data.get("description")),
             default=_opt_str(data.get("default")),
-            allowed_values=(
-                [_as_str(v) for v in data["allowed_values"]]
-                if isinstance(data.get("allowed_values"), list)
-                else None
-            ),
+            allowed_values=_opt_str_list(data.get("allowed_values")),
             min_value=_opt_str(data.get("min_value")),
             max_value=_opt_str(data.get("max_value")),
             min_length=_opt_int(data.get("min_length")),
@@ -1316,6 +1354,7 @@ class ProductParameter:
                 if isinstance(default_filter, Mapping)
                 else None
             ),
+            item=ProductParameterItem.from_dict(item) if isinstance(item, Mapping) else None,
         )
 
 

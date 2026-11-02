@@ -1,13 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Epic's Unreal Engine 5, whose UnrealEditor-Cmd the presets
-# unreal-mrq-job-render and unreal-mrq-queue-render run through the bare
-# command `UnrealEditor-Cmd`. The presets are Windows-only.
+# unreal-mrq-job-render, unreal-mrq-queue-render and unreal-mrq-shot-render
+# run through the bare command `UnrealEditor-Cmd`. The presets are
+# Windows-only.
 #
 # Windows: the Epic Games Launcher installs each engine version to
 # C:\Program Files\Epic Games\UE_5.<minor>\ by default, with the editor's
 # command-line program at Engine\Binaries\Win64\UnrealEditor-Cmd.exe below it.
-# That is the only location looked for, and it is unverified.
+# That is the only location looked for. A Launcher install of Unreal Engine
+# 5.8 is found there, tagged with version 5.8.
 #
 # Not found: an install in a custom Launcher folder, or a source build. Give
 # the worker an `UnrealEditor-Cmd` entry in worker.commands (and the tag

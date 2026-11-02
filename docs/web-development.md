@@ -263,7 +263,7 @@ requests without any client-side bookkeeping.
 
 ---
 
-## Role gating (`can`, `<RequireRole>`, nav/card filtering)
+## Role gating (`can`, `RequireRole`, nav/card filtering)
 
 The web UI mirrors the server's role→permission matrix
 (`docs/auth.md#roles--permissions`) so nav items, Admin-hub cards, and route

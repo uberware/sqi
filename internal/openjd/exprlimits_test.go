@@ -130,9 +130,8 @@ func TestExprLimits_OrDefaults(t *testing.T) {
 // budget exceeded", so matching that string would leave
 // MinExprSubmissionOperations and MinExprSubmissionMemoryBytes untested. Any
 // error the floors add is a floor-induced rejection. The comparison is a diff
-// because many presets already produce errors of their own here: under EXPR a
-// CHUNK[INT] is a range_expr, and the checker rejects their SQI_CHUNK_BOUNDS
-// .Start/.End access.
+// so that a preset which already produces an error of its own here does not
+// mask or fake a floor-induced one.
 func TestExprLimits_FloorsAcceptReferencePresets(t *testing.T) {
 	paths, err := fsutil.Glob(filepath.Join("..", "..", "presets", "sqi", "*.yaml"))
 	if err != nil {

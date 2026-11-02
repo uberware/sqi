@@ -5,8 +5,10 @@
 -- Install into Fusion's user Scripts/Comp folder (`sqi-submit install-host fusion` copies it
 -- there), then choose Script > Submit to sqi in Fusion. It writes a version 1 handoff context
 -- file (see docs/dcc-submitters.md) describing the open comp, then launches
--- `sqi-submit --context <file>`, which opens the shared submit dialog. It submits the whole
--- comp: the render command line cannot pick a Saver.
+-- `sqi-submit --context <file>`, which opens the shared submit dialog. The comp's Savers that
+-- are not in pass-through go in the context as render targets, one per Saver, so a product
+-- that takes a `Saver` parameter renders one job per ticked Saver and a whole-comp product
+-- ignores them.
 --
 -- Fusion bundles Lua 5.1 (LuaJIT in newer releases) but no Python, so this one file is the
 -- whole submitter. Keep it to Lua 5.1: no goto, no `//`, no utf8 library. The functions down
@@ -26,6 +28,7 @@ SQI_MSG = {
     launchFailed = "sqi-submit could not be started: ",
     noExecute = "This Fusion build does not allow scripts to run programs (os.execute), "
         .. "so sqi-submit cannot be started from here.",
+    noSavers = "The comp's Savers could not be listed, so the dialog offers none: ",
     unexpected = "Submit to sqi failed: ",
 }
 
@@ -83,15 +86,58 @@ local function json_or_null(value)
     return sqi_json_string(tostring(value))
 end
 
--- The version 1 handoff document for the open comp. frame_range and host_version may be nil.
-function sqi_context_json(scene_path, frame_range, host_version)
+-- The targets to render, one per Saver in savers (the tools comp:GetToolList returns, a list
+-- or nil), as { name = <string>, clip = <string or nil> } records in the list's order. A Saver
+-- in pass-through (TOOLB_PassThrough) writes nothing, so it is left out, as is one with no
+-- name or whose attributes cannot be read. clip is the first file the Saver writes, for the
+-- dialog's output path; Fusion's attribute for it is TOOLST_Clip_Name.
+function sqi_saver_targets(savers)
+    local targets = {}
+    if type(savers) ~= "table" then
+        return targets
+    end
+    for _, tool in ipairs(savers) do
+        local ok, attrs = pcall(function()
+            return tool:GetAttrs()
+        end)
+        if ok and type(attrs) == "table" and attrs.TOOLB_PassThrough ~= true then
+            local name = attrs.TOOLS_Name
+            if type(name) == "string" and name ~= "" then
+                local clips = attrs.TOOLST_Clip_Name
+                local clip = type(clips) == "table" and clips[1] or nil
+                if type(clip) ~= "string" or clip == "" then
+                    clip = nil
+                end
+                targets[#targets + 1] = { name = name, clip = clip }
+            end
+        end
+    end
+    return targets
+end
+
+-- The "targets" array of the handoff document for records from sqi_saver_targets (nil is
+-- none). Each Saver supplies the product's `Saver` parameter, matched by name in the dialog.
+local function targets_json(targets)
+    local items = {}
+    for _, target in ipairs(targets or {}) do
+        items[#items + 1] = "{\"name\":" .. sqi_json_string(target.name)
+            .. ",\"kind\":\"saver\",\"frame_range\":null,\"output_path\":"
+            .. json_or_null(target.clip)
+            .. ",\"extra\":{\"Saver\":" .. sqi_json_string(target.name) .. "},\"locked\":[]}"
+    end
+    return "[" .. table.concat(items, ",") .. "]"
+end
+
+-- The version 1 handoff document for the open comp. frame_range, host_version and targets may
+-- be nil.
+function sqi_context_json(scene_path, frame_range, host_version, targets)
     return "{\"version\":1,"
         .. "\"host\":{\"name\":\"fusion\",\"display_name\":\"Fusion\",\"version\":"
         .. json_or_null(host_version) .. "},"
         .. "\"scene\":{\"path\":" .. sqi_json_string(scene_path)
         .. ",\"frame_range\":" .. json_or_null(frame_range)
         .. ",\"output_path\":null,\"renderer\":null},"
-        .. "\"targets\":[],\"server_url\":null}"
+        .. "\"targets\":" .. targets_json(targets) .. ",\"server_url\":null}"
 end
 
 -- A Unicode code point as UTF-8 bytes (Lua 5.1 has no utf8 library).
@@ -436,6 +482,20 @@ local function comp_frame_range(attrs)
     return nil
 end
 
+-- The comp's Saver targets. comp:GetToolList(false, "Saver") lists every Saver, not only the
+-- selected tools; its signature is unverified, so a failure (or a Fusion without the method)
+-- gives no targets, says so on the Console, and the submission goes ahead as whole-comp.
+local function comp_saver_targets()
+    local ok, tools = pcall(function()
+        return comp:GetToolList(false, "Saver")
+    end)
+    if not ok then
+        print(SQI_TITLE .. ": " .. SQI_MSG.noSavers .. tostring(tools))
+        return {}
+    end
+    return sqi_saver_targets(tools)
+end
+
 -- Saves a modified comp; true when the file on disk is current. COMPB_Modified is read from
 -- the comp's attributes; when Fusion does not report it the comp is saved anyway, which only
 -- rewrites an unchanged file.
@@ -480,7 +540,9 @@ function sqi_submit()
         sqi_message(handle)
         return false
     end
-    local document = sqi_context_json(filename, comp_frame_range(attrs), fusion_version())
+    local document = sqi_context_json(
+        filename, comp_frame_range(attrs), fusion_version(), comp_saver_targets()
+    )
     local written = handle:write(document)
     handle:close()
     if not written then

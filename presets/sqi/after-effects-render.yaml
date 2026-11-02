@@ -1,0 +1,153 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: after-effects-render
+title: After Effects Render
+description: >-
+  Renders one render-queue item of a saved After Effects project with aerender
+  on Windows or macOS workers, up to ten frames per task by default.
+readme: |
+  # After Effects Render
+
+  Renders one item of a saved `.aep` project's render queue with Adobe's
+  `aerender`, using that item's own render settings and output module. Each
+  task renders a contiguous slice of the frame range, up to ten frames by
+  default. Use After Effects Queue Render instead to render everything the
+  project has queued on one machine.
+
+  ## Parameters
+
+  - **Scene File** - the `.aep` project to render. It must be reachable from
+    every worker that runs the job.
+  - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
+    `1-100:2` for every second frame. Each task passes its slice to `aerender`
+    as `-s <start> -e <end>`; the end frame is inclusive.
+  - **Render Queue Item** - the item's position in the render queue, counting
+    from 1, passed as `-rqindex`.
+  - **Frames Per Task** - the most frames one task renders. `aerender` is
+    slow to start, so the default is 10 rather than 1. A range that does not
+    divide evenly is spread over the same number of tasks in near-equal
+    chunks: `1-24` at 10 is `1-8`, `9-16`, `17-24`.
+
+  A movie output must be one task: After Effects cannot render one movie
+  file (a QuickTime or other container, as opposed to an image sequence) from
+  several machines. If the item writes a movie, set Frames Per Task to at
+  least the number of frames in the range, so the whole range is one task.
+  Enter the range with no step and no gaps, such as `1-240`: a stepped or
+  listed range always splits at each gap, whatever Frames Per Task says.
+  The preset cannot see the output format, so nothing enforces this.
+
+  ## How failures are detected
+
+  `aerender` is reported to exit with status 0 even when a render fails, so a
+  task that trusted its exit status would report every failure as a success.
+  This preset therefore declares the `SQI_LOG_CHECKS` extension: a task also
+  fails when any line of `aerender`'s output contains `aerender ERROR`, in any
+  letter case. A failure that neither makes `aerender` exit non-zero nor
+  prints `aerender ERROR` is still reported as a success.
+
+  ## How work is divided
+
+  The frame range expands into tasks through OpenJD task chunking. The
+  `SQI_CHUNK_BOUNDS` extension gives each task the first and last frame of its
+  own slice. A stepped range such as `1-9:4` splits into one task per frame,
+  so no task needs a step argument. The preset does not use `aerender`'s
+  `-i`, which repeats frames rather than skipping them.
+
+  ## Requirements
+
+  - **Windows or macOS workers only.** The step requires
+    `attr.worker.os.family` = `windows` or `macos` as well as the tag.
+  - Workers tagged `attr.worker.tag.aftereffects = true`
+  - An `aerender` command the worker can resolve: its `worker.commands`
+    entry, an `aerender` on its `PATH`, or the After Effects install it
+    detects, e.g.
+    `C:\Program Files\Adobe\Adobe After Effects 2026\Support Files\aerender.exe`
+    or `/Applications/Adobe After Effects 2026/aerender`.
+  - On each render node, Adobe's render-only marker: an empty file named
+    `ae_render_only_node.txt` in `C:\Users\Public\Documents\Adobe` on Windows
+    or `/Users/Shared/Adobe` on macOS. It runs After Effects in its
+    non-royalty-bearing, render-only mode; Adobe's network rendering page gives
+    the licensing terms.
+
+  ## What has not been verified
+
+  - No After Effects has executed this preset. The arguments come from Adobe's
+    "Automated rendering and network rendering" page.
+  - The `aerender ERROR` marker, and `aerender` exiting 0 when a render fails,
+    come from Adobe community and Thinkbox forum reports, not Adobe's
+    documentation. The marker has not been checked against a real failing
+    render.
+  - How `-s` and `-e` number frames in a comp whose display start is not 0.
+  - That `-s` and `-e` override the `-rqindex` item's own time span, which
+    Adobe implies ("like with the -comp flag") rather than states.
+  - The install folder names the detector looks for. Adobe's page still spells
+    them "Adobe After Effects CC"; the detector assumes the current "Adobe
+    After Effects <year>" form, so an install in a folder named otherwise needs
+    `aerender` on `PATH` or a `worker.commands` entry.
+category: Rendering
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: After Effects Render
+  extensions: [TASK_CHUNKING, SQI_CHUNK_BOUNDS, SQI_LOG_CHECKS]
+  parameterDefinitions:
+    - name: SceneFile
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface:
+        control: CHOOSE_INPUT_FILE
+        label: Scene File
+        fileFilters:
+          - label: After Effects projects
+            patterns: ["*.aep"]
+        fileFilterDefault:
+          label: After Effects projects
+          patterns: ["*.aep"]
+    - name: Frames
+      type: STRING
+      userInterface: { control: LINE_EDIT, label: Frame Range }
+    - name: RenderQueueItem
+      type: INT
+      minValue: 1
+      userInterface: { control: SPIN_BOX, label: Render Queue Item }
+    - name: FramesPerTask
+      type: INT
+      default: 10
+      minValue: 1
+      userInterface: { control: SPIN_BOX, label: Frames Per Task }
+  steps:
+    - name: Render
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.aftereffects
+            anyOf: ["true"]
+          - name: attr.worker.os.family
+            anyOf: ["windows", "macos"]
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Frame
+            type: CHUNK[INT]
+            range: "{{Param.Frames}}"
+            chunks:
+              defaultTaskCount: "{{Param.FramesPerTask}}"
+              rangeConstraint: CONTIGUOUS
+      SQI_LOG_CHECKS:
+        failOn:
+          - "(?i)aerender ERROR"
+      script:
+        actions:
+          onRun:
+            command: aerender
+            args:
+              - "-project"
+              - "{{Param.SceneFile}}"
+              - "-rqindex"
+              - "{{Param.RenderQueueItem}}"
+              - "-s"
+              - "{{Task.Param.Frame.Start}}"
+              - "-e"
+              - "{{Task.Param.Frame.End}}"
+              - "-v"
+              - "ERRORS_AND_PROGRESS"
+              - "-close"
+              - "DO_NOT_SAVE_CHANGES"

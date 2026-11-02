@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Adobe After Effects' command-line renderer, aerender, which the
-# presets/sqi/after-effects-*-render-{windows,macos}.yaml presets run by bare
-# name through a wrapper script. Source: Adobe's "Automated rendering and
-# network rendering" page
+# presets/sqi/after-effects-render.yaml and after-effects-queue-render.yaml
+# presets run by bare name. Source: Adobe's "Automated rendering and network
+# rendering" page
 # (helpx.adobe.com/after-effects/using/automated-rendering-network-rendering.html).
 #
 # The globs match the default install locations:
@@ -23,3 +23,13 @@ checks:
     os: windows
 version:
   from: 'After Effects (?P<v>[0-9]{4})'
+# The presets run a bare `aerender`, which an install does not put on PATH, so
+# the worker supplies an `aerender` command pointing at the newest install
+# found here, unless the operator or the host already provides one.
+command:
+  name: aerender
+  globs:
+    - path_glob: 'C:\Program Files\Adobe\Adobe After Effects *\Support Files\aerender.exe'   # windows
+      os: windows
+    - path_glob: "/Applications/Adobe After Effects */aerender"                              # macOS
+      os: darwin

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import sys
 import xml.etree.ElementTree as ET
 from importlib import resources
 from types import SimpleNamespace
@@ -12,7 +11,7 @@ from typing import Any
 import pytest
 
 from sqi_submitter.core import HostAdapter
-from tests.conftest import FakeHost
+from tests.conftest import FakeHost, stub_open_for_adapter
 
 IMPORT_LINE = "from sqi_submitter.hosts.max.menu import open_submitter; open_submitter()"
 
@@ -163,17 +162,7 @@ def test_max_menu_parents_to_max_main_window(
 ) -> None:
     main_window = object()
     fake_host_module("qtmax", GetQMaxMainWindow=lambda: main_window)
-    calls: list[tuple[Any, Any]] = []
-
-    def fake_open(adapter: Any, server_url: Any = None, parent: Any = None) -> None:
-        calls.append((adapter, parent))
-
-    # Stub the module: importing the real qt.dialog fails without a Qt binding (CI has none).
-    monkeypatch.setitem(
-        sys.modules,
-        "sqi_submitter.qt.dialog",
-        SimpleNamespace(open_for_adapter=fake_open),
-    )
+    calls = stub_open_for_adapter(monkeypatch)
     from sqi_submitter.hosts.max import menu
     from sqi_submitter.hosts.max.adapter import MaxAdapter
 

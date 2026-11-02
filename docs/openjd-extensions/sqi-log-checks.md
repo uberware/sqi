@@ -67,7 +67,9 @@ Structural, enforced at submission (`internal/openjd/logchecks.go`,
   defined as a step-level block and that the template declares. Anything else
   (for example a misspelt `SQI_LOG_CHECK`) is an error naming the key, because
   the step decoder would otherwise drop it and the step would run with its checks
-  off. Other unknown, non-`SQI_` step keys are silently dropped.
+  off. Any other step key the 2023-09 step schema does not define (a misspelt
+  `stepEnviroments`, say) is an error at `/steps/N/<key>`: "unknown field; the
+  step template schema defines no such key".
 - A `SQI_LOG_CHECKS` key anywhere else in a step (under `script`,
   `actions.onRun`, a step environment, and so on), in a job environment, or in a
   parameter definition is an error at the pointer where it was found ("is a

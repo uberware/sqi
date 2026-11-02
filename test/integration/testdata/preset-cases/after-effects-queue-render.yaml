@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# After Effects Queue Render. Gated to Windows and macOS workers by
+# hostRequirements, so its Tier-3 and outcome cases run on those two platforms
+# only. One task: the project's saved queue renders as is, so there is no frame
+# range to split. `default` uses a macOS scene path holding a space and an
+# apostrophe; the golden shows it travelling as one argument.
+#
+# logged-error and logged-error-other-case are outcome cases
+# (TestPresetOutcomes), as in after-effects-render's fixture: the stub prints a
+# line the failOn pattern matches, in the marker's own letter case and in
+# others, and exits 0. The one task runs three times, once per attempt.
+cases:
+  - name: default
+    params:
+      SceneFile: '/Volumes/Show Files/spot/o''brien_v002.aep'
+    expect_tasks: 1
+    expect_invocations:
+      aerender: 1
+  - name: logged-error
+    params:
+      SceneFile: '/Volumes/Show Files/spot/o''brien_v002.aep'
+    expect_tasks: 1
+    expect_invocations:
+      aerender: 3
+    stub_env:
+      SQI_STUB_STDOUT: "aerender ERROR: Unable to render"
+    expect_status: failed
+    expect_reason: "matched failOn"
+  - name: logged-error-other-case
+    params:
+      SceneFile: '/Volumes/Show Files/spot/o''brien_v002.aep'
+    expect_tasks: 1
+    expect_invocations:
+      aerender: 3
+    stub_env:
+      SQI_STUB_STDOUT: "AERENDER error: x"
+    expect_status: failed
+    expect_reason: "matched failOn"

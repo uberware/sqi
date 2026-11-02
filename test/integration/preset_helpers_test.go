@@ -4,7 +4,9 @@ package integration
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/uberware/sqi/internal/openjd"
@@ -12,18 +14,56 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-// Helpers shared by the host-script preset tests (Unreal, VRED, KeyShot, Modo).
+// Helpers shared by the host-script preset tests (Unreal, VRED, KeyShot, Modo, Fusion).
+
+// presetTemplates caches presettest.PresetTemplate by preset name: it reads and
+// validates the whole preset, and capturePreset runs once per subtest.
+var presetTemplates sync.Map
 
 // capturePreset expands one shipped preset under params through the production
 // pipeline (presettest.Capture, which resolves phase 3 against the worker's
 // default EXPR limits) and returns the snapshot.
 func capturePreset(t *testing.T, preset string, params map[string]string) (presettest.Snapshot, error) {
 	t.Helper()
-	tmpl, err := presettest.PresetTemplate(presettest.SourcePresets, preset)
-	if err != nil {
-		t.Fatalf("PresetTemplate %s: %v", preset, err)
+	cached, ok := presetTemplates.Load(preset)
+	if !ok {
+		tmpl, err := presettest.PresetTemplate(presettest.SourcePresets, preset)
+		if err != nil {
+			t.Fatalf("PresetTemplate %s: %v", preset, err)
+		}
+		cached, _ = presetTemplates.LoadOrStore(preset, tmpl)
+	}
+	tmpl, ok := cached.(string)
+	if !ok {
+		t.Fatalf("presetTemplates holds a %T for %s", cached, preset)
 	}
 	return presettest.Capture(t.Context(), tmpl, presettest.Options{Params: params, Format: store.TemplateFormatYAML})
+}
+
+// presetCase returns the preset's fixture case called name.
+func presetCase(t *testing.T, preset, name string) presettest.Case {
+	t.Helper()
+	cases, err := presettest.LoadCases(filepath.Join(presetCaseDir, preset+".yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cases {
+		if c.Name == name {
+			return c
+		}
+	}
+	t.Fatalf("%s.yaml has no %s case", preset, name)
+	return presettest.Case{}
+}
+
+// mustMarshal is json.Marshal that fails the test on an error.
+func mustMarshal(t *testing.T, v any) []byte {
+	t.Helper()
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 // decodeStrict decodes a host script's params.json strictly: an unknown key is

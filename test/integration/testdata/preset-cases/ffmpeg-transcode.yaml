@@ -2,7 +2,7 @@
 #
 # FFmpeg Transcode. One step, one task, no parameter space at all, so there is
 # no second expansion shape to cover: a single case is the whole preset. Real
-# ffmpeg already runs this end to end in ffmpeg_presets_test.go
+# ffmpeg already runs this end to end in preset_ffmpeg_test.go
 # (TestFFmpegPreset_TranscodeProducesPlayableOutput).
 cases:
   - name: default

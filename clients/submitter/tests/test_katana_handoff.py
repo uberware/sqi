@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import ast
+import importlib
+import json
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -18,6 +21,7 @@ from tests.conftest import (
     assert_no_sqi_submitter_import,
     load_host_file,
     stub_launch,
+    stub_open_for_adapter,
 )
 
 KATANA_DIR = Path(__file__).resolve().parents[1] / "src" / "sqi_submitter" / "hosts" / "katana"
@@ -164,6 +168,22 @@ class MenuBar:
 @pytest.fixture
 def katana(fake_host_module: FakeHost, monkeypatch: pytest.MonkeyPatch) -> Katana:
     return Katana(fake_host_module, monkeypatch)
+
+
+IN_PROCESS_MENU = "sqi_submitter.hosts.katana.menu"
+
+
+@pytest.fixture(autouse=True)
+def no_in_process_submitter(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Katana 8 runs the handoff unless a test lets the in-process menu import.
+
+    The developer's own settings file and ``$SQI_SUBMITTER_SITE`` are kept out, so no real
+    site folder reaches ``sys.path``.
+    """
+    monkeypatch.setitem(sys.modules, IN_PROCESS_MENU, None)  # importing it raises
+    monkeypatch.delenv("SQI_SUBMITTER_SITE", raising=False)
+    monkeypatch.setenv("SQI_SUBMITTER_SETTINGS", str(tmp_path / "absent-settings.json"))
+    monkeypatch.setattr(sys, "path", list(sys.path))
 
 
 def _module() -> Any:
@@ -492,3 +512,219 @@ def test_katana_module_imports_without_katana(monkeypatch: pytest.MonkeyPatch) -
 def test_katana_files_have_no_sqi_submitter_import() -> None:
     assert_no_sqi_submitter_import(MODULE)
     assert_no_sqi_submitter_import(HOOK)
+
+
+# ---- Katana 8 and later: the dialog in Katana's own Python ---------------------------------
+
+
+def _katana_8(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(sys.modules, "KatanaInfo", SimpleNamespace(version="8.0.1"))
+
+
+def _menu_module(opened: list[str]) -> SimpleNamespace:
+    return SimpleNamespace(open_submitter=lambda: opened.append("open"))
+
+
+def test_katana_8_opens_in_process(katana: Katana, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The real menu glue opens the dialog over the adapter; nothing is written or launched."""
+    _katana_8(monkeypatch)
+    monkeypatch.delitem(sys.modules, IN_PROCESS_MENU)  # the real glue imports
+    calls = stub_open_for_adapter(monkeypatch)
+    module = _module()
+    katana.nodes = [Node("Beauty")]
+    katana.dirty = True  # the dialog saves it, through the adapter, when the artist submits
+    stub_launch(module, monkeypatch, katana.events)
+    assert module.submit() is True
+    assert katana.events == []  # not saved here, no context file, no sqi-submit
+    assert katana.warnings == []
+    [(adapter, parent)] = calls
+    assert adapter.host_name == "katana"
+    assert [t.name for t in adapter.render_targets()] == ["Beauty"]
+    assert parent is katana.window
+
+
+def test_katana_75_never_imports_sqi_submitter(
+    katana: Katana, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Katana 7.5 hands off even with a stray PySide6 and sqi_submitter importable.
+
+    Every ``sqi_submitter`` module is swapped for a trap that records and refuses any use, so
+    an import of any of them, however it is spelled, is seen.
+    """
+    touched: list[str] = []
+
+    class Trap(ModuleType):
+        def __getattribute__(self, attr: str) -> Any:
+            touched.append(ModuleType.__getattribute__(self, "__name__") + "." + attr)
+            raise ImportError("sqi_submitter must not be imported on Katana 7.5")
+
+    names = {n for n in sys.modules if n == "sqi_submitter" or n.startswith("sqi_submitter.")}
+    for name in names | {"sqi_submitter", IN_PROCESS_MENU, "sqi_submitter.qt.dialog"}:
+        monkeypatch.setitem(sys.modules, name, Trap(name))
+    real_import = importlib.import_module
+
+    def spy(name: str, package: str | None = None) -> ModuleType:
+        if name.split(".")[0] == "sqi_submitter":
+            touched.append(name)
+        return real_import(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", spy)
+    assert "PySide6" in sys.modules  # the stray binding is there to be found
+    module = _module()
+    katana.nodes = [Node("Beauty")]
+    stub_launch(module, monkeypatch, katana.events)
+    assert module.submit() is True
+    assert katana.events == ["write:1", "launch:sqi:ctx.json"]
+    assert touched == []
+
+
+def test_katana_8_without_sqi_submitter_hands_off(
+    katana: Katana, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _katana_8(monkeypatch)
+    monkeypatch.setitem(sys.modules, "sqi_submitter", None)  # not installed in Katana's Python
+    module = _module()
+    katana.nodes = [Node("Beauty")]
+    stub_launch(module, monkeypatch, katana.events)
+    assert module.submit() is True
+    assert katana.events == ["write:1", "launch:sqi:ctx.json"]
+    assert capsys.readouterr().out == ""  # no site was configured: nothing to report
+
+
+def _import_outcomes(
+    module: Any, monkeypatch: pytest.MonkeyPatch, site: Path, outcomes: list[object]
+) -> list[bool]:
+    """Make each menu import give the next of ``outcomes``; record if ``site`` was on the path."""
+    seen: list[bool] = []
+
+    def importer() -> Any:
+        seen.append(str(site) in sys.path)
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(module, "_import_menu", importer)
+    return seen
+
+
+@pytest.mark.parametrize("source", ["settings", "environment"])
+def test_katana_configured_site_is_added_and_retried(
+    katana: Katana, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, source: str
+) -> None:
+    _katana_8(monkeypatch)
+    site = tmp_path / "katana-site"
+    site.mkdir()
+    if source == "settings":
+        settings = tmp_path / "submitter.json"
+        # The other host's key and the bare key are not Katana's.
+        settings.write_text(
+            json.dumps(
+                {
+                    "sqi_submitter_site": "/bare",
+                    "sqi_submitter_site.vred": "/vred",
+                    "sqi_submitter_site.katana": str(site),
+                }
+            ),
+            encoding="utf-8-sig",  # as PowerShell 5 writes it
+        )
+        monkeypatch.setenv("SQI_SUBMITTER_SETTINGS", str(settings))
+    else:
+        monkeypatch.setenv("SQI_SUBMITTER_SITE", str(site))
+    module = _module()
+    opened: list[str] = []
+    seen = _import_outcomes(
+        module, monkeypatch, site, [ImportError("no sqi_submitter"), _menu_module(opened)]
+    )
+    stub_launch(module, monkeypatch, katana.events)
+    assert module.submit() is True
+    assert seen == [False, True]  # the site was added between the two attempts
+    assert opened == ["open"]
+    assert katana.events == []
+
+
+def test_katana_other_hosts_site_is_not_used(
+    katana: Katana, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _katana_8(monkeypatch)
+    settings = tmp_path / "submitter.json"
+    settings.write_text(json.dumps({"sqi_submitter_site.vred": str(tmp_path)}), encoding="utf-8")
+    monkeypatch.setenv("SQI_SUBMITTER_SETTINGS", str(settings))
+    module = _module()
+    seen = _import_outcomes(module, monkeypatch, tmp_path, [ImportError("no sqi_submitter")])
+    stub_launch(module, monkeypatch, katana.events)
+    assert module.submit() is True
+    assert seen == [False]  # no Katana site: no second attempt
+    assert katana.events == ["write:0", "launch:sqi:ctx.json"]
+
+
+def test_katana_broken_site_prints_and_hands_off(
+    katana: Katana,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _katana_8(monkeypatch)
+    site = tmp_path / "katana-site"
+    monkeypatch.setenv("SQI_SUBMITTER_SITE", str(site))
+    module = _module()
+    seen = _import_outcomes(
+        module,
+        monkeypatch,
+        site,
+        [ImportError("no sqi_submitter"), ImportError("No module named 'httpx'")],
+    )
+    katana.nodes = [Node("Beauty")]
+    stub_launch(module, monkeypatch, katana.events)
+    assert module.submit() is True
+    assert seen == [False, True]
+    out = capsys.readouterr().out
+    assert str(site) in out and "No module named 'httpx'" in out
+    assert katana.events == ["write:1", "launch:sqi:ctx.json"]  # it hands off
+
+
+def test_katana_8_dialog_that_fails_to_open_hands_off(
+    katana: Katana, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _katana_8(monkeypatch)
+
+    def broken() -> None:
+        raise RuntimeError("no QApplication")
+
+    monkeypatch.setitem(sys.modules, IN_PROCESS_MENU, SimpleNamespace(open_submitter=broken))
+    module = _module()
+    katana.nodes = [Node("Beauty")]
+    stub_launch(module, monkeypatch, katana.events)
+    assert module.submit() is True
+    assert "no QApplication" in capsys.readouterr().out
+    assert katana.events == ["write:1", "launch:sqi:ctx.json"]
+
+
+def test_katana_unknown_version_hands_off(katana: Katana, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With no version to go on, the in-process dialog is not tried."""
+    monkeypatch.setitem(sys.modules, "KatanaInfo", None)
+    module = _module()
+    seen = _import_outcomes(module, monkeypatch, Path("unused"), [])
+    stub_launch(module, monkeypatch, katana.events)
+    assert module.submit() is True
+    assert seen == []
+    assert katana.events == ["write:0", "launch:sqi:ctx.json"]
+
+
+def test_katana_hook_only_imports_the_module() -> None:
+    """The in-process mode lives in the module: the hook only imports it and registers its
+    menu, so a studio's own copy of the hook (install never overwrites one) gets that mode too."""
+    imported: set[str] = set()
+    for node in ast.walk(ast.parse(HOOK.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        if isinstance(node, ast.ImportFrom):
+            imported.update(f"{node.module}.{alias.name}" for alias in node.names)
+    assert imported == {
+        "__future__.annotations",
+        "os",
+        "sys",
+        "Katana.Callbacks",
+        "sqi_katana_submit",
+    }
+    assert "sqi_katana_submit.install_menu" in HOOK.read_text(encoding="utf-8")
