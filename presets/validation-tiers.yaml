@@ -367,9 +367,10 @@ presets:
         default renderer (Storm), and that Karma CPU with a camera named cam
         writes exactly karma.003.png for one frame with a three-digit pad.
         usdrecord does not create the output folder (measured: a missing folder
-        fails the task with Failed to write image), so Tier 2 creates it first
-        and the readme says it must exist. A pattern with no # or two runs is
-        rejected at submission. Not shown:
+        fails the task with Failed to write image), so the launcher creates the
+        pattern's folder first; Tier 2 writes into a nested folder that does not
+        exist beforehand. A pattern with no # or two runs is rejected at
+        submission. Not shown:
         Houdini on Linux or macOS, any Houdini but 22.0.466, a worker with no
         GPU rendering with Storm, the other renderers (Karma XPU, Houdini VK,
         GL), a plain OpenUSD usdrecord, or the sub-frame ###.### pattern.

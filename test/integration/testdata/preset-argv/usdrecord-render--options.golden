@@ -30,5 +30,10 @@ task 1/1  name="Render[Frame=1-1]"
   embedded file "launcher" (launcher.py):
     import os, runpy, sys
     script = os.path.join(os.environ["HFS"], "bin", "usdrecord")
+    # usdrecord does not create the output folder; the last argument
+    # is the output pattern.
+    folder = os.path.dirname(sys.argv[-1])
+    if folder:
+        os.makedirs(folder, exist_ok=True)
     sys.argv = [script] + sys.argv[1:]
     runpy.run_path(script, run_name="__main__")

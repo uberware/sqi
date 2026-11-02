@@ -691,19 +691,8 @@ func TestPresetDCC_Houdini_USDRecord(t *testing.T) {
 		}
 	}
 
-	// usdrecord does not create the folder it writes into (measured), so the
-	// output folders exist before the jobs run.
-	mkOut := func(t *testing.T, name string) string {
-		t.Helper()
-		out := filepath.Join(dir, name)
-		if err := os.MkdirAll(out, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		return out
-	}
-
 	t.Run("storm", func(t *testing.T) {
-		out := mkOut(t, "out")
+		out := filepath.Join(dir, "out", "review")
 		job := runDCCJob(t, ts, farmID, queueID, "usdrecord-render", map[string]string{
 			"SceneFile": stage, "OutputFile": filepath.Join(out, "preview.####.png"),
 			"Frames": "1-12", "FramesPerTask": "10", "ImageWidth": "64",
@@ -715,7 +704,7 @@ func TestPresetDCC_Houdini_USDRecord(t *testing.T) {
 	})
 
 	t.Run("karma cpu", func(t *testing.T) {
-		out := mkOut(t, "karma")
+		out := filepath.Join(dir, "karma")
 		job := runDCCJob(t, ts, farmID, queueID, "usdrecord-render", map[string]string{
 			"SceneFile": stage, "OutputFile": filepath.Join(out, "karma.###.png"),
 			"Frames": "3", "Renderer": "Karma CPU", "Camera": "cam", "ImageWidth": "32",

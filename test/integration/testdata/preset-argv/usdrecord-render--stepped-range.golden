@@ -26,6 +26,11 @@ task 1/3  name="Render[Frame=1-1]"
   embedded file "launcher" (launcher.py):
     import os, runpy, sys
     script = os.path.join(os.environ["HFS"], "bin", "usdrecord")
+    # usdrecord does not create the output folder; the last argument
+    # is the output pattern.
+    folder = os.path.dirname(sys.argv[-1])
+    if folder:
+        os.makedirs(folder, exist_ok=True)
     sys.argv = [script] + sys.argv[1:]
     runpy.run_path(script, run_name="__main__")
 
@@ -44,6 +49,11 @@ task 2/3  name="Render[Frame=5-5]"
   embedded file "launcher" (launcher.py):
     import os, runpy, sys
     script = os.path.join(os.environ["HFS"], "bin", "usdrecord")
+    # usdrecord does not create the output folder; the last argument
+    # is the output pattern.
+    folder = os.path.dirname(sys.argv[-1])
+    if folder:
+        os.makedirs(folder, exist_ok=True)
     sys.argv = [script] + sys.argv[1:]
     runpy.run_path(script, run_name="__main__")
 
@@ -62,5 +72,10 @@ task 3/3  name="Render[Frame=9-9]"
   embedded file "launcher" (launcher.py):
     import os, runpy, sys
     script = os.path.join(os.environ["HFS"], "bin", "usdrecord")
+    # usdrecord does not create the output folder; the last argument
+    # is the output pattern.
+    folder = os.path.dirname(sys.argv[-1])
+    if folder:
+        os.makedirs(folder, exist_ok=True)
     sys.argv = [script] + sys.argv[1:]
     runpy.run_path(script, run_name="__main__")
