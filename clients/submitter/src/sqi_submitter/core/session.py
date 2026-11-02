@@ -35,7 +35,8 @@ class Settings:
 
     def _load(self) -> dict[str, Any]:
         try:
-            data = json.loads(self._path.read_text(encoding="utf-8"))
+            # utf-8-sig: PowerShell 5 writes UTF-8 with a BOM, which plain utf-8 rejects.
+            data = json.loads(self._path.read_text(encoding="utf-8-sig"))
             return data if isinstance(data, dict) else {}
         except (OSError, ValueError):
             return {}

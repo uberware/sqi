@@ -1,0 +1,988 @@
+preset: fusion-saver-render
+case:   stepped-range
+params:
+  Frames=1-9:4
+  FramesPerTask=10
+  Saver=MainOut
+  SceneFile=/mnt/show/seq010/shot0010/comp/shot0010_comp_v007.comp
+
+step "Render" — 3 tasks
+  log checks: failOn "SQI_RENDER: FAILED:"
+  log checks: failOn "The fusion renderer reported that the render failed"
+  log checks: failOn "Failed to load the comp"
+  log checks: requireLine "SQI_RENDER: OK"
+
+task 1/3  name="Render[Frame=1-1]"
+  task params:
+    Frame=1-1
+  command: FusionRenderNode
+  args:
+    [0]  -quiet
+    [1]  -verbose
+    [2]  -execute
+    [3]  dofile([==[<WORKDIR>]==])
+  embedded file "params" (params.json):
+    {"comp": "/mnt/show/seq010/shot0010/comp/shot0010_comp_v007.comp", "saver": "MainOut", "start": 1, "end": 1}
+  embedded file "render" (render.lua):
+    -- sqi Fusion Saver preset: renders one Saver of a comp over this
+    -- task's frames. The Render Node runs it from its -execute code;
+    -- its parameters come from params.json beside it, never from its
+    -- own text. Lua 5.1, which Fusion's Lua follows, and only Lua's
+    -- standard libraries.
+    
+    local OK = "SQI_RENDER: OK"
+    local FAILED = "SQI_RENDER: FAILED: "
+    
+    -- One line to standard output, which the worker reads, and through
+    -- print to Fusion's console. The checks match anywhere in a line, so
+    -- either copy counts. A failed write is ignored: the task then fails
+    -- for want of the OK line.
+    local function say(line)
+        pcall(function()
+            io.stdout:write(line, "\n")
+            io.stdout:flush()
+        end)
+        pcall(print, line)
+    end
+    
+    -- A JSON string literal for s, to quote a name in a message: quote
+    -- and backslash escaped, bytes below 0x20 as \u00XX, every other byte
+    -- as it is, so UTF-8 stays UTF-8.
+    local function quote(s)
+        local parts = { "\"" }
+        for i = 1, #s do
+            local b = string.byte(s, i)
+            if b == 34 then
+                parts[#parts + 1] = "\\\""
+            elseif b == 92 then
+                parts[#parts + 1] = "\\\\"
+            elseif b < 32 then
+                parts[#parts + 1] = string.format("\\u%04x", b)
+            else
+                parts[#parts + 1] = string.char(b)
+            end
+        end
+        parts[#parts + 1] = "\""
+        return table.concat(parts)
+    end
+    
+    -- A Unicode code point as UTF-8 bytes (Lua 5.1 has no utf8 library).
+    local function utf8_encode(cp)
+        if cp < 128 then
+            return string.char(cp)
+        elseif cp < 2048 then
+            return string.char(192 + math.floor(cp / 64), 128 + cp % 64)
+        elseif cp < 65536 then
+            return string.char(
+                224 + math.floor(cp / 4096),
+                128 + math.floor(cp / 64) % 64,
+                128 + cp % 64
+            )
+        end
+        return string.char(
+            240 + math.floor(cp / 262144),
+            128 + math.floor(cp / 4096) % 64,
+            128 + math.floor(cp / 64) % 64,
+            128 + cp % 64
+        )
+    end
+    
+    local JSON_SIMPLE_ESCAPES = {
+        ["\""] = "\"", ["\\"] = "\\", ["/"] = "/",
+        b = "\b", f = "\f", n = "\n", r = "\r", t = "\t",
+    }
+    
+    -- Reads the JSON string whose opening quote is at text[pos]. Returns
+    -- the decoded string and the position after the closing quote, or nil
+    -- if the string is malformed or unterminated. repr_json writes every
+    -- non-ASCII character as \uXXXX, which this turns back into UTF-8.
+    local function read_json_string(text, pos)
+        local parts = {}
+        local i = pos + 1
+        local n = #text
+        while i <= n do
+            local c = text:sub(i, i)
+            if c == "\"" then
+                return table.concat(parts), i + 1
+            elseif c == "\\" then
+                local e = text:sub(i + 1, i + 1)
+                if e == "u" then
+                    local hex = text:match("^%x%x%x%x", i + 2)
+                    if hex == nil then
+                        return nil
+                    end
+                    local cp = tonumber(hex, 16)
+                    i = i + 6
+                    if cp >= 55296 and cp <= 56319 then
+                        -- A high surrogate: combine it with the low one that
+                        -- must follow.
+                        local low = text:match("^\\u(%x%x%x%x)", i)
+                        local lowcp = low and tonumber(low, 16) or 0
+                        if lowcp >= 56320 and lowcp <= 57343 then
+                            cp = 65536 + (cp - 55296) * 1024 + (lowcp - 56320)
+                            i = i + 6
+                        else
+                            cp = 65533
+                        end
+                    elseif cp >= 56320 and cp <= 57343 then
+                        cp = 65533
+                    end
+                    parts[#parts + 1] = utf8_encode(cp)
+                else
+                    local simple = JSON_SIMPLE_ESCAPES[e]
+                    if simple == nil then
+                        return nil
+                    end
+                    parts[#parts + 1] = simple
+                    i = i + 2
+                end
+            else
+                parts[#parts + 1] = c
+                i = i + 1
+            end
+        end
+        return nil
+    end
+    
+    -- params.json: one JSON object whose values are strings and whole
+    -- numbers. Anything else is refused.
+    local function parse_params(text)
+        local bad = "params.json is not the JSON object this script expects"
+        local p = {}
+        local pos = text:match("^%s*{%s*()")
+        if pos == nil then
+            error(bad, 0)
+        end
+        if text:sub(pos, pos) == "}" then
+            return p
+        end
+        while true do
+            if text:sub(pos, pos) ~= "\"" then
+                error(bad, 0)
+            end
+            local key, after = read_json_string(text, pos)
+            if key == nil then
+                error(bad, 0)
+            end
+            pos = text:match("^%s*:%s*()", after)
+            if pos == nil then
+                error(bad, 0)
+            end
+            local value
+            if text:sub(pos, pos) == "\"" then
+                value, after = read_json_string(text, pos)
+                if value == nil then
+                    error(bad, 0)
+                end
+            else
+                local digits
+                digits, after = text:match("^(%-?%d+)()", pos)
+                if digits == nil then
+                    error(bad, 0)
+                end
+                value = tonumber(digits)
+            end
+            p[key] = value
+            pos = text:match("^%s*()", after)
+            local c = text:sub(pos, pos)
+            if c == "}" then
+                return p
+            end
+            if c ~= "," then
+                error(bad, 0)
+            end
+            pos = text:match("^,%s*()", pos)
+        end
+    end
+    
+    -- The folder this file is in, from the chunk name dofile gave it.
+    local function script_folder()
+        local info = debug and debug.getinfo and debug.getinfo(1, "S")
+        local source = info and info.source
+        if type(source) ~= "string" or source:sub(1, 1) ~= "@" then
+            error("cannot tell which folder render.lua is in", 0)
+        end
+        return source:sub(2):match("^(.*[/\\])") or ""
+    end
+    
+    local function read_params()
+        local path = script_folder() .. "params.json"
+        local f = io.open(path, "rb")
+        if f == nil then
+            error("cannot open " .. path, 0)
+        end
+        local text = f:read("*a")
+        f:close()
+        local p = parse_params(text)
+        for _, key in ipairs({ "comp", "saver" }) do
+            if type(p[key]) ~= "string" or p[key] == "" then
+                error("params.json: " .. key .. " is not a non-empty string", 0)
+            end
+        end
+        for _, key in ipairs({ "start", "end" }) do
+            if type(p[key]) ~= "number" then
+                error("params.json: " .. key .. " is not a whole number", 0)
+            end
+        end
+        if p.start > p["end"] then
+            error("params.json: start is after end", 0)
+        end
+        return p
+    end
+    
+    local function attrs_of(tool)
+        local ok, attrs = pcall(function()
+            return tool:GetAttrs()
+        end)
+        if ok and type(attrs) == "table" then
+            return attrs
+        end
+        return {}
+    end
+    
+    -- The comp's Savers, sorted by name, as { name, tool } records.
+    local function savers_of(comp)
+        local list = {}
+        for _, tool in pairs(comp:GetToolList(false, "Saver") or {}) do
+            local name = attrs_of(tool).TOOLS_Name
+            if type(name) == "string" then
+                list[#list + 1] = { name = name, tool = tool }
+            end
+        end
+        table.sort(list, function(a, b)
+            return a.name < b.name
+        end)
+        return list
+    end
+    
+    local function names_of(savers)
+        local quoted = {}
+        for i, saver in ipairs(savers) do
+            quoted[i] = quote(saver.name)
+        end
+        if #quoted == 0 then
+            return "none"
+        end
+        return table.concat(quoted, ", ")
+    end
+    
+    -- Loads the comp, renders the one Saver over the task's frames, and
+    -- raises on any failure. A name that is not one of the comp's Savers
+    -- fails the task: rendering every Saver instead would write outputs
+    -- nobody asked for. The comp is never saved.
+    local function render(app, p)
+        local comp = app:LoadComp(p.comp)
+        if comp == nil then
+            error("Fusion could not load the comp " .. p.comp, 0)
+        end
+        local savers = savers_of(comp)
+        local tool = comp:FindTool(p.saver)
+        if tool == nil then
+            error("the comp has no tool named " .. quote(p.saver) .. "; its Savers are " .. names_of(savers), 0)
+        end
+        local kind = attrs_of(tool).TOOLS_RegID
+        if kind ~= "Saver" then
+            error("the tool " .. quote(p.saver) .. " is a " .. tostring(kind)
+                .. ", not a Saver; the comp's Savers are " .. names_of(savers), 0)
+        end
+        for _, saver in ipairs(savers) do
+            if saver.name ~= p.saver then
+                saver.tool:SetAttrs({ TOOLB_PassThrough = true })
+            end
+        end
+        -- Set on the found tool, not from the list: a Saver the list
+        -- misses (inside a group) must not stay in pass-through.
+        tool:SetAttrs({ TOOLB_PassThrough = false })
+        local ok = comp:Render({ Start = p.start, End = p["end"], Wait = true })
+        if not ok then
+            error("Fusion reported that the render did not succeed (Render returned " .. tostring(ok) .. ")", 0)
+        end
+    end
+    
+    -- Quit is how a script ends Fusion. If it cannot be called, exit
+    -- anyway rather than leave the Render Node running with nothing left
+    -- to do.
+    local function finish(app, code)
+        local ok = app ~= nil and pcall(function()
+            app:Quit()
+        end)
+        if not ok then
+            os.exit(code)
+        end
+    end
+    
+    local function main()
+        local app = fusion or fu
+        local ok, err = xpcall(function()
+            if app == nil then
+                error("no fusion object: render.lua must run inside Fusion", 0)
+            end
+            render(app, read_params())
+        end, function(e)
+            pcall(function()
+                io.stderr:write(debug.traceback(tostring(e), 2), "\n")
+            end)
+            return e
+        end)
+        if ok then
+            say(OK)
+            finish(app, 0)
+            return
+        end
+        local reason = (tostring(err):gsub("%s+", " "))
+        say(FAILED .. reason)
+        say("openjd_fail: " .. reason)
+        finish(app, 1)
+    end
+    
+    main()
+
+task 2/3  name="Render[Frame=5-5]"
+  task params:
+    Frame=5-5
+  command: FusionRenderNode
+  args:
+    [0]  -quiet
+    [1]  -verbose
+    [2]  -execute
+    [3]  dofile([==[<WORKDIR>]==])
+  embedded file "params" (params.json):
+    {"comp": "/mnt/show/seq010/shot0010/comp/shot0010_comp_v007.comp", "saver": "MainOut", "start": 5, "end": 5}
+  embedded file "render" (render.lua):
+    -- sqi Fusion Saver preset: renders one Saver of a comp over this
+    -- task's frames. The Render Node runs it from its -execute code;
+    -- its parameters come from params.json beside it, never from its
+    -- own text. Lua 5.1, which Fusion's Lua follows, and only Lua's
+    -- standard libraries.
+    
+    local OK = "SQI_RENDER: OK"
+    local FAILED = "SQI_RENDER: FAILED: "
+    
+    -- One line to standard output, which the worker reads, and through
+    -- print to Fusion's console. The checks match anywhere in a line, so
+    -- either copy counts. A failed write is ignored: the task then fails
+    -- for want of the OK line.
+    local function say(line)
+        pcall(function()
+            io.stdout:write(line, "\n")
+            io.stdout:flush()
+        end)
+        pcall(print, line)
+    end
+    
+    -- A JSON string literal for s, to quote a name in a message: quote
+    -- and backslash escaped, bytes below 0x20 as \u00XX, every other byte
+    -- as it is, so UTF-8 stays UTF-8.
+    local function quote(s)
+        local parts = { "\"" }
+        for i = 1, #s do
+            local b = string.byte(s, i)
+            if b == 34 then
+                parts[#parts + 1] = "\\\""
+            elseif b == 92 then
+                parts[#parts + 1] = "\\\\"
+            elseif b < 32 then
+                parts[#parts + 1] = string.format("\\u%04x", b)
+            else
+                parts[#parts + 1] = string.char(b)
+            end
+        end
+        parts[#parts + 1] = "\""
+        return table.concat(parts)
+    end
+    
+    -- A Unicode code point as UTF-8 bytes (Lua 5.1 has no utf8 library).
+    local function utf8_encode(cp)
+        if cp < 128 then
+            return string.char(cp)
+        elseif cp < 2048 then
+            return string.char(192 + math.floor(cp / 64), 128 + cp % 64)
+        elseif cp < 65536 then
+            return string.char(
+                224 + math.floor(cp / 4096),
+                128 + math.floor(cp / 64) % 64,
+                128 + cp % 64
+            )
+        end
+        return string.char(
+            240 + math.floor(cp / 262144),
+            128 + math.floor(cp / 4096) % 64,
+            128 + math.floor(cp / 64) % 64,
+            128 + cp % 64
+        )
+    end
+    
+    local JSON_SIMPLE_ESCAPES = {
+        ["\""] = "\"", ["\\"] = "\\", ["/"] = "/",
+        b = "\b", f = "\f", n = "\n", r = "\r", t = "\t",
+    }
+    
+    -- Reads the JSON string whose opening quote is at text[pos]. Returns
+    -- the decoded string and the position after the closing quote, or nil
+    -- if the string is malformed or unterminated. repr_json writes every
+    -- non-ASCII character as \uXXXX, which this turns back into UTF-8.
+    local function read_json_string(text, pos)
+        local parts = {}
+        local i = pos + 1
+        local n = #text
+        while i <= n do
+            local c = text:sub(i, i)
+            if c == "\"" then
+                return table.concat(parts), i + 1
+            elseif c == "\\" then
+                local e = text:sub(i + 1, i + 1)
+                if e == "u" then
+                    local hex = text:match("^%x%x%x%x", i + 2)
+                    if hex == nil then
+                        return nil
+                    end
+                    local cp = tonumber(hex, 16)
+                    i = i + 6
+                    if cp >= 55296 and cp <= 56319 then
+                        -- A high surrogate: combine it with the low one that
+                        -- must follow.
+                        local low = text:match("^\\u(%x%x%x%x)", i)
+                        local lowcp = low and tonumber(low, 16) or 0
+                        if lowcp >= 56320 and lowcp <= 57343 then
+                            cp = 65536 + (cp - 55296) * 1024 + (lowcp - 56320)
+                            i = i + 6
+                        else
+                            cp = 65533
+                        end
+                    elseif cp >= 56320 and cp <= 57343 then
+                        cp = 65533
+                    end
+                    parts[#parts + 1] = utf8_encode(cp)
+                else
+                    local simple = JSON_SIMPLE_ESCAPES[e]
+                    if simple == nil then
+                        return nil
+                    end
+                    parts[#parts + 1] = simple
+                    i = i + 2
+                end
+            else
+                parts[#parts + 1] = c
+                i = i + 1
+            end
+        end
+        return nil
+    end
+    
+    -- params.json: one JSON object whose values are strings and whole
+    -- numbers. Anything else is refused.
+    local function parse_params(text)
+        local bad = "params.json is not the JSON object this script expects"
+        local p = {}
+        local pos = text:match("^%s*{%s*()")
+        if pos == nil then
+            error(bad, 0)
+        end
+        if text:sub(pos, pos) == "}" then
+            return p
+        end
+        while true do
+            if text:sub(pos, pos) ~= "\"" then
+                error(bad, 0)
+            end
+            local key, after = read_json_string(text, pos)
+            if key == nil then
+                error(bad, 0)
+            end
+            pos = text:match("^%s*:%s*()", after)
+            if pos == nil then
+                error(bad, 0)
+            end
+            local value
+            if text:sub(pos, pos) == "\"" then
+                value, after = read_json_string(text, pos)
+                if value == nil then
+                    error(bad, 0)
+                end
+            else
+                local digits
+                digits, after = text:match("^(%-?%d+)()", pos)
+                if digits == nil then
+                    error(bad, 0)
+                end
+                value = tonumber(digits)
+            end
+            p[key] = value
+            pos = text:match("^%s*()", after)
+            local c = text:sub(pos, pos)
+            if c == "}" then
+                return p
+            end
+            if c ~= "," then
+                error(bad, 0)
+            end
+            pos = text:match("^,%s*()", pos)
+        end
+    end
+    
+    -- The folder this file is in, from the chunk name dofile gave it.
+    local function script_folder()
+        local info = debug and debug.getinfo and debug.getinfo(1, "S")
+        local source = info and info.source
+        if type(source) ~= "string" or source:sub(1, 1) ~= "@" then
+            error("cannot tell which folder render.lua is in", 0)
+        end
+        return source:sub(2):match("^(.*[/\\])") or ""
+    end
+    
+    local function read_params()
+        local path = script_folder() .. "params.json"
+        local f = io.open(path, "rb")
+        if f == nil then
+            error("cannot open " .. path, 0)
+        end
+        local text = f:read("*a")
+        f:close()
+        local p = parse_params(text)
+        for _, key in ipairs({ "comp", "saver" }) do
+            if type(p[key]) ~= "string" or p[key] == "" then
+                error("params.json: " .. key .. " is not a non-empty string", 0)
+            end
+        end
+        for _, key in ipairs({ "start", "end" }) do
+            if type(p[key]) ~= "number" then
+                error("params.json: " .. key .. " is not a whole number", 0)
+            end
+        end
+        if p.start > p["end"] then
+            error("params.json: start is after end", 0)
+        end
+        return p
+    end
+    
+    local function attrs_of(tool)
+        local ok, attrs = pcall(function()
+            return tool:GetAttrs()
+        end)
+        if ok and type(attrs) == "table" then
+            return attrs
+        end
+        return {}
+    end
+    
+    -- The comp's Savers, sorted by name, as { name, tool } records.
+    local function savers_of(comp)
+        local list = {}
+        for _, tool in pairs(comp:GetToolList(false, "Saver") or {}) do
+            local name = attrs_of(tool).TOOLS_Name
+            if type(name) == "string" then
+                list[#list + 1] = { name = name, tool = tool }
+            end
+        end
+        table.sort(list, function(a, b)
+            return a.name < b.name
+        end)
+        return list
+    end
+    
+    local function names_of(savers)
+        local quoted = {}
+        for i, saver in ipairs(savers) do
+            quoted[i] = quote(saver.name)
+        end
+        if #quoted == 0 then
+            return "none"
+        end
+        return table.concat(quoted, ", ")
+    end
+    
+    -- Loads the comp, renders the one Saver over the task's frames, and
+    -- raises on any failure. A name that is not one of the comp's Savers
+    -- fails the task: rendering every Saver instead would write outputs
+    -- nobody asked for. The comp is never saved.
+    local function render(app, p)
+        local comp = app:LoadComp(p.comp)
+        if comp == nil then
+            error("Fusion could not load the comp " .. p.comp, 0)
+        end
+        local savers = savers_of(comp)
+        local tool = comp:FindTool(p.saver)
+        if tool == nil then
+            error("the comp has no tool named " .. quote(p.saver) .. "; its Savers are " .. names_of(savers), 0)
+        end
+        local kind = attrs_of(tool).TOOLS_RegID
+        if kind ~= "Saver" then
+            error("the tool " .. quote(p.saver) .. " is a " .. tostring(kind)
+                .. ", not a Saver; the comp's Savers are " .. names_of(savers), 0)
+        end
+        for _, saver in ipairs(savers) do
+            if saver.name ~= p.saver then
+                saver.tool:SetAttrs({ TOOLB_PassThrough = true })
+            end
+        end
+        -- Set on the found tool, not from the list: a Saver the list
+        -- misses (inside a group) must not stay in pass-through.
+        tool:SetAttrs({ TOOLB_PassThrough = false })
+        local ok = comp:Render({ Start = p.start, End = p["end"], Wait = true })
+        if not ok then
+            error("Fusion reported that the render did not succeed (Render returned " .. tostring(ok) .. ")", 0)
+        end
+    end
+    
+    -- Quit is how a script ends Fusion. If it cannot be called, exit
+    -- anyway rather than leave the Render Node running with nothing left
+    -- to do.
+    local function finish(app, code)
+        local ok = app ~= nil and pcall(function()
+            app:Quit()
+        end)
+        if not ok then
+            os.exit(code)
+        end
+    end
+    
+    local function main()
+        local app = fusion or fu
+        local ok, err = xpcall(function()
+            if app == nil then
+                error("no fusion object: render.lua must run inside Fusion", 0)
+            end
+            render(app, read_params())
+        end, function(e)
+            pcall(function()
+                io.stderr:write(debug.traceback(tostring(e), 2), "\n")
+            end)
+            return e
+        end)
+        if ok then
+            say(OK)
+            finish(app, 0)
+            return
+        end
+        local reason = (tostring(err):gsub("%s+", " "))
+        say(FAILED .. reason)
+        say("openjd_fail: " .. reason)
+        finish(app, 1)
+    end
+    
+    main()
+
+task 3/3  name="Render[Frame=9-9]"
+  task params:
+    Frame=9-9
+  command: FusionRenderNode
+  args:
+    [0]  -quiet
+    [1]  -verbose
+    [2]  -execute
+    [3]  dofile([==[<WORKDIR>]==])
+  embedded file "params" (params.json):
+    {"comp": "/mnt/show/seq010/shot0010/comp/shot0010_comp_v007.comp", "saver": "MainOut", "start": 9, "end": 9}
+  embedded file "render" (render.lua):
+    -- sqi Fusion Saver preset: renders one Saver of a comp over this
+    -- task's frames. The Render Node runs it from its -execute code;
+    -- its parameters come from params.json beside it, never from its
+    -- own text. Lua 5.1, which Fusion's Lua follows, and only Lua's
+    -- standard libraries.
+    
+    local OK = "SQI_RENDER: OK"
+    local FAILED = "SQI_RENDER: FAILED: "
+    
+    -- One line to standard output, which the worker reads, and through
+    -- print to Fusion's console. The checks match anywhere in a line, so
+    -- either copy counts. A failed write is ignored: the task then fails
+    -- for want of the OK line.
+    local function say(line)
+        pcall(function()
+            io.stdout:write(line, "\n")
+            io.stdout:flush()
+        end)
+        pcall(print, line)
+    end
+    
+    -- A JSON string literal for s, to quote a name in a message: quote
+    -- and backslash escaped, bytes below 0x20 as \u00XX, every other byte
+    -- as it is, so UTF-8 stays UTF-8.
+    local function quote(s)
+        local parts = { "\"" }
+        for i = 1, #s do
+            local b = string.byte(s, i)
+            if b == 34 then
+                parts[#parts + 1] = "\\\""
+            elseif b == 92 then
+                parts[#parts + 1] = "\\\\"
+            elseif b < 32 then
+                parts[#parts + 1] = string.format("\\u%04x", b)
+            else
+                parts[#parts + 1] = string.char(b)
+            end
+        end
+        parts[#parts + 1] = "\""
+        return table.concat(parts)
+    end
+    
+    -- A Unicode code point as UTF-8 bytes (Lua 5.1 has no utf8 library).
+    local function utf8_encode(cp)
+        if cp < 128 then
+            return string.char(cp)
+        elseif cp < 2048 then
+            return string.char(192 + math.floor(cp / 64), 128 + cp % 64)
+        elseif cp < 65536 then
+            return string.char(
+                224 + math.floor(cp / 4096),
+                128 + math.floor(cp / 64) % 64,
+                128 + cp % 64
+            )
+        end
+        return string.char(
+            240 + math.floor(cp / 262144),
+            128 + math.floor(cp / 4096) % 64,
+            128 + math.floor(cp / 64) % 64,
+            128 + cp % 64
+        )
+    end
+    
+    local JSON_SIMPLE_ESCAPES = {
+        ["\""] = "\"", ["\\"] = "\\", ["/"] = "/",
+        b = "\b", f = "\f", n = "\n", r = "\r", t = "\t",
+    }
+    
+    -- Reads the JSON string whose opening quote is at text[pos]. Returns
+    -- the decoded string and the position after the closing quote, or nil
+    -- if the string is malformed or unterminated. repr_json writes every
+    -- non-ASCII character as \uXXXX, which this turns back into UTF-8.
+    local function read_json_string(text, pos)
+        local parts = {}
+        local i = pos + 1
+        local n = #text
+        while i <= n do
+            local c = text:sub(i, i)
+            if c == "\"" then
+                return table.concat(parts), i + 1
+            elseif c == "\\" then
+                local e = text:sub(i + 1, i + 1)
+                if e == "u" then
+                    local hex = text:match("^%x%x%x%x", i + 2)
+                    if hex == nil then
+                        return nil
+                    end
+                    local cp = tonumber(hex, 16)
+                    i = i + 6
+                    if cp >= 55296 and cp <= 56319 then
+                        -- A high surrogate: combine it with the low one that
+                        -- must follow.
+                        local low = text:match("^\\u(%x%x%x%x)", i)
+                        local lowcp = low and tonumber(low, 16) or 0
+                        if lowcp >= 56320 and lowcp <= 57343 then
+                            cp = 65536 + (cp - 55296) * 1024 + (lowcp - 56320)
+                            i = i + 6
+                        else
+                            cp = 65533
+                        end
+                    elseif cp >= 56320 and cp <= 57343 then
+                        cp = 65533
+                    end
+                    parts[#parts + 1] = utf8_encode(cp)
+                else
+                    local simple = JSON_SIMPLE_ESCAPES[e]
+                    if simple == nil then
+                        return nil
+                    end
+                    parts[#parts + 1] = simple
+                    i = i + 2
+                end
+            else
+                parts[#parts + 1] = c
+                i = i + 1
+            end
+        end
+        return nil
+    end
+    
+    -- params.json: one JSON object whose values are strings and whole
+    -- numbers. Anything else is refused.
+    local function parse_params(text)
+        local bad = "params.json is not the JSON object this script expects"
+        local p = {}
+        local pos = text:match("^%s*{%s*()")
+        if pos == nil then
+            error(bad, 0)
+        end
+        if text:sub(pos, pos) == "}" then
+            return p
+        end
+        while true do
+            if text:sub(pos, pos) ~= "\"" then
+                error(bad, 0)
+            end
+            local key, after = read_json_string(text, pos)
+            if key == nil then
+                error(bad, 0)
+            end
+            pos = text:match("^%s*:%s*()", after)
+            if pos == nil then
+                error(bad, 0)
+            end
+            local value
+            if text:sub(pos, pos) == "\"" then
+                value, after = read_json_string(text, pos)
+                if value == nil then
+                    error(bad, 0)
+                end
+            else
+                local digits
+                digits, after = text:match("^(%-?%d+)()", pos)
+                if digits == nil then
+                    error(bad, 0)
+                end
+                value = tonumber(digits)
+            end
+            p[key] = value
+            pos = text:match("^%s*()", after)
+            local c = text:sub(pos, pos)
+            if c == "}" then
+                return p
+            end
+            if c ~= "," then
+                error(bad, 0)
+            end
+            pos = text:match("^,%s*()", pos)
+        end
+    end
+    
+    -- The folder this file is in, from the chunk name dofile gave it.
+    local function script_folder()
+        local info = debug and debug.getinfo and debug.getinfo(1, "S")
+        local source = info and info.source
+        if type(source) ~= "string" or source:sub(1, 1) ~= "@" then
+            error("cannot tell which folder render.lua is in", 0)
+        end
+        return source:sub(2):match("^(.*[/\\])") or ""
+    end
+    
+    local function read_params()
+        local path = script_folder() .. "params.json"
+        local f = io.open(path, "rb")
+        if f == nil then
+            error("cannot open " .. path, 0)
+        end
+        local text = f:read("*a")
+        f:close()
+        local p = parse_params(text)
+        for _, key in ipairs({ "comp", "saver" }) do
+            if type(p[key]) ~= "string" or p[key] == "" then
+                error("params.json: " .. key .. " is not a non-empty string", 0)
+            end
+        end
+        for _, key in ipairs({ "start", "end" }) do
+            if type(p[key]) ~= "number" then
+                error("params.json: " .. key .. " is not a whole number", 0)
+            end
+        end
+        if p.start > p["end"] then
+            error("params.json: start is after end", 0)
+        end
+        return p
+    end
+    
+    local function attrs_of(tool)
+        local ok, attrs = pcall(function()
+            return tool:GetAttrs()
+        end)
+        if ok and type(attrs) == "table" then
+            return attrs
+        end
+        return {}
+    end
+    
+    -- The comp's Savers, sorted by name, as { name, tool } records.
+    local function savers_of(comp)
+        local list = {}
+        for _, tool in pairs(comp:GetToolList(false, "Saver") or {}) do
+            local name = attrs_of(tool).TOOLS_Name
+            if type(name) == "string" then
+                list[#list + 1] = { name = name, tool = tool }
+            end
+        end
+        table.sort(list, function(a, b)
+            return a.name < b.name
+        end)
+        return list
+    end
+    
+    local function names_of(savers)
+        local quoted = {}
+        for i, saver in ipairs(savers) do
+            quoted[i] = quote(saver.name)
+        end
+        if #quoted == 0 then
+            return "none"
+        end
+        return table.concat(quoted, ", ")
+    end
+    
+    -- Loads the comp, renders the one Saver over the task's frames, and
+    -- raises on any failure. A name that is not one of the comp's Savers
+    -- fails the task: rendering every Saver instead would write outputs
+    -- nobody asked for. The comp is never saved.
+    local function render(app, p)
+        local comp = app:LoadComp(p.comp)
+        if comp == nil then
+            error("Fusion could not load the comp " .. p.comp, 0)
+        end
+        local savers = savers_of(comp)
+        local tool = comp:FindTool(p.saver)
+        if tool == nil then
+            error("the comp has no tool named " .. quote(p.saver) .. "; its Savers are " .. names_of(savers), 0)
+        end
+        local kind = attrs_of(tool).TOOLS_RegID
+        if kind ~= "Saver" then
+            error("the tool " .. quote(p.saver) .. " is a " .. tostring(kind)
+                .. ", not a Saver; the comp's Savers are " .. names_of(savers), 0)
+        end
+        for _, saver in ipairs(savers) do
+            if saver.name ~= p.saver then
+                saver.tool:SetAttrs({ TOOLB_PassThrough = true })
+            end
+        end
+        -- Set on the found tool, not from the list: a Saver the list
+        -- misses (inside a group) must not stay in pass-through.
+        tool:SetAttrs({ TOOLB_PassThrough = false })
+        local ok = comp:Render({ Start = p.start, End = p["end"], Wait = true })
+        if not ok then
+            error("Fusion reported that the render did not succeed (Render returned " .. tostring(ok) .. ")", 0)
+        end
+    end
+    
+    -- Quit is how a script ends Fusion. If it cannot be called, exit
+    -- anyway rather than leave the Render Node running with nothing left
+    -- to do.
+    local function finish(app, code)
+        local ok = app ~= nil and pcall(function()
+            app:Quit()
+        end)
+        if not ok then
+            os.exit(code)
+        end
+    end
+    
+    local function main()
+        local app = fusion or fu
+        local ok, err = xpcall(function()
+            if app == nil then
+                error("no fusion object: render.lua must run inside Fusion", 0)
+            end
+            render(app, read_params())
+        end, function(e)
+            pcall(function()
+                io.stderr:write(debug.traceback(tostring(e), 2), "\n")
+            end)
+            return e
+        end)
+        if ok then
+            say(OK)
+            finish(app, 0)
+            return
+        end
+        local reason = (tostring(err):gsub("%s+", " "))
+        say(FAILED .. reason)
+        say("openjd_fail: " .. reason)
+        finish(app, 1)
+    end
+    
+    main()

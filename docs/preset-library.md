@@ -167,31 +167,34 @@ copies show the **Update available** badge.
 
 ## DCC reference presets
 
-The official library ships fourteen `Rendering`-category presets as targets for
+The official library ships twelve `Rendering`-category presets as targets for
 the [`sqi-submitter`](dcc-submitters.md) in-application submitters:
 `maya-layer-render`, `maya-scene-render`, `houdini-rop-render`,
 `nuke-write-render`, `nuke-script-render`, `blender-batch-render`,
 `blender-view-layer-render`, `cinema4d-render`, `cinema4d-take-render`,
-`3dsmax-render` and the four After Effects presets. Fifteen more have no
-in-application submitter and are submitted from the web UI or the API:
-`mistika-boutique-render`, `mistika-vr-render`, `mistika-workflows-render`,
-`katana-render`, `silhouette-render`, `silhouette-render-all`, `fusion-render`,
-`vred-render`, `vred-viewpoint-render`, `keyshot-render`,
-`keyshot-studio-render`, `modo-render`, `modo-pass-group-render`,
-`unreal-mrq-job-render` and `unreal-mrq-queue-render`.
+`3dsmax-render`, `after-effects-render` and `after-effects-queue-render`.
+Fourteen more also have a `sqi-submitter` host (twenty-six of the twenty-nine
+DCC presets in all): `katana-render`, `silhouette-render`,
+`silhouette-render-all`, `fusion-render`, `fusion-saver-render`, `vred-render`,
+`vred-viewpoint-render`, `keyshot-render`, `keyshot-studio-render`,
+`modo-render`, `modo-pass-group-render`, `unreal-mrq-job-render`,
+`unreal-mrq-queue-render` and `unreal-mrq-shot-render`. Only the three Mistika
+presets (`mistika-boutique-render`, `mistika-vr-render` and
+`mistika-workflows-render`) have no in-application submitter and are submitted
+from the web UI or the API.
 
 Each names its parameters by the [parameter convention
 contract](dcc-submitters.md#the-parameter-convention-contract), so submitter
-pre-fill works without configuration. All but the two After Effects queue
-presets and the two Unreal presets declare `SceneFile` and `Frames`; the queue
+pre-fill works without configuration. All but the After Effects queue
+preset and the three Unreal presets declare `SceneFile` and `Frames`; the queue
 presets render whatever the project has queued, so they take only `SceneFile`,
 and the Unreal presets render the frame range their Movie Render Queue config
-sets, as one task. An output parameter is
+sets, as one task (one per shot for the shot preset). An output parameter is
 declared only where the command takes one: `OutputDir` on the two Maya presets,
 `OutputPath` on Blender, Cinema 4D and 3ds Max, `OutputFile` on the two
-VRED and the two KeyShot presets, and `OutputDirectory` on the two Unreal presets. Per-host extras include `Renderer`, `RenderLayer`, `RopPath`,
+VRED and the two KeyShot presets, and `OutputDirectory` on the three Unreal presets. Per-host extras include `Renderer`, `RenderLayer`, `RopPath`,
 `WriteNode`, `Scene`, `ViewLayer`, `Take`, `RenderNode`, `Session`,
-`OutputNode`, `View`, `Studio`, `PassGroup`, `LevelSequence`, `Map`, `MovieRenderConfig`, `QueueAsset` and `RenderQueueItem`.
+`OutputNode`, `Saver`, `View`, `Studio`, `PassGroup`, `LevelSequence`, `Map`, `MovieRenderConfig`, `QueueAsset`, `Shots` and `RenderQueueItem`.
 
 Each preset gates on a capability tag that `sqi-worker` auto-detects from a
 standard install; a manual tag is needed only for a nonstandard install path
@@ -230,8 +233,9 @@ does not run on macOS. See the preset's readme for what has not been verified.
 | Preset | Renders | Shape | Gate |
 |---|---|---|---|
 | `fusion-render` | a whole `.comp` with `FusionRenderNode` | `FramesPerTask` frames per task, default 10 | `fusion` |
+| `fusion-saver-render` | one Saver (`Saver`) of a `.comp`, chosen by an embedded Lua script | `FramesPerTask` frames per task, default 10 (at most 1000) | `fusion` |
 
-`fusion-render` has no per-target variant: Fusion's command line cannot pick a
+`fusion-render` renders the whole comp: Fusion's command line cannot pick a
 Saver, so every Saver in the comp writes where the comp says. It runs
 `FusionRenderNode <comp> -render -start <first> -end <last> -quiet -verbose
 -quit`, one argument per flag and value; a stepped `Frames` range splits into
@@ -249,6 +253,34 @@ the check never fires and a failed render is caught only by an exit status that
 is itself undocumented. A Fusion 8 report of a successful render exiting
 `-1073741819` is noted in the readme; the preset does not handle it. The `fusion`
 detector's install paths on all three platforms are inferred, not observed.
+
+`fusion-saver-render` is a host-script preset like VRED's. Each task runs
+`FusionRenderNode -quiet -verbose -execute "dofile([==[<render.lua>]==])"`: one line
+of Lua that runs the preset's embedded `render.lua` from the task's session folder,
+the path in a Lua long bracket so no character of it is an escape. No job value is
+written into the command line or into Lua source: the comp, the Saver and the task's
+first and last frame (the chunk's `min()` and `max()` under `EXPR`, which is why it
+declares no `SQI_CHUNK_BOUNDS`) come from a `params.json` that `EXPR` builds with
+`repr_json`. The script finds it beside itself through `debug.getinfo`, and decodes
+JSON's `\uXXXX` escapes, so a Saver name with quotes, backslashes or non-ASCII
+letters reaches Fusion unchanged. It loads the comp with `fusion:LoadComp`, looks the
+Saver up with `FindTool`, puts every other Saver (from `GetToolList(false, "Saver")`)
+in pass-through with `TOOLB_PassThrough` and takes the chosen one out of it, renders
+with `comp:Render{Start, End, Wait = true}`, and never saves the comp. A name the comp
+lacks, or a tool that is not a Saver, fails the task with a reason listing the comp's
+Savers; it never falls back to rendering every Saver. The script then prints
+`SQI_RENDER: OK`, or `SQI_RENDER: FAILED:` with the reason, to `io.stdout` and through
+`print`, and calls `fusion:Quit()`.
+
+It declares [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md): a task fails
+unless the output contains `SQI_RENDER: OK`, and fails on `SQI_RENDER: FAILED:` and on
+`fusion-render`'s two strings. It needs Fusion Studio 18 or later, and the readme
+recommends adding a step timeout, as for every host-script preset. Unverified: when
+`-execute` runs its code and whether the Render Node exits afterwards, whether
+`io.stdout` reaches the worker, whether `fusion:Quit()` ends the Render Node (or asks
+to save the changed comp), `LoadComp`'s signature, and Savers inside groups. Its
+`render.lua` runs under a stock Lua 5.1 with Fusion faked in
+`TestPresetFusion_ScriptDrivesFusion`; no Fusion has executed it.
 
 ### Silhouette
 
@@ -333,8 +365,9 @@ unverified.
 | `keyshot-studio-render` | one named studio (`Studio`) of a `.bip` scene | as `keyshot-render` | `keyshot` |
 
 Host-script presets like VRED's, with one difference: KeyShot's headless scripting has no call that renders
-a frame range, so each task runs `keyshot_headless -progress [-floating_feature <feature>] <scene> -script
-<script>` and the embedded `render.py` loops over the task's frames, calling `lux.setAnimationFrame` and
+a frame range, so each task runs
+`keyshot_headless -progress [-floating_feature <feature>] <scene> -script <script>` and the embedded `render.py`
+loops over the task's frames, calling `lux.setAnimationFrame` and
 `lux.renderImage` for each. The chunks are `NONCONTIGUOUS`, so a stepped or gapped range costs no extra
 launches, and the presets declare no `SQI_CHUNK_BOUNDS`. `-floating_feature` appears only when **License
 Feature** is set (`keyshot2`, `keyshot_enterprise` or `keyshot_network_rendering`). **Output File** holds
@@ -401,9 +434,10 @@ No Modo has executed either preset; the argument names of `scene.open` and `rend
 |---|---|---|---|
 | `unreal-mrq-job-render` | one Movie Render Queue job: a level sequence (`LevelSequence`) on a map (`Map`) with a saved config (`MovieRenderConfig`) | one task | `unreal`, Windows |
 | `unreal-mrq-queue-render` | every job of a saved Movie Pipeline Queue asset (`QueueAsset`) | one task | `unreal`, Windows |
+| `unreal-mrq-shot-render` | the job preset's job, one shot at a time: each name in `Shots` | one task per shot | `unreal`, Windows |
 
 Host-script presets like VRED's, gated on the worker's OS: Windows is the one OS any vendor
-Unreal render adaptor ships, so both require `attr.worker.os.family` = `windows` and their Tier 3 and outcome cases
+Unreal render adaptor ships, so all three require `attr.worker.os.family` = `windows` and their Tier 3 and outcome cases
 run on Windows only. Each task runs `UnrealEditor-Cmd <project> -log -unattended -stdout -allowstdoutlogverbosity
 -NoLoadingScreen -NoScreenMessages -RenderOffscreen -nohmd -windowed -execcmds=py <one line of Python>`, the command line
 of AWS's Deadline Cloud adaptor for Unreal. The line of Python adds the task's session folder to Python's path and imports
@@ -414,11 +448,23 @@ Render Queue's PIE executor and returns; the editor keeps running while it rende
 why the presets use `-execcmds` rather than `-ExecutePythonScript` (it can quit before an asynchronous render
 completes). When the executor reports back, the script prints `SQI_RENDER: OK` if every job succeeded, or
 `SQI_RENDER: FAILED:` with the reason, and calls `quit_editor()`; a fatal error ends the render the same way. No job
-value is written into the command line or Python source: the asset paths and the output directory come from an embedded
-`params.json` that `EXPR` builds with `repr_json`. With no frame parameter its cost is fixed, and every value it quotes
-has a `maxLength` of 1024 (pinned by `TestPresetUnreal_ParamsCostIsFixed`).
+value is written into the command line or Python source: the asset paths, the shot and the output directory come from
+an embedded `params.json` that `EXPR` builds with `repr_json`. With no frame parameter its cost is fixed, and every
+value it quotes has a `maxLength` of 1024, or 256 for a shot (pinned by `TestPresetUnreal_ParamsCostIsFixed`).
 
-Both declare [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md): a task fails unless the output contains `SQI_RENDER: OK`, and
+The shot preset makes one task per entry of `Shots`, a `LIST[STRING]` of 1 to 1000 names of 1 to 256 characters each
+(the server expands the whole list at submission within its `EXPR` memory limit, so the longest list at its longest
+names must fit; pinned by `TestPresetUnreal_ShotListBounds`), through a `STRING` task parameter `Shot` ranging over
+`{{ Param.Shots }}`. The three presets share one script byte for byte. With a `shot` in `params.json`, it rebuilds the
+job's shot list with `MoviePipelineLibrary.update_job_shot_list_from_sequence` and enables only the entries whose outer
+name is the task's shot (an entry with no outer name is named after the sequence asset). A shot the sequence does not
+have fails the task with a reason listing the shots it does have, and nothing renders. The script warns, without failing,
+when the config's output file name format has no `{shot_name}`, since every shot renders with the same config; the
+readme suggests `{sequence_name}/{shot_name}/{shot_name}.{frame_number}`. Each shot pays the editor's start-up and the
+project's and map's loading. Also unverified: how that call rebuilds the shot list, several camera
+cuts sharing one shot name (all of them render), and configs built with the Movie Render Graph.
+
+All three declare [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md): a task fails unless the output contains `SQI_RENDER: OK`, and
 fails on a line containing `SQI_RENDER: FAILED:`, `LogPython: Error:` or `Render Executor: Error:`. The exit status is
 not relied on, and `LogPython: Error:` matches any Python error in the editor session (for example one from a
 project's `init_unreal.py`), so such an error fails the task even if the render succeeded. The checks give their
@@ -427,7 +473,7 @@ project's shaders. The project and its content must be at the same path on every
 queues must be saved; the project needs the Movie Render Queue and Python Editor Script plug-ins. The detector finds
 only the Epic Games Launcher's default folder, `C:\Program Files\Epic Games\UE_5.*`; an install anywhere else needs an
 `UnrealEditor-Cmd` entry in `worker.commands`. Epic's licence terms for render nodes are the studio's to check. No
-Unreal has executed either preset.
+Unreal has executed any of the three presets.
 
 ### Cinema 4D, 3ds Max and After Effects
 
@@ -436,35 +482,30 @@ Unreal has executed either preset.
 | `cinema4d-render` | a `.c4d` scene with Maxon's `Commandline`, using the scene's render settings | one frame per task by default | `cinema4d` |
 | `cinema4d-take-render` | one named take of a `.c4d` scene (`Take`) | one frame per task by default | `cinema4d` |
 | `3dsmax-render` | a `.max` scene with `3dsmaxcmd` | one frame per task by default | `threedsmax`, and `attr.worker.os.family` = `windows` |
-| `after-effects-render-windows` | one render-queue item (`RenderQueueItem`) of an `.aep` project with `aerender` | up to `FramesPerTask` frames per task, default 10 | `aftereffects`, and `attr.worker.os.family` = `windows` |
-| `after-effects-render-macos` | the same, on macOS | up to `FramesPerTask` frames per task, default 10 | `aftereffects`, and `attr.worker.os.family` = `macos` |
-| `after-effects-queue-render-windows` | everything the saved project has queued | one task for the whole queue | `aftereffects`, and `attr.worker.os.family` = `windows` |
-| `after-effects-queue-render-macos` | the same, on macOS | one task for the whole queue | `aftereffects`, and `attr.worker.os.family` = `macos` |
+| `after-effects-render` | one render-queue item (`RenderQueueItem`) of an `.aep` project with `aerender` | up to `FramesPerTask` frames per task, default 10 | `aftereffects`, and `attr.worker.os.family` = `windows` or `macos` |
+| `after-effects-queue-render` | everything the saved project has queued | one task for the whole queue | `aftereffects`, and `attr.worker.os.family` = `windows` or `macos` |
 
-`3dsmax-render` is Windows-only because 3ds Max runs only on Windows. The two
-Cinema 4D presets carry no OS gate. Each Cinema 4D render node must be licensed
+`3dsmax-render` is Windows-only because 3ds Max runs only on Windows, and the
+two After Effects presets run on Windows and macOS, the platforms After Effects
+ships for. The two Cinema 4D presets carry no OS gate. Each Cinema 4D render node must be licensed
 before it can render. The `cinema4d` detector has no `exe` check, only
 install-location globs, so a Cinema 4D installed elsewhere needs the tag set by
 hand (see [built-in detectors](worker-capabilities.md#built-in-detectors)).
 
 A detector can tag a worker from the install location alone, but the presets
-run the bare commands `Commandline`, `3dsmaxcmd` and `aerender`, so each must
-also be on the worker's `PATH` for the job to run.
+run the bare commands `Commandline` and `3dsmaxcmd`, so each must also be on the
+worker's `PATH` for the job to run. The `aftereffects` detector also supplies an
+`aerender` command from the install it finds, so `aerender` need not be on
+`PATH` (see [detected commands](worker-capabilities.md#detected-commands)).
 
-**The After Effects wrapper.** `aerender` is reported to exit with status 0 when
-a render fails, so all four After Effects presets run it through a small script
-embedded in the preset: PowerShell on Windows, POSIX `sh` on macOS. The wrapper
-passes `aerender`'s output to the task log unchanged and fails the task when
-`aerender` exits non-zero or when any line of its output contains
+**After Effects failures.** `aerender` is reported to exit with status 0 when a render
+fails, so both After Effects presets declare
+[`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md): besides a non-zero exit, a task fails when any line of `aerender`'s output contains
 `aerender ERROR`, matched case-insensitively. That marker comes from user
 reports and has not been checked against a real failing render; a failure that
 neither exits non-zero nor prints the marker is still reported as a success.
-The Windows and macOS variants pass identical arguments to `aerender` and
-differ only in the wrapper script, which the variant's `os.family` gate
-selects.
 
-Each After Effects render node needs `aerender` on its `PATH`, `powershell`
-(Windows) or `sh` (macOS) on its `PATH`, and Adobe's render-only marker: an empty
+Each After Effects render node needs Adobe's render-only marker: an empty
 file named `ae_render_only_node.txt` in `C:\Users\Public\Documents\Adobe` on
 Windows or `/Users/Shared/Adobe` on macOS, which runs After Effects in its
 non-royalty-bearing, render-only mode.
@@ -624,7 +665,7 @@ tier to stand in for. The tiers are:
     OpenJD step (`1-19:2`, where Foundry documents `1-19x2`). That Nuke reads
     `-F 1-1` as the single frame 1 is shown by the Tier-2 case, not here.
   - The presets that pass a chunk's first and last frame (Maya, Blender,
-    Cinema 4D, 3ds Max, the two per-item After Effects presets and the three
+    Cinema 4D, 3ds Max, `after-effects-render` and the three
     Mistika presets) and V-Ray's `-frames=START-END` never render a frame the
     range excluded: a stepped or listed range splits into one chunk per run of
     consecutive frames, so a stepped range yields one single-frame chunk per
@@ -640,20 +681,20 @@ tier to stand in for. The tiers are:
   and its output is inspected. Eleven entries have a `tier2` block, each naming
   a test that runs the real program end to end:
   - The five ffmpeg presets and the `python-sequence` built-in.
-    `test/integration/ffmpeg_presets_test.go` runs real ffmpeg and decodes the
+    `test/integration/preset_ffmpeg_test.go` runs real ffmpeg and decodes the
     file it produced, and `TestPresetPythonSequence_LauncherContract` runs
     `python-sequence`'s launcher under a real Python.
   - Five DCC presets: `blender-batch-render`, `blender-view-layer-render`,
     `nuke-write-render`, `nuke-script-render` and `houdini-rop-render`.
-    `test/integration/dcc_presets_test.go` builds a scene with the application
+    `test/integration/preset_dcc_test.go` builds a scene with the application
     itself (`test/integration/testdata/dcc/`), submits the shipped preset
     through a real server and worker, and checks the files it renders: the exact
     frame set, and where it can be read back, their content (the view layer in
     an EXR header, a PNG's size, the frame a Houdini geometry file holds).
 
   The other thirty-two presets (Maya, Cinema 4D, 3ds Max, After Effects, the three
-  Mistika products, the eight standalone renderers, Katana, Fusion and the two
-  Silhouette, two VRED, two KeyShot, two Modo and two Unreal presets) have not reached Tier 2 and carry no `tier2` block.
+  Mistika products, the eight standalone renderers, Katana, the two Fusion and the two
+  Silhouette, two VRED, two KeyShot, two Modo and three Unreal presets) have not reached Tier 2 and carry no `tier2` block.
 
   A DCC case cannot be required by platform, because CI cannot provide the
   application, so its block says `requires_app: blender` (or `nuke`, `houdini`)
@@ -715,9 +756,9 @@ skip on a platform named in `required_on` is a registry failure.
 ### Tier 3 on Windows
 
 Tier 3 runs on Windows as it does on Linux and macOS, and CI runs it in a
-dedicated job (`preset-harness-windows`). Of the 49 registry entries, 37 have
+dedicated job (`preset-harness-windows`). Of the 49 registry entries, 38 have
 `tier3.required_on: [linux, darwin, windows]`, so a skip on Windows fails the
-registry check for each of them. The other 12 are gated to fewer platforms:
+registry check for each of them. The other 11 are gated to fewer platforms:
 
 - POSIX-only (`required_on: [linux, darwin]`), gated on
   `attr.worker.os.family anyOf ["linux", "macos"]`: `script` and
@@ -725,16 +766,12 @@ registry check for each of them. The other 12 are gated to fewer platforms:
 - Windows-only (`required_on: [windows]`), gated on
   `attr.worker.os.family anyOf ["windows"]`: `script-powershell`,
   `command-sequence-powershell`, `ffmpeg-segment-transcode-powershell`,
-  `3dsmax-render`, `after-effects-render-windows`,
-  `after-effects-queue-render-windows`, `unreal-mrq-job-render` and
-  `unreal-mrq-queue-render`. Only the Windows job runs them.
-- macOS-only (`required_on: [darwin]`), gated on
-  `attr.worker.os.family anyOf ["macos"]`: `after-effects-render-macos` and
-  `after-effects-queue-render-macos`. No CI job runs the preset harness on
-  macOS, so these two Tier-3 claims are not exercised in CI.
-  `TestPresetAfterEffects_WrapperFailsOnLoggedError` runs their `sh` wrapper
-  under Linux with the OS gate stripped; the Windows job runs the same test
-  against the PowerShell wrapper.
+  `3dsmax-render`, `unreal-mrq-job-render`, `unreal-mrq-queue-render` and
+  `unreal-mrq-shot-render`. Only the Windows job runs them.
+- Windows and macOS (`required_on: [windows, darwin]`), gated on
+  `attr.worker.os.family anyOf ["windows", "macos"]`: `after-effects-render`
+  and `after-effects-queue-render`. Only the Windows job runs them; no CI job
+  runs the preset harness on macOS.
 
 `TestPresetTier3RequiredOnMatchesOSGate` fails any entry whose
 `tier3.required_on` differs from the platforms its template's

@@ -10,7 +10,8 @@ readme: |
   Renders a saved `.comp` with the Fusion Render Node
   (`FusionRenderNode <comp> -render -start N -end M`). The whole composition
   renders: Fusion's command line cannot pick a single Saver, so every Saver
-  in the comp writes where the comp says, and there is no per-target variant.
+  in the comp writes where the comp says. Use Fusion Saver Render instead to
+  render one Saver; it runs a Lua script inside the Render Node to choose it.
 
   Each task renders a contiguous slice of the frame range, ten frames per task
   by default.

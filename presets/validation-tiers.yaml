@@ -467,7 +467,7 @@ presets:
 
   # Windows-only by hostRequirements (attr.worker.os.family anyOf ["windows"]),
   # so this entry's Tier-3 claim is required_on [windows] alone.
-  # TestThreeDSMaxRender_IsWindowsOnly pins the gate, and
+  # TestSQIReferencePresets pins the gate, and
   # TestPresetTier3RequiredOnMatchesOSGate the required_on it implies.
   - name: 3dsmax-render
     source: presets/sqi
@@ -490,120 +490,58 @@ presets:
       case: TestPresetTier3/3dsmax-render/default
       required_on: [windows]
 
-  # Windows-only by hostRequirements (attr.worker.os.family anyOf ["windows"]),
-  # so both After Effects Windows entries' Tier-3 claims are required_on
-  # [windows] alone. Tier 3 runs the real powershell and stubs aerender
-  # (stub_inner), and expect_inner_argv pins the argv the wrapper forwards.
-  # TestPresetAfterEffects_WrapperFailsOnLoggedError, which is not a registry
-  # case, tests the wrapper's exit status.
-  - name: after-effects-render-windows
+  # Windows and macOS only by hostRequirements (attr.worker.os.family anyOf
+  # ["windows", "macos"]), so both After Effects entries' Tier-3 claims are
+  # required_on [windows, darwin], and no CI job runs Tier 3 on macOS. The
+  # outcome cases show the SQI_LOG_CHECKS pattern failing a task whose aerender
+  # exited 0, in the marker's own letter case and in others.
+  - name: after-effects-render
     source: presets/sqi
     tier: 1
     tier1:
-      cases: [default, movie-one-task, stepped-range]
+      cases: [default, movie-one-task, stepped-range, logged-error, logged-error-other-case]
       caveat: >-
         argv derived from Adobe's "Automated rendering and network rendering"
         page (Wayback copy of 2026-05-27): aerender -project <scene> -rqindex
         <n> -s <start> -e <end> -v ERRORS_AND_PROGRESS -close
-        DO_NOT_SAVE_CHANGES, passed through an embedded PowerShell wrapper the
-        goldens print in full (its leading UTF-8 BOM is invisible there).
-        aerender is reported to exit 0 when a render fails (in Adobe community
-        and Thinkbox forum reports, not Adobe's documentation), so the wrapper
-        also fails the task when any output line contains "aerender ERROR" in
-        any letter case. That marker comes from the same reports and is
-        unverified against a real failing render. The goldens show the scene
-        path with a space and an apostrophe as one argument, 1-20 at ten frames
-        per task as 1-10 and 11-20, a 240-frame movie kept whole by Frames Per
-        Task 240, and 1-9:4 as frames 1, 5 and 9. No After Effects has executed
-        it. Unverified: how -s/-e number frames in a comp whose display start
-        is not 0; that -s/-e override the -rqindex item's own time span, which
-        Adobe implies ("like with the -comp flag") rather than states. Nothing
-        in the preset keeps a movie output to one task: the artist must set
-        Frames Per Task to at least the frame count and enter the range without
-        a step or gaps, since a stepped or listed range always splits at each
-        gap.
+        DO_NOT_SAVE_CHANGES. aerender is reported to exit 0 when a render fails
+        (in Adobe community and Thinkbox forum reports, not Adobe's
+        documentation), so the preset's SQI_LOG_CHECKS also fails the task when
+        any output line contains "aerender ERROR" in any letter case. That
+        marker comes from the same reports and is unverified against a real
+        failing render. The goldens show the scene path with a space and an
+        apostrophe as one argument, 1-20 at ten frames per task as 1-10 and
+        11-20, a 240-frame movie kept whole by Frames Per Task 240, and 1-9:4
+        as frames 1, 5 and 9. No After Effects has executed it. Unverified:
+        how -s/-e number frames in a comp whose display start is not 0; that
+        -s/-e override the -rqindex item's own time span, which Adobe implies
+        ("like with the -comp flag") rather than states. Nothing in the preset
+        keeps a movie output to one task: the artist must set Frames Per Task
+        to at least the frame count and enter the range without a step or
+        gaps, since a stepped or listed range always splits at each gap.
     tier3:
-      case: TestPresetTier3/after-effects-render-windows/default
-      required_on: [windows]
+      case: TestPresetTier3/after-effects-render/default
+      required_on: [windows, darwin]
 
-  - name: after-effects-queue-render-windows
+  - name: after-effects-queue-render
     source: presets/sqi
     tier: 1
     tier1:
-      cases: [default]
+      cases: [default, logged-error, logged-error-other-case]
       caveat: >-
         argv derived from Adobe's "Automated rendering and network rendering"
         page (Wayback copy of 2026-05-27): aerender -project <scene> -v
         ERRORS_AND_PROGRESS -close DO_NOT_SAVE_CHANGES, which renders the
         saved queue as is (Adobe: with no -comp, -s, -e, -i and -output are
-        ignored), passed through the same embedded PowerShell wrapper as
-        after-effects-render-windows, whose "aerender ERROR" failure marker is
-        equally unverified against a real failing render. The golden shows the
-        scene path with a space and an apostrophe as one argument. No After
-        Effects has executed it. The whole queue is one task on one machine, so
-        frame numbering and movie splitting do not arise.
+        ignored). It shares after-effects-render's SQI_LOG_CHECKS pattern,
+        whose "aerender ERROR" marker is equally unverified against a real
+        failing render. The golden shows the scene path with a space and an
+        apostrophe as one argument. No After Effects has executed it. The
+        whole queue is one task on one machine, so frame numbering and movie
+        splitting do not arise.
     tier3:
-      case: TestPresetTier3/after-effects-queue-render-windows/default
-      required_on: [windows]
-
-  # macOS-only by hostRequirements (attr.worker.os.family anyOf ["macos"]),
-  # so both After Effects macOS entries' Tier-3 claims are required_on
-  # [darwin] alone, and no CI job runs Tier 3 on macOS. Tier 3 runs the real
-  # /bin/sh and stubs aerender (stub_inner), and expect_inner_argv pins the
-  # argv the wrapper forwards. Linux CI runs the same sh wrapper, with the
-  # os.family gate stripped, in
-  # TestPresetAfterEffects_WrapperFailsOnLoggedError, which is not a registry
-  # case and tests the wrapper's exit status on both OSes.
-  - name: after-effects-render-macos
-    source: presets/sqi
-    tier: 1
-    tier1:
-      cases: [default, movie-one-task, stepped-range]
-      caveat: >-
-        argv derived from Adobe's "Automated rendering and network rendering"
-        page (Wayback copy of 2026-05-27): aerender -project <scene> -rqindex
-        <n> -s <start> -e <end> -v ERRORS_AND_PROGRESS -close
-        DO_NOT_SAVE_CHANGES, the same argv as after-effects-render-windows,
-        passed through an embedded POSIX sh wrapper run by /bin/sh, which the
-        goldens print in full. The wrapper fails the task on the same
-        "aerender ERROR" marker as the Windows wrapper, equally unverified
-        against a real failing render. The goldens show the scene path with a
-        space and an apostrophe as one argument, 1-20 at ten frames per task as
-        1-10 and 11-20, a 240-frame movie kept whole by Frames Per Task 240,
-        and 1-9:4 as frames 1, 5 and 9. No After Effects has executed it, and
-        the wrapper has run only under Linux's dash, never macOS's /bin/sh.
-        Unverified: how -s/-e number frames in a comp whose display start is
-        not 0; that -s/-e override the -rqindex item's own time span, which
-        Adobe implies ("like with the -comp flag") rather than states. Nothing
-        in the preset keeps a movie output to one task: the artist must set
-        Frames Per Task to at least the frame count and enter the range without
-        a step or gaps, since a stepped or listed range always splits at each
-        gap.
-    tier3:
-      case: TestPresetTier3/after-effects-render-macos/default
-      required_on: [darwin]
-
-  - name: after-effects-queue-render-macos
-    source: presets/sqi
-    tier: 1
-    tier1:
-      cases: [default]
-      caveat: >-
-        argv derived from Adobe's "Automated rendering and network rendering"
-        page (Wayback copy of 2026-05-27): aerender -project <scene> -v
-        ERRORS_AND_PROGRESS -close DO_NOT_SAVE_CHANGES, which renders the
-        saved queue as is (Adobe: with no -comp, -s, -e, -i and -output are
-        ignored), the same argv as after-effects-queue-render-windows, passed
-        through the same embedded POSIX sh wrapper as
-        after-effects-render-macos, whose "aerender ERROR" failure marker is
-        equally unverified against a real failing render. The golden shows the
-        scene path with a space and an apostrophe as one argument. No After
-        Effects has executed it, and the wrapper has run only under Linux's
-        dash, never macOS's /bin/sh. The whole queue is one task on one machine, so
-        frame numbering and movie splitting do not arise.
-    tier3:
-      case: TestPresetTier3/after-effects-queue-render-macos/default
-      required_on: [darwin]
+      case: TestPresetTier3/after-effects-queue-render/default
+      required_on: [windows, darwin]
 
   # DCC presets that declare SQI_LOG_CHECKS (Silhouette declares none). Every
   # argv is derived from vendor documentation and no application has executed
@@ -664,6 +602,47 @@ presets:
         install paths on all three platforms are unverified.
     tier3:
       case: TestPresetTier3/fusion-render/default
+      required_on: [linux, darwin, windows]
+
+  # fusion-saver-render is a host-script preset: FusionRenderNode runs an
+  # embedded render.lua through -execute, and the per-task values travel in an
+  # EXPR-built params.json. CONTIGUOUS chunks, no SQI_CHUNK_BOUNDS (an error
+  # under EXPR). No os.family gate, so Tier 3 runs on every OS.
+  - name: fusion-saver-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, multi-frame-chunk, stepped-range, quoting, logged-error, no-success-line]
+      caveat: >-
+        argv from the Fusion manual's command-line page (FusionRenderNode
+        -quiet -verbose -execute <code>), the code being only
+        dofile([==[<session>/render.lua]==]), so no job value reaches the
+        command line or Lua source. The render.lua calls are the Fusion
+        scripting API (fusion:LoadComp with the path alone, comp:FindTool,
+        comp:GetToolList(false, "Saver"), GetAttrs' TOOLS_Name and
+        TOOLS_RegID, SetAttrs with TOOLB_PassThrough on every other Saver and
+        off on the chosen one, comp:Render{Start, End, Wait = true},
+        fusion:Quit); the comp is never saved. No Fusion Render Node has
+        executed this preset. Unverified: when -execute runs its code and
+        whether the Render Node exits afterwards; whether io.stdout reaches
+        the worker (the script also prints to Fusion's console; if neither
+        arrives every task fails for want of SQI_RENDER: OK); whether
+        fusion:Quit() ends the Render Node or asks to save the changed comp
+        (the checks apply only once it exits, and the step has no timeout, so
+        a Render Node that stays open would hang the task rather than fail it;
+        the readme recommends a timeout); LoadComp's signature; whether
+        FindTool and GetToolList see Savers inside groups. The goldens pin
+        params.json in full; quoting is decoded with encoding/json by
+        TestPresetFusion_ParamsJSONRoundTrips, and render.lua runs under a
+        stock Lua 5.1 with a fake fusion and comp in
+        TestPresetFusion_ScriptDrivesFusion, including a Saver the comp lacks
+        and a tool that is not a Saver, each failing the task with the comp's
+        Savers named and nothing rendered. Tier 3 runs a stub as
+        FusionRenderNode: it exercises the worker, the embedded files and the
+        log checks, never the script inside Fusion. Rendering needs a Fusion
+        Studio licence; the detector's install paths are unverified.
+    tier3:
+      case: TestPresetTier3/fusion-saver-render/default
       required_on: [linux, darwin, windows]
 
   - name: silhouette-render
@@ -830,7 +809,7 @@ presets:
   # stdin, which the worker leaves as the null device, so the preset runs an
   # embedded render.py through the documented -cmd: startup command and the
   # per-task values travel in an EXPR-built params.json. CONTIGUOUS chunks,
-  # SQI_CHUNK_BOUNDS declared but unread (EXPR). No os.family gate (Modo ran on
+  # no SQI_CHUNK_BOUNDS (an error under EXPR). No os.family gate (Modo ran on
   # Windows, macOS and Linux; the worker tag is the gate), so Tier 3 runs on
   # every OS.
   - name: modo-render
@@ -966,6 +945,34 @@ presets:
         inside Unreal.
     tier3:
       case: TestPresetTier3/unreal-mrq-queue-render/default
+      required_on: [windows]
+
+  - name: unreal-mrq-shot-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, quoting, logged-error, python-error, executor-error, no-success-line]
+      caveat: >-
+        unreal-mrq-job-render's job as one task per entry of a Shots
+        LIST[STRING] (a STRING task parameter Shot ranging over {{ Param.Shots
+        }}), each task's params.json naming its shot. The script calls
+        MoviePipelineLibrary.update_job_shot_list_from_sequence, as Epic's
+        Python reference names it, and enables only the shot_info entries
+        whose outer_name is the task's shot (an entry with no outer name is
+        named after the sequence asset); a shot the sequence lacks fails the
+        task, listing the shots it has, and nothing renders. It warns when
+        the config's output file name format has no {shot_name}. Same sources,
+        the same command line and the same unverified points as
+        unreal-mrq-job-render, and unverified besides: how that call rebuilds
+        the shot list, several camera cuts sharing one name (all of them
+        render), and Movie Render Graph configs. quoting puts a double quote,
+        a backslash, spaces and a non-ASCII letter in the shot; the script's
+        handling of the shot list runs under a fake unreal module in
+        TestPresetUnreal_ScriptDrivesUnreal. Tier 3 runs a stub as
+        UnrealEditor-Cmd: it exercises the worker, the embedded files and the
+        log checks, never the script inside Unreal.
+    tier3:
+      case: TestPresetTier3/unreal-mrq-shot-render/default
       required_on: [windows]
 
   - name: ffmpeg-transcode

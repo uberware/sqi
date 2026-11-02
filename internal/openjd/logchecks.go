@@ -109,18 +109,6 @@ func decodeLogCheckList(lc *LogChecks, v any, suffix string) []string {
 	return out
 }
 
-// sqiStepKeys returns the sorted SQI_-prefixed keys of a step's raw mapping.
-func sqiStepKeys(raw map[string]any) []string {
-	var out []string
-	for k := range raw {
-		if strings.HasPrefix(k, "SQI_") {
-			out = append(out, k)
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
 // maxMisplacedStepBlocks is the most misplaced step blocks one template reports.
 // One is enough to reject the template; the cap keeps a template stuffed with
 // them from costing a pointer per copy.
@@ -279,10 +267,9 @@ func escapePointerToken(s string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(s, "~", "~0"), "/", "~1")
 }
 
-// validateLogChecks enforces the SQI_LOG_CHECKS extension/block coupling, the
-// block's own shape, and rejects any SQI_ step key that names no registered
-// step-block extension, and any step block found somewhere other than directly
-// on a step. Structural (not gated by EnforceLimits), like
+// validateLogChecks enforces the SQI_LOG_CHECKS extension/block coupling and
+// the block's own shape, and rejects any step block found somewhere other than
+// directly on a step. Structural (not gated by EnforceLimits), like
 // validatePathTranslation.
 func validateLogChecks(t *JobTemplate) ValidationErrors {
 	declared := t.hasExtension(ExtensionLogChecks)
@@ -297,7 +284,6 @@ func validateLogChecks(t *JobTemplate) ValidationErrors {
 	anyBlock := false
 	budget := maxLogCheckTemplateInsts
 	for i, s := range t.Steps {
-		errs = append(errs, validateSQIStepKeys(t, s, i)...)
 		if s.LogChecks == nil || !declared {
 			continue
 		}
@@ -309,31 +295,6 @@ func validateLogChecks(t *JobTemplate) ValidationErrors {
 			Pointer: "/extensions",
 			Message: "the SQI_LOG_CHECKS extension is declared but no step carries an SQI_LOG_CHECKS block",
 		})
-	}
-	return errs
-}
-
-// validateSQIStepKeys checks each SQI_-prefixed key of one step. A key is
-// accepted only if it names a registered, supported step-block extension that
-// the template declares; anything else is an error, because the decoder would
-// otherwise drop a misspelled block and run the step with its checks off.
-func validateSQIStepKeys(t *JobTemplate, s StepTemplate, idx int) ValidationErrors {
-	var errs ValidationErrors
-	for _, key := range s.SQIKeys {
-		ptr := fmt.Sprintf("/steps/%d/%s", idx, key)
-		ext, ok := LookupExtension(key)
-		switch {
-		case !ok || ext.Status != StatusSupported || !ext.StepBlock:
-			errs = append(errs, ValidationError{
-				Pointer: ptr,
-				Message: fmt.Sprintf("unknown sqi step block %q; no supported extension defines it", key),
-			})
-		case !t.hasExtension(key):
-			errs = append(errs, ValidationError{
-				Pointer: ptr,
-				Message: fmt.Sprintf("%s block requires declaring the %s extension in extensions", key, key),
-			})
-		}
 	}
 	return errs
 }

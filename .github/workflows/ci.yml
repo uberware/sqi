@@ -76,9 +76,6 @@ jobs:
               - 'presets/**'
               - 'internal/product/builtins/**'
               - 'presets/validation-tiers.yaml'
-              - 'test/integration/ffmpeg_presets_test.go'
-              - 'test/integration/dcc_presets_test.go'
-              - 'test/integration/preset_argv_test.go'
               - 'test/integration/worker_binary_test.go'
               - 'test/stubproc/**'
               - 'test/integration/testdata/**'
@@ -1495,13 +1492,18 @@ jobs:
       # adds does not exclude them: `make test-integration` runs
       # TestZZPresetTierRegistrySatisfied too, and the registry's tier2 blocks
       # require the real-ffmpeg cases to run, not skip.
-      - name: Install ffmpeg (the registry's tier-2 claims require it)
+      # The Fusion Saver preset's render.lua runs under a real Lua 5.1 in
+      # TestPresetFusion_ScriptDrivesFusion; SQI_REQUIRE_LUA=1 below turns its
+      # skip without an interpreter into a failure.
+      - name: Install ffmpeg and Lua 5.1 (tier-2 claims and the Fusion Saver script tests)
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg
+          sudo apt-get install -y --no-install-recommends ffmpeg lua5.1
           ffmpeg -version | head -1
 
       - name: Run the integration suite
+        env:
+          SQI_REQUIRE_LUA: "1"
         run: |
           set +e
           # The Makefile's INTEGRATION_TEST_FLAGS default (-timeout 30m)
@@ -1531,14 +1533,6 @@ jobs:
             # Skips without a working Python 3. Runs the Houdini preset's
             # driver against every chunk spelling sqi emits.
             TestHoudiniROPRender_DriverRendersEachRange
-            # The After Effects macOS presets' sh wrapper, run here with its
-            # os.family gate stripped because no macOS runner exists
-            # (preset-harness-windows asserts the Windows wrapper). The parent
-            # passes even when every subtest skips (newTier3Env skips on a
-            # host it cannot stage), so one leaf is named too: aerender
-            # logging an error and exiting 0, on a macOS variant.
-            TestPresetAfterEffects_WrapperFailsOnLoggedError
-            TestPresetAfterEffects_WrapperFailsOnLoggedError/logged-error-exit-0/after-effects-render-macos
             # The VRED host-script presets: params.json's cost at the largest
             # chunk, its JSON round trip with quotes and a backslash, and the
             # embedded render.py under a real Python with VRED faked (it skips
@@ -1574,15 +1568,33 @@ jobs:
             # Tier 3 and outcome cases skip here and run in
             # preset-harness-windows; these tests need no Unreal and no OS
             # gate, so they run on every OS. ScriptDrivesUnreal skips without
-            # a working Python 3, so two leaves are named too.
+            # a working Python 3, so three leaves are named too, one of them
+            # the shot preset's refusal of a shot its sequence lacks.
             TestPresetUnreal_ParamsCostIsFixed
             TestPresetUnreal_ParamsJSONRoundTrips
+            TestPresetUnreal_OneTaskPerShot
+            TestPresetUnreal_ShotListBounds
             TestPresetUnreal_ShareOneScript
             TestPresetUnreal_ExecCmdsImportsTheScript
             TestPresetUnreal_SessionFolderThatBreaksExecCmdsIsRefused
             TestPresetUnreal_ScriptDrivesUnreal
             TestPresetUnreal_ScriptDrivesUnreal/job_renders_and_quits/import
             TestPresetUnreal_ScriptDrivesUnreal/a_fatal_error_ends_the_render_once/cwd
+            TestPresetUnreal_ScriptDrivesUnreal/shot-missing/import
+            # The Fusion Saver host-script preset: the same checks as Modo's,
+            # with the embedded render.lua under a real Lua 5.1 and Fusion
+            # faked. SQI_REQUIRE_LUA=1 makes ScriptDrivesFusion fail rather
+            # than skip without one; four of its leaves are named too, the two
+            # refusals of a wrong Saver name among them.
+            TestPresetFusion_ParamsCostAtMaxChunk
+            TestPresetFusion_ParamsJSONRoundTrips
+            TestPresetFusion_CommandNamesTheScript
+            TestPresetTier3_FoldsALuaLongBracketScriptPath
+            TestPresetFusion_ScriptDrivesFusion
+            TestPresetFusion_ScriptDrivesFusion/renders-one-saver
+            TestPresetFusion_ScriptDrivesFusion/saver-missing
+            TestPresetFusion_ScriptDrivesFusion/not-a-saver
+            TestPresetFusion_ScriptDrivesFusion/render-fails
             # Outcome cases (expect_status in a preset-cases fixture). The
             # parent passes when every case skips, so leaves that run on linux
             # are named: the `script` built-in with the stub told to exit 3,
@@ -1928,21 +1940,21 @@ jobs:
             tee preset-harness-windows.log
 
       # A `-run` regex that matched nothing (after a rename, or a registry
-      # that failed to load) exits 0 having asserted nothing.
-      # TestPresetAfterEffects_WrapperFailsOnLoggedError pins the After
-      # Effects Windows wrapper's exit status, which no registry case covers;
-      # one leaf subtest is named too, because the parent passes even when
-      # every subtest skips. A trailing space anchors each name: `go test -v`
-      # emits "--- PASS: <name> (0.01s)", so without it a future
-      # TestPresetTier3Xyz would satisfy the check. Only the ffmpeg name,
-      # which nothing else extends, goes without one.
+      # that failed to load) exits 0 having asserted nothing. A trailing
+      # space anchors each name: `go test -v` emits "--- PASS: <name>
+      # (0.01s)", so without it a future TestPresetTier3Xyz would satisfy the
+      # check. Only the ffmpeg name, which nothing else extends, goes without
+      # one.
       #
       # TestPresetOutcomes is listed so the outcome runner cannot go missing
       # (it fails when no fixture case sets expect_status). The parent passes
       # when every case skips, and the Unreal presets' outcome cases are
       # Windows-only (their step requires attr.worker.os.family = windows) and
       # no registry claim covers them, so one of their leaves is named here;
-      # the linux integration job names the leaf that runs there.
+      # the linux integration job names the leaf that runs there. The After
+      # Effects outcome cases run on Windows and macOS only, and no CI job
+      # runs Go tests on macOS, so the leaf that proves the log check folds
+      # the marker's letter case is named too.
       #
       # The TestPresetVRED_ tests are listed because params.json escapes a
       # Windows path's backslashes, which only this host produces, and the
@@ -1952,7 +1964,11 @@ jobs:
       # leaves are named as well. The TestPresetKeyShot_ tests are listed for
       # the same reasons (ScriptDrivesKeyShot skips without Python 3), and so
       # are the TestPresetModo_ and TestPresetUnreal_ tests (ScriptDrivesModo
-      # and ScriptDrivesUnreal skip likewise).
+      # and ScriptDrivesUnreal skip likewise). The TestPresetFusion_ tests are
+      # listed for the same escaping reason, except ScriptDrivesFusion: it
+      # needs a Lua 5.1, which this image does not provide, so it skips here
+      # and is required in the integration-tests job instead, where
+      # SQI_REQUIRE_LUA=1 is set.
       #
       # TestFFmpegPreset_BashSegmentTranscodeJoins runs here but is not
       # listed, and the registry's tier2 required_on omits windows for it: it
@@ -1966,10 +1982,9 @@ jobs:
           for name in "TestPresetTier1Argv " "TestPresetTier3 " "TestZZPresetTierRegistrySatisfied " \
                       "TestFFmpegPreset_PowerShellSegmentTranscodeJoins" \
                       "TestScriptPowerShell_ExitStatus " \
-                      "TestPresetAfterEffects_WrapperFailsOnLoggedError " \
-                      "TestPresetAfterEffects_WrapperFailsOnLoggedError/logged-error-exit-0/after-effects-render-windows " \
                       "TestPresetOutcomes " \
                       "TestPresetOutcomes/unreal-mrq-job-render/logged-error " \
+                      "TestPresetOutcomes/after-effects-render/logged-error-other-case " \
                       "TestPresetPythonSequence_LauncherContract " \
                       "TestPresetVRED_ParamsCostAtMaxChunk " \
                       "TestPresetVRED_ParamsJSONRoundTrips " \
@@ -1993,19 +2008,26 @@ jobs:
                       "TestPresetModo_ScriptDrivesModo/scene_open_fails/file_commands " \
                       "TestPresetUnreal_ParamsCostIsFixed " \
                       "TestPresetUnreal_ParamsJSONRoundTrips " \
+                      "TestPresetUnreal_OneTaskPerShot " \
+                      "TestPresetUnreal_ShotListBounds " \
                       "TestPresetUnreal_ShareOneScript " \
                       "TestPresetUnreal_ExecCmdsImportsTheScript " \
                       "TestPresetUnreal_SessionFolderThatBreaksExecCmdsIsRefused " \
                       "TestPresetUnreal_ScriptDrivesUnreal " \
                       "TestPresetUnreal_ScriptDrivesUnreal/job_renders_and_quits/import " \
-                      "TestPresetUnreal_ScriptDrivesUnreal/a_fatal_error_ends_the_render_once/cwd "; do
+                      "TestPresetUnreal_ScriptDrivesUnreal/a_fatal_error_ends_the_render_once/cwd " \
+                      "TestPresetUnreal_ScriptDrivesUnreal/shot-missing/import " \
+                      "TestPresetFusion_ParamsCostAtMaxChunk " \
+                      "TestPresetFusion_ParamsJSONRoundTrips " \
+                      "TestPresetFusion_CommandNamesTheScript " \
+                      "TestPresetTier3_FoldsALuaLongBracketScriptPath "; do
             if ! grep -q -- "--- PASS: ${name}" preset-harness-windows.log; then
               echo "::error::${name} did not run to a PASS on windows"
               missing=1
             fi
           done
           [ "$missing" -eq 0 ] || exit 1
-          echo "Confirmed tiers 1, 2 and 3, the Python launcher, the After Effects wrapper, the Unreal outcome cases, the VRED, KeyShot, Modo and Unreal preset tests and the registry check ran on windows."
+          echo "Confirmed tiers 1, 2 and 3, the Python launcher, the Unreal and After Effects outcome cases, the VRED, KeyShot, Modo, Unreal and Fusion Saver preset tests and the registry check ran on windows."
 
   # Differential-tests internal/openjd/expr against the EXPR reference
   # implementation, the openjd.expr namespace of openjd-model (a re-export

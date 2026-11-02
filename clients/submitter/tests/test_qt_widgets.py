@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Qt widget binding tests (skipped without a Qt binding; offscreen in CI)."""
 
+from __future__ import annotations
+
 import os
 
 import pytest
@@ -203,3 +205,91 @@ def test_labeled_path_renders_picker_with_browse_button(app: object) -> None:
     parent = line.parent()
     assert parent is not None
     assert parent.findChild(QtWidgets.QToolButton) is not None
+
+
+def _list_model(type_: str = "LIST[STRING]", default: str | None = None) -> FormModel:
+    return FormModel.from_parameters(
+        [
+            ProductParameter(
+                name="Shots",
+                type=type_,
+                default=default,
+                user_interface=ParameterUserInterface(control="LINE_EDIT_LIST"),
+            )
+        ]
+    )
+
+
+def test_line_edit_list_shows_one_item_per_line(app: object) -> None:
+    form = build_form(_list_model(default='["sh010","sh020"]'))
+    edit = form.findChild(QtWidgets.QPlainTextEdit, "field_Shots")
+    assert edit is not None
+    assert edit.toPlainText() == "sh010\nsh020"
+
+
+def test_line_edit_list_writes_back_a_json_array_and_drops_blank_lines(app: object) -> None:
+    model = _list_model()
+    seen: list[tuple[str, str]] = []
+    form = build_form(model, on_change=lambda name, value: seen.append((name, value)))
+    edit = form.findChild(QtWidgets.QPlainTextEdit, "field_Shots")
+    assert edit is not None
+    edit.setPlainText("sh010\n\n  \nsh020\n")
+    assert model.values()["Shots"] == '["sh010", "sh020"]'
+    assert seen[-1] == ("Shots", '["sh010", "sh020"]')
+
+
+def test_line_edit_list_emptied_clears_the_value(app: object) -> None:
+    model = _list_model(default='["sh010"]')
+    form = build_form(model)
+    edit = form.findChild(QtWidgets.QPlainTextEdit, "field_Shots")
+    assert edit is not None
+    edit.setPlainText("\n \n")
+    assert model.values()["Shots"] == ""
+
+
+def test_line_edit_list_int_lines_become_numbers(app: object) -> None:
+    model = _list_model("LIST[INT]")
+    form = build_form(model)
+    edit = form.findChild(QtWidgets.QPlainTextEdit, "field_Shots")
+    assert edit is not None
+    edit.setPlainText("1\n20\n")
+    assert model.values()["Shots"] == "[1, 20]"
+    # A line that is not a number stays text so validation can name it.
+    edit.setPlainText("1\nx")
+    assert model.values()["Shots"] == '[1, "x"]'
+    assert model.validate() is False
+    assert model.errors()["Shots"] == "Item 2: Must be an integer"
+
+
+def test_line_edit_list_refresh_form_rereads_the_model(app: object) -> None:
+    model = _list_model()
+    form = build_form(model)
+    model.apply_prefill({"Shots": '["a","b"]'})
+    refresh_form(form, model)
+    edit = form.findChild(QtWidgets.QPlainTextEdit, "field_Shots")
+    assert edit is not None
+    assert edit.toPlainText() == "a\nb"
+    # refresh must not feed the rewritten text back into the model as an edit.
+    assert model.values()["Shots"] == '["a","b"]'
+
+
+def test_line_edit_list_shows_unparseable_model_text_as_is(app: object) -> None:
+    form = build_form(_list_model(default="not json"))
+    edit = form.findChild(QtWidgets.QPlainTextEdit, "field_Shots")
+    assert edit is not None
+    assert edit.toPlainText() == "not json"
+
+
+def test_line_edit_list_bool_lines_become_booleans(app: object) -> None:
+    model = _list_model("LIST[BOOL]")
+    form = build_form(model)
+    edit = form.findChild(QtWidgets.QPlainTextEdit, "field_Shots")
+    assert edit is not None
+    edit.setPlainText("true\nfalse")
+    assert model.values()["Shots"] == "[true, false]"
+    assert model.validate() is True
+    # A line that is not true/false stays text, and validation names it.
+    edit.setPlainText("true\nmaybe")
+    assert model.values()["Shots"] == '[true, "maybe"]'
+    assert model.validate() is False
+    assert model.errors()["Shots"] == "Item 2: Must be true or false"

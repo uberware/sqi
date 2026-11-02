@@ -28,10 +28,10 @@ task 1/1  name="Render"
   embedded file "params" (params.json):
     {"queue": "/Game/Cinematics/MRQ_HeroQueue", "output_directory": "C:\\Renders\\HeroFilm\\Queue"}
   embedded file "render" (sqi_unreal_render.py):
-    # sqi Unreal presets: renders a Movie Render Queue job or a saved
-    # queue in the editor. The editor imports it from its -execcmds
-    # startup command; its parameters come from params.json, never
-    # from its own text. It starts the render and returns. Unreal
+    # sqi Unreal presets: renders a Movie Render Queue job, one shot of a
+    # job, or a saved queue in the editor. The editor imports it from its
+    # -execcmds startup command; its parameters come from params.json,
+    # never from its own text. It starts the render and returns. Unreal
     # reports the outcome later, through the executor's delegates, and
     # only then does the script print its verdict and quit the editor.
     import json
@@ -90,8 +90,12 @@ task 1/1  name="Render"
         with open(path, encoding="utf-8") as f:
             p = json.load(f)
         # A queue preset's file names a queue; a job preset's names the
-        # three assets of its one job.
-        keys = ["queue"] if "queue" in p else ["sequence", "map", "config"]
+        # three assets of its one job, and a shot preset's also the shot
+        # of that job to render.
+        if "queue" in p:
+            keys = ["queue"]
+        else:
+            keys = ["sequence", "map", "config"] + (["shot"] if "shot" in p else [])
         params = dict()
         for key in keys + ["output_directory"]:
             value = p.get(key, "")
@@ -113,6 +117,11 @@ task 1/1  name="Render"
         return path if "." in leaf else path + "." + leaf
     
     
+    def asset_name(path):
+        # The asset's own name: /Game/Cinematics/SEQ_Hero.SEQ_Hero -> SEQ_Hero.
+        return path.rsplit("/", 1)[-1].split(".")[0]
+    
+    
     def build_queue(subsystem, params):
         # The editor's own queue, emptied, then filled with the one job
         # these parameters describe or with a copy of the saved queue's
@@ -132,11 +141,44 @@ task 1/1  name="Render"
             job.sequence = unreal.SoftObjectPath(object_path(params["sequence"]))
             job.map = unreal.SoftObjectPath(object_path(params["map"]))
             job.set_configuration(config)
-            job.job_name = params["sequence"].rsplit("/", 1)[-1].split(".")[0]
+            job.job_name = asset_name(params["sequence"])
         jobs = list(queue.get_jobs())
         if not jobs:
             raise ValueError("the queue holds no jobs")
         return jobs
+    
+    
+    def select_shot(jobs, params):
+        # One shot of the job: its shot list rebuilt from the sequence,
+        # then only the entries named after the shot left enabled. An
+        # entry is named by its outer name: its section's name in the
+        # shot track, or "no shot" in a sequence without one (Unreal
+        # 5.8). An entry with no outer name, which 5.8 never gives, is
+        # named after the sequence. A shot the sequence lacks fails the
+        # task, naming the shots it has, rather than render every shot.
+        shot = params["shot"]
+        sequence = unreal.EditorAssetLibrary.load_asset(object_path(params["sequence"]))
+        if sequence is None:
+            raise ValueError("no level sequence asset at " + params["sequence"])
+        for job in jobs:
+            unreal.MoviePipelineLibrary.update_job_shot_list_from_sequence(sequence, job)
+            entries = list(job.shot_info)
+            names = [str(entry.outer_name or "") or asset_name(params["sequence"]) for entry in entries]
+            if shot not in names:
+                have = ", ".join(json.dumps(name, ensure_ascii=False) for name in names) or "none"
+                raise ValueError(
+                    "the level sequence has no shot named " + json.dumps(shot, ensure_ascii=False)
+                    + "; its shots are " + have
+                )
+            for entry, name in zip(entries, names):
+                entry.enabled = name == shot
+            # Every shot's task renders with the same config, so without
+            # {shot_name} in the file names one shot's frames can replace
+            # another's. A warning, not a failure: the output directory may
+            # tell them apart.
+            setting = job.get_configuration().find_or_add_setting_by_class(unreal.MoviePipelineOutputSetting)
+            if "{shot_name}" not in str(setting.file_name_format or ""):
+                say("sqi: the output file name format has no {shot_name}; shots may overwrite each other")
     
     
     def apply_output(jobs, directory):
@@ -147,6 +189,15 @@ task 1/1  name="Render"
         path = unreal.DirectoryPath()
         path.set_editor_property("path", directory.replace("\\", "/"))
         for job in jobs:
+            # A job that still names the config asset it was made from,
+            # as a queue saved from the Movie Render Queue window does,
+            # has that asset copied over its settings again when the
+            # render starts, which would undo the directory set here.
+            # Setting the same asset as the job's own configuration keeps
+            # its settings and drops that link.
+            origin = job.get_preset_origin()
+            if origin is not None:
+                job.set_configuration(origin)
             setting = job.get_configuration().find_or_add_setting_by_class(unreal.MoviePipelineOutputSetting)
             setting.output_directory = path
     
@@ -225,7 +276,10 @@ task 1/1  name="Render"
             params = read_params(find_params())
             unreal.AssetRegistryHelpers.get_asset_registry().wait_for_completion()
             subsystem = unreal.get_editor_subsystem(unreal.MoviePipelineQueueSubsystem)
-            apply_output(build_queue(subsystem, params), params["output_directory"])
+            jobs = build_queue(subsystem, params)
+            if "shot" in params:
+                select_shot(jobs, params)
+            apply_output(jobs, params["output_directory"])
             executor = unreal.MoviePipelinePIEExecutor()
             STATE["executor"] = executor
             executor.on_executor_errored_delegate.add_callable(on_errored)

@@ -7,7 +7,9 @@ package integration
 // fixed and inside the worker's EXPR limits, that the -execcmds argument is
 // one comma-free line of Python importing the embedded script and carrying no
 // job value, that a session folder Unreal could not be handed that way fails
-// the task with a reason, and what the embedded script asks Unreal to do.
+// the task with a reason, that the shot preset makes one task per shot within
+// the bounds its Shots parameter declares, and what the embedded script asks
+// Unreal to do.
 //
 // Untagged, like the rest of the preset harness, so `make test-cover` runs it.
 // Every test is named TestPresetUnreal_* so the preset harness's -run regex
@@ -33,24 +35,43 @@ import (
 	"github.com/uberware/sqi/internal/presettest"
 )
 
-// unrealPresets are the two Unreal presets, which share one script and one
-// command line; their params.json differ in the asset keys.
-var unrealPresets = []string{"unreal-mrq-job-render", "unreal-mrq-queue-render"}
+// The three Unreal presets, which share one script and one command line; their
+// params.json differ in their keys. The shot preset is the job preset with a
+// shot per task.
+const (
+	unrealJob   = "unreal-mrq-job-render"
+	unrealQueue = "unreal-mrq-queue-render"
+	unrealShot  = "unreal-mrq-shot-render"
+)
+
+// unrealPresets are the three Unreal presets.
+var unrealPresets = []string{unrealJob, unrealQueue, unrealShot}
 
 // unrealMaxLength is the maxLength every asset-path parameter and
 // OutputDirectory declare, which bounds params.json's cost.
 const unrealMaxLength = 1024
+
+// unrealMaxShots is the shot preset's Shots maxLength: the most tasks one
+// submission can make.
+const unrealMaxShots = 1000
+
+// unrealMaxShotLength is the maxLength of each Shots item. The server expands
+// the whole list at submission, within its EXPR memory limit (1 MB by
+// default), so the most shots at their longest must fit in it.
+const unrealMaxShotLength = 256
 
 // unrealScriptFile is the embedded script's file name, which the -execcmds
 // command imports as a module.
 const unrealScriptFile = "sqi_unreal_render.py"
 
 // unrealParams is params.json as the script reads it: the job preset's three
-// asset paths, or the queue preset's queue, and the output directory.
+// asset paths (and the shot preset's shot), or the queue preset's queue, and
+// the output directory.
 type unrealParams struct {
 	Sequence        *string `json:"sequence"`
 	Map             *string `json:"map"`
 	Config          *string `json:"config"`
+	Shot            *string `json:"shot"`
 	Queue           *string `json:"queue"`
 	OutputDirectory *string `json:"output_directory"`
 }
@@ -61,9 +82,13 @@ type unrealParams struct {
 func decodeUnrealParams(t *testing.T, preset, data string) unrealParams {
 	t.Helper()
 	p := decodeStrict[unrealParams](t, data)
-	job := p.Sequence != nil && p.Map != nil && p.Config != nil && p.Queue == nil
-	queue := p.Sequence == nil && p.Map == nil && p.Config == nil && p.Queue != nil
-	if p.OutputDirectory == nil || (preset == unrealPresets[0] && !job) || (preset == unrealPresets[1] && !queue) {
+	assets := p.Sequence != nil && p.Map != nil && p.Config != nil && p.Queue == nil
+	right := map[string]bool{
+		unrealJob:   assets && p.Shot == nil,
+		unrealShot:  assets && p.Shot != nil,
+		unrealQueue: p.Sequence == nil && p.Map == nil && p.Config == nil && p.Shot == nil && p.Queue != nil,
+	}
+	if p.OutputDirectory == nil || !right[preset] {
 		t.Fatalf("%s params.json has the wrong keys:\n%s", preset, data)
 	}
 	return p
@@ -72,41 +97,58 @@ func decodeUnrealParams(t *testing.T, preset, data string) unrealParams {
 // unrealBaseParams are a valid parameter set for preset.
 func unrealBaseParams(preset string) map[string]string {
 	params := map[string]string{"SceneFile": `C:\Projects\HeroFilm\HeroFilm.uproject`}
-	if preset == unrealPresets[0] {
-		params["LevelSequence"] = "/Game/Cinematics/Hero/SEQ_Hero"
-		params["Map"] = "/Game/Maps/Hero"
-		params["MovieRenderConfig"] = "/Game/Cinematics/MRQ_Final"
-	} else {
+	if preset == unrealQueue {
 		params["QueueAsset"] = "/Game/Cinematics/MRQ_HeroQueue"
+		return params
+	}
+	params["LevelSequence"] = "/Game/Cinematics/Hero/SEQ_Hero"
+	params["Map"] = "/Game/Maps/Hero"
+	params["MovieRenderConfig"] = "/Game/Cinematics/MRQ_Final"
+	if preset == unrealShot {
+		params["Shots"] = `["sh010"]`
 	}
 	return params
 }
 
+// unrealShots encodes shots as a LIST[STRING] parameter value.
+func unrealShots(t *testing.T, shots ...string) string {
+	t.Helper()
+	if shots == nil {
+		shots = []string{}
+	}
+	return string(mustMarshal(t, shots))
+}
+
 // TestPresetUnreal_ParamsCostIsFixed pins params.json's cost. The presets have
-// no frame parameter, so it is the same for every task, bounded only by the
-// lengths of the values it quotes: with every one of them at its maxLength it
-// must still resolve under the worker's default EXPR limits (phase 3, on the
-// worker) and carry each value whole. One character more must be refused at
-// submission by the maxLength bound itself, or the bound bounds nothing.
+// no frame parameter, so it is bounded only by the lengths of the values it
+// quotes (the shot preset's one shot per task among them): with every one of
+// them at its maxLength it must still resolve under the worker's default EXPR
+// limits (phase 3, on the worker) and carry each value whole. One character
+// more must be refused at submission by the maxLength bound itself, or the
+// bound bounds nothing.
 func TestPresetUnreal_ParamsCostIsFixed(t *testing.T) {
 	long := func(prefix string) string { return prefix + strings.Repeat("x", unrealMaxLength-len(prefix)) }
 	for _, preset := range unrealPresets {
 		t.Run(preset, func(t *testing.T) {
 			params := unrealBaseParams(preset)
 			assetKeys := []string{"QueueAsset"}
-			if preset == unrealPresets[0] {
+			if preset != unrealQueue {
 				assetKeys = []string{"LevelSequence", "Map", "MovieRenderConfig"}
 			}
 			for _, key := range assetKeys {
 				params[key] = long("/Game/" + key + "/")
 			}
 			params["OutputDirectory"] = long(`C:\Renders\`)
+			shot := "shot " + strings.Repeat("x", unrealMaxShotLength-len("shot "))
+			if preset == unrealShot {
+				params["Shots"] = unrealShots(t, shot)
+			}
 			snap, err := capturePreset(t, preset, params)
 			if err != nil {
 				t.Fatalf("params.json at every value's maxLength must resolve under the worker's default EXPR limits: %v", err)
 			}
 			if len(snap.Steps) != 1 || len(snap.Steps[0].Tasks) != 1 {
-				t.Fatalf("an Unreal job must be one task, got %+v", snap.Steps)
+				t.Fatalf("an Unreal job (or one shot) must be one task, got %+v", snap.Steps)
 			}
 			p := decodeUnrealParams(t, preset, taskFile(t, snap.Steps[0].Tasks[0], "params"))
 			got := map[string]*string{
@@ -117,6 +159,9 @@ func TestPresetUnreal_ParamsCostIsFixed(t *testing.T) {
 				if got[key] == nil || *got[key] != params[key] {
 					t.Errorf("params.json does not carry %s whole", key)
 				}
+			}
+			if preset == unrealShot && (p.Shot == nil || *p.Shot != shot) {
+				t.Errorf("params.json does not carry the shot whole")
 			}
 
 			params[assetKeys[0]] += "x"
@@ -140,19 +185,7 @@ func TestPresetUnreal_ParamsCostIsFixed(t *testing.T) {
 func TestPresetUnreal_ParamsJSONRoundTrips(t *testing.T) {
 	for _, preset := range unrealPresets {
 		t.Run(preset, func(t *testing.T) {
-			cases, err := presettest.LoadCases(filepath.Join(presetCaseDir, preset+".yaml"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			var params map[string]string
-			for _, c := range cases {
-				if c.Name == "quoting" {
-					params = c.Params
-				}
-			}
-			if params == nil {
-				t.Fatalf("%s.yaml has no quoting case", preset)
-			}
+			params := presetCase(t, preset, "quoting").Params
 			asset := params["LevelSequence"] + params["QueueAsset"]
 			if !strings.ContainsAny(asset, `'"`) || !strings.Contains(asset, `\`) || !strings.Contains(asset, " ") ||
 				!strings.ContainsAny(params["OutputDirectory"], `'"`) {
@@ -164,10 +197,21 @@ func TestPresetUnreal_ParamsJSONRoundTrips(t *testing.T) {
 			}
 			p := decodeUnrealParams(t, preset, taskFile(t, snap.Steps[0].Tasks[0], "params"))
 			want := map[*string]string{p.OutputDirectory: filepath.FromSlash(params["OutputDirectory"])}
-			if preset == unrealPresets[0] {
-				want[p.Sequence], want[p.Map], want[p.Config] = params["LevelSequence"], params["Map"], params["MovieRenderConfig"]
-			} else {
+			if preset == unrealQueue {
 				want[p.Queue] = params["QueueAsset"]
+			} else {
+				want[p.Sequence], want[p.Map], want[p.Config] = params["LevelSequence"], params["Map"], params["MovieRenderConfig"]
+			}
+			if preset == unrealShot {
+				var shots []string
+				if err := json.Unmarshal([]byte(params["Shots"]), &shots); err != nil || len(shots) != 1 {
+					t.Fatalf("quoting case Shots = %q, want a list of one shot", params["Shots"])
+				}
+				if s := shots[0]; !strings.Contains(s, `"`) || !strings.Contains(s, `\`) || !strings.Contains(s, " ") ||
+					strings.IndexFunc(s, func(r rune) bool { return r > 0x7f }) < 0 {
+					t.Fatalf("quoting case needs a double quote, a backslash, a space and a non-ASCII letter in its shot: %q", s)
+				}
+				want[p.Shot] = shots[0]
 			}
 			for got, w := range want {
 				if *got != w {
@@ -178,8 +222,101 @@ func TestPresetUnreal_ParamsJSONRoundTrips(t *testing.T) {
 	}
 }
 
-// TestPresetUnreal_ShareOneScript keeps the two presets' script byte for byte
-// the same, so a fix to one cannot miss the other. The script tells the two
+// TestPresetUnreal_OneTaskPerShot pins the shot preset's task split: one task
+// per entry of Shots, in the order given, each task's params.json naming its
+// own shot and the same job.
+func TestPresetUnreal_OneTaskPerShot(t *testing.T) {
+	params := unrealBaseParams(unrealShot)
+	shots := []string{"sh010", "sh020"}
+	params["Shots"] = unrealShots(t, shots...)
+	snap, err := capturePreset(t, unrealShot, params)
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	if len(snap.Steps) != 1 || len(snap.Steps[0].Tasks) != len(shots) {
+		t.Fatalf("Shots %s must make %d tasks, got %+v", params["Shots"], len(shots), snap.Steps)
+	}
+	for i, shot := range shots {
+		p := decodeUnrealParams(t, unrealShot, taskFile(t, snap.Steps[0].Tasks[i], "params"))
+		if *p.Shot != shot {
+			t.Errorf("task %d params.json shot = %q, want %q", i+1, *p.Shot, shot)
+		}
+		if *p.Sequence != params["LevelSequence"] || *p.Map != params["Map"] || *p.Config != params["MovieRenderConfig"] {
+			t.Errorf("task %d params.json names another job: %+v", i+1, p)
+		}
+	}
+}
+
+// TestPresetUnreal_ShotListBounds pins the bounds on Shots, each refused at
+// submission rather than reaching a worker: a list with no shot (which would
+// make a job with no task), more shots than maxLength allows, an empty shot
+// name and one past the item maxLength. The largest list the bounds allow,
+// every shot at its maxLength, must be accepted and make one task per shot.
+func TestPresetUnreal_ShotListBounds(t *testing.T) {
+	name := func(i, n int) string {
+		s := fmt.Sprintf("sh%04d ", i)
+		return s + strings.Repeat("x", n-len(s))
+	}
+	many := func(count, length int) []string {
+		out := make([]string, count)
+		for i := range out {
+			out[i] = name(i, length)
+		}
+		return out
+	}
+	tests := []struct {
+		name  string
+		shots []string
+		want  string
+	}{
+		{"no shots", nil, "/parameterValues/Shots: has 0 items, below minLength 1"},
+		{"one shot past maxLength", many(unrealMaxShots+1, 8), fmt.Sprintf("/parameterValues/Shots: has %d items, above maxLength %d", unrealMaxShots+1, unrealMaxShots)},
+		{"an empty shot", []string{"sh010", ""}, "/parameterValues/Shots/1: length 0 is below item.minLength 1"},
+		{"a shot past its maxLength", []string{name(1, unrealMaxShotLength+1)}, fmt.Sprintf("/parameterValues/Shots/0: length %d is above item.maxLength %d", unrealMaxShotLength+1, unrealMaxShotLength)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			params := unrealBaseParams(unrealShot)
+			params["Shots"] = unrealShots(t, tc.shots...)
+			_, err := capturePreset(t, unrealShot, params)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("err = %v, want the refusal %q", err, tc.want)
+			}
+		})
+	}
+	// Submission alone, which is where the whole list is expanded: each task's
+	// params.json holds one shot, whose cost on the worker
+	// TestPresetUnreal_ParamsCostIsFixed pins, and resolving a thousand tasks
+	// here would only make the test slow.
+	t.Run("the most shots at their maxLength", func(t *testing.T) {
+		params := unrealBaseParams(unrealShot)
+		shots := many(unrealMaxShots, unrealMaxShotLength)
+		params["Shots"] = unrealShots(t, shots...)
+		tmpl, err := presettest.PresetTemplate(presettest.SourcePresets, unrealShot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := presettest.Submit(t.Context(), tmpl, presettest.Options{Params: params})
+		if err != nil {
+			t.Fatalf("the largest Shots the bounds allow must be accepted at submission: %v", err)
+		}
+		if len(result.Tasks) != unrealMaxShots {
+			t.Fatalf("tasks = %d, want %d", len(result.Tasks), unrealMaxShots)
+		}
+		got := map[string]bool{}
+		for _, task := range result.Tasks {
+			got[task.Parameters["Shot"]] = true
+		}
+		for _, shot := range shots {
+			if !got[shot] {
+				t.Fatalf("no task renders shot %q", shot)
+			}
+		}
+	})
+}
+
+// TestPresetUnreal_ShareOneScript keeps the three presets' script byte for
+// byte the same, so a fix to one cannot miss the others. The script tells them
 // apart by params.json's keys.
 func TestPresetUnreal_ShareOneScript(t *testing.T) {
 	assertPresetsShareFile(t, unrealPresets, "render")
@@ -233,8 +370,21 @@ func TestPresetUnreal_ExecCmdsImportsTheScript(t *testing.T) {
 					strings.Contains(script, `\`) {
 					t.Errorf("%s: script path %q must be the absolute, forward-slash path of %s", c.Name, script, unrealScriptFile)
 				}
+				values := map[string]string{}
 				for _, key := range []string{"LevelSequence", "Map", "MovieRenderConfig", "QueueAsset", "OutputDirectory"} {
-					if value := c.Params[key]; value != "" && strings.Contains(strings.Join(task.Args, " "), value) {
+					values[key] = c.Params[key]
+				}
+				if c.Params["Shots"] != "" {
+					var shots []string
+					if err := json.Unmarshal([]byte(c.Params["Shots"]), &shots); err != nil {
+						t.Fatalf("%s: Shots %q: %v", c.Name, c.Params["Shots"], err)
+					}
+					for i, shot := range shots {
+						values[fmt.Sprintf("Shots[%d]", i)] = shot
+					}
+				}
+				for key, value := range values {
+					if value != "" && strings.Contains(strings.Join(task.Args, " "), value) {
 						t.Errorf("%s: job value %s=%q appears in the command line %q", c.Name, key, value, task.Args)
 					}
 				}
@@ -294,11 +444,15 @@ func TestPresetUnreal_SessionFolderThatBreaksExecCmdsIsRefused(t *testing.T) {
 // events is a ;-separated list: "job:<1|0>:<name>" (a job's work finished,
 // with or without success), "error:<1|0>:<text>" (an error, fatal or not),
 // "finished:<1|0>". fail names a fake call that raises. assets maps an asset
-// path to the job names of the queue saved there, or to null for an asset that
-// does not exist; any other path loads as an asset with no jobs.
+// path to the job names of the queue saved there, or the shot names (outer
+// names) of the level sequence saved there, or to null for an asset that does
+// not exist; any other path loads as an asset with no jobs and no shots. A
+// queue's job written "name@/Game/Path" keeps the config asset at that path as
+// its preset origin, as a job saved from the Movie Render Queue window does.
+// name_format is every job's output file name format.
 const unrealRunner = `import json, os, sys, types
 
-locate, events, fail, script, record, elsewhere, bootstrap, assets = sys.argv[1:9]
+locate, events, fail, script, record, elsewhere, bootstrap, assets, name_format = sys.argv[1:10]
 assets = json.loads(assets)
 calls = []
 executors = []
@@ -370,8 +524,25 @@ class Setting(object):
     def __init__(self, job):
         object.__setattr__(self, "job", job)
 
+    @property
+    def file_name_format(self):
+        note("file_name_format", self.job.job_name)
+        return name_format
+
     def __setattr__(self, name, value):
         note(name, self.job.job_name, value.path)
+
+
+class Shot(object):
+    # A MoviePipelineExecutorShot: one camera cut of the job's sequence.
+    def __init__(self, outer_name):
+        object.__setattr__(self, "outer_name", outer_name)
+        object.__setattr__(self, "inner_name", "CameraActor")
+        object.__setattr__(self, "enabled", True)
+
+    def __setattr__(self, name, value):
+        note("set_shot", self.outer_name, name, value)
+        object.__setattr__(self, name, value)
 
 
 class Config(object):
@@ -384,17 +555,25 @@ class Config(object):
 
 
 class Job(object):
-    def __init__(self, name=""):
+    def __init__(self, name="", origin=None):
         object.__setattr__(self, "job_name", name)
         object.__setattr__(self, "config", Config(self))
+        object.__setattr__(self, "shot_info", [Shot("left over")])
+        object.__setattr__(self, "origin", origin)
 
     def __setattr__(self, name, value):
         note("set", name, str(value))
         object.__setattr__(self, name, value)
 
     def set_configuration(self, config):
+        # As in Unreal, setting a configuration clears the preset origin.
         note("set_configuration", config.path)
         raising("set_configuration")
+        object.__setattr__(self, "origin", None)
+
+    def get_preset_origin(self):
+        note("get_preset_origin", self.job_name)
+        return self.origin
 
     def get_configuration(self):
         return self.config
@@ -417,7 +596,10 @@ class Queue(object):
     def copy_from(self, asset):
         note("copy_from", asset.path)
         raising("copy_from")
-        self.jobs = [Job(name) for name in asset.jobs]
+        self.jobs = []
+        for spec in asset.jobs:
+            name, _, origin = spec.partition("@")
+            self.jobs.append(Job(name, Asset(origin, []) if origin else None))
 
     def allocate_new_job(self, cls):
         note("allocate_new_job", cls.__name__)
@@ -440,6 +622,16 @@ class EditorAssetLibrary(object):
         if path in assets and assets[path] is None:
             return None
         return Asset(path, assets.get(path) or [])
+
+
+class MoviePipelineLibrary(object):
+    @staticmethod
+    def update_job_shot_list_from_sequence(sequence, job):
+        # Rebuilds the job's shot list from the sequence's camera cuts.
+        note("update_job_shot_list_from_sequence", sequence.path, job.job_name)
+        raising("update_job_shot_list_from_sequence")
+        object.__setattr__(job, "shot_info", [Shot(name) for name in sequence.jobs])
+        return True
 
 
 class Registry(object):
@@ -539,7 +731,9 @@ var unrealRuns = []unrealRun{"import", "cwd"}
 // output directory (when set) moved into the test's folder, and runs the
 // script under unrealRunner. It returns the calls the fake recorded, as
 // canonical JSON, what the script wrote to stdout and its exit status.
-func runUnrealScript(t *testing.T, python string, task presettest.TaskSnapshot, run unrealRun, events, fail, assets string) (calls, stdout string, exit int) {
+// nameFormat is the jobs' output file name format; blank is the Movie Render
+// Queue's default.
+func runUnrealScript(t *testing.T, python string, task presettest.TaskSnapshot, run unrealRun, events, fail, assets, nameFormat string) (calls, stdout string, exit int) {
 	t.Helper()
 	dir := t.TempDir()
 	taskDir := filepath.Join(dir, "task")
@@ -574,9 +768,12 @@ func runUnrealScript(t *testing.T, python string, task presettest.TaskSnapshot, 
 	if assets == "" {
 		assets = "{}"
 	}
+	if nameFormat == "" {
+		nameFormat = unrealDefaultNameFormat
+	}
 
 	var out, errOut bytes.Buffer
-	cmd := exec.CommandContext(t.Context(), python, "-I", runner, string(run), events, fail, script, record, elsewhere, bootstrap, assets)
+	cmd := exec.CommandContext(t.Context(), python, "-I", runner, string(run), events, fail, script, record, elsewhere, bootstrap, assets, nameFormat)
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	if err := cmd.Run(); err != nil {
 		var ee *exec.ExitError
@@ -591,6 +788,14 @@ func runUnrealScript(t *testing.T, python string, task presettest.TaskSnapshot, 
 	}
 	return canonicalJSON(t, data), out.String(), exit
 }
+
+// unrealDefaultNameFormat is the Movie Render Queue's default output file name
+// format, which has no {shot_name}.
+const unrealDefaultNameFormat = "{sequence_name}.{frame_number}"
+
+// unrealShotNameFormat is the per-shot output file name format the shot
+// preset's readme recommends.
+const unrealShotNameFormat = "{sequence_name}/{shot_name}/{shot_name}.{frame_number}"
 
 // unrealNotFound folds the folders a "params.json not found" reason lists,
 // which differ per run.
@@ -610,7 +815,10 @@ func unrealObjectPath(path string) string {
 // TestPresetUnreal_ScriptDrivesUnreal runs the shipped script, as resolved for
 // a real task, under a real Python with the unreal module faked, and pins the
 // calls it makes: the editor's queue emptied and filled with the job the
-// parameters describe (or a copy of the saved queue's jobs), the output
+// parameters describe (or a copy of the saved queue's jobs), for the shot
+// preset the job's shot list rebuilt from the sequence with only the task's
+// shot enabled (a shot the sequence lacks fails the task, naming the shots it
+// has, before anything renders), the output
 // directory applied to every job when one is given, the PIE executor started
 // with its three delegates; then, as the movie pipeline reports back, one
 // verdict, the success line only when every job succeeded and nothing fatal
@@ -624,7 +832,7 @@ func TestPresetUnreal_ScriptDrivesUnreal(t *testing.T) {
 	if python == "" {
 		t.Skip("no working Python 3 on PATH (tried python3, python)")
 	}
-	job, queue := unrealPresets[0], unrealPresets[1]
+	job, queue, shot := unrealJob, unrealQueue, unrealShot
 	const (
 		seq    = "/Game/Cinematics/Hero/SEQ_Hero"
 		mapA   = "/Game/Maps/Hero"
@@ -661,7 +869,7 @@ func TestPresetUnreal_ScriptDrivesUnreal(t *testing.T) {
 	output := func(names ...string) []call {
 		out := []call{{"set_editor_property", "path", outputMarker}}
 		for _, n := range names {
-			out = append(out, call{"find_or_add_setting_by_class", n, "MoviePipelineOutputSetting"}, call{"output_directory", n, outputMarker})
+			out = append(out, call{"get_preset_origin", n}, call{"find_or_add_setting_by_class", n, "MoviePipelineOutputSetting"}, call{"output_directory", n, outputMarker})
 		}
 		return out
 	}
@@ -690,6 +898,30 @@ func TestPresetUnreal_ScriptDrivesUnreal(t *testing.T) {
 	}
 	twoJobs := `{"/Game/Cinematics/MRQ_HeroQueue": ["Hero A", "Hero B"]}`
 
+	// The shot preset: the job preset's job, its shot list rebuilt from the
+	// sequence and only the task's shot left enabled.
+	seqObject := unrealObjectPath(seq)
+	quotedShot := `sh "010" \ é`
+	shotParams := func(name, output string) map[string]string {
+		p := jobParams(seq, output)
+		p["Shots"] = unrealShots(t, name)
+		return p
+	}
+	sequenceShots := func(names ...string) string {
+		return string(mustMarshal(t, map[string]json.RawMessage{seqObject: json.RawMessage(unrealShots(t, names...))}))
+	}
+	selected := func(enabled ...call) []call {
+		return append([]call{{"load_asset", seqObject}, {"update_job_shot_list_from_sequence", seqObject, "SEQ_Hero"}}, enabled...)
+	}
+	enable := func(outer string, on bool) call { return call{"set_shot", outer, "enabled", on} }
+	nameFormat := func(warn bool) []call {
+		out := []call{{"find_or_add_setting_by_class", "SEQ_Hero", "MoviePipelineOutputSetting"}, {"file_name_format", "SEQ_Hero"}}
+		if warn {
+			out = append(out, call{"log", "sqi: the output file name format has no {shot_name}; shots may overwrite each other"})
+		}
+		return out
+	}
+
 	tests := []struct {
 		name     string
 		preset   string
@@ -698,6 +930,7 @@ func TestPresetUnreal_ScriptDrivesUnreal(t *testing.T) {
 		events   []string
 		fail     string
 		runs     []unrealRun
+		format   string
 		want     []call
 		wantOK   bool
 		wantFail string
@@ -731,6 +964,24 @@ func TestPresetUnreal_ScriptDrivesUnreal(t *testing.T) {
 			name: "queue renders every job to the output directory", preset: queue, params: queueParams(`C:\Renders\Queue`),
 			assets: twoJobs, events: []string{"job:1:Hero A", "job:1:Hero B", "finished:1"},
 			want:   join(copied, output("Hero A", "Hero B"), started, events("job:1:Hero A", "job:1:Hero B", "finished:1"), ok),
+			wantOK: true,
+		},
+		{
+			// Unreal copies a preset origin over the job's settings when the
+			// render starts, so a job that keeps one would lose the directory.
+			name: "a queue job's preset origin is dropped before its output directory is set", preset: queue,
+			params: queueParams(`C:\Renders\Queue`), assets: `{"/Game/Cinematics/MRQ_HeroQueue": ["Hero A@/Game/Cinematics/MRQ_Final", "Hero B"]}`,
+			events: []string{"finished:1"},
+			want: join(copied, []call{
+				{"set_editor_property", "path", outputMarker},
+				{"get_preset_origin", "Hero A"},
+				{"set_configuration", cfg},
+				{"find_or_add_setting_by_class", "Hero A", "MoviePipelineOutputSetting"},
+				{"output_directory", "Hero A", outputMarker},
+				{"get_preset_origin", "Hero B"},
+				{"find_or_add_setting_by_class", "Hero B", "MoviePipelineOutputSetting"},
+				{"output_directory", "Hero B", outputMarker},
+			}, started, events("finished:1"), ok),
 			wantOK: true,
 		},
 		{
@@ -817,6 +1068,63 @@ func TestPresetUnreal_ScriptDrivesUnreal(t *testing.T) {
 			wantFail: "Movie Render Queue reported that the render did not succeed", wantExit: 1,
 		},
 		{
+			name: "shot-enabled", preset: shot, params: shotParams("sh010", `C:\Renders\HeroFilm`),
+			assets: sequenceShots("sh010", "sh020", "sh010"), format: unrealShotNameFormat,
+			events: []string{"job:1:SEQ_Hero", "finished:1"},
+			want: join(built(seq, "SEQ_Hero"),
+				selected(enable("sh010", true), enable("sh020", false), enable("sh010", true)), nameFormat(false),
+				output("SEQ_Hero"), started, events("job:1:SEQ_Hero", "finished:1"), ok),
+			wantOK: true,
+		},
+		{
+			name: "a file name format without shot_name warns and renders", preset: shot, params: shotParams("sh020", ""),
+			assets: sequenceShots("sh010", "sh020"), events: []string{"finished:1"},
+			want: join(built(seq, "SEQ_Hero"), selected(enable("sh010", false), enable("sh020", true)), nameFormat(true),
+				started, events("finished:1"), ok),
+			wantOK: true,
+		},
+		{
+			name: "shot-missing", preset: shot, params: shotParams("sh030", ""),
+			assets: sequenceShots("sh010", "sh020"), format: unrealShotNameFormat,
+			want: join(built(seq, "SEQ_Hero"), selected(),
+				failed(`ValueError: the level sequence has no shot named "sh030"; its shots are "sh010", "sh020"`)),
+			wantFail: `ValueError: the level sequence has no shot named "sh030"; its shots are "sh010", "sh020"`,
+		},
+		{
+			name: "a sequence with no shots fails the shot", preset: shot, params: shotParams("sh010", ""),
+			assets: sequenceShots(), format: unrealShotNameFormat,
+			want: join(built(seq, "SEQ_Hero"), selected(),
+				failed(`ValueError: the level sequence has no shot named "sh010"; its shots are none`)),
+			wantFail: `ValueError: the level sequence has no shot named "sh010"; its shots are none`,
+		},
+		{
+			name: "an unnamed shot is named after its sequence", preset: shot, params: shotParams("SEQ_Hero", ""),
+			assets: sequenceShots("", "sh020"), format: unrealShotNameFormat, events: []string{"finished:1"},
+			want: join(built(seq, "SEQ_Hero"), selected(enable("", true), enable("sh020", false)), nameFormat(false),
+				started, events("finished:1"), ok),
+			wantOK: true,
+		},
+		{
+			name: "a quoted shot with a backslash and an accent", preset: shot, params: shotParams(quotedShot, ""),
+			assets: sequenceShots("sh010", quotedShot), format: unrealShotNameFormat, events: []string{"finished:1"},
+			want: join(built(seq, "SEQ_Hero"), selected(enable("sh010", false), enable(quotedShot, true)), nameFormat(false),
+				started, events("finished:1"), ok),
+			wantOK: true,
+		},
+		{
+			name: "a missing sequence fails the shot", preset: shot, params: shotParams("sh010", ""),
+			assets: `{"` + seqObject + `": null}`,
+			want: join(built(seq, "SEQ_Hero"), []call{{"load_asset", seqObject}},
+				failed("ValueError: no level sequence asset at "+seq)),
+			wantFail: "ValueError: no level sequence asset at " + seq,
+		},
+		{
+			name: "no-shot-key", preset: job, params: jobParams(seq, ""),
+			assets: sequenceShots("sh010", "sh020"), events: []string{"finished:1"},
+			want:   join(built(seq, "SEQ_Hero"), started, events("finished:1"), ok),
+			wantOK: true,
+		},
+		{
 			name: "params json is nowhere to be found", preset: job, params: jobParams(seq, ""),
 			runs:     []unrealRun{"none"},
 			want:     failed("OSError: params.json not found; looked at ..."),
@@ -835,7 +1143,7 @@ func TestPresetUnreal_ScriptDrivesUnreal(t *testing.T) {
 		}
 		for _, run := range runs {
 			t.Run(tc.name+"/"+string(run), func(t *testing.T) {
-				calls, stdout, exit := runUnrealScript(t, python, task, run, strings.Join(tc.events, ";"), tc.fail, tc.assets)
+				calls, stdout, exit := runUnrealScript(t, python, task, run, strings.Join(tc.events, ";"), tc.fail, tc.assets, tc.format)
 				calls = unrealNotFound.ReplaceAllString(calls, "params.json not found; looked at ...")
 				wantJSON, err := json.Marshal(tc.want)
 				if err != nil {

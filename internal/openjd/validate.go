@@ -119,6 +119,38 @@ func validateExtensions(t *JobTemplate) ValidationErrors {
 	return errs
 }
 
+// validateUnknownStepFields checks each key of one step that the step schema
+// does not define. A key is accepted only if it names a registered, supported
+// step-block extension that the template declares. Anything else is an error,
+// because the decoder would otherwise drop it: a misspelled base-spec key
+// silently loses its setting, and a misspelled block runs the step with its
+// checks off.
+func validateUnknownStepFields(t *JobTemplate, s StepTemplate, idx int) ValidationErrors {
+	var errs ValidationErrors
+	for _, key := range s.UnknownFields {
+		ptr := fmt.Sprintf("/steps/%d/%s", idx, escapePointerToken(key))
+		ext, ok := LookupExtension(key)
+		switch {
+		case !strings.HasPrefix(key, "SQI_"):
+			errs = append(errs, ValidationError{
+				Pointer: ptr,
+				Message: "unknown field; the step template schema defines no such key",
+			})
+		case !ok || ext.Status != StatusSupported || !ext.StepBlock:
+			errs = append(errs, ValidationError{
+				Pointer: ptr,
+				Message: fmt.Sprintf("unknown sqi step block %q; no supported extension defines it", key),
+			})
+		case !t.hasExtension(key):
+			errs = append(errs, ValidationError{
+				Pointer: ptr,
+				Message: fmt.Sprintf("%s block requires declaring the %s extension in extensions", key, key),
+			})
+		}
+	}
+	return errs
+}
+
 // unknownTopLevelMessage explains why a top-level key was rejected. A key that
 // names a step-block extension is a misplaced block, not a typo, and says so.
 func unknownTopLevelMessage(field string) string {
@@ -193,7 +225,9 @@ func validatePathTranslation(t *JobTemplate) ValidationErrors {
 // it is declared: TASK_CHUNKING must also be declared, and every CHUNK[INT] task
 // parameter must be CONTIGUOUS (rangeConstraint is required, so this only rejects
 // the literal NONCONTIGUOUS value), because .Start/.End are undefined across the
-// gaps of a NONCONTIGUOUS chunk.
+// gaps of a NONCONTIGUOUS chunk. Declaring it alongside EXPR is also an error:
+// under EXPR a CHUNK[INT] is a range_expr, so .Start/.End never resolve and the
+// extension would do nothing.
 // Runs unconditionally (not gated by EnforceLimits).
 func validateChunkBounds(t *JobTemplate) ValidationErrors {
 	if !t.hasExtension("SQI_CHUNK_BOUNDS") {
@@ -204,6 +238,12 @@ func validateChunkBounds(t *JobTemplate) ValidationErrors {
 		errs = append(errs, ValidationError{
 			Pointer: "/extensions",
 			Message: "SQI_CHUNK_BOUNDS requires the TASK_CHUNKING extension to also be declared",
+		})
+	}
+	if t.hasExtension("EXPR") {
+		errs = append(errs, ValidationError{
+			Pointer: "/extensions",
+			Message: "SQI_CHUNK_BOUNDS has no effect under EXPR; use min() and max() of the chunk",
 		})
 	}
 	for i, s := range t.Steps {
@@ -572,6 +612,7 @@ func ValidateWithBudget(t *JobTemplate, opts ValidateOptions) (ValidationErrors,
 	for i, s := range t.Steps {
 		errs = append(errs, validateStep(s, i, stepNames, exprDeclared)...)
 		errs = append(errs, validateStepEnvCollisions(s, i, t.JobEnvironments)...)
+		errs = append(errs, validateUnknownStepFields(t, s, i)...)
 	}
 
 	// ── acyclicity ────────────────────────────────────────────────────────

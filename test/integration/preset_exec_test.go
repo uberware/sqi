@@ -698,21 +698,19 @@ func foldFilePaths(args []string, files map[string]bool) []string {
 	return out
 }
 
-// foldQuotedFilePaths replaces each single-quoted absolute path to one of files
-// inside s ('/tmp/.../render.py', 'C:\\Users\\...\\render.py') with
-// '<FILE:name>'. Single quotes only: that is how repr_py writes a path holding
-// no quote, and a session directory holds none.
-//
-// A brace-quoted path is folded the same way ({/tmp/.../render.py},
-// {C:\Users\...\render.py}): that is how Modo's -cmd:@ argument quotes the
-// script and the parameters file, with single backslashes since no Python
-// literal is involved. A session directory holds no brace either.
+// foldQuotedFilePaths replaces each absolute path to one of files embedded in
+// s with <FILE:name>, leaving the quotes around it intact. A path ends at
+// whitespace, a quote, a brace or a square bracket, as presettest's
+// sessionDirPattern does, which covers every way a preset quotes a script
+// path: a repr_py string ('C:\\Users\\...\\render.py'), Modo's -cmd:@
+// braces ({/tmp/.../render.py}) and the Fusion preset's Lua long bracket
+// ([==[/tmp/.../render.lua]==]). A session directory holds none of those
+// characters. The name must end where the path does, so render.luac is not
+// render.lua.
 func foldQuotedFilePaths(s string, files map[string]bool) string {
 	for name := range files {
-		quoted := regexp.MustCompile(`'(?:[A-Za-z]:)?[\\/][^']*[\\/]` + regexp.QuoteMeta(name) + `'`)
-		s = quoted.ReplaceAllString(s, "'<FILE:"+name+">'")
-		braced := regexp.MustCompile(`\{(?:[A-Za-z]:)?[\\/][^{}]*[\\/]` + regexp.QuoteMeta(name) + `\}`)
-		s = braced.ReplaceAllString(s, "{<FILE:"+name+">}")
+		path := regexp.MustCompile(`(?:[A-Za-z]:)?[\\/][^\s"'{}\[\]]*[\\/]` + regexp.QuoteMeta(name) + `([\s"'{}\[\]]|$)`)
+		s = path.ReplaceAllString(s, "<FILE:"+name+">$1")
 	}
 	return s
 }

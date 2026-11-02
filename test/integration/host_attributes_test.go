@@ -19,7 +19,7 @@ package integration
 // times out, which is why these assert on completion rather than on a value.
 //
 // NOT tagged `integration`, for the reason worker_binary_test.go and
-// ffmpeg_presets_test.go are not: the CI `test` job runs `make test-cover`,
+// preset_ffmpeg_test.go are not: the CI `test` job runs `make test-cover`,
 // which passes no `-tags`, so a file behind that tag compiles and lints but
 // never executes there.
 

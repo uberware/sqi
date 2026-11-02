@@ -9,7 +9,7 @@
 # `powershell -File` refuses — so the golden's embedded-file NAME and full BODY
 # are the part to review, not the argv.
 #
-# `default` matches ffmpeg_presets_test.go's 6s/2s geometry (3 slices + 1 join).
+# `default` matches preset_ffmpeg_test.go's 6s/2s geometry (3 slices + 1 join).
 # `uneven-tail` uses 7s/2s: ceil(3.5) = 4 slices, a different task count.
 cases:
   - name: default

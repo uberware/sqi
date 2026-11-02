@@ -200,10 +200,29 @@ func TestLogChecks_Validate(t *testing.T) {
 			wantMessage: "unknown sqi step block",
 		},
 		{
-			name:       "non-SQI unknown step key is still dropped",
-			extensions: declared,
-			stepExtra:  "    fooBar: 1\n" + block("{failOn: [x]}"),
-			wantOK:     true,
+			name:        "non-SQI unknown step key is rejected",
+			extensions:  declared,
+			stepExtra:   "    fooBar: 1\n" + block("{failOn: [x]}"),
+			wantPointer: "/steps/0/fooBar",
+			wantMessage: "unknown field; the step template schema defines no such key",
+		},
+		{
+			name:        "misspelled base-spec step key",
+			stepExtra:   "    stepEnviroments: []",
+			wantPointer: "/steps/0/stepEnviroments",
+			wantMessage: "unknown field; the step template schema defines no such key",
+		},
+		{
+			name:        "bash action without FEATURE_BUNDLE_1",
+			stepExtra:   "    bash: {}",
+			wantPointer: "/steps/0/bash",
+			wantMessage: "unknown field; the step template schema defines no such key",
+		},
+		{
+			name:        "unregistered SQI_ step block",
+			stepExtra:   "    SQI_NOPE: {}",
+			wantPointer: "/steps/0/SQI_NOPE",
+			wantMessage: `unknown sqi step block "SQI_NOPE"; no supported extension defines it`,
 		},
 		{
 			name:        "top level, declared",
@@ -464,8 +483,8 @@ func TestLogChecks_ParsedValues(t *testing.T) {
 	if want := []string{"SQI_RENDER: OK"}; !reflect.DeepEqual(lc.RequireLine, want) {
 		t.Errorf("RequireLine = %v, want %v", lc.RequireLine, want)
 	}
-	if want := []string{"SQI_LOG_CHECKS"}; !reflect.DeepEqual(tmpl.Steps[0].SQIKeys, want) {
-		t.Errorf("SQIKeys = %v, want %v", tmpl.Steps[0].SQIKeys, want)
+	if want := []string{"SQI_LOG_CHECKS"}; !reflect.DeepEqual(tmpl.Steps[0].UnknownFields, want) {
+		t.Errorf("UnknownFields = %v, want %v", tmpl.Steps[0].UnknownFields, want)
 	}
 }
 
@@ -477,19 +496,19 @@ func TestLogChecks_AbsentBlockIsNil(t *testing.T) {
 	if tmpl.Steps[0].LogChecks != nil {
 		t.Errorf("LogChecks = %+v, want nil", tmpl.Steps[0].LogChecks)
 	}
-	if len(tmpl.Steps[0].SQIKeys) != 0 {
-		t.Errorf("SQIKeys = %v, want none", tmpl.Steps[0].SQIKeys)
+	if len(tmpl.Steps[0].UnknownFields) != 0 {
+		t.Errorf("UnknownFields = %v, want none", tmpl.Steps[0].UnknownFields)
 	}
 }
 
-func TestLogChecks_SQIKeysAreSorted(t *testing.T) {
+func TestUnknownStepFields_AreSorted(t *testing.T) {
 	y := lcTemplate("", "", "    SQI_ZED: 1\n    SQI_ALPHA: 2\n    plain: 3")
 	tmpl, err := openjd.Parse([]byte(y), openjd.FormatYAML)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if want := []string{"SQI_ALPHA", "SQI_ZED"}; !reflect.DeepEqual(tmpl.Steps[0].SQIKeys, want) {
-		t.Errorf("SQIKeys = %v, want %v", tmpl.Steps[0].SQIKeys, want)
+	if want := []string{"SQI_ALPHA", "SQI_ZED", "plain"}; !reflect.DeepEqual(tmpl.Steps[0].UnknownFields, want) {
+		t.Errorf("UnknownFields = %v, want %v", tmpl.Steps[0].UnknownFields, want)
 	}
 }
 

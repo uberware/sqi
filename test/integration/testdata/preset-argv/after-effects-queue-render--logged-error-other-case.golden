@@ -1,0 +1,17 @@
+preset: after-effects-queue-render
+case:   logged-error-other-case
+params:
+  SceneFile=/Volumes/Show Files/spot/o'brien_v002.aep
+
+step "Render" — 1 task
+  log checks: failOn "(?i)aerender ERROR"
+
+task 1/1  name="Render"
+  command: aerender
+  args:
+    [0]  -project
+    [1]  /Volumes/Show Files/spot/o'brien_v002.aep
+    [2]  -v
+    [3]  ERRORS_AND_PROGRESS
+    [4]  -close
+    [5]  DO_NOT_SAVE_CHANGES

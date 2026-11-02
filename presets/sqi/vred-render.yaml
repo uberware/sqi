@@ -120,7 +120,7 @@ version: 1.0.0
 template:
   specificationVersion: jobtemplate-2023-09
   name: VRED Render
-  extensions: [TASK_CHUNKING, SQI_CHUNK_BOUNDS, EXPR, SQI_LOG_CHECKS]
+  extensions: [TASK_CHUNKING, EXPR, SQI_LOG_CHECKS]
   parameterDefinitions:
     - name: SceneFile
       type: PATH

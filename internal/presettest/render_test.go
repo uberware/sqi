@@ -287,3 +287,30 @@ func TestHostPathReplacer_EscapedForms(t *testing.T) {
 		t.Errorf("render leaked a host-flavored or escaped path:\n%s", got)
 	}
 }
+
+// TestRender_SessionPathEndsAtABracketOrBrace pins where a session path inside
+// an argument ends: at a brace (Modo's -cmd:@{script} {params}) and at a square
+// bracket (the Fusion preset's dofile([==[script]==])), so the text after the
+// path stays in the golden for review.
+func TestRender_SessionPathEndsAtABracketOrBrace(t *testing.T) {
+	const posix = "/tmp/presettest-sessions-7/sessions/abc"
+	const windows = `C:\Users\r\AppData\Local\Temp\presettest-sessions-7\sessions\abc`
+	tests := []struct{ arg, want string }{
+		{"dofile([==[" + posix + "/render.lua]==])", "dofile([==[<WORKDIR>]==])"},
+		{"dofile([==[" + windows + `\render.lua]==])`, "dofile([==[<WORKDIR>]==])"},
+		{"-cmd:@{" + posix + "/render.py} {" + posix + "/params.json}", "-cmd:@{<WORKDIR>} {<WORKDIR>}"},
+	}
+	for _, tc := range tests {
+		snap := presettest.Snapshot{
+			Preset: "demo",
+			Case:   "default",
+			Steps: []presettest.StepSnapshot{{
+				Name:  "Render",
+				Tasks: []presettest.TaskSnapshot{{Name: "Render", Command: "renderer", Args: []string{tc.arg}}},
+			}},
+		}
+		if got := presettest.Render(snap); !strings.Contains(got, "    [0]  "+tc.want+"\n") {
+			t.Errorf("render of %q lacks %q:\n%s", tc.arg, tc.want, got)
+		}
+	}
+}

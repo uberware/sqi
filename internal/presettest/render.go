@@ -36,8 +36,10 @@ var uuidPattern = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{
 //
 // Braces end a path as quotes and whitespace do: Modo's -cmd:@{script} {params}
 // quotes each path in braces, and a pattern that ran on through them would
-// swallow the closing brace and the second path.
-var sessionDirPattern = regexp.MustCompile(`(?:[A-Za-z]:)?(?:/private)?(?:[\\/][^\s"'{}]*)?presettest-sessions-[0-9]+(?:[\\/][^\s"'{}]*)?`)
+// swallow the closing brace and the second path. Square brackets end one too:
+// the Fusion preset's -execute code puts its script path in a Lua long bracket,
+// dofile([==[script]==]), whose closing ]==]) would otherwise vanish.
+var sessionDirPattern = regexp.MustCompile(`(?:[A-Za-z]:)?(?:/private)?(?:[\\/][^\s"'{}\[\]]*)?presettest-sessions-[0-9]+(?:[\\/][^\s"'{}\[\]]*)?`)
 
 // Render returns the golden-file text for s: a header naming the preset, the
 // case, the bound parameters and any template patch, then every step, every

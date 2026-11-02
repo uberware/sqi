@@ -26,6 +26,10 @@ opened:
   Python for every handoff host but two: After Effects is ExtendScript and
   Fusion is Lua (Fusion bundles Lua, not Python). See [The handoff
   contract](#the-handoff-contract).
+- **Both.** Katana hands off on every version, and on Katana 8 or later it can
+  also open the dialog in-process: when `sqi-submitter` is installed for
+  Katana's own Python, the same menu entry opens the dialog inside Katana. See
+  [Katana](#katana).
 
 | Host | Opens the dialog | Installed as | Targets (per-target products) |
 |---|---|---|---|
@@ -38,10 +42,10 @@ opened:
 | Cinema 4D | handoff | one `.pyp` plug-in file (`sqi-submit install-host cinema4d`) | checked takes |
 | After Effects | handoff | a ScriptUI panel `.jsx` plus `json2.js` | `Queued` render-queue items |
 | Unreal Engine | handoff | a module plus the `init_unreal.py` startup hook (`sqi-submit install-host unreal`) | enabled Movie Render Queue jobs |
-| Katana | handoff | a module plus the `init.py` startup hook (`sqi-submit install-host katana`) | Render nodes |
+| Katana | handoff; in-process on Katana 8 or later when `sqi-submitter` is installed for Katana's Python | a module plus the `init.py` startup hook (`sqi-submit install-host katana`), optionally plus `sqi-submitter` in a site folder for Katana's Python | Render nodes |
 | KeyShot | handoff | one script file, run from the Scripting Console (`sqi-submit install-host keyshot`) | studios |
 | Silhouette | handoff | a module plus the `sfxuser.py` startup hook (`sqi-submit install-host silhouette`) | output nodes of each session |
-| Fusion | handoff | one Lua comp script (`sqi-submit install-host fusion`) | none (whole-comp only) |
+| Fusion | handoff | one Lua comp script (`sqi-submit install-host fusion`) | Savers that are not in pass-through |
 | Modo | handoff | a kit folder `sqi/` (`sqi-submit install-host modo`) | render pass groups |
 
 The package is layered so the parts that need Qt or a DCC's Python API stay
@@ -77,7 +81,10 @@ inside a host that cannot import `sqi_submitter`, so each is a single file (or,
 for the hosts that fix the name of a startup file, a module plus a tiny hook;
 for Modo, a kit folder) that uses only that host's standard library and ships
 in the wheel as package data. `hosts/vred` is the exception: its script plugin
-runs `sqi_submitter` inside VRED's own Python.
+runs `sqi_submitter` inside VRED's own Python. `hosts/katana` holds both kinds:
+the handoff module and hook, and an importable adapter and menu glue
+(`adapter.py`, `menu.py`) that the handoff module loads by name on Katana 8 or
+later when `sqi_submitter` imports there.
 
 The submitter is **product-driven** and hard-codes no per-DCC fields. It
 fetches the product catalog (`GET /api/v1/products`), lets the artist pick a
@@ -112,7 +119,10 @@ There are two install shapes, matching the two ways the dialog opens (see the
   (`sqi-submit install-host` does it where it can), and install
   `sqi-submitter[qt]` on the same machine as an ordinary command-line tool, for
   example with `pipx`, so the `sqi-submit` command exists. See [`sqi-submit
-  install-host`](#sqi-submit-install-host).
+  install-host`](#sqi-submit-install-host). Katana 8 or later can also run
+  the dialog in-process, with `sqi-submitter` (never the `[qt]` extra)
+  installed into a site folder for Katana's Python; see
+  [Katana](#in-process-on-katana-8-or-later).
 
 ```sh
 pip install sqi-submitter
@@ -346,6 +356,20 @@ the context file and starts `sqi-submit`. An unsaved scene is refused with
 view layer pair, are the targets: `blender-view-layer-render` is per-target and
 `blender-batch-render` is whole-scene.
 
+Each view layer target pre-fills **Output Path** from its scene's output
+setting. When several layers would share that path, each job would overwrite
+the frames of the one before it, so the add-on gives every one of them a folder
+named after the layer, inserted before the file prefix: with two layers `Fg`
+and `Bg` in a scene that writes `//renders/shot_####`, they render to
+`//renders/Fg/shot_####` and `//renders/Bg/shot_####`. When two of the layers
+sharing a path also share a name (`ViewLayer` in two scenes), the folder is the
+scene and then the layer, `//renders/<scene>/<layer>/...`. A layer whose path
+no other layer shares keeps it unchanged. In a folder name, `/ \ : * ? " < > |`
+and `#` become `_`: the first nine are not allowed in a Windows folder name, and
+Blender would read a `#` as part of the frame number. An **Output Path** you
+type in the dialog applies to every ticked layer, so tick one layer at a time
+to give each its own.
+
 If `sqi-submit` is not on Blender's `PATH`, set its full path in the add-on's
 preferences (**sqi-submit path**) or as `sqi_submit_command` in
 `~/.sqi/submitter.json`; see [How `sqi-submit` is
@@ -469,9 +493,8 @@ image-sequence items only. See [Submitting several
 targets](#submitting-several-targets).
 
 > **For a submitted job to run,** the rendering worker needs the
-> `aftereffects=true` capability tag, `aerender` on its `PATH`, and a
-> render-only marker file, and the product must match the worker's OS
-> (`windows` or `macos`). See [Reference presets](#reference-presets).
+> `aftereffects=true` capability tag, an `aerender` it can resolve and a
+> render-only marker file, and must run Windows or macOS. See [Reference presets](#reference-presets).
 
 ### Unreal Engine
 
@@ -519,18 +542,54 @@ stop:
 - the job's render settings were edited in the queue but not saved as a Movie
   Render Pipeline config asset (the job has no config asset to point at);
 - the job's map or level sequence is not a saved asset (an untitled map, or a
-  path under `/Temp/`).
+  path under `/Temp/`);
+- the job has no enabled shot ("no enabled shots"): every entry of its shot list
+  is switched off in the queue, or the sequence has none;
+- the job has more shots than `unreal-mrq-shot-render` accepts ("more than 1000
+  shots"), or a shot name longer than its 256-character limit ("shot name longer
+  than 256 characters"). The submitter checks these limits itself so that the
+  refusal names the target.
 
-`unreal-mrq-job-render` is the per-target product: each ticked job becomes one
-job, with `LevelSequence`, `Map` and `MovieRenderConfig` filled from the queue
-job. `unreal-mrq-queue-render` renders a saved queue asset as one task. It is
+If nothing is left to submit, the submitter launches nothing and says why in a
+message with only **OK**. An empty queue, or one whose jobs are all disabled,
+gets "The Movie Render Queue has no enabled jobs. Add or enable a job (or load
+a saved queue) in Window > Cinematics > Movie Render Queue, then submit again."
+When every enabled job is one of the refused kinds above, the message is "None
+of the queue's enabled jobs can render on the farm, so nothing was submitted:"
+followed by each job and its reason.
+
+Each target also carries its **shots**. Before reading them the submitter loads
+the job's level sequence and calls `update_job_shot_list_from_sequence` on the
+job, as the farm's script does, so both sides see the same shot list; this
+refreshes the shot list shown in the open Movie Render Queue. The enabled
+entries become the target's `Shots`, in queue order. An entry is named by its
+outer name, which is its section's name in the sequence's shot track (such as
+`SH010`); a sequence with no shot track has one entry, which the Movie Render
+Queue names `no shot`. A name that appears twice is listed once. If reading the shots raises an error, the job is still
+offered without them and the error is logged as an Editor warning: the job and
+queue presets do not need the shots. **Shots** is then typed in the dialog for
+`unreal-mrq-shot-render`, since not every target supplies it.
+
+Two products are per-target for a queue job, and the dialog lists both: pick
+the one that suits the job.
+
+- `unreal-mrq-job-render` makes one job per ticked queue job, rendered as one
+  task, with `LevelSequence`, `Map` and `MovieRenderConfig` filled from the
+  queue job. It ignores the shots.
+- `unreal-mrq-shot-render` makes one job per ticked queue job as well, with the
+  same three values and **Shots** filled with the job's enabled shots, one
+  list entry each; the job renders one task per shot, so the shots of a
+  sequence render side by side on several workers. **Shots** belongs to the
+  target: edit the queue to change it, not the list in the dialog.
+
+`unreal-mrq-queue-render` renders a saved queue asset as one task. It is
 not pre-filled: the handoff context has no scene-level field for a queue
 asset, so the product is always listed and you type the saved queue's asset
 path (such as `/Game/Cinematics/MyQueue`) into **Queue Asset**. Neither product
 has a **Frame Range**: each queue job renders the range in its own config.
 
 > **For a submitted job to run,** the rendering worker needs the `unreal=true`
-> capability tag and runs on Windows (both presets require
+> capability tag and runs on Windows (all three presets require
 > `attr.worker.os.family = "windows"`). Without a tagged worker the job stays
 > `ready`. See [Reference presets](#reference-presets).
 
@@ -538,10 +597,12 @@ has a **Frame Range**: each queue job renders the range in its own config.
 
 Katana hands the open project to `sqi-submit`, on every Katana version (Katana
 7.5 and earlier run PyQt5, which this package's Qt shim does not cover, so one
-standard-library-only file serves them all). The host side is
-`sqi_katana_submit.py` plus `init.py`, a startup hook that puts its own folder
-on `sys.path`, imports the module and registers the menu from Katana's
-`onStartupComplete` callback.
+standard-library-only file serves them all). On Katana 8 or later, which runs
+PySide6, the same menu entry can instead open the dialog **in-process**, inside
+Katana; see [In-process on Katana 8 or later](#in-process-on-katana-8-or-later)
+below. The host side is `sqi_katana_submit.py` plus `init.py`, a startup hook
+that puts its own folder on `sys.path`, imports the module and registers the
+menu from Katana's `onStartupComplete` callback.
 
 1. Install `sqi-submit` on the machine: `pipx install "sqi-submitter[qt]"`.
 2. Run `sqi-submit install-host katana`. It copies both files into
@@ -565,6 +626,53 @@ and the project's In/Out time otherwise. An unsaved project is refused with
 "Save your scene before submitting"; a changed one is saved first.
 `katana-render` is the per-target product (`RenderNode`); there is no
 whole-scene Katana product.
+
+#### In-process on Katana 8 or later
+
+This is optional: without it, Katana 8 hands off exactly as earlier versions
+do. With it, **Submit to sqi…** opens the dialog inside Katana, parented to
+Katana's main window, with no separate `sqi-submit` process.
+
+1. **Install `sqi-submitter` for Katana's Python into a folder of its own,**
+   never the `[qt]` extra (Katana supplies PySide6, and a second copy in the
+   process can conflict with it). Katana's interpreter is not meant for pip, so
+   fetch the wheels for its Python version from any `pip`:
+
+   ```sh
+   pip install --python-version 3.11 --only-binary=:all: --target ~/.sqi/katana-site sqi-submitter
+   ```
+
+   (`%USERPROFILE%\.sqi\katana-site` on Windows.) 3.11 is Katana 8's; match the
+   `sys.version` in Katana's own Python tab.
+2. **Tell Katana where it went.** Set `sqi_submitter_site.katana` in
+   `~/.sqi/submitter.json` to that folder (escape backslashes on Windows). The
+   key is per host, so a bare `sqi_submitter_site` or VRED's key is ignored:
+
+   ```json
+   { "sqi_submitter_site.katana": "/home/you/.sqi/katana-site" }
+   ```
+
+   The environment variable `SQI_SUBMITTER_SITE` does the same and wins. A
+   plain `import sqi_submitter` is tried first, so a `sqi_submitter` already on
+   Katana's path needs no setting.
+   `SQI_SUBMITTER_SITE` is one environment variable shared by Katana and VRED,
+   so a machine running both would point both at one folder; the settings keys
+   `sqi_submitter_site.katana` and `sqi_submitter_site.vred` are per host.
+3. Install the host files as above (`sqi-submit install-host katana`) and
+   restart Katana. Nothing in the hook changes: the choice is made in
+   `sqi_katana_submit.py` at each click.
+
+At each click the module reads Katana's major version from `KatanaInfo.version`
+before importing anything from `sqi_submitter`. Below 8, or when the
+version cannot be read, it hands off, so Katana 7.5 and earlier never import
+`sqi_submitter` even when a stray PySide6 or `sqi_submitter` is on their path.
+On 8 or later it imports `sqi_submitter.hosts.katana.menu`; if that fails, it
+adds the configured folder to `sys.path` and tries once more. When nothing is
+configured and the import fails, it hands off quietly. When a configured folder
+still fails, or the dialog fails to open, it prints the reason to Katana's
+console and hands off. In the dialog, the targets, frame ranges and unsaved
+project handling are the same as in the handoff, and the dialog's **Save scene
+before submit** box saves through `KatanaFile.Save`.
 
 > **For a submitted job to run,** the rendering worker needs the `katana=true`
 > capability tag and Katana's `katana` command. Without a tagged worker the job
@@ -596,16 +704,20 @@ unverified on an install; the [VRED checklist](#vred-checklist) lists them.
    `pip install --python-version 3.11 --only-binary=:all: --target
    %USERPROFILE%\.sqi\vred-site sqi-submitter` (3.11 is VRED 2026's; match the
    `sys.version` in VRED's own Python console).
-3. **Tell the plugin where it went.** Set `sqi_submitter_site` in
-   `~/.sqi/submitter.json` to that folder, escaping the backslashes:
+3. **Tell the plugin where it went.** Set `sqi_submitter_site.vred` in
+   `~/.sqi/submitter.json` to that folder, escaping the backslashes. The key is
+   per host, so a bare `sqi_submitter_site` is ignored:
 
    ```json
-   { "sqi_submitter_site": "C:\\Users\\you\\.sqi\\vred-site" }
+   { "sqi_submitter_site.vred": "C:\\Users\\you\\.sqi\\vred-site" }
    ```
 
    The environment variable `SQI_SUBMITTER_SITE` does the same and wins. The
    plugin tries a plain `import sqi_submitter` first, so an install into VRED's
    own `site-packages` needs no setting.
+   `SQI_SUBMITTER_SITE` is one environment variable shared by VRED and Katana,
+   so a machine running both would point both at one folder; the settings keys
+   `sqi_submitter_site.vred` and `sqi_submitter_site.katana` are per host.
 4. Run `sqi-submit install-host vred` (any ordinary install of `sqi-submitter`
    will do; the command needs no Qt). When it finds exactly one `VRED-*` folder
    under `%USERPROFILE%\Documents\Autodesk`, it copies the plugin to
@@ -731,9 +843,18 @@ the context file that contains a double quote, or on Windows a `%`, is refused
 with a message, and nothing is launched. The script reports problems in Fusion's
 Console and in a message dialog.
 
-The submission is the **whole comp**: the render command line cannot pick a
-Saver, so Fusion offers no targets and `fusion-render` is a whole-scene
-product. **Frame Range** is the comp's render range. An unsaved comp is refused
+The script lists the comp's **Savers** as targets, from
+`comp:GetToolList(false, "Saver")`, in the order Fusion returns them. A Saver in
+pass-through (`TOOLB_PassThrough`) writes nothing and is left out. Each target
+supplies the `Saver` parameter, so `fusion-saver-render` is a per-target
+product: tick the Savers to render and the dialog submits one job per Saver.
+`fusion-render` has no `Saver` parameter, so it stays a whole-scene product and
+renders every Saver the comp writes, whatever is ticked. A Saver's first output
+file (`TOOLST_Clip_Name`) is shown as the target's output path when Fusion
+reports one. If Fusion cannot list the Savers (the call raises, or the method
+is missing), the script says so on the Console and submits with no targets, so
+the dialog behaves as a whole-comp host and `fusion-render` still works.
+**Frame Range** is the comp's render range. An unsaved comp is refused
 with "Save your scene before submitting"; a changed one is saved first. Unlike
 the Python hosts, the context file goes straight into the system temp folder
 (`%TEMP%` on Windows, an `os.tmpname` file on macOS and Linux), not into a
@@ -790,7 +911,10 @@ location, or into `--dest DIR` (created if missing), and prints what it did and
 the next step. The files are package data, so this works with no Qt binding
 installed. (`vred` is the one host here that is not a handoff host; the command
 installs its script plugin the same way, and the plugin additionally needs
-`sqi-submitter` in VRED's Python, see [VRED](#vred).)
+`sqi-submitter` in VRED's Python, see [VRED](#vred). Katana's files are the
+same for both of its modes: its optional in-process mode needs only
+`sqi-submitter` in a site folder for Katana's Python, see
+[Katana](#in-process-on-katana-8-or-later).)
 
 | Host | Files | Default destination | Without a default destination |
 |---|---|---|---|
@@ -896,21 +1020,24 @@ exported scene files without loading the DCC, and five `Transcoding`-category
 [ffmpeg presets](preset-library.md#transcoding-reference-presets). Install the
 DCC presets from **Admin → Preset Library** in the web UI or, without a preset
 index, create them through `POST /api/v1/products` or **Admin → Products**. All
-twenty-nine use the product `category` `Rendering`. All but the two After Effects
-queue presets and the two Unreal presets (one task each) declare `TASK_CHUNKING` to split the frame range;
-the Maya, Blender, After Effects render, Mistika, Katana, Silhouette, Fusion, VRED and Modo presets also declare
+twenty-nine use the product `category` `Rendering`. All but the After Effects
+queue preset and the three Unreal presets (one task each, or one per shot) declare `TASK_CHUNKING` to split the frame range;
+the Maya, Blender, After Effects render, Mistika, Katana and Silhouette presets and `fusion-render` also declare
 `SQI_CHUNK_BOUNDS` to expose each chunk's start and end frame (see
 [OpenJD extensions](openjd-extensions.md)). The Cinema 4D and 3ds Max presets
 declare `EXPR` instead: it computes the same two frames, and leaves the output
-flag out when **Output Path** is empty. The two VRED presets declare `EXPR` as well,
-to build the `params.json` their embedded `render.py` reads inside VRED; like the Modo presets
-below, they declare the bounds but nothing reads them. The two KeyShot presets
+flag out when **Output Path** is empty. (`SQI_CHUNK_BOUNDS` is rejected in a
+template that declares `EXPR`, because a `CHUNK[INT]` is then a `range_expr`
+and `.Start`/`.End` do not resolve.) The two VRED presets declare `TASK_CHUNKING`, `EXPR`
+and `SQI_LOG_CHECKS`: `EXPR` builds the `params.json` their embedded `render.py` reads inside VRED,
+and that script takes its first and last frame from it. The two KeyShot presets
 declare `TASK_CHUNKING`, `EXPR` and `SQI_LOG_CHECKS` but not `SQI_CHUNK_BOUNDS`: their script loops over
 any list of frames, so a chunk may be stepped or gapped, and it needs no bounds. The two Modo presets declare
-`TASK_CHUNKING`, `SQI_CHUNK_BOUNDS`, `EXPR` and `SQI_LOG_CHECKS`; they declare the bounds but nothing reads them, since under `EXPR` the
-script takes its first and last frame from `params.json`. The two Unreal presets declare only `EXPR` and
-`SQI_LOG_CHECKS`: each renders one Movie Render Queue job or saved queue as one task, with its own frame range,
-and `EXPR` builds the `params.json` their embedded script reads inside the editor.
+`TASK_CHUNKING`, `EXPR` and `SQI_LOG_CHECKS`; under `EXPR` the
+script takes its first and last frame from `params.json`. `fusion-saver-render` declares the same three,
+and its embedded `render.lua` takes its first and last frame from `params.json` too. The three Unreal presets declare only `EXPR` and
+`SQI_LOG_CHECKS`: each renders one Movie Render Queue job or saved queue as one task, or one shot of a job per task,
+with its own frame range, and `EXPR` builds the `params.json` their embedded script reads inside the editor.
 
 Twenty-six of the twenty-nine have a matching `sqi-submitter` host (Maya,
 Houdini, Nuke, 3ds Max, VRED, Blender, Cinema 4D, After Effects, Unreal Engine,
@@ -929,15 +1056,14 @@ none and are submitted from the web UI or the API.
 | `cinema4d-render` | `Commandline -nogui -render <scene> -frame <start> <end> [-oimage <path>]` | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `OutputPath` | `attr.worker.tag.cinema4d = "true"` |
 | `cinema4d-take-render` | `Commandline -nogui -render <scene> -frame <start> <end> -take <take> [-oimage <path>]` | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `Take`, `OutputPath` | `attr.worker.tag.cinema4d = "true"` |
 | `3dsmax-render` | `3dsmaxcmd -v:5 -rfw:0 -start:<n> -end:<n> [-outputName:<path>] <scene>` | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `OutputPath` | `attr.worker.tag.3dsmax = "true"` and `attr.worker.os.family = "windows"` |
-| `after-effects-render-windows` | `aerender -project <scene> -rqindex <n> -s <start> -e <end> -v ERRORS_AND_PROGRESS -close DO_NOT_SAVE_CHANGES`, run through an embedded PowerShell wrapper | up to `FramesPerTask` per task, default 10 | `SceneFile`, `Frames`, `RenderQueueItem`, `FramesPerTask` | `attr.worker.tag.aftereffects = "true"` and `attr.worker.os.family = "windows"` |
-| `after-effects-render-macos` | the same `aerender` arguments, run through an embedded POSIX `sh` wrapper | up to `FramesPerTask` per task, default 10 | `SceneFile`, `Frames`, `RenderQueueItem`, `FramesPerTask` | `attr.worker.tag.aftereffects = "true"` and `attr.worker.os.family = "macos"` |
-| `after-effects-queue-render-windows` | `aerender -project <scene> -v ERRORS_AND_PROGRESS -close DO_NOT_SAVE_CHANGES` (renders the saved queue as is), through the PowerShell wrapper | one task for the whole queue | `SceneFile` | `attr.worker.tag.aftereffects = "true"` and `attr.worker.os.family = "windows"` |
-| `after-effects-queue-render-macos` | the same queue render, through the `sh` wrapper | one task for the whole queue | `SceneFile` | `attr.worker.tag.aftereffects = "true"` and `attr.worker.os.family = "macos"` |
+| `after-effects-render` | `aerender -project <scene> -rqindex <n> -s <start> -e <end> -v ERRORS_AND_PROGRESS -close DO_NOT_SAVE_CHANGES` | up to `FramesPerTask` per task, default 10 | `SceneFile`, `Frames`, `RenderQueueItem`, `FramesPerTask` | `attr.worker.tag.aftereffects = "true"` and `attr.worker.os.family = "windows"` or `"macos"` |
+| `after-effects-queue-render` | `aerender -project <scene> -v ERRORS_AND_PROGRESS -close DO_NOT_SAVE_CHANGES` (renders the saved queue as is) | one task for the whole queue | `SceneFile` | `attr.worker.tag.aftereffects = "true"` and `attr.worker.os.family = "windows"` or `"macos"` |
 | `mistika-boutique-render` | `mistika -r <scene> -s/-e <frame range>` | chunks of 10 | `SceneFile` (`*.rnd`), `Frames` | `attr.worker.tag.mistika = "true"` |
 | `mistika-vr-render` | `vr -r <scene> -s/-e <frame range>` | chunks of 10 | `SceneFile` (`*.rnd`), `Frames` | `attr.worker.tag.mistikavr = "true"` |
 | `mistika-workflows-render` | `workflows -r <scene> -s/-e <frame range>` | chunks of 10 | `SceneFile` (`*.rnd`), `Frames` | `attr.worker.tag.mistikaworkflows = "true"` |
 | `katana-render` | `katana --batch --katana-file=<scene> --render-node=<node> -t <first>-<last>` | one frame per task by default (raise `FramesPerTask` to batch) | `SceneFile` (`*.katana`), `Frames`, `RenderNode`, `FramesPerTask` | `attr.worker.tag.katana = "true"` |
 | `fusion-render` | `FusionRenderNode <comp> -render -start <first> -end <last> -quiet -verbose -quit` | chunks of 10 | `SceneFile` (`*.comp`), `Frames`, `FramesPerTask` | `attr.worker.tag.fusion = "true"` |
+| `fusion-saver-render` | `FusionRenderNode -quiet -verbose -execute <code>`, the code running an embedded `render.lua` that loads the comp named in an embedded `params.json`, puts every other Saver in pass-through and renders the task's frames | chunks of 10 (`FramesPerTask` at most 1000) | `SceneFile` (`*.comp`), `Frames`, `Saver`, `FramesPerTask` | `attr.worker.tag.fusion = "true"` |
 | `silhouette-render` | `sfxcmd -session <session> -node <output node> -range <first>-<last> <project>` | chunks of 10 | `SceneFile` (the `.sfx` bundle, a directory), `Frames`, `Session`, `OutputNode`, `FramesPerTask` | `attr.worker.tag.silhouette = "true"` |
 | `silhouette-render-all` | `sfxcmd -all -range <first>-<last> <project>` (every output node of the active session) | chunks of 10 | `SceneFile` (the `.sfx` bundle, a directory), `Frames`, `FramesPerTask` | `attr.worker.tag.silhouette = "true"` |
 | `vred-render` | `VREDCore <scene> -insecure_python -fast_start -hide_gui -postpython <code>`, the code running an embedded `render.py` that reads the task's frames and output file from an embedded `params.json` | chunks of 10 (`FramesPerTask` at most 1000) | `SceneFile` (`*.vpb`), `Frames`, `FramesPerTask`, `OutputFile` (blank keeps the scene's render filename) | `attr.worker.tag.vred = "true"` |
@@ -948,6 +1074,7 @@ none and are submitted from the web UI or the API.
 | `modo-pass-group-render` | as `modo-render`, the script running `render.animation` for one pass group | chunks of 1 (`FramesPerTask` at most 1000) | `SceneFile` (`*.lxo`), `Frames`, `PassGroup`, `FramesPerTask` | `attr.worker.tag.modo = "true"` |
 | `unreal-mrq-job-render` | `UnrealEditor-Cmd <project> -log -unattended -stdout -allowstdoutlogverbosity -NoLoadingScreen -NoScreenMessages -RenderOffscreen -nohmd -windowed -execcmds=py <import of the embedded script>`, the script building one Movie Render Queue job from an embedded `params.json` and rendering it with the PIE executor | one task (the config's frame range) | `SceneFile` (`*.uproject`, label Project File), `LevelSequence`, `Map`, `MovieRenderConfig`, `OutputDirectory` (blank keeps the config's) | `attr.worker.tag.unreal = "true"` and `attr.worker.os.family = "windows"` |
 | `unreal-mrq-queue-render` | as `unreal-mrq-job-render`, the script copying the jobs of a saved Movie Pipeline Queue asset into the editor's queue | one task for the whole queue | `SceneFile` (`*.uproject`), `QueueAsset`, `OutputDirectory` (blank keeps each job's) | `attr.worker.tag.unreal = "true"` and `attr.worker.os.family = "windows"` |
+| `unreal-mrq-shot-render` | as `unreal-mrq-job-render`, the script rebuilding the job's shot list from the sequence and enabling only the task's shot | one task per shot in `Shots` | as `unreal-mrq-job-render`, plus `Shots` (`LIST[STRING]`, 1 to 1000 names) | `attr.worker.tag.unreal = "true"` and `attr.worker.os.family = "windows"` |
 
 Maya and Nuke each ship a **single-target** product (`-rl <layer>` /
 `-X <writeNode>`) and a **whole-scene** product that omits that flag: Maya's
@@ -957,12 +1084,9 @@ renders rather than a flag that can be left out. Blender, Cinema 4D and After
 Effects each ship a **per-target** and a **whole-scene** product:
 `blender-view-layer-render` renders one named view layer, `blender-batch-render`
 the scene as saved; `cinema4d-take-render` renders one named take,
-`cinema4d-render` names no take; `after-effects-render-*` renders one
-render-queue item in frame chunks, `after-effects-queue-render-*` everything
+`cinema4d-render` names no take; `after-effects-render` renders one
+render-queue item in frame chunks, `after-effects-queue-render` everything
 the saved project has queued, as one task. 3ds Max ships only `3dsmax-render`.
-Each After Effects preset has a Windows and a macOS variant with the same
-parameters and `aerender` arguments; only the wrapper script differs. Pick the
-one that matches your render nodes.
 
 Maya, Blender, Cinema 4D and 3ds Max default to one frame per task (chunk size
 1). Their start and end frame arguments come from the chunk: its
@@ -988,15 +1112,13 @@ and these presets render up to ten frames per task, so a movie longer than ten
 frames needs the step's `chunks.defaultTaskCount` raised to cover the whole
 range. How Mistika writes a movie from a partial `-s`/`-e` range is unverified.
 
-**After Effects runs `aerender` through a wrapper, and a movie output must be
-one task.** `aerender` is reported to exit 0 when a render fails, so the four
-After Effects presets run it through a small embedded script (PowerShell on
-Windows, POSIX `sh` on macOS). The wrapper passes `aerender`'s output to the
-task log unchanged and fails the task when `aerender` exits non-zero or when
-any output line contains `aerender ERROR`, in any letter case. A failure that
-does neither is still reported as a success. Each render node needs `aerender`
-on its `PATH` (and `powershell` on Windows; macOS runs the wrapper with
-`/bin/sh`), and Adobe's render-only marker, an empty file named
+**After Effects checks `aerender`'s output, and a movie output must be one
+task.** `aerender` is reported to exit 0 when a render fails, so both After Effects
+presets declare `SQI_LOG_CHECKS`: besides a non-zero exit, a task fails when
+any output line contains `aerender ERROR`, in any letter case. A failure that does neither
+is still reported as a success. Each render node needs an `aerender` the worker
+can resolve (the `aftereffects` detector supplies one from a default install),
+and Adobe's render-only marker, an empty file named
 `ae_render_only_node.txt` in `C:\Users\Public\Documents\Adobe` (Windows) or
 `/Users/Shared/Adobe` (macOS). After Effects cannot render one movie file from
 several machines, so when the render-queue item writes a movie, set
@@ -1009,8 +1131,8 @@ Effects submitter does, by locking a movie target's range and frame count
 
 Each preset's `hostRequirements` gates it to workers advertising the matching
 `attr.worker.tag.<name>` capability tag. `3dsmax-render`, the After Effects
-presets and the two Unreal presets also require `attr.worker.os.family` (`windows` for `3dsmax-render`
-and the Unreal presets, `windows` or `macos` for the matching After Effects variant). At startup
+presets and the three Unreal presets also require `attr.worker.os.family` (`windows` for `3dsmax-render`
+and the Unreal presets, `windows` or `macos` for the After Effects presets). At startup
 `sqi-worker` detects a standard Maya, Nuke, Houdini, Blender, Cinema 4D, 3ds
 Max, After Effects, Mistika, Katana, Silhouette (`sfxcmd`), Fusion Render Node, VRED, KeyShot (`keyshot_headless`), Modo (`modo_cl`) or Unreal Engine 5 (`UnrealEditor-Cmd`, in the Epic Games Launcher's default folder only) install, on `PATH` or in its usual install
 location, and advertises the matching tag (`maya`, plus a version variant such
@@ -1030,12 +1152,13 @@ installed under the SGO layout, but the preset invokes the bare command, so
 the binary must also be on the worker's `PATH`. If your SGO install is not on
 `PATH`, add it, or duplicate the preset and give `command:` an absolute path.
 
-The Cinema 4D, 3ds Max and After Effects detectors have the same gap. They tag
-a worker from where the application is installed (and, for 3ds Max and After
-Effects, from the command on `PATH`), but a registry or install-location match
-does not put `Commandline`, `3dsmaxcmd` or `aerender` on the worker's `PATH`,
-and the presets invoke the bare command. Add the install folder to `PATH` on
-each such node.
+The Cinema 4D and 3ds Max detectors have the same gap. They tag a worker from
+where the application is installed (and, for 3ds Max, from the command on
+`PATH`), but a registry or install-location match does not put `Commandline` or
+`3dsmaxcmd` on the worker's `PATH`, and the presets invoke the bare command.
+Add the install folder to `PATH` on each such node. The After Effects detector
+does not have the gap: it supplies an `aerender` command from the install it
+finds.
 
 Manual tags are needed only when a DCC is installed somewhere the built-in
 detectors do not check, or for in-house tools they do not cover. Add a
@@ -1123,14 +1246,14 @@ are the **target parameters**: the names that identify one target.
 | 3ds Max | none: the host offers no targets | none | none | `3dsmax-render` |
 | Blender | one view layer of one scene, named `<scene> / <view layer>` | `Scene` (the **scene name**, not a path) and `ViewLayer` | `blender-view-layer-render` | `blender-batch-render` |
 | Cinema 4D | a checked take other than the main take | `Take` (the take's name) | `cinema4d-take-render` | `cinema4d-render` |
-| Fusion | none: the command line cannot pick a Saver, so the submitter offers no targets | none | none | `fusion-render` |
+| Fusion | a Saver that is not in pass-through, named after the tool | `Saver` (the Saver tool's name; a string) | `fusion-saver-render` | `fusion-render`: it declares no `Saver`, so the dialog treats it as whole-scene |
 | Silhouette | an output node of a session, named `<session> / <node>` | `Session` and `OutputNode` (the node's **label**; both strings) | `silhouette-render` | `silhouette-render-all`: it declares neither parameter, so the dialog treats it as whole-scene |
 | Katana | a Render node that is not bypassed, named in the project | `RenderNode` (the node's name; a string) | `katana-render` | none: a Render node is the unit, as a ROP is for Houdini |
 | VRED | a viewpoint, named after it | `View` (the viewpoint's name; a string) | `vred-viewpoint-render` | `vred-render`: it declares no `View`, so the dialog treats it as whole-scene |
 | KeyShot | a studio of the scene | `Studio` (the studio's name; a string) | `keyshot-studio-render` | `keyshot-render`: it declares no `Studio`, so the dialog treats it as whole-scene |
 | Modo | a render pass group | `PassGroup` (the group's name; a string) | `modo-pass-group-render` | `modo-render`: it declares no `PassGroup`, so the dialog treats it as whole-scene |
-| Unreal | an enabled Movie Render Queue job that has a saved config, map and level sequence, named after the job | `LevelSequence`, `Map` and `MovieRenderConfig` (asset paths such as `/Game/Maps/Hero`; strings) | `unreal-mrq-job-render` | `unreal-mrq-queue-render`: it declares none of them, only `QueueAsset`, so the dialog treats it as whole-scene |
-| After Effects | a `Queued` render-queue item, named after its composition | `RenderQueueItem` (the item's 1-based index; an `INT` parameter, minimum 1; extra values are strings) | `after-effects-render-windows`, `after-effects-render-macos` | `after-effects-queue-render-windows`, `after-effects-queue-render-macos` |
+| Unreal | an enabled Movie Render Queue job that has a saved config, map and level sequence and at least one enabled shot, named after the job | `LevelSequence`, `Map` and `MovieRenderConfig` (asset paths such as `/Game/Maps/Hero`; strings), and `Shots` (a list of the job's enabled shot names, written as JSON array text) | `unreal-mrq-job-render` and `unreal-mrq-shot-render` (it declares `Shots` as well) | `unreal-mrq-queue-render`: it declares none of them, only `QueueAsset`, so the dialog treats it as whole-scene |
+| After Effects | a `Queued` render-queue item, named after its composition | `RenderQueueItem` (the item's 1-based index; an `INT` parameter, minimum 1; extra values are strings) | `after-effects-render` | `after-effects-queue-render` |
 
 Houdini has a per-target product only: its output target is the ROP the script
 renders, not a flag that can be left out. A target's name is for display and
@@ -1263,6 +1386,24 @@ control is stored in the OpenJD document. The web submission form
 (`selectWidget` in `web/src/lib/productForm.ts`) renders a `PATH` parameter as
 a labeled text field, since a browser cannot browse the farm filesystem. Both
 read the same `control` and `label` hints.
+
+### List parameters
+
+A `LIST[*]` parameter's value is the JSON array text (`'["sh010","sh020"]'`), in
+the form model and in a submitter's `extra` as on the wire. The Qt dialog
+renders a `LINE_EDIT_LIST` control as a multi-line field with one item per line:
+blank lines are dropped, each line is trimmed, and lines of a `LIST[INT]`,
+`LIST[FLOAT]` or `LIST[BOOL]` parameter become numbers or booleans where they
+read as one (a line that does not stays text, so validation can name it). An
+empty field leaves the value empty. Other list controls fall back to a plain
+text field holding the JSON.
+
+`FormModel.validate()` (`_validate_field` in `core/schema.py`) checks a list the
+way the web form does: the text must be a JSON array (`Must be a list`), the
+parameter's `min_length`/`max_length` count **items** (`Must have at least 1
+item`, `Must have at most 2 items`), and each element is checked against the
+parameter's `item` constraints (`Item 1: Must be at most 3 characters`). The SDK
+exposes `item` as `ProductParameter.item`, a `ProductParameterItem`.
 
 ---
 
@@ -1410,8 +1551,8 @@ After installing per [Installation per host](#installation-per-host):
    command / panel button.
 2. **Dialog opens with a suggested product.** The product picker shows a
    **Suggested** group containing the host's reference presets (Maya suggests
-   `maya-layer-render` and `maya-scene-render`; After Effects suggests the four
-   `after-effects-*` presets) and an **All** group with every other product.
+   `maya-layer-render` and `maya-scene-render`; After Effects suggests
+   `after-effects-render` and `after-effects-queue-render`) and an **All** group with every other product.
 3. **Target checklist appears for a per-target product only.** Pick a per-target
    product (see the [table](#the-parameter-convention-contract)): the targets
    are listed as a checklist and the line under the picker reads "One job per
@@ -1670,12 +1811,15 @@ After installing per [Installation per host](#installation-per-host):
    `<scene> / <view layer>` for every one. A view layer with **Use for
    Rendering** off is still listed. Pick `blender-view-layer-render` and tick
    two: two jobs, each with the right `Scene` and `ViewLayer`. A scene or layer
-   name containing a space or quotes renders correctly.
+   name containing a space or quotes renders correctly. Two layers of one scene
+   pre-fill `<scene output folder>/<layer>/<file prefix>`, so neither job
+   overwrites the other's frames; a scene with one layer keeps its own output.
 6. `blender-batch-render` is whole-scene: no checklist, `OutputPath` pre-fills
    from the scene's output setting.
 7. **sqi-submit path** set to a bad path, then cleared with `sqi-submit` on
    `PATH`: the first falls through to `PATH` or the settings file; with none
-   found the "sqi-submit was not found" message shows in Blender's status bar.
+   found the "sqi-submit was not found" message shows in Blender's status bar,
+   ending with the hint to set it under Edit > Preferences > Add-ons > sqi.
 8. **The child's environment.** The dialog opens and submits when started from
    Blender. Blender passes its environment to the process it starts, and
    `PYTHONHOME`/`PYTHONPATH` set by the host could break a Python-based
@@ -1725,17 +1869,32 @@ After installing per [Installation per host](#installation-per-host):
    jobs by job name, with `LevelSequence`, `Map` and `MovieRenderConfig`
    filled in as asset paths. Confirm the exact text the Editor produces (for
    example `/Game/Maps/Hero.Hero`) is what a worker's Unreal accepts.
+   **Shots.** Pick `unreal-mrq-shot-render`: **Shots** lists the job's enabled
+   shots, one entry each, in the order of the queue's shot list. Switch a shot
+   off in the Movie Render Queue and submit again: it is gone. Confirm a level
+   sequence with no shot track appears as one shot, `no shot`, and that the
+   job renders on a worker under that name (the preset fails the task naming
+   the shots the sequence has when it is not). Confirm
+   `update_job_shot_list_from_sequence` does not switch off shots you left
+   enabled.
 3. **Refused jobs.** Edit a queue job's settings without saving them as a
    config asset; put a job on an untitled map; give a job a level sequence that
    was never saved. Each is named, with its reason, in the message that appears
    before the dialog. **OK** opens the dialog with the other jobs; **Cancel**
    launches nothing. A job whose config asset was saved and then edited in the
-   queue is also left out.
+   queue is also left out. A job with every shot switched off is refused too:
+   "<job>: no enabled shots".
+   With every enabled job refused, the message instead begins "None of the
+   queue's enabled jobs can render on the farm, so nothing was submitted:" and
+   has only **OK**; nothing launches. An empty queue, or one with every job
+   disabled, shows "The Movie Render Queue has no enabled jobs. ..." with only
+   **OK**, and also launches nothing.
 4. **Unsaved changes.** Make a map or asset dirty and submit. The Editor's save
    dialog appears, then the sqi dialog. Decline to save: "Save your changes
    before submitting — the farm renders the saved project." and no dialog.
 5. `unreal-mrq-job-render` with two jobs ticked: two jobs, each with its own
-   `LevelSequence`, `Map` and `MovieRenderConfig`. `unreal-mrq-queue-render` is
+   `LevelSequence`, `Map` and `MovieRenderConfig`; `unreal-mrq-shot-render` the
+   same, plus each job's own **Shots**. `unreal-mrq-queue-render` is
    always listed (it is whole-scene) and **Queue Asset** starts empty; typing a
    saved queue's asset path submits one task.
 6. `sqi-submit` not found (rename it or clear `PATH`): a message box names the
@@ -1749,39 +1908,29 @@ After installing per [Installation per host](#installation-per-host):
    loads sqi. Over the sqi-installed file (the marker line present) it is
    replaced without complaint.
 
+**Run on Unreal Engine 5.8.4, on Windows 11:** items 1 to 8 pass, except item
+3's job whose config asset was edited in the queue (see below). In
+particular, `register_menu()` finds the Tools menu when `init_unreal.py` runs
+at Editor startup, so registration needs no deferring, and
+`Documents/UnrealEngine/Python` is on the Editor's Python path and scanned for
+`init_unreal.py`. `SoftObjectPath.export_text()` returns object paths such as
+`/Game/Maps/Hero.Hero`, which the worker's Unreal accepts.
+
 **Verified only against fakes or documentation:**
 
-- **Asynchronous menu registration, the riskiest item.** `init_unreal.py` runs
-  during Editor startup and `register_menu()` calls
-  `ToolMenus.get().find_menu("LevelEditor.MainMenu.Tools")` at once. Whether
-  `ToolMenus` and the Tools menu already exist at that point, or appear later
-  and so need registration deferred, is not known; if the menu is not found
-  only a log warning is written and nothing is added. The entry itself
-  (`ToolMenuEntry(name=..., type=MultiBlockType.MENU_ENTRY)`, `set_label`,
-  `set_string_command(ToolMenuStringCommandType.PYTHON, "", ...)`,
-  `add_menu_entry("sqi", entry)`, `refresh_all_widgets()`) follows Epic's API
-  reference and has not been run.
-- **Refused-job detection.** That `job.get_preset_origin()` is null for a job
-  whose settings were edited after loading a config (documented as returning the
-  preset only while unmodified) and for a job with no config; that
-  `SoftObjectPath.export_text()` exists (it is not on that class's own
-  documentation page and is assumed to come from the struct base class) and
-  returns a path such as `/Game/Maps/Hero.Hero`; and that an unsaved map or
-  sequence reads as a path under `/Temp/` or `/Engine/Transient`, or one that
-  does not start with `/`. A job with an empty name is listed as "Unnamed job".
-- `MoviePipelineQueueSubsystem.get_queue()` and `get_jobs()`;
-  `job.is_enabled()`; `job.job_name`.
-- `EditorLoadingAndSavingUtils.get_dirty_map_packages()`,
-  `get_dirty_content_packages()` and `save_dirty_packages_with_dialog(True, True)`
-  (and that the save-dialog result is not consulted: the dirty check runs
-  again instead).
-- `EditorDialog.show_message(title, message, message_type)` with
-  `AppMsgType.OK` and `OK_CANCEL`, and `AppReturnType.OK`.
-- `Paths.get_project_file_path()` made absolute with
-  `convert_relative_path_to_full`, and `SystemLibrary.get_engine_version()`
-  (the version is read up to the first `-`).
-- That `Documents/UnrealEngine/Python` is on the Editor's Python path and is
-  scanned for `init_unreal.py`.
+- Unreal Engine versions before 5.8.
+- **A config edited in the queue.** That `job.get_preset_origin()` is null for
+  a job whose settings were edited in the Movie Render Queue window after
+  loading a config (documented as returning the preset only while
+  unmodified). An edit made from Python does not clear it on 5.8, and the
+  Movie Render Queue copies the preset back over such an edit when the render
+  starts, so that job is offered and renders its saved config.
+- That a map that was never saved, or a level sequence that was never saved,
+  reads as a path under `/Temp/` or `/Engine/Transient`, or one that does not
+  start with `/`. The 5.8 run gave jobs such paths from Python, and the
+  submitter refused them. A job with an empty name is listed as "Unnamed job".
+- `SystemLibrary.get_engine_version()` (the version is read up to the first
+  `-`).
 
 ### Katana checklist
 
@@ -1810,6 +1959,29 @@ After installing per [Installation per host](#installation-per-host):
 8. **Window focus.** The dialog comes to the front on each OS, with no console
    window alongside it on Windows.
 
+**Check by hand, in-process (Katana 8 or later):**
+
+9. **The dialog opens inside Katana.** Install `sqi-submitter` into
+   `~/.sqi/katana-site` as in [In-process on Katana 8 or
+   later](#in-process-on-katana-8-or-later), set `sqi_submitter_site.katana`,
+   restart and click **Submit to sqi…**: the dialog opens as a child of
+   Katana's main window (it stays above it and closes with it), and no
+   `sqi-submit` process starts. Items 2 and 3 hold in it.
+10. A changed project with **Save scene before submit** ticked is saved before
+    the job is sent; a project whose save fails (a read-only file) is not
+    submitted, and the dialog says so.
+11. **The fallback.** Point `sqi_submitter_site.katana` at an empty folder:
+    the click prints the import error in Katana's console and the separate
+    `sqi-submit` window opens instead. Remove the setting: it hands off with
+    nothing printed.
+12. **Katana 7.5 or earlier with the same setting** (and the same
+    `katana-site` folder) hands off, and `sqi_submitter` does not appear in
+    `sys.modules` in Katana's Python tab afterwards.
+13. That Katana's own Python accepts the wheels fetched with
+    `--python-version 3.11` (it is 3.11 on Katana 8; check `sys.version`), and
+    that the dialog's Qt is Katana's PySide6 (`sqi_submitter.qt._compat.QT_BINDING`
+    is `PySide6`).
+
 **Verified only against fakes or documentation:**
 
 - **The startup callback, the riskiest item.**
@@ -1837,6 +2009,9 @@ After installing per [Installation per host](#installation-per-host):
   Katana 8, PyQt5 before). On any failure the message goes to the console
   instead. The host version comes from `KATANA_RELEASE` (not found in Foundry's
   documentation), then `KatanaInfo.version`, else it is blank.
+- The in-process choice reads the major version from `KatanaInfo.version` only
+  (a `KATANA_RELEASE` alone does not enable it), and parents the dialog to
+  `UI4.App.MainWindow.CurrentMainWindow()`.
 
 ### VRED checklist
 
@@ -1848,7 +2023,7 @@ support):**
    Untick it, restart, and click again. (This is the first thing to check, see
    below.)
 2. **The install.** Install `sqi-submitter` into VRED's Python as in
-   [VRED](#vred), set `sqi_submitter_site`, restart VRED and confirm the dialog
+   [VRED](#vred), set `sqi_submitter_site.vred`, restart VRED and confirm the dialog
    opens from the menu with no error in VRED's terminal. Repeat with
    `SQI_SUBMITTER_SITE` instead of the settings key, and with no setting but an
    install into VRED's own `site-packages`.
@@ -2029,8 +2204,27 @@ support):**
    message, not launched.
 8. A comp path with non-ASCII characters (Windows especially) loads in the
    dialog.
+9. **Saver targets.** In a comp with three Savers, one of them in pass-through
+   (select it and press Ctrl+P), choose `fusion-saver-render`: the dialog lists
+   the two active Savers by their tool names, in the comp's order. Choose
+   `fusion-render`: no checklist appears. A Saver whose name has non-ASCII
+   letters appears with its name intact. A comp with no Savers lists none and
+   still submits.
 
 **Verified only against fakes or documentation:**
+
+- **`comp:GetToolList(false, "Saver")`.** The signature (first argument "selected
+  only", second the tool's registry ID), that it returns a Lua table indexed
+  from 1, and that it finds Savers inside groups come from Blackmagic's scripting
+  documentation (`fusion-saver-render`'s script makes the same call) and have not
+  been checked against a running Fusion. The script calls it under `pcall`: an error gives no targets and a
+  Console line, never a failed submission.
+- **The Saver attributes.** `TOOLS_Name` (the tool's name), `TOOLB_PassThrough`
+  (true when the tool is switched off) and `TOOLST_Clip_Name` (a table of the
+  tool's output file names, read at its first entry) come from the attribute
+  names Fusion's scripting documentation lists, unverified against a running
+  Fusion. If `TOOLB_PassThrough` is spelled otherwise, a disabled Saver is
+  offered as a target; if `TOOLST_Clip_Name` is, the target has no output path.
 
 - **`os.execute` launch and the console flash, the riskiest items.** That
   Fusion's Lua exposes `os.execute` (no documentation says whether a Comp
@@ -2227,12 +2421,14 @@ names a file that exists:
 A configured path that does not exist is skipped without complaint. If nothing
 is found, Blender reports (in its status bar) and Cinema 4D shows (in a dialog),
 as do Unreal, Katana, KeyShot, Silhouette and Modo in their own message boxes
-(Fusion words the last part as `then set its full path as sqi_submit_command in
-~/.sqi/submitter.json`, since it has no plug-in setting):
+(Fusion's script carries the same text):
 
 ```
-sqi-submit was not found. Install it on this machine with: pip install "sqi-submitter[qt]" — then set its full path in the sqi add-on/plugin settings, or as sqi_submit_command in ~/.sqi/submitter.json.
+sqi-submit was not found. Install it on this machine with: pip install "sqi-submitter[qt]" — then set its full path as sqi_submit_command in ~/.sqi/submitter.json.
 ```
+
+Blender appends ` Or set it in Edit > Preferences > Add-ons > sqi.`, since it
+alone has a preference for the path.
 
 After Effects shows its own message instead, since it only knows the located
 path: `sqi-submit was not found. Install it with pip install "sqi-submitter[qt]"

@@ -29,12 +29,17 @@ import tempfile
 
 NOT_FOUND_MESSAGE = (
     "sqi-submit was not found. Install it on this machine with: "
-    'pip install "sqi-submitter[qt]" — then set its full path in the sqi '
-    "add-on/plugin settings, or as sqi_submit_command in ~/.sqi/submitter.json."
+    'pip install "sqi-submitter[qt]" — then set its full path as '
+    "sqi_submit_command in ~/.sqi/submitter.json."
 )
 
 
-def _settings_command() -> str:
+class SubmitCommandNotFound(RuntimeError):
+    """``sqi-submit`` is in none of the places ``resolve_submit_command`` looks."""
+
+
+def _settings_value(key: str) -> str:
+    """The string ``key`` holds in ``~/.sqi/submitter.json``, or ``""``."""
     # Match sqi-submit's Path.home(): on Windows that is USERPROFILE. Python 3.7's expanduser
     # prefers HOME, which is often a network share there.
     home = (os.environ.get("USERPROFILE") if sys.platform == "win32" else None) or (
@@ -44,7 +49,7 @@ def _settings_command() -> str:
     try:
         # utf-8-sig: PowerShell 5 writes UTF-8 with a BOM, which plain utf-8 rejects.
         with open(path, encoding="utf-8-sig") as handle:
-            value = json.load(handle).get("sqi_submit_command")
+            value = json.load(handle).get(key)
     except (OSError, ValueError, AttributeError):
         return ""
     return value if isinstance(value, str) else ""
@@ -54,13 +59,13 @@ def resolve_submit_command(configured: str) -> str:
     """Find ``sqi-submit``: the host's own setting, the settings file, then PATH."""
     if configured and os.path.exists(configured):
         return configured
-    from_file = _settings_command()
+    from_file = _settings_value("sqi_submit_command")
     if from_file and os.path.exists(from_file):
         return from_file
     found = shutil.which("sqi-submit")
     if found:
         return found
-    raise RuntimeError(NOT_FOUND_MESSAGE)
+    raise SubmitCommandNotFound(NOT_FOUND_MESSAGE)
 
 
 def _handoff_folder() -> str:
@@ -145,6 +150,7 @@ bl_info = {
 
 __all__ = ["bl_info", "read_scene", "register", "submit_scene", "unregister"]
 
+_PREFERENCE_HINT = " Or set it in Edit > Preferences > Add-ons > sqi."
 _UNSAVED_MESSAGE = "Save your scene before submitting — the farm renders the file on disk."
 
 _classes: list[Any] = []  # registered bpy.types classes, in registration order
@@ -156,29 +162,69 @@ def _frame_range(start: float, end: float) -> str:
     return str(lo) if lo == hi else f"{lo}-{hi}"
 
 
+# Characters that cannot appear in a folder name on some OS, plus '#', which Blender would
+# read as part of the frame number.
+_UNSAFE_IN_FOLDER = '/\\:*?"<>|#'
+
+
+def _folder_name(name: str) -> str:
+    return "".join("_" if c in _UNSAFE_IN_FOLDER else c for c in name)
+
+
+def _in_folder(filepath: str, folders: list[str]) -> str:
+    """``filepath`` with ``folders`` inserted before its file prefix, in its own separator."""
+    cut = max(filepath.rfind("/"), filepath.rfind("\\"))
+    sep = filepath[cut] if cut >= 0 else "/"
+    head, tail = filepath[: cut + 1], filepath[cut + 1 :]
+    return head + "".join(_folder_name(f) + sep for f in folders) + tail
+
+
+def _layer_outputs(layers: list[tuple[str, str, str]]) -> list[str]:
+    """The output of each ``(scene, layer, filepath)``, distinct where filepaths are shared.
+
+    A view layer whose scene's output no other listed layer shares keeps it as it is. Layers
+    that would share one each write into a folder named after the layer, or after the scene
+    and then the layer when two of them have the same layer name, so one job never
+    overwrites another's frames.
+    """
+    sharing: dict[str, list[str]] = {}
+    for _scene, layer, filepath in layers:
+        sharing.setdefault(filepath, []).append(layer)
+    outputs = []
+    for scene, layer, filepath in layers:
+        names = sharing[filepath]
+        if len(names) == 1:
+            outputs.append(filepath)
+        elif len(set(names)) == len(names):
+            outputs.append(_in_folder(filepath, [layer]))
+        else:
+            outputs.append(_in_folder(filepath, [scene, layer]))
+    return outputs
+
+
 def read_scene() -> dict[str, object]:
     """Describe the open scene as a version-1 handoff context document.
 
     Every scene's view layers are targets, each with its scene's frame range and output, and
     ``extra`` carrying the scene and layer names that ``blender-view-layer-render`` pre-fills.
+    Layers that would share an output get a folder each (see ``_layer_outputs``).
     """
     import bpy
 
     scene = bpy.context.scene
-    targets: list[dict[str, object]] = []
-    for each in bpy.data.scenes:
-        frame_range = _frame_range(each.frame_start, each.frame_end)
-        for layer in each.view_layers:
-            targets.append(
-                {
-                    "name": f"{each.name} / {layer.name}",
-                    "kind": "view_layer",
-                    "frame_range": frame_range,
-                    "output_path": each.render.filepath,
-                    "extra": {"Scene": each.name, "ViewLayer": layer.name},
-                    "locked": [],
-                }
-            )
+    pairs = [(each, layer) for each in bpy.data.scenes for layer in each.view_layers]
+    outputs = _layer_outputs([(s.name, layer.name, s.render.filepath) for s, layer in pairs])
+    targets: list[dict[str, object]] = [
+        {
+            "name": f"{each.name} / {layer.name}",
+            "kind": "view_layer",
+            "frame_range": _frame_range(each.frame_start, each.frame_end),
+            "output_path": output,
+            "extra": {"Scene": each.name, "ViewLayer": layer.name},
+            "locked": [],
+        }
+        for (each, layer), output in zip(pairs, outputs)
+    ]
     return {
         "version": 1,
         "host": {
@@ -212,6 +258,9 @@ def submit_scene(report: Callable[[set[str], str], None], configured: str) -> se
             bpy.ops.wm.save_mainfile()
         command = resolve_submit_command(configured)
         launch(command, write_context(read_scene()))
+    except SubmitCommandNotFound as exc:
+        report({"ERROR"}, str(exc) + _PREFERENCE_HINT)
+        return {"CANCELLED"}
     except (RuntimeError, OSError) as exc:  # OSError: writing the context or launching
         report({"ERROR"}, str(exc))
         return {"CANCELLED"}
