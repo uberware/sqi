@@ -19,10 +19,9 @@ task 1/3  name="Render[Frame=1-1]"
     [0]  <WORKDIR>
     [1]  --imageWidth
     [2]  960
-    [3]  --frames
-    [4]  1:1
-    [5]  /mnt/show/seq010/shot0010/usd/shot0010_layout.usd
-    [6]  /mnt/show/seq010/shot0010/review/shot0010.####.png
+    [3]  --frames=1:1
+    [4]  /mnt/show/seq010/shot0010/usd/shot0010_layout.usd
+    [5]  /mnt/show/seq010/shot0010/review/shot0010.####.png
   embedded file "launcher" (launcher.py):
     import os, runpy, sys
     script = os.path.join(os.environ["HFS"], "bin", "usdrecord")
@@ -42,10 +41,9 @@ task 2/3  name="Render[Frame=5-5]"
     [0]  <WORKDIR>
     [1]  --imageWidth
     [2]  960
-    [3]  --frames
-    [4]  5:5
-    [5]  /mnt/show/seq010/shot0010/usd/shot0010_layout.usd
-    [6]  /mnt/show/seq010/shot0010/review/shot0010.####.png
+    [3]  --frames=5:5
+    [4]  /mnt/show/seq010/shot0010/usd/shot0010_layout.usd
+    [5]  /mnt/show/seq010/shot0010/review/shot0010.####.png
   embedded file "launcher" (launcher.py):
     import os, runpy, sys
     script = os.path.join(os.environ["HFS"], "bin", "usdrecord")
@@ -65,10 +63,9 @@ task 3/3  name="Render[Frame=9-9]"
     [0]  <WORKDIR>
     [1]  --imageWidth
     [2]  960
-    [3]  --frames
-    [4]  9:9
-    [5]  /mnt/show/seq010/shot0010/usd/shot0010_layout.usd
-    [6]  /mnt/show/seq010/shot0010/review/shot0010.####.png
+    [3]  --frames=9:9
+    [4]  /mnt/show/seq010/shot0010/usd/shot0010_layout.usd
+    [5]  /mnt/show/seq010/shot0010/review/shot0010.####.png
   embedded file "launcher" (launcher.py):
     import os, runpy, sys
     script = os.path.join(os.environ["HFS"], "bin", "usdrecord")

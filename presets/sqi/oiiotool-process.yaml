@@ -34,8 +34,9 @@ readme: |
 
   The file name of each pattern must contain exactly one run of `#`, and the
   length of the run is the frame number's padding: `shot.####.exr` is
-  `shot.0007.exr` for frame 7. A pattern with no `#`, with two separate runs, or
-  with a `#` in a folder name is rejected when you submit the job.
+  `shot.0007.exr` for frame 7. A pattern with no `#`, with two separate runs,
+  with a `#` in a folder name, or with an `@` anywhere is rejected when you
+  submit the job, because `oiiotool` would expand them as wildcards.
 
   `oiiotool` itself reads each `#` as four digits, so `######` would mean 24.
   To keep your padding exact, sqi hands `oiiotool` the `@` form, where each `@`
@@ -145,11 +146,12 @@ template:
           # oiiotool reads each # as four digits (measured, OIIO 2.5.18), so
           # the pattern's # run is rewritten as the same number of @, which
           # stand for one digit each. Only the file name is rewritten: a # in a
-          # folder would be expanded by oiiotool, so that is refused.
+          # folder would be expanded by oiiotool, and so would a literal @ (the
+          # form sqi writes itself), so both are refused.
           - ipad = Param.InputFile.name.count('#')
-          - "input = Param.InputFile.parent / Param.InputFile.name.replace('#' * ipad, '@' * ipad) if ipad > 0 and '#' * ipad in Param.InputFile.name and '#' not in string(Param.InputFile.parent) else fail('Input Sequence Pattern must contain exactly one run of # characters marking the frame number, e.g. shot.####.exr, and no # in its folders')"
+          - "input = Param.InputFile.parent / Param.InputFile.name.replace('#' * ipad, '@' * ipad) if ipad > 0 and '#' * ipad in Param.InputFile.name and '#' not in string(Param.InputFile.parent) and '@' not in string(Param.InputFile) else fail('Input Sequence Pattern must contain exactly one run of # characters marking the frame number, e.g. shot.####.exr, with no # in its folders and no @ anywhere')"
           - opad = Param.OutputFile.name.count('#')
-          - "output = Param.OutputFile.parent / Param.OutputFile.name.replace('#' * opad, '@' * opad) if opad > 0 and '#' * opad in Param.OutputFile.name and '#' not in string(Param.OutputFile.parent) else fail('Output Sequence Pattern must contain exactly one run of # characters marking the frame number, e.g. shot.####.exr, and no # in its folders')"
+          - "output = Param.OutputFile.parent / Param.OutputFile.name.replace('#' * opad, '@' * opad) if opad > 0 and '#' * opad in Param.OutputFile.name and '#' not in string(Param.OutputFile.parent) and '@' not in string(Param.OutputFile) else fail('Output Sequence Pattern must contain exactly one run of # characters marking the frame number, e.g. shot.####.exr, with no # in its folders and no @ anywhere')"
         actions:
           onRun:
             command: oiiotool

@@ -23,10 +23,9 @@ task 1/1  name="Render[Frame=1-1]"
     [4]  /World/cam
     [5]  --imageWidth
     [6]  1920
-    [7]  --frames
-    [8]  1:1
-    [9]  /mnt/show/seq010/shot0010/usd/shot0010_layout.usd
-    [10]  /mnt/show/seq010/shot0010/review/shot0010.####.png
+    [7]  --frames=1:1
+    [8]  /mnt/show/seq010/shot0010/usd/shot0010_layout.usd
+    [9]  /mnt/show/seq010/shot0010/review/shot0010.####.png
   embedded file "launcher" (launcher.py):
     import os, runpy, sys
     script = os.path.join(os.environ["HFS"], "bin", "usdrecord")

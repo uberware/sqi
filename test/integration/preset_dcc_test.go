@@ -648,8 +648,8 @@ for f in range(int(os.environ["SQI_FRAME_START"]), int(os.environ["SQI_FRAME_END
 // wrapper cannot launch, and the reason the preset runs hython directly. The
 // frame images are read back, so the files show that the `#` run is the frame
 // padding, that each task covers exactly its frames, that the renderer name
-// "Karma CPU" reaches usdrecord as one argument, and that --imageWidth is
-// applied.
+// "Karma CPU" reaches usdrecord as one argument, that --imageWidth is
+// applied, and that a range below zero is accepted.
 func TestPresetDCC_Houdini_USDRecord(t *testing.T) {
 	const caseName = "TestPresetDCC_Houdini_USDRecord"
 	trackOutcome(t, caseName)
@@ -712,5 +712,19 @@ func TestPresetDCC_Houdini_USDRecord(t *testing.T) {
 		assertTaskCount(t, ts, job, 1)
 		assertExactFiles(t, out, []string{"karma.003.png"})
 		assertPNGWidths(t, out, []string{"karma.003.png"}, 32)
+	})
+
+	// A chunk that starts below zero reaches usdrecord as --frames=-2:-1, one
+	// argument; as two, argparse reads -2:-1 as an option and the task fails.
+	t.Run("negative frames", func(t *testing.T) {
+		out := filepath.Join(dir, "neg")
+		job := runDCCJob(t, ts, farmID, queueID, "usdrecord-render", map[string]string{
+			"SceneFile": stage, "OutputFile": filepath.Join(out, "neg.####.png"),
+			"Frames": "-2--1", "ImageWidth": "16",
+		})
+		assertTaskCount(t, ts, job, 1)
+		names := []string{"neg.-002.png", "neg.-001.png"}
+		assertExactFiles(t, out, names)
+		assertPNGWidths(t, out, names, 16)
 	})
 }

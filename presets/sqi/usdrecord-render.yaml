@@ -22,8 +22,10 @@ readme: |
     run of `#`, and the length of the run is the frame number's padding:
     `preview.####.png` writes `preview.0007.png`. A pattern with no `#`, or
     with two separate runs, is rejected when you submit the job. The file type
-    comes from the extension. Missing folders in the path are created. On
-    Windows, a folder in the path may not contain `#`.
+    comes from the extension. Missing folders in the path are created. The path
+    may not contain `#` outside the file name's run, or any `{` or `}`:
+    `usdrecord` reads a `#` in a folder as a second frame number and formats the
+    path with the braces, so such a path is rejected when you submit the job.
   - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
     `1-100:2` for every second frame.
   - **Frames per Task** - the most consecutive frames one task renders, ten by
@@ -47,7 +49,8 @@ readme: |
   ## How work is divided
 
   Each task renders a contiguous chunk of the frame range, ten frames by
-  default. A stepped range such as `1-100:2` runs one task per frame, so no
+  default. A negative frame keeps its sign inside the padding: frame -2 at four
+  digits is `-002`. A stepped range such as `1-100:2` runs one task per frame, so no
   frame the range leaves out is rendered. A larger chunk loads the stage fewer
   times, at the cost of less parallelism.
 
@@ -136,7 +139,10 @@ template:
       script:
         let:
           - pad = Param.OutputFile.name.count('#')
-          - "output = Param.OutputFile if pad > 0 and '#' * pad in Param.OutputFile.name else fail('Output Image Pattern must contain exactly one run of # characters marking the frame number, e.g. preview.####.png (in a Windows path, folders may not contain #)')"
+          # usdrecord reads a # anywhere in the path (not only the file name)
+          # as a frame placeholder, and formats the path with str.format, so
+          # a # in a folder or a brace anywhere makes it fail at run time.
+          - "output = Param.OutputFile if pad > 0 and '#' * pad in Param.OutputFile.name and '#' not in string(Param.OutputFile.parent) and '{' not in string(Param.OutputFile) and '}' not in string(Param.OutputFile) else fail('Output Image Pattern must contain exactly one run of # characters marking the frame number, e.g. preview.####.png, with no # in its folders and no { or } anywhere')"
         embeddedFiles:
           # Static text. Houdini's usdrecord.cmd runs hython on an unquoted
           # %HFS% and fails when the install path has a space, so this runs
@@ -163,7 +169,6 @@ template:
               - "{{ ['--camera', Param.Camera] if Param.Camera != '' else [] }}"
               - "--imageWidth"
               - "{{Param.ImageWidth}}"
-              - "--frames"
-              - "{{ min(Task.Param.Frame) }}:{{ max(Task.Param.Frame) }}"
+              - "--frames={{ min(Task.Param.Frame) }}:{{ max(Task.Param.Frame) }}"
               - "{{Param.SceneFile}}"
               - "{{ output }}"

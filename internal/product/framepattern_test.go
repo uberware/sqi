@@ -39,8 +39,23 @@ type badPattern struct {
 }
 
 // hashInFolder is a pattern whose folder holds a #. oiiotool expands a # in
-// any argument, folders included, so the oiiotool presets reject it.
+// any argument, folders included, and usdrecord reads a # anywhere in the path
+// as a second frame placeholder, so both presets reject it.
 var hashInFolder = badPattern{"folder-hash", "/mnt/take#2/shot.####.exr"}
+
+// atSigns are patterns holding a literal @. oiiotool expands @ as a wildcard
+// the way it does #, in a folder or in the file name, so its presets reject it.
+var atSigns = []badPattern{
+	{"folder-at", "/mnt/take@2/shot.####.exr"},
+	{"name-at", "/mnt/s/shot@2x.####.exr"},
+}
+
+// braces are patterns usdrecord cannot take: it formats the output path with
+// str.format, so a brace anywhere in it fails at run time.
+var braces = []badPattern{
+	{"folder-brace", "/mnt/take{2}/shot.####.exr"},
+	{"name-brace", "/mnt/s/shot{x}.####.exr"},
+}
 
 // framePatternCases lists the presets checked by
 // TestFramePatternPresets_RejectABadPattern.
@@ -48,17 +63,17 @@ var framePatternCases = []framePatternCase{
 	{
 		preset: "usdrecord-render", param: "OutputFile", label: "Output Image Pattern",
 		params:    map[string]string{"SceneFile": "/mnt/s/stage.usd", "FramesPerTask": "1"},
-		goodTasks: 2,
+		goodTasks: 2, extraBad: append([]badPattern{hashInFolder}, braces...),
 	},
 	{
 		preset: "oiiotool-process", param: "InputFile", label: "Input Sequence Pattern",
 		params:    map[string]string{"OutputFile": "/mnt/o/out.####.png", "FramesPerTask": "1"},
-		goodTasks: 2, extraBad: []badPattern{hashInFolder},
+		goodTasks: 2, extraBad: append([]badPattern{hashInFolder}, atSigns...),
 	},
 	{
 		preset: "oiiotool-process", param: "OutputFile", label: "Output Sequence Pattern",
 		params:    map[string]string{"InputFile": "/mnt/i/in.####.exr", "FramesPerTask": "1"},
-		goodTasks: 2, extraBad: []badPattern{hashInFolder},
+		goodTasks: 2, extraBad: append([]badPattern{hashInFolder}, atSigns...),
 	},
 }
 
