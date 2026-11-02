@@ -446,7 +446,9 @@ func TestPresetUnreal_SessionFolderThatBreaksExecCmdsIsRefused(t *testing.T) {
 // "finished:<1|0>". fail names a fake call that raises. assets maps an asset
 // path to the job names of the queue saved there, or the shot names (outer
 // names) of the level sequence saved there, or to null for an asset that does
-// not exist; any other path loads as an asset with no jobs and no shots.
+// not exist; any other path loads as an asset with no jobs and no shots. A
+// queue's job written "name@/Game/Path" keeps the config asset at that path as
+// its preset origin, as a job saved from the Movie Render Queue window does.
 // name_format is every job's output file name format.
 const unrealRunner = `import json, os, sys, types
 
@@ -553,18 +555,25 @@ class Config(object):
 
 
 class Job(object):
-    def __init__(self, name=""):
+    def __init__(self, name="", origin=None):
         object.__setattr__(self, "job_name", name)
         object.__setattr__(self, "config", Config(self))
         object.__setattr__(self, "shot_info", [Shot("left over")])
+        object.__setattr__(self, "origin", origin)
 
     def __setattr__(self, name, value):
         note("set", name, str(value))
         object.__setattr__(self, name, value)
 
     def set_configuration(self, config):
+        # As in Unreal, setting a configuration clears the preset origin.
         note("set_configuration", config.path)
         raising("set_configuration")
+        object.__setattr__(self, "origin", None)
+
+    def get_preset_origin(self):
+        note("get_preset_origin", self.job_name)
+        return self.origin
 
     def get_configuration(self):
         return self.config
@@ -587,7 +596,10 @@ class Queue(object):
     def copy_from(self, asset):
         note("copy_from", asset.path)
         raising("copy_from")
-        self.jobs = [Job(name) for name in asset.jobs]
+        self.jobs = []
+        for spec in asset.jobs:
+            name, _, origin = spec.partition("@")
+            self.jobs.append(Job(name, Asset(origin, []) if origin else None))
 
     def allocate_new_job(self, cls):
         note("allocate_new_job", cls.__name__)
@@ -857,7 +869,7 @@ func TestPresetUnreal_ScriptDrivesUnreal(t *testing.T) {
 	output := func(names ...string) []call {
 		out := []call{{"set_editor_property", "path", outputMarker}}
 		for _, n := range names {
-			out = append(out, call{"find_or_add_setting_by_class", n, "MoviePipelineOutputSetting"}, call{"output_directory", n, outputMarker})
+			out = append(out, call{"get_preset_origin", n}, call{"find_or_add_setting_by_class", n, "MoviePipelineOutputSetting"}, call{"output_directory", n, outputMarker})
 		}
 		return out
 	}
@@ -952,6 +964,24 @@ func TestPresetUnreal_ScriptDrivesUnreal(t *testing.T) {
 			name: "queue renders every job to the output directory", preset: queue, params: queueParams(`C:\Renders\Queue`),
 			assets: twoJobs, events: []string{"job:1:Hero A", "job:1:Hero B", "finished:1"},
 			want:   join(copied, output("Hero A", "Hero B"), started, events("job:1:Hero A", "job:1:Hero B", "finished:1"), ok),
+			wantOK: true,
+		},
+		{
+			// Unreal copies a preset origin over the job's settings when the
+			// render starts, so a job that keeps one would lose the directory.
+			name: "a queue job's preset origin is dropped before its output directory is set", preset: queue,
+			params: queueParams(`C:\Renders\Queue`), assets: `{"/Game/Cinematics/MRQ_HeroQueue": ["Hero A@/Game/Cinematics/MRQ_Final", "Hero B"]}`,
+			events: []string{"finished:1"},
+			want: join(copied, []call{
+				{"set_editor_property", "path", outputMarker},
+				{"get_preset_origin", "Hero A"},
+				{"set_configuration", cfg},
+				{"find_or_add_setting_by_class", "Hero A", "MoviePipelineOutputSetting"},
+				{"output_directory", "Hero A", outputMarker},
+				{"get_preset_origin", "Hero B"},
+				{"find_or_add_setting_by_class", "Hero B", "MoviePipelineOutputSetting"},
+				{"output_directory", "Hero B", outputMarker},
+			}, started, events("finished:1"), ok),
 			wantOK: true,
 		},
 		{

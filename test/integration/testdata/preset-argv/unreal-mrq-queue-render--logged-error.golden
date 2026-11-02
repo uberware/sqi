@@ -151,9 +151,11 @@ task 1/1  name="Render"
     def select_shot(jobs, params):
         # One shot of the job: its shot list rebuilt from the sequence,
         # then only the entries named after the shot left enabled. An
-        # entry is named by its outer name, or after the sequence when it
-        # has none. A shot the sequence lacks fails the task, naming
-        # the shots it has, rather than render every shot.
+        # entry is named by its outer name: its section's name in the
+        # shot track, or "no shot" in a sequence without one (Unreal
+        # 5.8). An entry with no outer name, which 5.8 never gives, is
+        # named after the sequence. A shot the sequence lacks fails the
+        # task, naming the shots it has, rather than render every shot.
         shot = params["shot"]
         sequence = unreal.EditorAssetLibrary.load_asset(object_path(params["sequence"]))
         if sequence is None:
@@ -187,6 +189,15 @@ task 1/1  name="Render"
         path = unreal.DirectoryPath()
         path.set_editor_property("path", directory.replace("\\", "/"))
         for job in jobs:
+            # A job that still names the config asset it was made from,
+            # as a queue saved from the Movie Render Queue window does,
+            # has that asset copied over its settings again when the
+            # render starts, which would undo the directory set here.
+            # Setting the same asset as the job's own configuration keeps
+            # its settings and drops that link.
+            origin = job.get_preset_origin()
+            if origin is not None:
+                job.set_configuration(origin)
             setting = job.get_configuration().find_or_add_setting_by_class(unreal.MoviePipelineOutputSetting)
             setting.output_directory = path
     

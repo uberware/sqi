@@ -3,8 +3,8 @@ name: unreal-mrq-shot-render
 title: Unreal Movie Render Queue Shot Render
 description: >-
   Renders one level sequence on one map with one Movie Render Queue config in
-  an Unreal Engine 5 project, one task per shot, on Windows workers. The editor
-  runs the preset's own Python script. The preset has not been run in Unreal.
+  an Unreal Engine 5 project, one task per shot, on Windows workers, through
+  the preset's own Python script. Tested with Unreal Engine 5.8.
 readme: |
   # Unreal Movie Render Queue Shot Render
 
@@ -33,9 +33,9 @@ readme: |
     the quality.
   - **Shots** - the shots to render, one per line: from 1 to 1000 names, each
     from 1 to 256 characters. A shot is named as the Movie Render Queue names
-    it in the job's shot list, by the outer name of its camera cut (the shot
-    section's name in the sequence); a camera cut with no name is named after
-    the sequence asset, such as `SEQ_Hero`. Each shot is one task.
+    it in the job's shot list: by its section's name in the sequence's shot
+    track, such as `SH010`. A sequence with no shot track has one shot, which
+    the Movie Render Queue names `no shot`. Each shot is one task.
   - **Output Directory** - optional. Blank keeps the config's own output
     directory; otherwise the render is written here instead.
 
@@ -124,28 +124,32 @@ readme: |
     does.
   - Epic's licence terms for render nodes are the studio's to check.
 
+  ## What has been tested
+
+  The preset has rendered a two-shot sequence and a sequence with no shot
+  track with Unreal Engine 5.8 on a Windows worker. That run showed that
+  `update_job_shot_list_from_sequence` lists each shot by its section name
+  (`no shot` without a shot track), that each task renders only its own shot,
+  that a shot the sequence lacks fails the task with the names it has, and
+  that a config without `{shot_name}` gives the warning above and renders.
+  It also showed everything Unreal Movie Render Queue Job Render's readme
+  lists as tested.
+
   ## What has not been verified
 
-  - No Unreal has executed this preset. The command line follows AWS's
+  - Unreal Engine versions before 5.8. The command line follows AWS's
     Deadline Cloud adaptor for Unreal, and the script uses the Movie Render
     Queue's Python API as that adaptor and Epic's Python reference use it.
-  - How `update_job_shot_list_from_sequence` rebuilds a job's shot list: that
-    it lists every camera cut of the sequence, with its outer name, and that
-    the entries the script enables and disables afterwards are the ones the
-    render uses.
   - Several camera cuts sharing one shot name: the script enables every entry
     with the task's shot name, so such a task renders all of them, and their
     frames share the names `{shot_name}` gives them.
   - Configs built with the Movie Render Graph rather than the Movie Render
     Queue's settings: the script reads and sets the config's output setting,
     which a graph config may not have.
-  - Everything Unreal Movie Render Queue Job Render's readme lists as
-    unverified: that the editor stays running after the `-execcmds` script
-    returns, how Unreal splits and quotes the `-execcmds` value, whether
-    descriptor-1 output reaches the worker (the script also logs each line),
-    that the object path is needed, whether a canceled render reports
-    failure (UE-160482), whether the editor exits after `quit_editor()`, and
-    rendering on Linux or macOS.
+  - Everything else Unreal Movie Render Queue Job Render's readme lists as
+    unverified: that Unreal splits `-execcmds` at commas, that the object
+    path is needed, whether a canceled render reports failure (UE-160482),
+    and rendering on Linux or macOS.
 category: Rendering
 version: 1.0.0
 template:
@@ -364,9 +368,11 @@ template:
               def select_shot(jobs, params):
                   # One shot of the job: its shot list rebuilt from the sequence,
                   # then only the entries named after the shot left enabled. An
-                  # entry is named by its outer name, or after the sequence when it
-                  # has none. A shot the sequence lacks fails the task, naming
-                  # the shots it has, rather than render every shot.
+                  # entry is named by its outer name: its section's name in the
+                  # shot track, or "no shot" in a sequence without one (Unreal
+                  # 5.8). An entry with no outer name, which 5.8 never gives, is
+                  # named after the sequence. A shot the sequence lacks fails the
+                  # task, naming the shots it has, rather than render every shot.
                   shot = params["shot"]
                   sequence = unreal.EditorAssetLibrary.load_asset(object_path(params["sequence"]))
                   if sequence is None:
@@ -400,6 +406,15 @@ template:
                   path = unreal.DirectoryPath()
                   path.set_editor_property("path", directory.replace("\\", "/"))
                   for job in jobs:
+                      # A job that still names the config asset it was made from,
+                      # as a queue saved from the Movie Render Queue window does,
+                      # has that asset copied over its settings again when the
+                      # render starts, which would undo the directory set here.
+                      # Setting the same asset as the job's own configuration keeps
+                      # its settings and drops that link.
+                      origin = job.get_preset_origin()
+                      if origin is not None:
+                          job.set_configuration(origin)
                       setting = job.get_configuration().find_or_add_setting_by_class(unreal.MoviePipelineOutputSetting)
                       setting.output_directory = path
 
