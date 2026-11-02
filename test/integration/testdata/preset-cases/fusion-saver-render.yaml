@@ -15,7 +15,7 @@
 # quoting puts a double quote, a backslash, spaces and a non-ASCII letter in
 # the Saver's name, and a space in a directory and both quote characters in the
 # comp's file name, so params.json must escape them (repr_json writes the
-# letter as the escape é); TestPresetFusion_ParamsJSONRoundTrips decodes
+# letter as the escape \u00e9); TestPresetFusion_ParamsJSONRoundTrips decodes
 # it with encoding/json and compares the values. The quotes stay in the last path
 # segment so the golden's host-path rewrite (presettest.hostPathReplacer, keyed
 # on the parameter's parent folder) still applies on Windows.

@@ -429,7 +429,7 @@ func TestPresetFusion_ScriptDrivesFusion(t *testing.T) {
 	render := func(start, end int) []any {
 		return []any{"Render", map[string]any{"Start": start, "End": end, "Wait": true}}
 	}
-	selectQuoted := []any{pass("MainOut", true), pass(fusionQuotedSaver, false), pass("Saver1", true)}
+	selectQuoted := []any{pass("MainOut", true), pass("Saver1", true), pass(fusionQuotedSaver, false)}
 
 	tests := []struct {
 		name     string
@@ -446,7 +446,7 @@ func TestPresetFusion_ScriptDrivesFusion(t *testing.T) {
 		{
 			name: "negative-frames", saver: "MainOut", frames: "-5--1", mode: "ok",
 			want: []any{
-				load, pass("MainOut", false), pass(fusionQuotedSaver, true), pass("Saver1", true),
+				load, pass(fusionQuotedSaver, true), pass("Saver1", true), pass("MainOut", false),
 				render(-5, -1), quit,
 			},
 		},

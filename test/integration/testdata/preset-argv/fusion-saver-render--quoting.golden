@@ -286,8 +286,13 @@ task 1/1  name="Render[Frame=1-2]"
                 .. ", not a Saver; the comp's Savers are " .. names_of(savers), 0)
         end
         for _, saver in ipairs(savers) do
-            saver.tool:SetAttrs({ TOOLB_PassThrough = saver.name ~= p.saver })
+            if saver.name ~= p.saver then
+                saver.tool:SetAttrs({ TOOLB_PassThrough = true })
+            end
         end
+        -- Set on the found tool, not from the list: a Saver the list
+        -- misses (inside a group) must not stay in pass-through.
+        tool:SetAttrs({ TOOLB_PassThrough = false })
         local ok = comp:Render({ Start = p.start, End = p["end"], Wait = true })
         if not ok then
             error("Fusion reported that the render did not succeed (Render returned " .. tostring(ok) .. ")", 0)
