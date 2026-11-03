@@ -307,8 +307,8 @@ func TestEmbedded_EnrolmentNeedsNoBrokerCall(t *testing.T) {
 	nc.Close()
 }
 
-// TestEmbedded_RevokeDisconnectsBeforeReturning pins H1's synchronous
-// revocation on the callout mechanism. When Revoke returns, the broker holds
+// TestEmbedded_RevokeDisconnectsBeforeReturning pins synchronous revocation
+// through the auth callout. When Revoke returns, the broker holds
 // no connection for the worker and has stopped routing to it; the worker's
 // own client notices the closed socket a moment later. Its reconnect goes
 // through the callout and is refused because its key is gone.
@@ -427,9 +427,9 @@ func TestEmbedded_RevokeConcurrentWithShutdown(t *testing.T) {
 	wg.Wait()
 }
 
-// TestEmbedded_InvalidWorkerIDRowDenied is the last line of defense behind
-// the enrolment boundaries: a stored worker ID that is not a single subject
-// token would become a wildcard in the worker's grants.
+// TestEmbedded_InvalidWorkerIDRowDenied checks that a stored worker ID that
+// is not a single subject token is denied at connect, even though enrolment
+// already refuses one: it would become a wildcard in the worker's grants.
 func TestEmbedded_InvalidWorkerIDRowDenied(t *testing.T) {
 	for _, workerID := range []string{"*", ">", "a.b", "a b", ""} {
 		t.Run(fmt.Sprintf("worker id %q", workerID), func(t *testing.T) {
@@ -660,7 +660,7 @@ func TestEmbedded_TLSStillRequiredAfterRevoke(t *testing.T) {
 		t.Fatalf("Revoke: %v", err)
 	}
 
-	// The plaintext client carries a VALID credential, so the only reason
+	// The plaintext client carries a valid credential, so the only reason
 	// left to refuse it is TLS.
 	plain, err := nats.Connect(b.ClientURL(), nats.NoReconnect(), nkeyOption(t, seedA, pubA))
 	if err == nil {
@@ -683,10 +683,10 @@ func TestEmbedded_TLSStillRequiredAfterRevoke(t *testing.T) {
 // refused, and once the store is back the same retrying worker connects on
 // its own, with no broker restart.
 //
-// IgnoreAuthErrorAbort is load-bearing. Every refusal reaches nats.go as the
-// same "Authorization Violation", and by default nats.go closes a connection
-// for good on the second identical authorization error from one server, so
-// a client without it gives up during the outage rather than retrying.
+// The client must set IgnoreAuthErrorAbort. Every refusal reaches nats.go as
+// the same "Authorization Violation", and by default nats.go closes a
+// connection for good on the second identical authorization error from one
+// server, so a client without it gives up during the outage.
 func TestEmbedded_StoreOutageThenRecovery(t *testing.T) {
 	creds := newCredentialMap()
 	seed, pub := creds.enroll(t, "worker-a")
@@ -886,7 +886,7 @@ func TestEmbedded_RevokeHonoursCancellation(t *testing.T) {
 }
 
 // TestEmbedded_AuthTimeoutIsNATSDefault pins the value Revoke waits out to
-// the auth timeout nats-server actually applies.
+// the auth timeout nats-server applies.
 func TestEmbedded_AuthTimeoutIsNATSDefault(t *testing.T) {
 	dir, _ := farmCerts(t)
 	for name, tc := range map[string]struct {

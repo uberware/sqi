@@ -234,8 +234,8 @@ func TestRemote_VersionBelowFloorRefused(t *testing.T) {
 }
 
 // TestRemote_ReconnectToOldNodeWarns reconnects the data connection to a
-// node that reports a version below the floor. Start checked only the node it
-// first reached, so the reconnect is where a downgraded node shows up. Not
+// node that reports a version below the floor. Start checks only the node it
+// first reaches, so a node below the floor shows up on a reconnect. Not
 // parallel: it replaces the version reader.
 func TestRemote_ReconnectToOldNodeWarns(t *testing.T) {
 	var old atomic.Bool
@@ -314,8 +314,9 @@ func TestRemote_UnreachableFailsAfterConnectTimeout(t *testing.T) {
 
 // deliveryBudget is how long a consumer may take to deliver after a broker
 // restart or node loss. A pull lost while the consumer had no leader is
-// replaced after two missed idle heartbeats (2×2s), so this leaves room for
-// leader election without hiding a return to the library's ~30s default.
+// replaced after two missed idle heartbeats (2×2s). The budget leaves room
+// for leader election and stays well below the ~30s the library defaults
+// take, so losing the pull tuning fails the test.
 const deliveryBudget = 10 * time.Second
 
 func TestRemote_SurvivesBrokerRestart(t *testing.T) {
@@ -477,7 +478,7 @@ func TestRemote_SurvivesNodeLossAtR3(t *testing.T) {
 
 // TestConsume_InterruptionIsLogged deletes a running consumer under its
 // consume context. The context reports it, and sqi logs it at WARN under the
-// consumer's name instead of stalling silently.
+// consumer's name.
 func TestConsume_InterruptionIsLogged(t *testing.T) {
 	t.Parallel()
 	c := bustest.StartCluster(t, 1, bustest.Options{})

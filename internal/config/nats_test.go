@@ -109,7 +109,7 @@ func TestLoad_RemovedNATSKeys(t *testing.T) {
 		})
 	}
 
-	t.Run("new location loads", func(t *testing.T) {
+	t.Run("nats.embedded keys load", func(t *testing.T) {
 		body := "nats:\n  embedded:\n    addr: 127.0.0.1:4333\n    max_store_mb: 7\n"
 		cfg, err := config.Load(writeNATSFile(t, body), config.FlagOverrides{})
 		if err != nil {
@@ -414,6 +414,10 @@ func TestValidate_ExternalURLSchemesMustAgree(t *testing.T) {
 		{"all tls with ca", []string{"tls://a:4222", "tls://b:4222"}, ca, ""},
 		{"all nats, no tls", []string{"nats://a:4222"}, "", ""},
 		{"bad scheme", []string{"http://a:4222"}, "", "nats.external.urls"},
+		// A port with no host has a non-empty url.Host (":4222") but
+		// names nothing to dial.
+		{"port but no host", []string{"nats://:4222"}, "", "invalid broker URL"},
+		{"credentials but no host", []string{"nats://u:p@:4222"}, "", "invalid broker URL"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

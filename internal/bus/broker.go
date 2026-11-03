@@ -4,17 +4,15 @@ package bus
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
-
-	"github.com/uberware/sqi/internal/tlsutil"
 )
 
 // Broker is the NATS broker sqi-server runs on. [Embedded] hosts it inside
-// the process. Both modes share the same account layout ([Layout]) and
+// the process; [Remote] connects to an operator-run server or cluster. Both
+// modes share the same account layout ([Layout]) and
 // authenticate workers through the same auth-callout [Responder].
 type Broker interface {
 	// Start brings the broker up and provisions sqi's streams. It must be
@@ -44,6 +42,12 @@ type Broker interface {
 	// Identity names the broker and account sqi's streams live in, so a
 	// change of broker can be detected across restarts.
 	Identity() string
+
+	// AdvertiseURL is the broker URL discovery tells workers to use: the
+	// one configured for advertising, else the broker's own. host is this
+	// machine's discovery host name, for a broker whose URL is this machine.
+	// Call it after Start.
+	AdvertiseURL(host string) (string, error)
 }
 
 // AuthConfig controls worker authentication on the broker. The zero value
@@ -86,20 +90,6 @@ type BrokerTLSConfig struct {
 	ClientCAFile string
 }
 
-// buildBrokerTLS assembles the broker's server-side TLS configuration.
-// The paths have already been validated at config load, so a failure here
-// means the files changed underneath a running process.
-//
-// Note what is NOT here: the server's own connections need no client-side TLS
-// configuration at all, because they never speak TLS. See inProcessURL.
-func buildBrokerTLS(cfg BrokerTLSConfig) (*tls.Config, error) {
-	tlsCfg, err := tlsutil.ServerConfig(cfg.CertFile, cfg.KeyFile, cfg.ClientCAFile)
-	if err != nil {
-		return nil, err
-	}
-	return tlsCfg, nil
-}
-
 // waitForNATS waits up to timeout for ns to accept connections. It fails as
 // soon as the server reports a fatal error (a port in use, a JetStream store it
 // cannot open), naming it, or when ctx ends.
@@ -135,6 +125,6 @@ func waitForNATS(ctx context.Context, ns *natsserver.Server, nl *natsLogger, tim
 //
 // Passing no URL avoids all of it: nats-server clears info.TLSRequired for
 // in-process connections (server/server.go:3296), so the connection is plain
-// and authentication still applies — an in-process client presents its nkey
-// and is checked exactly like any other.
+// and authentication still applies: an in-process client presents its nkey
+// and is checked like any other.
 const inProcessURL = ""

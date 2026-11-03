@@ -445,18 +445,18 @@ make test-nats-cluster NATS_IMAGE='nats:2.14.9@sha256:2721e37c651cb38039c583b0ee
 supported-version floor moves, move the pins and the CI matrix with it:
 `TestNATSImagePins` in `internal/bus` fails when they drift apart.
 
-**Without Docker the target prints `docker unavailable — skipping NATS
+Without Docker the target prints `docker unavailable — skipping NATS
 cluster integration tests` and exits 0, and every test skips without the
-cluster. A skip verifies nothing.** Confirm the run with six
+cluster, so a pass there verifies nothing. Confirm the run with six
 `--- PASS: TestNATSCluster_` lines. CI's `nats-cluster-integration` job runs
 the target on both images and fails unless each of the six passes by name.
 
 The cluster directory is made under `$HOME/.cache`, not `$TMPDIR`, because
 Docker Desktop and Colima share only some host directories (Colima shares
 `$HOME`) into the VM that runs the containers, and a bind mount from anywhere
-else comes up empty. The reference cluster secures the client port with TLS
-but **not the routes between its nodes**, which are plaintext and
-unauthenticated on the Compose network; see
+else comes up empty. The reference cluster secures the client port with TLS;
+the routes between its nodes are plaintext and unauthenticated on the
+Compose network. See
 [The reference Compose cluster](operations.md#the-reference-compose-cluster).
 
 ### Testing against PostgreSQL

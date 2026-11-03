@@ -228,7 +228,7 @@ func printRestoreSummary(w io.Writer, r restore.Result) {
 // using the nats CLI as sqi's data user.
 func printManualPurge(w io.Writer, ex config.NATSExternalConfig) {
 	streams, consumers := bus.RestoreTargets()
-	fmt.Fprintf(w, "sqi's JetStream state on the external broker was NOT purged (--skip-nats-purge). "+
+	fmt.Fprintf(w, "sqi's JetStream state on the external broker was not purged (--skip-nats-purge). "+
 		"Before starting a server, in account %s:\n", ex.Account)
 	fmt.Fprintf(w, "  purge the streams %s\n", strings.Join(streams, ", "))
 	named := make([]string, 0, len(consumers))

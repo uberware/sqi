@@ -24,7 +24,6 @@ package natsclient
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -50,17 +49,18 @@ import (
 // could not look up (sqi-server or its store unavailable) with the same
 // "Authorization Violation", so a refusal alone cannot say which happened.
 // The grace lets a worker ride out a database restart, or in external mode a
-// sqi-server restart, while a revoked worker still stops. It is a variable
-// only so tests can shorten it; it is not operator configuration.
-var authRejectGrace = 2 * time.Minute
+// sqi-server restart, while a revoked worker still stops. It is not operator
+// configuration; tests pass a shorter grace to connect.
+const authRejectGrace = 2 * time.Minute
 
 // Connect dials the NATS server described by cfg and returns a connected
 // *nats.Conn and a lifecycle channel. The connection is configured for:
 //
 //   - MaxReconnects from cfg.MaxReconnectAttempts (-1 = unlimited).
 //   - Exponential backoff starting at cfg.ReconnectWait, doubling each attempt,
-//     capped at [protocol.MaxReconnectBackoff], with ±[protocol.ReconnectJitterFraction] randomness added so
-//     simultaneous worker restarts spread their reconnect storms.
+//     capped at [protocol.MaxReconnectBackoff], with
+//     ±[protocol.ReconnectJitterFraction] randomness added so simultaneous
+//     worker restarts spread their reconnect storms.
 //   - TLS when any of cfg.TLSCertFile, cfg.TLSKeyFile, or cfg.TLSCAFile is
 //     non-empty, or when cfg.InsecureSkipVerify is true.
 //
@@ -87,11 +87,11 @@ var authRejectGrace = 2 * time.Minute
 // is present, so the connect path is identical in both modes, and it must be
 // a single NATS subject token.
 func Connect(ctx context.Context, cfg workerconfig.NATSConfig, workerID string, seed []byte, publicKey string, logger *slog.Logger) (*nats.Conn, <-chan struct{}, error) {
-	return connect(ctx, cfg, workerID, seed, publicKey, logger)
+	return connect(ctx, cfg, workerID, seed, publicKey, logger, authRejectGrace)
 }
 
-// connect is [Connect], with extra options applied after the ones
-// buildOptions assembles.
+// connect is [Connect] with grace in place of [authRejectGrace], and extra
+// options applied after the ones buildOptions assembles.
 func connect(
 	ctx context.Context,
 	cfg workerconfig.NATSConfig,
@@ -99,9 +99,10 @@ func connect(
 	seed []byte,
 	publicKey string,
 	logger *slog.Logger,
+	grace time.Duration,
 	extra ...nats.Option,
 ) (*nats.Conn, <-chan struct{}, error) {
-	lc := newLifecycle(ctx, logger, len(seed) > 0, cfg.ReconnectWait)
+	lc := newLifecycle(ctx, logger, len(seed) > 0, cfg.ReconnectWait, grace)
 
 	opts, err := buildOptions(cfg, workerID, seed, publicKey, lc)
 	if err != nil {
@@ -129,8 +130,7 @@ func connect(
 // A refused credential never enters nats.go's own backoff loop, where the
 // reason would be buried: dial retries it here, with a WARN per refusal, and
 // returns the fatal rejection error once the refusals have lasted the grace.
-// Any other failure, notably an unreachable server, is returned at once, as
-// it always has been.
+// Any other failure, notably an unreachable server, is returned at once.
 func dial(ctx context.Context, cfg workerconfig.NATSConfig, opts []nats.Option, lc *lifecycle) (*nats.Conn, error) {
 	backoff := exponentialBackoff(cfg.ReconnectWait)
 	var since time.Time
@@ -220,9 +220,9 @@ func credentialRejectedError(err error, grace time.Duration, keyed bool) (error,
 	if err == nil || !isAuthRefusal(err) {
 		return nil, false
 	}
-	msg := "natsclient: the broker rejected this worker's credential — it may have been revoked; re-enroll with a new join token"
+	msg := "natsclient: the broker rejected this worker's credential: it may have been revoked (re-enroll with a new join token)"
 	if grace > 0 {
-		msg += fmt.Sprintf(" — or sqi-server or its store was unavailable for longer than %s", grace)
+		msg += fmt.Sprintf(", or sqi-server or its store was unavailable for longer than %s", grace)
 	}
 	if keyed {
 		msg += "; if the farm runs with broker authentication off, the broker refuses any key, so remove this worker's credential file (nats.credential_file)"
@@ -249,9 +249,10 @@ type lifecycle struct {
 	ctx    context.Context //nolint:containedctx // the callbacks nats.go invokes take no context
 	logger *slog.Logger
 
-	// grace is authRejectGrace for a worker that presents a key, and zero
-	// for one that does not: no outage explains refusing an anonymous
-	// connection, so there is nothing to wait out.
+	// grace is the refusal grace for a worker that presents a key
+	// ([authRejectGrace] outside tests), and zero for one that does not: no
+	// outage explains refusing an anonymous connection, so there is nothing
+	// to wait out.
 	grace time.Duration
 	keyed bool
 
@@ -271,10 +272,10 @@ type lifecycle struct {
 	gaveUp   bool      // the streak outlasted the grace and the rejection was logged
 }
 
-func newLifecycle(ctx context.Context, logger *slog.Logger, keyed bool, base time.Duration) *lifecycle {
+func newLifecycle(ctx context.Context, logger *slog.Logger, keyed bool, base, grace time.Duration) *lifecycle {
 	lc := &lifecycle{ctx: ctx, logger: logger, keyed: keyed, base: base, closedCh: make(chan struct{})}
 	if keyed {
-		lc.grace = authRejectGrace
+		lc.grace = grace
 	}
 	return lc
 }
@@ -516,8 +517,8 @@ func buildOptions(
 		// function that receives the number of attempts elapsed and returns
 		// the delay before the next attempt.
 		//
-		// Formula: base * 2^attempts, capped at protocol.MaxReconnectBackoff, then ±jitter,
-		// and never past the end of a refusal streak's grace.
+		// Formula: base * 2^attempts, capped at protocol.MaxReconnectBackoff,
+		// then ±jitter, and never past the end of a refusal streak's grace.
 		nats.CustomReconnectDelay(lc.capDelay(exponentialBackoff(cfg.ReconnectWait))),
 		nats.ReconnectErrHandler(lc.onReconnectErr),
 
@@ -581,7 +582,7 @@ func buildOptions(
 	// enrolled nkey. An empty seed adds no option at all, which is correct
 	// on a farm that does not require worker authentication — the broker
 	// accepts the anonymous connection exactly as it does today. When the
-	// broker DOES require authentication, connecting with no credential
+	// broker does require authentication, connecting with no credential
 	// fails the initial dial with nats.ErrAuthorization at once, and a
 	// refused key fails it once the refusals have lasted authRejectGrace.
 	if len(seed) > 0 {
@@ -592,8 +593,9 @@ func buildOptions(
 }
 
 // exponentialBackoff returns a CustomReconnectDelay function that doubles the
-// base wait on each attempt, caps at protocol.MaxReconnectBackoff, and adds ±protocol.ReconnectJitterFraction
-// randomness so simultaneous worker restarts spread their reconnect times.
+// base wait on each attempt, caps at protocol.MaxReconnectBackoff, and adds
+// ±protocol.ReconnectJitterFraction randomness so simultaneous worker restarts
+// spread their reconnect times.
 //
 // attempts is zero-indexed: attempt 0 is the first reconnect after disconnect.
 func exponentialBackoff(base time.Duration) func(int) time.Duration {
@@ -602,8 +604,8 @@ func exponentialBackoff(base time.Duration) func(int) time.Duration {
 		exp := math.Min(float64(attempts), 10) // 2^10 = 1024× base is already ≥ protocol.MaxReconnectBackoff for any sane base
 		delay := min(time.Duration(float64(base)*math.Pow(2, exp)), protocol.MaxReconnectBackoff)
 
-		// Add ±ReconnectJitterFraction randomness. math/rand/v2 is sufficient for
-		// backoff jitter — cryptographic randomness is not required here.
+		// Add ±ReconnectJitterFraction randomness. math/rand/v2 is sufficient
+		// for backoff jitter: cryptographic randomness is not required here.
 		jitter := time.Duration(float64(delay) * protocol.ReconnectJitterFraction * (rand.Float64()*2 - 1)) //nolint:gosec // jitter does not require cryptographic randomness
 		delay += jitter
 		if delay < 0 {
@@ -631,31 +633,15 @@ func buildTLSOptions(cfg workerconfig.NATSConfig) ([]nats.Option, error) {
 		return nil, nil
 	}
 
-	tlsCfg := &tls.Config{
-		MinVersion:         tls.VersionTLS12,
-		InsecureSkipVerify: cfg.InsecureSkipVerify, //nolint:gosec // explicitly user-requested
+	tlsCfg, err := tlsutil.ClientConfig(cfg.TLSCAFile, cfg.TLSCertFile, cfg.TLSKeyFile)
+	switch {
+	case errors.Is(err, tlsutil.ErrIncompleteClientPair):
+		return nil, errors.New("natsclient: tls_cert_file and tls_key_file must both be set")
+	case err != nil:
+		// The error names the file it could not load.
+		return nil, fmt.Errorf("natsclient: tls: %w", err)
 	}
-
-	// Mutual TLS: load client certificate keypair.
-	if cfg.TLSCertFile != "" || cfg.TLSKeyFile != "" {
-		if cfg.TLSCertFile == "" || cfg.TLSKeyFile == "" {
-			return nil, errors.New("natsclient: tls_cert_file and tls_key_file must both be set")
-		}
-		cert, err := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile)
-		if err != nil {
-			return nil, fmt.Errorf("natsclient: load client cert: %w", err)
-		}
-		tlsCfg.Certificates = []tls.Certificate{cert}
-	}
-
-	// Custom CA for verifying the server's certificate.
-	if cfg.TLSCAFile != "" {
-		pool, err := tlsutil.CertPool(cfg.TLSCAFile)
-		if err != nil {
-			return nil, fmt.Errorf("natsclient: %w", err)
-		}
-		tlsCfg.RootCAs = pool
-	}
+	tlsCfg.InsecureSkipVerify = cfg.InsecureSkipVerify // explicitly user-requested
 
 	return []nats.Option{nats.Secure(tlsCfg)}, nil
 }

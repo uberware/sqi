@@ -1552,11 +1552,11 @@ sqi lives in two NATS accounts, in both modes:
 
 - **`SQI`** (in external mode, the name `nats.external.account` sets) holds
   sqi's four streams and their consumers, in external mode the guard's KV
-  bucket, every worker connection, and `sqi-server`'s **data connection**.
+  bucket, every worker connection, and `sqi-server`'s data connection.
   The data connection may publish and subscribe to everything (`>`), which
   is safe only because the account boundary scopes it, so the account must be
   dedicated to sqi.
-- **`AUTH`** holds `sqi-server`'s **callout connection**, which answers the
+- **`AUTH`** holds `sqi-server`'s callout connection, which answers the
   broker's authorization requests on `$SYS.REQ.USER.AUTH` in the queue group
   `sqi-auth`. It exists only with `nats.auth.enabled` on.
 
@@ -1585,7 +1585,7 @@ so it has no guard.
 The guard is the key `active` in the JetStream KV bucket `SQI_SERVER`, with a
 30 s TTL and the stream replica count:
 
-- At startup, after it finds JetStream on the account and **before** it
+- At startup, after it finds JetStream on the account and before it
   touches the streams, `sqi-server` creates the key with its instance ID,
   host, PID and start time. If the key exists, startup fails naming the
   holder:
@@ -1611,8 +1611,8 @@ The guard is the key `active` in the JetStream KV bucket `SQI_SERVER`, with a
   `restore --skip-nats-purge`, which does not connect to the broker and so
   takes no guard.
 
-This is a refusal, not failover: it stops a copied configuration from
-pointing a second server at a live account. It does not elect a standby.
+The guard stops a copied configuration from pointing a second server at a
+live account. It does not fail over or elect a standby.
 
 ### Changing broker: identity and fencing
 
@@ -1635,9 +1635,9 @@ database with no open attempts the fence does nothing. See
 [Switching broker mode](operations.md#switching-broker-mode).
 
 An embedded broker whose `data_dir` contains `jetstream/$G` (streams in
-nats-server's global account, where v0.3.0 and earlier kept them) logs one
-INFO at each start naming that directory as abandoned and safe to delete. It
-deletes nothing.
+nats-server's global account, which sqi does not use) logs one INFO at each
+start naming that directory as abandoned and safe to delete. It deletes
+nothing.
 
 ### After a broker outage: the reconnect grace
 
@@ -1655,9 +1655,9 @@ scheduler.heartbeat_timeout + the worker's longest redial wait with its jitter
 
 A live worker lost the same broker and redials on its own backoff, capped at
 2 minutes with ±20 % jitter, so a shorter grace would reclaim the tasks of a
-worker that is merely still waiting to reconnect. The cost is that **a worker
-that died is marked offline, and its tasks reclaimed, up to about 3 minutes
-late after a server restart** or a broker outage. The sweep logs the
+worker that is still waiting to reconnect. The cost is that a worker that
+died is marked offline, and its tasks reclaimed, up to about 3 minutes late
+after a server restart or a broker outage. The sweep logs the
 deferral once per window, with the time it resumes: `scheduler: bus
 connected at startup; liveness sweep deferred for the reconnect grace` after
 a start, `scheduler: bus reconnected recently; liveness sweep deferred` after
@@ -1705,8 +1705,8 @@ A queue-unaffiliated worker leases on the reserved queue token
 `work.lease.<worker_id>._any` (`bus.WildcardQueueToken`).
 
 **Transport security.** Every subject above crosses the broker's client
-listener, which is **plaintext unless TLS is configured on it**
-(`nats.embedded.tls`, or the external cluster's own TLS) — see
+listener, which is plaintext unless TLS is configured on it
+(`nats.embedded.tls`, or the external cluster's own TLS); see
 [`docs/tls.md`](tls.md). That matters most for `work.lease.*`, whose reply
 carries the whole `AssignMsg`: command lines, embedded file contents, job
 parameters, environment and the run-as-user name. Broker *authentication*

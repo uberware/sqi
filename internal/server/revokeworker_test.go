@@ -27,7 +27,8 @@ import (
 // These exercise RevokeWorker directly against a *Server built by hand
 // (store + a real embedded broker whose auth callout reads that store, no
 // HTTP layer, no scheduler) so the store-write-then-disconnect ordering and
-// its failure mode are pinned at the unit level. The full HTTP-to-disconnect-to-reclaim path is covered by
+// its failure mode are pinned at the unit level. The full
+// HTTP-to-disconnect-to-reclaim path is covered by
 // test/integration's broker-auth suite, which also proves the existing
 // heartbeat-sweep/reclaim path — not anything reimplemented here — is what
 // returns a revoked worker's task to ready.
@@ -138,9 +139,9 @@ func connectAsWorker(t *testing.T, b *bus.Embedded, seed []byte, pub string) (*n
 // TestRevokeWorker_NATSAuthDisabled_StoreWriteOnly covers the farm that runs
 // without broker authentication at all: RevokeWorker must still perform the
 // store write (so an operator can pre-provision revocations, or clean up
-// after auth was turned off) but must never touch the broker — there is
-// nothing to disconnect, and s.broker is left nil here specifically to prove
-// that: touching it would panic.
+// after auth was turned off) but must never touch the broker: there is
+// nothing to disconnect. s.broker is left nil so that touching it would
+// panic.
 func TestRevokeWorker_NATSAuthDisabled_StoreWriteOnly(t *testing.T) {
 	st := fake.New()
 	ref, _ := enrolledCredential(t, st, "worker-a")
@@ -173,7 +174,7 @@ func TestRevokeWorker_UnknownWorker_ReturnsErrNotFoundWithoutTouchingBroker(t *t
 
 // TestRevokeWorker_DisconnectsRevokedWorkerOnly is the core positive case:
 // revoking worker A through Server.RevokeWorker disconnects A's live broker
-// connection inside the call and leaves B completely unaffected.
+// connection inside the call and leaves B connected.
 func TestRevokeWorker_DisconnectsRevokedWorkerOnly(t *testing.T) {
 	st := fake.New()
 	refA, seedA := enrolledCredential(t, st, "worker-a")
@@ -237,11 +238,10 @@ func (b *revokeStubBroker) Revoke(ctx context.Context, workerID string) error {
 	return b.err
 }
 
-// TestRevokeWorker_BrokerFailure_StoreStaysRevoked pins the defensible
-// outcome of a broker failure after a successful store write: the credential
-// row stays revoked (the store is never rolled back) and the failure is
-// still surfaced to the caller, since the synchronous disconnect this method
-// exists to provide did not actually happen.
+// TestRevokeWorker_BrokerFailure_StoreStaysRevoked pins the outcome of a
+// broker failure after a successful store write: the credential row stays
+// revoked (the store is never rolled back) and the failure is still returned
+// to the caller, since the synchronous disconnect did not happen.
 func TestRevokeWorker_BrokerFailure_StoreStaysRevoked(t *testing.T) {
 	st := fake.New()
 	ref, _ := enrolledCredential(t, st, "worker-a")
@@ -260,8 +260,8 @@ func TestRevokeWorker_BrokerFailure_StoreStaysRevoked(t *testing.T) {
 
 	// The store write must stand regardless: rolling it back on a broker
 	// failure would leave a credential the operator explicitly revoked
-	// silently trusted again, which is worse than the disconnect simply not
-	// having happened yet.
+	// silently trusted again, which is worse than a disconnect that has not
+	// happened yet.
 	if _, err := storetest.ActiveWorkerCredential(context.Background(), st, ref.WorkerID); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("credential still active after a broker failure: %v, want store.ErrNotFound", err)
 	}
@@ -282,9 +282,8 @@ func TestRevokeWorker_CancelledRequestStillGetsALiveBrokerContext(t *testing.T) 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // the client is already gone when RevokeWorker runs
 
-	// The store write is the one part that must not be skipped either; the
-	// fake does not look at the context, which is what the real store's
-	// write path is exercised for in the integration suite.
+	// The store write must not be skipped either. The fake ignores the
+	// context; the integration suite exercises the real store's write path.
 	if err := s.RevokeWorker(ctx, ref.WorkerID); err != nil {
 		t.Fatalf("RevokeWorker: %v", err)
 	}

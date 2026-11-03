@@ -69,7 +69,7 @@ nats:
 
 With `discovery.enable_mdns` and no `url`, the worker uses the one broker URL
 the server advertises in its `nats_url` record, as given. An advertisement
-with no usable `nats_url` (an older server's) is skipped with a WARN naming
+with no usable `nats_url` is skipped with a WARN naming
 `server advertises no broker URL`, and the worker keeps browsing.
 
 ---

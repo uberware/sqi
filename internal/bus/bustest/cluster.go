@@ -113,15 +113,16 @@ type Cluster struct {
 	nodes       []*node
 }
 
-// node is one cluster member. conf, storeDir and the ports never change, so a
-// restarted node comes back as the same member with the same data.
+// node is one cluster member. Its config file, which fixes its store
+// directory and ports, never changes, so a restarted node comes back as the
+// same member with the same data.
 type node struct {
 	name string
 	conf string
 	srv  *natsserver.Server
 }
 
-// StartCluster boots nodes routed nats-server nodes from sqi's account layout
+// StartCluster boots `nodes` routed nats-server nodes from sqi's account layout
 // and waits until each accepts connections and, with more than one node, a
 // JetStream meta leader sees all of them. The cluster is shut down when the
 // test ends.
@@ -196,8 +197,8 @@ func (c *Cluster) fragment(o Options) string {
 		frag = mustReplace(t, frag, "    jetstream: enabled\n", "")
 	}
 	if o.AuthEnabled {
-		// The issuer is an account key, not a user, so it is written in both
-		// forms: a responder needs it to sign answers either way.
+		// The issuer is an account key, not a user, so it is written with
+		// password users too: a responder needs it to sign answers either way.
 		c.IssuerSeed = writeSecret(t, dir, "issuer.nk", issuerSeed)
 	}
 	if o.PasswordUsers {

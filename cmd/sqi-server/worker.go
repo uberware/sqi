@@ -117,7 +117,7 @@ itself with a join token:
 var workerRevokeCmd = &cobra.Command{
 	Use:   "revoke WORKER_ID",
 	Short: "Revoke a worker's broker credential",
-	Long: `Revokes a worker credential in the database. A RUNNING sqi-server does not
+	Long: `Revokes a worker credential in the database. A running sqi-server does not
 disconnect the worker at once: the revocation takes effect at the worker's next
 connect, and within nats.auth.user_ttl at the latest. To revoke a worker on a
 running server and disconnect it at once, use the REST API:

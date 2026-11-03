@@ -23,9 +23,9 @@ const hammerChildEnv = "SQI_TEST_SHUTDOWN_HAMMER_CHILD"
 // fresh chance to land a CONNECT in nats-server's shutdown window.
 const hammerRounds = 4
 
-// hammerClients connect in a loop, pausing hammerPause between connects: a
-// steady stream rather than a flood, which under the race detector would
-// spend the test's time on overload instead of on the shutdown window.
+// hammerClients connect in a loop, pausing hammerPause between connects. A
+// flood would, under the race detector, spend the test's time on overload
+// instead of in the shutdown window.
 const (
 	hammerClients = 8
 	hammerPause   = 2 * time.Millisecond
@@ -34,9 +34,10 @@ const (
 // TestEmbedded_ShutdownUnderConnectHammerDoesNotPanic shuts an auth-on
 // embedded broker down while clients keep sending CONNECTs that need the
 // auth callout. nats-server v2.15.2 dereferences nil when it processes such a
-// CONNECT after its system account has shut down, which on a plain Shutdown
-// can happen before it closes the clients it already accepted: sqi-server
-// would panic on its way out, before the store is closed.
+// CONNECT after its system account has shut down, which a plain Shutdown
+// allows before it closes the clients it has accepted; [stopServer] narrows
+// that window. The panic would take sqi-server down before its store is
+// closed.
 //
 // A panic inside nats-server takes the whole process down, so the broker
 // runs in a child copy of this test binary and the parent checks how it

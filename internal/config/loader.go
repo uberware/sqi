@@ -183,9 +183,9 @@ type roleMappingFile struct {
 	Role  string `yaml:"role"`
 }
 
-// fileNATS is the nats block as it appears in the file. The removed pre-H6
-// keys (addr, data_dir, max_store_mb, tls) are not fields here; see
-// [rejectRemovedNATSKeys].
+// fileNATS is the nats block as it appears in the file. The keys that moved
+// under nats.embedded (addr, data_dir, max_store_mb, tls) are not fields
+// here; see [rejectRemovedNATSKeys].
 type fileNATS struct {
 	Mode *string `yaml:"mode"`
 	Auth *struct {
@@ -458,7 +458,7 @@ func mergeNATSFile(cfg *Config, fc fileConfig) {
 	mergeNATSExternalFile(cfg, fc.NATS)
 }
 
-// mergeNATSAuthFile overlays the nats.auth sub-fields from fc onto cfg. Split
+// mergeNATSAuthFile overlays the nats.auth sub-fields from n onto cfg. Split
 // out of [mergeNATSFile] to keep its cyclomatic complexity under the lint
 // threshold.
 func mergeNATSAuthFile(cfg *Config, n *fileNATS) {
@@ -473,7 +473,7 @@ func mergeNATSAuthFile(cfg *Config, n *fileNATS) {
 	setIfNotNilBool(&cfg.NATS.Auth.EnrollmentEndpointEnabled, a.EnrollmentEndpointEnabled)
 }
 
-// mergeNATSEmbeddedFile overlays the nats.embedded sub-fields from fc onto cfg.
+// mergeNATSEmbeddedFile overlays the nats.embedded sub-fields from n onto cfg.
 func mergeNATSEmbeddedFile(cfg *Config, n *fileNATS) {
 	e := n.Embedded
 	if e == nil {
@@ -494,7 +494,7 @@ func mergeNATSEmbeddedFile(cfg *Config, n *fileNATS) {
 	}
 }
 
-// mergeNATSExternalFile overlays the nats.external sub-fields from fc onto cfg.
+// mergeNATSExternalFile overlays the nats.external sub-fields from n onto cfg.
 func mergeNATSExternalFile(cfg *Config, n *fileNATS) {
 	e := n.External
 	if e == nil {
@@ -1045,8 +1045,8 @@ func rejectRemovedNATSKeys(path string, data []byte) error {
 }
 
 // yamlRoot returns the top-level node of data, or nil when data does not
-// parse or is empty. A syntax error is reported by the typed parse that
-// follows the callers, so it is not reported here.
+// parse or is empty. A syntax error is left to the typed parse that runs
+// after the caller.
 func yamlRoot(data []byte) *yaml.Node {
 	var doc yaml.Node
 	if yaml.Unmarshal(data, &doc) == nil && len(doc.Content) > 0 {

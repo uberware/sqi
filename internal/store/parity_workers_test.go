@@ -173,7 +173,7 @@ func TestParity_GetActiveWorkerCredentialByPublicKey(t *testing.T) {
 				t.Fatalf("unknown key: err = %v, want ErrNotFound", err)
 			}
 
-			// Revoked: the key is still enrolled, but no longer authenticates.
+			// Revoked: the key is still enrolled, but does not authenticate.
 			if err := st.RevokeWorkerCredential(ctx, "w1", time.Now().UTC()); err != nil {
 				t.Fatalf("RevokeWorkerCredential: %v", err)
 			}

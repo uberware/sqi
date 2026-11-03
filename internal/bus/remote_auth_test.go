@@ -93,22 +93,11 @@ func authRemoteConfig(c *bustest.Cluster, lookup bus.CredentialLookup) bus.Remot
 	return cfg
 }
 
-// workerNkey authenticates as the worker key pub, signing with seed.
-func workerNkey(seed []byte, pub string) nats.Option {
-	return nats.Nkey(pub, func(nonce []byte) ([]byte, error) {
-		kp, err := nkeys.FromSeed(seed)
-		if err != nil {
-			return nil, err
-		}
-		return kp.Sign(nonce)
-	})
-}
-
 // connectWorker connects as a worker through urls, in order, and closes the
 // connection when the test ends.
 func connectWorker(t *testing.T, urls []string, seed []byte, pub string, opts ...nats.Option) *nats.Conn {
 	t.Helper()
-	opts = append([]nats.Option{workerNkey(seed, pub), nats.DontRandomize()}, opts...)
+	opts = append([]nats.Option{brokerauth.NkeyOption(pub, seed), nats.DontRandomize()}, opts...)
 	nc, err := nats.Connect(strings.Join(urls, ","), opts...)
 	if err != nil {
 		t.Fatalf("connect as %s: %v", pub, err)
@@ -122,7 +111,7 @@ func connectWorker(t *testing.T, urls []string, seed []byte, pub string, opts ..
 func refusedEverywhere(t *testing.T, c *bustest.Cluster, seed []byte, pub string) {
 	t.Helper()
 	for i, u := range c.URLs {
-		nc, err := nats.Connect(u, nats.NoReconnect(), workerNkey(seed, pub))
+		nc, err := nats.Connect(u, nats.NoReconnect(), brokerauth.NkeyOption(pub, seed))
 		if err == nil {
 			nc.Close()
 			t.Fatalf("node %d accepted the connection", i)
@@ -199,7 +188,7 @@ func TestRemote_UnknownRevokedAndEmptyNonceRefused(t *testing.T) {
 			}
 			return err
 		}
-		if err := connect(workerNkey(seed, pub)); err != nil {
+		if err := connect(brokerauth.NkeyOption(pub, seed)); err != nil {
 			t.Fatalf("the enrolled worker was refused: %v", err)
 		}
 		if err := connect(); err == nil {
@@ -209,15 +198,15 @@ func TestRemote_UnknownRevokedAndEmptyNonceRefused(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := connect(workerNkey(strangerSeed, strangerPub)); !errors.Is(err, nats.ErrAuthorization) {
+		if err := connect(brokerauth.NkeyOption(strangerPub, strangerSeed)); !errors.Is(err, nats.ErrAuthorization) {
 			t.Errorf("a key never enrolled: %v, want nats.ErrAuthorization", err)
 		}
-		if err := connect(workerNkey(strangerSeed, pub)); !errors.Is(err, nats.ErrAuthorization) {
+		if err := connect(brokerauth.NkeyOption(pub, strangerSeed)); !errors.Is(err, nats.ErrAuthorization) {
 			t.Errorf("the enrolled key signed by another seed: %v, want nats.ErrAuthorization", err)
 		}
 
 		creds.fail(errors.New("database is down"))
-		if err := connect(workerNkey(seed, pub)); !errors.Is(err, nats.ErrAuthorization) {
+		if err := connect(brokerauth.NkeyOption(pub, seed)); !errors.Is(err, nats.ErrAuthorization) {
 			t.Errorf("connect during a store error: %v, want nats.ErrAuthorization", err)
 		}
 		creds.fail(nil)
@@ -236,9 +225,9 @@ func TestRemote_UnknownRevokedAndEmptyNonceRefused(t *testing.T) {
 }
 
 // testNoNonceCluster checks a cluster whose own users are all passwords, so
-// that it issues no nonce. sqi refuses to start on it, naming the cause, and
-// a responder that does answer refuses every worker, logging the ERROR that
-// names the cluster's misconfiguration.
+// that it issues no nonce. sqi refuses to start on it, naming the cause and
+// the fix, and a responder that does answer refuses every worker, logging the
+// ERROR that names the cluster's misconfiguration.
 func testNoNonceCluster(t *testing.T, c *bustest.Cluster, creds *testCreds, seed []byte, pub string) {
 	t.Helper()
 	logger, logs := bufLogger()
@@ -267,7 +256,7 @@ func testNoNonceCluster(t *testing.T, c *bustest.Cluster, creds *testCreds, seed
 
 	for i, u := range c.URLs {
 		// nats.go refuses on the client side before any callout runs.
-		if nc, err := nats.Connect(u, nats.NoReconnect(), workerNkey(seed, pub)); err == nil {
+		if nc, err := nats.Connect(u, nats.NoReconnect(), brokerauth.NkeyOption(pub, seed)); err == nil {
 			nc.Close()
 			t.Fatalf("node %d accepted an enrolled worker with no nonce issued", i)
 		}
@@ -335,10 +324,7 @@ func serveResponder(t *testing.T, c *bustest.Cluster, lookup bus.CredentialLooku
 		t.Fatalf("callout connection: %v", err)
 	}
 	t.Cleanup(nc.Close)
-	if _, err := resp.Serve(nc); err != nil {
-		t.Fatal(err)
-	}
-	if err := nc.Flush(); err != nil {
+	if err := resp.Serve(context.Background(), nc); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -580,7 +566,7 @@ func TestRemote_CalloutQueueGroup(t *testing.T) {
 	t.Cleanup(second.Shutdown)
 
 	for i := range connects {
-		nc, err := nats.Connect(c.URLs[i%len(c.URLs)], nats.NoReconnect(), workerNkey(seed, pub))
+		nc, err := nats.Connect(c.URLs[i%len(c.URLs)], nats.NoReconnect(), brokerauth.NkeyOption(pub, seed))
 		if err != nil {
 			t.Fatalf("connect %d through node %d: %v", i, i%len(c.URLs), err)
 		}
@@ -657,7 +643,7 @@ func TestRemote_ReconnectStormAllWorkersReturn(t *testing.T) {
 		wg.Go(func() {
 			// The options a worker uses that matter here: it retries a
 			// refusal rather than closing, and reconnects without limit.
-			nc, err := nats.Connect(strings.Join(c.URLs, ","), workerNkey(w.seed, w.pub),
+			nc, err := nats.Connect(strings.Join(c.URLs, ","), brokerauth.NkeyOption(w.pub, w.seed),
 				nats.IgnoreAuthErrorAbort(), nats.MaxReconnects(-1),
 				nats.ClosedHandler(func(*nats.Conn) { closed.Add(1) }),
 				nats.ReconnectHandler(func(*nats.Conn) { reconnectedAt[i].Store(time.Now().UnixNano()) }),
@@ -741,8 +727,8 @@ func TestRemote_ReconnectStormAllWorkersReturn(t *testing.T) {
 	}
 }
 
-// lookupStats wraps a lookup, recording how many calls it served and how long
-// the slowest took.
+// lookupStats wraps a lookup, recording how many calls it served, their mean
+// duration and the slowest.
 type lookupStats struct {
 	mu    sync.Mutex
 	calls int
@@ -1014,7 +1000,7 @@ func TestRemote_RevokeCatchesInFlightAuthorization(t *testing.T) {
 	}
 	dial := make(chan dialed, 1)
 	go func() {
-		nc, err := nats.Connect(c.URLs[2], nats.NoReconnect(), workerNkey(seed, pub))
+		nc, err := nats.Connect(c.URLs[2], nats.NoReconnect(), brokerauth.NkeyOption(pub, seed))
 		dial <- dialed{nc, err}
 	}()
 	select {
@@ -1125,7 +1111,8 @@ func TestRemote_RevokeUsesTheFreshAuthTimeout(t *testing.T) {
 }
 
 // TestRemote_RevokeFallsBackToTheStartAuthTimeout makes the fresh VARZ read
-// fail. Revoke still waits out the auth timeout every node reported at Start.
+// fail. Revoke still waits out the longest auth timeout the nodes reported at
+// Start.
 func TestRemote_RevokeFallsBackToTheStartAuthTimeout(t *testing.T) {
 	t.Parallel()
 	const authTimeout = 4 * time.Second

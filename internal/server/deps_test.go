@@ -17,9 +17,8 @@ const workerPkgPrefix = "github.com/uberware/sqi/internal/worker/"
 var serverWorkerDeps = map[string]bool{workerPkgPrefix + "protocol": true}
 
 // TestSQIServerLinksNoWorkerInternals keeps the worker's configuration,
-// broker client, capability detection and commands out of sqi-server. The
-// server once imported two of them for three timing constants, which linked
-// the worker's capability code into the server binary.
+// broker client, capability detection and commands out of sqi-server. Values
+// both binaries need belong in internal/worker/protocol.
 func TestSQIServerLinksNoWorkerInternals(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs go list")

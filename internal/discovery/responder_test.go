@@ -70,9 +70,9 @@ func TestBuildTXTRecords(t *testing.T) {
 	}
 }
 
-// TestBuildTXTRecords_AdvertisesNATSURLOnly pins the clean break: the broker
-// is advertised as one nats_url record, and neither the old port record nor
-// the old TLS record exists in any form.
+// TestBuildTXTRecords_AdvertisesNATSURLOnly pins that the broker is
+// advertised as one nats_url record, with no nats= port record and no
+// nats_tls= record.
 func TestBuildTXTRecords_AdvertisesNATSURLOnly(t *testing.T) {
 	t.Parallel()
 
@@ -82,15 +82,14 @@ func TestBuildTXTRecords_AdvertisesNATSURLOnly(t *testing.T) {
 	}
 	for _, rec := range got {
 		if strings.HasPrefix(rec, "nats=") || strings.HasPrefix(rec, "nats_tls=") {
-			t.Errorf("records %v contain the removed record %q", got, rec)
+			t.Errorf("records %v contain %q; the broker is advertised only as nats_url", got, rec)
 		}
 	}
 }
 
 // TestBuildTXTRecords_TLSKeysOmittedWhenOff pins that a plaintext farm's
-// advertisement is byte-for-byte what it has always been: the TLS keys are
-// ABSENT, not present-and-zero. Anything else would change what every
-// existing client sees on an unchanged deployment.
+// advertisement has no tls key at all, rather than tls=0, so clients see no
+// extra record on a farm without TLS.
 func TestBuildTXTRecords_TLSKeysOmittedWhenOff(t *testing.T) {
 	t.Parallel()
 

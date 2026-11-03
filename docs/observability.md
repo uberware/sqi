@@ -692,8 +692,8 @@ are two checks:
   - with `nats.auth.enabled`, the auth-callout connection is not connected:
     no worker can connect until it is back;
   - on the embedded broker, the in-process nats-server is not running;
-  - on an external broker (`nats.mode: external`), this server no longer
-    holds the [one-server-per-account guard](operations.md#one-server-per-broker-account):
+  - on an external broker (`nats.mode: external`), this server has lost
+    the [one-server-per-account guard](operations.md#one-server-per-broker-account):
     its last refresh is more than 30 seconds old (`the broker account guard
     was last refreshed … ago`), or another `sqi-server` took the account
     (`this sqi-server no longer holds it`), which lasts until this server

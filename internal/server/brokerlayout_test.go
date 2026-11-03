@@ -31,7 +31,7 @@ type identityBroker struct {
 
 func (b identityBroker) Identity() string { return b.identity }
 
-// layoutServer is a Server holding just what reconcileBrokerLayout reads.
+// layoutServer is a Server holding only what reconcileBrokerLayout reads.
 func layoutServer(t *testing.T, st store.Store, b bus.Broker) (*Server, *bytes.Buffer) {
 	t.Helper()
 	var buf bytes.Buffer
@@ -228,6 +228,7 @@ func TestReconcileBrokerLayout_LeftoverGlobalStreamsLogged(t *testing.T) {
 		t.Fatal(err)
 	}
 	s, logs := layoutServer(t, st, bus.NewEmbedded(bus.EmbeddedConfig{DataDir: dir}, slog.Default()))
+	s.cfg.NATS.Embedded.DataDir = dir
 
 	if err := s.reconcileBrokerLayout(t.Context()); err != nil {
 		t.Fatalf("reconcileBrokerLayout: %v", err)
@@ -274,7 +275,7 @@ func TestReconcileBrokerLayout_ExternalBrokerIsNotChecked(t *testing.T) {
 }
 
 // TestLegacyGlobalStreamsDir_MatchesNatsServer pins the path the leftover check
-// looks at against where nats-server really puts the global account's streams.
+// looks at against where nats-server puts the global account's streams.
 func TestLegacyGlobalStreamsDir_MatchesNatsServer(t *testing.T) {
 	dir := t.TempDir()
 	srv, err := natsserver.NewServer(&natsserver.Options{

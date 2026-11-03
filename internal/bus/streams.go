@@ -38,9 +38,9 @@ const (
 )
 
 // streamDefs returns the canonical JetStream stream configurations for
-// sqi-server, each with the given replica count.  Called once at startup by
-// [ensureStreams]; also used by tests to assert stream shape without booting
-// a real broker.
+// sqi-server, each with the given replica count. [ensureStreams] applies them
+// at startup; tests use them to assert stream shape without booting a real
+// broker.
 func streamDefs(replicas int) []jetstream.StreamConfig {
 	return []jetstream.StreamConfig{
 		{
@@ -132,9 +132,8 @@ func streamDefs(replicas int) []jetstream.StreamConfig {
 }
 
 // ensureStreams creates or updates all sqi-server JetStream streams with the
-// given replica count.  It is idempotent: calling it against a broker that
-// already has the streams defined is safe and will update any configuration
-// drift.
+// given replica count. It is idempotent, and brings an existing stream's
+// configuration back to its definition.
 func ensureStreams(ctx context.Context, js jetstream.JetStream, replicas int) error {
 	for _, cfg := range streamDefs(replicas) {
 		if _, err := js.CreateOrUpdateStream(ctx, cfg); err != nil {
@@ -142,4 +141,14 @@ func ensureStreams(ctx context.Context, js jetstream.JetStream, replicas int) er
 		}
 	}
 	return nil
+}
+
+// streamNames lists sqi's streams by name.
+func streamNames() []string {
+	defs := streamDefs(1)
+	names := make([]string, 0, len(defs))
+	for _, def := range defs {
+		names = append(names, def.Name)
+	}
+	return names
 }

@@ -20,7 +20,6 @@ import (
 	"net"
 	"net/http"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -302,7 +301,7 @@ func (s *Server) serveHTTP(ctx context.Context) error {
 	// Both TLS surfaces are warned about here, beside the listener they concern,
 	// rather than riding on broker startup where a reordering would silently
 	// take the HTTP warning with it.
-	warnTLSConfig(ctx, s.logger, s.cfg.HTTPTLS, s.cfg.NATS.Embedded.TLS)
+	warnTLSConfig(ctx, s.logger, s.cfg.HTTPTLS, s.cfg.NATS)
 
 	tlsOn := s.cfg.HTTPTLS.Enabled
 	if tlsOn {
@@ -342,17 +341,27 @@ func (s *Server) serveHTTP(ctx context.Context) error {
 // is a legitimate rollout step, and a certificate 29 days from expiry still
 // works — but both are worth saying out loud once at startup. The broker's
 // warnings are emitted here rather than in internal/bus so that package does
-// not have to import internal/config.
-func warnTLSConfig(ctx context.Context, logger *slog.Logger, httpTLS config.TLSConfig, natsTLS config.NATSTLSConfig) {
-	surfaces := []struct {
+// not have to import internal/config. In external mode there is no embedded
+// listener, so nats.embedded.tls is inert and not checked; the certificate
+// that matters is the client one in nats.external.tls, which a cluster
+// requiring mTLS refuses once it expires.
+func warnTLSConfig(ctx context.Context, logger *slog.Logger, httpTLS config.TLSConfig, nats config.NATSConfig) {
+	type surface struct {
 		component string // log prefix
 		key       string // the config key an operator would flip
 		enabled   bool
 		certFile  string
 		keyFile   string
-	}{
+	}
+	broker := surface{"bus", "nats.embedded.tls.enabled", nats.Embedded.TLS.Enabled, nats.Embedded.TLS.CertFile, nats.Embedded.TLS.KeyFile}
+	if nats.Mode == config.NATSModeExternal {
+		// A client certificate has no switch: it is in use when set.
+		c := nats.External.TLS
+		broker = surface{"bus", "", c.CertFile != "", c.CertFile, c.KeyFile}
+	}
+	surfaces := []surface{
 		{"http", "http.tls.enabled", httpTLS.Enabled, httpTLS.CertFile, httpTLS.KeyFile},
-		{"bus", "nats.embedded.tls.enabled", natsTLS.Enabled, natsTLS.CertFile, natsTLS.KeyFile},
+		broker,
 	}
 	for _, s := range surfaces {
 		if !s.enabled {
@@ -426,8 +435,8 @@ func warnIfRevocationBounded(ctx context.Context, n config.NATSConfig, logger *s
 	)
 }
 
-// shortDuration formats d without zero trailing units: "1h", "90m" as
-// "1h30m".
+// shortDuration formats d without trailing zero units: one hour is "1h",
+// 90 minutes "1h30m".
 func shortDuration(d time.Duration) string {
 	s := d.String()
 	if strings.HasSuffix(s, "m0s") {
@@ -487,8 +496,8 @@ func (s *Server) startBroker(ctx context.Context) (bus.Broker, error) {
 // broker's part. The broker needs about its auth timeout plus a margin
 // (2.25s embedded, 3.25s on an external cluster at nats-server's defaults);
 // a broker whose [bus.Broker.RevokeBudget] says it needs longer, a cluster
-// with a long auth timeout, gets that instead. Either way a stuck broker
-// cannot hold the request open for good.
+// with a long auth timeout, gets that instead. Either way the bound stops a
+// stuck broker from holding the request open indefinitely.
 const revokeBrokerTimeout = 10 * time.Second
 
 // RevokeWorker revokes workerID's active broker credential and, when broker
@@ -500,14 +509,13 @@ const revokeBrokerTimeout = 10 * time.Second
 // worker's next connect; this method runs inside the server process where
 // the broker handle lives, so it can disconnect the worker immediately.
 //
-// The store is written FIRST and the broker called SECOND, on purpose: once
-// the row is revoked, the auth callout refuses the worker's reconnect, so
-// disconnecting it is what makes the revocation take effect now rather than
-// at its user JWT's expiry. A broker failure after a successful store write
-// leaves the worker connected until that expiry at the latest, never trusted
-// again afterwards. The failure is still returned to the caller — the
-// synchronous guarantee this method exists to provide was not met — but it
-// never triggers a rollback of the store write.
+// The store is written before the broker is called: once the row is
+// revoked, the auth callout refuses the worker's reconnect, so the disconnect
+// makes the revocation take effect immediately instead of at its user JWT's
+// expiry. A broker failure after a successful store write leaves the worker
+// connected until that expiry at the latest, and it is not trusted again
+// afterwards. The failure is returned to the caller, since the synchronous
+// disconnect did not happen, but the store write is never rolled back.
 //
 // The broker call runs on a context detached from ctx and bounded by the
 // larger of [revokeBrokerTimeout] and the broker's own
@@ -683,7 +691,7 @@ func (s *Server) start(ctx context.Context) error {
 	// consumer), and heartbeat timeout sweep.
 	// The hub is passed as the notifier so live events are
 	// pushed to subscribed WebSocket clients after each state change.
-	s.sched = scheduler.New(schedulerConfigWithBus(s.cfg, busClient), s.store, s.busClient, s.metrics, s.logger, s.wsHub, s.diagBuf)
+	s.sched = scheduler.New(schedulerConfig(s.cfg, busClient), s.store, s.busClient, s.metrics, s.logger, s.wsHub, s.diagBuf)
 	// The scheduler runs on its own child context so a failed start can stop
 	// it (see abortStart) without racing Run's own setup of Scheduler.Stop.
 	schedCtx, cancelSched := context.WithCancel(ctx)
@@ -778,73 +786,13 @@ func (s *Server) startDiscovery(ctx context.Context) error {
 	return nil
 }
 
-// advertisedNATSURL is the broker URL discovery tells workers to use. The
-// embedded broker's port is the one it actually bound, which differs from the
-// configured one when that is 0. It fails rather than advertise port 0, and
-// returns "" when discovery is off.
+// advertisedNATSURL is the broker URL discovery tells workers to use, or ""
+// when discovery is off.
 func (s *Server) advertisedNATSURL() (string, error) {
 	if !s.cfg.DiscoveryEnabled {
 		return "", nil // nothing is advertised, so nothing can be wrong with it
 	}
-	if s.cfg.NATS.Mode == config.NATSModeExternal || s.cfg.NATS.Embedded.AdvertiseURL != "" {
-		return natsURLForMode(s.cfg.NATS, discovery.SRVHost(), 0), nil
-	}
-	clientURL := ""
-	if cu, ok := s.broker.(interface{ ClientURL() string }); ok {
-		clientURL = cu.ClientURL()
-	}
-	port, err := listenerPort(clientURL, s.cfg.NATS.Embedded.Addr)
-	if err != nil {
-		return "", err
-	}
-	return natsURLForMode(s.cfg.NATS, discovery.SRVHost(), port), nil
-}
-
-// listenerPort returns the embedded broker's listener port: the one in the
-// broker's client URL when it reports one, else the configured address's. The
-// client URL's host can be an unbracketed IPv6 address that url.Parse
-// rejects, so the port is whatever follows the last colon. A port of 0 (a
-// configured ":0" the broker did not report back) is an error, never
-// advertised.
-func listenerPort(clientURL, configuredAddr string) (int, error) {
-	if i := strings.LastIndex(clientURL, ":"); i >= 0 {
-		rest := strings.TrimRight(clientURL[i+1:], "/")
-		if n, err := strconv.Atoi(rest); err == nil && n > 0 && n <= 65535 {
-			return n, nil
-		}
-	}
-	if _, p, err := net.SplitHostPort(configuredAddr); err == nil {
-		if n, err := strconv.Atoi(p); err == nil && n > 0 && n <= 65535 {
-			return n, nil
-		}
-	}
-	return 0, fmt.Errorf("cannot determine the embedded broker's listener port (broker URL %q, nats.embedded.addr %q); set nats.embedded.advertise_url or a fixed port", clientURL, configuredAddr)
-}
-
-// natsURLForMode returns the broker URL discovery advertises:
-//   - external mode: the first advertise_urls entry, else the first urls entry;
-//   - embedded mode: advertise_url, else nats:// (tls:// when the broker
-//     requires TLS) + host + the listener port.
-//
-// host and port are only used for the embedded default.
-func natsURLForMode(n config.NATSConfig, host string, port int) string {
-	if n.Mode == config.NATSModeExternal {
-		if len(n.External.AdvertiseURLs) > 0 {
-			return n.External.AdvertiseURLs[0]
-		}
-		if len(n.External.URLs) > 0 {
-			return n.External.URLs[0]
-		}
-		return ""
-	}
-	if n.Embedded.AdvertiseURL != "" {
-		return n.Embedded.AdvertiseURL
-	}
-	scheme := "nats"
-	if n.Embedded.TLS.Enabled {
-		scheme = "tls"
-	}
-	return scheme + "://" + net.JoinHostPort(host, strconv.Itoa(port))
+	return s.broker.AdvertiseURL(discovery.SRVHost())
 }
 
 // wsJobOwnerResolverTimeout bounds each individual wsJobOwnerResolver lookup;
@@ -1127,7 +1075,7 @@ const abortStartTimeout = 5 * time.Second
 // abortStart stops what a failed [Server.start] had already started, so that
 // an immediate retry finds nothing held. The broker matters most: an external
 // broker holds its account's guard until it is shut down, and a retry inside
-// the guard's lease would be refused naming this very host. The store is left
+// the guard's lease would be refused naming this host. The store is left
 // as it is; the process is exiting.
 func (s *Server) abortStart() {
 	if s.discovery != nil {

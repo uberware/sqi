@@ -24,8 +24,7 @@ credential.
 `SQI_NATS_AUTH_ENABLED`; default `false`) — gates the NATS broker that
 workers connect to, whether it is the broker embedded in `sqi-server` or an
 external cluster (`nats.mode: external`). The two flags protect different
-surfaces and must each be turned on deliberately; flipping one does not flip
-the other.
+surfaces and are turned on separately; flipping one does not flip the other.
 
 ### What it protects, and what it does not
 
@@ -65,42 +64,42 @@ whichever broker mode the server runs in, and cannot tell the two apart.
 ### How a connection is authorized
 
 With `nats.auth.enabled` on, the broker hands every connection other than
-`sqi-server`'s own to `sqi-server` through the NATS **auth callout**. The same
+`sqi-server`'s own to `sqi-server` through the NATS auth callout. The same
 code answers in both broker modes:
 
 1. `sqi-server` checks that the worker presented a valid user public key and
    that its signature over the broker's nonce verifies.
-2. It looks the key up among the **active** credentials in its database, at
+2. It looks the key up among the active credentials in its database, at
    that moment, and re-checks the worker ID recorded with it.
 3. It answers with a short-lived authorization (a signed NATS user JWT) that
    places the worker in sqi's account with that worker's own permissions (see
    [What an enrolled worker's credential may do](#what-an-enrolled-workers-credential-may-do))
    and names the connection after the worker ID.
 
-Anything else — an unknown or revoked key, a bad signature, a database error,
-or `sqi-server` not answering at all — refuses the connection. The callout
-never admits a worker on an error.
+Anything else refuses the connection: an unknown or revoked key, a bad
+signature, a database error, or `sqi-server` not answering at all. The
+callout never admits a worker on an error.
 
-Because the database is read at every connect, **enrollment takes effect at
-the worker's next connect** on a running server, by either path below, and
-needs no server restart.
+Because the database is read at every connect, enrollment takes effect at the
+worker's next connect on a running server, by either path below, and needs no
+server restart.
 
 The authorization lasts `nats.auth.user_ttl` (default 1 hour, between 1
 minute and 24 hours). At expiry the broker disconnects the worker, which
 reconnects at once and is authorized afresh, so a healthy worker sees one
 brief reconnect per `user_ttl` and a revoked one is refused.
 
-**A refused worker retries for 2 minutes before it exits.** The broker shows
+A refused worker retries for 2 minutes before it exits. The broker shows
 the worker the same "Authorization Violation" whether its key was revoked or
 `sqi-server` could not answer (a database restart, or in external mode a
 `sqi-server` restart), so a worker holding a credential keeps retrying,
 logging a WARN at each refusal, and exits only once the refusals have lasted
-2 minutes. A worker with **no** credential gets no grace: on a broker that
+2 minutes. A worker with no credential gets no grace: on a broker that
 requires one it exits at the first refusal.
 
-**Embedded mode** needs nothing beyond `nats.auth.enabled: true`: the broker
+Embedded mode needs nothing beyond `nats.auth.enabled: true`: the broker
 inside `sqi-server` is set up with the callout, and the keys it signs with are
-generated in memory at every start. **External mode** also needs the cluster
+generated in memory at every start. External mode also needs the cluster
 configured for it and the `nats.external.callout` keys on `sqi-server`;
 `sqi-server nats external init` generates both (see
 [Running on an external NATS cluster](operations.md#running-on-an-external-nats-cluster)).
@@ -151,24 +150,24 @@ Two ways, both ultimately calling the same store write:
 > See [`docs/operations.md`](operations.md#worker-broker-credentials) for
 > the full command reference.
 
-**Turning `nats.auth.enabled` on is a staged change.** Turning it on takes a
-server restart, and from then on every connection is checked: a worker with
-no credential exits at its first refusal, and one whose key is not enrolled
+Turning `nats.auth.enabled` on is a staged change. It takes a server
+restart, and from then on every connection is checked: a worker with no
+credential exits at its first refusal, and one whose key is not enrolled
 exits after the 2-minute grace. The reverse also holds: a broker with
-authentication **off** accepts anonymous connections only, and **refuses a
-connection that presents a key** (the worker says so, and that its credential
-file should be removed). A worker presents a key whenever its
+authentication off accepts anonymous connections only, and refuses a
+connection that presents a key (the worker's error says so and tells the
+operator to remove its credential file). A worker presents a key whenever its
 `nats.credential_file` exists, so a worker must not be restarted onto a new
 seed while the farm is still auth-off. The safe order:
 
 1. **Enroll every worker, without restarting it.** With authentication off
    the enrollment endpoint is not mounted, so join tokens cannot be redeemed
-   yet; use the manual path: `sqi-worker keygen` on each worker host (it
+   at this point; use the manual path: `sqi-worker keygen` on each worker host (it
    writes the seed and prints the enroll command; the running worker keeps
    its anonymous connection, because it loaded its credential at start), then
    `sqi-server worker enroll` on the server. Confirm each one with
    `sqi-server worker list`. A worker that will enroll itself with a join
-   token instead gets its token file now (`sqi-server worker token issue`
+   token instead gets its token file at this step (`sqi-server worker token issue`
    works with authentication off) and enrolls at its first start after
    step 2.
 2. **Set `nats.auth.enabled: true` and restart the server.** On the embedded
@@ -266,8 +265,7 @@ fails after a successful revoke, the worker row survives but its broker access
 is already cut — the safe direction to fail in — and retrying `DELETE
 /workers/{id}` re-revokes (a no-op the second time) and tries the
 delete again. Deleting first and revoking after would be worse: a
-failure in the revoke's own store write, not just a failed disconnect,
-would leave the worker row gone, the credential never revoked, and nothing
+failure in the revoke's own store write would leave the worker row gone, the credential never revoked, and nothing
 left to reap it — the operator would be told 204 while the machine kept live
 broker access permanently, with no other permission available to fix it.
 
@@ -300,8 +298,8 @@ again. To rotate a worker's key:
    on the server host, using the public key `keygen` just printed.
 4. Restart `sqi-worker`. It finds the new seed already on disk (`keygen`
    wrote it directly) and connects with it, and the running server admits
-   it — no server restart, and no REST enrollment call on this path, since a
-   credential file already exists.
+   it without a restart. No REST enrollment call happens on this path, since
+   a credential file already exists.
 
 Running `keygen --force` before revoking the old credential is safe but
 will not help: the worker ID stays bound to the *old* public key on the
@@ -1837,12 +1835,12 @@ provider](development.md#testing-against-a-real-directory-or-identity-provider) 
   `auth.enabled` to `true`, so the server is now locked down" should not
   assume that also locked down the worker transport — the two flags are
   independent and both must be set.
-- **On an external broker without a system credential, revocation is bounded
-  by `nats.auth.user_ttl`, not immediate.** With
+- **On an external broker without a system credential, revocation takes
+  effect within `nats.auth.user_ttl`.** With
   `nats.external.callout.system_creds_file` unset, `sqi-server` cannot close
   another client's connection on a cluster it does not run, so a revoked
-  worker keeps its current connection until its authorization expires —
-  within `nats.auth.user_ttl`, 1 hour by default — and only its reconnect is
+  worker keeps its current connection until its authorization expires
+  (within `nats.auth.user_ttl`, 1 hour by default), and only its reconnect is
   refused. `sqi-server` logs a WARN at startup naming that bound. Configure
   the system credential (`sqi-server nats external init` generates one) to
   make external revocation immediate.

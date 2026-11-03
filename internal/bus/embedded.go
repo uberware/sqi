@@ -10,6 +10,7 @@ import (
 	"math"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,22 +20,23 @@ import (
 	"github.com/nats-io/nkeys"
 
 	"github.com/uberware/sqi/internal/brokerauth"
+	"github.com/uberware/sqi/internal/tlsutil"
 )
 
 // EmbeddedConfig holds the parameters of the NATS server sqi-server hosts
 // in-process.
 type EmbeddedConfig struct {
 	// Addr is the TCP address the embedded NATS server binds to, in
-	// "host:port" form.  Defaults to "0.0.0.0:4222" (all interfaces) so that
+	// "host:port" form. Defaults to "0.0.0.0:4222" (all interfaces) so that
 	// workers which discover the server via mDNS can reach the broker at the
 	// advertised LAN host.
 	//
-	// Broker authentication is OPT-IN and off by default. With it off, any
-	// host that can reach this port can register as a worker and receive
-	// assignments — including on a LAN, since the default binds all
-	// interfaces. sqi-server emits a startup WARN in exactly that case.
-	// Set nats.auth.enabled to require a per-worker credential, or bind this
-	// to 127.0.0.1:4222 for single-machine use. See docs/auth.md.
+	// Broker authentication is off by default. With it off, any host that
+	// can reach this port can register as a worker and receive assignments,
+	// on a LAN too, since the default binds all interfaces; sqi-server logs a
+	// warning at startup when the address is not loopback. Set
+	// nats.auth.enabled to require a per-worker credential, or bind this to
+	// 127.0.0.1:4222 for single-machine use. See docs/auth.md.
 	Addr string
 
 	// DataDir is the directory JetStream uses for file-backed stream storage.
@@ -49,6 +51,10 @@ type EmbeddedConfig struct {
 	// leaves the broker plaintext, which is the default.
 	TLS BrokerTLSConfig
 
+	// AdvertiseURL, when set, is the URL discovery advertises in place of
+	// one built from the discovery host and the listener's bound port.
+	AdvertiseURL string
+
 	// Auth configures worker authentication through the auth callout. Zero
 	// value leaves it off.
 	Auth AuthConfig
@@ -57,10 +63,6 @@ type EmbeddedConfig struct {
 // embeddedStreamReplicas is the replica count of every stream on the
 // embedded broker, which is a single server.
 const embeddedStreamReplicas = 1
-
-// calloutFlushTimeout bounds the round trip that confirms the callout
-// subscription is registered on the server.
-const calloutFlushTimeout = 5 * time.Second
 
 // revokeSettleMargin is added to nats-server's auth timeout before
 // [Embedded.Revoke]'s final pass, covering the moment between nats-server
@@ -90,10 +92,8 @@ type Embedded struct {
 	data    *nats.Conn // sqi's data connection (SQI account)
 	callout *nats.Conn // the auth-callout responder's connection (AUTH); nil with auth off
 
-	// responder and calloutSub answer authorization requests on callout;
-	// both nil with auth off.
-	responder  *Responder
-	calloutSub *nats.Subscription
+	// responder answers authorization requests on callout; nil with auth off.
+	responder *Responder
 
 	// authTimeout is how long nats-server waits for a callout answer before
 	// refusing the connection. Revoke waits it out.
@@ -117,11 +117,6 @@ func NewEmbedded(cfg EmbeddedConfig, logger *slog.Logger) *Embedded {
 // streams in the SQI account of its own data directory.
 func (*Embedded) Identity() string {
 	return "embedded:" + DefaultAccount
-}
-
-// StoreDir returns the JetStream store directory the broker runs on.
-func (e *Embedded) StoreDir() string {
-	return e.cfg.DataDir
 }
 
 // embeddedKeys are the broker's own keys, generated at every boot and held
@@ -178,10 +173,6 @@ func (e *Embedded) serverOptions(layout Layout) (*natsserver.Options, error) {
 		return nil, fmt.Errorf("bus: parse port in %q: %w", e.cfg.Addr, err)
 	}
 
-	serverMaxStore := int64(-1)
-	if layout.JetStreamMaxStore > 0 {
-		serverMaxStore = layout.JetStreamMaxStore
-	}
 	opts := &natsserver.Options{
 		Host: host,
 		Port: port,
@@ -192,14 +183,15 @@ func (e *Embedded) serverOptions(layout Layout) (*natsserver.Options, error) {
 		// the disk sqi was given.
 		JetStream:         true,
 		StoreDir:          e.cfg.DataDir,
-		JetStreamMaxStore: serverMaxStore,
+		JetStreamMaxStore: layout.maxStore(),
 
 		// Prevent NATS from installing its own SIGINT/SIGTERM handler; sqi-server
 		// owns signal handling and calls Shutdown() on the way out.
 		NoSigs: true,
 
-		// Suppress the NATS server's built-in logger.  All relevant lifecycle
-		// events are re-emitted through slog in this file instead.
+		// Suppress nats-server's built-in logger. startServer installs
+		// natsLogger, and this file logs the broker's lifecycle events
+		// through slog.
 		NoLog: true,
 
 		// Shutdown goes through lame duck mode; see stopServer. A zero grace
@@ -212,13 +204,13 @@ func (e *Embedded) serverOptions(layout Layout) (*natsserver.Options, error) {
 	}
 
 	if e.cfg.TLS.Enabled {
-		tlsCfg, err := buildBrokerTLS(e.cfg.TLS)
+		tlsCfg, err := tlsutil.ServerConfig(e.cfg.TLS.CertFile, e.cfg.TLS.KeyFile, e.cfg.TLS.ClientCAFile)
 		if err != nil {
 			return nil, fmt.Errorf("bus: tls: %w", err)
 		}
-		// Setting TLSConfig is what makes the broker REQUIRE TLS:
-		// nats-server computes `tlsReq := opts.TLSConfig != nil`. There is no
-		// separate flag. TLSTimeout self-defaults to 2s when left zero.
+		// Setting TLSConfig makes the broker require TLS: nats-server
+		// computes `tlsReq := opts.TLSConfig != nil` and has no separate
+		// flag. TLSTimeout defaults to 2s when left zero.
 		opts.TLSConfig = tlsCfg
 	}
 	opts.AuthTimeout = defaultAuthTimeout(opts)
@@ -315,14 +307,14 @@ func (e *Embedded) Start(ctx context.Context) error {
 
 	e.mu.Lock()
 	e.ns, e.data, e.callout = ns, own.data, own.callout
-	e.responder, e.calloutSub = responder, own.calloutSub
+	e.responder = responder
 	e.authTimeout = time.Duration(opts.AuthTimeout * float64(time.Second))
 	e.dataSeed, e.dataPub = keys.dataSeed, keys.dataPub
 	e.mu.Unlock()
 
 	e.logger.InfoContext(
 		ctx, "bus: jetstream streams provisioned",
-		slog.String("streams", StreamTask+","+StreamLogs+","+StreamWorker+","+StreamCancel),
+		slog.String("streams", strings.Join(streamNames(), ",")),
 	)
 	return nil
 }
@@ -358,9 +350,8 @@ func (e *Embedded) startServer(ctx context.Context, opts *natsserver.Options, la
 
 // ownConns are sqi's in-process connections to the embedded broker.
 type ownConns struct {
-	data       *nats.Conn
-	callout    *nats.Conn         // nil with auth off
-	calloutSub *nats.Subscription // nil with auth off
+	data    *nats.Conn
+	callout *nats.Conn // nil with auth off
 }
 
 // connectOwn opens sqi's in-process connections: the data connection, and
@@ -394,17 +385,9 @@ func connectOwn(ctx context.Context, ns *natsserver.Server, keys embeddedKeys, r
 		own.data.Close()
 		return ownConns{}, fmt.Errorf("bus: auth callout connection: %w", err)
 	}
-	if own.calloutSub, err = responder.Serve(own.callout); err != nil {
+	if err := responder.Serve(ctx, own.callout); err != nil {
 		closeConns(own.data, own.callout)
-		return ownConns{}, fmt.Errorf("bus: subscribe auth callout: %w", err)
-	}
-	// The subscription is in place on the server once the flush returns.
-	// Start's context may carry no deadline, which FlushWithContext refuses.
-	flushCtx, cancel := context.WithTimeout(ctx, calloutFlushTimeout)
-	defer cancel()
-	if err := own.callout.FlushWithContext(flushCtx); err != nil {
-		closeConns(own.data, own.callout)
-		return ownConns{}, fmt.Errorf("bus: subscribe auth callout: %w", err)
+		return ownConns{}, err
 	}
 	return own, nil
 }
@@ -437,18 +420,17 @@ const (
 // account (shutdownEventing sets s.sys to nil) before it closes the clients
 // it has accepted, and a CONNECT that needs the auth callout processed in
 // between dereferences that nil (processClientOrLeafCallout → newRespInbox),
-// crashing the whole process. With auth on, anything connecting while
-// sqi-server shuts down, a worker reconnecting at its user JWT's expiry or
-// anyone at all sending CONNECTs, would take sqi-server down before its
-// store is closed.
+// crashing the process. With auth on, any connection attempt during
+// shutdown, such as a worker reconnecting at its user JWT's expiry, would
+// take sqi-server down before its store is closed.
 //
 // Lame duck mode closes the client listener and then every client before it
 // shuts the server down, and a connection accepted after it began is dropped
 // before it is registered or read (createClientEx checks the lame duck flag
-// under the server lock). That narrows the window but does not close it: a
+// under the server lock). That narrows the window without closing it: a
 // client whose read loop was already parsing a CONNECT when lame duck mode
 // closed it can still reach the callout after the system account is gone.
-// Only an upstream fix closes that.
+// Closing it needs an upstream fix.
 //
 // The explicit Shutdown is required: lame duck mode returns without shutting
 // down when it has nothing to do (no listener, or already in lame duck mode).
@@ -467,8 +449,8 @@ func closeConns(conns ...*nats.Conn) {
 }
 
 // Shutdown closes sqi's connections and stops the embedded NATS server,
-// waiting until it has fully exited before returning.  It is safe to call
-// Shutdown more than once; subsequent calls are no-ops.
+// waiting until it has exited before returning. It is safe to call Shutdown
+// more than once; later calls do nothing.
 //
 // With auth on, the callout subscription stops taking requests first and the
 // authorizations already accepted are answered before the callout
@@ -481,16 +463,13 @@ func closeConns(conns ...*nats.Conn) {
 func (e *Embedded) Shutdown() {
 	e.mu.Lock()
 	ns, data, callout := e.ns, e.data, e.callout
-	responder, calloutSub := e.responder, e.calloutSub
+	responder := e.responder
 	e.ns, e.data, e.callout = nil, nil, nil
-	e.responder, e.calloutSub = nil, nil
+	e.responder = nil
 	e.mu.Unlock()
 
-	if responder != nil && calloutSub != nil && !responder.drain(calloutSub, calloutMaxTimeout) {
-		e.logger.WarnContext(
-			context.Background(), "bus: auth callout requests were still unanswered at shutdown",
-			slog.String("impact", "the workers that were connecting are refused and retry"),
-		)
+	if responder != nil {
+		responder.Stop()
 	}
 	closeConns(callout, data)
 	if ns != nil {
@@ -539,6 +518,31 @@ func (e *Embedded) ClientURL() string {
 		return ""
 	}
 	return ns.ClientURL()
+}
+
+// AdvertiseURL returns [EmbeddedConfig.AdvertiseURL] when set, else
+// nats:// (tls:// when the listener requires TLS) + host + the port the
+// listener bound, read from the listener rather than the configuration.
+func (e *Embedded) AdvertiseURL(host string) (string, error) {
+	if e.cfg.AdvertiseURL != "" {
+		return e.cfg.AdvertiseURL, nil
+	}
+	e.mu.Lock()
+	ns := e.ns
+	e.mu.Unlock()
+	if ns == nil {
+		return "", errors.New("bus: broker not started")
+	}
+	addr, ok := ns.Addr().(*net.TCPAddr)
+	if !ok || addr.Port == 0 {
+		return "", fmt.Errorf("bus: cannot determine the embedded broker's listener port (nats.embedded.addr %q); "+
+			"set nats.embedded.advertise_url or a fixed port", e.cfg.Addr)
+	}
+	scheme := "nats"
+	if e.cfg.TLS.Enabled {
+		scheme = "tls"
+	}
+	return scheme + "://" + net.JoinHostPort(host, strconv.Itoa(addr.Port)), nil
 }
 
 // NewClient returns a connected [Client] on the data connection's credential,
@@ -607,14 +611,25 @@ func (e *Embedded) Revoke(ctx context.Context, workerID string) error {
 		return err
 	}
 
+	if err := awaitRevokeSettle(ctx, began, authTimeout, workerID); err != nil {
+		return err
+	}
+	return disconnectUser(ns, workerID)
+}
+
+// awaitRevokeSettle waits until authTimeout plus [revokeSettleMargin] has
+// passed since a revocation of workerID began, when every authorization that
+// was in flight has either placed its connection or been refused, so the
+// final pass leaves no window. It returns early with ctx's error.
+func awaitRevokeSettle(ctx context.Context, began time.Time, authTimeout time.Duration, workerID string) error {
 	settle := time.NewTimer(time.Until(began.Add(authTimeout + revokeSettleMargin)))
 	defer settle.Stop()
 	select {
 	case <-ctx.Done():
 		return fmt.Errorf("bus: revoke %s: %w", workerID, ctx.Err())
 	case <-settle.C:
+		return nil
 	}
-	return disconnectUser(ns, workerID)
 }
 
 // disconnectUser closes every open connection of user in the SQI account.

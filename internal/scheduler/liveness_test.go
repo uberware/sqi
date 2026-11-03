@@ -190,9 +190,9 @@ func TestLivenessDeferred_Boundary(t *testing.T) {
 		{"after the grace", upAt.Add(testBusGrace + time.Second), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			deferred, busDown := s.livenessDeferred(tc.now)
-			if deferred != tc.wantDeferred || busDown {
-				t.Errorf("livenessDeferred = (%v, busDown=%v), want (%v, false)", deferred, busDown, tc.wantDeferred)
+			deferred, up := s.livenessDeferred(tc.now)
+			if deferred != tc.wantDeferred || up.IsZero() {
+				t.Errorf("livenessDeferred = (%v, up=%v), want (%v, a non-zero up)", deferred, up, tc.wantDeferred)
 			}
 		})
 	}

@@ -13,10 +13,9 @@ import (
 )
 
 // ApplyTLS is what makes nats.tls_enabled's "auto" mode able to see a
-// TLS-required broker. Before it existed the server advertised tls=1 and a
-// tls:// nats_url over mDNS and nothing read them, so a discovering worker attempted
-// plaintext and failed with nats.go's "secure connection not available" —
-// naming neither the cause nor the setting that fixes it.
+// TLS-required broker: it folds a discovered tls:// nats_url into the
+// worker's configuration, so the worker's own tls_* settings apply and a
+// misconfiguration is logged with the setting that fixes it.
 
 func applyFixture(t *testing.T, cfg workerconfig.NATSConfig, found Result) (workerconfig.NATSConfig, string) {
 	t.Helper()

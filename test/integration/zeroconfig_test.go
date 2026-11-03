@@ -4,15 +4,13 @@
 
 package integration
 
-// The zero-config farm is the one deployment this work holds fixed: a server
-// started with no config file and a worker started with no nats.url must
-// still find each other and run a task, whatever changes underneath them in
-// the broker. This is its regression test.
+// The zero-config farm: a server started with no config file and a worker
+// started with no nats.url must find each other and run a task, whatever the
+// broker configuration underneath them. This test pins that.
 //
 // The mDNS part binds the test broker to every interface (the advertisement
 // carries the machine's hostname, so a loopback-bound broker is unreachable at
-// it), so it runs only when discovery testing was asked for explicitly —
-// `make test-discovery` — and skips otherwise, exactly as
+// it), so it runs only under `make test-discovery` and skips otherwise, as
 // TestDiscovery_RealBinaryFindsItsServerOverMDNS does. The rest of the test
 // runs everywhere; when the mDNS part is skipped the worker joins by an
 // explicit URL instead, so the task still runs.
@@ -50,14 +48,12 @@ steps:
 `
 
 // TestZeroConfigFarm boots a server from the configuration an operator gets
-// with no config file at all and checks the farm the new broker layout leaves
-// them: an embedded broker with worker authentication off, single-replica
-// streams, no guard bucket, and a worker that finds the server and runs a
-// task.
+// with no config file at all and checks the resulting farm: an embedded
+// broker with worker authentication off, single-replica streams, no guard
+// bucket, and a worker that finds the server and runs a task.
 func TestZeroConfigFarm(t *testing.T) {
-	// Exactly what the server loads with no config file: built-in defaults
-	// only. The per-test addresses and directories below are the only things
-	// changed, and they are placement, not behavior.
+	// What the server loads with no config file: built-in defaults only. The
+	// only changes below are the per-test addresses and directories.
 	loaded, err := config.Load("", config.FlagOverrides{})
 	if err != nil {
 		t.Fatalf("config.Load with no file: %v", err)

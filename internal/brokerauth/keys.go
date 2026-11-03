@@ -25,28 +25,21 @@ import (
 // corresponding public key. The public key is returned alongside so that no
 // caller has to derive it, and so none can derive it wrongly.
 func GenerateSeed() (seed []byte, publicKey string, err error) {
-	kp, err := nkeys.CreateUser()
-	if err != nil {
-		return nil, "", fmt.Errorf("brokerauth: create user key: %w", err)
-	}
-	seed, err = kp.Seed()
-	if err != nil {
-		return nil, "", fmt.Errorf("brokerauth: extract seed: %w", err)
-	}
-	publicKey, err = kp.PublicKey()
-	if err != nil {
-		return nil, "", fmt.Errorf("brokerauth: extract public key: %w", err)
-	}
-	return seed, publicKey, nil
+	return generate(nkeys.CreateUser, "user")
 }
 
 // GenerateAccountSeed creates a new Ed25519 account nkey and returns its seed
 // and public key (which starts with "A"). It mirrors [GenerateSeed] for the
 // account identity that signs user JWTs.
 func GenerateAccountSeed() (seed []byte, publicKey string, err error) {
-	kp, err := nkeys.CreateAccount()
+	return generate(nkeys.CreateAccount, "account")
+}
+
+// generate creates a key with create and returns its seed and public key.
+func generate(create func() (nkeys.KeyPair, error), kind string) (seed []byte, publicKey string, err error) {
+	kp, err := create()
 	if err != nil {
-		return nil, "", fmt.Errorf("brokerauth: create account key: %w", err)
+		return nil, "", fmt.Errorf("brokerauth: create %s key: %w", kind, err)
 	}
 	seed, err = kp.Seed()
 	if err != nil {
@@ -200,8 +193,8 @@ func ValidatePublicKey(pk string) error {
 // RestrictHint returns the platform-appropriate remediation for a seed file
 // that is readable beyond its owner.
 //
-// Only the ADVICE is platform-specific. The check itself
-// (fsutil.IsRestricted) is not, and deliberately so: see LoadSeed.
+// Only the advice is platform-specific. The check itself
+// (fsutil.IsRestricted) is not: see LoadSeed.
 func RestrictHint(path string) string {
 	if runtime.GOOS == "windows" {
 		return fmt.Sprintf(

@@ -12,11 +12,11 @@ package integration
 // YAML config file in nats.mode: external, and sqi-worker is the built worker
 // enrolling through a join token. The one exception is
 // TestNATSCluster_ExpiryReconnectsThreeTimes, which needs a user JWT lifetime
-// below the configurable floor and so runs sqi's broker client in process. The cluster is configured the
-// way an operator configures one, from `sqi-server nats external init` and
-// `sqi-server tls init`, and every client dials it over TLS with worker
-// authentication on. The REST API stays plain HTTP: TLS is under test on the
-// broker, which is what external mode adds.
+// below the configurable floor and so runs sqi's broker client in process.
+// The cluster is configured the way an operator configures one, from
+// `sqi-server nats external init` and `sqi-server tls init`, and every client
+// dials it over TLS with worker authentication on. The REST API stays plain
+// HTTP: these tests cover TLS on the broker, which is what external mode adds.
 //
 // The tests share one cluster and run in order. Each starts its own
 // sqi-server on a fresh database and stops it cleanly, which releases the
@@ -24,8 +24,8 @@ package integration
 // starts the node it stopped again and waits for the cluster to be whole.
 //
 // Every test skips without SQI_TEST_NATS_URLS, which only the script sets, so
-// `make test-integration` skips them all. A skip verifies nothing: CI asserts
-// each test's PASS line by name.
+// `make test-integration` skips them all. CI asserts each test's PASS line by
+// name, so a skip there fails the job.
 
 import (
 	"bytes"
@@ -51,7 +51,6 @@ import (
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"github.com/nats-io/nkeys"
 
 	"github.com/uberware/sqi/internal/brokerauth"
 	"github.com/uberware/sqi/internal/bus"
@@ -655,8 +654,7 @@ func TestNATSCluster_FarmRunsJobWithAuthAndTLS(t *testing.T) {
 // line stored: with R3 streams, no message is lost to one node going away.
 //
 // The node stopped is the leader of SQI_TASK, the stream every status report
-// goes through, so a new leader has to be elected while the tasks report. A
-// node holding none of the job's traffic would prove less.
+// goes through, so a new leader has to be elected while the tasks report.
 func TestNATSCluster_SurvivesNodeLoss(t *testing.T) {
 	c := requireNATSCluster(t)
 	s, farmID, queueID, _ := c.clusterFarm(t)
@@ -684,8 +682,7 @@ func TestNATSCluster_SurvivesNodeLoss(t *testing.T) {
 			t.Errorf("the cluster did not recover after %s restarted: %v", leader, err)
 		}
 	})
-	// The node must be gone while the job still has work to report, or the
-	// test proves nothing about losing it.
+	// The node must be gone while the job still has work to report.
 	unfinished := 0
 	for _, task := range jobTasks(t, s.testServer, jobID) {
 		if task.Status != "succeeded" && task.Status != "failed" && task.Status != "canceled" {
@@ -762,7 +759,8 @@ func TestNATSCluster_RevokeWithSystemCreds(t *testing.T) {
 	took := time.Since(began)
 	t.Logf("DELETE /api/v1/workers/%s/credential returned after %s", workerID, took.Round(time.Millisecond))
 	// Revoke waits out the cluster's auth timeout and checks again, so it
-	// takes seconds; the bound it replaces is the hour-long user_ttl.
+	// takes seconds; without the system credential the bound is the
+	// hour-long user_ttl.
 	if took > 30*time.Second {
 		t.Errorf("revocation took %s, want well under nats.auth.user_ttl (1h)", took)
 	}
@@ -824,13 +822,7 @@ func TestNATSCluster_ExpiryReconnectsThreeTimes(t *testing.T) {
 
 	var reconnects, expiries atomic.Int32
 	nc, err := nats.Connect(strings.Join(c.urls, ","),
-		nats.Nkey(pub, func(nonce []byte) ([]byte, error) {
-			kp, err := nkeys.FromSeed(seed)
-			if err != nil {
-				return nil, err
-			}
-			return kp.Sign(nonce)
-		}),
+		brokerauth.NkeyOption(pub, seed),
 		nats.RootCAs(c.caFile),
 		nats.CustomInboxPrefix(brokerauth.InboxPrefix(workerID)),
 		nats.MaxReconnects(-1), nats.ReconnectWait(50*time.Millisecond),

@@ -113,7 +113,8 @@ func TestDefaultConfig_ServesPlaintextUnchanged(t *testing.T) {
 	//    environments), so a responder started here would never produce
 	//    records and any check would be vacuous.
 	//    TestBuildTXTRecords_TLSKeysOmittedWhenOff in internal/discovery is the
-	//    real assertion. What this test contributes is the input to it: both
-	//    flags come from cfg.HTTPTLS.Enabled / cfg.NATS.Embedded.TLS.Enabled, verified
-	//    false at the top of this function.
+	//    real assertion. What this test contributes is the input to it: the
+	//    HTTP flag comes from cfg.HTTPTLS.Enabled and the advertised broker
+	//    URL's scheme from cfg.NATS.Embedded.TLS.Enabled, both verified false
+	//    at the top of this function.
 }

@@ -373,17 +373,8 @@ func TestNATSExternalInit_FragmentBootsWithPrintedConfig(t *testing.T) {
 		t.Fatalf("Check: %v", err)
 	}
 
-	sign := func(seed []byte) nats.Option {
-		return nats.Nkey(workerPub, func(nonce []byte) ([]byte, error) {
-			kp, err := nkeys.FromSeed(seed)
-			if err != nil {
-				return nil, err
-			}
-			return kp.Sign(nonce)
-		})
-	}
 	disconnected := make(chan struct{}, 1)
-	nc, err := nats.Connect(cluster.URLs[0], sign(workerSeed), nats.MaxReconnects(-1),
+	nc, err := nats.Connect(cluster.URLs[0], brokerauth.NkeyOption(workerPub, workerSeed), nats.MaxReconnects(-1),
 		nats.ReconnectWait(50*time.Millisecond), nats.IgnoreAuthErrorAbort(),
 		nats.ErrorHandler(func(*nats.Conn, *nats.Subscription, error) {}),
 		nats.DisconnectErrHandler(func(*nats.Conn, error) {
@@ -401,7 +392,7 @@ func TestNATSExternalInit_FragmentBootsWithPrintedConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c, err := nats.Connect(cluster.URLs[0], nats.NoReconnect(), sign(strangerSeed)); err == nil {
+	if c, err := nats.Connect(cluster.URLs[0], nats.NoReconnect(), brokerauth.NkeyOption(workerPub, strangerSeed)); err == nil {
 		c.Close()
 		t.Fatal("a worker presenting an enrolled key signed by another seed was accepted")
 	} else if !errors.Is(err, nats.ErrAuthorization) {

@@ -100,7 +100,7 @@ nats:
     # Defaults to all interfaces (0.0.0.0) so that workers which discover the
     # server via mDNS can connect to NATS at the advertised LAN host. Set this
     # to "127.0.0.1:4222" to restrict NATS to loopback (single-machine only).
-    # Broker authentication is opt-in and OFF by default (see nats.auth above).
+    # Broker authentication is opt-in and off by default (see nats.auth above).
     # While it is off, any host that can reach this port can register as a
     # worker and execute submitted job code. sqi-server warns at startup when
     # this address is not loopback and nats.auth is disabled.
@@ -125,11 +125,11 @@ nats:
 
     # In-process TLS on the embedded broker's client listener.
     #
-    # OFF by default. This is what encrypts the WORKER TRANSPORT — assignments
-    # (command lines, embedded file contents, parameters, environment, the
-    # isolation username), status messages and log chunks. Broker AUTHENTICATION
-    # above does not encrypt anything: the two are independent settings against
-    # different threats, and a production farm wants both.
+    # Off by default. This encrypts the worker transport: assignments (command
+    # lines, embedded file contents, parameters, environment, the isolation
+    # username), status messages and log chunks. Broker authentication above
+    # encrypts nothing: the two are independent settings against different
+    # threats, and a production farm wants both.
     #
     # Workers need the matching CA in nats.tls_ca_file. See docs/tls.md.
     # tls:
@@ -140,7 +140,7 @@ nats:
     #   # Type: string Env: SQI_NATS_EMBEDDED_TLS_KEY_FILE
     #   key_file: "/etc/sqi/certs/server.key"
     #   # Require each worker to present a client certificate signed by this CA
-    #   # (mutual TLS). Layers ON TOP of the nkey credential rather than
+    #   # (mutual TLS). This adds to the nkey credential rather than
     #   # replacing it: the certificate gates who may connect, the nkey decides
     #   # which worker they are. Issue per-worker certificates with
     #   # `sqi-server tls init --client <worker-id>`.

@@ -247,7 +247,10 @@ func TestTLSStartupWarnings(t *testing.T) {
 		name     string
 		httpTLS  config.TLSConfig
 		natsTLS  config.NATSTLSConfig
-		wantWarn string
+		external bool
+		// clientCert is nats.external.tls.cert_file, set only with external.
+		clientCert, clientKey string
+		wantWarn              string // "" means no warning at all
 	}{
 		{
 			name:     "http certificates configured but tls disabled",
@@ -269,13 +272,49 @@ func TestTLSStartupWarnings(t *testing.T) {
 			natsTLS:  config.NATSTLSConfig{Enabled: true, CertFile: expiringCert, KeyFile: expiringKey},
 			wantWarn: "expires soon",
 		},
+		{
+			// A leftover embedded block configures nothing in external mode,
+			// so it must not claim the bus is serving plaintext.
+			name:     "external mode ignores leftover embedded certificates",
+			natsTLS:  config.NATSTLSConfig{Enabled: false, CertFile: goodCert, KeyFile: goodKey},
+			external: true,
+		},
+		{
+			name:     "external mode ignores an expiring embedded certificate",
+			natsTLS:  config.NATSTLSConfig{Enabled: true, CertFile: expiringCert, KeyFile: expiringKey},
+			external: true,
+		},
+		{
+			// In external mode the client certificate is the one that
+			// matters: a cluster requiring mTLS refuses sqi once it expires.
+			name:       "external client certificate expiring soon",
+			external:   true,
+			clientCert: expiringCert, clientKey: expiringKey,
+			wantWarn: "expires soon",
+		},
+		{
+			name:       "external client certificate with time to spare",
+			external:   true,
+			clientCert: goodCert, clientKey: goodKey,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var buf bytes.Buffer
 			logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
-			warnTLSConfig(context.Background(), logger, tt.httpTLS, tt.natsTLS)
+			nats := config.NATSConfig{Embedded: config.NATSEmbeddedConfig{TLS: tt.natsTLS}}
+			if tt.external {
+				nats.Mode = config.NATSModeExternal
+				nats.External.TLS = config.NATSClientTLSConfig{CertFile: tt.clientCert, KeyFile: tt.clientKey}
+			}
+			warnTLSConfig(context.Background(), logger, tt.httpTLS, nats)
+			if tt.wantWarn == "" {
+				if buf.Len() != 0 {
+					t.Errorf("warnings = %q, want none", buf.String())
+				}
+				return
+			}
 			if !strings.Contains(buf.String(), tt.wantWarn) {
 				t.Errorf("warnings = %q, want one containing %q", buf.String(), tt.wantWarn)
 			}
@@ -286,7 +325,7 @@ func TestTLSStartupWarnings(t *testing.T) {
 func TestTLSStartupWarnings_SilentOnDefaults(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	warnTLSConfig(context.Background(), logger, config.TLSConfig{}, config.NATSTLSConfig{})
+	warnTLSConfig(context.Background(), logger, config.TLSConfig{}, config.NATSConfig{})
 	if buf.Len() != 0 {
 		t.Errorf("default configuration produced warnings: %q", buf.String())
 	}

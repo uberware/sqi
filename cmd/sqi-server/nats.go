@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -28,6 +29,9 @@ const (
 	// printed configuration, which cannot know it.
 	natsExternalPlaceholderURL = "nats://nats.example.internal:4222"
 )
+
+// natsSeedFiles are the private keys among those files.
+var natsSeedFiles = []string{natsIssuerSeedFile, natsDataSeedFile, natsAuthSeedFile, natsSysSeedFile}
 
 var natsCmd = &cobra.Command{
 	Use:   "nats",
@@ -159,9 +163,7 @@ func runNATSExternalInit(cmd *cobra.Command, _ []string) error {
 // a mix of old and new keys.
 func refuseExistingNATSFiles(dir string) error {
 	var existing []string
-	for _, name := range []string{
-		natsIssuerSeedFile, natsDataSeedFile, natsAuthSeedFile, natsSysSeedFile, natsFragmentFile,
-	} {
+	for _, name := range append(slices.Clone(natsSeedFiles), natsFragmentFile) {
 		path := filepath.Join(dir, name)
 		if _, err := os.Stat(path); err == nil {
 			existing = append(existing, path)
@@ -180,7 +182,7 @@ func printNATSExternalInit(w io.Writer, dir, account string) {
 	path := func(name string) string { return filepath.Join(dir, name) }
 
 	fmt.Fprintf(w, "Wrote:\n")
-	for _, name := range []string{natsIssuerSeedFile, natsDataSeedFile, natsAuthSeedFile, natsSysSeedFile} {
+	for _, name := range natsSeedFiles {
 		fmt.Fprintf(w, "  %s (private key, owner-only)\n", path(name))
 	}
 	fmt.Fprintf(w, "  %s (public keys only)\n", path(natsFragmentFile))

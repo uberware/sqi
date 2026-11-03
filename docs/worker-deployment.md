@@ -167,10 +167,10 @@ naming the field, rather than guessing a host.
    connect with it. The token is single-use by default, so a second worker
    needs its own token.
 
-Every enrollment failure past this point is fatal and explicit — an expired,
-unknown or already-used token, or a worker ID already bound to a different
-key — the worker logs the cause and exits rather than looping in the
-background with no visible reason. An unreachable *server* is different: that
+Every enrollment failure past this point (an expired, unknown or
+already-used token, or a worker ID already bound to a different key) is
+fatal and explicit: the worker logs the cause and exits rather than looping
+in the background with no visible reason. An unreachable *server* is different: that
 still falls back to the ordinary reconnect-with-backoff behavior once a
 credential exists. A broker that refuses the credential is retried for 2
 minutes, with a WARN at each refusal, before the worker exits, so it rides out
@@ -256,7 +256,7 @@ grace.
 3. `sqi-server worker enroll --worker-id <worker-id> --public-key <new-key>`
    on the server host, using the key `keygen` printed.
 4. Restart the worker. It finds the new seed `keygen` already wrote and
-   connects directly, and the running server admits it — no server restart,
+   connects directly, and the running server admits it. No server restart,
    join token or REST enrollment call is needed on this path.
 
 The worker ID can be reused once its old credential is revoked; the old

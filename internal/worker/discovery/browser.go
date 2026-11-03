@@ -33,6 +33,7 @@ import (
 
 	"github.com/grandcat/zeroconf"
 
+	"github.com/uberware/sqi/internal/discovery"
 	"github.com/uberware/sqi/internal/redact"
 )
 
@@ -208,13 +209,13 @@ func browseService(ctx context.Context, service string, timeout time.Duration, l
 func entryToResult(entry *zeroconf.ServiceEntry) (Result, error) {
 	txt := parseTXTRecords(entry.Text)
 
-	natsURL := txt["nats_url"]
+	natsURL := txt[discovery.NATSURLKey]
 	if natsURL == "" {
 		return Result{}, errors.New("server advertises no broker URL")
 	}
-	u, err := url.Parse(natsURL)
-	if err != nil || u.Hostname() == "" || (u.Scheme != "nats" && u.Scheme != "tls") {
-		return Result{}, fmt.Errorf("invalid nats_url %q in mDNS TXT record: want nats://host:port or tls://host:port", redact.URL(natsURL))
+	u, err := discovery.CheckNATSURL(natsURL)
+	if err != nil {
+		return Result{}, fmt.Errorf("invalid nats_url %q in mDNS TXT record: %w", redact.URL(natsURL), err)
 	}
 
 	return Result{

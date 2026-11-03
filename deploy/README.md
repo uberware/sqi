@@ -47,10 +47,10 @@ container, see
 
 ## TLS
 
-Every artifact here except the NATS cluster deploys sqi in its **plaintext
-default**: the REST API, the WebSocket gateway and the embedded broker all serve
-unencrypted. That is deliberate — TLS is opt-in — but it means none of these
-files is production-ready as shipped on an untrusted network.
+Every artifact here except the NATS cluster deploys sqi in its plaintext
+default: the REST API, the WebSocket gateway and the embedded broker all serve
+unencrypted. TLS is opt-in, so none of these files is production-ready as
+shipped on an untrusted network.
 
 To add TLS, generate material with `sqi-server tls init`, mount it into the
 container or place it on the host, and set `http.tls` and `nats.embedded.tls`

@@ -863,7 +863,7 @@ jobs:
           set -e
 
           if grep -q "docker unavailable" nats-cluster-output.log; then
-            echo "::error::Docker was unavailable — the NATS cluster suite did not run. A skip here proves nothing, so this is a hard failure."
+            echo "::error::Docker was unavailable, so the NATS cluster suite did not run."
             exit 1
           fi
 

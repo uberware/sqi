@@ -171,8 +171,8 @@ func TestRestoreLock_FreshAccount(t *testing.T) {
 	}
 }
 
-// A restore configured with other stream_replicas than the farm runs with
-// changes nothing but the messages: rescaling is the server's to do.
+// A restore configured with a stream_replicas other than the farm's changes
+// only the messages: rescaling is the server's job.
 func TestRestoreLock_LeavesReplicasAlone(t *testing.T) {
 	t.Parallel()
 	c := bustest.StartCluster(t, 3, bustest.Options{})

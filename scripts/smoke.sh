@@ -723,8 +723,8 @@ log "EXPR assertion PASSED: phase-3 resolved text found in task logs"
 # disconnected it. On the embedded broker the revoke closes the worker's
 # connection before the request returns; the worker's reconnect then goes
 # through the auth callout, which refuses the revoked key, and the worker logs
-# that refusal. Seeing it proves both halves: the connection was dropped, and
-# the worker could not come back.
+# that refusal, which shows both that the connection was dropped and that the
+# worker could not come back.
 REVOKE_OK="skip"
 if [ "$mode" = "brokerauth" ]; then
   log "revoking worker ${WORKER_ID}'s broker credential"

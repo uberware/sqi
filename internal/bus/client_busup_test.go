@@ -12,7 +12,6 @@ import (
 	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
-	nats "github.com/nats-io/nats.go"
 )
 
 // startPlainServer runs a bare nats-server on addr (JetStream is not needed
@@ -75,11 +74,11 @@ func TestBusUpSince_TracksConnectAndReconnect(t *testing.T) {
 	}
 }
 
-// TestBusUpSince_SilentPartitionIsSeenAsDown: a link that stops carrying
-// traffic without closing (a black-holed route, a hung broker host) must read
-// as down within about 20 s, not after the client library's default two
-// minutes of pings, or the scheduler would judge every worker by heartbeats
-// that were never delivered while BusUpSince still says "up".
+// TestBusUpSince_SilentPartitionIsSeenAsDown checks that a link that stops
+// carrying traffic without closing (a black-holed route, a hung broker host)
+// reads as down within 20 s. With the client library's default ping settings
+// that takes two minutes, during which the scheduler would judge every worker
+// by heartbeats that were never delivered while BusUpSince still says "up".
 func TestBusUpSince_SilentPartitionIsSeenAsDown(t *testing.T) {
 	port := freePort(t)
 	srv := startPlainServer(t, "127.0.0.1", port)
@@ -170,34 +169,6 @@ func (p *blackholeProxy) pipe(dst, src net.Conn) {
 			return
 		}
 	}
-}
-
-// TestNewClient_CallerHandlersStillRunAndBusUpSinceStillUpdates: a caller's
-// own reconnect and disconnect handlers are chained, not replaced by, the
-// ones that maintain BusUpSince (nats.go keeps only the last of each kind).
-func TestNewClient_CallerHandlersStillRunAndBusUpSinceStillUpdates(t *testing.T) {
-	port := freePort(t)
-	srv := startPlainServer(t, "127.0.0.1", port)
-	defer func() { srv.Shutdown() }()
-
-	var disconnects, reconnects atomic.Int32
-	c, err := NewClient(
-		"nats://"+net.JoinHostPort("127.0.0.1", itoa(port)), slog.New(slog.DiscardHandler),
-		nats.DisconnectErrHandler(func(*nats.Conn, error) { disconnects.Add(1) }),
-		nats.ReconnectHandler(func(*nats.Conn) { reconnects.Add(1) }),
-	)
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-	t.Cleanup(c.Close)
-
-	srv.Shutdown()
-	waitUntil(t, 5*time.Second, "BusUpSince to clear", func() bool { return c.BusUpSince().IsZero() })
-	waitUntil(t, 5*time.Second, "the caller's disconnect handler", func() bool { return disconnects.Load() == 1 })
-
-	srv = startPlainServer(t, "127.0.0.1", port)
-	waitUntil(t, 15*time.Second, "BusUpSince to be set again", func() bool { return !c.BusUpSince().IsZero() })
-	waitUntil(t, 5*time.Second, "the caller's reconnect handler", func() bool { return reconnects.Load() == 1 })
 }
 
 // TestClientState_InitialUpDoesNotUndoAnEarlierDisconnect pins the

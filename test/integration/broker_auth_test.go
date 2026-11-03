@@ -7,11 +7,11 @@ package integration
 // TestRevocation_DisconnectsAndReclaims proves revocation end to end: DELETE
 // /api/v1/workers/{id}/credential revokes in the store, then asks the broker
 // to disconnect the worker, which closes the revoked worker's live NATS
-// connection SYNCHRONOUSLY — inside the broker's Revoke call, which returns
-// only after a final pass over the connections has found none left. The
-// worker's reconnect goes back through the auth callout, which now refuses
-// the key. The disconnected worker's in-flight task is then returned to ready
-// by the EXISTING heartbeat-sweep/reclaim path (internal/scheduler), not by
+// connection synchronously: inside the broker's Revoke call, which returns
+// only after its final pass has disconnected any connection left. The
+// worker's reconnect goes back through the auth callout, which refuses the
+// revoked key. The disconnected worker's in-flight task is then returned to
+// ready by the EXISTING heartbeat-sweep/reclaim path (internal/scheduler), not by
 // anything this test reimplements, and a second, unrevoked
 // worker is left completely unaffected and able to lease the reclaimed
 // task.
@@ -231,8 +231,8 @@ type workerCredentialWireResp struct {
 }
 
 // enrollWorker exchanges joinToken for a broker credential over the real,
-// unauthenticated POST /api/v1/workers/enroll wire protocol — the path that
-// makes the credential connectable on a RUNNING broker with no further step.
+// unauthenticated POST /api/v1/workers/enroll wire protocol, which makes the
+// credential connectable on a running broker with no further step.
 func enrollWorker(t *testing.T, ts *testServer, joinToken, workerID, publicKey string) {
 	t.Helper()
 	body, err := json.Marshal(map[string]string{
@@ -342,8 +342,8 @@ func TestRevocation_DisconnectsAndReclaims(t *testing.T) {
 		t.Fatalf("GenerateSeed(B): %v", err)
 	}
 
-	// Both workers are enrolled BEFORE the server starts, so both are
-	// connectable from the moment it boots — see seedWorkerCredential's doc
+	// Both workers are enrolled before the server starts, so both are
+	// connectable from the moment it boots. See seedWorkerCredential's doc
 	// comment for why this test does not use POST /workers/enroll.
 	seedWorkerCredential(t, so, "worker-a", pubA)
 	seedWorkerCredential(t, so, "worker-b", pubB)
@@ -384,11 +384,11 @@ func TestRevocation_DisconnectsAndReclaims(t *testing.T) {
 	// ── Revoke worker A: the synchronous path under test ────────────────────
 	revokeWorkerCredential(t, ts, "worker-a")
 
-	// 1. A's NATS connection closes. Revocation is synchronous — the broker
+	// 1. A's NATS connection closes. Revocation is synchronous (the broker
 	// disconnects the worker inside Revoke, which DELETE
-	// /workers/{id}/credential's handler waits on — so this is not a poll for
-	// a generous timeout, only tolerance for scheduling jitter in observing
-	// an event that already happened.
+	// /workers/{id}/credential's handler waits on), so the timeout below only
+	// allows for scheduling jitter in observing an event that already
+	// happened.
 	select {
 	case <-closedA:
 	case <-time.After(2 * time.Second):
@@ -435,7 +435,7 @@ func pollWorkerOffline(t *testing.T, ts *testServer, workerID string, timeout ti
 
 // TestWorkerDeletion_RevokesCredentialAndDisconnects proves the cascade DELETE
 // /api/v1/workers/{id} performs: removing a worker record
-// also revokes its broker credential, through the SAME synchronous
+// also revokes its broker credential, through the same synchronous
 // store-write-then-broker-disconnect path DELETE /workers/{id}/credential uses.
 // Without it, a machine an operator has just decommissioned from the farm
 // keeps live broker access — able to connect, lease work and execute job
@@ -487,13 +487,13 @@ func TestWorkerDeletion_RevokesCredentialAndDisconnects(t *testing.T) {
 	mustDoJSON(t, http.MethodGet, apiURL(ts, "/api/v1/workers/worker-a"), nil, "", http.StatusNotFound, nil)
 }
 
-// TestEnrollment_ConnectsToRunningBrokerWithoutRestart guards that the
-// enrolment needs no broker call: the broker's auth callout reads the
+// TestEnrollment_ConnectsToRunningBrokerWithoutRestart guards that
+// enrollment needs no broker call: the broker's auth callout reads the
 // credential from the store when the worker connects, so a worker enrolled
-// over POST /workers/enroll against a RUNNING server connects without a
+// over POST /workers/enroll against a running server connects without a
 // restart or reload. This enrolls a worker over the real REST wire protocol
-// AFTER the server is already up, with no restart in between, and asserts it
-// connects and registers successfully.
+// after the server is already up, with no restart in between, and asserts it
+// connects and registers.
 func TestEnrollment_ConnectsToRunningBrokerWithoutRestart(t *testing.T) {
 	so := storeFor(t, t.TempDir()+"/sqi-broker-auth-enroll.db")
 
@@ -510,9 +510,9 @@ func TestEnrollment_ConnectsToRunningBrokerWithoutRestart(t *testing.T) {
 		t.Fatalf("GenerateSeed(C): %v", err)
 	}
 
-	// Enroll AFTER the server has already booted and become ready, so the
-	// credential did not exist when the broker started; the auth callout
-	// must find it in the store at connect time.
+	// Enroll after the server has booted and become ready, so the credential
+	// did not exist when the broker started; the auth callout must find it in
+	// the store at connect time.
 	enrollWorker(t, ts, rawToken, "worker-c", pubC)
 
 	natsURL := "nats://" + ts.NATSAddr

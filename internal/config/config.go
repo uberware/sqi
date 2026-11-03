@@ -85,10 +85,9 @@ type NATSConfig struct {
 	Mode string `yaml:"mode"`
 
 	// Auth configures per-worker broker authentication. Off by default, and
-	// the same in both modes. Deliberately INDEPENDENT of the top-level auth
-	// block: the two protect different surfaces, and coupling them would
-	// force an operator who wants worker authentication into user accounts
-	// they did not ask for.
+	// the same in both modes. Independent of the top-level auth block: the
+	// two protect different surfaces, so worker authentication does not
+	// require user accounts.
 	Auth NATSAuthConfig `yaml:"auth"`
 
 	// Embedded configures the broker inside sqi-server. Used only when Mode
@@ -180,21 +179,9 @@ type NATSExternalConfig struct {
 func (e NATSExternalConfig) MarshalYAML() (any, error) {
 	type plain NATSExternalConfig
 	out := plain(e)
-	out.URLs = redactURLs(e.URLs)
-	out.AdvertiseURLs = redactURLs(e.AdvertiseURLs)
+	out.URLs = redact.EachURL(e.URLs)
+	out.AdvertiseURLs = redact.EachURL(e.AdvertiseURLs)
 	return out, nil
-}
-
-// redactURLs returns urls with their credentials replaced, nil for nil.
-func redactURLs(urls []string) []string {
-	if urls == nil {
-		return nil
-	}
-	out := make([]string, len(urls))
-	for i, raw := range urls {
-		out[i] = redact.URL(raw)
-	}
-	return out
 }
 
 // NATSClientTLSConfig is the TLS configuration of a client connection to an

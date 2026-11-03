@@ -2972,7 +2972,7 @@ paths:
 
         With broker authentication off (`nats.auth.enabled: false`) this only
         writes the store: there is nothing to disconnect a worker from,
-        because the broker never authenticated it in the first place.
+        because the broker never authenticated it.
 
         The offline CLI equivalent, `sqi-server worker revoke <id>`, has no
         broker handle and does not disconnect a running worker: its

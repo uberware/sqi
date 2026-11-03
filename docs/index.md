@@ -71,7 +71,7 @@ See the [Quickstart](quickstart.md) for a full walkthrough (binary or Docker Com
 
 **Distributed (production mode)**
 
-State in PostgreSQL and the message bus on a NATS cluster you run, with workers connecting to the cluster directly (unreleased). Set `store.driver: postgres` for the store (see [Running on PostgreSQL](operations.md#running-on-postgresql)) and `nats.mode: external` for the broker (see [Running on an external NATS cluster](operations.md#running-on-an-external-nats-cluster)); the cluster survives the loss of a node and outlives `sqi-server` restarts. This is not yet high availability for the scheduler: one `sqi-server` runs per database and per broker account, and an HA scheduler (Phase 4) and Kubernetes manifests are not yet implemented.
+State in PostgreSQL and the message bus on a NATS cluster you run, with workers connecting to the cluster directly. Set `store.driver: postgres` for the store (see [Running on PostgreSQL](operations.md#running-on-postgresql)) and `nats.mode: external` for the broker (see [Running on an external NATS cluster](operations.md#running-on-an-external-nats-cluster)); the cluster outlives `sqi-server` restarts and, with three stream replicas, the loss of a node. The scheduler itself is not highly available: one `sqi-server` runs per database and per broker account. An HA scheduler and Kubernetes manifests are planned for Phase 4.
 
 Both modes run the same software. The difference is configuration; an existing SQLite farm moves to PostgreSQL with `sqi-server store copy` (see [Moving to PostgreSQL](operations.md#moving-to-postgresql)), and to an external broker by changing `nats.mode` (see [Switching broker mode](operations.md#switching-broker-mode)).
 

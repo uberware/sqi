@@ -44,9 +44,9 @@ func TestRevokeWorker_TLSSurvivesRevocation(t *testing.T) {
 		t.Fatalf("RevokeWorker: %v", err)
 	}
 
-	// THE assertion: TLS is still required after the revocation.
+	// TLS is still required after the revocation.
 	//
-	// The plaintext client carries credential A's VALID nkey. Without it the
+	// The plaintext client carries credential A's valid nkey. Without it the
 	// broker refuses the connection for want of authentication whatever the TLS
 	// state, and the check cannot tell "TLS still required" from "auth still
 	// required". With a valid credential, refusal can only mean TLS.

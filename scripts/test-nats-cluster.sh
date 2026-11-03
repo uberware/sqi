@@ -16,8 +16,8 @@
 #   TEST_FLAGS  extra `go test` flags (the Makefile's, e.g. -race)
 #
 # Exits 0 with "docker unavailable" when there is no Docker, as the other
-# container targets do. A skip verifies nothing: the tests skip without the
-# cluster, so check for the six `--- PASS: TestNATSCluster_` lines (CI does).
+# container targets do. The tests skip without the cluster, so check for the
+# six `--- PASS: TestNATSCluster_` lines (CI does).
 #
 # Docker Desktop and Colima share only some host directories into the VM that
 # runs the containers (Colima shares $HOME), and a bind mount from anywhere

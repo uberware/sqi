@@ -11,14 +11,13 @@ package api
 //	DELETE /api/v1/workers/{id}/credential     — workers.enroll
 //
 // The revoke handler delegates to an injected [WorkerRevoker] rather than
-// writing the store directly. internal/api never holds a live broker handle —
-// the process that does (internal/server) supplies an implementation that
-// writes the store and then disconnects the worker, so a worker that loses
-// its credential is disconnected synchronously, inside the same request.
-// Enrolment needs no broker call at all: the broker reads the credential
-// from the store when the worker connects. This package depends only on the
-// narrow interface, never on internal/bus or internal/server, so it cannot
-// import either and stays testable without a live broker.
+// writing the store directly. internal/api holds no broker handle: the
+// process that does (internal/server) supplies an implementation that writes
+// the store and then disconnects the worker from the broker, inside the same
+// request. Enrollment needs no broker call: the broker reads the credential
+// from the store when the worker connects. This package depends only on that
+// interface, never on internal/bus or internal/server, so it stays testable
+// without a live broker.
 
 import (
 	"context"

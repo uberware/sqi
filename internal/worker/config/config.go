@@ -393,8 +393,9 @@ func normalizeTLSMode(v string) (mode string, ok bool) {
 // UseTLS reports whether the broker connection should use TLS.
 //
 // brokerAdvertisedTLS is what mDNS discovery learned about the server (the
-// tls:// scheme of the advertised nats_url); it is false when the URL was configured explicitly,
-// since nothing was discovered. It only participates in "auto".
+// tls:// scheme of the advertised nats_url); it is false when the URL was
+// configured explicitly, since nothing was discovered. It only participates
+// in "auto".
 func (c NATSConfig) UseTLS(brokerAdvertisedTLS bool) bool {
 	mode, _ := normalizeTLSMode(c.TLSEnabled)
 	switch mode {

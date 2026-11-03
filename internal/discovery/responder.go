@@ -12,7 +12,7 @@
 //	id=<instance-id>   unique per process; lets clients dedupe re-announcements
 //	http=<http-port>   REST + WebSocket API port (also the SRV port)
 //	nats_url=<url>     broker URL for worker connections; the nats:// or tls://
-//	                   scheme carries TLS
+//	                   scheme says whether the broker requires TLS
 //	host=<hostname>    advertising host's reported name
 //	version=<version>  server build version
 //	tls=1              present only when the REST API is TLS-terminated
@@ -27,7 +27,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -137,27 +136,18 @@ func New(cfg Config, logger *slog.Logger) (*Responder, error) {
 	return r, nil
 }
 
-// maxTXTString is the DNS TXT character-string limit; one "key=value" record
-// cannot exceed it.
-const maxTXTString = 255
-
-// validateNATSURL is the backstop for the contract workers rely on: the
-// advertised broker URL parses, uses the nats or tls scheme, names a host,
-// carries no credentials (the record is plaintext on the network), and fits
-// in its TXT record. Configuration validation is the user-facing check.
+// validateNATSURL applies [CheckNATSURL] as a backstop; configuration
+// validation reports the same problems to the operator at load.
 func validateNATSURL(raw string) error {
 	if raw == "" {
 		return errors.New("discovery: broker URL must not be empty")
 	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Hostname() == "" || (u.Scheme != "nats" && u.Scheme != "tls") {
-		return fmt.Errorf("discovery: broker URL %q must be nats://host:port or tls://host:port", redact.URL(raw))
-	}
-	if u.User != nil {
-		return fmt.Errorf("discovery: broker URL %q carries credentials, which mDNS would publish in plaintext", redact.URL(raw))
-	}
-	if n := len("nats_url=") + len(raw); n > maxTXTString {
-		return fmt.Errorf("discovery: broker URL makes a %d-byte nats_url record, over the %d-byte DNS TXT limit", n, maxTXTString)
+	if _, err := CheckNATSURL(raw); err != nil {
+		if errors.Is(err, ErrNATSURLTooLong) {
+			return fmt.Errorf("discovery: broker URL makes a %d-byte %s record, over the %d-byte DNS TXT limit: %w",
+				NATSURLRecordLen(raw), NATSURLKey, MaxTXTString, err)
+		}
+		return fmt.Errorf("discovery: broker URL %q %w", redact.URL(raw), err)
 	}
 	return nil
 }
@@ -242,11 +232,11 @@ func buildTXTRecords(instanceID string, httpPort int, natsURL, host, ver string,
 	txt := []string{
 		"id=" + instanceID,
 		"http=" + strconv.Itoa(httpPort),
-		"nats_url=" + natsURL,
+		NATSURLKey + "=" + natsURL,
 		"host=" + host,
 		"version=" + ver,
 	}
-	// The tls key is OMITTED rather than emitted as "tls=0" when off, so a
+	// The tls key is omitted rather than emitted as "tls=0" when off, so a
 	// plaintext farm advertises nothing extra. The broker's TLS needs no key:
 	// the nats_url scheme carries it.
 	if httpTLS {

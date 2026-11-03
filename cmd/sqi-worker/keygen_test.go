@@ -126,7 +126,7 @@ func TestKeygenCmd_WritesSeedAndPrintsEnrollCommand(t *testing.T) {
 		t.Errorf("output missing the note that a running server needs no restart; got:\n%s", out)
 	}
 	if strings.Contains(out, "will not accept this credential") {
-		t.Errorf("output still says a running server needs a restart; got:\n%s", out)
+		t.Errorf("output says a running server needs a restart; got:\n%s", out)
 	}
 
 	seedPath := filepath.Join(dataDir, "worker.nk")

@@ -567,8 +567,8 @@ func TestRestoreSQLite_APathWithAQuestionMark(t *testing.T) {
 	}
 }
 
-// With a broker purge in place of a NATS directory, step 6 purges: the purge
-// runs once, nothing is renamed, and the result says so.
+// With a broker purge in place of a NATS directory, the last step purges: the
+// purge runs once, nothing is renamed, and the result says so.
 func TestRun_ExternalCallsPurgeInsteadOfQuarantine(t *testing.T) {
 	_, db, natsDir, backup, taskID := liveFarm(t)
 	var renamed []string
@@ -627,8 +627,8 @@ func TestRun_ExternalPurgeFailureSaysWhatStateItLeft(t *testing.T) {
 	}
 }
 
-// A NATS directory and a broker purge are two ways to do step 6; asking for
-// both is a caller's mistake, refused before anything changes.
+// A NATS directory and a broker purge are two ways to do the last step;
+// asking for both is a caller's mistake, refused before anything changes.
 func TestRun_RefusesBothANATSDirAndAPurge(t *testing.T) {
 	_, db, natsDir, backup, _ := liveFarm(t)
 	o := opts(db, natsDir, backup)

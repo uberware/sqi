@@ -46,11 +46,19 @@ func URL(raw string) string {
 
 // URLs applies [URL] to each of urls and joins the results with sep.
 func URLs(urls []string, sep string) string {
+	return strings.Join(EachURL(urls), sep)
+}
+
+// EachURL applies [URL] to each of urls, returning nil for nil.
+func EachURL(urls []string) []string {
+	if urls == nil {
+		return nil
+	}
 	out := make([]string, len(urls))
 	for i, raw := range urls {
 		out[i] = URL(raw)
 	}
-	return strings.Join(out, sep)
+	return out
 }
 
 // List applies [URL] to each URL of a comma-separated list, the form

@@ -48,20 +48,16 @@ func ExprLimitsFromConfig(c config.OpenJDConfig) openjd.ExprLimits {
 // Comparing against anything other than the submitter's own limits would gate
 // on a number no submission ever used, so the two are set from one field rather
 // than left to a caller to keep in step.
-func schedulerConfig(cfg Config) scheduler.Config {
+//
+// The scheduler's bus-up source is taken from client (nil for none) unless
+// the caller's Scheduler section already set one. Heartbeats ride the bus, so
+// the liveness sweeps stand down while it is down or has just come back; both
+// broker modes need that, since a broker can restart while the server stays
+// up.
+func schedulerConfig(cfg Config, client *bus.Client) scheduler.Config {
 	sched := cfg.Scheduler
 	sched.ExprLimits = cfg.OpenJDExprLimits
 	sched.NATSAuthEnabled = cfg.NATS.Auth.Enabled
-	return sched
-}
-
-// schedulerConfigWithBus is [schedulerConfig] with the scheduler's bus-up
-// source taken from client unless the caller's Scheduler section already set
-// one. Heartbeats ride the bus, so the liveness sweeps stand down while it is
-// down or has just come back; both broker modes need that, since a broker can
-// restart while the server stays up.
-func schedulerConfigWithBus(cfg Config, client *bus.Client) scheduler.Config {
-	sched := schedulerConfig(cfg)
 	if sched.BusUpSince == nil && client != nil {
 		sched.BusUpSince = client.BusUpSince
 	}

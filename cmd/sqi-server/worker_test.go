@@ -151,7 +151,7 @@ func TestWorkerCmd_Enroll_SaysARunningServerNeedsNoRestart(t *testing.T) {
 		}
 	}
 	if strings.Contains(out, "will not accept this credential") {
-		t.Errorf("enroll output still says a restart is needed; got: %s", out)
+		t.Errorf("enroll output says a restart is needed; got: %s", out)
 	}
 }
 

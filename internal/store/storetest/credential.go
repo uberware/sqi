@@ -13,10 +13,9 @@ import (
 // nil RevokedAt — or [store.ErrNotFound] if it has none. After a key rotation a
 // worker has a revoked row and an active one; only the active one is returned.
 //
-// It reads through ListActiveWorkerCredentials, the set the broker's
-// authorized keys are rebuilt from, so it asserts what authentication sees. More
-// than one active credential for a worker is an error: the schema's partial
-// unique index forbids it.
+// It reads through ListActiveWorkerCredentials, the set `sqi-server worker
+// list` shows. More than one active credential for a worker is an error: the
+// schema's partial unique index forbids it.
 func ActiveWorkerCredential(ctx context.Context, st store.WorkerCredentialStore, workerID string) (store.WorkerCredential, error) {
 	creds, err := st.ListActiveWorkerCredentials(ctx)
 	if err != nil {

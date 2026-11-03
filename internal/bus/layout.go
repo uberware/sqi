@@ -5,7 +5,6 @@ package bus
 import (
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
@@ -17,7 +16,7 @@ import (
 const (
 	// AccountAuth is the account that holds sqi's callout connection. Nothing
 	// else lives in it.
-	AccountAuth = "AUTH"
+	AccountAuth = brokerauth.AccountAuth
 
 	// DefaultAccount is the account that holds sqi's streams, consumers, KV
 	// bucket and workers, and sqi's data connection. Embedded mode always uses
@@ -26,17 +25,8 @@ const (
 
 	// accountSystem is the system account the rendered fragment declares.
 	// Embedded mode leaves the system account to nats-server's default.
-	accountSystem = "SYS"
-
-	// accountGlobal is nats-server's built-in global account.
-	accountGlobal = "$G"
+	accountSystem = brokerauth.AccountSystem
 )
-
-// accountNameRE is the shape of an account name sqi accepts. It is narrower
-// than nats-server's grammar so that the name can be written into a config
-// file unquoted-safe and used as a directory name. internal/config applies the
-// same rule to nats.external.account.
-var accountNameRE = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // Layout describes sqi's NATS account layout once, for both broker modes.
 // [Layout.Apply] renders it as nats-server Options for the embedded broker;
@@ -55,7 +45,7 @@ var accountNameRE = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 // connection except the two sqi users, which are exempt through auth_users so
 // that neither needs the responder to be running before it can connect. With
 // auth off, there is no callout and anonymous connections are mapped to the
-// data user, which is today's behavior inside a named account.
+// data user, with its unrestricted grants inside the named account.
 type Layout struct {
 	// Account is the NATS account sqi's data lives in.
 	Account string
@@ -74,15 +64,15 @@ type Layout struct {
 	JetStreamMaxStore int64
 }
 
-// validate reports a layout nats-server would reject or, worse, accept with a
+// validate reports a layout nats-server would reject, or accept with a
 // meaning other than the one intended.
 func (l Layout) validate() error {
 	switch {
 	case l.Account == "":
 		return errors.New("bus: layout: account name is empty")
-	case l.Account == AccountAuth || l.Account == accountSystem || l.Account == accountGlobal:
+	case brokerauth.ReservedAccount(l.Account):
 		return fmt.Errorf("bus: layout: account %q is reserved", l.Account)
-	case !accountNameRE.MatchString(l.Account):
+	case !brokerauth.ValidAccountName(l.Account):
 		return fmt.Errorf("bus: layout: account name %q must use only letters, digits, '_' and '-'", l.Account)
 	case !nkeys.IsValidPublicUserKey(l.DataUserPub):
 		return errors.New("bus: layout: data user is not a valid public user key")
@@ -102,12 +92,6 @@ func (l Layout) validate() error {
 		return errors.New("bus: layout: the data and callout users must be different keys")
 	}
 	return nil
-}
-
-// hasCalloutUser reports whether the AUTH account gets a user. With auth off
-// the callout connection does not exist.
-func (l Layout) hasCalloutUser() bool {
-	return l.AuthEnabled && l.CalloutUserPub != ""
 }
 
 // Apply sets the layout on o: Accounts, Nkeys, AuthCallout or NoAuthUser, and
@@ -137,7 +121,7 @@ func (l Layout) Apply(o *natsserver.Options) error {
 		Permissions: brokerauth.ServerPermissions(),
 		Account:     data,
 	}}
-	if l.hasCalloutUser() {
+	if l.AuthEnabled {
 		o.Nkeys = append(o.Nkeys, &natsserver.NkeyUser{Nkey: l.CalloutUserPub, Account: auth})
 	}
 
@@ -164,19 +148,24 @@ func (l Layout) Apply(o *natsserver.Options) error {
 // jetStreamLimits is Account's JetStream limits: unlimited everywhere except
 // file storage, which takes JetStreamMaxStore.
 func (l Layout) jetStreamLimits() map[string]natsserver.JetStreamAccountLimits {
-	maxStore := int64(-1)
-	if l.JetStreamMaxStore > 0 {
-		maxStore = l.JetStreamMaxStore
-	}
 	return map[string]natsserver.JetStreamAccountLimits{"": {
 		MaxMemory:            -1,
-		MaxStore:             maxStore,
+		MaxStore:             l.maxStore(),
 		MaxStreams:           -1,
 		MaxConsumers:         -1,
 		MaxAckPending:        -1,
 		MemoryMaxStreamBytes: -1,
 		StoreMaxStreamBytes:  -1,
 	}}
+}
+
+// maxStore is JetStreamMaxStore in nats-server's terms, where -1 is
+// unlimited.
+func (l Layout) maxStore() int64 {
+	if l.JetStreamMaxStore > 0 {
+		return l.JetStreamMaxStore
+	}
+	return -1
 }
 
 // EnableAccountJetStream enables JetStream on Account of a server started
@@ -244,7 +233,7 @@ func (l Layout) ConfigFragmentWithSystemUser(systemUserPub string) (string, erro
 	b.WriteString("    ]\n  }\n")
 
 	fmt.Fprintf(&b, "  %q {\n", AccountAuth)
-	if l.hasCalloutUser() {
+	if l.AuthEnabled {
 		fmt.Fprintf(&b, "    users: [{nkey: %q}]\n", l.CalloutUserPub)
 	}
 	b.WriteString("  }\n")

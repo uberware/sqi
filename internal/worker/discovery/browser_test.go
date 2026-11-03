@@ -153,7 +153,7 @@ func TestEntryToResult(t *testing.T) {
 			wantErr:  "server advertises no broker URL",
 		},
 		{
-			name:     "the removed nats record is not a fallback",
+			name:     "a bare nats port record is not a fallback",
 			hostname: "render01.local.",
 			txt:      []string{"id=abc", "nats=4222"},
 			wantErr:  "server advertises no broker URL",
@@ -175,6 +175,20 @@ func TestEntryToResult(t *testing.T) {
 			hostname: "render01.local.",
 			txt:      []string{"nats_url=nats://:4222"},
 			wantErr:  "invalid nats_url",
+		},
+		{
+			// The server's own checks refuse to advertise these; the worker
+			// applies the same contract to what it receives.
+			name:     "port 0",
+			hostname: "render01.local.",
+			txt:      []string{"nats_url=nats://render01.local:0"},
+			wantErr:  "port 0",
+		},
+		{
+			name:     "credentials in url",
+			hostname: "render01.local.",
+			txt:      []string{"nats_url=nats://u:p@render01.local:4222"},
+			wantErr:  "carries credentials",
 		},
 	}
 
@@ -406,8 +420,8 @@ func TestEntryToResult_TLSRecords(t *testing.T) {
 			txt:  []string{"id=a", "nats_url=nats://h:4222", "tls=true"},
 		},
 		{
-			// The old nats_tls record no longer means anything.
-			name: "the removed nats_tls record is ignored",
+			// TLS comes from the URL scheme; a nats_tls record is ignored.
+			name: "a nats_tls record is ignored",
 			txt:  []string{"id=a", "nats_url=nats://h:4222", "nats_tls=1"},
 		},
 	}

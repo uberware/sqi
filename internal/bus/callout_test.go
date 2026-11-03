@@ -384,7 +384,7 @@ func TestResponder_EmptyNonceLogsCause(t *testing.T) {
 		}
 	})
 
-	t.Run("unsigned connect is a client fault, not a farm-wide alarm", func(t *testing.T) {
+	t.Run("unsigned connect is logged as a client fault", func(t *testing.T) {
 		g := newCalloutRig(t, staticLookup("w1"))
 		req := g.request(newCallerKeys(t), func(r *jwt.AuthorizationRequestClaims) {
 			r.ConnectOptions.SignedNonce = ""
@@ -706,14 +706,10 @@ func TestResponder_ServeHandlesRequestsConcurrently(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(nc.Close)
-	sub, err := g.resp.Serve(nc)
-	if err != nil {
+	if err := g.resp.Serve(context.Background(), nc); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = sub.Unsubscribe() }) //nolint:errcheck // test cleanup
-	if err := nc.Flush(); err != nil {
-		t.Fatal(err)
-	}
+	t.Cleanup(g.resp.Stop)
 
 	var wg sync.WaitGroup
 	errs := make(chan error, requests)

@@ -22,9 +22,9 @@ const consumePullExpiry = 10 * time.Second
 // consumeHeartbeat is the idle heartbeat the broker sends on an open pull.
 // The consume context re-pulls once it misses two in a row, so a pull lost
 // while the consumer had no leader (a broker restart, a node loss) is
-// replaced within about 2×consumeHeartbeat. With the library defaults it took
-// up to ~30s, longer than a worker's heartbeat timeout. The check is paused
-// while a handler runs, so a slow handler does not trip it.
+// replaced within about 2×consumeHeartbeat. The library defaults take up to
+// 30s, longer than a worker's heartbeat timeout. The check is paused while a
+// handler runs, so a slow handler does not trip it.
 const consumeHeartbeat = 2 * time.Second
 
 // consume starts consumer with sqi's pull tuning and an error handler that
@@ -62,7 +62,7 @@ func (c *Client) consumeErrHandler(name string) jetstream.ConsumeErrHandlerFunc 
 
 // taskStatusConsumerName is the durable name for the server-side push consumer
 // that processes task-status transitions.  One server process runs this
-// consumer at a time: in external mode the guard ([AcquireGuard]) refuses a
+// consumer at a time: in external mode the account guard ([Guard]) refuses a
 // second sqi-server on the same broker account, and the embedded broker is
 // private to its one server.
 const taskStatusConsumerName = "sqi-task-status-srv"

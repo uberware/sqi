@@ -67,6 +67,38 @@ func ServerConfig(certFile, keyFile, clientCAFile string) (*tls.Config, error) {
 	return cfg, nil
 }
 
+// ErrIncompleteClientPair is [ClientConfig]'s error for a client certificate
+// without its key, or a key without its certificate, so a caller can name its
+// own config keys.
+var ErrIncompleteClientPair = errors.New("a client certificate needs both a certificate file and a key file")
+
+// ClientConfig builds a client *tls.Config: TLS 1.2 or later, trusting
+// caFile's certificates when it is set (else the system pool), and presenting
+// the certFile/keyFile pair when both are set. Setting only one of the pair
+// is an error. The caller sets ServerName or InsecureSkipVerify if it needs
+// them.
+func ClientConfig(caFile, certFile, keyFile string) (*tls.Config, error) {
+	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	if (certFile == "") != (keyFile == "") {
+		return nil, ErrIncompleteClientPair
+	}
+	if certFile != "" {
+		pair, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return nil, fmt.Errorf("load client certificate %s/%s: %w", certFile, keyFile, err)
+		}
+		cfg.Certificates = []tls.Certificate{pair}
+	}
+	if caFile != "" {
+		pool, err := CertPool(caFile)
+		if err != nil {
+			return nil, err
+		}
+		cfg.RootCAs = pool
+	}
+	return cfg, nil
+}
+
 // LeafOf returns the parsed leaf certificate of a loaded keypair.
 //
 // tls.LoadX509KeyPair normally populates Leaf itself, but only when the

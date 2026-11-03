@@ -161,12 +161,12 @@ configured on the worker at all. Two consequences:
   roots**, so a farm CA fails with a certificate error naming the issuer. The
   worker warns about exactly this at startup. Copy `ca.crt` over and set
   `tls_ca_file`.
-- Under `"false"` a `tls://` URL still connects over TLS — the NATS client
-  requires it for that scheme — but with none of the worker's TLS settings:
-  no CA file, no client certificate, no `insecure_skip_verify`, so the
-  certificate is verified against the system roots. The worker warns about
-  this, because the certificate error that follows will not mention the
-  setting responsible.
+- Under `"false"` a `tls://` URL still connects over TLS, since the NATS
+  client requires it for that scheme, but with none of the worker's TLS
+  settings: no CA file, no client certificate, no `insecure_skip_verify`, so
+  the certificate is verified against the system roots. The worker warns
+  about this, because the certificate error that follows does not mention
+  the setting responsible.
 
 An explicit `nats.url` discovers nothing, so none of this applies: an operator
 who configures the URL by hand configures the transport by hand.
@@ -188,7 +188,7 @@ Nothing about a certificate is allowed to fail for the first time at connect tim
 | `enabled: true` with an empty `cert_file` or `key_file` | error at startup |
 | File missing, unreadable, or key/certificate mismatch | error at startup |
 | Certificate already expired | error at startup |
-| Certificate expires within 30 days | WARN at startup |
+| Certificate expires within 30 days (including the `nats.external.tls` client certificate) | WARN at startup |
 | Certificate files set while `enabled: false` | WARN — "serving plaintext" |
 | `nats.embedded.tls.client_ca_file` set while `nats.embedded.tls.enabled: false` | error at startup |
 | `nats.external.tls.*` set beside `nats://` URLs, or only one of `cert_file` / `key_file` | error at startup |
@@ -350,8 +350,8 @@ as the cause, and a worker with no TLS configuration attempting a TLS-required
 broker fails with `secure connection not available`.
 
 The server advertises `tls=1` in its mDNS TXT records when the API is
-TLS-terminated, and a `tls://` `nats_url` when the broker is, and a
-discovering worker acts on the latter — see
+TLS-terminated, and a `tls://` `nats_url` when the broker is. A discovering
+worker acts on the `nats_url`; see
 [Discovery fills in "auto"](#discovery-fills-in-auto).
 
 `scripts/smoke.sh` runs its whole flow in three modes — plain, broker-auth and TLS

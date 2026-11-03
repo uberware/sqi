@@ -205,15 +205,12 @@ account that nothing else uses (`SQI`, or
 connection in a second account, `AUTH`. See
 [Broker topologies](architecture.md#broker-topologies).
 
-> **Keys that moved.** The embedded broker's `addr`, `data_dir`,
-> `max_store_mb` and `tls` keys sit under `nats.embedded`. A configuration
-> file that still has any of them directly under `nats` fails at startup with
-> an error naming the new key. Their environment variables moved the same
-> way, and the old names are refused the same way: `SQI_NATS_ADDR`,
-> `SQI_NATS_DATA_DIR`, `SQI_NATS_MAX_STORE_MB` and every `SQI_NATS_TLS_*`
-> variable are now `SQI_NATS_EMBEDDED_ADDR`, `SQI_NATS_EMBEDDED_DATA_DIR`,
-> `SQI_NATS_EMBEDDED_MAX_STORE_MB` and `SQI_NATS_EMBEDDED_TLS_*`.
-> `SQI_NATS_MODE` and `SQI_NATS_AUTH_*` are unchanged.
+The embedded broker's `addr`, `data_dir`, `max_store_mb` and `tls` keys
+belong under `nats.embedded`. A configuration file with any of them directly
+under `nats` fails at startup with an error naming the `nats.embedded` key.
+Likewise a set `SQI_NATS_ADDR`, `SQI_NATS_DATA_DIR`, `SQI_NATS_MAX_STORE_MB`
+or `SQI_NATS_TLS_*` variable fails startup with an error naming its
+`SQI_NATS_EMBEDDED_*` equivalent.
 
 ### `nats.mode`
 
@@ -623,7 +620,7 @@ string.
 | **Env var** | `SQI_NATS_EXTERNAL_ACCOUNT` |
 
 The NATS account sqi's streams, consumers, guard bucket and workers live in.
-It must be **dedicated to sqi**: `sqi-server`'s data connection may publish and
+It must be dedicated to sqi: `sqi-server`'s data connection may publish and
 subscribe to everything in it, which is safe only because nothing else shares
 the account. Letters, digits, `_` and `-` only; `AUTH`, `SYS` and `$G` are
 refused, because the generated cluster configuration defines the first two
@@ -664,9 +661,9 @@ startup.
 | **Env var** | `SQI_NATS_EXTERNAL_CREDS_FILE` |
 
 A NATS `.creds` file (user JWT plus seed) for the data connection, for a
-cluster that runs in NATS operator (JWT) mode. It is for broker
-authentication **off** only: sqi's auth callout is supported on clusters
-configured with config-file accounts, not under an operator. Mutually
+cluster that runs in NATS operator (JWT) mode, with broker authentication
+off: sqi's auth callout is supported only on clusters configured with
+config-file accounts. Mutually
 exclusive with [`nats.external.nkey_seed_file`](#natsexternalnkey_seed_file).
 
 ---
@@ -726,7 +723,7 @@ need the same CA in their `nats.tls_ca_file`.
 | **Env var** | `SQI_NATS_EXTERNAL_TLS_CERT_FILE`, `SQI_NATS_EXTERNAL_TLS_KEY_FILE` |
 
 A client certificate and its key, for a cluster that requires mutual TLS. Set
-both or neither.
+both or neither. A certificate expiring within 30 days logs a WARN at startup.
 
 ### `nats.external.tls.server_name`
 
@@ -761,7 +758,7 @@ external mode when [`nats.auth.enabled`](#natsauthenabled) is `true`.
 | **Default** | `""` |
 | **Env var** | `SQI_NATS_EXTERNAL_CALLOUT_ISSUER_SEED_FILE` |
 
-The **account** nkey seed (`SA…`) `sqi-server` signs its authorization answers
+The account nkey seed (`SA…`) `sqi-server` signs its authorization answers
 with (`issuer.nk`). The cluster's `auth_callout` block names its public key as
 the issuer. Required in external mode when `nats.auth.enabled` is `true`. A
 user seed (`SU…`) here is the usual mistake, and the startup error says so.

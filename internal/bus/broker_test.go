@@ -128,12 +128,9 @@ func TestBrokerLifecycle(t *testing.T) {
 		DataDir: dataDir,
 	}, logger)
 
-	// Identity and StoreDir describe the configuration, not the running state.
+	// Identity describes the configuration, not the running state.
 	if got := b.Identity(); got != "embedded:SQI" {
 		t.Errorf("Identity() = %q, want %q", got, "embedded:SQI")
-	}
-	if got := b.StoreDir(); got != dataDir {
-		t.Errorf("StoreDir() = %q, want %q", got, dataDir)
 	}
 
 	// Before Start: not running, no URL, NewClient fails.

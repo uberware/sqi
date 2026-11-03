@@ -174,10 +174,9 @@ func validateNATSAuth(cfg NATSAuthConfig) []ValidationError {
 			),
 		})
 	}
-	// A disabled auth block must never produce validation errors about the
-	// join token — the same rule validateAuth follows. Turning a feature off
-	// must not stop a server from starting because of a value nobody is
-	// reading.
+	// A disabled auth block produces no join-token errors, the same rule
+	// validateAuth follows: turning a feature off must not stop a server from
+	// starting over a value nothing reads.
 	if !cfg.Enabled {
 		return errs
 	}

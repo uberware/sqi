@@ -24,12 +24,12 @@ import (
 // the transport by hand.
 //
 // On trusting an advertisement at all: the signal cannot be used to weaken the
-// connection. Forging a tls:// nats_url UPGRADES a worker to TLS; withholding it
+// connection. Forging a tls:// nats_url upgrades a worker to TLS; withholding it
 // leaves the worker attempting plaintext against a TLS broker, which fails
 // closed. Any locally configured tls_* setting still wins, so an advertisement
 // can never downgrade a worker that was configured for TLS. And an attacker
-// able to forge mDNS already controls NATSURL entirely, so the tls:// scheme adds
-// no surface that was not already there.
+// able to forge mDNS already controls NATSURL entirely, so the tls:// scheme
+// adds no surface that was not already there.
 func ApplyTLS(ctx context.Context, cfg *workerconfig.NATSConfig, found Result, logger *slog.Logger) {
 	switch {
 	case found.NATSTLS && cfg.TLSEnabled == workerconfig.TLSOff:

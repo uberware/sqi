@@ -150,11 +150,11 @@ type failingRevoker struct{ t *testing.T }
 
 func (r failingRevoker) RevokeWorker(context.Context, string) error {
 	r.t.Helper()
-	r.t.Error("enrolment called the revoker; it must not touch the broker")
+	r.t.Error("enrollment called the revoker; it must not touch the broker")
 	return nil
 }
 
-// TestEnroll_DoesNotCallBroker proves enrolment completes with no broker
+// TestEnroll_DoesNotCallBroker proves enrollment completes with no broker
 // dependency: the handler is constructed with only the store and a revoker
 // that must stay unused, and the credential is created and durable. The
 // broker reads the credential from the store when the worker connects, so a

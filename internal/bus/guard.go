@@ -4,8 +4,6 @@ package bus
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -78,14 +77,12 @@ func (h GuardHolder) describe() string {
 
 // NewInstanceID returns a random identifier for one server process.
 func NewInstanceID() string {
-	var b [8]byte
-	_, _ = rand.Read(b[:])
-	return hex.EncodeToString(b[:])
+	return uuid.NewString()
 }
 
 // Guard is a held one-server-per-account lease. The holder refreshes it by
-// compare-and-set until [Guard.Release]. The guard is deliberately a lease so
-// that leader election can later turn "refuse to start" into "wait as standby".
+// compare-and-set until [Guard.Release]; a key left unrefreshed expires after
+// the bucket's TTL, so a holder that dies frees the account.
 type Guard struct {
 	js     jetstream.JetStream
 	kv     jetstream.KeyValue
@@ -107,17 +104,14 @@ type Guard struct {
 	lost     error
 }
 
-// AcquireGuard creates the guard bucket if needed, with the stream replica
+// acquireGuard creates the guard bucket if needed, with the stream replica
 // count, and takes the guard for h. It returns an error wrapping
 // [ErrGuardHeld] and naming the current holder when another server holds it.
 // On success a goroutine refreshes the guard until [Guard.Release].
-func AcquireGuard(ctx context.Context, js jetstream.JetStream, replicas int, h GuardHolder, logger *slog.Logger) (*Guard, error) {
-	return acquireGuard(ctx, js, replicas, h, logger, true)
-}
-
-// acquireGuard is [AcquireGuard]. With reconcile false the guard bucket keeps
-// the configuration it has, replica count included, once held: a holder that
-// is not a server, such as a restore, leaves rescaling to the server.
+//
+// With reconcile false the guard bucket keeps the configuration it has,
+// replica count included, once held: a holder that is not a server, such as a
+// restore, leaves rescaling to the server.
 func acquireGuard(ctx context.Context, js jetstream.JetStream, replicas int, h GuardHolder, logger *slog.Logger, reconcile bool) (*Guard, error) {
 	value, err := json.Marshal(h)
 	if err != nil {
@@ -173,7 +167,7 @@ func guardBucketConfig(replicas int) jetstream.KeyValueConfig {
 // holder until the guard is taken.
 func guardBucket(ctx context.Context, js jetstream.JetStream, replicas int, deadline time.Time) (jetstream.KeyValue, error) {
 	var kv jetstream.KeyValue
-	err := retryUntil(ctx, deadline, func() error {
+	err := retryUntil(ctx, deadline, func(ctx context.Context) error {
 		opCtx, cancel := context.WithTimeout(ctx, guardOpTimeout)
 		defer cancel()
 		var err error
@@ -192,7 +186,7 @@ func guardBucket(ctx context.Context, js jetstream.JetStream, replicas int, dead
 // ensureGuardBucket brings the guard bucket's configuration, its replica
 // count included, to the configured one. Call it only while holding the guard.
 func ensureGuardBucket(ctx context.Context, js jetstream.JetStream, replicas int, deadline time.Time) error {
-	err := retryUntil(ctx, deadline, func() error {
+	err := retryUntil(ctx, deadline, func(ctx context.Context) error {
 		opCtx, cancel := context.WithTimeout(ctx, guardOpTimeout)
 		defer cancel()
 		_, err := js.CreateOrUpdateKeyValue(opCtx, guardBucketConfig(replicas))
@@ -210,7 +204,7 @@ func ensureGuardBucket(ctx context.Context, js jetstream.JetStream, replicas int
 func createGuardKey(ctx context.Context, kv jetstream.KeyValue, instanceID string, value []byte, deadline time.Time) (uint64, error) {
 	var rev uint64
 	var held error
-	err := retryUntil(ctx, deadline, func() error {
+	err := retryUntil(ctx, deadline, func(ctx context.Context) error {
 		held = nil
 		opCtx, cancel := context.WithTimeout(ctx, guardOpTimeout)
 		defer cancel()
@@ -472,9 +466,5 @@ func (g *Guard) bucketLastSeq(ctx context.Context) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	info, err := stream.Info(ctx)
-	if err != nil {
-		return 0, err
-	}
-	return info.State.LastSeq, nil
+	return stream.CachedInfo().State.LastSeq, nil
 }

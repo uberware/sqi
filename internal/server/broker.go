@@ -59,6 +59,7 @@ func RemoteBrokerConfig(c config.NATSConfig) bus.RemoteConfig {
 	e := c.External
 	return bus.RemoteConfig{
 		URLs:           slices.Clone(e.URLs),
+		AdvertiseURLs:  slices.Clone(e.AdvertiseURLs),
 		Account:        e.Account,
 		NkeySeedFile:   e.NkeySeedFile,
 		CredsFile:      e.CredsFile,
@@ -97,6 +98,7 @@ func embeddedBrokerConfig(cfg Config, st store.WorkerCredentialStore) bus.Embedd
 			KeyFile:      e.TLS.KeyFile,
 			ClientCAFile: e.TLS.ClientCAFile,
 		},
+		AdvertiseURL: e.AdvertiseURL,
 		Auth: bus.AuthConfig{
 			Enabled: cfg.NATS.Auth.Enabled,
 			UserTTL: cfg.NATS.Auth.UserTTL,
@@ -113,8 +115,8 @@ func embeddedBrokerConfig(cfg Config, st store.WorkerCredentialStore) bus.Embedd
 // returns to ready, and no retry is consumed. Only then is the new identity
 // recorded, so a failed fence is retried on the next start.
 //
-// A database with no recorded identity counts as a switch, which also covers
-// one last run by a build whose streams lived in the global account. On a
+// A database with no recorded identity counts as a switch, including one last
+// served by a broker that kept sqi's streams in the global account. On a
 // database with no open attempts the fence does nothing.
 //
 // It must run after the broker starts and before any consumer or lease
@@ -140,10 +142,10 @@ func (s *Server) reconcileBrokerLayout(ctx context.Context) error {
 	return nil
 }
 
-// logIdentityRecorded says what reconcileBrokerLayout just did. A new
-// database records its first identity with nothing to fence; a database an
-// older build ran on records one after fencing what it left open; any other
-// is a broker switch.
+// logIdentityRecorded logs what reconcileBrokerLayout did. A database with no
+// recorded identity and nothing open records its first identity; one with no
+// recorded identity but open attempts records it after fencing them; any
+// other case is a broker switch.
 func (s *Server) logIdentityRecorded(ctx context.Context, recorded, current string, fenced int) {
 	switch {
 	case recorded == "" && fenced == 0:
@@ -162,24 +164,24 @@ func (s *Server) logIdentityRecorded(ctx context.Context, recorded, current stri
 }
 
 // legacyGlobalStreamsDir is where nats-server keeps the streams of the global
-// account ($G) under storeDir. Builds before the SQI account kept sqi's
-// streams there.
+// account ($G) under storeDir. sqi keeps its streams in the SQI account and
+// does not use this directory.
 func legacyGlobalStreamsDir(storeDir string) string {
 	return filepath.Join(storeDir, "jetstream", "$G")
 }
 
-// logLeftoverGlobalStreams logs once when an embedded broker's store still
-// holds the global account's streams from an older build. Nothing reads them
-// any more. They are not deleted: that is the operator's call.
+// logLeftoverGlobalStreams logs at each start when an embedded broker's store
+// holds streams in the global account. sqi does not read them and does not
+// delete them: that is the operator's call.
 func (s *Server) logLeftoverGlobalStreams(ctx context.Context) {
-	emb, ok := s.broker.(interface{ StoreDir() string })
-	if !ok || emb.StoreDir() == "" {
+	storeDir := s.cfg.NATS.Embedded.DataDir
+	if s.cfg.NATS.Mode == config.NATSModeExternal || storeDir == "" {
 		return
 	}
-	dir := legacyGlobalStreamsDir(emb.StoreDir())
+	dir := legacyGlobalStreamsDir(storeDir)
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 		return
 	}
-	s.logger.InfoContext(ctx, "bus: found JetStream streams from an older build; they are abandoned and safe to delete",
+	s.logger.InfoContext(ctx, "bus: found JetStream streams in the global account; they are abandoned and safe to delete",
 		slog.String("path", dir))
 }

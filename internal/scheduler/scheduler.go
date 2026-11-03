@@ -1448,8 +1448,8 @@ func (s *Scheduler) notifyTaskReclaimed(ctx context.Context, task store.Task, no
 // outage and once per grace window ([Scheduler.logLivenessDeferred]);
 // [Scheduler.reapStaleAssignedTasks] defers silently on the same tick.
 func (s *Scheduler) sweepStaleWorkers(ctx context.Context) {
-	if deferred, busDown, up := s.busLiveness(time.Now()); deferred {
-		s.logLivenessDeferred(ctx, busDown, up)
+	if deferred, up := s.livenessDeferred(time.Now()); deferred {
+		s.logLivenessDeferred(ctx, up)
 		return
 	}
 	cutoff := time.Now().UTC().Add(-s.cfg.WorkerTimeout)
@@ -1510,41 +1510,38 @@ func (s *Scheduler) sweepStaleWorkers(ctx context.Context) {
 }
 
 // livenessDeferred reports whether, at now, the sweeps that judge a worker by
-// its heartbeat must hold off: the bus is down (busDown), or came back less
-// than BusReconnectGrace ago, so a live worker has not yet had time to notice
-// the outage ended, redial and heartbeat. A worker that is genuinely dead is
-// only declared so once the grace has passed. Exactly BusReconnectGrace after
-// the reconnect the sweep acts. With no BusUpSince source it is never deferred.
-func (s *Scheduler) livenessDeferred(now time.Time) (deferred, busDown bool) {
-	deferred, busDown, _ = s.busLiveness(now)
-	return deferred, busDown
-}
-
-// busLiveness is [Scheduler.livenessDeferred], also returning the bus-up time
-// it judged by (zero while the bus is down). It remembers the first non-zero
-// one, the connection made at startup.
-func (s *Scheduler) busLiveness(now time.Time) (deferred, busDown bool, up time.Time) {
+// its heartbeat must hold off: the bus is down, or came back less than
+// BusReconnectGrace ago, so a live worker has not yet had time to notice the
+// outage ended, redial and heartbeat. A dead worker is declared offline only
+// once the grace has passed. Exactly BusReconnectGrace after the reconnect
+// the sweep acts. With no BusUpSince source it is never deferred.
+//
+// It also returns the bus-up time it judged by, zero while the bus is down,
+// and remembers the first non-zero one, the connection made at startup.
+func (s *Scheduler) livenessDeferred(now time.Time) (deferred bool, up time.Time) {
 	if s.cfg.BusUpSince == nil {
-		return false, false, time.Time{}
+		return false, time.Time{}
 	}
 	up = s.cfg.BusUpSince()
 	if up.IsZero() {
-		return true, true, up
+		return true, up
 	}
 	s.deferLog.mu.Lock()
 	if s.deferLog.firstUp.IsZero() {
 		s.deferLog.firstUp = up
 	}
 	s.deferLog.mu.Unlock()
-	return now.Sub(up) < s.cfg.BusReconnectGrace, false, up
+	return now.Sub(up) < s.cfg.BusReconnectGrace, up
 }
 
 // logLivenessDeferred logs a deferred liveness sweep once per outage and once
 // per grace window, not on every tick: the sweep runs every 15 s, and the
 // grace lasts about 189 s at the defaults after every start. The window
 // after the connection made at startup is reported as startup, not as a
-// reconnect.
-func (s *Scheduler) logLivenessDeferred(ctx context.Context, busDown bool, up time.Time) {
+// reconnect. up is the bus-up time [Scheduler.livenessDeferred] judged by,
+// zero while the bus is down.
+func (s *Scheduler) logLivenessDeferred(ctx context.Context, up time.Time) {
+	busDown := up.IsZero()
 	d := &s.deferLog
 	d.mu.Lock()
 	if d.logged && d.key.Equal(up) {

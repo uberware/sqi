@@ -3,14 +3,16 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
-	"regexp"
 	"strings"
 
 	"github.com/nats-io/nkeys"
 
+	"github.com/uberware/sqi/internal/brokerauth"
+	"github.com/uberware/sqi/internal/discovery"
 	"github.com/uberware/sqi/internal/redact"
 )
 
@@ -59,11 +61,6 @@ func validateNATSExternal(cfg NATSConfig, discoveryEnabled bool) []ValidationErr
 	return errs
 }
 
-// externalAccountRE is the account-name shape internal/bus.Layout accepts.
-// The two are kept in step by hand because internal/config does not import
-// internal/bus.
-var externalAccountRE = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
-
 // validateExternalAccount checks nats.external.account. AUTH and SYS are
 // accounts the generated cluster config also defines, and $G is nats-server's
 // global account; a name that collides with one would merge or clobber it.
@@ -72,9 +69,9 @@ func validateExternalAccount(account string) []ValidationError {
 	switch {
 	case account == "":
 		return []ValidationError{{Field: field, Message: "must not be empty; set SQI_NATS_EXTERNAL_ACCOUNT or nats.external.account"}}
-	case account == "AUTH" || account == "SYS" || account == "$G":
+	case brokerauth.ReservedAccount(account):
 		return []ValidationError{{Field: field, Message: fmt.Sprintf("%q is reserved for a NATS account sqi or nats-server defines; choose another name", account)}}
-	case !externalAccountRE.MatchString(account):
+	case !brokerauth.ValidAccountName(account):
 		return []ValidationError{{Field: field, Message: fmt.Sprintf("%q must use only letters, digits, '_' and '-'; set SQI_NATS_EXTERNAL_ACCOUNT or nats.external.account", account)}}
 	}
 	return nil
@@ -95,7 +92,7 @@ func validateExternalURLs(ex NATSExternalConfig) []ValidationError {
 	for _, raw := range ex.URLs {
 		u, err := url.Parse(raw)
 		switch {
-		case err != nil || u.Host == "":
+		case err != nil || u.Hostname() == "":
 			errs = append(errs, ValidationError{Field: field, Message: fmt.Sprintf("invalid broker URL %q; want tls://host:port or nats://host:port", redact.URL(raw))})
 		case u.Scheme == "tls":
 			tlsCount++
@@ -161,8 +158,8 @@ func validateCallout(c NATSCalloutConfig) []ValidationError {
 	return append(errs, validateIssuerSeed(c.IssuerSeedFile)...)
 }
 
-// validateIssuerSeed requires the file to hold an ACCOUNT nkey seed. A user
-// seed there is the likely mistake, so its error says so.
+// validateIssuerSeed requires the file to hold an account nkey seed. A user
+// seed is the likely mistake, so the error names it.
 func validateIssuerSeed(path string) []ValidationError {
 	const field = "nats.external.callout.issuer_seed_file"
 	data, err := os.ReadFile(path)
@@ -215,45 +212,42 @@ func validateReadable(field, path string) []ValidationError {
 	return nil
 }
 
-// maxNATSURLRecord is the DNS TXT character-string limit. Discovery
-// advertises the broker as the single record "nats_url=<url>", so the URL
-// plus that prefix must fit one string or discovery breaks at every worker.
-const maxNATSURLRecord = 255
-
-// validateAdvertiseURL checks one URL discovery would hand to workers: it
-// parses, carries no credentials, uses the nats:// or tls:// scheme, names a
-// host and not port 0. wantScheme, when non-empty, is the scheme the broker
-// listener actually uses; a mismatch would send workers to the wrong
-// transport. Messages show the URL redacted.
+// validateAdvertiseURL checks one URL discovery would hand to workers
+// against [discovery.CheckNATSURL], with a message naming the fix. Length is
+// left to [validateAdvertiseRecordLength], since only the first URL is
+// advertised. wantScheme, when non-empty, is the scheme the broker listener
+// uses; a mismatch would send workers to the wrong transport.
+// Messages show the URL redacted.
 func validateAdvertiseURL(field, raw, wantScheme, hint string) []ValidationError {
-	u, err := url.Parse(raw)
+	u, err := discovery.CheckNATSURL(raw)
 	shown := redact.URL(raw)
+	msg := ""
 	switch {
-	case err != nil || u.Hostname() == "":
-		return []ValidationError{{Field: field, Message: fmt.Sprintf("invalid advertised URL %q; want tls://host:port or nats://host:port", shown)}}
-	case u.User != nil:
-		return []ValidationError{{Field: field, Message: fmt.Sprintf(
-			"advertised URL %q must not carry credentials (user:password@ or token@): discovery publishes it in plaintext "+
-				"over mDNS; remove them, since workers authenticate with their own credentials", shown,
-		)}}
-	case u.Scheme != "tls" && u.Scheme != "nats":
-		return []ValidationError{{Field: field, Message: fmt.Sprintf("advertised URL %q must use the tls:// or nats:// scheme", shown)}}
+	case errors.Is(err, discovery.ErrNATSURLInvalid):
+		msg = fmt.Sprintf("invalid advertised URL %q; want tls://host:port or nats://host:port", shown)
+	case errors.Is(err, discovery.ErrNATSURLCredentials):
+		msg = fmt.Sprintf("advertised URL %q must not carry credentials (user:password@ or token@): discovery publishes it in plaintext "+
+			"over mDNS; remove them, since workers authenticate with their own credentials", shown)
+	case errors.Is(err, discovery.ErrNATSURLScheme):
+		msg = fmt.Sprintf("advertised URL %q must use the tls:// or nats:// scheme", shown)
 	case wantScheme != "" && u.Scheme != wantScheme:
-		return []ValidationError{{Field: field, Message: fmt.Sprintf("advertised URL %q uses %s:// but %s; use %s://", shown, u.Scheme, hint, wantScheme)}}
-	case u.Port() == "0":
-		return []ValidationError{{Field: field, Message: fmt.Sprintf("advertised URL %q names port 0, which no worker can dial; give the broker's real port", shown)}}
+		msg = fmt.Sprintf("advertised URL %q uses %s:// but %s; use %s://", shown, u.Scheme, hint, wantScheme)
+	case errors.Is(err, discovery.ErrNATSURLPortZero):
+		msg = fmt.Sprintf("advertised URL %q names port 0, which no worker can dial; give the broker's real port", shown)
+	default:
+		return nil
 	}
-	return nil
+	return []ValidationError{{Field: field, Message: msg}}
 }
 
 // validateAdvertiseRecordLength rejects a first advertised URL too long for
 // the nats_url TXT record. Only the first is advertised. remedy says how to
 // fix it.
 func validateAdvertiseRecordLength(field, first, remedy string) []ValidationError {
-	const prefix = "nats_url="
-	if n := len(prefix) + len(first); n > maxNATSURLRecord {
+	if n := discovery.NATSURLRecordLen(first); n > discovery.MaxTXTString {
 		return []ValidationError{{Field: field, Message: fmt.Sprintf(
-			"advertised URL is %d bytes as a %q record, over the %d-byte DNS TXT limit; %s", n, prefix+"...", maxNATSURLRecord, remedy,
+			"advertised URL is %d bytes as a %q record, over the %d-byte DNS TXT limit; %s",
+			n, discovery.NATSURLKey+"=...", discovery.MaxTXTString, remedy,
 		)}}
 	}
 	return nil
@@ -289,33 +283,32 @@ func validateExternalAdvertiseURLs(ex NATSExternalConfig) []ValidationError {
 // advertised URL when it is the one discovery advertises, which it is while
 // nats.external.advertise_urls is empty. Credentials stay allowed in urls
 // whenever advertise_urls is set, because only that is advertised. A URL that
-// does not parse is left to [validateExternalURLs].
+// does not parse or has the wrong scheme is left to [validateExternalURLs].
 func validateAdvertisedFirstURL(ex NATSExternalConfig) []ValidationError {
 	const field = "nats.external.urls"
 	if len(ex.AdvertiseURLs) > 0 || len(ex.URLs) == 0 {
 		return nil
 	}
 	first := ex.URLs[0]
-	u, err := url.Parse(first)
-	if err != nil || u.Hostname() == "" {
-		return nil
-	}
+	_, err := discovery.CheckNATSURL(first)
 	shown := redact.URL(first)
-	if u.User != nil {
+	switch {
+	case errors.Is(err, discovery.ErrNATSURLCredentials):
 		return []ValidationError{{Field: field, Message: fmt.Sprintf(
 			"the first URL %q carries credentials (user:password@ or token@), and with nats.external.advertise_urls "+
 				"empty discovery would publish it in plaintext over mDNS; set nats.external.advertise_urls to a "+
 				"credential-free URL of the same broker, or set discovery.enabled: false", shown,
 		)}}
-	}
-	if u.Port() == "0" {
+	case errors.Is(err, discovery.ErrNATSURLPortZero):
 		return []ValidationError{{Field: field, Message: fmt.Sprintf(
 			"the first URL %q names port 0, and with nats.external.advertise_urls empty discovery would advertise it; "+
 				"give the broker's real port", shown,
 		)}}
+	case errors.Is(err, discovery.ErrNATSURLTooLong):
+		return validateAdvertiseRecordLength(field, first,
+			"set nats.external.advertise_urls to a shorter URL of the same broker, or set discovery.enabled: false")
 	}
-	return validateAdvertiseRecordLength(field, first,
-		"set nats.external.advertise_urls to a shorter URL of the same broker, or set discovery.enabled: false")
+	return nil
 }
 
 // validateEmbeddedAdvertiseURL checks nats.embedded.advertise_url, whose

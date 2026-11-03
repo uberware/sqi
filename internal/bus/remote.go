@@ -33,12 +33,16 @@ import (
 // RemoteConfig holds the parameters of an operator-run NATS server or
 // cluster sqi-server connects to.
 //
-// This is bus's own view of the operator's nats.external block, mapped by the
-// caller, so that internal/bus does not import internal/config, which has
-// already validated it.
+// It is bus's own view of the operator's nats.external block, which
+// internal/config validates. The caller maps it, so that internal/bus does not
+// import internal/config.
 type RemoteConfig struct {
 	// URLs are the broker URLs, all tls:// or all nats://.
 	URLs []string
+
+	// AdvertiseURLs, when set, are what discovery tells workers to use in
+	// place of URLs; only the first is advertised.
+	AdvertiseURLs []string
 
 	// Account is the dedicated account sqi's streams and workers live in.
 	// The data connection's credential must place it there.
@@ -156,10 +160,8 @@ type Remote struct {
 	callout *nats.Conn // the auth-callout responder's connection (AUTH); nil with auth off
 	system  *nats.Conn // the system-account connection; nil without a system credential
 
-	// responder and calloutSub answer authorization requests on callout;
-	// both nil with auth off.
-	responder  *Responder
-	calloutSub *nats.Subscription
+	// responder answers authorization requests on callout; nil with auth off.
+	responder *Responder
 
 	// cluster is what the nodes have reported through the system
 	// connection: at Start, then raised by every Revoke. Zero without a
@@ -193,7 +195,21 @@ var _ Broker = (*Remote)(nil)
 // logger. Call [Remote.Start] to connect.
 func NewRemote(cfg RemoteConfig, logger *slog.Logger) *Remote {
 	cfg.URLs = slices.Clone(cfg.URLs)
+	cfg.AdvertiseURLs = slices.Clone(cfg.AdvertiseURLs)
 	return &Remote{cfg: cfg, logger: logger, connzSubject: connzPingSubject, varzSubject: varzPingSubject}
+}
+
+// AdvertiseURL returns the first [RemoteConfig.AdvertiseURLs] entry, else
+// the first of [RemoteConfig.URLs]. host is unused: the cluster's URLs are
+// its own.
+func (r *Remote) AdvertiseURL(string) (string, error) {
+	if len(r.cfg.AdvertiseURLs) > 0 {
+		return r.cfg.AdvertiseURLs[0], nil
+	}
+	if len(r.cfg.URLs) > 0 {
+		return r.cfg.URLs[0], nil
+	}
+	return "", errors.New("bus: external broker has no URL to advertise")
 }
 
 // Identity returns "external:<account>@<cluster>", the cluster name being
@@ -258,18 +274,13 @@ func (a RemoteAuthConfig) validate() error {
 // dialOptions builds the data connection's credential and TLS options,
 // which every Client shares.
 func (cfg RemoteConfig) dialOptions() ([]nats.Option, error) {
-	var opts []nats.Option
 	switch {
 	case cfg.NkeySeedFile != "":
-		opt, err := nats.NkeyOptionFromSeed(cfg.NkeySeedFile)
-		if err != nil {
-			return nil, fmt.Errorf("bus: external broker: data connection nkey seed: %w", err)
-		}
-		opts = append(opts, opt)
+		return cfg.seedDialOptions("data", cfg.NkeySeedFile)
 	case cfg.CredsFile != "":
-		opts = append(opts, nats.UserCredentials(cfg.CredsFile))
+		return cfg.withTLS([]nats.Option{nats.UserCredentials(cfg.CredsFile)})
 	}
-	return cfg.withTLS(opts)
+	return cfg.withTLS(nil)
 }
 
 // seedDialOptions builds the options of one of sqi's other connections: the
@@ -313,24 +324,11 @@ func (c ClientTLSConfig) build() (*tls.Config, error) {
 	if c == (ClientTLSConfig{}) {
 		return nil, nil //nolint:nilnil // nil means "no TLS options", which is not an error
 	}
-	cfg := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: c.ServerName}
-	if c.CAFile != "" {
-		pool, err := tlsutil.CertPool(c.CAFile)
-		if err != nil {
-			return nil, fmt.Errorf("bus: external broker tls: %w", err)
-		}
-		cfg.RootCAs = pool
+	cfg, err := tlsutil.ClientConfig(c.CAFile, c.CertFile, c.KeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("bus: external broker tls: %w", err)
 	}
-	if (c.CertFile == "") != (c.KeyFile == "") {
-		return nil, errors.New("bus: external broker tls: a client certificate needs both a cert file and a key file")
-	}
-	if c.CertFile != "" {
-		pair, err := tls.LoadX509KeyPair(c.CertFile, c.KeyFile)
-		if err != nil {
-			return nil, fmt.Errorf("bus: external broker tls: client certificate: %w", err)
-		}
-		cfg.Certificates = []tls.Certificate{pair}
-	}
+	cfg.ServerName = c.ServerName
 	return cfg, nil
 }
 
@@ -397,7 +395,7 @@ func (r *Remote) Start(ctx context.Context) error {
 	r.mu.Lock()
 	r.data, r.dialOpts, r.identity, r.guard = data, dialOpts, identity, guard
 	r.callout, r.system = auth.callout, auth.system
-	r.responder, r.calloutSub = responder, auth.calloutSub
+	r.responder = responder
 	r.cluster = auth.cluster
 	r.mu.Unlock()
 
@@ -526,10 +524,9 @@ func (r *Remote) newResponder() (*Responder, error) {
 
 // remoteAuth is what [Remote.startAuth] opened.
 type remoteAuth struct {
-	callout    *nats.Conn
-	calloutSub *nats.Subscription
-	system     *nats.Conn
-	cluster    clusterView
+	callout *nats.Conn
+	system  *nats.Conn
+	cluster clusterView
 }
 
 func (a remoteAuth) close() {
@@ -551,17 +548,9 @@ func (r *Remote) startAuth(ctx context.Context, responder *Responder, deadline t
 	if a.callout, err = r.dial(ctx, roleCallout, opts, deadline); err != nil {
 		return a, err
 	}
-	if a.calloutSub, err = responder.Serve(a.callout); err != nil {
+	if err := responder.Serve(ctx, a.callout); err != nil {
 		a.close()
-		return remoteAuth{}, fmt.Errorf("bus: subscribe auth callout: %w", err)
-	}
-	// The subscription is in place on the cluster once the flush returns.
-	// Start's context may carry no deadline, which FlushWithContext refuses.
-	flushCtx, cancel := context.WithTimeout(ctx, calloutFlushTimeout)
-	defer cancel()
-	if err := a.callout.FlushWithContext(flushCtx); err != nil {
-		a.close()
-		return remoteAuth{}, fmt.Errorf("bus: subscribe auth callout: %w", err)
+		return remoteAuth{}, err
 	}
 
 	if r.cfg.Auth.SystemCredsFile == "" {
@@ -672,19 +661,7 @@ func isNoResponders(m *nats.Msg) bool {
 // the guard. The guard comes before the streams so that a server refused as a
 // second one on the account has not changed anything the first one owns.
 func (r *Remote) provision(ctx context.Context, data *nats.Conn, deadline time.Time) (string, *Guard, error) {
-	if err := CheckBrokerVersion(brokerVersion(data)); err != nil {
-		return "", nil, fmt.Errorf("%w (broker at %s)", err, redact.URL(data.ConnectedUrl()))
-	}
-	identity := remoteIdentity(r.cfg.Account, data.ConnectedClusterName(), data.ConnectedServerName(), data.ConnectedServerId())
-
-	js, err := jetstream.New(data)
-	if err != nil {
-		return "", nil, fmt.Errorf("bus: jetstream context: %w", err)
-	}
-	if err := r.requireAccountJetStream(ctx, js, deadline); err != nil {
-		return "", nil, err
-	}
-	guard, err := r.acquireGuard(ctx, js, deadline, "")
+	js, guard, err := r.checkAndGuard(ctx, data, deadline, "")
 	if err != nil {
 		return "", nil, err
 	}
@@ -692,7 +669,30 @@ func (r *Remote) provision(ctx context.Context, data *nats.Conn, deadline time.T
 		r.releaseGuard(guard)
 		return "", nil, err
 	}
+	identity := remoteIdentity(r.cfg.Account, data.ConnectedClusterName(), data.ConnectedServerName(), data.ConnectedServerId())
 	return identity, guard, nil
+}
+
+// checkAndGuard checks the broker nc reached (its version, and that the
+// account has JetStream) and takes the account's guard for purpose. Both the
+// server and a restore pass through it, so neither skips a precondition the
+// other enforces.
+func (r *Remote) checkAndGuard(ctx context.Context, nc *nats.Conn, deadline time.Time, purpose string) (jetstream.JetStream, *Guard, error) {
+	if err := CheckBrokerVersion(brokerVersion(nc)); err != nil {
+		return nil, nil, fmt.Errorf("%w (broker at %s)", err, redact.URL(nc.ConnectedUrl()))
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return nil, nil, fmt.Errorf("bus: jetstream context: %w", err)
+	}
+	if err := r.requireAccountJetStream(ctx, js, deadline); err != nil {
+		return nil, nil, err
+	}
+	guard, err := r.acquireGuard(ctx, js, deadline, purpose)
+	if err != nil {
+		return nil, nil, err
+	}
+	return js, guard, nil
 }
 
 // connRole names one of sqi's own connections to the broker.
@@ -832,7 +832,7 @@ func (l *lastError) get() error {
 // has no JetStream. A broker that is still bringing JetStream up answers the
 // lookup with other errors, which are retried until deadline.
 func (r *Remote) requireAccountJetStream(ctx context.Context, js jetstream.JetStream, deadline time.Time) error {
-	err := retryUntil(ctx, deadline, func() error {
+	err := retryUntil(ctx, deadline, func(ctx context.Context) error {
 		_, err := js.AccountInfo(ctx)
 		return err
 	}, func(err error) bool { return !errors.Is(err, jetstream.ErrJetStreamNotEnabledForAccount) })
@@ -848,17 +848,37 @@ func (r *Remote) requireAccountJetStream(ctx context.Context, js jetstream.JetSt
 
 // retryUntil runs op until it succeeds, fails with an error transient does
 // not accept, or deadline passes, and returns op's last error. ctx ending
-// stops it early with ctx's error.
-func retryUntil(ctx context.Context, deadline time.Time, op func() error, transient func(error) bool) error {
+// stops it early with ctx's error. op runs on a context that ends at
+// deadline, since the caller's ctx may carry none, and no attempt starts
+// after deadline, so a failing cluster cannot hold startup past it.
+func retryUntil(ctx context.Context, deadline time.Time, op func(context.Context) error, transient func(error) bool) error {
+	opCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	var last error
 	for {
-		err := op()
-		if err == nil || !transient(err) || !time.Now().Before(deadline) {
+		err := op(opCtx)
+		if err != nil && last != nil && opCtx.Err() != nil {
+			// The deadline cut this attempt off; the one before says why
+			// the retries were needed.
+			err = fmt.Errorf("%w (previous attempt: %w)", err, last)
+		}
+		if err == nil || !transient(err) {
 			return err
 		}
+		last = err
+		wait := min(startupRetryWait, time.Until(deadline))
+		if wait <= 0 {
+			return err
+		}
+		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return fmt.Errorf("%w (last error: %w)", ctx.Err(), err)
-		case <-time.After(startupRetryWait):
+		case <-timer.C:
+		}
+		if !time.Now().Before(deadline) {
+			return err
 		}
 	}
 }
@@ -905,7 +925,7 @@ func (r *Remote) noJetStreamError(err error) error {
 // retried until deadline; a definite error fails at once.
 func provisionRemoteStreams(ctx context.Context, js jetstream.JetStream, replicas int, deadline time.Time, logger *slog.Logger) error {
 	var before map[string]int
-	err := retryUntil(ctx, deadline, func() error {
+	err := retryUntil(ctx, deadline, func(ctx context.Context) error {
 		var err error
 		before, err = streamReplicas(ctx, js, replicas)
 		return err
@@ -914,7 +934,7 @@ func provisionRemoteStreams(ctx context.Context, js jetstream.JetStream, replica
 		return fmt.Errorf("bus: provision streams: %w", err)
 	}
 	warned := false
-	err = retryUntil(ctx, deadline, func() error {
+	err = retryUntil(ctx, deadline, func(ctx context.Context) error {
 		err := ensureStreams(ctx, js, replicas)
 		if err != nil && !warned && transientJetStreamError(err) {
 			warned = true
@@ -929,7 +949,7 @@ func provisionRemoteStreams(ctx context.Context, js jetstream.JetStream, replica
 	logReplicaChanges(ctx, logger, before, replicas)
 	logger.InfoContext(
 		ctx, "bus: jetstream streams provisioned",
-		slog.String("streams", StreamTask+","+StreamLogs+","+StreamWorker+","+StreamCancel),
+		slog.String("streams", strings.Join(streamNames(), ",")),
 		slog.Int("replicas", replicas),
 	)
 	return nil
@@ -991,17 +1011,14 @@ func logReplicaChanges(ctx context.Context, logger *slog.Logger, before map[stri
 func (r *Remote) Shutdown() {
 	r.mu.Lock()
 	data, callout, system := r.data, r.callout, r.system
-	responder, calloutSub, guard := r.responder, r.calloutSub, r.guard
+	responder, guard := r.responder, r.guard
 	r.data, r.callout, r.system = nil, nil, nil
 	r.guard = nil
-	r.responder, r.calloutSub = nil, nil
+	r.responder = nil
 	r.mu.Unlock()
 
-	if responder != nil && calloutSub != nil && !responder.drain(calloutSub, calloutMaxTimeout) {
-		r.logger.WarnContext(
-			context.Background(), "bus: auth callout requests were still unanswered at shutdown",
-			slog.String("impact", "the workers that were connecting are refused and retry"),
-		)
+	if responder != nil {
+		responder.Stop()
 	}
 	r.releaseGuard(guard)
 	closeConns(system, callout, data)
@@ -1149,12 +1166,8 @@ func (r *Remote) Revoke(ctx context.Context, workerID string) error {
 		return err
 	}
 
-	settle := time.NewTimer(time.Until(began.Add(known.authTimeout + revokeSettleMargin)))
-	defer settle.Stop()
-	select {
-	case <-ctx.Done():
-		return fmt.Errorf("bus: revoke %s: %w", workerID, ctx.Err())
-	case <-settle.C:
+	if err := awaitRevokeSettle(ctx, began, known.authTimeout, workerID); err != nil {
+		return err
 	}
 	if answered, err = r.kickPass(ctx, system, connzSubject, workerID, known); err != nil {
 		return err

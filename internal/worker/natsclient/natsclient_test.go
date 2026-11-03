@@ -24,6 +24,7 @@ import (
 )
 
 func TestExponentialBackoff_GrowsAndCaps(t *testing.T) {
+	t.Parallel()
 	base := 100 * time.Millisecond
 	fn := exponentialBackoff(base)
 
@@ -44,6 +45,7 @@ func TestExponentialBackoff_GrowsAndCaps(t *testing.T) {
 }
 
 func TestExponentialBackoff_NeverNegative(t *testing.T) {
+	t.Parallel()
 	fn := exponentialBackoff(time.Millisecond)
 	for i := range 50 {
 		if d := fn(i); d < 0 {
@@ -53,37 +55,38 @@ func TestExponentialBackoff_NeverNegative(t *testing.T) {
 }
 
 func TestBuildTLSOptions(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		cfg      workerconfig.NATSConfig
 		wantOpts bool
-		wantErr  bool
+		wantErr  string // a substring the error must contain; "" for none
 	}{
-		{"no tls", workerconfig.NATSConfig{}, false, false},
+		{"no tls", workerconfig.NATSConfig{}, false, ""},
 		// "auto" is the default and infers from the other tls_* settings.
-		{"auto with a ca file infers tls", workerconfig.NATSConfig{TLSEnabled: workerconfig.TLSAuto, InsecureSkipVerify: true}, true, false},
-		{"auto with nothing set stays plaintext", workerconfig.NATSConfig{TLSEnabled: workerconfig.TLSAuto}, false, false},
+		{"auto with a ca file infers tls", workerconfig.NATSConfig{TLSEnabled: workerconfig.TLSAuto, InsecureSkipVerify: true}, true, ""},
+		{"auto with nothing set stays plaintext", workerconfig.NATSConfig{TLSEnabled: workerconfig.TLSAuto}, false, ""},
 		// "true" forces TLS for a broker with a publicly-trusted certificate,
 		// where no CA file would signal intent.
-		{"true forces tls with system roots", workerconfig.NATSConfig{TLSEnabled: workerconfig.TLSOn}, true, false},
+		{"true forces tls with system roots", workerconfig.NATSConfig{TLSEnabled: workerconfig.TLSOn}, true, ""},
 		// "false" forces plaintext even against configured TLS material —
 		// the state a force-on-only boolean could not express.
-		{"false overrides a configured ca file", workerconfig.NATSConfig{TLSEnabled: workerconfig.TLSOff, TLSCAFile: "/does/not/exist.pem"}, false, false},
-		{"false overrides insecure_skip_verify", workerconfig.NATSConfig{TLSEnabled: workerconfig.TLSOff, InsecureSkipVerify: true}, false, false},
-		{"insecure skip verify", workerconfig.NATSConfig{InsecureSkipVerify: true}, true, false},
-		{"cert without key errors", workerconfig.NATSConfig{TLSCertFile: "/x.crt"}, false, true},
-		{"bad ca file errors", workerconfig.NATSConfig{TLSCAFile: "/does/not/exist.pem"}, false, true},
+		{"false overrides a configured ca file", workerconfig.NATSConfig{TLSEnabled: workerconfig.TLSOff, TLSCAFile: "/does/not/exist.pem"}, false, ""},
+		{"false overrides insecure_skip_verify", workerconfig.NATSConfig{TLSEnabled: workerconfig.TLSOff, InsecureSkipVerify: true}, false, ""},
+		{"insecure skip verify", workerconfig.NATSConfig{InsecureSkipVerify: true}, true, ""},
+		{"cert without key errors", workerconfig.NATSConfig{TLSCertFile: "/x.crt"}, false, "tls_cert_file and tls_key_file must both be set"},
+		{"bad ca file errors", workerconfig.NATSConfig{TLSCAFile: "/does/not/exist.pem"}, false, "/does/not/exist.pem"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			opts, err := buildTLSOptions(tc.cfg)
-			if tc.wantErr && err == nil {
-				t.Fatal("want error, got nil")
+			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("err = %v, want one containing %q", err, tc.wantErr)
 			}
-			if !tc.wantErr && err != nil {
+			if tc.wantErr == "" && err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if !tc.wantErr {
+			if tc.wantErr == "" {
 				if tc.wantOpts && len(opts) == 0 {
 					t.Error("expected TLS options, got none")
 				}
@@ -96,6 +99,7 @@ func TestBuildTLSOptions(t *testing.T) {
 }
 
 func TestConnect_DialErrorIsReturned(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.DiscardHandler)
 	cfg := workerconfig.NATSConfig{
 		URL:                  "nats://127.0.0.1:1", // nothing listens on port 1
@@ -111,6 +115,7 @@ func TestConnect_DialErrorIsReturned(t *testing.T) {
 // TestConnect_DialErrorRedactsCredentials checks that a dial failure names
 // the broker URL without the token or password it may carry.
 func TestConnect_DialErrorRedactsCredentials(t *testing.T) {
+	t.Parallel()
 	for _, raw := range []string{"nats://s3cr3tt0ken@127.0.0.1:1", "nats://sqi:hunter2@127.0.0.1:1"} {
 		cfg := workerconfig.NATSConfig{URL: raw, ReconnectWait: 10 * time.Millisecond}
 		_, _, err := Connect(context.Background(), cfg, "worker-a", nil, "", slog.New(slog.DiscardHandler))
@@ -129,13 +134,14 @@ func TestConnect_DialErrorRedactsCredentials(t *testing.T) {
 }
 
 func TestBuildOptions_AddsNkeyOptionWhenSeedPresent(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.DiscardHandler)
 	seed, pub, err := brokerauth.GenerateSeed()
 	if err != nil {
 		t.Fatalf("GenerateSeed: %v", err)
 	}
 
-	opts, err := buildOptions(workerconfig.NATSConfig{}, "worker-a", seed, pub, newLifecycle(context.Background(), logger, true, 0))
+	opts, err := buildOptions(workerconfig.NATSConfig{}, "worker-a", seed, pub, newLifecycle(context.Background(), logger, true, 0, authRejectGrace))
 	if err != nil {
 		t.Fatalf("buildOptions: %v", err)
 	}
@@ -170,8 +176,9 @@ func TestBuildOptions_AddsNkeyOptionWhenSeedPresent(t *testing.T) {
 }
 
 func TestBuildOptions_NoNkeyOptionWhenSeedEmpty(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.DiscardHandler)
-	opts, err := buildOptions(workerconfig.NATSConfig{}, "worker-a", nil, "", newLifecycle(context.Background(), logger, false, 0))
+	opts, err := buildOptions(workerconfig.NATSConfig{}, "worker-a", nil, "", newLifecycle(context.Background(), logger, false, 0, 0))
 	if err != nil {
 		t.Fatalf("buildOptions: %v", err)
 	}
@@ -190,8 +197,15 @@ func TestBuildOptions_NoNkeyOptionWhenSeedEmpty(t *testing.T) {
 	}
 }
 
-// freePort asks the OS for an unused loopback TCP port, for booting a
-// throwaway embedded broker.
+// randomPortAddr has nats-server bind a port the OS picks (-1 is its
+// RANDOM_PORT), so tests running in parallel never race for one. The broker's
+// ClientURL reports the port it got.
+const randomPortAddr = "127.0.0.1:-1"
+
+// freePort asks the OS for an unused loopback TCP port, for a test that must
+// bring a broker back up at the same address. Such a test must not run in
+// parallel: between the probe and the bind, or across a restart, another
+// test's broker could take the port.
 func freePort(t *testing.T) int {
 	t.Helper()
 	var lc net.ListenConfig
@@ -262,7 +276,7 @@ func startTestBroker(t *testing.T, enrolled *enrolment) *bus.Embedded {
 // JWTs the auth callout issues.
 func startTestBrokerWithTTL(t *testing.T, enrolled *enrolment, userTTL time.Duration) *bus.Embedded {
 	t.Helper()
-	return startTestBrokerAt(t, net.JoinHostPort("127.0.0.1", itoa(freePort(t))), t.TempDir()+"/nats", enrolled, userTTL)
+	return startTestBrokerAt(t, randomPortAddr, t.TempDir()+"/nats", enrolled, userTTL)
 }
 
 // startTestBrokerAt is [startTestBrokerWithTTL] on a given address and
@@ -291,14 +305,6 @@ func startTestBrokerAt(t *testing.T, addr, dataDir string, enrolled *enrolment, 
 
 func itoa(p int) string {
 	return (&net.TCPAddr{Port: p}).String()[1:] // ":<port>"[1:] == "<port>"
-}
-
-// withAuthRejectGrace sets [authRejectGrace] for the duration of one test.
-func withAuthRejectGrace(t *testing.T, d time.Duration) {
-	t.Helper()
-	prev := authRejectGrace
-	authRejectGrace = d
-	t.Cleanup(func() { authRejectGrace = prev })
 }
 
 // logBuffer is a log sink safe to read while nats.go's callback goroutine
@@ -353,6 +359,7 @@ func reconnectingConfig(url string) workerconfig.NATSConfig {
 }
 
 func TestConnect_ClassifiesRejectedCredentialAsFatal(t *testing.T) {
+	t.Parallel()
 	_, enrolledPub, err := brokerauth.GenerateSeed()
 	if err != nil {
 		t.Fatalf("GenerateSeed: %v", err)
@@ -376,9 +383,9 @@ func TestConnect_ClassifiesRejectedCredentialAsFatal(t *testing.T) {
 	}
 	// A refused credential is retried for authRejectGrace before it is
 	// final; keep that short here.
-	withAuthRejectGrace(t, 500*time.Millisecond)
+	grace := 500 * time.Millisecond
 	logger := slog.New(slog.DiscardHandler)
-	_, _, connErr := Connect(context.Background(), cfg, "worker-a", strangerSeed, strangerPub, logger)
+	_, _, connErr := connect(context.Background(), cfg, "worker-a", strangerSeed, strangerPub, logger, grace)
 	if connErr == nil {
 		t.Fatal("Connect with an unenrolled nkey: want error, got nil")
 	}
@@ -388,8 +395,9 @@ func TestConnect_ClassifiesRejectedCredentialAsFatal(t *testing.T) {
 }
 
 func TestConnect_AuthOffFarmConnectsWithNoCredential(t *testing.T) {
+	t.Parallel()
 	b := bus.NewEmbedded(bus.EmbeddedConfig{
-		Addr:    net.JoinHostPort("127.0.0.1", itoa(freePort(t))),
+		Addr:    randomPortAddr,
 		DataDir: t.TempDir() + "/nats",
 	}, slog.New(slog.DiscardHandler))
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -415,23 +423,22 @@ func TestConnect_AuthOffFarmConnectsWithNoCredential(t *testing.T) {
 	}
 }
 
-// TestConnect_LiveRevocationNamesCauseAndRemediation covers the common
-// revocation shape in this project, not just a rejected initial dial: the
-// credential is revoked and internal/bus.Broker.Revoke synchronously
-// disconnects the client that was using it, whose reconnect the auth callout
-// then refuses. The worker is already connected when this happens, so
-// the classification has to happen in the ClosedHandler, not at the initial
-// nats.Connect call — this test drives that path against a real broker and
-// asserts the SAME crafted cause+remediation text reaches the logger, not a
-// generic "connection closed" line.
+// TestConnect_LiveRevocationNamesCauseAndRemediation covers a revocation
+// while the worker is connected: the credential is revoked,
+// internal/bus.Broker.Revoke disconnects the client that was using it, and
+// the auth callout refuses its reconnect. The refusal is classified by the
+// connection's lifecycle callbacks, not at the initial dial. Against a real
+// broker, this test asserts that the crafted cause and remediation text
+// reaches the logger, not a generic "connection closed" line.
 func TestConnect_LiveRevocationNamesCauseAndRemediation(t *testing.T) {
+	t.Parallel()
 	enrolledSeed, enrolledPub, err := brokerauth.GenerateSeed()
 	if err != nil {
 		t.Fatalf("GenerateSeed: %v", err)
 	}
 	enrolled := &enrolment{workerID: "worker-a", pub: enrolledPub}
 	b := startTestBroker(t, enrolled)
-	withAuthRejectGrace(t, 2*time.Second)
+	grace := 2 * time.Second
 
 	logger, buf := newTestLogger()
 
@@ -451,7 +458,7 @@ func TestConnect_LiveRevocationNamesCauseAndRemediation(t *testing.T) {
 		MaxReconnectAttempts: -1,
 		ReconnectWait:        5 * time.Millisecond,
 	}
-	nc, closedCh, err := Connect(context.Background(), cfg, "worker-a", enrolledSeed, enrolledPub, logger)
+	nc, closedCh, err := connect(context.Background(), cfg, "worker-a", enrolledSeed, enrolledPub, logger, grace)
 	if err != nil {
 		t.Fatalf("Connect with an enrolled credential: %v", err)
 	}
@@ -488,10 +495,11 @@ func TestConnect_LiveRevocationNamesCauseAndRemediation(t *testing.T) {
 // the same broker. The matching permission is asserted in
 // internal/brokerauth; the end-to-end consequence in internal/bus.
 func TestBuildOptions_SetsPerWorkerInboxPrefix(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.DiscardHandler)
 	const workerID = "0f1d2c3b-4a59-6879-8a9b-0c1d2e3f4a5b"
 
-	opts, err := buildOptions(workerconfig.NATSConfig{}, workerID, nil, "", newLifecycle(context.Background(), logger, false, 0))
+	opts, err := buildOptions(workerconfig.NATSConfig{}, workerID, nil, "", newLifecycle(context.Background(), logger, false, 0, 0))
 	if err != nil {
 		t.Fatalf("buildOptions: %v", err)
 	}
@@ -512,9 +520,10 @@ func TestBuildOptions_SetsPerWorkerInboxPrefix(t *testing.T) {
 // prefix, and one carrying a "." or a wildcard would widen the subtree the
 // broker grant built from it covers.
 func TestBuildOptions_RejectsWorkerIDThatIsNotASubjectToken(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.DiscardHandler)
 	for _, workerID := range []string{"", "a.b", "a b", "*", ">"} {
-		if _, err := buildOptions(workerconfig.NATSConfig{}, workerID, nil, "", newLifecycle(context.Background(), logger, false, 0)); err == nil {
+		if _, err := buildOptions(workerconfig.NATSConfig{}, workerID, nil, "", newLifecycle(context.Background(), logger, false, 0, 0)); err == nil {
 			t.Errorf("buildOptions with worker id %q: want error, got nil", workerID)
 		}
 	}
@@ -525,12 +534,13 @@ func TestBuildOptions_RejectsWorkerIDThatIsNotASubjectToken(t *testing.T) {
 // and once the refusals have lasted authRejectGrace the worker gives up and
 // names both causes a refusal can have.
 func TestConnect_RevokedWorkerStopsAfterGrace(t *testing.T) {
+	t.Parallel()
 	seed, pub, enrolled := enrolledWorker(t)
 	b := startTestBroker(t, enrolled)
-	withAuthRejectGrace(t, 2*time.Second)
+	grace := 2 * time.Second
 	logger, logs := newTestLogger()
 
-	nc, closedCh, err := Connect(context.Background(), reconnectingConfig(b.ClientURL()), "worker-a", seed, pub, logger)
+	nc, closedCh, err := connect(context.Background(), reconnectingConfig(b.ClientURL()), "worker-a", seed, pub, logger, grace)
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -581,12 +591,13 @@ func TestConnect_RevokedWorkerStopsAfterGrace(t *testing.T) {
 // store is down, exactly as it refuses a revoked key, and a worker that has to
 // reconnect during that outage must still be there when it ends.
 func TestConnect_StoreOutageShorterThanGraceRecovers(t *testing.T) {
+	t.Parallel()
 	seed, pub, enrolled := enrolledWorker(t)
 	b := startTestBroker(t, enrolled)
-	withAuthRejectGrace(t, 2*time.Second)
+	grace := 2 * time.Second
 	logger, logs := newTestLogger()
 
-	nc, closedCh, err := Connect(context.Background(), reconnectingConfig(b.ClientURL()), "worker-a", seed, pub, logger)
+	nc, closedCh, err := connect(context.Background(), reconnectingConfig(b.ClientURL()), "worker-a", seed, pub, logger, grace)
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -625,14 +636,15 @@ func TestConnect_StoreOutageShorterThanGraceRecovers(t *testing.T) {
 // TestConnect_InitialDialRetriesThroughShortOutage covers a worker that boots
 // while the credential store is down.
 func TestConnect_InitialDialRetriesThroughShortOutage(t *testing.T) {
+	t.Parallel()
 	seed, pub, enrolled := enrolledWorker(t)
 	b := startTestBroker(t, enrolled)
-	withAuthRejectGrace(t, 2*time.Second)
+	grace := 2 * time.Second
 	logger, logs := newTestLogger()
 
 	enrolled.outage(time.Second)
 	start := time.Now()
-	nc, _, err := Connect(context.Background(), reconnectingConfig(b.ClientURL()), "worker-a", seed, pub, logger)
+	nc, _, err := connect(context.Background(), reconnectingConfig(b.ClientURL()), "worker-a", seed, pub, logger, grace)
 	if err != nil {
 		t.Fatalf("Connect through a 1s store outage: %v; logs:\n%s", err, logs)
 	}
@@ -648,13 +660,14 @@ func TestConnect_InitialDialRetriesThroughShortOutage(t *testing.T) {
 // TestConnect_InitialDialRejectedAfterGrace pins that a credential the
 // broker keeps refusing at boot is still fatal, once the grace is spent.
 func TestConnect_InitialDialRejectedAfterGrace(t *testing.T) {
+	t.Parallel()
 	_, _, enrolled := enrolledWorker(t)
 	b := startTestBroker(t, enrolled)
-	withAuthRejectGrace(t, 2*time.Second)
+	grace := 2 * time.Second
 	strangerSeed, strangerPub, _ := enrolledWorker(t)
 
 	start := time.Now()
-	_, _, err := Connect(context.Background(), reconnectingConfig(b.ClientURL()), "worker-a", strangerSeed, strangerPub, slog.New(slog.DiscardHandler))
+	_, _, err := connect(context.Background(), reconnectingConfig(b.ClientURL()), "worker-a", strangerSeed, strangerPub, slog.New(slog.DiscardHandler), grace)
 	elapsed := time.Since(start)
 	if err == nil {
 		t.Fatal("Connect with a never-enrolled key: want error, got nil")
@@ -678,15 +691,16 @@ func TestConnect_InitialDialRejectedAfterGrace(t *testing.T) {
 // TestConnect_InitialDialHonoursCancel covers a service Stop that lands while
 // Connect is retrying a refused credential.
 func TestConnect_InitialDialHonoursCancel(t *testing.T) {
+	t.Parallel()
 	_, _, enrolled := enrolledWorker(t)
 	b := startTestBroker(t, enrolled)
-	withAuthRejectGrace(t, time.Minute)
+	grace := time.Minute
 	strangerSeed, strangerPub, _ := enrolledWorker(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(300*time.Millisecond, cancel)
 	start := time.Now()
-	_, _, err := Connect(ctx, reconnectingConfig(b.ClientURL()), "worker-a", strangerSeed, strangerPub, slog.New(slog.DiscardHandler))
+	_, _, err := connect(ctx, reconnectingConfig(b.ClientURL()), "worker-a", strangerSeed, strangerPub, slog.New(slog.DiscardHandler), grace)
 	if err == nil {
 		t.Fatal("Connect after cancel: want error, got nil")
 	}
@@ -703,12 +717,13 @@ func TestConnect_InitialDialHonoursCancel(t *testing.T) {
 // anonymous connection is refused, so retrying it would only delay the
 // "no credential" diagnosis at boot.
 func TestConnect_NoCredentialRefusedWithoutGrace(t *testing.T) {
+	t.Parallel()
 	_, _, enrolled := enrolledWorker(t)
 	b := startTestBroker(t, enrolled)
-	withAuthRejectGrace(t, time.Minute)
+	grace := time.Minute
 
 	start := time.Now()
-	_, _, err := Connect(context.Background(), reconnectingConfig(b.ClientURL()), "worker-a", nil, "", slog.New(slog.DiscardHandler))
+	_, _, err := connect(context.Background(), reconnectingConfig(b.ClientURL()), "worker-a", nil, "", slog.New(slog.DiscardHandler), grace)
 	if err == nil {
 		t.Fatal("Connect with no credential against an auth-on broker: want error, got nil")
 	}
@@ -725,12 +740,13 @@ func TestConnect_NoCredentialRefusedWithoutGrace(t *testing.T) {
 // "authentication expired" and the reconnect is authorized afresh. That is
 // routine and must not read as a failure.
 func TestConnect_RoutineUserJWTExpiryIsQuiet(t *testing.T) {
+	t.Parallel()
 	seed, pub, enrolled := enrolledWorker(t)
 	b := startTestBrokerWithTTL(t, enrolled, 2*time.Second)
-	withAuthRejectGrace(t, 2*time.Second)
+	grace := 2 * time.Second
 	logger, logs := newTestLogger()
 
-	nc, closedCh, err := Connect(context.Background(), reconnectingConfig(b.ClientURL()), "worker-a", seed, pub, logger)
+	nc, closedCh, err := connect(context.Background(), reconnectingConfig(b.ClientURL()), "worker-a", seed, pub, logger, grace)
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -782,7 +798,7 @@ func TestConnect_RefusalThenUnreachableThenBackDoesNotSpin(t *testing.T) {
 	addr := net.JoinHostPort("127.0.0.1", itoa(freePort(t)))
 	dataDir := t.TempDir() + "/nats"
 	first := startTestBrokerAt(t, addr, dataDir, enrolled, time.Hour)
-	withAuthRejectGrace(t, time.Second)
+	grace := time.Second
 	logger, logs := newTestLogger()
 
 	var delays atomic.Int64
@@ -795,7 +811,7 @@ func TestConnect_RefusalThenUnreachableThenBackDoesNotSpin(t *testing.T) {
 		return nil
 	}
 	cfg := workerconfig.NATSConfig{URL: first.ClientURL(), MaxReconnectAttempts: -1, ReconnectWait: 10 * time.Millisecond}
-	nc, closedCh, err := connect(context.Background(), cfg, "worker-a", seed, pub, logger, countDelays)
+	nc, closedCh, err := connect(context.Background(), cfg, "worker-a", seed, pub, logger, grace, countDelays)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -847,10 +863,10 @@ func TestConnect_RepeatedExpiryWithoutReconnectGivesUp(t *testing.T) {
 	addr := net.JoinHostPort("127.0.0.1", itoa(freePort(t)))
 	dataDir := t.TempDir() + "/nats"
 	healthy := startTestBrokerAt(t, addr, dataDir, enrolled, time.Hour)
-	withAuthRejectGrace(t, time.Second)
+	grace := time.Second
 	logger, logs := newTestLogger()
 
-	nc, closedCh, err := Connect(context.Background(), reconnectingConfig(healthy.ClientURL()), "worker-a", seed, pub, logger)
+	nc, closedCh, err := connect(context.Background(), reconnectingConfig(healthy.ClientURL()), "worker-a", seed, pub, logger, grace)
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -876,10 +892,10 @@ func TestConnect_RepeatedExpiryWithoutReconnectGivesUp(t *testing.T) {
 // TestLifecycle_OnlyFirstExpiryAfterConnectedIsRoutine pins the expiry
 // classifier deterministically, independent of broker timing.
 func TestLifecycle_OnlyFirstExpiryAfterConnectedIsRoutine(t *testing.T) {
+	t.Parallel()
 	up := func() bool { return true }
 	down := func() bool { return false }
-	lc := newLifecycle(context.Background(), slog.New(slog.DiscardHandler), true, 0)
-	lc.grace = 50 * time.Millisecond
+	lc := newLifecycle(context.Background(), slog.New(slog.DiscardHandler), true, 0, 50*time.Millisecond)
 
 	// A session ends at expiry and reconnects: routine, every time.
 	for i := range 3 {
@@ -909,7 +925,8 @@ func TestLifecycle_OnlyFirstExpiryAfterConnectedIsRoutine(t *testing.T) {
 // drops the "expected disconnect" mark, so it cannot quiet a later,
 // unrelated disconnect.
 func TestLifecycle_ClearForgetsExpectedExpiryDisconnect(t *testing.T) {
-	lc := newLifecycle(context.Background(), slog.New(slog.DiscardHandler), true, 0)
+	t.Parallel()
+	lc := newLifecycle(context.Background(), slog.New(slog.DiscardHandler), true, 0, authRejectGrace)
 	if v, _ := lc.record(func() bool { return true }, true); v != authExpired {
 		t.Fatalf("verdict %d, want authExpired", v)
 	}
@@ -919,11 +936,12 @@ func TestLifecycle_ClearForgetsExpectedExpiryDisconnect(t *testing.T) {
 	}
 }
 
-// TestLifecycle_UnreachableBrokerEndsStreak pins the ReconnectErrHandler
-// half of the spin fix: a reconnect that cannot reach the broker ends the
-// streak, and a refusal does not.
+// TestLifecycle_UnreachableBrokerEndsStreak pins the ReconnectErrHandler's
+// part in keeping reconnects from spinning: a reconnect that cannot reach the
+// broker ends the streak, and a refusal does not.
 func TestLifecycle_UnreachableBrokerEndsStreak(t *testing.T) {
-	lc := newLifecycle(context.Background(), slog.New(slog.DiscardHandler), true, 0)
+	t.Parallel()
+	lc := newLifecycle(context.Background(), slog.New(slog.DiscardHandler), true, 0, authRejectGrace)
 	lc.record(func() bool { return false }, false)
 	lc.onReconnectErr(nil, nats.ErrAuthorization)
 	if lc.refusals != 1 {
@@ -935,12 +953,13 @@ func TestLifecycle_UnreachableBrokerEndsStreak(t *testing.T) {
 	}
 }
 
-// TestLifecycle_CappedDelayKeepsBackoffFloor pins the other half: a spent
-// grace never makes the reconnect delay zero.
+// TestLifecycle_CappedDelayKeepsBackoffFloor pins the delay cap's part in
+// keeping reconnects from spinning: a spent grace never makes the reconnect
+// delay zero.
 func TestLifecycle_CappedDelayKeepsBackoffFloor(t *testing.T) {
+	t.Parallel()
 	const base = 10 * time.Millisecond
-	lc := newLifecycle(context.Background(), slog.New(slog.DiscardHandler), true, base)
-	lc.grace = time.Millisecond
+	lc := newLifecycle(context.Background(), slog.New(slog.DiscardHandler), true, base, time.Millisecond)
 	lc.record(func() bool { return false }, false)
 	time.Sleep(5 * time.Millisecond)
 	delay := lc.capDelay(func(int) time.Duration { return time.Second })
@@ -950,6 +969,7 @@ func TestLifecycle_CappedDelayKeepsBackoffFloor(t *testing.T) {
 }
 
 func TestIsAuthRefusal(t *testing.T) {
+	t.Parallel()
 	for _, err := range []error{nats.ErrAuthorization, nats.ErrAuthExpired, nats.ErrAuthRevoked, nats.ErrAccountAuthExpired} {
 		if !isAuthRefusal(err) {
 			t.Errorf("isAuthRefusal(%v) = false, want true", err)

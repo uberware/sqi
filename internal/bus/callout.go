@@ -33,6 +33,10 @@ const (
 	// a slower answer is wasted.
 	calloutMaxTimeout = 5 * time.Second
 
+	// calloutFlushTimeout bounds the round trip that confirms the callout
+	// subscription is registered on the server.
+	calloutFlushTimeout = 5 * time.Second
+
 	// calloutMinTimeout is the budget when the request carries no usable
 	// expiry (missing, or already past because sqi-server's clock runs ahead
 	// of the broker's).
@@ -87,6 +91,8 @@ type Responder struct {
 
 	// inflight counts the requests Serve has accepted and not yet answered.
 	inflight sync.WaitGroup
+	// sub is the subscription Serve made; nil before it succeeds.
+	sub *nats.Subscription
 }
 
 // NewResponder validates cfg and returns a Responder.
@@ -269,7 +275,7 @@ func (r *Responder) issueUserJWT(ctx context.Context, subject, workerID string) 
 	uc.Name = workerID
 	uc.Expires = r.cfg.Now().Add(r.cfg.UserTTL).Unix()
 	uc.Permissions = brokerauth.WorkerUserPermissions(workerID)
-	// Only enforced for callout from nats-server 2.15.2; advisory before.
+	// nats-server enforces this for callout users from version 2.15.2.
 	uc.AllowedConnectionTypes.Add(jwt.ConnectionTypeStandard)
 	// No NotBefore: a worker whose clock trails the broker's would be refused
 	// for the length of the skew.
@@ -409,12 +415,15 @@ func decodeRequest(requestJWT []byte) (req *jwt.AuthorizationRequestClaims, time
 	return req, timeIssue, nil
 }
 
-// Serve subscribes the responder to the callout subject as part of the
+// Serve subscribes the responder to the callout subject on nc as part of the
 // shared queue group and replies to every request with [Responder.Handle].
 // Requests are handled concurrently, at most [calloutMaxInFlight] at a time.
-func (r *Responder) Serve(nc *nats.Conn) (*nats.Subscription, error) {
+// Serve returns once the subscription is registered on the server; ctx may
+// carry no deadline, so that round trip is bounded by [calloutFlushTimeout].
+// Call it once, and [Responder.Stop] when the connection is about to close.
+func (r *Responder) Serve(ctx context.Context, nc *nats.Conn) error {
 	slots := make(chan struct{}, calloutMaxInFlight)
-	return nc.QueueSubscribe(calloutSubject, calloutQueue, func(m *nats.Msg) {
+	sub, err := nc.QueueSubscribe(calloutSubject, calloutQueue, func(m *nats.Msg) {
 		slots <- struct{}{}
 		r.inflight.Go(func() {
 			defer func() { <-slots }()
@@ -430,14 +439,39 @@ func (r *Responder) Serve(nc *nats.Conn) (*nats.Subscription, error) {
 			}
 		})
 	})
+	if err != nil {
+		return fmt.Errorf("bus: subscribe auth callout: %w", err)
+	}
+	flushCtx, cancel := context.WithTimeout(ctx, calloutFlushTimeout)
+	defer cancel()
+	if err := nc.FlushWithContext(flushCtx); err != nil {
+		return fmt.Errorf("bus: subscribe auth callout: %w", err)
+	}
+	r.sub = sub
+	return nil
 }
 
-// drain stops sub, a subscription returned by [Responder.Serve], from taking
-// new requests, and waits up to timeout for the requests it already accepted
-// to be answered, so a shutdown does not close the connection under them. It
-// reports whether every accepted request was answered in time.
-func (r *Responder) drain(sub *nats.Subscription, timeout time.Duration) bool {
-	deadline := time.After(timeout)
+// Stop stops the subscription [Responder.Serve] made from taking new
+// requests and waits, for at most [calloutMaxTimeout], for the requests it
+// already accepted to be answered, so a shutdown does not close the
+// connection under them. It logs when some were not. Stop does nothing if
+// Serve did not succeed, or on a second call.
+func (r *Responder) Stop() {
+	sub := r.sub
+	r.sub = nil
+	if sub == nil || r.drain(sub) {
+		return
+	}
+	r.cfg.Logger.WarnContext(
+		context.Background(), "bus: auth callout requests were still unanswered at shutdown",
+		slog.String("impact", "the workers that were connecting are refused and retry"),
+	)
+}
+
+// drain is [Responder.Stop] for sub, reporting whether every accepted request
+// was answered in time.
+func (r *Responder) drain(sub *nats.Subscription) bool {
+	deadline := time.After(calloutMaxTimeout)
 
 	// The subscription reports closed only after its last message handler
 	// has returned, and each handler counts its request in inflight before

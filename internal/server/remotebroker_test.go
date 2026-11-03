@@ -64,7 +64,8 @@ func TestRemoteBrokerConfig_MapsEveryField(t *testing.T) {
 	}
 	got := RemoteBrokerConfig(n)
 
-	if strings.Join(got.URLs, ",") != "tls://a:4222,tls://b:4222" || got.Account != "FARM" ||
+	if strings.Join(got.URLs, ",") != "tls://a:4222,tls://b:4222" ||
+		strings.Join(got.AdvertiseURLs, ",") != "tls://pub:4222" || got.Account != "FARM" ||
 		got.NkeySeedFile != "/k/data.nk" || got.CredsFile != "/k/data.creds" ||
 		got.StreamReplicas != 3 || got.ConnectTimeout != 45*time.Second {
 		t.Errorf("connection fields = %+v", got)
@@ -78,8 +79,17 @@ func TestRemoteBrokerConfig_MapsEveryField(t *testing.T) {
 		t.Errorf("auth = %+v; want every field mapped and Lookup left for the caller", a)
 	}
 	n.External.URLs[0] = "changed"
-	if got.URLs[0] != "tls://a:4222" {
-		t.Error("RemoteBrokerConfig shares the URL slice with the configuration")
+	n.External.AdvertiseURLs[0] = "changed"
+	if got.URLs[0] != "tls://a:4222" || got.AdvertiseURLs[0] != "tls://pub:4222" {
+		t.Error("RemoteBrokerConfig shares a URL slice with the configuration")
+	}
+}
+
+func TestEmbeddedBrokerConfig_MapsAdvertiseURL(t *testing.T) {
+	cfg := Config{NATS: config.DefaultConfig().NATS}
+	cfg.NATS.Embedded.AdvertiseURL = "tls://nats.example.com:7422"
+	if got := embeddedBrokerConfig(cfg, fake.New()).AdvertiseURL; got != "tls://nats.example.com:7422" {
+		t.Errorf("AdvertiseURL = %q, want the configured nats.embedded.advertise_url", got)
 	}
 }
 

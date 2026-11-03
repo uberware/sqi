@@ -13,8 +13,6 @@ import (
 
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-
-	"github.com/uberware/sqi/internal/redact"
 )
 
 // purgeOpTimeout bounds one stream purge or consumer deletion request. A
@@ -30,10 +28,7 @@ type DurableConsumer struct {
 // RestoreTargets returns what [RestoreLock.Purge] empties: every one of sqi's
 // streams, and the durable consumers a running sqi-server keeps on them.
 func RestoreTargets() (streams []string, consumers []DurableConsumer) {
-	for _, def := range streamDefs(1) {
-		streams = append(streams, def.Name)
-	}
-	return streams, []DurableConsumer{
+	return streamNames(), []DurableConsumer{
 		{Stream: StreamTask, Name: taskStatusConsumerName},
 		{Stream: StreamLogs, Name: taskLogsConsumerName},
 		{Stream: StreamWorker, Name: workerConsumerName},
@@ -91,17 +86,7 @@ func (r *Remote) LockForRestore(ctx context.Context) (*RestoreLock, error) {
 
 // lockOn checks the broker nc reached and takes the guard on it.
 func (r *Remote) lockOn(ctx context.Context, nc *nats.Conn, deadline time.Time) (*RestoreLock, error) {
-	if err := CheckBrokerVersion(brokerVersion(nc)); err != nil {
-		return nil, fmt.Errorf("%w (broker at %s)", err, redact.URL(nc.ConnectedUrl()))
-	}
-	js, err := jetstream.New(nc)
-	if err != nil {
-		return nil, fmt.Errorf("bus: jetstream context: %w", err)
-	}
-	if err := r.requireAccountJetStream(ctx, js, deadline); err != nil {
-		return nil, err
-	}
-	guard, err := r.acquireGuard(ctx, js, deadline, GuardPurposeRestore)
+	js, guard, err := r.checkAndGuard(ctx, nc, deadline, GuardPurposeRestore)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +98,7 @@ func (r *Remote) lockOn(ctx context.Context, nc *nats.Conn, deadline time.Time) 
 // restored database. A stream or consumer that does not exist, on an account
 // no server finished starting on, is skipped. The streams keep their
 // configuration, replica count included. Requests the cluster cannot serve
-// yet are retried for up to the connect timeout.
+// yet are retried, each target on its own budget ([RestoreLock.targetDeadline]).
 //
 // It refuses when the lock no longer holds the guard: another sqi-server may
 // be running on the account.
@@ -123,17 +108,16 @@ func (l *RestoreLock) Purge(ctx context.Context) error {
 			return fmt.Errorf("bus: purge for restore: %w", err)
 		}
 	}
-	deadline := time.Now().Add(l.r.cfg.ConnectTimeout)
 	streams, consumers := RestoreTargets()
 	for _, name := range streams {
-		err := retryUntil(ctx, deadline, func() error { return purgeStream(ctx, l.js, name) }, transientJetStreamError)
+		err := retryUntil(ctx, l.targetDeadline(), func(ctx context.Context) error { return purgeStream(ctx, l.js, name) }, transientJetStreamError)
 		if err != nil {
 			return fmt.Errorf("bus: purge stream %s: %w", name, err)
 		}
 	}
 	names := make([]string, 0, len(consumers))
 	for _, c := range consumers {
-		err := retryUntil(ctx, deadline, func() error { return deleteDurable(ctx, l.js, c) }, transientJetStreamError)
+		err := retryUntil(ctx, l.targetDeadline(), func(ctx context.Context) error { return deleteDurable(ctx, l.js, c) }, transientJetStreamError)
 		if err != nil {
 			return fmt.Errorf("bus: delete consumer %s on stream %s: %w", c.Name, c.Stream, err)
 		}
@@ -144,6 +128,15 @@ func (l *RestoreLock) Purge(ctx context.Context) error {
 		slog.String("streams", strings.Join(streams, ",")),
 		slog.String("consumers_deleted", strings.Join(names, ",")))
 	return nil
+}
+
+// targetDeadline is when the retries of one purge or deletion stop. Each
+// target gets its own budget, never less than one full [purgeOpTimeout]
+// request: [retryUntil] ends every attempt at the deadline, so a budget shared
+// across targets would let a slow purge of a large stream leave the next one
+// no attempt at all, failing a restore whose database is already replaced.
+func (l *RestoreLock) targetDeadline() time.Time {
+	return time.Now().Add(max(l.r.cfg.ConnectTimeout, purgeOpTimeout))
 }
 
 // Release gives the account's guard back and closes the connection. It is
