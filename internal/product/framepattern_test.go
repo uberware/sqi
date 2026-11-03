@@ -9,7 +9,7 @@ import (
 	"github.com/uberware/sqi/internal/openjd"
 )
 
-// framePatternCase is a shipped preset with an output frame-pattern parameter:
+// framePatternCase is a shipped preset's frame-pattern parameter:
 // a path whose file name holds exactly one run of #, the run's length being the
 // frame padding.
 type framePatternCase struct {
@@ -33,7 +33,8 @@ type badPattern struct {
 }
 
 // atSigns are patterns holding a literal @. oiiotool expands @ as a wildcard
-// the way it does #, in a folder or in the file name, so its presets reject it.
+// the way it does #, in a folder or in the file name, so oiiotool-process
+// rejects it.
 var atSigns = []badPattern{
 	{"folder-at", "/mnt/take@2/shot.####.exr"},
 	{"name-at", "/mnt/s/shot@2x.####.exr"},

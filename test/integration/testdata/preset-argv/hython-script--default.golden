@@ -25,8 +25,8 @@ task 1/3  name="Run[Frame=1-1,Frame.End=1,Frame.Start=1]"
     # sqi hython-script launcher: sets the four SQI_FRAME* variables,
     # loads the hip, moves the playbar to the task's first frame and
     # runs the user's script in this process, so the script sees the
-    # loaded Houdini session. An exception or SystemExit leaves
-    # hython with a non-zero exit status, which fails the task.
+    # loaded Houdini session. An exception or a non-zero SystemExit
+    # leaves hython with a non-zero exit status, which fails the task.
     import os
     import runpy
     import sys
@@ -61,8 +61,8 @@ task 2/3  name="Run[Frame=2-2,Frame.End=2,Frame.Start=2]"
     # sqi hython-script launcher: sets the four SQI_FRAME* variables,
     # loads the hip, moves the playbar to the task's first frame and
     # runs the user's script in this process, so the script sees the
-    # loaded Houdini session. An exception or SystemExit leaves
-    # hython with a non-zero exit status, which fails the task.
+    # loaded Houdini session. An exception or a non-zero SystemExit
+    # leaves hython with a non-zero exit status, which fails the task.
     import os
     import runpy
     import sys
@@ -97,8 +97,8 @@ task 3/3  name="Run[Frame=3-3,Frame.End=3,Frame.Start=3]"
     # sqi hython-script launcher: sets the four SQI_FRAME* variables,
     # loads the hip, moves the playbar to the task's first frame and
     # runs the user's script in this process, so the script sees the
-    # loaded Houdini session. An exception or SystemExit leaves
-    # hython with a non-zero exit status, which fails the task.
+    # loaded Houdini session. An exception or a non-zero SystemExit
+    # leaves hython with a non-zero exit status, which fails the task.
     import os
     import runpy
     import sys

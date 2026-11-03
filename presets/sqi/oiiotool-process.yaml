@@ -146,11 +146,10 @@ template:
               rangeConstraint: CONTIGUOUS
       script:
         let:
-          # oiiotool 2.5.18 reads each # as four digits, so the pattern's # run
-          # is rewritten as the same number of @, which stand for one digit
-          # each. Only the file name is rewritten: oiiotool expands a # in a
-          # folder and a literal @ (the form this rewrite writes), so both are
-          # refused, and it evaluates {...} in a file argument as an
+          # oiiotool 2.5.18 reads each # as four digits, so the file name's #
+          # run is rewritten as the same number of @, one digit each. oiiotool
+          # also expands a # in a folder and any literal @ as wildcards, so
+          # both are refused, and it evaluates {...} in a file argument as an
           # expression, so braces are refused too.
           - ipad = Param.InputFile.name.count('#')
           - "input = Param.InputFile.parent / Param.InputFile.name.replace('#' * ipad, '@' * ipad) if ipad > 0 and '#' * ipad in Param.InputFile.name and '#' not in string(Param.InputFile.parent) and '@' not in string(Param.InputFile) and '{' not in string(Param.InputFile) and '}' not in string(Param.InputFile) else fail('Input Sequence Pattern must contain exactly one run of # characters marking the frame number, e.g. shot.####.exr, with no # in its folders and no @, { or } anywhere')"

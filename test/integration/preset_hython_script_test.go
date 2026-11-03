@@ -57,8 +57,9 @@ print("USER:" + json.dumps({
 
 // TestHythonScript_LauncherRunsTheScript pins what the embedded launcher does
 // before and while it runs the user's script: the four frame variables, the hip
-// load, the first setFrame, the script's own __main__ identity, and that an
-// exception or a SystemExit reaches the process exit status unchanged.
+// load, the first setFrame, the script's own __main__ identity, that an
+// exception gives a non-zero exit status, and that a SystemExit code reaches
+// the exit status unchanged.
 func TestHythonScript_LauncherRunsTheScript(t *testing.T) {
 	python := findPython3(t)
 	if python == "" {

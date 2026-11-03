@@ -73,10 +73,10 @@ readme: |
     on macOS put it on the worker's `PATH`
   - A Houdini license available to `hython`
 
-  The script runs as the account the worker runs under. That is arbitrary code
-  execution by design, so on a shared farm set **run as user** on the queue,
-  which runs every task as an account the operator chooses instead; see the
-  sqi documentation on task isolation.
+  The script runs as the account the worker runs under and can run arbitrary
+  code. On a shared farm, set **run as user** on the queue, which runs every
+  task as an account the operator chooses; see the sqi documentation on task
+  isolation.
 category: General
 version: 1.0.0
 template:
@@ -135,9 +135,9 @@ template:
             type: TEXT
             filename: script.py
             data: "{{Param.Script}}"
-          # Static text: no format string may appear in it, so the hip path and
-          # the frame values arrive as argv rather than being substituted into
-          # Python source.
+          # Static text with no format strings: the hip path and the frame
+          # values reach it as argv and are never substituted into Python
+          # source.
           - name: launcher
             type: TEXT
             filename: launcher.py
@@ -145,8 +145,8 @@ template:
               # sqi hython-script launcher: sets the four SQI_FRAME* variables,
               # loads the hip, moves the playbar to the task's first frame and
               # runs the user's script in this process, so the script sees the
-              # loaded Houdini session. An exception or SystemExit leaves
-              # hython with a non-zero exit status, which fails the task.
+              # loaded Houdini session. An exception or a non-zero SystemExit
+              # leaves hython with a non-zero exit status, which fails the task.
               import os
               import runpy
               import sys
