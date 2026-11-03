@@ -5,15 +5,14 @@
 # has no fixed install location on any platform, so the PATH probe comes first.
 #
 # Houdini ships its own copy as hoiiotool, in $HFS/bin beside hython. Houdini
-# 22.0.466's is OIIO 2.5.18; it was measured on 2026-11-02 running the tile
-# preset's `--paste:mergeroi=1:all=1` assembly and oiiotool's `@` frame
-# wildcard. The Windows glob is the default install layout, as houdini.yaml
-# uses. The Linux glob is inferred from the shared $HFS/bin layout and has not
-# been checked on a Linux install. There is no macOS glob, for the reason
-# houdini.yaml gives.
+# 22.0.466's is OIIO 2.5.18, which runs the tile preset's
+# `--paste:mergeroi=1:all=1` assembly and oiiotool's `@` frame wildcard. The
+# Windows glob is the default install layout, as houdini.yaml uses. The Linux
+# glob is inferred from the shared $HFS/bin layout and is unverified on a Linux
+# install. There is no macOS glob, for the reason houdini.yaml gives.
 #
 # The version belongs to Houdini, not to OIIO, so the detector has no top-level
-# version: and the command's version is only used to pick the newest install.
+# version. The command's version only picks the newest install.
 tag: oiiotool
 checks:
   - exe: oiiotool                                                            # on PATH

@@ -393,8 +393,9 @@ func nukeScene(t *testing.T, exe, renders string) string {
 	return savedPath(t, runDCC(t, exe, args...))
 }
 
-// assertPNGs checks each file decodes as a PNG of the test script's size.
-func assertPNGs(t *testing.T, dir string, names []string) {
+// assertPNGSize checks each file in dir decodes as a PNG of w pixels wide and h
+// high. An h of zero or less checks only the width.
+func assertPNGSize(t *testing.T, dir string, names []string, w, h int) {
 	t.Helper()
 	for _, name := range names {
 		f, err := os.Open(filepath.Join(dir, name))
@@ -404,10 +405,11 @@ func assertPNGs(t *testing.T, dir string, names []string) {
 		}
 		cfg, err := png.DecodeConfig(f)
 		_ = f.Close()
-		if err != nil {
+		switch {
+		case err != nil:
 			t.Errorf("%s is not a PNG: %v", name, err)
-		} else if cfg.Width != 320 || cfg.Height != 180 {
-			t.Errorf("%s is %dx%d, want 320x180", name, cfg.Width, cfg.Height)
+		case cfg.Width != w || (h > 0 && cfg.Height != h):
+			t.Errorf("%s is %dx%d, want width %d, height %d (0 = any)", name, cfg.Width, cfg.Height, w, max(h, 0))
 		}
 	}
 }
@@ -434,7 +436,7 @@ func TestPresetDCC_Nuke_WriteRender(t *testing.T) {
 	assertTaskCount(t, ts, job, 2)
 	want := frameNames("wr2.%04d.png", 1, 4)
 	assertExactFiles(t, renders, want)
-	assertPNGs(t, renders, want)
+	assertPNGSize(t, renders, want, 320, 180)
 }
 
 // TestPresetDCC_Nuke_ScriptRender runs nuke-script-render under a real Nuke: with
@@ -455,7 +457,7 @@ func TestPresetDCC_Nuke_ScriptRender(t *testing.T) {
 	})
 	want := append(frameNames("wr1.%04d.png", seq(1, 4)...), frameNames("wr2.%04d.png", seq(1, 4)...)...)
 	assertExactFiles(t, renders, want)
-	assertPNGs(t, renders, want)
+	assertPNGSize(t, renders, want, 320, 180)
 }
 
 // ── Houdini ───────────────────────────────────────────────────────────────────
@@ -592,41 +594,20 @@ for f in range(int(os.environ["SQI_FRAME_START"]), int(os.environ["SQI_FRAME_END
 	}
 	wantHip := filepath.Base(hip)
 
-	t.Run("one frame per task", func(t *testing.T) {
-		out := t.TempDir()
-		job := runDCCJob(t, ts, farmID, queueID, "hython-script", map[string]string{
-			"SceneFile": hip, "Script": scriptFor(out), "Frames": "1-3", "FramesPerTask": "1",
-		})
-		assertTaskCount(t, ts, job, 3)
-		assertExactFiles(t, out, frameNames("frame.%d.json", 1, 2, 3))
-		for f, ff := range readFrames(t, out, seq(1, 3)) {
-			if ff.HouFrame != float64(f) || ff.Hip != wantHip || ff.Start != strconv.Itoa(f) {
-				t.Errorf("frame %d: saw %+v, want hou_frame %d, hip %q, start %d", f, ff, f, wantHip, f)
-			}
-		}
-	})
-
+	// A contiguous chunk never spans a gap and chunks are balanced, so 1-5,7 at 4
+	// frames per task is 1-3, 4-5 and 7. hou.frame() is the first frame of the
+	// task's chunk, whatever frame the script is on.
 	t.Run("chunks", func(t *testing.T) {
 		out := t.TempDir()
 		job := runDCCJob(t, ts, farmID, queueID, "hython-script", map[string]string{
-			"SceneFile": hip, "Script": scriptFor(out), "Frames": "1-10", "FramesPerTask": "4",
+			"SceneFile": hip, "Script": scriptFor(out), "Frames": "1-5,7", "FramesPerTask": "4",
 		})
 		assertTaskCount(t, ts, job, 3)
-		assertExactFiles(t, out, frameNames("frame.%d.json", seq(1, 10)...))
-		// 1-10 at 4 balances into 1-4, 5-7 and 8-10; hou.frame() is the first
-		// frame of the chunk, whatever frame the script is on.
-		chunkStart := func(f int) int {
-			switch {
-			case f <= 4:
-				return 1
-			case f <= 7:
-				return 5
-			default:
-				return 8
-			}
-		}
-		for f, ff := range readFrames(t, out, seq(1, 10)) {
-			if want := chunkStart(f); ff.HouFrame != float64(want) || ff.Start != strconv.Itoa(want) || ff.Hip != wantHip {
+		wantStart := map[int]int{1: 1, 2: 1, 3: 1, 4: 4, 5: 4, 7: 7}
+		frames := []int{1, 2, 3, 4, 5, 7}
+		assertExactFiles(t, out, frameNames("frame.%d.json", frames...))
+		for f, ff := range readFrames(t, out, frames) {
+			if want := wantStart[f]; ff.HouFrame != float64(want) || ff.Start != strconv.Itoa(want) || ff.Hip != wantHip {
 				t.Errorf("frame %d: saw %+v, want hou_frame and start %d, hip %q", f, ff, want, wantHip)
 			}
 		}
@@ -672,25 +653,6 @@ func TestPresetDCC_Houdini_USDRecord(t *testing.T) {
 	farmID, queueID := seedFarmAndQueue(t, ts)
 	startRealWorkerAnyOS(t, ts, farmID, queueID)
 
-	// assertPNGWidths checks each file decodes as a PNG of the given width.
-	assertPNGWidths := func(t *testing.T, out string, names []string, width int) {
-		t.Helper()
-		for _, name := range names {
-			f, err := os.Open(filepath.Join(out, name))
-			if err != nil {
-				t.Errorf("open %s: %v", name, err)
-				continue
-			}
-			cfg, err := png.DecodeConfig(f)
-			_ = f.Close()
-			if err != nil {
-				t.Errorf("%s is not a PNG: %v", name, err)
-			} else if cfg.Width != width {
-				t.Errorf("%s is %d pixels wide, want %d", name, cfg.Width, width)
-			}
-		}
-	}
-
 	t.Run("storm", func(t *testing.T) {
 		out := filepath.Join(dir, "out", "review")
 		job := runDCCJob(t, ts, farmID, queueID, "usdrecord-render", map[string]string{
@@ -700,7 +662,7 @@ func TestPresetDCC_Houdini_USDRecord(t *testing.T) {
 		assertTaskCount(t, ts, job, 2)
 		names := frameNames("preview.%04d.png", seq(1, 12)...)
 		assertExactFiles(t, out, names)
-		assertPNGWidths(t, out, names, 64)
+		assertPNGSize(t, out, names, 64, 0)
 	})
 
 	t.Run("karma cpu", func(t *testing.T) {
@@ -711,7 +673,7 @@ func TestPresetDCC_Houdini_USDRecord(t *testing.T) {
 		})
 		assertTaskCount(t, ts, job, 1)
 		assertExactFiles(t, out, []string{"karma.003.png"})
-		assertPNGWidths(t, out, []string{"karma.003.png"}, 32)
+		assertPNGSize(t, out, []string{"karma.003.png"}, 32, 0)
 	})
 
 	// A chunk that starts below zero reaches usdrecord as --frames=-2:-1, one
@@ -725,6 +687,6 @@ func TestPresetDCC_Houdini_USDRecord(t *testing.T) {
 		assertTaskCount(t, ts, job, 1)
 		names := []string{"neg.-002.png", "neg.-001.png"}
 		assertExactFiles(t, out, names)
-		assertPNGWidths(t, out, names, 16)
+		assertPNGSize(t, out, names, 16, 0)
 	})
 }

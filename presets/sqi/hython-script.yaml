@@ -152,10 +152,7 @@ template:
               import sys
 
               hip, script, start, end, frames = sys.argv[1:6]
-              os.environ["SQI_FRAME"] = start
-              os.environ["SQI_FRAME_START"] = start
-              os.environ["SQI_FRAME_END"] = end
-              os.environ["SQI_FRAMES"] = frames
+              os.environ.update(SQI_FRAME=start, SQI_FRAME_START=start, SQI_FRAME_END=end, SQI_FRAMES=frames)
 
               import hou
 

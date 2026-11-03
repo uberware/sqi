@@ -359,7 +359,7 @@ variant is gated to one OS), and in whether they delete the slice files
 afterwards. Full reference:
 [`docs/preset-library.md`](preset-library.md#transcoding-reference-presets).
 
-Three more presets are utilities rather than scene renders: `hython-script`
+Three other presets are utilities rather than scene renders: `hython-script`
 (category `General`) runs a Python script in a Houdini session, `usdrecord-render`
 (`Rendering`) renders a USD stage with Houdini's `usdrecord`, and
 `oiiotool-process` (the `Image Processing` category) converts or processes an

@@ -618,8 +618,7 @@ tiers](#validation-tiers) and each preset's caveat in
 
 ## Houdini and image-processing reference presets
 
-Three more presets are general-purpose utilities rather than renders of a
-scene. They live in `presets/sqi/*.yaml` like the others and have no
+Three presets are general-purpose utilities rather than renders of a scene. They live in `presets/sqi/*.yaml` like the others and have no
 in-application submitter; submit them from the web UI or the API. Two run
 Houdini's `hython` and gate on the `houdini` capability tag; the third runs
 OpenImageIO's `oiiotool` and gates on the `oiiotool` tag. Both tags are set by
@@ -661,7 +660,7 @@ between reading and writing; leave it empty to convert by the output's file
 extension. `oiiotool` does not create missing folders, so the output folder
 must already exist. The worker finds Houdini's copy, `hoiiotool`, when
 `oiiotool` is not on `PATH`, on Windows and on Linux (the Linux path is inferred
-from Houdini's layout, not measured).
+from Houdini's layout and unverified).
 
 **Frame patterns.** `usdrecord-render` and `oiiotool-process` take a pattern
 whose file name has exactly one run of `#`, and the length of the run is the

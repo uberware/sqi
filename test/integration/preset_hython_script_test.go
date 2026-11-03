@@ -152,20 +152,26 @@ func TestHythonScript_LauncherRunsTheScript(t *testing.T) {
 		}
 	})
 
-	t.Run("raises", func(t *testing.T) {
-		out, code := run(t, `raise RuntimeError("boom")`)
-		if code == 0 {
-			t.Errorf("an exception in the script exited 0:\n%s", out)
-		}
-		if !strings.Contains(out, "boom") {
-			t.Errorf("output does not show the exception:\n%s", out)
-		}
-	})
-
-	t.Run("exit code", func(t *testing.T) {
-		out, code := run(t, `raise SystemExit(3)`)
-		if code != 3 {
-			t.Errorf("SystemExit(3) exited %d, want 3:\n%s", code, out)
-		}
-	})
+	for _, tc := range []struct {
+		name     string
+		body     string
+		wantCode int // 0 means any non-zero code
+		wantOut  string
+	}{
+		{"raises", `raise RuntimeError("boom")`, 0, "boom"},
+		{"exit code", `raise SystemExit(3)`, 3, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, code := run(t, tc.body)
+			if tc.wantCode == 0 && code == 0 {
+				t.Errorf("exited 0, want a non-zero code:\n%s", out)
+			}
+			if tc.wantCode != 0 && code != tc.wantCode {
+				t.Errorf("exited %d, want %d:\n%s", code, tc.wantCode, out)
+			}
+			if !strings.Contains(out, tc.wantOut) {
+				t.Errorf("output does not contain %q:\n%s", tc.wantOut, out)
+			}
+		})
+	}
 }

@@ -201,8 +201,8 @@ func TestNukeDetector_CommandFindsTheExecutableOnEveryPlatform(t *testing.T) {
 // globs against Houdini 22.0.466's bundled OpenImageIO tool, which is named
 // hoiiotool and lives beside hython in $HFS/bin. The presets run `oiiotool`,
 // which the command default stands in for; its neighbors must not match. The
-// Windows layout was measured on a real install; the Linux one is inferred from
-// the shared $HFS/bin layout.
+// Windows layout is that of a real install; the Linux one is inferred from the
+// shared $HFS/bin layout and unverified.
 func TestOIIOToolDetector_CommandFindsHoudinisCopy(t *testing.T) {
 	d := builtinDetector(t, "oiiotool")
 	if d.Command == nil || d.Command.Name != "oiiotool" {

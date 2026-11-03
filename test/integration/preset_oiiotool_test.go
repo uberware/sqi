@@ -14,13 +14,12 @@ package integration
 //
 // Untagged, like preset_ffmpeg_test.go, so the CI `test` job runs it. It uses
 // the oiiotool on PATH, or else Houdini's bundled hoiiotool through the
-// worker's command default, and skips when neither exists, which means A LOCAL
-// PASS PROVES NOTHING ON ITS OWN: look for the
-// "--- PASS: TestPresetOIIOTool_ProcessesASequence" line.
+// worker's command default, and skips when neither exists, so a local pass shows
+// nothing unless the "--- PASS: TestPresetOIIOTool_ProcessesASequence" line
+// appears.
 
 import (
 	"context"
-	"image/png"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,7 +59,7 @@ func TestPresetOIIOTool_ProcessesASequence(t *testing.T) {
 	farmID, queueID := seedFarmAndQueue(t, ts)
 	startRealWorkerAnyOS(t, ts, farmID, queueID)
 
-	// oiiotool does not create the folder it writes into (measured), so the
+	// oiiotool does not create the folder it writes into, so the
 	// output folders exist before the jobs run.
 	mkOut := func(t *testing.T, name string) string {
 		t.Helper()
@@ -90,19 +89,6 @@ func TestPresetOIIOTool_ProcessesASequence(t *testing.T) {
 		assertTaskCount(t, ts, job, 1)
 		names := []string{"small.002.png", "small.003.png"}
 		assertExactFiles(t, out, names)
-		for _, name := range names {
-			f, err := os.Open(filepath.Join(out, name))
-			if err != nil {
-				t.Errorf("open %s: %v", name, err)
-				continue
-			}
-			cfg, err := png.DecodeConfig(f)
-			_ = f.Close()
-			if err != nil {
-				t.Errorf("%s is not a PNG: %v", name, err)
-			} else if cfg.Width != 4 || cfg.Height != 4 {
-				t.Errorf("%s is %dx%d, want 4x4", name, cfg.Width, cfg.Height)
-			}
-		}
+		assertPNGSize(t, out, names, 4, 4)
 	})
 }

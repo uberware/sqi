@@ -3,14 +3,10 @@
 package product_test
 
 import (
-	"errors"
 	"maps"
-	"strings"
 	"testing"
 
 	"github.com/uberware/sqi/internal/openjd"
-	"github.com/uberware/sqi/internal/store"
-	"github.com/uberware/sqi/internal/store/fake"
 )
 
 // framePatternCase is a shipped preset with an output frame-pattern parameter:
@@ -24,9 +20,7 @@ type framePatternCase struct {
 	label string
 	// params holds every other job parameter the preset requires.
 	params map[string]string
-	// goodTasks is the task count a valid pattern over Frames "1-2" expands to.
-	goodTasks int
-	// extraBad lists patterns this preset rejects beyond the two every preset
+	// extraBad lists patterns this preset rejects beyond the ones every preset
 	// rejects.
 	extraBad []badPattern
 }
@@ -37,11 +31,6 @@ type badPattern struct {
 	label   string
 	pattern string
 }
-
-// hashInFolder is a pattern whose folder holds a #. oiiotool expands a # in
-// any argument, folders included, and usdrecord reads a # anywhere in the path
-// as a second frame placeholder, so both presets reject it.
-var hashInFolder = badPattern{"folder-hash", "/mnt/take#2/shot.####.exr"}
 
 // atSigns are patterns holding a literal @. oiiotool expands @ as a wildcard
 // the way it does #, in a folder or in the file name, so its presets reject it.
@@ -62,24 +51,27 @@ var braces = []badPattern{
 var framePatternCases = []framePatternCase{
 	{
 		preset: "usdrecord-render", param: "OutputFile", label: "Output Image Pattern",
-		params:    map[string]string{"SceneFile": "/mnt/s/stage.usd", "FramesPerTask": "1"},
-		goodTasks: 2, extraBad: append([]badPattern{hashInFolder}, braces...),
+		params:   map[string]string{"SceneFile": "/mnt/s/stage.usd", "FramesPerTask": "1"},
+		extraBad: braces,
 	},
 	{
 		preset: "oiiotool-process", param: "InputFile", label: "Input Sequence Pattern",
-		params:    map[string]string{"OutputFile": "/mnt/o/out.####.png", "FramesPerTask": "1"},
-		goodTasks: 2, extraBad: append([]badPattern{hashInFolder}, atSigns...),
+		params:   map[string]string{"OutputFile": "/mnt/o/out.####.png", "FramesPerTask": "1"},
+		extraBad: atSigns,
 	},
 	{
 		preset: "oiiotool-process", param: "OutputFile", label: "Output Sequence Pattern",
-		params:    map[string]string{"InputFile": "/mnt/i/in.####.exr", "FramesPerTask": "1"},
-		goodTasks: 2, extraBad: append([]badPattern{hashInFolder}, atSigns...),
+		params:   map[string]string{"InputFile": "/mnt/i/in.####.exr", "FramesPerTask": "1"},
+		extraBad: atSigns,
 	},
 }
 
 // TestFramePatternPresets_RejectABadPattern asserts a frame pattern with no run
-// of #, or with two runs, is rejected at submission with the parameter's label
-// in the message, and a valid one expands.
+// of #, or with two runs, or with a # in its folder, is rejected at submission
+// with the parameter's label in the message, and a valid one expands to two
+// tasks. oiiotool expands a # in any argument, folders included, and usdrecord
+// reads a # anywhere in the path as a second frame placeholder, so both presets
+// reject a # in the folder.
 func TestFramePatternPresets_RejectABadPattern(t *testing.T) {
 	for _, fc := range framePatternCases {
 		t.Run(fc.preset+"/"+fc.param, func(t *testing.T) {
@@ -87,28 +79,17 @@ func TestFramePatternPresets_RejectABadPattern(t *testing.T) {
 			submit := func(pattern string) (*openjd.SubmitResult, error) {
 				params := map[string]string{"Frames": "1-2", fc.param: pattern}
 				maps.Copy(params, fc.params)
-				st := fake.New()
-				farmID, queueID := seedFarmQueue(t, st)
-				return openjd.NewSubmitter(st).Submit(t.Context(), tmpl, store.TemplateFormatYAML, openjd.SubmitOptions{
-					FarmID: farmID, QueueID: queueID, Parameters: params,
-				})
+				return submitPreset(t, tmpl, params)
 			}
 			bad := append([]badPattern{
 				{"no-run", "/mnt/s/shot.0001.exr"},
 				{"two-runs", "/mnt/s/sh##ot.####.exr"},
+				{"folder-hash", "/mnt/take#2/shot.####.exr"},
 			}, fc.extraBad...)
 			for _, b := range bad {
 				t.Run(b.label, func(t *testing.T) {
 					_, err := submit(b.pattern)
-					if err == nil {
-						t.Fatalf("pattern %q was accepted; it must be rejected at submission", b.pattern)
-					}
-					if _, ok := errors.AsType[*openjd.SubmitValidationError](err); !ok {
-						t.Fatalf("want a *openjd.SubmitValidationError, got %T: %v", err, err)
-					}
-					if !strings.Contains(err.Error(), fc.label) || !strings.Contains(err.Error(), badPatternMessage) {
-						t.Errorf("error does not name %q and the rule %q: %v", fc.label, badPatternMessage, err)
-					}
+					assertRejectedPattern(t, err, fc.label, badPatternMessage)
 				})
 			}
 			t.Run("good", func(t *testing.T) {
@@ -116,8 +97,8 @@ func TestFramePatternPresets_RejectABadPattern(t *testing.T) {
 				if err != nil {
 					t.Fatalf("a valid pattern was rejected: %v", err)
 				}
-				if len(res.Tasks) != fc.goodTasks {
-					t.Errorf("expanded to %d tasks, want %d", len(res.Tasks), fc.goodTasks)
+				if len(res.Tasks) != 2 {
+					t.Errorf("expanded to %d tasks, want 2", len(res.Tasks))
 				}
 			})
 		})

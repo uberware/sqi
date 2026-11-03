@@ -77,7 +77,7 @@ readme: |
   - Workers tagged `attr.worker.tag.oiiotool = true`
   - `oiiotool` on the worker's `PATH`, or Houdini's copy of it (`hoiiotool`),
     which the worker finds on Windows, and on Linux at the standard `/opt/hfs*`
-    install (inferred from Houdini's layout, not yet measured)
+    install (inferred from Houdini's layout, unverified)
 category: Image Processing
 version: 1.0.0
 template:
@@ -143,11 +143,11 @@ template:
               rangeConstraint: CONTIGUOUS
       script:
         let:
-          # oiiotool reads each # as four digits (measured, OIIO 2.5.18), so
-          # the pattern's # run is rewritten as the same number of @, which
-          # stand for one digit each. Only the file name is rewritten: a # in a
-          # folder would be expanded by oiiotool, and so would a literal @ (the
-          # form sqi writes itself), so both are refused.
+          # oiiotool 2.5.18 reads each # as four digits, so the pattern's # run
+          # is rewritten as the same number of @, which stand for one digit
+          # each. Only the file name is rewritten: oiiotool expands a # in a
+          # folder and a literal @ (the form this rewrite writes), so both are
+          # refused.
           - ipad = Param.InputFile.name.count('#')
           - "input = Param.InputFile.parent / Param.InputFile.name.replace('#' * ipad, '@' * ipad) if ipad > 0 and '#' * ipad in Param.InputFile.name and '#' not in string(Param.InputFile.parent) and '@' not in string(Param.InputFile) else fail('Input Sequence Pattern must contain exactly one run of # characters marking the frame number, e.g. shot.####.exr, with no # in its folders and no @ anywhere')"
           - opad = Param.OutputFile.name.count('#')

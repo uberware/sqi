@@ -139,14 +139,14 @@ template:
       script:
         let:
           - pad = Param.OutputFile.name.count('#')
-          # usdrecord reads a # anywhere in the path (not only the file name)
-          # as a frame placeholder, and formats the path with str.format, so
-          # a # in a folder or a brace anywhere makes it fail at run time.
+          # usdrecord reads a # anywhere in the path, not only the file name, as
+          # a frame placeholder, and formats the path with str.format, so a # in
+          # a folder or a brace anywhere makes it fail at run time.
           - "output = Param.OutputFile if pad > 0 and '#' * pad in Param.OutputFile.name and '#' not in string(Param.OutputFile.parent) and '{' not in string(Param.OutputFile) and '}' not in string(Param.OutputFile) else fail('Output Image Pattern must contain exactly one run of # characters marking the frame number, e.g. preview.####.png, with no # in its folders and no { or } anywhere')"
         embeddedFiles:
           # Static text. Houdini's usdrecord.cmd runs hython on an unquoted
           # %HFS% and fails when the install path has a space, so this runs
-          # hython on the usdrecord script itself; hython sets HFS for itself.
+          # the usdrecord script under hython directly. hython sets HFS.
           - name: launcher
             type: TEXT
             filename: launcher.py
