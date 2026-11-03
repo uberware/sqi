@@ -1,6 +1,6 @@
 # `sqi` Roadmap and Technical Architecture
 
-> **Status:** v0.3.0 (Phase 3) released — opt-in authentication and multi-user support, including task isolation (run-as-user), plus the official OpenJD `EXPR` extension and expanded ffmpeg and Mistika reference presets. **Phase 4** (production hardening) is in progress: the PostgreSQL state store and backup/restore are implemented, not yet released. Details may change with requests, feedback, and discoveries as development progresses.
+> **Status:** v0.3.0 (Phase 3) released — opt-in authentication and multi-user support, including task isolation (run-as-user), plus the official OpenJD `EXPR` extension and expanded ffmpeg and Mistika reference presets. **Phase 4** (production hardening) is in progress: the PostgreSQL state store, backup/restore, external and clustered NATS, and a much larger set of reference presets and in-application submitters are implemented, not yet released. Details may change with requests, feedback, and discoveries as development progresses.
 
 This document provides technical detail on `sqi`'s architecture, core concepts, and development roadmap. For the vision and feature overview, see [README.md](index.md).
 
@@ -295,6 +295,7 @@ before Phase 3. See [docs/auth.md](auth.md) for the model and setup.
 - External and clustered NATS — **implemented, not yet released**: `nats.mode: external` runs the farm on a NATS server or cluster the operator runs, with configurable stream replicas, worker authentication through the NATS auth callout in both broker modes, one `sqi-server` per broker account, and `sqi-server nats external init` to generate the cluster's accounts configuration. See [Running on an external NATS cluster](operations.md#running-on-an-external-nats-cluster).
 - Worker auto-scaling hooks (AWS, GCP, Azure)
 - Installer packages (Linux, macOS, Windows)
+- Reference presets and submitters — **implemented, not yet released**: 45 presets covering DCC rendering, standalone renderers, transcoding and image processing; seven built-in products, including fan-out `command-sequence`/`python-sequence` and Windows `script-powershell`; in-application submitters for 14 applications; the `SQI_LOG_CHECKS` vendor extension for applications that exit 0 on failure; and a checked record of the validation tier each preset has reached. See [Preset Library](preset-library.md).
 
 ### Phase 5: LLM Plugin and Polish (v0.5 — RC)
 
@@ -306,7 +307,7 @@ before Phase 3. See [docs/auth.md](auth.md) for the model and setup.
 
 ### Phase 6: v1.0 Release
 
-- Community preset library populated
+- Community contributions to the preset library (the first-party reference presets ship in Phase 4)
 - Full documentation
 - Migration guides
 - Dual licensing finalized (AGPL + commercial)
