@@ -132,10 +132,9 @@ type ExprLimits struct {
 // tighten a limit far enough to reject sqi's own templates at those defaults.
 // A parameter that grows the work, such as a long list or a high slice count,
 // can need more. TestExprLimits_FloorsAcceptReferencePresets measures
-// this on every run. Currently the largest needs are 15 operations and 390
-// live bytes in one evaluation (ffmpeg-segment-transcode-expr), and 38
-// positions and 512 retained let bytes in one template
-// (arnold-kick-tile-render).
+// this on every run. The largest needs are 15 operations and 390 live bytes in
+// one evaluation (ffmpeg-segment-transcode-expr), and 38 positions and 512
+// retained let bytes in one template (arnold-kick-tile-render).
 const (
 	// MinExprSubmissionOperations / MaxExprSubmissionOperations bound
 	// [ExprLimits.SubmissionOperations].
