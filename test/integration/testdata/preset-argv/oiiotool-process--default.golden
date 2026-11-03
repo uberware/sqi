@@ -1,0 +1,32 @@
+preset: oiiotool-process
+case:   default
+params:
+  Frames=1-20
+  FramesPerTask=10
+  InputFile=/mnt/show/seq010/shot0010/comp/in.####.exr
+  Operations=[]
+  OutputFile=/mnt/show/seq010/shot0010/review/out.####.jpg
+
+step "Process" — 2 tasks
+
+task 1/2  name="Process[Frame=1-10]"
+  task params:
+    Frame=1-10
+  command: oiiotool
+  args:
+    [0]  --frames
+    [1]  1-10
+    [2]  /mnt/show/seq010/shot0010/comp/in.@@@@.exr
+    [3]  -o
+    [4]  /mnt/show/seq010/shot0010/review/out.@@@@.jpg
+
+task 2/2  name="Process[Frame=11-20]"
+  task params:
+    Frame=11-20
+  command: oiiotool
+  args:
+    [0]  --frames
+    [1]  11-20
+    [2]  /mnt/show/seq010/shot0010/comp/in.@@@@.exr
+    [3]  -o
+    [4]  /mnt/show/seq010/shot0010/review/out.@@@@.jpg

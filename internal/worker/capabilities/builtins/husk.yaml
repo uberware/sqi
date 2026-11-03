@@ -9,6 +9,11 @@
 # roots, /opt/hfs<version> on Linux and
 # "C:\Program Files\Side Effects Software\Houdini <version>" on Windows. macOS
 # is covered by the PATH probe only.
+#
+# A default Houdini install does not put $HFS/bin on PATH, so the command block
+# supplies the newest install's husk as the `husk` command. The Windows glob
+# matches Houdini 22.0.466's layout; the Linux one is inferred from it and
+# unverified.
 tag: husk
 checks:
   - exe: husk
@@ -17,3 +22,12 @@ checks:
     os: windows
 version:
   from: '(?:hfs|Houdini ?)(?P<v>[0-9]+\.[0-9]+)'
+command:
+  name: husk
+  version:
+    from: '(?:hfs|Houdini ?)(?P<v>[0-9]+\.[0-9]+)'
+  globs:
+    - path_glob: "/opt/hfs*/bin/husk"                                              # linux
+      os: linux
+    - path_glob: 'C:\Program Files\Side Effects Software\Houdini *\bin\husk.exe'   # windows
+      os: windows

@@ -40,6 +40,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"image/png"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -144,12 +145,25 @@ func savedPath(t *testing.T, output string) string {
 // runDCCJob submits a preset and waits for it to complete, returning the job ID.
 func runDCCJob(t *testing.T, ts *testServer, farmID, queueID, preset string, params map[string]string) string {
 	t.Helper()
-	jobID := submitPreset(t, ts, farmID, queueID, preset, params)
-	got := pollJobStatus(t, ts, jobID, []string{"completed", "failed", "canceled"}, dccJobTimeout)
-	if got != "completed" {
-		t.Fatalf("preset %s: job status = %q, want completed%s", preset, got, reportFailedTasks(t, ts, jobID))
-	}
+	jobID, _ := runPresetJobWithin(t, ts, farmID, queueID, preset, "completed", dccJobTimeout, params)
 	return jobID
+}
+
+// runPresetJobWithin submits a preset and waits up to timeout for the job to finish
+// with status want, returning the job ID and, when the job did not complete,
+// its failed tasks' report (their failure reasons and log tails).
+func runPresetJobWithin(t *testing.T, ts *testServer, farmID, queueID, preset, want string, timeout time.Duration, params map[string]string) (string, string) {
+	t.Helper()
+	jobID := submitPreset(t, ts, farmID, queueID, preset, params)
+	got := pollJobStatus(t, ts, jobID, []string{"completed", "failed", "canceled"}, timeout)
+	report := ""
+	if got != "completed" {
+		report = reportFailedTasks(t, ts, jobID)
+	}
+	if got != want {
+		t.Fatalf("preset %s: job status = %q, want %q%s", preset, got, want, report)
+	}
+	return jobID, report
 }
 
 // jobTaskCount returns how many tasks a job fanned out into.
@@ -293,12 +307,8 @@ func TestPresetDCC_Blender_BatchRender(t *testing.T) {
 // returning the failed tasks' report (their failure reasons and log tails).
 func runDCCJobExpectingFailure(t *testing.T, ts *testServer, farmID, queueID, preset string, params map[string]string) string {
 	t.Helper()
-	jobID := submitPreset(t, ts, farmID, queueID, preset, params)
-	got := pollJobStatus(t, ts, jobID, []string{"completed", "failed", "canceled"}, dccJobTimeout)
-	if got != "failed" {
-		t.Fatalf("preset %s: job status = %q, want failed", preset, got)
-	}
-	return reportFailedTasks(t, ts, jobID)
+	_, report := runPresetJobWithin(t, ts, farmID, queueID, preset, "failed", dccJobTimeout, params)
+	return report
 }
 
 // TestPresetDCC_Blender_ViewLayerRender runs blender-view-layer-render under a
@@ -393,8 +403,9 @@ func nukeScene(t *testing.T, exe, renders string) string {
 	return savedPath(t, runDCC(t, exe, args...))
 }
 
-// assertPNGs checks each file decodes as a PNG of the test script's size.
-func assertPNGs(t *testing.T, dir string, names []string) {
+// assertPNGSize checks each file in dir decodes as a PNG of w pixels wide and h
+// high. An h of zero or less checks only the width.
+func assertPNGSize(t *testing.T, dir string, names []string, w, h int) {
 	t.Helper()
 	for _, name := range names {
 		f, err := os.Open(filepath.Join(dir, name))
@@ -404,10 +415,11 @@ func assertPNGs(t *testing.T, dir string, names []string) {
 		}
 		cfg, err := png.DecodeConfig(f)
 		_ = f.Close()
-		if err != nil {
+		switch {
+		case err != nil:
 			t.Errorf("%s is not a PNG: %v", name, err)
-		} else if cfg.Width != 320 || cfg.Height != 180 {
-			t.Errorf("%s is %dx%d, want 320x180", name, cfg.Width, cfg.Height)
+		case cfg.Width != w || (h > 0 && cfg.Height != h):
+			t.Errorf("%s is %dx%d, want width %d, height %d (0 = any)", name, cfg.Width, cfg.Height, w, max(h, 0))
 		}
 	}
 }
@@ -434,7 +446,7 @@ func TestPresetDCC_Nuke_WriteRender(t *testing.T) {
 	assertTaskCount(t, ts, job, 2)
 	want := frameNames("wr2.%04d.png", 1, 4)
 	assertExactFiles(t, renders, want)
-	assertPNGs(t, renders, want)
+	assertPNGSize(t, renders, want, 320, 180)
 }
 
 // TestPresetDCC_Nuke_ScriptRender runs nuke-script-render under a real Nuke: with
@@ -455,7 +467,7 @@ func TestPresetDCC_Nuke_ScriptRender(t *testing.T) {
 	})
 	want := append(frameNames("wr1.%04d.png", seq(1, 4)...), frameNames("wr2.%04d.png", seq(1, 4)...)...)
 	assertExactFiles(t, renders, want)
-	assertPNGs(t, renders, want)
+	assertPNGSize(t, renders, want, 320, 180)
 }
 
 // ── Houdini ───────────────────────────────────────────────────────────────────
@@ -530,4 +542,287 @@ func TestPresetDCC_Houdini_ROPRender(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPresetDCC_Houdini_HythonScript runs hython-script under a real hython. The
+// script each task runs writes one JSON file per frame of its chunk holding
+// hou.frame(), the hip's name and SQI_FRAME_START, so the files on disk show
+// that the launcher loaded the hip, that hou.frame() starts at the task's first
+// frame, and that every frame of the range was written by its own chunk. A
+// script that raises must fail the job: that is the property the launcher
+// relies on hython for.
+func TestPresetDCC_Houdini_HythonScript(t *testing.T) {
+	const caseName = "TestPresetDCC_Houdini_HythonScript"
+	trackOutcome(t, caseName)
+	hython := requireDCC(t, caseName, "Houdini", "hython")
+
+	dir := t.TempDir()
+	hip := savedPath(t, runDCC(t, hython, dccTestdata(t, "houdini_scene.py"),
+		filepath.Join(dir, "test shot"), filepath.ToSlash(filepath.Join(dir, "geo"))))
+
+	ts := startServer(t)
+	farmID, queueID := seedFarmAndQueue(t, ts)
+	startRealWorkerAnyOS(t, ts, farmID, queueID)
+
+	// scriptFor builds a script body that records, for each frame of the task's
+	// chunk, what hou saw. The output directory is embedded with %q, which is a
+	// valid Python string literal for any path.
+	scriptFor := func(out string) string {
+		return fmt.Sprintf(`import json, os
+import hou
+
+for f in range(int(os.environ["SQI_FRAME_START"]), int(os.environ["SQI_FRAME_END"]) + 1):
+    with open(os.path.join(%q, "frame.%%d.json" %% f), "w") as fh:
+        json.dump({
+            "hou_frame": hou.frame(),
+            "hip": hou.hipFile.basename(),
+            "start": os.environ["SQI_FRAME_START"],
+        }, fh)
+`, filepath.ToSlash(out))
+	}
+	type frameFile struct {
+		HouFrame float64 `json:"hou_frame"`
+		Hip      string  `json:"hip"`
+		Start    string  `json:"start"`
+	}
+	// readFrames reads back the file for each frame, keyed by frame.
+	readFrames := func(t *testing.T, out string, frames []int) map[int]frameFile {
+		t.Helper()
+		got := map[int]frameFile{}
+		for _, f := range frames {
+			data, err := os.ReadFile(filepath.Join(out, fmt.Sprintf("frame.%d.json", f)))
+			if err != nil {
+				t.Fatalf("frame %d: %v", f, err)
+			}
+			var ff frameFile
+			if err := json.Unmarshal(data, &ff); err != nil {
+				t.Fatalf("frame %d: %v", f, err)
+			}
+			got[f] = ff
+		}
+		return got
+	}
+	wantHip := filepath.Base(hip)
+
+	// A contiguous chunk never spans a gap and chunks are balanced, so 1-5,7 at 4
+	// frames per task is 1-3, 4-5 and 7. hou.frame() is the first frame of the
+	// task's chunk, whatever frame the script is on.
+	t.Run("chunks", func(t *testing.T) {
+		out := t.TempDir()
+		job := runDCCJob(t, ts, farmID, queueID, "hython-script", map[string]string{
+			"SceneFile": hip, "Script": scriptFor(out), "Frames": "1-5,7", "FramesPerTask": "4",
+		})
+		assertTaskCount(t, ts, job, 3)
+		wantStart := map[int]int{1: 1, 2: 1, 3: 1, 4: 4, 5: 4, 7: 7}
+		frames := []int{1, 2, 3, 4, 5, 7}
+		assertExactFiles(t, out, frameNames("frame.%d.json", frames...))
+		for f, ff := range readFrames(t, out, frames) {
+			if want := wantStart[f]; ff.HouFrame != float64(want) || ff.Start != strconv.Itoa(want) || ff.Hip != wantHip {
+				t.Errorf("frame %d: saw %+v, want hou_frame and start %d, hip %q", f, ff, want, wantHip)
+			}
+		}
+	})
+
+	t.Run("script error fails the job", func(t *testing.T) {
+		report := runDCCJobExpectingFailure(t, ts, farmID, queueID, "hython-script", map[string]string{
+			"SceneFile": hip, "Script": `raise RuntimeError("boom")`, "Frames": "1", "FramesPerTask": "1",
+		})
+		if !strings.Contains(report, "boom") {
+			t.Errorf("failed task report does not show the script's exception:\n%s", report)
+		}
+	})
+}
+
+// TestPresetDCC_Houdini_USDRecord runs usdrecord-render under a real hython,
+// which runs Houdini's usdrecord on a 20-frame stage. The stage is copied to a
+// directory with a space in its name: that is what Houdini's own usdrecord.cmd
+// wrapper cannot launch, and the reason the preset runs hython directly. The
+// frame images are read back, so the files show that the `#` run is the frame
+// padding, that each task covers exactly its frames, that the renderer name
+// "Karma CPU" reaches usdrecord as one argument, that --imageWidth is
+// applied, and that a range below zero is accepted.
+func TestPresetDCC_Houdini_USDRecord(t *testing.T) {
+	const caseName = "TestPresetDCC_Houdini_USDRecord"
+	trackOutcome(t, caseName)
+	requireDCC(t, caseName, "Houdini", "hython")
+
+	dir := filepath.Join(t.TempDir(), "test shot")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stage := filepath.Join(dir, "stage.usda")
+	data, err := os.ReadFile(dccTestdata(t, "stage.usda"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stage, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ts := startServer(t)
+	farmID, queueID := seedFarmAndQueue(t, ts)
+	startRealWorkerAnyOS(t, ts, farmID, queueID)
+
+	t.Run("storm", func(t *testing.T) {
+		out := filepath.Join(dir, "out", "review")
+		job := runDCCJob(t, ts, farmID, queueID, "usdrecord-render", map[string]string{
+			"SceneFile": stage, "OutputFile": filepath.Join(out, "preview.####.png"),
+			"Frames": "1-12", "FramesPerTask": "10", "ImageWidth": "64",
+		})
+		assertTaskCount(t, ts, job, 2)
+		names := frameNames("preview.%04d.png", seq(1, 12)...)
+		assertExactFiles(t, out, names)
+		assertPNGSize(t, out, names, 64, 0)
+	})
+
+	t.Run("karma cpu", func(t *testing.T) {
+		out := filepath.Join(dir, "karma")
+		job := runDCCJob(t, ts, farmID, queueID, "usdrecord-render", map[string]string{
+			"SceneFile": stage, "OutputFile": filepath.Join(out, "karma.###.png"),
+			"Frames": "3", "Renderer": "Karma CPU", "Camera": "cam", "ImageWidth": "32",
+		})
+		assertTaskCount(t, ts, job, 1)
+		assertExactFiles(t, out, []string{"karma.003.png"})
+		assertPNGSize(t, out, []string{"karma.003.png"}, 32, 0)
+	})
+
+	// A chunk that starts below zero reaches usdrecord as --frames=-2:-1, one
+	// argument; as two, argparse reads -2:-1 as an option and the task fails.
+	t.Run("negative frames", func(t *testing.T) {
+		out := filepath.Join(dir, "neg")
+		job := runDCCJob(t, ts, farmID, queueID, "usdrecord-render", map[string]string{
+			"SceneFile": stage, "OutputFile": filepath.Join(out, "neg.####.png"),
+			"Frames": "-2--1", "ImageWidth": "16",
+		})
+		assertTaskCount(t, ts, job, 1)
+		names := []string{"neg.-002.png", "neg.-001.png"}
+		assertExactFiles(t, out, names)
+		assertPNGSize(t, out, names, 16, 0)
+	})
+}
+
+// huskLayer is a USD layer over testdata/dcc/stage.usda that adds the render
+// settings husk renders from: the camera cam at 64x36, and one PNG product
+// named by productName. Karma needs the AOV name and format on the render var;
+// without them it reports "Unsupported AOV settings" and writes a blank image.
+const huskLayer = `#usda 1.0
+(
+    defaultPrim = "World"
+    renderSettingsPrimPath = "/Render/settings"
+    subLayers = [@./stage.usda@]
+)
+
+def Scope "Render"
+{
+    def RenderSettings "settings"
+    {
+        rel camera = </World/cam>
+        int2 resolution = (64, 36)
+        rel products = </Render/Products/beauty>
+    }
+
+    def Scope "Products"
+    {
+        def RenderProduct "beauty"
+        {
+            token productName = "%s"
+            rel orderedVars = </Render/Products/Vars/color>
+        }
+
+        def Scope "Vars"
+        {
+            def RenderVar "color"
+            {
+                string sourceName = "C.*[LO]"
+                token sourceType = "lpe"
+                token dataType = "color4f"
+                string driver:parameters:aov:name = "C"
+                token driver:parameters:aov:format = "color4h"
+                bool driver:parameters:aov:multiSampled = 1
+            }
+        }
+    }
+}
+`
+
+// TestPresetDCC_Houdini_HuskRender runs husk-usd-render under Houdini's own
+// husk, found through the detector's command default, on the 20-frame stage the
+// usdrecord test renders. Each case writes a layer naming its own output
+// pattern, with $F4 for the frame, beside the stage in a folder whose name has
+// a space; the output folder does not exist beforehand, so the files also show
+// that --make-output-path creates it. The images are read back, so the files
+// show that each task renders exactly its own frames, that a stepped range
+// renders no frame it leaves out, that a delegate name with a space reaches husk
+// as one argument, and that --frame accepts a frame below zero.
+func TestPresetDCC_Houdini_HuskRender(t *testing.T) {
+	const caseName = "TestPresetDCC_Houdini_HuskRender"
+	trackOutcome(t, caseName)
+	requireDCC(t, caseName, "Houdini", "husk")
+
+	dir := filepath.Join(t.TempDir(), "test shot")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(dccTestdata(t, "stage.usda"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "stage.usda"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// layer writes a layer rendering to out/<name>.$F4.png and returns its path.
+	layer := func(t *testing.T, name, out string) string {
+		t.Helper()
+		path := filepath.Join(dir, name+".usda")
+		product := filepath.ToSlash(filepath.Join(out, name)) + ".$F4.png"
+		if err := os.WriteFile(path, fmt.Appendf(nil, huskLayer, product), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	ts := startServer(t)
+	farmID, queueID := seedFarmAndQueue(t, ts)
+	startRealWorkerAnyOS(t, ts, farmID, queueID)
+
+	cases := []struct {
+		name   string
+		params map[string]string
+		tasks  int
+		frames []int
+		want   []string
+	}{
+		{name: "one frame per task", params: map[string]string{"Frames": "1-3"}, tasks: 3, frames: seq(1, 3)},
+		{name: "stepped", params: map[string]string{"Frames": "1-5:2"}, tasks: 3, frames: []int{1, 3, 5}},
+		{name: "karma cpu", params: map[string]string{"Frames": "7", "Renderer": "Karma CPU"}, tasks: 1, frames: []int{7}},
+		{
+			name: "negative", params: map[string]string{"Frames": "-2--1"}, tasks: 2,
+			want: []string{"negative.-002.png", "negative.-001.png"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stem := strings.ReplaceAll(tc.name, " ", "_")
+			out := filepath.Join(dir, "renders", stem)
+			params := map[string]string{"SceneFile": layer(t, stem, out)}
+			maps.Copy(params, tc.params)
+			job := runDCCJob(t, ts, farmID, queueID, "husk-usd-render", params)
+			assertTaskCount(t, ts, job, tc.tasks)
+			want := tc.want
+			if want == nil {
+				want = frameNames(stem+".%04d.png", tc.frames...)
+			}
+			assertExactFiles(t, out, want)
+			assertPNGSize(t, out, want, 64, 36)
+		})
+	}
+
+	t.Run("missing stage fails", func(t *testing.T) {
+		report := runDCCJobExpectingFailure(t, ts, farmID, queueID, "husk-usd-render", map[string]string{
+			"SceneFile": filepath.Join(dir, "missing.usda"), "Frames": "1",
+		})
+		if !strings.Contains(report, "Unable to load USD file") {
+			t.Errorf("failed task report does not show husk's error:\n%s", report)
+		}
+	})
 }

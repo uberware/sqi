@@ -3,6 +3,7 @@
 package product_test
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -167,4 +168,75 @@ func submitSlices(t *testing.T, tmpl string, format store.TemplateFormat, sliceC
 			"SegmentSeconds":  "60",
 		},
 	})
+}
+
+// TestOIIOToolOperationsCeilingFitsTheStockMemoryLimit pins what the largest
+// Operations list oiiotool-process accepts (64 items of 1024 characters, the
+// parameter's own bounds) costs at submission.
+//
+// Operations is the one input of that preset that grows: the other expressions
+// cost a fixed ~24 operations and ~285 retained bytes whatever the job. A full
+// list costs the same 24 operations, but its strings are live values while the
+// argument list is built, and that is charged against
+// openjd.expr_memory_limit: 69,696 bytes against the stock 1,000,000 (14x
+// headroom), and 20,544 for 64 items of 256. An operator who lowers the memory
+// limit toward its 4,096-byte floor rejects a long list well before the floor,
+// as with ffmpeg-segment-transcode-expr's slice count.
+//
+// The table submits under fixed memory limits: a full list must fit in 100,000
+// bytes, and must not fit in 50,000, so the first cannot pass because the limit
+// never applied.
+func TestOIIOToolOperationsCeilingFitsTheStockMemoryLimit(t *testing.T) {
+	const items, itemLen = 64, 1024
+	tmpl := presetTemplate(t, "oiiotool-process")
+	ops := make([]string, items)
+	for i := range ops {
+		ops[i] = strings.Repeat("x", itemLen)
+	}
+	list, err := json.Marshal(ops)
+	if err != nil {
+		t.Fatal(err)
+	}
+	submit := func(limits openjd.ExprLimits) (*openjd.SubmitResult, error) {
+		st := fake.New()
+		farmID, queueID := seedFarmQueue(t, st)
+		return openjd.NewSubmitterWithOptions(st, openjd.SubmitterOptions{EnforceLimits: true, ExprLimits: limits}).
+			Submit(t.Context(), tmpl, store.TemplateFormatYAML, openjd.SubmitOptions{
+				FarmID: farmID, QueueID: queueID,
+				Parameters: map[string]string{
+					"InputFile": "/mnt/i/in.####.exr", "OutputFile": "/mnt/o/out.####.png",
+					"Frames": "1-2", "FramesPerTask": "1", "Operations": string(list),
+				},
+			})
+	}
+
+	for _, tc := range []struct {
+		name        string
+		memoryLimit int64
+		wantErr     bool
+	}{
+		{"fits in a tenth of the stock limit", 100_000, false},
+		{"the memory limit applies", 50_000, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			limits := openjd.DefaultExprLimits()
+			limits.SubmissionMemoryBytes = tc.memoryLimit
+			res, err := submit(limits)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("a full Operations list was accepted under a %d-byte memory limit; the cost this file pins is not being charged", tc.memoryLimit)
+				}
+				if _, ok := errors.AsType[*openjd.SubmitValidationError](err); !ok {
+					t.Fatalf("want a *openjd.SubmitValidationError, got %T: %v", err, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("a full Operations list must fit in %d bytes of expression memory: %v", tc.memoryLimit, err)
+			}
+			if len(res.Tasks) != 2 {
+				t.Errorf("expanded to %d tasks, want 2", len(res.Tasks))
+			}
+		})
+	}
 }

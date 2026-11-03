@@ -24,20 +24,25 @@ readme: |
 
   ## How work is divided
 
-  Each task renders a contiguous chunk of the frame range, one frame per task
-  by default. The task passes `husk` its first frame and its frame count, so a
-  larger chunk size renders several frames in one `husk` launch, with fewer
-  stage loads and less parallelism. A stepped range such as `1-100:2` always
-  runs one task per frame, so `husk` never renders a frame the range leaves
-  out.
+  Each task renders one frame: the task passes `husk` its frame as the first
+  frame and a frame count of 1. A stepped range such as `1-100:2` runs one
+  task per frame in the range, so `husk` never renders a frame the range
+  leaves out.
 
-  Output paths come from the stage's render products; `husk` creates any
-  missing output directories.
+  ## Output
+
+  Output paths come from the stage's render products, and `husk` creates any
+  missing output folders. Each product's name must hold a frame variable, such
+  as `$F4` in `shot.$F4.exr`. With none, every frame writes the same file. A
+  stage with no render product writes every frame to `karma.exr` in the
+  task's working folder, which sqi deletes when the task ends.
 
   ## Requirements
 
   - Workers tagged `attr.worker.tag.husk = true`
-  - `husk` on the worker's `PATH`
+  - `husk` on the worker's `PATH`, or Houdini's own, which the worker finds at
+    the default install location on Windows, and on Linux at `/opt/hfs*`
+    (inferred from Houdini's layout, unverified)
   - A Houdini license available to `husk`, and a Karma license when rendering
     with Karma
 category: Rendering

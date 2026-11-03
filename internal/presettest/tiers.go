@@ -23,7 +23,7 @@ const RequireAppsEnv = "SQI_TEST_REQUIRE_APPS"
 
 // KnownApps are the vendor applications a Tier-2 case may need, by the name
 // RequiresApp and RequireAppsEnv use.
-var KnownApps = []string{"blender", "houdini", "nuke"}
+var KnownApps = []string{"3delight", "blender", "houdini", "nuke", "renderman", "unreal"}
 
 // RequiredApps parses the RequireAppsEnv value. An unknown name is an error: a
 // typo would otherwise turn the requirement off silently.

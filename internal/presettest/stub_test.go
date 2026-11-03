@@ -31,7 +31,11 @@ func TestInstallStub_PlacesAnExecutableUnderEachName(t *testing.T) {
 	if err != nil {
 		t.Skipf("BuildStub: %v (no Go toolchain?)", err)
 	}
-	dir := t.TempDir()
+	dir, err := presettest.StubInstallDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
 	if err := presettest.InstallStub(dir, []string{"Render", "ffmpeg"}); err != nil {
 		t.Fatalf("InstallStub: %v", err)
 	}

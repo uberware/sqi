@@ -1,0 +1,21 @@
+preset: oiiotool-process
+case:   windows-path
+params:
+  Frames=1
+  FramesPerTask=10
+  InputFile=C:\comp\shot0010\in.####.exr
+  Operations=[]
+  OutputFile=C:\review\shot0010\out.####.png
+
+step "Process" — 1 task
+
+task 1/1  name="Process[Frame=1-1]"
+  task params:
+    Frame=1-1
+  command: oiiotool
+  args:
+    [0]  --frames
+    [1]  1-1
+    [2]  C:\comp\shot0010\in.@@@@.exr
+    [3]  -o
+    [4]  C:\review\shot0010\out.@@@@.png

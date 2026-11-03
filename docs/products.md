@@ -93,7 +93,7 @@ template:
 | `title` | yes | Human-readable display name. |
 | `description` | no | Short plain-text catalog blurb, max 500 runes (a Unicode character count, not a byte count). Shown in cards and in DCC submitter dropdowns, and matched by product search. **Plain text, not Markdown** — it reaches consumers that cannot render markup, such as the Blender addon's tooltip. |
 | `readme` | no | Long-form Markdown documentation, max 8000 runes. Rendered on the product's detail page in the web UI. **Not searched**, and not carried in the preset library index. |
-| `category` | no | Free-form group label (e.g. `General`, `Rendering`). |
+| `category` | no | Free-form group label (e.g. `General`, `Rendering`, `Transcoding`, `Image Processing`). |
 | `version` | no | Semver string used for future update-detection. |
 | `template` | yes | Inline OpenJD job template (`specificationVersion: jobtemplate-2023-09`). |
 
@@ -358,6 +358,28 @@ template), in what that join requires of the worker (only the PowerShell
 variant is gated to one OS), and in whether they delete the slice files
 afterwards. Full reference:
 [`docs/preset-library.md`](preset-library.md#transcoding-reference-presets).
+
+Three other presets are utilities rather than scene renders: `hython-script`
+(category `General`) runs a Python script in a Houdini session, `usdrecord-render`
+(`Rendering`) renders a USD stage with Houdini's `usdrecord`, and
+`oiiotool-process` (the `Image Processing` category) converts or processes an
+image sequence with OpenImageIO's `oiiotool`. The first two gate on the
+`houdini` capability tag, the third on `oiiotool`. None has a submitter host;
+install and submit them from the web UI or REST API. Full reference:
+[`docs/preset-library.md`](preset-library.md#houdini-and-image-processing-reference-presets).
+
+`usdrecord-render` and `oiiotool-process` share one frame-pattern rule. The
+file name of each pattern parameter must contain exactly one run of `#`, and the
+length of the run is the frame number's padding: `shot.####.exr` is
+`shot.0007.exr` for frame 7. A pattern with no run, or with two separate runs,
+is rejected when you submit the job. `oiiotool` reads each `#` as four digits,
+so sqi rewrites the run to the same number of `@`, where each `@` is one digit,
+before it reaches `oiiotool`: `shot.####.exr` becomes `shot.@@@@.exr`. A `#`
+in a folder name is also rejected, because both tools read it as a placeholder
+or wildcard. Both presets also reject `{` and `}` anywhere in the path:
+`usdrecord` formats the path with Python's `str.format`, and `oiiotool`
+evaluates `{...}` as an expression. `oiiotool-process` also rejects an `@`
+anywhere in either pattern.
 
 Key points about installed products:
 

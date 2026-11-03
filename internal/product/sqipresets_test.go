@@ -159,6 +159,21 @@ func TestSQIReferencePresets(t *testing.T) {
 			params:     []string{"SceneFile", "Frames", "Renderer"},
 			extensions: []string{"TASK_CHUNKING", "EXPR"},
 		},
+		"hython-script": {
+			category:   "General",
+			params:     []string{"SceneFile", "Script", "Frames", "FramesPerTask"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
+		},
+		"usdrecord-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "OutputFile", "Frames", "FramesPerTask", "Renderer", "Camera", "ImageWidth"},
+			extensions: []string{"TASK_CHUNKING", "EXPR"},
+		},
+		"oiiotool-process": {
+			category:   "Image Processing",
+			params:     []string{"InputFile", "OutputFile", "Frames", "FramesPerTask", "Operations"},
+			extensions: []string{"TASK_CHUNKING", "EXPR"},
+		},
 		"redshift-standalone-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames"},
@@ -177,7 +192,7 @@ func TestSQIReferencePresets(t *testing.T) {
 		"3delight-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames"},
-			extensions: []string{"EXPR"},
+			extensions: []string{"EXPR", "SQI_LOG_CHECKS"},
 		},
 		"mantra-render": {
 			category:   "Rendering",

@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# USD Record Render: hython runs the embedded launcher, which runs Houdini's
+# usdrecord. Each task passes the chunk's first and last frame as --frames
+# MIN:MAX. default omits --renderer and --camera and passes --imageWidth 960;
+# options passes a renderer name with a space in it as one argument;
+# stepped-range splits into one-frame chunks; and negative-range passes a range
+# that starts below zero as the single argument --frames=-2:2, because a
+# separate -2:2 argument would be read as an option.
+cases:
+  - name: default
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/usd/shot0010_layout.usd
+      OutputFile: /mnt/show/seq010/shot0010/review/shot0010.####.png
+      Frames: "1-20"
+      FramesPerTask: "10"
+    expect_tasks: 2
+    expect_invocations:
+      hython: 2
+  - name: options
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/usd/shot0010_layout.usd
+      OutputFile: /mnt/show/seq010/shot0010/review/shot0010.####.png
+      Frames: "1"
+      Renderer: Karma CPU
+      Camera: /World/cam
+      ImageWidth: "1920"
+    expect_tasks: 1
+    expect_invocations:
+      hython: 1
+  - name: stepped-range
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/usd/shot0010_layout.usd
+      OutputFile: /mnt/show/seq010/shot0010/review/shot0010.####.png
+      Frames: "1-9:4"
+    expect_tasks: 3
+    expect_invocations:
+      hython: 3
+  - name: negative-range
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/usd/shot0010_layout.usd
+      OutputFile: /mnt/show/seq010/shot0010/review/shot0010.####.png
+      Frames: "-2-2"
+      FramesPerTask: "10"
+    expect_tasks: 1
+    expect_invocations:
+      hython: 1

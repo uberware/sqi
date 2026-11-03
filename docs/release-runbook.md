@@ -249,7 +249,7 @@ VERSION=0.3.0
 The presets authored in this repo are not part of the GitHub release or the
 PyPI packages:
 
-- the forty-two `presets/sqi/*.yaml` reference presets (Maya layer + scene, Nuke
+- the forty-five `presets/sqi/*.yaml` reference presets (Maya layer + scene, Nuke
   write + script, Houdini ROP, Blender batch + view layer, Cinema 4D scene +
   take, 3ds Max, After Effects render + queue render, Mistika Boutique + VR +
   Workflows, Katana, Silhouette render +
@@ -258,7 +258,7 @@ PyPI packages:
   queue + shot render; the standalone renderers Arnold
   kick + kick tile, V-Ray, husk, Redshift, RenderMan, 3Delight and Mantra;
   ffmpeg transcode, sequence-encode, and segment-transcode
-  bash/PowerShell/EXPR);
+  bash/PowerShell/EXPR; hython script, usdrecord render and oiiotool process);
 - the four `presets/testing/*.yaml` smoke-test presets (test-render and
   test-steps, each in bash + PowerShell).
 
@@ -304,7 +304,7 @@ go run ./cmd/presetgen -presets presets/testing -subdir testing -out /path/to/sq
 
 **Verify:**
 - The published index (`https://uberware.github.io/sqi-presets/index.json`)
-  lists all forty-two presets under `sqi/` and the four test presets under `testing/`
+  lists all forty-five presets under `sqi/` and the four test presets under `testing/`
   with the correct `sha256`.
 - In the sqi web UI's Preset Library page, each preset installs successfully
   and its checksum verifies (no 422).

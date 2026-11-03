@@ -59,6 +59,33 @@ func presetTemplate(t *testing.T, name string) string {
 	return tmpl
 }
 
+// submitPreset submits tmpl to a fresh fake store with the given parameters.
+func submitPreset(t *testing.T, tmpl string, params map[string]string) (*openjd.SubmitResult, error) {
+	t.Helper()
+	st := fake.New()
+	farmID, queueID := seedFarmQueue(t, st)
+	return openjd.NewSubmitter(st).Submit(t.Context(), tmpl, store.TemplateFormatYAML, openjd.SubmitOptions{
+		FarmID: farmID, QueueID: queueID, Parameters: params,
+	})
+}
+
+// assertRejectedPattern asserts err is a submission validation error whose
+// message contains every fragment.
+func assertRejectedPattern(t *testing.T, err error, fragments ...string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("the pattern was accepted; it must be rejected at submission")
+	}
+	if _, ok := errors.AsType[*openjd.SubmitValidationError](err); !ok {
+		t.Fatalf("want a *openjd.SubmitValidationError, got %T: %v", err, err)
+	}
+	for _, f := range fragments {
+		if !strings.Contains(err.Error(), f) {
+			t.Errorf("error does not contain %q: %v", f, err)
+		}
+	}
+}
+
 // parsedPresetTemplate returns the presets/sqi preset name's template, parsed.
 func parsedPresetTemplate(t *testing.T, name string) *openjd.JobTemplate {
 	t.Helper()
@@ -106,24 +133,15 @@ func TestPerFilePresets_RejectABadScenePattern(t *testing.T) {
 			submit := func(scene string) (*openjd.SubmitResult, error) {
 				params := map[string]string{"SceneFile": scene, "Frames": "1-2"}
 				maps.Copy(params, pf.extra)
-				st := fake.New()
-				farmID, queueID := seedFarmQueue(t, st)
-				return openjd.NewSubmitter(st).Submit(t.Context(), tmpl, store.TemplateFormatYAML, openjd.SubmitOptions{
-					FarmID: farmID, QueueID: queueID, Parameters: params,
-				})
+				return submitPreset(t, tmpl, params)
 			}
-			for _, bad := range []string{"/mnt/s/shot.0001.ass", "/mnt/s/sh##ot.####.ass"} {
-				t.Run(bad, func(t *testing.T) {
-					_, err := submit(bad)
-					if err == nil {
-						t.Fatalf("pattern %q was accepted; it must be rejected at submission", bad)
-					}
-					if _, ok := errors.AsType[*openjd.SubmitValidationError](err); !ok {
-						t.Fatalf("want a *openjd.SubmitValidationError, got %T: %v", err, err)
-					}
-					if !strings.Contains(err.Error(), badPatternMessage) {
-						t.Errorf("error does not name the pattern rule (%q): %v", badPatternMessage, err)
-					}
+			for _, bad := range []badPattern{
+				{"no-run", "/mnt/s/shot.0001.ass"},
+				{"two-runs", "/mnt/s/sh##ot.####.ass"},
+			} {
+				t.Run(bad.label, func(t *testing.T) {
+					_, err := submit(bad.pattern)
+					assertRejectedPattern(t, err, badPatternMessage)
 				})
 			}
 			t.Run("good pattern", func(t *testing.T) {

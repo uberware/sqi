@@ -1,0 +1,34 @@
+preset: usdrecord-render
+case:   negative-range
+params:
+  Camera=
+  Frames=-2-2
+  FramesPerTask=10
+  ImageWidth=960
+  OutputFile=/mnt/show/seq010/shot0010/review/shot0010.####.png
+  Renderer=
+  SceneFile=/mnt/show/seq010/shot0010/usd/shot0010_layout.usd
+
+step "Render" — 1 task
+
+task 1/1  name="Render[Frame=-2-2]"
+  task params:
+    Frame=-2-2
+  command: hython
+  args:
+    [0]  <WORKDIR>
+    [1]  --imageWidth
+    [2]  960
+    [3]  --frames=-2:2
+    [4]  /mnt/show/seq010/shot0010/usd/shot0010_layout.usd
+    [5]  /mnt/show/seq010/shot0010/review/shot0010.####.png
+  embedded file "launcher" (launcher.py):
+    import os, runpy, sys
+    script = os.path.join(os.environ["HFS"], "bin", "usdrecord")
+    # usdrecord does not create the output folder; the last argument
+    # is the output pattern.
+    folder = os.path.dirname(sys.argv[-1])
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    sys.argv = [script] + sys.argv[1:]
+    runpy.run_path(script, run_name="__main__")

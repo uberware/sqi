@@ -197,6 +197,96 @@ func TestNukeDetector_CommandFindsTheExecutableOnEveryPlatform(t *testing.T) {
 	}
 }
 
+// TestHoudiniBinDetectors_CommandFindsHoudinisCopy checks the shipped command
+// globs of the detectors whose command is a program in Houdini 22.0.466's
+// $HFS/bin: husk, mantra, and oiiotool, which Houdini ships as hoiiotool.
+// Houdini's installer does not put $HFS/bin on PATH, so the presets reach these
+// programs through the command default. Each glob must pick its own program and
+// none of its neighbors. The Windows layout is that of a real install; the
+// Linux one is inferred from the shared $HFS/bin layout and unverified.
+func TestHoudiniBinDetectors_CommandFindsHoudinisCopy(t *testing.T) {
+	const (
+		linuxBin   = "/opt/hfs22.0.466/bin/"
+		windowsBin = `C:\Program Files\Side Effects Software\Houdini 22.0.466\bin\`
+	)
+	cases := []struct {
+		command string
+		file    string
+		not     []string
+	}{
+		{"husk", "husk", []string{"hython", "karma", "mantra"}},
+		{"mantra", "mantra", []string{"husk", "hython", "mantra_tool"}},
+		{"oiiotool", "hoiiotool", []string{"iconvert", "hython"}},
+	}
+	for _, tc := range cases {
+		d := builtinDetector(t, tc.command)
+		if d.Command == nil || d.Command.Name != tc.command {
+			t.Fatalf("the %s detector has no command named %s: %+v", tc.command, tc.command, d.Command)
+		}
+		for _, p := range []struct{ goos, dir, ext string }{{"linux", linuxBin, ""}, {"windows", windowsBin, ".exe"}} {
+			t.Run(tc.command+"/"+p.goos, func(t *testing.T) {
+				exe := p.dir + tc.file + p.ext
+				var not []string
+				for _, n := range tc.not {
+					not = append(not, p.dir+n+p.ext)
+				}
+				assertCommandGlobsPick(t, d, p.goos, exe, not, "Houdini's "+tc.file)
+				got, ok := d.FindCommand(envWithCommandAt(d, p.goos, exe))
+				if !ok || got.Name != tc.command || got.Path != exe || got.Version != "22.0" {
+					t.Errorf("FindCommand = %+v (found %v), want %s 22.0 at %s", got, ok, tc.command, exe)
+				}
+			})
+		}
+	}
+}
+
+// TestRendererDetectors_CommandFindsTheInstall checks the shipped command globs
+// of the RenderMan and 3Delight detectors against their default install
+// layouts. Neither installer puts its renderer on the PATH a running worker
+// sees, so the presets reach prman and renderdl through the command default.
+// The Windows layouts are those of RenderMan 27.3 and a 3Delight install; the
+// others are unverified.
+func TestRendererDetectors_CommandFindsTheInstall(t *testing.T) {
+	cases := []struct {
+		detector, command, goos, exe, version string
+		not                                   []string
+	}{
+		{
+			"renderman", "prman", "linux", "/opt/pixar/RenderManProServer-27.3/bin/prman", "27.3",
+			[]string{"/opt/pixar/RenderManProServer-27.3/bin/txmake"},
+		},
+		{
+			"renderman", "prman", "darwin", "/Applications/Pixar/RenderManProServer-27.3/bin/prman", "27.3",
+			[]string{"/Applications/Pixar/RenderManProServer-27.3/bin/txmake"},
+		},
+		{
+			"renderman", "prman", "windows", `C:\Program Files\Pixar\RenderManProServer-27.3\bin\prman.exe`, "27.3",
+			[]string{`C:\Program Files\Pixar\RenderManProServer-27.3\bin\txmake.exe`},
+		},
+		{
+			"threedelight", "renderdl", "darwin", "/Applications/3Delight/bin/renderdl", "",
+			[]string{"/Applications/3Delight/bin/tdlmake"},
+		},
+		{
+			"threedelight", "renderdl", "windows", `C:\Program Files\3Delight\bin\renderdl.exe`, "",
+			[]string{`C:\Program Files\3Delight\bin\tdlmake.exe`, `C:\Program Files\3Delight\bin\i-display.exe`},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.command+"/"+tc.goos, func(t *testing.T) {
+			d := builtinDetector(t, tc.detector)
+			if d.Command == nil || d.Command.Name != tc.command {
+				t.Fatalf("the %s detector has no command named %s: %+v", tc.detector, tc.command, d.Command)
+			}
+			assertCommandGlobsPick(t, d, tc.goos, tc.exe, tc.not, tc.command)
+			got, ok := d.FindCommand(envWithCommandAt(d, tc.goos, tc.exe))
+			if !ok || got.Name != tc.command || got.Path != tc.exe || got.Version != tc.version {
+				t.Errorf("FindCommand = %+v (found %v), want %s %q at %s", got, ok, tc.command, tc.version, tc.exe)
+			}
+		})
+	}
+}
+
 // TestKatanaDetector_CommandFindsTheExecutableOnEveryPlatform checks the shipped
 // command globs against a Katana 7.0v1 install on the two platforms Katana runs
 // on, in both Linux letter cases. The layouts are unverified (see katana.yaml).

@@ -165,11 +165,17 @@ func TestBuiltinDetectors_FFmpeg(t *testing.T) {
 	}
 }
 
-// TestBuiltinDetectors_OIIOTool checks that the oiiotool detector is a single
-// PATH probe for oiiotool.
+// TestBuiltinDetectors_OIIOTool checks that the oiiotool detector probes PATH
+// for oiiotool first, then Houdini's bundled hoiiotool, and supplies the
+// command `oiiotool` for hosts where only the Houdini copy exists.
 func TestBuiltinDetectors_OIIOTool(t *testing.T) {
 	d := builtinDetector(t, "oiiotool")
-	if len(d.Checks) != 1 || d.Checks[0].Exe != "oiiotool" {
-		t.Errorf("oiiotool detector checks = %+v, want exactly exe: oiiotool", d.Checks)
+	if len(d.Checks) < 2 || d.Checks[0].Exe != "oiiotool" {
+		t.Fatalf("oiiotool detector checks = %+v, want exe: oiiotool first", d.Checks)
+	}
+	for _, c := range d.Checks[1:] {
+		if !strings.Contains(c.PathGlob, "hoiiotool") {
+			t.Errorf("check %+v: every check after the PATH probe must be a path_glob for hoiiotool", c)
+		}
 	}
 }
