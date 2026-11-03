@@ -376,8 +376,10 @@ is rejected when you submit the job. `oiiotool` reads each `#` as four digits,
 so sqi rewrites the run to the same number of `@`, where each `@` is one digit,
 before it reaches `oiiotool`: `shot.####.exr` becomes `shot.@@@@.exr`. A `#`
 in a folder name is also rejected, because both tools read it as a placeholder
-or wildcard. `usdrecord-render` additionally rejects `{` and `}` anywhere in
-the path, and `oiiotool-process` an `@` anywhere in either pattern.
+or wildcard. Both presets also reject `{` and `}` anywhere in the path:
+`usdrecord` formats the path with Python's `str.format`, and `oiiotool`
+evaluates `{...}` as an expression. `oiiotool-process` also rejects an `@`
+anywhere in either pattern.
 
 Key points about installed products:
 

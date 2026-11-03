@@ -39,12 +39,16 @@ var atSigns = []badPattern{
 	{"name-at", "/mnt/s/shot@2x.####.exr"},
 }
 
-// braces are patterns usdrecord cannot take: it formats the output path with
-// str.format, so a brace anywhere in it fails at run time.
+// braces are patterns holding a { or }. usdrecord formats the output path with
+// str.format and oiiotool evaluates {...} in a file argument as an expression,
+// so both presets reject a brace anywhere.
 var braces = []badPattern{
 	{"folder-brace", "/mnt/take{2}/shot.####.exr"},
 	{"name-brace", "/mnt/s/shot{x}.####.exr"},
 }
+
+// oiiotoolBad is what oiiotool-process rejects beyond the shared rules.
+var oiiotoolBad = append(append([]badPattern{}, atSigns...), braces...)
 
 // framePatternCases lists the presets checked by
 // TestFramePatternPresets_RejectABadPattern.
@@ -57,12 +61,12 @@ var framePatternCases = []framePatternCase{
 	{
 		preset: "oiiotool-process", param: "InputFile", label: "Input Sequence Pattern",
 		params:   map[string]string{"OutputFile": "/mnt/o/out.####.png", "FramesPerTask": "1"},
-		extraBad: atSigns,
+		extraBad: oiiotoolBad,
 	},
 	{
 		preset: "oiiotool-process", param: "OutputFile", label: "Output Sequence Pattern",
 		params:   map[string]string{"InputFile": "/mnt/i/in.####.exr", "FramesPerTask": "1"},
-		extraBad: atSigns,
+		extraBad: oiiotoolBad,
 	},
 }
 

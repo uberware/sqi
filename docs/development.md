@@ -19,6 +19,7 @@ guides for extending the worker.
 | `pkgsite` | Local pkg.go.dev docs server | `go install golang.org/x/pkgsite/cmd/pkgsite@latest` |
 | `ffmpeg` (with `ffprobe`) | Required by `make test`, `make test-cover`, `make ci` and `make test-preset-harness`: the preset validation registry's `tier2` blocks require the real-ffmpeg cases to run, and a skip on a required platform is a failure | `apt-get install ffmpeg` / `choco install ffmpeg` / `brew install ffmpeg` |
 | Python 3 (`python3` or `python` on `PATH`) | Required by the same four targets for the `python-sequence` Tier-2 case. Some `internal/openjd/expr` path tests compare against `python3`'s `pathlib` and skip without it. `make test-expr-oracle`, `make docs-site-install` and the `py-*` targets build their virtualenvs from it | [python.org](https://www.python.org/downloads/) |
+| `oiiotool` (Linux) | Required by the same four targets on Linux for the `oiiotool-process` Tier-2 case. On Windows and macOS the case runs when `oiiotool`, or Houdini's `hoiiotool` on Windows, is found, and skips otherwise | `apt-get install openimageio-tools` / `brew install openimageio` |
 | Docker (optional) | Build and run the container image. Also runs the real-directory LDAP tests (`make test-ldap`), the real-provider SSO tests (`make test-oidc`), the real-root run-as-user isolation tests (`make test-isolation`) and the PostgreSQL tests (`make test-postgres`), all of which skip without it | [docs.docker.com](https://docs.docker.com/get-docker/), or `brew install colima docker && colima start` |
 
 `gofumpt`, `goimports`, and `golangci-lint` are required at commit time via
@@ -585,7 +586,8 @@ make test-preset-harness
 go test ./test/integration/ -run TestPresetTier1Argv/maya-layer-render -v
 ```
 
-`make test-preset-harness` needs ffmpeg and Python 3 on `PATH`: the
+`make test-preset-harness` needs ffmpeg and Python 3 on `PATH`, and on Linux
+`oiiotool`: the
 registry's `tier2` blocks require those cases to run, and a skip on a required
 platform is a registry failure. Each registry entry's `required_on` names the
 platforms its cases must run on. Most name Linux, macOS and Windows; these name

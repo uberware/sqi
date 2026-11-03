@@ -332,11 +332,10 @@ presets:
         SystemExit reaching the exit status. Tier 2 runs the preset under a
         real hython (Houdini 22.0.466, Apprentice, Windows) against a saved
         hipnc and shows that the hip loads, that hou.frame() starts at the
-        task's first frame (one frame per task, and 1-10 at 4 giving chunk
-        starts 1, 5 and 8), that SQI_FRAME_START reaches the script, that
-        every frame of a range was written and that the last writer of each
-        was the right chunk, and that an exception in the script fails the
-        job. That each frame belongs to exactly one task comes from the Tier 1
+        task's first frame (1-5,7 at 4 per task giving three tasks with chunk
+        starts 1, 4 and 7, the last a one-frame chunk), that SQI_FRAME_START
+        reaches the script, that every frame of the range was written by the
+        right chunk, and that an exception in the script fails the job. That each frame belongs to exactly one task comes from the Tier 1
         goldens, not from Tier 2. An empty script is refused at submission
         (minLength 1). Not shown: a hip file that needs plugins or a license
         beyond Apprentice, a simulation cooked across a chunk, a .hip or
@@ -404,8 +403,9 @@ presets:
         #### gives 16 digits and ###### gives 24). Only the file name is
         rewritten: the windows-path case shows C:\... patterns intact, and a #
         in a folder or an @ anywhere (oiiotool 2.5.18 expands both as
-        wildcards) is rejected at submission, as are patterns with no # or two
-        runs. The default case shows an empty Operations list leaving no empty
+        wildcards) is rejected at submission, as is a { or } anywhere (it
+        evaluates {...} as an expression) and a pattern with no # or two runs.
+        A printf-style %d in a pattern is not rejected; oiiotool expands it. The default case shows an empty Operations list leaving no empty
         argument. Tier 2 runs the preset with Houdini 22.0.466's hoiiotool (OIIO
         2.5.18), found through the detector's command default, on the Windows
         development host and, in CI, with Ubuntu's openimageio-tools (2.5.19.1

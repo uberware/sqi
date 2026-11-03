@@ -671,8 +671,11 @@ placeholder and formats the path with Python's `str.format`, so
 `oiiotool` reads each `#` as four digits, so sqi rewrites the run as the same
 number of `@` before it reaches `oiiotool`, where each `@` is one digit:
 `shot.####.exr` becomes `shot.@@@@.exr`. `oiiotool` expands `#` and `@` as
-wildcards anywhere in an argument, so `oiiotool-process` also rejects a `#` in
-a folder and an `@` anywhere in either pattern. Anything written under
+wildcards anywhere in an argument and evaluates `{...}` as an expression, so
+`oiiotool-process` also rejects a `#` in a folder and an `@`, `{` or `}`
+anywhere in either pattern. It also expands a printf-style `%d` or `%04d`,
+which sqi does not check for, so keep those out of the patterns. Anything
+written under
 **Operations** is passed through as written, including a second input sequence,
 which must use the `@` form.
 
@@ -818,8 +821,9 @@ could ever fail it.
 registry check) in one `go test` invocation. It must be one invocation:
 `TestZZPresetTierRegistrySatisfied` checks what the tier tests recorded in the
 same process, so a split run fails the registry check with "never reported".
-ffmpeg and Python must be on `PATH`, because the `tier2` cases need them and a
-skip on a platform named in `required_on` is a registry failure.
+ffmpeg and Python must be on `PATH`, and on Linux `oiiotool` too, because the
+`tier2` cases need them and a skip on a platform named in `required_on` is a
+registry failure.
 
 ### Tier 3 on Windows
 

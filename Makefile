@@ -318,7 +318,8 @@ test-preset-harness: ## Run the whole preset validation harness (tiers 1-3 + reg
 # needs --nc, which SQI_TEST_NUKE_ARGS supplies (default --nc; set it empty for a
 # commercial or Indie license), and Houdini's needs an activated Apprentice or
 # commercial license. Narrow DCC_APPS to the ones you have, e.g.
-# `make test-dcc DCC_APPS=blender`. ffmpeg must still be on PATH.
+# `make test-dcc DCC_APPS=blender`. ffmpeg must still be on PATH, and on Linux
+# oiiotool.
 DCC_APPS ?= blender,nuke,houdini
 
 .PHONY: test-dcc

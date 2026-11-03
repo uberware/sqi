@@ -538,7 +538,7 @@ func TestPresetDCC_Houdini_ROPRender(t *testing.T) {
 // script each task runs writes one JSON file per frame of its chunk holding
 // hou.frame(), the hip's name and SQI_FRAME_START, so the files on disk show
 // that the launcher loaded the hip, that hou.frame() starts at the task's first
-// frame, and that every frame of a range is covered by exactly one task. A
+// frame, and that every frame of the range was written by its own chunk. A
 // script that raises must fail the job: that is the property the launcher
 // relies on hython for.
 func TestPresetDCC_Houdini_HythonScript(t *testing.T) {
