@@ -23,6 +23,31 @@ var (
 	errStub  error
 )
 
+// StubParent is the folder under the system temp folder that holds every copy
+// of the stub: each process's build, Go's own build files for it (GOTMPDIR),
+// and the folders [StubInstallDir] makes. Windows Defender flags the stub as
+// malware, so excluding this one folder from scanning covers all of them.
+const StubParent = "sqi-stubproc"
+
+// stubTempDir makes a new folder under StubParent whose name starts with prefix.
+func stubTempDir(prefix string) (string, error) {
+	parent := filepath.Join(os.TempDir(), StubParent)
+	if err := os.MkdirAll(parent, 0o750); err != nil {
+		return "", fmt.Errorf("presettest: temp dir for stub: %w", err)
+	}
+	dir, err := os.MkdirTemp(parent, prefix+"-*")
+	if err != nil {
+		return "", fmt.Errorf("presettest: temp dir for stub: %w", err)
+	}
+	return dir, nil
+}
+
+// StubInstallDir makes a new folder under StubParent for [InstallStub]. The
+// caller removes it.
+func StubInstallDir() (string, error) {
+	return stubTempDir("path")
+}
+
 // BuildStub compiles the stub binary once per process and returns its path.
 //
 // The directory is deliberately NOT a testing.TempDir: the build is cached
@@ -30,14 +55,15 @@ var (
 // it removed should register [RemoveStub] in TestMain.
 func BuildStub(ctx context.Context) (string, error) {
 	stubOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "sqi-stubproc-*")
+		dir, err := stubTempDir("build")
 		if err != nil {
-			errStub = fmt.Errorf("presettest: temp dir for stub: %w", err)
+			errStub = err
 			return
 		}
 		stubDir = dir
 		out := filepath.Join(dir, "stubproc"+exeSuffix())
 		cmd := exec.CommandContext(ctx, "go", "build", "-o", out, StubPackage)
+		cmd.Env = append(os.Environ(), "GOTMPDIR="+dir)
 		if combined, err := cmd.CombinedOutput(); err != nil {
 			errStub = fmt.Errorf("presettest: build stub: %w\n%s", err, combined)
 			return

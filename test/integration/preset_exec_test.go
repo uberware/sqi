@@ -58,7 +58,11 @@ type tier3Env struct {
 // environment that makes a worker resolve those commands to it.
 func newTier3Env(t *testing.T, names []string, extra ...string) tier3Env {
 	t.Helper()
-	stubDir := t.TempDir()
+	stubDir, err := presettest.StubInstallDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(stubDir) })
 	if err := presettest.InstallStub(stubDir, names); err != nil {
 		t.Skipf("InstallStub: %v (no Go toolchain?)", err)
 	}
