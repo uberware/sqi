@@ -44,12 +44,12 @@ type Metrics struct {
 	// failures from long-running successes.
 	ExecDuration *prometheus.HistogramVec
 
-	// NATSPublishedTotal counts messages published to the sqi-server NATS
-	// broker, labeled by subject. Populated by the NATS client.
+	// NATSPublishedTotal counts messages published to the NATS broker,
+	// labeled by subject. Populated by the NATS client.
 	NATSPublishedTotal *prometheus.CounterVec
 
-	// NATSConsumedTotal counts messages consumed from the sqi-server NATS
-	// broker, labeled by subject. Populated by the NATS client.
+	// NATSConsumedTotal counts messages consumed from the NATS broker,
+	// labeled by subject. Populated by the NATS client.
 	NATSConsumedTotal *prometheus.CounterVec
 
 	// UptimeSeconds is the wall-clock seconds since the worker process started.
@@ -102,7 +102,7 @@ func New() *Metrics {
 				Namespace: "sqi_worker",
 				Subsystem: "nats",
 				Name:      "published_total",
-				Help:      "Total messages published to the sqi-server NATS broker, partitioned by subject.",
+				Help:      "Total messages published to the NATS broker, partitioned by subject.",
 			},
 			[]string{"subject"},
 		),
@@ -112,7 +112,7 @@ func New() *Metrics {
 				Namespace: "sqi_worker",
 				Subsystem: "nats",
 				Name:      "consumed_total",
-				Help:      "Total messages consumed from the sqi-server NATS broker, partitioned by subject.",
+				Help:      "Total messages consumed from the NATS broker, partitioned by subject.",
 			},
 			[]string{"subject"},
 		),

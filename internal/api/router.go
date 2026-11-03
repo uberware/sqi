@@ -234,20 +234,10 @@ type Deps struct {
 	// registered, regardless of NATSAuthEnabled — so a nil value panics the
 	// first time it is called, the same contract every other required Deps
 	// field carries. Production supplies *server.Server, which revokes in
-	// the store and then reloads the broker's authorized-key set; this
+	// the store and then disconnects the worker from the broker; this
 	// package depends only on the [WorkerRevoker] interface, never on
 	// internal/bus or internal/server.
 	WorkerRevoker WorkerRevoker
-
-	// BrokerCredentialReloader handles the post-enrollment reload inside
-	// POST /api/v1/workers/enroll. Only actually invoked when that route is
-	// mounted (NATSAuthEnabled && NATSAuthEnrollmentEndpointEnabled both
-	// true), but production always supplies it unconditionally — same
-	// *server.Server as WorkerRevoker — so a nil value here indicates a
-	// wiring bug rather than an intentionally-disabled feature. See
-	// [BrokerCredentialReloader] (the interface) for why enroll's reload
-	// failure is handled differently from revoke's.
-	BrokerCredentialReloader BrokerCredentialReloader
 }
 
 // resolveCORSOrigins returns the CORS allow-list to configure, dropping the
@@ -452,7 +442,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	}
 	usersH := newUsersHandler(deps.Store, logger, deps.LDAPConfig.RoleSource, deps.OIDCConfig.RoleSource)
 	apiKeysH := newAPIKeysHandler(deps.Store, logger)
-	workerEnroll := newWorkerEnrollHandler(deps.Store, deps.WorkerRevoker, deps.BrokerCredentialReloader, logger, deps.JoinTokenSingleUse, deps.JoinTokenTTL)
+	workerEnroll := newWorkerEnrollHandler(deps.Store, deps.WorkerRevoker, logger, deps.JoinTokenSingleUse, deps.JoinTokenTTL)
 	az := newAuthz(deps.Store, logger)
 
 	wsH := newWSHandler(logger, deps.Hub, deps.Store, deps.Auth, wsOriginConfig{

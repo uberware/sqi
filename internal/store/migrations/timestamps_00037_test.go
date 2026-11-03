@@ -192,6 +192,11 @@ var (
 	caseColumnLine  = regexp.MustCompile(`^    (\w+) = CASE$`)
 )
 
+// addedAfter00037 are timestamp columns of tables a later migration creates.
+// They are written fixed-width from their first row, so 00037 has nothing to
+// rewrite in them.
+var addedAfter00037 = []string{"broker_state.recorded_at"}
+
 // TestMigration00037_CoversEveryTimestampColumn fails, by name, on a timestamp
 // column the schema has and 00037 does not rewrite, or one 00037 rewrites that
 // the schema does not have. A timestamp column is one named at, retry_after or
@@ -209,6 +214,9 @@ WHERE  m.type = 'table' AND m.name NOT LIKE 'sqlite_%' AND m.name <> 'goose_db_v
   AND  (p.name IN ('at', 'retry_after') OR p.name LIKE '%\_at' ESCAPE '\')`)
 	rewritten := migrationColumns(t)
 	for _, c := range schema {
+		if slices.Contains(addedAfter00037, c) {
+			continue
+		}
 		if !slices.Contains(rewritten, c) {
 			t.Errorf("timestamp column %s is not rewritten by %s", c, migration00037)
 		}

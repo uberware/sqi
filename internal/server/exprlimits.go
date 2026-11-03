@@ -3,9 +3,13 @@
 package server
 
 import (
+	"time"
+
+	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/config"
 	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/scheduler"
+	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
 // ExprLimitsFromConfig maps the operator's four openjd.expr_* settings onto
@@ -47,6 +51,37 @@ func ExprLimitsFromConfig(c config.OpenJDConfig) openjd.ExprLimits {
 func schedulerConfig(cfg Config) scheduler.Config {
 	sched := cfg.Scheduler
 	sched.ExprLimits = cfg.OpenJDExprLimits
-	sched.NATSAuthEnabled = cfg.NATSAuthEnabled
+	sched.NATSAuthEnabled = cfg.NATS.Auth.Enabled
 	return sched
+}
+
+// schedulerConfigWithBus is [schedulerConfig] with the scheduler's bus-up
+// source taken from client unless the caller's Scheduler section already set
+// one. Heartbeats ride the bus, so the liveness sweeps stand down while it is
+// down or has just come back; both broker modes need that, since a broker can
+// restart while the server stays up.
+func schedulerConfigWithBus(cfg Config, client *bus.Client) scheduler.Config {
+	sched := schedulerConfig(cfg)
+	if sched.BusUpSince == nil && client != nil {
+		sched.BusUpSince = client.BusUpSince
+	}
+	if sched.BusReconnectGrace <= 0 {
+		sched.BusReconnectGrace = busReconnectGrace(sched.WorkerTimeout)
+	}
+	return sched
+}
+
+// busReconnectGrace is how long after the server's bus connection returns the
+// liveness sweeps keep standing down. A live worker lost the same broker, so
+// it redials on its own backoff, which is independent of the server's: the
+// grace must cover the worker timeout, a worker's longest redial wait with its
+// jitter, and one heartbeat interval for the first heartbeat after the redial.
+// A shorter grace reclaims the running tasks of a worker that is merely still
+// waiting to reconnect.
+func busReconnectGrace(workerTimeout time.Duration) time.Duration {
+	if workerTimeout <= 0 {
+		workerTimeout = scheduler.DefaultConfig().WorkerTimeout
+	}
+	redial := time.Duration(float64(protocol.MaxReconnectBackoff) * (1 + protocol.ReconnectJitterFraction))
+	return workerTimeout + redial + protocol.DefaultHeartbeatInterval
 }

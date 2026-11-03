@@ -8,8 +8,18 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
+func TestStreamDefs_TakeTheReplicaCount(t *testing.T) {
+	for _, replicas := range []int{1, 3, 5} {
+		for _, d := range streamDefs(replicas) {
+			if d.Replicas != replicas {
+				t.Errorf("streamDefs(%d): %s replicas = %d", replicas, d.Name, d.Replicas)
+			}
+		}
+	}
+}
+
 func TestStreamDefs(t *testing.T) {
-	defs := streamDefs()
+	defs := streamDefs(1)
 
 	byName := make(map[string]jetstream.StreamConfig, len(defs))
 	for _, d := range defs {

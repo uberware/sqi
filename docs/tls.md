@@ -3,7 +3,10 @@
 sqi can terminate TLS in-process on every listener it opens: `sqi-server`'s REST
 API, WebSocket gateway and embedded web UI on one listener, its embedded NATS
 broker on another, and the worker's own metrics and health endpoint on a third.
-Workers can optionally be required to present a client certificate.
+Workers can optionally be required to present a client certificate. With an
+external NATS cluster (`nats.mode: external`), the cluster's own TLS covers the
+worker transport, and `sqi-server` is one more TLS client of it (see
+[External broker](#external-broker)).
 
 **TLS is off by default.** A `sqi-server` started with no TLS configuration
 opens one plaintext HTTP listener and one plaintext broker. Everything below
@@ -17,7 +20,8 @@ many deployments will do anyway — see [Reverse proxy](#reverse-proxy).
 | Surface | Covered by | Notes |
 |---|---|---|
 | REST API, WebSocket, web UI | `http.tls` | One listener; it upgrades in place |
-| Worker ↔ broker (assignments, status, logs) | `nats.tls` | Closes the cleartext gap that broker authentication alone does not |
+| Worker ↔ broker (assignments, status, logs) | `nats.embedded.tls`, or the external cluster's own TLS | Closes the cleartext gap that broker authentication alone does not |
+| `sqi-server` ↔ external broker | `nats.external.tls` and `tls://` URLs | Only with `nats.mode: external`; the embedded broker's own connections are in-process |
 | Worker enrollment (`POST /api/v1/workers/enroll`) | `http.tls` server-side, `nats.server_tls_ca_file` worker-side | Runs over REST before the worker holds any credential |
 | Outbound LDAP / OIDC | Their own settings (`auth.ldap.*`, `auth.oidc.*`) | Unchanged by anything here |
 | Worker metrics / health (`metrics.addr`) | `metrics.tls` (worker) | Loopback by default, where plaintext is fine; turn TLS on with any address reachable from elsewhere, since this carries metrics, health and — with `enable_pprof` — full runtime profiles |
@@ -43,16 +47,18 @@ http:
     key_file: ""      # PEM private key matching cert_file
 
 nats:
-  tls:
-    enabled: false
-    cert_file: ""
-    key_file: ""
-    client_ca_file: ""  # set = require and verify worker client certificates
+  embedded:
+    tls:
+      enabled: false
+      cert_file: ""
+      key_file: ""
+      client_ca_file: ""  # set = require and verify worker client certificates
 ```
 
 Environment: `SQI_HTTP_TLS_ENABLED`, `SQI_HTTP_TLS_CERT_FILE`,
-`SQI_HTTP_TLS_KEY_FILE`, `SQI_NATS_TLS_ENABLED`, `SQI_NATS_TLS_CERT_FILE`,
-`SQI_NATS_TLS_KEY_FILE`, `SQI_NATS_TLS_CLIENT_CA_FILE`.
+`SQI_HTTP_TLS_KEY_FILE`, `SQI_NATS_EMBEDDED_TLS_ENABLED`,
+`SQI_NATS_EMBEDDED_TLS_CERT_FILE`, `SQI_NATS_EMBEDDED_TLS_KEY_FILE`,
+`SQI_NATS_EMBEDDED_TLS_CLIENT_CA_FILE`.
 
 The two blocks are deliberately independent. An operator may legitimately serve
 the API with a publicly-issued certificate and the broker with a private farm CA,
@@ -60,6 +66,34 @@ or turn on one without the other.
 
 There is no minimum-version or cipher-suite setting. Go's server default is
 already TLS 1.2 minimum, and a farm has no use for lowering it.
+
+### External broker
+
+With `nats.mode: external`, sqi does not terminate the worker transport: the
+cluster's listeners do, configured in the cluster's own nats-server config.
+`sqi-server` connects to it as a client:
+
+```yaml
+nats:
+  external:
+    urls: ["tls://nats-a:4222", "tls://nats-b:4222", "tls://nats-c:4222"]
+    tls:
+      ca_file: ""       # CA that verifies the cluster's certificate; empty = system roots
+      cert_file: ""     # client certificate, for a cluster that requires mTLS
+      key_file: ""
+      server_name: ""   # name to verify the certificate against, if not the URL's host
+```
+
+Environment: `SQI_NATS_EXTERNAL_TLS_CA_FILE`, `SQI_NATS_EXTERNAL_TLS_CERT_FILE`,
+`SQI_NATS_EXTERNAL_TLS_KEY_FILE`, `SQI_NATS_EXTERNAL_TLS_SERVER_NAME`.
+
+The scheme of `nats.external.urls` decides: `tls://` URLs use TLS, and every
+URL must use the same scheme. The `tls` keys are refused beside `nats://`
+URLs, since they would make the result depend on what the cluster offers.
+Workers use `tls://` URLs too, with the cluster's CA in `nats.tls_ca_file`.
+`sqi-server tls init --host <cluster-name>` can issue the cluster's certificate
+from the farm CA, as the [reference cluster](operations.md#the-reference-compose-cluster)
+does. TLS between the cluster's nodes is the cluster's concern.
 
 ### Worker
 
@@ -116,18 +150,23 @@ falling back to `auto`.
 
 ### Discovery fills in "auto"
 
-A worker that finds its server over mDNS reads the `nats_tls` TXT record the
-server advertises. Under `"auto"` that record is a reason to use TLS, so a
-discovered TLS farm connects over TLS with nothing configured on the worker at
-all. Two consequences:
+A worker that finds its server over mDNS uses the broker URL the server
+advertises in its `nats_url` TXT record, and the URL's scheme says whether the
+broker requires TLS: `tls://` when `nats.embedded.tls.enabled` is on, or
+whatever scheme the advertised external URL has. Under `"auto"` a `tls://` URL
+is a reason to use TLS, so a discovered TLS farm connects over TLS with nothing
+configured on the worker at all. Two consequences:
 
 - With no `tls_ca_file`, the broker certificate is verified against the **system
   roots**, so a farm CA fails with a certificate error naming the issuer. The
   worker warns about exactly this at startup. Copy `ca.crt` over and set
   `tls_ca_file`.
-- Under `"false"` the advertisement is **not** overridden — false means false —
-  but the worker warns that the connection is about to be refused, because the
-  broker's own error will not mention the setting responsible.
+- Under `"false"` a `tls://` URL still connects over TLS — the NATS client
+  requires it for that scheme — but with none of the worker's TLS settings:
+  no CA file, no client certificate, no `insecure_skip_verify`, so the
+  certificate is verified against the system roots. The worker warns about
+  this, because the certificate error that follows will not mention the
+  setting responsible.
 
 An explicit `nats.url` discovers nothing, so none of this applies: an operator
 who configures the URL by hand configures the transport by hand.
@@ -151,7 +190,8 @@ Nothing about a certificate is allowed to fail for the first time at connect tim
 | Certificate already expired | error at startup |
 | Certificate expires within 30 days | WARN at startup |
 | Certificate files set while `enabled: false` | WARN — "serving plaintext" |
-| `nats.tls.client_ca_file` set while `nats.tls.enabled: false` | error at startup |
+| `nats.embedded.tls.client_ca_file` set while `nats.embedded.tls.enabled: false` | error at startup |
+| `nats.external.tls.*` set beside `nats://` URLs, or only one of `cert_file` / `key_file` | error at startup |
 
 An expired certificate is an error rather than a warning because a server that
 boots with one is a server whose entire farm fails to connect — strictly worse
@@ -216,8 +256,10 @@ this one makes the common case correct by default.
 
 ## Worker client certificates (mTLS)
 
-Setting `nats.tls.client_ca_file` makes the broker require a client certificate
-signed by that CA from every connecting worker.
+Setting `nats.embedded.tls.client_ca_file` makes the embedded broker require a
+client certificate signed by that CA from every connecting worker. An external
+cluster that requires client certificates does so in its own configuration,
+and `sqi-server` then needs `nats.external.tls.cert_file` and `key_file` too.
 
 This **layers on** the nkey credential rather than replacing it. The certificate
 gates *who may open a connection*; the nkey decides *which worker* they are, and
@@ -246,14 +288,14 @@ The supported order:
 2. Copy `ca.crt` to every worker.
 3. Stage each worker's `tls_ca_file` and `server_tls_ca_file` in its config, but
    do not restart the workers yet.
-4. Set `http.tls` and `nats.tls` on the server, then restart the server and all
-   workers together.
+4. Set `http.tls` and `nats.embedded.tls` on the server, then restart the
+   server and all workers together.
 
 ## Certificate rotation
 
 Rotation requires a **server restart**. Certificates are read once, at startup,
 and validated before the listener opens; there is no hot-reload. Replacing the
-files under a running server has no effect until it restarts.
+files under a running server takes effect only at its next restart.
 
 Renew before expiry: the server refuses to start with an expired certificate, and
 warns for 30 days beforehand.
@@ -272,8 +314,8 @@ supported and needs no TLS configuration in sqi. Two things to get right:
   usually fine; across a network it is not.
 
 A reverse proxy in front of the **API** does nothing for the **broker**. Workers
-connect to the NATS port directly, so `nats.tls` is the only thing that encrypts
-assignments, status and log chunks.
+connect to the NATS port directly, so TLS on the broker is the only thing that
+encrypts assignments, status and log chunks.
 
 ## Verifying
 
@@ -307,9 +349,10 @@ silently: a certificate signed by an unknown CA fails verification with that nam
 as the cause, and a worker with no TLS configuration attempting a TLS-required
 broker fails with `secure connection not available`.
 
-The server advertises `tls=1` / `nats_tls=1` in its mDNS TXT records when the
-respective listener is TLS-terminated, and a discovering worker acts on
-`nats_tls` — see [Discovery fills in "auto"](#discovery-fills-in-auto).
+The server advertises `tls=1` in its mDNS TXT records when the API is
+TLS-terminated, and a `tls://` `nats_url` when the broker is, and a
+discovering worker acts on the latter — see
+[Discovery fills in "auto"](#discovery-fills-in-auto).
 
 `scripts/smoke.sh` runs its whole flow in three modes — plain, broker-auth and TLS
 — so the TLS path is exercised end to end on every CI run.

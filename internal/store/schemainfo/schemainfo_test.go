@@ -41,7 +41,7 @@ func TestSQLite_ReadsTheMigratedSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
-		"api_keys", "audit_log", "compute_locations", "farms", "job_dependencies", "jobs", "products",
+		"api_keys", "audit_log", "broker_state", "compute_locations", "farms", "job_dependencies", "jobs", "products",
 		"queues", "sessions", "steps", "storage_locations", "task_attempts", "task_logs", "tasks",
 		"usage_claims", "usage_pools", "users", "worker_credentials", "worker_join_tokens", "workers",
 	}

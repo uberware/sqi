@@ -57,16 +57,33 @@ func TestPortFromAddr(t *testing.T) {
 func TestBuildTXTRecords(t *testing.T) {
 	t.Parallel()
 
-	got := buildTXTRecords("abc-123", 8080, 4222, "render-01", "v0.1.0", false, false)
+	got := buildTXTRecords("abc-123", 8080, "nats://render-01.local:4222", "render-01", "v0.1.0", false)
 	want := []string{
 		"id=abc-123",
 		"http=8080",
-		"nats=4222",
+		"nats_url=nats://render-01.local:4222",
 		"host=render-01",
 		"version=v0.1.0",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("buildTXTRecords() = %v, want %v", got, want)
+	}
+}
+
+// TestBuildTXTRecords_AdvertisesNATSURLOnly pins the clean break: the broker
+// is advertised as one nats_url record, and neither the old port record nor
+// the old TLS record exists in any form.
+func TestBuildTXTRecords_AdvertisesNATSURLOnly(t *testing.T) {
+	t.Parallel()
+
+	got := buildTXTRecords("id-1", 8080, "tls://h:4222", "h", "0.4.0", true)
+	if !slices.Contains(got, "nats_url=tls://h:4222") {
+		t.Errorf("records %v missing nats_url=tls://h:4222", got)
+	}
+	for _, rec := range got {
+		if strings.HasPrefix(rec, "nats=") || strings.HasPrefix(rec, "nats_tls=") {
+			t.Errorf("records %v contain the removed record %q", got, rec)
+		}
 	}
 }
 
@@ -77,41 +94,19 @@ func TestBuildTXTRecords(t *testing.T) {
 func TestBuildTXTRecords_TLSKeysOmittedWhenOff(t *testing.T) {
 	t.Parallel()
 
-	for _, rec := range buildTXTRecords("id-1", 8080, 4222, "host", "0.4.0", false, false) {
-		if strings.HasPrefix(rec, "tls=") || strings.HasPrefix(rec, "nats_tls=") {
-			t.Errorf("plaintext advertisement contains %q; TLS keys must be absent, not zero-valued", rec)
+	for _, rec := range buildTXTRecords("id-1", 8080, "nats://host:4222", "host", "0.4.0", false) {
+		if strings.HasPrefix(rec, "tls=") {
+			t.Errorf("plaintext advertisement contains %q; the tls key must be absent, not zero-valued", rec)
 		}
 	}
 }
 
-func TestBuildTXTRecords_TLSKeysPresentWhenOn(t *testing.T) {
+func TestBuildTXTRecords_HTTPTLSKeyPresentWhenOn(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name             string
-		httpTLS, natsTLS bool
-		want             []string
-		absent           []string
-	}{
-		{"both on", true, true, []string{"tls=1", "nats_tls=1"}, nil},
-		{"http only", true, false, []string{"tls=1"}, []string{"nats_tls=1"}},
-		{"nats only", false, true, []string{"nats_tls=1"}, []string{"tls=1"}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := buildTXTRecords("id-1", 8080, 4222, "host", "0.4.0", tt.httpTLS, tt.natsTLS)
-			for _, w := range tt.want {
-				if !slices.Contains(got, w) {
-					t.Errorf("records %v missing %q", got, w)
-				}
-			}
-			for _, a := range tt.absent {
-				if slices.Contains(got, a) {
-					t.Errorf("records %v unexpectedly contain %q", got, a)
-				}
-			}
-		})
+	got := buildTXTRecords("id-1", 8080, "tls://host:4222", "host", "0.4.0", true)
+	if !slices.Contains(got, "tls=1") {
+		t.Errorf("records %v missing tls=1", got)
 	}
 }
 
@@ -143,15 +138,15 @@ func TestNew_EnabledValidationErrors(t *testing.T) {
 	}{
 		{
 			name: "empty instance name",
-			cfg:  Config{Enabled: true, HTTPAddr: "0.0.0.0:8080", NATSAddr: "127.0.0.1:4222"},
+			cfg:  Config{Enabled: true, HTTPAddr: "0.0.0.0:8080", NATSURL: "nats://h:4222"},
 		},
 		{
 			name: "bad http addr",
-			cfg:  Config{Enabled: true, InstanceName: "sqi-server", HTTPAddr: "nope", NATSAddr: "127.0.0.1:4222"},
+			cfg:  Config{Enabled: true, InstanceName: "sqi-server", HTTPAddr: "nope", NATSURL: "nats://h:4222"},
 		},
 		{
-			name: "bad nats addr",
-			cfg:  Config{Enabled: true, InstanceName: "sqi-server", HTTPAddr: "0.0.0.0:8080", NATSAddr: "nope"},
+			name: "no broker url",
+			cfg:  Config{Enabled: true, InstanceName: "sqi-server", HTTPAddr: "0.0.0.0:8080", NATSURL: ""},
 		},
 	}
 
@@ -165,6 +160,46 @@ func TestNew_EnabledValidationErrors(t *testing.T) {
 	}
 }
 
+func TestNew_RejectsUnusableBrokerURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"empty", ""},
+		{"no scheme", "h:4222"},
+		{"http scheme", "http://h:4222"},
+		{"empty host", "nats://:4222"},
+		{"record over 255 bytes", "nats://" + strings.Repeat("h", 250) + ":4222"},
+		{"user and password", "nats://sqi:hunter2@h:4222"},
+		{"token", "nats://s3cr3tt0ken@h:4222"},
+		{"unparseable with a token", "nats://s3cr3tt0ken@h:4222\x7f"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := Config{Enabled: true, InstanceName: "sqi-server", HTTPAddr: "0.0.0.0:8080", NATSURL: tt.url}
+			_, err := New(cfg, discardLogger())
+			if err == nil {
+				t.Fatalf("New with NATSURL %q = nil error, want error", tt.url)
+			}
+			for _, secret := range []string{"hunter2", "s3cr3tt0ken"} {
+				if strings.Contains(err.Error(), secret) {
+					t.Fatalf("New error %q repeats the credential %q", err, secret)
+				}
+			}
+		})
+	}
+
+	// The limit is on the whole record: exactly 255 bytes passes.
+	ok := "nats://" + strings.Repeat("h", 255-len("nats_url=")-len("nats://")-len(":4222")) + ":4222"
+	cfg := Config{Enabled: true, InstanceName: "sqi-server", HTTPAddr: "0.0.0.0:8080", NATSURL: ok}
+	if _, err := New(cfg, discardLogger()); err != nil {
+		t.Fatalf("New with a 255-byte record = %v, want nil", err)
+	}
+}
+
 func TestNew_GeneratesInstanceID(t *testing.T) {
 	t.Parallel()
 
@@ -172,7 +207,7 @@ func TestNew_GeneratesInstanceID(t *testing.T) {
 		Enabled:      true,
 		InstanceName: "sqi-server",
 		HTTPAddr:     "0.0.0.0:8080",
-		NATSAddr:     "127.0.0.1:4222",
+		NATSURL:      "nats://h:4222",
 	}
 	r, err := New(cfg, discardLogger())
 	if err != nil {
@@ -184,9 +219,6 @@ func TestNew_GeneratesInstanceID(t *testing.T) {
 	if r.httpPort != 8080 {
 		t.Errorf("httpPort = %d, want 8080", r.httpPort)
 	}
-	if r.natsPort != 4222 {
-		t.Errorf("natsPort = %d, want 4222", r.natsPort)
-	}
 }
 
 func TestNew_PreservesInstanceID(t *testing.T) {
@@ -196,7 +228,7 @@ func TestNew_PreservesInstanceID(t *testing.T) {
 		Enabled:      true,
 		InstanceName: "sqi-server",
 		HTTPAddr:     "0.0.0.0:8080",
-		NATSAddr:     "127.0.0.1:4222",
+		NATSURL:      "nats://h:4222",
 		InstanceID:   "fixed-id",
 	}
 	r, err := New(cfg, discardLogger())

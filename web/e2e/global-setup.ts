@@ -159,8 +159,8 @@ export default async function globalSetup(): Promise<void> {
     env: {
       ...process.env,
       SQI_HTTP_ADDR: httpAddr,
-      SQI_NATS_ADDR: natsAddr,
-      SQI_NATS_DATA_DIR: join(tmpDir, 'nats'),
+      SQI_NATS_EMBEDDED_ADDR: natsAddr,
+      SQI_NATS_EMBEDDED_DATA_DIR: join(tmpDir, 'nats'),
       SQI_STORE_SQLITE_PATH: join(tmpDir, 'sqi.db'),
       SQI_DISCOVERY_ENABLED: 'false',
       SQI_SCHEDULER_TICK_INTERVAL: '100ms',

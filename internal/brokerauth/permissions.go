@@ -5,6 +5,7 @@ package brokerauth
 import (
 	"strings"
 
+	"github.com/nats-io/jwt/v2"
 	natsserver "github.com/nats-io/nats-server/v2/server"
 )
 
@@ -50,10 +51,10 @@ func InboxPrefix(workerID string) string {
 //     rest — able to publish concrete subjects belonging to any worker, so
 //     it could forge status and logs, deregister the farm, and lease work as
 //     another worker and receive that worker's assignment batch. ">" instead
-//     yields the malformed "task.status.>.*", which nats-server rejects: it
-//     would fail every credential reload, or stop the broker booting.
-//     internal/bus's buildNkeys re-checks and skips, so a row that reached
-//     the database some other way cannot do either.
+//     yields the malformed "task.status.>.*", which nats-server rejects.
+//     internal/bus's auth-callout responder re-checks at every connect and
+//     refuses, so a row that reached the database some other way cannot do
+//     either.
 //   - At the WORKER's own connect path (internal/worker/natsclient) the ID
 //     comes from a file an operator can edit, and one containing "." would
 //     silently widen the inbox subtree its grant covers.
@@ -115,4 +116,15 @@ func ServerPermissions() *natsserver.Permissions {
 		Publish:   &natsserver.SubjectPermission{Allow: []string{">"}},
 		Subscribe: &natsserver.SubjectPermission{Allow: []string{">"}},
 	}
+}
+
+// WorkerUserPermissions returns the same grants as [WorkerPermissions] in the
+// form carried by a NATS user JWT. It is derived from WorkerPermissions so the
+// grant list is defined once; the two cannot drift.
+func WorkerUserPermissions(workerID string) jwt.Permissions {
+	legacy := WorkerPermissions(workerID)
+	var out jwt.Permissions
+	out.Pub.Allow.Add(legacy.Publish.Allow...)
+	out.Sub.Allow.Add(legacy.Subscribe.Allow...)
+	return out
 }

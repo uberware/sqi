@@ -47,6 +47,18 @@ func (s *Store) ListActiveWorkerCredentials(_ context.Context) ([]store.WorkerCr
 	return out, nil
 }
 
+// GetActiveWorkerCredentialByPublicKey implements [store.WorkerCredentialStore].
+func (s *Store) GetActiveWorkerCredentialByPublicKey(_ context.Context, publicKey string) (store.WorkerCredential, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, c := range s.workerCredentials {
+		if c.PublicKey == publicKey && c.RevokedAt == nil {
+			return c, nil
+		}
+	}
+	return store.WorkerCredential{}, store.ErrNotFound
+}
+
 // RevokeWorkerCredential implements [store.WorkerCredentialStore].
 func (s *Store) RevokeWorkerCredential(_ context.Context, workerID string, at time.Time) error {
 	s.mu.Lock()

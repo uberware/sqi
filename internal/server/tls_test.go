@@ -68,11 +68,13 @@ func startTestServer(t *testing.T, scheme string, mutate func(*Config)) (*Server
 	tmpDir := t.TempDir()
 
 	cfg := Config{
-		HTTPAddr:           httpAddr,
-		CORSOrigins:        []string{"*"},
-		NATSAddr:           natsAddr,
-		NATSDataDir:        tmpDir + "/nats",
-		NATSMaxStoreMB:     64,
+		HTTPAddr:    httpAddr,
+		CORSOrigins: []string{"*"},
+		NATS: config.NATSConfig{Embedded: config.NATSEmbeddedConfig{
+			Addr:       natsAddr,
+			DataDir:    tmpDir + "/nats",
+			MaxStoreMB: 64,
+		}},
 		SQLitePath:         tmpDir + "/test.db",
 		CheckpointInterval: time.Minute,
 		Scheduler: scheduler.Config{
@@ -255,7 +257,7 @@ func TestTLSStartupWarnings(t *testing.T) {
 		{
 			name:     "nats certificates configured but tls disabled",
 			natsTLS:  config.NATSTLSConfig{Enabled: false, CertFile: goodCert, KeyFile: goodKey},
-			wantWarn: "nats.tls.enabled",
+			wantWarn: "nats.embedded.tls.enabled",
 		},
 		{
 			name:     "http certificate expiring soon",

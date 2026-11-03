@@ -19,10 +19,10 @@ services:
     restart: unless-stopped
     environment:
       # Bind NATS to all interfaces so the worker container can reach it.
-      SQI_NATS_ADDR: "0.0.0.0:4222"
+      SQI_NATS_EMBEDDED_ADDR: "0.0.0.0:4222"
       # SQLite state lives under the mounted data dir for persistence.
       SQI_STORE_SQLITE_PATH: "/var/lib/sqi-server/sqi.db"
-      SQI_NATS_DATA_DIR: "/var/lib/sqi-server/nats"
+      SQI_NATS_EMBEDDED_DATA_DIR: "/var/lib/sqi-server/nats"
       # mDNS is unreliable inside Docker networks; the worker uses an explicit URL.
       SQI_DISCOVERY_ENABLED: "false"
     volumes:

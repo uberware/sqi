@@ -144,14 +144,14 @@ func TestValidate_HTTPTLSValidConfigPasses(t *testing.T) {
 func TestValidate_NATSTLSClientCARequiresTLSEnabled(t *testing.T) {
 	_, _, caFile := writeCerts(t, time.Hour)
 	cfg := config.DefaultConfig()
-	cfg.NATS.TLS = config.NATSTLSConfig{Enabled: false, ClientCAFile: caFile}
+	cfg.NATS.Embedded.TLS = config.NATSTLSConfig{Enabled: false, ClientCAFile: caFile}
 
-	ve := findErr(config.Validate(cfg), "nats.tls.client_ca_file")
+	ve := findErr(config.Validate(cfg), "nats.embedded.tls.client_ca_file")
 	if ve == nil {
-		t.Fatal("client_ca_file without nats.tls.enabled was accepted; mTLS without TLS is meaningless")
+		t.Fatal("client_ca_file without nats.embedded.tls.enabled was accepted; mTLS without TLS is meaningless")
 	}
-	if !strings.Contains(ve.Message, "nats.tls.enabled") {
-		t.Errorf("message = %q, want it to name nats.tls.enabled", ve.Message)
+	if !strings.Contains(ve.Message, "nats.embedded.tls.enabled") {
+		t.Errorf("message = %q, want it to name nats.embedded.tls.enabled", ve.Message)
 	}
 }
 
@@ -162,10 +162,10 @@ func TestValidate_NATSTLSClientCAMustParse(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	cfg := config.DefaultConfig()
-	cfg.NATS.TLS = config.NATSTLSConfig{
+	cfg.NATS.Embedded.TLS = config.NATSTLSConfig{
 		Enabled: true, CertFile: cert, KeyFile: key, ClientCAFile: notACA,
 	}
-	if ve := findErr(config.Validate(cfg), "nats.tls.client_ca_file"); ve == nil {
+	if ve := findErr(config.Validate(cfg), "nats.embedded.tls.client_ca_file"); ve == nil {
 		t.Fatal("unparseable client CA file was accepted")
 	}
 }
@@ -175,8 +175,8 @@ func TestValidate_DefaultConfigHasTLSOff(t *testing.T) {
 	if cfg.HTTP.TLS.Enabled {
 		t.Error("http.tls.enabled defaults to true, want false")
 	}
-	if cfg.NATS.TLS.Enabled {
-		t.Error("nats.tls.enabled defaults to true, want false")
+	if cfg.NATS.Embedded.TLS.Enabled {
+		t.Error("nats.embedded.tls.enabled defaults to true, want false")
 	}
 	if errs := config.Validate(cfg); len(errs) != 0 {
 		t.Errorf("default config does not validate: %v", errs)
@@ -188,14 +188,14 @@ func TestValidate_DefaultConfigHasTLSOff(t *testing.T) {
 // Validation tests exercise the structs directly, so nothing else here would
 // notice a wrong `yaml:` tag, a key omitted from fileConfig, or a missing env
 // binding — the value would simply never arrive and TLS would stay off with no
-// error. nats.tls.client_ca_file in particular has no other coverage in any
+// error. nats.embedded.tls.client_ca_file in particular has no other coverage in any
 // suite.
 func TestLoad_TLSFromFileAndEnv(t *testing.T) {
 	cert, key, ca := writeCerts(t, time.Hour)
 	path := filepath.Join(t.TempDir(), "sqi.yaml")
 	body := "http:\n  tls:\n    enabled: true\n    cert_file: " + cert + "\n    key_file: " + key +
-		"\nnats:\n  tls:\n    enabled: true\n    cert_file: " + cert + "\n    key_file: " + key +
-		"\n    client_ca_file: " + ca + "\n"
+		"\nnats:\n  embedded:\n    tls:\n      enabled: true\n      cert_file: " + cert + "\n      key_file: " + key +
+		"\n      client_ca_file: " + ca + "\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -207,21 +207,21 @@ func TestLoad_TLSFromFileAndEnv(t *testing.T) {
 	if !cfg.HTTP.TLS.Enabled || cfg.HTTP.TLS.CertFile != cert || cfg.HTTP.TLS.KeyFile != key {
 		t.Errorf("http.tls from file = %+v, want enabled with %s/%s", cfg.HTTP.TLS, cert, key)
 	}
-	if !cfg.NATS.TLS.Enabled || cfg.NATS.TLS.CertFile != cert || cfg.NATS.TLS.KeyFile != key {
-		t.Errorf("nats.tls from file = %+v, want enabled with %s/%s", cfg.NATS.TLS, cert, key)
+	if !cfg.NATS.Embedded.TLS.Enabled || cfg.NATS.Embedded.TLS.CertFile != cert || cfg.NATS.Embedded.TLS.KeyFile != key {
+		t.Errorf("nats.embedded.tls from file = %+v, want enabled with %s/%s", cfg.NATS.Embedded.TLS, cert, key)
 	}
-	if cfg.NATS.TLS.ClientCAFile != ca {
-		t.Errorf("nats.tls.client_ca_file = %q, want %q", cfg.NATS.TLS.ClientCAFile, ca)
+	if cfg.NATS.Embedded.TLS.ClientCAFile != ca {
+		t.Errorf("nats.embedded.tls.client_ca_file = %q, want %q", cfg.NATS.Embedded.TLS.ClientCAFile, ca)
 	}
 
 	// Env must override the file, for every key that has a binding.
 	t.Setenv("SQI_HTTP_TLS_ENABLED", "false")
 	t.Setenv("SQI_HTTP_TLS_CERT_FILE", "/env/http.crt")
 	t.Setenv("SQI_HTTP_TLS_KEY_FILE", "/env/http.key")
-	t.Setenv("SQI_NATS_TLS_ENABLED", "false")
-	t.Setenv("SQI_NATS_TLS_CERT_FILE", "/env/nats.crt")
-	t.Setenv("SQI_NATS_TLS_KEY_FILE", "/env/nats.key")
-	t.Setenv("SQI_NATS_TLS_CLIENT_CA_FILE", "/env/ca.pem")
+	t.Setenv("SQI_NATS_EMBEDDED_TLS_ENABLED", "false")
+	t.Setenv("SQI_NATS_EMBEDDED_TLS_CERT_FILE", "/env/nats.crt")
+	t.Setenv("SQI_NATS_EMBEDDED_TLS_KEY_FILE", "/env/nats.key")
+	t.Setenv("SQI_NATS_EMBEDDED_TLS_CLIENT_CA_FILE", "/env/ca.pem")
 
 	cfg, err = config.Load(path, config.FlagOverrides{})
 	if err != nil {
@@ -230,9 +230,9 @@ func TestLoad_TLSFromFileAndEnv(t *testing.T) {
 	for _, tc := range []struct{ got, want, name string }{
 		{cfg.HTTP.TLS.CertFile, "/env/http.crt", "SQI_HTTP_TLS_CERT_FILE"},
 		{cfg.HTTP.TLS.KeyFile, "/env/http.key", "SQI_HTTP_TLS_KEY_FILE"},
-		{cfg.NATS.TLS.CertFile, "/env/nats.crt", "SQI_NATS_TLS_CERT_FILE"},
-		{cfg.NATS.TLS.KeyFile, "/env/nats.key", "SQI_NATS_TLS_KEY_FILE"},
-		{cfg.NATS.TLS.ClientCAFile, "/env/ca.pem", "SQI_NATS_TLS_CLIENT_CA_FILE"},
+		{cfg.NATS.Embedded.TLS.CertFile, "/env/nats.crt", "SQI_NATS_EMBEDDED_TLS_CERT_FILE"},
+		{cfg.NATS.Embedded.TLS.KeyFile, "/env/nats.key", "SQI_NATS_EMBEDDED_TLS_KEY_FILE"},
+		{cfg.NATS.Embedded.TLS.ClientCAFile, "/env/ca.pem", "SQI_NATS_EMBEDDED_TLS_CLIENT_CA_FILE"},
 	} {
 		if tc.got != tc.want {
 			t.Errorf("%s did not override the config file: got %q, want %q", tc.name, tc.got, tc.want)
@@ -241,7 +241,7 @@ func TestLoad_TLSFromFileAndEnv(t *testing.T) {
 	if cfg.HTTP.TLS.Enabled {
 		t.Error("SQI_HTTP_TLS_ENABLED=false did not override the config file")
 	}
-	if cfg.NATS.TLS.Enabled {
-		t.Error("SQI_NATS_TLS_ENABLED=false did not override the config file")
+	if cfg.NATS.Embedded.TLS.Enabled {
+		t.Error("SQI_NATS_EMBEDDED_TLS_ENABLED=false did not override the config file")
 	}
 }

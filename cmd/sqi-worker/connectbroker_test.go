@@ -38,9 +38,9 @@ func freeTestPort(t *testing.T) int {
 // cleanup. A real broker is used rather than a fake so these tests exercise
 // the actual nkey handshake, matching how [connectToBroker] behaves in
 // production.
-func startEmbeddedBroker(t *testing.T, auth bus.BrokerAuthConfig) *bus.Broker {
+func startEmbeddedBroker(t *testing.T, auth bus.AuthConfig) *bus.Embedded {
 	t.Helper()
-	b := bus.New(bus.BrokerConfig{
+	b := bus.NewEmbedded(bus.EmbeddedConfig{
 		Addr:    net.JoinHostPort("127.0.0.1", strconv.Itoa(freeTestPort(t))),
 		DataDir: t.TempDir() + "/nats",
 		Auth:    auth,
@@ -61,7 +61,7 @@ func startEmbeddedBroker(t *testing.T, auth bus.BrokerAuthConfig) *bus.Broker {
 // connect, exactly as it did before broker authentication existed. This is
 // the regression this feature is not allowed to introduce.
 func TestConnectToBroker_AuthOffFarmBootsWithNoCredential(t *testing.T) {
-	b := startEmbeddedBroker(t, bus.BrokerAuthConfig{Enabled: false})
+	b := startEmbeddedBroker(t, bus.AuthConfig{Enabled: false})
 
 	var cfg workerconfig.WorkerConfig
 	cfg.NATS.URL = b.ClientURL()
@@ -86,7 +86,12 @@ func TestConnectToBroker_AuthOffFarmBootsWithNoCredential(t *testing.T) {
 // broker that actually requires authentication. The failure must be fatal
 // and must name both ways an operator can fix it.
 func TestConnectToBroker_AuthOnFarmWithNoCredentialNamesBothRemediations(t *testing.T) {
-	b := startEmbeddedBroker(t, bus.BrokerAuthConfig{Enabled: true})
+	// Auth on with nothing enrolled: the callout refuses every key.
+	b := startEmbeddedBroker(t, bus.AuthConfig{
+		Enabled: true,
+		UserTTL: time.Hour,
+		Lookup:  func(context.Context, string) (string, error) { return "", bus.ErrUnknownCredential },
+	})
 
 	var cfg workerconfig.WorkerConfig
 	cfg.NATS.URL = b.ClientURL()

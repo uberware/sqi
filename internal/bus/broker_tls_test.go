@@ -3,11 +3,8 @@
 package bus
 
 import (
-	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"log/slog"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,23 +41,9 @@ func farmCerts(t *testing.T) (dir string, ca *certgen.CA) {
 
 // startBrokerTLS boots an embedded broker with the given TLS and auth
 // configuration on an OS-assigned loopback port.
-func startBrokerTLS(t *testing.T, tlsCfg BrokerTLSConfig, auth BrokerAuthConfig) *Broker {
+func startBrokerTLS(t *testing.T, tlsCfg BrokerTLSConfig, auth AuthConfig) *Embedded {
 	t.Helper()
-	cfg := BrokerConfig{
-		Addr:       net.JoinHostPort("127.0.0.1", itoa(freePort(t))),
-		DataDir:    t.TempDir() + "/nats",
-		MaxStoreMB: 64,
-		Auth:       auth,
-		TLS:        tlsCfg,
-	}
-	b := New(cfg, slog.New(slog.DiscardHandler))
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if err := b.Start(ctx); err != nil {
-		t.Fatalf("startBrokerTLS: Start: %v", err)
-	}
-	t.Cleanup(b.Shutdown)
-	return b
+	return startEmbedded(t, EmbeddedConfig{Auth: auth, TLS: tlsCfg})
 }
 
 // caPool returns a root pool trusting only the CA in dir.
@@ -110,7 +93,7 @@ func clientCertOption(t *testing.T, ca *certgen.CA, pool *x509.CertPool, commonN
 
 func TestBrokerTLS_RequiredWhenEnabled(t *testing.T) {
 	dir, _ := farmCerts(t)
-	b := startBrokerTLS(t, brokerTLSOf(dir, false), BrokerAuthConfig{})
+	b := startBrokerTLS(t, brokerTLSOf(dir, false), AuthConfig{})
 
 	nc, err := nats.Connect(b.ClientURL(), nats.Secure(&tls.Config{
 		MinVersion: tls.VersionTLS12,
@@ -132,7 +115,7 @@ func TestBrokerTLS_RequiredWhenEnabled(t *testing.T) {
 func TestBrokerTLS_WrongCARefused(t *testing.T) {
 	dir, _ := farmCerts(t)
 	otherDir, _ := farmCerts(t)
-	b := startBrokerTLS(t, brokerTLSOf(dir, false), BrokerAuthConfig{})
+	b := startBrokerTLS(t, brokerTLSOf(dir, false), AuthConfig{})
 
 	_, err := nats.Connect(b.ClientURL(), nats.NoReconnect(), nats.Secure(&tls.Config{
 		MinVersion: tls.VersionTLS12,
@@ -148,7 +131,7 @@ func TestBrokerTLS_WrongCARefused(t *testing.T) {
 
 func TestBrokerTLS_MTLSRequiresClientCert(t *testing.T) {
 	dir, ca := farmCerts(t)
-	b := startBrokerTLS(t, brokerTLSOf(dir, true), BrokerAuthConfig{})
+	b := startBrokerTLS(t, brokerTLSOf(dir, true), AuthConfig{})
 	pool := caPool(t, dir)
 
 	// Correct server trust but no client certificate: refused.
@@ -170,11 +153,12 @@ func TestBrokerTLS_MTLSRequiresClientCert(t *testing.T) {
 
 func TestBrokerTLS_MTLSLayersOnNkeyRatherThanReplacingIt(t *testing.T) {
 	dir, ca := farmCerts(t)
-	enrolled, _ := enrolledWorker(t, "worker-01")
+	creds := newCredentialMap()
+	creds.enroll(t, "worker-01")
 	b := startBrokerTLS(
 		t,
 		brokerTLSOf(dir, true),
-		BrokerAuthConfig{Enabled: true, Credentials: []WorkerCredentialRef{enrolled}},
+		AuthConfig{Enabled: true, UserTTL: time.Hour, Lookup: creds.lookup},
 	)
 	pool := caPool(t, dir)
 
@@ -191,7 +175,7 @@ func TestBrokerTLS_MTLSLayersOnNkeyRatherThanReplacingIt(t *testing.T) {
 func TestBrokerTLS_OffIsUnchanged(t *testing.T) {
 	// The zero-value TLS field is the default path: plaintext, exactly as it
 	// behaved before TLS existed.
-	b := startBrokerTLS(t, BrokerTLSConfig{}, BrokerAuthConfig{})
+	b := startBrokerTLS(t, BrokerTLSConfig{}, AuthConfig{})
 	nc, err := nats.Connect(b.ClientURL())
 	if err != nil {
 		t.Fatalf("plaintext client could not connect to a default broker: %v", err)

@@ -164,13 +164,18 @@ type Store struct {
 	stmtTouchAPIKeyLastUsed      *dbStmt
 
 	// ── worker credentials & join tokens ────────────────────────────────────
-	stmtInsertWorkerCredential      *dbStmt
-	stmtListActiveWorkerCredentials *dbStmt
-	stmtRevokeWorkerCredential      *dbStmt
-	stmtTouchWorkerCredential       *dbStmt
-	stmtInsertWorkerJoinToken       *dbStmt
-	stmtGetWorkerJoinTokenByHash    *dbStmt
-	stmtMarkWorkerJoinTokenUsed     *dbStmt
+	stmtInsertWorkerCredential               *dbStmt
+	stmtListActiveWorkerCredentials          *dbStmt
+	stmtGetActiveWorkerCredentialByPublicKey *dbStmt
+	stmtRevokeWorkerCredential               *dbStmt
+	stmtTouchWorkerCredential                *dbStmt
+	stmtInsertWorkerJoinToken                *dbStmt
+	stmtGetWorkerJoinTokenByHash             *dbStmt
+	stmtMarkWorkerJoinTokenUsed              *dbStmt
+
+	// ── broker state ─────────────────────────────────────────────────────
+	stmtGetBrokerIdentity *dbStmt
+	stmtSetBrokerIdentity *dbStmt
 }
 
 // Option configures [New].
@@ -612,6 +617,9 @@ func (s *Store) prepareAll(ctx context.Context) error {
 	if s.stmtListActiveWorkerCredentials, err = s.prepare(ctx, sqlListActiveWorkerCredentials); err != nil {
 		return err
 	}
+	if s.stmtGetActiveWorkerCredentialByPublicKey, err = s.prepare(ctx, sqlGetActiveWorkerCredentialByPublicKey); err != nil {
+		return err
+	}
 	if s.stmtRevokeWorkerCredential, err = s.prepare(ctx, sqlRevokeWorkerCredential); err != nil {
 		return err
 	}
@@ -625,6 +633,13 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 	if s.stmtMarkWorkerJoinTokenUsed, err = s.prepare(ctx, sqlMarkWorkerJoinTokenUsed); err != nil {
+		return err
+	}
+	// ── broker state ─────────────────────────────────────────────────────────
+	if s.stmtGetBrokerIdentity, err = s.prepare(ctx, sqlGetBrokerIdentity); err != nil {
+		return err
+	}
+	if s.stmtSetBrokerIdentity, err = s.prepare(ctx, sqlSetBrokerIdentity); err != nil {
 		return err
 	}
 	// sqlConsumeWorkerJoinToken has no prepared statement of its own: it is

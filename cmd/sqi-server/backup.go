@@ -36,15 +36,19 @@ snapshots the live database without taking an exclusive lock. The result is
 an ordinary SQLite database file. Restore it with "sqi-server restore FILE"
 while the server is stopped: it checks the backup, moves the live database
 (and its -wal/-shm files) aside, puts the backup in place, migrates it,
-returns tasks that were in flight to ready, and moves nats.data_dir aside.
-Copying the file over store.sqlite_path by hand skips those steps.
+returns tasks that were in flight to ready, and clears the broker's messages
+(see "restore --help"). Copying the file over store.sqlite_path by hand skips
+those steps.
 
 PostgreSQL: the backup runs "pg_dump --format=custom" against the database,
 so the PostgreSQL client tools must be on PATH, at a major version no older
 than the server's. Restore it with "sqi-server restore FILE" while the server
 is stopped, into an empty database (drop or rename the old one and create it
 again first): it checks the archive, loads it with pg_restore, migrates it,
-returns tasks that were in flight to ready, and moves nats.data_dir aside.
+returns tasks that were in flight to ready, and clears the broker's messages.
+
+The backup never includes the broker's JetStream state, in either broker mode:
+it holds only messages in transit.
 
 The store is chosen as follows: --dsn names a PostgreSQL database; --db names
 a SQLite file; otherwise store.driver from the resolved configuration (the

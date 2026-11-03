@@ -120,14 +120,13 @@ func TestWorkerCmd_Enroll_InvalidPublicKey(t *testing.T) {
 	}
 }
 
-// TestWorkerCmd_Enroll_WarnsThatARunningServerNeedsARestart pins the one
-// thing an operator cannot discover from a successful enroll: the command
-// opens the SQLite file from a separate process, so it cannot reload a
-// running broker's authorized-key set (built once at Broker.Start). Without
-// this warning the sequence reads as a success followed by an unrelated
-// worker that exits on an authorization error. The revoke command carries
-// the mirror-image warning; both must keep saying so.
-func TestWorkerCmd_Enroll_WarnsThatARunningServerNeedsARestart(t *testing.T) {
+// TestWorkerCmd_Enroll_SaysARunningServerNeedsNoRestart pins what an
+// operator cannot discover from a successful enroll: the command writes the
+// database from a separate process, and a running server picks the credential
+// up at the worker's next connect, because the auth callout reads the store at
+// every connect. Without the line an operator would restart a farm for
+// nothing.
+func TestWorkerCmd_Enroll_SaysARunningServerNeedsNoRestart(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	createTestDB(t, dbPath)
 	_, pub, err := brokerauth.GenerateSeed()
@@ -143,25 +142,27 @@ func TestWorkerCmd_Enroll_WarnsThatARunningServerNeedsARestart(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		"RUNNING sqi-server",
-		"restarts",
-		"/api/v1/workers/enroll",
+		"running sqi-server",
+		"next connect",
+		"no restart",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("enroll output does not mention %q; got: %s", want, out)
 		}
 	}
+	if strings.Contains(out, "will not accept this credential") {
+		t.Errorf("enroll output still says a restart is needed; got: %s", out)
+	}
 }
 
-// TestWorkerCmd_Enroll_LongHelpWarnsAboutARunningServer keeps the same
-// warning on the command's own help text, so an operator reading
+// TestWorkerCmd_Enroll_LongHelpSaysARunningServerNeedsNoRestart keeps the
+// same statement on the command's own help text, so an operator reading
 // "worker enroll --help" before running anything learns it too.
-func TestWorkerCmd_Enroll_LongHelpWarnsAboutARunningServer(t *testing.T) {
-	if !strings.Contains(workerEnrollCmd.Long, "RUNNING sqi-server") {
-		t.Errorf("workerEnrollCmd.Long does not warn that a running server will not see the credential; got:\n%s", workerEnrollCmd.Long)
-	}
-	if !strings.Contains(workerEnrollCmd.Long, "POST /api/v1/workers/enroll") {
-		t.Errorf("workerEnrollCmd.Long does not name the REST alternative; got:\n%s", workerEnrollCmd.Long)
+func TestWorkerCmd_Enroll_LongHelpSaysARunningServerNeedsNoRestart(t *testing.T) {
+	for _, want := range []string{"running sqi-server needs no restart", "next connect", "POST /api/v1/workers/enroll"} {
+		if !strings.Contains(workerEnrollCmd.Long, want) {
+			t.Errorf("workerEnrollCmd.Long does not mention %q; got:\n%s", want, workerEnrollCmd.Long)
+		}
 	}
 }
 

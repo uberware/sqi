@@ -1,0 +1,100 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# A three-node nats-server cluster for sqi-server's external broker mode
+# (nats.mode: external), with JetStream, routes between the nodes and TLS on
+# the client port. sqi-server itself is not in this file: it runs wherever you
+# run it and dials the nodes' client ports.
+#
+# Prepare a cluster directory holding exactly the files the nodes need. The
+# private seeds `nats external init` writes stay with sqi-server and are never
+# mounted here:
+#
+#   sqi-server nats external init --out ./sqi-nats        # seeds + sqi-accounts.conf
+#   sqi-server tls init --out ./sqi-tls --host nats.example.internal
+#   mkdir cluster
+#   cp deploy/nats-cluster/nats.conf      cluster/
+#   cp sqi-nats/sqi-accounts.conf         cluster/
+#   cp sqi-tls/server.crt sqi-tls/server.key cluster/
+#
+# Then start it. The client ports bind 127.0.0.1 unless NATS_CLUSTER_BIND says
+# otherwise (see below), so workers on other hosts cannot reach them by
+# default:
+#
+#   NATS_CLUSTER_DIR=$PWD/cluster docker compose -f deploy/docker-compose.nats-cluster.yml up -d
+#
+# and point sqi-server at it with the nats: block `nats external init` printed,
+# listing every node, with stream_replicas: 3 so losing one node loses no
+# messages:
+#
+#   nats:
+#     external:
+#       urls: ["tls://nats.example.internal:4222", "tls://nats.example.internal:4223", "tls://nats.example.internal:4224"]
+#       stream_replicas: 3
+#       tls: { ca_file: ./sqi-tls/ca.crt }
+#
+# Workers list the same URLs, comma-separated, in nats.url, with ca.crt as
+# nats.tls_ca_file.
+#
+# On Docker Desktop and Colima only some host directories are shared into the
+# VM that runs the containers (Colima shares $HOME), so keep the cluster
+# directory under one of them; elsewhere it mounts empty and every node fails
+# to read nats.conf.
+#
+# Variables:
+#   NATS_CLUSTER_DIR      the cluster directory above (required)
+#   NATS_IMAGE            nats-server image (default below: the version sqi
+#                         embeds, pinned by digest; the Makefile pins both
+#                         tested versions)
+#   NATS_CLUSTER_BIND     host address the client ports bind to (default
+#                         127.0.0.1, reachable from this host only). Workers
+#                         and an sqi-server on other hosts need an address
+#                         they can reach, such as 0.0.0.0 or this host's LAN
+#                         address.
+#   NATS_CLUSTER_1_PORT, NATS_CLUSTER_2_PORT, NATS_CLUSTER_3_PORT
+#                         host client ports (default 4222, 4223, 4224)
+#
+# `docker compose ... down -v` removes the nodes and their JetStream data.
+
+x-nats-node: &nats-node
+  image: ${NATS_IMAGE:-nats:2.15.2@sha256:991242c32d2738ffd358fd6614dd96c735017b4b3b34bfdb2c52a072d66db211}
+  command: ["--config", "/etc/nats/nats.conf"]
+  restart: unless-stopped
+
+services:
+  nats-1:
+    <<: *nats-node
+    hostname: nats-1
+    environment:
+      NATS_SERVER_NAME: nats-1
+    volumes:
+      - ${NATS_CLUSTER_DIR:?set NATS_CLUSTER_DIR to the cluster directory}:/etc/nats:ro
+      - nats-1-data:/data
+    ports:
+      - "${NATS_CLUSTER_BIND:-127.0.0.1}:${NATS_CLUSTER_1_PORT:-4222}:4222"
+
+  nats-2:
+    <<: *nats-node
+    hostname: nats-2
+    environment:
+      NATS_SERVER_NAME: nats-2
+    volumes:
+      - ${NATS_CLUSTER_DIR:?set NATS_CLUSTER_DIR to the cluster directory}:/etc/nats:ro
+      - nats-2-data:/data
+    ports:
+      - "${NATS_CLUSTER_BIND:-127.0.0.1}:${NATS_CLUSTER_2_PORT:-4223}:4222"
+
+  nats-3:
+    <<: *nats-node
+    hostname: nats-3
+    environment:
+      NATS_SERVER_NAME: nats-3
+    volumes:
+      - ${NATS_CLUSTER_DIR:?set NATS_CLUSTER_DIR to the cluster directory}:/etc/nats:ro
+      - nats-3-data:/data
+    ports:
+      - "${NATS_CLUSTER_BIND:-127.0.0.1}:${NATS_CLUSTER_3_PORT:-4224}:4222"
+
+volumes:
+  nats-1-data:
+  nats-2-data:
+  nats-3-data:

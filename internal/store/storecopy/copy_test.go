@@ -46,8 +46,8 @@ func TestStoreCopy_CopiesEveryRowVerbatim(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("copied %d tables in %s", len(res.Tables), res.Elapsed)
-	if len(res.Tables) != 20 {
-		t.Errorf("copied %d tables, want 20", len(res.Tables))
+	if len(res.Tables) != 21 {
+		t.Errorf("copied %d tables, want 21", len(res.Tables))
 	}
 	counts := sqliteCounts(t, src)
 	for _, tr := range res.Tables {
@@ -236,11 +236,11 @@ func TestStoreCopy_RefusesATargetAtAnotherVersion(t *testing.T) {
 	})
 	t.Run("behind", func(t *testing.T) {
 		dst := storetest.PostgresDSN(t)
-		execPG(t, dst, `DELETE FROM goose_db_version WHERE version_id = 39`)
+		execPG(t, dst, `DELETE FROM goose_db_version WHERE version_id = 40`)
 		_, err := storecopy.Copy(t.Context(), storecopy.Options{SQLitePath: src, PostgresDSN: dst})
 		if err == nil || !strings.Contains(err.Error(), "use an empty database") ||
 			!strings.Contains(err.Error(), "drop and recreate") {
-			t.Fatalf("Copy into a schema-38 target = %v, want a refusal saying what to do", err)
+			t.Fatalf("Copy into a schema-39 target = %v, want a refusal saying what to do", err)
 		}
 	})
 }
@@ -493,6 +493,8 @@ func seedEveryTable(t *testing.T, path string) {
 		ID: "join-1", TokenHash: "hash-join-1", Prefix: "sqj_ab", Name: "rack 3", ExpiresAt: later, CreatedBy: "Admin",
 	})
 	must("join token", err)
+
+	must("broker identity", st.SetBrokerIdentity(ctx, "external:SQI@c1", now))
 
 	// An upstream job, complete, and a running job that depends on it.
 	storetest.NewJob("job-up", "farm-1", "queue-1").As(store.JobStatusCompleted).

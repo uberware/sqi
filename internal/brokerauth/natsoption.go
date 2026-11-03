@@ -9,7 +9,7 @@ import (
 
 // NkeyOption returns a [nats.Option] that authenticates a connection as the
 // nkey identified by publicKey, signing the server's nonce with seed. Both
-// sqi-server (its admin connection, internal/bus.Broker.adminOptions) and
+// sqi-server (its own broker connections, internal/bus.Embedded) and
 // sqi-worker (internal/worker/natsclient.buildOptions) use it to present
 // their own credential to the broker.
 func NkeyOption(publicKey string, seed []byte) nats.Option {

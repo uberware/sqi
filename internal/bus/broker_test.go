@@ -10,9 +10,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -38,29 +40,46 @@ func freePort(t *testing.T) int {
 	return port
 }
 
-// startBroker boots an embedded broker on a temp JetStream dir and an
-// OS-assigned loopback port, waits for it to be ready, and registers cleanup.
-func startBroker(t *testing.T) *Broker {
+// startBroker boots an embedded broker with auth off on a temp JetStream dir
+// and an OS-assigned loopback port, waits for it to be ready, and registers
+// cleanup.
+func startBroker(t *testing.T) *Embedded {
 	t.Helper()
-	logger := slog.New(slog.DiscardHandler)
-	cfg := BrokerConfig{
-		Addr:       net.JoinHostPort("127.0.0.1", itoa(freePort(t))),
-		DataDir:    t.TempDir() + "/nats",
-		MaxStoreMB: 64,
+	return startEmbedded(t, EmbeddedConfig{})
+}
+
+// startEmbedded boots an embedded broker from cfg, filling in a loopback
+// address, a temp data dir and a 64 MB store cap where cfg leaves them unset.
+func startEmbedded(t *testing.T, cfg EmbeddedConfig) *Embedded {
+	t.Helper()
+	return startEmbeddedWithLogger(t, cfg, slog.New(slog.DiscardHandler))
+}
+
+// startEmbeddedWithLogger is [startEmbedded] with the broker logging to logger.
+func startEmbeddedWithLogger(t *testing.T, cfg EmbeddedConfig, logger *slog.Logger) *Embedded {
+	t.Helper()
+	if cfg.Addr == "" {
+		cfg.Addr = net.JoinHostPort("127.0.0.1", itoa(freePort(t)))
 	}
-	b := New(cfg, logger)
+	if cfg.DataDir == "" {
+		cfg.DataDir = t.TempDir() + "/nats"
+	}
+	if cfg.MaxStoreMB == 0 {
+		cfg.MaxStoreMB = 64
+	}
+	b := NewEmbedded(cfg, logger)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := b.Start(ctx); err != nil {
-		t.Fatalf("startBroker: Start: %v", err)
+		t.Fatalf("startEmbedded: Start: %v", err)
 	}
 	t.Cleanup(b.Shutdown)
 	return b
 }
 
 // newClient builds a typed Client against the broker and registers cleanup.
-func newClient(t *testing.T, b *Broker) *Client {
+func newClient(t *testing.T, b Broker) *Client {
 	t.Helper()
 	c, err := b.NewClient()
 	if err != nil {
@@ -103,10 +122,19 @@ func mustJSON(t *testing.T, v any) []byte {
 
 func TestBrokerLifecycle(t *testing.T) {
 	logger := slog.New(slog.DiscardHandler)
-	b := New(BrokerConfig{
+	dataDir := t.TempDir() + "/nats"
+	b := NewEmbedded(EmbeddedConfig{
 		Addr:    net.JoinHostPort("127.0.0.1", itoa(freePort(t))),
-		DataDir: t.TempDir() + "/nats",
+		DataDir: dataDir,
 	}, logger)
+
+	// Identity and StoreDir describe the configuration, not the running state.
+	if got := b.Identity(); got != "embedded:SQI" {
+		t.Errorf("Identity() = %q, want %q", got, "embedded:SQI")
+	}
+	if got := b.StoreDir(); got != dataDir {
+		t.Errorf("StoreDir() = %q, want %q", got, dataDir)
+	}
 
 	// Before Start: not running, no URL, NewClient fails.
 	if err := b.Check(context.Background()); err == nil {
@@ -153,7 +181,7 @@ func TestBrokerStartInvalidAddr(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			b := New(BrokerConfig{Addr: tt.addr, DataDir: t.TempDir()}, logger)
+			b := NewEmbedded(EmbeddedConfig{Addr: tt.addr, DataDir: t.TempDir()}, logger)
 			if err := b.Start(context.Background()); err == nil {
 				t.Fatal("Start with invalid addr: want error, got nil")
 			}
@@ -171,7 +199,7 @@ func TestBrokerStart_ReportsAPortInUse(t *testing.T) {
 	}
 	defer taken.Close()
 
-	b := New(BrokerConfig{Addr: taken.Addr().String(), DataDir: t.TempDir() + "/nats"}, slog.New(slog.DiscardHandler))
+	b := NewEmbedded(EmbeddedConfig{Addr: taken.Addr().String(), DataDir: t.TempDir() + "/nats"}, slog.New(slog.DiscardHandler))
 	start := time.Now()
 	err = b.Start(context.Background())
 	if err == nil {
@@ -193,7 +221,7 @@ func TestBrokerStart_ReportsAnUnusableDataDir(t *testing.T) {
 	if err := os.WriteFile(file, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	b := New(BrokerConfig{Addr: net.JoinHostPort("127.0.0.1", itoa(freePort(t))), DataDir: filepath.Join(file, "nats")},
+	b := NewEmbedded(EmbeddedConfig{Addr: net.JoinHostPort("127.0.0.1", itoa(freePort(t))), DataDir: filepath.Join(file, "nats")},
 		slog.New(slog.DiscardHandler))
 	start := time.Now()
 	err := b.Start(context.Background())
@@ -395,6 +423,93 @@ func TestClientDrain(t *testing.T) {
 	}
 }
 
+// TestClientDrain_WaitsForInFlightHandlers checks that Drain returns only
+// once a message already being handled has finished and the connection has
+// closed. nats.go's ConsumeContext.Drain and Conn.Drain only begin a drain;
+// the server shuts the broker down (and gives its account guard up) as soon
+// as Drain returns, so returning early would cut a handler off mid-write.
+func TestClientDrain_WaitsForInFlightHandlers(t *testing.T) {
+	b := startBroker(t)
+	c := newClient(t, b)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	const handlerTime = 500 * time.Millisecond
+	started := make(chan struct{})
+	var finished atomic.Bool
+	_, err := c.ConsumeTaskStatus(ctx, func(m jetstream.Msg) {
+		close(started)
+		time.Sleep(handlerTime)
+		if err := m.Ack(); err != nil {
+			t.Errorf("Ack: %v", err)
+		}
+		finished.Store(true)
+	})
+	if err != nil {
+		t.Fatalf("ConsumeTaskStatus: %v", err)
+	}
+	if err := c.PublishTaskStatus(ctx, "w-1", "job-w", mustJSON(t, payload{ID: "t", Body: "x"})); err != nil {
+		t.Fatalf("PublishTaskStatus: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler did not start")
+	}
+
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer drainCancel()
+	if err := c.Drain(drainCtx); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if !finished.Load() {
+		t.Fatal("Drain returned while a handler was still running")
+	}
+	if !c.nc.IsClosed() {
+		t.Fatalf("Drain returned with the connection %v, want CLOSED", c.nc.Status())
+	}
+}
+
+// TestClientDrain_BoundedByContext checks that a handler that outlives the
+// context does not hold Drain: it gives up, closes the connection and says so.
+func TestClientDrain_BoundedByContext(t *testing.T) {
+	b := startBroker(t)
+	c := newClient(t, b)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	_, err := c.ConsumeTaskStatus(ctx, func(jetstream.Msg) {
+		close(started)
+		<-release
+	})
+	if err != nil {
+		t.Fatalf("ConsumeTaskStatus: %v", err)
+	}
+	if err := c.PublishTaskStatus(ctx, "w-1", "job-b", mustJSON(t, payload{ID: "t", Body: "x"})); err != nil {
+		t.Fatalf("PublishTaskStatus: %v", err)
+	}
+	<-started
+
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer drainCancel()
+	began := time.Now()
+	err = c.Drain(drainCtx)
+	if err == nil {
+		t.Fatal("Drain succeeded though a handler outlived its context")
+	}
+	if elapsed := time.Since(began); elapsed > 3*time.Second {
+		t.Fatalf("Drain took %s, want it bounded by its 300ms context", elapsed)
+	}
+	if !c.nc.IsClosed() {
+		t.Fatalf("Drain gave up with the connection %v, want it closed", c.nc.Status())
+	}
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 // fetchOne pulls exactly one message from a pull consumer within a bounded
@@ -413,4 +528,24 @@ func fetchOne(t *testing.T, consumer jetstream.Consumer) jetstream.Msg {
 		t.Fatal("fetchOne: no message delivered within timeout")
 	}
 	return msg
+}
+
+// TestNewClient_ConnectErrorRedactsCredentials checks that a failed dial
+// names each URL of the comma-separated list without its credentials.
+func TestNewClient_ConnectErrorRedactsCredentials(t *testing.T) {
+	a := net.JoinHostPort("127.0.0.1", itoa(freePort(t)))
+	b := net.JoinHostPort("127.0.0.1", itoa(freePort(t)))
+	_, err := NewClient("nats://sqi:hunter2@"+a+",nats://s3cr3tt0ken@"+b, slog.New(slog.DiscardHandler),
+		nats.MaxReconnects(0), nats.Timeout(200*time.Millisecond))
+	if err == nil {
+		t.Fatal("NewClient succeeded with no broker listening")
+	}
+	for _, secret := range []string{"hunter2", "s3cr3tt0ken"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("NewClient error %q repeats the credential %q", err, secret)
+		}
+	}
+	if want := "nats://REDACTED@" + a + ",nats://REDACTED@" + b; !strings.Contains(err.Error(), want) {
+		t.Fatalf("NewClient error %q does not name %s", err, want)
+	}
 }

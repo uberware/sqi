@@ -20,6 +20,7 @@ import (
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/health"
 	sqilog "github.com/uberware/sqi/internal/log"
+	"github.com/uberware/sqi/internal/redact"
 	"github.com/uberware/sqi/internal/winsvc"
 	"github.com/uberware/sqi/internal/worker/cancel"
 	"github.com/uberware/sqi/internal/worker/capabilities"
@@ -419,7 +420,7 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 		slog.String("data_dir", cfg.Worker.DataDir),
 		slog.String("session_root", sessionRoot),
 		slog.String("metrics_addr", cfg.Metrics.Addr),
-		slog.String("nats_url", nc.ConnectedUrl()),
+		slog.String("nats_url", redact.URL(nc.ConnectedUrl())),
 		slog.String("os", caps.OS),
 		slog.Int("cpu_count", caps.CPUCount),
 		slog.Int("ram_mb", caps.RAMMb),
@@ -652,7 +653,7 @@ func runDryRun(cfg workerconfig.WorkerConfig) error {
 	fmt.Fprintf(w, "  name:             %s\n", cfg.Worker.Name)
 	fmt.Fprintf(w, "  compute_location: %s\n", cfg.Worker.ComputeLocation)
 	if cfg.NATS.URL != "" {
-		fmt.Fprintf(w, "  server_nats_url:      %s\n", cfg.NATS.URL)
+		fmt.Fprintf(w, "  server_nats_url:      %s\n", redact.List(cfg.NATS.URL))
 	} else {
 		fmt.Fprintln(w, "  server_nats_url:      (auto-discover via mDNS)")
 	}

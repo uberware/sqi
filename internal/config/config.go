@@ -27,6 +27,7 @@ import (
 
 	"github.com/uberware/sqi/internal/auth/oidc"
 	"github.com/uberware/sqi/internal/pgdsn"
+	"github.com/uberware/sqi/internal/redact"
 )
 
 // Config is the complete runtime configuration for sqi-server.
@@ -68,31 +69,173 @@ type HTTPConfig struct {
 	TLS TLSConfig `yaml:"tls"`
 }
 
-// NATSConfig controls the embedded NATS JetStream broker.
+// The NATS broker modes.
+const (
+	// NATSModeEmbedded runs the broker inside sqi-server (the default).
+	NATSModeEmbedded = "embedded"
+	// NATSModeExternal connects sqi-server to a broker the operator runs.
+	NATSModeExternal = "external"
+)
+
+// NATSConfig controls the NATS JetStream broker sqi runs on: either one
+// embedded in sqi-server or an external server or cluster.
 type NATSConfig struct {
+	// Mode selects the broker: "embedded" (the default) or "external".
+	// Env: SQI_NATS_MODE
+	Mode string `yaml:"mode"`
+
+	// Auth configures per-worker broker authentication. Off by default, and
+	// the same in both modes. Deliberately INDEPENDENT of the top-level auth
+	// block: the two protect different surfaces, and coupling them would
+	// force an operator who wants worker authentication into user accounts
+	// they did not ask for.
+	Auth NATSAuthConfig `yaml:"auth"`
+
+	// Embedded configures the broker inside sqi-server. Used only when Mode
+	// is embedded.
+	Embedded NATSEmbeddedConfig `yaml:"embedded"`
+
+	// External configures the connection to an operator-run broker. Used
+	// only when Mode is external.
+	External NATSExternalConfig `yaml:"external"`
+}
+
+// NATSEmbeddedConfig configures the broker embedded in sqi-server.
+type NATSEmbeddedConfig struct {
 	// Addr is the TCP address the embedded NATS server binds to. The default,
 	// 0.0.0.0:4222, listens on every interface because workers connect to the
 	// broker over the network; sqi-server itself uses NATS in-process.
-	// Env: SQI_NATS_ADDR
+	// Env: SQI_NATS_EMBEDDED_ADDR
 	Addr string `yaml:"addr"`
+
+	// AdvertiseURL is the broker URL discovery tells workers to use. Empty
+	// derives nats:// or tls:// from the discovery host and Addr's port.
+	// Env: SQI_NATS_EMBEDDED_ADVERTISE_URL
+	AdvertiseURL string `yaml:"advertise_url"`
 
 	// DataDir is the directory used by JetStream for file-backed stream
 	// storage. Created at startup if it does not exist.
-	// Env: SQI_NATS_DATA_DIR
+	// Env: SQI_NATS_EMBEDDED_DATA_DIR
 	DataDir string `yaml:"data_dir"`
 
 	// MaxStoreMB is the JetStream file-storage cap in megabytes.
-	// Env: SQI_NATS_MAX_STORE_MB
+	// Env: SQI_NATS_EMBEDDED_MAX_STORE_MB
 	MaxStoreMB int `yaml:"max_store_mb"`
-
-	// Auth configures per-worker broker authentication. Off by default.
-	// Deliberately INDEPENDENT of the top-level auth block: the two protect
-	// different surfaces, and coupling them would force an operator who
-	// wants worker authentication into user accounts they did not ask for.
-	Auth NATSAuthConfig `yaml:"auth"`
 
 	// TLS encrypts the embedded broker's client listener. Off by default.
 	TLS NATSTLSConfig `yaml:"tls"`
+}
+
+// NATSExternalConfig configures sqi-server's connection to an external NATS
+// server or cluster.
+type NATSExternalConfig struct {
+	// URLs are the broker URLs sqi-server connects to, all tls:// or all
+	// nats://. Required in external mode.
+	// Env: SQI_NATS_EXTERNAL_URLS (comma-separated)
+	URLs []string `yaml:"urls"`
+
+	// AdvertiseURLs are the broker URLs discovery tells workers to use.
+	// Empty means URLs.
+	// Env: SQI_NATS_EXTERNAL_ADVERTISE_URLS (comma-separated)
+	AdvertiseURLs []string `yaml:"advertise_urls"`
+
+	// Account is the dedicated NATS account sqi's streams, consumers and
+	// workers live in.
+	// Env: SQI_NATS_EXTERNAL_ACCOUNT
+	Account string `yaml:"account"`
+
+	// NkeySeedFile is sqi-server's data-connection credential as an nkey
+	// seed. Mutually exclusive with CredsFile; neither set means an
+	// unauthenticated account.
+	// Env: SQI_NATS_EXTERNAL_NKEY_SEED_FILE
+	NkeySeedFile string `yaml:"nkey_seed_file"`
+
+	// CredsFile is sqi-server's data-connection credential as a .creds file.
+	// Mutually exclusive with NkeySeedFile.
+	// Env: SQI_NATS_EXTERNAL_CREDS_FILE
+	CredsFile string `yaml:"creds_file"`
+
+	// StreamReplicas is the JetStream replica count for sqi's streams and
+	// KV bucket: 1, 3 or 5.
+	// Env: SQI_NATS_EXTERNAL_STREAM_REPLICAS
+	StreamReplicas int `yaml:"stream_replicas"`
+
+	// ConnectTimeout bounds the connection attempt at startup only;
+	// reconnects after startup are unbounded.
+	// Env: SQI_NATS_EXTERNAL_CONNECT_TIMEOUT
+	ConnectTimeout time.Duration `yaml:"connect_timeout"`
+
+	// TLS configures the client side of the connection.
+	TLS NATSClientTLSConfig `yaml:"tls"`
+
+	// Callout configures the auth callout connection. Used only when
+	// nats.auth.enabled is true.
+	Callout NATSCalloutConfig `yaml:"callout"`
+}
+
+// MarshalYAML replaces the credentials a broker URL may carry (user:password@
+// or a token@) so they never appear in YAML output (e.g. `sqi-server config
+// print`), as [PostgresStoreConfig.MarshalYAML] does the DSN's password. It
+// does not affect unmarshaling or the loaded value.
+func (e NATSExternalConfig) MarshalYAML() (any, error) {
+	type plain NATSExternalConfig
+	out := plain(e)
+	out.URLs = redactURLs(e.URLs)
+	out.AdvertiseURLs = redactURLs(e.AdvertiseURLs)
+	return out, nil
+}
+
+// redactURLs returns urls with their credentials replaced, nil for nil.
+func redactURLs(urls []string) []string {
+	if urls == nil {
+		return nil
+	}
+	out := make([]string, len(urls))
+	for i, raw := range urls {
+		out[i] = redact.URL(raw)
+	}
+	return out
+}
+
+// NATSClientTLSConfig is the TLS configuration of a client connection to an
+// external broker.
+type NATSClientTLSConfig struct {
+	// CAFile is the PEM CA bundle that verifies the broker's certificate.
+	// Env: SQI_NATS_EXTERNAL_TLS_CA_FILE
+	CAFile string `yaml:"ca_file"`
+
+	// CertFile is an optional client certificate, for clusters that require
+	// mTLS.
+	// Env: SQI_NATS_EXTERNAL_TLS_CERT_FILE
+	CertFile string `yaml:"cert_file"`
+
+	// KeyFile is the private key matching CertFile.
+	// Env: SQI_NATS_EXTERNAL_TLS_KEY_FILE
+	KeyFile string `yaml:"key_file"`
+
+	// ServerName overrides the name the broker certificate is verified
+	// against.
+	// Env: SQI_NATS_EXTERNAL_TLS_SERVER_NAME
+	ServerName string `yaml:"server_name"`
+}
+
+// NATSCalloutConfig configures the auth callout connection to an external
+// broker.
+type NATSCalloutConfig struct {
+	// NkeySeedFile is the callout connection's own user nkey seed, in the
+	// AUTH account.
+	// Env: SQI_NATS_EXTERNAL_CALLOUT_NKEY_SEED_FILE
+	NkeySeedFile string `yaml:"nkey_seed_file"`
+
+	// IssuerSeedFile is the account nkey seed sqi signs callout responses
+	// with.
+	// Env: SQI_NATS_EXTERNAL_CALLOUT_ISSUER_SEED_FILE
+	IssuerSeedFile string `yaml:"issuer_seed_file"`
+
+	// SystemCredsFile is an optional system-account credential; it enables
+	// immediate revocation by kicking the connection.
+	// Env: SQI_NATS_EXTERNAL_CALLOUT_SYSTEM_CREDS_FILE
+	SystemCredsFile string `yaml:"system_creds_file"`
 }
 
 // TLSConfig controls in-process TLS termination for a listener. Zero value
@@ -119,15 +262,15 @@ type TLSConfig struct {
 // and a private farm CA on the broker.
 type NATSTLSConfig struct {
 	// Enabled requires TLS on every broker connection.
-	// Env: SQI_NATS_TLS_ENABLED
+	// Env: SQI_NATS_EMBEDDED_TLS_ENABLED
 	Enabled bool `yaml:"enabled"`
 
 	// CertFile is the PEM certificate presented to connecting workers.
-	// Env: SQI_NATS_TLS_CERT_FILE
+	// Env: SQI_NATS_EMBEDDED_TLS_CERT_FILE
 	CertFile string `yaml:"cert_file"`
 
 	// KeyFile is the PEM private key matching CertFile.
-	// Env: SQI_NATS_TLS_KEY_FILE
+	// Env: SQI_NATS_EMBEDDED_TLS_KEY_FILE
 	KeyFile string `yaml:"key_file"`
 
 	// ClientCAFile, when set, requires every worker to present a client
@@ -135,15 +278,15 @@ type NATSTLSConfig struct {
 	// top of the per-worker nkey credential, not a replacement for it: the
 	// certificate gates who may open a connection, the nkey decides which
 	// worker you are.
-	// Env: SQI_NATS_TLS_CLIENT_CA_FILE
+	// Env: SQI_NATS_EMBEDDED_TLS_CLIENT_CA_FILE
 	ClientCAFile string `yaml:"client_ca_file"`
 }
 
 // NATSAuthConfig configures broker authentication and worker enrollment.
 type NATSAuthConfig struct {
 	// Enabled requires every NATS client to present a per-worker nkey
-	// credential. When false the broker accepts any connection, which is the
-	// v0.3.0 behavior and the default.
+	// credential. When false, the default, the broker accepts any anonymous
+	// connection and refuses one that presents a key.
 	// Env: SQI_NATS_AUTH_ENABLED
 	Enabled bool `yaml:"enabled"`
 
@@ -163,6 +306,11 @@ type NATSAuthConfig struct {
 	// enrollment surface at all. Meaningful only when Enabled is true.
 	// Env: SQI_NATS_AUTH_ENROLLMENT_ENDPOINT_ENABLED
 	EnrollmentEndpointEnabled bool `yaml:"enrollment_endpoint_enabled"`
+
+	// UserTTL is the lifetime of the user JWT issued to a worker. Bounded by
+	// MinNATSAuthUserTTL and MaxNATSAuthUserTTL.
+	// Env: SQI_NATS_AUTH_USER_TTL
+	UserTTL time.Duration `yaml:"user_ttl"`
 }
 
 const (
@@ -175,6 +323,12 @@ const (
 	// blast radius; a token valid for weeks is a standing credential wearing
 	// a different name.
 	MaxNATSAuthJoinTokenTTL = 24 * time.Hour
+
+	// MinNATSAuthUserTTL is the shortest worker user JWT lifetime.
+	MinNATSAuthUserTTL = 1 * time.Minute
+
+	// MaxNATSAuthUserTTL is the longest worker user JWT lifetime.
+	MaxNATSAuthUserTTL = 24 * time.Hour
 )
 
 // The store drivers.
@@ -856,14 +1010,23 @@ func DefaultConfig() Config {
 			Addr: "0.0.0.0:8080",
 		},
 		NATS: NATSConfig{
-			Addr:       "0.0.0.0:4222",
-			DataDir:    "data/nats",
-			MaxStoreMB: 1024,
+			Mode: NATSModeEmbedded,
 			Auth: NATSAuthConfig{
 				Enabled:                   false,
 				JoinTokenTTL:              1 * time.Hour,
 				JoinTokenSingleUse:        true,
 				EnrollmentEndpointEnabled: true,
+				UserTTL:                   1 * time.Hour,
+			},
+			Embedded: NATSEmbeddedConfig{
+				Addr:       "0.0.0.0:4222",
+				DataDir:    "data/nats",
+				MaxStoreMB: 1024,
+			},
+			External: NATSExternalConfig{
+				Account:        "SQI",
+				StreamReplicas: 1,
+				ConnectTimeout: 30 * time.Second,
 			},
 		},
 		Store: StoreConfig{

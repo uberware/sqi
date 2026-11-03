@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -107,73 +108,73 @@ func TestEntryToResult(t *testing.T) {
 	tests := []struct {
 		name     string
 		hostname string
-		ipv4     []net.IP
-		ipv6     []net.IP
 		txt      []string
 		wantURL  string
-		wantErr  bool
+		wantTLS  bool
+		wantErr  string
 	}{
 		{
-			name:     "valid hostname with nats port",
+			name:     "plaintext url used as advertised",
 			hostname: "render01.local.",
-			txt:      []string{"id=abc", "nats=4222", "version=1.0.0"},
+			txt:      []string{"id=abc", "nats_url=nats://render01.local:4222", "version=1.0.0"},
 			wantURL:  "nats://render01.local:4222",
 		},
 		{
-			name:     "trailing dot stripped from hostname",
-			hostname: "myhost.local.",
-			txt:      []string{"nats=4222"},
-			wantURL:  "nats://myhost.local:4222",
+			name:     "tls scheme means TLS",
+			hostname: "render01.local.",
+			txt:      []string{"nats_url=tls://render01.local:4222"},
+			wantURL:  "tls://render01.local:4222",
+			wantTLS:  true,
 		},
 		{
-			name:     "hostname without trailing dot",
-			hostname: "myhost.local",
-			txt:      []string{"nats=4222"},
-			wantURL:  "nats://myhost.local:4222",
+			// An operator-chosen advertise_url need not name the SRV host.
+			name:     "a different host is used verbatim",
+			hostname: "render01.local.",
+			txt:      []string{"nats_url=tls://nats.example.com:4222"},
+			wantURL:  "tls://nats.example.com:4222",
+			wantTLS:  true,
 		},
 		{
-			name:     "missing nats record",
+			name:     "no hostname is not an error",
+			hostname: "",
+			txt:      []string{"nats_url=nats://192.0.2.1:4222"},
+			wantURL:  "nats://192.0.2.1:4222",
+		},
+		{
+			name:     "ipv6 host",
+			hostname: "",
+			txt:      []string{"nats_url=nats://[2001:db8::1]:4222"},
+			wantURL:  "nats://[2001:db8::1]:4222",
+		},
+		{
+			name:     "missing nats_url",
 			hostname: "render01.local.",
 			txt:      []string{"id=abc"},
-			wantErr:  true,
+			wantErr:  "server advertises no broker URL",
 		},
 		{
-			name:     "invalid nats port string",
+			name:     "the removed nats record is not a fallback",
 			hostname: "render01.local.",
-			txt:      []string{"nats=notaport"},
-			wantErr:  true,
+			txt:      []string{"id=abc", "nats=4222"},
+			wantErr:  "server advertises no broker URL",
 		},
 		{
-			name:     "nats port out of range high",
+			name:     "empty nats_url",
 			hostname: "render01.local.",
-			txt:      []string{"nats=99999"},
-			wantErr:  true,
+			txt:      []string{"nats_url="},
+			wantErr:  "server advertises no broker URL",
 		},
 		{
-			name:     "nats port zero",
+			name:     "unsupported scheme",
 			hostname: "render01.local.",
-			txt:      []string{"nats=0"},
-			wantErr:  true,
+			txt:      []string{"nats_url=http://render01.local:4222"},
+			wantErr:  "invalid nats_url",
 		},
 		{
-			name:     "no hostname no IP",
-			hostname: "",
-			txt:      []string{"nats=4222"},
-			wantErr:  true,
-		},
-		{
-			name:     "no hostname falls back to IPv4",
-			hostname: "",
-			ipv4:     []net.IP{net.ParseIP("192.168.1.100")},
-			txt:      []string{"nats=4222"},
-			wantURL:  "nats://192.168.1.100:4222",
-		},
-		{
-			name:     "no hostname falls back to IPv6",
-			hostname: "",
-			ipv6:     []net.IP{net.ParseIP("2001:db8::1")},
-			txt:      []string{"nats=4222"},
-			wantURL:  "nats://[2001:db8::1]:4222",
+			name:     "no host in url",
+			hostname: "render01.local.",
+			txt:      []string{"nats_url=nats://:4222"},
+			wantErr:  "invalid nats_url",
 		},
 	}
 
@@ -181,18 +182,10 @@ func TestEntryToResult(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			entry := buildZeroconfEntry(tc.hostname, tc.txt, "test-instance")
-			if len(tc.ipv4) > 0 {
-				entry.AddrIPv4 = tc.ipv4
-			}
-			if len(tc.ipv6) > 0 {
-				entry.AddrIPv6 = tc.ipv6
-			}
-
-			result, err := entryToResult(entry)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected error, got result %+v", result)
+			result, err := entryToResult(buildZeroconfEntry(tc.hostname, tc.txt, "test-instance"))
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want one containing %q (result %+v)", err, tc.wantErr, result)
 				}
 				return
 			}
@@ -202,8 +195,58 @@ func TestEntryToResult(t *testing.T) {
 			if result.NATSURL != tc.wantURL {
 				t.Errorf("NATSURL: got %q, want %q", result.NATSURL, tc.wantURL)
 			}
+			if result.NATSTLS != tc.wantTLS {
+				t.Errorf("NATSTLS: got %v, want %v", result.NATSTLS, tc.wantTLS)
+			}
 		})
 	}
+}
+
+// TestEntryToResult_UsesNATSURL pins the three behaviors the advertised URL
+// is consumed with: the scheme decides TLS, the SRV host still gets the
+// advertised-IP fallback, and any other host is left alone.
+func TestEntryToResult_UsesNATSURL(t *testing.T) {
+	orig := lookupHost
+	t.Cleanup(func() { lookupHost = orig })
+	lookupHost = func(context.Context, string) ([]string, error) { return nil, errors.New("no such host") }
+
+	build := func(url string) Result {
+		t.Helper()
+		entry := buildZeroconfEntry("render01.local.", []string{"id=a", "nats_url=" + url}, "srv")
+		entry.AddrIPv4 = []net.IP{net.ParseIP("192.0.2.9")}
+		got, err := entryToResult(entry)
+		if err != nil {
+			t.Fatalf("entryToResult: %v", err)
+		}
+		return resolveHost(t.Context(), got, testLogger())
+	}
+
+	t.Run("tls scheme sets NATSTLS", func(t *testing.T) {
+		if got := build("tls://other.example:4222"); !got.NATSTLS {
+			t.Error("NATSTLS = false for a tls:// URL")
+		}
+	})
+	t.Run("the SRV host is replaced by the advertised IP when it does not resolve", func(t *testing.T) {
+		got := build("tls://render01.local:4222")
+		if got.NATSURL != "tls://192.0.2.9:4222" {
+			t.Errorf("NATSURL = %q, want the advertised IP with the scheme and port kept", got.NATSURL)
+		}
+		if !got.NATSTLS {
+			t.Error("NATSTLS lost across the IP substitution")
+		}
+	})
+	t.Run("a different host is used verbatim", func(t *testing.T) {
+		got := build("nats://nats.example.com:4222")
+		if got.NATSURL != "nats://nats.example.com:4222" {
+			t.Errorf("NATSURL = %q, want it untouched", got.NATSURL)
+		}
+	})
+	t.Run("no nats_url is an error", func(t *testing.T) {
+		_, err := entryToResult(buildZeroconfEntry("render01.local.", []string{"id=a"}, "srv"))
+		if err == nil || err.Error() != "server advertises no broker URL" {
+			t.Errorf("err = %v, want %q", err, "server advertises no broker URL")
+		}
+	})
 }
 
 func TestEntryToResultFields(t *testing.T) {
@@ -211,7 +254,7 @@ func TestEntryToResultFields(t *testing.T) {
 
 	entry := buildZeroconfEntry(
 		"render01.local.",
-		[]string{"id=server-id-123", "nats=4222", "version=2.1.0", "http=8080"},
+		[]string{"id=server-id-123", "nats_url=nats://render01.local:4222", "version=2.1.0", "http=8080"},
 		"my-sqi-server",
 	)
 
@@ -334,32 +377,38 @@ func TestEntryToResult_TLSRecords(t *testing.T) {
 		wantHTTPTLS bool
 	}{
 		{
-			// A plaintext server omits the keys entirely rather than sending
-			// "tls=0", so absence is the normal case and must read as false.
-			name: "absent keys mean plaintext",
-			txt:  []string{"id=a", "nats=4222", "version=0.4.0", "http=8080"},
+			// A plaintext server omits the tls key entirely rather than
+			// sending "tls=0", so absence is the normal case.
+			name: "plaintext broker and http",
+			txt:  []string{"id=a", "nats_url=nats://h:4222", "version=0.4.0", "http=8080"},
 		},
 		{
-			name:        "nats_tls only",
-			txt:         []string{"id=a", "nats=4222", "nats_tls=1"},
+			name:        "tls broker only",
+			txt:         []string{"id=a", "nats_url=tls://h:4222"},
 			wantNATSTLS: true,
 		},
 		{
-			name:        "tls only",
-			txt:         []string{"id=a", "nats=4222", "tls=1"},
+			name:        "tls http only",
+			txt:         []string{"id=a", "nats_url=nats://h:4222", "tls=1"},
 			wantHTTPTLS: true,
 		},
 		{
 			name:        "both",
-			txt:         []string{"id=a", "nats=4222", "tls=1", "nats_tls=1"},
+			txt:         []string{"id=a", "nats_url=tls://h:4222", "tls=1"},
 			wantNATSTLS: true,
 			wantHTTPTLS: true,
 		},
 		{
-			// Only "1" counts. Anything else is a server we do not understand,
-			// and guessing "probably TLS" would break a plaintext farm.
-			name: "unexpected values are not truthy",
-			txt:  []string{"id=a", "nats=4222", "tls=true", "nats_tls=yes"},
+			// Only "1" counts for the http record. Anything else is a server
+			// we do not understand, and guessing "probably TLS" would break a
+			// plaintext farm.
+			name: "unexpected http value is not truthy",
+			txt:  []string{"id=a", "nats_url=nats://h:4222", "tls=true"},
+		},
+		{
+			// The old nats_tls record no longer means anything.
+			name: "the removed nats_tls record is ignored",
+			txt:  []string{"id=a", "nats_url=nats://h:4222", "nats_tls=1"},
 		},
 	}
 	for _, tt := range tests {
@@ -406,7 +455,7 @@ func TestResolveHost_KeepsAResolvableHostname(t *testing.T) {
 	t.Cleanup(func() { lookupHost = orig })
 	lookupHost = func(context.Context, string) ([]string, error) { return []string{"192.0.2.9"}, nil }
 
-	in := Result{NATSURL: "nats://render01.local:4222", ipHost: "192.0.2.9", natsPort: 4222}
+	in := Result{NATSURL: "nats://render01.local:4222", ipHost: "192.0.2.9", srvHost: "render01.local"}
 	got := resolveHost(t.Context(), in, testLogger())
 	if got.NATSURL != in.NATSURL {
 		// The hostname is preferred because a TLS certificate names hosts far
@@ -422,7 +471,7 @@ func TestResolveHost_FallsBackToTheAdvertisedIP(t *testing.T) {
 		return nil, errors.New("no such host")
 	}
 
-	in := Result{NATSURL: "nats://render01.local:4222", ipHost: "192.0.2.9", natsPort: 4222}
+	in := Result{NATSURL: "nats://render01.local:4222", ipHost: "192.0.2.9", srvHost: "render01.local"}
 	got := resolveHost(t.Context(), in, testLogger())
 	if got.NATSURL != "nats://192.0.2.9:4222" {
 		t.Errorf("NATSURL = %q, want the advertised IP", got.NATSURL)
@@ -454,7 +503,7 @@ func TestResolveHost_DoesNotLookUpAnIP(t *testing.T) {
 	}
 
 	// Already an IP: a lookup would be a pointless round trip at every boot.
-	in := Result{NATSURL: "nats://192.0.2.9:4222", ipHost: "192.0.2.9", natsPort: 4222}
+	in := Result{NATSURL: "nats://192.0.2.9:4222", ipHost: "192.0.2.9", srvHost: "render01.local"}
 	got := resolveHost(t.Context(), in, testLogger())
 	if called {
 		t.Error("resolveHost performed a DNS lookup for an address")
@@ -466,7 +515,7 @@ func TestResolveHost_DoesNotLookUpAnIP(t *testing.T) {
 
 func TestEntryToResult_KeepsTheAdvertisedIPAlongsideTheHostname(t *testing.T) {
 	t.Parallel()
-	entry := buildZeroconfEntry("render01.local.", []string{"id=a", "nats=4222"}, "srv")
+	entry := buildZeroconfEntry("render01.local.", []string{"id=a", "nats_url=nats://render01.local:4222"}, "srv")
 	entry.AddrIPv4 = []net.IP{net.ParseIP("192.0.2.9")}
 
 	got, err := entryToResult(entry)
@@ -478,8 +527,8 @@ func TestEntryToResult_KeepsTheAdvertisedIPAlongsideTheHostname(t *testing.T) {
 	}
 	// The address must survive even though the hostname was usable, or the
 	// fallback has nothing to work with.
-	if got.ipHost != "192.0.2.9" || got.natsPort != 4222 {
-		t.Errorf("ipHost/natsPort = %q/%d, want 192.0.2.9/4222", got.ipHost, got.natsPort)
+	if got.ipHost != "192.0.2.9" || got.srvHost != "render01.local" {
+		t.Errorf("ipHost/srvHost = %q/%q, want 192.0.2.9/render01.local", got.ipHost, got.srvHost)
 	}
 }
 
@@ -506,10 +555,34 @@ func TestAdvertisedIP_SkipsLinkLocal(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			entry := buildZeroconfEntry("h.local.", []string{"nats=4222"}, "srv")
+			entry := buildZeroconfEntry("h.local.", []string{"nats_url=nats://h:4222"}, "srv")
 			entry.AddrIPv4, entry.AddrIPv6 = tt.v4, tt.v6
 			if got := advertisedIP(entry); got != tt.want {
 				t.Errorf("advertisedIP() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveHost_SubstitutesAnIPv6Address(t *testing.T) {
+	orig := lookupHost
+	t.Cleanup(func() { lookupHost = orig })
+	lookupHost = func(context.Context, string) ([]string, error) { return nil, errors.New("no such host") }
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"with a port", "tls://render01.local:4222", "tls://[2001:db8::1]:4222"},
+		{"without a port", "nats://render01.local", "nats://[2001:db8::1]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := Result{NATSURL: tt.in, ipHost: "2001:db8::1", srvHost: "render01.local"}
+			got := resolveHost(t.Context(), in, testLogger())
+			if got.NATSURL != tt.want {
+				t.Errorf("NATSURL = %q, want %q", got.NATSURL, tt.want)
 			}
 		})
 	}

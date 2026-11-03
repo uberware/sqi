@@ -13,11 +13,12 @@ import (
 
 func TestBrokerInProcess_ServerReachesJetStreamUnderTLSAndAuth(t *testing.T) {
 	dir, _ := farmCerts(t)
-	enrolled, _ := enrolledWorker(t, "worker-01")
+	creds := newCredentialMap()
+	creds.enroll(t, "worker-01")
 	b := startBrokerTLS(
 		t,
 		brokerTLSOf(dir, false),
-		BrokerAuthConfig{Enabled: true, Credentials: []WorkerCredentialRef{enrolled}},
+		AuthConfig{Enabled: true, UserTTL: time.Hour, Lookup: creds.lookup},
 	)
 
 	// The server's own client carries no TLS configuration at all: the
@@ -38,7 +39,7 @@ func TestBrokerInProcess_ServerReachesJetStreamUnderTLSAndAuth(t *testing.T) {
 
 func TestBrokerInProcess_NetworkClientsStillNeedCertificates(t *testing.T) {
 	dir, _ := farmCerts(t)
-	b := startBrokerTLS(t, brokerTLSOf(dir, true), BrokerAuthConfig{})
+	b := startBrokerTLS(t, brokerTLSOf(dir, true), AuthConfig{})
 
 	// The server's own connection is in-process and therefore plaintext, which
 	// bypasses the client-certificate requirement by never doing a handshake.
@@ -55,7 +56,7 @@ func TestBrokerInProcess_NetworkClientsStillNeedCertificates(t *testing.T) {
 
 func TestBrokerInProcess_PlaintextStillRefusedForNetworkClients(t *testing.T) {
 	dir, _ := farmCerts(t)
-	b := startBrokerTLS(t, brokerTLSOf(dir, false), BrokerAuthConfig{})
+	b := startBrokerTLS(t, brokerTLSOf(dir, false), AuthConfig{})
 
 	if nc, err := nats.Connect(b.ClientURL(), nats.NoReconnect()); err == nil {
 		nc.Close()

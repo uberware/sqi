@@ -9,7 +9,7 @@ package integration
 // Everything else in this suite sets DiscoveryEnabled: false, and the unit
 // tests cover the two halves separately: the server's advertised TXT records
 // and the worker's parsing of them. These tests join the halves, in
-// particular for the TLS records: a server advertising nats_tls=1 achieves
+// particular for the TLS signals: a server advertising a tls:// nats_url achieves
 // nothing unless the worker reads it.
 //
 // These tests use real multicast on a real interface. See multicast_test.go
@@ -37,13 +37,16 @@ import (
 func advertise(t *testing.T, httpTLS, natsTLS bool) string {
 	t.Helper()
 	instance := instanceName(t, "sqi-disco")
+	natsURL := "nats://127.0.0.1:14222"
+	if natsTLS {
+		natsURL = "tls://127.0.0.1:14222"
+	}
 	resp, err := serverdiscovery.New(serverdiscovery.Config{
 		Enabled:      true,
 		InstanceName: instance,
 		HTTPAddr:     "127.0.0.1:18080",
-		NATSAddr:     "127.0.0.1:14222",
+		NATSURL:      natsURL,
 		HTTPTLS:      httpTLS,
-		NATSTLS:      natsTLS,
 		// Loopback only: a test must not announce a service on the network it
 		// happens to be running on.
 		Interfaces: loopbackIfaces(),
@@ -97,13 +100,17 @@ func TestDiscovery_TLSRecordsCrossTheWire(t *testing.T) {
 				t.Fatalf("discovered %q, want this test's %q", found.InstanceName, instance)
 			}
 			if found.NATSTLS != tt.natsTLS {
-				t.Errorf("NATSTLS = %v, want %v (nats_tls TXT record did not survive the wire)", found.NATSTLS, tt.natsTLS)
+				t.Errorf("NATSTLS = %v, want %v (the nats_url scheme did not survive the wire)", found.NATSTLS, tt.natsTLS)
 			}
 			if found.HTTPTLS != tt.httpTLS {
 				t.Errorf("HTTPTLS = %v, want %v (tls TXT record did not survive the wire)", found.HTTPTLS, tt.httpTLS)
 			}
-			if !strings.HasPrefix(found.NATSURL, "nats://") {
-				t.Errorf("NATSURL = %q, want a nats:// URL", found.NATSURL)
+			wantScheme := "nats://"
+			if tt.natsTLS {
+				wantScheme = "tls://"
+			}
+			if !strings.HasPrefix(found.NATSURL, wantScheme) {
+				t.Errorf("NATSURL = %q, want a %s URL", found.NATSURL, wantScheme)
 			}
 		})
 	}
@@ -151,7 +158,8 @@ func TestDiscovery_AdvertisedBrokerTLSReachesWorkerConfig(t *testing.T) {
 // TestDiscovery_RealBinaryFindsItsServerOverMDNS is the full stack: a real
 // sqi-server advertising over mDNS with TLS on both listeners, and a real
 // sqi-worker subprocess given NO nats.url at all, which has to discover the
-// server, act on nats_tls, and register.
+// server, learn from the tls:// scheme of the advertised nats_url that the
+// broker requires TLS, and register.
 func TestDiscovery_RealBinaryFindsItsServerOverMDNS(t *testing.T) {
 	// This is the ONE test here that opens a listener beyond loopback, so it
 	// runs only when discovery testing was asked for explicitly — `make
@@ -196,10 +204,10 @@ func TestDiscovery_RealBinaryFindsItsServerOverMDNS(t *testing.T) {
 
 	ts := startBrokerAuthServer(t, so, func(cfg *server.Config) {
 		cfg.HTTPTLS = config.TLSConfig{Enabled: true, CertFile: certFile, KeyFile: keyFile}
-		cfg.NATSTLS = config.NATSTLSConfig{Enabled: true, CertFile: certFile, KeyFile: keyFile}
-		cfg.NATSAuthEnrollmentEndpointEnabled = true
+		cfg.NATS.Embedded.TLS = config.NATSTLSConfig{Enabled: true, CertFile: certFile, KeyFile: keyFile}
+		cfg.NATS.Auth.EnrollmentEndpointEnabled = true
 		// Reachable at the advertised hostname, per (1) above.
-		cfg.NATSAddr = strings.Replace(cfg.NATSAddr, "127.0.0.1", "0.0.0.0", 1)
+		cfg.NATS.Embedded.Addr = strings.Replace(cfg.NATS.Embedded.Addr, "127.0.0.1", "0.0.0.0", 1)
 		// The point of this test: advertise, so the worker can find us.
 		cfg.DiscoveryEnabled = true
 		cfg.DiscoveryInstanceName = instance
@@ -210,7 +218,7 @@ func TestDiscovery_RealBinaryFindsItsServerOverMDNS(t *testing.T) {
 	caFile := filepath.Join(dir, "ca.crt")
 
 	// No SQI_WORKER_NATS_URL: the worker must find the broker over mDNS, and
-	// the discovered nats_tls record is what tells it the transport.
+	// the scheme of the discovered nats_url is what tells it the transport.
 	startRealWorkerNoWait(t, ts, farmID, queueID, nil, []string{
 		// Blank out the harness default so the worker has no URL to fall back
 		// on: applyNATSEnv ignores an empty value, so nats.url stays unset and

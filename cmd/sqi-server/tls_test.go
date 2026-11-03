@@ -186,10 +186,10 @@ func TestTLSInit_PrintsConfigKeys(t *testing.T) {
 	}
 	for _, want := range []string{
 		"http.tls.cert_file",
-		"nats.tls.cert_file",
+		"nats.embedded.tls.cert_file",
 		"nats.tls_ca_file",
 		"nats.server_tls_ca_file",
-		"nats.tls.client_ca_file",
+		"nats.embedded.tls.client_ca_file",
 		"coordinated restart",
 	} {
 		if !strings.Contains(out, want) {

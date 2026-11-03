@@ -36,6 +36,7 @@ type Store struct {
 	sessions          map[string]store.Session
 	apiKeys           map[string]store.APIKey
 	workerCredentials map[string]store.WorkerCredential
+	brokerIdentity    string
 	workerJoinTokens  map[string]store.WorkerJoinToken
 }
 

@@ -38,10 +38,10 @@ import (
 // ── router helper ────────────────────────────────────────────────────────────
 
 // storeRevoker adapts a store.Store directly to [WorkerRevoker] by writing
-// the credential row and nothing else — no broker reload. The real
-// broker-reload behavior belongs to *server.Server (internal/server cannot
-// be imported here: internal/server imports internal/api, not the other way
-// around) and is covered by test/integration's broker-auth suite. Every test
+// the credential row and nothing else — no broker disconnect. The real
+// disconnect belongs to *server.Server (internal/server cannot be imported
+// here: internal/server imports internal/api, not the other way around) and
+// is covered by test/integration's broker-auth suite. Every test
 // in this file that does not care about broker semantics gets this by
 // default via newWorkerEnrollRouter.
 type storeRevoker struct{ store store.WorkerCredentialStore }
@@ -50,36 +50,16 @@ func (r storeRevoker) RevokeWorker(ctx context.Context, workerID string) error {
 	return r.store.RevokeWorkerCredential(ctx, workerID, time.Now().UTC())
 }
 
-// noopReloader is a [BrokerCredentialReloader] that does nothing and
-// returns nil — the enroll-side default for tests that don't care about
-// broker-reload semantics, matching storeRevoker's role on the revoke side.
-type noopReloader struct{}
-
-func (noopReloader) ReloadBrokerCredentials(context.Context) error { return nil }
-
-// recordingReloader is a [BrokerCredentialReloader] stub that counts calls
-// and returns a configurable error, for tests verifying enroll's delegation
-// to the reloader and its log-and-continue failure handling.
-type recordingReloader struct {
-	calls int
-	err   error
-}
-
-func (r *recordingReloader) ReloadBrokerCredentials(context.Context) error {
-	r.calls++
-	return r.err
-}
-
 func newWorkerEnrollRouter(st store.Store, singleUse bool, ttl time.Duration) chi.Router {
-	return newWorkerEnrollRouterWith(st, storeRevoker{store: st}, noopReloader{}, singleUse, ttl)
+	return newWorkerEnrollRouterWith(st, storeRevoker{store: st}, singleUse, ttl)
 }
 
 func newWorkerEnrollRouterWithRevoker(st store.Store, revoker WorkerRevoker, singleUse bool, ttl time.Duration) chi.Router {
-	return newWorkerEnrollRouterWith(st, revoker, noopReloader{}, singleUse, ttl)
+	return newWorkerEnrollRouterWith(st, revoker, singleUse, ttl)
 }
 
-func newWorkerEnrollRouterWith(st store.Store, revoker WorkerRevoker, reloader BrokerCredentialReloader, singleUse bool, ttl time.Duration) chi.Router {
-	h := newWorkerEnrollHandler(st, revoker, reloader, newTestLogger(), singleUse, ttl)
+func newWorkerEnrollRouterWith(st store.Store, revoker WorkerRevoker, singleUse bool, ttl time.Duration) chi.Router {
+	h := newWorkerEnrollHandler(st, revoker, newTestLogger(), singleUse, ttl)
 	r := chi.NewRouter()
 	r.Post("/workers/enroll", h.enroll)
 	r.Post("/workers/join-tokens", h.createJoinToken)
@@ -165,16 +145,25 @@ func TestWorkerEnroll_ValidTokenAndKey_Created(t *testing.T) {
 	}
 }
 
-// TestWorkerEnroll_ReloadsBrokerCredentialsAfterSuccess proves enroll
-// delegates to the injected [BrokerCredentialReloader] — not just the store
-// — after a successful credential creation. This is the property that makes
-// a freshly-enrolled worker able to connect to a RUNNING broker without a
-// restart; test/integration's broker-auth suite proves the real
-// *server.Server implementation end to end against a live broker.
-func TestWorkerEnroll_ReloadsBrokerCredentialsAfterSuccess(t *testing.T) {
+// failingRevoker is a [WorkerRevoker] that fails the test if it is ever called.
+type failingRevoker struct{ t *testing.T }
+
+func (r failingRevoker) RevokeWorker(context.Context, string) error {
+	r.t.Helper()
+	r.t.Error("enrolment called the revoker; it must not touch the broker")
+	return nil
+}
+
+// TestEnroll_DoesNotCallBroker proves enrolment completes with no broker
+// dependency: the handler is constructed with only the store and a revoker
+// that must stay unused, and the credential is created and durable. The
+// broker reads the credential from the store when the worker connects, so a
+// freshly enrolled worker needs no broker call; test/integration's
+// TestEnrollment_ConnectsToRunningBrokerWithoutRestart proves that against a
+// live broker.
+func TestEnroll_DoesNotCallBroker(t *testing.T) {
 	st := fake.New()
-	reloader := &recordingReloader{}
-	r := newWorkerEnrollRouterWith(st, storeRevoker{store: st}, reloader, true, time.Hour)
+	r := newWorkerEnrollRouterWith(st, failingRevoker{t: t}, true, time.Hour)
 	raw, _ := seedJoinToken(t, st, nil)
 
 	req := newReq(t, http.MethodPost, "/workers/enroll", jsonBody(t, workerEnrollRequest{
@@ -186,41 +175,8 @@ func TestWorkerEnroll_ReloadsBrokerCredentialsAfterSuccess(t *testing.T) {
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201 — body: %s", rr.Code, rr.Body)
 	}
-	if reloader.calls != 1 {
-		t.Errorf("reloader.calls = %d, want 1 — enroll must reload the broker's authorized-key set after creating the credential", reloader.calls)
-	}
-}
-
-// TestWorkerEnroll_ReloadFailure_StillCreated pins the deliberate asymmetry
-// with revoke: the credential is genuinely created and durable regardless of
-// whether the broker reload succeeds, so a reload failure here is logged and
-// swallowed, not turned into an error response — telling the caller
-// enrollment failed would be false, and the worker can simply retry
-// connecting once a later reload or restart picks up the row that already
-// exists in the store.
-func TestWorkerEnroll_ReloadFailure_StillCreated(t *testing.T) {
-	st := fake.New()
-	reloader := &recordingReloader{err: errors.New("broker not started")}
-	r := newWorkerEnrollRouterWith(st, storeRevoker{store: st}, reloader, true, time.Hour)
-	raw, _ := seedJoinToken(t, st, nil)
-
-	req := newReq(t, http.MethodPost, "/workers/enroll", jsonBody(t, workerEnrollRequest{
-		JoinToken: raw, WorkerID: "w1", PublicKey: genPublicKey(t),
-	}))
-	rr := httptest.NewRecorder()
-	r.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusCreated {
-		t.Fatalf("status = %d, want 201 even though the reload failed — body: %s", rr.Code, rr.Body)
-	}
-	if reloader.calls != 1 {
-		t.Errorf("reloader.calls = %d, want 1", reloader.calls)
-	}
 	if _, err := storetest.ActiveWorkerCredential(t.Context(), st, "w1"); err != nil {
-		t.Errorf("credential was not durably created despite the reload failure: %v", err)
-	}
-	if strings.Contains(rr.Body.String(), "broker not started") {
-		t.Error("response leaks the underlying reload error; it must not appear given the 201 above")
+		t.Errorf("credential was not durably created: %v", err)
 	}
 }
 
@@ -671,7 +627,7 @@ func TestWorkerCredentialRevoke_RevokerErrorNotFound_NotFound(t *testing.T) {
 
 func TestWorkerCredentialRevoke_RevokerOtherError_InternalServerError(t *testing.T) {
 	st := fake.New()
-	rev := &recordingRevoker{err: errors.New("broker reload failed")}
+	rev := &recordingRevoker{err: errors.New("broker disconnect failed")}
 	r := newWorkerEnrollRouterWithRevoker(st, rev, true, time.Hour)
 
 	req := newReq(t, http.MethodDelete, "/workers/w1/credential", nil)
@@ -681,7 +637,7 @@ func TestWorkerCredentialRevoke_RevokerOtherError_InternalServerError(t *testing
 	if rr.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500 — body: %s", rr.Code, rr.Body)
 	}
-	if strings.Contains(rr.Body.String(), "broker reload failed") {
+	if strings.Contains(rr.Body.String(), "broker disconnect failed") {
 		t.Error("response leaks the underlying revoker error; expected the generic message")
 	}
 }

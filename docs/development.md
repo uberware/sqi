@@ -85,6 +85,7 @@ Run `make` (no arguments) to see all available targets with descriptions.
 | `make test-oidc` | Run the SSO tests against a real Keycloak in a container (needs Docker; **skips** without it) |
 | `make test-postgres` | Run the PostgreSQL-backed tests against a throwaway PostgreSQL in a container (`PG_VERSION=16` or `18`, default 18; needs Docker; **skips** without it). See [Testing against PostgreSQL](#testing-against-postgresql) |
 | `make test-isolation` | Run run-as-user task-isolation tests as real root against real OS accounts in a container (needs Docker; **skips** without it) |
+| `make test-nats-cluster` | Run the external-broker tests against a real three-node NATS cluster in Docker (`NATS_IMAGE=…`, default the current pinned image; needs Docker; **skips** without it). See [Testing against a real NATS cluster](#testing-against-a-real-nats-cluster) |
 | `make test-isolation-windows` | Run the Windows run-as-user isolation tests against real local accounts, tier 1 as the elevated administrator and tier 2 as SYSTEM. Needs an **elevated** shell on a real Windows host (no container); exits 0 with a message when not elevated |
 | `make test-service-windows` | Drive `sqi-server` and `sqi-worker` through the real Windows service manager. It installs, starts, stops and deletes real `sqi-test-*` services and creates and deletes a throwaway `sqisvc-*` local account. Needs an **elevated** shell on a real Windows host (no container); exits 0 having done nothing when not elevated |
 | `make test-discovery` | Run the mDNS discovery tests over real multicast (no container; **fails rather than skips** when multicast is unavailable) |
@@ -158,6 +159,10 @@ make test-postgres PG_VERSION=16
 # Run-as-user task-isolation tests as real root against real OS accounts in a
 # container (needs Docker)
 make test-isolation
+
+# External-broker tests against a real three-node NATS cluster in Docker
+# (needs Docker)
+make test-nats-cluster
 
 # Windows service tests against the real service manager (elevated shell on a
 # real Windows host; installs and deletes real services)
@@ -354,10 +359,11 @@ needs no container.
 
 It covers what unit tests of each half cannot: the server derives its TXT
 records from its config, they cross the wire, and the worker parses them and
-acts on them, so a record one side advertises and the other never reads (such
-as `nats_tls`) fails here. In `TestDiscovery_RealBinaryFindsItsServerOverMDNS`
-a real `sqi-worker` subprocess with no `nats.url` has to find its server, learn
-from the advertisement that the broker needs TLS, and register.
+acts on them, so a record one side advertises and the other never reads, or
+reads differently (such as the `nats_url` broker URL), fails here. In
+`TestDiscovery_RealBinaryFindsItsServerOverMDNS` a real `sqi-worker`
+subprocess with no `nats.url` has to find its server, learn from the
+advertised `tls://` URL that the broker needs TLS, and register.
 
 #### It does not advertise on your network
 
@@ -403,6 +409,55 @@ authentication and TLS are both on, so enrolling still requires a join token.
   where they skip on a host without loopback multicast.
 
 ---
+
+### Testing against a real NATS cluster
+
+The external broker mode (`nats.mode: external`) is unit-tested against an
+in-process nats-server cluster (`internal/bus/bustest`) whose nodes start from
+the same config-file layout `sqi-server nats external init` generates. `make test-nats-cluster` runs it
+against a real cluster: `scripts/test-nats-cluster.sh` generates the accounts
+fragment and seeds with `sqi-server nats external init` and a certificate with
+`sqi-server tls init`, starts the three-node cluster in
+[`deploy/docker-compose.nats-cluster.yml`](https://github.com/uberware/sqi/blob/main/deploy/docker-compose.nats-cluster.yml)
+with TLS on the client port, and runs the `TestNATSCluster_` tests in
+`test/integration/natscluster_test.go` against it, with the real `sqi-server`
+and `sqi-worker` binaries except where noted:
+
+| Test | What it checks |
+|---|---|
+| `TestNATSCluster_FarmRunsJobWithAuthAndTLS` | a job runs end to end with broker authentication and TLS |
+| `TestNATSCluster_SurvivesNodeLoss` | with three replicas, stopping a stream's leader node loses no task |
+| `TestNATSCluster_RevokeWithSystemCreds` | revocation through the system user disconnects the worker at once |
+| `TestNATSCluster_ExpiryReconnectsThreeTimes` | three consecutive user-JWT expiries on one connection each reconnect with a fresh authorization; runs sqi's broker client in process with a 2 s `user_ttl`, below the configurable 1-minute floor |
+| `TestNATSCluster_SecondServerRefused` | the one-server-per-account guard refuses a second server |
+| `TestNATSCluster_RestorePurges` | `sqi-server restore` purges sqi's streams and consumers on the cluster |
+
+It runs against two nats-server images, each pinned by tag and digest in the
+Makefile: `NATS_IMAGE_CURRENT` (the default, `nats:2.15.2`, the release
+`sqi-server` embeds) and `NATS_IMAGE_FLOOR` (`nats:2.14.9`, the newest patch
+of the oldest series sqi supports). Run the floor with:
+
+```sh
+make test-nats-cluster NATS_IMAGE='nats:2.14.9@sha256:2721e37c651cb38039c583b0ee1b7248155e607ccaabfea19b38eb95a86fc3ff'
+```
+
+`NATS_IMAGE` overrides the image. When `go.mod`'s nats-server or the
+supported-version floor moves, move the pins and the CI matrix with it:
+`TestNATSImagePins` in `internal/bus` fails when they drift apart.
+
+**Without Docker the target prints `docker unavailable — skipping NATS
+cluster integration tests` and exits 0, and every test skips without the
+cluster. A skip verifies nothing.** Confirm the run with six
+`--- PASS: TestNATSCluster_` lines. CI's `nats-cluster-integration` job runs
+the target on both images and fails unless each of the six passes by name.
+
+The cluster directory is made under `$HOME/.cache`, not `$TMPDIR`, because
+Docker Desktop and Colima share only some host directories (Colima shares
+`$HOME`) into the VM that runs the containers, and a bind mount from anywhere
+else comes up empty. The reference cluster secures the client port with TLS
+but **not the routes between its nodes**, which are plaintext and
+unauthenticated on the Compose network; see
+[The reference Compose cluster](operations.md#the-reference-compose-cluster).
 
 ### Testing against PostgreSQL
 

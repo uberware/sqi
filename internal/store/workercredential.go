@@ -43,9 +43,14 @@ type WorkerCredentialStore interface {
 	// on a worker-id, public-key, or id collision.
 	CreateWorkerCredential(ctx context.Context, c WorkerCredential) (WorkerCredential, error)
 	// ListActiveWorkerCredentials returns every credential with a nil
-	// RevokedAt. It is what the broker's authorized-key set is rebuilt from,
-	// so a revoked credential must never appear in the result.
+	// RevokedAt, as "sqi-server worker list" shows them, so a revoked
+	// credential must never appear in the result.
 	ListActiveWorkerCredentials(ctx context.Context) ([]WorkerCredential, error)
+	// GetActiveWorkerCredentialByPublicKey returns the credential whose
+	// PublicKey is publicKey and whose RevokedAt is nil, or [ErrNotFound] if
+	// no active credential has that key. A revoked key and an unknown key are
+	// indistinguishable here on purpose: both mean "do not authenticate".
+	GetActiveWorkerCredentialByPublicKey(ctx context.Context, publicKey string) (WorkerCredential, error)
 	// RevokeWorkerCredential soft-revokes the credential for workerID.
 	// Returns [ErrNotFound] if no such worker has a credential.
 	RevokeWorkerCredential(ctx context.Context, workerID string, at time.Time) error

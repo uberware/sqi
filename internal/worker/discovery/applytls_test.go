@@ -13,8 +13,8 @@ import (
 )
 
 // ApplyTLS is what makes nats.tls_enabled's "auto" mode able to see a
-// TLS-required broker. Before it existed the server advertised tls=1 /
-// nats_tls=1 over mDNS and nothing read them, so a discovering worker attempted
+// TLS-required broker. Before it existed the server advertised tls=1 and a
+// tls:// nats_url over mDNS and nothing read them, so a discovering worker attempted
 // plaintext and failed with nats.go's "secure connection not available" —
 // naming neither the cause nor the setting that fixes it.
 
@@ -33,7 +33,7 @@ func TestApplyTLS_AutoEnablesOnAdvertisedBroker(t *testing.T) {
 		Result{NATSURL: "nats://srv:4222", NATSTLS: true},
 	)
 	if !got.UseTLS(false) {
-		t.Error("auto did not enable TLS against a broker advertising nats_tls=1")
+		t.Error("auto did not enable TLS against a broker advertising a tls:// nats_url")
 	}
 	if !strings.Contains(logs, "enabling TLS") {
 		t.Errorf("no log explained the switch:\n%s", logs)
@@ -62,12 +62,13 @@ func TestApplyTLS_ForcedOffIsHonoredButExplained(t *testing.T) {
 		workerconfig.NATSConfig{TLSEnabled: workerconfig.TLSOff},
 		Result{NATSURL: "nats://srv:4222", NATSTLS: true},
 	)
-	// "false" means false: discovery must not override an explicit decision.
+	// Discovery must not override an explicit decision about the worker's own
+	// TLS settings, even though a tls:// URL makes nats.go use TLS anyway.
 	if got.TLSEnabled != workerconfig.TLSOff || got.UseTLS(true) {
 		t.Error("discovery overrode an explicit nats.tls_enabled=false")
 	}
-	if !strings.Contains(logs, "will be refused") {
-		t.Errorf("no log warned that the connection is about to fail:\n%s", logs)
+	if !strings.Contains(logs, "are not applied") || strings.Contains(logs, "refused") {
+		t.Errorf("log did not explain that the tls_* settings are not applied:\n%s", logs)
 	}
 }
 

@@ -61,6 +61,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/uberware/sqi/internal/bus"
+	"github.com/uberware/sqi/internal/redact"
 	"github.com/uberware/sqi/internal/version"
 	"github.com/uberware/sqi/internal/worker/capabilities"
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
@@ -334,7 +335,7 @@ func (r *Registrar) SetupReconnectHook(_ context.Context) {
 		ctx := context.Background()
 		r.logger.InfoContext(
 			ctx, "natsclient: reconnected — re-registering worker",
-			slog.String("url", conn.ConnectedUrl()),
+			slog.String("url", redact.URL(conn.ConnectedUrl())),
 			slog.String("server_id", conn.ConnectedServerId()),
 			slog.String("worker_id", r.workerID),
 		)

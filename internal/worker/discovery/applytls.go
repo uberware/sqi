@@ -14,32 +14,38 @@ import (
 // configuration.
 //
 // This is what makes nats.tls_enabled's "auto" mode able to see a TLS-required
-// broker. Without it a worker that discovers its server has no way to know the
-// broker needs TLS, attempts plaintext, and fails with nats.go's
-// "secure connection not available" — which names neither the cause nor the
-// setting that fixes it.
+// broker. A discovered tls:// URL makes nats.go use TLS on its own, but only
+// with the system roots; folding it into the configuration is what applies the
+// worker's own tls_* settings and lets this explain a certificate failure that
+// would otherwise name neither the cause nor the setting that fixes it.
 //
 // An explicit nats.url discovers nothing, so found's TLS fields are false and
 // this is a no-op: an operator who configures the URL by hand also configures
 // the transport by hand.
 //
 // On trusting an advertisement at all: the signal cannot be used to weaken the
-// connection. Forging nats_tls=1 UPGRADES a worker to TLS; withholding it
+// connection. Forging a tls:// nats_url UPGRADES a worker to TLS; withholding it
 // leaves the worker attempting plaintext against a TLS broker, which fails
 // closed. Any locally configured tls_* setting still wins, so an advertisement
 // can never downgrade a worker that was configured for TLS. And an attacker
-// able to forge mDNS already controls NATSURL entirely, so the TLS record adds
+// able to forge mDNS already controls NATSURL entirely, so the tls:// scheme adds
 // no surface that was not already there.
 func ApplyTLS(ctx context.Context, cfg *workerconfig.NATSConfig, found Result, logger *slog.Logger) {
 	switch {
 	case found.NATSTLS && cfg.TLSEnabled == workerconfig.TLSOff:
-		// The operator forced plaintext against a broker that requires TLS.
-		// Honor it — "false" means false — but say plainly why the connection
-		// is about to fail, since the broker's own error will not mention this
-		// setting.
+		// The operator set nats.tls_enabled to "false" but the advertised URL
+		// is tls://, and nats.go requires TLS for a tls:// URL whatever this
+		// setting says. "false" only withholds the worker's own TLS settings
+		// (CA file, client certificate, insecure_skip_verify) from that
+		// connection, so it dials with the system roots and no client
+		// certificate. That succeeds only against a publicly trusted
+		// certificate; say plainly why it otherwise will not, since the
+		// resulting certificate error does not mention this setting.
 		logger.WarnContext(ctx,
-			"discovery: server advertises a TLS-required broker but nats.tls_enabled is \"false\"; "+
-				"the connection will be refused — set it to \"auto\" or \"true\"",
+			"discovery: server advertises a tls:// broker URL, which requires TLS, but nats.tls_enabled is \"false\", "+
+				"so nats.tls_ca_file, nats.tls_cert_file and nats.insecure_skip_verify are not applied "+
+				"and the certificate is verified against the system roots; a farm CA will not verify — "+
+				"set nats.tls_enabled to \"auto\" or \"true\"",
 			slog.String("url", cfg.URL))
 
 	case found.NATSTLS && !cfg.UseTLS(false):

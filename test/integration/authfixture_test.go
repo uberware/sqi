@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/uberware/sqi/internal/config"
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/server"
 )
@@ -94,11 +95,13 @@ func startAuthServer(t *testing.T, httpAddr, dbName string, mutate func(*server.
 	so := storeFor(t, tmpDir+"/"+dbName)
 
 	cfg := server.Config{
-		HTTPAddr:           httpAddr,
-		CORSOrigins:        []string{"*"},
-		NATSAddr:           natsAddr,
-		NATSDataDir:        tmpDir + "/nats",
-		NATSMaxStoreMB:     64,
+		HTTPAddr:    httpAddr,
+		CORSOrigins: []string{"*"},
+		NATS: config.NATSConfig{Embedded: config.NATSEmbeddedConfig{
+			Addr:       natsAddr,
+			DataDir:    tmpDir + "/nats",
+			MaxStoreMB: 64,
+		}},
 		CheckpointInterval: time.Minute,
 		Scheduler: scheduler.Config{
 			AssignInterval:         100 * time.Millisecond,

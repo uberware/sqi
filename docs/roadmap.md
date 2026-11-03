@@ -292,7 +292,7 @@ before Phase 3. See [docs/auth.md](auth.md) for the model and setup.
 - PostgreSQL state store option — **implemented, not yet released**: `store.driver: postgres` (PostgreSQL 16 or later), one `sqi-server` per database, a `pg_dump` backup and a Docker Compose example; an existing SQLite farm moves onto it with `sqi-server store copy`. See [Running on PostgreSQL](operations.md#running-on-postgresql) and [Moving to PostgreSQL](operations.md#moving-to-postgresql).
 - Backup, restore and upgrade — **implemented, not yet released**: `sqi-server backup` and `sqi-server restore` on SQLite and PostgreSQL, with restore handing back the tasks the backup recorded in flight; forward-only schema migrations (a binary older than the database refuses to start, and rollback is restoring the pre-upgrade backup); one server per database, enforced by a lock; and reconciliation of tasks a live worker stops reporting. See [Upgrade](operations.md#upgrade), [Rollback](operations.md#rollback) and [Restore](operations.md#restore).
 - Scheduler HA (leader election, warm standby)
-- Distributed NATS cluster
+- External and clustered NATS — **implemented, not yet released**: `nats.mode: external` runs the farm on a NATS server or cluster the operator runs, with configurable stream replicas, worker authentication through the NATS auth callout in both broker modes, one `sqi-server` per broker account, and `sqi-server nats external init` to generate the cluster's accounts configuration. See [Running on an external NATS cluster](operations.md#running-on-an-external-nats-cluster).
 - Worker auto-scaling hooks (AWS, GCP, Azure)
 - Installer packages (Linux, macOS, Windows)
 

@@ -38,9 +38,10 @@ const (
 )
 
 // streamDefs returns the canonical JetStream stream configurations for
-// sqi-server.  Called once at startup by [ensureStreams]; also exported so
-// tests can assert stream shape without booting a real broker.
-func streamDefs() []jetstream.StreamConfig {
+// sqi-server, each with the given replica count.  Called once at startup by
+// [ensureStreams]; also used by tests to assert stream shape without booting
+// a real broker.
+func streamDefs(replicas int) []jetstream.StreamConfig {
 	return []jetstream.StreamConfig{
 		{
 			// SQI_TASK — task.status.<worker>.<job>
@@ -56,7 +57,7 @@ func streamDefs() []jetstream.StreamConfig {
 			Storage:     jetstream.FileStorage,
 			MaxAge:      24 * time.Hour,
 			Discard:     jetstream.DiscardOld,
-			Replicas:    1,
+			Replicas:    replicas,
 		},
 		{
 			// SQI_LOGS — task.logs.<worker>.<task>
@@ -76,7 +77,7 @@ func streamDefs() []jetstream.StreamConfig {
 			Storage:     jetstream.FileStorage,
 			MaxAge:      96 * time.Hour,
 			Discard:     jetstream.DiscardOld,
-			Replicas:    1,
+			Replicas:    replicas,
 		},
 		{
 			// SQI_WORKER — worker.register.<worker>, worker.heartbeat.<worker>,
@@ -104,7 +105,7 @@ func streamDefs() []jetstream.StreamConfig {
 			Storage:   jetstream.FileStorage,
 			MaxAge:    2 * time.Minute,
 			Discard:   jetstream.DiscardOld,
-			Replicas:  1,
+			Replicas:  replicas,
 		},
 		{
 			// SQI_CANCEL — task.cancel.<taskID>
@@ -125,16 +126,17 @@ func streamDefs() []jetstream.StreamConfig {
 			Storage:     jetstream.FileStorage,
 			MaxAge:      5 * time.Minute,
 			Discard:     jetstream.DiscardOld,
-			Replicas:    1,
+			Replicas:    replicas,
 		},
 	}
 }
 
-// ensureStreams creates or updates all sqi-server JetStream streams.  It is
-// idempotent: calling it against a broker that already has the streams defined
-// is safe and will update any configuration drift.
-func ensureStreams(ctx context.Context, js jetstream.JetStream) error {
-	for _, cfg := range streamDefs() {
+// ensureStreams creates or updates all sqi-server JetStream streams with the
+// given replica count.  It is idempotent: calling it against a broker that
+// already has the streams defined is safe and will update any configuration
+// drift.
+func ensureStreams(ctx context.Context, js jetstream.JetStream, replicas int) error {
+	for _, cfg := range streamDefs(replicas) {
 		if _, err := js.CreateOrUpdateStream(ctx, cfg); err != nil {
 			return fmt.Errorf("stream %s: %w", cfg.Name, err)
 		}

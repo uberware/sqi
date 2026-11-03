@@ -102,8 +102,8 @@ services:
     restart: unless-stopped
     environment:
       # Bind NATS to all interfaces so the worker container can reach it.
-      SQI_NATS_ADDR: "0.0.0.0:4222"
-      SQI_NATS_DATA_DIR: "/var/lib/sqi-server/nats"
+      SQI_NATS_EMBEDDED_ADDR: "0.0.0.0:4222"
+      SQI_NATS_EMBEDDED_DATA_DIR: "/var/lib/sqi-server/nats"
       # The state store: PostgreSQL. The DSN names no password; the driver
       # reads it from PGPASSWORD. sslmode=disable is for the private compose
       # network only.

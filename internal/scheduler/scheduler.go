@@ -141,6 +141,24 @@ type Config struct {
 	// the heartbeat sweep considers it offline. Default: 30 s.
 	WorkerTimeout time.Duration
 
+	// BusUpSince reports when the message bus connection was last established
+	// or re-established, and the zero time while it is down. Worker heartbeats
+	// and running-reports travel over that bus, so while it is down (or has
+	// just come back) their absence says nothing about the workers: the
+	// liveness sweeps decide nothing until the bus has been up for
+	// BusReconnectGrace. Nil means no grace: every sweep acts on what the
+	// store holds. Not a tuning knob; the server wires it from its bus client.
+	BusUpSince func() time.Time
+
+	// BusReconnectGrace is how long the bus must have been up before the
+	// liveness sweeps act on heartbeats again. It must cover the time a live
+	// worker needs to notice the outage ended, redial and heartbeat, which is
+	// longer than WorkerTimeout when workers back off between redials. A value
+	// <= 0 is coerced to WorkerTimeout in [New]; the server sets a larger
+	// value derived from the workers' reconnect behavior. Unused when
+	// BusUpSince is nil.
+	BusReconnectGrace time.Duration
+
 	// HeartbeatSweepInterval is how often the heartbeat sweep runs. Should be
 	// well below WorkerTimeout so stale workers are caught promptly. Default: 15 s.
 	HeartbeatSweepInterval time.Duration
@@ -341,6 +359,22 @@ type Scheduler struct {
 	// startedAt is when [Run] started; reconciliation holds off for the first
 	// ReconcileGrace after it, while live heartbeats rebuild the reconciler.
 	startedAt time.Time
+
+	// deferLog remembers which liveness deferral was last logged, so each is
+	// logged once rather than on every sweep tick.
+	deferLog deferralLog
+}
+
+// deferralLog is the state behind [Scheduler.logLivenessDeferred].
+type deferralLog struct {
+	mu sync.Mutex
+	// logged is set once a deferral has been logged; key is the bus-up time
+	// it was logged for, zero for an outage.
+	logged bool
+	key    time.Time
+	// firstUp is the first bus-up time the scheduler saw: the connection
+	// made at startup.
+	firstUp time.Time
 }
 
 // New creates a Scheduler. Call [Run] to start its goroutines.
@@ -381,6 +415,9 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 	// submission would actually be metered under. An unset field left at 0
 	// would report "no shortfall" in that dimension for every worker.
 	cfg.ExprLimits = cfg.ExprLimits.Normalized()
+	if cfg.BusReconnectGrace <= 0 {
+		cfg.BusReconnectGrace = cfg.WorkerTimeout
+	}
 	n := notifier
 	if n == nil {
 		n = ws.NoopNotifier{}
@@ -1340,7 +1377,15 @@ func (s *Scheduler) announceDemoted(ctx context.Context, demoted []string) {
 // already reclaimed (the store commits them a batch at a time), so those are
 // announced before the error is handled: they are ready now and no later reap
 // will list them again.
+//
+// While the bus is down, or has been up for less than BusReconnectGrace, it
+// reclaims nothing (see [Scheduler.livenessDeferred]): the worker's running
+// report may be waiting in the stream, and reclaiming now re-dispatches a task
+// that is already running.
 func (s *Scheduler) reapStaleAssignedTasks(ctx context.Context) {
+	if deferred, _ := s.livenessDeferred(time.Now()); deferred {
+		return
+	}
 	cutoff := time.Now().UTC().Add(-s.cfg.AssignedTaskTimeout)
 	reclaimed, err := s.store.ReclaimStaleAssignedTasks(ctx, cutoff)
 	s.announceReaped(ctx, reclaimed)
@@ -1395,7 +1440,18 @@ func (s *Scheduler) notifyTaskReclaimed(ctx context.Context, task store.Task, no
 // tasks running. Only a worker the store actually took offline is announced
 // and has its reclaim reported; the attempts, claims and tasks are handled by
 // that same store call.
+//
+// The sweep decides nothing while the bus is down or has been up for less than
+// BusReconnectGrace ([Scheduler.livenessDeferred]): a heartbeat travels over the
+// bus, so a broker outage looks like every worker going silent at once, and
+// acting on it would reclaim tasks that are still running. It logs once per
+// outage and once per grace window ([Scheduler.logLivenessDeferred]);
+// [Scheduler.reapStaleAssignedTasks] defers silently on the same tick.
 func (s *Scheduler) sweepStaleWorkers(ctx context.Context) {
+	if deferred, busDown, up := s.busLiveness(time.Now()); deferred {
+		s.logLivenessDeferred(ctx, busDown, up)
+		return
+	}
 	cutoff := time.Now().UTC().Add(-s.cfg.WorkerTimeout)
 	stale, err := s.store.ListStaleWorkers(ctx, cutoff)
 	if err != nil {
@@ -1451,6 +1507,66 @@ func (s *Scheduler) sweepStaleWorkers(ctx context.Context) {
 	}
 
 	s.refreshWorkerGauge(ctx)
+}
+
+// livenessDeferred reports whether, at now, the sweeps that judge a worker by
+// its heartbeat must hold off: the bus is down (busDown), or came back less
+// than BusReconnectGrace ago, so a live worker has not yet had time to notice
+// the outage ended, redial and heartbeat. A worker that is genuinely dead is
+// only declared so once the grace has passed. Exactly BusReconnectGrace after
+// the reconnect the sweep acts. With no BusUpSince source it is never deferred.
+func (s *Scheduler) livenessDeferred(now time.Time) (deferred, busDown bool) {
+	deferred, busDown, _ = s.busLiveness(now)
+	return deferred, busDown
+}
+
+// busLiveness is [Scheduler.livenessDeferred], also returning the bus-up time
+// it judged by (zero while the bus is down). It remembers the first non-zero
+// one, the connection made at startup.
+func (s *Scheduler) busLiveness(now time.Time) (deferred, busDown bool, up time.Time) {
+	if s.cfg.BusUpSince == nil {
+		return false, false, time.Time{}
+	}
+	up = s.cfg.BusUpSince()
+	if up.IsZero() {
+		return true, true, up
+	}
+	s.deferLog.mu.Lock()
+	if s.deferLog.firstUp.IsZero() {
+		s.deferLog.firstUp = up
+	}
+	s.deferLog.mu.Unlock()
+	return now.Sub(up) < s.cfg.BusReconnectGrace, false, up
+}
+
+// logLivenessDeferred logs a deferred liveness sweep once per outage and once
+// per grace window, not on every tick: the sweep runs every 15 s, and the
+// grace lasts about 189 s at the defaults after every start. The window
+// after the connection made at startup is reported as startup, not as a
+// reconnect.
+func (s *Scheduler) logLivenessDeferred(ctx context.Context, busDown bool, up time.Time) {
+	d := &s.deferLog
+	d.mu.Lock()
+	if d.logged && d.key.Equal(up) {
+		d.mu.Unlock()
+		return
+	}
+	d.logged, d.key = true, up
+	startup := !busDown && up.Equal(d.firstUp)
+	d.mu.Unlock()
+
+	grace := slog.Duration("bus_reconnect_grace", s.cfg.BusReconnectGrace)
+	switch {
+	case busDown:
+		s.logger.InfoContext(ctx, "scheduler: bus is down; liveness sweep deferred until it reconnects",
+			slog.Bool("bus_down", true), grace)
+	case startup:
+		s.logger.InfoContext(ctx, "scheduler: bus connected at startup; liveness sweep deferred for the reconnect grace",
+			slog.Bool("bus_down", false), grace, slog.Time("resumes_at", up.Add(s.cfg.BusReconnectGrace)))
+	default:
+		s.logger.InfoContext(ctx, "scheduler: bus reconnected recently; liveness sweep deferred",
+			slog.Bool("bus_down", false), grace, slog.Time("resumes_at", up.Add(s.cfg.BusReconnectGrace)))
+	}
 }
 
 // sweepRetiredWorkers hard-deletes workers that have been offline longer than

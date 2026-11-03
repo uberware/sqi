@@ -105,11 +105,11 @@ by hand): run "sqi-worker keygen" on the worker host to generate a keypair,
 then run this command on the server with the worker ID and public key it
 prints.
 
-A RUNNING sqi-server does not see the new credential — it reads the enrolled
-set once, at startup, and this command writes the database from a separate
-process with no broker handle. The worker's connection is refused until
-sqi-server is restarted. To enroll against a running server instead, use the
-REST API with a join token:
+A running sqi-server needs no restart: with broker authentication on, the
+broker asks sqi-server to authorize every worker connection, and sqi-server
+reads the credential from the database each time, so the worker is accepted at
+its next connect. A worker that can reach the REST API can instead enroll
+itself with a join token:
   POST /api/v1/workers/enroll`,
 	RunE: runWorkerEnroll,
 }
@@ -118,7 +118,8 @@ var workerRevokeCmd = &cobra.Command{
 	Use:   "revoke WORKER_ID",
 	Short: "Revoke a worker's broker credential",
 	Long: `Revokes a worker credential in the database. A RUNNING sqi-server does not
-see this immediately — it applies at next start. To revoke a worker on a
+disconnect the worker at once: the revocation takes effect at the worker's next
+connect, and within nats.auth.user_ttl at the latest. To revoke a worker on a
 running server and disconnect it at once, use the REST API:
   DELETE /api/v1/workers/{id}/credential`,
 	Args: cobra.ExactArgs(1),
@@ -255,14 +256,11 @@ func runWorkerEnroll(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("store credential: %w", err)
 	}
 
-	// Symmetric with runWorkerRevoke's warning, and for the same reason: this
-	// command writes the database from a process with no broker handle, and
-	// the broker's authorized-key set is built once at Broker.Start. Without
-	// this line an operator who enrolls against a running server sees
-	// "Enrolled worker" and then a worker that exits fatally on
-	// nats.ErrAuthorization, with nothing connecting the two.
-	fmt.Fprintf(os.Stdout, "Enrolled worker %q. A RUNNING sqi-server will not accept this credential until it restarts;"+
-		" to enroll against a running server, use POST /api/v1/workers/enroll with a join token instead.\n",
+	// The auth callout reads the credential from the store at every connect,
+	// so a running server accepts it with no restart. Saying so here keeps an
+	// operator from restarting a farm for nothing.
+	fmt.Fprintf(os.Stdout, "Enrolled worker %q. A running sqi-server accepts this credential at the worker's next connect;"+
+		" no restart is needed.\n",
 		workerEnrollFlags.WorkerID)
 	return nil
 }
@@ -291,7 +289,7 @@ func runWorkerRevoke(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("revoke credential: %w", err)
 	}
 
-	fmt.Fprintf(os.Stdout, "Revoked credential for worker %q. This takes effect the next time sqi-server starts;"+
+	fmt.Fprintf(os.Stdout, "Revoked credential for worker %q. A running sqi-server refuses the worker at its next connect, and within nats.auth.user_ttl at the latest;"+
 		" to disconnect it immediately, use DELETE /api/v1/workers/%s/credential instead.\n", workerID, workerID)
 	return nil
 }

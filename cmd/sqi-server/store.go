@@ -38,7 +38,7 @@ copy, so it refuses to run while a server uses either. Leave the password out of
 --to (the process list shows it) and supply it with PGPASSWORD or a password file.
 
 Afterwards set store.driver: postgres and start the server. If it will run with a
-different (or empty) nats.data_dir than the SQLite server had, run
+different (or empty) nats.embedded.data_dir than the SQLite server had, run
 "sqi-server restore --in-place" first so no task waits on a report that is gone.
 
 PostgreSQL to SQLite is not supported.`,

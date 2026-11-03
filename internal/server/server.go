@@ -20,7 +20,8 @@ import (
 	"net"
 	"net/http"
 	"slices"
-	"sync"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/uberware/sqi/internal/api"
@@ -40,6 +41,7 @@ import (
 	"github.com/uberware/sqi/internal/pgdsn"
 	"github.com/uberware/sqi/internal/presetlib"
 	"github.com/uberware/sqi/internal/product"
+	"github.com/uberware/sqi/internal/redact"
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/backend"
@@ -66,10 +68,6 @@ type Config struct {
 	// Zero value leaves it plaintext, which is the default.
 	HTTPTLS config.TLSConfig
 
-	// NATSTLS encrypts the embedded broker's client listener. Zero value
-	// leaves it plaintext, which is the default.
-	NATSTLS config.NATSTLSConfig
-
 	// CORSOrigins is the list of origins that the CORS middleware permits.
 	// Use ["*"] to allow all origins (suitable for local / dev deployments).
 	// An empty slice is treated as ["*"]. Tighten this for production
@@ -81,46 +79,13 @@ type Config struct {
 	// to untrusted networks. Default false.
 	EnablePprof bool
 
-	// NATSAddr is the TCP address the embedded NATS server listens on.
-	// It defaults to all interfaces so that workers discovering the server
-	// via mDNS can connect to NATS at the advertised LAN host.
-	// Broker authentication is opt-in (nats.auth.enabled) and off by
-	// default; when off, any host that can reach this port can register as
-	// a worker. warnIfBrokerUnauthenticated logs this at startup.
-	NATSAddr string // default "0.0.0.0:4222"
-
-	// NATSAuthEnabled reports whether the broker requires a per-worker
-	// credential. Used for the startup warning and to configure the broker
-	// itself, including which workers it authorizes. Also gates, together
-	// with NATSAuthEnrollmentEndpointEnabled, whether POST
-	// /api/v1/workers/enroll is mounted at all.
-	NATSAuthEnabled bool
-
-	// NATSAuthEnrollmentEndpointEnabled mirrors
-	// config.NATSAuthConfig.EnrollmentEndpointEnabled: whether POST
-	// /api/v1/workers/enroll is mounted. Meaningful only when NATSAuthEnabled
-	// is true; a site that provisions every credential by hand (`sqi-server
-	// worker enroll`) can turn this off to remove the self-service surface
-	// entirely.
-	NATSAuthEnrollmentEndpointEnabled bool
-
-	// NATSAuthJoinTokenTTL mirrors config.NATSAuthConfig.JoinTokenTTL: how
-	// long a join token minted by POST /api/v1/workers/join-tokens remains
-	// valid. Already bounds-checked at config load.
-	NATSAuthJoinTokenTTL time.Duration
-
-	// NATSAuthJoinTokenSingleUse mirrors
-	// config.NATSAuthConfig.JoinTokenSingleUse: whether a join token is
-	// rejected on a second enrollment attempt after its first successful use.
-	NATSAuthJoinTokenSingleUse bool
-
-	// NATSDataDir is the directory used by JetStream for file-backed stream
-	// storage. It is created at startup if it does not exist.
-	NATSDataDir string // default "data/nats"
-
-	// NATSMaxStoreMB is the maximum disk space JetStream may use, in
-	// megabytes.  0 means unlimited (not recommended for production).
-	NATSMaxStoreMB int // default 1024
+	// NATS carries the whole nats block: broker mode, worker authentication
+	// and the embedded and external broker settings. The embedded broker's
+	// address defaults to all interfaces so that workers discovering the
+	// server via mDNS can connect at the advertised LAN host; broker
+	// authentication is opt-in (NATS.Auth.Enabled) and off by default, and
+	// warnIfBrokerUnauthenticated logs the exposure at startup.
+	NATS config.NATSConfig
 
 	// SQLitePath is the path to the SQLite database file used in simple mode.
 	// It is created at startup if it does not exist.
@@ -249,9 +214,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		HTTPAddr:              "0.0.0.0:8080",
-		NATSAddr:              "0.0.0.0:4222",
-		NATSDataDir:           "data/nats",
-		NATSMaxStoreMB:        1024,
+		NATS:                  config.DefaultConfig().NATS,
 		SQLitePath:            "sqi.db",
 		CheckpointInterval:    5 * time.Minute,
 		StoreDriver:           backend.DriverSQLite,
@@ -286,27 +249,23 @@ type Server struct {
 	httpServer *http.Server
 
 	store     store.Store
-	broker    *bus.Broker
+	broker    bus.Broker
 	busClient *bus.Client // typed wrapper; drained before broker shutdown
 	sched     *scheduler.Scheduler
 	wsHub     *ws.Hub              // WebSocket fan-out hub
 	discovery *discovery.Responder // mDNS advertisement
 
+	// cancelSched stops the scheduler's Run; set once it is started.
+	cancelSched context.CancelFunc
+
+	// wrapBroker, when set, wraps the broker newBroker built before it is
+	// started. It is a test seam, set only by tests that observe start's
+	// order through the broker; production leaves it nil.
+	wrapBroker func(bus.Broker) bus.Broker
+
 	// checkpointDone closes after the SQLite WAL checkpointer's final TRUNCATE;
 	// nil on a backend with no checkpointer.
 	checkpointDone <-chan struct{}
-
-	// brokerReloadMu serializes every "read the active worker-credential set
-	// from the store, then reload it into the broker" span — see
-	// reloadBrokerCredentials. Both a revocation and an enrollment trigger
-	// that span, from different goroutines (different HTTP requests), and
-	// the span is not safe to interleave: a reload built from a read that
-	// started before another writer's store commit can still finish AFTER
-	// that writer's own reload, silently reintroducing whatever the other
-	// writer just removed (or omitting whatever it just added). Locking only
-	// the call into the broker, not the read that precedes it, would not
-	// close this — the stale READ is what makes the reload wrong.
-	brokerReloadMu sync.Mutex
 
 	// diagBuf is the in-memory diagnostic-log ring buffer. It is created in the
 	// serve command before the logger (so the server's own logs are captured
@@ -343,7 +302,7 @@ func (s *Server) serveHTTP(ctx context.Context) error {
 	// Both TLS surfaces are warned about here, beside the listener they concern,
 	// rather than riding on broker startup where a reordering would silently
 	// take the HTTP warning with it.
-	warnTLSConfig(ctx, s.logger, s.cfg.HTTPTLS, s.cfg.NATSTLS)
+	warnTLSConfig(ctx, s.logger, s.cfg.HTTPTLS, s.cfg.NATS.Embedded.TLS)
 
 	tlsOn := s.cfg.HTTPTLS.Enabled
 	if tlsOn {
@@ -393,7 +352,7 @@ func warnTLSConfig(ctx context.Context, logger *slog.Logger, httpTLS config.TLSC
 		keyFile   string
 	}{
 		{"http", "http.tls.enabled", httpTLS.Enabled, httpTLS.CertFile, httpTLS.KeyFile},
-		{"bus", "nats.tls.enabled", natsTLS.Enabled, natsTLS.CertFile, natsTLS.KeyFile},
+		{"bus", "nats.embedded.tls.enabled", natsTLS.Enabled, natsTLS.CertFile, natsTLS.KeyFile},
 	}
 	for _, s := range surfaces {
 		if !s.enabled {
@@ -411,19 +370,32 @@ func warnTLSConfig(ctx context.Context, logger *slog.Logger, httpTLS config.TLSC
 	}
 }
 
-// warnIfBrokerUnauthenticated emits a WARN when the NATS broker is reachable
-// from outside this machine and has no credential requirement.
+// warnIfBrokerUnauthenticated emits a WARN when the NATS broker has no
+// credential requirement and may be reachable from outside this machine.
 //
 // This is the highest-value line in the whole broker-auth component: broker
 // auth is opt-in and off by default, so this is the only thing that tells an
 // operator who turned on auth.enabled that their worker transport is still
-// wide open. It stays silent on loopback, where the exposure does not exist,
-// and silent on an unparseable address, where config validation has already
-// produced a better message.
-func warnIfBrokerUnauthenticated(ctx context.Context, natsAddr string, brokerAuthEnabled bool, logger *slog.Logger) {
-	if brokerAuthEnabled {
+// wide open.
+//
+// For the embedded broker it stays silent on loopback, where the exposure does
+// not exist, and silent on an unparseable address, where config validation
+// has already produced a better message. For an external broker it always
+// warns: sqi cannot tell who else can reach an operator-run cluster.
+func warnIfBrokerUnauthenticated(ctx context.Context, n config.NATSConfig, logger *slog.Logger) {
+	if n.Auth.Enabled {
 		return
 	}
+	if n.Mode == config.NATSModeExternal {
+		logger.WarnContext(
+			ctx, "the NATS broker is unauthenticated",
+			slog.String("nats_urls", redact.URLs(n.External.URLs, ",")),
+			slog.String("impact", "any host that can reach the broker can register as a worker and execute submitted job code"),
+			slog.String("remediation", "set nats.auth.enabled: true, configure nats.external.callout and enroll your workers"),
+		)
+		return
+	}
+	natsAddr := n.Embedded.Addr
 	host, _, err := net.SplitHostPort(natsAddr)
 	if err != nil {
 		return
@@ -435,8 +407,45 @@ func warnIfBrokerUnauthenticated(ctx context.Context, natsAddr string, brokerAut
 		ctx, "the NATS broker is unauthenticated and reachable beyond this host",
 		slog.String("nats_addr", natsAddr),
 		slog.String("impact", "any host that can reach this port can register as a worker and execute submitted job code"),
-		slog.String("remediation", "set nats.auth.enabled: true and enroll your workers, or bind nats.addr to 127.0.0.1:4222 for single-machine use"),
+		slog.String("remediation", "set nats.auth.enabled: true and enroll your workers, or bind nats.embedded.addr to 127.0.0.1:4222 for single-machine use"),
 	)
+}
+
+// warnIfRevocationBounded emits a WARN when worker revocation on an external
+// broker cannot be immediate: with authentication on and no system
+// credential, sqi-server cannot reach a revoked worker's live connection, so
+// it lasts until its user JWT expires.
+func warnIfRevocationBounded(ctx context.Context, n config.NATSConfig, logger *slog.Logger) {
+	if n.Mode != config.NATSModeExternal || !n.Auth.Enabled || n.External.Callout.SystemCredsFile != "" {
+		return
+	}
+	logger.WarnContext(
+		ctx, "worker revocation takes effect within "+shortDuration(n.Auth.UserTTL)+" on the external NATS broker",
+		slog.String("impact", "a revoked worker stays connected until its user JWT expires (nats.auth.user_ttl); its reconnect is then refused"),
+		slog.String("remediation", "set nats.external.callout.system_creds_file to a system-account user's nkey seed to make revocation immediate"),
+	)
+}
+
+// shortDuration formats d without zero trailing units: "1h", "90m" as
+// "1h30m".
+func shortDuration(d time.Duration) string {
+	s := d.String()
+	if strings.HasSuffix(s, "m0s") {
+		s = strings.TrimSuffix(s, "0s")
+	}
+	if strings.HasSuffix(s, "h0m") {
+		s = strings.TrimSuffix(s, "0m")
+	}
+	return s
+}
+
+// natsStartAttr names the broker in the startup line: the embedded broker's
+// listen address, or the external broker's URLs.
+func natsStartAttr(n config.NATSConfig) slog.Attr {
+	if n.Mode == config.NATSModeExternal {
+		return slog.String("nats_urls", redact.URLs(n.External.URLs, ","))
+	}
+	return slog.String("nats_addr", n.Embedded.Addr)
 }
 
 // isLoopbackHost reports whether host names only this machine. An empty host
@@ -452,141 +461,74 @@ func isLoopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// startBroker constructs and starts the embedded NATS broker, warning about
-// an unauthenticated broker exposed beyond this host and loading the
-// enrolled worker credential set when broker authentication is enabled.
-func (s *Server) startBroker(ctx context.Context) (*bus.Broker, error) {
-	warnIfBrokerUnauthenticated(ctx, s.cfg.NATSAddr, s.cfg.NATSAuthEnabled, s.logger)
+// startBroker constructs and starts the broker nats.mode selects, warning
+// about an unauthenticated broker that may be exposed beyond this host. With
+// broker authentication on, the broker reads each connecting worker's
+// credential from the store through the auth callout, so nothing is loaded
+// here.
+func (s *Server) startBroker(ctx context.Context) (bus.Broker, error) {
+	warnIfBrokerUnauthenticated(ctx, s.cfg.NATS, s.logger)
+	warnIfRevocationBounded(ctx, s.cfg.NATS, s.logger)
 
-	brokerAuth, err := loadBrokerAuthConfig(ctx, s.store, s.cfg.NATSAuthEnabled)
+	broker, err := s.newBroker()
 	if err != nil {
-		return nil, fmt.Errorf("load worker credentials: %w", err)
+		return nil, err
 	}
-
-	broker := bus.New(bus.BrokerConfig{
-		Addr:       s.cfg.NATSAddr,
-		DataDir:    s.cfg.NATSDataDir,
-		MaxStoreMB: s.cfg.NATSMaxStoreMB,
-		Auth:       brokerAuth,
-		// Mapped field by field rather than shared: internal/bus does not
-		// import internal/config, the same boundary WorkerCredentialRef draws
-		// against internal/store.
-		TLS: bus.BrokerTLSConfig{
-			Enabled:      s.cfg.NATSTLS.Enabled,
-			CertFile:     s.cfg.NATSTLS.CertFile,
-			KeyFile:      s.cfg.NATSTLS.KeyFile,
-			ClientCAFile: s.cfg.NATSTLS.ClientCAFile,
-		},
-	}, s.logger)
+	if s.wrapBroker != nil {
+		broker = s.wrapBroker(broker)
+	}
 	if err := broker.Start(ctx); err != nil {
 		return nil, err
 	}
 	return broker, nil
 }
 
-// loadBrokerAuthConfig builds the broker's authorization configuration.
-//
-// It queries the store for the enrolled worker credential set only when
-// enabled is true, so that a server running with broker authentication off
-// never touches the credential table — the default startup path stays
-// byte-for-byte what it was before broker authentication existed.
-func loadBrokerAuthConfig(ctx context.Context, st store.WorkerCredentialStore, enabled bool) (bus.BrokerAuthConfig, error) {
-	if !enabled {
-		return bus.BrokerAuthConfig{}, nil
-	}
-	creds, err := st.ListActiveWorkerCredentials(ctx)
-	if err != nil {
-		return bus.BrokerAuthConfig{}, err
-	}
-	refs := make([]bus.WorkerCredentialRef, 0, len(creds))
-	for _, c := range creds {
-		refs = append(refs, bus.WorkerCredentialRef{
-			WorkerID:  c.WorkerID,
-			PublicKey: c.PublicKey,
-		})
-	}
-	return bus.BrokerAuthConfig{Enabled: true, Credentials: refs}, nil
-}
+// revokeBrokerTimeout is the least time [Server.RevokeWorker] allows the
+// broker's part. The broker needs about its auth timeout plus a margin
+// (2.25s embedded, 3.25s on an external cluster at nats-server's defaults);
+// a broker whose [bus.Broker.RevokeBudget] says it needs longer, a cluster
+// with a long auth timeout, gets that instead. Either way a stuck broker
+// cannot hold the request open for good.
+const revokeBrokerTimeout = 10 * time.Second
 
 // RevokeWorker revokes workerID's active broker credential and, when broker
 // authentication is enabled, disconnects it and reclaims its in-flight work.
 // It implements [api.WorkerRevoker] and is what makes DELETE
 // /api/v1/workers/{id}/credential the synchronous revocation path: the
 // offline "sqi-server worker revoke" CLI command writes the same store row
-// from a separate process holding no broker handle, so it can only apply at
-// the broker's next start; this method runs inside the server process where
-// the broker handle lives, so it can act on a running broker immediately.
+// from a separate process holding no broker handle, so it takes effect at the
+// worker's next connect; this method runs inside the server process where
+// the broker handle lives, so it can disconnect the worker immediately.
 //
-// The store is written FIRST and the broker reloaded SECOND, on purpose: a
-// reload failure after a successful store write leaves the worst-case state
-// "revoked in the store, still trusted by the running broker" — recoverable
-// at the broker's next start or next successful reload, and never worse than
-// what the offline CLI path already promises. The reverse ordering could
-// instead leave a credential trusted by neither the store nor a
-// findable-again authorized-key set, which nothing could repair. The reload
-// failure is still returned to the caller — the synchronous guarantee this
-// method exists to provide was not met — but it never triggers a rollback of
-// the store write.
+// The store is written FIRST and the broker called SECOND, on purpose: once
+// the row is revoked, the auth callout refuses the worker's reconnect, so
+// disconnecting it is what makes the revocation take effect now rather than
+// at its user JWT's expiry. A broker failure after a successful store write
+// leaves the worker connected until that expiry at the latest, never trusted
+// again afterwards. The failure is still returned to the caller — the
+// synchronous guarantee this method exists to provide was not met — but it
+// never triggers a rollback of the store write.
+//
+// The broker call runs on a context detached from ctx and bounded by the
+// larger of [revokeBrokerTimeout] and the broker's own
+// [bus.Broker.RevokeBudget]. [bus.Broker.Revoke] takes seconds, and its final
+// pass is what closes the window for a connection whose authorization began
+// before the revocation: neither an HTTP client disconnecting mid-request
+// nor a bound shorter than the broker's auth timeout may cut that pass off.
 func (s *Server) RevokeWorker(ctx context.Context, workerID string) error {
 	if err := s.store.RevokeWorkerCredential(ctx, workerID, time.Now().UTC()); err != nil {
 		return err
 	}
-	return s.reloadBrokerCredentials(ctx)
-}
-
-// ReloadBrokerCredentials implements [api.BrokerCredentialReloader]. It is
-// called after a new worker credential is created (self-service REST
-// enrollment) so that worker can connect to THIS running broker without an
-// operator restarting it — loadBrokerAuthConfig otherwise only ever runs
-// once, at Start, so without this call a freshly-enrolled worker's
-// connection is refused by a broker whose Options.Nkeys was built before
-// that credential existed, and the worker exits fatally naming that
-// rejection.
-//
-// Unlike a revoke's reload failure — which the caller must hear about,
-// because it means the broker still trusts a credential the store says is
-// gone — a failure here means the opposite direction: the broker is
-// (temporarily) too STRICT, not too permissive. The credential the caller
-// asked to create is genuinely created and durable; the worker simply cannot
-// connect until the next successful reload or restart, and can retry then.
-// Telling the enrolling caller "enrollment failed" would be false, so the
-// REST handler logs this failure and still reports success — see
-// workerenroll.go's enroll.
-func (s *Server) ReloadBrokerCredentials(ctx context.Context) error {
-	return s.reloadBrokerCredentials(ctx)
-}
-
-// reloadBrokerCredentials re-reads the active worker-credential set from the
-// store and reloads it into the broker's authorized-key set. It backs both
-// RevokeWorker and ReloadBrokerCredentials, which is deliberate: the two
-// are the same operation ("make the broker's authorized-key set match the
-// store's active rows right now"), triggered by opposite events.
-//
-// The read-then-reload span is serialized by s.brokerReloadMu — see that
-// field's doc comment for why an unserialized version loses updates.
-// Locking only the call into the broker (not the read that precedes it)
-// would not close that race: the read is what goes stale.
-//
-// Returns nil immediately, without touching the store or the broker, when
-// broker authentication is disabled: there is no authorized-key set to
-// reload, and this keeps the auth-off path free of the extra store read.
-func (s *Server) reloadBrokerCredentials(ctx context.Context) error {
-	if !s.cfg.NATSAuthEnabled {
+	if !s.cfg.NATS.Auth.Enabled {
 		return nil
 	}
 	if s.broker == nil {
-		return errors.New("reload broker credentials: broker not started")
+		return errors.New("revoke worker: broker not started")
 	}
-
-	s.brokerReloadMu.Lock()
-	defer s.brokerReloadMu.Unlock()
-
-	brokerAuth, err := loadBrokerAuthConfig(ctx, s.store, true)
-	if err != nil {
-		return fmt.Errorf("reload broker credentials: read active credential set: %w", err)
-	}
-	if err := s.broker.ReloadCredentials(brokerAuth.Credentials); err != nil {
-		return fmt.Errorf("reload broker credentials: %w", err)
+	brokerCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), max(revokeBrokerTimeout, s.broker.RevokeBudget()))
+	defer cancel()
+	if err := s.broker.Revoke(brokerCtx, workerID); err != nil {
+		return fmt.Errorf("revoke worker: %w", err)
 	}
 	return nil
 }
@@ -609,7 +551,7 @@ func (s *Server) Run(ctx context.Context) error {
 	driver := backend.Name(s.cfg.StoreDriver)
 	attrs := []any{
 		slog.String("http_addr", s.cfg.HTTPAddr),
-		slog.String("nats_addr", s.cfg.NATSAddr),
+		natsStartAttr(s.cfg.NATS),
 		slog.String("store_driver", driver),
 	}
 	if driver == backend.DriverSQLite {
@@ -620,6 +562,7 @@ func (s *Server) Run(ctx context.Context) error {
 	s.logger.InfoContext(ctx, "sqi-server starting", attrs...)
 
 	if err := s.start(ctx); err != nil {
+		s.abortStart()
 		return fmt.Errorf("startup failed: %w", err)
 	}
 
@@ -686,18 +629,24 @@ func (s *Server) start(ctx context.Context) error {
 	}
 
 	// ── Message bus (NATS JetStream) ───────────────────────────────────────
-	// Embed NATS server, enable JetStream, provision streams.
-	// Typed client wrapper, consumers, reconnect, drain.
+	// Start the embedded broker, or connect to the external one, and
+	// provision sqi's streams on it.
 	broker, err := s.startBroker(ctx)
 	if err != nil {
 		return fmt.Errorf("start bus: %w", err)
 	}
 	s.broker = broker
 
+	// A broker the database has not run against may hold messages for attempts
+	// the store still calls open. Fence them before anything consumes.
+	if err := s.reconcileBrokerLayout(ctx); err != nil {
+		return fmt.Errorf("reconcile broker layout: %w", err)
+	}
+
 	// Register NATS as a readiness dependency so GET /readyz reflects its health.
 	s.health.Register("nats", health.CheckerFunc(broker.Check))
 
-	// Dial the embedded broker with a typed client.  All server components
+	// Dial the broker with a typed client.  All server components
 	// (scheduler, worker-protocol handlers, etc.) will receive this client
 	// rather than importing the raw nats package directly.
 	busClient, err := broker.NewClient()
@@ -734,9 +683,13 @@ func (s *Server) start(ctx context.Context) error {
 	// consumer), and heartbeat timeout sweep.
 	// The hub is passed as the notifier so live events are
 	// pushed to subscribed WebSocket clients after each state change.
-	s.sched = scheduler.New(schedulerConfig(s.cfg), s.store, s.busClient, s.metrics, s.logger, s.wsHub, s.diagBuf)
+	s.sched = scheduler.New(schedulerConfigWithBus(s.cfg, busClient), s.store, s.busClient, s.metrics, s.logger, s.wsHub, s.diagBuf)
+	// The scheduler runs on its own child context so a failed start can stop
+	// it (see abortStart) without racing Run's own setup of Scheduler.Stop.
+	schedCtx, cancelSched := context.WithCancel(ctx)
+	s.cancelSched = cancelSched
 	go func() {
-		if err := s.sched.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		if err := s.sched.Run(schedCtx); err != nil && !errors.Is(err, context.Canceled) {
 			s.logger.ErrorContext(ctx, "scheduler: exited with error", slog.Any("error", err))
 		}
 	}()
@@ -751,12 +704,11 @@ func (s *Server) start(ctx context.Context) error {
 			EnforceLimits: s.cfg.EnforceOpenJDLimits,
 			ExprLimits:    s.cfg.OpenJDExprLimits,
 		}),
-		Products:                 product.NewCatalog(s.store),
-		Scheduler:                s.sched,
-		Hub:                      s.wsHub,
-		Version:                  version.Get(),
-		WorkerRevoker:            s,
-		BrokerCredentialReloader: s,
+		Products:      product.NewCatalog(s.store),
+		Scheduler:     s.sched,
+		Hub:           s.wsHub,
+		Version:       version.Get(),
+		WorkerRevoker: s,
 	}
 	// Only expose the diagnostics reader when diagnostics are enabled. Leaving
 	// DiagReader as a nil interface (rather than a typed-nil *diag.Buffer) makes
@@ -795,18 +747,24 @@ func (s *Server) start(ctx context.Context) error {
 		return err
 	}
 
-	// ── mDNS responder ────────────────────────────────────────────────────
-	// Advertise _sqi._tcp on the local network so workers and the
-	// sqi CLI can discover this server without manual address configuration.
-	// Advertisement is gated on DiscoveryEnabled for environments
-	// that forbid multicast.
+	return s.startDiscovery(ctx)
+}
+
+// startDiscovery advertises _sqi._tcp on the local network so workers and the
+// sqi CLI can discover this server without manual address configuration.
+// Advertisement is gated on DiscoveryEnabled for environments that forbid
+// multicast.
+func (s *Server) startDiscovery(ctx context.Context) error {
+	natsURL, err := s.advertisedNATSURL()
+	if err != nil {
+		return fmt.Errorf("init discovery: %w", err)
+	}
 	resp, err := discovery.New(discovery.Config{
 		Enabled:      s.cfg.DiscoveryEnabled,
 		InstanceName: s.cfg.DiscoveryInstanceName,
 		HTTPAddr:     s.cfg.HTTPAddr,
-		NATSAddr:     s.cfg.NATSAddr,
+		NATSURL:      natsURL,
 		HTTPTLS:      s.cfg.HTTPTLS.Enabled,
-		NATSTLS:      s.cfg.NATSTLS.Enabled,
 		Interfaces:   s.cfg.DiscoveryInterfaces,
 	}, s.logger)
 	if err != nil {
@@ -818,6 +776,75 @@ func (s *Server) start(ctx context.Context) error {
 	s.discovery = resp
 
 	return nil
+}
+
+// advertisedNATSURL is the broker URL discovery tells workers to use. The
+// embedded broker's port is the one it actually bound, which differs from the
+// configured one when that is 0. It fails rather than advertise port 0, and
+// returns "" when discovery is off.
+func (s *Server) advertisedNATSURL() (string, error) {
+	if !s.cfg.DiscoveryEnabled {
+		return "", nil // nothing is advertised, so nothing can be wrong with it
+	}
+	if s.cfg.NATS.Mode == config.NATSModeExternal || s.cfg.NATS.Embedded.AdvertiseURL != "" {
+		return natsURLForMode(s.cfg.NATS, discovery.SRVHost(), 0), nil
+	}
+	clientURL := ""
+	if cu, ok := s.broker.(interface{ ClientURL() string }); ok {
+		clientURL = cu.ClientURL()
+	}
+	port, err := listenerPort(clientURL, s.cfg.NATS.Embedded.Addr)
+	if err != nil {
+		return "", err
+	}
+	return natsURLForMode(s.cfg.NATS, discovery.SRVHost(), port), nil
+}
+
+// listenerPort returns the embedded broker's listener port: the one in the
+// broker's client URL when it reports one, else the configured address's. The
+// client URL's host can be an unbracketed IPv6 address that url.Parse
+// rejects, so the port is whatever follows the last colon. A port of 0 (a
+// configured ":0" the broker did not report back) is an error, never
+// advertised.
+func listenerPort(clientURL, configuredAddr string) (int, error) {
+	if i := strings.LastIndex(clientURL, ":"); i >= 0 {
+		rest := strings.TrimRight(clientURL[i+1:], "/")
+		if n, err := strconv.Atoi(rest); err == nil && n > 0 && n <= 65535 {
+			return n, nil
+		}
+	}
+	if _, p, err := net.SplitHostPort(configuredAddr); err == nil {
+		if n, err := strconv.Atoi(p); err == nil && n > 0 && n <= 65535 {
+			return n, nil
+		}
+	}
+	return 0, fmt.Errorf("cannot determine the embedded broker's listener port (broker URL %q, nats.embedded.addr %q); set nats.embedded.advertise_url or a fixed port", clientURL, configuredAddr)
+}
+
+// natsURLForMode returns the broker URL discovery advertises:
+//   - external mode: the first advertise_urls entry, else the first urls entry;
+//   - embedded mode: advertise_url, else nats:// (tls:// when the broker
+//     requires TLS) + host + the listener port.
+//
+// host and port are only used for the embedded default.
+func natsURLForMode(n config.NATSConfig, host string, port int) string {
+	if n.Mode == config.NATSModeExternal {
+		if len(n.External.AdvertiseURLs) > 0 {
+			return n.External.AdvertiseURLs[0]
+		}
+		if len(n.External.URLs) > 0 {
+			return n.External.URLs[0]
+		}
+		return ""
+	}
+	if n.Embedded.AdvertiseURL != "" {
+		return n.Embedded.AdvertiseURL
+	}
+	scheme := "nats"
+	if n.Embedded.TLS.Enabled {
+		scheme = "tls"
+	}
+	return scheme + "://" + net.JoinHostPort(host, strconv.Itoa(port))
 }
 
 // wsJobOwnerResolverTimeout bounds each individual wsJobOwnerResolver lookup;
@@ -1094,6 +1121,38 @@ func browseURL(addr string, tlsOn bool) string {
 	return scheme + net.JoinHostPort(host, port)
 }
 
+// abortStartTimeout bounds stopping the HTTP listener after a failed start.
+const abortStartTimeout = 5 * time.Second
+
+// abortStart stops what a failed [Server.start] had already started, so that
+// an immediate retry finds nothing held. The broker matters most: an external
+// broker holds its account's guard until it is shut down, and a retry inside
+// the guard's lease would be refused naming this very host. The store is left
+// as it is; the process is exiting.
+func (s *Server) abortStart() {
+	if s.discovery != nil {
+		s.discovery.Shutdown()
+	}
+	if s.httpServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), abortStartTimeout)
+		if err := s.httpServer.Shutdown(ctx); err != nil {
+			s.logger.WarnContext(ctx, "http: shutdown after a failed start", slog.Any("error", err))
+		}
+		cancel()
+	}
+	if s.cancelSched != nil {
+		s.cancelSched()
+	}
+	if s.busClient != nil {
+		s.busClient.Close()
+	}
+	if s.broker != nil {
+		// Bounded inside: an external broker gives its guard up within its
+		// own guard-operation timeout.
+		s.broker.Shutdown()
+	}
+}
+
 // shutdown stops all running components in reverse dependency order within
 // a [ShutdownTimeout] deadline.
 func (s *Server) shutdown() error {
@@ -1129,7 +1188,8 @@ func (s *Server) shutdown() error {
 	// ── Message bus ───────────────────────────────────────────────────────
 	// Drain the typed client first — stops push consumers,
 	// waits for in-flight handlers, and flushes pending publish-acks — then
-	// shut down the embedded NATS server.
+	// shut the broker down: stop the embedded server, or close sqi's
+	// connections to the external one.
 	if s.busClient != nil {
 		if err := s.busClient.Drain(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("bus client drain: %w", err))

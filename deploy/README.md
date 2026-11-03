@@ -8,6 +8,14 @@ Deployment artifacts for `sqi`:
 - `deploy/docker-compose.postgres.yml` — the same stack with its state store on
   a PostgreSQL 18 container (see below).
 - `deploy/docker-compose.smoke.yml` — minimal stack used by CI smoke tests.
+- `deploy/docker-compose.nats-cluster.yml` and `deploy/nats-cluster/nats.conf` —
+  a three-node nats-server cluster for `nats.mode: external`, with TLS on the
+  client port, configured from `sqi-server nats external init`; the file's
+  header has the steps. The routes between the nodes are plaintext and
+  unauthenticated, which is safe only while the route port stays inside the
+  Compose network. `make test-nats-cluster` runs the external-mode tests
+  against it; the full guide is
+  [Running on an external NATS cluster](../docs/operations.md#running-on-an-external-nats-cluster).
 - `deploy/systemd/` — sample unit files for bare-metal Linux worker installs.
 - `deploy/config/` — pointer to the canonical example configs under `config/`.
 
@@ -39,14 +47,14 @@ container, see
 
 ## TLS
 
-Every artifact here deploys sqi in its **plaintext default**: the REST API, the
-WebSocket gateway and the embedded broker all serve unencrypted. That is
-deliberate — TLS is opt-in — but it means none of these files is production-ready
-as shipped on an untrusted network.
+Every artifact here except the NATS cluster deploys sqi in its **plaintext
+default**: the REST API, the WebSocket gateway and the embedded broker all serve
+unencrypted. That is deliberate — TLS is opt-in — but it means none of these
+files is production-ready as shipped on an untrusted network.
 
 To add TLS, generate material with `sqi-server tls init`, mount it into the
-container or place it on the host, and set `http.tls` and `nats.tls` (plus the
-matching worker CA settings). The full guide, including the fact that enabling
+container or place it on the host, and set `http.tls` and `nats.embedded.tls`
+(plus the matching worker CA settings). The full guide, including the fact that enabling
 TLS on a running farm is a coordinated restart rather than a rolling one, is in
 [`docs/tls.md`](../docs/tls.md).
 

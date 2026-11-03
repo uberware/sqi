@@ -160,6 +160,40 @@ func TestParity_RevokeWorkerCredential(t *testing.T) {
 	}
 }
 
+func TestParity_GetActiveWorkerCredentialByPublicKey(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			c := mustCreateCredential(t, st, mkCredential("w1"))
+			got, err := st.GetActiveWorkerCredentialByPublicKey(ctx, c.PublicKey)
+			if err != nil || got.ID != c.ID || got.WorkerID != "w1" || got.PublicKey != c.PublicKey || got.RevokedAt != nil {
+				t.Fatalf("enrolled key = (%+v, %v), want credential %s for w1", got, err, c.ID)
+			}
+			if _, err := st.GetActiveWorkerCredentialByPublicKey(ctx, "U-unknown"); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("unknown key: err = %v, want ErrNotFound", err)
+			}
+
+			// Revoked: the key is still enrolled, but no longer authenticates.
+			if err := st.RevokeWorkerCredential(ctx, "w1", time.Now().UTC()); err != nil {
+				t.Fatalf("RevokeWorkerCredential: %v", err)
+			}
+			if _, err := st.GetActiveWorkerCredentialByPublicKey(ctx, c.PublicKey); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("revoked key: err = %v, want ErrNotFound", err)
+			}
+
+			// Re-enrolled with a new key: the new key resolves, the old stays dead.
+			next := mustCreateCredential(t, st, mkCredential("w1"))
+			got, err = st.GetActiveWorkerCredentialByPublicKey(ctx, next.PublicKey)
+			if err != nil || got.ID != next.ID || got.WorkerID != "w1" {
+				t.Fatalf("new key = (%+v, %v), want credential %s for w1", got, err, next.ID)
+			}
+			if _, err := st.GetActiveWorkerCredentialByPublicKey(ctx, c.PublicKey); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("old key after re-enroll: err = %v, want ErrNotFound", err)
+			}
+		})
+	}
+}
+
 func TestParity_TouchWorkerCredential(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {

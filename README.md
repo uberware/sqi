@@ -73,9 +73,9 @@ See the [Quickstart](docs/quickstart.md) for a full walkthrough (binary or Docke
 
 **Distributed (production mode)**
 
-A planned configuration (Phase 4) for high availability: a standalone NATS message broker and PostgreSQL for durable state, with workers connecting to the broker directly. So far only the PostgreSQL state store is implemented (unreleased; set `store.driver: postgres`, see [Running on PostgreSQL](docs/operations.md#running-on-postgresql) and [`deploy/docker-compose.postgres.yml`](deploy/docker-compose.postgres.yml)). A standalone broker, the HA scheduler and Kubernetes manifests are not yet implemented, and one `sqi-server`, with its embedded broker, runs per database.
+State in PostgreSQL and the message bus on a NATS cluster you run, with workers connecting to the cluster directly (unreleased). Set `store.driver: postgres` for the store (see [Running on PostgreSQL](docs/operations.md#running-on-postgresql) and [`deploy/docker-compose.postgres.yml`](deploy/docker-compose.postgres.yml)) and `nats.mode: external` for the broker (see [Running on an external NATS cluster](docs/operations.md#running-on-an-external-nats-cluster) and [`deploy/docker-compose.nats-cluster.yml`](deploy/docker-compose.nats-cluster.yml)); the cluster survives the loss of a node and outlives `sqi-server` restarts. This is not yet high availability for the scheduler: one `sqi-server` runs per database and per broker account, and an HA scheduler (Phase 4) and Kubernetes manifests are not yet implemented.
 
-Both modes run the same software. The difference is configuration; an existing SQLite farm moves to PostgreSQL with `sqi-server store copy` (see [Moving to PostgreSQL](docs/operations.md#moving-to-postgresql)).
+Both modes run the same software. The difference is configuration; an existing SQLite farm moves to PostgreSQL with `sqi-server store copy` (see [Moving to PostgreSQL](docs/operations.md#moving-to-postgresql)), and to an external broker by changing `nats.mode` (see [Switching broker mode](docs/operations.md#switching-broker-mode)).
 
 ---
 

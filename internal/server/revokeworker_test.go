@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"net"
-	"sync"
 	"testing"
 	"time"
 
@@ -26,9 +25,9 @@ import (
 // separate process holding no broker handle.
 //
 // These exercise RevokeWorker directly against a *Server built by hand
-// (store + a real embedded broker, no HTTP layer, no scheduler) so the
-// store-write-then-reload ordering and its failure mode are pinned at the
-// unit level. The full HTTP-to-disconnect-to-reclaim path is covered by
+// (store + a real embedded broker whose auth callout reads that store, no
+// HTTP layer, no scheduler) so the store-write-then-disconnect ordering and
+// its failure mode are pinned at the unit level. The full HTTP-to-disconnect-to-reclaim path is covered by
 // test/integration's broker-auth suite, which also proves the existing
 // heartbeat-sweep/reclaim path — not anything reimplemented here — is what
 // returns a revoked worker's task to ready.
@@ -50,20 +49,20 @@ func freeLoopbackAddr(t *testing.T) string {
 	return addr
 }
 
-// startTestBroker boots a real embedded broker with authentication enabled
-// and enrolled with creds, and registers cleanup.
-func startTestBroker(t *testing.T, creds []bus.WorkerCredentialRef, mutate ...func(*bus.BrokerConfig)) *bus.Broker {
+// startTestBroker boots a real embedded broker with authentication enabled,
+// answering connects from st's active credentials, and registers cleanup.
+func startTestBroker(t *testing.T, st store.WorkerCredentialStore, mutate ...func(*bus.EmbeddedConfig)) *bus.Embedded {
 	t.Helper()
-	cfg := bus.BrokerConfig{
+	cfg := bus.EmbeddedConfig{
 		Addr:       freeLoopbackAddr(t),
 		DataDir:    t.TempDir() + "/nats",
 		MaxStoreMB: 64,
-		Auth:       bus.BrokerAuthConfig{Enabled: true, Credentials: creds},
+		Auth:       bus.AuthConfig{Enabled: true, UserTTL: time.Hour, Lookup: credentialLookup(st)},
 	}
 	for _, m := range mutate {
 		m(&cfg)
 	}
-	b := bus.New(cfg, testLogger())
+	b := bus.NewEmbedded(cfg, testLogger())
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := b.Start(ctx); err != nil {
@@ -73,10 +72,16 @@ func startTestBroker(t *testing.T, creds []bus.WorkerCredentialRef, mutate ...fu
 	return b
 }
 
+// testCredential is an enrolled worker's ID and public key.
+type testCredential struct {
+	WorkerID  string
+	PublicKey string
+}
+
 // enrolledCredential generates a fresh nkey, seeds a matching
-// [store.WorkerCredential] row in st, and returns the [bus.WorkerCredentialRef]
-// and raw seed needed to connect as that worker.
-func enrolledCredential(t *testing.T, st store.Store, workerID string) (bus.WorkerCredentialRef, []byte) {
+// [store.WorkerCredential] row in st, and returns it with the raw seed
+// needed to connect as that worker.
+func enrolledCredential(t *testing.T, st store.Store, workerID string) (testCredential, []byte) {
 	t.Helper()
 	seed, pub, err := brokerauth.GenerateSeed()
 	if err != nil {
@@ -90,7 +95,7 @@ func enrolledCredential(t *testing.T, st store.Store, workerID string) (bus.Work
 	}); err != nil {
 		t.Fatalf("enrolledCredential: CreateWorkerCredential: %v", err)
 	}
-	return bus.WorkerCredentialRef{WorkerID: workerID, PublicKey: pub}, seed
+	return testCredential{WorkerID: workerID, PublicKey: pub}, seed
 }
 
 // nkeyOption builds a nats.Option that authenticates as the nkey pair
@@ -110,7 +115,7 @@ func nkeyOption(t *testing.T, seed []byte, pub string) nats.Option {
 // a ClosedHandler feeding the returned channel — the same pattern
 // internal/bus's own revocation tests use, so the disconnect assertion is
 // not coupled to nats.go's reconnect/backoff timing.
-func connectAsWorker(t *testing.T, b *bus.Broker, seed []byte, pub string) (*nats.Conn, <-chan struct{}) {
+func connectAsWorker(t *testing.T, b *bus.Embedded, seed []byte, pub string) (*nats.Conn, <-chan struct{}) {
 	t.Helper()
 	closedCh := make(chan struct{})
 	nc, err := nats.Connect(
@@ -133,14 +138,14 @@ func connectAsWorker(t *testing.T, b *bus.Broker, seed []byte, pub string) (*nat
 // TestRevokeWorker_NATSAuthDisabled_StoreWriteOnly covers the farm that runs
 // without broker authentication at all: RevokeWorker must still perform the
 // store write (so an operator can pre-provision revocations, or clean up
-// after auth was turned off) but must never touch the broker — there is no
-// authorized-key set to reload, and s.broker is left nil here specifically
-// to prove that: touching it would panic.
+// after auth was turned off) but must never touch the broker — there is
+// nothing to disconnect, and s.broker is left nil here specifically to prove
+// that: touching it would panic.
 func TestRevokeWorker_NATSAuthDisabled_StoreWriteOnly(t *testing.T) {
 	st := fake.New()
 	ref, _ := enrolledCredential(t, st, "worker-a")
 
-	s := &Server{cfg: Config{NATSAuthEnabled: false}, store: st, logger: testLogger()}
+	s := &Server{cfg: brokerAuthConfig(false), store: st, logger: testLogger()}
 
 	if err := s.RevokeWorker(context.Background(), ref.WorkerID); err != nil {
 		t.Fatalf("RevokeWorker: %v", err)
@@ -158,7 +163,7 @@ func TestRevokeWorker_NATSAuthDisabled_StoreWriteOnly(t *testing.T) {
 // NATSAuthEnabled is true.
 func TestRevokeWorker_UnknownWorker_ReturnsErrNotFoundWithoutTouchingBroker(t *testing.T) {
 	st := fake.New()
-	s := &Server{cfg: Config{NATSAuthEnabled: true}, store: st, logger: testLogger()}
+	s := &Server{cfg: brokerAuthConfig(true), store: st, logger: testLogger()}
 
 	err := s.RevokeWorker(context.Background(), "ghost")
 	if !errors.Is(err, store.ErrNotFound) {
@@ -166,18 +171,16 @@ func TestRevokeWorker_UnknownWorker_ReturnsErrNotFoundWithoutTouchingBroker(t *t
 	}
 }
 
-// TestRevokeWorker_ReloadDisconnectsRevokedWorkerOnly is the core positive
-// case: revoking worker A through Server.RevokeWorker disconnects A's live
-// broker connection inside the call (nats-server's reloadAuthorization
-// re-authorizes every connected client synchronously) and leaves B
-// completely unaffected.
-func TestRevokeWorker_ReloadDisconnectsRevokedWorkerOnly(t *testing.T) {
+// TestRevokeWorker_DisconnectsRevokedWorkerOnly is the core positive case:
+// revoking worker A through Server.RevokeWorker disconnects A's live broker
+// connection inside the call and leaves B completely unaffected.
+func TestRevokeWorker_DisconnectsRevokedWorkerOnly(t *testing.T) {
 	st := fake.New()
 	refA, seedA := enrolledCredential(t, st, "worker-a")
 	refB, seedB := enrolledCredential(t, st, "worker-b")
 
-	broker := startTestBroker(t, []bus.WorkerCredentialRef{refA, refB})
-	s := &Server{cfg: Config{NATSAuthEnabled: true}, store: st, broker: broker, logger: testLogger()}
+	broker := startTestBroker(t, st)
+	s := &Server{cfg: brokerAuthConfig(true), store: st, broker: broker, logger: testLogger()}
 
 	_, closedA := connectAsWorker(t, broker, seedA, refA.PublicKey)
 	ncB, closedB := connectAsWorker(t, broker, seedB, refB.PublicKey)
@@ -209,163 +212,123 @@ func TestRevokeWorker_ReloadDisconnectsRevokedWorkerOnly(t *testing.T) {
 	}
 }
 
-// TestRevokeWorker_ReloadFailure_StoreStaysRevoked pins the defensible
-// outcome of a reload failure after a successful store write: the credential
+// revokeStubBroker is a [bus.Broker] whose Revoke records what it was called
+// with. Every other method is unused by RevokeWorker.
+type revokeStubBroker struct {
+	bus.Broker // nil: any other method panics, which RevokeWorker must never reach
+
+	err    error
+	budget time.Duration
+
+	calls       int
+	workerID    string
+	ctxErr      error
+	hasDeadline bool
+	deadline    time.Time
+}
+
+func (b *revokeStubBroker) RevokeBudget() time.Duration { return b.budget }
+
+func (b *revokeStubBroker) Revoke(ctx context.Context, workerID string) error {
+	b.calls++
+	b.workerID = workerID
+	b.ctxErr = ctx.Err()
+	b.deadline, b.hasDeadline = ctx.Deadline()
+	return b.err
+}
+
+// TestRevokeWorker_BrokerFailure_StoreStaysRevoked pins the defensible
+// outcome of a broker failure after a successful store write: the credential
 // row stays revoked (the store is never rolled back) and the failure is
 // still surfaced to the caller, since the synchronous disconnect this method
-// exists to provide did not actually happen. A shut-down broker stands in
-// for "the reload call itself failed" — ReloadCredentials returns "broker
-// not started" once Shutdown has run, which is the same shape of failure as
-// any other ReloadOptions error from the caller's point of view.
-func TestRevokeWorker_ReloadFailure_StoreStaysRevoked(t *testing.T) {
+// exists to provide did not actually happen.
+func TestRevokeWorker_BrokerFailure_StoreStaysRevoked(t *testing.T) {
 	st := fake.New()
 	ref, _ := enrolledCredential(t, st, "worker-a")
 
-	broker := startTestBroker(t, []bus.WorkerCredentialRef{ref})
-	broker.Shutdown() // torn down before RevokeWorker runs
-
-	s := &Server{cfg: Config{NATSAuthEnabled: true}, store: st, broker: broker, logger: testLogger()}
+	boom := errors.New("broker unreachable")
+	stub := &revokeStubBroker{err: boom}
+	s := &Server{cfg: brokerAuthConfig(true), store: st, broker: stub, logger: testLogger()}
 
 	err := s.RevokeWorker(context.Background(), ref.WorkerID)
-	if err == nil {
-		t.Fatal("RevokeWorker: want an error when the broker reload fails, got nil")
+	if !errors.Is(err, boom) {
+		t.Fatalf("RevokeWorker = %v, want an error wrapping the broker's", err)
+	}
+	if stub.calls != 1 || stub.workerID != ref.WorkerID {
+		t.Errorf("broker.Revoke calls = %d for %q, want 1 for %q", stub.calls, stub.workerID, ref.WorkerID)
 	}
 
-	// The store write must stand regardless: rolling it back on a reload
+	// The store write must stand regardless: rolling it back on a broker
 	// failure would leave a credential the operator explicitly revoked
-	// silently trusted again, which is worse than the reload simply not
-	// having taken effect yet.
+	// silently trusted again, which is worse than the disconnect simply not
+	// having happened yet.
 	if _, err := storetest.ActiveWorkerCredential(context.Background(), st, ref.WorkerID); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("credential still active after a reload failure: %v, want store.ErrNotFound", err)
+		t.Errorf("credential still active after a broker failure: %v, want store.ErrNotFound", err)
 	}
 }
 
-// ── An unserialized read-then-reload span loses an update ──────────────────
-//
-// An unlocked "read the active credential set, then call ReloadCredentials"
-// sequence is vulnerable to a lost update. Two concurrent revocations of
-// DIFFERENT workers can interleave like this:
-//
-//  1. revoke(A) commits its store write.
-//  2. revoke(A) reads the active set — B is still active, so the set
-//     contains B.
-//  3. revoke(B) commits its store write.
-//  4. revoke(B) reads the active set — correctly excludes A and B — and
-//     reloads.
-//  5. revoke(A)'s reload, built from the STALE step-2 read, applies LAST
-//     and reintroduces B into the broker's trusted key set.
-//
-// raceMarkerKey and blockingListStore below reproduce this deterministically
-// instead of hoping many iterations happen to hit the right interleaving:
-// A's read is captured, then paused (holding s.brokerReloadMu) until the
-// test explicitly releases it — by which point B's own revoke has fully
-// run. This pins the exact scenario s.brokerReloadMu closes, not just "some
-// race somewhere."
-
-// raceMarkerKey tags a context so blockingListStore knows which caller's
-// ListActiveWorkerCredentials call to pause.
-type raceMarkerKey struct{}
-
-// blockingListStore wraps a store.Store and, only for the call whose
-// context carries blockFor, pauses AFTER reading the real result (so the
-// caller holds a real, but soon-to-be-stale, snapshot) until release is
-// closed. entered is closed the moment the pause begins, so the test knows
-// the blocked call has already captured its snapshot before letting the
-// other revoke proceed.
-type blockingListStore struct {
-	store.Store
-
-	blockFor string
-	entered  chan struct{}
-	release  chan struct{}
-}
-
-func (s *blockingListStore) ListActiveWorkerCredentials(ctx context.Context) ([]store.WorkerCredential, error) {
-	creds, err := s.Store.ListActiveWorkerCredentials(ctx)
-	if v, ok := ctx.Value(raceMarkerKey{}).(string); ok && v == s.blockFor {
-		close(s.entered)
-		<-s.release
-	}
-	return creds, err
-}
-
-// TestRevokeWorker_ConcurrentRevocationsOfDifferentWorkers_BothStayRevoked
-// deterministically forces the interleaving described above and asserts the
-// broker ends up trusting NEITHER worker — not just that the store shows
-// both revoked (the store was never the vulnerable part; the broker's
-// authorized-key set was).
-func TestRevokeWorker_ConcurrentRevocationsOfDifferentWorkers_BothStayRevoked(t *testing.T) {
+// TestRevokeWorker_CancelledRequestStillGetsALiveBrokerContext pins that the
+// broker's final pass is not cut off by the HTTP client going away: Revoke
+// runs for seconds, and a disconnecting client cancels the request context
+// partway through. RevokeWorker must hand the broker a context detached from
+// that cancellation, bounded by its own timeout.
+func TestRevokeWorker_CancelledRequestStillGetsALiveBrokerContext(t *testing.T) {
 	st := fake.New()
-	refA, seedA := enrolledCredential(t, st, "worker-a")
-	refB, seedB := enrolledCredential(t, st, "worker-b")
+	ref, _ := enrolledCredential(t, st, "worker-a")
 
-	broker := startTestBroker(t, []bus.WorkerCredentialRef{refA, refB})
+	stub := &revokeStubBroker{}
+	s := &Server{cfg: brokerAuthConfig(true), store: st, broker: stub, logger: testLogger()}
 
-	wrapped := &blockingListStore{
-		Store:    st,
-		blockFor: "A",
-		entered:  make(chan struct{}),
-		release:  make(chan struct{}),
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the client is already gone when RevokeWorker runs
+
+	// The store write is the one part that must not be skipped either; the
+	// fake does not look at the context, which is what the real store's
+	// write path is exercised for in the integration suite.
+	if err := s.RevokeWorker(ctx, ref.WorkerID); err != nil {
+		t.Fatalf("RevokeWorker: %v", err)
 	}
-	s := &Server{cfg: Config{NATSAuthEnabled: true}, store: wrapped, broker: broker, logger: testLogger()}
-
-	ctxA := context.WithValue(context.Background(), raceMarkerKey{}, "A")
-	ctxB := context.WithValue(context.Background(), raceMarkerKey{}, "B") // never matches blockFor; B is not paused
-
-	var wg sync.WaitGroup
-	var errA, errB error
-	wg.Go(func() {
-		errA = s.RevokeWorker(ctxA, refA.WorkerID)
-	})
-
-	// Wait until A has committed its store write, read the (still-stale,
-	// B-included) active set, and is now paused holding that snapshot.
-	<-wrapped.entered
-
-	// Run B's revoke to completion while A is paused. RevokeWorker's own
-	// call blocks trying to acquire s.brokerReloadMu (A is still inside the
-	// critical section) until A finishes — so this goroutine only returns
-	// after A's whole RevokeWorker call has completed. An unserialized
-	// implementation would instead let B run immediately and finish well
-	// before A resumes.
-	wg.Go(func() {
-		errB = s.RevokeWorker(ctxB, refB.WorkerID)
-	})
-
-	// Give B's goroutine a moment to either finish (unserialized) or block
-	// on the mutex (serialized) before releasing A — the property under
-	// test does not depend on this sleep's exact duration, only that B has
-	// had the chance to run to the point it would reach if it were going to.
-	time.Sleep(50 * time.Millisecond)
-	close(wrapped.release)
-
-	wg.Wait()
-
-	if errA != nil {
-		t.Errorf("RevokeWorker(A): %v", errA)
+	if stub.calls != 1 {
+		t.Fatalf("broker.Revoke calls = %d, want 1", stub.calls)
 	}
-	if errB != nil {
-		t.Errorf("RevokeWorker(B): %v", errB)
+	if stub.ctxErr != nil {
+		t.Errorf("broker.Revoke saw ctx.Err() = %v, want nil: the request's cancellation must not reach the broker", stub.ctxErr)
 	}
+	if !stub.hasDeadline {
+		t.Fatal("broker.Revoke ctx has no deadline, want one bounding a stuck broker")
+	}
+	if left := time.Until(stub.deadline); left <= 0 || left > revokeBrokerTimeout {
+		t.Errorf("broker.Revoke deadline is %s away, want within (0, %s]", left, revokeBrokerTimeout)
+	}
+}
 
-	// Both must be gone from the store...
-	if _, err := storetest.ActiveWorkerCredential(context.Background(), st, refA.WorkerID); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("worker A still active in the store: %v, want store.ErrNotFound", err)
-	}
-	if _, err := storetest.ActiveWorkerCredential(context.Background(), st, refB.WorkerID); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("worker B still active in the store: %v, want store.ErrNotFound", err)
-	}
-
-	// ...and, the property this test exists to pin, neither can connect to
-	// the broker: a fresh connection attempt with either's key must be
-	// refused. An unserialized read-then-reload would let B's stale reload
-	// reintroduce it here even though the store already shows it revoked.
-	if nc, err := nats.Connect(broker.ClientURL(), nkeyOption(t, seedA, refA.PublicKey), nats.NoReconnect()); err == nil {
-		nc.Close()
-		t.Error("worker A connected to the broker after concurrent revocation — its credential was reintroduced")
-	}
-	if nc, err := nats.Connect(broker.ClientURL(), nkeyOption(t, seedB, refB.PublicKey), nats.NoReconnect()); err == nil {
-		nc.Close()
-		t.Error("worker B connected to the broker after concurrent revocation — its credential was reintroduced by a stale reload")
+// TestRevokeWorker_BrokerBudgetExtendsTheBound pins that a broker needing
+// longer than revokeBrokerTimeout, an external cluster with a long auth
+// timeout, gets its own budget: a shorter bound would cut its final pass
+// off and fail every revocation.
+func TestRevokeWorker_BrokerBudgetExtendsTheBound(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		budget time.Duration
+		want   time.Duration
+	}{
+		{"short budget keeps the floor", 3 * time.Second, revokeBrokerTimeout},
+		{"long budget extends it", 30 * time.Second, 30 * time.Second},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			st := fake.New()
+			ref, _ := enrolledCredential(t, st, "worker-a")
+			stub := &revokeStubBroker{budget: tt.budget}
+			s := &Server{cfg: brokerAuthConfig(true), store: st, broker: stub, logger: testLogger()}
+			if err := s.RevokeWorker(context.Background(), ref.WorkerID); err != nil {
+				t.Fatalf("RevokeWorker: %v", err)
+			}
+			if !stub.hasDeadline {
+				t.Fatal("broker.Revoke ctx has no deadline")
+			}
+			if left := time.Until(stub.deadline); left > tt.want || left < tt.want-time.Second {
+				t.Errorf("broker.Revoke deadline is %s away, want about %s", left, tt.want)
+			}
+		})
 	}
 }

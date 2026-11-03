@@ -40,6 +40,25 @@ func GenerateSeed() (seed []byte, publicKey string, err error) {
 	return seed, publicKey, nil
 }
 
+// GenerateAccountSeed creates a new Ed25519 account nkey and returns its seed
+// and public key (which starts with "A"). It mirrors [GenerateSeed] for the
+// account identity that signs user JWTs.
+func GenerateAccountSeed() (seed []byte, publicKey string, err error) {
+	kp, err := nkeys.CreateAccount()
+	if err != nil {
+		return nil, "", fmt.Errorf("brokerauth: create account key: %w", err)
+	}
+	seed, err = kp.Seed()
+	if err != nil {
+		return nil, "", fmt.Errorf("brokerauth: extract seed: %w", err)
+	}
+	publicKey, err = kp.PublicKey()
+	if err != nil {
+		return nil, "", fmt.Errorf("brokerauth: extract public key: %w", err)
+	}
+	return seed, publicKey, nil
+}
+
 // PublicKeyFromSeed derives the public key for a seed.
 func PublicKeyFromSeed(seed []byte) (string, error) {
 	kp, err := nkeys.FromSeed(seed)
@@ -154,7 +173,7 @@ func LoadSeed(path string) ([]byte, error) {
 		return nil, fmt.Errorf(
 			"brokerauth: seed file %s is readable beyond its owner; it holds this worker's "+
 				"private key and must be restricted — %s",
-			path, restrictHint(path),
+			path, RestrictHint(path),
 		)
 	}
 	seed, err := os.ReadFile(path)
@@ -178,12 +197,12 @@ func ValidatePublicKey(pk string) error {
 	return nil
 }
 
-// restrictHint returns the platform-appropriate remediation for a seed file
+// RestrictHint returns the platform-appropriate remediation for a seed file
 // that is readable beyond its owner.
 //
 // Only the ADVICE is platform-specific. The check itself
 // (fsutil.IsRestricted) is not, and deliberately so: see LoadSeed.
-func restrictHint(path string) string {
+func RestrictHint(path string) string {
 	if runtime.GOOS == "windows" {
 		return fmt.Sprintf(
 			"remove inherited access with: icacls %q /inheritance:r /grant:r %%USERNAME%%:F", path,

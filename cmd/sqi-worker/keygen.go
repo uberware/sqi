@@ -123,8 +123,8 @@ func runKeygen(cmd *cobra.Command, _ []string) error {
 	}
 	fmt.Fprintln(os.Stdout, "On the server, run:")
 	fmt.Fprintf(os.Stdout, "  sqi-server worker enroll --worker-id %s --public-key %s\n", workerID, publicKey)
-	fmt.Fprintln(os.Stdout, "A RUNNING sqi-server will not accept this credential until it restarts;"+
-		" to enroll against a running server, use POST /api/v1/workers/enroll with a join token instead.")
+	fmt.Fprintln(os.Stdout, "Once enrolled, the credential is accepted at this worker's next connect;"+
+		" sqi-server needs no restart.")
 
 	if seedExisted {
 		// --force just overwrote a seed that may still be the credential the
