@@ -28,7 +28,9 @@ func TestNoRawStatementCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, f := range files {
-		if strings.HasSuffix(f, "_test.go") || rawCallAllowed[f] {
+		// The go command ignores files whose names start with "." or "_",
+		// such as the ._ sidecars macOS writes on some volumes.
+		if strings.HasSuffix(f, "_test.go") || strings.HasPrefix(f, ".") || strings.HasPrefix(f, "_") || rawCallAllowed[f] {
 			continue
 		}
 		body, err := os.ReadFile(f)
