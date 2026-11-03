@@ -30,19 +30,32 @@ readme: |
   when the job is submitted.
 
   Output paths come from the scene files. A static-geometry file that a frame's
-  file refers to is read from the path recorded in that file.
+  file refers to is read from the path recorded in that file. Each file must
+  start its own render with `RenderControl "action" "string" 1 "start"`, as
+  files exported for batch rendering do; `renderdl` renders nothing for a file
+  without it. `renderdl` creates an output folder that does not exist.
+
+  ## How failures are detected
+
+  `renderdl` exits with status 0 when it cannot open the scene file, and when
+  the file never starts a render, so its exit status alone would report both
+  as successes. This preset therefore declares the `SQI_LOG_CHECKS` extension:
+  a task fails when `renderdl` prints `cannot open input file`, and fails
+  unless its progress reaches `100%`. A render that reaches `100%` but reports
+  errors along the way, such as a missing texture, still succeeds.
 
   ## Requirements
 
   - Workers tagged `attr.worker.tag.threedelight = true`
-  - `renderdl` on the worker's `PATH`
+  - `renderdl` on the worker's `PATH`, or 3Delight's own, which the worker
+    finds at the default install location on Windows and macOS
   - A 3Delight license
 category: Rendering
 version: 1.0.0
 template:
   specificationVersion: jobtemplate-2023-09
   name: 3Delight Render
-  extensions: [EXPR]
+  extensions: [EXPR, SQI_LOG_CHECKS]
   parameterDefinitions:
     - name: SceneFile
       type: PATH
@@ -66,6 +79,13 @@ template:
         attributes:
           - name: attr.worker.tag.threedelight
             anyOf: ["true"]
+      # renderdl exits 0 on an unreadable file and on a file that never starts
+      # a render; -progress prints "100%" when a render completes.
+      SQI_LOG_CHECKS:
+        failOn:
+          - "renderdl: cannot open input file"
+        requireLine:
+          - '^\s*100%'
       parameterSpace:
         taskParameterDefinitions:
           - name: Frame

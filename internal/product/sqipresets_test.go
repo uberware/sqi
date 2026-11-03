@@ -192,7 +192,7 @@ func TestSQIReferencePresets(t *testing.T) {
 		"3delight-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames"},
-			extensions: []string{"EXPR"},
+			extensions: []string{"EXPR", "SQI_LOG_CHECKS"},
 		},
 		"mantra-render": {
 			category:   "Rendering",

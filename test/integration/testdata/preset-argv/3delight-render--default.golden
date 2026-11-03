@@ -5,6 +5,8 @@ params:
   SceneFile=/mnt/show/seq010/shot0010/nsi/shot0010_beauty.####.nsi
 
 step "Render" — 3 tasks
+  log checks: failOn "renderdl: cannot open input file"
+  log checks: requireLine "^\\s*100%"
 
 task 1/3  name="Render[Frame=1]"
   task params:
