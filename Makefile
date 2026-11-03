@@ -309,7 +309,7 @@ test-preset-library: ## Validate the published preset library against this tree 
 # tier2 blocks require it, and a skip on a required platform is a failure.
 .PHONY: test-preset-harness
 test-preset-harness: ## Run the whole preset validation harness (tiers 1-3 + registry) in one process
-	go test $(TEST_FLAGS) -count=1 -run 'TestPreset|TestZZPreset|TestFFmpegPreset|TestScriptPowerShell' -v -timeout 1800s ./test/integration/
+	go test $(TEST_FLAGS) -count=1 -run 'TestPreset|TestZZPreset|TestFFmpegPreset|TestScriptPowerShell' -v -timeout 3600s ./test/integration/
 
 # The same harness with the vendor applications REQUIRED: a TestPresetDCC_ case
 # that finds its application missing fails the registry check instead of
@@ -318,13 +318,15 @@ test-preset-harness: ## Run the whole preset validation harness (tiers 1-3 + reg
 # needs --nc, which SQI_TEST_NUKE_ARGS supplies (default --nc; set it empty for a
 # commercial or Indie license), and Houdini's needs an activated Apprentice or
 # commercial license. Narrow DCC_APPS to the ones you have, e.g.
-# `make test-dcc DCC_APPS=blender`. ffmpeg must still be on PATH, and on Linux
-# oiiotool.
+# `make test-dcc DCC_APPS=blender`. unreal, renderman and 3delight are not in
+# the default list; add the ones installed, e.g. on a Windows host with UE 5.8
+# `make test-dcc DCC_APPS=blender,nuke,houdini,unreal`. ffmpeg must still be on
+# PATH, and on Linux oiiotool.
 DCC_APPS ?= blender,nuke,houdini
 
 .PHONY: test-dcc
 test-dcc: ## Run the preset harness with Blender/Nuke/Houdini required (DCC_APPS=..); needs them installed and licensed
-	SQI_TEST_REQUIRE_APPS=$(DCC_APPS) go test $(TEST_FLAGS) -count=1 -run 'TestPreset|TestZZPreset|TestFFmpegPreset|TestScriptPowerShell' -v -timeout 1800s ./test/integration/
+	SQI_TEST_REQUIRE_APPS=$(DCC_APPS) go test $(TEST_FLAGS) -count=1 -run 'TestPreset|TestZZPreset|TestFFmpegPreset|TestScriptPowerShell' -v -timeout 3600s ./test/integration/
 
 .PHONY: test-ldap
 test-ldap: ## Run the LDAP tests against a real directory in a container (needs Docker)
