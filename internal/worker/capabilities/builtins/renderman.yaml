@@ -10,6 +10,12 @@
 # C:\Program Files\Pixar\RenderManProServer-<version> on Windows. The version
 # is read from that directory name, whether it came from a glob match or from
 # RMANTREE.
+#
+# The installers do not put prman on PATH, so the command block supplies the
+# newest install's prman as the `prman` command. The Windows glob matches
+# RenderMan 27.3's layout; the Linux and macOS ones are unverified. prman also
+# needs RMANTREE in its environment to find its license: without it, prman 27.3
+# exits 13 with "License location is not set in rendermn.ini".
 tag: renderman
 checks:
   - exe: prman
@@ -20,3 +26,14 @@ checks:
     os: windows
 version:
   from: 'RenderManProServer-(?P<v>[0-9]+\.[0-9]+)'
+command:
+  name: prman
+  version:
+    from: 'RenderManProServer-(?P<v>[0-9]+\.[0-9]+)'
+  globs:
+    - path_glob: "/opt/pixar/RenderManProServer-*/bin/prman"                       # linux
+      os: linux
+    - path_glob: "/Applications/Pixar/RenderManProServer-*/bin/prman"              # macOS
+      os: darwin
+    - path_glob: 'C:\Program Files\Pixar\RenderManProServer-*\bin\prman.exe'       # windows
+      os: windows

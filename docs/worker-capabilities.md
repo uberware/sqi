@@ -161,11 +161,11 @@ application under
 | `mistikaworkflows` | Linux `path_glob /home/mistika/SGO Apps/Mistika Workflows*/bin/workflows`; macOS `path_glob /Applications/SGO Apps/Mistika Workflows.app*/Contents/MacOS/workflows`; Windows `path_glob C:\Program Files\SGO Apps\Mistika Workflows*\bin\workflows.exe` | `Mistika Workflows ?(?P<v>[0-9]+\.[0-9]+)` against the matched path |
 | `arnold` | `exe kick` (any OS); Linux `path_glob /usr/autodesk/arnold/maya*/bin/kick`; Windows `path_glob C:\Program Files\Autodesk\Arnold\maya*\bin\kick.exe` (the copy MtoA installs) | none (presence only; the paths carry the Maya version, not Arnold's) |
 | `vray` | `exe vray` (any OS); Linux `path_glob /usr/Chaos/V-Ray/Standalone_for_*/bin/vray`; Windows `path_glob C:\Program Files\Chaos\V-Ray\Standalone for x64\bin\vray.exe` | none |
-| `husk` | `exe husk` (any OS); Linux `path_glob /opt/hfs*/bin/husk`; Windows `path_glob C:\Program Files\Side Effects Software\Houdini *\bin\husk.exe` | `(?:hfs\|Houdini ?)(?P<v>[0-9]+\.[0-9]+)` against the matched path |
-| `mantra` | `exe mantra` (any OS); Linux `path_glob /opt/hfs*/bin/mantra`; Windows `path_glob C:\Program Files\Side Effects Software\Houdini *\bin\mantra.exe` | `(?:hfs\|Houdini ?)(?P<v>[0-9]+\.[0-9]+)` against the matched path |
+| `husk` | `exe husk` (any OS); Linux `path_glob /opt/hfs*/bin/husk`; Windows `path_glob C:\Program Files\Side Effects Software\Houdini *\bin\husk.exe`. Also supplies a default `husk` command from the newest Houdini install (the Windows glob matches Houdini 22.0.466's layout; the Linux glob is unverified) | `(?:hfs\|Houdini ?)(?P<v>[0-9]+\.[0-9]+)` against the matched path |
+| `mantra` | `exe mantra` (any OS); Linux `path_glob /opt/hfs*/bin/mantra`; Windows `path_glob C:\Program Files\Side Effects Software\Houdini *\bin\mantra.exe`. Also supplies a default `mantra` command from the newest Houdini install (the Windows glob matches Houdini 22.0.466's layout; the Linux glob is unverified) | `(?:hfs\|Houdini ?)(?P<v>[0-9]+\.[0-9]+)` against the matched path |
 | `redshift` | `exe redshiftCmdLine` (any OS); Linux `path_glob /usr/redshift/bin/redshiftCmdLine`; macOS `path_glob /Applications/Maxon Redshift */bin/redshiftCmdLine`; Windows `path_glob C:\Program Files\Maxon Redshift *\bin\redshiftCmdLine.exe` | `Maxon Redshift (?P<v>[0-9]{4})` against the matched path |
-| `renderman` | `exe prman` (any OS); `env RMANTREE`; `path_glob RenderManProServer-*/bin/prman` under `/opt/pixar` (Linux), `/Applications/Pixar` (macOS) and `C:\Program Files\Pixar` (Windows) | `RenderManProServer-(?P<v>[0-9]+\.[0-9]+)` against the matched path or the `RMANTREE` value |
-| `threedelight` | `exe renderdl` (any OS); `env DELIGHT`; macOS `path_glob /Applications/3Delight/bin/renderdl`; Windows `path_glob C:\Program Files\3Delight\bin\renderdl.exe` | none |
+| `renderman` | `exe prman` (any OS); `env RMANTREE`; `path_glob RenderManProServer-*/bin/prman` under `/opt/pixar` (Linux), `/Applications/Pixar` (macOS) and `C:\Program Files\Pixar` (Windows). Also supplies a default `prman` command from the newest install under those directories (the Windows glob matches RenderMan 27.3's layout; the others are unverified). `prman` also needs `RMANTREE` in the worker's environment to find its license | `RenderManProServer-(?P<v>[0-9]+\.[0-9]+)` against the matched path or the `RMANTREE` value |
+| `threedelight` | `exe renderdl` (any OS); `env DELIGHT`; macOS `path_glob /Applications/3Delight/bin/renderdl`; Windows `path_glob C:\Program Files\3Delight\bin\renderdl.exe`. Also supplies a default `renderdl` command from those two locations (the Windows glob matches a real install; the macOS one is unverified) | none |
 | `oiiotool` | `exe oiiotool` (any OS, if on `PATH`); Houdini's bundled copy, `hoiiotool`: Linux `path_glob /opt/hfs*/bin/hoiiotool`, Windows `path_glob C:\Program Files\Side Effects Software\Houdini *\bin\hoiiotool.exe`. Also supplies a default `oiiotool` command from the newest Houdini install (the Windows glob matches Houdini 22.0.466's layout; the Linux glob is unverified) | none (presence only; the command's version only picks the newest install) |
 | `katana` | `exe katana` (any OS, if on `PATH`); Linux `path_glob /opt/Foundry/Katana*/katana` and `/opt/foundry/katana*/katana`; Windows `path_glob C:\Program Files\Katana*\bin\katanaBin.exe`. All install paths unverified; Katana does not run on macOS. Also supplies a default `katana` command (Windows: `katanaBin.exe`) | `[Kk]atana([0-9]+\.[0-9]+v[0-9]+)` against the matched path (none when only `exe katana` matched) |
 | `silhouette` | `exe sfxcmd` (any OS, if on `PATH`); Windows `path_glob C:\Program Files\BorisFX\Silhouette*\sfxcmd.exe` and `C:\Program Files\SilhouetteFX\Silhouette*\sfxcmd.exe`; macOS `path_glob /Applications/BorisFX/Silhouette*/Silhouette.app/Contents/MacOS/sfxcmd` and the `SilhouetteFX` equivalent; Linux `path_glob /opt/BorisFX/Silhouette*/sfxcmd` and `/opt/SilhouetteFX/Silhouette*/sfxcmd`. The `SilhouetteFX` Windows and macOS folders are Boris FX's documented layout, the `BorisFX` roots and Linux paths are unverified. Also supplies a default `sfxcmd` command, which carries `-nogui` on Linux (see [Detected commands](#detected-commands)) | `Silhouette ?([0-9]{4}(?:\.[0-9]+)?)` against the matched path (none when only `exe sfxcmd` matched) |
@@ -199,7 +199,7 @@ registry match carries no year, so it tags the worker without a version.
 Each standalone-renderer detector checks `PATH` for the command its preset
 runs, plus the install locations listed in the table. `husk` and `mantra` have
 their own tags, separate from `houdini`, because a worker can have `hython`
-without either renderer on `PATH`. The `redshift` tag marks the Redshift
+without either renderer. The `redshift` tag marks the Redshift
 **install**, not a usable GPU; GPU detection covers only NVIDIA on Linux (see
 [GPU fields](#gpu-fields)). On a host with Redshift but no usable GPU, list
 `redshift` under `capabilities.disable`.
@@ -379,11 +379,11 @@ that worker. Map `keyshot_headless` in `worker.commands` to state the arguments
 yourself.
 
 The `nuke`, `blender`, `houdini` (`hython`), `aftereffects` (`aerender`), `katana`, `fusion`, `silhouette`
-(`sfxcmd`), `vred` (`VREDCore`), `keyshot` (`keyshot_headless`), `modo` (`modo_cl`), `unreal` (`UnrealEditor-Cmd`) and `oiiotool` (Houdini's `hoiiotool`) built-ins define a command; the others rely on the command being on `PATH`. Blender's has Windows and macOS globs
+(`sfxcmd`), `vred` (`VREDCore`), `keyshot` (`keyshot_headless`), `modo` (`modo_cl`), `unreal` (`UnrealEditor-Cmd`), `husk`, `mantra`, `renderman` (`prman`), `threedelight` (`renderdl`) and `oiiotool` (Houdini's `hoiiotool`) built-ins define a command; the others rely on the command being on `PATH`. Blender's has Windows and macOS globs
 only: a Linux install is wherever it was unpacked, or a distro package already on
 `PATH`. Houdini's has Windows and Linux globs only; on macOS put `hython` on
-`PATH` or map it in `worker.commands`; the `oiiotool` one has the same Windows and
-Linux globs and the same macOS gap. For
+`PATH` or map it in `worker.commands`; the `husk`, `mantra` and `oiiotool` ones
+have the same Windows and Linux globs and the same macOS gap. For
 Blender the version is read only to pick the newest install, so its tag stays
 presence only. Turning a detector off with `capabilities.disable` turns off its
 command default too. A custom detector can add one:
