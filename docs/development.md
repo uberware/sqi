@@ -80,7 +80,7 @@ Run `make` (no arguments) to see all available targets with descriptions.
 | `make test-cover` | Run tests and print coverage; fails below 70% (the `COVERAGE_MIN` default in the Makefile) |
 | `make test-cover-html` | Open an HTML coverage report in the browser |
 | `make test-integration` | Run integration tests (build tag `integration`) |
-| `make test-dcc` | Run the preset harness with Blender, Nuke and Houdini **required**, against the real applications (`DCC_APPS=blender,nuke,houdini` by default; narrow it to the ones you have). A missing application **fails** instead of skipping. See [Running the preset validation harness](#running-the-preset-validation-harness) |
+| `make test-dcc` | Run the preset harness with Blender, Nuke and Houdini **required**, against the real applications (`DCC_APPS=blender,nuke,houdini` by default; narrow it to the ones you have, or add `unreal`, `renderman` or `3delight`). A missing application **fails** instead of skipping. See [Running the preset validation harness](#running-the-preset-validation-harness) |
 | `make test-ldap` | Run the LDAP tests against a real OpenLDAP directory in a container (needs Docker; **skips** without it) |
 | `make test-oidc` | Run the SSO tests against a real Keycloak in a container (needs Docker; **skips** without it) |
 | `make test-postgres` | Run the PostgreSQL-backed tests against a throwaway PostgreSQL in a container (`PG_VERSION=16` or `18`, default 18; needs Docker; **skips** without it). See [Testing against PostgreSQL](#testing-against-postgresql) |
@@ -587,11 +587,10 @@ go test ./test/integration/ -run TestPresetTier1Argv/maya-layer-render -v
 ```
 
 `make test-preset-harness` needs ffmpeg and Python 3 on `PATH`, and on Linux
-`oiiotool`: the
-registry's `tier2` blocks require those cases to run, and a skip on a required
-platform is a registry failure. Each registry entry's `required_on` names the
-platforms its cases must run on. Most name Linux, macOS and Windows; these name
-fewer:
+`oiiotool`: the registry's `tier2` blocks require those cases to run, and a skip
+on a required platform is a registry failure. Each registry entry's
+`required_on` names the platforms its cases must run on. Most name Linux, macOS
+and Windows; these name fewer:
 
 - Linux and macOS: `script`, `command-sequence`, `ffmpeg-segment-transcode-bash`
 - Windows: `script-powershell`, `command-sequence-powershell`,
@@ -603,7 +602,7 @@ A pass on one OS proves nothing about another OS's entries, so CI runs the
 whole harness natively on Linux (the `test` job) and on Windows
 (`preset-harness-windows`). No CI job runs it on macOS.
 
-The Blender, Nuke and Houdini cases (`TestPresetDCC_*`) are different: they need
+The Blender, Nuke, Houdini, Unreal, RenderMan and 3Delight cases (`TestPresetDCC_*`) are different: they need
 the application, so `make test-preset-harness` skips them when it is absent.
 `make test-dcc` is the same harness with `SQI_TEST_REQUIRE_APPS` set, which makes
 a skip a failure. Each application must be installed where the worker's detector
@@ -616,7 +615,20 @@ finds it (or its command on `PATH`) and licensed for command-line use:
   Nuke and to the worker's `nuke` command. Set it empty for a commercial or Indie
   license. The license is activated by signing in once through Foundry.
 - **Houdini:** the free Apprentice license works once activated through the
-  License Administrator, and `hython` then runs headless.
+  License Administrator, and `hython` and `husk` then run headless. Apprentice
+  cannot export `.ifd` files, so `mantra-render` has no Tier 2 case.
+- **Unreal Engine:** free to install through the Epic Games Launcher, at its
+  default `C:\Program Files\Epic Games\UE_5.8`. Its cases run on Windows only
+  and need a GPU. They are not in the default `DCC_APPS`; add `unreal` to
+  require them. The test builds a throwaway project each run, and the first
+  render on a machine compiles shaders, which can take many minutes.
+- **RenderMan:** the free non-commercial license works. `prman` needs
+  `RMANTREE`, which the installer sets for the whole machine, so run the tests
+  from a shell opened after the install; the case skips without it.
+- **3Delight:** the free version (12 cores) works with no license setup.
+
+`renderman` and `3delight` are not in the default `DCC_APPS` either; add them
+to require their cases.
 
 Use `make test-dcc DCC_APPS=blender` to require only the ones you have installed.
 

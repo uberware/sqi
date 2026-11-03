@@ -612,13 +612,31 @@ default EXPR limits. A server with `openjd.expr_memory_limit` at its minimum of
 install, not on a detected GPU. On a worker with Redshift installed but no
 usable GPU, list `redshift` under the worker's `capabilities.disable`.
 
-These presets are verified at Tier 1 and Tier 3 only. See [Validation
+**RenderMan's environment.** `prman` finds its license through `RMANTREE`.
+RenderMan's installer sets it for the whole machine, which a running worker
+does not see, and without it every `prman-render` task fails. Restart a worker
+started from a shell after installing RenderMan. A worker running as a Windows
+service needs the machine restarted, because Windows services read machine
+variables only when the machine starts. `prman` also does not create the
+folder an image is written to, so a task whose output folder does not exist
+fails; `renderdl` creates it.
+
+**3Delight's exit status.** `renderdl` exits with status 0 when it cannot open
+the scene file, and when a file never starts its render. `3delight-render`
+declares [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md) for that: a
+task fails when `renderdl` reports `cannot open input file`, and fails unless
+its progress reaches `100%`. Each `.nsi` file must start its render with a
+`RenderControl "start"` action, as files exported for batch rendering do.
+
+These presets are verified at Tier 1 and Tier 3, and `husk-usd-render`,
+`prman-render` and `3delight-render` at Tier 2 as well. See [Validation
 tiers](#validation-tiers) and each preset's caveat in
 `presets/validation-tiers.yaml`.
 
 ## Houdini and image-processing reference presets
 
-Three presets are general-purpose utilities rather than renders of a scene. They live in `presets/sqi/*.yaml` like the others and have no
+Three presets are general-purpose utilities rather than renders of a scene.
+They live in `presets/sqi/*.yaml` like the others and have no
 in-application submitter; submit them from the web UI or the API. Two run
 Houdini's `hython` and gate on the `houdini` capability tag; the third runs
 OpenImageIO's `oiiotool` and gates on the `oiiotool` tag. Both tags are set by
@@ -647,12 +665,12 @@ substitute for `husk-usd-render` at final quality. **Output Image Pattern**
 marks the frame number with one run of `#`, as in `preview.####.png`, and the
 launcher creates any missing output folders. A negative first frame works: the
 sign takes one place of the padding, so frame -2 at four digits is `-002`.
-**Renderer**, **Camera** and
-**Image Width** are optional. Storm, the default renderer, needs an OpenGL
-context, so a worker with no GPU or display should use `Karma CPU`. The task
-starts `hython` with a small launcher instead of Houdini's `usdrecord`
-command, because on Windows that command cannot start when Houdini is installed
-under a folder whose name has a space, which is the default.
+**Renderer**, **Camera** and **Image Width** are optional. Storm, the default
+renderer, needs an OpenGL context, so a worker with no GPU or display should
+use `Karma CPU`. The task starts `hython` with a small launcher instead of
+Houdini's `usdrecord` command, because on Windows that command cannot start
+when Houdini is installed under a folder whose name has a space, which is the
+default.
 
 **`oiiotool-process`.** Runs one `oiiotool` launch per chunk of frames, ten by
 default. **Operations** is a list of `oiiotool` arguments, one per line, applied
@@ -675,9 +693,8 @@ wildcards anywhere in an argument and evaluates `{...}` as an expression, so
 `oiiotool-process` also rejects a `#` in a folder and an `@`, `{` or `}`
 anywhere in either pattern. It also expands a printf-style `%d` or `%04d`,
 which sqi does not check for, so keep those out of the patterns. Anything
-written under
-**Operations** is passed through as written, including a second input sequence,
-which must use the `@` form.
+written under **Operations** is passed through as written, including a second
+input sequence, which must use the `@` form.
 
 All three are verified at Tier 2 as well as Tier 1 and Tier 3. See [Validation
 tiers](#validation-tiers) and each preset's caveat in
@@ -745,7 +762,7 @@ tier to stand in for. The tiers are:
   than "the template still expands the way it did when this was reviewed."
 
 - **Tier 2: real application.** The real application runs the resolved command
-  and its output is inspected. Fourteen entries have a `tier2` block, each naming
+  and its output is inspected. Twenty entries have a `tier2` block, each naming
   a test that runs the real program end to end:
   - The five ffmpeg presets and the `python-sequence` built-in.
     `test/integration/preset_ffmpeg_test.go` runs real ffmpeg and decodes the
@@ -762,18 +779,29 @@ tier to stand in for. The tiers are:
     Houdini 22.0.466 (`make test-dcc`, `requires_app: houdini`), and
     `oiiotool-process` under a real `oiiotool`, which CI installs from
     Ubuntu's `openimageio-tools` (`required_on: [linux]`).
+  - Three standalone renderers: `husk-usd-render` under Houdini 22.0.466's own
+    `husk` (`requires_app: houdini`), `prman-render` under RenderMan 27.3
+    (`requires_app: renderman`) and `3delight-render` under 3Delight 2.9.213
+    (`requires_app: 3delight`). `test/integration/preset_dcc_renderers_test.go`
+    writes the RIB and NSI files itself.
+  - The three Unreal presets under Unreal Engine 5.8 on Windows
+    (`requires_app: unreal`). `test/integration/preset_dcc_unreal_test.go`
+    builds a project with the editor itself, then renders a sequence, a saved
+    queue and a sequence's shots through the shipped presets.
 
-  The other thirty-two presets (Maya, Cinema 4D, 3ds Max, After Effects, the three
-  Mistika products, the eight standalone renderers, Katana, the two Fusion and the two
-  Silhouette, two VRED, two KeyShot, two Modo and three Unreal presets) have not reached Tier 2 and carry no `tier2` block.
+  The other twenty-six presets (Maya, Cinema 4D, 3ds Max, After Effects, the
+  three Mistika products, the five other standalone renderers, Katana, the two
+  Fusion and the two Silhouette, two VRED, two KeyShot and two Modo presets)
+  have not reached Tier 2 and carry no `tier2` block.
 
   A DCC case cannot be required by platform, because CI cannot provide the
-  application, so its block says `requires_app: blender` (or `nuke`, `houdini`)
-  in place of `required_on`. The case skips when the application is absent, and
-  that skip fails the registry check only when `SQI_TEST_REQUIRE_APPS` lists the
-  application. CI sets it for Blender, which is free and needs no license, in the
-  `blender-presets` job. Nuke and Houdini need a licensed install, so they run
-  through `make test-dcc` on a machine that has them. **A run that does not
+  application, so its block says `requires_app: blender` (or `nuke`, `houdini`,
+  `unreal`, `renderman`, `3delight`) in place of `required_on`. The case skips
+  when the application is absent, and that skip fails the registry check only
+  when `SQI_TEST_REQUIRE_APPS` lists the application. CI sets it for Blender,
+  which is free and needs no license, in the `blender-presets` job. The others
+  need an install or license CI does not have, so they run through
+  `make test-dcc` on a machine that has them. **A run that does not
   require an application proves nothing about it:** look for the
   `--- PASS: TestPresetDCC_` lines.
 
@@ -848,6 +876,16 @@ registry check for each of them. The other 11 are gated to fewer platforms:
 `TestPresetTier3RequiredOnMatchesOSGate` fails any entry whose
 `tier3.required_on` differs from the platforms its template's
 `attr.worker.os.family` requirements admit.
+
+Windows Defender can flag the stub as malware (`Trojan:Win32/Bearfoos.A!ml`)
+and quarantine it, which skips every Tier 3 case and fails the registry
+check. Every copy of the stub, and Go's build files for it, is written under
+`%TEMP%\sqi-stubproc`, so one exclusion covers them. From an elevated
+PowerShell:
+
+```powershell
+Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\Temp\sqi-stubproc"
+```
 
 `script-powershell` is `script`'s Windows counterpart: where `script` invokes
 `/bin/sh -c`, `script-powershell` runs the command as an embedded `.ps1` with
