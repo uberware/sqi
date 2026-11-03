@@ -433,7 +433,7 @@ func TestNATSExternalInit_OutputIsACopyPasteBlock(t *testing.T) {
 			t.Errorf("the printed config lacks %q:\n%s", want, yaml)
 		}
 	}
-	if !strings.Contains(yaml, "nkey_seed_file: "+`"`+filepath.Join(abs, "sqi-auth.nk")+`"`) {
+	if !strings.Contains(yaml, "nkey_seed_file: "+fmt.Sprintf("%q", filepath.Join(abs, "sqi-auth.nk"))) {
 		t.Errorf("the printed config does not wire sqi-auth.nk as the callout seed:\n%s", yaml)
 	}
 }
