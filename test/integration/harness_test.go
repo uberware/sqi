@@ -41,6 +41,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/uberware/sqi/internal/bus"
+	"github.com/uberware/sqi/internal/config"
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/server"
 	"github.com/uberware/sqi/internal/store"
@@ -312,12 +313,14 @@ func startServerWith(t *testing.T, mutate func(*server.Config)) *testServer {
 	natsDir := tmpDir + "/nats"
 
 	cfg := server.Config{
-		HTTPAddr:           httpAddr,
-		CORSOrigins:        []string{"*"},
-		EnablePprof:        false,
-		NATSAddr:           natsAddr,
-		NATSDataDir:        natsDir,
-		NATSMaxStoreMB:     64,
+		HTTPAddr:    httpAddr,
+		CORSOrigins: []string{"*"},
+		EnablePprof: false,
+		NATS: config.NATSConfig{Embedded: config.NATSEmbeddedConfig{
+			Addr:       natsAddr,
+			DataDir:    natsDir,
+			MaxStoreMB: 64,
+		}},
 		CheckpointInterval: time.Minute,
 		// Tight scheduler timing so tests don't wait a full second per poll.
 		Scheduler: scheduler.Config{
@@ -369,7 +372,7 @@ func restartServer(t *testing.T, ts *testServer) *testServer {
 	t.Helper()
 	next, err := launchServer(t, ts.cfg, ts.Store)
 	if err != nil {
-		t.Fatalf("restartServer: HTTP %s, NATS %s: %v", ts.cfg.HTTPAddr, ts.cfg.NATSAddr, err)
+		t.Fatalf("restartServer: HTTP %s, NATS %s: %v", ts.cfg.HTTPAddr, ts.cfg.NATS.Embedded.Addr, err)
 	}
 	if ts.chain != nil {
 		ts.chain.add(next)
@@ -391,7 +394,7 @@ func bootServer(t *testing.T, cfg server.Config, so backend.Options) *testServer
 	t.Helper()
 	ts, err := tryBootServer(t, cfg, so)
 	if err != nil {
-		t.Fatalf("startServer: HTTP %s, NATS %s: %v", cfg.HTTPAddr, cfg.NATSAddr, err)
+		t.Fatalf("startServer: HTTP %s, NATS %s: %v", cfg.HTTPAddr, cfg.NATS.Embedded.Addr, err)
 	}
 	return ts
 }
@@ -433,7 +436,7 @@ func launchServer(t *testing.T, cfg server.Config, so backend.Options) (*testSer
 	// ports (a reconnecting worker, a database client), so the OS may lend one
 	// out while the server is down. Linux makes that rare (connect prefers
 	// even ports, bind(0) odd ones); other OSes draw both from one pool.
-	if err := waitAddrsBindable(10*time.Second, cfg.HTTPAddr, cfg.NATSAddr); err != nil {
+	if err := waitAddrsBindable(10*time.Second, cfg.HTTPAddr, cfg.NATS.Embedded.Addr); err != nil {
 		return nil, err
 	}
 
@@ -455,10 +458,10 @@ func launchServer(t *testing.T, cfg server.Config, so backend.Options) (*testSer
 
 	ts := &testServer{
 		HTTPAddr: cfg.HTTPAddr,
-		NATSAddr: cfg.NATSAddr,
+		NATSAddr: cfg.NATS.Embedded.Addr,
 		Store:    so,
 		DBPath:   so.SQLitePath,
-		NATSDir:  cfg.NATSDataDir,
+		NATSDir:  cfg.NATS.Embedded.DataDir,
 		Logs:     logs,
 		cfg:      cfg,
 		cancel:   cancel,

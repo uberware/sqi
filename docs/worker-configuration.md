@@ -50,14 +50,27 @@ Duration values use Go syntax: `30s`, `1m30s`, `500ms`, `2h`, etc.
 | **Default** | `""` (empty — use mDNS discovery) |
 | **Env var** | `SQI_WORKER_NATS_URL` |
 
-URL of the NATS server embedded in `sqi-server`, e.g.
-`nats://sqi-server.local:4222`. Required when `discovery.enable_mdns` is
-`false`. When set, mDNS discovery is skipped.
+URL of the NATS broker: the one embedded in `sqi-server`, e.g.
+`nats://sqi-server.local:4222`, or the external NATS cluster the server runs
+on (`nats.mode: external` on the server). For a cluster, list every node,
+comma-separated: the worker connects to one of them and moves to another
+when it is lost. Required when `discovery.enable_mdns` is `false`. When set,
+mDNS discovery is skipped.
 
 ```yaml
 nats:
   url: "nats://sqi-server.example.com:4222"
 ```
+
+```yaml
+nats:
+  url: "tls://nats-a:4222,tls://nats-b:4222,tls://nats-c:4222"
+```
+
+With `discovery.enable_mdns` and no `url`, the worker uses the one broker URL
+the server advertises in its `nats_url` record, as given. An advertisement
+with no usable `nats_url` is skipped with a WARN naming
+`server advertises no broker URL`, and the worker keeps browsing.
 
 ---
 
@@ -107,20 +120,24 @@ Whether to use TLS on the broker connection. Three-valued, like the server's
 
 | Value | Meaning |
 |---|---|
-| `"auto"` | Use TLS when any `nats.tls_*` file or `nats.insecure_skip_verify` is set, or when the server discovered over mDNS advertises a TLS-required broker (`nats_tls=1`) |
+| `"auto"` | Use TLS when any `nats.tls_*` file or `nats.insecure_skip_verify` is set, or when the server discovered over mDNS advertises a `tls://` broker URL |
 | `"true"` | Always use TLS. With no `tls_ca_file`, the certificate is verified against the system roots, which works for a publicly trusted broker certificate and fails for a farm CA |
-| `"false"` | Never use TLS, even with a CA configured |
+| `"false"` | Never apply the `nats.tls_*` settings or `insecure_skip_verify`. A `tls://` URL still uses TLS, verified against the system roots |
 
 The file and the environment also accept `1`/`yes`/`on` for `"true"` and
 `0`/`no`/`off` for `"false"`. Any other value fails startup with a
 `nats.tls_enabled` validation error.
 
-Under `"auto"`, a worker that discovers a TLS-required broker enables TLS and
+Under `"auto"`, a worker that discovers a `tls://` broker URL enables TLS and
 logs that it did; if no `tls_ca_file` is configured it also warns that the
-system roots cannot verify a farm CA. Under `"false"`, a worker that
-discovers a TLS-required broker keeps plaintext and warns that the broker will
-refuse the connection, because the broker's own error does not name this
-setting.
+system roots cannot verify a farm CA. Under `"false"`, a `tls://` URL, whether
+discovered or configured, still connects over TLS, because the NATS client
+requires TLS for that scheme, but with none of this worker's TLS settings: the
+certificate is verified against the system roots, with no client certificate.
+That succeeds only against a publicly trusted certificate, so a worker that
+discovers a `tls://` URL under `"false"` warns that `tls_ca_file`,
+`tls_cert_file` and `insecure_skip_verify` are not applied, because the
+certificate error that follows does not name this setting.
 
 ```yaml
 nats:
@@ -138,7 +155,8 @@ nats:
 | **Env var** | `SQI_WORKER_NATS_TLS_CA_FILE` |
 
 Path to the CA certificate (PEM-encoded) that verifies the broker's TLS
-certificate, i.e. the one configured as `nats.tls.cert_file` on the server.
+certificate: the one configured as `nats.embedded.tls.cert_file` on the
+server, or the external cluster's.
 
 Empty means the system certificate pool. When set, only certificates issued by
 this CA are accepted. Separate from
@@ -187,9 +205,10 @@ nats:
 > **Keep this above `0`.** When broker authentication is on and the server
 > rejects this worker's credential mid-run (usually after
 > `sqi-server worker revoke` or `DELETE /api/v1/workers/{id}/credential`), the
-> worker logs that its credential was rejected and that it must re-enroll. It
-> learns the reason from a reconnect attempt, so with `0` it attempts none and
-> logs only a generic "connection closed".
+> worker keeps retrying for 2 minutes, in case `sqi-server` or its database is
+> only restarting, then logs that its credential was rejected and that it must
+> re-enroll, and exits. It learns the reason from a reconnect attempt, so with
+> `0` it attempts none and logs only a generic "connection closed".
 
 ---
 
@@ -222,9 +241,11 @@ nats:
 | **Env var** | `SQI_WORKER_NATS_CREDENTIAL_FILE` |
 
 Path to this worker's nkey seed file, which it presents to authenticate to the
-broker. Only used when the server's
-[`nats.auth.enabled`](configuration.md#natsauthenabled) is `true`. Empty
-resolves to `<worker.data_dir>/worker.nk`.
+broker. Empty resolves to `<worker.data_dir>/worker.nk`. A worker presents the
+seed whenever this file exists, and a farm whose
+[`nats.auth.enabled`](configuration.md#natsauthenabled) is `false` refuses any
+connection that presents a key, so on an auth-off farm the file must not
+exist.
 
 Enrollment and `sqi-worker keygen` both create the file at the resolved path;
 `keygen` loads the same configuration layers as `start`, so a non-default

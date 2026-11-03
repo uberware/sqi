@@ -12,12 +12,13 @@
 //
 //	id=<instance-id>   unique per process
 //	http=<http-port>   REST + WebSocket API port
-//	nats=<nats-port>   NATS JetStream port for worker connections
+//	nats_url=<url>     broker URL for worker connections (nats:// or tls://)
 //	host=<hostname>    advertising host's reported name
 //	version=<version>  server build version
 //
-// The browser constructs a "nats://<host>:<nats-port>" URL from the SRV
-// record's hostname and the nats TXT record value.
+// The browser uses nats_url as advertised. The URL's scheme carries TLS, so
+// there is no separate TLS record for the broker, and a server that does not
+// advertise nats_url is not usable: there is no fallback.
 package discovery
 
 import (
@@ -26,11 +27,14 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"strconv"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/grandcat/zeroconf"
+
+	"github.com/uberware/sqi/internal/discovery"
+	"github.com/uberware/sqi/internal/redact"
 )
 
 const (
@@ -62,9 +66,9 @@ type Result struct {
 	// Version is the server build version from the "version" TXT record.
 	Version string
 
-	// NATSTLS reports whether the discovered server's broker requires TLS,
-	// from the "nats_tls" TXT record. A server that predates the record, or
-	// one serving a plaintext broker, leaves this false.
+	// NATSTLS reports whether the discovered server's broker requires TLS:
+	// true exactly when the advertised nats_url has the tls scheme. An
+	// explicit URL discovers nothing and leaves this false.
 	//
 	// This is an INPUT to nats.tls_enabled's "auto" mode: it is the one signal
 	// that can tell a worker the broker needs TLS without the operator having
@@ -76,8 +80,10 @@ type Result struct {
 	// callers want NATSURL, not the decision behind it.
 	ipHost string
 
-	// natsPort is the advertised broker port, kept for the same reason.
-	natsPort int
+	// srvHost is the host the SRV record named. Only a broker URL naming that
+	// host is a candidate for the ipHost fallback: any other host was chosen
+	// by the operator (advertise_url) and is used as given.
+	srvHost string
 
 	// HTTPTLS reports whether the discovered server's REST API is
 	// TLS-terminated, from the "tls" TXT record. Enrollment does not use a
@@ -175,7 +181,7 @@ func browseService(ctx context.Context, service string, timeout time.Duration, l
 			logger.InfoContext(
 				ctx, "discovery: found sqi-server via mDNS",
 				slog.String("instance", result.InstanceName),
-				slog.String("nats_url", result.NATSURL),
+				slog.String("nats_url", redact.URL(result.NATSURL)),
 				slog.String("version", result.Version),
 				slog.String("server_id", result.InstanceID),
 			)
@@ -199,55 +205,32 @@ func browseService(ctx context.Context, service string, timeout time.Duration, l
 }
 
 // entryToResult converts a raw zeroconf ServiceEntry into a [Result].
-// It returns an error if the entry is missing required information (hostname
-// or NATS port in TXT records).
+// It returns an error if the entry advertises no usable nats_url TXT record.
 func entryToResult(entry *zeroconf.ServiceEntry) (Result, error) {
-	host := entry.HostName
-	if host == "" {
-		// Fall back to IP addresses if the SRV hostname is absent.
-		switch {
-		case len(entry.AddrIPv4) > 0:
-			// Use To4() to get the dotted-decimal form: net.IP.String() on a
-			// v4-mapped IPv6 address returns "::ffff:a.b.c.d", which is not
-			// a valid host in a nats:// URL.
-			ip4 := entry.AddrIPv4[0].To4()
-			if ip4 == nil {
-				ip4 = entry.AddrIPv4[0]
-			}
-			host = ip4.String()
-		case len(entry.AddrIPv6) > 0:
-			host = entry.AddrIPv6[0].String()
-		default:
-			return Result{}, errors.New("no hostname or IP address in mDNS entry")
-		}
-	}
-	// Strip trailing dot from mDNS hostname (e.g. "myhost.local." → "myhost.local")
-	host = strings.TrimSuffix(host, ".")
-
-	// Keep the advertised IP even when a hostname is present. mDNS gives us
-	// both, and the hostname is only useful to a host that can resolve it —
-	// see resolveHost.
-	ipHost := advertisedIP(entry)
-
 	txt := parseTXTRecords(entry.Text)
 
-	natsPortStr, ok := txt["nats"]
-	if !ok || natsPortStr == "" {
-		return Result{}, errors.New("mDNS entry missing 'nats' TXT record")
+	natsURL := txt[discovery.NATSURLKey]
+	if natsURL == "" {
+		return Result{}, errors.New("server advertises no broker URL")
 	}
-	natsPort, err := strconv.Atoi(natsPortStr)
-	if err != nil || natsPort < 1 || natsPort > 65535 {
-		return Result{}, fmt.Errorf("invalid nats port %q in mDNS TXT record", natsPortStr)
+	u, err := discovery.CheckNATSURL(natsURL)
+	if err != nil {
+		return Result{}, fmt.Errorf("invalid nats_url %q in mDNS TXT record: %w", redact.URL(natsURL), err)
 	}
 
 	return Result{
-		NATSURL:      "nats://" + net.JoinHostPort(host, strconv.Itoa(natsPort)),
-		ipHost:       ipHost,
-		natsPort:     natsPort,
+		NATSURL: natsURL,
+		NATSTLS: u.Scheme == "tls",
+		// Keep the advertised IP even when a hostname is present. mDNS gives
+		// us both, and the hostname is only useful to a host that can resolve
+		// it — see resolveHost.
+		ipHost: advertisedIP(entry),
+		// Strip the trailing dot from the mDNS hostname
+		// ("myhost.local." → "myhost.local").
+		srvHost:      strings.TrimSuffix(entry.HostName, "."),
 		InstanceName: entry.Instance,
 		InstanceID:   txt["id"],
 		Version:      txt["version"],
-		NATSTLS:      txt["nats_tls"] == "1",
 		HTTPTLS:      txt["tls"] == "1",
 	}, nil
 }
@@ -296,11 +279,15 @@ var lookupHost = net.DefaultResolver.LookupHost
 // resolveHost returns r with NATSURL rewritten to the advertised IP when the
 // advertised HOSTNAME cannot be resolved on this machine.
 //
-// mDNS advertises "<hostname>.local", and resolving that needs an mDNS NSS
-// module. macOS has one built in; a headless Linux worker generally does not
-// (no avahi/nss-mdns), and there the worker would discover its server correctly
-// and then fail to dial it — "no servers available", which names neither the
-// cause nor the fix. The address was in the advertisement all along.
+// The server's default broker URL names the host its SRV record names:
+// "<hostname>.local". Resolving that needs an mDNS NSS module. macOS has one
+// built in; a headless Linux worker generally does not (no avahi/nss-mdns),
+// and there the worker would discover its server correctly and then fail to
+// dial it — "no servers available", which names neither the cause nor the fix.
+// The address was in the advertisement all along.
+//
+// Only a URL that names the SRV host is touched. Any other host was put there
+// by the operator (advertise_url, advertise_urls) and is used as written.
 //
 // The hostname is preferred when it does resolve, because a TLS broker's
 // certificate names hosts far more often than IPs: `sqi-server tls init` puts
@@ -309,12 +296,16 @@ var lookupHost = net.DefaultResolver.LookupHost
 // certificate mismatch — better, because that error says what is wrong, but
 // worth warning about.
 func resolveHost(ctx context.Context, r Result, logger *slog.Logger) Result {
-	if r.ipHost == "" || r.natsPort == 0 {
+	if r.ipHost == "" || r.srvHost == "" {
 		return r // nothing to fall back to
 	}
-	host, _, err := net.SplitHostPort(strings.TrimPrefix(r.NATSURL, "nats://"))
-	if err != nil || net.ParseIP(host) != nil {
-		return r // already an IP
+	u, err := url.Parse(r.NATSURL)
+	if err != nil {
+		return r
+	}
+	host := u.Hostname()
+	if net.ParseIP(host) != nil || !strings.EqualFold(host, r.srvHost) {
+		return r // already an IP, or a host the operator chose
 	}
 
 	lookupCtx, cancel := context.WithTimeout(ctx, hostLookupTimeout)
@@ -323,7 +314,14 @@ func resolveHost(ctx context.Context, r Result, logger *slog.Logger) Result {
 		return r
 	}
 
-	r.NATSURL = "nats://" + net.JoinHostPort(r.ipHost, strconv.Itoa(r.natsPort))
+	if port := u.Port(); port != "" {
+		u.Host = net.JoinHostPort(r.ipHost, port)
+	} else if strings.Contains(r.ipHost, ":") {
+		u.Host = "[" + r.ipHost + "]"
+	} else {
+		u.Host = r.ipHost
+	}
+	r.NATSURL = u.String()
 	logger.WarnContext(ctx,
 		"discovery: the advertised hostname does not resolve here; using the advertised IP instead",
 		slog.String("hostname", host),

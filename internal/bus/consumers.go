@@ -4,17 +4,67 @@ package bus
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
+	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
+
+// ── Pull tuning shared by every server-side consumer ──────────────────────────
+
+// consumePullExpiry is how long each pull request a consume context issues
+// stays open on the broker before it is renewed.
+const consumePullExpiry = 10 * time.Second
+
+// consumeHeartbeat is the idle heartbeat the broker sends on an open pull.
+// The consume context re-pulls once it misses two in a row, so a pull lost
+// while the consumer had no leader (a broker restart, a node loss) is
+// replaced within about 2×consumeHeartbeat. The library defaults take up to
+// 30s, longer than a worker's heartbeat timeout. The check is paused while a
+// handler runs, so a slow handler does not trip it.
+const consumeHeartbeat = 2 * time.Second
+
+// consume starts consumer with sqi's pull tuning and an error handler that
+// logs every interruption under the consumer's name.
+func (c *Client) consume(consumer jetstream.Consumer, name string, handler jetstream.MessageHandler) (jetstream.ConsumeContext, error) {
+	return consumer.Consume(
+		handler,
+		jetstream.PullExpiry(consumePullExpiry),
+		jetstream.PullHeartbeat(consumeHeartbeat),
+		jetstream.ConsumeErrHandler(c.consumeErrHandler(name)),
+	)
+}
+
+// consumeErrHandler logs the errors a consume context reports. Without it the
+// library swallows them, and a stalled consumer is silent.
+func (c *Client) consumeErrHandler(name string) jetstream.ConsumeErrHandlerFunc {
+	return func(_ jetstream.ConsumeContext, err error) {
+		ctx := context.Background()
+		attrs := []any{slog.String("consumer", name), slog.Any("error", err)}
+		switch {
+		case errors.Is(err, jetstream.ErrConnectionClosed), errors.Is(err, nats.ErrConnectionClosed):
+			// Every Close and Drain ends here; it is not a fault.
+			c.logger.DebugContext(ctx, "bus: consumer stopped with its connection", attrs...)
+		case errors.Is(err, jetstream.ErrNoHeartbeat),
+			errors.Is(err, nats.ErrNoResponders),
+			errors.Is(err, jetstream.ErrConsumerLeadershipChanged):
+			c.logger.WarnContext(ctx, "bus: consumer pull interrupted; pulling again", attrs...)
+		default:
+			c.logger.WarnContext(ctx, "bus: consumer error", attrs...)
+		}
+	}
+}
 
 // ── Consumer name helpers ─────────────────────────────────────────────────────
 
 // taskStatusConsumerName is the durable name for the server-side push consumer
 // that processes task-status transitions.  One server process runs this
-// consumer at a time.
+// consumer at a time: in external mode the account guard ([Guard]) refuses a
+// second sqi-server on the same broker account, and the embedded broker is
+// private to its one server.
 const taskStatusConsumerName = "sqi-task-status-srv"
 
 // taskLogsConsumerName is the durable name for the server-side push consumer
@@ -55,7 +105,7 @@ func (c *Client) ConsumeTaskStatus(ctx context.Context, handler jetstream.Messag
 		return nil, fmt.Errorf("bus: ensure task-status consumer: %w", err)
 	}
 
-	cc, err := consumer.Consume(handler)
+	cc, err := c.consume(consumer, taskStatusConsumerName, handler)
 	if err != nil {
 		return nil, fmt.Errorf("bus: consume task-status: %w", err)
 	}
@@ -96,7 +146,7 @@ func (c *Client) ConsumeTaskLogs(ctx context.Context, handler jetstream.MessageH
 		return nil, fmt.Errorf("bus: ensure task-logs consumer: %w", err)
 	}
 
-	cc, err := consumer.Consume(handler)
+	cc, err := c.consume(consumer, taskLogsConsumerName, handler)
 	if err != nil {
 		return nil, fmt.Errorf("bus: consume task-logs: %w", err)
 	}
@@ -135,7 +185,7 @@ func (c *Client) ConsumeWorker(ctx context.Context, handler jetstream.MessageHan
 		return nil, fmt.Errorf("bus: ensure worker consumer: %w", err)
 	}
 
-	cc, err := consumer.Consume(handler)
+	cc, err := c.consume(consumer, workerConsumerName, handler)
 	if err != nil {
 		return nil, fmt.Errorf("bus: consume worker: %w", err)
 	}

@@ -5,13 +5,13 @@
 package integration
 
 // TestRevocation_DisconnectsAndReclaims proves revocation end to end: DELETE
-// /api/v1/workers/{id}/credential revokes in the store, then reloads the
-// running broker's authorized-key set, which disconnects the revoked
-// worker's live NATS connection SYNCHRONOUSLY — inside the reload call,
-// because nats-server's reloadAuthorization re-runs isClientAuthorized over
-// every connected client and calls authViolation() on any that no longer
-// pass. The disconnected worker's in-flight task is then returned to ready
-// by the EXISTING heartbeat-sweep/reclaim path (internal/scheduler), not by
+// /api/v1/workers/{id}/credential revokes in the store, then asks the broker
+// to disconnect the worker, which closes the revoked worker's live NATS
+// connection synchronously: inside the broker's Revoke call, which returns
+// only after its final pass has disconnected any connection left. The
+// worker's reconnect goes back through the auth callout, which refuses the
+// revoked key. The disconnected worker's in-flight task is then returned to
+// ready by the EXISTING heartbeat-sweep/reclaim path (internal/scheduler), not by
 // anything this test reimplements, and a second, unrevoked
 // worker is left completely unaffected and able to lease the reclaimed
 // task.
@@ -73,9 +73,6 @@ func startBrokerAuthServer(t *testing.T, so backend.Options, mutate func(*server
 	cfg := server.Config{
 		HTTPAddr:           httpAddr,
 		CORSOrigins:        []string{"*"},
-		NATSAddr:           natsAddr,
-		NATSDataDir:        tmpDir + "/nats",
-		NATSMaxStoreMB:     64,
 		CheckpointInterval: time.Minute,
 		Scheduler: scheduler.Config{
 			AssignInterval:  100 * time.Millisecond,
@@ -87,6 +84,11 @@ func startBrokerAuthServer(t *testing.T, so backend.Options, mutate func(*server
 			// offline detection at all).
 			WorkerTimeout:          2 * time.Second,
 			HeartbeatSweepInterval: 300 * time.Millisecond,
+			// The server's default grace (~3 minutes, sized for a worker's
+			// own redial backoff) would hold the sweep off for longer than
+			// these tests run. Their workers never lose the broker, so the
+			// grace only has to cover WorkerTimeout after boot.
+			BusReconnectGrace: 2 * time.Second,
 		},
 		DiscoveryEnabled: false,
 
@@ -95,7 +97,16 @@ func startBrokerAuthServer(t *testing.T, so backend.Options, mutate func(*server
 		// rather than through POST /workers/enroll. A caller that needs the
 		// real REST enrollment surface turns it on via mutate — see
 		// TestEnrollment_ConnectsToRunningBrokerWithoutRestart.
-		NATSAuthEnabled: true,
+		NATS: config.NATSConfig{
+			Embedded: config.NATSEmbeddedConfig{
+				Addr:       natsAddr,
+				DataDir:    tmpDir + "/nats",
+				MaxStoreMB: 64,
+			},
+			// A hand-built Config skips config defaults, and the auth
+			// callout needs a positive user JWT lifetime.
+			Auth: config.NATSAuthConfig{Enabled: true, UserTTL: time.Hour},
+		},
 	}
 	applyStore(&cfg, so)
 	if mutate != nil {
@@ -152,8 +163,9 @@ func startBrokerAuthServer(t *testing.T, so backend.Options, mutate func(*server
 // row directly into the database o names, mirroring what
 // "sqi-server worker enroll" (the offline CLI enrollment path) writes — a
 // direct store.CreateWorkerCredential call from a process holding no broker
-// handle, so (unlike POST /workers/enroll, see enrollWorker below) it never
-// reaches a running broker's authorized-key set on its own. Used by
+// handle, so (unlike POST /workers/enroll, see enrollWorker below) it makes
+// no broker call at all; the broker's auth callout reads the row from the
+// store when the worker connects. Used by
 // TestRevocation_DisconnectsAndReclaims, which wants both its workers
 // connectable from the moment the server boots and has no other reason to
 // exercise the REST enrollment surface. Must run before the server opens
@@ -219,9 +231,8 @@ type workerCredentialWireResp struct {
 }
 
 // enrollWorker exchanges joinToken for a broker credential over the real,
-// unauthenticated POST /api/v1/workers/enroll wire protocol — the path that
-// reloads a RUNNING broker's authorized-key set rather than only taking
-// effect at the server's next start.
+// unauthenticated POST /api/v1/workers/enroll wire protocol, which makes the
+// credential connectable on a running broker with no further step.
 func enrollWorker(t *testing.T, ts *testServer, joinToken, workerID, publicKey string) {
 	t.Helper()
 	body, err := json.Marshal(map[string]string{
@@ -331,10 +342,9 @@ func TestRevocation_DisconnectsAndReclaims(t *testing.T) {
 		t.Fatalf("GenerateSeed(B): %v", err)
 	}
 
-	// Both workers are enrolled BEFORE the server starts, so the broker's
-	// initial authorized-key set (built once, at Start, from
-	// ListActiveWorkerCredentials) includes both — see seedWorkerCredential's
-	// doc comment for why this test does not use POST /workers/enroll.
+	// Both workers are enrolled before the server starts, so both are
+	// connectable from the moment it boots. See seedWorkerCredential's doc
+	// comment for why this test does not use POST /workers/enroll.
 	seedWorkerCredential(t, so, "worker-a", pubA)
 	seedWorkerCredential(t, so, "worker-b", pubB)
 
@@ -374,11 +384,10 @@ func TestRevocation_DisconnectsAndReclaims(t *testing.T) {
 	// ── Revoke worker A: the synchronous path under test ────────────────────
 	revokeWorkerCredential(t, ts, "worker-a")
 
-	// 1. A's NATS connection closes. Revocation is synchronous — nats-server
-	// re-authorizes every connected client inside the broker's
-	// ReloadOptions call, which DELETE /workers/{id}/credential's handler
-	// waits on — so this is not a poll for a generous timeout, only
-	// tolerance for scheduling jitter in observing an event that already
+	// 1. A's NATS connection closes. Revocation is synchronous (the broker
+	// disconnects the worker inside Revoke, which DELETE
+	// /workers/{id}/credential's handler waits on), so the timeout below only
+	// allows for scheduling jitter in observing an event that already
 	// happened.
 	select {
 	case <-closedA:
@@ -426,8 +435,8 @@ func pollWorkerOffline(t *testing.T, ts *testServer, workerID string, timeout ti
 
 // TestWorkerDeletion_RevokesCredentialAndDisconnects proves the cascade DELETE
 // /api/v1/workers/{id} performs: removing a worker record
-// also revokes its broker credential, through the SAME synchronous
-// store-write-then-broker-reload path DELETE /workers/{id}/credential uses.
+// also revokes its broker credential, through the same synchronous
+// store-write-then-broker-disconnect path DELETE /workers/{id}/credential uses.
 // Without it, a machine an operator has just decommissioned from the farm
 // keeps live broker access — able to connect, lease work and execute job
 // code — because WorkersManage (what deleting a worker requires) does not
@@ -438,7 +447,7 @@ func pollWorkerOffline(t *testing.T, ts *testServer, workerID string, timeout ti
 // without an extra disable step — while its NATS connection stays live
 // (nothing here closes it). The test then deletes the worker over REST and
 // asserts the still-open connection is closed by the same
-// ReloadCredentials call TestRevocation_DisconnectsAndReclaims already
+// Broker.Revoke call TestRevocation_DisconnectsAndReclaims already
 // proves is synchronous for the dedicated credential-revoke endpoint.
 func TestWorkerDeletion_RevokesCredentialAndDisconnects(t *testing.T) {
 	so := storeFor(t, t.TempDir()+"/sqi-broker-auth-delete.db")
@@ -478,22 +487,20 @@ func TestWorkerDeletion_RevokesCredentialAndDisconnects(t *testing.T) {
 	mustDoJSON(t, http.MethodGet, apiURL(ts, "/api/v1/workers/worker-a"), nil, "", http.StatusNotFound, nil)
 }
 
-// TestEnrollment_ConnectsToRunningBrokerWithoutRestart guards that the
-// broker's authorized-key set is reloaded after POST /workers/enroll creates
-// a credential. loadBrokerAuthConfig only ever runs
-// once, at Start, so without an explicit reload a worker enrolled against a
-// RUNNING server could not actually connect: nats-server would refuse it
-// with "Authorization Violation", and the real sqi-worker binary exits
-// fatally naming that rejection. This enrolls a worker over the real REST
-// wire protocol AFTER the server is already up, with no restart in between,
-// and asserts it connects and registers successfully.
+// TestEnrollment_ConnectsToRunningBrokerWithoutRestart guards that
+// enrollment needs no broker call: the broker's auth callout reads the
+// credential from the store when the worker connects, so a worker enrolled
+// over POST /workers/enroll against a running server connects without a
+// restart or reload. This enrolls a worker over the real REST wire protocol
+// after the server is already up, with no restart in between, and asserts it
+// connects and registers.
 func TestEnrollment_ConnectsToRunningBrokerWithoutRestart(t *testing.T) {
 	so := storeFor(t, t.TempDir()+"/sqi-broker-auth-enroll.db")
 
 	rawToken := seedJoinToken(t, so, "worker-c")
 
 	ts := startBrokerAuthServer(t, so, func(cfg *server.Config) {
-		cfg.NATSAuthEnrollmentEndpointEnabled = true
+		cfg.NATS.Auth.EnrollmentEndpointEnabled = true
 	})
 
 	farmID, queueID := seedFarmAndQueue(t, ts)
@@ -503,9 +510,9 @@ func TestEnrollment_ConnectsToRunningBrokerWithoutRestart(t *testing.T) {
 		t.Fatalf("GenerateSeed(C): %v", err)
 	}
 
-	// Enroll AFTER the server has already booted and become ready — the
-	// broker's initial authorized-key set (built once, at Start) could not
-	// possibly contain this credential.
+	// Enroll after the server has booted and become ready, so the credential
+	// did not exist when the broker started; the auth callout must find it in
+	// the store at connect time.
 	enrollWorker(t, ts, rawToken, "worker-c", pubC)
 
 	natsURL := "nats://" + ts.NATSAddr
@@ -575,7 +582,7 @@ func TestDefaultConfig_NoBrokerAuth(t *testing.T) {
 			"broker authentication must default to off")
 	}
 
-	// startServer boots server.Config with every NATSAuth* field left at its
+	// startServer boots server.Config with every NATS.Auth field left at its
 	// zero value: the same "nobody has ever configured this" state an
 	// operator gets with no nats.auth section in their config file, no
 	// SQI_NATS_AUTH_* environment variable, and no --nats-auth-* flag --

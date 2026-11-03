@@ -50,63 +50,32 @@ http:
   #   # Type: string Env: SQI_HTTP_TLS_KEY_FILE
   #   key_file: "/etc/sqi/certs/server.key"
 
-# ── NATS JetStream (embedded broker) ─────────────────────────────────────────
+# ── NATS JetStream ───────────────────────────────────────────────────────────
 nats:
-  # TCP address the embedded NATS server binds to.
-  # Defaults to all interfaces (0.0.0.0) so that workers which discover the
-  # server via mDNS can connect to NATS at the advertised LAN host. Set this
-  # to "127.0.0.1:4222" to restrict NATS to loopback (single-machine only).
-  # Broker authentication is opt-in and OFF by default (see nats.auth below).
-  # While it is off, any host that can reach this port can register as a
-  # worker and execute submitted job code. sqi-server warns at startup when
-  # this address is not loopback and nats.auth is disabled.
-  # Type: string   Env: SQI_NATS_ADDR
-  addr: "0.0.0.0:4222"
+  # Which broker sqi runs on: "embedded" (a broker inside sqi-server; the
+  # default and the zero-config path) or "external" (a NATS server or cluster
+  # you run; configure the external block below).
+  # Default: embedded
+  # Accepted: embedded | external
+  # Type: string   Env: SQI_NATS_MODE
+  mode: "embedded"
 
-  # Directory used by JetStream for file-backed stream persistence.
-  # Created at startup if it does not exist. Relative paths are resolved
-  # from the working directory at the time sqi-server starts.
-  # Type: string   Env: SQI_NATS_DATA_DIR
-  data_dir: "data/nats"
-
-  # Maximum disk space JetStream may use, in megabytes.
-  # When the limit is reached, older messages are evicted per stream policy.
-  # Type: int   Env: SQI_NATS_MAX_STORE_MB
-  max_store_mb: 1024
-
-  # Broker authentication for worker connections. Opt-in and independent of
-  # the top-level auth block (auth.enabled) below — that block gates human
-  # users and API keys; this one gates workers connecting to the broker.
-  # In-process TLS on the embedded broker's client listener.
-  #
-  # OFF by default. This is what encrypts the WORKER TRANSPORT — assignments
-  # (command lines, embedded file contents, parameters, environment, the
-  # isolation username), status messages and log chunks. Broker AUTHENTICATION
-  # below does not encrypt anything: the two are independent settings against
-  # different threats, and a production farm wants both.
-  #
-  # Workers need the matching CA in nats.tls_ca_file. See docs/tls.md.
-  # tls:
-  #   # Type: bool   Env: SQI_NATS_TLS_ENABLED
-  #   enabled: true
-  #   # Type: string Env: SQI_NATS_TLS_CERT_FILE
-  #   cert_file: "/etc/sqi/certs/server.crt"
-  #   # Type: string Env: SQI_NATS_TLS_KEY_FILE
-  #   key_file: "/etc/sqi/certs/server.key"
-  #   # Require each worker to present a client certificate signed by this CA
-  #   # (mutual TLS). Layers ON TOP of the nkey credential below rather than
-  #   # replacing it: the certificate gates who may connect, the nkey decides
-  #   # which worker they are. Issue per-worker certificates with
-  #   # `sqi-server tls init --client <worker-id>`.
-  #   # Type: string Env: SQI_NATS_TLS_CLIENT_CA_FILE
-  #   client_ca_file: "/etc/sqi/certs/ca.crt"
-
+  # Broker authentication for worker connections, in both modes. Opt-in and
+  # independent of the top-level auth block (auth.enabled) below — that block
+  # gates human users and API keys; this one gates workers connecting to the
+  # broker.
   auth:
     # Requires every NATS client to present a per-worker nkey credential.
-    # When false, the broker accepts any connection (the v0.3.0 behavior).
+    # When false, the broker accepts any anonymous connection and refuses one
+    # that presents a key.
     # Default: false
     # Type: bool   Env: SQI_NATS_AUTH_ENABLED
     enabled: false
+
+    # Lifetime of the user JWT issued to a worker.
+    # Default: 1h   Min: 1m   Max: 24h
+    # Type: duration   Env: SQI_NATS_AUTH_USER_TTL
+    user_ttl: 1h
 
     # How long a newly issued worker join token remains valid.
     # Default: 1h   Min: 1m   Max: 24h
@@ -124,6 +93,120 @@ nats:
     # Default: true
     # Type: bool   Env: SQI_NATS_AUTH_ENROLLMENT_ENDPOINT_ENABLED
     enrollment_endpoint_enabled: true
+
+  # The broker embedded in sqi-server. Used only when mode is "embedded".
+  embedded:
+    # TCP address the embedded NATS server binds to.
+    # Defaults to all interfaces (0.0.0.0) so that workers which discover the
+    # server via mDNS can connect to NATS at the advertised LAN host. Set this
+    # to "127.0.0.1:4222" to restrict NATS to loopback (single-machine only).
+    # Broker authentication is opt-in and off by default (see nats.auth above).
+    # While it is off, any host that can reach this port can register as a
+    # worker and execute submitted job code. sqi-server warns at startup when
+    # this address is not loopback and nats.auth is disabled.
+    # Type: string   Env: SQI_NATS_EMBEDDED_ADDR
+    addr: "0.0.0.0:4222"
+
+    # The broker URL mDNS tells workers to use. Empty derives nats:// or tls://
+    # from the discovery host and the port of addr.
+    # Type: string   Env: SQI_NATS_EMBEDDED_ADVERTISE_URL
+    advertise_url: ""
+
+    # Directory used by JetStream for file-backed stream persistence.
+    # Created at startup if it does not exist. Relative paths are resolved
+    # from the working directory at the time sqi-server starts.
+    # Type: string   Env: SQI_NATS_EMBEDDED_DATA_DIR
+    data_dir: "data/nats"
+
+    # Maximum disk space JetStream may use, in megabytes.
+    # When the limit is reached, older messages are evicted per stream policy.
+    # Type: int   Env: SQI_NATS_EMBEDDED_MAX_STORE_MB
+    max_store_mb: 1024
+
+    # In-process TLS on the embedded broker's client listener.
+    #
+    # Off by default. This encrypts the worker transport: assignments (command
+    # lines, embedded file contents, parameters, environment, the isolation
+    # username), status messages and log chunks. Broker authentication above
+    # encrypts nothing: the two are independent settings against different
+    # threats, and a production farm wants both.
+    #
+    # Workers need the matching CA in nats.tls_ca_file. See docs/tls.md.
+    # tls:
+    #   # Type: bool   Env: SQI_NATS_EMBEDDED_TLS_ENABLED
+    #   enabled: true
+    #   # Type: string Env: SQI_NATS_EMBEDDED_TLS_CERT_FILE
+    #   cert_file: "/etc/sqi/certs/server.crt"
+    #   # Type: string Env: SQI_NATS_EMBEDDED_TLS_KEY_FILE
+    #   key_file: "/etc/sqi/certs/server.key"
+    #   # Require each worker to present a client certificate signed by this CA
+    #   # (mutual TLS). This adds to the nkey credential rather than
+    #   # replacing it: the certificate gates who may connect, the nkey decides
+    #   # which worker they are. Issue per-worker certificates with
+    #   # `sqi-server tls init --client <worker-id>`.
+    #   # Type: string Env: SQI_NATS_EMBEDDED_TLS_CLIENT_CA_FILE
+    #   client_ca_file: "/etc/sqi/certs/ca.crt"
+
+  # An external NATS server or cluster. Used only when mode is "external".
+  # external:
+  #   # Broker URLs, all tls:// or all nats://. Required.
+  #   # Type: list of string   Env: SQI_NATS_EXTERNAL_URLS (comma-separated)
+  #   urls: ["tls://nats-a:4222", "tls://nats-b:4222", "tls://nats-c:4222"]
+  #
+  #   # The broker URLs mDNS tells workers to use. Empty means urls.
+  #   # Type: list of string   Env: SQI_NATS_EXTERNAL_ADVERTISE_URLS
+  #   advertise_urls: []
+  #
+  #   # The dedicated NATS account sqi's streams and workers live in.
+  #   # Default: SQI
+  #   # Type: string   Env: SQI_NATS_EXTERNAL_ACCOUNT
+  #   account: "SQI"
+  #
+  #   # sqi-server's data-connection credential: set at most one of these
+  #   # two, or neither for an unauthenticated account. nkey_seed_file is the
+  #   # seed `sqi-server nats external init` writes (sqi-data.nk). creds_file
+  #   # is a .creds file for a cluster in NATS operator (JWT) mode, which works
+  #   # only with nats.auth.enabled false.
+  #   # Type: string   Env: SQI_NATS_EXTERNAL_NKEY_SEED_FILE
+  #   nkey_seed_file: ""
+  #   # Type: string   Env: SQI_NATS_EXTERNAL_CREDS_FILE
+  #   creds_file: ""
+  #
+  #   # JetStream replica count for sqi's streams: 1, 3 or 5.
+  #   # Default: 1
+  #   # Type: int   Env: SQI_NATS_EXTERNAL_STREAM_REPLICAS
+  #   stream_replicas: 1
+  #
+  #   # Bounds the connection attempt at startup only; reconnects after
+  #   # startup are unbounded.
+  #   # Default: 30s
+  #   # Type: duration   Env: SQI_NATS_EXTERNAL_CONNECT_TIMEOUT
+  #   connect_timeout: 30s
+  #
+  #   tls:
+  #     # Type: string   Env: SQI_NATS_EXTERNAL_TLS_CA_FILE
+  #     ca_file: ""
+  #     # Optional client certificate (a cluster that requires mTLS).
+  #     # Type: string   Env: SQI_NATS_EXTERNAL_TLS_CERT_FILE
+  #     cert_file: ""
+  #     # Type: string   Env: SQI_NATS_EXTERNAL_TLS_KEY_FILE
+  #     key_file: ""
+  #     # Type: string   Env: SQI_NATS_EXTERNAL_TLS_SERVER_NAME
+  #     server_name: ""
+  #
+  #   # Used only when nats.auth.enabled is true.
+  #   callout:
+  #     # The callout connection's own user nkey seed, in the AUTH account.
+  #     # Type: string   Env: SQI_NATS_EXTERNAL_CALLOUT_NKEY_SEED_FILE
+  #     nkey_seed_file: ""
+  #     # The account nkey seed (SA...) sqi signs callout responses with.
+  #     # Type: string   Env: SQI_NATS_EXTERNAL_CALLOUT_ISSUER_SEED_FILE
+  #     issuer_seed_file: ""
+  #     # Optional: the nkey seed (not a .creds file) of a system-account
+  #     # user (sqi-sys.nk from `nats external init`). With it a revoked
+  #     # worker is disconnected at once; without it, within user_ttl.
+  #     # Type: string   Env: SQI_NATS_EXTERNAL_CALLOUT_SYSTEM_CREDS_FILE
+  #     system_creds_file: ""
 
 # ── State store (SQLite or PostgreSQL) ────────────────────────────────────────
 store:

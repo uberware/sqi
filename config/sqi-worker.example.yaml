@@ -21,13 +21,17 @@
 #   sqi-worker start --dry-run
 
 # ── NATS connection ───────────────────────────────────────────────────────────
-# The worker connects to the NATS instance embedded in sqi-server. Either set
-# nats.url explicitly or enable discovery.enable_mdns to locate the server
-# automatically on the local network. Both may not be empty at the same time.
+# The worker connects to sqi's NATS broker: the one embedded in sqi-server, or
+# the external NATS server or cluster sqi-server uses (nats.mode: external on
+# the server). Either set nats.url explicitly or enable discovery.enable_mdns
+# to locate the server automatically on the local network. Both may not be
+# empty at the same time.
 nats:
-  # URL of the remote NATS server embedded in sqi-server.
+  # URL of the broker. For a cluster, list every node, comma-separated; the
+  # worker connects to any one of them and moves to another if it is lost.
   # Required when discovery.enable_mdns is false.
   # Example: "nats://sqi-server.local:4222"
+  # Example: "tls://nats-a:4222,tls://nats-b:4222,tls://nats-c:4222"
   # Type: string   Env: SQI_WORKER_NATS_URL
   url: ""
 
@@ -35,18 +39,21 @@ nats:
   #
   #   "auto"  (default) use TLS when there is a reason to: any tls_* field
   #                     below is set, OR the server found over mDNS advertises
-  #                     a TLS-required broker.
+  #                     a tls:// broker URL.
   #   "true"            always use TLS, even with no CA configured (system
   #                     roots) — for a publicly-trusted broker certificate.
-  #   "false"           never use TLS, even with a CA configured.
+  #   "false"           never apply the tls_* settings below. A tls:// URL
+  #                     still uses TLS (the NATS client requires it), verified
+  #                     against the system roots.
   #
   # Any other value is rejected at startup. See docs/tls.md.
   # Type: string   Env: SQI_WORKER_NATS_TLS_ENABLED
   tls_enabled: "auto"
 
   # Path to the client TLS certificate (PEM-encoded). Leave empty to disable
-  # mutual TLS. Required only when the server demands client certificates
-  # (nats.tls.client_ca_file on the server). Issue one per worker with
+  # mutual TLS. Required only when the broker demands client certificates
+  # (nats.embedded.tls.client_ca_file on the server, or the external
+  # cluster's own TLS configuration). Issue one per worker with
   # `sqi-server tls init --client <worker-id>`.
   # Type: string   Env: SQI_WORKER_NATS_TLS_CERT_FILE
   tls_cert_file: ""
@@ -349,7 +356,8 @@ metrics:
 # ── mDNS server discovery ─────────────────────────────────────────────────────
 # When discovery is enabled and nats.url is empty, the worker browses for
 # _sqi._tcp mDNS advertisements on the local network. The first discovered
-# server's NATS address is used as the connection target. mDNS requires
+# server's advertised broker URL (its nats_url record) is used as the
+# connection target. mDNS requires
 # multicast, which is available on most LANs but not on cloud VPCs or
 # cross-subnet networks.
 discovery:

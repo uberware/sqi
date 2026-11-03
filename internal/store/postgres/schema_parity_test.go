@@ -255,6 +255,13 @@ func sqliteIndexes(t *testing.T, db *sql.DB, tbl string) []index {
 		}, `SELECT name, coll FROM pragma_index_xinfo(?) WHERE key = 1 ORDER BY seqno`, l.name)
 		out = append(out, index{Cols: strings.Join(cols, ","), Unique: l.unique, Partial: l.partial})
 	}
+	// An INTEGER PRIMARY KEY is SQLite's rowid alias and has no index of its
+	// own; PostgreSQL backs the same key with a unique index. Report it, so the
+	// two read alike.
+	pks := collect(t, db, scanName, `SELECT name FROM pragma_table_info(?) WHERE pk > 0 AND upper(type) = 'INTEGER'`, tbl)
+	if n := len(collect(t, db, scanName, `SELECT name FROM pragma_table_info(?) WHERE pk > 0`, tbl)); n == 1 && len(pks) == 1 {
+		out = append(out, index{Cols: pks[0], Unique: true})
+	}
 	return out
 }
 

@@ -44,7 +44,7 @@ docker run -d \
   -p 8080:8080 \
   -v /data/sqi:/data \
   -e SQI_STORE_SQLITE_PATH=/data/sqi.db \
-  -e SQI_NATS_DATA_DIR=/data/nats \
+  -e SQI_NATS_EMBEDDED_DATA_DIR=/data/nats \
   ghcr.io/uberware/sqi/sqi-server:latest serve
 ```
 
@@ -80,12 +80,15 @@ Minimum required changes for production:
 - `store.sqlite_path` — set to an absolute path on a local SSD, or set
   `store.driver: postgres` and `store.postgres.dsn` to keep the state in
   PostgreSQL instead (see [Running on PostgreSQL](#running-on-postgresql))
-- `nats.data_dir` — set to a persistent directory for JetStream storage
+- `nats.embedded.data_dir` — set to a persistent directory for JetStream
+  storage. To run on a NATS cluster of your own instead of the embedded
+  broker, see [Running on an external NATS cluster](#running-on-an-external-nats-cluster)
 - `http.addr` — restrict to `127.0.0.1:8080` if a reverse proxy handles TLS
-- `http.tls` / `nats.tls` — terminate TLS in sqi instead, if there is no proxy.
-  Both are off by default, so **the API and the worker transport are plaintext
-  until you set one or the other**. See [`docs/tls.md`](tls.md); note that
-  enabling TLS on a running farm is a coordinated restart, not a rolling one
+- `http.tls` / `nats.embedded.tls` — terminate TLS in sqi instead, if there is
+  no proxy. Both are off by default, so the API and the worker transport are
+  plaintext until you set one or the other. See [`docs/tls.md`](tls.md);
+  enabling TLS on a running farm takes a coordinated restart of the server and
+  every worker
 
 See [`docs/configuration.md`](configuration.md) for all options.
 
@@ -227,7 +230,7 @@ create — see
 - is given 45 s to shut down when Windows reboots: the server's own 30 s
   shutdown bound (`server.ShutdownTimeout`, not configurable) plus 15 s;
 - runs **in the configuration file's directory**, so the default relative
-  `store.sqlite_path` (`sqi.db`) and `nats.data_dir` (`data\nats`) live beside the
+  `store.sqlite_path` (`sqi.db`) and `nats.embedded.data_dir` (`data\nats`) live beside the
   config — `C:\ProgramData\sqi` by default. Set absolute paths, for example on a
   data volume, if you would rather keep them elsewhere. A `--user` account
   cannot read the administrators-only directory: give the server its own, as
@@ -255,7 +258,7 @@ file (the fallback is described under
 
 > **`migrate`, `backup`, `restore`, `store copy` and `worker` run from a
 > console use the *shell's* working directory, not the service's.** With the
-> default relative `store.sqlite_path` and `nats.data_dir`,
+> default relative `store.sqlite_path` and `nats.embedded.data_dir`,
 > `sqi-server migrate up --config C:\ProgramData\sqi\sqi-server.yaml` looks for
 > `sqi.db` in the directory the shell is in — an elevated PowerShell usually starts in
 > `C:\Windows\System32` — and would *create* a new, empty database there, while
@@ -296,6 +299,28 @@ recovered by [reconciliation](#reconciliation), at the cost of running that
 task again. Workers from v0.3.0 and earlier send no attempt list and are
 never reconciled: a task whose report such a worker lost stays `running` until
 that worker goes offline.
+
+Upgrade the server and its workers together. The server discards the
+messages of a worker whose wire protocol does not match its own, registration
+included, logging `scheduler: discarding worker message — wire protocol
+version mismatch`. A worker that relies on mDNS connects only to a server
+that advertises its broker in a `nats_url` record, and skips an advertisement
+without one; a worker with an explicit `nats.url` does not use discovery, but
+is still subject to the protocol check.
+
+After any server start, worker-offline detection waits about 3 minutes (at
+the defaults) before acting, so a worker that died while the server was down
+is marked offline, and its tasks reclaimed, that much later. See
+[After a broker outage](architecture.md#after-a-broker-outage-the-reconnect-grace).
+
+With an external broker (`nats.mode: external`) the cluster keeps
+running while the server is stopped, workers stay connected to it, and
+messages wait in its streams; the steps are the same. With broker
+authentication on, a worker that reconnects to the cluster while the server
+is stopped is refused, because nobody answers the auth callout, and retries
+for 2 minutes before it exits, so keep the server's downtime under that or
+let the workers' supervisor restart them. Upgrading the cluster itself is
+separate; see [Upgrading the cluster](#upgrading-the-cluster).
 
 Run the CLI commands as the account the server runs as (`sqi` in the systemd
 unit above). On SQLite the files they create are readable by their owner only,
@@ -446,18 +471,29 @@ again; see [What runs again](#what-runs-again). Executed by
 `TestUpgrade_OlderBinaryRefused`, which stands in for the newer binary by
 recording a schema version above its own.
 
+The embedded broker's JetStream directory may not be readable by the older
+binary: nats-server does not promise that an older release reads the file
+store a newer one wrote. `restore` moves `nats.embedded.data_dir` aside, so
+the older server starts with an empty one.
+
 ### Rolling back to v0.3.0 or earlier
 
 v0.3.0 and earlier have neither the `restore` command nor the schema version
 check: they start on a newer database without complaint and run against a
-schema they do not know. They support only SQLite, so put the pre-upgrade
-backup in place by hand, with the server stopped. This procedure is not
-executed by a test.
+schema they do not know. They support only SQLite and only the embedded
+broker, so put the pre-upgrade backup in place by hand, with the server
+stopped. This procedure is not executed by a test.
+
+Their configuration file is the one they had: v0.3.0 reads the embedded
+broker's `addr`, `data_dir`, `max_store_mb` and `tls` directly under `nats`
+and ignores `nats.embedded`, so put back the file you upgraded from, or the
+older release silently runs on its defaults.
 
 ```sh
 sudo systemctl stop sqi-server
-# store.sqlite_path is /var/lib/sqi/sqi.db and nats.data_dir /var/lib/sqi/nats
-# here; every step runs as the service account, which owns that directory.
+# store.sqlite_path is /var/lib/sqi/sqi.db and the JetStream directory
+# /var/lib/sqi/nats here; every step runs as the service account, which owns
+# that directory.
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 for f in /var/lib/sqi/sqi.db /var/lib/sqi/sqi.db-wal /var/lib/sqi/sqi.db-shm /var/lib/sqi/nats; do
   if sudo -u sqi test -e "$f"; then sudo -u sqi mv "$f" "$f.pre-restore-$stamp"; fi
@@ -480,7 +516,8 @@ their tasks to `ready`. Then start the workers again.
 
 `sqi-server backup` makes a consistent copy of the state store while the
 server keeps running, on both backends. Workers do not need to pause. It
-backs up the **database only**; [What a backup leaves
+backs up the database only, with either broker mode: it never connects to
+the broker, embedded or external; [What a backup leaves
 out](#what-a-backup-leaves-out) says why that is enough.
 
 ```sh
@@ -577,15 +614,19 @@ This keeps 30 days of daily backups and rotates older files automatically.
 
 ### What a backup leaves out
 
-- **The NATS data directory (`nats.data_dir`).** JetStream holds only messages
-  the server has not finished with: status reports, log chunks and worker
+- **The broker's JetStream state** — the embedded broker's
+  `nats.embedded.data_dir`, or sqi's streams on an external cluster. It holds
+  only messages the server has not finished with: status reports, log chunks and worker
   registrations in transit (the log stream also keeps chunks for 96 h after
   they are stored, but nothing reads them back). Everything durable is in the
   database. A JetStream directory is also never correct beside a database from
   another moment: an older one replays reports for attempts the database has
   already closed or never saw, a newer one holds reports the database will
-  never get. So it is not backed up; `restore` moves it aside instead and
-  makes the database safe without it (see [Restore](#restore)).
+  never get. So it is not backed up; `restore` moves the directory aside, or
+  purges the streams on an external cluster, and makes the database safe
+  without it (see [Restore](#restore)). An external cluster's own
+  configuration and the seeds `sqi-server nats external init` wrote are yours
+  to back up.
 - **Files.** The configuration file, TLS material (`sqi-server tls init`
   output), worker credential files on the workers, and log files are yours to
   back up.
@@ -621,21 +662,27 @@ resume from it. In order, it:
    (its task assigned or running) is closed as failed (`worker shut down`) and
    its task goes back to `ready`, without using a retry or counting toward the
    job's failure limit;
-6. renames `nats.data_dir` to `<dir>.pre-restore-<UTC time>` (the same time
-   as step 3).
+6. clears the broker's messages, which belong to a different moment than the
+   restored database. Embedded broker: renames `nats.embedded.data_dir` to
+   `<dir>.pre-restore-<UTC time>` (the same time as step 3). External broker:
+   purges sqi's streams and deletes the server's durable consumers; see
+   [Restoring with an external broker](#restoring-with-an-external-broker).
 
 Nothing is deleted. Each step must succeed before the next, and a failure says
 what state it left (see [When restore stops partway](#when-restore-stops-partway)).
 
 **Which store and which NATS directory.** `restore` chooses the store as
 `backup` does (`--db`, `--dsn`, `store.driver`; see [Backup](#backup)) and
-reads `nats.data_dir` from the same configuration the server reads (`--config`,
-`SQI_*` variables); `--nats-data-dir` overrides it. Relative paths resolve
-from the current directory, as the server resolves them, so run it from the
-directory the server runs in, with the server's configuration. If the
-configuration cannot be loaded, `restore` refuses rather than fall back to the
-built-in defaults, unless you name both the store (`--db` or `--dsn`) and
-`--nats-data-dir`; an empty `--nats-data-dir` is refused too.
+reads `nats.mode` and `nats.embedded.data_dir` from the same configuration the
+server reads (`--config`, `SQI_*` variables); `--nats-data-dir` overrides the
+directory. Relative paths resolve from the current directory, as the server
+resolves them, so run it from the directory the server runs in, with the
+server's configuration. If the configuration cannot be loaded, `restore`
+refuses rather than fall back to the built-in defaults, unless you name both
+the store (`--db` or `--dsn`) and `--nats-data-dir`; an empty
+`--nats-data-dir` is refused too. With `SQI_NATS_MODE=external` set, an
+unloadable configuration is refused outright, since the defaults are an
+embedded broker's and would skip the purge the cluster needs.
 
 ### Restoring SQLite
 
@@ -673,7 +720,7 @@ There is one `previous database file` line for each file moved: a server that
 did not stop cleanly, or a `store copy`, can also leave `sqi.db-wal` and
 `sqi.db-shm`, which move with it. `no NATS data directory at <dir>; nothing to
 move` means there was none at that path: if you expected one, check that
-`nats.data_dir` and the directory you ran from are the server's.
+`nats.embedded.data_dir` and the directory you ran from are the server's.
 
 `restore` copies only the backup's database file, so it refuses a backup with
 a non-empty `-wal` file beside it (a live database's file, copied by hand): the
@@ -741,10 +788,12 @@ the search path, including ones the role has no privilege on.
   left out, so a role the new cluster lacks cannot fail the load. Re-apply such
   grants after the restore.
 - **Run `restore` on the server's host**, with the server's configuration, so
-  that it moves the right `nats.data_dir`. If you run it from another host
-  (one with the PostgreSQL client tools, say), move the server's
-  `nats.data_dir` aside by hand before you start the server, or run
-  `sqi-server restore --in-place` on the server's host afterwards.
+  that it moves the right `nats.embedded.data_dir`. If you run it from another
+  host (one with the PostgreSQL client tools, say), move the server's
+  `nats.embedded.data_dir` aside by hand before you start the server, or run
+  `sqi-server restore --in-place` on the server's host afterwards. With an
+  external broker any host that can reach the cluster with the server's
+  configuration will do.
 
 Executed by `TestPostgres_RestoreRoundTrip` and, on PostgreSQL 16 and 18, by
 `TestBackupRestore_FarmResumes` in `make test-postgres`.
@@ -756,6 +805,69 @@ The `sqi-server` image does not include `pg_restore`, so with
 `restore` runs in a one-off container of the `postgres` service, with the
 server's binary and its data volume mounted into it. The file's header has the
 commands; they are not executed by a test.
+
+### Restoring with an external broker
+
+With `nats.mode: external`, the broker's messages live on the cluster, so step
+6 purges them instead of moving a directory: `restore` empties sqi's four
+streams (`SQI_TASK`, `SQI_LOGS`, `SQI_WORKER`, `SQI_CANCEL`) and deletes the
+server's three durable consumers (`sqi-task-status-srv`, `sqi-task-logs-srv`,
+`sqi-worker-srv`), connecting with the server's own `nats.external`
+configuration (its data credential and TLS settings). The streams keep their
+configuration, replica count included. The steps are those above:
+
+```sh
+sudo systemctl stop sqi-server
+sudo -u sqi sqi-server restore --config /etc/sqi/sqi-server.yaml \
+  /backups/sqi/sqi-20261013-020000.db
+sudo systemctl start sqi-server
+```
+
+```
+restored a schema-39 backup; schema is now 39
+previous database file moved to /var/lib/sqi/sqi.db.pre-restore-20261013T143216Z
+fenced 1 attempt(s): their tasks are ready again
+purged sqi's JetStream state on the external broker: its streams are empty and the server's durable consumers deleted
+```
+
+Before it changes anything, `restore` takes the account's
+[guard](#one-server-per-broker-account) (unless given `--skip-nats-purge`,
+below), and holds it until it finishes, so
+no `sqi-server` can start on the account while the database is replaced and
+the streams are purged; a server started meanwhile is refused naming the
+restore. It therefore refuses, with nothing changed:
+
+- while a server runs on the account:
+  `restore changed nothing: bus: another sqi-server holds this broker account: host …, pid …, started … (instance …); it is still running, or exited less than 30s ago; stop that sqi-server before restoring`.
+  A server that has just stopped uncleanly holds it for up to 30 s more;
+- when it cannot reach the cluster, or the cluster refuses the data
+  credential, within `nats.external.connect_timeout`.
+
+If the cluster cannot be reached and the restore cannot wait, pass
+`--skip-nats-purge`: `restore` does not connect to the broker at all, so it
+takes no guard and nothing stops a server starting on the account meanwhile;
+it puts the database in place and fences it, and
+then prints what to purge by hand, with the `nats` CLI commands to do it as
+sqi's data user (credentials in a URL are printed as `REDACTED`). Do that
+before you start a server, or it replays messages from before the restore:
+
+```
+sqi's JetStream state on the external broker was not purged (--skip-nats-purge). Before starting a server, in account SQI:
+  purge the streams SQI_TASK, SQI_LOGS, SQI_WORKER, SQI_CANCEL
+  delete the durable consumers sqi-task-status-srv (stream SQI_TASK), sqi-task-logs-srv (stream SQI_LOGS), sqi-worker-srv (stream SQI_WORKER)
+for example, with the nats CLI as sqi's data user:
+  nats stream purge SQI_TASK -f --server tls://nats-a:4222,tls://nats-b:4222,tls://nats-c:4222 --nkey /etc/sqi/nats/sqi-data.nk --tlsca /etc/sqi/tls/ca.crt
+  …
+  nats consumer rm SQI_WORKER sqi-worker-srv -f --server … --nkey … --tlsca …
+```
+
+`--skip-nats-purge` is refused with an embedded broker, whose directory is
+moved aside rather than purged, and `--nats-data-dir` is refused with an
+external one. `--in-place` works the same way with an external broker: it
+fences the database in place and purges the cluster.
+
+Executed by `TestNATSCluster_RestorePurges` in `make test-nats-cluster`,
+against a real three-node cluster.
 
 ### After point-in-time recovery or a snapshot: `--in-place`
 
@@ -774,7 +886,8 @@ NATS data directory moved to /var/lib/sqi/nats.pre-restore-20261013T143953Z
 ```
 
 `--in-place` takes the lock, migrates, fences and moves the NATS directory
-aside (steps 1 and 4 to 6 above); it loads nothing. It refuses a SQLite path
+aside or purges the external broker (steps 1 and 4 to 6 above); it loads
+nothing. It refuses a SQLite path
 with no database, and a database on either backend with no sqi schema (an
 empty file, or one sqi never migrated), and checks this before it changes
 anything.
@@ -867,6 +980,11 @@ Remove-Item -Recurse C:\ProgramData\sqi\data\nats.pre-restore-*
 - **After the fence, when the NATS directory could not be moved**: the
   database is restored and fenced; move the directory aside by hand, or run
   `sqi-server restore --in-place`, before starting a server.
+- **After the fence, when the external broker could not be purged**: the
+  database is restored and fenced, and the message says so. Run
+  `sqi-server restore --in-place` once the broker is reachable, or purge by
+  hand (`sqi-server restore --in-place --skip-nats-purge` prints what),
+  before starting a server.
 
 ---
 
@@ -931,7 +1049,7 @@ same guard keeps the commands that rewrite the database (`migrate up`,
 
 | Takes the lock | Does not |
 |---|---|
-| `serve`, `migrate up`, `restore`, `store copy` (both its SQLite source and its PostgreSQL target) | `migrate status`, `backup`, `worker token issue`, `worker enroll`, `worker revoke`, `worker list` |
+| `serve`, `migrate up`, `restore`, `store copy` (both its SQLite source and its PostgreSQL target) | `migrate status`, `backup`, `worker token issue`, `worker enroll`, `worker revoke`, `worker list`, `nats external init` |
 
 The commands in the right-hand column work while a server runs.
 
@@ -998,6 +1116,42 @@ again.
 Advisory locks belong to one database, so servers on different databases of
 the same PostgreSQL cluster do not collide. Running several servers against
 one database, for high availability, is not supported.
+
+---
+
+## One server per broker account
+
+With an external broker, only one `sqi-server` may use a broker account at a
+time, as only one may use a database. Two servers on one account would both
+answer every lease and split the status messages between their databases,
+losing work, and two servers with two databases never meet at either
+database's lock, so this guard lives on the broker. It exists only in external
+mode: an embedded broker cannot be shared.
+
+At startup the server takes the key `active` in the KV bucket `SQI_SERVER` in
+its account, before it touches anything else there, and refreshes it every
+10 s. `sqi-server restore` takes the same key for as long as it runs (except
+with `--skip-nats-purge`, which does not connect to the broker). A second
+server, or a server started during a restore, exits at once:
+
+```
+startup failed: start bus: bus: another sqi-server holds this broker account: host render-db-01, pid 4242, started 2026-11-02T09:14:03Z (instance 3f9c2a7d1e5b8046); it is still running, or exited less than 30s ago
+```
+
+The holder is named, so the other server can be found. A server that stops
+cleanly deletes its key; one that crashed leaves it for at most 30 s, so a
+supervisor restarting the server sees this refusal for up to 30 s and then
+gets through. As with the database lock, do not overlap restarts, and never
+point a copied configuration (a staging server, say) at a live account.
+
+If a running server loses the key (its refreshes failed for more than 30 s
+during a partition and another server took the account), it logs
+`bus: this sqi-server no longer holds the broker account; another sqi-server
+took it` at Error and reports degraded on `/readyz` until it is restarted. It does
+not stop on its own: stop one of the two. A server whose refreshes fail but
+whose key nobody took keeps running, reports degraded while the last refresh
+is more than 30 s old, and retakes the key with a Warn once it can. See
+[The one-server-per-account guard](architecture.md#the-one-server-per-account-guard).
 
 ---
 
@@ -1141,11 +1295,12 @@ PostgreSQL.
 3. In the configuration, set `store.driver: postgres` and
    [`store.postgres.dsn`](configuration.md#storepostgresdsn). Leave
    `store.sqlite_path` set for now: `store copy` reads its source from it. Keep
-   `nats.data_dir` as it is.
+   the `nats` block as it is.
 
    ```yaml
    nats:
-     data_dir: "/var/lib/sqi/nats"   # unchanged
+     embedded:
+       data_dir: "/var/lib/sqi/nats"   # unchanged
    store:
      driver: postgres
      sqlite_path: "/var/lib/sqi/sqi.db"   # the copy's source; remove it afterwards
@@ -1197,9 +1352,9 @@ PostgreSQL.
    sudo systemctl start sqi-server
    ```
 
-**If `nats.data_dir` changes** (the server moves to another host or into a
-container, or you start it with an empty directory), run `sqi-server restore
---in-place` with the new configuration before starting it. The copy is exact,
+**If `nats.embedded.data_dir` changes** (the server moves to another host or
+into a container, or you start it with an empty directory), run `sqi-server
+restore --in-place` with the new configuration before starting it. The copy is exact,
 so a server that keeps its NATS directory continues every task that was in
 flight; one that does not would wait for reports that are not there.
 `--in-place` fences those tasks so they run again (see [After point-in-time
@@ -1264,6 +1419,294 @@ stays stopped for that long.
 
 ---
 
+## Running on an external NATS cluster
+
+`sqi-server` runs its own NATS broker by default. Set
+[`nats.mode`](configuration.md#natsmode) to `external` to connect it to a
+NATS server or cluster you run instead. The cluster then outlives
+`sqi-server` restarts, workers connect to it rather than to `sqi-server`, and
+with [`stream_replicas: 3`](configuration.md#natsexternalstream_replicas) on
+three nodes, losing one node loses no message. The API, the scheduler,
+enrollment, revocation and the workers' credentials are the same in both
+modes. How the two topologies differ is described under
+[Broker topologies](architecture.md#broker-topologies).
+
+**sqi needs a dedicated account on the cluster.** `sqi-server`'s data
+connection may publish and subscribe to every subject in its account, which is
+safe only because nothing else lives there. Do not share the account with
+another application.
+
+What the cluster must provide:
+
+- a [supported nats-server release](#supported-nats-server-versions) on
+  every node;
+- JetStream, enabled on sqi's account;
+- with broker authentication on, sqi's accounts and auth-callout settings, in
+  config-file accounts as `sqi-server nats external init` generates them. A
+  cluster in NATS operator (JWT) mode can host sqi only with broker
+  authentication off.
+
+This is not high availability for `sqi-server` itself: one server runs per
+account (see [One server per broker account](#one-server-per-broker-account)),
+and while it is stopped no work is leased.
+
+### Supported nats-server versions
+
+| Release series | Minimum |
+|---|---|
+| 2.14 | 2.14.8 |
+| 2.15 | 2.15.1 |
+| 2.16 and later | any |
+
+Each minimum is the first release of its series with upstream's fixes to the
+auth callout, which sqi's worker authentication depends on. Series before
+2.14 are refused. The external-mode tests run against 2.14.9 and against
+2.15.2, the release `sqi-server` embeds. `sqi-server` reads the version from
+the node it first reaches and refuses an older one at startup:
+
+```
+bus: nats-server 2.14.5 is older than the minimum 2.14.8 for its release series; upgrade the broker to a release still receiving security fixes (broker at tls://nats-a:4222)
+```
+
+A reconnect that lands on an older node later, mid-upgrade or mid-downgrade,
+logs `bus: reconnected to a nats-server below the supported version` at Warn
+rather than stopping the server. Keep every node on a supported release.
+
+### Generating the cluster configuration
+
+```sh
+sqi-server nats external init --out /etc/sqi/nats
+```
+
+`--account` names the account (default `SQI`; it must match
+[`nats.external.account`](configuration.md#natsexternalaccount)). The command
+writes five files:
+
+| File | What it is | Where it goes |
+|---|---|---|
+| `issuer.nk` | account nkey seed sqi signs worker authorizations with | `sqi-server` host only |
+| `sqi-data.nk` | user nkey seed of `sqi-server`'s data connection (sqi's account) | `sqi-server` host only |
+| `sqi-auth.nk` | user nkey seed of `sqi-server`'s callout connection (`AUTH` account) | `sqi-server` host only |
+| `sqi-sys.nk` | user nkey seed of a system-account user, which lets `sqi-server` disconnect a revoked worker at once | `sqi-server` host only |
+| `sqi-accounts.conf` | nats-server configuration: the accounts and the `auth_callout` block | every cluster node |
+
+The four seeds are private keys, written owner-only (`0600`); they never
+leave the `sqi-server` host, and the cluster never needs them.
+`sqi-accounts.conf` holds only public keys and goes to every node. The
+command refuses to replace files that already exist unless given `--force`,
+because a regenerated key does not match the fragment the cluster already
+loaded. It then prints the `include` line for the nodes and the `nats:` block
+for `sqi-server.yaml`, with these files' paths filled in.
+
+sqi's own users are nkey users because a cluster sends the nonce workers sign
+only when it has nkey users of its own, so the fragment is also what makes
+worker authentication possible.
+
+### Configuring the cluster
+
+Copy `sqi-accounts.conf` into the directory of every node's config file, and
+include it from that config:
+
+```
+include "sqi-accounts.conf"
+```
+
+nats-server resolves an `include` path relative to the including file's
+directory, even a path that looks absolute, so the fragment must sit beside
+each node's config. The fragment defines sqi's account (with JetStream), the
+`AUTH` and `SYS` accounts, `system_account` and the `authorization {
+auth_callout }` block; the node's own config supplies the rest — listeners,
+TLS, clustering and the JetStream `store_dir` — and must not define
+`accounts`, `system_account` or `authorization` of its own: nats-server does
+not merge a second `accounts` block.
+
+The `auth_callout` block applies to the whole server: every connection by a
+user not in its `auth_users` list is sent to `sqi-server`, which admits only
+enrolled sqi workers. Any other user on the cluster must be added to
+`auth_users`, or it is refused. Do not add a `no_auth_user` either: with the
+callout it would let anonymous clients in.
+
+The fragment is for broker authentication on. To run external mode with
+`nats.auth.enabled: false`, replace its `authorization` block with
+`no_auth_user` naming the data user's public key (the `nkey` in sqi's
+account), so anonymous connections land in sqi's account. Any host that can
+reach the cluster can then register as a worker, and `sqi-server` warns
+about it at every start.
+
+[`deploy/nats-cluster/nats.conf`](https://github.com/uberware/sqi/blob/main/deploy/nats-cluster/nats.conf)
+is a working node config to start from.
+
+### Configuring sqi-server
+
+Put the printed block in `sqi-server.yaml`, with your nodes' URLs:
+
+```yaml
+nats:
+  mode: external
+  auth:
+    enabled: true
+  external:
+    urls:
+      - "tls://nats-a.example.internal:4222"
+      - "tls://nats-b.example.internal:4222"
+      - "tls://nats-c.example.internal:4222"
+    account: "SQI"
+    nkey_seed_file: "/etc/sqi/nats/sqi-data.nk"
+    stream_replicas: 3
+    tls:
+      ca_file: "/etc/sqi/tls/ca.crt"
+    callout:
+      nkey_seed_file: "/etc/sqi/nats/sqi-auth.nk"
+      issuer_seed_file: "/etc/sqi/nats/issuer.nk"
+      system_creds_file: "/etc/sqi/nats/sqi-sys.nk"
+```
+
+Every key is described under
+[`nats.external.*`](configuration.md#natsexternalurls). At startup
+`sqi-server` dials the URLs until
+[`connect_timeout`](configuration.md#natsexternalconnect_timeout) (30 s), checks
+the broker's version, requires JetStream on the account, takes the
+[account guard](#one-server-per-broker-account), creates or updates its
+streams, and, with authentication on, starts answering the callout. It logs
+`bus: connected to external nats` with the URL, version, cluster, account,
+replica count and whether revocation is immediate. After startup it
+reconnects without limit, and `/readyz` reports degraded while the data or
+callout connection is down.
+
+**List the nodes of one cluster.** Every `urls` entry must name a node of
+the same NATS cluster. The server records the broker it runs against by the
+cluster name of the node it connected to (`external:<account>@<cluster>`),
+and treats a change of that name as a broker switch, which
+[fences every open attempt](#switching-broker-mode). URLs that span a
+gateway supercluster, two clusters joined by gateways, can land on a node of
+the other cluster at the next start, so the identity flips between restarts
+and each flip fails the farm's running work back to `ready`.
+
+**Keep the seed files owner-only.** The data, callout, issuer and system
+seed files are private keys. At every start `sqi-server` logs
+`bus: an external broker seed file is readable beyond its owner` for each one
+other accounts can read, naming the file and the fix (`chmod 600 <file>` on
+Linux and macOS), and starts anyway: the files are yours to manage, and a
+secrets mount may set their mode. `sqi-server nats external init` writes
+them owner-only.
+
+**Keep `system_creds_file`.** Without it, `sqi-server` cannot close a revoked
+worker's connection on the cluster: revocation takes effect when the worker's
+authorization expires, within
+[`nats.auth.user_ttl`](configuration.md#natsauthuser_ttl), and the server
+warns about that at every start. See
+[Revocation](auth.md#revocation-two-paths-deliberately-distinct).
+
+**Discovery.** mDNS advertises the first
+[`advertise_urls`](configuration.md#natsexternaladvertise_urls) entry, else
+the first `urls` entry, so a discovering worker reaches one node. Set
+`advertise_urls` when workers must use other addresses than `sqi-server` does,
+and when `urls` carry credentials (`user:password@` or `token@`): mDNS
+publishes the advertised URL in plaintext, so the server refuses to start
+when that URL carries any.
+
+### Configuring workers
+
+Workers connect to the cluster with the same credential they would use on an
+embedded broker, and enroll the same way. List every node, comma-separated, in
+the worker's `nats.url`, so it can move to another node when one is lost:
+
+```yaml
+nats:
+  url: "tls://nats-a.example.internal:4222,tls://nats-b.example.internal:4222,tls://nats-c.example.internal:4222"
+  tls_ca_file: "/etc/sqi/tls/ca.crt"
+  server_url: "https://sqi-server.example.internal:8080"   # enrollment, over REST
+```
+
+A worker that connects while `sqi-server` is not running (with broker
+authentication on) is refused, because nothing answers the callout. It
+retries for 2 minutes before it exits, so keep server downtime short or let
+the worker's supervisor restart it.
+
+### The reference Compose cluster
+
+[`deploy/docker-compose.nats-cluster.yml`](https://github.com/uberware/sqi/blob/main/deploy/docker-compose.nats-cluster.yml)
+runs three nodes from `deploy/nats-cluster/nats.conf`, with JetStream, TLS on
+the client port and the fragment from `nats external init`. Its header has the
+steps. It secures the client port only: the routes between the nodes are
+plaintext and unauthenticated, which holds only because the route port is not
+published outside the Compose network. Nodes on separate hosts need TLS (or a
+shared `authorization`) on their `cluster` block, with only the nodes able to
+reach the route port. The client ports bind `127.0.0.1` unless
+`NATS_CLUSTER_BIND` says otherwise, so set it for workers on other hosts.
+`make test-nats-cluster` runs the external-mode tests against it.
+
+### Upgrading the cluster
+
+Restart nodes one at a time, and stop each through lame duck mode rather than
+a plain stop:
+
+```sh
+nats-server --signal ldm=<pid>
+```
+
+Lame duck mode closes the node's listener and moves its clients to the other
+nodes before it exits. A plain shutdown can crash nats-server 2.15.2 in the
+auth callout when a client connects while the node shuts down, and workers
+reconnect at any time, at every authorization expiry. `sqi-server`'s embedded
+broker always stops through lame duck mode. With `stream_replicas: 3` the streams
+stay available while one node is down. Stay within the
+[supported versions](#supported-nats-server-versions) on every node.
+
+### Troubleshooting
+
+- **Workers fail with `nats: nkeys not supported by the server`.** The
+  cluster sent no nonce, because it has no nkey users: its config does not
+  include `sqi-accounts.conf`. `sqi-server` reports the same cause at startup
+  (`the cluster issued no nonce; define sqi's own users as nkey users`).
+- **`account "SQI" on the external broker has no JetStream`.** Enable
+  JetStream on the node (a `jetstream { store_dir }` block) and on the account
+  (`jetstream: enabled`, which the fragment has).
+- **`the external cluster cannot place sqi's streams yet`** at startup: the
+  cluster has fewer JetStream nodes up than `stream_replicas`. `sqi-server`
+  keeps trying until `connect_timeout`.
+- **`another sqi-server holds this broker account`**: see
+  [One server per broker account](#one-server-per-broker-account).
+- **`no server answered $SYS.REQ.SERVER.PING.VARZ … the system credential
+  (system_creds_file) must be a user in the cluster's system account`** at
+  startup: `system_creds_file` is not the seed of a user in the system
+  account listed in the callout's `auth_users`, which `sqi-sys.nk` and the
+  generated fragment are.
+
+### Switching broker mode
+
+Moving a farm between the embedded broker and an external one, in either
+direction, leaves the in-flight messages (status reports, log chunks, cancels
+for open attempts) behind in the broker the farm left. `sqi-server` handles
+this itself:
+
+1. Stop the server cleanly, so it drains what it can.
+2. Change `nats.mode` and the `nats.embedded` or `nats.external` settings,
+   and point the workers at the new broker (their `nats.url`, or let
+   discovery advertise it).
+3. Start the server.
+
+On that first start the server finds that the broker differs from the one
+its database last ran against, and fences, as `restore` does: every attempt
+the database still records as open (its task assigned or running) closes as
+failed, its task returns to `ready`, and no retry is used. It logs
+`bus: broker layout changed; open attempts fenced` with the count and both
+identities. Those tasks run again; a worker still running one is a ghost run
+(see [What runs again](#what-runs-again)). Moving an external farm to another
+cluster or account is the same switch.
+
+A database with no broker identity recorded counts as a switch too, so its
+open attempts are fenced once at the first start; the server logs
+`bus: no broker identity recorded; open attempts fenced` with the count and
+the identity it recorded. On a new database there is nothing to fence, and it
+logs `bus: broker identity recorded` instead. sqi keeps the embedded broker's
+streams in the `SQI` account, never nats-server's global account: if
+`<data_dir>/jetstream/$G` exists, the server logs `bus: found JetStream
+streams in the global account; they are abandoned and safe to delete` at Info
+at every start, with its path, and leaves it there.
+
+---
+
 ## Worker broker credentials
 
 `sqi-server worker` groups the offline CLI commands for NATS broker
@@ -1310,10 +1753,9 @@ sqi-server worker enroll --db /data/sqi.db \
 Registers a worker's broker credential directly, by worker ID and public
 key — the offline counterpart to self-service enrollment over REST. Run
 `sqi-worker keygen` on the worker host first; it prints this exact command
-with the worker's own ID and public key filled in. A **running**
-`sqi-server` does not see the new credential until it restarts — the broker
-builds its authorized-key set once at startup, and this command writes the
-database from a separate process with no broker handle.
+with the worker's own ID and public key filled in. A running `sqi-server`
+needs no restart: the auth callout reads the credential from the database at
+every connect, so the worker is admitted at its next connect.
 
 ### Revoke a worker's credential
 
@@ -1321,10 +1763,11 @@ database from a separate process with no broker handle.
 sqi-server worker revoke --db /data/sqi.db <worker-id>
 ```
 
-Revokes a worker credential in the database. Takes effect the next time
-`sqi-server` starts, not immediately — to disconnect a worker at once
-against a running server, use `DELETE /api/v1/workers/{id}/credential`
-instead.
+Revokes a worker credential in the database. It closes no connection: a
+running worker is refused at its next connect, within `nats.auth.user_ttl`
+(1 hour by default) at the latest. To disconnect a worker at once against a
+running server, use `DELETE /api/v1/workers/{id}/credential` instead (see
+[Revocation](auth.md#revocation-two-paths-deliberately-distinct)).
 
 ### List worker credentials
 
@@ -1535,8 +1978,11 @@ groups:
 2. Stop accepting new HTTP and WebSocket connections.
 3. Wait for in-flight HTTP requests to complete.
 4. Stop the scheduler.
-5. Drain and flush the embedded NATS JetStream (in-flight messages are
-   acknowledged or requeued), then shut down the broker.
+5. Drain and flush sqi's JetStream consumers (in-flight messages are
+   acknowledged or requeued), then shut the broker down. The embedded broker
+   stops through lame duck mode; with an external broker, `sqi-server`
+   releases the [account guard](#one-server-per-broker-account) and closes its
+   connections, and the cluster keeps running.
 6. SQLite: wait for the final WAL checkpoint, in TRUNCATE mode, to finish.
 7. Close the store: both connection pools (write and read) and the
    [single-server lock](#one-server-per-database) (SQLite's lock file,

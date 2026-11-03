@@ -33,8 +33,9 @@ executing them as bare-metal OS processes.
 
 ## Minimum configuration
 
-`sqi-worker` requires a way to reach `sqi-server`'s embedded NATS broker. You
-have two options:
+`sqi-worker` requires a way to reach sqi's NATS broker: the one embedded in
+`sqi-server`, or the external NATS cluster the server runs on. You have two
+options:
 
 ### Option A — mDNS auto-discovery (local network, zero config)
 

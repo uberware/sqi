@@ -29,7 +29,9 @@ func loadPackage(t *testing.T) (*token.FileSet, []*ast.File, *types.Info) {
 	}
 	var files []*ast.File
 	for _, n := range names {
-		if strings.HasSuffix(n, "_test.go") {
+		// The go command ignores files whose names start with "." or "_",
+		// such as the ._ sidecars macOS writes on some volumes.
+		if strings.HasSuffix(n, "_test.go") || strings.HasPrefix(n, ".") || strings.HasPrefix(n, "_") {
 			continue
 		}
 		src, err := os.ReadFile(n)

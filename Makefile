@@ -388,16 +388,42 @@ test-isolation: ## Run run-as-user isolation tests as root against real OS accou
 	docker run --rm --init sqi-isolation-test \
 	  go test $(TEST_FLAGS) -tags integration -run 'TestIsolation_' -v -timeout 15m ./test/integration/
 
+# The external broker mode against a real three-node nats-server cluster in
+# Docker (deploy/docker-compose.nats-cluster.yml), configured from the output
+# of `sqi-server nats external init` and `tls init`, with real sqi-server and
+# sqi-worker binaries: scripts/test-nats-cluster.sh. CI runs it on both images
+# below; run the floor locally with
+#   make test-nats-cluster NATS_IMAGE='$(NATS_IMAGE_FLOOR)'
+#
+# The floor is the newest patch of the oldest series sqi supports
+# (internal/bus MinBrokerVersion); the current image tracks go.mod's
+# nats-server, so the embedded and external paths run the same broker code.
+# Both are pinned by tag and digest. Keep the nats-cluster-integration job's
+# matrix in .github/workflows/ci.yml in step: internal/bus's
+# TestNATSImagePins fails when they, go.mod or MinBrokerVersion drift apart.
+#
+# Exits 0 when Docker is unavailable, and every test skips without the cluster,
+# so a local run has passed only when it prints six
+# `--- PASS: TestNATSCluster_` lines.
+NATS_IMAGE_FLOOR   := nats:2.14.9@sha256:2721e37c651cb38039c583b0ee1b7248155e607ccaabfea19b38eb95a86fc3ff
+NATS_IMAGE_CURRENT := nats:2.15.2@sha256:991242c32d2738ffd358fd6614dd96c735017b4b3b34bfdb2c52a072d66db211
+NATS_IMAGE         ?= $(NATS_IMAGE_CURRENT)
+
+.PHONY: test-nats-cluster
+test-nats-cluster: ## Run the external-broker tests against a real 3-node NATS cluster in Docker (NATS_IMAGE=..)
+	NATS_IMAGE='$(NATS_IMAGE)' TEST_FLAGS='$(TEST_FLAGS)' bash scripts/test-nats-cluster.sh
+
 .PHONY: test-discovery
 test-discovery: ## Run the mDNS discovery tests over real multicast (fails rather than skips if multicast is unavailable)
 	@echo "note: advertisements are restricted to loopback, so nothing is announced"
 	@echo "      on your network. One test (RealBinary...) binds the test broker to"
-	@echo "      all interfaces for ~10s; make test-integration skips that one."
+	@echo "      all interfaces for ~10s, as does TestZeroConfigFarm's mDNS part;"
+	@echo "      make test-integration skips both."
 	@echo "      On Linux, loopback needs both: sudo ip link set lo multicast on"
 	@echo "      and: sudo ip -6 addr add fe80::1/64 dev lo (zeroconf discards"
 	@echo "      loopback addresses, so lo has nothing to advertise without it)"
 	SQI_TEST_REQUIRE_MULTICAST=1 go test $(TEST_FLAGS) -tags integration \
-	  -run 'TestDiscovery_' -v -timeout 10m ./test/integration/
+	  -run 'TestDiscovery_|TestZeroConfigFarm' -v -timeout 10m ./test/integration/
 
 .PHONY: test-isolation-windows
 test-isolation-windows: ## Run windows run-as-user isolation tests as SYSTEM against real local accounts (needs an elevated shell)

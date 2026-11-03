@@ -24,6 +24,7 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
@@ -96,7 +97,7 @@ func requireMulticast(t *testing.T) {
 		Enabled:      true,
 		InstanceName: instanceName(t, "sqi-probe"),
 		HTTPAddr:     "127.0.0.1:1",
-		NATSAddr:     "127.0.0.1:2",
+		NATSURL:      "nats://127.0.0.1:2",
 		Interfaces:   lo,
 	}, logger)
 	if err != nil {
@@ -210,14 +211,33 @@ func instanceName(t *testing.T, prefix string) string {
 // own before connecting to it. Refusing to run is the only safe response.
 func noForeignServer(t *testing.T) {
 	t.Helper()
+	if reason := foreignServerReason(); reason != "" {
+		t.Skip(reason)
+	}
+}
+
+// noForeignServerOrFail is [noForeignServer] for a caller that must not
+// silently lose its mDNS coverage: when multicast was declared required, a
+// foreign server fails the test instead of skipping it.
+func noForeignServerOrFail(t *testing.T) {
+	t.Helper()
+	if reason := foreignServerReason(); reason != "" {
+		skipOrFail(t, reason)
+	}
+}
+
+// foreignServerReason returns why a real-mDNS test must not run, or "" when
+// no other sqi-server is advertising.
+func foreignServerReason() string {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	found, err := workerdiscovery.Browse(ctx, 2*time.Second, slog.New(slog.DiscardHandler))
-	if err == nil {
-		t.Skipf("another sqi-server is advertising on this network (%s at %s); "+
-			"refusing to run a real-mDNS test that could discover it",
-			found.InstanceName, found.NATSURL)
+	if err != nil {
+		return ""
 	}
+	return fmt.Sprintf("another sqi-server is advertising on this network (%s at %s); "+
+		"refusing to run a real-mDNS test that could discover it",
+		found.InstanceName, found.NATSURL)
 }
 
 // TestMulticastRequired_FlagParsing pins the switch that decides whether a

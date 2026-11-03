@@ -29,6 +29,7 @@ import (
 	sqilog "github.com/uberware/sqi/internal/log"
 	"github.com/uberware/sqi/internal/worker/capabilities"
 	"github.com/uberware/sqi/internal/worker/commands"
+	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
 // WorkerConfig is the complete runtime configuration for sqi-worker.
@@ -392,8 +393,9 @@ func normalizeTLSMode(v string) (mode string, ok bool) {
 // UseTLS reports whether the broker connection should use TLS.
 //
 // brokerAdvertisedTLS is what mDNS discovery learned about the server (the
-// "nats_tls" TXT record); it is false when the URL was configured explicitly,
-// since nothing was discovered. It only participates in "auto".
+// tls:// scheme of the advertised nats_url); it is false when the URL was
+// configured explicitly, since nothing was discovered. It only participates
+// in "auto".
 func (c NATSConfig) UseTLS(brokerAdvertisedTLS bool) bool {
 	mode, _ := normalizeTLSMode(c.TLSEnabled)
 	switch mode {
@@ -628,7 +630,7 @@ func Default() WorkerConfig {
 		Worker: WorkerSettings{
 			Name:                hostname,
 			DataDir:             defaultDataDir(),
-			HeartbeatInterval:   15 * time.Second,
+			HeartbeatInterval:   protocol.DefaultHeartbeatInterval,
 			ShutdownGracePeriod: 30 * time.Second,
 			PullIdleBackoff:     2 * time.Second,
 			PullNackDelay:       5 * time.Second,

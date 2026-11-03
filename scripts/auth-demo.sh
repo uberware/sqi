@@ -226,8 +226,8 @@ API="${BASE_URL}/api/v1"
 # The bootstrap only fires on an empty user table, which the fresh temp SQLite
 # path guarantees. Against an existing database it is a deliberate no-op.
 SQI_HTTP_ADDR="$HTTP_ADDR" \
-SQI_NATS_ADDR="$NATS_ADDR" \
-SQI_NATS_DATA_DIR="${TMP_DIR}/nats" \
+SQI_NATS_EMBEDDED_ADDR="$NATS_ADDR" \
+SQI_NATS_EMBEDDED_DATA_DIR="${TMP_DIR}/nats" \
 SQI_STORE_SQLITE_PATH="${TMP_DIR}/sqi.db" \
 SQI_DISCOVERY_ENABLED="false" \
 SQI_SCHEDULER_TICK_INTERVAL="100ms" \

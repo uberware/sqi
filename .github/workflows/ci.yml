@@ -808,6 +808,87 @@ jobs:
 
           echo "Confirmed $pass_count/$expected TestIsolation_ tests passed."
 
+  # ── External broker: a real three-node NATS cluster ─────────────────────────
+  # Runs sqi-server in nats.mode: external, as the real binary, against a
+  # three-node nats-server cluster in Docker configured from `sqi-server nats
+  # external init` and `tls init`, with a real sqi-worker: the job, losing a
+  # node at R3, revocation through the system user, three user-JWT expiries
+  # on one connection, the one-server guard and restore's purge. See
+  # scripts/test-nats-cluster.sh.
+  #
+  # Two images: the floor (the oldest nats-server series sqi supports) and
+  # the current minor (the nats-server sqi embeds). Each is pinned by tag and
+  # digest and must equal NATS_IMAGE_FLOOR / NATS_IMAGE_CURRENT in the
+  # Makefile; internal/bus's TestNATSImagePins fails when they drift.
+  #
+  # One arch: the cluster runs nats-server's own images, and sqi's side of
+  # the wire is plain Go with no arch-specific code.
+  #
+  # `make test-nats-cluster` exits 0 when Docker is unavailable and every test
+  # skips without the cluster, so the job fails on that message and requires
+  # each test's PASS line by name instead of trusting the exit code.
+  nats-cluster-integration:
+    name: NATS cluster integration (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    needs: test
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: floor
+            image: nats:2.14.9@sha256:2721e37c651cb38039c583b0ee1b7248155e607ccaabfea19b38eb95a86fc3ff
+          - name: current
+            image: nats:2.15.2@sha256:991242c32d2738ffd358fd6614dd96c735017b4b3b34bfdb2c52a072d66db211
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # Pulled explicitly so a registry problem fails here with a clear
+      # message, not inside the test run.
+      - name: Pull nats-server image
+        run: docker pull ${{ matrix.image }}
+
+      - name: Run NATS cluster integration tests
+        run: |
+          set +e
+          make test-nats-cluster NATS_IMAGE='${{ matrix.image }}' 2>&1 | tee nats-cluster-output.log
+          status=${PIPESTATUS[0]}
+          set -e
+
+          if grep -q "docker unavailable" nats-cluster-output.log; then
+            echo "::error::Docker was unavailable, so the NATS cluster suite did not run."
+            exit 1
+          fi
+
+          expected=(
+            TestNATSCluster_FarmRunsJobWithAuthAndTLS
+            TestNATSCluster_SurvivesNodeLoss
+            TestNATSCluster_RevokeWithSystemCreds
+            TestNATSCluster_ExpiryReconnectsThreeTimes
+            TestNATSCluster_SecondServerRefused
+            TestNATSCluster_RestorePurges
+          )
+          missing=0
+          for name in "${expected[@]}"; do
+            if ! grep -q -- "^--- PASS: $name " nats-cluster-output.log; then
+              echo "::error::$name did not pass"
+              missing=1
+            fi
+          done
+          if [ "$status" -ne 0 ] || [ "$missing" -ne 0 ]; then
+            echo "::error::the NATS cluster suite did not all pass on ${{ matrix.image }} (exit=$status)."
+            exit 1
+          fi
+
+          echo "Confirmed all ${#expected[@]} TestNATSCluster_ tests passed on ${{ matrix.image }}."
+
   # ── State store on PostgreSQL ────────────────────────────────────────────────
   # Runs everything that needs a real PostgreSQL: the shared SQL layer's
   # concurrency races, schema parity with the SQLite migrations, the
@@ -1701,6 +1782,11 @@ jobs:
             TestDiscovery_TLSRecordsCrossTheWire
             TestDiscovery_AdvertisedBrokerTLSReachesWorkerConfig
             TestDiscovery_RealBinaryFindsItsServerOverMDNS
+            TestZeroConfigFarm
+            # The parent passes even when its mDNS subtest skips, so assert
+            # the subtests that join and run over mDNS by name.
+            TestZeroConfigFarm/worker_finds_the_server_over_mDNS
+            TestZeroConfigFarm/worker_runs_a_script_task_to_succeeded
           )
           missing=0
           for name in "${expected[@]}"; do

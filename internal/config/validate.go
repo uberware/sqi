@@ -39,7 +39,7 @@ func (e ValidationError) Error() string {
 func Validate(cfg Config) []ValidationError {
 	var errs []ValidationError
 	errs = append(errs, validateHTTP(cfg.HTTP)...)
-	errs = append(errs, validateNATS(cfg.NATS)...)
+	errs = append(errs, validateNATS(cfg.NATS, cfg.Discovery.Enabled)...)
 	errs = append(errs, validateStore(cfg.Store)...)
 	errs = append(errs, validateLog(cfg.Log)...)
 	errs = append(errs, validateScheduler(cfg.Scheduler)...)
@@ -112,43 +112,75 @@ func validateCORSOrigins(origins []string) []ValidationError {
 	return errs
 }
 
-func validateNATS(cfg NATSConfig) []ValidationError {
+// validateNATS checks the nats block. discoveryEnabled says whether the
+// broker URL is advertised over mDNS, which decides whether
+// nats.external.urls[0] is held to the rules for an advertised URL.
+func validateNATS(cfg NATSConfig, discoveryEnabled bool) []ValidationError {
+	var errs []ValidationError
+	switch cfg.Mode {
+	case "", NATSModeEmbedded:
+		errs = append(errs, validateNATSEmbedded(cfg.Embedded)...)
+	case NATSModeExternal:
+		errs = append(errs, validateNATSExternal(cfg, discoveryEnabled)...)
+	default:
+		errs = append(errs, ValidationError{
+			Field:   "nats.mode",
+			Message: fmt.Sprintf("must be embedded or external, got %q; set SQI_NATS_MODE or nats.mode", cfg.Mode),
+		})
+	}
+	return append(errs, validateNATSAuth(cfg.Auth)...)
+}
+
+func validateNATSEmbedded(cfg NATSEmbeddedConfig) []ValidationError {
 	var errs []ValidationError
 	if cfg.Addr == "" {
 		errs = append(errs, ValidationError{
-			Field:   "nats.addr",
-			Message: "must not be empty; set SQI_NATS_ADDR or nats.addr in the config file",
+			Field:   "nats.embedded.addr",
+			Message: "must not be empty; set SQI_NATS_EMBEDDED_ADDR or nats.embedded.addr in the config file",
 		})
 	} else if err := validateTCPAddr(cfg.Addr); err != nil {
 		errs = append(errs, ValidationError{
-			Field:   "nats.addr",
+			Field:   "nats.embedded.addr",
 			Message: fmt.Sprintf("invalid address %q: %s", cfg.Addr, err),
 		})
 	}
 	if cfg.DataDir == "" {
 		errs = append(errs, ValidationError{
-			Field:   "nats.data_dir",
-			Message: "must not be empty; set SQI_NATS_DATA_DIR or nats.data_dir in the config file",
+			Field:   "nats.embedded.data_dir",
+			Message: "must not be empty; set SQI_NATS_EMBEDDED_DATA_DIR or nats.embedded.data_dir in the config file",
 		})
 	}
 	if cfg.MaxStoreMB <= 0 {
 		errs = append(errs, ValidationError{
-			Field:   "nats.max_store_mb",
-			Message: fmt.Sprintf("must be > 0, got %d; set SQI_NATS_MAX_STORE_MB or nats.max_store_mb", cfg.MaxStoreMB),
+			Field:   "nats.embedded.max_store_mb",
+			Message: fmt.Sprintf("must be > 0, got %d; set SQI_NATS_EMBEDDED_MAX_STORE_MB or nats.embedded.max_store_mb", cfg.MaxStoreMB),
 		})
 	}
-	// TLS is validated BEFORE the auth early-return below: the two blocks are
-	// independent, and a farm running TLS with broker authentication off must
-	// still have its certificates checked at load.
+	// TLS is validated independently of auth: a farm running TLS with broker
+	// authentication off must still have its certificates checked at load.
 	errs = append(errs, validateNATSTLS(cfg.TLS)...)
+	return append(errs, validateEmbeddedAdvertiseURL(cfg)...)
+}
 
-	// A disabled auth block must never produce validation errors — the same
-	// rule validateAuth follows. Turning a feature off must not stop a
-	// server from starting because of a value nobody is reading.
-	if !cfg.Auth.Enabled {
+// validateNATSAuth checks the settings shared by both broker modes.
+func validateNATSAuth(cfg NATSAuthConfig) []ValidationError {
+	var errs []ValidationError
+	if d := cfg.UserTTL; d < MinNATSAuthUserTTL || d > MaxNATSAuthUserTTL {
+		errs = append(errs, ValidationError{
+			Field: "nats.auth.user_ttl",
+			Message: fmt.Sprintf(
+				"must be between %s and %s, got %s; set SQI_NATS_AUTH_USER_TTL or nats.auth.user_ttl",
+				MinNATSAuthUserTTL, MaxNATSAuthUserTTL, d,
+			),
+		})
+	}
+	// A disabled auth block produces no join-token errors, the same rule
+	// validateAuth follows: turning a feature off must not stop a server from
+	// starting over a value nothing reads.
+	if !cfg.Enabled {
 		return errs
 	}
-	if d := cfg.Auth.JoinTokenTTL; d < MinNATSAuthJoinTokenTTL || d > MaxNATSAuthJoinTokenTTL {
+	if d := cfg.JoinTokenTTL; d < MinNATSAuthJoinTokenTTL || d > MaxNATSAuthJoinTokenTTL {
 		errs = append(errs, ValidationError{
 			Field: "nats.auth.join_token_ttl",
 			Message: fmt.Sprintf(

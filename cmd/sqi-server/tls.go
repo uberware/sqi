@@ -77,7 +77,7 @@ func init() {
 	tlsInitCmd.Flags().StringArrayVar(&tlsInitHosts, "host", nil,
 		"hostname or IP the server certificate must cover (repeatable; defaults to this machine's hostname plus localhost, 127.0.0.1 and ::1)")
 	tlsInitCmd.Flags().StringArrayVar(&tlsInitClients, "client", nil,
-		"worker ID to issue a client certificate for, used only with nats.tls.client_ca_file (repeatable)")
+		"worker ID to issue a client certificate for, used only with nats.embedded.tls.client_ca_file (repeatable)")
 	tlsCmd.AddCommand(tlsInitCmd)
 
 	tlsIssueCmd.Flags().StringVar(&tlsIssueOut, "out", "./certs",
@@ -242,12 +242,12 @@ func runTLSInit(cmd *cobra.Command, _ []string) error {
   SANs: %[2]v
 
 On sqi-server:
-  http.tls.enabled:    true
-  http.tls.cert_file:  %[1]s/server.crt
-  http.tls.key_file:   %[1]s/server.key
-  nats.tls.enabled:    true
-  nats.tls.cert_file:  %[1]s/server.crt
-  nats.tls.key_file:   %[1]s/server.key
+  http.tls.enabled:             true
+  http.tls.cert_file:           %[1]s/server.crt
+  http.tls.key_file:            %[1]s/server.key
+  nats.embedded.tls.enabled:    true
+  nats.embedded.tls.cert_file:  %[1]s/server.crt
+  nats.embedded.tls.key_file:   %[1]s/server.key
 
 On each sqi-worker (copy ca.crt over first):
   nats.tls_ca_file:         /path/to/ca.crt
@@ -257,7 +257,7 @@ On each sqi-worker (copy ca.crt over first):
 	if len(tlsInitClients) > 0 {
 		fmt.Fprintf(cmd.OutOrStdout(), `
 For client-certificate (mTLS) workers, also set on the server:
-  nats.tls.client_ca_file: %s/ca.crt
+  nats.embedded.tls.client_ca_file: %s/ca.crt
 and give each worker its own client-<id>.crt / .key as
   nats.tls_cert_file / nats.tls_key_file
 `, tlsInitOut)

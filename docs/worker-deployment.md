@@ -74,6 +74,19 @@ worker:
   data_dir: "/var/lib/sqi-worker"
 ```
 
+`nats.url` is the broker's address: `sqi-server`'s own, or, when the server
+runs with an external NATS cluster (`nats.mode: external`), the cluster's.
+For a cluster, list every node, comma-separated, so the worker can move to
+another node when the one it is connected to is lost:
+
+```yaml
+nats:
+  url: "tls://nats-a.example.com:4222,tls://nats-b.example.com:4222,tls://nats-c.example.com:4222"
+```
+
+A worker that finds its server over mDNS uses the one broker URL the server
+advertises instead.
+
 A worker executes as many tasks concurrently as it has CPU cores; the server
 gates capacity by CPU-core fit, so there is no per-worker concurrency knob to
 set. On a multi-site farm you may also want to declare where this worker runs
@@ -154,12 +167,15 @@ naming the field, rather than guessing a host.
    connect with it. The token is single-use by default, so a second worker
    needs its own token.
 
-Every failure past this point is fatal and explicit — an expired, unknown or
-already-used token, or a worker ID already bound to a different key — the
-worker logs the cause and exits rather than looping in the background with
-no visible reason. An unreachable *server* is different: that still falls
-back to the ordinary reconnect-with-backoff behavior once a credential
-exists.
+Every enrollment failure past this point (an expired, unknown or
+already-used token, or a worker ID already bound to a different key) is
+fatal and explicit: the worker logs the cause and exits rather than looping
+in the background with no visible reason. An unreachable *server* is different: that
+still falls back to the ordinary reconnect-with-backoff behavior once a
+credential exists. A broker that refuses the credential is retried for 2
+minutes, with a WARN at each refusal, before the worker exits, so it rides out
+a `sqi-server` or database restart; see
+[How a connection is authorized](auth.md#how-a-connection-is-authorized).
 
 ### Path B — manual pre-provisioning
 
@@ -189,7 +205,7 @@ a site that wants no self-service enrollment endpoint at all
    Worker ID: 3f2a... (newly generated; if you expected an existing worker id here, --data-dir/worker.data_dir is probably pointed at the wrong directory)
    On the server, run:
      sqi-server worker enroll --worker-id 3f2a... --public-key UABC...XYZ
-   A RUNNING sqi-server will not accept this credential until it restarts; to enroll against a running server, use POST /api/v1/workers/enroll with a join token instead.
+   Once enrolled, the credential is accepted at this worker's next connect; sqi-server needs no restart.
    ```
 
 2. Copy that command to the server host (out of band — SSH, a console, a
@@ -199,17 +215,11 @@ a site that wants no self-service enrollment endpoint at all
    sqi-server worker enroll --worker-id 3f2a... --public-key UABC...XYZ
    ```
 
-3. **Restart `sqi-server`.** `sqi-server worker enroll` writes the database
-   from a separate process with no broker handle, and the broker builds its
-   authorized-key set once at startup — so a *running* server does not know
-   about the credential just written, and a worker presenting it is refused
-   with an authorization error (which the worker treats as fatal, by
-   design). If restarting the server is not acceptable, enroll over REST
-   with a join token instead (Path A), which reloads the running broker in
-   the same request.
-
-4. Start the worker. It finds the seed already on disk, skips enrollment
-   entirely, and connects directly with the credential.
+3. Start the worker. It finds the seed already on disk, skips enrollment
+   entirely, and connects directly with the credential. A running server
+   needs no restart: the broker asks `sqi-server` to authorize every
+   connection, and `sqi-server` reads the credential from the database each
+   time.
 
 No join token and no REST call are involved in this path at any point.
 
@@ -218,10 +228,16 @@ No join token and no REST call are involved in this path at any point.
 - **Immediately**, against a running server: `DELETE
   /api/v1/workers/{id}/credential`. This disconnects the worker inside the
   call — its in-flight leases reclaim through the normal heartbeat-sweep
-  path.
+  path. On an external NATS cluster that needs the server's
+  `nats.external.callout.system_creds_file`; without it the worker keeps its
+  connection until its authorization expires, within `nats.auth.user_ttl`.
 - **Offline**, without a running server (or as part of a maintenance
   script): `sqi-server worker revoke <worker-id>`. This writes the database
-  directly and takes effect the next time `sqi-server` starts, not before.
+  directly and disconnects nothing: the worker is refused at its next
+  connect, within `nats.auth.user_ttl` (1 hour by default) at the latest.
+
+A revoked worker's reconnect is refused, and it exits after the 2-minute
+grace.
 
 ### Rotating a compromised or lost key
 
@@ -239,14 +255,9 @@ No join token and no REST call are involved in this path at any point.
    revoked.
 3. `sqi-server worker enroll --worker-id <worker-id> --public-key <new-key>`
    on the server host, using the key `keygen` printed.
-4. **Restart `sqi-server`**, for the reason given in Path B step 3: this
-   offline command cannot reload a running broker's authorized-key set, so
-   until the server restarts it still refuses the new key. To rotate
-   without a server restart, remove `worker.nk` and re-enroll over REST
-   with a fresh join token instead (see the note below).
-5. Restart the worker. It finds the new seed `keygen` already wrote and
-   connects directly — no join token or REST enrollment call is needed on
-   this path.
+4. Restart the worker. It finds the new seed `keygen` already wrote and
+   connects directly, and the running server admits it. No server restart,
+   join token or REST enrollment call is needed on this path.
 
 The worker ID can be reused once its old credential is revoked; the old
 public key itself can never be enrolled again, on this worker ID or any

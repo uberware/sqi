@@ -250,7 +250,9 @@ func TestStdlibOnly(t *testing.T) {
 	}
 	fset := token.NewFileSet()
 	for _, name := range files {
-		if strings.HasSuffix(name, "_test.go") {
+		// The go command ignores files whose names start with "." or "_",
+		// such as the ._ sidecars macOS writes on some volumes.
+		if strings.HasSuffix(name, "_test.go") || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") {
 			continue
 		}
 		f, err := parser.ParseFile(fset, name, nil, parser.ImportsOnly)

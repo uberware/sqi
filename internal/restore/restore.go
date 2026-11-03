@@ -29,6 +29,11 @@ type Options struct {
 	InPlace     bool
 	Now         func() time.Time // nil: time.Now
 	Logger      *slog.Logger
+
+	// PurgeNATS, when set, replaces the quarantine: it removes sqi's
+	// JetStream state from an external broker. Set it or NATSDataDir, not
+	// both.
+	PurgeNATS func(ctx context.Context) error
 }
 
 // Result reports what Run did.
@@ -39,6 +44,7 @@ type Result struct {
 	MovedAside    []string // where the previous database files went
 	NATSDir       string   // the absolute directory looked at
 	NATSMovedTo   string   // "" when there was none
+	NATSPurged    bool     // PurgeNATS ran and succeeded
 }
 
 // stampLayout names moved-aside files: sqi.db.pre-restore-20261012T153000Z.
@@ -49,8 +55,9 @@ var rename = os.Rename
 
 // Run restores o.Backup (or, with InPlace, the database already in place) and
 // makes it safe to start a server on: lock, check, put in place, migrate,
-// fence, quarantine the NATS directory. Each step must succeed before the
-// next. The lock is held until Run returns.
+// fence, then quarantine the NATS directory or, with an external broker,
+// purge it. Each step must succeed before the next. The lock is held until
+// Run returns.
 func Run(ctx context.Context, o Options) (Result, error) {
 	if err := validate(o); err != nil {
 		return Result{}, err
@@ -92,6 +99,10 @@ func Run(ctx context.Context, o Options) (Result, error) {
 func validate(o Options) error {
 	if o.InPlace == (o.Backup != "") {
 		return errors.New("restore: give a backup file, or --in-place, not both")
+	}
+	if o.PurgeNATS != nil && o.NATSDataDir != "" {
+		return errors.New("restore: a NATS data directory belongs to an embedded broker and a purge to an " +
+			"external one; give one of them, not both")
 	}
 	if backend.Name(o.Driver) == backend.DriverSQLite && o.SQLitePath == "" {
 		return errors.New("restore: the SQLite database path is empty; use --db, set store.sqlite_path, " +
@@ -140,7 +151,8 @@ const notFenced = "the database in place is not fenced, so do not start a server
 	"fix the cause and run \"sqi-server restore --in-place\" to finish"
 
 // finish migrates the database now in place, fences it, and moves the NATS
-// directory aside, filling in res. Each failure says what state it left.
+// directory aside or purges the external broker, filling in res. Each failure
+// says what state it left.
 func finish(ctx context.Context, o Options, bo backend.Options, now time.Time, stamp string, res *Result) error {
 	bo.AutoMigrate = true // the version guard runs inside Open
 	st, err := backend.Open(ctx, bo)
@@ -154,11 +166,26 @@ func finish(ctx context.Context, o Options, bo backend.Options, now time.Time, s
 	if res.Fenced, err = Fence(ctx, st, now); err != nil {
 		return fmt.Errorf("%w; %s", err, notFenced)
 	}
+	if o.PurgeNATS != nil {
+		return purgeNATS(ctx, o.PurgeNATS, res)
+	}
 	if res.NATSDir, res.NATSMovedTo, err = quarantineNATS(o.NATSDataDir, stamp); err != nil {
 		return fmt.Errorf("%w; the database in place is restored and fenced, but the NATS data directory "+
 			"was not moved aside: move it aside by hand, or run \"sqi-server restore --in-place\", "+
 			"before starting a server", err)
 	}
+	return nil
+}
+
+// purgeNATS runs the external broker's purge in place of the quarantine.
+func purgeNATS(ctx context.Context, purge func(context.Context) error, res *Result) error {
+	if err := purge(ctx); err != nil {
+		return fmt.Errorf("%w; the database in place is restored and fenced, but sqi's JetStream state on the "+
+			"external broker was not purged: run \"sqi-server restore --in-place\" once the broker is reachable, "+
+			"or purge it by hand (\"sqi-server restore --in-place --skip-nats-purge\" lists what), "+
+			"before starting a server", err)
+	}
+	res.NATSPurged = true
 	return nil
 }
 

@@ -45,8 +45,8 @@ func routerConfig(cfg Config) api.Config {
 // regardless of nats.auth.* configuration, the enrollment endpoint never
 // mounted and a minted token carrying a zero TTL.
 func natsAuthDeps(cfg Config, deps *api.Deps) {
-	deps.NATSAuthEnabled = cfg.NATSAuthEnabled
-	deps.NATSAuthEnrollmentEndpointEnabled = cfg.NATSAuthEnrollmentEndpointEnabled
-	deps.JoinTokenTTL = cfg.NATSAuthJoinTokenTTL
-	deps.JoinTokenSingleUse = cfg.NATSAuthJoinTokenSingleUse
+	deps.NATSAuthEnabled = cfg.NATS.Auth.Enabled
+	deps.NATSAuthEnrollmentEndpointEnabled = cfg.NATS.Auth.EnrollmentEndpointEnabled
+	deps.JoinTokenTTL = cfg.NATS.Auth.JoinTokenTTL
+	deps.JoinTokenSingleUse = cfg.NATS.Auth.JoinTokenSingleUse
 }

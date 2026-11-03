@@ -63,6 +63,7 @@ type Store interface {
 	SessionStore
 	APIKeyStore
 	WorkerCredentialStore
+	BrokerStateStore
 	io.Closer
 }
 

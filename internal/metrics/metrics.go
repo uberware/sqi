@@ -83,11 +83,11 @@ type Metrics struct {
 
 	// ── NATS JetStream ────────────────────────────────────────────────────────
 
-	// NATSPublishedTotal counts messages published to the embedded NATS broker,
+	// NATSPublishedTotal counts messages published to the NATS broker,
 	// labeled by subject. Incremented by the typed bus client.
 	NATSPublishedTotal *prometheus.CounterVec
 
-	// NATSConsumedTotal counts messages consumed from the embedded NATS broker,
+	// NATSConsumedTotal counts messages consumed from the NATS broker,
 	// labeled by subject. Incremented by the typed bus client.
 	NATSConsumedTotal *prometheus.CounterVec
 
@@ -216,7 +216,7 @@ func New() *Metrics {
 				Namespace: "sqi",
 				Subsystem: "nats",
 				Name:      "published_total",
-				Help:      "Total messages published to the embedded NATS broker, partitioned by subject.",
+				Help:      "Total messages published to the NATS broker, partitioned by subject.",
 			},
 			[]string{"subject"},
 		),
@@ -226,7 +226,7 @@ func New() *Metrics {
 				Namespace: "sqi",
 				Subsystem: "nats",
 				Name:      "consumed_total",
-				Help:      "Total messages consumed from the embedded NATS broker, partitioned by subject.",
+				Help:      "Total messages consumed from the NATS broker, partitioned by subject.",
 			},
 			[]string{"subject"},
 		),

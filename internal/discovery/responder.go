@@ -5,15 +5,17 @@
 // without manual address configuration.
 //
 // The server publishes a single "_sqi._tcp" service instance whose SRV record
-// points at the HTTP API port — the canonical, externally-bound sqi endpoint
-// (the embedded NATS broker defaults to loopback). Additional connection
-// details, including the NATS port, are carried in TXT records:
+// points at the HTTP API port — the canonical, externally-bound sqi endpoint.
+// Additional connection details, including the broker URL, are carried in TXT
+// records:
 //
 //	id=<instance-id>   unique per process; lets clients dedupe re-announcements
 //	http=<http-port>   REST + WebSocket API port (also the SRV port)
-//	nats=<nats-port>   embedded NATS JetStream port for worker connections
+//	nats_url=<url>     broker URL for worker connections; the nats:// or tls://
+//	                   scheme says whether the broker requires TLS
 //	host=<hostname>    advertising host's reported name
 //	version=<version>  server build version
+//	tls=1              present only when the REST API is TLS-terminated
 //
 // Advertisement is toggleable via configuration (see [Config.Enabled]) for
 // environments that prohibit multicast, such as most cloud VPCs.
@@ -27,10 +29,12 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/grandcat/zeroconf"
 
+	"github.com/uberware/sqi/internal/redact"
 	"github.com/uberware/sqi/internal/version"
 )
 
@@ -58,9 +62,11 @@ type Config struct {
 	// extracted and advertised as the SRV record port.
 	HTTPAddr string
 
-	// NATSAddr is the embedded NATS listen address ("host:port"). The port is
-	// extracted and advertised in the "nats" TXT record.
-	NATSAddr string
+	// NATSURL is the broker URL workers should connect to, advertised as the
+	// "nats_url" TXT record. Its nats:// or tls:// scheme is how a discovering
+	// worker learns whether the broker requires TLS. Must not be empty when
+	// Enabled is true.
+	NATSURL string
 
 	// InstanceID uniquely identifies this server process. When empty, [New]
 	// generates a random UUID. Advertised in the "id" TXT record.
@@ -84,16 +90,6 @@ type Config struct {
 	// config key: an operator who wants to limit advertisement should say so
 	// through a real setting, and none exists yet.
 	Interfaces []net.Interface
-
-	// NATSTLS reports whether the embedded broker requires TLS, advertised as
-	// the "nats_tls" TXT record.
-	//
-	// This is the one signal that can tell a worker its broker needs TLS
-	// without anything being configured locally, so it feeds
-	// nats.tls_enabled's "auto" mode directly: a discovering worker turns TLS
-	// on rather than attempting plaintext and failing with an error that names
-	// neither the cause nor the fix.
-	NATSTLS bool
 }
 
 // Responder owns the lifecycle of the mDNS service advertisement. Create one
@@ -102,13 +98,13 @@ type Responder struct {
 	cfg      Config
 	logger   *slog.Logger
 	httpPort int
-	natsPort int
 
 	server *zeroconf.Server // nil until Start succeeds; nil when disabled
 }
 
-// New validates cfg and returns a [Responder]. It parses the HTTP and NATS
-// ports up front so configuration errors surface before the server boots.
+// New validates cfg and returns a [Responder]. It parses the HTTP port and
+// checks the broker URL up front so configuration errors surface before the
+// server boots.
 // An empty [Config.InstanceID] is filled with a freshly generated UUID.
 //
 // When cfg.Enabled is false, port parsing is skipped and the returned
@@ -128,18 +124,32 @@ func New(cfg Config, logger *slog.Logger) (*Responder, error) {
 	if err != nil {
 		return nil, err
 	}
-	natsPort, err := portFromAddr(cfg.NATSAddr)
-	if err != nil {
+	if err := validateNATSURL(cfg.NATSURL); err != nil {
 		return nil, err
 	}
 	r.httpPort = httpPort
-	r.natsPort = natsPort
 
 	if r.cfg.InstanceID == "" {
 		r.cfg.InstanceID = uuid.NewString()
 	}
 
 	return r, nil
+}
+
+// validateNATSURL applies [CheckNATSURL] as a backstop; configuration
+// validation reports the same problems to the operator at load.
+func validateNATSURL(raw string) error {
+	if raw == "" {
+		return errors.New("discovery: broker URL must not be empty")
+	}
+	if _, err := CheckNATSURL(raw); err != nil {
+		if errors.Is(err, ErrNATSURLTooLong) {
+			return fmt.Errorf("discovery: broker URL makes a %d-byte %s record, over the %d-byte DNS TXT limit: %w",
+				NATSURLRecordLen(raw), NATSURLKey, MaxTXTString, err)
+		}
+		return fmt.Errorf("discovery: broker URL %q %w", redact.URL(raw), err)
+	}
+	return nil
 }
 
 // Start publishes the mDNS service record on all multicast-capable interfaces.
@@ -156,7 +166,7 @@ func (r *Responder) Start(ctx context.Context) error {
 		return nil
 	}
 
-	txt := buildTXTRecords(r.cfg.InstanceID, r.httpPort, r.natsPort, hostname(), version.Version, r.cfg.HTTPTLS, r.cfg.NATSTLS)
+	txt := buildTXTRecords(r.cfg.InstanceID, r.httpPort, r.cfg.NATSURL, hostname(), version.Version, r.cfg.HTTPTLS)
 
 	server, err := zeroconf.Register(
 		r.cfg.InstanceName,
@@ -176,7 +186,7 @@ func (r *Responder) Start(ctx context.Context) error {
 		slog.String("instance", r.cfg.InstanceName),
 		slog.String("service", serviceType),
 		slog.Int("http_port", r.httpPort),
-		slog.Int("nats_port", r.natsPort),
+		slog.String("nats_url", redact.URL(r.cfg.NATSURL)),
 		slog.String("id", r.cfg.InstanceID),
 	)
 	return nil
@@ -218,25 +228,30 @@ func portFromAddr(addr string) (int, error) {
 
 // buildTXTRecords assembles the DNS-SD TXT key=value records advertised
 // alongside the service. Order is stable for deterministic tests.
-func buildTXTRecords(instanceID string, httpPort, natsPort int, host, ver string, httpTLS, natsTLS bool) []string {
+func buildTXTRecords(instanceID string, httpPort int, natsURL, host, ver string, httpTLS bool) []string {
 	txt := []string{
 		"id=" + instanceID,
 		"http=" + strconv.Itoa(httpPort),
-		"nats=" + strconv.Itoa(natsPort),
+		NATSURLKey + "=" + natsURL,
 		"host=" + host,
 		"version=" + ver,
 	}
-	// The TLS keys are OMITTED rather than emitted as "tls=0" when off, so a
-	// plaintext farm advertises byte-for-byte what it always has. Clients that
-	// predate these keys ignore unknown keys, so adding them is compatible in
-	// both directions.
+	// The tls key is omitted rather than emitted as "tls=0" when off, so a
+	// plaintext farm advertises nothing extra. The broker's TLS needs no key:
+	// the nats_url scheme carries it.
 	if httpTLS {
 		txt = append(txt, "tls=1")
 	}
-	if natsTLS {
-		txt = append(txt, "nats_tls=1")
-	}
 	return txt
+}
+
+// SRVHost returns the host the service's SRV record names: the machine's
+// hostname in the ".local" domain, which is how the underlying responder
+// forms it. The server uses it as the host of a derived broker URL, so that
+// URL names the same host as the SRV record and a discovering worker can fall
+// back to the advertised address when that name does not resolve.
+func SRVHost() string {
+	return hostname() + "." + strings.TrimSuffix(domain, ".")
 }
 
 // hostname returns the host's reported name, or "unknown" if it cannot be

@@ -4,8 +4,10 @@ package tlsutil_test
 
 import (
 	"crypto/tls"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -105,5 +107,40 @@ func TestLeafOf_ReturnsTheLeaf(t *testing.T) {
 	}
 	if !reparsed.NotAfter.Equal(leaf.NotAfter) {
 		t.Error("re-parsed leaf disagrees with the populated one")
+	}
+}
+
+func TestClientConfig(t *testing.T) {
+	cert, key, ca := farmCerts(t)
+
+	t.Run("nothing set: TLS 1.2+, system roots, no client certificate", func(t *testing.T) {
+		tc, err := tlsutil.ClientConfig("", "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tc.MinVersion != tls.VersionTLS12 || tc.RootCAs != nil || len(tc.Certificates) != 0 {
+			t.Fatalf("config = %+v", tc)
+		}
+	})
+
+	t.Run("ca and client pair", func(t *testing.T) {
+		tc, err := tlsutil.ClientConfig(ca, cert, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tc.RootCAs == nil || len(tc.Certificates) != 1 {
+			t.Fatalf("config = %+v, want the CA pool and one certificate", tc)
+		}
+	})
+
+	for _, half := range [][2]string{{cert, ""}, {"", key}} {
+		if _, err := tlsutil.ClientConfig("", half[0], half[1]); !errors.Is(err, tlsutil.ErrIncompleteClientPair) {
+			t.Errorf("ClientConfig(cert=%q, key=%q) = %v, want ErrIncompleteClientPair", half[0], half[1], err)
+		}
+	}
+
+	if _, err := tlsutil.ClientConfig("", cert, filepath.Join(t.TempDir(), "missing.key")); err == nil ||
+		!strings.Contains(err.Error(), cert) {
+		t.Errorf("unloadable pair: err = %v, want one naming %s", err, cert)
 	}
 }

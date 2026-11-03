@@ -673,6 +673,45 @@ and the file grows past its limit until the reader lets go.
 
 ---
 
+## Readiness: `GET /readyz`
+
+`/healthz` says only that the process is alive. `/readyz` runs every
+registered readiness check concurrently under a 5-second deadline and returns
+`200` with `{"status":"ok","checks":{…}}` when all pass, or `503` with
+`{"status":"degraded","checks":{…}}` naming each failing check's error. There
+are two checks:
+
+- **The store**, named after `store.driver` (`sqlite` or `postgres`): a ping
+  over the read pool, so a long submission holding the write connection does
+  not make the server look down.
+- **`nats`**, the broker. It never makes a round trip to the broker, so it
+  answers within the deadline even during a network partition. It fails
+  when:
+  - sqi's data connection to the broker is not connected (the error names
+    its state, such as `RECONNECTING`);
+  - with `nats.auth.enabled`, the auth-callout connection is not connected:
+    no worker can connect until it is back;
+  - on the embedded broker, the in-process nats-server is not running;
+  - on an external broker (`nats.mode: external`), this server has lost
+    the [one-server-per-account guard](operations.md#one-server-per-broker-account):
+    its last refresh is more than 30 seconds old (`the broker account guard
+    was last refreshed … ago`), or another `sqi-server` took the account
+    (`this sqi-server no longer holds it`), which lasts until this server
+    restarts.
+
+  On an external broker the system connection used for revocation is not
+  checked: without it revocation is slower, but workers keep working.
+
+After the server's broker connection comes back, `/readyz` turns ready at
+once, but worker-offline detection waits about 3 minutes (at the defaults)
+before acting on missing heartbeats, logging `scheduler: bus reconnected
+recently; liveness sweep deferred` once with the time it resumes (after a
+start, `scheduler: bus connected at startup; liveness sweep deferred for the
+reconnect grace`); see
+[After a broker outage](architecture.md#after-a-broker-outage-the-reconnect-grace).
+
+---
+
 ## Configuration reference
 
 ### Server (`sqi-server`)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -182,6 +183,52 @@ type roleMappingFile struct {
 	Role  string `yaml:"role"`
 }
 
+// fileNATS is the nats block as it appears in the file. The keys that moved
+// under nats.embedded (addr, data_dir, max_store_mb, tls) are not fields
+// here; see [rejectRemovedNATSKeys].
+type fileNATS struct {
+	Mode *string `yaml:"mode"`
+	Auth *struct {
+		Enabled                   *bool         `yaml:"enabled"`
+		UserTTL                   *fileDuration `yaml:"user_ttl"`
+		JoinTokenTTL              *fileDuration `yaml:"join_token_ttl"`
+		JoinTokenSingleUse        *bool         `yaml:"join_token_single_use"`
+		EnrollmentEndpointEnabled *bool         `yaml:"enrollment_endpoint_enabled"`
+	} `yaml:"auth"`
+	Embedded *struct {
+		Addr         *string `yaml:"addr"`
+		AdvertiseURL *string `yaml:"advertise_url"`
+		DataDir      *string `yaml:"data_dir"`
+		MaxStoreMB   *int    `yaml:"max_store_mb"`
+		TLS          *struct {
+			Enabled      *bool   `yaml:"enabled"`
+			CertFile     *string `yaml:"cert_file"`
+			KeyFile      *string `yaml:"key_file"`
+			ClientCAFile *string `yaml:"client_ca_file"`
+		} `yaml:"tls"`
+	} `yaml:"embedded"`
+	External *struct {
+		URLs           *[]string     `yaml:"urls"`
+		AdvertiseURLs  *[]string     `yaml:"advertise_urls"`
+		Account        *string       `yaml:"account"`
+		NkeySeedFile   *string       `yaml:"nkey_seed_file"`
+		CredsFile      *string       `yaml:"creds_file"`
+		StreamReplicas *int          `yaml:"stream_replicas"`
+		ConnectTimeout *fileDuration `yaml:"connect_timeout"`
+		TLS            *struct {
+			CAFile     *string `yaml:"ca_file"`
+			CertFile   *string `yaml:"cert_file"`
+			KeyFile    *string `yaml:"key_file"`
+			ServerName *string `yaml:"server_name"`
+		} `yaml:"tls"`
+		Callout *struct {
+			NkeySeedFile    *string `yaml:"nkey_seed_file"`
+			IssuerSeedFile  *string `yaml:"issuer_seed_file"`
+			SystemCredsFile *string `yaml:"system_creds_file"`
+		} `yaml:"callout"`
+	} `yaml:"external"`
+}
+
 // fileConfig is the partial YAML/JSON shape used when unmarshaling a config
 // file. Every field uses a pointer so we can distinguish "not set" from a
 // zero value, applying only the fields that are present in the file.
@@ -197,23 +244,7 @@ type fileConfig struct {
 		} `yaml:"tls"`
 	} `yaml:"http"`
 
-	NATS *struct {
-		Addr       *string `yaml:"addr"`
-		DataDir    *string `yaml:"data_dir"`
-		MaxStoreMB *int    `yaml:"max_store_mb"`
-		Auth       *struct {
-			Enabled                   *bool         `yaml:"enabled"`
-			JoinTokenTTL              *fileDuration `yaml:"join_token_ttl"`
-			JoinTokenSingleUse        *bool         `yaml:"join_token_single_use"`
-			EnrollmentEndpointEnabled *bool         `yaml:"enrollment_endpoint_enabled"`
-		} `yaml:"auth"`
-		TLS *struct {
-			Enabled      *bool   `yaml:"enabled"`
-			CertFile     *string `yaml:"cert_file"`
-			KeyFile      *string `yaml:"key_file"`
-			ClientCAFile *string `yaml:"client_ca_file"`
-		} `yaml:"tls"`
-	} `yaml:"nats"`
+	NATS *fileNATS `yaml:"nats"`
 
 	Store *struct {
 		Driver             *string       `yaml:"driver"`
@@ -339,6 +370,10 @@ func loadFileConfig(explicit string) (*fileConfig, error) {
 		return nil, fmt.Errorf("read config file %q: %w", path, err)
 	}
 
+	if err := rejectRemovedNATSKeys(path, data); err != nil {
+		return nil, err
+	}
+
 	var fc fileConfig
 	if err := yaml.Unmarshal(data, &fc); err != nil {
 		return nil, fmt.Errorf("parse config file %q: %w", path, err)
@@ -417,59 +452,78 @@ func mergeNATSFile(cfg *Config, fc fileConfig) {
 	if fc.NATS == nil {
 		return
 	}
-	if fc.NATS.Addr != nil {
-		cfg.NATS.Addr = *fc.NATS.Addr
-	}
-	if fc.NATS.DataDir != nil {
-		cfg.NATS.DataDir = *fc.NATS.DataDir
-	}
-	if fc.NATS.MaxStoreMB != nil {
-		cfg.NATS.MaxStoreMB = *fc.NATS.MaxStoreMB
-	}
-	mergeNATSAuthFile(cfg, fc.NATS.Auth)
-	mergeNATSTLSFile(cfg, fc.NATS.TLS)
+	setIfNotNilString(&cfg.NATS.Mode, fc.NATS.Mode)
+	mergeNATSAuthFile(cfg, fc.NATS)
+	mergeNATSEmbeddedFile(cfg, fc.NATS)
+	mergeNATSExternalFile(cfg, fc.NATS)
 }
 
-// mergeNATSTLSFile overlays the nats.tls sub-fields from fc onto cfg. Split
-// out of [mergeNATSFile] for the same reason as [mergeNATSAuthFile].
-func mergeNATSTLSFile(cfg *Config, t *struct {
-	Enabled      *bool   `yaml:"enabled"`
-	CertFile     *string `yaml:"cert_file"`
-	KeyFile      *string `yaml:"key_file"`
-	ClientCAFile *string `yaml:"client_ca_file"`
-},
-) {
-	if t == nil {
-		return
-	}
-	setIfNotNilBool(&cfg.NATS.TLS.Enabled, t.Enabled)
-	setIfNotNilString(&cfg.NATS.TLS.CertFile, t.CertFile)
-	setIfNotNilString(&cfg.NATS.TLS.KeyFile, t.KeyFile)
-	setIfNotNilString(&cfg.NATS.TLS.ClientCAFile, t.ClientCAFile)
-}
-
-// mergeNATSAuthFile overlays the nats.auth sub-fields from fc onto cfg. Split
+// mergeNATSAuthFile overlays the nats.auth sub-fields from n onto cfg. Split
 // out of [mergeNATSFile] to keep its cyclomatic complexity under the lint
 // threshold.
-func mergeNATSAuthFile(cfg *Config, a *struct {
-	Enabled                   *bool         `yaml:"enabled"`
-	JoinTokenTTL              *fileDuration `yaml:"join_token_ttl"`
-	JoinTokenSingleUse        *bool         `yaml:"join_token_single_use"`
-	EnrollmentEndpointEnabled *bool         `yaml:"enrollment_endpoint_enabled"`
-},
-) {
+func mergeNATSAuthFile(cfg *Config, n *fileNATS) {
+	a := n.Auth
 	if a == nil {
 		return
 	}
-	if a.Enabled != nil {
-		cfg.NATS.Auth.Enabled = *a.Enabled
-	}
+	setIfNotNilBool(&cfg.NATS.Auth.Enabled, a.Enabled)
+	setIfNotNilDuration(&cfg.NATS.Auth.UserTTL, a.UserTTL)
 	setIfNotNilDuration(&cfg.NATS.Auth.JoinTokenTTL, a.JoinTokenTTL)
-	if a.JoinTokenSingleUse != nil {
-		cfg.NATS.Auth.JoinTokenSingleUse = *a.JoinTokenSingleUse
+	setIfNotNilBool(&cfg.NATS.Auth.JoinTokenSingleUse, a.JoinTokenSingleUse)
+	setIfNotNilBool(&cfg.NATS.Auth.EnrollmentEndpointEnabled, a.EnrollmentEndpointEnabled)
+}
+
+// mergeNATSEmbeddedFile overlays the nats.embedded sub-fields from n onto cfg.
+func mergeNATSEmbeddedFile(cfg *Config, n *fileNATS) {
+	e := n.Embedded
+	if e == nil {
+		return
 	}
-	if a.EnrollmentEndpointEnabled != nil {
-		cfg.NATS.Auth.EnrollmentEndpointEnabled = *a.EnrollmentEndpointEnabled
+	d := &cfg.NATS.Embedded
+	setIfNotNilString(&d.Addr, e.Addr)
+	setIfNotNilString(&d.AdvertiseURL, e.AdvertiseURL)
+	setIfNotNilString(&d.DataDir, e.DataDir)
+	if e.MaxStoreMB != nil {
+		d.MaxStoreMB = *e.MaxStoreMB
+	}
+	if t := e.TLS; t != nil {
+		setIfNotNilBool(&d.TLS.Enabled, t.Enabled)
+		setIfNotNilString(&d.TLS.CertFile, t.CertFile)
+		setIfNotNilString(&d.TLS.KeyFile, t.KeyFile)
+		setIfNotNilString(&d.TLS.ClientCAFile, t.ClientCAFile)
+	}
+}
+
+// mergeNATSExternalFile overlays the nats.external sub-fields from n onto cfg.
+func mergeNATSExternalFile(cfg *Config, n *fileNATS) {
+	e := n.External
+	if e == nil {
+		return
+	}
+	d := &cfg.NATS.External
+	if e.URLs != nil {
+		d.URLs = *e.URLs
+	}
+	if e.AdvertiseURLs != nil {
+		d.AdvertiseURLs = *e.AdvertiseURLs
+	}
+	setIfNotNilString(&d.Account, e.Account)
+	setIfNotNilString(&d.NkeySeedFile, e.NkeySeedFile)
+	setIfNotNilString(&d.CredsFile, e.CredsFile)
+	if e.StreamReplicas != nil {
+		d.StreamReplicas = *e.StreamReplicas
+	}
+	setIfNotNilDuration(&d.ConnectTimeout, e.ConnectTimeout)
+	if t := e.TLS; t != nil {
+		setIfNotNilString(&d.TLS.CAFile, t.CAFile)
+		setIfNotNilString(&d.TLS.CertFile, t.CertFile)
+		setIfNotNilString(&d.TLS.KeyFile, t.KeyFile)
+		setIfNotNilString(&d.TLS.ServerName, t.ServerName)
+	}
+	if c := e.Callout; c != nil {
+		setIfNotNilString(&d.Callout.NkeySeedFile, c.NkeySeedFile)
+		setIfNotNilString(&d.Callout.IssuerSeedFile, c.IssuerSeedFile)
+		setIfNotNilString(&d.Callout.SystemCredsFile, c.SystemCredsFile)
 	}
 }
 
@@ -806,17 +860,8 @@ func applyEnv(cfg *Config) error {
 	setString(&cfg.HTTP.TLS.KeyFile, "SQI_HTTP_TLS_KEY_FILE")
 	setStringSlice(&cfg.HTTP.CORSOrigins, "SQI_HTTP_CORS_ORIGINS")
 
-	setString(&cfg.NATS.Addr, "SQI_NATS_ADDR")
-	setString(&cfg.NATS.DataDir, "SQI_NATS_DATA_DIR")
-	collect(setInt(&cfg.NATS.MaxStoreMB, "SQI_NATS_MAX_STORE_MB"))
-	collect(setBool(&cfg.NATS.TLS.Enabled, "SQI_NATS_TLS_ENABLED"))
-	setString(&cfg.NATS.TLS.CertFile, "SQI_NATS_TLS_CERT_FILE")
-	setString(&cfg.NATS.TLS.KeyFile, "SQI_NATS_TLS_KEY_FILE")
-	setString(&cfg.NATS.TLS.ClientCAFile, "SQI_NATS_TLS_CLIENT_CA_FILE")
-	collect(setBool(&cfg.NATS.Auth.Enabled, "SQI_NATS_AUTH_ENABLED"))
-	collect(setDuration(&cfg.NATS.Auth.JoinTokenTTL, "SQI_NATS_AUTH_JOIN_TOKEN_TTL"))
-	collect(setBool(&cfg.NATS.Auth.JoinTokenSingleUse, "SQI_NATS_AUTH_JOIN_TOKEN_SINGLE_USE"))
-	collect(setBool(&cfg.NATS.Auth.EnrollmentEndpointEnabled, "SQI_NATS_AUTH_ENROLLMENT_ENDPOINT_ENABLED"))
+	collect(rejectRemovedNATSEnv())
+	applyNATSEnv(cfg, collect)
 
 	setString(&cfg.Store.Driver, "SQI_STORE_DRIVER")
 	setString(&cfg.Store.SQLitePath, "SQI_STORE_SQLITE_PATH")
@@ -929,6 +974,109 @@ func setString(dst *string, key string) {
 	if v := os.Getenv(key); v != "" {
 		*dst = v
 	}
+}
+
+// applyNATSEnv overlays the SQI_NATS_* variables onto cfg.
+func applyNATSEnv(cfg *Config, collect func(error)) {
+	n := &cfg.NATS
+	setString(&n.Mode, "SQI_NATS_MODE")
+	collect(setBool(&n.Auth.Enabled, "SQI_NATS_AUTH_ENABLED"))
+	collect(setDuration(&n.Auth.UserTTL, "SQI_NATS_AUTH_USER_TTL"))
+	collect(setDuration(&n.Auth.JoinTokenTTL, "SQI_NATS_AUTH_JOIN_TOKEN_TTL"))
+	collect(setBool(&n.Auth.JoinTokenSingleUse, "SQI_NATS_AUTH_JOIN_TOKEN_SINGLE_USE"))
+	collect(setBool(&n.Auth.EnrollmentEndpointEnabled, "SQI_NATS_AUTH_ENROLLMENT_ENDPOINT_ENABLED"))
+
+	em := &n.Embedded
+	setString(&em.Addr, "SQI_NATS_EMBEDDED_ADDR")
+	setString(&em.AdvertiseURL, "SQI_NATS_EMBEDDED_ADVERTISE_URL")
+	setString(&em.DataDir, "SQI_NATS_EMBEDDED_DATA_DIR")
+	collect(setInt(&em.MaxStoreMB, "SQI_NATS_EMBEDDED_MAX_STORE_MB"))
+	collect(setBool(&em.TLS.Enabled, "SQI_NATS_EMBEDDED_TLS_ENABLED"))
+	setString(&em.TLS.CertFile, "SQI_NATS_EMBEDDED_TLS_CERT_FILE")
+	setString(&em.TLS.KeyFile, "SQI_NATS_EMBEDDED_TLS_KEY_FILE")
+	setString(&em.TLS.ClientCAFile, "SQI_NATS_EMBEDDED_TLS_CLIENT_CA_FILE")
+
+	ex := &n.External
+	setStringSlice(&ex.URLs, "SQI_NATS_EXTERNAL_URLS")
+	setStringSlice(&ex.AdvertiseURLs, "SQI_NATS_EXTERNAL_ADVERTISE_URLS")
+	setString(&ex.Account, "SQI_NATS_EXTERNAL_ACCOUNT")
+	setString(&ex.NkeySeedFile, "SQI_NATS_EXTERNAL_NKEY_SEED_FILE")
+	setString(&ex.CredsFile, "SQI_NATS_EXTERNAL_CREDS_FILE")
+	collect(setInt(&ex.StreamReplicas, "SQI_NATS_EXTERNAL_STREAM_REPLICAS"))
+	collect(setDuration(&ex.ConnectTimeout, "SQI_NATS_EXTERNAL_CONNECT_TIMEOUT"))
+	setString(&ex.TLS.CAFile, "SQI_NATS_EXTERNAL_TLS_CA_FILE")
+	setString(&ex.TLS.CertFile, "SQI_NATS_EXTERNAL_TLS_CERT_FILE")
+	setString(&ex.TLS.KeyFile, "SQI_NATS_EXTERNAL_TLS_KEY_FILE")
+	setString(&ex.TLS.ServerName, "SQI_NATS_EXTERNAL_TLS_SERVER_NAME")
+	setString(&ex.Callout.NkeySeedFile, "SQI_NATS_EXTERNAL_CALLOUT_NKEY_SEED_FILE")
+	setString(&ex.Callout.IssuerSeedFile, "SQI_NATS_EXTERNAL_CALLOUT_ISSUER_SEED_FILE")
+	setString(&ex.Callout.SystemCredsFile, "SQI_NATS_EXTERNAL_CALLOUT_SYSTEM_CREDS_FILE")
+}
+
+// removedNATSKeys are the nats.* keys that moved under nats.embedded.
+var removedNATSKeys = []string{"addr", "data_dir", "max_store_mb", "tls"}
+
+// rejectRemovedNATSKeys fails a config file that still uses a nats.* key that
+// moved under nats.embedded. Unknown keys are otherwise ignored, so without
+// this a stale file would run silently on the defaults. Only these four paths
+// are checked: the loader does not reject unknown keys in general.
+func rejectRemovedNATSKeys(path string, data []byte) error {
+	root := yamlRoot(data)
+	if root == nil || root.Kind != yaml.MappingNode {
+		return nil
+	}
+	var errs []error
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value != "nats" || root.Content[i+1].Kind != yaml.MappingNode {
+			continue
+		}
+		nats := root.Content[i+1]
+		for j := 0; j+1 < len(nats.Content); j += 2 {
+			k := nats.Content[j]
+			if slices.Contains(removedNATSKeys, k.Value) {
+				errs = append(errs, fmt.Errorf(
+					"config file %q line %d: nats.%s was removed; use nats.embedded.%s",
+					path, k.Line, k.Value, k.Value,
+				))
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// yamlRoot returns the top-level node of data, or nil when data does not
+// parse or is empty. A syntax error is left to the typed parse that runs
+// after the caller.
+func yamlRoot(data []byte) *yaml.Node {
+	var doc yaml.Node
+	if yaml.Unmarshal(data, &doc) == nil && len(doc.Content) > 0 {
+		return doc.Content[0]
+	}
+	return nil
+}
+
+// rejectRemovedNATSEnv fails when an SQI_NATS_* variable that moved under
+// SQI_NATS_EMBEDDED_* is set. A stale unit file or Compose file would
+// otherwise run silently on the defaults.
+func rejectRemovedNATSEnv() error {
+	var errs []error
+	for _, kv := range os.Environ() {
+		name, value, _ := strings.Cut(kv, "=")
+		if value == "" || !isRemovedNATSEnv(name) {
+			continue
+		}
+		errs = append(errs, fmt.Errorf("environment variable %s was removed; use SQI_NATS_EMBEDDED_%s",
+			name, strings.TrimPrefix(name, "SQI_NATS_")))
+	}
+	return errors.Join(errs...)
+}
+
+func isRemovedNATSEnv(name string) bool {
+	switch name {
+	case "SQI_NATS_ADDR", "SQI_NATS_DATA_DIR", "SQI_NATS_MAX_STORE_MB":
+		return true
+	}
+	return strings.HasPrefix(name, "SQI_NATS_TLS_")
 }
 
 // setStringSlice sets dst from a comma-separated env var, trimming spaces and

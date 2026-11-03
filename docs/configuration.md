@@ -50,7 +50,7 @@ loopback only.
 Must be `host:port`. A host given as a name rather than an IP literal is
 resolved at startup, so an unresolvable hostname fails config validation and
 the server does not start; `0.0.0.0`, `::` and an empty host are accepted
-without resolution. The same rule applies to [`nats.addr`](#natsaddr).
+without resolution. The same rule applies to [`nats.embedded.addr`](#natsembeddedaddr).
 
 ```yaml
 http:
@@ -182,71 +182,53 @@ Certificates are read once at startup, so rotating them requires a restart.
 
 ---
 
-## `nats` — Embedded NATS JetStream broker
+## `nats` — NATS JetStream broker
 
-### `nats.addr`
+sqi-server and its workers talk through a NATS JetStream broker.
+[`nats.mode`](#natsmode) chooses where it runs:
+
+- **`embedded`** (the default): a broker inside `sqi-server`. Nothing to
+  install or configure; this is the zero-config single-binary farm. Its
+  settings are under `nats.embedded`.
+- **`external`**: a NATS server or cluster you run. `sqi-server` connects to
+  it, provisions its streams there, and keeps running when one node of the
+  cluster is lost. Its settings are under `nats.external`. Setting one up is
+  walked through in
+  [Running on an external NATS cluster](operations.md#running-on-an-external-nats-cluster).
+
+`nats.auth` applies in both modes. The `nats.embedded` block is ignored in
+external mode and `nats.external` in embedded mode.
+
+In both modes sqi keeps its streams, consumers and workers in one NATS
+account that nothing else uses (`SQI`, or
+[`nats.external.account`](#natsexternalaccount)), and its auth-callout
+connection in a second account, `AUTH`. See
+[Broker topologies](architecture.md#broker-topologies).
+
+The embedded broker's `addr`, `data_dir`, `max_store_mb` and `tls` keys
+belong under `nats.embedded`. A configuration file with any of them directly
+under `nats` fails at startup with an error naming the `nats.embedded` key.
+Likewise a set `SQI_NATS_ADDR`, `SQI_NATS_DATA_DIR`, `SQI_NATS_MAX_STORE_MB`
+or `SQI_NATS_TLS_*` variable fails startup with an error naming its
+`SQI_NATS_EMBEDDED_*` equivalent.
+
+### `nats.mode`
 
 | | |
 |---|---|
 | **Type** | `string` |
-| **Default** | `"0.0.0.0:4222"` |
-| **Env var** | `SQI_NATS_ADDR` |
+| **Default** | `"embedded"` |
+| **Accepted** | `embedded`, `external` |
+| **Env var** | `SQI_NATS_MODE` |
 
-TCP address the embedded NATS server binds to. Defaults to all interfaces so
-that workers which discover the server over mDNS can connect to NATS at the
-advertised LAN host. Set this to `"127.0.0.1:4222"` to restrict NATS to loopback
-(single-machine only). Broker authentication is a separate opt-in setting,
-independent of `auth.enabled`; see [`nats.auth.*`](#natsauthenabled) below.
-While `nats.auth.enabled` is off (the default), any host that can reach this
-port can register as a worker and receive task assignments, whatever
-`auth.enabled` says. See [Known gaps](auth.md#known-gaps).
+`embedded` runs the broker inside `sqi-server`. `external` connects to the
+broker listed in [`nats.external.urls`](#natsexternalurls). Changing the mode
+of a farm that has run is a stop-the-farm operation; see
+[Switching broker mode](operations.md#switching-broker-mode).
 
 ```yaml
 nats:
-  addr: "0.0.0.0:4222"
-```
-
----
-
-### `nats.data_dir`
-
-| | |
-|---|---|
-| **Type** | `string` |
-| **Default** | `"data/nats"` |
-| **Env var** | `SQI_NATS_DATA_DIR` |
-
-Directory used by JetStream for file-backed stream persistence. Created at
-startup if it does not exist. Relative paths are resolved from the working
-directory at the time `sqi-server` starts. For production, use an absolute path
-on fast local storage.
-
-It holds only messages in transit, so it is not part of a backup;
-`sqi-server restore` renames it to `<dir>.pre-restore-<time>` instead (see
-[Restore](operations.md#restore)).
-
-```yaml
-nats:
-  data_dir: "/var/lib/sqi/nats"
-```
-
----
-
-### `nats.max_store_mb`
-
-| | |
-|---|---|
-| **Type** | `int` (megabytes) |
-| **Default** | `1024` |
-| **Env var** | `SQI_NATS_MAX_STORE_MB` |
-
-Maximum disk space JetStream may use. When the limit is reached, older messages
-are evicted per stream retention policy. Increase this on farms with many active
-jobs or high log volume.
-
-```yaml
-nats:
-  max_store_mb: 4096
+  mode: external
 ```
 
 ---
@@ -259,17 +241,57 @@ nats:
 | **Default** | `false` |
 | **Env var** | `SQI_NATS_AUTH_ENABLED` |
 
-Requires every NATS client to present a per-worker nkey credential. When
-`true`, the broker refuses any connection that does not present one. When
-`false` (the default), the broker accepts any connection; see the warning
-under [`nats.addr`](#natsaddr) above. Independent of `auth.enabled`, which
-gates human users and API keys on the REST API; this setting gates workers on
-the broker.
+Requires every worker to present a per-worker nkey credential. When `true`,
+the broker sends each connection to `sqi-server` through the NATS auth
+callout, and `sqi-server` admits only a key enrolled in its database. When
+`false` (the default), the broker accepts any anonymous connection and refuses
+one that presents a key, so a worker must not hold a credential file on an
+auth-off farm; see the warning under
+[`nats.embedded.addr`](#natsembeddedaddr), and the order for turning it on
+under [Broker authentication](auth.md#getting-a-credential). Independent of
+`auth.enabled`, which gates human users and API keys on the REST API; this
+setting gates workers on the broker.
+
+The same setting works in both modes. In embedded mode it needs nothing else.
+In external mode it also needs the
+[`nats.external.callout`](#natsexternalcalloutnkey_seed_file) keys, which
+`sqi-server nats external init` generates. See
+[Broker authentication](auth.md#broker-authentication-transport).
 
 ```yaml
 nats:
   auth:
     enabled: true
+```
+
+---
+
+### `nats.auth.user_ttl`
+
+| | |
+|---|---|
+| **Type** | `duration` |
+| **Default** | `1h` |
+| **Range** | `1m` – `24h` |
+| **Env var** | `SQI_NATS_AUTH_USER_TTL` |
+
+How long the authorization `sqi-server` issues a worker at connect stays
+valid. At expiry the broker disconnects the worker, which reconnects at once
+and is authorized again against the database. A worker revoked in the
+meantime is refused at that reconnect.
+
+This is the bound on revocation wherever `sqi-server` cannot disconnect a
+worker itself: an [external broker without a system
+credential](#natsexternalcalloutsystem_creds_file), and the offline
+`sqi-server worker revoke` command. Each expiry costs every worker one
+reconnect, so a shorter value means more reconnects. For prompt revocation on
+an external broker, configure the system credential instead of shortening
+this. Validated whether or not `nats.auth.enabled` is on.
+
+```yaml
+nats:
+  auth:
+    user_ttl: 30m
 ```
 
 ---
@@ -336,13 +358,121 @@ nats:
 
 ---
 
-### `nats.tls.enabled`
+### `nats.embedded.addr`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `"0.0.0.0:4222"` |
+| **Env var** | `SQI_NATS_EMBEDDED_ADDR` |
+
+TCP address the embedded broker binds to. Defaults to all interfaces so that
+workers which discover the server over mDNS can connect to the broker at the
+advertised LAN host. Set this to `"127.0.0.1:4222"` to restrict the broker to
+loopback (single-machine only). `sqi-server`'s own connections to the
+embedded broker run in-process and never use this listener.
+
+Broker authentication is a separate opt-in setting, independent of
+`auth.enabled`; see [`nats.auth.enabled`](#natsauthenabled). While it is off
+(the default), any host that can reach this port can register as a worker and
+receive task assignments, whatever `auth.enabled` says, and `sqi-server` logs
+a startup WARN when this address is not loopback. See
+[Known gaps](auth.md#known-gaps).
+
+```yaml
+nats:
+  embedded:
+    addr: "0.0.0.0:4222"
+```
+
+---
+
+### `nats.embedded.advertise_url`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` |
+| **Env var** | `SQI_NATS_EMBEDDED_ADVERTISE_URL` |
+
+The broker URL that mDNS discovery tells workers to use, in the `nats_url`
+record. Empty derives `nats://<host>.local:<port>` (`tls://` when
+[`nats.embedded.tls.enabled`](#natsembeddedtlsenabled) is on) from this
+machine's mDNS host name and the port the broker bound. Set it when workers
+must reach the broker by another name or address, such as a DNS name the
+broker certificate covers.
+
+Validated at load: it must parse as `nats://host:port` or `tls://host:port`,
+carry no credentials (`user:password@` or `token@`, which mDNS would publish
+in plaintext), not name port 0, its scheme must match
+`nats.embedded.tls.enabled` (`tls://` when TLS is on, `nats://` when it is
+off), and `nats_url=` plus the URL must fit the 255-byte limit of one DNS TXT
+string. Validated even when
+[`discovery.enabled`](#discoveryenabled) is off; used only when it is on.
+
+```yaml
+nats:
+  embedded:
+    advertise_url: "tls://sqi-server.example:4222"
+```
+
+---
+
+### `nats.embedded.data_dir`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `"data/nats"` |
+| **Env var** | `SQI_NATS_EMBEDDED_DATA_DIR` |
+
+Directory used by JetStream for file-backed stream persistence. Created at
+startup if it does not exist. Relative paths are resolved from the working
+directory at the time `sqi-server` starts. For production, use an absolute path
+on fast local storage.
+
+It holds only messages in transit, so it is not part of a backup;
+`sqi-server restore` renames it to `<dir>.pre-restore-<time>` instead (see
+[Restore](operations.md#restore)).
+
+```yaml
+nats:
+  embedded:
+    data_dir: "/var/lib/sqi/nats"
+```
+
+---
+
+### `nats.embedded.max_store_mb`
+
+| | |
+|---|---|
+| **Type** | `int` (megabytes) |
+| **Default** | `1024` |
+| **Env var** | `SQI_NATS_EMBEDDED_MAX_STORE_MB` |
+
+Maximum disk space JetStream may use, for sqi's account and for the broker as
+a whole. Messages leave sqi's streams by age (the log stream keeps chunks for
+96 hours); when the cap is reached first, the broker refuses new messages
+until space frees. Increase this on farms with many active jobs or high log
+volume. An external broker's storage limits are set on its account by the
+cluster's operator instead.
+
+```yaml
+nats:
+  embedded:
+    max_store_mb: 4096
+```
+
+---
+
+### `nats.embedded.tls.enabled`
 
 | | |
 |---|---|
 | **Type** | `bool` |
 | **Default** | `false` |
-| **Env var** | `SQI_NATS_TLS_ENABLED` |
+| **Env var** | `SQI_NATS_EMBEDDED_TLS_ENABLED` |
 
 Require TLS on every connection to the embedded broker.
 
@@ -353,27 +483,29 @@ messages and log chunks. Broker authentication
 settings are independent and address different threats, and a production farm
 should enable both.
 
-Requires [`nats.tls.cert_file`](#natstlscert_file) and
-[`nats.tls.key_file`](#natstlskey_file). Workers must be configured with the
-matching CA (the worker key `nats.tls_ca_file`); see [`docs/tls.md`](tls.md).
+Requires [`nats.embedded.tls.cert_file`](#natsembeddedtlscert_file) and
+[`nats.embedded.tls.key_file`](#natsembeddedtlskey_file). Workers must be
+configured with the matching CA (the worker key `nats.tls_ca_file`); see
+[`docs/tls.md`](tls.md).
 
 ```yaml
 nats:
-  tls:
-    enabled: true
-    cert_file: "/etc/sqi/certs/server.crt"
-    key_file: "/etc/sqi/certs/server.key"
+  embedded:
+    tls:
+      enabled: true
+      cert_file: "/etc/sqi/certs/server.crt"
+      key_file: "/etc/sqi/certs/server.key"
 ```
 
 ---
 
-### `nats.tls.cert_file`
+### `nats.embedded.tls.cert_file`
 
 | | |
 |---|---|
 | **Type** | `string` |
 | **Default** | `""` |
-| **Env var** | `SQI_NATS_TLS_CERT_FILE` |
+| **Env var** | `SQI_NATS_EMBEDDED_TLS_CERT_FILE` |
 
 PEM certificate the broker presents to connecting workers. May be the same
 file as [`http.tls.cert_file`](#httptlscert_file) or a different one: the two
@@ -384,25 +516,25 @@ Validated at startup on the same terms as `http.tls.cert_file`.
 
 ---
 
-### `nats.tls.key_file`
+### `nats.embedded.tls.key_file`
 
 | | |
 |---|---|
 | **Type** | `string` |
 | **Default** | `""` |
-| **Env var** | `SQI_NATS_TLS_KEY_FILE` |
+| **Env var** | `SQI_NATS_EMBEDDED_TLS_KEY_FILE` |
 
-PEM private key matching [`nats.tls.cert_file`](#natstlscert_file).
+PEM private key matching [`nats.embedded.tls.cert_file`](#natsembeddedtlscert_file).
 
 ---
 
-### `nats.tls.client_ca_file`
+### `nats.embedded.tls.client_ca_file`
 
 | | |
 |---|---|
 | **Type** | `string` |
 | **Default** | `""` |
-| **Env var** | `SQI_NATS_TLS_CLIENT_CA_FILE` |
+| **Env var** | `SQI_NATS_EMBEDDED_TLS_CLIENT_CA_FILE` |
 
 When set, every connecting worker must present a client certificate signed by
 this CA (mutual TLS). Issue per-worker certificates with
@@ -413,9 +545,244 @@ certificate gates who may open a connection; the nkey identifies the worker and
 drives subject permissions and revocation. A valid farm certificate on its own
 authenticates nobody, and sqi does not bind a certificate to a worker ID.
 
-Requires [`nats.tls.enabled`](#natstlsenabled). Setting this on a plaintext
-broker is a startup error, since client certificates cannot be verified
-without a TLS handshake.
+Requires [`nats.embedded.tls.enabled`](#natsembeddedtlsenabled). Setting this
+on a plaintext broker is a startup error, since client certificates cannot be
+verified without a TLS handshake.
+
+---
+
+### `nats.external.urls`
+
+| | |
+|---|---|
+| **Type** | `[]string` |
+| **Default** | `[]` |
+| **Env var** | `SQI_NATS_EXTERNAL_URLS` (comma-separated) |
+
+The broker's client URLs. Required in external mode. List every node of a
+cluster: `sqi-server` connects to one and moves to another when it is lost.
+Every URL must use the same scheme, all `tls://` or all `nats://`. With
+`nats://` URLs, no [`nats.external.tls.*`](#natsexternaltlsca_file) key may be
+set.
+
+At startup `sqi-server` keeps trying every URL until
+[`nats.external.connect_timeout`](#natsexternalconnect_timeout), then fails
+naming the URLs it tried and the last error. It refuses a broker older than
+the [supported nats-server versions](operations.md#supported-nats-server-versions).
+After startup it reconnects without limit. URLs are logged, and printed by
+`sqi-server config print`, with any credentials (`user:password@` or
+`token@`) replaced by `REDACTED`.
+
+With [`advertise_urls`](#natsexternaladvertise_urls) empty and
+[`discovery.enabled`](#discoveryenabled) on, discovery advertises the first
+entry, so it is validated as an advertised URL: no credentials, not port 0,
+and `nats_url=` plus the URL within 255 bytes. To keep credentials in `urls`,
+set a credential-free `advertise_urls`.
+
+```yaml
+nats:
+  mode: external
+  external:
+    urls: ["tls://nats-a:4222", "tls://nats-b:4222", "tls://nats-c:4222"]
+```
+
+---
+
+### `nats.external.advertise_urls`
+
+| | |
+|---|---|
+| **Type** | `[]string` |
+| **Default** | `[]` (use `urls`) |
+| **Env var** | `SQI_NATS_EXTERNAL_ADVERTISE_URLS` (comma-separated) |
+
+The broker URLs mDNS discovery tells workers to use, when they must reach the
+cluster at different addresses than `sqi-server` does (a load balancer in
+front of it, say). Discovery advertises only the first entry, in the
+`nats_url` record; empty advertises the first entry of `urls`. A worker that
+should know every node lists them in its own `nats.url` instead.
+
+Validated at load, even when [`discovery.enabled`](#discoveryenabled) is
+off: every entry must parse as `nats://host:port` or `tls://host:port` with
+the same scheme as `urls`, carry no credentials (`user:password@` or
+`token@`, which mDNS would publish in plaintext), and not name port 0, and
+`nats_url=` plus the first entry must fit the 255-byte limit of one DNS TXT
+string.
+
+---
+
+### `nats.external.account`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `"SQI"` |
+| **Env var** | `SQI_NATS_EXTERNAL_ACCOUNT` |
+
+The NATS account sqi's streams, consumers, guard bucket and workers live in.
+It must be dedicated to sqi: `sqi-server`'s data connection may publish and
+subscribe to everything in it, which is safe only because nothing else shares
+the account. Letters, digits, `_` and `-` only; `AUTH`, `SYS` and `$G` are
+refused, because the generated cluster configuration defines the first two
+and the third is nats-server's global account. Pass the same name to
+`sqi-server nats external init --account`.
+
+Only one `sqi-server` can run on an account at a time; see
+[One server per broker account](operations.md#one-server-per-broker-account).
+
+---
+
+### `nats.external.nkey_seed_file`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` |
+| **Env var** | `SQI_NATS_EXTERNAL_NKEY_SEED_FILE` |
+
+The nkey seed `sqi-server`'s data connection authenticates with: the
+`sqi-data.nk` file `sqi-server nats external init` writes. Its public key must
+be a user in [`nats.external.account`](#natsexternalaccount), and, with broker
+authentication on, listed in the callout's `auth_users`, which the generated
+fragment does. Mutually exclusive with
+[`nats.external.creds_file`](#natsexternalcreds_file). Leaving both empty
+connects with no credential, which works only on a broker that accepts
+anonymous connections into the account. The file must exist and be readable at
+startup.
+
+---
+
+### `nats.external.creds_file`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` |
+| **Env var** | `SQI_NATS_EXTERNAL_CREDS_FILE` |
+
+A NATS `.creds` file (user JWT plus seed) for the data connection, for a
+cluster that runs in NATS operator (JWT) mode, with broker authentication
+off: sqi's auth callout is supported only on clusters configured with
+config-file accounts. Mutually
+exclusive with [`nats.external.nkey_seed_file`](#natsexternalnkey_seed_file).
+
+---
+
+### `nats.external.stream_replicas`
+
+| | |
+|---|---|
+| **Type** | `int` |
+| **Default** | `1` |
+| **Accepted** | `1`, `3`, `5` |
+| **Env var** | `SQI_NATS_EXTERNAL_STREAM_REPLICAS` |
+
+How many copies the cluster keeps of each of sqi's streams and of the guard
+bucket. With `3`, a three-node cluster loses no message when one node is lost.
+A change on an existing stream is applied at the next start and logged at
+INFO with the old and new values; lowering it is allowed and logged with what
+it costs. At startup `sqi-server` waits, up to
+[`nats.external.connect_timeout`](#natsexternalconnect_timeout), for the
+cluster to have enough nodes to place the streams. The embedded broker always
+uses `1`.
+
+---
+
+### `nats.external.connect_timeout`
+
+| | |
+|---|---|
+| **Type** | `duration` |
+| **Default** | `30s` |
+| **Env var** | `SQI_NATS_EXTERNAL_CONNECT_TIMEOUT` |
+
+How long startup may take to reach a broker, find JetStream on the account and
+provision the streams. After startup, reconnects are unbounded. Also bounds
+the broker steps of `sqi-server restore`.
+
+---
+
+### `nats.external.tls.ca_file`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` |
+| **Env var** | `SQI_NATS_EXTERNAL_TLS_CA_FILE` |
+
+PEM CA bundle that verifies the cluster's certificate, in place of the system
+roots. Empty, with `tls://` URLs, verifies against the system roots. Workers
+need the same CA in their `nats.tls_ca_file`.
+
+### `nats.external.tls.cert_file` / `nats.external.tls.key_file`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` |
+| **Env var** | `SQI_NATS_EXTERNAL_TLS_CERT_FILE`, `SQI_NATS_EXTERNAL_TLS_KEY_FILE` |
+
+A client certificate and its key, for a cluster that requires mutual TLS. Set
+both or neither. A certificate expiring within 30 days logs a WARN at startup.
+
+### `nats.external.tls.server_name`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` |
+| **Env var** | `SQI_NATS_EXTERNAL_TLS_SERVER_NAME` |
+
+The name the cluster's certificate is verified against, when it is not the
+host in the URL being dialed.
+
+---
+
+### `nats.external.callout.nkey_seed_file`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` |
+| **Env var** | `SQI_NATS_EXTERNAL_CALLOUT_NKEY_SEED_FILE` |
+
+The nkey seed of `sqi-server`'s auth-callout connection, a user in the `AUTH`
+account (`sqi-auth.nk` from `sqi-server nats external init`). Required in
+external mode when [`nats.auth.enabled`](#natsauthenabled) is `true`.
+
+### `nats.external.callout.issuer_seed_file`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` |
+| **Env var** | `SQI_NATS_EXTERNAL_CALLOUT_ISSUER_SEED_FILE` |
+
+The account nkey seed (`SA…`) `sqi-server` signs its authorization answers
+with (`issuer.nk`). The cluster's `auth_callout` block names its public key as
+the issuer. Required in external mode when `nats.auth.enabled` is `true`. A
+user seed (`SU…`) here is the usual mistake, and the startup error says so.
+
+### `nats.external.callout.system_creds_file`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` |
+| **Env var** | `SQI_NATS_EXTERNAL_CALLOUT_SYSTEM_CREDS_FILE` |
+
+Optional. The nkey seed of a user in the cluster's system account
+(`sqi-sys.nk`). Despite the key's name it is a raw nkey seed, not a `.creds`
+file: with config-file accounts nats-server authenticates nkey users by their
+signature alone. With it, revoking a worker disconnects it from every node at
+once. Without it, a revoked worker stays connected until its authorization
+expires, within [`nats.auth.user_ttl`](#natsauthuser_ttl), and `sqi-server`
+logs a WARN at startup saying so. See
+[Revocation](auth.md#revocation-two-paths-deliberately-distinct).
+
+At startup `sqi-server` asks every node through this connection for its auth
+timeout; a seed that is not a system-account user fails startup naming
+`system_creds_file`.
 
 ---
 
@@ -1022,6 +1389,14 @@ When `true`, `sqi-server` broadcasts a `_sqi._tcp` mDNS record so that workers
 and the `sqi` CLI can discover it on the local network without manual address
 configuration. Disable it where multicast is unavailable, as in most cloud
 VPCs and container networks and many VLANs.
+
+The record's `nats_url` field is the broker URL a discovering worker connects
+to, used as given: its `nats://` or `tls://` scheme tells the worker whether
+the broker requires TLS. In embedded mode it is
+[`nats.embedded.advertise_url`](#natsembeddedadvertise_url), or
+`nats://<host>.local:<port>` (`tls://` with broker TLS on); in external mode
+the first [`nats.external.advertise_urls`](#natsexternaladvertise_urls) entry,
+else the first [`nats.external.urls`](#natsexternalurls) entry.
 
 ```yaml
 discovery:
@@ -1967,7 +2342,7 @@ The scheduler places only the username in the task assignment sent to the
 worker over NATS, never a credential, and the worker resolves it to a real OS
 credential itself. This matters because both worker↔server transport
 protections are opt-in and off by default: authentication via `nats.auth`
-(see [Known gaps](auth.md#known-gaps)) and encryption via `nats.tls` (see
+(see [Known gaps](auth.md#known-gaps)) and encryption via TLS on the broker (see
 [`docs/tls.md`](tls.md)). In a default deployment the assignment channel is
 neither authenticated nor encrypted, so nothing secret may travel on it.
 
@@ -2117,17 +2492,34 @@ for the detector schema reference.
 | `http.tls.enabled` | bool | `false` | `SQI_HTTP_TLS_ENABLED` | — |
 | `http.tls.cert_file` | string | `""` | `SQI_HTTP_TLS_CERT_FILE` | — |
 | `http.tls.key_file` | string | `""` | `SQI_HTTP_TLS_KEY_FILE` | — |
-| `nats.addr` | string | `0.0.0.0:4222` | `SQI_NATS_ADDR` | — |
-| `nats.data_dir` | string | `data/nats` | `SQI_NATS_DATA_DIR` | — |
-| `nats.max_store_mb` | int | `1024` | `SQI_NATS_MAX_STORE_MB` | — |
+| `nats.mode` | string | `embedded` | `SQI_NATS_MODE` | — |
 | `nats.auth.enabled` | bool | `false` | `SQI_NATS_AUTH_ENABLED` | — |
+| `nats.auth.user_ttl` | duration | `1h` | `SQI_NATS_AUTH_USER_TTL` | — |
 | `nats.auth.join_token_ttl` | duration | `1h` | `SQI_NATS_AUTH_JOIN_TOKEN_TTL` | — |
 | `nats.auth.join_token_single_use` | bool | `true` | `SQI_NATS_AUTH_JOIN_TOKEN_SINGLE_USE` | — |
 | `nats.auth.enrollment_endpoint_enabled` | bool | `true` | `SQI_NATS_AUTH_ENROLLMENT_ENDPOINT_ENABLED` | — |
-| `nats.tls.enabled` | bool | `false` | `SQI_NATS_TLS_ENABLED` | — |
-| `nats.tls.cert_file` | string | `""` | `SQI_NATS_TLS_CERT_FILE` | — |
-| `nats.tls.key_file` | string | `""` | `SQI_NATS_TLS_KEY_FILE` | — |
-| `nats.tls.client_ca_file` | string | `""` | `SQI_NATS_TLS_CLIENT_CA_FILE` | — |
+| `nats.embedded.addr` | string | `0.0.0.0:4222` | `SQI_NATS_EMBEDDED_ADDR` | — |
+| `nats.embedded.advertise_url` | string | `""` | `SQI_NATS_EMBEDDED_ADVERTISE_URL` | — |
+| `nats.embedded.data_dir` | string | `data/nats` | `SQI_NATS_EMBEDDED_DATA_DIR` | — |
+| `nats.embedded.max_store_mb` | int | `1024` | `SQI_NATS_EMBEDDED_MAX_STORE_MB` | — |
+| `nats.embedded.tls.enabled` | bool | `false` | `SQI_NATS_EMBEDDED_TLS_ENABLED` | — |
+| `nats.embedded.tls.cert_file` | string | `""` | `SQI_NATS_EMBEDDED_TLS_CERT_FILE` | — |
+| `nats.embedded.tls.key_file` | string | `""` | `SQI_NATS_EMBEDDED_TLS_KEY_FILE` | — |
+| `nats.embedded.tls.client_ca_file` | string | `""` | `SQI_NATS_EMBEDDED_TLS_CLIENT_CA_FILE` | — |
+| `nats.external.urls` | []string | `[]` | `SQI_NATS_EXTERNAL_URLS` | — |
+| `nats.external.advertise_urls` | []string | `[]` | `SQI_NATS_EXTERNAL_ADVERTISE_URLS` | — |
+| `nats.external.account` | string | `SQI` | `SQI_NATS_EXTERNAL_ACCOUNT` | — |
+| `nats.external.nkey_seed_file` | string | `""` | `SQI_NATS_EXTERNAL_NKEY_SEED_FILE` | — |
+| `nats.external.creds_file` | string | `""` | `SQI_NATS_EXTERNAL_CREDS_FILE` | — |
+| `nats.external.stream_replicas` | int | `1` | `SQI_NATS_EXTERNAL_STREAM_REPLICAS` | — |
+| `nats.external.connect_timeout` | duration | `30s` | `SQI_NATS_EXTERNAL_CONNECT_TIMEOUT` | — |
+| `nats.external.tls.ca_file` | string | `""` | `SQI_NATS_EXTERNAL_TLS_CA_FILE` | — |
+| `nats.external.tls.cert_file` | string | `""` | `SQI_NATS_EXTERNAL_TLS_CERT_FILE` | — |
+| `nats.external.tls.key_file` | string | `""` | `SQI_NATS_EXTERNAL_TLS_KEY_FILE` | — |
+| `nats.external.tls.server_name` | string | `""` | `SQI_NATS_EXTERNAL_TLS_SERVER_NAME` | — |
+| `nats.external.callout.nkey_seed_file` | string | `""` | `SQI_NATS_EXTERNAL_CALLOUT_NKEY_SEED_FILE` | — |
+| `nats.external.callout.issuer_seed_file` | string | `""` | `SQI_NATS_EXTERNAL_CALLOUT_ISSUER_SEED_FILE` | — |
+| `nats.external.callout.system_creds_file` | string | `""` | `SQI_NATS_EXTERNAL_CALLOUT_SYSTEM_CREDS_FILE` | — |
 | `store.driver` | string | `sqlite` | `SQI_STORE_DRIVER` | — |
 | `store.sqlite_path` | string | `sqi.db` | `SQI_STORE_SQLITE_PATH` | — |
 | `store.checkpoint_interval` | duration | `5m` | `SQI_STORE_CHECKPOINT_INTERVAL` | — |
@@ -2212,8 +2604,9 @@ http:
   addr: "0.0.0.0:8080"
 
 nats:
-  data_dir: "/var/lib/sqi/nats"
-  max_store_mb: 4096
+  embedded:
+    data_dir: "/var/lib/sqi/nats"
+    max_store_mb: 4096
 
 store:
   sqlite_path: "/var/lib/sqi/sqi.db"

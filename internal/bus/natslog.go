@@ -9,7 +9,7 @@ import (
 )
 
 // natsLogger is the embedded NATS server's logger. It logs a fatal error
-// through slog and records the first one, so [Broker.Start] can fail with it:
+// through slog and records the first one, so [Embedded.Start] can fail with it:
 // nats-server reports a listener or JetStream failure only through its logger,
 // and otherwise just never becomes ready. Notices, warnings, errors, debug and
 // trace output are dropped; the broker logs its own lifecycle events.

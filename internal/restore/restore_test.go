@@ -194,7 +194,7 @@ func TestRestoreSQLite_RefusesTheLiveDatabaseAsBackup(t *testing.T) {
 }
 
 // An absent NATS directory is reported by the absolute path looked at, so an
-// operator can spot a wrong nats.data_dir.
+// operator can spot a wrong nats.embedded.data_dir.
 func TestRestore_ReportsAMissingNATSDirByAbsolutePath(t *testing.T) {
 	_, db, _, backup, _ := liveFarm(t)
 	missing := filepath.Join(t.TempDir(), "nowhere")
@@ -565,4 +565,76 @@ func TestRestoreSQLite_APathWithAQuestionMark(t *testing.T) {
 	if task, err := st.GetTask(t.Context(), taskID); err != nil || task.Status != store.TaskStatusReady {
 		t.Fatalf("restored task = %+v, %v; want ready (fenced)", task, err)
 	}
+}
+
+// With a broker purge in place of a NATS directory, the last step purges: the
+// purge runs once, nothing is renamed, and the result says so.
+func TestRun_ExternalCallsPurgeInsteadOfQuarantine(t *testing.T) {
+	_, db, natsDir, backup, taskID := liveFarm(t)
+	var renamed []string
+	restore.SetRenameForTest(t, func(from, to string) error {
+		renamed = append(renamed, from)
+		return os.Rename(from, to)
+	})
+	calls := 0
+	o := opts(db, "", backup)
+	o.PurgeNATS = func(context.Context) error {
+		calls++
+		return nil
+	}
+	res, err := restore.Run(t.Context(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || !res.NATSPurged || res.NATSMovedTo != "" || res.NATSDir != "" {
+		t.Fatalf("purge calls = %d, result = %+v; want one call, NATSPurged and no NATS directory", calls, res)
+	}
+	for _, from := range renamed {
+		if !strings.HasPrefix(from, db) {
+			t.Errorf("renamed %s, want only the database's own files", from)
+		}
+	}
+	if _, err := os.Stat(natsDir); err != nil {
+		t.Errorf("the NATS directory moved: %v", err)
+	}
+	st, err := sqlite.Open(t.Context(), db, sqlite.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if task, err := st.GetTask(t.Context(), taskID); err != nil || task.Status != store.TaskStatusReady {
+		t.Fatalf("task = %+v, %v; want ready (fenced)", task, err)
+	}
+}
+
+// A failed purge fails the restore, saying the database is restored and
+// fenced but the broker still holds the old state.
+func TestRun_ExternalPurgeFailureSaysWhatStateItLeft(t *testing.T) {
+	_, db, _, backup, _ := liveFarm(t)
+	o := opts(db, "", backup)
+	o.PurgeNATS = func(context.Context) error { return errors.New("injected") }
+	res, err := restore.Run(t.Context(), o)
+	if err == nil {
+		t.Fatal("Run with a failing purge = nil, want an error")
+	}
+	if res.NATSPurged {
+		t.Error("NATSPurged after a failed purge")
+	}
+	for _, want := range []string{"injected", "restored and fenced", "not purged", "restore --in-place", db + stamp} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v; want it to contain %q", err, want)
+		}
+	}
+}
+
+// A NATS directory and a broker purge are two ways to do the last step;
+// asking for both is a caller's mistake, refused before anything changes.
+func TestRun_RefusesBothANATSDirAndAPurge(t *testing.T) {
+	_, db, natsDir, backup, _ := liveFarm(t)
+	o := opts(db, natsDir, backup)
+	o.PurgeNATS = func(context.Context) error { return nil }
+	if _, err := restore.Run(t.Context(), o); err == nil {
+		t.Fatal("Run with both a NATS directory and a purge = nil, want an error")
+	}
+	requireUntouched(t, db, natsDir)
 }

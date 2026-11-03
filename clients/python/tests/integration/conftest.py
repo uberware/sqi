@@ -95,8 +95,8 @@ def server() -> Iterator[Server]:
     env = {
         **os.environ,
         "SQI_HTTP_ADDR": http_addr,
-        "SQI_NATS_ADDR": nats_addr,
-        "SQI_NATS_DATA_DIR": str(tmp / "nats"),
+        "SQI_NATS_EMBEDDED_ADDR": nats_addr,
+        "SQI_NATS_EMBEDDED_DATA_DIR": str(tmp / "nats"),
         "SQI_STORE_SQLITE_PATH": str(tmp / "sqi.db"),
         "SQI_DISCOVERY_ENABLED": "false",
         "SQI_SCHEDULER_TICK_INTERVAL": "100ms",

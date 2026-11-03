@@ -2949,25 +2949,35 @@ paths:
         worker does not exist.
 
         Revocation is **synchronous**: this call writes the revocation to
-        the database and then reloads the running broker's authorized-key
-        set, and nats-server re-authorizes every connected client inside
-        that reload. An already-connected worker is therefore disconnected
-        before the `204` is returned, and its in-flight leases reclaim
-        through the ordinary heartbeat-sweep path.
+        the database and then disconnects the worker's live broker
+        connections. Its reconnect goes back through the broker's auth
+        callout, which reads the revoked row and refuses it. On the embedded
+        broker, and on an external broker configured with
+        `nats.external.callout.system_creds_file`, the worker is disconnected
+        before the `204` is returned, and its in-flight leases reclaim through
+        the ordinary heartbeat-sweep path. The call can take a few seconds:
+        it waits out the broker's auth timeout so that a connection whose
+        authorization was already in flight is disconnected too.
 
-        If the store write succeeds but the broker reload fails, the
-        response is `500`: the credential is gone from the store while the
-        broker may still be honoring it, which the caller has to know
-        about. Retry the request, or restart `sqi-server`.
+        On an external broker without a system credential, sqi cannot reach
+        another client's connection: the call returns `204` once the store is
+        written, and the worker stays connected until its user JWT expires
+        (`nats.auth.user_ttl`, 1 hour by default). Its reconnect is then
+        refused.
 
-        With broker authentication off (`nats.auth.enabled: false`) there is
-        no authorized-key set to reload, so this only writes the store —
-        there is nothing to disconnect a worker from, because the broker
-        never authenticated it in the first place.
+        If the store write succeeds but the disconnect fails, the response is
+        `500`: the credential is revoked and every new connection is
+        refused, but the worker may still hold its current connection until
+        its user JWT expires. Retry the request.
+
+        With broker authentication off (`nats.auth.enabled: false`) this only
+        writes the store: there is nothing to disconnect a worker from,
+        because the broker never authenticated it.
 
         The offline CLI equivalent, `sqi-server worker revoke <id>`, has no
-        broker handle and does NOT disconnect a running worker — it takes
-        effect at the next server start.
+        broker handle and does not disconnect a running worker: its
+        revocation takes effect at the worker's next connect, and within
+        `nats.auth.user_ttl` at the latest.
       responses:
         "204":
           description: >-
@@ -2986,9 +2996,9 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: >-
-            The store write or the broker reload failed. The credential may
-            be revoked in the store while the broker still honors it; retry,
-            or restart sqi-server.
+            The store write or the broker disconnect failed. The credential
+            may be revoked in the store while the worker keeps its current
+            connection until its user JWT expires; retry.
           content:
             application/problem+json:
               schema:

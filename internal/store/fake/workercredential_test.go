@@ -285,9 +285,9 @@ func TestWorkerCredential_RevokedPublicKeyStillUnique(t *testing.T) {
 // after enroll, revoke, re-enroll, ListActiveWorkerCredentials must return
 // exactly one row for the rotated worker — never zero (the rotation
 // silently failing) and never two. Two simultaneously-active rows for one
-// worker_id would mean the broker's authorized-key set (which this method
-// feeds) accepts both the old and the new key for that worker at once,
-// which is not a rotation at all.
+// worker_id would mean the store holds both the old and the new key as
+// active for that worker at once, so the broker would accept either, which
+// is not a rotation at all.
 func TestWorkerCredential_ListActiveAfterRotationHasExactlyOneRow(t *testing.T) {
 	s := fake.New()
 	defer s.Close()

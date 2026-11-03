@@ -31,7 +31,7 @@ type workerHandler struct {
 	// connected clients drop it live. May be nil (no push).
 	notifier ws.Notifier
 	// revoker revokes a deleted worker's broker credential, through the same
-	// serialized store-write-then-broker-reload path DELETE
+	// store-write-then-broker-disconnect path DELETE
 	// /api/v1/workers/{id}/credential uses. internal/api depends only on
 	// this interface — never on internal/bus or internal/server — the same
 	// seam workerEnrollHandler uses for the same reason.
@@ -363,7 +363,7 @@ func (h *workerHandler) setWorkerDisabled(w http.ResponseWriter, r *http.Request
 // revocation on a delete that is then rejected. A revoke failure then means
 // nothing happened at all — worker row intact, a clean 500, safely
 // retryable. Deleting first would instead let a failure of the revoke's own
-// store write (not just a broker-reload failure — a documented, recoverable
+// store write (not just a broker.Revoke failure — a documented, recoverable
 // degraded mode) leave the worker row gone, the credential never revoked,
 // and nothing left to reap it: the caller who holds WorkersManage without
 // WorkersEnroll has no other way to revoke it, and would be told 204 while

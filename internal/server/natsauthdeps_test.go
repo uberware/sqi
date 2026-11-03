@@ -11,10 +11,17 @@ import (
 
 	"github.com/uberware/sqi/internal/api"
 	"github.com/uberware/sqi/internal/auth"
+	"github.com/uberware/sqi/internal/config"
 	"github.com/uberware/sqi/internal/health"
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/store/fake"
 )
+
+// brokerAuthConfig returns a Config whose only non-zero setting is whether
+// broker authentication is enabled.
+func brokerAuthConfig(enabled bool) Config {
+	return Config{NATS: config.NATSConfig{Auth: config.NATSAuthConfig{Enabled: enabled}}}
+}
 
 // TestNATSAuthDeps_CopiesAllFourSettings covers the SECOND of the three hops
 // that carry the nats.auth.* settings from the config file to the REST
@@ -22,12 +29,12 @@ import (
 // TestServerConfig_CarriesTheBrokerAuthSettings in cmd/sqi-server for the
 // first hop.
 func TestNATSAuthDeps_CopiesAllFourSettings(t *testing.T) {
-	cfg := Config{
-		NATSAuthEnabled:                   true,
-		NATSAuthEnrollmentEndpointEnabled: true,
-		NATSAuthJoinTokenTTL:              42 * time.Minute,
-		NATSAuthJoinTokenSingleUse:        false,
-	}
+	cfg := Config{NATS: config.NATSConfig{Auth: config.NATSAuthConfig{
+		Enabled:                   true,
+		EnrollmentEndpointEnabled: true,
+		JoinTokenTTL:              42 * time.Minute,
+		JoinTokenSingleUse:        false,
+	}}}
 	var deps api.Deps
 	natsAuthDeps(cfg, &deps)
 
@@ -87,10 +94,8 @@ func routeMounted(t *testing.T, r chi.Router, method, pattern string) bool {
 // print` still echoes the operator's values, and the route simply never
 // mounts.
 func TestNATSAuthDeps_EndToEnd_EnrollRouteMountedWhenConfigured(t *testing.T) {
-	cfg := Config{
-		NATSAuthEnabled:                   true,
-		NATSAuthEnrollmentEndpointEnabled: true,
-	}
+	cfg := brokerAuthConfig(true)
+	cfg.NATS.Auth.EnrollmentEndpointEnabled = true
 	deps := api.Deps{Store: fake.New(), Auth: auth.Anonymous()}
 	natsAuthDeps(cfg, &deps)
 

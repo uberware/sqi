@@ -89,22 +89,22 @@ func validateHTTPTLS(cfg TLSConfig) []ValidationError {
 	return validateKeypair("http.tls.cert_file", "http.tls.key_file", cfg.CertFile, cfg.KeyFile)
 }
 
-// validateNATSTLS checks the nats.tls block.
+// validateNATSTLS checks the nats.embedded.tls block.
 func validateNATSTLS(cfg NATSTLSConfig) []ValidationError {
 	if !cfg.Enabled {
 		if cfg.ClientCAFile != "" {
 			return []ValidationError{{
-				Field:   "nats.tls.client_ca_file",
-				Message: "requires nats.tls.enabled: true; client certificates cannot be verified on a plaintext listener",
+				Field:   "nats.embedded.tls.client_ca_file",
+				Message: "requires nats.embedded.tls.enabled: true; client certificates cannot be verified on a plaintext listener",
 			}}
 		}
 		return nil
 	}
-	errs := validateKeypair("nats.tls.cert_file", "nats.tls.key_file", cfg.CertFile, cfg.KeyFile)
+	errs := validateKeypair("nats.embedded.tls.cert_file", "nats.embedded.tls.key_file", cfg.CertFile, cfg.KeyFile)
 	if cfg.ClientCAFile != "" {
 		if _, err := tlsutil.CertPool(cfg.ClientCAFile); err != nil {
 			errs = append(errs, ValidationError{
-				Field:   "nats.tls.client_ca_file",
+				Field:   "nats.embedded.tls.client_ca_file",
 				Message: err.Error(),
 			})
 		}

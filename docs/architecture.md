@@ -27,7 +27,7 @@ through scheduling, worker execution, and final state.
 │                                    └──────┬───────────────┘                 │
 │                                           │                                 │
 │             ┌─────────────────────────────▼──────────────────────────────┐ │
-│             │           embedded NATS (JetStream + core NATS)            │ │
+│             │   NATS broker: embedded, or an external cluster            │ │
 │             │                                                            │ │
 │             │  work.lease.<worker>.<queue>   task.status.<worker>.<job>  │ │
 │             │  task.logs.<worker>.<task>     task.cancel.<task>          │ │
@@ -44,6 +44,8 @@ through scheduling, worker execution, and final state.
 └─────────────────────────────────────────────────────────────────────────────┘
                    ▲                              ▲
                    │ NATS                         │ NATS
+                   │ (sqi-server's broker, or     │
+                   │  the external cluster)       │
         ┌──────────┴────────┐         ┌──────────┴────────┐
         │    sqi-worker A   │  . . .  │    sqi-worker N   │
         │  task executor    │         │  task executor    │
@@ -59,7 +61,7 @@ through scheduling, worker execution, and final state.
 | Boot orchestration | `internal/server` | Process startup and graceful shutdown; wires the store, bus, scheduler, auth, and router together |
 | Auth | `internal/auth` | Opt-in authentication and authorization: `password` (argon2id local login), `session` (server-side cookie sessions), `apikey`, `policy` (RBAC), `rolemap`, `ldap`, `oidc`, plus the `Authenticator` interface and `chain` that select among them (see [`docs/auth.md`](auth.md)) |
 | Scheduler | `internal/scheduler` | Assignment loop, worker registry, heartbeat sweep, usage pool gating |
-| NATS bus | `internal/bus` | Typed JetStream client wrapper; stream, subject, and consumer definitions |
+| NATS bus | `internal/bus` | The `Broker` interface and its two implementations, `Embedded` (an in-process nats-server) and `Remote` (an operator-run server or cluster); the account `Layout` both share; the auth-callout `Responder`; the one-server-per-account guard; the typed JetStream client wrapper; stream, subject, and consumer definitions (see [Broker topologies](#broker-topologies)) |
 | Store | `internal/store` | `Store` interface, the shared SQL implementation (`sqlstore`), the SQLite and PostgreSQL openers and dialects (`sqlite`, `postgres`), the factory that opens the configured one (`backend`), the in-memory fake, and one migration set per backend (see [Store layout](#store-layout)) |
 | PostgreSQL DSNs | `internal/pgdsn` | Reads a PostgreSQL connection string the way the driver does, to redact it for `config print` and logs and to strip its password before `pg_dump` sees it |
 | Diagnostics | `internal/diag` | Bounded, per-component in-memory ring buffer of server + worker operational log records; backs `GET /api/v1/diagnostics/logs` and the `diagnostics` WebSocket subject (see [`docs/observability.md`](observability.md)) |
@@ -98,9 +100,23 @@ main()
           (store.checkpoint_interval)
        5. Start the expired-session sweeper (no-op when auth is disabled)
        6. Seed a default farm + queue on first start (no-op once any farm exists)
-       7. Start embedded NATS JetStream server, provision streams, and register
-          it as the "nats" readiness checker
-       8. Create in-process NATS client (internal/bus)
+       7. Start the broker nats.mode selects (see "Broker topologies"):
+            - embedded: boot an in-process nats-server with the SQI and AUTH
+              accounts, JetStream on SQI, and, with nats.auth.enabled, the
+              auth callout; open sqi's own in-process connections and
+              provision the streams;
+            - external: dial nats.external.urls until connect_timeout, refuse
+              a broker below the version floor, require JetStream on the
+              account, take the one-server-per-account guard, provision the
+              streams with stream_replicas, then, with nats.auth.enabled,
+              start answering the auth callout and open the system
+              connection when one is configured.
+          Then compare the broker's identity with the one the database last
+          ran against and, when it differs, fence every open attempt (as
+          restore does) before recording the new one. Register the broker as
+          the "nats" readiness checker
+       8. Create the typed NATS client (internal/bus) on sqi's data
+          connection credential
        9. Create WebSocket hub (internal/ws) — before the scheduler, so it can be
           passed in as the notifier — then wire the diagnostic buffer's notify
           callback to it
@@ -128,7 +144,9 @@ main()
             b. Stop accepting new HTTP connections and drain in-flight requests
             c. Stop Scheduler
             d. Drain NATS in-flight messages, flush JetStream
-            e. Close NATS server
+            e. Shut the broker down. Embedded: stop the server through lame
+               duck mode. External: release the guard and close sqi's
+               connections; the cluster keeps running
             f. Close the store. SQLite: wait for the checkpointer goroutine's
                final WAL checkpoint in TRUNCATE mode (bounded by the shutdown
                deadline), then close both pools, then release the lock file.
@@ -1396,8 +1414,10 @@ JetStream directory beside it does not match it. `sqi-server restore`
 single-server lock held, it lists every open attempt (`store.ListOpenAttempts`
 with a far-future cutoff), reclaims each through `store.ReclaimTaskAttempt`
 (task back to `ready`, attempt closed as `worker shut down`, claims released,
-no retry used), fails if any is still open afterwards, and renames
-`nats.data_dir` to `<dir>.pre-restore-<time>`. Workers still running a fenced
+no retry used), fails if any is still open afterwards, and then clears the
+broker: it renames the embedded broker's `nats.embedded.data_dir` to
+`<dir>.pre-restore-<time>`, or, on an external broker, purges sqi's streams
+and deletes the server's durable consumers while holding the account's guard. Workers still running a fenced
 task become ghost runs: their status reports name a closed attempt and are
 discarded, and their log chunks land on that closed attempt. A database
 restored without the fence is recovered by attempt reconciliation instead
@@ -1477,6 +1497,191 @@ The store does not close these yet.
 
 ---
 
+## Broker topologies
+
+`nats.mode` chooses where the broker runs. Both modes use the same account
+layout and the same auth-callout responder; only who hosts the broker
+differs.
+
+**Embedded** (`nats.mode: embedded`, the default). The broker is a
+nats-server inside the `sqi-server` process, with JetStream in
+`nats.embedded.data_dir`. `sqi-server`'s own connections to it are in-process
+pipes; workers connect to its client listener, `nats.embedded.addr`.
+
+```
+┌─────────────────────────── sqi-server ───────────────────────────┐
+│  scheduler · API · store                                          │
+│        │ data connection (SQI)         │ callout connection (AUTH) │
+│        │ in-process                    │ in-process, auth on only  │
+│  ┌─────▼───────────────────────────────▼──────────────────────┐   │
+│  │ nats-server                                                 │   │
+│  │   account SQI   streams SQI_TASK SQI_LOGS SQI_WORKER        │   │
+│  │                 SQI_CANCEL, R1; the workers                 │   │
+│  │   account AUTH  the callout connection                      │   │
+│  └───────────────────────────▲─────────────────────────────────┘   │
+└──────────────────────────────┼─────────────────────────────────────┘
+                               │ nats.embedded.addr (0.0.0.0:4222)
+                        sqi-worker × N
+```
+
+**External** (`nats.mode: external`). The broker is a NATS server or cluster
+the operator runs, normally configured from the fragment
+`sqi-server nats external init` writes. `sqi-server` is one more client of it:
+it dials `nats.external.urls`, provisions its streams there with
+`nats.external.stream_replicas` copies, and reconnects to another node when
+one is lost. Workers dial the same cluster, not `sqi-server`.
+
+```
+                ┌──────────── NATS cluster (operator-run) ────────────┐
+sqi-worker × N ─►  node 1 · node 2 · node 3                           │
+ (nats.url)     │  account SQI   streams SQI_*, R = stream_replicas;   │
+                │                KV bucket SQI_SERVER; the workers     │
+                │  account AUTH  the callout user                      │
+                │  account SYS   the system user (optional)            │
+                └───────▲───────────────────▲──────────────────▲──────┘
+                        │ data (SQI)        │ callout (AUTH)    │ system (SYS)
+                        │                   │ auth on only      │ optional
+                ┌───────┴───────────────────┴───────────────────┴──────┐
+                │                       sqi-server                     │
+                └──────────────────────────────────────────────────────┘
+```
+
+### The account layout
+
+sqi lives in two NATS accounts, in both modes:
+
+- **`SQI`** (in external mode, the name `nats.external.account` sets) holds
+  sqi's four streams and their consumers, in external mode the guard's KV
+  bucket, every worker connection, and `sqi-server`'s data connection.
+  The data connection may publish and subscribe to everything (`>`), which
+  is safe only because the account boundary scopes it, so the account must be
+  dedicated to sqi.
+- **`AUTH`** holds `sqi-server`'s callout connection, which answers the
+  broker's authorization requests on `$SYS.REQ.USER.AUTH` in the queue group
+  `sqi-auth`. It exists only with `nats.auth.enabled` on.
+
+The two connections authenticate with their own nkeys and are exempt from the
+callout (they are its `auth_users`), so neither needs the responder running
+before it can connect. In embedded mode those keys, and the account key the
+responder signs with, are generated in memory at every start; in external mode
+they are the files `sqi-server nats external init` writes. That command
+renders this layout as nats-server configuration, and a test boots a broker
+from each form and checks they agree.
+
+With `nats.auth.enabled` off there is no callout: the broker maps every
+anonymous connection into `SQI` with no permission limits. With it on, the
+broker asks the responder about every other connection; see
+[How a connection is authorized](auth.md#how-a-connection-is-authorized).
+
+### The one-server-per-account guard
+
+Two `sqi-server`s on one account would both answer every lease (the lease
+subscription is not a queue group) and split the status stream between two
+databases, so external mode refuses a second one. The guard lives on the
+broker because only the broker sees both: two servers with two databases
+never meet at either database's lock. The embedded broker cannot be shared,
+so it has no guard.
+
+The guard is the key `active` in the JetStream KV bucket `SQI_SERVER`, with a
+30 s TTL and the stream replica count:
+
+- At startup, after it finds JetStream on the account and before it
+  touches the streams, `sqi-server` creates the key with its instance ID,
+  host, PID and start time. If the key exists, startup fails naming the
+  holder:
+
+  ```
+  bus: another sqi-server holds this broker account: host render-db-01, pid 4242, started 2026-11-02T09:14:03Z (instance 3f9c2a7d1e5b8046); it is still running, or exited less than 30s ago
+  ```
+
+  A crashed server's key expires within 30 s, so a supervisor's restart
+  loop gets through on its own.
+- The holder refreshes the key every 10 s by compare-and-set, never a plain
+  write, so a server whose key expired during a partition and was taken by
+  another server cannot overwrite the new holder. It logs an ERROR when a
+  refresh fails and keeps running. While the last successful refresh is
+  older than 30 s the `nats` readiness check, and `/readyz` with it,
+  reports degraded; once another server has taken the key it reports
+  degraded until this server restarts. A key that merely expired, with no
+  other holder in between, is retaken with a WARN.
+- A clean shutdown deletes the key.
+- `sqi-server restore` takes the guard as well, and holds it for the whole
+  restore, so no server can start on the account while it runs; a server
+  refused meanwhile names the restore as the holder. The exception is
+  `restore --skip-nats-purge`, which does not connect to the broker and so
+  takes no guard.
+
+The guard stops a copied configuration from pointing a second server at a
+live account. It does not fail over or elect a standby.
+
+### Changing broker: identity and fencing
+
+In-flight JetStream messages (status reports, log chunks, cancels for open
+attempts) stay behind in the broker or account a farm leaves. The server
+therefore records, in the database, the identity of the broker it ran
+against: `embedded:SQI` for the embedded broker, and
+`external:<account>@<cluster>` for an external one (the cluster name the
+broker reports, or a standalone server's configured `server_name`;
+`external:<account>` for a standalone server with neither). At every
+start, after the broker is up and before anything consumes, it compares that
+identity with the current one. When they differ, it applies `restore`'s
+fence — every open attempt closes as failed, its task returns to `ready`,
+and no retry is used — then records the new identity and logs
+`bus: broker layout changed; open attempts fenced` with the count. A
+database with no recorded identity counts as a change, logged as
+`bus: no broker identity recorded; open attempts fenced`, or, on a new
+database with nothing to fence, as `bus: broker identity recorded`. On a
+database with no open attempts the fence does nothing. See
+[Switching broker mode](operations.md#switching-broker-mode).
+
+An embedded broker whose `data_dir` contains `jetstream/$G` (streams in
+nats-server's global account, which sqi does not use) logs one INFO at each
+start naming that directory as abandoned and safe to delete. It deletes
+nothing.
+
+### After a broker outage: the reconnect grace
+
+Worker heartbeats travel over the broker, so while the server's connection
+to it is down, or has just come back, missing heartbeats say nothing about
+the workers. After the server's bus connection comes up, at startup or after
+a reconnect, the heartbeat sweep and the stale-assignment reaper stand down
+for:
+
+```
+scheduler.heartbeat_timeout + the worker's longest redial wait with its jitter
+  + one heartbeat interval
+= 30 s + 2 min × 1.2 + 15 s = 189 s at the defaults
+```
+
+A live worker lost the same broker and redials on its own backoff, capped at
+2 minutes with ±20 % jitter, so a shorter grace would reclaim the tasks of a
+worker that is still waiting to reconnect. The cost is that a worker that
+died is marked offline, and its tasks reclaimed, up to about 3 minutes late
+after a server restart or a broker outage. The sweep logs the
+deferral once per window, with the time it resumes: `scheduler: bus
+connected at startup; liveness sweep deferred for the reconnect grace` after
+a start, `scheduler: bus reconnected recently; liveness sweep deferred` after
+a reconnect, and `scheduler: bus is down; liveness sweep deferred until it
+reconnects` once per outage.
+
+### Health
+
+The `nats` readiness check never makes a round trip to the broker, so it
+answers within `/readyz`'s 5 s budget even during a partition. It reports
+degraded unless:
+
+- the data connection is connected;
+- with `nats.auth.enabled`, the callout connection is connected too, since
+  without it every worker connect is refused;
+- on the embedded broker, the in-process server is running;
+- on an external broker, this server still holds the guard: its last refresh
+  succeeded within 30 s and no other server took the key.
+
+The external system connection is not checked: without it revocation waits
+for expiry, but workers keep working.
+
+---
+
 ## NATS subjects and streams
 
 | Subject pattern | Transport | Direction | Purpose |
@@ -1491,8 +1696,8 @@ The store does not close these yet.
 | `worker.diag.<workerID>` | Core NATS (best-effort) | worker → server | Diagnostic log records |
 
 Every worker → server subject carries the publishing worker's ID directly after
-its class prefix. NATS permissions are static per credential and JetStream does
-not stamp publisher identity onto a message, so this placement is what lets the
+its class prefix. A worker's permissions are fixed when its connection is
+authorized and JetStream does not stamp publisher identity onto a message, so this placement is what lets the
 broker restrict a worker to its own traffic, and what lets the server recover
 who published a message it received (`bus.ParseWorkerSubject`).
 
@@ -1500,16 +1705,23 @@ A queue-unaffiliated worker leases on the reserved queue token
 `work.lease.<worker_id>._any` (`bus.WildcardQueueToken`).
 
 **Transport security.** Every subject above crosses the broker's client
-listener, which is **plaintext unless `nats.tls` is configured** — see
+listener, which is plaintext unless TLS is configured on it
+(`nats.embedded.tls`, or the external cluster's own TLS); see
 [`docs/tls.md`](tls.md). That matters most for `work.lease.*`, whose reply
 carries the whole `AssignMsg`: command lines, embedded file contents, job
 parameters, environment and the run-as-user name. Broker *authentication*
 (`nats.auth`, [`docs/auth.md`](auth.md)) is a separate setting: it decides who
 may connect and constrains which subjects they may use, but it does not encrypt
 anything. The server's own connections to the embedded broker never touch this
-listener at all — they run in-process over a pipe.
+listener at all — they run in-process over a pipe. Its connections to an
+external broker are ordinary client connections, with their own TLS settings
+(`nats.external.tls`).
 
-JetStream streams use file-backed storage with configurable size limits.
+JetStream streams use file-backed storage and age messages out by `MaxAge`.
+On the embedded broker the account's storage is capped by
+`nats.embedded.max_store_mb`; on an external broker storage limits are the
+account's, set by the cluster's operator, and each stream keeps
+`nats.external.stream_replicas` copies.
 `work.lease.<worker_id>.<queue>` uses core NATS request/reply — no stream is created for
 it. The server holds an unfulfillable request in memory for up to 30 s before
 replying with an empty batch; the worker re-requests immediately. A disabled

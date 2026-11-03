@@ -1,10 +1,10 @@
 # sqi-server
 
 `sqi-server` is the control plane for a `sqi` render farm. A single binary runs
-the job scheduler, REST API, WebSocket gateway, embedded NATS JetStream broker,
-and the state store: embedded SQLite by default, or an external PostgreSQL
-database. Workers connect to it over NATS; clients interact with it over HTTP
-and WebSocket.
+the job scheduler, REST API, WebSocket gateway, an embedded NATS JetStream
+broker (or connects to a NATS cluster you run), and the state store: embedded
+SQLite by default, or an external PostgreSQL database. Workers connect to the
+broker over NATS; clients interact with the server over HTTP and WebSocket.
 
 ---
 
@@ -15,7 +15,7 @@ and WebSocket.
 | **Scheduler** | Assigns ready tasks to available workers, enforcing priority, capability matching, compute-location affinity, and usage pool limits. |
 | **REST API** | `/api/v1/…` endpoints for job submission, status queries, worker management, and system configuration. |
 | **WebSocket gateway** | `/api/v1/ws` endpoint for real-time push of job, task, worker, and log events to subscribed clients. |
-| **Embedded NATS** | In-process JetStream broker used for work assignment, status reporting, log streaming, and worker heartbeats. |
+| **NATS broker** | The JetStream broker used for work assignment, status reporting, log streaming, and worker heartbeats: in-process by default, or an external NATS server or cluster with `nats.mode: external` (see [Running on an external NATS cluster](../../docs/operations.md#running-on-an-external-nats-cluster)). With broker authentication on, the server answers the broker's auth callout for every worker connection. |
 | **State store** | The database holding all durable state — jobs, tasks, workers, farms, queues, usage pools, and audit log: an embedded SQLite file by default, or PostgreSQL 16 or later with `store.driver: postgres` (see [Running on PostgreSQL](../../docs/operations.md#running-on-postgresql)). |
 | **Web UI host** | Serves the embedded SPA at the root (`/`, with SPA fallback for extensionless paths; the legacy `/ui/*` prefix still resolves) and the OpenAPI spec at `/api/v1/openapi.yaml`. |
 | **mDNS responder** | Advertises `_sqi._tcp` on the local network so workers and the CLI can discover the server without manual address configuration. |
@@ -213,15 +213,48 @@ PostgreSQL deployment in Docker Compose is in
 `restore` takes the single-server lock, checks the backup (an intact sqi
 backup no newer than the binary), puts it in place, applies any newer
 migrations, returns every task the backup recorded as assigned or running to
-`ready` (the fence: no retry is used), and renames `nats.data_dir` aside. On
+`ready` (the fence: no retry is used), and clears the broker's messages. On
 SQLite the live database and its `-wal`/`-shm` files are renamed to
 `<name>.pre-restore-<UTC time>`; on PostgreSQL the target database must be
 empty, and `pg_restore` must be on `PATH`. It chooses the store as `backup`
-does (`--db`, `--dsn`, `store.driver`), takes the NATS directory from
-`nats.data_dir` or `--nats-data-dir`, and deletes nothing. Work done after the
-backup runs again. The runbooks, including what to clean up afterwards, are
-in [Backup](../../docs/operations.md#backup) and
-[Restore](../../docs/operations.md#restore).
+does (`--db`, `--dsn`, `store.driver`), and deletes nothing. Work done after
+the backup runs again.
+
+How the broker's messages are cleared depends on `nats.mode`:
+
+- **Embedded broker**: the JetStream directory, `nats.embedded.data_dir` or
+  `--nats-data-dir`, is renamed to `<dir>.pre-restore-<UTC time>`.
+- **External broker**: `restore` connects to the cluster with the server's
+  `nats.external` configuration, takes the account's one-server guard before
+  it changes anything and holds it to the end (so it refuses while a server
+  runs on the account, and no server can start meanwhile), then purges sqi's
+  four streams and deletes the server's three durable consumers. It refuses,
+  with nothing changed, when it cannot reach the cluster, unless given
+  `--skip-nats-purge`: it then restores without the purge and prints the
+  `nats` CLI commands to purge by hand before a server starts.
+  `--nats-data-dir` does not apply, and `--skip-nats-purge` is refused with an
+  embedded broker.
+
+`backup` is the same in both modes: it never includes the broker's state. The
+runbooks, including what to clean up afterwards, are in
+[Backup](../../docs/operations.md#backup) and
+[Restore](../../docs/operations.md#restore), with the external-mode one in
+[Restoring with an external broker](../../docs/operations.md#restoring-with-an-external-broker).
+
+## External NATS cluster
+
+```sh
+# Generate the seeds and the nats-server config fragment for a cluster
+./bin/sqi-server nats external init --out /etc/sqi/nats
+```
+
+`nats external init` writes four private nkey seeds (`issuer.nk`,
+`sqi-data.nk`, `sqi-auth.nk`, `sqi-sys.nk`, owner-only, kept on the server
+host) and `sqi-accounts.conf` (public keys only), which every cluster node
+includes from beside its own config file. It prints the `include` line and the
+`nats:` block for `sqi-server.yaml`, and never replaces existing files without
+`--force`. Step by step:
+[Running on an external NATS cluster](../../docs/operations.md#running-on-an-external-nats-cluster).
 
 ## Moving a farm to PostgreSQL
 
@@ -248,7 +281,7 @@ cmd/sqi-server/
 └── main.go            Entry point — wires the cobra command tree, exits.
 
 internal/
-├── bus/               Typed NATS JetStream client wrapper and subject definitions.
+├── bus/               Broker (embedded and external), auth-callout responder, account guard, typed JetStream client, subjects.
 ├── config/            Config struct, layered loader, and startup validator.
 ├── discovery/         mDNS responder (grandcat/zeroconf).
 ├── health/            /healthz and /readyz handlers.

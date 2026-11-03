@@ -128,8 +128,8 @@ func startTLSServer(t *testing.T, so backend.Options, dir string) *testServer {
 
 	ts := startBrokerAuthServer(t, so, func(cfg *server.Config) {
 		cfg.HTTPTLS = config.TLSConfig{Enabled: true, CertFile: certFile, KeyFile: keyFile}
-		cfg.NATSTLS = config.NATSTLSConfig{Enabled: true, CertFile: certFile, KeyFile: keyFile}
-		cfg.NATSAuthEnrollmentEndpointEnabled = true
+		cfg.NATS.Embedded.TLS = config.NATSTLSConfig{Enabled: true, CertFile: certFile, KeyFile: keyFile}
+		cfg.NATS.Auth.EnrollmentEndpointEnabled = true
 	})
 	// startBrokerAuthServer stamps ts.Scheme/ts.Client from cfg.HTTPTLS, so
 	// every shared helper already speaks https here.
@@ -224,12 +224,12 @@ func TestTLSMutualAuthEndToEnd(t *testing.T) {
 
 	ts := startBrokerAuthServer(t, so, func(cfg *server.Config) {
 		cfg.HTTPTLS = config.TLSConfig{Enabled: true, CertFile: certFile, KeyFile: keyFile}
-		cfg.NATSTLS = config.NATSTLSConfig{
+		cfg.NATS.Embedded.TLS = config.NATSTLSConfig{
 			Enabled: true, CertFile: certFile, KeyFile: keyFile,
 			// Require a client certificate from every worker.
 			ClientCAFile: caFile,
 		}
-		cfg.NATSAuthEnrollmentEndpointEnabled = true
+		cfg.NATS.Auth.EnrollmentEndpointEnabled = true
 	})
 
 	farmID, queueID := seedFarmAndQueue(t, ts)
@@ -263,10 +263,10 @@ func TestTLSMutualAuthRefusesWorkerWithoutCertificate(t *testing.T) {
 
 	ts := startBrokerAuthServer(t, so, func(cfg *server.Config) {
 		cfg.HTTPTLS = config.TLSConfig{Enabled: true, CertFile: certFile, KeyFile: keyFile}
-		cfg.NATSTLS = config.NATSTLSConfig{
+		cfg.NATS.Embedded.TLS = config.NATSTLSConfig{
 			Enabled: true, CertFile: certFile, KeyFile: keyFile, ClientCAFile: caFile,
 		}
-		cfg.NATSAuthEnrollmentEndpointEnabled = true
+		cfg.NATS.Auth.EnrollmentEndpointEnabled = true
 	})
 
 	farmID, queueID := seedFarmAndQueue(t, ts)
@@ -325,10 +325,10 @@ func TestTLSMutualAuthWithIssuedCertificate(t *testing.T) {
 
 	ts := startBrokerAuthServer(t, so, func(cfg *server.Config) {
 		cfg.HTTPTLS = config.TLSConfig{Enabled: true, CertFile: certFile, KeyFile: keyFile}
-		cfg.NATSTLS = config.NATSTLSConfig{
+		cfg.NATS.Embedded.TLS = config.NATSTLSConfig{
 			Enabled: true, CertFile: certFile, KeyFile: keyFile, ClientCAFile: caFile,
 		}
-		cfg.NATSAuthEnrollmentEndpointEnabled = true
+		cfg.NATS.Auth.EnrollmentEndpointEnabled = true
 	})
 
 	farmID, queueID := seedFarmAndQueue(t, ts)

@@ -80,7 +80,7 @@ func TestServerConfig_DefaultsAreTheConfigDefaults(t *testing.T) {
 func TestServerConfig_CarriesTheRestOfTheConfig(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.HTTP.Addr = ":9999"
-	cfg.NATS.Addr = "nats://127.0.0.1:4333"
+	cfg.NATS.Embedded.Addr = "nats://127.0.0.1:4333"
 	cfg.Store.SQLitePath = "/tmp/does-not-need-to-exist.db"
 	cfg.Auth.Enabled = true
 	cfg.Auth.Session.CookieName = "cookie-under-test"
@@ -95,8 +95,8 @@ func TestServerConfig_CarriesTheRestOfTheConfig(t *testing.T) {
 	if got.HTTPAddr != ":9999" {
 		t.Errorf("HTTPAddr = %q, want %q", got.HTTPAddr, ":9999")
 	}
-	if got.NATSAddr != "nats://127.0.0.1:4333" {
-		t.Errorf("NATSAddr = %q, want the configured address", got.NATSAddr)
+	if got.NATS.Embedded.Addr != "nats://127.0.0.1:4333" {
+		t.Errorf("NATS.Embedded.Addr = %q, want the configured address", got.NATS.Embedded.Addr)
 	}
 	if got.SQLitePath != "/tmp/does-not-need-to-exist.db" {
 		t.Errorf("SQLitePath = %q, want the configured path", got.SQLitePath)
@@ -150,16 +150,16 @@ func TestServerConfig_CarriesTheBrokerAuthSettings(t *testing.T) {
 
 	got := serverConfig(cfg, scheduler.Config{})
 
-	if !got.NATSAuthEnabled {
+	if !got.NATS.Auth.Enabled {
 		t.Error("NATSAuthEnabled = false, want the configured true")
 	}
-	if !got.NATSAuthEnrollmentEndpointEnabled {
+	if !got.NATS.Auth.EnrollmentEndpointEnabled {
 		t.Error("NATSAuthEnrollmentEndpointEnabled = false, want the configured true")
 	}
-	if want := 42 * time.Minute; got.NATSAuthJoinTokenTTL != want {
-		t.Errorf("NATSAuthJoinTokenTTL = %s, want %s", got.NATSAuthJoinTokenTTL, want)
+	if want := 42 * time.Minute; got.NATS.Auth.JoinTokenTTL != want {
+		t.Errorf("NATSAuthJoinTokenTTL = %s, want %s", got.NATS.Auth.JoinTokenTTL, want)
 	}
-	if got.NATSAuthJoinTokenSingleUse {
+	if got.NATS.Auth.JoinTokenSingleUse {
 		t.Error("NATSAuthJoinTokenSingleUse = true, want the configured false")
 	}
 }
@@ -173,19 +173,19 @@ func TestServerConfig_BrokerAuthDefaultsAreTheConfigDefaults(t *testing.T) {
 	def := config.DefaultConfig()
 	got := serverConfig(def, scheduler.Config{})
 
-	if got.NATSAuthEnabled {
+	if got.NATS.Auth.Enabled {
 		t.Error("at defaults NATSAuthEnabled = true, want false")
 	}
-	if got.NATSAuthEnrollmentEndpointEnabled != def.NATS.Auth.EnrollmentEndpointEnabled {
+	if got.NATS.Auth.EnrollmentEndpointEnabled != def.NATS.Auth.EnrollmentEndpointEnabled {
 		t.Errorf("at defaults NATSAuthEnrollmentEndpointEnabled = %v, want %v",
-			got.NATSAuthEnrollmentEndpointEnabled, def.NATS.Auth.EnrollmentEndpointEnabled)
+			got.NATS.Auth.EnrollmentEndpointEnabled, def.NATS.Auth.EnrollmentEndpointEnabled)
 	}
-	if got.NATSAuthJoinTokenTTL != def.NATS.Auth.JoinTokenTTL {
-		t.Errorf("at defaults NATSAuthJoinTokenTTL = %s, want %s", got.NATSAuthJoinTokenTTL, def.NATS.Auth.JoinTokenTTL)
+	if got.NATS.Auth.JoinTokenTTL != def.NATS.Auth.JoinTokenTTL {
+		t.Errorf("at defaults NATSAuthJoinTokenTTL = %s, want %s", got.NATS.Auth.JoinTokenTTL, def.NATS.Auth.JoinTokenTTL)
 	}
-	if got.NATSAuthJoinTokenSingleUse != def.NATS.Auth.JoinTokenSingleUse {
+	if got.NATS.Auth.JoinTokenSingleUse != def.NATS.Auth.JoinTokenSingleUse {
 		t.Errorf("at defaults NATSAuthJoinTokenSingleUse = %v, want %v",
-			got.NATSAuthJoinTokenSingleUse, def.NATS.Auth.JoinTokenSingleUse)
+			got.NATS.Auth.JoinTokenSingleUse, def.NATS.Auth.JoinTokenSingleUse)
 	}
 }
 

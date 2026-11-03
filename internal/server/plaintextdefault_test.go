@@ -30,18 +30,18 @@ func TestDefaultConfig_ServesPlaintextUnchanged(t *testing.T) {
 	if defaults.HTTP.TLS.Enabled {
 		t.Fatal("config.DefaultConfig() ships http.tls.enabled = true; TLS must be opt-in")
 	}
-	if defaults.NATS.TLS.Enabled {
-		t.Fatal("config.DefaultConfig() ships nats.tls.enabled = true; TLS must be opt-in")
+	if defaults.NATS.Embedded.TLS.Enabled {
+		t.Fatal("config.DefaultConfig() ships nats.embedded.tls.enabled = true; TLS must be opt-in")
 	}
 
 	// Same boot helper the TLS tests use, so the only difference between this
 	// test and those is the TLS configuration itself.
 	srv, base := startTestServer(t, "http", func(cfg *Config) {
 		cfg.HTTPTLS = defaults.HTTP.TLS
-		cfg.NATSTLS = defaults.NATS.TLS
+		cfg.NATS.Embedded.TLS = defaults.NATS.Embedded.TLS
 	})
 	httpAddr := strings.TrimPrefix(base, "http://")
-	natsAddr := srv.cfg.NATSAddr
+	natsAddr := srv.cfg.NATS.Embedded.Addr
 
 	client := &http.Client{Timeout: 5 * time.Second}
 
@@ -113,7 +113,8 @@ func TestDefaultConfig_ServesPlaintextUnchanged(t *testing.T) {
 	//    environments), so a responder started here would never produce
 	//    records and any check would be vacuous.
 	//    TestBuildTXTRecords_TLSKeysOmittedWhenOff in internal/discovery is the
-	//    real assertion. What this test contributes is the input to it: both
-	//    flags come from cfg.HTTPTLS.Enabled / cfg.NATSTLS.Enabled, verified
-	//    false at the top of this function.
+	//    real assertion. What this test contributes is the input to it: the
+	//    HTTP flag comes from cfg.HTTPTLS.Enabled and the advertised broker
+	//    URL's scheme from cfg.NATS.Embedded.TLS.Enabled, both verified false
+	//    at the top of this function.
 }

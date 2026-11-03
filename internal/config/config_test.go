@@ -40,9 +40,9 @@ func TestDefaultConfig(t *testing.T) {
 	}
 
 	check("http.addr", cfg.HTTP.Addr, "0.0.0.0:8080")
-	check("nats.addr", cfg.NATS.Addr, "0.0.0.0:4222")
-	check("nats.data_dir", cfg.NATS.DataDir, "data/nats")
-	checkInt("nats.max_store_mb", cfg.NATS.MaxStoreMB, 1024)
+	check("nats.embedded.addr", cfg.NATS.Embedded.Addr, "0.0.0.0:4222")
+	check("nats.embedded.data_dir", cfg.NATS.Embedded.DataDir, "data/nats")
+	checkInt("nats.embedded.max_store_mb", cfg.NATS.Embedded.MaxStoreMB, 1024)
 	check("store.sqlite_path", cfg.Store.SQLitePath, "sqi.db")
 	check("log.level", cfg.Log.Level, "info")
 	check("log.format", cfg.Log.Format, "json")
@@ -95,7 +95,8 @@ log:
   level: "debug"
   format: "text"
 nats:
-  max_store_mb: 512
+  embedded:
+    max_store_mb: 512
 scheduler:
   heartbeat_timeout: "1m"
   max_tasks_per_worker: 4
@@ -121,8 +122,8 @@ discovery:
 	if cfg.Log.Format != "text" {
 		t.Errorf("log.format: got %q", cfg.Log.Format)
 	}
-	if cfg.NATS.MaxStoreMB != 512 {
-		t.Errorf("nats.max_store_mb: got %d", cfg.NATS.MaxStoreMB)
+	if cfg.NATS.Embedded.MaxStoreMB != 512 {
+		t.Errorf("nats.embedded.max_store_mb: got %d", cfg.NATS.Embedded.MaxStoreMB)
 	}
 	if cfg.Scheduler.HeartbeatTimeout != time.Minute {
 		t.Errorf("scheduler.heartbeat_timeout: got %s", cfg.Scheduler.HeartbeatTimeout)
@@ -137,8 +138,8 @@ discovery:
 		t.Errorf("discovery.instance_name: got %q", cfg.Discovery.InstanceName)
 	}
 	// Unset fields should keep defaults.
-	if cfg.NATS.Addr != "0.0.0.0:4222" {
-		t.Errorf("nats.addr: expected default, got %q", cfg.NATS.Addr)
+	if cfg.NATS.Embedded.Addr != "0.0.0.0:4222" {
+		t.Errorf("nats.embedded.addr: expected default, got %q", cfg.NATS.Embedded.Addr)
 	}
 }
 
@@ -148,7 +149,7 @@ func TestLoad_EnvOverridesDefaults(t *testing.T) {
 	t.Chdir(t.TempDir())
 	t.Setenv("SQI_HTTP_ADDR", "0.0.0.0:7777")
 	t.Setenv("SQI_LOG_LEVEL", "warn")
-	t.Setenv("SQI_NATS_MAX_STORE_MB", "256")
+	t.Setenv("SQI_NATS_EMBEDDED_MAX_STORE_MB", "256")
 	t.Setenv("SQI_SCHEDULER_TICK_INTERVAL", "2s")
 	t.Setenv("SQI_DISCOVERY_ENABLED", "false")
 
@@ -163,8 +164,8 @@ func TestLoad_EnvOverridesDefaults(t *testing.T) {
 	if cfg.Log.Level != "warn" {
 		t.Errorf("log.level: got %q", cfg.Log.Level)
 	}
-	if cfg.NATS.MaxStoreMB != 256 {
-		t.Errorf("nats.max_store_mb: got %d", cfg.NATS.MaxStoreMB)
+	if cfg.NATS.Embedded.MaxStoreMB != 256 {
+		t.Errorf("nats.embedded.max_store_mb: got %d", cfg.NATS.Embedded.MaxStoreMB)
 	}
 	if cfg.Scheduler.TickInterval != 2*time.Second {
 		t.Errorf("scheduler.tick_interval: got %s", cfg.Scheduler.TickInterval)
@@ -269,9 +270,9 @@ func TestValidate_ReturnsAllErrors(t *testing.T) {
 
 	required := []string{
 		"http.addr",
-		"nats.addr",
-		"nats.data_dir",
-		"nats.max_store_mb",
+		"nats.embedded.addr",
+		"nats.embedded.data_dir",
+		"nats.embedded.max_store_mb",
 		"store.sqlite_path",
 		"log.level",
 		"log.format",
@@ -303,18 +304,18 @@ func TestValidate_FieldErrors(t *testing.T) {
 		},
 		{
 			name:      "bad nats addr",
-			mutate:    func(c *config.Config) { c.NATS.Addr = "not-an-addr" },
-			wantField: "nats.addr",
+			mutate:    func(c *config.Config) { c.NATS.Embedded.Addr = "not-an-addr" },
+			wantField: "nats.embedded.addr",
 		},
 		{
 			name:      "empty nats data dir",
-			mutate:    func(c *config.Config) { c.NATS.DataDir = "" },
-			wantField: "nats.data_dir",
+			mutate:    func(c *config.Config) { c.NATS.Embedded.DataDir = "" },
+			wantField: "nats.embedded.data_dir",
 		},
 		{
 			name:      "zero nats max store mb",
-			mutate:    func(c *config.Config) { c.NATS.MaxStoreMB = 0 },
-			wantField: "nats.max_store_mb",
+			mutate:    func(c *config.Config) { c.NATS.Embedded.MaxStoreMB = 0 },
+			wantField: "nats.embedded.max_store_mb",
 		},
 		{
 			name:      "empty sqlite path",
@@ -890,13 +891,13 @@ func TestLoad_AuthSessionTTL_GarbageValueErrors(t *testing.T) {
 
 // An unparseable non-empty int must error and name the key.
 func TestLoad_IntEnv_GarbageValueErrors(t *testing.T) {
-	t.Setenv("SQI_NATS_MAX_STORE_MB", "lots")
+	t.Setenv("SQI_NATS_EMBEDDED_MAX_STORE_MB", "lots")
 	_, err := config.Load("", config.FlagOverrides{})
 	if err == nil {
-		t.Fatal("Load: got nil error for SQI_NATS_MAX_STORE_MB=lots, want an error")
+		t.Fatal("Load: got nil error for SQI_NATS_EMBEDDED_MAX_STORE_MB=lots, want an error")
 	}
-	if !strings.Contains(err.Error(), "SQI_NATS_MAX_STORE_MB") {
-		t.Errorf("error %q does not name the offending env key SQI_NATS_MAX_STORE_MB", err)
+	if !strings.Contains(err.Error(), "SQI_NATS_EMBEDDED_MAX_STORE_MB") {
+		t.Errorf("error %q does not name the offending env key SQI_NATS_EMBEDDED_MAX_STORE_MB", err)
 	}
 }
 
@@ -942,13 +943,13 @@ func TestLoad_ValidEnvValuesStillApply(t *testing.T) {
 	}
 
 	t.Run("int", func(t *testing.T) {
-		t.Setenv("SQI_NATS_MAX_STORE_MB", "256")
+		t.Setenv("SQI_NATS_EMBEDDED_MAX_STORE_MB", "256")
 		cfg, err := config.Load("", config.FlagOverrides{})
 		if err != nil {
 			t.Fatalf("Load: %v", err)
 		}
-		if cfg.NATS.MaxStoreMB != 256 {
-			t.Errorf("NATS.MaxStoreMB = %d, want 256", cfg.NATS.MaxStoreMB)
+		if cfg.NATS.Embedded.MaxStoreMB != 256 {
+			t.Errorf("NATS.Embedded.MaxStoreMB = %d, want 256", cfg.NATS.Embedded.MaxStoreMB)
 		}
 	})
 
@@ -2849,5 +2850,42 @@ func TestLoad_RejectsAMalformedFileDuration(t *testing.T) {
 	}
 	if cfg.Scheduler.RetryDelay != 45*time.Second {
 		t.Fatalf("retry_delay = %s, want 45s", cfg.Scheduler.RetryDelay)
+	}
+}
+
+func TestMarshalYAML_NATSExternalURLCredentialsRedacted(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.NATS.Mode = config.NATSModeExternal
+	cfg.NATS.External.URLs = []string{"nats://sqi:hunter2@a:4222", "nats://s3cr3tt0ken@b:4222"}
+	cfg.NATS.External.AdvertiseURLs = []string{"nats://public:4222"}
+	cfg.NATS.External.Account = "FARM"
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"hunter2", "s3cr3tt0ken"} {
+		if strings.Contains(string(out), secret) {
+			t.Fatalf("marshaled config contains the credential %q:\n%s", secret, out)
+		}
+	}
+	var back struct {
+		NATS struct {
+			External struct {
+				URLs          []string `yaml:"urls"`
+				AdvertiseURLs []string `yaml:"advertise_urls"`
+				Account       string   `yaml:"account"`
+			} `yaml:"external"`
+		} `yaml:"nats"`
+	}
+	if err := yaml.Unmarshal(out, &back); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out)
+	}
+	ex := back.NATS.External
+	if strings.Join(ex.URLs, ",") != "nats://REDACTED@a:4222,nats://REDACTED@b:4222" ||
+		strings.Join(ex.AdvertiseURLs, ",") != "nats://public:4222" || ex.Account != "FARM" {
+		t.Fatalf("nats.external = %+v\n%s", ex, out)
+	}
+	if cfg.NATS.External.URLs[0] != "nats://sqi:hunter2@a:4222" {
+		t.Fatal("MarshalYAML changed the loaded value")
 	}
 }

@@ -12,3 +12,9 @@ so the dev workflow and the deployment docs reference one source of truth.
 
 Both files ship with TLS commented out, matching the plaintext default. See
 [`docs/tls.md`](../../docs/tls.md) for what to uncomment and in what order.
+
+The server file configures the embedded NATS broker under `nats.embedded`, and
+has a commented `nats.external` block for running on a NATS cluster you run
+instead (`nats.mode: external`); `sqi-server nats external init` generates the
+keys that block names. See
+[Running on an external NATS cluster](../../docs/operations.md#running-on-an-external-nats-cluster).

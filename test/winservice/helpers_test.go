@@ -190,7 +190,7 @@ func startServer(t *testing.T) serverFixture {
 
 func serverYAML(httpPort, natsPort int) string {
 	return "http:\n  addr: " + strconv.Quote(hostPort(httpPort)) +
-		"\nnats:\n  addr: " + strconv.Quote(hostPort(natsPort)) +
+		"\nnats:\n  embedded:\n    addr: " + strconv.Quote(hostPort(natsPort)) +
 		"\ndiscovery:\n  enabled: false\n"
 }
 

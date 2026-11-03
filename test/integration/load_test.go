@@ -59,6 +59,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/uberware/sqi/internal/bus"
+	"github.com/uberware/sqi/internal/config"
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/server"
 	"github.com/uberware/sqi/internal/worker/protocol"
@@ -116,12 +117,14 @@ func startLoadServer(tb testing.TB) *testServer {
 	natsDir := tmpDir + "/nats"
 
 	cfg := server.Config{
-		HTTPAddr:           httpAddr,
-		CORSOrigins:        []string{"*"},
-		EnablePprof:        false,
-		NATSAddr:           natsAddr,
-		NATSDataDir:        natsDir,
-		NATSMaxStoreMB:     128,
+		HTTPAddr:    httpAddr,
+		CORSOrigins: []string{"*"},
+		EnablePprof: false,
+		NATS: config.NATSConfig{Embedded: config.NATSEmbeddedConfig{
+			Addr:       natsAddr,
+			DataDir:    natsDir,
+			MaxStoreMB: 128,
+		}},
 		CheckpointInterval: time.Minute,
 		Scheduler: scheduler.Config{
 			AssignInterval:         50 * time.Millisecond,

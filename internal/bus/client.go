@@ -12,6 +12,8 @@ import (
 
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/uberware/sqi/internal/redact"
 )
 
 // Client is the typed in-process NATS client used by all sqi-server code.
@@ -29,51 +31,118 @@ type Client struct {
 	js     jetstream.JetStream
 	logger *slog.Logger
 
+	// stateMu guards upSince and events. See [Client.BusUpSince].
+	stateMu sync.Mutex
+	// upSince is when the connection was last established or re-established;
+	// zero while it is down.
+	upSince time.Time
+	// events counts the connection handlers that have run, so the constructor
+	// can tell that one fired between nats.Connect returning and its own
+	// bookkeeping, and not undo it.
+	events int
+
 	// mu guards cons; all other fields are immutable after construction.
 	mu   sync.Mutex
 	cons []jetstream.ConsumeContext // push consumers tracked for drain
 }
 
-// NewClient dials the embedded NATS server at url and returns a connected
-// Client.  The connection is configured for unlimited reconnects with
-// exponential backoff, so transient disruptions (e.g. a brief broker restart
-// during development) recover automatically.
+// BusUpSince returns when the client's connection was last established or
+// re-established, and the zero time while it is disconnected. Safe for
+// concurrent use.
+//
+// The scheduler uses it to avoid judging workers by heartbeats that could not
+// have reached it: a heartbeat travels over the bus, so a broker outage looks
+// exactly like every worker going silent at once.
+func (c *Client) BusUpSince() time.Time {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	return c.upSince
+}
+
+// markUp records a (re)connect.
+func (c *Client) markUp() {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	c.events++
+	c.upSince = time.Now().UTC()
+}
+
+// markDown records a disconnect.
+func (c *Client) markDown() {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	c.events++
+	c.upSince = time.Time{}
+}
+
+// markInitialUp records the first connection, unless a connection handler has
+// already run: whatever it recorded is newer than this connect.
+func (c *Client) markInitialUp() {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	if c.events == 0 {
+		c.upSince = time.Now().UTC()
+	}
+}
+
+// NewClient dials the broker at url, the embedded server in-process or an
+// external cluster, and returns a connected Client. The connection reconnects
+// without limit every 2 s, so a broker restart or a brief partition recovers
+// on its own.
 //
 // extraOpts are appended after the default options, so a caller can supply
 // authentication (e.g. an nkey credential) without disturbing the reconnect
-// behavior above.
+// behavior above. NewClient owns the reconnect and disconnect handlers, which
+// maintain [Client.BusUpSince]: one passed in extraOpts is replaced.
 //
 // Prefer [Broker.NewClient] over calling NewClient directly; the Broker
-// supplies the correct loopback URL without the caller needing to know it.
+// supplies the URL, credential and TLS options for its mode.
 func NewClient(url string, logger *slog.Logger, extraOpts ...nats.Option) (*Client, error) {
+	// c's connection fields are set once nats.Connect returns; the handlers
+	// below use only its connection-state fields.
+	c := &Client{logger: logger}
 	opts := []nats.Option{
-		// Reconnect indefinitely — this is an in-process loopback connection
-		// and should always come back up if the embedded broker restarts.
+		// Reconnect indefinitely: the server has no use without its bus, so
+		// the connection must come back whenever the broker does.
 		nats.MaxReconnects(-1),
 
-		// Wait 2 s between reconnect attempts.  The embedded broker is on
-		// loopback so it recovers quickly; a short fixed interval is sufficient.
+		// Wait 2 s between reconnect attempts. A short fixed interval is
+		// enough for sqi-server's own few connections; the reconnect grace
+		// the scheduler applies afterwards covers the workers' slower redials.
 		nats.ReconnectWait(2 * time.Second),
 
-		// Log reconnect events through the server's structured logger so
-		// operators can correlate them with other activity.
-		nats.ReconnectHandler(func(nc *nats.Conn) {
-			logger.InfoContext(context.Background(), "bus: client reconnected", slog.String("url", nc.ConnectedUrl()))
-		}),
-		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
-			if err != nil {
-				logger.WarnContext(context.Background(), "bus: client disconnected", slog.Any("error", err))
-			}
-		}),
+		// Detect a silent partition (a black-holed link, a dead broker host)
+		// in about 15 s: the scheduler defers its liveness sweeps only while
+		// BusUpSince is zero, and the default of two minutes of pings would
+		// leave it reporting "up" while every heartbeat is being dropped.
+		nats.PingInterval(5 * time.Second),
+		nats.MaxPingsOutstanding(2),
+
 		nats.ClosedHandler(func(_ *nats.Conn) {
 			logger.InfoContext(context.Background(), "bus: client connection closed")
 		}),
 	}
 	opts = append(opts, extraOpts...)
+	// The handlers that log through the server's structured logger and
+	// maintain BusUpSince come last: nats.go keeps only the last handler of
+	// each kind, so a caller's own would otherwise silence BusUpSince.
+	opts = append(
+		opts,
+		nats.ReconnectHandler(func(nc *nats.Conn) {
+			c.markUp()
+			logger.InfoContext(context.Background(), "bus: client reconnected", slog.String("url", redact.URL(nc.ConnectedUrl())))
+		}),
+		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
+			c.markDown()
+			if err != nil {
+				logger.WarnContext(context.Background(), "bus: client disconnected", slog.Any("error", err))
+			}
+		}),
+	)
 
 	nc, err := nats.Connect(url, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("bus: client connect %q: %w", url, err)
+		return nil, fmt.Errorf("bus: client connect %q: %w", redact.List(url), err)
 	}
 
 	js, err := jetstream.New(nc)
@@ -82,7 +151,11 @@ func NewClient(url string, logger *slog.Logger, extraOpts ...nats.Option) (*Clie
 		return nil, fmt.Errorf("bus: client jetstream context: %w", err)
 	}
 
-	return &Client{nc: nc, js: js, logger: logger}, nil
+	c.nc, c.js = nc, js
+	if nc.IsConnected() {
+		c.markInitialUp()
+	}
+	return c, nil
 }
 
 // ── Publish methods ──────────────────────────────────────────────────────────
@@ -142,39 +215,31 @@ func (c *Client) publish(ctx context.Context, subject string, data []byte) error
 // Drain stops all push consumers started by this Client, waits for in-flight
 // message handlers to finish, and then drains the underlying NATS connection
 // (flushing pending publish-acks and waiting for all outstanding messages to
-// be delivered).  It respects the given context deadline.
+// be delivered) and waits for it to close. It respects the given context
+// deadline.
+//
+// [jetstream.ConsumeContext.Drain] and [nats.Conn.Drain] only start a drain:
+// both return at once and finish in the background. Drain waits for each
+// consumer's Closed channel and then for the connection to reach CLOSED, so
+// that when it returns the buffered messages have been handled. The server
+// shuts the broker down, and on an external broker releases its account
+// guard, as soon as Drain returns.
 //
 // Call Drain before [Client.Close] or [Broker.Shutdown] to guarantee a clean
 // shutdown — no in-flight messages are dropped and no pending publishes are
 // lost.  After Drain returns, no further messages will arrive at handlers.
+// When ctx ends first, Drain stops the consumers, closes the connection and
+// returns an error.
 func (c *Client) Drain(ctx context.Context) error {
 	c.mu.Lock()
 	cons := c.cons
 	c.cons = nil
 	c.mu.Unlock()
 
-	// Drain consumers and the NATS connection in a single goroutine so that
-	// the caller's context deadline is honored without blocking here.
-	//
-	// Consumer.Drain() stops new message delivery and waits for any in-flight
-	// handler invocations to complete before returning.  nc.Drain() then
-	// flushes pending JetStream publish-acks and closes the connection.
-	done := make(chan error, 1)
-	go func() {
-		for _, cc := range cons {
-			cc.Drain()
+	if err := c.drain(ctx, cons); err != nil {
+		if ctx.Err() == nil {
+			return err
 		}
-		done <- c.nc.Drain()
-	}()
-
-	select {
-	case err := <-done:
-		if err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
-			return fmt.Errorf("bus: drain: %w", err)
-		}
-		c.logger.InfoContext(ctx, "bus: client drained cleanly")
-		return nil
-	case <-ctx.Done():
 		// Context expired before drain finished — stop remaining consumers
 		// immediately and force-close the connection so the broker can shut down.
 		c.logger.WarnContext(ctx, "bus: drain timed out — forcing close", slog.Any("error", ctx.Err()))
@@ -184,6 +249,44 @@ func (c *Client) Drain(ctx context.Context) error {
 		c.nc.Close()
 		return fmt.Errorf("bus: drain timed out: %w", ctx.Err())
 	}
+	c.logger.InfoContext(ctx, "bus: client drained cleanly")
+	return nil
+}
+
+// drain drains cons, then the connection, waiting for each to finish. It
+// returns ctx's error when ctx ends first.
+func (c *Client) drain(ctx context.Context, cons []jetstream.ConsumeContext) error {
+	// ConsumeContext.Drain stops new deliveries; the messages already
+	// buffered are still handed to the handler, and Closed closes once that
+	// is done.
+	for _, cc := range cons {
+		cc.Drain()
+	}
+	for _, cc := range cons {
+		select {
+		case <-cc.Closed():
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	// Registered before Drain so the close cannot be missed; a connection
+	// that was already closed sends nothing, which IsClosed covers.
+	closed := c.nc.StatusChanged(nats.CLOSED)
+	defer c.nc.RemoveStatusListener(closed)
+	if err := c.nc.Drain(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
+		return fmt.Errorf("bus: drain: %w", err)
+	}
+	if !c.nc.IsClosed() {
+		select {
+		case <-closed:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if err := c.nc.LastError(); errors.Is(err, nats.ErrDrainTimeout) {
+		return fmt.Errorf("bus: drain: %w", err)
+	}
+	return nil
 }
 
 // Close closes the underlying NATS connection immediately without draining.
