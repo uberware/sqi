@@ -31,12 +31,22 @@ readme: |
 
   Output paths come from the RIB files. `prman` resolves relative paths in a
   RIB file against the task's working directory, not the RIB file's folder, so
-  export RIB files with absolute paths.
+  export RIB files with absolute paths. `prman` does not create the folder an
+  image is written to: a task whose output folder does not exist fails with
+  `Can't open display image`.
 
   ## Requirements
 
   - Workers tagged `attr.worker.tag.renderman = true`
-  - `prman` on the worker's `PATH`
+  - `prman` on the worker's `PATH`, or RenderMan's own, which the worker
+    finds at the default install location on Windows, Linux and macOS (the
+    Linux and macOS locations are unverified)
+  - `RMANTREE` set in the worker's environment. Without it `prman` cannot
+    find its license and the task fails. RenderMan's installer sets it for the
+    whole machine, which a running worker does not see: restart a worker
+    started from a shell, and restart the machine when the worker runs as a
+    Windows service, because Windows services read machine variables only
+    when the machine starts.
   - A RenderMan license
 category: Rendering
 version: 1.0.0
