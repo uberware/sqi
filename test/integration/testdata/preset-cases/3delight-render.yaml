@@ -2,6 +2,13 @@
 #
 # 3Delight Render: one task per frame. padding-and-step shows the # run length
 # setting the padding over a stepped range.
+#
+# The preset requires a progress line reaching 100% (renderdl exits 0 when it
+# renders nothing), so the passing cases have the stub print one. The outcome
+# cases have the stub print one line and exit 0, so only the log checks can
+# fail the task: renderdl's message for a file it cannot open, and a render
+# that never reaches 100%. A failed task is retried, so each outcome case runs
+# the stub three times.
 cases:
   - name: default
     params:
@@ -10,6 +17,8 @@ cases:
     expect_tasks: 3
     expect_invocations:
       renderdl: 3
+    stub_env:
+      SQI_STUB_STDOUT: "  100%"
   - name: padding-and-step
     params:
       SceneFile: /mnt/show/seq010/shot0010/nsi/shot0010_beauty.######.nsi
@@ -17,3 +26,27 @@ cases:
     expect_tasks: 3
     expect_invocations:
       renderdl: 3
+    stub_env:
+      SQI_STUB_STDOUT: "  100%"
+  - name: cannot-open
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/nsi/shot0010_beauty.####.nsi
+      Frames: "1"
+    expect_tasks: 1
+    expect_invocations:
+      renderdl: 3
+    stub_env:
+      SQI_STUB_STDOUT: "renderdl: cannot open input file 'shot0010_beauty.0001.nsi' (system error: No error)"
+    expect_status: failed
+    expect_reason: "matched failOn"
+  - name: no-progress
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/nsi/shot0010_beauty.####.nsi
+      Frames: "1"
+    expect_tasks: 1
+    expect_invocations:
+      renderdl: 3
+    stub_env:
+      SQI_STUB_STDOUT: "# Rendering shot0010_beauty.0001.nsi ..."
+    expect_status: failed
+    expect_reason: "never printed"

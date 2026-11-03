@@ -293,24 +293,36 @@ presets:
 
   - name: husk-usd-render
     source: presets/sqi
-    tier: 1
+    tier: 2
     tier1:
       cases: [default, multi-frame-chunk, stepped-range, renderer]
       caveat: >-
-        argv derived from SideFX's husk documentation for Houdini 22.0:
-        --renderer, --frame, --frame-count, --make-output-path, --no-mplay,
-        -V 2a (line-per-update progress), and the USD stage as a positional
-        argument. No Houdini installation has executed it. The start frame and
-        count are computed with EXPR (min and len of the chunk's range),
+        argv is husk with --renderer (only when a delegate is named), --frame,
+        --frame-count, --make-output-path, --no-mplay, -V 2a (line-per-update
+        progress) and the USD stage as a positional argument. The start frame
+        and count are computed with EXPR (min and len of the chunk's range),
         because SQI_CHUNK_BOUNDS's .Start/.End do not resolve on an EXPR
         range_expr. The goldens show them at one frame per task, at a patched
         chunk size of 4, which balances 1-10 into chunks of 4, 3 and 3
         (start/count 1/4, 5/3, 8/3), and over a stepped range (each
-        --frame-count 1). With the Hydra Delegate empty no
-        --renderer is passed and husk uses the stage's husk:delegate render
-        setting; the renderer case shows the flag when a delegate is named.
-        Its BRAY_HdKarmaXPU is an example, not a verified delegate name.
-        Unverified: licensing and the stage's render products.
+        --frame-count 1). The renderer case names BRAY_HdKarmaXPU, which
+        Houdini 22.0.466's husk --list-renderers lists. Tier 2 runs the preset
+        under Houdini 22.0.466's own husk (Apprentice, Windows), found through
+        the detector's command default because the installer does not put
+        husk on PATH. On a stage whose render settings name a PNG product with
+        $F4 in a folder that does not exist yet, it shows that 1-3 writes
+        exactly frames 1 to 3 at the render settings' 64x36, one task each;
+        that 1-5:2 writes exactly 1, 3 and 5; that the delegate name Karma CPU,
+        with its space, reaches husk as one argument; that -2--1 writes
+        frames -002 and -001; and that a stage husk cannot load fails the job.
+        A multi-frame chunk is not shown at Tier 2: the preset has no chunk
+        size parameter. Not shown: a stage with no render product (husk then
+        writes every frame to karma.exr in the task's working folder), Karma
+        XPU on a GPU, any other Hydra delegate, Houdini on Linux or macOS, any
+        Houdini but 22.0.466, and a commercial or Indie license.
+    tier2:
+      case: TestPresetDCC_Houdini_HuskRender
+      requires_app: houdini
     tier3:
       case: TestPresetTier3/husk-usd-render/default
       required_on: [linux, darwin, windows]
@@ -335,8 +347,9 @@ presets:
         task's first frame (1-5,7 at 4 per task giving three tasks with chunk
         starts 1, 4 and 7, the last a one-frame chunk), that SQI_FRAME_START
         reaches the script, that every frame of the range was written by the
-        right chunk, and that an exception in the script fails the job. That each frame belongs to exactly one task comes from the Tier 1
-        goldens, not from Tier 2. An empty script is refused at submission
+        right chunk, and that an exception in the script fails the job. That
+        each frame belongs to exactly one task comes from the Tier 1 goldens,
+        not from Tier 2. An empty script is refused at submission
         (minLength 1). Not shown: a hip file that needs plugins or a license
         beyond Apprentice, a simulation cooked across a chunk, a .hip or
         .hiplc, Houdini on Linux or macOS, any Houdini but 22.0.466, or a
@@ -366,9 +379,9 @@ presets:
         with can't open file 'C:\Program' on the default install path
         (Houdini 22.0.466, Windows). Tier 2 runs the preset under that Houdini
         (Apprentice, Windows, an NVIDIA GPU) with the stage in a folder whose
-        name has a space, and shows that --frames 1-12 at 10 per task writes exactly
-        preview.0001.png to preview.0012.png at the requested width with the
-        default renderer (Storm), and that Karma CPU with a camera named cam
+        name has a space, and shows that --frames 1-12 at 10 per task writes
+        exactly preview.0001.png to preview.0012.png at the requested width with
+        the default renderer (Storm), and that Karma CPU with a camera named cam
         writes exactly karma.003.png for one frame with a three-digit pad.
         usdrecord does not create the output folder (a missing folder fails the
         task with Failed to write image), so the launcher creates the pattern's
@@ -405,7 +418,8 @@ presets:
         in a folder or an @ anywhere (oiiotool 2.5.18 expands both as
         wildcards) is rejected at submission, as is a { or } anywhere (it
         evaluates {...} as an expression) and a pattern with no # or two runs.
-        A printf-style %d in a pattern is not rejected; oiiotool expands it. The default case shows an empty Operations list leaving no empty
+        A printf-style %d in a pattern is not rejected; oiiotool expands it.
+        The default case shows an empty Operations list leaving no empty
         argument. Tier 2 runs the preset with Houdini 22.0.466's hoiiotool (OIIO
         2.5.18), found through the detector's command default, on the Windows
         development host and, in CI, with Ubuntu's openimageio-tools (2.5.19.1
@@ -450,17 +464,32 @@ presets:
 
   - name: prman-render
     source: presets/sqi
-    tier: 1
+    tier: 2
     tier1:
       cases: [default, padding-and-step]
       caveat: >-
-        argv derived from Pixar's prman documentation: -Progress (one progress
-        line per update) and the RIB file as a positional argument. -t and
-        -cwd are not passed, so prman uses every core and the task's working
-        directory. No RenderMan installation has executed it. The goldens show
-        the shared scene-pattern substitution; a bad pattern is rejected at
-        submission. Unverified: licensing, and how RenderMan 27 chooses
-        between RIS and XPU for a command-line render.
+        argv is prman -Progress (one progress line per update) and the RIB
+        file as a positional argument. -t and -cwd are not passed, so prman
+        uses every core and the task's working directory. The goldens show the
+        shared scene-pattern substitution; a bad pattern is rejected at
+        submission. Tier 2 (TestPresetDCC_RenderMan_PrmanRender) runs the
+        preset under RenderMan 27.3's own prman (non-commercial license,
+        Windows), found through the detector's command default because the
+        installer does not put prman on PATH, on RIB files the test writes
+        into a folder whose name has a space, each rendering a lit sphere to a
+        64x36 PNG at an absolute path. It shows that 1-3 renders exactly
+        frames 1 to 3, one task each; that 2-6:2 renders exactly 2, 4 and 6;
+        that frame -1 reads shot.-001.rib; that a missing RIB file fails the
+        job with prman's "Can't open RIB file"; and that an output folder that
+        does not exist fails it with "Can't open display image", since prman
+        does not create the folder. prman needs RMANTREE in
+        its environment: without it prman 27.3 exits 13 with "License location
+        is not set in rendermn.ini", which fails the task. Not shown: RIB
+        files exported by a DCC, XPU, any RenderMan but 27.3, Linux and macOS,
+        and a commercial license.
+    tier2:
+      case: TestPresetDCC_RenderMan_PrmanRender
+      requires_app: renderman
     tier3:
       case: TestPresetTier3/prman-render/default
       required_on: [linux, darwin, windows]
@@ -500,18 +529,35 @@ presets:
 
   - name: 3delight-render
     source: presets/sqi
-    tier: 1
+    tier: 2
     tier1:
-      cases: [default, padding-and-step]
+      cases: [default, padding-and-step, cannot-open, no-progress]
       caveat: >-
-        argv derived from 3Delight's "Rendering NSI file" documentation
-        (renderdl -progress <file.nsi>). renderdl documents no frame-range
-        option and renders one .nsi file per frame, so this preset uses the
-        per-file shape, not chunk bounds. -t is not passed, so renderdl uses
-        every core. No 3Delight installation has executed it. The goldens show
-        the shared scene-pattern substitution; a bad pattern is rejected at
-        submission. Unverified: licensing and the handling of a separate
-        .static.nsi file.
+        argv is renderdl -progress <file.nsi>, from 3Delight's "Rendering NSI
+        file" documentation. renderdl documents no frame-range option and
+        renders one .nsi file per frame, so this preset uses the per-file
+        shape, not chunk bounds. -t is not passed, so renderdl uses every
+        core. The goldens show the shared scene-pattern substitution and the
+        log checks; a bad pattern is rejected at submission. renderdl 2.9.213
+        exits 0 when it cannot open the file and when the stream never starts
+        a render, so the preset declares SQI_LOG_CHECKS: failOn renderdl's
+        "cannot open input file" and requireLine a progress line reading
+        100%. The outcome cases cannot-open and no-progress pin both with the
+        stub. Tier 2 (TestPresetDCC_3Delight_Render) runs the preset under
+        3Delight 2.9.213's own renderdl (free 12-core version, Windows), found
+        through the detector's command default, on NSI files the test writes
+        into a folder whose name has a space, each rendering a quad to a 64x36
+        PNG in a folder that does not exist yet, which renderdl creates. It
+        shows that 1-3 renders exactly frames 1 to 3, one task each; that
+        2-6:2 renders exactly 2, 4 and 6; that frame -1 reads shot.-001.nsi;
+        that a missing file fails on the failOn pattern; and
+        that a stream with no RenderControl start fails because 100% never
+        appears. Not shown: NSI files exported by a DCC, a separate
+        .static.nsi file, a stream with several screens, Linux and macOS, and
+        a commercial license.
+    tier2:
+      case: TestPresetDCC_3Delight_Render
+      requires_app: 3delight
     tier3:
       case: TestPresetTier3/3delight-render/default
       required_on: [linux, darwin, windows]
@@ -526,9 +572,11 @@ presets:
         22.0: mantra -f <file.ifd>, one IFD per command, with -V 2a
         (line-per-update progress). -j is not passed, so mantra uses every
         core. Mantra ships but is unsupported by SideFX; the readme points to
-        husk-usd-render. No Houdini installation has executed it. The goldens
-        show the shared scene-pattern substitution; a bad pattern is rejected
-        at submission. Unverified: licensing.
+        husk-usd-render. No Houdini installation has executed it, and a Tier 2
+        test needs IFD files that Houdini Apprentice cannot write (hython
+        reports "Apprentice does not support generating disk files"). The
+        goldens show the shared scene-pattern substitution; a bad pattern is
+        rejected at submission. Unverified: licensing.
     tier3:
       case: TestPresetTier3/mantra-render/default
       required_on: [linux, darwin, windows]
@@ -993,7 +1041,7 @@ presets:
   # of params.json is fixed.
   - name: unreal-mrq-job-render
     source: presets/sqi
-    tier: 1
+    tier: 2
     tier1:
       cases: [default, blank-output, target-with-space, quoting, logged-error, python-error, executor-error, no-success-line]
       caveat: >-
@@ -1015,11 +1063,9 @@ presets:
         AWS's adaptor and Epic's Python reference show it
         (MoviePipelineQueueSubsystem, allocate_new_job,
         MoviePipelinePIEExecutor, its errored, finished and per-job delegates,
-        render_queue_with_executor_instance, SystemLibrary.quit_editor).
-        Unverified: everything inside Unreal; whether descriptor-1 lines reach
-        the worker (the script also writes them through unreal.log); the exit
-        status (Epic's MoviePipelineDeadline quits the same way on success and
-        failure, so it is not relied on); UE-160482 reports a canceled render
+        render_queue_with_executor_instance, SystemLibrary.quit_editor). The
+        exit status is not relied on (Epic's MoviePipelineDeadline quits the
+        same way on success and failure); UE-160482 reports a canceled render
         as success before 5.3. The step has no timeout, so an editor whose
         executor never reports, or that does not exit after quit_editor(),
         hangs the task rather than failing it (the readme recommends one). The
@@ -1028,18 +1074,33 @@ presets:
         real Python with a fake unreal module in
         TestPresetUnreal_ScriptDrivesUnreal. Tier 3 runs a stub as
         UnrealEditor-Cmd: it exercises the worker, the embedded files and the
-        log checks, never the script inside Unreal. The detector finds only the
-        Launcher default C:\Program Files\Epic Games\UE_5.*, which is
-        unverified. The Launcher records each install under
-        HKLM\SOFTWARE\EpicGames\Unreal Engine\<5.x> as InstalledDirectory (as
-        AWS's adaptor reads it), which a registry check cannot read.
+        log checks, never the script inside Unreal. Tier 2
+        (TestPresetDCC_Unreal_MRQRender, shared by the three Unreal presets)
+        runs UE 5.8's own UnrealEditor-Cmd, found by the detector at the
+        Launcher default C:\Program Files\Epic Games\UE_5.8, on a project the
+        test builds in a folder whose name has a space. It shows that the
+        -execcmds command starts the script, that the editor renders after the
+        script returns and then exits, that SQI_RENDER: OK reaches the worker
+        so the log checks pass, and that a sequence and a map given as
+        package paths (/Game/Maps/Test, no .Test) render exactly the
+        sequence's three frames at the config's 64x36 into the Output
+        Directory. Not shown: the descriptor-1 and unreal.log copies of the
+        success line separately, a blank Output Directory, a missing config,
+        a project with code modules, any UE but 5.8, an install outside the
+        Launcher default (the Launcher records each one under
+        HKLM\SOFTWARE\EpicGames\Unreal Engine\<5.x> as InstalledDirectory, as
+        AWS's adaptor reads it, which a detector check cannot read), and a
+        cold shader cache.
+    tier2:
+      case: TestPresetDCC_Unreal_MRQRender
+      requires_app: unreal
     tier3:
       case: TestPresetTier3/unreal-mrq-job-render/default
       required_on: [windows]
 
   - name: unreal-mrq-queue-render
     source: presets/sqi
-    tier: 1
+    tier: 2
     tier1:
       cases: [default, output-directory, quoting, logged-error, no-success-line]
       caveat: >-
@@ -1054,14 +1115,21 @@ presets:
         quotes, a backslash and spaces in QueueAsset and both quotes in the
         output directory. Tier 3 runs a stub as UnrealEditor-Cmd: it exercises
         the worker, the embedded files and the log checks, never the script
-        inside Unreal.
+        inside Unreal. Tier 2 runs UE 5.8 on a saved queue of one job and shows
+        that the queue loads, that its job renders exactly the sequence's three
+        frames, and that the Output Directory replaces the job's own. Not
+        shown: a queue of several jobs, a disabled job, and a blank Output
+        Directory.
+    tier2:
+      case: TestPresetDCC_Unreal_MRQRender
+      requires_app: unreal
     tier3:
       case: TestPresetTier3/unreal-mrq-queue-render/default
       required_on: [windows]
 
   - name: unreal-mrq-shot-render
     source: presets/sqi
-    tier: 1
+    tier: 2
     tier1:
       cases: [default, quoting, logged-error, python-error, executor-error, no-success-line]
       caveat: >-
@@ -1075,14 +1143,25 @@ presets:
         task, listing the shots it has, and nothing renders. It warns when
         the config's output file name format has no {shot_name}. Same sources,
         the same command line and the same unverified points as
-        unreal-mrq-job-render, and unverified besides: how that call rebuilds
-        the shot list, several camera cuts sharing one name (all of them
-        render), and Movie Render Graph configs. quoting puts a double quote,
-        a backslash, spaces and a non-ASCII letter in the shot; the script's
-        handling of the shot list runs under a fake unreal module in
+        unreal-mrq-job-render. quoting puts a double quote, a backslash,
+        spaces and a non-ASCII letter in the shot; the script's handling of
+        the shot list runs under a fake unreal module in
         TestPresetUnreal_ScriptDrivesUnreal. Tier 3 runs a stub as
         UnrealEditor-Cmd: it exercises the worker, the embedded files and the
-        log checks, never the script inside Unreal.
+        log checks, never the script inside Unreal. Tier 2 runs UE 5.8 on a
+        sequence whose shot track holds SH010 and SH020, two frames each, with
+        {shot_name} in the config's file name format. It shows that
+        update_job_shot_list_from_sequence names each shot by its section's
+        display name, that Shots SH010 and SH020 run two tasks that together
+        write exactly the four frames, that Shots SH020 alone writes only
+        SH020's two, and that a shot the sequence lacks (SH999) fails the
+        task with a reason naming SH010 and SH020. Not shown: a sequence
+        without a shot track, an entry with no outer name, several camera cuts
+        sharing one name (all of them render), the missing-{shot_name}
+        warning, and Movie Render Graph configs.
+    tier2:
+      case: TestPresetDCC_Unreal_MRQRender
+      requires_app: unreal
     tier3:
       case: TestPresetTier3/unreal-mrq-shot-render/default
       required_on: [windows]

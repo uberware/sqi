@@ -40,6 +40,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"image/png"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -144,12 +145,25 @@ func savedPath(t *testing.T, output string) string {
 // runDCCJob submits a preset and waits for it to complete, returning the job ID.
 func runDCCJob(t *testing.T, ts *testServer, farmID, queueID, preset string, params map[string]string) string {
 	t.Helper()
-	jobID := submitPreset(t, ts, farmID, queueID, preset, params)
-	got := pollJobStatus(t, ts, jobID, []string{"completed", "failed", "canceled"}, dccJobTimeout)
-	if got != "completed" {
-		t.Fatalf("preset %s: job status = %q, want completed%s", preset, got, reportFailedTasks(t, ts, jobID))
-	}
+	jobID, _ := runPresetJobWithin(t, ts, farmID, queueID, preset, "completed", dccJobTimeout, params)
 	return jobID
+}
+
+// runPresetJobWithin submits a preset and waits up to timeout for the job to finish
+// with status want, returning the job ID and, when the job did not complete,
+// its failed tasks' report (their failure reasons and log tails).
+func runPresetJobWithin(t *testing.T, ts *testServer, farmID, queueID, preset, want string, timeout time.Duration, params map[string]string) (string, string) {
+	t.Helper()
+	jobID := submitPreset(t, ts, farmID, queueID, preset, params)
+	got := pollJobStatus(t, ts, jobID, []string{"completed", "failed", "canceled"}, timeout)
+	report := ""
+	if got != "completed" {
+		report = reportFailedTasks(t, ts, jobID)
+	}
+	if got != want {
+		t.Fatalf("preset %s: job status = %q, want %q%s", preset, got, want, report)
+	}
+	return jobID, report
 }
 
 // jobTaskCount returns how many tasks a job fanned out into.
@@ -293,12 +307,8 @@ func TestPresetDCC_Blender_BatchRender(t *testing.T) {
 // returning the failed tasks' report (their failure reasons and log tails).
 func runDCCJobExpectingFailure(t *testing.T, ts *testServer, farmID, queueID, preset string, params map[string]string) string {
 	t.Helper()
-	jobID := submitPreset(t, ts, farmID, queueID, preset, params)
-	got := pollJobStatus(t, ts, jobID, []string{"completed", "failed", "canceled"}, dccJobTimeout)
-	if got != "failed" {
-		t.Fatalf("preset %s: job status = %q, want failed", preset, got)
-	}
-	return reportFailedTasks(t, ts, jobID)
+	_, report := runPresetJobWithin(t, ts, farmID, queueID, preset, "failed", dccJobTimeout, params)
+	return report
 }
 
 // TestPresetDCC_Blender_ViewLayerRender runs blender-view-layer-render under a
@@ -688,5 +698,131 @@ func TestPresetDCC_Houdini_USDRecord(t *testing.T) {
 		names := []string{"neg.-002.png", "neg.-001.png"}
 		assertExactFiles(t, out, names)
 		assertPNGSize(t, out, names, 16, 0)
+	})
+}
+
+// huskLayer is a USD layer over testdata/dcc/stage.usda that adds the render
+// settings husk renders from: the camera cam at 64x36, and one PNG product
+// named by productName. Karma needs the AOV name and format on the render var;
+// without them it reports "Unsupported AOV settings" and writes a blank image.
+const huskLayer = `#usda 1.0
+(
+    defaultPrim = "World"
+    renderSettingsPrimPath = "/Render/settings"
+    subLayers = [@./stage.usda@]
+)
+
+def Scope "Render"
+{
+    def RenderSettings "settings"
+    {
+        rel camera = </World/cam>
+        int2 resolution = (64, 36)
+        rel products = </Render/Products/beauty>
+    }
+
+    def Scope "Products"
+    {
+        def RenderProduct "beauty"
+        {
+            token productName = "%s"
+            rel orderedVars = </Render/Products/Vars/color>
+        }
+
+        def Scope "Vars"
+        {
+            def RenderVar "color"
+            {
+                string sourceName = "C.*[LO]"
+                token sourceType = "lpe"
+                token dataType = "color4f"
+                string driver:parameters:aov:name = "C"
+                token driver:parameters:aov:format = "color4h"
+                bool driver:parameters:aov:multiSampled = 1
+            }
+        }
+    }
+}
+`
+
+// TestPresetDCC_Houdini_HuskRender runs husk-usd-render under Houdini's own
+// husk, found through the detector's command default, on the 20-frame stage the
+// usdrecord test renders. Each case writes a layer naming its own output
+// pattern, with $F4 for the frame, beside the stage in a folder whose name has
+// a space; the output folder does not exist beforehand, so the files also show
+// that --make-output-path creates it. The images are read back, so the files
+// show that each task renders exactly its own frames, that a stepped range
+// renders no frame it leaves out, that a delegate name with a space reaches husk
+// as one argument, and that --frame accepts a frame below zero.
+func TestPresetDCC_Houdini_HuskRender(t *testing.T) {
+	const caseName = "TestPresetDCC_Houdini_HuskRender"
+	trackOutcome(t, caseName)
+	requireDCC(t, caseName, "Houdini", "husk")
+
+	dir := filepath.Join(t.TempDir(), "test shot")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(dccTestdata(t, "stage.usda"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "stage.usda"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// layer writes a layer rendering to out/<name>.$F4.png and returns its path.
+	layer := func(t *testing.T, name, out string) string {
+		t.Helper()
+		path := filepath.Join(dir, name+".usda")
+		product := filepath.ToSlash(filepath.Join(out, name)) + ".$F4.png"
+		if err := os.WriteFile(path, fmt.Appendf(nil, huskLayer, product), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	ts := startServer(t)
+	farmID, queueID := seedFarmAndQueue(t, ts)
+	startRealWorkerAnyOS(t, ts, farmID, queueID)
+
+	cases := []struct {
+		name   string
+		params map[string]string
+		tasks  int
+		frames []int
+		want   []string
+	}{
+		{name: "one frame per task", params: map[string]string{"Frames": "1-3"}, tasks: 3, frames: seq(1, 3)},
+		{name: "stepped", params: map[string]string{"Frames": "1-5:2"}, tasks: 3, frames: []int{1, 3, 5}},
+		{name: "karma cpu", params: map[string]string{"Frames": "7", "Renderer": "Karma CPU"}, tasks: 1, frames: []int{7}},
+		{
+			name: "negative", params: map[string]string{"Frames": "-2--1"}, tasks: 2,
+			want: []string{"negative.-002.png", "negative.-001.png"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stem := strings.ReplaceAll(tc.name, " ", "_")
+			out := filepath.Join(dir, "renders", stem)
+			params := map[string]string{"SceneFile": layer(t, stem, out)}
+			maps.Copy(params, tc.params)
+			job := runDCCJob(t, ts, farmID, queueID, "husk-usd-render", params)
+			assertTaskCount(t, ts, job, tc.tasks)
+			want := tc.want
+			if want == nil {
+				want = frameNames(stem+".%04d.png", tc.frames...)
+			}
+			assertExactFiles(t, out, want)
+			assertPNGSize(t, out, want, 64, 36)
+		})
+	}
+
+	t.Run("missing stage fails", func(t *testing.T) {
+		report := runDCCJobExpectingFailure(t, ts, farmID, queueID, "husk-usd-render", map[string]string{
+			"SceneFile": filepath.Join(dir, "missing.usda"), "Frames": "1",
+		})
+		if !strings.Contains(report, "Unable to load USD file") {
+			t.Errorf("failed task report does not show husk's error:\n%s", report)
+		}
 	})
 }

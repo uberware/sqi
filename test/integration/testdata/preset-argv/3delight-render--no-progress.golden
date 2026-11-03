@@ -1,0 +1,17 @@
+preset: 3delight-render
+case:   no-progress
+params:
+  Frames=1
+  SceneFile=/mnt/show/seq010/shot0010/nsi/shot0010_beauty.####.nsi
+
+step "Render" — 1 task
+  log checks: failOn "renderdl: cannot open input file"
+  log checks: requireLine "^\\s*100%"
+
+task 1/1  name="Render[Frame=1]"
+  task params:
+    Frame=1
+  command: renderdl
+  args:
+    [0]  -progress
+    [1]  /mnt/show/seq010/shot0010/nsi/shot0010_beauty.0001.nsi
