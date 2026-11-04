@@ -143,6 +143,10 @@ func TestValidate_RejectsUnsatisfiable(t *testing.T) {
 			"actions[1].pause_queue", `"ghost" is not in farm.queues`,
 		},
 		{
+			"resume undeclared queue", TargetManaged, func(s *Scenario) { s.Actions[1].ResumeQueue = "ghost" },
+			"actions[1].resume_queue", `"ghost" is not in farm.queues`,
+		},
+		{
 			"negative assert", TargetManaged, func(s *Scenario) { s.Assert["p95_submit_to_first_lease"] = Duration{-time.Second} },
 			"assert.p95_submit_to_first_lease", "negative",
 		},

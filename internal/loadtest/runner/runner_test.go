@@ -499,3 +499,37 @@ func TestRecord_NoSubmissionAccepted(t *testing.T) {
 		})
 	}
 }
+
+// TestRunner_ResumesPausedQueues runs the smoke scenario with its only queue
+// paused part way and never resumed by the scenario: the runner must resume
+// it once submissions stop, so every job still finishes and every invariant
+// holds, rather than the paused jobs reading as stranded by the server.
+func TestRunner_ResumesPausedQueues(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs real sqi binaries for about a minute; skipped with -short")
+	}
+	sc := smokeScenario(t, "20s")
+	sc.Actions = []scenario.Action{{At: scenario.Duration{Duration: 5 * time.Second}, PauseQueue: "render"}}
+	// Short, so a paused queue fails the run quickly rather than in 10 min.
+	sc.DrainTimeout.Duration = 45 * time.Second
+	if err := sc.Validate(scenario.TargetManaged); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := Run(t.Context(), Options{
+		Scenario: sc, RunID: "resume-test", OutDir: t.TempDir(), Seed: 1, Managed: binaries(t), Logger: testLogger(t),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !rec.Complete {
+		t.Fatal("the run is incomplete")
+	}
+	for _, inv := range rec.Invariants {
+		if !inv.OK {
+			t.Errorf("invariant %s failed: %q", inv.Name, inv.Evidence)
+		}
+	}
+	if got := rec.Counters[report.CounterTasksTerminal]; got != 1000 {
+		t.Errorf("tasks.terminal = %d, want 1000", got)
+	}
+}

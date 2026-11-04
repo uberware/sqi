@@ -245,13 +245,16 @@ func (v *validator) actions() {
 		case v.s.Duration.Duration > 0 && a.At.Duration > v.s.Duration.Duration:
 			v.failf(path+".at", "%s is after duration %s", a.At, v.s.Duration)
 		}
-		if a.CancelJobs == nil && !a.RetryFailed && a.PauseQueue == "" && a.DisableWorkers == nil {
-			v.failf(path, "names no action; set one of cancel_jobs, retry_failed, pause_queue, disable_workers")
+		if a.CancelJobs == nil && !a.RetryFailed && a.PauseQueue == "" && a.ResumeQueue == "" && a.DisableWorkers == nil {
+			v.failf(path, "names no action; set one of cancel_jobs, retry_failed, pause_queue, resume_queue, disable_workers")
 		}
 		v.fraction(path+".cancel_jobs.fraction", a.CancelJobs)
 		v.fraction(path+".disable_workers.fraction", a.DisableWorkers)
 		if a.PauseQueue != "" && !v.queues[a.PauseQueue] {
 			v.failf(path+".pause_queue", "%q is not in farm.queues", a.PauseQueue)
+		}
+		if a.ResumeQueue != "" && !v.queues[a.ResumeQueue] {
+			v.failf(path+".resume_queue", "%q is not in farm.queues", a.ResumeQueue)
 		}
 	}
 }

@@ -504,6 +504,9 @@ func (r *run) measure(ctx context.Context) {
 		return
 	}
 	r.snapshotWindow(ctx)
+	if resumed := r.actions.ResumePaused(ctx); len(resumed) > 0 {
+		r.logger.InfoContext(ctx, "resumed the queues the run paused, so their jobs can finish", slog.Any("queues", resumed))
+	}
 
 	r.logger.InfoContext(ctx, "submissions stopped; waiting for the jobs to finish",
 		slog.Int("jobs", r.jobs.AcceptedCount()), slog.Duration("drain_timeout", sc.DrainTimeout.Duration))

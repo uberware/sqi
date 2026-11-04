@@ -5,6 +5,7 @@ package driver
 import (
 	"context"
 	"fmt"
+	"maps"
 	"math"
 	"math/rand/v2"
 	"slices"
@@ -34,7 +35,8 @@ const ActionCancelJobs = "cancel_jobs"
 
 // ActionRecord is what one step of a timed action did.
 type ActionRecord struct {
-	// Kind is cancel_jobs, retry_failed, pause_queue or disable_workers.
+	// Kind is cancel_jobs, retry_failed, pause_queue, resume_queue or
+	// disable_workers.
 	Kind string
 	// At is the action's offset in the scenario; Started is when it began.
 	At      time.Duration
@@ -51,8 +53,9 @@ type ActionRecord struct {
 
 // Actions fires the scenario's timed events at their offsets from the run's
 // start: it cancels a fraction of the jobs submitted so far, retries failed
-// jobs, pauses a queue, disables a fraction of the workers. Each step is
-// recorded; a call the server refuses is counted in the record, not fatal.
+// jobs, pauses or resumes a queue, disables a fraction of the workers. Each
+// step is recorded; a call the server refuses is counted in the record, not
+// fatal. A queue left paused is resumed by ResumePaused.
 type Actions struct {
 	c     *client.Client
 	t     target.Target
@@ -63,6 +66,9 @@ type Actions struct {
 
 	mu      sync.Mutex
 	records []ActionRecord
+	// paused are the queues a pause_queue action targeted and no later
+	// resume_queue resumed, by name.
+	paused map[string]bool
 }
 
 // ActionsOption configures NewActions.
@@ -102,9 +108,9 @@ func (a *Actions) record(r ActionRecord) {
 // target does not have.
 func (a *Actions) Run(ctx context.Context, start time.Time) error {
 	for _, act := range a.acts {
-		if act.PauseQueue != "" {
-			if _, ok := a.t.QueueIDs()[act.PauseQueue]; !ok {
-				return fmt.Errorf("driver: action at %s pauses queue %q, which the target does not have", act.At.Duration, act.PauseQueue)
+		for _, q := range []string{act.PauseQueue, act.ResumeQueue} {
+			if _, ok := a.t.QueueIDs()[q]; q != "" && !ok {
+				return fmt.Errorf("driver: action at %s names queue %q, which the target does not have", act.At.Duration, q)
 			}
 		}
 	}
@@ -135,6 +141,9 @@ func (a *Actions) fire(ctx context.Context, act scenario.Action, rng *rand.Rand)
 	}
 	if act.PauseQueue != "" {
 		a.pauseQueue(ctx, act)
+	}
+	if act.ResumeQueue != "" {
+		a.resumeQueue(ctx, act, act.ResumeQueue, "")
 	}
 	if act.DisableWorkers != nil {
 		a.disableWorkers(ctx, act, rng)
@@ -204,11 +213,55 @@ func (a *Actions) jobStatuses(ctx context.Context) (map[string]string, error) {
 
 func (a *Actions) pauseQueue(ctx context.Context, act scenario.Action) {
 	id := a.t.QueueIDs()[act.PauseQueue]
+	// Marked before the call: one that errors may still have landed.
+	a.setPaused(act.PauseQueue, true)
 	rec := apply(ctx, "pause_queue", act, []string{id}, func(ctx context.Context, id string) error {
 		return a.c.PauseQueue(ctx, id, true)
 	})
 	rec.Detail = joinDetail(rec.Detail, "queue "+act.PauseQueue)
 	a.record(rec)
+}
+
+// resumeQueue resumes queue name and records it, with note added to the
+// record's detail.
+func (a *Actions) resumeQueue(ctx context.Context, act scenario.Action, name, note string) {
+	id := a.t.QueueIDs()[name]
+	rec := apply(ctx, "resume_queue", act, []string{id}, func(ctx context.Context, id string) error {
+		return a.c.PauseQueue(ctx, id, false)
+	})
+	if rec.Failed == 0 && rec.Succeeded == 1 {
+		a.setPaused(name, false)
+	}
+	rec.Detail = joinDetail(joinDetail(rec.Detail, "queue "+name), note)
+	a.record(rec)
+}
+
+func (a *Actions) setPaused(name string, paused bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.paused == nil {
+		a.paused = map[string]bool{}
+	}
+	if paused {
+		a.paused[name] = true
+	} else {
+		delete(a.paused, name)
+	}
+}
+
+// ResumePaused resumes every queue a pause_queue action paused and no later
+// resume_queue action resumed, and returns their names. The runner calls it
+// once submissions stop, before it waits for the jobs to finish: a paused
+// queue leases nothing, so its jobs would otherwise sit until the drain
+// timeout and read as stranded by the server.
+func (a *Actions) ResumePaused(ctx context.Context) []string {
+	a.mu.Lock()
+	names := slices.Sorted(maps.Keys(a.paused))
+	a.mu.Unlock()
+	for _, name := range names {
+		a.resumeQueue(ctx, scenario.Action{}, name, "automatic, before the drain")
+	}
+	return names
 }
 
 func (a *Actions) disableWorkers(ctx context.Context, act scenario.Action, rng *rand.Rand) {

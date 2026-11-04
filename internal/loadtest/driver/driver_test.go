@@ -980,8 +980,16 @@ func (o *opServer) start(t *testing.T) *httptest.Server {
 			}
 			return
 		}
+		call := r.Method + " " + strings.TrimPrefix(r.URL.Path, "/api/v1/")
+		if r.Method == http.MethodPut {
+			var q struct {
+				Paused bool `json:"paused"`
+			}
+			json.NewDecoder(r.Body).Decode(&q) //nolint:errcheck // test server
+			call += fmt.Sprintf(" paused=%v", q.Paused)
+		}
 		o.mu.Lock()
-		o.calls = append(o.calls, r.Method+" "+strings.TrimPrefix(r.URL.Path, "/api/v1/"))
+		o.calls = append(o.calls, call)
 		o.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -1253,5 +1261,51 @@ func TestSubmitter_UndecodableSuccessIsCountedUnderItsOwnKey(t *testing.T) {
 		if j.Status != StatusUndecodable || j.Accepted() {
 			t.Errorf("ledger entry %+v, want Status StatusUndecodable and not accepted", j)
 		}
+	}
+}
+
+func TestActions_ResumeQueue(t *testing.T) {
+	o := &opServer{}
+	ts := o.start(t)
+	a := runActions(t, ts, []scenario.Action{{PauseQueue: "other"}, {At: scenario.Duration{Duration: 10 * time.Millisecond}, ResumeQueue: "other"}}, NewJobLedger(), nil)
+	if calls := o.made(); !slices.Equal(calls, []string{"PUT queues/queue-2 paused=true", "PUT queues/queue-2 paused=false"}) {
+		t.Errorf("calls = %v, want a pause and then a resume of queue-2", calls)
+	}
+	if got := a.ResumePaused(t.Context()); len(got) != 0 {
+		t.Errorf("ResumePaused resumed %v, want nothing: the scenario resumed its queue itself", got)
+	}
+	if n := len(o.made()); n != 2 {
+		t.Errorf("%d calls after ResumePaused, want still 2", n)
+	}
+}
+
+// TestActions_ResumePaused checks that a queue the scenario paused and never
+// resumed is resumed when ResumePaused is called, as the runner does before
+// the drain: a paused queue leases nothing, so its jobs could never finish.
+func TestActions_ResumePaused(t *testing.T) {
+	o := &opServer{}
+	ts := o.start(t)
+	a := runActions(t, ts, []scenario.Action{{PauseQueue: "other"}, {PauseQueue: "q"}}, NewJobLedger(), nil)
+	got := a.ResumePaused(t.Context())
+	if !slices.Equal(got, []string{"other", "q"}) {
+		t.Errorf("ResumePaused = %v, want both paused queues", got)
+	}
+	calls := o.made()
+	for _, want := range []string{"PUT queues/queue-1 paused=false", "PUT queues/queue-2 paused=false"} {
+		if !slices.Contains(calls, want) {
+			t.Errorf("calls %v lack %q", calls, want)
+		}
+	}
+	var resumes int
+	for _, r := range a.Records() {
+		if r.Kind == "resume_queue" && strings.Contains(r.Detail, "before the drain") && r.Succeeded == 1 {
+			resumes++
+		}
+	}
+	if resumes != 2 {
+		t.Errorf("records %+v, want two automatic resume_queue records", a.Records())
+	}
+	if again := a.ResumePaused(t.Context()); len(again) != 0 {
+		t.Errorf("a second ResumePaused resumed %v again", again)
 	}
 }

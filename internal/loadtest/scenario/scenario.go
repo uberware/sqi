@@ -137,6 +137,7 @@ type Action struct {
 	CancelJobs     *Fraction `yaml:"cancel_jobs"`
 	RetryFailed    bool      `yaml:"retry_failed"`
 	PauseQueue     string    `yaml:"pause_queue"`
+	ResumeQueue    string    `yaml:"resume_queue"`
 	DisableWorkers *Fraction `yaml:"disable_workers"`
 }
 
