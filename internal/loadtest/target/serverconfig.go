@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"maps"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strings"
 
@@ -32,7 +31,7 @@ func (s serverSettings) tlsDir() string  { return filepath.Join(s.RunDir, "tls")
 // renderServerConfig returns the server.yaml of a managed server: the
 // harness's settings with the scenario's server.config merged over them.
 func renderServerConfig(s serverSettings) ([]byte, error) {
-	if err := checkOverride(s.Spec.Config, ""); err != nil {
+	if err := checkOverride(s.Spec.Config); err != nil {
 		return nil, err
 	}
 	doc := harnessConfig(s)
@@ -138,9 +137,27 @@ var ownedKeys = []struct{ path, use string }{
 }
 
 // checkOverride rejects keys of the scenario's server.config that the harness
-// owns, or that sqi-server would ignore: its loader skips unknown keys, so a
-// misspelled one would silently leave the server at a default.
-func checkOverride(m map[string]any, prefix string) error {
+// owns, or that sqi-server would not accept: its loader rejects an unknown
+// key, so a misspelled one fails here, before a server is started for it.
+func checkOverride(m map[string]any) error {
+	if err := checkOwned(m, ""); err != nil {
+		return err
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	body, err := yaml.Marshal(m)
+	if err != nil {
+		return fmt.Errorf("target: encode server.config: %w", err)
+	}
+	if err := config.CheckFileKeys(body); err != nil {
+		return fmt.Errorf("target: server.config is not sqi-server configuration: %w", err)
+	}
+	return nil
+}
+
+// checkOwned rejects any key of m, at any depth, that the harness owns.
+func checkOwned(m map[string]any, prefix string) error {
 	for _, k := range slices.Sorted(maps.Keys(m)) {
 		path := k
 		if prefix != "" {
@@ -151,52 +168,11 @@ func checkOverride(m map[string]any, prefix string) error {
 				return fmt.Errorf("target: server.config.%s is set by the harness: %s", path, o.use)
 			}
 		}
-		section, isSection, ok := configField(path)
-		if !ok {
-			return fmt.Errorf("target: server.config.%s is not an sqi-server configuration key", path)
-		}
-		sub, valueIsMap := m[k].(map[string]any)
-		switch {
-		case isSection && valueIsMap:
-			if err := checkOverride(sub, path); err != nil {
+		if sub, ok := m[k].(map[string]any); ok {
+			if err := checkOwned(sub, path); err != nil {
 				return err
 			}
-		case isSection:
-			return fmt.Errorf("target: server.config.%s is a section (%s), not a value", path, section)
-		case valueIsMap:
-			return fmt.Errorf("target: server.config.%s is a value, not a section", path)
 		}
 	}
 	return nil
-}
-
-// configField looks a dotted key up in sqi-server's configuration schema. It
-// reports the field's type name, whether it is a section (a struct of
-// further keys), and whether the key exists at all.
-func configField(path string) (typeName string, isSection, ok bool) {
-	t := reflect.TypeFor[config.Config]()
-	for part := range strings.SplitSeq(path, ".") {
-		if t.Kind() != reflect.Struct {
-			return "", false, false
-		}
-		f, found := yamlField(t, part)
-		if !found {
-			return "", false, false
-		}
-		t = f.Type
-		for t.Kind() == reflect.Pointer {
-			t = t.Elem()
-		}
-	}
-	return t.Name(), t.Kind() == reflect.Struct && t.PkgPath() == reflect.TypeFor[config.Config]().PkgPath(), true
-}
-
-func yamlField(t reflect.Type, key string) (reflect.StructField, bool) {
-	for f := range t.Fields() {
-		name, _, _ := strings.Cut(f.Tag.Get("yaml"), ",")
-		if name == key && name != "-" {
-			return f, true
-		}
-	}
-	return reflect.StructField{}, false
 }

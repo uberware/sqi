@@ -206,6 +206,7 @@ func TestManagedConfig_RejectsBadOverrides(t *testing.T) {
 		{"unknown top-level key", map[string]any{"shceduler": map[string]any{"tick_interval": "1s"}}, "shceduler"},
 		{"unknown nested key", map[string]any{"scheduler": map[string]any{"heartbeat_timout": "1s"}}, "scheduler.heartbeat_timout"},
 		{"key under a leaf", map[string]any{"http": map[string]any{"enable_pprof": map[string]any{"x": 1}}}, "http.enable_pprof"},
+		{"value for a section", map[string]any{"scheduler": "fast"}, "scheduler"},
 		{"removed flat nats key", map[string]any{"nats": map[string]any{"data_dir": "x"}}, "nats.data_dir"},
 		{"harness-owned address", map[string]any{"http": map[string]any{"addr": ":9999"}}, "http.addr"},
 		{"harness-owned store", map[string]any{"store": map[string]any{"sqlite_path": "x.db"}}, "store.sqlite_path"},

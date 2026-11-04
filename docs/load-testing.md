@@ -337,7 +337,7 @@ A lognormal needs `median > 0` and `p95 >= median`; a uniform needs
 
 `server.config` takes real `sqi-server` configuration keys (see
 [Configuration](configuration.md)) and is checked: an unknown key is rejected
-(the server would silently ignore it), and so are the keys the harness owns,
+(the server refuses to start on it), and so are the keys the harness owns,
 with a message naming the scenario field that controls it instead
 (`http.addr`, `http.tls`, `nats.mode`, `nats.embedded.addr`,
 `nats.embedded.data_dir`, `nats.embedded.tls`, `nats.auth.enabled`,
