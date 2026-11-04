@@ -283,6 +283,12 @@ type fileConfig struct {
 		InstanceName *string `yaml:"instance_name"`
 	} `yaml:"discovery"`
 
+	HA *struct {
+		Enabled      *bool         `yaml:"enabled"`
+		LeaseTTL     *fileDuration `yaml:"lease_ttl"`
+		InstanceName *string       `yaml:"instance_name"`
+	} `yaml:"ha"`
+
 	OpenJD *struct {
 		EnforceLimits             *bool         `yaml:"enforce_limits"`
 		ExprOperationLimit        *int64        `yaml:"expr_operation_limit"`
@@ -409,6 +415,7 @@ func mergeFileConfig(cfg *Config, fc fileConfig) {
 	mergeLogFile(cfg, fc)
 	mergeSchedulerFile(cfg, fc)
 	mergeDiscoveryFile(cfg, fc)
+	mergeHAFile(cfg, fc)
 	mergeOpenJDFile(cfg, fc)
 	mergeDiagnosticsFile(cfg, fc)
 	mergePresetLibraryFile(cfg, fc)
@@ -615,6 +622,19 @@ func mergeDiscoveryFile(cfg *Config, fc fileConfig) {
 	}
 	if fc.Discovery.InstanceName != nil {
 		cfg.Discovery.InstanceName = *fc.Discovery.InstanceName
+	}
+}
+
+func mergeHAFile(cfg *Config, fc fileConfig) {
+	if fc.HA == nil {
+		return
+	}
+	if fc.HA.Enabled != nil {
+		cfg.HA.Enabled = *fc.HA.Enabled
+	}
+	setIfNotNilDuration(&cfg.HA.LeaseTTL, fc.HA.LeaseTTL)
+	if fc.HA.InstanceName != nil {
+		cfg.HA.InstanceName = *fc.HA.InstanceName
 	}
 }
 
@@ -889,6 +909,9 @@ func applyEnv(cfg *Config) error {
 
 	collect(setBool(&cfg.Discovery.Enabled, "SQI_DISCOVERY_ENABLED"))
 	setString(&cfg.Discovery.InstanceName, "SQI_DISCOVERY_INSTANCE_NAME")
+	collect(setBool(&cfg.HA.Enabled, "SQI_HA_ENABLED"))
+	collect(setDuration(&cfg.HA.LeaseTTL, "SQI_HA_LEASE_TTL"))
+	setString(&cfg.HA.InstanceName, "SQI_HA_INSTANCE_NAME")
 
 	collect(setBool(&cfg.OpenJD.EnforceLimits, "SQI_OPENJD_ENFORCE_LIMITS"))
 	collect(setInt64(&cfg.OpenJD.ExprOperationLimit, "SQI_OPENJD_EXPR_OPERATION_LIMIT"))

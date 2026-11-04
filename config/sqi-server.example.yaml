@@ -478,3 +478,21 @@ preset_library:
   # feature entirely. Defaults to the official sqi preset library.
   # Type: string   Env: SQI_PRESET_LIBRARY_URL
   url: "https://uberware.github.io/sqi-presets/index.json"
+
+# ── High availability ─────────────────────────────────────────────────────────
+ha:
+  # Run several sqi-server processes against one PostgreSQL database and one
+  # external NATS account, one leader and the rest warm standbys. Requires
+  # store.driver: postgres and nats.mode: external. Nothing below is read
+  # while this is false.
+  # Type: bool   Env: SQI_HA_ENABLED
+  enabled: false
+
+  # Leader lease lifetime; how long a failover waits after a leader crash.
+  # Range 6s to 60s.
+  # Type: duration   Env: SQI_HA_LEASE_TTL
+  lease_ttl: 15s
+
+  # Name shown in logs, /readyz and the servers list. Empty uses the host name.
+  # Type: string   Env: SQI_HA_INSTANCE_NAME
+  instance_name: ""

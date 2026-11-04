@@ -47,6 +47,7 @@ func Validate(cfg Config) []ValidationError {
 	errs = append(errs, validateDiagnostics(cfg.Diagnostics)...)
 	errs = append(errs, validateOpenJD(cfg.OpenJD)...)
 	errs = append(errs, validateAuth(cfg.Auth)...)
+	errs = append(errs, validateHA(cfg)...)
 	return errs
 }
 
@@ -906,4 +907,51 @@ func validateTCPAddr(addr string) error {
 		}
 	}
 	return nil
+}
+
+// validateHA checks the ha block. It reads the store and broker settings too,
+// because HA is only possible on a shared database and an external broker.
+// While ha.enabled is false nothing under ha is checked.
+func validateHA(cfg Config) []ValidationError {
+	if !cfg.HA.Enabled {
+		return nil
+	}
+	var errs []ValidationError
+	if cfg.Store.Driver != StoreDriverPostgres {
+		driver := cfg.Store.Driver
+		if driver == "" {
+			driver = StoreDriverSQLite
+		}
+		errs = append(errs, ValidationError{
+			Field: "ha.enabled",
+			Message: fmt.Sprintf(
+				"requires store.driver: postgres (got %s); set SQI_STORE_DRIVER or store.driver",
+				driver,
+			),
+		})
+	}
+	if cfg.NATS.Mode != NATSModeExternal {
+		mode := cfg.NATS.Mode
+		if mode == "" {
+			mode = NATSModeEmbedded
+		}
+		errs = append(errs, ValidationError{
+			Field: "ha.enabled",
+			Message: fmt.Sprintf(
+				"requires nats.mode: external (got %s); set SQI_NATS_MODE or nats.mode",
+				mode,
+			),
+		})
+	}
+	if d := cfg.HA.LeaseTTL; d < MinHALeaseTTL || d > MaxHALeaseTTL {
+		errs = append(errs, ValidationError{
+			Field: "ha.lease_ttl",
+			Message: fmt.Sprintf(
+				"must be between %s and %s, got %s; set %s or %s",
+				MinHALeaseTTL, MaxHALeaseTTL, d,
+				"SQI_HA_LEASE_TTL", "ha.lease_ttl",
+			),
+		})
+	}
+	return errs
 }
