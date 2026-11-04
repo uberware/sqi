@@ -124,6 +124,28 @@ func TestMerge_InvariantsValidityAndMissingShards(t *testing.T) {
 	}
 }
 
+func TestMerge_SteadyCounters(t *testing.T) {
+	s0, s1 := shardRecord("0/2", 10, 100), shardRecord("1/2", 5, 50)
+	s0.SteadyCounters = map[string]int64{"tasks.terminal": 20, "jobs.submitted": 2}
+	s1.SteadyCounters = map[string]int64{"tasks.terminal": 10}
+	got, err := Merge([]*Record{s0, s1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SteadyCounters["tasks.terminal"] != 30 || got.SteadyCounters["jobs.submitted"] != 2 {
+		t.Errorf("steady counters = %v", got.SteadyCounters)
+	}
+	// A shard without a snapshot makes the merged rates run averages.
+	s1.SteadyCounters = nil
+	got, err = Merge([]*Record{s0, s1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SteadyCounters != nil {
+		t.Errorf("steady counters = %v, want none", got.SteadyCounters)
+	}
+}
+
 func TestMerge_EvidenceCap(t *testing.T) {
 	s0, s1 := shardRecord("0/2", 1, 1), shardRecord("1/2", 1, 1)
 	var ev []string

@@ -65,10 +65,13 @@ func parseShards(rs []*Record) ([]shardEntry, error) {
 // Merge combines the records of one run's shards into one record. The records
 // must share a run ID. Histograms merge and counters add; series, environment
 // and scenario come from shard 0/n, which is the one to carry server
-// observations; the run is Valid and Complete only if every shard is; an
-// invariant holds only if it held in every shard, with the shards' evidence
-// concatenated; findings are recomputed from the merged data. The inputs are
-// not modified.
+// observations (so the merged record's scenario has shard 0's counts and rates,
+// which are per shard, not for the whole farm); the run is Valid and Complete
+// only if every shard is; an invariant holds only if it held in every shard,
+// with the shards' evidence concatenated; findings are recomputed from the
+// merged data. SteadyCounters add like Counters, unless a shard has none, in
+// which case the merged record has none and its rates are run averages. The
+// inputs are not modified.
 func Merge(rs []*Record) (*Record, error) {
 	shards, err := parseShards(rs)
 	if err != nil {
@@ -79,6 +82,8 @@ func Merge(rs []*Record) (*Record, error) {
 	m.Shard = fmt.Sprintf("merged/%d", total)
 	m.Histograms = map[string]*measure.Histogram{}
 	m.Counters = map[string]int64{}
+	m.SteadyCounters = map[string]int64{}
+	steadyAll := true
 	m.Series = slices.Clone(shards[0].rec.Series)
 	m.Complete, m.Valid, m.InvalidReason = true, true, ""
 	unavailable := map[string]bool{}
@@ -94,6 +99,12 @@ func Merge(rs []*Record) (*Record, error) {
 		for k, v := range r.Counters {
 			m.Counters[k] += v
 		}
+		if r.SteadyCounters == nil {
+			steadyAll = false
+		}
+		for k, v := range r.SteadyCounters {
+			m.SteadyCounters[k] += v
+		}
 		if r.Started.Before(m.Started) {
 			m.Started = r.Started
 		}
@@ -108,6 +119,9 @@ func Merge(rs []*Record) (*Record, error) {
 		for _, u := range r.Unavailable {
 			unavailable[u] = true
 		}
+	}
+	if !steadyAll {
+		m.SteadyCounters = nil
 	}
 	m.InvalidReason = strings.Join(reasons, "; ")
 	if len(shards) < total {

@@ -233,6 +233,49 @@ func TestFindings(t *testing.T) {
 	}
 }
 
+// rampFrom is ramp starting at start instead of t0.
+func rampFrom(start time.Time, name, unit string, n int, step time.Duration, v0, inc float64) measure.Series {
+	s := ramp(name, unit, n, step, v0, inc)
+	for i := range s.Points {
+		s.Points[i].T = start.Add(time.Duration(i) * step)
+	}
+	return s
+}
+
+func TestFindings_GrowthGuards(t *testing.T) {
+	steady := t0.Add(2 * time.Minute)
+	zigzag := rampFrom(steady, "server.rss_bytes", "bytes", 10, 20*time.Second, 0, 0)
+	for i := range zigzag.Points {
+		zigzag.Points[i].V = float64(i%2) * 2 * (1 << 30)
+	}
+	for _, tc := range []struct {
+		name string
+		rule string
+		s    measure.Series
+		fire bool
+	}{
+		{"goroutines: 9 points do not fire", RuleGoroutineGrowth, rampFrom(steady, "server.goroutines", "count", 9, 20*time.Second, 1000, 5), false},
+		{"goroutines: 10 points fire", RuleGoroutineGrowth, rampFrom(steady, "server.goroutines", "count", 10, 20*time.Second, 1000, 5), true},
+		{"rss: 9 points do not fire", RuleRSSGrowth, rampFrom(steady, "server.rss_bytes", "bytes", 9, 20*time.Second, 500<<20, 100<<20), false},
+		{"rss: 10 points fire", RuleRSSGrowth, rampFrom(steady, "server.rss_bytes", "bytes", 10, 20*time.Second, 500<<20, 100<<20), true},
+		// Alternating 0 and 2 GiB has a positive slope that projects to
+		// terabytes a week, but its r² is about 0.03: noise, not a trend.
+		{"rss: a steep slope with a low r2 does not fire", RuleRSSGrowth, zigzag, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := baseRecord()
+			r.Series = []measure.Series{tc.s}
+			fired := false
+			for _, f := range Findings(r, steady) {
+				fired = fired || f.Rule == tc.rule
+			}
+			if fired != tc.fire {
+				t.Fatalf("fired = %v, want %v", fired, tc.fire)
+			}
+		})
+	}
+}
+
 func TestFindings_NilAndEmpty(t *testing.T) {
 	if got := Findings(nil, t0); len(got) != 0 {
 		t.Fatalf("nil record: %+v", got)

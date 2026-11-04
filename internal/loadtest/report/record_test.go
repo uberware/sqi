@@ -21,6 +21,7 @@ func fullRecord() *Record {
 	r.Scenario.Server.Config = map[string]any{"nats": map[string]any{"embedded": map[string]any{"max_store_mb": float64(256)}}}
 	r.Histograms[HistFirstLease] = hist(10*time.Millisecond, 20*time.Millisecond, 900*time.Millisecond)
 	r.Counters["tasks.terminal"] = 4200
+	r.SteadyCounters = map[string]int64{"tasks.terminal": 600}
 	r.Series = []measure.Series{ramp("server.rss_bytes", "bytes", 5, time.Minute, 1e8, 1e6)}
 	r.Invariants = []verify.Result{okResult("terminal"), {Name: "logs", OK: false, Evidence: []string{"task t1 lost lines"}}}
 	r.Unavailable = []string{"pg.db_bytes: no DSN"}

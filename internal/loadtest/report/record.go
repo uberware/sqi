@@ -111,18 +111,28 @@ type Record struct {
 	Complete bool `json:"complete"`
 	// Valid is false when the measurement cannot be trusted, typically because
 	// the generator was saturated; InvalidReason says why.
-	Valid         bool                          `json:"valid"`
-	InvalidReason string                        `json:"invalid_reason,omitempty"`
-	Scenario      *scenario.Scenario            `json:"scenario"`
-	Env           Env                           `json:"env"`
-	Started       time.Time                     `json:"started"`
-	Ended         time.Time                     `json:"ended"`
-	Histograms    map[string]*measure.Histogram `json:"histograms"`
-	Counters      map[string]int64              `json:"counters"`
-	Series        []measure.Series              `json:"series"`
-	Invariants    []verify.Result               `json:"invariants"`
-	Unavailable   []string                      `json:"unavailable"`
-	Findings      []Finding                     `json:"findings"`
+	Valid         bool   `json:"valid"`
+	InvalidReason string `json:"invalid_reason,omitempty"`
+	// Scenario is the scenario as resolved. In a record merged from shards it
+	// is shard 0's, whose counts and rates are per shard, not for the whole
+	// farm.
+	Scenario *scenario.Scenario `json:"scenario"`
+	Env      Env                `json:"env"`
+	Started  time.Time          `json:"started"`
+	Ended    time.Time          `json:"ended"`
+	// Histograms cover the whole run, warmup included.
+	Histograms map[string]*measure.Histogram `json:"histograms"`
+	// Counters are the counter values at the end of the run.
+	Counters map[string]int64 `json:"counters"`
+	// SteadyCounters are the counter values at SteadyFrom, snapshotted by the
+	// runner. A rate over the steady window is (Counters - SteadyCounters)
+	// divided by that window. Nil (no snapshot: warmup 0, or an older record)
+	// makes every rate a run average, Counters over Ended - Started.
+	SteadyCounters map[string]int64 `json:"steady_counters"`
+	Series         []measure.Series `json:"series"`
+	Invariants     []verify.Result  `json:"invariants"`
+	Unavailable    []string         `json:"unavailable"`
+	Findings       []Finding        `json:"findings"`
 }
 
 // warmup returns the scenario's warmup, or zero when there is no scenario.
@@ -141,6 +151,29 @@ func (r *Record) SteadyFrom() time.Time { return r.Started.Add(r.warmup()) }
 // warmup, never negative.
 func (r *Record) steadyWindow() time.Duration {
 	return max(r.Ended.Sub(r.Started)-r.warmup(), 0)
+}
+
+// hasSteadyBasis reports whether rates can be measured over the steady window:
+// the runner snapshotted the counters at SteadyFrom and the window is not
+// empty.
+func (r *Record) hasSteadyBasis() bool { return r.SteadyCounters != nil && r.steadyWindow() > 0 }
+
+// rate returns counter k per second: over the steady window from the
+// SteadyCounters snapshot when steady is true (use hasSteadyBasis), else the
+// run average. ok is false when the window is empty.
+func (r *Record) rate(k string, steady bool) (perSecond float64, ok bool) {
+	if steady {
+		w := r.steadyWindow()
+		if w <= 0 {
+			return 0, false
+		}
+		return float64(r.Counters[k]-r.SteadyCounters[k]) / w.Seconds(), true
+	}
+	w := r.Ended.Sub(r.Started)
+	if w <= 0 {
+		return 0, false
+	}
+	return float64(r.Counters[k]) / w.Seconds(), true
 }
 
 // Write writes run.json, summary.md and series.csv into dir, creating it.

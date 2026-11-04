@@ -27,6 +27,13 @@ func goldenRecord() *Record {
 		CounterWorkersLive:  100,
 		"submit.status.201": 600,
 	}
+	// What the counters held when warmup ended, two minutes in.
+	r.SteadyCounters = map[string]int64{
+		"jobs.submitted":    120,
+		"tasks.terminal":    2400,
+		CounterWorkersLive:  100,
+		"submit.status.201": 120,
+	}
 	r.Series = []measure.Series{
 		ramp("server.rss_bytes", "bytes", 12, time.Minute, 200<<20, 4<<20),
 		ramp("server.goroutines", "count", 12, time.Minute, 1000, 0),
@@ -58,6 +65,38 @@ func TestSummary_Golden(t *testing.T) {
 	// Git on Windows may check the golden file out with CRLF line endings.
 	if got, w := sb.String(), strings.ReplaceAll(string(want), "\r\n", "\n"); got != w {
 		t.Fatalf("summary differs from testdata/summary.golden.md\n--- got ---\n%s\n--- want ---\n%s", got, w)
+	}
+}
+
+func TestSummary_ThroughputMethods(t *testing.T) {
+	// 12000 tasks in a 12 minute run with 2 minutes of warmup, 2400 of them
+	// by the end of warmup: 9600 tasks over the 600 s steady window is 16/s,
+	// where the run average over 720 s is 16.67/s.
+	steady := goldenRecord()
+	average := goldenRecord()
+	average.SteadyCounters = nil
+	for _, tc := range []struct {
+		name string
+		rec  *Record
+		want []string
+	}{
+		{"steady window", steady, []string{"steady-window rates", "| tasks.terminal | 12000 | 16.00 |", "| jobs.submitted | 600 | 0.80 |", "| workers.live | 100 | - |"}},
+		{"run average", average, []string{"run averages", "| tasks.terminal | 12000 | 16.67 |", "warmup included"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var sb strings.Builder
+			if err := writeSummary(&sb, tc.rec); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(sb.String(), want) {
+					t.Errorf("summary lacks %q:\n%s", want, sb.String())
+				}
+			}
+			if !strings.Contains(sb.String(), "Histograms cover the whole run, warmup included.") {
+				t.Error("the Latency section must say its histograms include warmup")
+			}
+		})
 	}
 }
 

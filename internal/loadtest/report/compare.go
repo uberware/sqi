@@ -81,7 +81,9 @@ func counterDirection(name string) direction {
 
 // Compare returns the per-metric deltas from a to b: the p50, p95 and p99 of
 // every histogram both runs have, every comparable counter (as a per-second
-// rate over the steady window when both runs have one, else as a total) and
+// steady-window rate when both runs carry a SteadyCounters snapshot, as a
+// per-second run average when either does not, and as a total when a run has no
+// duration) and
 // the peaks of the key server series. A difference of at most 5% either way is
 // "no change". Deltas come in a fixed order: histograms, counters, peaks.
 func Compare(a, b *Record) []Delta {
@@ -117,8 +119,10 @@ func compareCounters(a, b *Record) []Delta {
 	for k := range b.Counters {
 		names[k] = true
 	}
-	wa, wb := a.steadyWindow(), b.steadyWindow()
-	rates := wa > 0 && wb > 0
+	// Rates are steady-window rates only when both runs can give one; mixing a
+	// steady-window rate with a run average would bake the warmup into the
+	// difference, so otherwise both are run averages.
+	steady := a.hasSteadyBasis() && b.hasSteadyBasis()
 	var out []Delta
 	for _, k := range slices.Sorted(maps.Keys(names)) {
 		dir := counterDirection(k)
@@ -126,8 +130,10 @@ func compareCounters(a, b *Record) []Delta {
 			continue
 		}
 		va, vb, label := float64(a.Counters[k]), float64(b.Counters[k]), k
-		if rates {
-			va, vb, label = va/wa.Seconds(), vb/wb.Seconds(), k+"/s"
+		ra, okA := a.rate(k, steady)
+		rb, okB := b.rate(k, steady)
+		if okA && okB {
+			va, vb, label = ra, rb, k+"/s"
 		}
 		out = append(out, newDelta(label, va, vb, dir))
 	}

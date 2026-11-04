@@ -12,16 +12,18 @@
 
 ## Throughput
 
-Rates are the run's counters divided by the steady window (10m0s, the run minus its warmup).
+Rates are steady-window rates: each counter's growth since the end of warmup divided by the steady window (10m0s, the run minus its warmup).
 
 | Counter | Total | Per second |
 |---|---:|---:|
-| jobs.submitted | 600 | 1.00 |
-| submit.status.201 | 600 | 1.00 |
-| tasks.terminal | 12000 | 20.00 |
+| jobs.submitted | 600 | 0.80 |
+| submit.status.201 | 600 | 0.80 |
+| tasks.terminal | 12000 | 16.00 |
 | workers.live | 100 | - |
 
 ## Latency
+
+Histograms cover the whole run, warmup included.
 
 | Histogram | n | p50 | p95 | p99 | max |
 |---|---:|---:|---:|---:|---:|

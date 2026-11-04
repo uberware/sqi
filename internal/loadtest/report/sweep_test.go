@@ -3,6 +3,7 @@
 package report
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,6 +55,41 @@ func TestKnee(t *testing.T) {
 				t.Fatal("a missing knee still gets a reason")
 			}
 		})
+	}
+}
+
+func TestKnee_MissingRecordIsTheKnee(t *testing.T) {
+	pts := sweepPoints(map[int]bool{0: true, 1: true, 2: true}, nil, 100, 110, 120)
+	pts[1].Rec = nil
+	if idx, reason := Knee(pts); idx != 1 || reason != "missing record" {
+		t.Fatalf("got %d, %q", idx, reason)
+	}
+	pts[0].Rec = nil
+	if idx, reason := Knee(pts); idx != 0 || reason != "missing record" {
+		t.Fatalf("got %d, %q", idx, reason)
+	}
+}
+
+func TestKnee_ZeroBaselineDisablesLatencyRule(t *testing.T) {
+	pts := sweepPoints(map[int]bool{0: true, 1: true}, nil, 100, 900)
+	pts[0].Rec.Histograms[HistFirstLease] = hist(0)
+	if idx, _ := Knee(pts); idx != -1 {
+		t.Fatalf("index = %d, want -1", idx)
+	}
+}
+
+func TestSweepThroughput(t *testing.T) {
+	r := goldenRecord() // 12000 tasks, 2400 at the end of warmup, 600 s steady window
+	if got, ok := throughput(r); !ok || got != 16 {
+		t.Fatalf("steady throughput = %v, %v, want 16", got, ok)
+	}
+	r.SteadyCounters = nil
+	if got, ok := throughput(r); !ok || math.Abs(got-12000.0/720) > 1e-9 {
+		t.Fatalf("run-average throughput = %v, %v", got, ok)
+	}
+	r.Ended = r.Started
+	if _, ok := throughput(r); ok {
+		t.Fatal("a run with no duration has no throughput")
 	}
 }
 

@@ -60,6 +60,34 @@ func TestCompare_NoiseBand(t *testing.T) {
 	}
 }
 
+// warmupRecord is a ten minute run with the given warmup whose tasks.terminal
+// counter climbs at 1/s through warmup and at steadyRate/s after it, with the
+// SteadyCounters snapshot taken when warmup ends.
+func warmupRecord(warmup time.Duration, steadyRate int64) *Record {
+	r := baseRecord()
+	r.Scenario.Warmup.Duration = warmup
+	atSteady := int64(warmup.Seconds())
+	steadySecs := int64((10*time.Minute - warmup).Seconds())
+	r.SteadyCounters = map[string]int64{CounterTasksTerminal: atSteady}
+	r.Counters[CounterTasksTerminal] = atSteady + steadyRate*steadySecs
+	return r
+}
+
+func TestCompare_DifferentWarmupSameSteadyRate(t *testing.T) {
+	a, b := warmupRecord(5*time.Minute, 10), warmupRecord(time.Minute, 10)
+	d := deltaFor(t, Compare(a, b), CounterTasksTerminal+"/s")
+	if d.Verdict != VerdictNoChange || d.A != 10 || d.B != 10 {
+		t.Fatalf("identical steady-state rates must compare equal: %+v", d)
+	}
+	// The run averages differ a lot (5.5/s against 9.1/s), so a comparison
+	// that ignored the snapshot would call this an improvement.
+	b.SteadyCounters = nil
+	d = deltaFor(t, Compare(a, b), CounterTasksTerminal+"/s")
+	if d.Verdict != VerdictBetter || math.Abs(d.A-5.5) > 1e-9 {
+		t.Fatalf("without both snapshots both sides are run averages: %+v", d)
+	}
+}
+
 func TestCompare_ErrorCountersAreLowerBetter(t *testing.T) {
 	a, b := baseRecord(), baseRecord()
 	a.Counters[CounterWSDrops] = 100

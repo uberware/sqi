@@ -123,9 +123,13 @@ func summaryValidity(b *strings.Builder, r *Record) {
 }
 
 func summaryThroughput(b *strings.Builder, r *Record) {
-	window := r.steadyWindow()
+	steady := r.hasSteadyBasis()
 	b.WriteString("## Throughput\n\n")
-	fmt.Fprintf(b, "Rates are the run's counters divided by the steady window (%s, the run minus its warmup).\n\n", fmtDur(window))
+	if steady {
+		fmt.Fprintf(b, "Rates are steady-window rates: each counter's growth since the end of warmup divided by the steady window (%s, the run minus its warmup).\n\n", fmtDur(r.steadyWindow()))
+	} else {
+		fmt.Fprintf(b, "Rates are run averages: each counter's total divided by the whole run (%s), warmup included, because no counters were snapshotted at the end of warmup.\n\n", fmtDur(r.Ended.Sub(r.Started)))
+	}
 	if len(r.Counters) == 0 {
 		b.WriteString("No counters were recorded.\n\n")
 		return
@@ -133,8 +137,8 @@ func summaryThroughput(b *strings.Builder, r *Record) {
 	b.WriteString("| Counter | Total | Per second |\n|---|---:|---:|\n")
 	for _, k := range slices.Sorted(maps.Keys(r.Counters)) {
 		rate := "-"
-		if !gaugeCounters[k] && window > 0 {
-			rate = strconv.FormatFloat(float64(r.Counters[k])/window.Seconds(), 'f', 2, 64)
+		if v, ok := r.rate(k, steady); ok && !gaugeCounters[k] {
+			rate = strconv.FormatFloat(v, 'f', 2, 64)
 		}
 		fmt.Fprintf(b, "| %s | %d | %s |\n", k, r.Counters[k], rate)
 	}
@@ -143,6 +147,7 @@ func summaryThroughput(b *strings.Builder, r *Record) {
 
 func summaryLatency(b *strings.Builder, r *Record) {
 	b.WriteString("## Latency\n\n")
+	b.WriteString("Histograms cover the whole run, warmup included.\n\n")
 	if len(r.Histograms) == 0 {
 		b.WriteString("No histograms were recorded.\n\n")
 		return

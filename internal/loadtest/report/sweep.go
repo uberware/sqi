@@ -52,16 +52,19 @@ func failedInvariants(r *Record) []string {
 // first point whose run was INVALID (the generator saturated), whose
 // invariants failed, or whose submit-to-first-lease p95 exceeds twice the
 // baseline's. It returns the point's index and the reason, or -1 and a note
-// when there is no knee. A point with no first-lease histogram is not judged
-// on latency, and neither is any point when the baseline has none.
+// when there is no knee. A point with no record is the knee, with the reason
+// "missing record". A point with no first-lease histogram is not judged on
+// latency, and neither is any point when the baseline has none or a zero p95.
 func Knee(points []SweepPoint) (index int, reason string) {
 	if len(points) == 0 {
 		return -1, "no knee: the sweep has no points"
 	}
+	// A baseline with no p95, or a zero one, disables the latency rule: there
+	// is nothing to be twice.
 	base, haveBase := firstLeaseP95(points[0].Rec)
 	for i, p := range points {
 		if p.Rec == nil {
-			continue
+			return i, "missing record"
 		}
 		if !p.Rec.Valid {
 			return i, "run INVALID: " + orDash(p.Rec.InvalidReason)
@@ -86,14 +89,11 @@ func fmtRatio(v float64) string {
 	return strings.TrimSuffix(s, ".")
 }
 
-// throughput is a record's tasks reaching a terminal status per second of its
-// steady window, and whether there is one to report.
+// throughput is a record's tasks reaching a terminal status per second: over
+// its steady window when it carries a SteadyCounters snapshot, else its run
+// average. ok is false when the run has no duration.
 func throughput(r *Record) (float64, bool) {
-	w := r.steadyWindow()
-	if w <= 0 {
-		return 0, false
-	}
-	return float64(r.Counters[CounterTasksTerminal]) / w.Seconds(), true
+	return r.rate(CounterTasksTerminal, r.hasSteadyBasis())
 }
 
 // WriteSweep writes sweep.csv and sweep.md into dir: one row per point with
