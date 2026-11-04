@@ -29,10 +29,12 @@ on:
         default: ""
         type: string
 
-# A new run of the same workflow on the same ref cancels the one in progress.
+# Runs of the same workflow on the same ref queue rather than cancel one
+# another: the 03:30 schedule must not kill a soak dispatched hours earlier,
+# nor a dispatch kill the nightly.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read

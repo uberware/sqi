@@ -86,13 +86,16 @@ jobs:
             workflows:
               - '.github/workflows/**'
             # Gates load-smoke below. Any Go source or module change can move
-            # what the load harness measures, and the harness itself
-            # (internal/loadtest, cmd/sqi-load, test/load) is Go.
+            # what the load harness measures. The harness's own directories
+            # are listed whole: their scenario YAML and testdata are not Go
+            # but change what the smoke run does.
             go:
               - '**/*.go'
               - 'go.mod'
               - 'go.sum'
               - 'Makefile'
+              - 'internal/loadtest/**'
+              - 'test/load/**'
               - '.github/workflows/ci.yml'
 
   # ── Workflow linting ─────────────────────────────────────────────────────────
