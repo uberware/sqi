@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -418,26 +419,37 @@ func TestDispatcher_Timeout(t *testing.T) {
 
 // A cancel and the timeout landing together publish one terminal.
 func TestDispatcher_TimeoutRacingCancel(t *testing.T) {
-	for range 20 {
-		d, conn, l := newTestDispatcher(t, simworker.TaskPlan{Duration: time.Minute, Outcome: simworker.OutcomeHang})
-		if err := d.Dispatch(t.Context(), assignmentWithTimeout("t1", "a1", 1)); err != nil {
-			t.Fatalf("Dispatch: %v", err)
+	// Each round waits out a one-second timeout, so the rounds run in
+	// parallel: about two seconds in all rather than twenty.
+	for i := range 20 {
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			t.Parallel()
+			timeoutRacingCancel(t)
+		})
+	}
+}
+
+// timeoutRacingCancel cancels a task just as its one-second timeout fires:
+// whichever wins, the task ends exactly once.
+func timeoutRacingCancel(t *testing.T) {
+	d, conn, l := newTestDispatcher(t, simworker.TaskPlan{Duration: time.Minute, Outcome: simworker.OutcomeHang})
+	if err := d.Dispatch(t.Context(), assignmentWithTimeout("t1", "a1", 1)); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	waitFor(t, 5*time.Second, "running", func() bool { return ledgerHas(l, "t1", simworker.KindRunning) })
+	time.Sleep(time.Second - 2*time.Millisecond)
+	d.Cancel("t1")
+	waitFor(t, 5*time.Second, "release", func() bool { return len(d.ActiveAttemptIDs()) == 0 })
+	terminals := 0
+	for _, s := range conn.statuses(t) {
+		if s.Status != "running" {
+			terminals++
 		}
-		waitFor(t, 5*time.Second, "running", func() bool { return ledgerHas(l, "t1", simworker.KindRunning) })
-		time.Sleep(time.Second - 2*time.Millisecond)
-		d.Cancel("t1")
-		waitFor(t, 5*time.Second, "release", func() bool { return len(d.ActiveAttemptIDs()) == 0 })
-		terminals := 0
-		for _, s := range conn.statuses(t) {
-			if s.Status != "running" {
-				terminals++
-			}
-		}
-		if terminals != 1 {
-			t.Fatalf("%d terminal statuses, want exactly 1", terminals)
-		}
-		if ends := countKind(l, "t1", simworker.KindTerminal) + countKind(l, "t1", simworker.KindCanceled); ends != 1 {
-			t.Fatalf("%d end events, want exactly 1", ends)
-		}
+	}
+	if terminals != 1 {
+		t.Fatalf("%d terminal statuses, want exactly 1", terminals)
+	}
+	if ends := countKind(l, "t1", simworker.KindTerminal) + countKind(l, "t1", simworker.KindCanceled); ends != 1 {
+		t.Fatalf("%d end events, want exactly 1", ends)
 	}
 }
