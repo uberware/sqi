@@ -168,7 +168,11 @@ func (s *Scheduler) sweepBlockedJobs(ctx context.Context) error {
 		return err
 	}
 	for _, job := range blocked {
-		if err := s.reconcileBlockedJob(ctx, job.ID); err != nil {
+		err := s.reconcileBlockedJob(ctx, job.ID)
+		if errors.Is(err, store.ErrFenced) {
+			return err // the sweep stops; sweepOnce records the fence
+		}
+		if err != nil {
 			s.logger.ErrorContext(ctx, "scheduler: sweep reconcile blocked job failed",
 				slog.String("job_id", job.ID), slog.Any("error", err))
 		}

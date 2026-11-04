@@ -40,10 +40,19 @@ type leaseReply struct {
 // empty result parks the request in the waiter registry until new work appears
 // or leaseHoldTimeout elapses, then replies once more.
 //
+// A lease fenced part way through a batch (see fence.go) stops the batch: the
+// reply carries the tasks leased before it, which are committed and must reach
+// the worker, and the request does not park. A scheduler already fenced leases
+// nothing and answers after leaseRefusalDelay, so the worker's lease loop does
+// not spin against it.
+//
 // workerID is the identity carried by the request's subject; queueID is the
 // queue the worker asked about.
 func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []byte {
 	ctx := s.ctx
+	if s.deposed() {
+		return s.refuseLeaseAfterDelay(ctx)
+	}
 	var req leaseRequest
 	if err := json.Unmarshal(data, &req); err != nil || req.WorkerID == "" {
 		// Two cases, both refused the same way: a body this server cannot
@@ -96,7 +105,9 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 		// before it: those tasks are committed as assigned, and dropping them
 		// would strand them with nobody running them until the assigned-task
 		// timeout.
-		s.logLeaseSelectionFailure(ctx, workerID, len(batch), err)
+		if !s.stopIfFenced(ctx, err) {
+			s.logLeaseSelectionFailure(ctx, workerID, len(batch), err)
+		}
 		return marshalLeaseReply(batch)
 	}
 	if len(batch) > 0 {
@@ -161,13 +172,16 @@ func (s *Scheduler) refuseLeaseAfterDelay(ctx context.Context) []byte {
 // its next request is served (the offline-worker known gap in
 // docs/architecture.md).
 func (s *Scheduler) leaseAfterPark(ctx context.Context, workerID, instanceID string) [][]byte {
+	if s.deposed() {
+		return nil // fenced while parked: lease nothing
+	}
 	w, err := s.store.GetWorker(ctx, workerID)
 	if err != nil || w.Disabled || w.Status == store.WorkerStatusOffline ||
 		s.leaseFromUnregisteredInstance(ctx, w, instanceID) {
 		return nil
 	}
 	batch, err := s.selectLeaseBatchLocked(ctx, w)
-	if err != nil {
+	if err != nil && !s.stopIfFenced(ctx, err) {
 		s.logLeaseSelectionFailure(ctx, workerID, len(batch), err)
 	}
 	return batch

@@ -45,6 +45,9 @@ func (s *Scheduler) sweepUnschedulable(ctx context.Context) {
 	}
 
 	for _, task := range ready {
+		if s.deposed() {
+			return
+		}
 		// The grace window only delays the *first* flag on a freshly-ready
 		// task (UnschedulableReason == "") so newly-submitted work isn't
 		// flagged before a worker has had a chance to pick it up. A task
@@ -70,6 +73,9 @@ func (s *Scheduler) reconcileTaskSchedulability(ctx context.Context, task store.
 		return // no change — avoid notification churn
 	}
 	written, err := s.store.SetTaskUnschedulableReason(ctx, task.ID, reason)
+	if s.stopIfFenced(ctx, err) {
+		return
+	}
 	if err != nil {
 		s.logger.WarnContext(
 			ctx, "scheduler: unschedulable sweep: set reason failed",

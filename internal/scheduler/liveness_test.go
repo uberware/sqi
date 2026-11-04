@@ -8,6 +8,7 @@ package scheduler
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -278,5 +279,121 @@ func TestSweepStaleWorkers_DeferralLoggedOncePerWindow(t *testing.T) {
 	if down, startup, reconnect := sweepLogs(logs.String()); down != 1 || startup != 1 || reconnect != 1 {
 		t.Fatalf("after three ticks after the reconnect: down=%d startup=%d reconnect=%d, want 1/1/1:\n%s",
 			down, startup, reconnect, logs.String())
+	}
+}
+
+// TestLivenessDeferred_CountsFromRunStart pins hazard H-1: a standby's bus
+// connection has been up for hours when it is promoted, and its first sweep
+// must not read every worker's still-unconsumed heartbeats as silence. The
+// deferral counts from when Run started (promotion) when that is later than
+// the bus coming up.
+func TestLivenessDeferred_CountsFromRunStart(t *testing.T) {
+	st := newCheckedFake(t)
+	workerID, taskID, _ := seedStaleWorkerWithTask(t, st, 40*time.Second)
+	busUp := time.Now().UTC().Add(-time.Hour)
+	b := newSyncBus()
+	s, _ := newLivenessScheduler(t, st, func() time.Time { return busUp })
+	s.bus = b
+	startRun(t, s, b, t.Context())
+	started := s.startedAt // ordered by startRun's handoff
+
+	for _, tc := range []struct {
+		name         string
+		now          time.Time
+		wantDeferred bool
+	}{
+		{"just after Run started", started.Add(time.Second), true},
+		{"just before the grace from Run ends", started.Add(testBusGrace - time.Nanosecond), true},
+		{"exactly the grace after Run started", started.Add(testBusGrace), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deferred, up := s.livenessDeferred(tc.now)
+			if deferred != tc.wantDeferred {
+				t.Errorf("deferred = %v, want %v (the bus has been up an hour; Run started %v before now)",
+					deferred, tc.wantDeferred, tc.now.Sub(started))
+			}
+			if !up.Equal(started) {
+				t.Errorf("judged by up = %v, want Run's start %v", up, started)
+			}
+		})
+	}
+
+	s.sweepStaleWorkers(t.Context())
+	if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
+		t.Errorf("worker = %s right after Run started, want online (deferred)", got)
+	}
+	if got := taskStatus(t, st, taskID); got != store.TaskStatusRunning {
+		t.Errorf("task = %s, want running (not reclaimed)", got)
+	}
+}
+
+// TestLivenessDeferred_NonHAUnchanged pins that a scheduler whose Run started
+// no later than its bus came up (or has not run at all) decides exactly as it
+// did before the deferral could count from Run: by the bus-up time alone.
+func TestLivenessDeferred_NonHAUnchanged(t *testing.T) {
+	upAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	before := func(up, now time.Time) bool { return up.IsZero() || now.Sub(up) < testBusGrace }
+	for _, startedAt := range []time.Time{{}, upAt.Add(-5 * time.Millisecond), upAt} {
+		for _, tc := range []struct {
+			name string
+			up   time.Time
+			now  time.Time
+		}{
+			{"bus down", time.Time{}, upAt.Add(time.Hour)},
+			{"just connected", upAt, upAt},
+			{"up a worker timeout", upAt, upAt.Add(31 * time.Second)},
+			{"a nanosecond short of the grace", upAt, upAt.Add(testBusGrace - time.Nanosecond)},
+			{"exactly the grace", upAt, upAt.Add(testBusGrace)},
+			{"long after", upAt, upAt.Add(24 * time.Hour)},
+		} {
+			t.Run(fmt.Sprintf("%s/started %v", tc.name, startedAt.Sub(upAt)), func(t *testing.T) {
+				s, _ := newLivenessScheduler(t, newCheckedFake(t), func() time.Time { return tc.up })
+				s.startedAt = startedAt
+
+				deferred, up := s.livenessDeferred(tc.now)
+
+				if want := before(tc.up, tc.now); deferred != want {
+					t.Errorf("deferred = %v, want %v as before", deferred, want)
+				}
+				if !up.Equal(tc.up) {
+					t.Errorf("judged by up = %v, want the bus-up time %v", up, tc.up)
+				}
+			})
+		}
+	}
+}
+
+// TestReconcileAttempts_GraceFromRunStart pins that attempt reconciliation
+// holds off for reconcile_grace from when Run started, not from when the
+// attempt was created or the bus came up: a promoted standby reclaims nothing
+// until live heartbeats have had a grace to rebuild what workers hold.
+func TestReconcileAttempts_GraceFromRunStart(t *testing.T) {
+	st, attempt := seedReconcileAttempt(t)
+	b := newSyncBus()
+	cfg := DefaultConfig()
+	cfg.FarmID = "f1"
+	cfg.ReconcileGrace = time.Minute
+	s := New(cfg, st, b, metrics.New(), slog.New(slog.DiscardHandler), ws.NoopNotifier{}, nil)
+	startRun(t, s, b, t.Context())
+	started := s.startedAt
+
+	early := started.Add(time.Minute - time.Nanosecond)
+	s.reconciler.record(reconcileWorker, early, early, nil) // w1 reports holding nothing
+	s.reconcileAttempts(t.Context(), early)
+	if got := mustTaskOf(t, st, "t1").Status; got != store.TaskStatusRunning {
+		t.Fatalf("task = %s a nanosecond before the grace from Run, want running", got)
+	}
+	if !attempt.CreatedAt.Before(started) {
+		t.Fatalf("fixture: attempt created %v, want before Run started %v", attempt.CreatedAt, started)
+	}
+
+	at := started.Add(time.Minute)
+	s.reconciler.record(reconcileWorker, at, at, nil)
+	s.reconcileAttempts(t.Context(), at)
+	if got := mustTaskOf(t, st, "t1").Status; got != store.TaskStatusReady {
+		t.Errorf("task = %s the grace after Run started, want ready (reclaimed)", got)
+	}
+	if got := reconciledTotal(t, s); got != 1 {
+		t.Errorf("sqi_scheduler_tasks_reconciled_total = %v, want 1", got)
 	}
 }
