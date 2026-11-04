@@ -5,10 +5,15 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // ServerLockKey is the advisory lock a running sqi-server holds on its
@@ -175,11 +180,19 @@ func (l *serverLock) watch(ctx context.Context, log *slog.Logger) {
 	}
 }
 
-// releaseTimeout bounds the unlock at shutdown. The lock dies with its session
-// anyway, so a connection that no longer answers (a dead network path) must
-// not hold the shutdown up.
-const releaseTimeout = 5 * time.Second
+// releaseTimeout bounds the unlock at shutdown, so a connection that no
+// longer answers (a dead network path) does not hold the shutdown up; the
+// timeout is then reported, since the session may still hold the lock. A
+// variable for tests.
+var releaseTimeout = 5 * time.Second
 
+// release unlocks the lock and gives its connection back. An unlock that
+// fails because the session has already ended (PostgreSQL restarted, or an
+// administrator terminated the backend) is not an error: the lock ended with
+// the session, so nothing is left to release, and a server stopping cleanly
+// after a database restart must say so. That needs proof the session ended
+// ([sessionEnded]); any other failure, a timeout above all, is returned,
+// since the session, and the lock, may still be alive.
 func (l *serverLock) release() error {
 	close(l.stop)
 	<-l.done
@@ -194,7 +207,59 @@ func (l *serverLock) release() error {
 		_, err := l.conn.ExecContext(ctx, `SELECT pg_advisory_unlock_shared($1)`, ServerLockKey)
 		errs = append(errs, err)
 	}
-	return errors.Join(append(errs, l.conn.Close())...)
+	// Read before closing: the driver reports an unlock its context cut
+	// short as a bad connection, having closed its own end, which says
+	// nothing about the session on the server.
+	timedOut := ctx.Err() != nil
+	closeErr := l.conn.Close()
+	err := errors.Join(errs...)
+	switch {
+	case err == nil:
+		return closeErr
+	case timedOut:
+		return fmt.Errorf("postgres: release the server lock: %w (the session may still hold it)",
+			errors.Join(append([]error{ctx.Err()}, errs...)...))
+	case allSessionEnded(errs):
+		return nil
+	}
+	return errors.Join(err, closeErr)
+}
+
+// allSessionEnded reports whether every failed unlock in errs failed because
+// the session had ended.
+func allSessionEnded(errs []error) bool {
+	for _, err := range errs {
+		if err != nil && !sessionEnded(err) {
+			return false
+		}
+	}
+	return true
+}
+
+// sessionEnded reports whether err proves the connection's session is gone:
+// the connection was already discarded, the server closed it, or PostgreSQL
+// ended the backend (SQLSTATE class 57P: admin, crash or startup shutdown). A
+// timeout or a cancellation proves nothing, even beside one of those, since a
+// session on the far side of a dead network path lives until its server
+// notices.
+func sessionEnded(err error) bool {
+	if err == nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if ne, ok := errors.AsType[net.Error](err); ok && ne.Timeout() {
+		return false
+	}
+	if errors.Is(err, sql.ErrConnDone) || errors.Is(err, driver.ErrBadConn) ||
+		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	if pe, ok := errors.AsType[*pgconn.PgError](err); ok {
+		switch pe.Code {
+		case "57P01", "57P02", "57P03": // admin_shutdown, crash_shutdown, cannot_connect_now
+			return true
+		}
+	}
+	return false
 }
 
 // DatabaseLock is the single-server lock held by a command (restore, store

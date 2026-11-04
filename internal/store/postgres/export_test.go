@@ -30,6 +30,14 @@ func SetHALockWaitForTest(d time.Duration) (restore func()) {
 	return func() { haLockWait = old }
 }
 
+// SetReleaseTimeoutForTest changes how long releasing the server lock may
+// take, and returns the function that restores it.
+func SetReleaseTimeoutForTest(d time.Duration) (restore func()) {
+	old := releaseTimeout
+	releaseTimeout = d
+	return func() { releaseTimeout = old }
+}
+
 // WriteDBForTest, ReadDBForTest and LeaseDBForTest expose the store's pools so
 // a test can look at the sessions they hold. LeaseDBForTest is nil without HA.
 func (s *Store) WriteDBForTest() *sql.DB { return s.db }

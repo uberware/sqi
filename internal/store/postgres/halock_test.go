@@ -345,3 +345,50 @@ func TestNonHASession_NoTimeouts(t *testing.T) {
 		t.Error("a non-HA store opened a lease pool")
 	}
 }
+
+// TestServerLock_CloseAfterSessionEnded closes a store whose server-lock
+// session PostgreSQL has already ended, as a PostgreSQL restart or an
+// administrator's pg_terminate_backend does. The lock went with the session,
+// so there is nothing left to release, and Close must report success: a
+// server stopping cleanly after a database restart must exit 0, not 1.
+func TestServerLock_CloseAfterSessionEnded(t *testing.T) {
+	for name, opts := range map[string]postgres.Options{"non-HA": nonHAServerOpts(), "HA": haServerOpts()} {
+		t.Run(name, func(t *testing.T) {
+			dsn := storetest.PostgresDSN(t)
+			st, err := postgres.Open(t.Context(), dsn, opts)
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			raw := openRaw(t, dsn)
+			if _, err := raw.ExecContext(t.Context(), `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+				WHERE datname = current_database() AND pid <> pg_backend_pid()`); err != nil {
+				t.Fatalf("terminate the store's sessions: %v", err)
+			}
+			if err := st.Close(); err != nil {
+				t.Fatalf("Close after the lock's session ended = %v, want nil", err)
+			}
+		})
+	}
+}
+
+// TestServerLock_CloseReportsAnUnlockThatTimedOut is the other side of
+// [TestServerLock_CloseAfterSessionEnded]: an unlock that fails while the
+// session may still be alive (here it times out, as on a dead network path)
+// is not proof the lock is gone, so Close must report it rather than let the
+// server exit 0 still holding the lock.
+func TestServerLock_CloseReportsAnUnlockThatTimedOut(t *testing.T) {
+	for name, opts := range map[string]postgres.Options{"non-HA": nonHAServerOpts(), "HA": haServerOpts()} {
+		t.Run(name, func(t *testing.T) {
+			st, err := postgres.Open(t.Context(), storetest.PostgresDSN(t), opts)
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			restore := postgres.SetReleaseTimeoutForTest(time.Nanosecond)
+			err = st.Close()
+			restore()
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("Close with an unlock that timed out = %v, want an error wrapping %v", err, context.DeadlineExceeded)
+			}
+		})
+	}
+}
