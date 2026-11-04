@@ -48,8 +48,9 @@ func (s *Scheduler) stopIfFenced(ctx context.Context, err error) bool {
 	return true
 }
 
-// fenced records that a store write was fenced. The first call logs one ERROR
-// and invokes [Config.OnFenced] on a goroutine of its own, so the handler or
+// fenced records that a store write was fenced. The first call logs it, at
+// ERROR without [Config.OnFenced] and at WARN with it, and invokes the
+// callback on a goroutine of its own, so the handler or
 // sweep that hit the fence is not held up by it, and a callback that stops the
 // scheduler and waits for [Scheduler.Run] to return cannot deadlock against
 // Run waiting for that same goroutine. Later calls log at Debug.
@@ -58,10 +59,15 @@ func (s *Scheduler) fenced(ctx context.Context, err error) {
 	first := false
 	s.fence.once.Do(func() {
 		first = true
-		s.logger.ErrorContext(ctx, "scheduler: this server is no longer the leader; stopping", slog.Any("error", err))
-		if s.cfg.OnFenced != nil {
-			go s.cfg.OnFenced(err)
+		const msg = "scheduler: this server is no longer the leader; stopping"
+		if s.cfg.OnFenced == nil {
+			s.logger.ErrorContext(ctx, msg, slog.Any("error", err))
+			return
 		}
+		// The callback's owner reports the loss at ERROR, once; a second
+		// ERROR for the same loss would read as two failures.
+		s.logger.WarnContext(ctx, msg, slog.Any("error", err))
+		go s.cfg.OnFenced(err)
 	})
 	if !first {
 		s.logger.DebugContext(ctx, "scheduler: store write fenced", slog.Any("error", err))

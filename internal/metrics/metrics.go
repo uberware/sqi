@@ -21,6 +21,7 @@ package metrics
 
 import (
 	"net/http"
+	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
@@ -31,6 +32,8 @@ import (
 // registry they are registered against. Obtain one with [New].
 type Metrics struct {
 	reg *prometheus.Registry
+
+	haOnce sync.Once // registers the HA families once
 
 	// ── HTTP ──────────────────────────────────────────────────────────────────
 
@@ -114,6 +117,29 @@ type Metrics struct {
 	// JobsAutoParkedTotal counts jobs auto-parked at their failure limit,
 	// partitioned by queue name. Incremented by the scheduler's failure fork.
 	JobsAutoParkedTotal *prometheus.CounterVec
+
+	// ── High availability ─────────────────────────────────────────────────────
+	// Created by New but exposed only once [Metrics.RegisterHA] is called, so a
+	// server outside a group serves no sqi_server_ha_* series.
+
+	// HALeader is 1 while this server leads its high-availability group and 0
+	// otherwise, including on a server outside a group. Every server of a
+	// group is scraped; the leader is the one reporting 1.
+	HALeader prometheus.Gauge
+
+	// HAEpoch is the leadership epoch: the one this server leads at, or on a
+	// standby the one it last saw the leader hold.
+	HAEpoch prometheus.Gauge
+
+	// HAPromotions counts this process's promotions to leader: at most one,
+	// since a demoted leader exits.
+	HAPromotions prometheus.Counter
+
+	// HADemotions counts losses of leadership, partitioned by reason
+	// (renew_refused, deadline, fenced, guard_lost, broker_lost,
+	// promotion_failed). The process exits after one, so the series is
+	// mostly read from its last scrape and the exit code.
+	HADemotions *prometheus.CounterVec
 }
 
 // New creates a [*Metrics] and registers all metric families — plus the
@@ -271,6 +297,43 @@ func New() *Metrics {
 			},
 			[]string{"queue"},
 		),
+
+		HALeader: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Namespace: "sqi",
+				Subsystem: "server_ha",
+				Name:      "leader",
+				Help:      "1 while this server leads its high-availability group, 0 otherwise.",
+			},
+		),
+
+		HAEpoch: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Namespace: "sqi",
+				Subsystem: "server_ha",
+				Name:      "epoch",
+				Help:      "The leadership epoch this server leads at, or last saw the leader hold.",
+			},
+		),
+
+		HAPromotions: prometheus.NewCounter(
+			prometheus.CounterOpts{
+				Namespace: "sqi",
+				Subsystem: "server_ha",
+				Name:      "promotions_total",
+				Help:      "Promotions of this server to leader of its high-availability group.",
+			},
+		),
+
+		HADemotions: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sqi",
+				Subsystem: "server_ha",
+				Name:      "demotions_total",
+				Help:      "Losses of leadership by this server, partitioned by reason.",
+			},
+			[]string{"reason"},
+		),
 	}
 
 	reg.MustRegister(
@@ -291,6 +354,17 @@ func New() *Metrics {
 	)
 
 	return m
+}
+
+// RegisterHA exposes the sqi_server_ha_* families. A server in a
+// high-availability group calls it once at start; further calls do nothing.
+// Without it the families can be written to but are not served, so the
+// /metrics of a server outside a group is unchanged and a
+// sqi_server_ha_leader == 1 selector never matches it.
+func (m *Metrics) RegisterHA() {
+	m.haOnce.Do(func() {
+		m.reg.MustRegister(m.HALeader, m.HAEpoch, m.HAPromotions, m.HADemotions)
+	})
 }
 
 // Handler returns an [http.Handler] that serves the Prometheus text exposition

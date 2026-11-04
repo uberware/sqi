@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -156,7 +157,11 @@ func serve(ctx context.Context, overrides config.FlagOverrides) error {
 
 	srv := server.New(serverConfig(cfg, schedCfg), logger, diagBuf)
 	if err := srv.Run(ctx); err != nil {
-		logger.ErrorContext(ctx, "sqi-server exited with error", slog.Any("error", err))
+		// A demotion's loss was logged at ERROR where it was found, and the
+		// exit at INFO by the server; a second ERROR would read as a crash.
+		if !errors.Is(err, server.ErrDemoted) {
+			logger.ErrorContext(ctx, "sqi-server exited with error", slog.Any("error", err))
+		}
 		return err
 	}
 	return nil
@@ -227,6 +232,7 @@ func serverConfig(cfg config.Config, schedCfg scheduler.Config) server.Config {
 		AuthLDAP:                     cfg.Auth.LDAP,
 		AuthOIDC:                     cfg.Auth.OIDC,
 		Scheduler:                    schedCfg,
+		HA:                           cfg.HA,
 		// Always seed. Replace with cfg.Store.SeedDefaults when
 		// internal/config grows a setting for it.
 		SeedDefaults: true,

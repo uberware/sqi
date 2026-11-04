@@ -708,6 +708,16 @@ func (g *Guard) recordLost(ctx context.Context, value []byte) error {
 	}
 	lost := fmt.Errorf("%w: this sqi-server no longer holds it; %s took it", ErrGuardHeld, holder)
 	g.setLost(lost)
+	if g.opts.OnLost != nil {
+		// An HA leader: OnLost makes it step down and exit, and the loss is
+		// reported at ERROR there, once.
+		g.logger.WarnContext(
+			ctx, "bus: this sqi-server no longer holds the broker account; another sqi-server took it, so this one steps down",
+			slog.Any("error", lost),
+			slog.String("impact", "this sqi-server stops leading and exits; the server that took the account leads"),
+		)
+		return lost
+	}
 	g.logger.ErrorContext(
 		ctx, "bus: this sqi-server no longer holds the broker account; another sqi-server took it",
 		slog.Any("error", lost),

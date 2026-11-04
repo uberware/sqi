@@ -136,6 +136,18 @@ func TestHandler_NoConfigPathRefusedBeforeFn(t *testing.T) {
 	}
 }
 
+// An error naming its own exit code (a demoted HA server's) reaches the SCM
+// as that service-specific code, so its recovery actions and alerting can
+// tell a demotion from a crash.
+func TestHandler_CodedErrorExitsWithItsCode(t *testing.T) {
+	hs := newHarness(t, func(context.Context) error { return fmt.Errorf("run: %w", codedError{}) })
+	hs.start("sqi-server")
+	hs.wait(t)
+	if !hs.specific || hs.code != 75 {
+		t.Fatalf("exit = (%v, %d), want (true, 75)", hs.specific, hs.code)
+	}
+}
+
 func TestHandler_FnErrorExitsServiceSpecificAndTraces(t *testing.T) {
 	hs := newHarness(t, func(context.Context) error { return errors.New("load config: bad yaml") })
 	hs.start("sqi-worker")

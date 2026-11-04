@@ -31,7 +31,8 @@ import (
 	"github.com/uberware/sqi/internal/ws"
 )
 
-// fencedLog is the one ERROR line the first fenced write logs.
+// fencedLog is the line the first fenced write logs: at WARN when OnFenced
+// is set (the callback's owner reports the loss), at ERROR when it is not.
 const fencedLog = "scheduler: this server is no longer the leader; stopping"
 
 // lockedBuffer is a bytes.Buffer safe for a logger written from several
@@ -77,8 +78,8 @@ func newFenceScheduler(t *testing.T, st store.Store, farmID string) (*Scheduler,
 }
 
 // assertFencedOnce waits for the OnFenced call and checks that it carried
-// store.ErrFenced, that no second call follows, and that the ERROR was logged
-// once.
+// store.ErrFenced, that no second call follows, and that the fence was logged
+// once, at WARN: the callback's owner logs the loss's one ERROR.
 func (r *fenceRecorder) assertFencedOnce(t *testing.T) {
 	t.Helper()
 	select {
@@ -96,8 +97,24 @@ func (r *fenceRecorder) assertFencedOnce(t *testing.T) {
 	if n := strings.Count(r.logs.String(), fencedLog); n != 1 {
 		t.Errorf("%q logged %d times, want once:\n%s", fencedLog, n, r.logs.String())
 	}
-	if !strings.Contains(r.logs.String(), "level=ERROR msg=\""+fencedLog) {
-		t.Errorf("the fenced line is not an ERROR:\n%s", r.logs.String())
+	if !strings.Contains(r.logs.String(), "level=WARN msg=\""+fencedLog) || strings.Contains(r.logs.String(), "level=ERROR") {
+		t.Errorf("the fenced line is not a lone WARN:\n%s", r.logs.String())
+	}
+}
+
+// TestFenced_NoCallbackLogsError: with no OnFenced, nothing else reports the
+// loss, so the scheduler logs it at ERROR, once.
+func TestFenced_NoCallbackLogsError(t *testing.T) {
+	logs := &lockedBuffer{}
+	s := New(DefaultConfig(), fake.New(), &recordBus{}, metrics.New(), slog.New(slog.NewTextHandler(logs, nil)), ws.NoopNotifier{}, nil)
+	ctx := context.Background()
+	for range 2 {
+		if !s.stopIfFenced(ctx, fmt.Errorf("write: %w", store.ErrFenced)) {
+			t.Fatal("stopIfFenced did not recognize store.ErrFenced")
+		}
+	}
+	if n := strings.Count(logs.String(), "level=ERROR msg=\""+fencedLog); n != 1 {
+		t.Fatalf("logged %d ERROR fence lines, want 1:\n%s", n, logs.String())
 	}
 }
 

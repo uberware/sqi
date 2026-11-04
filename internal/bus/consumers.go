@@ -62,8 +62,10 @@ func (c *Client) consumeErrHandler(name string) jetstream.ConsumeErrHandlerFunc 
 
 // taskStatusConsumerName is the durable name for the server-side push consumer
 // that processes task-status transitions.  One server process runs this
-// consumer at a time: in external mode the account guard ([Guard]) refuses a
-// second sqi-server on the same broker account, and the embedded broker is
+// consumer at a time: in a high-availability group only the server holding
+// the leader lease runs a scheduler, and a deposed leader's writes are fenced
+// and its process exits; outside a group the account guard ([Guard]) refuses
+// a second sqi-server on the same broker account, and the embedded broker is
 // private to its one server.
 const taskStatusConsumerName = "sqi-task-status-srv"
 

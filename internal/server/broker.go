@@ -45,6 +45,11 @@ func (s *Server) newBroker() (bus.Broker, error) {
 	case config.NATSModeExternal:
 		cfg := RemoteBrokerConfig(s.cfg.NATS)
 		cfg.Auth.Lookup = credentialLookup(s.store)
+		if s.ha != nil {
+			// The guard names this server by its member id, so the next
+			// leader recognizes a key it left behind.
+			cfg.InstanceID = s.ha.self.InstanceID
+		}
 		return bus.NewRemote(cfg, s.logger), nil
 	default:
 		return nil, fmt.Errorf("unknown nats.mode %q; want %s or %s", s.cfg.NATS.Mode, config.NATSModeEmbedded, config.NATSModeExternal)

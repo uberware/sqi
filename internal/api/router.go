@@ -120,6 +120,21 @@ type Config struct {
 	// read this field turn the configured duration (ExprSubmissionDeadline)
 	// into an instant per request instead.
 	ExprLimits openjd.ExprLimits
+
+	// HA is set on a server in a high-availability group: GET /leaderz is
+	// mounted, and while the server is a standby every route other than the
+	// probes and /metrics answers 503 naming the leader. Nil, as without HA,
+	// mounts no /leaderz (404) and gates nothing.
+	HA *HAGate
+}
+
+// HAGate is how the router asks a server in a high-availability group for
+// its role, on every request.
+type HAGate struct {
+	// IsLeader reports whether this server leads now.
+	IsLeader func() bool
+	// LeaderName names the server leading, "" when none is known.
+	LeaderName func() string
 }
 
 // Deps holds the application-layer dependencies injected into the REST
@@ -289,6 +304,42 @@ func resolveCORSOrigins(cfg Config, logger *slog.Logger) []string {
 	return slices.DeleteFunc(slices.Clone(origins), func(o string) bool { return o == "*" })
 }
 
+// mountObservability mounts the probes, /metrics and, when enabled, the
+// pprof endpoints. /leaderz is the HA leader probe; without HA it is mounted
+// as a 404.
+func mountObservability(r chi.Router, cfg Config, logger *slog.Logger, m *metrics.Metrics, hr *health.Registry) {
+	r.Get("/healthz", hr.LivenessHandler().ServeHTTP)
+	r.Get("/readyz", hr.ReadinessHandler().ServeHTTP)
+	if cfg.HA != nil {
+		r.Get("/leaderz", hr.LeaderHandler().ServeHTTP)
+	} else {
+		// Mounted as a 404 so the web UI's catch-all cannot answer it 200: a
+		// load balancer pointed at /leaderz of a server outside a group must
+		// not take it for a leader.
+		r.Get("/leaderz", http.NotFound)
+	}
+	r.Handle("/metrics", m.Handler())
+
+	if cfg.EnablePprof {
+		logger.WarnContext(
+			context.Background(),
+			"pprof: profiling endpoints enabled — do not expose to untrusted networks",
+			slog.String("prefix", "/debug/pprof/"),
+		)
+		r.HandleFunc("/debug/pprof/", httppprof.Index)
+		r.HandleFunc("/debug/pprof/cmdline", httppprof.Cmdline)
+		r.HandleFunc("/debug/pprof/profile", httppprof.Profile)
+		r.HandleFunc("/debug/pprof/symbol", httppprof.Symbol)
+		r.HandleFunc("/debug/pprof/trace", httppprof.Trace)
+		r.Handle("/debug/pprof/goroutine", httppprof.Handler("goroutine"))
+		r.Handle("/debug/pprof/heap", httppprof.Handler("heap"))
+		r.Handle("/debug/pprof/allocs", httppprof.Handler("allocs"))
+		r.Handle("/debug/pprof/block", httppprof.Handler("block"))
+		r.Handle("/debug/pprof/mutex", httppprof.Handler("mutex"))
+		r.Handle("/debug/pprof/threadcreate", httppprof.Handler("threadcreate"))
+	}
+}
+
 // schedulerWaker returns sched as the worker handler's waker, or nil when no
 // scheduler is wired. A typed-nil *scheduler.Scheduler stored in the interface
 // would not itself be nil, so the handler's nil check would pass and the call
@@ -371,30 +422,16 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	// 6. Prometheus HTTP metrics.
 	r.Use(middleware.RequestMetrics(m))
 
+	// HA standby gate, in a high-availability group only: a standby serves
+	// the probes and its metrics and answers everything else 503. After
+	// logging and metrics, so a gated request is still logged and counted.
+	if cfg.HA != nil {
+		r.Use(middleware.Standby(cfg.HA.IsLeader, cfg.HA.LeaderName))
+	}
+
 	// ── Observability routes ──────────────────────────────────────────────────
 
-	r.Get("/healthz", hr.LivenessHandler().ServeHTTP)
-	r.Get("/readyz", hr.ReadinessHandler().ServeHTTP)
-	r.Handle("/metrics", m.Handler())
-
-	if cfg.EnablePprof {
-		logger.WarnContext(
-			context.Background(),
-			"pprof: profiling endpoints enabled — do not expose to untrusted networks",
-			slog.String("prefix", "/debug/pprof/"),
-		)
-		r.HandleFunc("/debug/pprof/", httppprof.Index)
-		r.HandleFunc("/debug/pprof/cmdline", httppprof.Cmdline)
-		r.HandleFunc("/debug/pprof/profile", httppprof.Profile)
-		r.HandleFunc("/debug/pprof/symbol", httppprof.Symbol)
-		r.HandleFunc("/debug/pprof/trace", httppprof.Trace)
-		r.Handle("/debug/pprof/goroutine", httppprof.Handler("goroutine"))
-		r.Handle("/debug/pprof/heap", httppprof.Handler("heap"))
-		r.Handle("/debug/pprof/allocs", httppprof.Handler("allocs"))
-		r.Handle("/debug/pprof/block", httppprof.Handler("block"))
-		r.Handle("/debug/pprof/mutex", httppprof.Handler("mutex"))
-		r.Handle("/debug/pprof/threadcreate", httppprof.Handler("threadcreate"))
-	}
+	mountObservability(r, cfg, logger, m, hr)
 
 	// ── REST API ────────────────────────────────────────────────
 	// Assigned only when non-nil so the handlers' nil checks stay meaningful:

@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/uberware/sqi/internal/config"
+	"github.com/uberware/sqi/internal/winsvc"
 )
 
 // rootCmd is the top-level sqi-server command. It does not run any logic
@@ -89,9 +90,19 @@ func Execute() error {
 	return rootCmd.Execute()
 }
 
-// exitOnErr exits with code 1 if err is non-nil. Used by main only.
+// exitOnErr exits with [exitCode]'s code if err is non-nil. Used by main
+// only.
 func exitOnErr(err error) {
 	if err != nil {
-		os.Exit(1)
+		os.Exit(exitCode(err))
 	}
+}
+
+// exitCode is the process exit code for err: 0 for nil, [server.ExitDemoted]
+// for a leader of an HA group that lost its leadership (its error names that
+// code), so a supervisor and its alerting can tell a demotion (restart as a
+// standby) from a crash, and 1 for anything else. It is [winsvc.ExitCode],
+// which the Windows service reports too.
+func exitCode(err error) int {
+	return winsvc.ExitCode(err)
 }

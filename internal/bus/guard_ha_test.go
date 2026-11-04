@@ -107,8 +107,11 @@ func TestGuardHA_MemberKeyOverwrittenAtOnce(t *testing.T) {
 	if err := a.Healthy(); !errors.Is(err, bus.ErrGuardHeld) {
 		t.Errorf("overwritten holder Healthy = %v, want ErrGuardHeld", err)
 	}
-	if !strings.Contains(logsA.String(), "no longer holds the broker account") {
-		t.Errorf("the lost holder did not log its loss: %s", logsA.String())
+	// With OnLost set its owner reports the loss at ERROR, so the guard says
+	// it at WARN: a stepping-down leader logs one ERROR, not two.
+	if got := logsA.String(); !strings.Contains(got, "level=WARN") || !strings.Contains(got, "no longer holds the broker account") ||
+		!strings.Contains(got, "steps down") || strings.Contains(got, "level=ERROR") || strings.Contains(got, "stop one of the two servers") {
+		t.Errorf("the lost holder's log = %s; want one WARN saying it steps down", got)
 	}
 	if err := b.Healthy(); err != nil {
 		t.Errorf("new holder Healthy = %v, want nil", err)

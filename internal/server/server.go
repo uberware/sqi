@@ -205,6 +205,12 @@ type Config struct {
 	// startup if the store has no farms yet. No-op once any farm exists.
 	// Default true.
 	SeedDefaults bool
+
+	// HA mirrors config.HAConfig. With HA.Enabled the server joins a
+	// high-availability group: it starts as a warm standby and leads only
+	// while it holds the leader lease (see ha.go). The zero value, as without
+	// an ha section, is a single server.
+	HA config.HAConfig
 }
 
 // DefaultConfig returns a [Config] with sensible development defaults.
@@ -251,8 +257,11 @@ type Server struct {
 	broker    bus.Broker
 	busClient *bus.Client // typed wrapper; drained before broker shutdown
 	sched     *scheduler.Scheduler
-	wsHub     *ws.Hub              // WebSocket fan-out hub
-	discovery *discovery.Responder // mDNS advertisement
+	wsHub     *ws.Hub   // WebSocket fan-out hub
+	discovery responder // mDNS advertisement
+
+	// ha is the high-availability state, nil without HA.
+	ha *haState
 
 	// cancelSched stops the scheduler's Run; set once it is started.
 	cancelSched context.CancelFunc
@@ -261,6 +270,12 @@ type Server struct {
 	// started. It is a test seam, set only by tests that observe start's
 	// order through the broker; production leaves it nil.
 	wrapBroker func(bus.Broker) bus.Broker
+
+	// openBackend, when set, opens the store in place of [backend.Open], and
+	// newResponder builds the mDNS responder in place of [discovery.New].
+	// Test seams; production leaves both nil.
+	openBackend  func(context.Context, backend.Options) (backend.Backend, error)
+	newResponder func(discovery.Config, *slog.Logger) (responder, error)
 
 	// checkpointDone closes after the SQLite WAL checkpointer's final TRUNCATE;
 	// nil on a backend with no checkpointer.
@@ -476,6 +491,20 @@ func isLoopbackHost(host string) bool {
 // credential from the store through the auth callout, so nothing is loaded
 // here.
 func (s *Server) startBroker(ctx context.Context) (bus.Broker, error) {
+	broker, err := s.buildBroker(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := broker.Start(ctx); err != nil {
+		return nil, err
+	}
+	return broker, nil
+}
+
+// buildBroker constructs the broker nats.mode selects without starting it,
+// warning about an unauthenticated broker that may be exposed beyond this
+// host.
+func (s *Server) buildBroker(ctx context.Context) (bus.Broker, error) {
 	warnIfBrokerUnauthenticated(ctx, s.cfg.NATS, s.logger)
 	warnIfRevocationBounded(ctx, s.cfg.NATS, s.logger)
 
@@ -485,9 +514,6 @@ func (s *Server) startBroker(ctx context.Context) (bus.Broker, error) {
 	}
 	if s.wrapBroker != nil {
 		broker = s.wrapBroker(broker)
-	}
-	if err := broker.Start(ctx); err != nil {
-		return nil, err
 	}
 	return broker, nil
 }
@@ -569,6 +595,10 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	s.logger.InfoContext(ctx, "sqi-server starting", attrs...)
 
+	if s.cfg.HA.Enabled {
+		return s.runHA(ctx)
+	}
+
 	if err := s.start(ctx); err != nil {
 		s.abortStart()
 		return fmt.Errorf("startup failed: %w", err)
@@ -587,11 +617,21 @@ func (s *Server) Run(ctx context.Context) error {
 // dependency under its driver's name, and, on SQLite, starts the WAL
 // checkpointer.
 func (s *Server) openStore(ctx context.Context) error {
-	st, err := backend.Open(ctx, backend.Options{
+	o := backend.Options{
 		Driver: s.cfg.StoreDriver, SQLitePath: s.cfg.SQLitePath,
 		PostgresDSN: s.cfg.PostgresDSN, MaxConns: s.cfg.PostgresMaxConns,
 		AutoMigrate: true, ServerLock: true, Logger: s.logger,
-	})
+	}
+	if s.ha != nil {
+		// Share the lock with the group's other servers, and bound sessions
+		// by the lease.
+		o.HA, o.LeaseTTL = true, s.cfg.HA.LeaseTTL
+	}
+	open := backend.Open
+	if s.openBackend != nil {
+		open = s.openBackend
+	}
+	st, err := open(ctx, o)
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
@@ -673,18 +713,7 @@ func (s *Server) start(ctx context.Context) error {
 	// Wire the diagnostic buffer's notifier to the hub now that the hub exists,
 	// so every appended record (server logs and worker diagnostics) is fanned
 	// out to subscribed WebSocket clients. No-op when diagnostics are disabled.
-	if s.diagBuf != nil {
-		hub := s.wsHub
-		s.diagBuf.SetNotify(func(r diag.Record) {
-			hub.NotifyDiag(ws.DiagEvent{
-				Component: r.Component,
-				Level:     r.Level,
-				Msg:       r.Msg,
-				Attrs:     r.Attrs,
-				At:        r.Ts,
-			})
-		})
-	}
+	s.notifyDiagToHub()
 
 	// ── Scheduler ─────────────────────────────────────────────────────────
 	// Assignment loop goroutine pool, worker registry (NATS
@@ -706,30 +735,7 @@ func (s *Server) start(ctx context.Context) error {
 	// ── HTTP server (chi router) ──────────────────────────────────────────
 	// Chi router with standard middleware mounts all routes.
 	// Job REST endpoints are now registered via api.Deps.
-	deps := api.Deps{
-		Store: s.store,
-		Submitter: openjd.NewSubmitterWithOptions(s.store, openjd.SubmitterOptions{
-			EnforceLimits: s.cfg.EnforceOpenJDLimits,
-			ExprLimits:    s.cfg.OpenJDExprLimits,
-		}),
-		Products:      product.NewCatalog(s.store),
-		Scheduler:     s.sched,
-		Hub:           s.wsHub,
-		Version:       version.Get(),
-		WorkerRevoker: s,
-	}
-	// Only expose the diagnostics reader when diagnostics are enabled. Leaving
-	// DiagReader as a nil interface (rather than a typed-nil *diag.Buffer) makes
-	// the endpoint return 503 instead of panicking on Query.
-	if s.diagBuf != nil {
-		deps.DiagReader = s.diagBuf
-	}
-	// Only wire the preset library when a URL is configured. Leaving PresetLib
-	// as a nil interface (rather than a typed-nil *presetlib.Service) makes the
-	// endpoints return 503 instead of panicking.
-	if s.cfg.PresetLibraryURL != "" {
-		deps.PresetLib = presetlib.New(s.cfg.PresetLibraryURL, presetlib.DefaultCacheTTL)
-	}
+	deps := s.apiDeps()
 	if err := s.wireAuthDeps(ctx, &deps); err != nil {
 		return err
 	}
@@ -758,6 +764,70 @@ func (s *Server) start(ctx context.Context) error {
 	return s.startDiscovery(ctx)
 }
 
+// notifyDiagToHub fans every record appended to the diagnostic buffer out to
+// the WebSocket hub's subscribers. No-op when diagnostics are disabled.
+func (s *Server) notifyDiagToHub() {
+	if s.diagBuf == nil {
+		return
+	}
+	hub := s.wsHub
+	s.diagBuf.SetNotify(func(r diag.Record) {
+		hub.NotifyDiag(ws.DiagEvent{
+			Component: r.Component,
+			Level:     r.Level,
+			Msg:       r.Msg,
+			Attrs:     r.Attrs,
+			At:        r.Ts,
+		})
+	})
+}
+
+// apiDeps assembles the REST handlers' dependencies from what start has
+// built, short of authentication (wireAuthDeps) and the session and broker
+// settings start adds after it.
+func (s *Server) apiDeps() api.Deps {
+	deps := api.Deps{
+		Store: s.store,
+		Submitter: openjd.NewSubmitterWithOptions(s.store, openjd.SubmitterOptions{
+			EnforceLimits: s.cfg.EnforceOpenJDLimits,
+			ExprLimits:    s.cfg.OpenJDExprLimits,
+		}),
+		Products:      product.NewCatalog(s.store),
+		Scheduler:     s.sched,
+		Hub:           s.wsHub,
+		Version:       version.Get(),
+		WorkerRevoker: s,
+	}
+	// Only expose the diagnostics reader when diagnostics are enabled. Leaving
+	// DiagReader as a nil interface (rather than a typed-nil *diag.Buffer) makes
+	// the endpoint return 503 instead of panicking on Query.
+	if s.diagBuf != nil {
+		deps.DiagReader = s.diagBuf
+	}
+	// Only wire the preset library when a URL is configured. Leaving PresetLib
+	// as a nil interface (rather than a typed-nil *presetlib.Service) makes the
+	// endpoints return 503 instead of panicking.
+	if s.cfg.PresetLibraryURL != "" {
+		deps.PresetLib = presetlib.New(s.cfg.PresetLibraryURL, presetlib.DefaultCacheTTL)
+	}
+	return deps
+}
+
+// responder is the mDNS responder as the server drives it.
+type responder interface {
+	Start(ctx context.Context) error
+	Shutdown()
+}
+
+// newDiscoveryResponder is [discovery.New] as a [responder].
+func newDiscoveryResponder(cfg discovery.Config, logger *slog.Logger) (responder, error) {
+	r, err := discovery.New(cfg, logger)
+	if err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
 // startDiscovery advertises _sqi._tcp on the local network so workers and the
 // sqi CLI can discover this server without manual address configuration.
 // Advertisement is gated on DiscoveryEnabled for environments that forbid
@@ -767,7 +837,11 @@ func (s *Server) startDiscovery(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("init discovery: %w", err)
 	}
-	resp, err := discovery.New(discovery.Config{
+	newResponder := s.newResponder
+	if newResponder == nil {
+		newResponder = newDiscoveryResponder
+	}
+	resp, err := newResponder(discovery.Config{
 		Enabled:      s.cfg.DiscoveryEnabled,
 		InstanceName: s.cfg.DiscoveryInstanceName,
 		HTTPAddr:     s.cfg.HTTPAddr,
@@ -865,7 +939,12 @@ func (s *Server) wireAuthDeps(ctx context.Context, deps *api.Deps) error {
 		return fmt.Errorf("select auth: %w", err)
 	}
 	deps.Auth = a
+	return s.wireDirectoryDeps(ctx, deps)
+}
 
+// wireDirectoryDeps constructs the LDAP verifier and the SSO provider, when
+// configured, and assigns them and their settings into deps.
+func (s *Server) wireDirectoryDeps(ctx context.Context, deps *api.Deps) error {
 	v, err := s.buildLDAPVerifier(ctx)
 	if err != nil {
 		return fmt.Errorf("auth ldap: %w", err)
@@ -893,17 +972,37 @@ func (s *Server) selectAuth(ctx context.Context) (auth.Authenticator, error) {
 	if !s.cfg.AuthEnabled {
 		return auth.Anonymous(), nil
 	}
+	if err := s.bootstrapAuth(ctx); err != nil {
+		return nil, err
+	}
+	return s.authenticator(), nil
+}
+
+// bootstrapAuth seeds the first admin when auth is enabled and the users
+// table is empty. An HA server runs it at promotion rather than at boot:
+// its count-then-create would race another server's.
+func (s *Server) bootstrapAuth(ctx context.Context) error {
 	if err := bootstrapAdmin(ctx, s.store, BootstrapParams{
 		Username: s.cfg.AuthBootstrapUsername,
 		Password: s.cfg.AuthBootstrapPassword,
 	}, s.logger); err != nil {
-		return nil, fmt.Errorf("auth bootstrap: %w", err)
+		return fmt.Errorf("auth bootstrap: %w", err)
+	}
+	return nil
+}
+
+// authenticator is the request authenticator: the anonymous superuser with
+// auth off, otherwise a Bearer API key or a session cookie, both backed by
+// the store.
+func (s *Server) authenticator() auth.Authenticator {
+	if !s.cfg.AuthEnabled {
+		return auth.Anonymous()
 	}
 	// Compose credential types: a machine's Bearer API key leads, the
 	// browser session cookie is the fallback. Both back onto the store.
 	keyAuthn := apikey.New(s.store, nil)
 	sessAuthn := session.New(s.store, s.cfg.AuthCookieName, nil)
-	return auth.Chain(keyAuthn, sessAuthn), nil
+	return auth.Chain(keyAuthn, sessAuthn)
 }
 
 // buildLDAPVerifier constructs the directory verifier, or nil when LDAP is
@@ -1118,6 +1217,13 @@ func (s *Server) shutdown() error {
 		s.discovery.Shutdown()
 	}
 
+	// ── HA leader lease ───────────────────────────────────────────────────
+	// Hand the lease over before the HTTP drain, which can last as long as
+	// its slowest request: a standby takes over at its next poll instead.
+	if err := s.handOver(ctx); err != nil {
+		errs = append(errs, err)
+	}
+
 	// ── HTTP server ───────────────────────────────────────────────────────
 	if s.httpServer != nil {
 		if err := s.httpServer.Shutdown(ctx); err != nil {
@@ -1149,12 +1255,11 @@ func (s *Server) shutdown() error {
 
 	// SQLite: let the checkpointer's final TRUNCATE finish before the store
 	// closes under it, bounded by the shutdown budget.
-	if s.checkpointDone != nil {
-		select {
-		case <-s.checkpointDone:
-		case <-ctx.Done():
-		}
-	}
+	s.waitCheckpoint(ctx)
+
+	// HA: the membership and observer loops write to the store until they
+	// stop.
+	s.ha.stopLoops()
 
 	// ── Store ─────────────────────────────────────────────────────────────
 	if s.store != nil {
@@ -1173,6 +1278,18 @@ func (s *Server) shutdown() error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// waitCheckpoint waits for the SQLite checkpointer's final TRUNCATE, if there
+// is a checkpointer, until ctx ends.
+func (s *Server) waitCheckpoint(ctx context.Context) {
+	if s.checkpointDone == nil {
+		return
+	}
+	select {
+	case <-s.checkpointDone:
+	case <-ctx.Done():
+	}
 }
 
 // sessionSweepInterval is how often expired sessions are reaped. Sessions
@@ -1201,13 +1318,8 @@ func (s *Server) startSessionSweeper(ctx context.Context) {
 		return
 	}
 	sweep := func() {
-		n, err := s.store.DeleteExpiredSessions(ctx, time.Now().UTC())
-		if err != nil {
+		if err := s.sweepSessions(ctx); err != nil {
 			s.logger.ErrorContext(ctx, "auth: expired-session sweep failed", slog.Any("error", err))
-			return
-		}
-		if n > 0 {
-			s.logger.InfoContext(ctx, "auth: reaped expired sessions", slog.Int("count", n))
 		}
 	}
 
@@ -1229,4 +1341,16 @@ func (s *Server) startSessionSweeper(ctx context.Context) {
 		ctx, "auth: expired-session sweeper started",
 		slog.Duration("interval", sessionSweepInterval),
 	)
+}
+
+// sweepSessions deletes the expired sessions once, logging how many it reaped.
+func (s *Server) sweepSessions(ctx context.Context) error {
+	n, err := s.store.DeleteExpiredSessions(ctx, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		s.logger.InfoContext(ctx, "auth: reaped expired sessions", slog.Int("count", n))
+	}
+	return nil
 }
