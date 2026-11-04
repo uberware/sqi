@@ -4,7 +4,6 @@ package simworker
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,7 +17,6 @@ import (
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/uberware/sqi/internal/brokerauth"
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
 	"github.com/uberware/sqi/internal/version"
@@ -45,6 +43,13 @@ const (
 	registerMaxGap = 2 * time.Second
 	// registerPoll is how often Disconnect checks for the re-registration.
 	registerPoll = 10 * time.Millisecond
+	// handlerGrace is how long Disconnect leaves the reconnect handler to
+	// re-register once the connection is back before registering itself.
+	handlerGrace = time.Second
+	// disconnectBound caps Disconnect: natsclient's first redial waits about
+	// reconnectWait (plus jitter), and one registration may take
+	// registerBudget.
+	disconnectBound = 2*reconnectWait + registerBudget
 	// simArch is the architecture every simulated worker reports. Scenarios
 	// have no arch field, and a fixed value keeps a run independent of the
 	// generator host's.
@@ -65,8 +70,19 @@ type WorkerSpec struct {
 	NATSURL              string
 	Seed                 []byte
 	PublicKey            string
-	TLS                  *tls.Config
+	TLS                  TLSFiles
 	RandSeed             uint64
+}
+
+// TLSFiles is the broker TLS material as file paths, the form natsclient
+// takes: sqi-worker's nats.tls_enabled, nats.tls_ca_file, nats.tls_cert_file,
+// nats.tls_key_file and nats.insecure_skip_verify. The zero value is "auto"
+// with no files, which dials without TLS.
+type TLSFiles struct {
+	Enabled            string // "" or "auto", "true", "false"
+	CAFile             string
+	CertFile, KeyFile  string
+	InsecureSkipVerify bool
 }
 
 // Worker is one simulated sqi-worker: one NATS connection, a hand-built
@@ -82,6 +98,10 @@ type Worker struct {
 	opMu     sync.Mutex   // serializes Start, Stop, Crash, Restart, Disconnect
 	cur      *incarnation // the running process; nil when stopped or crashed
 	instance atomic.Pointer[string]
+
+	// registerFault, when set, runs before each registration publish and
+	// fails it with its error. A test hook.
+	registerFault atomic.Pointer[func() error]
 }
 
 // NewWorker returns a stopped worker. A nil logger discards.
@@ -140,8 +160,8 @@ func (w *Worker) Stop(ctx context.Context) error {
 }
 
 // Crash drops the connection without deregistering. Heartbeats stop, and
-// every in-flight attempt is abandoned with no status published (ledger kind
-// crashed). Nothing is kept running.
+// every in-flight attempt is abandoned with no terminal status published
+// (ledger kind crashed). Nothing is kept running.
 func (w *Worker) Crash() {
 	w.opMu.Lock()
 	defer w.opMu.Unlock()
@@ -171,8 +191,13 @@ func (w *Worker) Restart(ctx context.Context) error {
 
 // Disconnect drops the connection's socket and waits until NATS has
 // reconnected it and the worker has re-registered, with the same instance ID,
-// so the server keeps its attempts. The re-registration is the reconnect
-// handler's, the same path a broker-side drop takes.
+// so the server keeps its attempts. The reconnect handler re-registers, the
+// same path a broker-side drop takes; if its registration has not landed
+// handlerGrace after the connection is back (it failed, or the stream ack
+// timed out), Disconnect registers itself, retrying. The wait is bounded by
+// disconnectBound as well as ctx, so a lost registration cannot hold the
+// worker's lifecycle lock indefinitely; after that error the worker keeps
+// running and its heartbeat watchdog may still re-register it.
 func (w *Worker) Disconnect(ctx context.Context) error {
 	w.opMu.Lock()
 	defer w.opMu.Unlock()
@@ -184,16 +209,9 @@ func (w *Worker) Disconnect(ctx context.Context) error {
 	if err := inc.nc.ForceReconnect(); err != nil {
 		return fmt.Errorf("simworker: force reconnect: %w", err)
 	}
-	tick := time.NewTicker(registerPoll)
-	defer tick.Stop()
-	for inc.registrations.Load() == before {
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("simworker: waiting for re-registration: %w", ctx.Err())
-		case <-tick.C:
-		}
-	}
-	return nil
+	ctx, cancelFn := context.WithTimeout(ctx, disconnectBound)
+	defer cancelFn()
+	return inc.awaitReregistration(ctx, before)
 }
 
 // incarnation is one worker process: one connection and instance ID.
@@ -206,14 +224,69 @@ type incarnation struct {
 
 	stopHB, stopLease context.CancelFunc
 	hbDone, leaseDone chan struct{}
+	// ended is closed when this process is torn down on purpose, so the
+	// closed-connection watcher can tell that from natsclient giving up.
+	ended chan struct{}
 
 	lastRegistered atomic.Int64 // UnixNano of the last successful registration
 	registrations  atomic.Int64 // successful registrations so far
 }
 
+// awaitReregistration waits for a registration after the before'th, making it
+// itself once the reconnect handler has had handlerGrace to.
+func (inc *incarnation) awaitReregistration(ctx context.Context, before int64) error {
+	tick := time.NewTicker(registerPoll)
+	defer tick.Stop()
+	var direct time.Time // when to stop waiting for the reconnect handler
+	for inc.registrations.Load() == before {
+		if direct.IsZero() && inc.nc.IsConnected() {
+			direct = time.Now().Add(handlerGrace)
+		}
+		if !direct.IsZero() && time.Now().After(direct) {
+			return inc.registerUntil(ctx, before)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("simworker: waiting for re-registration: %w", ctx.Err())
+		case <-tick.C:
+		}
+	}
+	return nil
+}
+
+// registerUntil registers, with backoff, until a registration after the
+// before'th has landed (its own or anyone's) or ctx ends.
+func (inc *incarnation) registerUntil(ctx context.Context, before int64) error {
+	backoff := registerRetry
+	for inc.registrations.Load() == before {
+		err := inc.Register(ctx)
+		if err == nil {
+			return nil
+		}
+		inc.w.logger.DebugContext(ctx, "simworker: re-registration failed; retrying", slog.Any("error", err))
+		if !sleepCtx(ctx, backoff) {
+			return fmt.Errorf("simworker: re-registering after disconnect: %w", err)
+		}
+		backoff = min(backoff*2, registerMaxGap)
+	}
+	return nil
+}
+
+// sleepCtx waits d and reports whether ctx was still live at the end.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
 // launch connects and registers a new process, then starts its loops.
 func (w *Worker) launch(ctx context.Context) (*incarnation, error) {
-	nc, err := w.connect(ctx)
+	nc, closed, err := w.connect(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -222,7 +295,7 @@ func (w *Worker) launch(ctx context.Context) (*incarnation, error) {
 		nc.Close()
 		return nil, fmt.Errorf("simworker: jetstream: %w", err)
 	}
-	inc := &incarnation{w: w, instanceID: uuid.NewString(), nc: nc, js: js}
+	inc := &incarnation{w: w, instanceID: uuid.NewString(), nc: nc, js: js, ended: make(chan struct{})}
 	nc.SetReconnectHandler(inc.onReconnect)
 	if err := inc.Register(ctx); err != nil {
 		nc.Close()
@@ -260,44 +333,51 @@ func (w *Worker) launch(ctx context.Context) (*incarnation, error) {
 		defer close(inc.leaseDone)
 		loop.Run(leaseCtx)
 	}()
+	go w.watchClosed(inc, closed) //nolint:gosec // G118: it watches the connection for the process lifetime, not the Start call
 	return inc, nil
 }
 
-// connect dials the broker on one connection with this worker's inbox prefix.
-// With a credential and no TLS it goes through natsclient, as sqi-worker does;
-// natsclient takes TLS only as files, so an in-memory TLS config dials with
-// the same options directly.
-func (w *Worker) connect(ctx context.Context) (*nats.Conn, error) {
+// watchClosed crashes inc if its connection closes for good without the
+// worker tearing it down: natsclient gave up (a credential refused past its
+// grace, or reconnects exhausted). A worker left running on a closed
+// connection would neither heartbeat nor lease: a zombie in the fleet count.
+func (w *Worker) watchClosed(inc *incarnation, closed <-chan struct{}) {
+	select {
+	case <-inc.ended:
+		return
+	case <-closed:
+	}
+	w.opMu.Lock()
+	defer w.opMu.Unlock()
+	if w.cur != inc {
+		return // torn down meanwhile, on purpose
+	}
+	w.logger.WarnContext(context.Background(), "simworker: connection closed for good; treating it as a crash")
+	inc.crash()
+	w.cur = nil
+}
+
+// connect dials the broker through natsclient exactly as sqi-worker does, with
+// or without a credential, so the inbox prefix, reconnect backoff and
+// lifecycle handling are the real ones. The returned channel closes when the
+// connection closes for good.
+func (w *Worker) connect(ctx context.Context) (*nats.Conn, <-chan struct{}, error) {
 	s := w.spec
-	if len(s.Seed) > 0 && s.TLS == nil {
-		cfg := workerconfig.NATSConfig{URL: s.NATSURL, MaxReconnectAttempts: -1, ReconnectWait: reconnectWait}
-		nc, _, err := natsclient.Connect(ctx, cfg, s.ID, s.Seed, s.PublicKey, w.logger)
-		if err != nil {
-			return nil, fmt.Errorf("simworker: connect: %w", err)
-		}
-		return nc, nil
+	cfg := workerconfig.NATSConfig{
+		URL:                  s.NATSURL,
+		TLSEnabled:           s.TLS.Enabled,
+		TLSCAFile:            s.TLS.CAFile,
+		TLSCertFile:          s.TLS.CertFile,
+		TLSKeyFile:           s.TLS.KeyFile,
+		InsecureSkipVerify:   s.TLS.InsecureSkipVerify,
+		MaxReconnectAttempts: -1,
+		ReconnectWait:        reconnectWait,
 	}
-	if !brokerauth.ValidWorkerIDToken(s.ID) {
-		return nil, fmt.Errorf("simworker: worker id %q is not a single NATS subject token", s.ID)
-	}
-	opts := []nats.Option{
-		nats.Name(s.Hostname),
-		nats.CustomInboxPrefix(brokerauth.InboxPrefix(s.ID)),
-		nats.MaxReconnects(-1),
-		nats.ReconnectWait(reconnectWait),
-		nats.ReconnectJitter(reconnectWait/5, reconnectWait/5),
-	}
-	if s.TLS != nil {
-		opts = append(opts, nats.Secure(s.TLS.Clone()))
-	}
-	if len(s.Seed) > 0 {
-		opts = append(opts, brokerauth.NkeyOption(s.PublicKey, s.Seed))
-	}
-	nc, err := nats.Connect(s.NATSURL, opts...)
+	nc, closed, err := natsclient.Connect(ctx, cfg, s.ID, s.Seed, s.PublicKey, w.logger)
 	if err != nil {
-		return nil, fmt.Errorf("simworker: connect: %w", err)
+		return nil, nil, fmt.Errorf("simworker: connect: %w", err)
 	}
-	return nc, nil
+	return nc, closed, nil
 }
 
 // leaseQueueIDs is sqi-worker's mapping: no queues means the wildcard token.
@@ -355,6 +435,11 @@ func (inc *incarnation) Register(ctx context.Context) error {
 	data, err := json.Marshal(inc.w.registerMsg(inc.instanceID))
 	if err != nil {
 		return fmt.Errorf("simworker: marshal registration: %w", err)
+	}
+	if fault := inc.w.registerFault.Load(); fault != nil {
+		if err := (*fault)(); err != nil {
+			return err
+		}
 	}
 	ctx, cancelFn := context.WithTimeout(ctx, registerBudget)
 	defer cancelFn()
@@ -416,6 +501,7 @@ func (inc *incarnation) deregister(reason string) error {
 
 // stop is the graceful shutdown behind Worker.Stop.
 func (inc *incarnation) stop(ctx context.Context) error {
+	close(inc.ended)
 	inc.stopLease()
 	<-inc.leaseDone
 	if !inc.disp.wait(ctx) {
@@ -431,9 +517,19 @@ func (inc *incarnation) stop(ctx context.Context) error {
 }
 
 // crash is the abrupt end behind Crash and Restart: loops stop, attempts are
-// abandoned unpublished, and the connection closes with no deregistration.
-// Terminal statuses already being published when it starts still go out.
+// abandoned without a terminal status, and the connection closes with no
+// deregistration.
+//
+// It is not a severed socket, and deliberately so. Every message a task
+// handed to the connection before the crash still goes out, because Close
+// flushes the connection's buffer: a terminal status already being published
+// (the ledger records that attempt as terminal, not crashed), a running
+// status from a task that started as the crash began, and the log lines the
+// log publisher still held, which FlushLogs drains while stopping its
+// per-attempt goroutine. Keeping them means the ledger never claims a status
+// the server did not get, and never misses one it did.
 func (inc *incarnation) crash() {
+	close(inc.ended)
 	inc.stopHB() // also stops the lease loop
 	<-inc.leaseDone
 	<-inc.hbDone

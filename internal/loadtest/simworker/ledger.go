@@ -91,10 +91,13 @@ func (l *Ledger) SetOutcome(taskID, outcome string) bool {
 // is counted under key(its leased event). An attempt that ends at the instant
 // another starts does not overlap it.
 //
-// The window is the worker's view, which sits inside the server's (the server
-// counts an attempt from before the worker receives it until after it hears
-// the terminal status), so a peak above a server-enforced cap is a real
-// violation, never an artifact of measuring.
+// The window is the worker's view, which sits inside the server's: the server
+// commits the lease before the worker records leased, and a dispatcher stamps
+// an attempt's end event with a time taken before it publishes the terminal
+// status, so before the server can free the slot. A peak above a
+// server-enforced cap is therefore a real violation, not an artifact of
+// measuring. That holds for events the dispatcher records; an event recorded
+// with At left zero is stamped when Record runs.
 func (l *Ledger) ConcurrentPeak(key func(Event) string) map[string]int {
 	type edge struct {
 		at    time.Time

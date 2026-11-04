@@ -45,8 +45,9 @@ func newFarm(t *testing.T) *farm {
 	return &farm{srv: srv, c: c, farmID: farmID, queueID: queueID}
 }
 
-// startWorker starts a queue-less simulated worker and stops it at cleanup.
-func (f *farm) startWorker(t *testing.T, n int, b simworker.Behavior, l *simworker.Ledger) *simworker.Worker {
+// startWorker starts a simulated worker serving queues (none means every
+// queue) and stops it at cleanup.
+func (f *farm) startWorker(t *testing.T, n int, b simworker.Behavior, l *simworker.Ledger, queues ...string) *simworker.Worker {
 	t.Helper()
 	spec := simworker.WorkerSpec{
 		ID:       uuid.NewString(),
@@ -55,6 +56,7 @@ func (f *farm) startWorker(t *testing.T, n int, b simworker.Behavior, l *simwork
 		Group: scenario.WorkerGroup{
 			Name: "sim", CPU: 4, RAMMb: 8192, OS: "linux",
 			Heartbeat: scenario.Duration{Duration: 15 * time.Second},
+			Queues:    queues,
 		},
 		NATSURL:  f.srv.NATSURL(),
 		RandSeed: uint64(n),
@@ -155,54 +157,73 @@ func fixedPlan(p simworker.TaskPlan) simworker.Behavior {
 }
 
 func TestWorker_RegistersAndCompletesTasks(t *testing.T) {
-	f := newFarm(t)
-	l := simworker.NewLedger()
-	// A base-spec job carries no name in its assignments and no lookup is
-	// wired, so the class can only come from the template's class argument:
-	// the fallback plan would write no lines.
-	b := simworker.ScenarioBehavior(map[string]scenario.TaskSpec{"sim": {
-		Duration: constDist(0.05), LogLines: constDist(3), LogLineBytes: 32,
-	}})
-	for n := range 3 {
-		f.startWorker(t, n, b, l)
+	tests := []struct {
+		name     string
+		oneQueue bool // serve only the job's queue rather than every queue
+	}{
+		{"queue-less workers lease on the wildcard", false},
+		{"single-queue workers register and lease on their queue", true},
 	}
-
-	// The stream acks a registration before the server applies it.
-	var hosts []string
-	waitFor(t, 10*time.Second, "three online workers", func() bool {
-		page, err := f.c.ListWorkers(t.Context(), f.farmID, 10, 0)
-		if err != nil {
-			return false
-		}
-		hosts = hosts[:0]
-		for _, w := range page.Items {
-			if w.Status == "online" {
-				hosts = append(hosts, w.Hostname)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFarm(t)
+			l := simworker.NewLedger()
+			// A base-spec job carries no name in its assignments and no lookup
+			// is wired, so the class can only come from the template's class
+			// argument: the fallback plan would write no lines.
+			b := simworker.ScenarioBehavior(map[string]scenario.TaskSpec{"sim": {
+				Duration: constDist(0.05), LogLines: constDist(3), LogLineBytes: 32,
+			}})
+			var queues []string
+			wantQueue := ""
+			if tt.oneQueue {
+				queues, wantQueue = []string{f.queueID}, f.queueID
 			}
-		}
-		return len(hosts) == 3
-	})
-	slices.Sort(hosts)
-	if !slices.Equal(hosts, []string{"sim-test-0", "sim-test-1", "sim-test-2"}) {
-		t.Errorf("registered hostnames = %v", hosts)
-	}
-
-	jobID := f.submit(t, 2, 5)
-	f.waitJob(t, jobID, "completed", 30*time.Second)
-
-	terminals := 0
-	tasks := map[string]bool{}
-	for _, e := range l.Events() {
-		if e.Kind == simworker.KindTerminal {
-			terminals++
-			tasks[e.TaskID] = true
-			if e.Outcome != simworker.OutcomeSucceeded || e.LogLines != 3 || e.InstanceID == "" {
-				t.Errorf("terminal event %+v", e)
+			for n := range 3 {
+				f.startWorker(t, n, b, l, queues...)
 			}
-		}
-	}
-	if terminals != 10 || len(tasks) != 10 {
-		t.Errorf("ledger has %d terminal events over %d tasks, want 10 over 10", terminals, len(tasks))
+
+			// The stream acks a registration before the server applies it.
+			var hosts []string
+			waitFor(t, 10*time.Second, "three online workers", func() bool {
+				page, err := f.c.ListWorkers(t.Context(), f.farmID, 10, 0)
+				if err != nil {
+					return false
+				}
+				hosts = hosts[:0]
+				for _, w := range page.Items {
+					if w.Status == "online" {
+						hosts = append(hosts, w.Hostname)
+						if w.QueueID != wantQueue {
+							t.Errorf("worker %s registered queue %q, want %q", w.Hostname, w.QueueID, wantQueue)
+						}
+					}
+				}
+				return len(hosts) == 3
+			})
+			slices.Sort(hosts)
+			if !slices.Equal(hosts, []string{"sim-test-0", "sim-test-1", "sim-test-2"}) {
+				t.Errorf("registered hostnames = %v", hosts)
+			}
+
+			jobID := f.submit(t, 2, 5)
+			f.waitJob(t, jobID, "completed", 30*time.Second)
+
+			terminals := 0
+			tasks := map[string]bool{}
+			for _, e := range l.Events() {
+				if e.Kind == simworker.KindTerminal {
+					terminals++
+					tasks[e.TaskID] = true
+					if e.Outcome != simworker.OutcomeSucceeded || e.LogLines != 3 || e.InstanceID == "" {
+						t.Errorf("terminal event %+v", e)
+					}
+				}
+			}
+			if terminals != 10 || len(tasks) != 10 {
+				t.Errorf("ledger has %d terminal events over %d tasks, want 10 over 10", terminals, len(tasks))
+			}
+		})
 	}
 }
 
@@ -284,6 +305,10 @@ func TestWorker_ReconnectKeepsInstance(t *testing.T) {
 	jobID := f.submit(t, 1, 1)
 	waitFor(t, 30*time.Second, "task running", func() bool { return countKind(l, "", simworker.KindRunning) == 1 })
 
+	// InstanceID is only the worker's own field and Disconnect never assigns
+	// it, so this check is close to trivially true. The proof that the
+	// re-registration carried the same instance is on the server: one
+	// attempt, never reclaimed (asserted below).
 	before := w.InstanceID()
 	if err := w.Disconnect(t.Context()); err != nil {
 		t.Fatalf("Disconnect: %v", err)

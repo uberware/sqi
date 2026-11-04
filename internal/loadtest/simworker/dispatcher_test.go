@@ -73,6 +73,9 @@ func (f *fakeConn) statuses(t *testing.T) []protocol.TaskStatusMsg {
 
 const testWorkerID = "w1"
 
+// slowPublish is how long a test hook holds a terminal publish.
+const slowPublish = 30 * time.Millisecond
+
 func newTestDispatcher(t *testing.T, plan simworker.TaskPlan) (*simworker.Dispatcher, *fakeConn, *simworker.Ledger) {
 	t.Helper()
 	conn := &fakeConn{}
@@ -127,6 +130,7 @@ func TestDispatcher_SucceededPath(t *testing.T) {
 	// Is the attempt still reported as held at the moment its terminal status
 	// goes out?
 	var heldAtTerminal, sawTerminal bool
+	var publishedAt time.Time
 	var hookMu sync.Mutex
 	conn.setHook(func(subj string, data []byte) {
 		if !strings.HasPrefix(subj, "task.status.") {
@@ -138,8 +142,12 @@ func TestDispatcher_SucceededPath(t *testing.T) {
 		}
 		hookMu.Lock()
 		sawTerminal = true
+		publishedAt = time.Now()
 		heldAtTerminal = slices.Contains(d.ActiveAttemptIDs(), "a1")
 		hookMu.Unlock()
+		// A slow publish: an end event stamped after it would read later than
+		// publishedAt even on a coarse clock.
+		time.Sleep(slowPublish)
 	})
 
 	d.Hold("a1")
@@ -220,6 +228,11 @@ func TestDispatcher_SucceededPath(t *testing.T) {
 		if e.Kind == simworker.KindTerminal && (e.Outcome != simworker.OutcomeSucceeded || e.LogLines != lines) {
 			t.Errorf("terminal event = %+v, want succeeded with %d lines", e, lines)
 		}
+		// Stamped before the publish, so the server freeing the slot can never
+		// precede the end edge in the ledger.
+		if e.Kind == simworker.KindTerminal && e.At.After(publishedAt) {
+			t.Errorf("terminal event At %v is after its publish at %v", e.At, publishedAt)
+		}
 	}
 	if !slices.Equal(kinds, []string{simworker.KindLeased, simworker.KindRunning, simworker.KindTerminal}) {
 		t.Errorf("ledger kinds = %v", kinds)
@@ -233,6 +246,17 @@ func TestDispatcher_HangThenCancel(t *testing.T) {
 	if err := d.Dispatch(t.Context(), assignment("t1", "a1")); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
+	var publishedAt time.Time
+	var hookMu sync.Mutex
+	conn.setHook(func(subj string, data []byte) {
+		var s protocol.TaskStatusMsg
+		if strings.HasPrefix(subj, "task.status.") && json.Unmarshal(data, &s) == nil && s.Status == "canceled" {
+			hookMu.Lock()
+			publishedAt = time.Now()
+			hookMu.Unlock()
+			time.Sleep(slowPublish)
+		}
+	})
 	waitFor(t, 5*time.Second, "running", func() bool { return ledgerHas(l, "t1", simworker.KindRunning) })
 	time.Sleep(200 * time.Millisecond)
 	if st := conn.statuses(t); len(st) != 1 || st[0].Status != "running" {
@@ -258,9 +282,17 @@ func TestDispatcher_HangThenCancel(t *testing.T) {
 	if ledgerHas(l, "t1", simworker.KindTerminal) {
 		t.Error("a canceled task also recorded a terminal event")
 	}
+	hookMu.Lock()
+	defer hookMu.Unlock()
 	for _, e := range l.Events() {
-		if e.Kind == simworker.KindCanceled && e.LogLines != 2 {
+		if e.Kind != simworker.KindCanceled {
+			continue
+		}
+		if e.LogLines != 2 {
 			t.Errorf("canceled event lines = %d, want 2", e.LogLines)
+		}
+		if publishedAt.IsZero() || e.At.After(publishedAt) {
+			t.Errorf("canceled event At %v, publish at %v; want the event stamped first", e.At, publishedAt)
 		}
 	}
 	if d.Cancel("t1") {

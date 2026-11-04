@@ -74,6 +74,10 @@ type Dispatcher struct {
 	ledger     *Ledger
 	logger     *slog.Logger // the worker sets its own; discard otherwise
 
+	// rngMu guards rng, which a Worker shares with every dispatcher it builds.
+	// A per-dispatcher mutex suffices because only Dispatch samples, and a
+	// worker builds its next dispatcher only after the previous one's lease
+	// loop has returned, so two dispatchers never sample at once.
 	rngMu sync.Mutex
 	rng   *rand.Rand
 
@@ -132,8 +136,8 @@ func (d *Dispatcher) Dispatch(_ context.Context, m *protocol.AssignMsg) error {
 	if d.closed {
 		delete(d.held, m.AttemptID)
 		d.mu.Unlock()
-		d.record(m, KindLeased, "", 0)
-		d.record(m, KindCrashed, "", 0)
+		d.record(m, KindLeased, "", 0, now)
+		d.record(m, KindCrashed, "", 0, now)
 		return errClosed
 	}
 	d.held[m.AttemptID] = struct{}{}
@@ -142,7 +146,7 @@ func (d *Dispatcher) Dispatch(_ context.Context, m *protocol.AssignMsg) error {
 	d.wg.Add(1)
 	d.mu.Unlock()
 
-	d.record(m, KindLeased, "", 0)
+	d.record(m, KindLeased, "", 0, time.Time{})
 	go d.run(t) //nolint:gosec // G118: a task outlives the lease request that delivered it; shutdown stops it, not the lease context
 	return nil
 }
@@ -203,7 +207,7 @@ func (d *Dispatcher) run(t *simTask) {
 		defer d.cancels.Deregister(m.TaskID)
 	}
 	d.st.Running(context.Background(), m, "", nil, time.Now())
-	d.record(m, KindRunning, "", 0)
+	d.record(m, KindRunning, "", 0, time.Time{})
 
 	lines := d.emit(t)
 	d.finish(t, d.settle(t), lines)
@@ -285,6 +289,9 @@ func (d *Dispatcher) finish(t *simTask, reason endReason, lines int) {
 		d.logger.DebugContext(context.Background(), "simworker: flush logs failed", slog.String("task_id", m.TaskID), slog.Any("error", err))
 	}
 	ctx := context.Background()
+	// The end event is stamped before the publish: once the server has the
+	// status it may lease the freed slot to another worker, whose leased event
+	// must not sort before this attempt's end.
 	now := time.Now()
 	switch reason {
 	case endDone:
@@ -293,15 +300,15 @@ func (d *Dispatcher) finish(t *simTask, reason endReason, lines int) {
 			outcome, code, msg = OutcomeFailed, 1, simulatedFailure
 		}
 		d.st.Terminal(ctx, m, "", outcome, &code, msg, nil, now)
-		d.record(m, KindTerminal, outcome, lines)
+		d.record(m, KindTerminal, outcome, lines, now)
 	case endCanceled:
 		d.st.Terminal(ctx, m, "", "canceled", nil, "", nil, now)
-		d.record(m, KindCanceled, "", lines)
+		d.record(m, KindCanceled, "", lines, now)
 	case endShutdown:
 		d.st.Terminal(ctx, m, "", "failed", nil, protocol.MessageWorkerShutdown, nil, now)
-		d.record(m, KindTerminal, protocol.MessageWorkerShutdown, lines)
+		d.record(m, KindTerminal, protocol.MessageWorkerShutdown, lines, now)
 	default: // endCrashed: nothing is published
-		d.record(m, KindCrashed, "", lines)
+		d.record(m, KindCrashed, "", lines, now)
 	}
 	d.release(t)
 }
@@ -316,8 +323,11 @@ func (d *Dispatcher) release(t *simTask) {
 	d.mu.Unlock()
 }
 
-func (d *Dispatcher) record(m *protocol.AssignMsg, kind, outcome string, lines int) {
+// record adds an event for m to the ledger. A zero at is stamped with the
+// current time.
+func (d *Dispatcher) record(m *protocol.AssignMsg, kind, outcome string, lines int, at time.Time) {
 	d.ledger.Record(Event{
+		At:       at,
 		WorkerID: d.workerID, InstanceID: d.instanceID,
 		TaskID: m.TaskID, AttemptID: m.AttemptID, JobID: m.JobID,
 		Kind: kind, Outcome: outcome, LogLines: lines,
