@@ -218,6 +218,7 @@ func newWorld() *world {
 		Seed:           1,
 		ConvergeWithin: 50 * time.Millisecond,
 		Settle:         time.Millisecond,
+		LogSettle:      time.Millisecond,
 	}
 	// A rejected submission is never checked.
 	w.in.Jobs = append(w.in.Jobs, driver.SubmittedJob{Class: "shot", Status: 422})
@@ -381,6 +382,14 @@ func TestCheck(t *testing.T) {
 			fail: map[string]string{"outcomes": "t11"},
 		},
 		{
+			name: "outcomes: a leased task whose last attempt crashed, canceled in a job the run did not cancel",
+			mutate: func(w *world) {
+				w.view.setJob("j1", "failed")
+				w.task("j1", "t14", "canceled", att{"a14", 0, 1, "crashed", "failed", 0})
+			},
+			fail: map[string]string{"outcomes": "t14"},
+		},
+		{
 			name: "outcomes: a crashed task of a canceled job is canceled",
 			mutate: func(w *world) {
 				w.task("j2", "t12", "canceled", att{"a12", 0, 1, "crashed", "failed", 0})
@@ -438,6 +447,22 @@ func TestCheck(t *testing.T) {
 			},
 		},
 		{
+			name: "single-attempt: a terminal task whose last attempt never ended",
+			mutate: func(w *world) {
+				w.view.attempts["t1"] = []client.Attempt{attempt(w.t0, 1, "running", 0, -1)}
+			},
+			fail: map[string]string{"single-attempt": "no ended_at"},
+		},
+		{
+			name: "single-attempt: an overlap within the clock-skew tolerance",
+			mutate: func(w *world) {
+				prev := attempt(w.t0, 1, "failed", 0, 6)
+				ended := prev.EndedAt.Add(500 * time.Millisecond) // the worker's clock runs ahead
+				prev.EndedAt = &ended
+				w.view.attempts["t2"] = []client.Attempt{prev, attempt(w.t0, 2, "succeeded", 6, 12)}
+			},
+		},
+		{
 			name:   "single-attempt: the server cannot list a task's attempts",
 			mutate: func(w *world) { w.view.failAttempt["t1"] = true },
 			fail:   map[string]string{"single-attempt": "t1"},
@@ -459,10 +484,18 @@ func TestCheck(t *testing.T) {
 			},
 		},
 		{
-			name: "logs: overflow lost every chunk",
+			name: "logs: overflow may not lose the newest chunk, so not every chunk",
 			mutate: func(w *world) {
 				w.in.LogOverflowExpected = true
 				delete(w.view.logs, "t1")
+			},
+			fail: map[string]string{"logs": "t1"},
+		},
+		{
+			name: "logs: overflow with nothing sent and nothing kept",
+			mutate: func(w *world) {
+				w.in.LogOverflowExpected = true
+				delete(w.view.logs, "t8") // t8 sent no lines
 			},
 		},
 		{
@@ -607,6 +640,142 @@ func assertResults(t *testing.T, results []verify.Result, fail map[string]string
 	}
 }
 
+func TestCheck_DroppedWork(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(w *world)
+		want   []string // outcomes evidence, each naming the job
+	}{
+		{name: "every task present"},
+		{
+			name: "a never-leased task row is missing",
+			mutate: func(w *world) {
+				w.view.tasks["j1"] = slices.DeleteFunc(w.view.tasks["j1"], func(t client.Task) bool { return t.ID == "t5" })
+			},
+			want: []string{"job j1 has 5 tasks (5 listed), want 6 (2 steps x 3 tasks)"},
+		},
+		{
+			name: "a task the simulator ran is missing",
+			mutate: func(w *world) {
+				w.view.tasks["j1"] = slices.DeleteFunc(w.view.tasks["j1"], func(t client.Task) bool { return t.ID == "t0" })
+			},
+			want: []string{"job j1 has 5 tasks", "job j1: the simulator ran task t0, which the server does not list"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld()
+			w.in.Scenario.Jobs[0].Steps, w.in.Scenario.Jobs[0].TasksPerStep = 2, 3
+			w.job("j1", "failed", false)
+			w.task("j1", "t0", "succeeded", att{"a0", 0, 1, "succeeded", "succeeded", 2})
+			w.task("j1", "t1", "succeeded", att{"a1", 0, 1, "succeeded", "succeeded", 2})
+			w.task("j1", "t2", "failed", att{"a2", 0, 1, "failed", "failed", 2})
+			for _, id := range []string{"t3", "t4", "t5"} {
+				w.task("j1", id, "canceled") // the dependent step, canceled after t2 failed
+			}
+			if tc.mutate != nil {
+				tc.mutate(w)
+			}
+			results := verify.Check(t.Context(), w.view, w.in)
+			if len(tc.want) == 0 {
+				assertResults(t, results, nil)
+				return
+			}
+			assertResults(t, results, map[string]string{"outcomes": "job j1"})
+			for _, want := range tc.want {
+				if !slices.ContainsFunc(results[1].Evidence, func(e string) bool { return strings.Contains(e, want) }) {
+					t.Errorf("outcomes evidence %q does not contain %q", results[1].Evidence, want)
+				}
+			}
+		})
+	}
+}
+
+// TestCheck_CapsAfterACancel pins that caps ends a canceled attempt's window
+// at the cancel action's start: the server frees the slot when it commits the
+// cancel, before the simulator records the end.
+func TestCheck_CapsAfterACancel(t *testing.T) {
+	tests := []struct {
+		name       string
+		canceledAt int // seconds after t0; < 0 leaves CanceledAt unset
+		fail       bool
+	}{
+		// jA's attempt is held 0-10s by the simulator; jB's lease lands at 6s.
+		{"the action at 5s freed the slot before the next lease", 5, false},
+		{"without the action's time the windows overlap", -1, true},
+		{"an action after the next lease does not hide the overlap", 7, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld()
+			w.in.Scenario.Farm.UsagePools[0].Limit = 1
+			w.job("jA", "canceled", true)
+			w.task("jA", "tA", "canceled", att{"aA", 0, 10, "canceled", "canceled", 0})
+			w.job("jB", "completed", false)
+			w.task("jB", "tB", "succeeded", att{"aB", 6, 12, "succeeded", "succeeded", 0})
+			if tc.canceledAt >= 0 {
+				w.in.CanceledAt = map[string]time.Time{"jA": at(w.t0, tc.canceledAt)}
+			}
+			want := map[string]string(nil)
+			if tc.fail {
+				want = map[string]string{"caps": "arnold"}
+			}
+			assertResults(t, verify.Check(t.Context(), w.view, w.in), want)
+		})
+	}
+}
+
+// slowFirstLogs answers the first read of t1's logs slowly and with the
+// newest chunk missing, as a log consumer with a backlog would, then has every
+// chunk.
+type slowFirstLogs struct {
+	*fakeView
+
+	once sync.Once
+	full []client.LogLine
+}
+
+func (s *slowFirstLogs) TaskLogs(ctx context.Context, taskID string, after int64, limit int) ([]client.LogLine, int64, error) {
+	first := false
+	if taskID == "t1" {
+		s.once.Do(func() { first = true })
+	}
+	if !first {
+		return s.fakeView.TaskLogs(ctx, taskID, after, limit)
+	}
+	time.Sleep(200 * time.Millisecond)
+	items, cursor, err := s.fakeView.TaskLogs(ctx, taskID, after, limit)
+	s.mu.Lock()
+	s.logs["t1"] = s.full
+	s.mu.Unlock()
+	return items, cursor, err
+}
+
+// TestCheck_SettleStartsAfterTheFirstPass pins that a first pass slower than
+// the settle time still re-reads what it found wrong.
+func TestCheck_SettleStartsAfterTheFirstPass(t *testing.T) {
+	w := healthyWorld()
+	w.in.LogSettle = 50 * time.Millisecond
+	full := w.view.logs["t1"]
+	w.view.logs["t1"] = full[:2]
+	v := &slowFirstLogs{fakeView: w.view, full: full}
+	assertResults(t, verify.Check(t.Context(), v, w.in), nil)
+}
+
+func TestCancelTimes(t *testing.T) {
+	t0 := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	recs := []driver.ActionRecord{
+		{Kind: driver.ActionCancelJobs, Started: t0.Add(time.Minute), JobIDs: []string{"a", "b"}},
+		{Kind: "pause_queue", Started: t0},
+		{Kind: driver.ActionCancelJobs, Started: t0.Add(30 * time.Second), JobIDs: []string{"a"}},
+	}
+	got := verify.CancelTimes(recs)
+	want := map[string]time.Time{"a": t0.Add(30 * time.Second), "b": t0.Add(time.Minute)}
+	if len(got) != len(want) || !got["a"].Equal(want["a"]) || !got["b"].Equal(want["b"]) {
+		t.Errorf("CancelTimes = %v, want %v", got, want)
+	}
+}
+
 func TestCheck_EvidenceIsBounded(t *testing.T) {
 	w := newWorld()
 	for i := range 30 {
@@ -714,7 +883,7 @@ func TestCheck_SettlesALateLedgerEvent(t *testing.T) {
 
 func TestCheck_SettlesLateLogs(t *testing.T) {
 	w := healthyWorld()
-	w.in.Settle = 5 * time.Second
+	w.in.LogSettle = 5 * time.Second
 	full := w.view.logs["t1"]
 	w.view.mu.Lock()
 	w.view.logs["t1"] = full[:2]

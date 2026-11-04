@@ -89,18 +89,22 @@ func TestCheck_AgainstARealServer(t *testing.T) {
 		}
 		jobs = append(jobs, driver.SubmittedJob{ID: id, Name: name, Class: jc.Name, SubmittedAt: submitted, AcceptedAt: time.Now(), Status: status})
 	}
+	cancelRec := driver.ActionRecord{Kind: driver.ActionCancelJobs, Started: time.Now(), JobIDs: []string{jobs[3].ID}}
 	if err := c.CancelJob(ctx, jobs[3].ID); err != nil {
 		t.Fatalf("CancelJob: %v", err)
 	}
-	canceled := verify.CanceledJobs([]driver.ActionRecord{{Kind: driver.ActionCancelJobs, JobIDs: []string{jobs[3].ID}}})
+	recs := []driver.ActionRecord{cancelRec}
+	canceled := verify.CanceledJobs(recs)
 
 	if err := verify.WaitDrained(ctx, c, farmID, jobs, time.Minute); err != nil {
 		t.Fatalf("WaitDrained: %v", err)
 	}
+	// Each job is 2 steps x 4 tasks, so outcomes also checks no task row is
+	// missing.
 	results := verify.Check(ctx, c, verify.Input{
 		Jobs: jobs, Ledger: ledger, Scenario: sc, FarmID: farmID,
 		LiveWorkers: fleet.Live(), LogSample: 1, AttemptSample: 1, Seed: 1,
-		CanceledJobs: canceled, ConvergeWithin: 10 * time.Second,
+		CanceledJobs: canceled, CanceledAt: verify.CancelTimes(recs), ConvergeWithin: 10 * time.Second,
 	})
 	for _, r := range results {
 		if !r.OK {

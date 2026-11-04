@@ -24,6 +24,7 @@
 package verify
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -54,6 +55,10 @@ const (
 	MaxEvidence = 20
 	// DefaultSettle is the settle time when Input.Settle is zero.
 	DefaultSettle = 5 * time.Second
+	// DefaultLogSettle is the logs settle time when Input.LogSettle is zero.
+	// It is longer than DefaultSettle because the log consumer has a backlog
+	// of its own that WaitDrained, which waits on job statuses, does not see.
+	DefaultLogSettle = 30 * time.Second
 	// maxPage is the largest page the server's list endpoints serve.
 	maxPage = 1000
 	// parallelism bounds the per-job and per-task calls in flight.
@@ -124,14 +129,22 @@ type Input struct {
 	// CanceledJobs are the jobs the run's actions canceled ([CanceledJobs]).
 	// A task of one of them may be canceled whatever the simulator did.
 	CanceledJobs []string
+	// CanceledAt is when the first cancel action targeting each job started
+	// ([CancelTimes]). Its jobs count as canceled too, and caps ends a
+	// canceled attempt of one of them no later than that time, when the
+	// server may already have freed its slot.
+	CanceledAt map[string]time.Time
 	// ConvergeWithin is how long the online worker count may take to reach
 	// LiveWorkers: the heartbeat timeout plus a margin. Zero checks once.
 	ConvergeWithin time.Duration
-	// Settle is how long a task whose outcome or logs disagree is re-read
-	// before the disagreement counts: the ledger records a terminal event
-	// just after the server may already have applied it, and log chunks are
-	// ingested on their own stream. Zero means DefaultSettle.
+	// Settle is how long, after the first pass, a task whose outcome
+	// disagrees is re-read before the disagreement counts: the ledger records
+	// a terminal event just after the server may already have applied it.
+	// Zero means DefaultSettle. A disagreeing task is always re-read once.
 	Settle time.Duration
+	// LogSettle is the same for logs, whose chunks are ingested on a stream of
+	// their own. Zero means DefaultLogSettle.
+	LogSettle time.Duration
 }
 
 // Result is one invariant's verdict. Evidence names the job, task, attempt,
@@ -179,18 +192,18 @@ type checker struct {
 	canceled map[string]bool
 	classes  map[string]scenario.JobClass // by name
 	settle   time.Duration
+	// logSettle is the logs check's settle time.
+	logSettle time.Duration
 }
 
 func newChecker(v ServerView, in Input) *checker {
 	c := &checker{
 		v: v, in: in,
-		jobs:     map[string]driver.SubmittedJob{},
-		canceled: map[string]bool{},
-		classes:  map[string]scenario.JobClass{},
-		settle:   in.Settle,
-	}
-	if c.settle == 0 {
-		c.settle = DefaultSettle
+		jobs:      map[string]driver.SubmittedJob{},
+		canceled:  map[string]bool{},
+		classes:   map[string]scenario.JobClass{},
+		settle:    cmp.Or(in.Settle, DefaultSettle),
+		logSettle: cmp.Or(in.LogSettle, DefaultLogSettle),
 	}
 	c.order = acceptedIDs(in.Jobs)
 	for _, j := range in.Jobs {
@@ -199,6 +212,9 @@ func newChecker(v ServerView, in Input) *checker {
 		}
 	}
 	for _, id := range in.CanceledJobs {
+		c.canceled[id] = true
+	}
+	for id := range in.CanceledAt {
 		c.canceled[id] = true
 	}
 	if in.Scenario != nil {
@@ -283,6 +299,23 @@ func CanceledJobs(records []driver.ActionRecord) []string {
 			if !seen[id] {
 				seen[id] = true
 				out = append(out, id)
+			}
+		}
+	}
+	return out
+}
+
+// CancelTimes returns, for each job a cancel_jobs action targeted, when the
+// first such action started, for Input.CanceledAt.
+func CancelTimes(records []driver.ActionRecord) map[string]time.Time {
+	out := map[string]time.Time{}
+	for _, r := range records {
+		if r.Kind != driver.ActionCancelJobs {
+			continue
+		}
+		for _, id := range r.JobIDs {
+			if at, ok := out[id]; !ok || r.Started.Before(at) {
+				out[id] = r.Started
 			}
 		}
 	}
@@ -494,12 +527,15 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 }
 
 // settleLoop calls check on items and keeps re-checking the ones it reports
-// (a non-empty message) until none is left or d has elapsed, then returns
-// the messages still reported, in the order of items.
+// (a non-empty message) until none is left or d has elapsed since the first
+// pass ended, then returns the messages still reported, in the order of
+// items. Whatever the first pass reports is re-checked at least once, so a
+// first pass slower than d cannot use up the settle time.
 func settleLoop[T any](ctx context.Context, d time.Duration, items []T, check func([]T) []string) []string {
+	msgs := check(items)
 	deadline := time.Now().Add(d)
 	wait := settlePoll
-	msgs := check(items)
+	rechecked := false
 	for {
 		var keepItems []T
 		var keepMsgs []string
@@ -510,12 +546,13 @@ func settleLoop[T any](ctx context.Context, d time.Duration, items []T, check fu
 			}
 		}
 		items, msgs = keepItems, keepMsgs
-		if len(items) == 0 || !time.Now().Before(deadline) || ctx.Err() != nil {
+		if len(items) == 0 || ctx.Err() != nil || (rechecked && !time.Now().Before(deadline)) {
 			return msgs
 		}
 		sleepCtx(ctx, min(wait, time.Until(deadline)))
 		wait = min(2*wait, settlePollMax)
 		msgs = check(items)
+		rechecked = true
 	}
 }
 
