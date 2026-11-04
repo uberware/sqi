@@ -394,6 +394,10 @@ func (r *run) setup(ctx context.Context) error {
 // given, or attaches to a running server.
 func (r *run) startTarget(ctx context.Context) (target.Target, error) {
 	if r.o.Attach != nil {
+		if set := serverSettings(r.sc); len(set) > 0 {
+			r.logger.WarnContext(ctx, "the scenario's server settings do not apply to an attached server, which keeps its own configuration",
+				slog.Any("ignored", set))
+		}
 		cfg := *r.o.Attach
 		cfg.Scenario, cfg.RunID, cfg.Logger = r.sc, r.targetRunID(), r.logger
 		// The shards of one run share its usage pools, named for the run.

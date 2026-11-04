@@ -536,3 +536,34 @@ func TestRunner_ResumesPausedQueues(t *testing.T) {
 		t.Errorf("tasks.terminal = %d, want 1000", got)
 	}
 }
+
+func TestAttach_StoreLabelAndIgnoredServerSettings(t *testing.T) {
+	sc := smokeScenario(t, "20s")
+	sc.Server.BrokerAuth = true
+	sc.Server.Config = map[string]any{"scheduler": map[string]any{"heartbeat_timeout": "45s"}}
+	if got := serverSettings(sc); !slices.Equal(got, []string{"server.broker_auth=true", "server.config.scheduler"}) {
+		t.Errorf("serverSettings = %v, want broker_auth and the config key", got)
+	}
+	if got := serverSettings(smokeScenario(t, "20s")); len(got) != 0 {
+		t.Errorf("serverSettings of a default scenario = %v, want none", got)
+	}
+	for _, tc := range []struct {
+		name string
+		o    Options
+		want string
+	}{
+		{"managed", Options{Scenario: sc}, "sqlite"},
+		{"attached", Options{Scenario: sc, Attach: &target.AttachConfig{HTTPURL: "http://h", NATSURL: "nats://h", NoAuth: true}}, "attached (unknown)"},
+		{"attached with its database", Options{Scenario: sc, Attach: &target.AttachConfig{HTTPURL: "http://h", NATSURL: "nats://h", NoAuth: true}, PostgresDSN: "postgres://h/sqi"}, "postgres (attached)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, err := newRun(tc.o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := r.env().Store; got != tc.want {
+				t.Errorf("env store = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

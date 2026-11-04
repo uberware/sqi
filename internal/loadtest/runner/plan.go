@@ -3,7 +3,9 @@
 package runner
 
 import (
+	"maps"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/uberware/sqi/internal/config"
@@ -24,6 +26,28 @@ const (
 	// lognormalP95Z is the standard normal's 95th percentile.
 	lognormalP95Z = 1.6449
 )
+
+// serverSettings lists the scenario's server settings that differ from a
+// default managed server's: the ones an attached run silently cannot apply.
+func serverSettings(sc *scenario.Scenario) []string {
+	s := sc.Server
+	var out []string
+	if s.Store != "" && s.Store != "sqlite" {
+		out = append(out, "server.store="+s.Store)
+	}
+	for _, f := range []struct {
+		name string
+		on   bool
+	}{{"server.broker_auth", s.BrokerAuth}, {"server.http_auth", s.HTTPAuth}, {"server.tls", s.TLS}} {
+		if f.on {
+			out = append(out, f.name+"=true")
+		}
+	}
+	for _, k := range slices.Sorted(maps.Keys(s.Config)) {
+		out = append(out, "server.config."+k)
+	}
+	return out
+}
 
 // poolNames maps each scenario usage pool to the name the target knows it by.
 func poolNames(t target.Target, sc *scenario.Scenario) map[string]string {

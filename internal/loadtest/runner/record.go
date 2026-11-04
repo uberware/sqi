@@ -130,6 +130,14 @@ func (r *run) env() report.Env {
 	env := report.LocalEnv()
 	env.SQIVersion, env.Commit = version.Version, version.Commit
 	env.Store = r.sc.Server.Store
+	if r.o.Attach != nil {
+		// An attached server keeps its own store, whatever the scenario says;
+		// a DSN for its database is the one sign of which it is.
+		env.Store = "attached (unknown)"
+		if r.o.PostgresDSN != "" {
+			env.Store = "postgres (attached)"
+		}
+	}
 	env.Flags = slices.Clone(r.o.Flags)
 	if env.Flags == nil {
 		env.Flags = []string{}
