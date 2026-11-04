@@ -187,6 +187,7 @@ func (r *run) liveCounters() map[string]int64 {
 	m := r.metrics
 	out := map[string]int64{
 		report.CounterJobsSubmitted: int64(r.jobs.AcceptedCount()),
+		report.CounterLogLines:      r.ledger.LogLines(),
 		report.CounterWorkersLive:   int64(simulatedCount(r.sc) + realCount(r.sc)),
 		report.CounterWSDrops:       m.WSDrops.Load(),
 		report.CounterWSEvents:      m.WSEvents.Load(),

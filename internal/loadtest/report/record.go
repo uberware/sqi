@@ -67,6 +67,10 @@ const (
 	CounterTasksTerminal = "tasks.terminal"
 	// CounterJobsSubmitted counts jobs the server accepted.
 	CounterJobsSubmitted = "jobs.submitted"
+	// CounterLogLines counts the task log lines the simulated workers emitted
+	// in the attempts that have ended: the log load offered to the server.
+	// Whether the server kept them is the logs invariant's question.
+	CounterLogLines = "logs.lines"
 	// CounterWorkersLive is the size of the simulated fleet that was meant to
 	// be online (a gauge, not a flow: it is not turned into a rate).
 	CounterWorkersLive = "workers.live"

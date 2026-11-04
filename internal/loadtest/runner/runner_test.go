@@ -119,6 +119,11 @@ func TestRunner_Smoke(t *testing.T) {
 	if got := rec.Counters[report.CounterJobsSubmitted]; got != 50 {
 		t.Errorf("jobs.submitted = %d, want 50", got)
 	}
+	// 50 jobs x 2 steps x 10 tasks x 20 lines: every task's last attempt
+	// emitted its 20; a crashed attempt adds the lines it got out.
+	if got := rec.Counters[report.CounterLogLines]; got < 20000 {
+		t.Errorf("logs.lines = %d, want at least 20000", got)
+	}
 	if got := rec.Counters[report.CounterWorkersLive]; got != 20 {
 		t.Errorf("workers.live = %d, want 20", got)
 	}

@@ -70,6 +70,19 @@ func (l *Ledger) Events() []Event {
 	return slices.Clone(l.events)
 }
 
+// LogLines returns how many log lines the simulated workers emitted in the
+// attempts that have ended so far (by a terminal, canceled or crashed event):
+// the sum of those events' LogLines.
+func (l *Ledger) LogLines() int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var n int64
+	for i := range l.events {
+		n += int64(l.events[i].LogLines)
+	}
+	return n
+}
+
 // SetOutcome rewrites the outcome of the last terminal event recorded for
 // taskID and reports whether there was one. It is a test hook: it lets a test
 // make the ledger disagree with the server on purpose.

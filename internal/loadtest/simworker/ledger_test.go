@@ -132,3 +132,13 @@ func TestLedger_ConcurrentPeak(t *testing.T) {
 		})
 	}
 }
+
+func TestLedger_LogLines(t *testing.T) {
+	l := simworker.NewLedger()
+	l.Record(simworker.Event{TaskID: "t1", AttemptID: "a1", Kind: simworker.KindLeased})
+	l.Record(simworker.Event{TaskID: "t1", AttemptID: "a1", Kind: simworker.KindTerminal, Outcome: simworker.OutcomeSucceeded, LogLines: 120})
+	l.Record(simworker.Event{TaskID: "t2", AttemptID: "a2", Kind: simworker.KindCrashed, LogLines: 7})
+	if got := l.LogLines(); got != 127 {
+		t.Errorf("LogLines = %d, want 127", got)
+	}
+}
