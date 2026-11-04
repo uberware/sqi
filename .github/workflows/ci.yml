@@ -37,6 +37,7 @@ jobs:
       submitter: ${{ steps.filter.outputs.submitter }}
       presets: ${{ steps.filter.outputs.presets }}
       workflows: ${{ steps.filter.outputs.workflows }}
+      go: ${{ steps.filter.outputs.go }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -84,6 +85,15 @@ jobs:
               - '.github/workflows/ci.yml'
             workflows:
               - '.github/workflows/**'
+            # Gates load-smoke below. Any Go source or module change can move
+            # what the load harness measures, and the harness itself
+            # (internal/loadtest, cmd/sqi-load, test/load) is Go.
+            go:
+              - '**/*.go'
+              - 'go.mod'
+              - 'go.sum'
+              - 'Makefile'
+              - '.github/workflows/ci.yml'
 
   # ── Workflow linting ─────────────────────────────────────────────────────────
   # Lints the GitHub Actions workflow files with actionlint (run via `go run`,
@@ -2307,6 +2317,60 @@ jobs:
       - name: Assert the oracle actually ran
         run: |
           grep -q -- '--- PASS: TestExprOracle_MatchesReferenceImplementation' /tmp/expr-oracle.log
+
+  # ── Load harness smoke ───────────────────────────────────────────────────────
+  # Runs the load harness's smoke scenario end to end against real sqi-server
+  # and sqi-worker binaries (`make load-smoke`, SQLite). It asserts that the
+  # harness works and that the six invariants hold, never latency: shared
+  # runners are too noisy for that. The nightly load run is a separate
+  # workflow (load-nightly.yml).
+  load-smoke:
+    name: Load harness smoke
+    runs-on: ubuntu-latest
+    needs: [changes, test]
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.go == 'true' }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # SQI_LOAD_OUT makes the test write its run directories to a known path
+      # so the next step can upload them.
+      - name: Run the smoke scenario
+        env:
+          SQI_LOAD_OUT: ${{ runner.temp }}/load-runs
+        run: |
+          set -o pipefail
+          make load-smoke 2>&1 | tee "$RUNNER_TEMP/load-smoke.log"
+
+      - name: Upload the run directories
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: load-smoke-runs
+          path: |
+            ${{ runner.temp }}/load-runs
+            ${{ runner.temp }}/load-smoke.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      # A skipped or filtered test would still leave `go test` green, so the
+      # two tests are asserted by name. The trailing space keeps a name from
+      # matching a longer one with the same prefix.
+      - name: Assert the smoke tests actually ran
+        run: |
+          for t in TestLoadSmoke TestLoadSmoke_VerifierCanFail; do
+            if ! grep -q -- "--- PASS: $t " "$RUNNER_TEMP/load-smoke.log"; then
+              echo "::error::$t did not pass (or did not run)"
+              exit 1
+            fi
+          done
 
   # ── Python client: lint + type-check ─────────────────────────────────────────
   # ruff and mypy follow their configured target versions (mypy checks src at
