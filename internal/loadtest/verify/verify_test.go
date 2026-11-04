@@ -1011,3 +1011,58 @@ func TestCheck_TaskSeen(t *testing.T) {
 		t.Errorf("TaskSeen saw %v, want every listed task once: %v", seen, want)
 	}
 }
+
+// TestCheck_LedgerOverlap covers a worker that keeps running an attempt the
+// server has already closed: the server reclaimed it (its attempts are
+// sequential: failed, then a new one), but the ledger shows the old worker
+// still running it when the new attempt was leased to another worker. Only
+// the ledger can see the task ran twice at once.
+func TestCheck_LedgerOverlap(t *testing.T) {
+	tests := []struct {
+		name     string
+		staleEnd int // when the first attempt ended on its worker; -1 never
+		endKind  string
+		want     string // evidence single-attempt must carry; "" passes
+	}{
+		{"the reclaimed attempt kept running", 110, simworker.KindTerminal, "ran until"},
+		{"the reclaimed attempt never ended", -1, "", "had not ended"},
+		{"it crashed before the new lease", 105, simworker.KindCrashed, ""},
+		{"it ended exactly at the new lease", 106, simworker.KindTerminal, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := healthyWorld()
+			w.job("j3", "completed", false)
+			w.view.tasks["j3"] = append(w.view.tasks["j3"], client.Task{ID: "t9", Status: "succeeded"})
+			s1, e1, s2, e2 := at(w.t0, 100), at(w.t0, 104), at(w.t0, 106), at(w.t0, 112)
+			w.view.attempts["t9"] = []client.Attempt{
+				{ID: "1", AttemptNumber: 1, WorkerID: "w0", Status: "failed", StartedAt: &s1, EndedAt: &e1},
+				{ID: "2", AttemptNumber: 2, WorkerID: "w1", Status: "succeeded", StartedAt: &s2, EndedAt: &e2},
+			}
+			w.ledger.Record(simworker.Event{At: s1, WorkerID: "w0", TaskID: "t9", AttemptID: "a9a", JobID: "j3", Kind: simworker.KindLeased})
+			w.ledger.Record(simworker.Event{At: s2, WorkerID: "w1", TaskID: "t9", AttemptID: "a9b", JobID: "j3", Kind: simworker.KindLeased})
+			w.ledger.Record(simworker.Event{At: e2, WorkerID: "w1", TaskID: "t9", AttemptID: "a9b", JobID: "j3", Kind: simworker.KindTerminal, Outcome: simworker.OutcomeSucceeded})
+			if tt.staleEnd >= 0 {
+				e := simworker.Event{At: at(w.t0, tt.staleEnd), WorkerID: "w0", TaskID: "t9", AttemptID: "a9a", JobID: "j3", Kind: tt.endKind}
+				if e.Kind == simworker.KindTerminal {
+					e.Outcome = simworker.OutcomeSucceeded
+				}
+				w.ledger.Record(e)
+			}
+			results := verify.Check(t.Context(), w.view, w.in)
+			fail := map[string]string{}
+			if tt.want != "" {
+				fail[verify.NameSingleAttempt] = tt.want
+			}
+			assertResults(t, results, fail)
+			if tt.want != "" {
+				ev := strings.Join(results[2].Evidence, "\n")
+				for _, name := range []string{"t9", "a9a", "a9b", "w0", "w1"} {
+					if !strings.Contains(ev, name) {
+						t.Errorf("single-attempt evidence does not name %s: %s", name, ev)
+					}
+				}
+			}
+		})
+	}
+}

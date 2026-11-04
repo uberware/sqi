@@ -20,6 +20,10 @@ import (
 // ledgerAttempt is one attempt as the simulator saw it.
 type ledgerAttempt struct {
 	id, taskID, jobID string
+	// leased is when the lease reached the worker, workerID which worker
+	// that was; zero and "" when the ledger has no leased event for it.
+	leased   time.Time
+	workerID string
 	// end is the attempt's first terminal, canceled or crashed event; nil
 	// while the simulator has not ended it.
 	end *simworker.Event
@@ -52,6 +56,10 @@ func indexLedger(l *simworker.Ledger) *ledgerIndex {
 			x.byTask[e.TaskID] = append(x.byTask[e.TaskID], a)
 		}
 		switch e.Kind {
+		case simworker.KindLeased:
+			if a.leased.IsZero() {
+				a.leased, a.workerID = e.At, e.WorkerID
+			}
 		case simworker.KindTerminal, simworker.KindCanceled, simworker.KindCrashed:
 			if a.end == nil {
 				ev := e
@@ -279,7 +287,8 @@ func (c *checker) outcomeMsg(ref taskRef, server string, x *ledgerIndex) string 
 // singleAttempt: on each sampled task, no two of the server's attempts are
 // held at once, every attempt after the first follows a failed or canceled
 // one (a retry or a reclaim), and a task in a terminal status holds no open
-// attempt.
+// attempt. On every task, the simulator never ran two attempts at once (see
+// [ledgerOverlaps]).
 func (c *checker) singleAttempt(ctx context.Context, refs []taskRef) Result {
 	msgs := parallelMap(len(refs), func(i int) string {
 		ref := refs[i]
@@ -295,8 +304,51 @@ func (c *checker) singleAttempt(ctx context.Context, refs []taskRef) Result {
 		return attemptsMsg(ref, atts)
 	})
 	var ev evidence
+	ev.addAll(c.ledgerOverlaps())
 	ev.addAll(msgs)
 	return ev.result(NameSingleAttempt)
+}
+
+// ledgerOverlaps returns, for every task of an accepted job, each attempt the
+// simulator was leased while an earlier attempt of the same task had not yet
+// ended (by a terminal, canceled or crashed event) on the generator's own
+// clock. The server's attempt list cannot show it: a worker that keeps
+// running an attempt the server already closed (reclaimed after its
+// heartbeats were lost, or canceled with the cancel lost) leaves the server
+// with sequential attempts and the stale worker's report rejected, while the
+// task really ran twice at once.
+func (c *checker) ledgerOverlaps() []string {
+	x := indexLedger(c.in.Ledger)
+	var out []string
+	for _, jobID := range c.order {
+		for _, taskID := range x.byJob[jobID] {
+			atts := slices.Clone(x.byTask[taskID])
+			atts = slices.DeleteFunc(atts, func(a *ledgerAttempt) bool { return a.leased.IsZero() })
+			slices.SortStableFunc(atts, func(a, b *ledgerAttempt) int { return a.leased.Compare(b.leased) })
+			for i, later := range atts {
+				for _, earlier := range atts[:i] {
+					if msg := overlapMsg(jobID, taskID, earlier, later); msg != "" {
+						out = append(out, msg)
+						break
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+// overlapMsg describes earlier still running when later was leased, or "".
+func overlapMsg(jobID, taskID string, earlier, later *ledgerAttempt) string {
+	if earlier.end != nil && !earlier.end.At.After(later.leased) {
+		return ""
+	}
+	until := "had not ended"
+	if earlier.end != nil {
+		until = fmt.Sprintf("ran until %s (%s)", stamp(earlier.end.At), earlier.end.Kind)
+	}
+	return fmt.Sprintf("job %s task %s ran twice at once: attempt %s was leased to worker %s at %s while attempt %s on worker %s, leased at %s, %s",
+		jobID, taskID, later.id, later.workerID, stamp(later.leased), earlier.id, earlier.workerID, stamp(earlier.leased), until)
 }
 
 // skewTolerance is how far an attempt may start before the previous one's
