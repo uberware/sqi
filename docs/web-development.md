@@ -153,7 +153,7 @@ Router.
      entries in `src/components/layout/Sidebar.tsx` — add a `<NavLink>` so the
      active link highlights based on the URL.
    - **Admin / management views** (farms, queues, usage pools, storage, compute
-     locations, products, preset library, server log) are **not** in the sidebar;
+     locations, products, preset library, server log, servers) are **not** in the sidebar;
      they live on the **Admin hub** (`/admin`, `src/pages/Admin.tsx`). Add an entry
      to its `ADMIN_LINKS` registry (`label`, `description`, `to`) and the card grid
      renders it. The sidebar's only management entry is **Admin** itself; the server

@@ -32,7 +32,12 @@ vi.mock('@/auth/context', () => ({
   useAuth: vi.fn(() => ({ principal: ADMIN_PRINCIPAL, status: 'authed', refresh: () => {} })),
 }))
 import { useAuth } from '@/auth/context'
-import { ADMIN_PERMISSIONS, OPERATOR_PERMISSIONS, READ_ONLY_PERMISSIONS } from '@/test/principals'
+import {
+  ADMIN_PERMISSIONS,
+  OPERATOR_PERMISSIONS,
+  READ_ONLY_PERMISSIONS,
+  USER_PERMISSIONS,
+} from '@/test/principals'
 
 function setPrincipal(principal: Principal) {
   ;(useAuth as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
@@ -51,6 +56,7 @@ describe('Admin hub', () => {
     ['Locations', '/compute-locations'],
     ['Products', '/products'],
     ['Server Log', '/server-log'],
+    ['Servers', '/servers'],
   ]
 
   it.each(cases)('renders a %s card linking to %s', (label, href) => {
@@ -95,6 +101,22 @@ describe('Admin hub', () => {
       }
       // read-only does hold apikeys.self, so the API Keys card still shows.
       expect(screen.getByRole('link', { name: /^API Keys/i })).toBeInTheDocument()
+    })
+
+    it('hides the Servers card without diagnostics.read', () => {
+      setPrincipal({
+        subject: 's',
+        display_name: 'n',
+        roles: ['user'],
+        kind: 'user',
+        permissions: USER_PERMISSIONS,
+      })
+      render(
+        <MemoryRouter>
+          <Admin />
+        </MemoryRouter>,
+      )
+      expect(screen.queryByRole('link', { name: /^Servers/i })).not.toBeInTheDocument()
     })
 
     it('hides the Users card for an operator (users.read is admin-only)', () => {

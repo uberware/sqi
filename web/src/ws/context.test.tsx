@@ -2,7 +2,8 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import type { ReactNode } from 'react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { useState, type ReactNode } from 'react'
 import { WebSocketProvider, useWebSocket, useConnectionState } from './context'
 
 // ── Mock WebSocket ────────────────────────────────────────────────────────────
@@ -73,7 +74,12 @@ afterEach(() => {
 
 function makeWrapper(url = 'ws://test') {
   return function Wrapper({ children }: { children: ReactNode }) {
-    return <WebSocketProvider url={url}>{children}</WebSocketProvider>
+    const [queryClient] = useState(() => new QueryClient())
+    return (
+      <QueryClientProvider client={queryClient}>
+        <WebSocketProvider url={url}>{children}</WebSocketProvider>
+      </QueryClientProvider>
+    )
   }
 }
 
@@ -171,5 +177,73 @@ describe('useWebSocket', () => {
     expect(() => renderHook(() => useWebSocket('jobs', vi.fn()))).toThrow(
       'WebSocket hooks must be used inside WebSocketProvider',
     )
+  })
+})
+
+// ── Reconnect refresh ─────────────────────────────────────────────────────────
+
+describe('reconnect refresh', () => {
+  function setup() {
+    const queryClient = new QueryClient()
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    function Wrapper({ children }: { children: ReactNode }) {
+      return (
+        <QueryClientProvider client={queryClient}>
+          <WebSocketProvider url="ws://test">{children}</WebSocketProvider>
+        </QueryClientProvider>
+      )
+    }
+    renderHook(() => useConnectionState(), { wrapper: Wrapper })
+    return invalidate
+  }
+
+  // After a failover the browser reconnects to a different server whose event
+  // stream it has never seen, so pushes it missed are never replayed.
+  it('invalidates live queries when the socket reconnects', () => {
+    const invalidate = setup()
+    act(() => {
+      instance(0).simulateOpen()
+    })
+    expect(invalidate).not.toHaveBeenCalled()
+
+    act(() => {
+      instance(0).simulateClose()
+    })
+    act(() => {
+      vi.advanceTimersByTime(1_000)
+    })
+    expect(invalidate).not.toHaveBeenCalled()
+
+    act(() => {
+      instance(1).simulateOpen()
+    })
+    expect(invalidate).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not invalidate on the initial connection', () => {
+    const invalidate = setup()
+    act(() => {
+      instance(0).simulateOpen()
+    })
+    expect(invalidate).not.toHaveBeenCalled()
+  })
+
+  it('invalidates once per reconnect, not once per attempt', () => {
+    const invalidate = setup()
+    act(() => {
+      instance(0).simulateOpen()
+      instance(0).simulateClose()
+    })
+    act(() => {
+      vi.advanceTimersByTime(1_000)
+      instance(1).simulateClose()
+    })
+    act(() => {
+      vi.advanceTimersByTime(2_000)
+    })
+    act(() => {
+      instance(2).simulateOpen()
+    })
+    expect(invalidate).toHaveBeenCalledTimes(1)
   })
 })

@@ -3,7 +3,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, waitFor, act, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import LogViewer from './LogViewer'
 import { WebSocketProvider } from '@/ws/context'
 import type { TaskLogsResponse } from '@/api/types'
@@ -106,8 +107,14 @@ function makeLogsResponse(override?: Partial<TaskLogsResponse>): TaskLogsRespons
 
 // ── Test wrapper ──────────────────────────────────────────────────────────────
 
+// WebSocketProvider refreshes queries on reconnect, so it needs a QueryClient.
 function Wrapper({ children }: { children: ReactNode }) {
-  return <WebSocketProvider url="ws://test">{children}</WebSocketProvider>
+  const [queryClient] = useState(() => new QueryClient())
+  return (
+    <QueryClientProvider client={queryClient}>
+      <WebSocketProvider url="ws://test">{children}</WebSocketProvider>
+    </QueryClientProvider>
+  )
 }
 
 function renderViewer(
