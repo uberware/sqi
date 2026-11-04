@@ -487,7 +487,7 @@ func (r *Remote) acquireGuard(ctx context.Context, js jetstream.JetStream, deadl
 	ctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	h := GuardHolder{InstanceID: NewInstanceID(), Host: host, PID: os.Getpid(), StartedAt: time.Now(), Purpose: purpose}
-	return acquireGuard(ctx, js, r.cfg.StreamReplicas, h, r.logger, purpose == "")
+	return acquireGuard(ctx, js, r.cfg.StreamReplicas, h, r.logger, purpose == "", GuardOptions{})
 }
 
 // releaseGuard gives the account's guard up, within a bounded time.
