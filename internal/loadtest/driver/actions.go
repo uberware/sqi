@@ -29,6 +29,9 @@ const (
 	jobStatusFailed = "failed"
 )
 
+// ActionCancelJobs is the [ActionRecord.Kind] of a cancel_jobs action.
+const ActionCancelJobs = "cancel_jobs"
+
 // ActionRecord is what one step of a timed action did.
 type ActionRecord struct {
 	// Kind is cancel_jobs, retry_failed, pause_queue or disable_workers.
@@ -41,6 +44,9 @@ type ActionRecord struct {
 	Targeted, Succeeded, Failed int
 	// Detail names the queue, or the first error.
 	Detail string
+	// JobIDs are the jobs a cancel_jobs action set out to cancel, whether or
+	// not the server accepted the call: one that errored may still have landed.
+	JobIDs []string
 }
 
 // Actions fires the scenario's timed events at their offsets from the run's
@@ -157,7 +163,8 @@ func (a *Actions) cancelJobs(ctx context.Context, act scenario.Action, rng *rand
 		ids[i] = j.ID
 	}
 	chosen := sample(ids, share(act.CancelJobs.Fraction, len(ids)), rng)
-	rec := apply(ctx, "cancel_jobs", act, chosen, a.c.CancelJob)
+	rec := apply(ctx, ActionCancelJobs, act, chosen, a.c.CancelJob)
+	rec.JobIDs = chosen
 	rec.Detail = joinDetail(rec.Detail, fmt.Sprintf("fraction %g of %d accepted jobs", act.CancelJobs.Fraction, len(ids)))
 	a.record(rec)
 }

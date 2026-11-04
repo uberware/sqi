@@ -984,8 +984,18 @@ func TestActions_CancelFraction(t *testing.T) {
 				t.Errorf("canceled %d distinct jobs, want %d", len(seen), tc.want)
 			}
 			recs := a.Records()
-			if len(recs) != 1 || recs[0].Kind != "cancel_jobs" || recs[0].Targeted != tc.want || recs[0].Succeeded != tc.want {
-				t.Errorf("records = %+v", recs)
+			if len(recs) != 1 || recs[0].Kind != ActionCancelJobs || recs[0].Targeted != tc.want || recs[0].Succeeded != tc.want {
+				t.Fatalf("records = %+v", recs)
+			}
+			// The record names every job it set out to cancel, so the verifier
+			// can tell a job the run canceled from one the server canceled.
+			if len(recs[0].JobIDs) != tc.want {
+				t.Errorf("record names %d jobs, want %d", len(recs[0].JobIDs), tc.want)
+			}
+			for _, id := range recs[0].JobIDs {
+				if !seen["POST jobs/"+id+"/cancel"] {
+					t.Errorf("record names job %q, which was not canceled", id)
+				}
 			}
 		})
 	}
