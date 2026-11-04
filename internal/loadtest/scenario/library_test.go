@@ -3,6 +3,7 @@
 package scenario
 
 import (
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -209,6 +210,74 @@ func TestBuiltin_Sizes(t *testing.T) {
 				t.Fatal(err)
 			}
 			tc.check(t, s)
+		})
+	}
+}
+
+// meanSeconds is the mean of a task duration distribution, in seconds.
+func meanSeconds(d Dist) float64 {
+	switch d.Kind {
+	case DistUniform:
+		return (d.Min + d.Max) / 2
+	case DistLognormal:
+		sigma := math.Log(d.P95/d.Median) / 1.6449
+		return d.Median * math.Exp(sigma*sigma/2)
+	}
+	return d.Value
+}
+
+// TestBuiltins_FeasibleLoad pins the sizing of the scenarios people run
+// locally (make load and make soak): the load they offer must fit in 70% of
+// their own capacity, worker cores and usage-pool limits alike, and stay
+// under 70% of the server load ci-medium measured as its knee on 4 CPUs
+// (about 7.4 tasks/s). Otherwise the run measures a backlog, and its drain
+// fails the terminal invariant on any hardware.
+func TestBuiltins_FeasibleLoad(t *testing.T) {
+	const (
+		maxShare = 0.7
+		kneeRate = 7.4 // tasks/s, ci-medium at 0.16/s and 0.10/s on 4 CPUs
+	)
+	for _, name := range []string{"mixed-medium", "soak-steady"} {
+		t.Run(name, func(t *testing.T) {
+			s, err := Builtin(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cores := 0.0
+			for _, g := range s.Workers {
+				cores += float64(g.Count * g.CPU)
+			}
+			cpu := s.Workers[0].CPU
+			var rate, busyCores float64
+			inPool := map[string]float64{}
+			for _, j := range s.Jobs {
+				tasks := float64(j.Steps * j.TasksPerStep)
+				offered := j.Rate.PerSecond * tasks // tasks/s
+				if j.Total > 0 {
+					offered = float64(j.Total) * tasks / s.Duration.Duration.Seconds()
+				}
+				inFlight := offered * meanSeconds(j.Task.Duration)
+				perTask := float64(j.Cores)
+				if perTask == 0 {
+					perTask = float64(cpu) // a whole worker
+				}
+				rate += offered
+				busyCores += inFlight * perTask
+				if j.UsagePool != "" {
+					inPool[j.UsagePool] += inFlight
+				}
+			}
+			if share := busyCores / cores; share > maxShare {
+				t.Errorf("tasks in flight hold %.0f%% of the workers' cores, want at most %.0f%%", share*100, maxShare*100)
+			}
+			for _, p := range s.Farm.UsagePools {
+				if share := inPool[p.Name] / float64(p.Limit); share > maxShare {
+					t.Errorf("pool %s is %.0f%% used (%.0f of %d), want at most %.0f%%", p.Name, share*100, inPool[p.Name], p.Limit, maxShare*100)
+				}
+			}
+			if rate > maxShare*kneeRate {
+				t.Errorf("offers %.2f tasks/s, want at most %.2f (70%% of ci-medium's knee)", rate, maxShare*kneeRate)
+			}
 		})
 	}
 }

@@ -60,6 +60,22 @@ func TestFindings(t *testing.T) {
 			},
 		},
 		{
+			name: "a drain over a quarter of the duration", rule: RuleFellBehind, severity: SeverityWarn, fire: true,
+			build: func() *Record { return drained(3*time.Minute, nil) },
+		},
+		{
+			name: "a drain under a quarter of the duration", rule: RuleFellBehind,
+			build: func() *Record {
+				return drained(2*time.Minute, &Backlog{Open: 50, TailCompleted: 120, TailFrom: t0.Add(9 * time.Minute)})
+			},
+		},
+		{
+			name: "more open at the end than finished in the last tenth", rule: RuleFellBehind, severity: SeverityWarn, fire: true,
+			build: func() *Record {
+				return drained(time.Minute, &Backlog{Open: 500, TailCompleted: 120, TailFrom: t0.Add(9 * time.Minute)})
+			},
+		},
+		{
 			name: "goroutines flat", rule: RuleGoroutineGrowth,
 			build: func() *Record {
 				r := longRecord()
@@ -471,4 +487,31 @@ func TestRecord_NoneAccepted(t *testing.T) {
 			t.Errorf("%s: NoneAccepted = %v, want %v", tc.name, got, tc.want)
 		}
 	}
+}
+
+// drained is a ten minute run whose jobs took drain to finish after
+// submissions stopped, with backlog.
+func drained(drain time.Duration, backlog *Backlog) *Record {
+	r := baseRecord()
+	r.Scenario.Duration.Duration = 10 * time.Minute
+	r.WindowEnd = t0.Add(10 * time.Minute)
+	r.Ended = r.WindowEnd.Add(drain)
+	r.Backlog = backlog
+	return r
+}
+
+func TestFindings_FellBehindMessage(t *testing.T) {
+	r := drained(4*time.Minute, &Backlog{Open: 900, TailCompleted: 60, TailFrom: t0.Add(9 * time.Minute)})
+	for _, f := range Findings(r, t0) {
+		if f.Rule != RuleFellBehind {
+			continue
+		}
+		for _, want := range []string{"4m0s to drain", "25% of the 10m0s duration", "900 tasks were still open", "the 60 it finished in the window's last 1m0s"} {
+			if !strings.Contains(f.Message, want) {
+				t.Errorf("message %q lacks %q", f.Message, want)
+			}
+		}
+		return
+	}
+	t.Fatal("server-fell-behind did not fire")
 }

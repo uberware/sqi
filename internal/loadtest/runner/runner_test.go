@@ -141,6 +141,9 @@ func TestRunner_Smoke(t *testing.T) {
 	if got := rec.WindowCounters[report.CounterJobsSubmitted]; got != 50 {
 		t.Errorf("jobs.submitted when submissions stopped = %d, want 50", got)
 	}
+	if b := rec.Backlog; b == nil || b.Open < 0 || b.TailCompleted < 0 || !b.TailFrom.After(rec.Started) || !b.TailFrom.Before(rec.WindowEnd) {
+		t.Errorf("Backlog = %+v, want one read in the window's last tenth", b)
+	}
 	for _, k := range []string{report.HistSubmitLatency, report.HistFirstLease, report.HistTaskE2E, report.HistTerminalIngest, report.HistJobE2E} {
 		if h := rec.Histograms[k]; h == nil || h.Count() == 0 {
 			t.Errorf("histogram %s is empty", k)

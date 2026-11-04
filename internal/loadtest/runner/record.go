@@ -82,6 +82,7 @@ func (r *run) record() *report.Record {
 	r.mu.Unlock()
 	// Every key, as for SteadyCounters: one first seen in the drain was 0.
 	rec.WindowCounters = completeSteady(r.window, rec.Counters)
+	rec.Backlog = r.backlog
 	rec.Series = r.recorder.Series()
 	if rec.Series == nil {
 		rec.Series = []measure.Series{}
@@ -309,6 +310,17 @@ func terminalTasks(jobs map[string]client.Job) int64 {
 	var n int64
 	for _, j := range jobs {
 		n += int64(j.TaskCounts["succeeded"] + j.TaskCounts["failed"] + j.TaskCounts["canceled"])
+	}
+	return n
+}
+
+// allTasks counts every task of the jobs, whatever its status.
+func allTasks(jobs map[string]client.Job) int64 {
+	var n int64
+	for _, j := range jobs {
+		for _, c := range j.TaskCounts {
+			n += int64(c)
+		}
 	}
 	return n
 }

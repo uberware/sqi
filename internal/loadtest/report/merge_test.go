@@ -195,3 +195,21 @@ func TestMerge_WindowCounters(t *testing.T) {
 		t.Errorf("a shard without window counters: merged %v (err %v), want nil", m.WindowCounters, err)
 	}
 }
+
+func TestMerge_Backlog(t *testing.T) {
+	a, b := baseRecord(), baseRecord()
+	a.Shard, b.Shard = "0/2", "1/2"
+	a.Backlog = &Backlog{Open: 10, TailCompleted: 40, TailFrom: t0.Add(9 * time.Minute)}
+	b.Backlog = &Backlog{Open: 5, TailCompleted: 30, TailFrom: t0.Add(9*time.Minute + time.Second)}
+	m, err := Merge([]*Record{a, b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Backlog == nil || m.Backlog.Open != 15 || m.Backlog.TailCompleted != 70 || !m.Backlog.TailFrom.Equal(a.Backlog.TailFrom) {
+		t.Errorf("merged backlog %+v, want 15 open and 70 finished from the earlier shard's tail", m.Backlog)
+	}
+	b.Backlog = nil
+	if m, _ = Merge([]*Record{a, b}); m.Backlog != nil {
+		t.Errorf("a shard without a backlog: merged %+v, want nil", m.Backlog)
+	}
+}

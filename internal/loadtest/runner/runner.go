@@ -179,6 +179,7 @@ type run struct {
 	// windowEnd is when submissions stopped, and window the counters then.
 	windowEnd  time.Time
 	window     map[string]int64
+	backlog    *report.Backlog
 	complete   bool
 	tornDown   bool
 	uiRunning  bool // the UI clients did not stop in time
@@ -187,6 +188,11 @@ type run struct {
 	serverErr  error
 
 	mu sync.Mutex // guards the fields below
+	// tailAt is the start of the window's last tenth, and tailTerminal the
+	// farm's terminal tasks then; tailOK says it was read.
+	tailAt       time.Time
+	tailTerminal int64
+	tailOK       bool
 	// tasks are the tasks the invariant checks listed, by ID.
 	tasks       map[string]client.Task
 	steady      map[string]int64
@@ -491,6 +497,7 @@ func (r *run) measure(ctx context.Context) {
 	})
 	wg.Go(func() { r.fleet.RunChurn(subCtx) })
 	wg.Go(func() { r.snapshotSteady(subCtx, steadyFrom) })
+	wg.Go(func() { r.snapshotTail(subCtx, end.Add(-end.Sub(steadyFrom)/10)) })
 	wg.Go(func() { r.profileCPU(subCtx, steadyFrom, end) })
 	<-subCtx.Done()
 	wg.Wait()
@@ -559,6 +566,34 @@ func (r *run) snapshotWindow(ctx context.Context) {
 	}
 	counters[report.CounterTasksTerminal] = terminalTasks(jobs)
 	r.window = counters
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.tailOK {
+		r.backlog = &report.Backlog{
+			Open:          allTasks(jobs) - counters[report.CounterTasksTerminal],
+			TailCompleted: counters[report.CounterTasksTerminal] - r.tailTerminal,
+			TailFrom:      r.tailAt,
+		}
+	}
+}
+
+// snapshotTail counts the farm's terminal tasks at the start of the window's
+// last tenth, the base of how much the server finished just before
+// submissions stopped.
+func (r *run) snapshotTail(ctx context.Context, at time.Time) {
+	if !sleepUntil(ctx, at) {
+		return
+	}
+	jobs, err := listFarmJobs(ctx, r.c, r.tgt.FarmID())
+	if err != nil {
+		if ctx.Err() == nil {
+			r.unavail("backlog", "listing the farm's jobs near the end of the window failed: "+err.Error())
+		}
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tailAt, r.tailTerminal, r.tailOK = at, terminalTasks(jobs), true
 }
 
 // profileCPU takes one CPU profile of the server centered on the middle of

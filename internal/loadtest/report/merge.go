@@ -137,6 +137,7 @@ func Merge(rs []*Record) (*Record, error) {
 	if !windowAll {
 		m.WindowCounters = nil
 	}
+	m.Backlog = mergeBacklog(shards)
 	m.InvalidReason = strings.Join(reasons, "; ")
 	if len(shards) < total {
 		unavailable[fmt.Sprintf("merge: only %d of %d shards were given, so totals are understated", len(shards), total)] = true
@@ -146,6 +147,24 @@ func Merge(rs []*Record) (*Record, error) {
 	m.Invariants = mergeInvariants(shards)
 	m.Findings = Findings(&m, m.SteadyFrom())
 	return &m, nil
+}
+
+// mergeBacklog adds up the shards' backlogs, or returns nil when a shard has
+// none. Each shard counts the tasks of its own farm.
+func mergeBacklog(shards []shardEntry) *Backlog {
+	var b Backlog
+	for i, s := range shards {
+		sb := s.rec.Backlog
+		if sb == nil {
+			return nil
+		}
+		b.Open += sb.Open
+		b.TailCompleted += sb.TailCompleted
+		if i == 0 || sb.TailFrom.Before(b.TailFrom) {
+			b.TailFrom = sb.TailFrom
+		}
+	}
+	return &b
 }
 
 // mergeInvariants combines the shards' results by invariant name, in order of

@@ -104,6 +104,17 @@ func LocalEnv() Env {
 	return Env{OS: runtime.GOOS, Arch: runtime.GOARCH, CPUs: runtime.NumCPU()}
 }
 
+// Backlog compares the work left open when submissions stopped with how
+// fast the server was finishing work just before.
+type Backlog struct {
+	// Open is the number of the farm's tasks not yet terminal at WindowEnd.
+	Open int64 `json:"open"`
+	// TailCompleted is the number of tasks that reached a terminal status in
+	// the last tenth of the measured window, from TailFrom to WindowEnd.
+	TailCompleted int64     `json:"tail_completed"`
+	TailFrom      time.Time `json:"tail_from"`
+}
+
 // Finding is one thing the rules flagged about a run.
 type Finding struct {
 	Rule     string `json:"rule"`
@@ -152,10 +163,13 @@ type Record struct {
 	// WindowCounters are the counter values at WindowEnd, with every key of
 	// Counters. Nil (an older record, or no snapshot) means Counters.
 	WindowCounters map[string]int64 `json:"window_counters"`
-	Series         []measure.Series `json:"series"`
-	Invariants     []verify.Result  `json:"invariants"`
-	Unavailable    []string         `json:"unavailable"`
-	Findings       []Finding        `json:"findings"`
+	// Backlog is the work the server still held when submissions stopped,
+	// beside its recent pace; nil when it could not be read.
+	Backlog     *Backlog         `json:"backlog,omitempty"`
+	Series      []measure.Series `json:"series"`
+	Invariants  []verify.Result  `json:"invariants"`
+	Unavailable []string         `json:"unavailable"`
+	Findings    []Finding        `json:"findings"`
 }
 
 // warmup returns the scenario's warmup, or zero when there is no scenario.

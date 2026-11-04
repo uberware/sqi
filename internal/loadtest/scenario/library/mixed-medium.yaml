@@ -1,6 +1,21 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: mixed-medium
-description: mixed - 2,000 workers (1,800 simulated and 2 real), steady mixed submissions, 30 min
+description: mixed - 1,800 simulated and 2 real workers; shot-render at 1/min (2 x 100 tasks) plus 3 jobs of 1,000 whole-worker tasks, about 5 tasks/s; churn, cancels and retries, 30 min
+# Sizing: offered load at most 70% of the scenario's own capacity (worker
+# slots and pool limits), and of what a server can take.
+#   shot-render: 1/min x 2 steps x 100 tasks = 3.33 tasks/s. Its duration is
+#     lognormal, median 20 s, p95 90 s: sigma = ln(90/20) / 1.645 = 0.914, so
+#     the mean is 20 s x e^(0.914^2 / 2) = 30.4 s, and 3.33 x 30.4 = 101 tasks
+#     are in flight: 51% of pool arnold's 200. The workers are not the limit:
+#     1,800 x 32 cores / 8 cores = 7,200 slots, 1.4% used.
+#   big-sim: 3 jobs x 1,000 whole-worker tasks of 5 s, submitted at the
+#     start: 15,000 worker-seconds of 1,800 workers x 1,800 s = 3.24M, 0.5%;
+#     spread over the window, 1.67 tasks/s.
+#   Together about 5.0 tasks/s, under 70% of ci-medium's measured knee on 4
+#     CPUs (about 7.4 tasks/s; 0.7 x 7.4 = 5.2), so the server keeps up too.
+# The spec's example rates (2/s x 200 tasks, and 3 x 250,000 tasks) offer
+# 400 tasks/s against a pool that serves about 6.6 (200 / 30.4 s): no
+# hardware drains them, and the run would end in a terminal failure.
 duration: 30m
 warmup: 2m
 
@@ -29,7 +44,7 @@ workers:
 jobs:
   - name: shot-render
     weight: 8
-    rate: 2/s
+    rate: 1/m
     queue: render
     steps: 2
     tasks_per_step: 100
@@ -47,7 +62,7 @@ jobs:
     weight: 1
     total: 3
     queue: comp
-    tasks_per_step: 250000
+    tasks_per_step: 1000
 
 clients:
   websocket: {count: 200, subscribe: [jobs, workers, own-job-tasks, own-task-logs]}

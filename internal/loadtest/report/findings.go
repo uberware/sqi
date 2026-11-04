@@ -37,6 +37,7 @@ const (
 	RuleStreamAtCap     = "stream-at-cap"
 	RuleWorkersOffline  = "workers-offline-under-load"
 	RuleRejected        = "submissions-rejected"
+	RuleFellBehind      = "server-fell-behind"
 )
 
 const (
@@ -64,6 +65,9 @@ const (
 	// rejectedErrorPct is the share of submission attempts, in percent, above
 	// which rejected submissions are an error rather than a warning.
 	rejectedErrorPct = 1.0
+	// maxDrainFraction is the share of the scenario's duration a drain may
+	// take before the server is said to have fallen behind.
+	maxDrainFraction = 0.25
 )
 
 // streamLogs is the JetStream stream of task logs, the one that fills first.
@@ -85,7 +89,7 @@ func Findings(r *Record, steadyFrom time.Time) []Finding {
 	}
 	var out []Finding
 	for _, rule := range []func(*Record, time.Time) *Finding{
-		goroutineGrowth, rssGrowth, walNeverShrank, wsDrops, rateLimited, submissionsRejected, streamAtCap, workersOffline,
+		goroutineGrowth, rssGrowth, walNeverShrank, wsDrops, rateLimited, submissionsRejected, streamAtCap, workersOffline, fellBehind,
 	} {
 		if f := rule(r, steadyFrom); f != nil {
 			out = append(out, *f)
@@ -253,6 +257,33 @@ func submissionsRejected(r *Record, _ time.Time) *Finding {
 		Rule: RuleRejected, Severity: sev,
 		Message: fmt.Sprintf("%d of %d submissions (%.1f%%) were not accepted: %s; their jobs are not in the run, so it measured less load than the scenario offers",
 			rejected, attempts, pct, strings.Join(parts, ", ")),
+	}
+}
+
+// fellBehind flags a server that did not keep up with the load offered: its
+// jobs took more than a quarter of the run's duration to drain after
+// submissions stopped, or it held more open tasks when they stopped than it
+// had finished in the last tenth of the window. Either way its latencies and
+// growth slopes describe a backlog, not the steady state the scenario meant.
+func fellBehind(r *Record, _ time.Time) *Finding {
+	var why []string
+	if r.Scenario != nil && r.Scenario.Duration.Duration > 0 {
+		dur := r.Scenario.Duration.Duration
+		if d := r.Drain(); d > time.Duration(maxDrainFraction*float64(dur)) {
+			why = append(why, fmt.Sprintf("its jobs took %s to drain after submissions stopped, more than %.0f%% of the %s duration",
+				fmtDur(d.Round(time.Second)), maxDrainFraction*100, fmtDur(dur)))
+		}
+	}
+	if b := r.Backlog; b != nil && b.Open > b.TailCompleted {
+		why = append(why, fmt.Sprintf("%d tasks were still open when submissions stopped, more than the %d it finished in the window's last %s",
+			b.Open, b.TailCompleted, fmtDur(r.windowEnd().Sub(b.TailFrom).Round(time.Second))))
+	}
+	if len(why) == 0 {
+		return nil
+	}
+	return &Finding{
+		Rule: RuleFellBehind, Severity: SeverityWarn,
+		Message: "the server fell behind the offered load: " + strings.Join(why, "; ") + "; its numbers describe a backlog, so size the scenario down or the server up",
 	}
 }
 
