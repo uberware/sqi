@@ -80,6 +80,30 @@ http:
 
 ---
 
+### `http.rate_limit.enabled`
+
+| | |
+|---|---|
+| **Type** | `bool` |
+| **Default** | `true` |
+| **Env var** | `SQI_HTTP_RATE_LIMIT_ENABLED` |
+| **CLI flag** | *(none — set via config file or env var)* |
+
+Apply the per-IP rate limit to API requests. With it on, a client that sends
+requests faster than the limit allows is answered with `429 Too Many Requests`.
+
+Turn it off only behind a trusted network or for load testing. With it off
+nothing throttles a client that floods the API, and a load generator driving
+the server from one address no longer hits the limit.
+
+```yaml
+http:
+  rate_limit:
+    enabled: true
+```
+
+---
+
 ### `http.cors_origins`
 
 | | |
@@ -2567,6 +2591,7 @@ for the detector schema reference.
 |---|---|---|---|---|
 | `http.addr` | string | `0.0.0.0:8080` | `SQI_HTTP_ADDR` | `--http-addr` |
 | `http.enable_pprof` | bool | `false` | `SQI_HTTP_ENABLE_PPROF` | — |
+| `http.rate_limit.enabled` | bool | `true` | `SQI_HTTP_RATE_LIMIT_ENABLED` | — |
 | `http.cors_origins` | []string | `[]` (= `*`) | `SQI_HTTP_CORS_ORIGINS` | `--http-cors-origins` |
 | `http.tls.enabled` | bool | `false` | `SQI_HTTP_TLS_ENABLED` | — |
 | `http.tls.cert_file` | string | `""` | `SQI_HTTP_TLS_CERT_FILE` | — |

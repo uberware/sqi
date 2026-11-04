@@ -212,6 +212,7 @@ func serverConfig(cfg config.Config, schedCfg scheduler.Config) server.Config {
 		NATS:                         cfg.NATS,
 		SQLitePath:                   cfg.Store.SQLitePath,
 		EnablePprof:                  cfg.HTTP.EnablePprof,
+		DisableRateLimit:             !cfg.HTTP.RateLimit.Enabled,
 		CheckpointInterval:           cfg.Store.CheckpointInterval,
 		StoreDriver:                  cfg.Store.Driver,
 		PostgresDSN:                  cfg.Store.Postgres.DSN,

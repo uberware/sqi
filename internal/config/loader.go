@@ -237,7 +237,10 @@ type fileConfig struct {
 		Addr        *string   `yaml:"addr"`
 		EnablePprof *bool     `yaml:"enable_pprof"`
 		CORSOrigins *[]string `yaml:"cors_origins"`
-		TLS         *struct {
+		RateLimit   *struct {
+			Enabled *bool `yaml:"enabled"`
+		} `yaml:"rate_limit"`
+		TLS *struct {
 			Enabled  *bool   `yaml:"enabled"`
 			CertFile *string `yaml:"cert_file"`
 			KeyFile  *string `yaml:"key_file"`
@@ -434,6 +437,9 @@ func mergeHTTPFile(cfg *Config, fc fileConfig) {
 	}
 	if fc.HTTP.CORSOrigins != nil {
 		cfg.HTTP.CORSOrigins = *fc.HTTP.CORSOrigins
+	}
+	if fc.HTTP.RateLimit != nil {
+		setIfNotNilBool(&cfg.HTTP.RateLimit.Enabled, fc.HTTP.RateLimit.Enabled)
 	}
 	mergeHTTPTLSFile(cfg, fc.HTTP.TLS)
 }
@@ -875,6 +881,7 @@ func applyEnv(cfg *Config) error {
 
 	setString(&cfg.HTTP.Addr, "SQI_HTTP_ADDR")
 	collect(setBool(&cfg.HTTP.EnablePprof, "SQI_HTTP_ENABLE_PPROF"))
+	collect(setBool(&cfg.HTTP.RateLimit.Enabled, "SQI_HTTP_RATE_LIMIT_ENABLED"))
 	collect(setBool(&cfg.HTTP.TLS.Enabled, "SQI_HTTP_TLS_ENABLED"))
 	setString(&cfg.HTTP.TLS.CertFile, "SQI_HTTP_TLS_CERT_FILE")
 	setString(&cfg.HTTP.TLS.KeyFile, "SQI_HTTP_TLS_KEY_FILE")

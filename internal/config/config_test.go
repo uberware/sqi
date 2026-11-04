@@ -2889,3 +2889,48 @@ func TestMarshalYAML_NATSExternalURLCredentialsRedacted(t *testing.T) {
 		t.Fatal("MarshalYAML changed the loaded value")
 	}
 }
+
+// ── http.rate_limit.enabled ──────────────────────────────────────────────────
+
+func TestDefaultConfig_RateLimitEnabled(t *testing.T) {
+	if !config.DefaultConfig().HTTP.RateLimit.Enabled {
+		t.Error("http.rate_limit.enabled: default = false, want true")
+	}
+}
+
+func TestLoad_RateLimitEnabled(t *testing.T) {
+	tests := []struct {
+		name string
+		file string
+		env  string
+		want bool
+	}{
+		{name: "unset keeps the default", want: true},
+		{name: "file false", file: "http:\n  rate_limit:\n    enabled: false\n", want: false},
+		{name: "file true", file: "http:\n  rate_limit:\n    enabled: true\n", want: true},
+		{name: "env false", env: "false", want: false},
+		{name: "env overrides a file true", file: "http:\n  rate_limit:\n    enabled: true\n", env: "false", want: false},
+		{name: "env overrides a file false", file: "http:\n  rate_limit:\n    enabled: false\n", env: "true", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := ""
+			if tt.file != "" {
+				path = filepath.Join(t.TempDir(), "cfg.yaml")
+				if err := os.WriteFile(path, []byte(tt.file), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.env != "" {
+				t.Setenv("SQI_HTTP_RATE_LIMIT_ENABLED", tt.env)
+			}
+			cfg, err := config.Load(path, config.FlagOverrides{})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got := cfg.HTTP.RateLimit.Enabled; got != tt.want {
+				t.Errorf("http.rate_limit.enabled = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
