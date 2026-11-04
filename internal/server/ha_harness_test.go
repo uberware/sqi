@@ -90,15 +90,27 @@ type haStore struct {
 
 	rec *recorder
 
-	mu     sync.Mutex
-	epochs map[string]int64 // event → the epoch on its context, -1 for none
+	mu      sync.Mutex
+	epochs  map[string]int64 // event → the epoch on its context, -1 for none
+	pingErr error
 }
 
 func newHAStore(rec *recorder) *haStore {
 	return &haStore{Store: fake.New(), rec: rec, epochs: map[string]int64{}}
 }
 
-func (*haStore) Ping(context.Context) error { return nil }
+func (s *haStore) Ping(context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pingErr
+}
+
+// failPing makes the store's Ping, and so its readiness check, return err.
+func (s *haStore) failPing(err error) {
+	s.mu.Lock()
+	s.pingErr = err
+	s.mu.Unlock()
+}
 
 func (s *haStore) note(ctx context.Context, event string) {
 	epoch, ok := store.LeaderEpoch(ctx)
@@ -191,6 +203,8 @@ type fakeHABroker struct {
 	opts     bus.GuardOptions
 	callout  []bool
 	identity string
+	leading  bool  // TakeLeadership has succeeded
+	guardErr error // what the leader's guard reports from Healthy
 }
 
 func newFakeHABroker(emb *bus.Embedded, rec *recorder, up bool) *fakeHABroker {
@@ -216,7 +230,11 @@ func (b *fakeHABroker) StandbyReady() error {
 	return b.readyErr
 }
 
-func (b *fakeHABroker) StandbyChecked() <-chan struct{} { return b.checked }
+func (b *fakeHABroker) StandbyChecked() <-chan struct{} {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.checked
+}
 
 func (b *fakeHABroker) TakeLeadership(ctx context.Context, opts bus.GuardOptions) error {
 	b.rec.add("TakeLeadership")
@@ -231,6 +249,7 @@ func (b *fakeHABroker) TakeLeadership(ctx context.Context, opts bus.GuardOptions
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.leading = b.takeErr == nil
 	return b.takeErr
 }
 
@@ -249,11 +268,45 @@ func (b *fakeHABroker) SetCalloutActive(active bool) {
 	b.callout = append(b.callout, active)
 }
 
+// Check is [bus.Remote.Check]: the data connection, then on a standby its
+// checks, and on a leader its guard.
 func (b *fakeHABroker) Check(ctx context.Context) error {
 	if up, _ := b.Connected(); !up {
 		return errors.New("bus: not connected")
 	}
+	b.mu.Lock()
+	leading, readyErr, guardErr := b.leading, b.readyErr, b.guardErr
+	b.mu.Unlock()
+	if !leading && readyErr != nil {
+		return readyErr
+	}
+	if leading && guardErr != nil {
+		return guardErr
+	}
 	return b.Broker.Check(ctx)
+}
+
+// holdChecks makes the broker connected with its standby checks still
+// pending, until [fakeHABroker.passChecks].
+func (b *fakeHABroker) holdChecks() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.readyErr, b.checked = bus.ErrStandbyUnchecked, make(chan struct{})
+}
+
+// passChecks completes the standby checks that holdChecks left pending.
+func (b *fakeHABroker) passChecks() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.readyErr = nil
+	close(b.checked)
+}
+
+// failGuard makes a leader's guard report err from Healthy; nil restores it.
+func (b *fakeHABroker) failGuard(err error) {
+	b.mu.Lock()
+	b.guardErr = err
+	b.mu.Unlock()
 }
 
 func (b *fakeHABroker) Identity() string {
@@ -272,6 +325,16 @@ func (b *fakeHABroker) bringUp() {
 	defer b.mu.Unlock()
 	b.up, b.upSince, b.readyErr = true, time.Now().UTC(), nil
 	close(b.checked)
+}
+
+// setUp reports the broker connected or not, without touching its checks.
+func (b *fakeHABroker) setUp(up bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.up = up
+	if up {
+		b.upSince = time.Now().UTC()
+	}
 }
 
 // loseGuard plays another server taking the account's guard.
