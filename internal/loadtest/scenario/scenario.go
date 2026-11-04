@@ -58,6 +58,13 @@ type PoolSpec struct {
 	Limit int    `yaml:"limit"`
 }
 
+// Command is the command a real worker runs for a task: the no-op the load
+// harness submits against managed real workers.
+type Command struct {
+	Path string
+	Args []string
+}
+
 // WorkerGroup is a set of identically configured workers.
 type WorkerGroup struct {
 	Name      string            `yaml:"name"`
