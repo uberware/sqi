@@ -30,8 +30,8 @@ const (
 
 // sampleDisk records the sizes of the SQLite database, its write-ahead log and
 // the broker's store under dataDir. A file that does not exist is skipped: a
-// PostgreSQL-backed server has no database file, and a WAL that was just
-// checkpointed away has no size to report.
+// PostgreSQL-backed server has no database file, and SQLite removes the WAL
+// when the last connection to the database closes.
 func sampleDisk(rec *measure.Recorder, t time.Time, dataDir string) error {
 	var firstErr error
 	recorded := 0

@@ -99,7 +99,7 @@ func TestFindings(t *testing.T) {
 			name: "rss projects past 1 GiB a week", rule: RuleRSSGrowth, severity: SeverityWarn, fire: true,
 			build: func() *Record {
 				r := longRecord()
-				// 10 MiB per minute is 600 MiB/h, 100 GiB over a week.
+				// 10 MiB per minute is 600 MiB/h, about 98 GiB over a week.
 				r.Series = []measure.Series{ramp("server.rss_bytes", "bytes", 30, 2*time.Minute, 500<<20, 20<<20)}
 				return r
 			},
@@ -108,7 +108,7 @@ func TestFindings(t *testing.T) {
 			name: "rss projects under 1 GiB a week", rule: RuleRSSGrowth,
 			build: func() *Record {
 				r := longRecord()
-				// 1 KiB per sample is 30 KiB/h, 5 MiB over a week.
+				// 1 KiB per sample is 30 KiB/h, about 5 MiB over a week.
 				r.Series = []measure.Series{ramp("server.rss_bytes", "bytes", 30, 2*time.Minute, 500<<20, 1024)}
 				return r
 			},
@@ -254,7 +254,7 @@ func TestFindings(t *testing.T) {
 		{
 			name: "queue depth that never drains is not a finding", rule: "any",
 			build: func() *Record {
-				// F5: the server keeps a drained queue's last non-zero depth.
+				// The server keeps a drained queue's last non-zero depth.
 				r := baseRecord()
 				r.Series = []measure.Series{values("sched.queue_depth{default}", "tasks", time.Minute, 5, 900, 900, 900, 900, 900)}
 				return r

@@ -9,9 +9,9 @@ import (
 	"github.com/uberware/sqi/internal/worker/lease"
 )
 
-// TestQueueIDs guards the queueless-worker regression: a worker with no
-// configured queues must request leases on the wildcard token (a valid subject),
-// not on an empty leaf that routes to no responder.
+// TestQueueIDs pins that a worker with no configured queues requests leases on
+// the wildcard token (a valid subject), not on an empty leaf that routes to no
+// responder.
 func TestQueueIDs(t *testing.T) {
 	t.Run("empty -> wildcard token", func(t *testing.T) {
 		got := lease.QueueIDs(nil)

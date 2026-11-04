@@ -343,8 +343,8 @@ func TestBuildTemplate_SubmitsLikeTheServer(t *testing.T) {
 	}
 }
 
-// The EXPR variant must stay far below the default per-evaluation operation
-// budget, so a tight 2,000-operation limit still accepts it.
+// The EXPR variant must stay well under the default per-evaluation operation
+// budget of 10,000: a 2,000-operation limit still accepts it.
 func TestBuildTemplate_EXPRCostBound(t *testing.T) {
 	b, err := BuildTemplate(scenario.JobClass{Steps: 3, TasksPerStep: 20, Chunk: 5, EXPR: true}, "j", noopCmd)
 	if err != nil {

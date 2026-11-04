@@ -91,7 +91,7 @@ var defaultMaxStoreMB = config.DefaultConfig().NATS.Embedded.MaxStoreMB
 // Findings come back in a fixed rule order.
 //
 // No rule reads sched.queue_depth{queue}: the server keeps a drained queue's
-// last non-zero depth, so a queue that looks stuck may simply be empty.
+// last non-zero depth, so a queue that looks stuck may be empty.
 func Findings(r *Record, steadyFrom time.Time) []Finding {
 	if r == nil {
 		return nil
@@ -107,8 +107,8 @@ func Findings(r *Record, steadyFrom time.Time) []Finding {
 	return out
 }
 
-// findSeries returns the named series cut to the run (see Record.runSeries),
-// or nil.
+// findSeries returns the named series cut to the run (see Record.inRun), or
+// nil.
 func findSeries(r *Record, name string) *measure.Series {
 	for i := range r.Series {
 		if r.Series[i].Name == name {
@@ -273,7 +273,7 @@ func submissionsRejected(r *Record, _ time.Time) *Finding {
 // jobs took more than a quarter of the run's duration to drain after
 // submissions stopped, or it held more open tasks when they stopped than it
 // had finished in the last tenth of the window. Either way its latencies and
-// growth slopes describe a backlog, not the steady state the scenario meant.
+// growth slopes describe a backlog rather than the scenario's steady state.
 func fellBehind(r *Record, _ time.Time) *Finding {
 	var why []string
 	if r.Scenario != nil && r.Scenario.Duration.Duration > 0 {

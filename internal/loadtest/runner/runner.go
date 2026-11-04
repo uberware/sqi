@@ -62,7 +62,8 @@ const (
 	// closeTimeout covers a managed target's 30 s worker and 30 s server
 	// grace, and an attached one's wait for its workers to go offline.
 	closeTimeout = 5 * time.Minute
-	// emergencyStop bounds each step of the teardown after a panic.
+	// emergencyStop bounds the fleet's stop in the teardown after a panic;
+	// closing the target there is bounded by closeTimeout.
 	emergencyStop = 10 * time.Second
 
 	// checkTimeout bounds the invariant checks.
@@ -95,9 +96,9 @@ type Options struct {
 	Sample, ProfileEvery time.Duration
 	// Shard runs one slice of the scenario (see report.ShardSpec.Apply).
 	Shard report.ShardSpec
-	// AllowSaturated keeps an INVALID run (a saturated generator) from
-	// counting against it: the record stays marked INVALID and gains a
-	// warning finding. The CLI uses it to choose its exit status.
+	// AllowSaturated keeps an invalid run (a saturated generator) from
+	// counting against it: the record stays invalid and gains a warning
+	// finding. The CLI uses it to choose its exit status.
 	AllowSaturated bool
 	// Managed starts the run's own sqi-server; Attach drives one somebody
 	// else runs. Neither set means a managed target with defaults. Run fills
@@ -223,9 +224,9 @@ func (o *Options) Directory() string {
 	return filepath.Join(o.OutDir, o.shardRunID())
 }
 
-// shardRunID is the run ID with a shard's prefix, for a shard of several: it
-// names the shard's directory, farm and worker hostnames, so that the shards
-// never collide.
+// shardRunID is the run ID with the shard's -s<i> suffix, for a shard of
+// several: it names the shard's directory, farm and worker hostnames, so that
+// the shards never collide.
 func (o *Options) shardRunID() string {
 	if o.Shard.Active() {
 		return o.RunID + "-" + o.Shard.Prefix()
@@ -724,8 +725,9 @@ func (r *run) teardown(ctx context.Context) {
 	}
 }
 
-// emergencyStop is the teardown after a panic: it waits for nothing and
-// keeps only the steps that stop processes.
+// emergencyStop is the teardown after a panic: it cancels the UI clients and
+// the observer without waiting for them, and keeps only the steps that stop
+// processes.
 func (r *run) emergencyStop(ctx context.Context) {
 	for _, cancel := range []context.CancelFunc{r.uiCancel, r.obsCancel} {
 		if cancel != nil {

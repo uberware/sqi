@@ -40,7 +40,7 @@ const (
 	// reconnectDelay is the pause before a lost connection is redialed.
 	reconnectDelay = time.Second
 	// maxParallelDial bounds the WebSocket dials in progress at once, so
-	// starting a thousand clients is a ramp, not a thundering herd.
+	// clients started together connect gradually.
 	maxParallelDial = 64
 )
 
@@ -166,8 +166,8 @@ func chooseNames(kind string, names, known []string) ([]string, error) {
 // noReplay is the since_seq that subscribes without replaying the hub's
 // buffered pushes (the hub treats it as past every sequence number). A client
 // that has seen nothing on a subject asks for it: the buffer holds up to 256
-// old pushes, which the client's 64-slot queue would drop, and they would show
-// up as drops and as lag that never happened.
+// old pushes, which the hub's 64-slot queue for each client would drop, and
+// they would show up as drops and as lag that never happened.
 const noReplay = ^uint64(0)
 
 // maxTrackedHoles bounds the missing sequence numbers remembered per subject.
@@ -313,7 +313,7 @@ func (u *UIClients) wsClient(ctx context.Context, rng *rand.Rand, subs []string,
 			return
 		}
 		u.m.WSErrors.Add(1)
-		_ = err // the count is the record; a per-error log line would drown the run at 1,000 clients
+		_ = err // the count is the record; a log line per error would flood the output with many clients
 		if !sleep.For(ctx, u.retryDelay) {
 			return
 		}

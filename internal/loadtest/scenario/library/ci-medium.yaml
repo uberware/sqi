@@ -1,14 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: ci-medium
-description: "mixed - 300 workers, shot-render 0.12/s and comp 0.07/s (about 5.5 tasks/s offered, about 3.8 steady) with churn, cancels and retries, 15 min; sized for a 4-vCPU CI runner: on WSL pinned to 4 CPUs (Intel i7-10750H) a 5 min run measured generator 0.27 cores peak (0.14 mean) of 4, server 2.3 cores peak (1.1 mean), VALID"
-# Sizing: the original 1/s + 0.5/s (about 45 tasks/s) saturated the
-# server on 4 CPUs (3.4 cores, a 4,584-task backlog, 228 of 452 jobs unfinished
-# after the drain). Rates were then tried at 0.08/0.05 (2.0 cores peak),
-# 0.16/0.10 (3.3 cores peak, first-lease p95 4.3s, near the knee) and settled at
-# 0.12/0.07: generator peak 0.27 / mean 0.14 cores, server peak 2.27 / mean 1.15
-# cores, first-lease p95 0.78s, all six invariants held. Measured as 5 min runs
-# pinned with taskset to 4 CPUs of an Intel i7-10750H (WSL2); the 15 min
-# validation is a separate run.
+description: "mixed - 300 workers, shot-render 0.12/s and comp 0.07/s (about 5.5 tasks/s offered) with churn, cancels and retries, 15 min; sized for a 4-vCPU CI runner"
+# Sizing: shot-render 0.12/s x 2 steps x 20 tasks = 4.8 tasks/s, comp
+# 0.07/s x 10 tasks = 0.7 tasks/s, 5.5 tasks/s in all. A 4-CPU server reaches
+# its knee at 0.16/s and 0.10/s (about 7.4 tasks/s), the reference the other
+# locally run scenarios are sized against; well above it (about 45 tasks/s) the
+# server builds a backlog and jobs are left unfinished after the drain.
 duration: 15m
 warmup: 1m
 

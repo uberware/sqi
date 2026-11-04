@@ -2322,8 +2322,8 @@ jobs:
           grep -q -- '--- PASS: TestExprOracle_MatchesReferenceImplementation' /tmp/expr-oracle.log
 
   # ── Load harness smoke ───────────────────────────────────────────────────────
-  # Runs the load harness's smoke scenario end to end against real sqi-server
-  # and sqi-worker binaries (`make load-smoke`, SQLite). It asserts that the
+  # Runs the load harness's smoke scenario end to end against a real sqi-server
+  # binary with simulated workers (`make load-smoke`, SQLite). It asserts that the
   # harness works and that the six invariants hold, never latency: shared
   # runners are too noisy for that. The nightly load run is a separate
   # workflow (load-nightly.yml).

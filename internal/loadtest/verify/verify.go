@@ -11,8 +11,9 @@
 //
 //   - The attempt ID in an assignment, and so in every ledger event, is the
 //     server's attempt row ID. The server's log chunks carry it as
-//     [client.LogLine.AttemptID]; GET /tasks/{id}/attempts does not expose it,
-//     only the attempt number, so attempts are matched to the ledger by order.
+//     [client.LogLine.AttemptID]. GET /tasks/{id}/attempts does not expose it,
+//     only the attempt number, which the client returns as
+//     [client.Attempt.ID].
 //   - Attempt statuses are running, succeeded, failed and canceled. An attempt
 //     the server reclaims from a crashed, restarted or silent worker is closed
 //     as failed, so a retry and a reclaim both follow a failed attempt, and a
@@ -69,8 +70,8 @@ const (
 	// more are read from the farm's job list.
 	fewJobs = 20
 	// settlePoll is the first pause between two re-reads while settling; it
-	// doubles after each re-read up to settlePollMax, so a disagreement that
-	// is real costs a handful of re-reads rather than one every 100 ms.
+	// doubles after each re-read up to settlePollMax, so a lasting
+	// disagreement costs a few re-reads instead of one every 100 ms.
 	settlePoll    = 100 * time.Millisecond
 	settlePollMax = time.Second
 )
@@ -365,7 +366,8 @@ func jobStatuses(ctx context.Context, v ServerView, farmID string, ids []string)
 		}
 	}
 	if len(missing) > fewJobs {
-		// Not one GET each for a listing that lacks many: the farm is wrong.
+		// Many jobs missing from the list means the farm is wrong; report
+		// them instead of reading each one with a GET.
 		for _, id := range missing {
 			errs[id] = fmt.Errorf("not in the job list of farm %q", farmID)
 		}

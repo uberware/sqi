@@ -10,8 +10,8 @@ import (
 // Pacer hands out the due times of an open-loop schedule: the n-th call to
 // Next returns start + n/rate, whatever the clock says and however late the
 // caller is. It never skips a slot and never sleeps, so a caller that falls
-// behind sees due times in the past, acts at once, and records the gap as lag.
-// That is what keeps a slow server from quietly lowering the offered load.
+// behind sees due times in the past, acts at once, and records the gap as lag,
+// so a slow server cannot lower the offered load.
 //
 // A Pacer is safe for concurrent use.
 type Pacer struct {

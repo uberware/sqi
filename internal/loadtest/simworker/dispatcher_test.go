@@ -128,8 +128,8 @@ func TestDispatcher_SucceededPath(t *testing.T) {
 		Duration: 50 * time.Millisecond, Outcome: simworker.OutcomeSucceeded, LogLines: lines, LineBytes: lineBytes,
 	})
 
-	// Is the attempt still reported as held at the moment its terminal status
-	// goes out?
+	// Record whether the attempt is still held when its terminal status is
+	// published.
 	var heldAtTerminal, sawTerminal bool
 	var publishedAt time.Time
 	var hookMu sync.Mutex
@@ -420,7 +420,7 @@ func TestDispatcher_Timeout(t *testing.T) {
 // A cancel and the timeout landing together publish one terminal.
 func TestDispatcher_TimeoutRacingCancel(t *testing.T) {
 	// Each round waits out a one-second timeout, so the rounds run in
-	// parallel: about two seconds in all rather than twenty.
+	// parallel.
 	for i := range 20 {
 		t.Run(strconv.Itoa(i), func(t *testing.T) {
 			t.Parallel()

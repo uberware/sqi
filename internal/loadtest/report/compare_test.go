@@ -53,7 +53,7 @@ func TestCompare_NoiseBand(t *testing.T) {
 			if d.Verdict != tc.wantVerdict {
 				t.Errorf("verdict = %q, want %q (%+v)", d.Verdict, tc.wantVerdict, d)
 			}
-			if math.Abs(d.Pct-tc.wantPct) > 0.6 { // histogram buckets are 0.4% wide
+			if math.Abs(d.Pct-tc.wantPct) > 0.6 { // a quantile is within 0.4% of the recorded value
 				t.Errorf("pct = %v, want about %v", d.Pct, tc.wantPct)
 			}
 		})

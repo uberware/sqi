@@ -90,8 +90,8 @@ func BuildBinaries(ctx context.Context, outDir string) (server, worker, noop str
 	for i, n := range names {
 		paths[i] = filepath.Join(outDir, n)
 		if _, err := os.Stat(paths[i]); err != nil {
-			// Antivirus software has been seen quarantining freshly built
-			// small Go binaries on Windows.
+			// Antivirus software on Windows can quarantine a freshly built
+			// small Go binary.
 			return "", "", "", fmt.Errorf("target: %s is missing after the build (removed by antivirus?): %w", paths[i], err)
 		}
 	}

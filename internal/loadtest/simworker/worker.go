@@ -348,9 +348,10 @@ func (w *Worker) launch(ctx context.Context) (*incarnation, error) {
 }
 
 // watchClosed crashes inc if its connection closes for good without the
-// worker tearing it down: natsclient gave up (a credential refused past its
-// grace, or reconnects exhausted). A worker left running on a closed
-// connection would neither heartbeat nor lease: a zombie in the fleet count.
+// worker tearing it down: natsclient gave up after a credential was refused
+// past its grace (reconnects are unlimited, so they are never exhausted). A
+// worker left running on a closed connection would neither heartbeat nor
+// lease, yet still count as live.
 func (w *Worker) watchClosed(inc *incarnation, closed <-chan struct{}) {
 	select {
 	case <-inc.ended:
@@ -446,14 +447,13 @@ func (inc *incarnation) stop(ctx context.Context) {
 // abandoned without a terminal status, and the connection closes with no
 // deregistration.
 //
-// It is not a severed socket, and deliberately so. Every message a task
-// handed to the connection before the crash still goes out, because Close
-// flushes the connection's buffer: a terminal status already being published
-// (the ledger records that attempt as terminal, not crashed), a running
-// status from a task that started as the crash began, and the log lines the
-// log publisher still held, which FlushLogs drains while stopping its
-// per-attempt goroutine. Keeping them means the ledger never claims a status
-// the server did not get, and never misses one it did.
+// The socket is not severed. Close flushes the connection's buffer, so every
+// message a task handed to the connection before the crash still goes out: a
+// terminal status already being published (the ledger records that attempt as
+// terminal, not crashed), a running status from a task that started as the
+// crash began, and the log lines the log publisher still held, which FlushLogs
+// drains while stopping its per-attempt goroutine. The ledger therefore
+// records no status the server did not get, and misses none it did.
 func (inc *incarnation) crash() {
 	close(inc.ended)
 	inc.stopHB() // also stops the lease loop

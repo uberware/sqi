@@ -9,9 +9,8 @@ import (
 )
 
 // TestTaskCounts reads the server's task_counts as GET /jobs serves them:
-// with total and unschedulable beside the per-status counts. Summing every
-// key once counted each task twice and made server-fell-behind fire on
-// healthy runs.
+// with total and unschedulable beside the per-status counts, so summing every
+// key would count each task twice.
 func TestTaskCounts(t *testing.T) {
 	jobs := map[string]client.Job{
 		"j1": {TaskCounts: map[string]int{

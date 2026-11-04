@@ -149,8 +149,8 @@ type Record struct {
 	Ended   time.Time `json:"ended"`
 	// WindowEnd is when submissions stopped: the end of the measured window,
 	// which runs from SteadyFrom to WindowEnd. The run drains from WindowEnd
-	// to Ended. Zero (an older record, or a run stopped before submissions
-	// ended) makes the window end at Ended.
+	// to Ended. Zero (a record without it, or a run stopped before
+	// submissions ended) makes the window end at Ended.
 	WindowEnd time.Time `json:"window_end"`
 	// Histograms cover the whole run, warmup included.
 	Histograms map[string]*measure.Histogram `json:"histograms"`
@@ -158,12 +158,12 @@ type Record struct {
 	Counters map[string]int64 `json:"counters"`
 	// SteadyCounters are the counter values at SteadyFrom, snapshotted by the
 	// runner. A rate over the measured window is (WindowCounters -
-	// SteadyCounters) divided by WindowEnd - SteadyFrom. Nil (no snapshot:
-	// warmup 0, or an older record) makes every rate a run average,
-	// WindowCounters over WindowEnd - Started.
+	// SteadyCounters) divided by WindowEnd - SteadyFrom. Nil (no snapshot,
+	// as with warmup 0) makes every rate a run average, WindowCounters over
+	// WindowEnd - Started.
 	SteadyCounters map[string]int64 `json:"steady_counters"`
 	// WindowCounters are the counter values at WindowEnd, with every key of
-	// Counters. Nil (an older record, or no snapshot) means Counters.
+	// Counters. Nil (no snapshot) means Counters.
 	WindowCounters map[string]int64 `json:"window_counters"`
 	// Backlog is the work the server still held when submissions stopped,
 	// beside its recent pace; nil when it could not be read.

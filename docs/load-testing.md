@@ -8,18 +8,16 @@ checks that nothing was lost, double-run or stranded along the way.
 
 This page covers what the harness is and is not, how to run it, the scenario
 format and the built-in library, how to read a report, sweep and soak runs,
-sharding one run across several machines, the CI jobs, baseline numbers, the
-defects the harness has found so far, and the questions only large-scale runs
-can answer.
+sharding one run across several machines, the CI jobs, baseline numbers, known
+server defects, and open questions for large-scale runs.
 
 ---
 
 ## What it is, and what it is not
 
-**It is** one repeatable tool that scales a farm along every axis that
-matters: workers, jobs, tasks per job, steps and dependencies, queues and
-usage pools, log volume, UI clients, failure and churn rates, and run length.
-It reports:
+It is a repeatable tool that scales a farm along each of these axes: workers,
+jobs, tasks per job, steps and dependencies, queues and usage pools, log
+volume, UI clients, failure and churn rates, and run length. It reports:
 
 - **throughput**: submissions, task completions and log lines emitted per
   second, over the window in which jobs were submitted;
@@ -36,11 +34,10 @@ It reports:
 Two runs of the same scenario can be compared (two server revisions, two
 stores, two machines) with `sqi-load compare`.
 
-**It is not**
+It is not:
 
-- **A fix for what it finds.** The harness measures and records. Defects it
-  finds are listed under [What the harness has found](#what-the-harness-has-found)
-  and fixed as separate work.
+- **A fix for what it finds.** The harness measures and records. Known
+  defects are listed under [Known server defects](#known-server-defects).
 - **A fault-injection tool.** It simulates worker churn (crashes,
   disconnects, restarts) because that is a normal condition on a real farm. It
   does not kill the server, partition the broker or fill disks.
@@ -55,16 +52,16 @@ stores, two machines) with `sqi-load compare`.
 Simulated workers speak the real worker protocol over real NATS connections
 (one connection per worker, so per-connection broker cost is measured) and
 reuse the real worker packages for leasing, heartbeats, status, log streaming
-and cancel. They run no processes: a task is a timer. Up to 10,000 simulated
-workers per generator process is the design target; that scale has not been
-measured yet (see [Open questions for H12m](#open-questions-for-h12m)).
-Scenarios can also start a few **real** `sqi-worker` processes beside the
-simulated fleet so the real execution path sees the same load.
+and cancel. They run no processes: a task is a timer. The design target is
+10,000 simulated workers per generator process; that scale is unmeasured (see
+[Open questions](#open-questions)). Scenarios can also start a few real
+`sqi-worker` processes beside the simulated fleet so the real execution path
+sees the same load.
 
-> **A number from `sqi-load` describes the server only while the generator
-> kept up.** The harness samples its own CPU and timer lateness and marks a
-> run INVALID when it was the bottleneck. Never quote latencies from an INVALID
-> run as the server's.
+> A number from `sqi-load` describes the server only while the generator kept
+> up. The harness samples its own CPU and timer lateness and marks a run
+> INVALID when it was the bottleneck. Latencies from an INVALID run do not
+> describe the server.
 
 ---
 
@@ -86,11 +83,11 @@ tasks, logs, 5 WebSocket clients and one expected worker crash, against a real
 managed `sqi-server` on SQLite, in about a minute. It runs on PostgreSQL too
 when `SQI_TEST_POSTGRES_DSN` points at a server (the harness uses the
 database that DSN names, as it is). A second test, `TestLoadSmoke_VerifierCanFail`,
-corrupts one expectation on purpose to prove the verifier can fail a run.
+corrupts one expectation and checks that the verifier fails the run.
 
 The run directories are temporary unless `SQI_LOAD_OUT` names a directory to
-write them to (CI sets it, to upload them). Check that the test **ran**: look
-for `--- PASS: TestLoadSmoke` in the output.
+write them to (CI sets it, to upload them). A skipped test verifies nothing:
+look for `--- PASS: TestLoadSmoke` in the output.
 
 ### Any scenario
 
@@ -155,7 +152,7 @@ sqi-load run --scenario ci-medium \
 | `--server URL` | The server's HTTP URL. Switches the run to attach mode. |
 | `--nats URL` | The server's NATS URL. Required with `--server`. |
 | `--api-key KEY` | API key sent as `Authorization: Bearer` on every REST call and WebSocket connection, for a server with the [auth gate](auth.md) on. |
-| `--join-token TOKEN` | A **reusable** join token the simulated workers enroll with. Required unless the broker needs no credentials. |
+| `--join-token TOKEN` | A reusable join token the simulated workers enroll with. Required unless the broker needs no credentials. |
 | `--no-auth` | The broker needs no credentials, so no join token is needed. |
 | `--data-dir DIR` | The server's data directory, when the generator can read it, for disk measurements. |
 | `--ca-file FILE` | CA certificate the server's TLS certificates chain to. |
@@ -167,7 +164,7 @@ Things to know before attaching:
 - The harness creates its own farm, `load-<run-id>`, and works only inside it,
   so it never touches existing jobs. It deletes the farm (and the jobs and
   workers in it) at the end unless `--keep` is given.
-- **Usage pools are global**, not per farm, and a job claims one by name, so
+- Usage pools are global, not per farm, and a job claims one by name, so
   the harness never uses the scenario's pool names as they are: a run's pools
   are its own, named `load_<run-id>_<pool>` (characters other than letters,
   digits and `_` become `_`), with the scenario's limits, and the job
@@ -183,8 +180,7 @@ Things to know before attaching:
   (attached)` when `--postgres-dsn` names the server's database.
 - Server-process measurements come only from `/metrics`: no disk sizes without
   `--data-dir`, and no JetStream stream sizes when broker authentication is on
-  (the observer connects anonymously). The report lists what was unavailable
-  rather than omitting it silently.
+  (the observer connects anonymously). The report lists what was unavailable.
 - Scenarios with `workers[].real` need a managed target and are rejected in
   attach mode. `--server-bin` and `--worker-bin` apply only to a managed run.
 - Managed runs turn the HTTP rate limiter off (`http.rate_limit.enabled:
@@ -252,8 +248,8 @@ teardown waits and kills what is left.
 | 2 | The run is INVALID or it was interrupted. INVALID means the generator saturated, or the scenario submits jobs but the server accepted none of them (a key without `jobs.write`, a template the server refuses, every submission throttled), so every invariant held vacuously. `--allow-saturated` accepts a saturated generator, but not an incomplete run nor one with no accepted submission. |
 | 3 | A usage, setup or teardown error: a bad flag, a bad scenario, a target that would not start, a teardown that failed (the run's farm may be left on an attached server), or a cleanup that could not remove everything. |
 
-When several apply, 1 wins over 3, which wins over 2. **Findings never change
-the exit status**, whatever their severity: an `error` finding says the
+When several apply, 1 wins over 3, which wins over 2. Findings never change
+the exit status, whatever their severity: an `error` finding says the
 result is unreliable or points at a defect, and is for a person to read in
 `summary.md`. These are the exit statuses of the `sqi-load` binary; through
 `go run`, and so through `make load` and `make soak`, every non-zero status
@@ -267,8 +263,8 @@ knee are expected to fail.
 ## Scenario reference
 
 A scenario is a YAML file. Built-ins are embedded in the binary and run by
-name; `--scenario path.yaml` runs your own. **An unknown key is an error**, so
-a misspelt field cannot silently do nothing. `--set` overrides any field after
+name; `--scenario path.yaml` runs your own. An unknown key is an error, so a
+misspelt field is reported. `--set` overrides any field after
 parsing and before validation; it parses the value as YAML into the field's
 type, so anything a file can say about a field, `--set` can too:
 
@@ -327,7 +323,7 @@ A lognormal needs `median > 0` and `p95 >= median`; a uniform needs
 | `job_deps` | `0` | The fraction (0 to 1) of jobs submitted with `depends_on` an earlier accepted job. |
 | `clients` | none | WebSocket clients and REST pollers. |
 | `actions` | none | Timed events. |
-| `assert` | none | A map of name to non-negative duration. It is accepted and validated and recorded with the scenario, but **nothing evaluates it yet**. CI never uses it. |
+| `assert` | none | A map of name to non-negative duration. It is accepted and validated and recorded with the scenario, but nothing evaluates it. CI never uses it. |
 
 ### `server` (managed target only)
 
@@ -386,12 +382,12 @@ An empty `queues` list becomes one queue named `default`.
 | Field | Default | Meaning |
 |---|---|---|
 | `crash_per_hour` | `0` | Expected crashes per worker per hour. A crash drops the connection without deregistering and stops heartbeats. |
-| `restart_after` | `0` | How long a crashed worker stays down. It then reconnects with a **new** instance ID, so the server reclaims the old attempts. |
+| `restart_after` | `0` | How long a crashed worker stays down. It then reconnects with a new instance ID, so the server reclaims the old attempts. |
 | `disconnect_per_hour` | `0` | Expected disconnects per worker per hour. A disconnect closes and reopens the connection with the same instance (a NATS reconnect). |
 
 Give `restart_after` a realistic value (seconds). An instant restart can race
 with a lease request still in flight from the old process; see
-[What the harness has found](#what-the-harness-has-found).
+[Known server defects](#known-server-defects).
 
 ### `jobs[]`
 
@@ -422,7 +418,7 @@ split that way (a large prime, say), naming the divisor to aim for.
 | Field | Default | Meaning |
 |---|---|---|
 | `duration` | constant `5s` | How long a task runs. A distribution. |
-| `fail_rate` | `0` | Probability (0 to 1) that an attempt fails. It applies to **every** attempt, since assignments carry no attempt number, so retries can fail too. |
+| `fail_rate` | `0` | Probability (0 to 1) that an attempt fails. It applies to every attempt, since assignments carry no attempt number, so retries can fail too. |
 | `hang_rate` | `0` | Probability (0 to 1) that a task runs until canceled or timed out. A scenario with `hang_rate > 0` gives the task an `onRun` timeout of max(60 s, 3 x the duration's upper value), and a hung task ends `failed` at the timeout like a real one. The lognormal tail beyond 3 x p95 can time out a non-hung task. |
 | `log_lines` | constant `0` | Lines per task. A distribution; a plain count. |
 | `log_line_bytes` | `120` | Bytes per line. |
@@ -515,11 +511,11 @@ actions:
 Each built-in isolates one axis, plus mixed ones. `sqi-load scenarios` lists
 them and `scenarios --show NAME` prints one as resolved YAML. Every scenario
 runs on SQLite by default; `--set server.store=postgres` runs it on
-PostgreSQL. Sizes are starting points that measurements revise.
+PostgreSQL. Sizes are starting points.
 
 | Scenario | Axis | Shape | Duration |
 |---|---|---|---|
-| `smoke` | all, tiny | 20 workers (8 cores each); 50 jobs of 2 steps x 10 tasks (1,000 tasks) with 20 log lines each; 5 WebSocket clients; crash rate sized for about one crash with a 10 s restart. **CI.** | 1m |
+| `smoke` | all, tiny | 20 workers (8 cores each); 50 jobs of 2 steps x 10 tasks (1,000 tasks) with 20 log lines each; 5 WebSocket clients; crash rate sized for about one crash with a 10 s restart. Run by CI (`load-smoke`). | 1m |
 | `workers-ramp` | nodes | 10,000 idle workers ramping at 250/s, then 1 job/s of 10 tasks; 2 pollers on `workers-list`. Heartbeat and parked-lease cost. | 20m |
 | `workers-churn` | nodes | 2,000 workers with 6 crashes and 12 disconnects per worker per hour, 30 s restarts; 5 jobs/s of 2 x 20 tasks. Reclaim correctness. | 30m |
 | `jobs-flood` | jobs | 200 workers (16 cores); 100,000 one-task jobs submitted as fast as accepted; 5 pollers on `jobs-list` and `job-detail`. Submission path and `GET /jobs` cost. | 1h |
@@ -529,25 +525,24 @@ PostgreSQL. Sizes are starting points that measurements revise.
 | `logs-heavy` | logs | 500 single-core workers; 1 job/s of 10 tasks, each 60 s long writing 8,000 lines of 128 bytes (about 1 MB per task); 10 WebSocket clients on `own-task-logs`. `SQI_LOGS` growth and eviction. | 1h |
 | `ui-heavy` | UI | 500 workers; 3 jobs/s of 2 x 20 tasks; 1,000 WebSocket clients and 100 REST pollers on all four endpoints. Fan-out, drops and read latency. | 30m |
 | `expr-mix` | submission CPU | 300 workers; `EXPR` templates (2 steps x 100 tasks at 2/s, 4 steps x 500 tasks at 0.2/s) beside plain ones (1/s). | 30m |
-| `ci-medium` | mixed | 300 workers (8 cores); `shot-render` at 0.12/s (2 steps x 20 tasks, 2 cores, usage pool `arnold` limit 100) and `comp` at 0.07/s (10 tasks), about 5.5 tasks/s offered; churn, 20 WebSocket clients, 5 pollers, a 10% cancel at 5 min and a retry at 10 min. Sized to stay valid on a 4-vCPU CI runner. **Nightly.** | 15m |
+| `ci-medium` | mixed | 300 workers (8 cores); `shot-render` at 0.12/s (2 steps x 20 tasks, 2 cores, usage pool `arnold` limit 100) and `comp` at 0.07/s (10 tasks), about 5.5 tasks/s offered; churn, 20 WebSocket clients, 5 pollers, a 10% cancel at 5 min and a retry at 10 min. Sized to stay valid on a 4-vCPU CI runner. Run nightly (`load-nightly`). | 15m |
 | `mixed-medium` | mixed | 1,800 simulated and 2 real workers (32 cores); `shot-render` at 1/min (2 x 100 tasks, 8 cores, pool limit 200) plus 3 jobs of 1,000 whole-worker tasks, about 5 tasks/s in all; churn; 200 WebSocket clients and 20 pollers; a cancel at 10 min and a retry at 20 min. The `make load` default. | 30m |
 | `soak-steady` | time | 500 workers (8 cores); `shot-render` at 0.11/s (2 x 20 tasks) and `comp` at 0.06/s (10 tasks), about 5 tasks/s; light churn, 20 WebSocket clients, 5 pollers; warmup 10 m. Growth detection. The `make soak` default. | 8h |
 
-`ci-medium` was sized by measurement: at 1 and 0.5 jobs/s the server needed
-about 3.4 cores on a 4-CPU host, left a 4,584-task backlog, and 228 of 452 jobs
-were unfinished after the drain. The shipped rates (about 5.5 tasks/s offered)
-measured, on WSL pinned to 4 CPUs of an Intel Core i7-10750H over a 5 minute
-run, a generator peak of 0.27 cores, a server peak of 2.3 cores, and a VALID
-run with all six invariants holding. At 0.16 and 0.10 jobs/s (about 7.4
-tasks/s) the server was near its knee.
+Sizing of `ci-medium`, on WSL pinned to 4 CPUs of an Intel Core i7-10750H:
+
+- At its rates (about 5.5 tasks/s offered, about 3.8 in the steady state), a
+  5 minute run peaks at 0.27 generator cores and 2.3 server cores, VALID, with
+  all six invariants holding.
+- At 0.16 and 0.10 jobs/s (about 7.4 tasks/s) the server is near its knee.
+- At 1 and 0.5 jobs/s the server needs about 3.4 cores, leaves a 4,584-task
+  backlog, and 228 of 452 jobs are unfinished after the drain.
 
 `mixed-medium` and `soak-steady`, the scenarios `make load` and `make soak`
 run on a workstation, are sized from those numbers: each offers about 5
 tasks/s, under 70% of that knee, and uses at most 70% of its own capacity
 (worker cores and usage-pool limits). Each YAML file shows the arithmetic, and
-a unit test pins it. The spec's example rates for `mixed-medium` (2 jobs/s of
-200 tasks and three 250,000-task jobs) offer about 400 tasks/s against a pool
-that serves about 6.6, which no hardware drains.
+a unit test checks it.
 
 ---
 
@@ -608,7 +603,7 @@ kept), `ws.events`, `ws.drops`, `ws.errors`, `ws.lag_negative`, `rest.errors`,
 `workers.live` (a fleet size, so no rate) and `submit.status.<code>` per HTTP
 status (0 is a submission that got no answer).
 
-**Latency** histograms cover the **whole run, warmup included**, and show n,
+**Latency** histograms cover the whole run, warmup included, and show n,
 p50, p95, p99 and max:
 
 | Histogram | Measures |
@@ -634,14 +629,14 @@ about 2,000 and a seeded random sample of that size beyond.
 |---|---|
 | `terminal` | Every accepted job is `completed`, `failed` or `canceled` within `drain_timeout` after submissions stop. A job left non-terminal is stranded. |
 | `outcomes` | Every task's final server status is the one the simulator decided (succeeded, failed after retries, or canceled). A task the simulator never leased can only be canceled, and a task of a job a cancel action targeted may be canceled whatever was decided. A `completed` job has only succeeded tasks. A job has exactly `steps x tasks_per_step` tasks, so no work is silently dropped. A disagreeing task is re-read for a few seconds before it counts. |
-| `single-attempt` | On each sampled task, no two of the server's attempts are held at once; every attempt after the first follows a failed or canceled one (a retry or a reclaim); and a task in a terminal status holds no open attempt. On every task, the simulator never ran two attempts at once: an attempt leased while an earlier attempt of the same task had not yet ended (succeeded, failed, canceled or crashed) on its worker fails the check, naming both attempts and workers. The server's attempt list cannot show that case: a worker still running an attempt the server already reclaimed (its heartbeats lost under load) or canceled (the cancel lost) leaves the server with sequential attempts and its late report rejected. |
-| `logs` | On each sampled task, the lines the server returns for the task's latest attempt equal the lines the simulator sent for it, in order. When the scenario overflows the broker's store on purpose, losing the attempt's oldest whole chunks is allowed and nothing else is. A chunk lost on an unplanned connection drop fails the check: core-NATS log delivery is at most once, and the harness reports that as a real finding about sqi rather than excusing it. |
+| `single-attempt` | On each sampled task, no two of the server's attempts are held at once; every attempt after the first follows a failed or canceled one (a retry or a reclaim); and a task in a terminal status holds no open attempt. On every task, the simulator never ran two attempts at once: an attempt leased while an earlier attempt of the same task had not ended (succeeded, failed, canceled or crashed) on its worker fails the check, naming both attempts and workers. The server's attempt list cannot show that case: a worker still running an attempt the server already reclaimed (its heartbeats lost under load) or canceled (the cancel lost) leaves the server with sequential attempts and its late report rejected. |
+| `logs` | On each sampled task, the lines the server returns for the task's latest attempt equal the lines the simulator sent for it, in order. When the scenario overflows the broker's store on purpose, losing the attempt's oldest whole chunks is allowed and nothing else is. A chunk lost on an unplanned connection drop fails the check: workers publish log chunks with a core-NATS publish, which delivers at most once. |
 | `workers-converge` | Within the server's heartbeat timeout plus the slowest worker heartbeat plus 10 s, the farm's online worker count equals the number of workers the harness has running. |
 | `caps` | The most attempts the simulator held at once on a queue never exceeded `max_concurrent_tasks` (0 is unlimited), and on a usage pool never exceeded its `limit` (each task claims one unit). A canceled attempt counts as released when the cancel action started, since the server frees the slot when it commits the cancel. |
 
-The `caps` invariant is the one that caught the lost-cancel defect described
-below: the server's own claim count stayed at the limit while real concurrent
-execution exceeded it.
+A lost cancel (see [Known server defects](#known-server-defects)) fails `caps`:
+the server's own claim count stays at the limit while concurrent execution
+exceeds it.
 
 ### Findings
 
@@ -674,8 +669,7 @@ than leaving it out. Common entries:
 
 - `ws_lag` on Windows: the wall clock steps by about 0.5 ms in Go on a typical
   Windows host, so a push delivered within one step reads 0 (shown as the
-  histogram's 1 microsecond floor). WSL and Linux resolve it (about 243
-  microseconds p50 in smoke).
+  histogram's 1 microsecond floor). WSL and Linux resolve it.
 - JetStream stream sizes when broker authentication is on; disk sizes against
   an attached server without `--data-dir`.
 - `invariants`, when the run ended early.
@@ -708,7 +702,7 @@ drain), and the peaks of the key server series (CPU, RSS, goroutines, open
 files, heap, GC pause). A difference of 5% or less either way is reported as
 "no change". When either run is INVALID or incomplete, `compare` prints a
 warning above the table: the deltas are still shown, but they describe a
-saturated generator or a run cut short. Compare runs of the **same scenario**
+saturated generator or a run cut short. Compare runs of the same scenario
 on comparable hardware; comparing server revisions with one harness is valid
 only while both revisions speak the harness's worker protocol and accept its
 configuration keys.
@@ -728,7 +722,7 @@ sqi-load sweep --scenario workers-ramp \
 Values run in the order given, so list them ascending; the first is the
 baseline. Each point's record goes to `<out>/<sweep-id>/<i>-<value>/`, and the
 sweep writes `sweep.csv` (throughput, first-lease p50, p95 and p99, validity
-and invariants per value) and `sweep.md` with the **knee** called out. A value
+and invariants per value) and `sweep.md` with the knee called out. A value
 cannot contain a comma, and a sweep is managed-only.
 
 The knee is the first value where any of these holds:
@@ -762,8 +756,8 @@ slope per hour, with its R², of server RSS, goroutines and open files, the
 SQLite database, WAL and NATS data sizes, the PostgreSQL database size, and
 each JetStream stream's bytes. The `rss-growth`, `goroutine-growth`,
 `wal-never-shrank` and `stream-at-cap` findings turn the ones that matter into
-flags. Of those series only RSS and goroutines have a projection rule so far;
-read the others from the table.
+flags. Of the slopes, only RSS and goroutines raise a finding; read the others
+from the table.
 
 Plan for the generator too: the harness's own CPU and goroutines are sampled
 for the whole soak, and an INVALID soak is as meaningless as an INVALID load
@@ -803,7 +797,7 @@ What a shard does:
 - `merge` needs the records of the same run ID, ideally all `n`; given fewer, it
   says totals are understated and marks the result incomplete. Histograms
   merge, counters add, and the series, environment and scenario come from
-  **shard 0**, so run shard 0 where the server observations (`/metrics`, and
+  shard 0, so run shard 0 where the server observations (`/metrics`, and
   `--data-dir` if readable) should be taken. The merged scenario carries shard
   0's per-shard counts, not the whole farm's. The merged run is valid and
   complete only if every shard is, an invariant holds only if it held in every
@@ -811,11 +805,11 @@ What a shard does:
   `churn-failed` and `generator-saturated`, which only a live run can see:
   those are carried over from the shards, labeled with their shard.
 
-**The shared-pool caveat.** Usage pools are global to the server, so the
-shards of a run share the run's pools, `load_<run-id>_<pool>`, and their
-limits are **not** divided. Two consequences:
+**Shared pools.** Usage pools are global to the server, so the shards of a run
+share the run's pools, `load_<run-id>_<pool>`, and their limits are not
+divided. Two consequences:
 
-- A sharded run **never deletes the usage pools** it created, since one shard
+- A sharded run never deletes the usage pools it created, since one shard
   deleting a pool would pull it from under the others, and the server refuses
   while any claim names it. After every shard has finished, remove them with
   `sqi-load cleanup --run-id <run-id>` (see
@@ -835,8 +829,8 @@ Starting the machines is the operator's job.
 Two jobs run the harness. Neither enforces latency.
 
 **`load-smoke`** in `.github/workflows/ci.yml` runs on pushes and on pull
-requests that touch Go code, `go.mod`, `go.sum`, the Makefile, or anything
-under `internal/loadtest/` or `test/load/` (the scenario YAML included),
+requests that touch Go code, `go.mod`, `go.sum`, the Makefile, `ci.yml`, or
+anything under `internal/loadtest/` or `test/load/` (the scenario YAML included),
 after the main `test` job. It runs `make load-smoke` (SQLite) with `SQI_LOAD_OUT` set,
 uploads the run directories and the log as the `load-smoke-runs` artifact (7
 days), and then asserts by name that `TestLoadSmoke` and
@@ -856,16 +850,16 @@ are too noisy to gate on timings. Compare uploaded directories with `sqi-load
 compare`. A new run never cancels one in progress: the scheduled run waits
 for a dispatched soak to finish, and the reverse.
 
-Expect the nightly to fail now and then on `caps` or `logs` with every other
-invariant holding. `ci-medium` has cancels, churn and disconnects, which can
-hit two known sqi defects (a cancel lost just after a lease, below, and log
-chunks lost on a forced disconnect, which core NATS delivers at most once).
-That is the harness working: read the evidence, and fix the server, not the
-harness.
+The nightly can fail on `caps` or `logs` with every other invariant holding.
+`ci-medium` has cancels, churn and disconnects, which can hit two known server
+defects: a cancel lost just after a lease (see
+[Known server defects](#known-server-defects)), and log chunks lost on a forced
+disconnect, which core NATS delivers at most once. The evidence names the
+tasks and attempts involved.
 
 `workflow_dispatch` takes two inputs: `scenario` (default `ci-medium`) and
-`duration`. Giving a duration runs the scenario as a soak of that length, **up
-to 5 hours 30 minutes**, so the job (six hour cap) has room for the build and
+`duration`. Giving a duration runs the scenario as a soak of that length, up
+to 5 hours 30 minutes, so the job (six hour cap) has room for the build and
 the artifact upload. A longer or malformed duration fails the job before
 anything builds.
 
@@ -877,9 +871,8 @@ large scenarios are local or self-hosted runs.
 
 ## Baselines
 
-The first baseline runs. They are the numbers later runs and the large-scale
-follow-up compare against; they were taken at a stated commit on the stated
-hardware, and a different host will differ.
+Reference runs to compare later runs against, taken at the commit and on the
+hardware stated below. A different host gives different numbers.
 
 | Host | Store | Scenario | Tasks/s | Submit→first lease p50 / p95 / p99 | Job end-to-end p95 | Peak server RSS | Peak server CPU | Invariants |
 |---|---|---|---|---|---|---|---|---|
@@ -890,150 +883,122 @@ hardware, and a different host will differ.
 | Windows | SQLite | smoke | 13.65 | 2.83 s / 9.09 s / 10.36 s | 14.93 s | 134 MiB | 2.42 cores | 6/6 |
 | Windows | SQLite | ci-medium | 5.38 | 284 ms / 849 ms / 1.16 s | 2m57s | 681 MiB | 5.41 cores | 6/6 |
 
-The hardware for each row is stated beneath the table.
-
 **Hardware.** Both hosts are the same physical laptop, and the runs were
 sequential, never concurrent. All runs were `sqi-load run` against a managed
-target with default seeds, on the branch at commit `365833d2`, measured on
-2026-11-04.
+target with default seeds, at commit `365833d2`, on 2026-11-04.
 
 - **Windows:** Intel Core i7-10750H at 2.60 GHz (6 cores, 12 threads), 16 GB
   RAM, a WDC PC SN530 NVMe SSD, Windows 11 Home, native Windows binaries.
 - **WSL:** WSL2 Ubuntu (kernel 6.18, microsoft-standard-WSL2) on the same
-  machine, with 12 vCPUs, 7.7 GiB RAM and ext4 on the same NVMe. **The WSL runs
-  were not pinned to a CPU set**, so they are not comparable with the
-  4-vCPU-pinned sizing measurements quoted for `ci-medium` above. PostgreSQL
-  18.6 ran in Docker on the same WSL VM.
+  machine, with 12 vCPUs, 7.7 GiB RAM and ext4 on the same NVMe. The WSL runs
+  were not pinned to a CPU set, so they are not comparable with the
+  4-vCPU-pinned `ci-medium` sizing in [The scenario library](#the-scenario-library).
+  PostgreSQL 18.6 ran in Docker on the same WSL VM.
 
-All six runs are VALID: the generator peaked at 0.41 cores or less of 12.
-
-**Windows with PostgreSQL was not measured.** The only PostgreSQL available to
-the Windows host was the WSL Docker container, and it became unreachable 12 s
-into the Windows smoke run (most likely the WSL VM idling out). The harness
-reported that correctly as failed invariants (`terminal`, `outcomes` and
-`workers-converge`, with `GET /jobs` answering HTTP 500) and exit status 1.
-Measuring it needs a PostgreSQL that stays up; that is left to H12m.
+There is no Windows baseline on PostgreSQL.
 
 How to read the columns: **Tasks/s** is the rate of `tasks.terminal` over
-the measured window, from the end of warmup to the end of submissions. The latencies are the whole-run histograms. **Peak server
-CPU** is in cores, so 2.3 on a 4-CPU host is 58% of the machine. It is the
-`sqi-server` process's CPU only: on a PostgreSQL row the database runs in its own
-process, which this column does not include. **Invariants**
-is how many of the six held. Every row is a VALID run.
+the measured window, from the end of warmup to the end of submissions. The
+latencies are the whole-run histograms. **Peak server CPU** is in cores, so
+2.3 on a 4-CPU host is 58% of the machine. It is the `sqi-server` process's
+CPU only: on a PostgreSQL row the database runs in its own process, which this
+column does not include. **Invariants** is how many of the six held. Every row
+is a VALID run: the generator peaked at 0.41 cores or less of 12.
+
+### Observations
+
+Each comes from a single run on one laptop.
+
+- **PostgreSQL schedules far more slowly than SQLite at `ci-medium`** on the
+  same host. Submit to first lease has a p50 of 12.99 s against 326 ms (about
+  40 times) and a p95 of 47 s against 967 ms. Terminal ingest (the server's
+  task `updated_at` minus the worker's terminal publish) has a p50 of 2.54 s
+  against 15 ms. Throughput is similar (5.17 against 5.44 tasks/s) because it
+  is bounded by the offered load, not by the scheduler. At `smoke` the two
+  stores are close.
+- **`GET /api/v1/jobs` (50 per page) is slow on PostgreSQL at `ci-medium`:**
+  p50 2.79 s against 8.6 ms on SQLite, and p95 3.52 s against 280 ms. See
+  question 5 under [Open questions](#open-questions).
+- **Server CPU on SQLite is high:** peaks of 4.4 to 5.4 cores on `ci-medium`
+  (unpinned) against 1.8 on PostgreSQL. SQLite's single writer runs inside the
+  server process, while PostgreSQL's work happens in a separate database
+  process that `server.cpu_cores` does not include, so the two figures are not
+  a like-for-like measure of total cost.
+- **Server RSS** is about 660 to 680 MiB at 300 workers and 120 to 135 MiB at
+  20 workers.
+- **RSS rises steadily through the 17-minute `ci-medium` run** (about 2 GiB/h,
+  r² 0.97 to 0.99 in the growth table). That run is too short for the growth
+  rule, which needs 30 minutes of steady samples, so no `rss-growth` finding
+  is raised. Whether it plateaus is question 4 under
+  [Open questions](#open-questions).
+- **The SQLite WAL never shrinks** across the 17-minute WSL `ci-medium` run
+  (3.9 to 9.6 MiB), and `wal-never-shrank` warns. See question 9.
+- **The generator is cheap at small scale.** Smoke (20 simulated workers)
+  costs the harness about 0.1 to 0.3 cores. Its cost at 10,000 workers per
+  generator is unmeasured.
 
 ---
 
-## What the harness has found
+## Known server defects
 
-Defects and facts the harness surfaced while it was being built. None is fixed
-by H12; fixes are separate work, and the scheduler ones wait for H7 (scheduler
-HA), which owns that code.
+Defects in `sqi-server` that a run can hit.
 
 ### A cancel that commits just after a lease is lost
 
-**A real sqi defect, unfixed.** A job cancel that commits between a task's
-lease and the worker subscribing to `task.cancel.<taskID>` is lost. The server
-closes the attempt, releases the usage-pool claim and leases the slot to
-another task, while the worker keeps running the canceled attempt (5 to 42 s in
-the reproduction) and reports `succeeded`, which the server rejects. Real
-concurrent execution therefore exceeds a usage-pool cap (101 to 103 against a
-limit of 100) although the server's own claim count stays at the limit.
+A job cancel that commits between a task's lease and the worker subscribing to
+`task.cancel.<taskID>` is lost. The server closes the attempt, releases the
+usage-pool claim and leases the slot to another task, while the worker keeps
+running the canceled attempt and reports `succeeded`, which the server
+rejects. Concurrent execution then exceeds a usage-pool cap while the
+server's own claim count stays at the limit, and the `caps` invariant fails.
 
-It reproduced 2 times in 3 at the original `ci-medium` rates on a saturated
-server, where the lease to worker gap had a p95 of about 2.4 s. At the retuned
-rates the window is milliseconds. The `caps` invariant is what catches it.
-
-Candidate fixes, both in the scheduler: resend the cancel in the `!started`
-branch of `handleTaskRunning` (`internal/scheduler/taskstatus.go`), or send an
-attempt-scoped cancel when a heartbeat names a closed attempt. The `SQI_CANCEL`
-stream is documented as a durability backstop, but nothing consumes it.
+The window is the gap between the lease and the worker's subscription:
+milliseconds on a server that keeps up, seconds on a saturated one. The worker
+receives cancels on a core-NATS subscription, so a cancel published before it
+subscribes never reaches it. Nothing consumes the `SQI_CANCEL` stream, and
+`handleTaskRunning` (`internal/scheduler/taskstatus.go`) discards the closed
+attempt's `running` report without resending the cancel.
 
 ### An instant restart can strand an attempt
 
-**Server, unfixed.** A lease request still in flight from a worker's old
-process can be served after a restart's reclaim (the stale worker row is used;
-the instance is not re-checked under the per-worker lock), leaving the
-re-leased attempt stranded as running until `scheduler.reconcile_grace` (2
-minutes) expires. It was seen in 5 of 25 runs with an instant simulated
-restart. A real restart takes seconds, so real workers are unlikely to hit it,
-and the harness's churn therefore crashes, waits `restart_after`, then
-restarts. Keep `restart_after` realistic in your own scenarios.
-
-### First baseline observations
-
-From the six [baseline](#baselines) runs. Each is a single run on one laptop,
-so treat them as leads for H12m rather than conclusions.
-
-- **PostgreSQL scheduled far more slowly than SQLite at `ci-medium`** on the same
-  host. Submit to first lease had a p50 of 12.99 s against 326 ms (about 40
-  times) and a p95 of 47 s against 967 ms. Terminal ingest (the server's task
-  `updated_at` minus the worker's terminal publish) had a p50 of 2.54 s against
-  15 ms. Throughput was similar (5.17 against 5.44 tasks/s) because it is bounded
-  by the offered load, not by the scheduler. At `smoke` the two stores were close.
-- **`GET /api/v1/jobs` (50 per page) was slow on PostgreSQL at `ci-medium`:** p50
-  2.79 s against 8.6 ms on SQLite, and p95 3.52 s against 280 ms. See hypothesis
-  5 below.
-- **Server CPU on SQLite was high:** peaks of 4.4 to 5.4 cores on `ci-medium`
-  (unpinned) against 1.8 on PostgreSQL. SQLite's single writer runs inside the
-  server process, while PostgreSQL's work happens in a separate database
-  process that `server.cpu_cores` does not include, so the two figures are not a
-  like-for-like measure of total cost.
-- **Server RSS** was about 660 to 680 MiB at 300 workers and 120 to 135 MiB at
-  20 workers.
-- **RSS rose steadily through the 17-minute `ci-medium` run** (about 2 GiB/h,
-  r² 0.97 to 0.99 in the growth table). That run is too short for the growth
-  rule, which needs 30 minutes of steady samples, so no `rss-growth` finding was
-  raised. Whether it plateaus is a soak question for H12m.
-- **The SQLite WAL never shrank** across the 17-minute WSL `ci-medium` run (3.9 to
-  9.6 MiB), and `wal-never-shrank` warned. See hypothesis 9.
-
-### Sizing facts
-
-- **The original `ci-medium` rates saturated a 4-CPU host.** At 1 and 0.5
-  jobs/s (about 40 and 10 tasks per job) with 300 workers the server reached
-  about 3.4 cores and 228 of 452 jobs were unfinished after the drain. The
-  scenario was retuned to about 5.5 tasks/s offered (about 3.8 in the steady
-  state): server peak 2.27 cores, generator 0.27 cores, VALID.
-- **The generator is cheap at small scale.** Smoke (20 simulated workers)
-  costs the harness about 0.1 to 0.3 cores, and a Linux CPU profile showed no
-  hot spot. The cost at 10,000 workers per generator has not been measured.
-- **Windows wall-clock resolution** limits `ws_lag` as described under
-  Unavailable.
+A lease request still in flight from a worker's old process can be served
+after a restart's reclaim (the stale worker row is used; the instance is not
+re-checked under the per-worker lock), leaving the re-leased attempt stranded
+as running until `scheduler.reconcile_grace` (default 2 minutes) expires. A
+real restart takes seconds, so real workers are unlikely to hit it. The
+harness's churn crashes a worker, waits `restart_after`, then restarts it;
+keep `restart_after` realistic in your own scenarios.
 
 ---
 
-## Open questions for H12m
+## Open questions
 
-H12 made the large runs runnable. **H12m** is the follow-up measurement item
-that runs them on stated hardware: `workers-ramp` to 10,000, `tasks-wide`,
-sweeps to the knee, and an 8 hour soak, and answers the ten questions below
-with numbers. They came from a survey of the code and each becomes a finding
-with numbers. Where the first runs have shown something, it is stated; for
-most, the honest status is **not yet measured**, because the hardware used for
-the first baselines cannot host the scale each needs.
+The large scenarios, sweeps to the knee and an 8 hour soak answer these
+questions with numbers. Each needs more hardware than the baselines used. The
+Status column gives what the baselines show.
 
 | # | Question | Scenario and signal | Status |
 |---|---|---|---|
-| 1 | Heartbeat ingest is one serialized store write per heartbeat. At what worker count does N workers / 15 s saturate it on SQLite and on PostgreSQL? The `SQI_WORKER` stream drops messages older than 2 minutes, so saturation means lost heartbeats and workers marked offline. | `workers-ramp` swept over `workers[0].count`; `workers-offline-under-load`, `workers.online`, `server.cpu_cores`. | Not yet measured; needs H12m scale. |
-| 2 | What do parked lease goroutines and timers cost at 10,000 workers across queues, and what does `WakeQueue` waking every waiter on a busy queue cost? | `workers-ramp`; `server.goroutines`, `server.rss_bytes`, `first_lease`. | Not yet measured. |
-| 3 | `sweepUnschedulable` considers at most 1,000 online workers. Above 1,000 workers, are tasks wrongly flagged unschedulable? | `workers-ramp`, `mixed-medium` (1,800 workers); watch for tasks flagged unschedulable that the fleet could run. | Not yet measured. |
-| 4 | Per-worker `sync.Map` entries are never pruned. Does churn grow server memory without bound in a soak? | `soak-steady` or `workers-churn` as a soak; `rss-growth`, `goroutine-growth`. | Not yet measured. The 15 minute `ci-medium` run is too short for the growth rules, which need 30 minutes of steady samples. In the 17-minute baseline runs RSS rose at about 2 GiB/h (r² 0.97 to 0.99); whether it plateaus is the soak's question. |
-| 5 | `GET /api/v1/jobs` issues two count queries per job on the page. How does read latency grow with job count? | `jobs-flood`; the `rest.jobs-list` histogram. | Not yet measured as job count grows. At `ci-medium` the first baseline had `GET /jobs` (50 per page) at p50 2.79 s on PostgreSQL against 8.6 ms on SQLite, so the cost is already visible on PostgreSQL at a modest job count. |
-| 6 | WebSocket clients silently drop pushes when their 64-message buffer is full. At what fan-out does `ui-heavy` start dropping? | `ui-heavy` swept over `clients.websocket.count`; the `ws-drops` finding and `ws.drops`. | Not yet measured at fan-out. The drop counting itself is tested. |
-| 7 | SQLite serializes writes behind a large submission (1,000,000 tasks takes about 1 min 20 s). What happens to heartbeats and status ingest meanwhile? | `tasks-wide` on SQLite and on PostgreSQL; `submit_latency`, `workers-converge`, `workers.online`. | Not yet measured. |
-| 8 | How does `SQI_LOGS` growth toward `max_store_mb` (1024 by default) and eviction behave, and does log ingest keep up with `logs-heavy`? | `logs-heavy`; `stream-at-cap`, `js.bytes{SQI_LOGS}`, the `logs` invariant. | Not yet measured. |
-| 9 | How large does the WAL grow between the 5 minute PASSIVE checkpoints under sustained writes? | Any SQLite run of 5 minutes or more; `disk.sqlite_wal_bytes`, `wal-never-shrank`. | In the first baseline the WAL never shrank across the 17-minute WSL `ci-medium` run (3.9 to 9.6 MiB) and `wal-never-shrank` warned. One run at this scale does not say how large it gets under longer sustained writes. |
-| 10 | The diagnostics buffer has a 512-component ceiling. What happens with more than 512 workers publishing diagnostics? | Not testable with the harness as built. | **Not covered.** Simulated workers do not publish worker diagnostics (`worker.diag.<workerID>`), so this needs either a simulator addition or real workers. |
+| 1 | Heartbeat ingest is one serialized store write per heartbeat. At what worker count does N workers / 15 s saturate it on SQLite and on PostgreSQL? The `SQI_WORKER` stream drops messages older than 2 minutes, so saturation means lost heartbeats and workers marked offline. | `workers-ramp` swept over `workers[0].count`; `workers-offline-under-load`, `workers.online`, `server.cpu_cores`. | Unmeasured. |
+| 2 | What do parked lease goroutines and timers cost at 10,000 workers across queues, and what does `WakeQueue` waking every waiter on a busy queue cost? | `workers-ramp`; `server.goroutines`, `server.rss_bytes`, `first_lease`. | Unmeasured. |
+| 3 | `sweepUnschedulable` considers at most 1,000 online workers. Above 1,000 workers, are tasks wrongly flagged unschedulable? | `workers-ramp`, `mixed-medium` (1,800 workers); watch for tasks flagged unschedulable that the fleet could run. | Unmeasured. |
+| 4 | Per-worker `sync.Map` entries are never pruned. Does churn grow server memory without bound in a soak? | `soak-steady` or `workers-churn` as a soak; `rss-growth`, `goroutine-growth`. | Unmeasured. The 15 minute `ci-medium` run is too short for the growth rules, which need 30 minutes of steady samples. In the 17-minute baseline runs RSS rises at about 2 GiB/h (r² 0.97 to 0.99). |
+| 5 | `GET /api/v1/jobs` issues two count queries per job on the page. How does read latency grow with job count? | `jobs-flood`; the `rest.jobs-list` histogram. | Unmeasured as job count grows. At `ci-medium` the baseline has `GET /jobs` (50 per page) at p50 2.79 s on PostgreSQL against 8.6 ms on SQLite, so the cost is visible on PostgreSQL at a modest job count. |
+| 6 | WebSocket clients silently drop pushes when their 64-message buffer is full. At what fan-out does `ui-heavy` start dropping? | `ui-heavy` swept over `clients.websocket.count`; the `ws-drops` finding and `ws.drops`. | Unmeasured at fan-out. The drop counting itself is tested. |
+| 7 | SQLite serializes writes behind a large submission (1,000,000 tasks takes about 1 min 20 s). What happens to heartbeats and status ingest meanwhile? | `tasks-wide` on SQLite and on PostgreSQL; `submit_latency`, `workers-converge`, `workers.online`. | Unmeasured. |
+| 8 | How does `SQI_LOGS` growth toward `max_store_mb` (1024 by default) and eviction behave, and does log ingest keep up with `logs-heavy`? | `logs-heavy`; `stream-at-cap`, `js.bytes{SQI_LOGS}`, the `logs` invariant. | Unmeasured. |
+| 9 | How large does the WAL grow between the 5 minute PASSIVE checkpoints under sustained writes? | Any SQLite run of 5 minutes or more; `disk.sqlite_wal_bytes`, `wal-never-shrank`. | In the baseline the WAL never shrinks across the 17-minute WSL `ci-medium` run (3.9 to 9.6 MiB) and `wal-never-shrank` warns. One run at this scale does not say how large it gets under longer sustained writes. |
+| 10 | The diagnostics buffer has a 512-component ceiling. What happens with more than 512 workers publishing diagnostics? | Not testable with the harness as built. | Not covered: simulated workers do not publish worker diagnostics (`worker.diag.<workerID>`), so this needs either a simulator addition or real workers. |
 
-H12m also covers what the first runs could not: the generator's own cost at
-10,000 workers per process (the design target), and the knee of each sweep.
+Also unmeasured: the generator's own cost at 10,000 workers per process (the
+design target), and the knee of each sweep.
 
 ---
 
 ## See also
 
 - [Observability](observability.md): server metrics, including the five metric
-  families declared but not yet recorded that the harness measures from the
+  families declared but not recorded that the harness measures from the
   client side instead.
 - [Operations](operations.md): running and sizing `sqi-server`.
 - [Configuration](configuration.md): the keys `server.config` accepts,

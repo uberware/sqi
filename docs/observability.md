@@ -239,8 +239,8 @@ are visible (component `server`) in Admin → Server log and
 ## Known gap: server metrics declared but not recorded
 
 `GET /metrics` on `sqi-server` registers five metric families that nothing in
-the server records yet, so they never carry a sample and should not be graphed
-or alerted on:
+the server records, so they never carry a sample and should not be graphed or
+alerted on:
 
 | Metric | Declared as |
 |---|---|
@@ -250,9 +250,7 @@ or alerted on:
 | `sqi_nats_consumed_total` | messages consumed from the broker |
 | `sqi_db_query_duration_seconds` | store query latency |
 
-Wiring them touches the scheduler and is tracked as part of the SLO-metrics
-work (H11). Until then, the load harness measures the same things from the
-client side: task completions per second, submit-to-first-lease and job
+The load harness measures the same things from the client side: task completions per second, submit-to-first-lease and job
 end-to-end latency, and server CPU, memory and goroutines scraped from the
 metrics that are recorded. See [Load testing](load-testing.md).
 

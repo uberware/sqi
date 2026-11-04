@@ -472,8 +472,8 @@ func TestTerminalIngest(t *testing.T) {
 }
 
 // TestRecord_NoSubmissionAccepted checks that a complete run whose scenario
-// submits jobs, but whose submissions the server all refused, is INVALID with
-// a submissions-rejected error, and not a run in which every invariant held.
+// submits jobs, but whose submissions the server all refused, is invalid with
+// a submissions-rejected error rather than a run in which every invariant held.
 func TestRecord_NoSubmissionAccepted(t *testing.T) {
 	for _, tc := range []struct {
 		name      string

@@ -22,8 +22,8 @@ const (
 	subCount = 1 << subBits
 
 	// MinTrackable and MaxTrackable bound the range the buckets resolve.
-	// Values outside it land in the lowest or highest bucket; Min and Max
-	// still report the true extremes.
+	// Values outside it are counted in the bucket of MinTrackable or
+	// MaxTrackable; Min and Max still report the true extremes.
 	MinTrackable = time.Microsecond
 	// MaxTrackable is the highest bucketed value; see MinTrackable.
 	MaxTrackable = 24 * time.Hour
@@ -32,8 +32,8 @@ const (
 // numBuckets is one past the index of the highest trackable value.
 var numBuckets = bucketIndex(int64(MaxTrackable)) + 1
 
-// maxBuckets is the fixed array size; the init check below keeps it equal to
-// numBuckets so the array never needs a runtime length.
+// maxBuckets is the fixed array size. It must equal numBuckets; init panics
+// when it does not.
 const maxBuckets = 5150
 
 func init() {
@@ -68,10 +68,10 @@ func bucketBounds(idx int) (lo, width int64) {
 // for use. Record is safe for concurrent use and lock-free.
 //
 // Count, Quantile, Min, Max, Mean and Marshal may be called while Record runs
-// and see a consistent-enough snapshot for monitoring. Merge and Unmarshal are
-// meant for after recording has stopped; merging into h while h is recorded
-// into is safe, merging from a histogram that is still being recorded into
-// may miss in-flight records.
+// and see an approximate snapshot, suitable for monitoring. Merge and
+// Unmarshal are for use after recording has stopped. Merging into h while h is
+// recorded into is safe; merging from a histogram that is still being
+// recorded into may miss in-flight records.
 type Histogram struct {
 	buckets [maxBuckets]atomic.Int64
 	count   atomic.Int64

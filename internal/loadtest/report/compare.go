@@ -20,9 +20,8 @@ const (
 )
 
 // noiseBandPct is the half-width of the band, in percent, inside which a
-// difference is reported as "no change". The spec leaves the band to the
-// author; a run's own variance is not modeled (a repeated run is compared
-// run against run).
+// difference is reported as "no change". A run's own variance is not modeled:
+// a repeated run is compared run against run.
 const noiseBandPct = 5.0
 
 // Delta is one metric's change from run A to run B.
@@ -57,8 +56,8 @@ var peakSeries = []string{
 //
 //   - higher is better: tasks.terminal, jobs.submitted, and a submit.status.<code>
 //     counter for a 2xx status (accepted submissions);
-//   - lower is better: ws.drops, ws.errors, rest.errors and a submit.status.<code>
-//     counter for any other status;
+//   - lower is better: ws.drops, ws.errors, ws.lag_negative, rest.errors and a
+//     submit.status.<code> counter for any other status;
 //   - not compared: everything else (workers.live is a fleet size, ws.events
 //     has no good direction, and an unknown counter has no defined one).
 //
@@ -82,10 +81,10 @@ func counterDirection(name string) direction {
 // Compare returns the per-metric deltas from a to b: the p50, p95 and p99 of
 // every histogram both runs have, every comparable counter (as a per-second
 // steady-window rate when both runs carry a SteadyCounters snapshot, as a
-// per-second run average when either does not, and as a total when a run has no
-// duration) and
-// the peaks of the key server series. A difference of at most 5% either way is
-// "no change". Deltas come in a fixed order: histograms, counters, peaks.
+// per-second run average when either does not, and as a total when a run has
+// no duration) and the peaks of the key server series. A difference of at most
+// 5% either way is "no change". Deltas come in a fixed order: histograms,
+// counters, peaks.
 func Compare(a, b *Record) []Delta {
 	var out []Delta
 	out = append(out, compareHistograms(a, b)...)

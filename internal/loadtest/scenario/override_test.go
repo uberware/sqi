@@ -38,8 +38,8 @@ func TestSet(t *testing.T) {
 		{"duration map key", "assert.p95_submit_to_first_lease", "3s", func(s *Scenario) bool { return s.Assert["p95_submit_to_first_lease"].Duration == 3*time.Second }, ""},
 		{"new duration map key", "assert.p99_submit_to_first_lease", "9s", func(s *Scenario) bool { return s.Assert["p99_submit_to_first_lease"].Duration == 9*time.Second }, ""},
 		{"nested any map", "server.config.http.rate_limit.enabled", "false", func(s *Scenario) bool {
-			h, _ := s.Server.Config["http"].(map[string]any) //nolint:errcheck // a missing key just fails the check
-			r, _ := h["rate_limit"].(map[string]any)         //nolint:errcheck // a missing key just fails the check
+			h, _ := s.Server.Config["http"].(map[string]any) //nolint:errcheck // a missing key fails the check
+			r, _ := h["rate_limit"].(map[string]any)         //nolint:errcheck // a missing key fails the check
 			return r["enabled"] == false
 		}, ""},
 		{"empty value zeroes a string", "jobs[0].usage_pool", "", func(s *Scenario) bool { return s.Jobs[0].UsagePool == "" }, ""},

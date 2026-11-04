@@ -35,8 +35,8 @@ type jsReader struct {
 
 	nc *nats.Conn
 	js jetstream.JetStream
-	// refused is the broker's authentication refusal. It is permanent for the
-	// run, so the observer stops knocking on the broker's auth callout.
+	// refused is the broker's authentication refusal. It is kept for the rest
+	// of the run, and connect returns it without dialing the broker again.
 	refused error
 }
 

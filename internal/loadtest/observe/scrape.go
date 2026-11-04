@@ -25,16 +25,15 @@ import (
 const maxMetricsBytes = 64 << 20
 
 // maxRoutes bounds the distinct route series. The server labels its latency
-// histogram with the raw request path, so a scanner hitting random URLs would
-// otherwise mint a series per URL; routes past the bound share "other".
+// histogram with the raw request path, so without a bound every distinct URL
+// requested would add a series; routes past the bound share "other".
 const maxRoutes = 100
 
 // otherRoute is the route of every path beyond maxRoutes.
 const otherRoute = "other"
 
-// quietRoutes are served by the server for operators, not for the farm: the
-// scrape itself, probes, profiling, and the WebSocket upgrade, whose duration
-// is the connection's lifetime.
+// quietRoutes get no latency series: the scrape itself, probes, profiling, and
+// the WebSocket upgrade, whose duration is the connection's lifetime.
 var quietRoutes = []string{"/metrics", "/healthz", "/readyz", "/api/v1/ws", "/debug/pprof"}
 
 var (
@@ -294,9 +293,10 @@ func (s *scrapeState) recordHTTP(rec *measure.Recorder, t time.Time, fams map[st
 	for _, route := range slices.Sorted(maps.Keys(cur)) {
 		before, ok := prev[route]
 		if !ok {
-			// A route first seen this scrape has no baseline; its next sample does.
-			// The first scrape of a long-running server would otherwise report
-			// the percentile of everything since the server started.
+			// The first scrape has no baseline, and differencing it against
+			// zero would report the percentile of everything since the server
+			// started, so it records no percentile. A route that first appears
+			// in a later scrape is differenced against zero.
 			if !s.havePrev {
 				continue
 			}

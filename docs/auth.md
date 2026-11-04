@@ -1364,7 +1364,7 @@ defense and does not become one because the login route sits behind it.
 
 `http.rate_limit.enabled: false` turns even that off (the load harness does
 so on the servers it starts). Leave it on for any server untrusted clients
-can reach: with it off, nothing at all stands in front of `/auth/login` or
+can reach: with it off, nothing throttles `/auth/login` or
 `/workers/enroll`.
 
 **Failed logins against directory accounts hit your directory.** For an

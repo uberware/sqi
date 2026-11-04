@@ -94,7 +94,7 @@ requests faster than the limit allows is answered with `429 Too Many Requests`.
 
 Turn it off only behind a trusted network or for load testing. With it off
 nothing throttles a client that floods the API, and a load generator driving
-the server from one address no longer hits the limit.
+the server from one address does not hit the limit.
 
 ```yaml
 http:

@@ -11,11 +11,12 @@ description: mixed - 1,800 simulated and 2 real workers; shot-render at 1/min (2
 #   big-sim: 3 jobs x 1,000 whole-worker tasks of 5 s, submitted at the
 #     start: 15,000 worker-seconds of 1,800 workers x 1,800 s = 3.24M, 0.5%;
 #     spread over the window, 1.67 tasks/s.
-#   Together about 5.0 tasks/s, under 70% of ci-medium's measured knee on 4
-#     CPUs (about 7.4 tasks/s; 0.7 x 7.4 = 5.2), so the server keeps up too.
-# The spec's example rates (2/s x 200 tasks, and 3 x 250,000 tasks) offer
-# 400 tasks/s against a pool that serves about 6.6 (200 / 30.4 s): no
-# hardware drains them, and the run would end in a terminal failure.
+#   Together about 5.0 tasks/s, under 70% of ci-medium's knee on 4 CPUs
+#     (about 7.4 tasks/s; 0.7 x 7.4 = 5.2), so the server keeps up too.
+# testdata/example.yaml's rates (shot-render 2/s x 200 tasks, big-sim
+# 3 x 250,000 tasks) give shot-render alone 400 tasks/s against a pool that
+# serves about 6.6 (200 / 30.4 s): no hardware drains them, and the run ends
+# in a terminal failure.
 duration: 30m
 warmup: 2m
 

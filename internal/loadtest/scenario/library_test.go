@@ -194,7 +194,7 @@ func TestBuiltin_Sizes(t *testing.T) {
 		}},
 		{"mixed-medium", func(t *testing.T, s *Scenario) {
 			if workers(s) != 1800 || s.Workers[1].Real != 2 || s.Duration.Duration != 30*time.Minute {
-				t.Error("want the 1800 + 2 real workers for 30m of the spec example")
+				t.Error("want 1800 simulated and 2 real workers for 30m")
 			}
 		}},
 		{"soak-steady", func(t *testing.T, s *Scenario) {
@@ -226,16 +226,16 @@ func meanSeconds(d Dist) float64 {
 	return d.Value
 }
 
-// TestBuiltins_FeasibleLoad pins the sizing of the scenarios people run
-// locally (make load and make soak): the load they offer must fit in 70% of
-// their own capacity, worker cores and usage-pool limits alike, and stay
-// under 70% of the server load ci-medium measured as its knee on 4 CPUs
-// (about 7.4 tasks/s). Otherwise the run measures a backlog, and its drain
-// fails the terminal invariant on any hardware.
+// TestBuiltins_FeasibleLoad pins the sizing of the scenarios run locally
+// (make load and make soak): the load they offer must fit in 70% of their own
+// capacity, worker cores and usage-pool limits alike, and stay under 70% of
+// ci-medium's knee on a 4-CPU server (about 7.4 tasks/s). Otherwise the run
+// measures a backlog, and its drain fails the terminal invariant on any
+// hardware.
 func TestBuiltins_FeasibleLoad(t *testing.T) {
 	const (
 		maxShare = 0.7
-		kneeRate = 7.4 // tasks/s, ci-medium at 0.16/s and 0.10/s on 4 CPUs
+		kneeRate = 7.4 // tasks/s: ci-medium at 0.16/s and 0.10/s on 4 CPUs
 	)
 	for _, name := range []string{"mixed-medium", "soak-steady"} {
 		t.Run(name, func(t *testing.T) {

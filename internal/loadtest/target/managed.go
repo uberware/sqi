@@ -695,7 +695,7 @@ func (m *managed) workerPIDs() []int {
 }
 
 // Close stops the real workers (together), then the server: each gets an
-// interrupt and the stop grace (30 s) to exit before it is killed, and a
+// interrupt and the stop grace (30 s by default) to exit before it is killed, and a
 // done ctx kills at once. It then drops a database the harness created.
 // Every process is reaped before Close returns, whatever the error.
 func (m *managed) Close(ctx context.Context) error {

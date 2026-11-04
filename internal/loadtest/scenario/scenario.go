@@ -37,7 +37,7 @@ type ServerSpec struct {
 	BrokerAuth bool           `yaml:"broker_auth"`
 	HTTPAuth   bool           `yaml:"http_auth"`
 	TLS        bool           `yaml:"tls"`
-	Config     map[string]any `yaml:"config"` // merged over the harness defaults untouched
+	Config     map[string]any `yaml:"config"` // merged over the harness's settings; harness-owned and unknown keys are rejected
 }
 
 // FarmSpec declares the queues and usage pools the run creates.
@@ -58,8 +58,8 @@ type PoolSpec struct {
 	Limit int    `yaml:"limit"`
 }
 
-// Command is the command a real worker runs for a task: the no-op the load
-// harness submits against managed real workers.
+// Command is the onRun command the driver writes into every template: the
+// no-op binary real workers run, or a placeholder no worker executes.
 type Command struct {
 	Path string
 	Args []string

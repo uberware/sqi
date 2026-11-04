@@ -23,8 +23,8 @@ import (
 	"github.com/uberware/sqi/internal/loadtest/internal/sleep"
 )
 
-// requestTimeout bounds every call except SubmitJob. It is a variable so a
-// test can shorten it.
+// requestTimeout bounds every call except SubmitJob and GetRaw. It is a
+// variable so a test can shorten it.
 var requestTimeout = 30 * time.Second
 
 // The pauses between retries of a throttled call (see [WithRetry]) when the
@@ -71,21 +71,21 @@ func WithAPIKey(key string) Option {
 	return func(c *Client) { c.apiKey = key }
 }
 
-// WithRetry makes every call but SubmitJob and Ready retry a 429 or 503
-// answer, waiting as the server's Retry-After says (or backing off from
+// WithRetry makes every call but SubmitJob, Ready and GetRaw retry a 429 or
+// 503 answer, waiting as the server's Retry-After says (or backing off from
 // 250 ms to 10 s without one), until the call succeeds, fails otherwise, or
-// would wait past budget in all. A server's rate limiter answers 429, and an
-// attached server keeps its limiter on, so the harness's own setup, actions,
-// checks and teardown must ride it out. Submissions never retry: a 429 or
-// 503 answer to one is what the run measures. A budget of 0 turns retries
-// off, as for the UI pollers, whose errors are counted.
+// would wait past budget in all. The harness's setup, actions, checks and
+// teardown need this because a server's rate limiter answers 429, and an
+// attached server keeps its limiter on. Submissions never retry: a 429 or 503
+// answer to one is what the run measures. A budget of 0 turns retries off, as
+// for the UI pollers, whose errors are counted.
 func WithRetry(budget time.Duration) Option {
 	return func(c *Client) { c.retryBudget = max(budget, 0) }
 }
 
-// WithHTTPClient replaces the default client. Per-request deadlines are applied
-// by the Client itself (30 s, none for SubmitJob), so the http.Client should
-// not set a Timeout of its own.
+// WithHTTPClient replaces the default client. The Client applies per-request
+// deadlines itself (30 s, none for SubmitJob or GetRaw), so the http.Client
+// should not set a Timeout of its own.
 func WithHTTPClient(hc *http.Client) Option {
 	return func(c *Client) { c.hc = hc }
 }
@@ -694,12 +694,11 @@ func (c *Client) CreateAPIKey(ctx context.Context, name string) (string, error) 
 // ── Jobs ─────────────────────────────────────────────────────────────────────
 
 // SubmitJob submits a job (POST /jobs). It is never retried, so a 429 or 503
-// answer reaches the caller to be counted. It has no deadline of its own: a large
-// job takes the server a long time to create, and giving up would orphan it. The
-// caller's ctx bounds it.
-// It returns the HTTP status of every
-// response so callers can count 422, 429 and 503; a non-2xx status comes with an
-// error carrying the server's message, and a transport error returns status 0.
+// answer reaches the caller to be counted. It has no deadline of its own: a
+// large job takes the server a long time to create, and giving up would orphan
+// it. The caller's ctx bounds it. It returns the HTTP status of every response
+// so callers can count 422, 429 and 503; a non-2xx status comes with an error
+// carrying the server's message, and a transport error returns status 0.
 func (c *Client) SubmitJob(ctx context.Context, r SubmitRequest) (jobID string, status int, err error) {
 	q := url.Values{"farm_id": {r.FarmID}, "queue_id": {r.QueueID}}
 	if r.Priority > 0 {

@@ -65,17 +65,24 @@ func parseShards(rs []*Record) ([]shardEntry, error) {
 }
 
 // Merge combines the records of one run's shards into one record. The records
-// must share a run ID. Histograms merge and counters add; series, environment
-// and scenario come from shard 0/n, which is the one to carry server
-// observations (so the merged record's scenario has shard 0's counts and rates,
-// which are per shard, not for the whole farm); the run is Valid and Complete
-// only if every shard is; an invariant holds only if it held in every shard,
-// with the shards' evidence concatenated; findings are recomputed from the
-// merged data, and the runner's own (churn-failed, generator-saturated),
-// which a record cannot recompute, are carried over from the shards. SteadyCounters and WindowCounters add like Counters, unless a
-// shard has none, in which case the merged record has none (no
-// SteadyCounters makes its rates run averages); WindowEnd is the latest
-// shard's. The inputs are not modified.
+// must share a run ID. In the merged record:
+//
+//   - histograms merge, and counters and backlogs add;
+//   - SteadyCounters and WindowCounters add like Counters, unless a shard has
+//     none, in which case the merged record has none (no SteadyCounters makes
+//     its rates run averages);
+//   - series, environment and scenario come from shard 0/n, the shard that
+//     carries server observations, so the scenario's counts and rates are per
+//     shard, not for the whole farm;
+//   - Started is the earliest shard's, Ended and WindowEnd the latest shard's;
+//   - the run is Valid and Complete only if every shard is;
+//   - an invariant holds only if it held in every shard, with the shards'
+//     evidence concatenated;
+//   - findings are recomputed from the merged data, and the runner's own
+//     (churn-failed, generator-saturated), which a record cannot recompute,
+//     are carried over from the shards.
+//
+// The inputs are not modified.
 func Merge(rs []*Record) (*Record, error) {
 	shards, err := parseShards(rs)
 	if err != nil {

@@ -127,7 +127,7 @@ func TestRecord_RatesExcludeTheDrain(t *testing.T) {
 		}
 	}
 
-	// An older record, with no window, keeps rating up to Ended.
+	// A record with no window rates up to Ended.
 	old := rec(4 * time.Minute)
 	old.WindowEnd, old.WindowCounters = time.Time{}, nil
 	if got, _ := old.rate(CounterJobsSubmitted, true); math.Abs(got-60.0/(14*60)) > 1e-9 {

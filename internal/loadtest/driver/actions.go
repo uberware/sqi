@@ -152,7 +152,8 @@ func (a *Actions) fire(ctx context.Context, act scenario.Action, rng *rand.Rand)
 	}
 }
 
-// share is floor(fraction x n), robust against binary rounding.
+// share is floor(fraction x n), corrected for binary rounding by
+// fractionEpsilon.
 func share(fraction float64, n int) int {
 	return min(n, max(0, int(math.Floor(fraction*float64(n)+fractionEpsilon))))
 }

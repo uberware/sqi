@@ -151,8 +151,8 @@ func (a *attached) DataDir() string                    { return a.cfg.DataDir }
 func (a *attached) Credentials() simworker.Credentials { return a.creds }
 func (a *attached) TLS() simworker.TLSFiles            { return a.cfg.TLS }
 
-// PoolName is the server's name of the scenario's usage pool name: the run's
-// own namespaced pool.
+// PoolName returns the server's name for the scenario's usage pool name: the
+// run's own namespaced pool.
 func (a *attached) PoolName(name string) string {
 	if name == "" {
 		return ""

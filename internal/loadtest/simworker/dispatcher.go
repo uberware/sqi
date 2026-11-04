@@ -26,9 +26,9 @@ import (
 
 // minLineTick is the shortest wait between two rounds of log lines. A plan
 // with lines closer together than this emits them in batches, so a heavy log
-// plan costs one timer per tick rather than one per line. It stays well under
-// the log streamer's 500 ms flush interval, so batching here does not change
-// when lines reach the server by much.
+// plan costs one timer per tick rather than one per line. It is well under the
+// log streamer's 500 ms flush interval, so batching adds little delay before
+// lines reach the server.
 const minLineTick = 100 * time.Millisecond
 
 // simulatedFailure is the failure reason of a task whose plan fails.

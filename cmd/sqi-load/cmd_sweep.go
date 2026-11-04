@@ -21,9 +21,10 @@ func (a *app) sweepCmd() *cobra.Command {
 		Use:   "sweep --scenario <name|file> --vary path=v1,v2,... [flags]",
 		Short: "Run a scenario once per value of one parameter and find the knee",
 		Long: `Run a scenario once per value of one parameter, each on a fresh managed
-sqi-server, in the order given (ascending), and write sweep.csv and sweep.md
-with the knee: the first value whose p95 submit-to-first-lease exceeds twice
-the first value's, whose invariants fail, or whose run is INVALID.
+sqi-server, in the order given (give them ascending), and write sweep.csv and
+sweep.md with the knee: the first value whose p95 submit-to-first-lease
+exceeds twice the first value's, whose invariants fail, or whose run is
+INVALID.
 
 Each point's record goes to <out>/<sweep-id>/<i>-<value>/. A value cannot
 contain a comma. sweep exits 0 once every point has run, whatever the knee:

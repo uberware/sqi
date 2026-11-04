@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: mixed-medium
-description: 2,000 workers, steady mixed submissions, 30 min
+description: 1,800 simulated and 2 real workers, steady mixed submissions, 30 min
 duration: 30m            # load: hard stop; soak: run length
 warmup: 2m               # excluded from summary statistics and growth slopes
 
@@ -22,7 +22,7 @@ workers:
     cpu: 32
     os: linux
     tags: {arnold: "true"}
-    queues: []            # [] = _any
+    queues: []            # [] = every queue
     heartbeat: 15s
     churn: {crash_per_hour: 0.05, restart_after: 30s, disconnect_per_hour: 0.1}
   - name: real
@@ -40,7 +40,7 @@ jobs:
     expr: false
     task:
       duration: {dist: lognormal, median: 20s, p95: 90s}
-      fail_rate: 0.01     # first attempt fails, retry policy applies
+      fail_rate: 0.01     # each attempt fails with this probability; retry policy applies
       hang_rate: 0.0005   # runs until canceled or timeout
       log_lines: {median: 200, p95: 2000}
       log_line_bytes: 120
@@ -58,5 +58,5 @@ actions:                  # timed events
   - at: 20m
     retry_failed: true
 
-assert:                   # optional thresholds; never used in CI
+assert:                   # optional thresholds; validated and recorded, never evaluated
   p95_submit_to_first_lease: 2s

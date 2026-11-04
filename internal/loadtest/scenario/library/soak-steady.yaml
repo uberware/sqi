@@ -9,11 +9,9 @@ description: time - 500 workers under a steady mixed load of about 5 tasks/s for
 #   comp: 0.06/s x 10 tasks = 0.6 tasks/s, uniform 2 to 10 s (mean 6 s): 3.6
 #     tasks in flight.
 #   Slots: 500 workers x 8 cores / 2 cores = 2,000; about 98 in flight is 5%.
-#   Server: 5.0 tasks/s in all, under 70% of ci-medium's measured knee on 4
-#     CPUs (about 7.4 tasks/s; 0.7 x 7.4 = 5.2). The earlier 1/s and 0.3/s
-#     offered about 43 tasks/s, the load that saturated a 4-CPU server when
-#     ci-medium was sized, so an 8 h soak on a laptop would have grown a
-#     backlog and its growth slopes would have described that, not leaks.
+#   Server: 5.0 tasks/s in all, under 70% of ci-medium's knee on 4 CPUs
+#     (about 7.4 tasks/s; 0.7 x 7.4 = 5.2). Above the knee an 8 h soak grows
+#     a backlog, and its growth slopes describe that backlog, not leaks.
 duration: 8h
 warmup: 10m
 

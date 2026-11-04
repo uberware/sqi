@@ -96,7 +96,7 @@ func (r *run) record() *report.Record {
 // judgeValidity sets rec's validity and returns whether the generator
 // saturated. The generator's health is judged over the measured window (an
 // idle drain would dilute it), and a complete run whose server accepted none
-// of the scenario's submissions is INVALID too.
+// of the scenario's submissions is invalid too.
 func (r *run) judgeValidity(rec *report.Record) (saturated bool) {
 	rec.Valid, rec.InvalidReason = true, ""
 	if r.obs != nil {

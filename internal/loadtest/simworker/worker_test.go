@@ -249,12 +249,12 @@ func TestWorker_RestartReclaims(t *testing.T) {
 		task := f.onlyTask(t, jobID)
 		return task.Status == "running"
 	})
-	// A real restart takes seconds, by which time the old process's next lease
-	// request is parked on the server, and a parked request from a superseded
-	// instance is refused. A request still in the handler's front path when
-	// the new registration lands is not re-checked against it and can be
-	// served the reclaimed task into a dead inbox (left to the 2 min attempt
-	// reconciliation), so give that request time to park first.
+	// The server refuses a parked lease request from a superseded instance, but
+	// does not re-check one still in the handler's front path when the new
+	// registration lands; that request can be served the reclaimed task into a
+	// dead inbox, recovered only by scheduler.reconcile_grace. A real restart
+	// takes seconds, long enough for the old process's next request to park, so
+	// give it time to park first.
 	time.Sleep(250 * time.Millisecond)
 	first := l.Events()[0]
 
@@ -304,10 +304,9 @@ func TestWorker_ReconnectKeepsInstance(t *testing.T) {
 	jobID := f.submit(t, 1, 1)
 	waitFor(t, 30*time.Second, "task running", func() bool { return countKind(l, "", simworker.KindRunning) == 1 })
 
-	// InstanceID is only the worker's own field and Disconnect never assigns
-	// it, so this check is close to trivially true. The proof that the
-	// re-registration carried the same instance is on the server: one
-	// attempt, never reclaimed (asserted below).
+	// Disconnect never assigns InstanceID, so this check covers only the
+	// worker's own field. The server's single, unreclaimed attempt (asserted
+	// below) shows the re-registration carried the same instance.
 	before := w.InstanceID()
 	if err := w.Disconnect(t.Context()); err != nil {
 		t.Fatalf("Disconnect: %v", err)

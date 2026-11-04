@@ -208,9 +208,9 @@ func (g *genSampler) stop() { g.lag.stop() }
 
 // sample records the generator's goroutine count and, from the second sample,
 // its CPU use and schedule lag over the interval since the previous one. It
-// takes its own timestamp, at the instant it reads the process CPU time: the
-// caller may have spent seconds in network calls beforehand, and a timestamp
-// from before them would turn that wait into a wrong CPU rate.
+// takes its own timestamp when it reads the process CPU time, so a rate's
+// interval is the time between two CPU reads and excludes any time the caller
+// spent before calling it.
 func (g *genSampler) sample() {
 	cpu, err := g.cpu()
 	t := g.now()

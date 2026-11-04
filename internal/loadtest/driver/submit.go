@@ -24,16 +24,16 @@ const (
 	// in flight.
 	defaultConcurrency = 32
 	// maxPacedInFlight bounds the submissions of one paced class awaiting an
-	// answer. A server that stops answering fills it, after which the pacer's
-	// lag grows, which is the measurement.
+	// answer. A server that stops answering fills it; the pacer's lag then
+	// grows and is recorded.
 	maxPacedInFlight = 256
 )
 
 // finishTimeout bounds how long a submission still unanswered when the run
 // ends waits for its answer, so the ledger accounts for it. A submission in
-// a live run has no time limit: creating a million-task job takes the server
-// over a minute, and abandoning it would leave a job the ledger never saw. A
-// variable so a test can shorten it.
+// a live run has no time limit: the server can take minutes to create a large
+// job, and abandoning it would leave a job the ledger never saw. A variable so
+// a test can shorten it.
 var finishTimeout = 10 * time.Second
 
 // Submitter submits the scenario's jobs to the server and records what the
