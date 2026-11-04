@@ -1028,6 +1028,8 @@ was open, and counts it in `sqi_scheduler_tasks_reconciled_total`.
   not count (the server warns once until it recovers: `scheduler: worker
   heartbeat delayed or skewed`), so that worker's tasks are not reconciled
   until its clock or its delivery recovers. Keep worker clocks synchronized.
+  A skewed clock does not take a worker offline: liveness is timed by the
+  broker's timestamp for each heartbeat, not by the worker's.
 - **Workers from v0.3.0 and earlier are never reconciled.** They send no
   attempt list, and are covered only by the offline sweep and by `restore`'s
   fence. A current worker holding nothing sends an empty list, which counts.

@@ -69,8 +69,8 @@ RETURNING ` + workerCols
 UPDATE workers SET disabled = ?, updated_at = ? WHERE id = ?
 RETURNING ` + workerCols
 
-	// sqlUpdateWorkerHeartbeat orders heartbeats by the broker's stamp, not
-	// the worker's clock: one stamped earlier than heartbeat_broker_at (a late
+	// sqlUpdateWorkerHeartbeat orders heartbeats by the broker's stamp, not by
+	// the time recorded: one stamped earlier than heartbeat_broker_at (a late
 	// redelivery) matches no row, and any other is recorded whatever its
 	// last_heartbeat_at. A NULL stamp (both stamp arguments) matches as the
 	// stored one does, so an unstamped heartbeat is recorded unconditionally

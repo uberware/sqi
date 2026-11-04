@@ -1296,14 +1296,17 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 
 // ── Heartbeat handler and sweep ──────────────────────────────────────
 
-// handleWorkerHeartbeat processes a worker.heartbeat message by recording its
-// At as the worker's LastHeartbeatAt. If At is zero the server timestamp is
-// used so clock skew on the worker side cannot cause false timeouts. The
-// heartbeat is ordered by the broker's stream timestamp ([Scheduler.brokerAt]),
-// never by At, which only rejects out-of-order redeliveries. The stored time is
-// still the worker's, so [Scheduler.sweepStaleWorkers] judges it against the
-// server's clock: a worker whose clock is behind, or stepped back, by more
-// than the heartbeat timeout looks offline.
+// handleWorkerHeartbeat processes a worker.heartbeat message by recording, as
+// the worker's LastHeartbeatAt, the broker's stream timestamp for it
+// ([Scheduler.brokerAt]), or the server's receipt time when the message has
+// none. Never the worker's own At: [Scheduler.sweepStaleWorkers] compares
+// LastHeartbeatAt with the server's clock, so a worker whose clock runs
+// behind, or is stepped back, would otherwise look offline and have its
+// running tasks reclaimed and run again. The broker stamp is the time the
+// heartbeat was published, so a backlog delivered late (after a store outage
+// or a failover) does not make a worker that has since died look alive. The
+// same stamp orders heartbeats, so an out-of-order redelivery is ignored. At
+// is still what the reconciler checks for a delayed or skewed worker.
 //
 // The handler reads WorkerID and At and passes AttemptsReported and
 // ActiveAttemptIDs to the reconciler (see attemptreconcile.go), but decodes the
@@ -1336,13 +1339,18 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 		return
 	}
 
+	received := time.Now().UTC()
 	at := m.At
 	if at.IsZero() {
-		at = time.Now().UTC()
+		at = received
 	}
 
 	stamp := s.brokerAt(ctx, msg, "worker.heartbeat", m.WorkerID)
-	if err := s.store.UpdateWorkerHeartbeat(ctx, m.WorkerID, at, stamp); err != nil {
+	seen := received
+	if stamp != nil {
+		seen = *stamp
+	}
+	if err := s.store.UpdateWorkerHeartbeat(ctx, m.WorkerID, seen, stamp); err != nil {
 		if s.stopIfFenced(ctx, err) {
 			return
 		}
@@ -1369,7 +1377,7 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 	// an attempt is no longer held. Older workers send neither field and are
 	// never reconciled.
 	if s.reconciler != nil && m.AttemptsReported {
-		if s.reconciler.record(m.WorkerID, at, time.Now().UTC(), m.ActiveAttemptIDs) {
+		if s.reconciler.record(m.WorkerID, at, received, m.ActiveAttemptIDs) {
 			s.logger.WarnContext(ctx, "scheduler: worker heartbeat delayed or skewed: more than heartbeat_timeout "+
 				"between the worker's timestamp and its receipt; its tasks are not reconciled until its "+
 				"heartbeats arrive in time again",

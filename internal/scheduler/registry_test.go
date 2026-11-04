@@ -256,12 +256,16 @@ func TestHandleWorkerHeartbeat_Valid(t *testing.T) {
 		t.Fatalf("RegisterWorker: %v", err)
 	}
 
-	hbAt := now.Add(5 * time.Second)
+	// The worker's own time is not what liveness records: with no broker stamp
+	// on the message, the server's receipt time is.
+	hbAt := now.Add(-time.Hour)
 	msg := &fakeJSMsg{
 		subject: bus.WorkerHeartbeatSubject("w-1"),
 		data:    workerMsgJSON(t, protocol.HeartbeatMsg{Version: protocol.ProtocolVersion, WorkerID: "w-1", At: hbAt}),
 	}
+	before := time.Now().UTC()
 	s.handleWorkerMessage(msg)
+	after := time.Now().UTC()
 
 	if !msg.acked {
 		t.Error("valid heartbeat should be acked")
@@ -270,8 +274,9 @@ func TestHandleWorkerHeartbeat_Valid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetWorker: %v", err)
 	}
-	if w.LastHeartbeatAt == nil || !w.LastHeartbeatAt.Equal(hbAt) {
-		t.Errorf("LastHeartbeatAt = %v, want %v", w.LastHeartbeatAt, hbAt)
+	if w.LastHeartbeatAt == nil || w.LastHeartbeatAt.Before(before) || w.LastHeartbeatAt.After(after) {
+		t.Errorf("LastHeartbeatAt = %v, want the receipt time in [%v, %v], not the worker's %v",
+			w.LastHeartbeatAt, before, after, hbAt)
 	}
 }
 

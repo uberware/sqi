@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -167,12 +168,11 @@ func heartbeatMsgStamped(t *testing.T, workerID string, at, stamp time.Time) *fa
 }
 
 // TestHandleHeartbeat_OrderedByBrokerStampNotWorkerClock pins that heartbeats
-// are ordered by the broker's stream timestamp, not the worker's: a heartbeat
-// whose worker time is ten minutes earlier but whose broker stamp is later is
-// recorded with the worker's own time, while a late redelivery the broker
+// are ordered and timed by the broker's stream timestamp, not the worker's: a
+// heartbeat whose worker time is ten minutes earlier but whose broker stamp is
+// later is recorded at its broker stamp, while a late redelivery the broker
 // stamped earlier is acked and ignored, though its own timestamp is the newest
-// of the three. It does not assert liveness: the stored time is the worker's,
-// so the sweep still compares it with the server's clock.
+// of the three.
 func TestHandleHeartbeat_OrderedByBrokerStampNotWorkerClock(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
@@ -195,8 +195,9 @@ func TestHandleHeartbeat_OrderedByBrokerStampNotWorkerClock(t *testing.T) {
 				}
 			}
 			got, err := st.GetWorker(t.Context(), workerID)
-			if err != nil || got.LastHeartbeatAt == nil || !got.LastHeartbeatAt.Equal(stepped) {
-				t.Fatalf("GetWorker = (last heartbeat %v, %v), want the stepped-back %v", got.LastHeartbeatAt, err, stepped)
+			if want := stamp.Add(time.Second); err != nil || got.LastHeartbeatAt == nil || !got.LastHeartbeatAt.Equal(want) {
+				t.Fatalf("GetWorker = (last heartbeat %v, %v), want the broker stamp %v, not the worker's %v",
+					got.LastHeartbeatAt, err, want, stepped)
 			}
 			if want := stamp.Add(time.Second); got.HeartbeatBrokerAt == nil || !got.HeartbeatBrokerAt.Equal(want) {
 				t.Fatalf("HeartbeatBrokerAt = %v, want %v", got.HeartbeatBrokerAt, want)
@@ -207,7 +208,7 @@ func TestHandleHeartbeat_OrderedByBrokerStampNotWorkerClock(t *testing.T) {
 
 // TestHandleHeartbeat_NoBrokerMetadataRecordedUnordered pins the fallback: a
 // heartbeat whose metadata cannot be read, or carries no timestamp, is recorded
-// whatever its time, as heartbeats were before ordering existed, keeps the
+// unordered at the server's receipt time (never the worker's), keeps the
 // recorded stamp, and says so at Debug.
 func TestHandleHeartbeat_NoBrokerMetadataRecordedUnordered(t *testing.T) {
 	for name, st := range raceBackends(t) {
@@ -224,7 +225,9 @@ func TestHandleHeartbeat_NoBrokerMetadataRecordedUnordered(t *testing.T) {
 			s.handleWorkerMessage(noTime)
 			broken := heartbeatMsgStamped(t, workerID, stamp.Add(-2*time.Minute), time.Time{})
 			broken.metaErr = errors.New("no metadata")
+			before := time.Now().UTC()
 			s.handleWorkerMessage(broken)
+			after := time.Now().UTC()
 
 			for _, m := range []*fakeJSMsg{noTime, broken} {
 				if !m.acked || m.nacked {
@@ -232,8 +235,9 @@ func TestHandleHeartbeat_NoBrokerMetadataRecordedUnordered(t *testing.T) {
 				}
 			}
 			got, err := st.GetWorker(t.Context(), workerID)
-			if want := stamp.Add(-2 * time.Minute); err != nil || got.LastHeartbeatAt == nil || !got.LastHeartbeatAt.Equal(want) {
-				t.Fatalf("GetWorker = (last heartbeat %v, %v), want %v", got.LastHeartbeatAt, err, want)
+			if err != nil || got.LastHeartbeatAt == nil || got.LastHeartbeatAt.Before(before) || got.LastHeartbeatAt.After(after) {
+				t.Fatalf("GetWorker = (last heartbeat %v, %v), want the receipt time in [%v, %v]",
+					got.LastHeartbeatAt, err, before, after)
 			}
 			if got.HeartbeatBrokerAt == nil || !got.HeartbeatBrokerAt.Equal(stamp) {
 				t.Fatalf("HeartbeatBrokerAt = %v, want the earlier stamp %v kept", got.HeartbeatBrokerAt, stamp)
@@ -242,6 +246,41 @@ func TestHandleHeartbeat_NoBrokerMetadataRecordedUnordered(t *testing.T) {
 				t.Errorf("no Debug line for the unreadable metadata:\n%s", out)
 			}
 		})
+	}
+}
+
+// TestHandleHeartbeat_WorkerClockBehindStaysOnline pins that liveness does not
+// depend on the worker's clock: a worker whose clock runs ten minutes behind,
+// far past the heartbeat timeout, stays online through a sweep and keeps its
+// running task, whether the heartbeat carries a broker stamp or not.
+func TestHandleHeartbeat_WorkerClockBehindStaysOnline(t *testing.T) {
+	for _, stamped := range []bool{true, false} {
+		for name, st := range raceBackends(t) {
+			t.Run(fmt.Sprintf("%s/stamped=%v", name, stamped), func(t *testing.T) {
+				workerID, taskID, _ := seedStaleWorkerWithTask(t, st, time.Hour)
+				s := newMetricsScheduler(st, &recordBus{}, "farm-1")
+				s.ctx = t.Context()
+				now := time.Now().UTC()
+				var stamp time.Time
+				if stamped {
+					stamp = now
+				}
+				hb := heartbeatMsgStamped(t, workerID, now.Add(-10*time.Minute), stamp)
+				s.handleWorkerMessage(hb)
+				if !hb.acked {
+					t.Fatalf("heartbeat acked=%v nacked=%v, want acked", hb.acked, hb.nacked)
+				}
+
+				s.sweepStaleWorkers(t.Context())
+
+				if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
+					t.Errorf("worker status = %q, want online: its heartbeat just arrived", got)
+				}
+				if got := taskStatus(t, st, taskID); got != store.TaskStatusRunning {
+					t.Errorf("task status = %q, want running (not reclaimed)", got)
+				}
+			})
+		}
 	}
 }
 

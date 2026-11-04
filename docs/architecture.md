@@ -1323,17 +1323,19 @@ Upgrading from v0.3.0 changes the following behaviour.
   before. Heartbeats are ordered the same way, by their stream timestamp,
   recorded as `heartbeat_broker_at`: `UpdateWorkerHeartbeat` ignores (and the
   scheduler acks) one the broker stamped before the recorded one, and records
-  any other with the worker's own time as `last_heartbeat_at`, whatever that
-  time is. The broker stamp only orders redeliveries; it does not take worker
-  clocks out of liveness. The stored heartbeat time is the worker's own, and
-  the liveness sweep judges it against the server's `now` minus
-  `scheduler.heartbeat_timeout`, as before. A worker whose clock runs behind,
-  or is stepped back, by more than `heartbeat_timeout` therefore looks offline,
-  and its running tasks are reclaimed, even though its heartbeats arrive and
-  are recorded. Keep worker clocks synchronized (see the Reconciliation notes
-  in [Operations](operations.md)); moving liveness onto server or broker time
-  is a separate change. A heartbeat whose broker metadata cannot be read is
-  recorded unconditionally, as before.
+  any other. The time recorded as `last_heartbeat_at`, which the liveness sweep
+  judges against the server's `now` minus `scheduler.heartbeat_timeout`, is
+  that same broker stamp, never the worker's own clock: a worker whose clock
+  runs behind, or is stepped back, stays online and keeps its tasks. The stamp
+  is the moment the heartbeat was published, so a backlog delivered late
+  (after a store outage or a failover) does not make a worker that has since
+  died look alive. With the embedded broker the stamp comes from the server's
+  own clock; with an external cluster, keep the sqi-server and NATS hosts'
+  clocks synchronized. A heartbeat whose broker metadata cannot be read is
+  recorded unconditionally, at the server's receipt time. The worker's own
+  timestamp is still used by attempt reconciliation, which ignores a delayed or
+  skewed heartbeat (see the Reconciliation notes in
+  [Operations](operations.md)).
 - A late or redelivered deregister can no longer take a restarted worker
   offline. The deregister carries the same optional `instance_id`, and
   `OfflineWorker` writes nothing when it and the stored one are both non-empty

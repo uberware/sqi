@@ -262,17 +262,15 @@ type WorkerStore interface {
 	// error. Returns [ErrNotFound] if the worker does not exist.
 	SetWorkerDisabled(ctx context.Context, id string, disabled bool) (Worker, error)
 
-	// UpdateWorkerHeartbeat records at, the worker's own timestamp of its
-	// heartbeat, as the given worker's LastHeartbeatAt. brokerAt is the message
-	// broker's stream timestamp of the heartbeat, and it alone orders
-	// heartbeats: one the broker stamped earlier than the recorded
-	// HeartbeatBrokerAt (a late redelivery) is accepted and ignored, not an
-	// error, while one stamped no earlier is recorded whatever at says. The
-	// broker stamp only orders redeliveries; LastHeartbeatAt stays the worker's
-	// time, so the liveness sweep still compares it with the server's clock and
-	// a worker whose clock is behind, or stepped back, by more than the
-	// heartbeat timeout looks offline. A nil brokerAt is recorded
-	// unconditionally and keeps the stored HeartbeatBrokerAt.
+	// UpdateWorkerHeartbeat records at as the given worker's LastHeartbeatAt,
+	// the time the liveness sweep judges against the server's clock. The
+	// scheduler passes the broker's stream timestamp of the heartbeat, or its
+	// own receipt time when there is none, never the worker's clock. brokerAt
+	// is that stream timestamp, and it alone orders heartbeats: one the broker
+	// stamped earlier than the recorded HeartbeatBrokerAt (a late redelivery)
+	// is accepted and ignored, not an error, while one stamped no earlier is
+	// recorded whatever at says. A nil brokerAt is recorded unconditionally
+	// and keeps the stored HeartbeatBrokerAt.
 	// This is a hot path; implementations should use a single UPDATE
 	// statement, reading only to tell an unknown worker from an ignored
 	// heartbeat. Returns [ErrNotFound] if the worker does not exist.
