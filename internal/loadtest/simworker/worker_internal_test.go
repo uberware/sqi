@@ -14,11 +14,20 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/loadtest/client"
-	"github.com/uberware/sqi/internal/loadtest/driver"
 	"github.com/uberware/sqi/internal/loadtest/internal/testserver"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
+
+const oneTaskTemplate = `specificationVersion: "jobtemplate-2023-09"
+name: x-1
+steps:
+  - name: Run
+    script:
+      actions:
+        onRun:
+          command: noop
+`
 
 // running reports whether the worker has a live process.
 func (w *Worker) running() bool {
@@ -120,10 +129,9 @@ func TestWatchClosed_PermanentCloseIsACrash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateQueue: %v", err)
 	}
-	tmpl, err := driver.BuildTemplate(scenario.JobClass{Name: "x", Steps: 1, TasksPerStep: 1}, "x-1", scenario.Command{Path: "noop"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	// Not driver.BuildTemplate: driver imports this package, so an in-package
+	// test cannot import it back.
+	tmpl := []byte(oneTaskTemplate)
 	if _, _, err := c.SubmitJob(t.Context(), client.SubmitRequest{FarmID: farmID, QueueID: queueID, Template: tmpl}); err != nil {
 		t.Fatalf("SubmitJob: %v", err)
 	}
