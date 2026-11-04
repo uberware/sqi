@@ -108,7 +108,7 @@ Run `make` (no arguments) to see all available targets with descriptions.
 | `make docs` | Serve Go package docs at `localhost:8080` via `pkgsite` |
 | `make load-smoke` | Run the load harness's smoke scenario end to end as a Go test (SQLite; PostgreSQL too with `SQI_TEST_POSTGRES_DSN`) |
 | `make load` | Run one load scenario with `sqi-load` (`SCENARIO=mixed-medium`) |
-| `make soak` | Run the `soak-steady` scenario as a soak (`DURATION=8h`) |
+| `make soak` | Run a scenario as a soak (`SCENARIO=soak-steady`, `DURATION=8h`) |
 | `make load-sweep` | Sweep one scenario parameter and find the knee (`SCENARIO=…`, `VARY='workers[0].count=100,200,400'`) |
 | `make docs-site-install` | Create `.venv-docs/` and install the pinned MkDocs dependencies |
 | `make docs-site` | Build the MkDocs documentation site with `--strict` (the CI gate) |

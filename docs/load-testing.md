@@ -21,9 +21,11 @@ matters: workers, jobs, tasks per job, steps and dependencies, queues and
 usage pools, log volume, UI clients, failure and churn rates, and run length.
 It reports:
 
-- **throughput**: submissions, task completions and log lines per second;
-- **latency distributions**: submit, submit to first lease, task and job end
-  to end, WebSocket event lag, and REST read latency per endpoint;
+- **throughput**: submissions, task completions and log lines emitted per
+  second, over the window in which jobs were submitted;
+- **latency distributions**: submit, submit to first lease, the server's
+  ingest of a terminal status, task and job end to end, WebSocket event lag,
+  and REST read latency per endpoint;
 - **server resource use**: CPU, RSS, goroutines, open files, GC pauses,
   database, WAL and NATS data size, and JetStream bytes per stream;
 - **correctness under load**: six invariants checked at the end of every run
@@ -94,11 +96,15 @@ for `--- PASS: TestLoadSmoke` in the output.
 
 ```sh
 make load SCENARIO=ci-medium              # one run; SCENARIO defaults to mixed-medium
-make soak DURATION=8h                     # the soak-steady scenario as a soak
+make soak DURATION=8h                     # a soak; SCENARIO defaults to soak-steady here
 make load-sweep SCENARIO=workers-ramp VARY='workers[0].count=500,1000,2000'
 ```
 
-These wrap `go run ./cmd/sqi-load`, which you can also call directly:
+These wrap `go run ./cmd/sqi-load`, which you can also call directly. `go
+run` turns any non-zero exit status into 1, so through `make` an invariant
+failure and an INVALID run both exit 1; build the binary (`go build -o
+sqi-load ./cmd/sqi-load`) when a script needs to tell them apart (see
+[Exit codes](#exit-codes)).
 
 ```sh
 go run ./cmd/sqi-load scenarios                       # list the built-ins
@@ -110,15 +116,22 @@ go run ./cmd/sqi-load compare runs/<a> runs/<b>
 
 Each run writes a directory `runs/<run-id>/` (`--out` changes the parent). The
 file to open first is `summary.md`. Binaries the managed target builds are
-cached under `<out>/.bin`, keyed by git commit.
+cached under `<out>/.bin`, keyed by git commit and rebuilt when tracked files
+have changes (untracked files do not count). Runs that share the directory
+take turns building, and a rebuild never overwrites a binary another run is
+still running.
 
 ### PostgreSQL
 
 Give a managed run a PostgreSQL store with `--set server.store=postgres` and
-`--postgres-dsn`. A DSN that names the `postgres` database is treated as an
-administrative one: the harness creates a throwaway database named
-`sqi_load_<run-id>` for the run and drops it afterwards. A DSN naming any other
-database is used as it is, so it must be empty.
+`--postgres-dsn`; one without the other is refused (exit 3), since a DSN on a
+SQLite run would otherwise be ignored. A DSN that names the `postgres`
+database is treated as an administrative one: the harness creates a
+throwaway database named `sqi_load_<run-id>` for the run and drops it
+afterwards. A DSN naming any other database is used as it is and left
+holding the run, so it must be empty: the run is refused (exit 3) when that
+database has any table in its `public` schema, which keeps a server's own
+database from being migrated and filled with a load farm.
 
 ```sh
 go run ./cmd/sqi-load run --scenario ci-medium \
@@ -154,8 +167,20 @@ Things to know before attaching:
 - The harness creates its own farm, `load-<run-id>`, and works only inside it,
   so it never touches existing jobs. It deletes the farm (and the jobs and
   workers in it) at the end unless `--keep` is given.
-- **Usage pools are global**, not per farm. The harness creates the scenario's
-  pools by name; a pool that already exists is used as it is and never deleted.
+- **Usage pools are global**, not per farm, and a job claims one by name, so
+  the harness never uses the scenario's pool names as they are: a run's pools
+  are its own, named `load_<run-id>_<pool>` (characters other than letters,
+  digits and `_` become `_`), with the scenario's limits, and the job
+  templates claim those names. A production pool called `arnold` is never
+  touched by a scenario's `arnold`. If a pool of the run's own name already
+  exists (a leftover of an earlier run with the same run ID), the run refuses
+  to start (exit 3); remove the leftover with [`sqi-load cleanup`](#cleaning-up-after-an-attached-run).
+  The shards of one sharded run share their run's pools.
+- The scenario's `server` section does not apply: an attached server keeps
+  its own store, authentication, TLS and configuration. The harness logs a
+  warning naming every `server.*` setting it is ignoring, and the record's
+  environment gives the store as `attached (unknown)`, or `postgres
+  (attached)` when `--postgres-dsn` names the server's database.
 - Server-process measurements come only from `/metrics`: no disk sizes without
   `--data-dir`, and no JetStream stream sizes when broker authentication is on
   (the observer connects anonymously). The report lists what was unavailable
@@ -163,9 +188,37 @@ Things to know before attaching:
 - Scenarios with `workers[].real` need a managed target and are rejected in
   attach mode. `--server-bin` and `--worker-bin` apply only to a managed run.
 - Managed runs turn the HTTP rate limiter off (`http.rate_limit.enabled:
-  false`). An attached server keeps its own setting, and one generator address
-  is throttled at 20 requests per second; the `rate-limited` finding fires when
-  submissions are answered 429.
+  false`). An attached server keeps its own: 20 requests per second per
+  source address, bursts of 40, on every `/api/v1` route. The harness rides it
+  out for its own calls: setting up the farm, enrolling simulated workers,
+  the timed actions, the invariant checks and the teardown all retry a 429 or
+  503 answer, waiting as the server's `Retry-After` says, for up to two
+  minutes per call, so setup and teardown are slower but complete. Job
+  submissions are never retried: a 429 is counted, raising the `rate-limited`
+  and `submissions-rejected` findings, because the throttled submissions are
+  load the scenario offered and the server did not take. REST pollers count
+  a 429 as an error. To measure an attached server at more than about 20
+  submissions per second, turn its limiter off or shard the run across
+  several source addresses.
+
+#### Cleaning up after an attached run
+
+A run kept with `--keep`, or one whose teardown failed (it ends with exit 3
+and "farm load-... may be left on the server"), leaves its farm and pools on
+the server. Remove them with the run's ID:
+
+```sh
+sqi-load cleanup --server https://sqi.example.net --api-key "$SQI_KEY" --run-id 20261104-120000-ab12
+```
+
+It deletes the farm `load-<run-id>` (or a sharded run's farms
+`load-<run-id>-s<i>`) with its jobs, workers and queues, waiting up to two
+minutes for workers still online, then the run's usage pools
+`load_<run-id>_*`. Nothing else is touched: a pool of another load run whose
+farm is still on the server is left alone even when its name starts the same
+way, and the server refuses to delete a pool a job still claims. It takes
+`--ca-file` for a server with a private CA, prints what it removed, and exits
+0, or 3 when something could not be removed.
 
 ### Common flags
 
@@ -194,8 +247,15 @@ teardown waits and kills what is left.
 |---|---|
 | 0 | Valid, complete, and every invariant held. |
 | 1 | An invariant failed. This wins over the others. |
-| 2 | The run is INVALID (generator saturated), or it was interrupted. `--allow-saturated` accepts an INVALID run but not an incomplete one. |
-| 3 | A usage or setup error: a bad flag, a bad scenario, a target that would not start. |
+| 2 | The run is INVALID or it was interrupted. INVALID means the generator saturated, or the scenario submits jobs but the server accepted none of them (a key without `jobs.write`, a template the server refuses, every submission throttled), so every invariant held vacuously. `--allow-saturated` accepts a saturated generator, but not an incomplete run nor one with no accepted submission. |
+| 3 | A usage, setup or teardown error: a bad flag, a bad scenario, a target that would not start, a teardown that failed (the run's farm may be left on an attached server), or a cleanup that could not remove everything. |
+
+When several apply, 1 wins over 3, which wins over 2. **Findings never change
+the exit status**, whatever their severity: an `error` finding says the
+result is unreliable or points at a defect, and is for a person to read in
+`summary.md`. These are the exit statuses of the `sqi-load` binary; through
+`go run`, and so through `make load` and `make soak`, every non-zero status
+comes back as 1.
 
 `sweep` exits 0 once every point has run, whatever the knee: points past the
 knee are expected to fail.
@@ -386,8 +446,15 @@ least one thing to do:
 | `at` | When, as a duration from the start of the run. |
 | `cancel_jobs: {fraction: f}` | Cancel a random share of the jobs accepted so far. |
 | `retry_failed: true` | Retry every job that is `failed`. |
-| `pause_queue: NAME` | Pause a queue. It must be one of the farm's queues. |
-| `disable_workers: {fraction: f}` | Disable a random share of the workers. |
+| `pause_queue: NAME` | Pause a queue. It must be one of the farm's queues. A paused queue leases nothing. |
+| `resume_queue: NAME` | Resume a queue. It must be one of the farm's queues. |
+| `disable_workers: {fraction: f}` | Disable a random share of the workers. There is no action to enable them again. |
+
+When submissions stop, the runner resumes every queue an action paused and
+no later `resume_queue` resumed, before it waits for the jobs to finish (the
+resume is recorded like an action). A queue left paused would otherwise hold
+its jobs until the drain timeout, and the `terminal` invariant would report
+them as stranded by the server.
 
 ### A complete example
 
@@ -462,15 +529,24 @@ PostgreSQL. Sizes are starting points that measurements revise.
 | `ui-heavy` | UI | 500 workers; 3 jobs/s of 2 x 20 tasks; 1,000 WebSocket clients and 100 REST pollers on all four endpoints. Fan-out, drops and read latency. | 30m |
 | `expr-mix` | submission CPU | 300 workers; `EXPR` templates (2 steps x 100 tasks at 2/s, 4 steps x 500 tasks at 0.2/s) beside plain ones (1/s). | 30m |
 | `ci-medium` | mixed | 300 workers (8 cores); `shot-render` at 0.12/s (2 steps x 20 tasks, 2 cores, usage pool `arnold` limit 100) and `comp` at 0.07/s (10 tasks), about 5.5 tasks/s offered; churn, 20 WebSocket clients, 5 pollers, a 10% cancel at 5 min and a retry at 10 min. Sized to stay valid on a 4-vCPU CI runner. **Nightly.** | 15m |
-| `mixed-medium` | mixed | 1,800 simulated and 2 real workers (32 cores); `shot-render` at 2/s (2 x 100 tasks, 8 cores, pool limit 200) plus 3 jobs of 250,000 tasks; churn; 200 WebSocket clients and 20 pollers; a cancel at 10 min and a retry at 20 min. Local or self-hosted. | 30m |
-| `soak-steady` | time | 500 workers; `shot-render` at 1/s and `comp` at 0.3/s, light churn, 20 WebSocket clients, 5 pollers; warmup 10 m. Growth detection. | 8h |
+| `mixed-medium` | mixed | 1,800 simulated and 2 real workers (32 cores); `shot-render` at 1/min (2 x 100 tasks, 8 cores, pool limit 200) plus 3 jobs of 1,000 whole-worker tasks, about 5 tasks/s in all; churn; 200 WebSocket clients and 20 pollers; a cancel at 10 min and a retry at 20 min. The `make load` default. | 30m |
+| `soak-steady` | time | 500 workers (8 cores); `shot-render` at 0.11/s (2 x 20 tasks) and `comp` at 0.06/s (10 tasks), about 5 tasks/s; light churn, 20 WebSocket clients, 5 pollers; warmup 10 m. Growth detection. The `make soak` default. | 8h |
 
 `ci-medium` was sized by measurement: at 1 and 0.5 jobs/s the server needed
 about 3.4 cores on a 4-CPU host, left a 4,584-task backlog, and 228 of 452 jobs
 were unfinished after the drain. The shipped rates (about 5.5 tasks/s offered)
 measured, on WSL pinned to 4 CPUs of an Intel Core i7-10750H over a 5 minute
 run, a generator peak of 0.27 cores, a server peak of 2.3 cores, and a VALID
-run with all six invariants holding.
+run with all six invariants holding. At 0.16 and 0.10 jobs/s (about 7.4
+tasks/s) the server was near its knee.
+
+`mixed-medium` and `soak-steady`, the scenarios `make load` and `make soak`
+run on a workstation, are sized from those numbers: each offers about 5
+tasks/s, under 70% of that knee, and uses at most 70% of its own capacity
+(worker cores and usage-pool limits). Each YAML file shows the arithmetic, and
+a unit test pins it. The spec's example rates for `mixed-medium` (2 jobs/s of
+200 tasks and three 250,000-task jobs) offer about 400 tasks/s against a pool
+that serves about 6.6, which no hardware drains.
 
 ---
 
@@ -481,38 +557,55 @@ A run writes `runs/<run-id>/`:
 | File | Contents |
 |---|---|
 | `summary.md` | The human-readable report. Start here. |
-| `run.json` | The whole record: the scenario as resolved, the environment (OS, CPUs, sqi version and commit, store, flags with secrets redacted), every series, every histogram, invariant results and validity. `compare`, `merge` and `sweep` read it. |
+| `run.json` | The whole record: the scenario as resolved, the environment (OS, CPUs, sqi version and commit, store, flags with secrets redacted), the run's start, the end of submissions (`window_end`) and its end after the drain, the counters at the end of warmup, at the end of submissions and at the end, the backlog when submissions stopped, every series, every histogram, invariant results and validity. `compare`, `merge` and `sweep` read it. |
 | `series.csv` | Every sampled series, point by point. |
 | `profiles/` | Server heap and goroutine profiles at the start and end (and periodically in a soak), and one CPU profile (at most 30 seconds) near the middle of the steady window. |
 | `target/` | A managed run's server: `server.yaml` (the configuration written for it), `server.log`, `data/` and `workers/N.log` for real workers. |
 
-`summary.md` has these sections: Validity, Throughput, Latency, Server
-resources, Growth, Invariants, Findings, Unavailable.
+`summary.md` opens with the run's times: when it started and ended, its
+warmup, and when submissions stopped with how long the drain then took. Its
+sections are Validity, Throughput, Latency, Server resources, Growth,
+Invariants, Findings and Unavailable.
+
+**The measured window** runs from the end of warmup to the end of
+submissions (`started + duration`). Throughput rates and generator validity
+are judged over it. The drain that follows, while the run waits for the jobs
+to finish, is reported on its own and kept out of both: idle drain time
+would dilute every rate, and two revisions differing only in drain time
+would compare as a throughput change.
 
 ### Validity
 
 A run is **INVALID** when the generator itself was the bottleneck, so its
 numbers describe the harness rather than the server. In more than 10% of the
-samples taken after warmup, either:
+samples taken in the measured window, either:
 
 - the generator used more than 85% of the machine's cores, or
 - the 99th percentile of its timer lateness (schedule lag) exceeded 1 second.
 
-The reason names every threshold hit and by how much. An INVALID run exits 2;
-`--allow-saturated` downgrades that to a warning plus a `generator-saturated`
+The reason names every threshold hit and by how much. A run is INVALID too
+when its scenario submits jobs and the server accepted none of them: every
+invariant then holds vacuously and says nothing about the server. An INVALID
+run exits 2; `--allow-saturated` downgrades a saturated generator (not a run
+with no accepted submission) to a warning plus a `generator-saturated`
 finding. The Validity section also shows the generator's peak CPU and peak p99
 schedule lag, so you can see how much headroom a VALID run had. A run cut short
 by Ctrl-C or a driver failure is marked INCOMPLETE.
 
 ### Throughput and latency
 
-**Throughput** is steady-window: each counter's growth since the end of warmup
-divided by the steady window (the run minus its warmup). If the counter
-snapshot at warmup's end could not be taken, rates are whole-run averages and
-the report says so. The counters are `jobs.submitted`, `tasks.terminal`
-(distinct tasks that reached a terminal status on the server), `ws.events`,
-`ws.drops`, `ws.errors`, `ws.lag_negative`, `rest.errors`, `workers.live` (a
-fleet size, so no rate) and `submit.status.<code>` per HTTP status.
+**Throughput** is taken over the measured window: each counter's growth from
+the end of warmup to the end of submissions, divided by that window. The
+table shows each counter's total at the end of the run (drain included), the
+part of it in the window, and the rate. If the counter snapshot at warmup's
+end could not be taken, rates are averages from the start to the end of
+submissions and the report says so. The counters are `jobs.submitted`,
+`tasks.terminal` (distinct tasks that reached a terminal status on the
+server), `logs.lines` (log lines the simulated workers emitted in attempts
+that ended: the log load offered; the `logs` invariant checks what the server
+kept), `ws.events`, `ws.drops`, `ws.errors`, `ws.lag_negative`, `rest.errors`,
+`workers.live` (a fleet size, so no rate) and `submit.status.<code>` per HTTP
+status (0 is a submission that got no answer).
 
 **Latency** histograms cover the **whole run, warmup included**, and show n,
 p50, p95, p99 and max:
@@ -522,7 +615,8 @@ p50, p95, p99 and max:
 | `submit_latency` | The HTTP round trip of a job submission. |
 | `submit_lag` | How late a paced submission left the generator. |
 | `first_lease` | A job's submission to its first task's lease. A sweep's knee reads its p95. |
-| `task_e2e` | A task's assignment to its acknowledged terminal status. |
+| `task_e2e` | One simulated attempt, from its lease reaching the worker to the worker publishing its terminal status. It holds the scenario's sampled task duration, so it describes the scenario's input as much as the server; read `terminal_ingest` and `first_lease` for the server. |
+| `terminal_ingest` | How long the server took to store a task's final status: the task's `updated_at` once terminal minus the moment the simulated worker published that status. One sample per task that ended succeeded or failed with a matching simulated report, read during the invariant checks. A clock difference between the generator and an attached server shifts it; a negative value counts as 0. |
 | `job_e2e` | A job's submission to its terminal status. |
 | `ws_lag` | WebSocket push lag: server event time to receive time. |
 | `rest.<endpoint>` | REST poller latency per endpoint. |
@@ -539,7 +633,7 @@ about 2,000 and a seeded random sample of that size beyond.
 |---|---|
 | `terminal` | Every accepted job is `completed`, `failed` or `canceled` within `drain_timeout` after submissions stop. A job left non-terminal is stranded. |
 | `outcomes` | Every task's final server status is the one the simulator decided (succeeded, failed after retries, or canceled). A task the simulator never leased can only be canceled, and a task of a job a cancel action targeted may be canceled whatever was decided. A `completed` job has only succeeded tasks. A job has exactly `steps x tasks_per_step` tasks, so no work is silently dropped. A disagreeing task is re-read for a few seconds before it counts. |
-| `single-attempt` | On each sampled task, no two of the server's attempts are held at once; every attempt after the first follows a failed or canceled one (a retry or a reclaim); and a task in a terminal status holds no open attempt. |
+| `single-attempt` | On each sampled task, no two of the server's attempts are held at once; every attempt after the first follows a failed or canceled one (a retry or a reclaim); and a task in a terminal status holds no open attempt. On every task, the simulator never ran two attempts at once: an attempt leased while an earlier attempt of the same task had not yet ended (succeeded, failed, canceled or crashed) on its worker fails the check, naming both attempts and workers. The server's attempt list cannot show that case: a worker still running an attempt the server already reclaimed (its heartbeats lost under load) or canceled (the cancel lost) leaves the server with sequential attempts and its late report rejected. |
 | `logs` | On each sampled task, the lines the server returns for the task's latest attempt equal the lines the simulator sent for it, in order. When the scenario overflows the broker's store on purpose, losing the attempt's oldest whole chunks is allowed and nothing else is. A chunk lost on an unplanned connection drop fails the check: core-NATS log delivery is at most once, and the harness reports that as a real finding about sqi rather than excusing it. |
 | `workers-converge` | Within the server's heartbeat timeout plus the slowest worker heartbeat plus 10 s, the farm's online worker count equals the number of workers the harness has running. |
 | `caps` | The most attempts the simulator held at once on a queue never exceeded `max_concurrent_tasks` (0 is unlimited), and on a usage pool never exceeded its `limit` (each task claims one unit). A canceled attempt counts as released when the cancel action started, since the server frees the slot when it commits the cancel. |
@@ -552,18 +646,21 @@ execution exceeded it.
 
 Findings are rules applied to the record. An **error** points at a defect in
 sqi or makes the result unreliable; a **warn** is something to look at.
+Neither changes the exit status.
 
 | Rule | Severity | Fires when |
 |---|---|---|
 | `ws-drops` | error | WebSocket clients saw gaps in the push sequence: the server dropped pushes to a client whose buffer was full. |
 | `rate-limited` | error | Any submission was answered 429. The server's rate limiter throttled the run; set `http.rate_limit.enabled: false` or use more source addresses. |
+| `submissions-rejected` | warn, or error above 1% | Submissions the server did not accept: any status outside 2xx, or no answer. The message counts them per status. Their jobs are not in the run, so it measured less load than the scenario offers. |
 | `workers-offline-under-load` | error | The scenario has no churn, yet `workers.online` fell below the live fleet in some sample between warmup and the end of the run. |
 | `churn-failed` | error | A churn event failed to restart or reconnect its worker, so the fleet ran short. |
 | `goroutine-growth` | warn | Server goroutines rose steadily after warmup (slope above 0, r² above 0.8). |
 | `rss-growth` | warn | Server RSS rose with r² of at least 0.5 and projects to more than 1 GiB of growth over 7 days. |
 | `wal-never-shrank` | warn | On SQLite, the WAL grew over at least 5 minutes without once shrinking. |
 | `stream-at-cap` | warn | The `SQI_LOGS` stream reached 95% of `nats.embedded.max_store_mb`, so the broker evicts the oldest log chunks from here on. |
-| `generator-saturated` | warn | The run was INVALID but accepted with `--allow-saturated`. |
+| `generator-saturated` | warn | The generator saturated but the run was accepted with `--allow-saturated`. |
+| `server-fell-behind` | warn | The server did not keep up with the load offered: the drain took more than 25% of the scenario's `duration`, or more tasks were open when submissions stopped than the server finished in the last 10% of the measured window. The run's latencies and slopes then describe a backlog; size the scenario down or the server up. |
 
 The two growth rules need at least 10 samples spanning at least 30 minutes
 after warmup, so only soaks and long runs raise them. Every statistic uses
@@ -584,6 +681,11 @@ than leaving it out. Common entries:
   an attached server without `--data-dir`.
 - `invariants`, when the run ended early.
 - `cpu_profile`, when the steady window is too short for a profile.
+- `terminal_ingest`, when no task the server lists as succeeded or failed
+  matched a terminal status a simulated worker published (only real workers
+  ran the work, say).
+- `window_counters` and `backlog`, when listing the farm's jobs at the end of
+  submissions, or near it, failed.
 
 ### Gauges that mislead
 
@@ -599,9 +701,12 @@ sqi-load compare runs/<a> runs/<b>
 
 prints per-metric deltas for the p50, p95 and p99 of every histogram both runs
 have, every comparable counter (steady-window rates when both runs carry the
-snapshot, otherwise run averages), and the peaks of the key server series
-(CPU, RSS, goroutines, open files, heap, GC pause). A difference of 5% or less
-either way is reported as "no change". Compare runs of the **same scenario**
+snapshot, otherwise run averages; both over the measured window, never the
+drain), and the peaks of the key server series (CPU, RSS, goroutines, open
+files, heap, GC pause). A difference of 5% or less either way is reported as
+"no change". When either run is INVALID or incomplete, `compare` prints a
+warning above the table: the deltas are still shown, but they describe a
+saturated generator or a run cut short. Compare runs of the **same scenario**
 on comparable hardware; comparing server revisions with one harness is valid
 only while both revisions speak the harness's worker protocol and accept its
 configuration keys.
@@ -641,7 +746,8 @@ and invariants decide.
 A soak is a long run at steady load, to find leaks and drift.
 
 ```sh
-make soak DURATION=8h
+make soak DURATION=8h                        # soak-steady
+make soak SCENARIO=workers-churn DURATION=2h
 sqi-load soak --scenario soak-steady --duration 8h
 ```
 
@@ -675,8 +781,9 @@ sqi-load run --scenario workers-ramp --run-id big-1 --shard 0/2 \
   --server https://sqi.example.net --nats nats://sqi.example.net:4222 \
   --join-token "$JOIN_TOKEN" --api-key "$SQI_KEY"
 
-# then, with the shard records copied to one place:
-sqi-load merge runs/big-1-merged runs/big-1-0 runs/big-1-1
+# then, with the shard records copied to one place (each shard writes
+# runs/<run-id>-s<i>):
+sqi-load merge runs/big-1-merged runs/big-1-s0 runs/big-1-s1
 ```
 
 What a shard does:
@@ -698,16 +805,20 @@ What a shard does:
   `--data-dir` if readable) should be taken. The merged scenario carries shard
   0's per-shard counts, not the whole farm's. The merged run is valid and
   complete only if every shard is, an invariant holds only if it held in every
-  shard, and findings are recomputed from the merged data.
+  shard, and findings are recomputed from the merged data, except
+  `churn-failed` and `generator-saturated`, which only a live run can see:
+  those are carried over from the shards, labeled with their shard.
 
 **The shared-pool caveat.** Usage pools are global to the server, so the
-shards of a run share them by name and their limits are **not** divided. Two
-consequences:
+shards of a run share the run's pools, `load_<run-id>_<pool>`, and their
+limits are **not** divided. Two consequences:
 
 - A sharded run **never deletes the usage pools** it created, since one shard
   deleting a pool would pull it from under the others, and the server refuses
-  while any claim names it. After every shard has finished, delete them by
-  hand. The shards log their names.
+  while any claim names it. After every shard has finished, remove them with
+  `sqi-load cleanup --run-id <run-id>` (see
+  [Cleaning up after an attached run](#cleaning-up-after-an-attached-run)).
+  The shards log their names.
 - The `caps` invariant is checked per shard, against the pool's full limit, on
   that shard's own attempts. It cannot see two shards together exceed a pool's
   limit. A pool-limit finding on a sharded run needs the server's own claim
@@ -722,8 +833,9 @@ Starting the machines is the operator's job.
 Two jobs run the harness. Neither enforces latency.
 
 **`load-smoke`** in `.github/workflows/ci.yml` runs on pushes and on pull
-requests that touch Go code, `go.mod`, `go.sum` or the Makefile, after the
-main `test` job. It runs `make load-smoke` (SQLite) with `SQI_LOAD_OUT` set,
+requests that touch Go code, `go.mod`, `go.sum`, the Makefile, or anything
+under `internal/loadtest/` or `test/load/` (the scenario YAML included),
+after the main `test` job. It runs `make load-smoke` (SQLite) with `SQI_LOAD_OUT` set,
 uploads the run directories and the log as the `load-smoke-runs` artifact (7
 days), and then asserts by name that `TestLoadSmoke` and
 `TestLoadSmoke_VerifierCanFail` both passed, because a skipped or filtered test
@@ -732,12 +844,22 @@ run or a harness error.
 
 **`load-nightly`** (`.github/workflows/load-nightly.yml`) runs daily at 03:30
 UTC and on demand, on GitHub-hosted runners, as a matrix of SQLite and
-PostgreSQL 18 (a service container). It runs `ci-medium` and uploads the run
-directories as `load-runs-sqlite` and `load-runs-postgres` (30 days), with each
-`summary.md` added to the job page. A non-zero exit from `sqi-load` (1 an
-invariant failed, 2 INVALID) fails the job; thresholds are only reported, since
-shared runners are too noisy to gate on timings. Compare uploaded directories
-with `sqi-load compare`.
+PostgreSQL 18 (a service container; that leg passes `--set
+server.store=postgres` with an administrative DSN, so the run gets a database
+of its own). It runs `ci-medium` and uploads the run directories as
+`load-runs-sqlite` and `load-runs-postgres` (30 days), with each `summary.md`
+added to the job page. A non-zero exit from `sqi-load` (1 an invariant failed,
+2 INVALID) fails the job; thresholds are only reported, since shared runners
+are too noisy to gate on timings. Compare uploaded directories with `sqi-load
+compare`. A new run never cancels one in progress: the scheduled run waits
+for a dispatched soak to finish, and the reverse.
+
+Expect the nightly to fail now and then on `caps` or `logs` with every other
+invariant holding. `ci-medium` has cancels, churn and disconnects, which can
+hit two known sqi defects (a cancel lost just after a lease, below, and log
+chunks lost on a forced disconnect, which core NATS delivers at most once).
+That is the harness working: read the evidence, and fix the server, not the
+harness.
 
 `workflow_dispatch` takes two inputs: `scenario` (default `ci-medium`) and
 `duration`. Giving a duration runs the scenario as a soak of that length, **up
@@ -765,8 +887,8 @@ The hardware for each row is stated beneath the table.
 
 <!-- HARDWARE: filled from the first baseline runs -->
 
-How to read the columns: **Tasks/s** is the steady-window rate of
-`tasks.terminal`. The latencies are the whole-run histograms. **Peak server
+How to read the columns: **Tasks/s** is the rate of `tasks.terminal` over
+the measured window, from the end of warmup to the end of submissions. The latencies are the whole-run histograms. **Peak server
 CPU** is in cores, so 2.3 on a 4-CPU host is 58% of the machine. **Invariants**
 is how many of the six held. Every row is a VALID run.
 
