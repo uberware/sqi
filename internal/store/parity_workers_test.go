@@ -22,14 +22,14 @@ func TestParity_UpdateWorkerHeartbeat(t *testing.T) {
 			farm := seedGraph(t, st, graphOpts{}).Farm
 			w := seedWorker(t, st, farm.ID, store.WorkerStatusOnline, t0)
 
-			if err := st.UpdateWorkerHeartbeat(ctx, w.ID, t1); err != nil {
+			if err := st.UpdateWorkerHeartbeat(ctx, w.ID, t1, nil); err != nil {
 				t.Fatalf("UpdateWorkerHeartbeat: %v", err)
 			}
 			got, err := st.GetWorker(ctx, w.ID)
 			if err != nil || got.LastHeartbeatAt == nil || !got.LastHeartbeatAt.Equal(t1) {
 				t.Fatalf("GetWorker = (%+v, %v), want last heartbeat %v", got, err, t1)
 			}
-			if err := st.UpdateWorkerHeartbeat(ctx, "ghost", t1); !errors.Is(err, store.ErrNotFound) {
+			if err := st.UpdateWorkerHeartbeat(ctx, "ghost", t1, nil); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("unknown worker: err = %v, want ErrNotFound", err)
 			}
 		})
@@ -204,39 +204,133 @@ func TestParity_RegisterWorker_NoBrokerStampBehavesAsBefore(t *testing.T) {
 	}
 }
 
-func TestParity_UpdateWorkerHeartbeat_NeverMovesBackwards(t *testing.T) {
+// beatStamped records a heartbeat at at, the broker having stamped it at
+// stamp (nil is a message with no usable metadata).
+func beatStamped(t *testing.T, st store.Store, id string, at time.Time, stamp *time.Time) {
+	t.Helper()
+	if err := st.UpdateWorkerHeartbeat(t.Context(), id, at, stamp); err != nil {
+		t.Fatalf("UpdateWorkerHeartbeat(at %v, stamped %v): %v", at, stamp, err)
+	}
+}
+
+// wantBeat fails unless the stored worker's last heartbeat is at and its
+// heartbeat broker stamp is stamp (nil for none).
+func wantBeat(t *testing.T, st store.Store, id string, at time.Time, stamp *time.Time) store.Worker {
+	t.Helper()
+	got := mustWorker(t, st, id)
+	if got.LastHeartbeatAt == nil || !got.LastHeartbeatAt.Equal(at) {
+		t.Fatalf("LastHeartbeatAt = %v, want %v", got.LastHeartbeatAt, at)
+	}
+	switch {
+	case stamp == nil && got.HeartbeatBrokerAt != nil:
+		t.Fatalf("HeartbeatBrokerAt = %v, want none", got.HeartbeatBrokerAt)
+	case stamp != nil && (got.HeartbeatBrokerAt == nil || !got.HeartbeatBrokerAt.Equal(*stamp)):
+		t.Fatalf("HeartbeatBrokerAt = %v, want %v", got.HeartbeatBrokerAt, *stamp)
+	}
+	return got
+}
+
+// TestParity_UpdateWorkerHeartbeat_BrokerStampNeverMovesBackwards pins that the
+// broker's stream timestamp orders heartbeats: one stamped earlier than the
+// recorded one (a late redelivery) is ignored whatever the worker's clock
+// says, and one stamped the same or later is recorded.
+func TestParity_UpdateWorkerHeartbeat_BrokerStampNeverMovesBackwards(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
-			ctx := t.Context()
-			t1, t2 := subSecond()
+			b1, b2 := subSecond()
+			at1, at2 := b1.Add(-time.Minute), b1.Add(-time.Minute+time.Second)
 			farm := seedGraph(t, st, graphOpts{}).Farm
-			w := seedWorker(t, st, farm.ID, store.WorkerStatusOnline, t1.Add(-time.Hour))
+			w := seedWorker(t, st, farm.ID, store.WorkerStatusOnline, b1.Add(-time.Hour))
 
-			if err := st.UpdateWorkerHeartbeat(ctx, w.ID, t2); err != nil {
-				t.Fatalf("UpdateWorkerHeartbeat(t2): %v", err)
-			}
-			updated := mustWorker(t, st, w.ID)
-			// A late, older heartbeat is accepted and ignored.
-			if err := st.UpdateWorkerHeartbeat(ctx, w.ID, t1); err != nil {
-				t.Fatalf("UpdateWorkerHeartbeat(t1, older): %v", err)
-			}
-			got := mustWorker(t, st, w.ID)
-			if got.LastHeartbeatAt == nil || !got.LastHeartbeatAt.Equal(t2) {
-				t.Fatalf("LastHeartbeatAt = %v, want %v kept", got.LastHeartbeatAt, t2)
-			}
-			if !got.UpdatedAt.Equal(updated.UpdatedAt) {
+			beatStamped(t, st, w.ID, at1, &b2)
+			updated := wantBeat(t, st, w.ID, at1, &b2)
+			// A late redelivery the broker stamped earlier is accepted and
+			// ignored, though the worker's clock calls it newer.
+			beatStamped(t, st, w.ID, at2, &b1)
+			if got := wantBeat(t, st, w.ID, at1, &b2); !got.UpdatedAt.Equal(updated.UpdatedAt) {
 				t.Fatalf("UpdatedAt moved to %v on an ignored heartbeat, want %v", got.UpdatedAt, updated.UpdatedAt)
 			}
-			// The same instant again, and then a newer one.
-			if err := st.UpdateWorkerHeartbeat(ctx, w.ID, t2); err != nil {
-				t.Fatalf("UpdateWorkerHeartbeat(t2, equal): %v", err)
+			// The same broker stamp again is recorded, and then a later one.
+			beatStamped(t, st, w.ID, at2, &b2)
+			wantBeat(t, st, w.ID, at2, &b2)
+			b3 := b2.Add(time.Second)
+			at3 := at2.Add(time.Second)
+			beatStamped(t, st, w.ID, at3, &b3)
+			wantBeat(t, st, w.ID, at3, &b3)
+		})
+	}
+}
+
+// TestParity_UpdateWorkerHeartbeat_WorkerClockStepBackRecorded pins that a
+// worker whose clock is stepped back is still heard: its heartbeat carries an
+// earlier worker timestamp but a later broker stamp, and is recorded as sent.
+func TestParity_UpdateWorkerHeartbeat_WorkerClockStepBackRecorded(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			b1, b2 := subSecond()
+			farm := seedGraph(t, st, graphOpts{}).Farm
+			w := seedWorker(t, st, farm.ID, store.WorkerStatusOnline, b1.Add(-time.Hour))
+
+			beatStamped(t, st, w.ID, b1, &b1)
+			stepped := b1.Add(-10 * time.Minute)
+			beatStamped(t, st, w.ID, stepped, &b2)
+			wantBeat(t, st, w.ID, stepped, &b2)
+		})
+	}
+}
+
+// TestParity_UpdateWorkerHeartbeat_UnstampedRecordedUnconditionally pins that a
+// heartbeat with no broker stamp is recorded whatever its time, as before
+// heartbeats were ordered, and keeps the recorded broker stamp.
+func TestParity_UpdateWorkerHeartbeat_UnstampedRecordedUnconditionally(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			b1, b2 := subSecond()
+			farm := seedGraph(t, st, graphOpts{}).Farm
+			w := seedWorker(t, st, farm.ID, store.WorkerStatusOnline, b1.Add(-time.Hour))
+
+			beatStamped(t, st, w.ID, b2, nil)
+			wantBeat(t, st, w.ID, b2, nil)
+			beatStamped(t, st, w.ID, b2, &b2)
+			beatStamped(t, st, w.ID, b1, nil)
+			wantBeat(t, st, w.ID, b1, &b2)
+		})
+	}
+}
+
+// TestParity_RegisterWorker_NeverWritesHeartbeatBrokerAt pins that a
+// registration leaves the heartbeat broker stamp alone: a new worker has none
+// whatever the registration carries, and a re-registration keeps the stored
+// one.
+func TestParity_RegisterWorker_NeverWritesHeartbeatBrokerAt(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			b1, b2 := subSecond()
+			farm := seedGraph(t, st, graphOpts{}).Farm
+			reg := func(stamp *time.Time) store.Worker {
+				t.Helper()
+				now := time.Now().UTC()
+				got, _, err := st.RegisterWorker(t.Context(), store.Worker{
+					ID: fixtureWorkerID, FarmID: farm.ID, Hostname: "node", Status: store.WorkerStatusOnline,
+					LastHeartbeatAt: &now, HeartbeatBrokerAt: stamp,
+				})
+				if err != nil {
+					t.Fatalf("RegisterWorker: %v", err)
+				}
+				return got
 			}
-			t3 := t2.Add(time.Second)
-			if err := st.UpdateWorkerHeartbeat(ctx, w.ID, t3); err != nil {
-				t.Fatalf("UpdateWorkerHeartbeat(t3): %v", err)
+			if got := reg(&b1); got.HeartbeatBrokerAt != nil {
+				t.Fatalf("new worker: HeartbeatBrokerAt = %v, want none", got.HeartbeatBrokerAt)
 			}
-			if got := mustWorker(t, st, w.ID); got.LastHeartbeatAt == nil || !got.LastHeartbeatAt.Equal(t3) {
-				t.Fatalf("LastHeartbeatAt = %v, want %v", got.LastHeartbeatAt, t3)
+			if got := mustWorker(t, st, fixtureWorkerID); got.HeartbeatBrokerAt != nil {
+				t.Fatalf("new worker stored HeartbeatBrokerAt = %v, want none", got.HeartbeatBrokerAt)
+			}
+			beatStamped(t, st, fixtureWorkerID, b1, &b1)
+			if got := reg(&b2); got.HeartbeatBrokerAt == nil || !got.HeartbeatBrokerAt.Equal(b1) {
+				t.Fatalf("re-registration: HeartbeatBrokerAt = %v, want %v kept", got.HeartbeatBrokerAt, b1)
+			}
+			if got := reg(nil); got.HeartbeatBrokerAt == nil || !got.HeartbeatBrokerAt.Equal(b1) {
+				t.Fatalf("re-registration with none: HeartbeatBrokerAt = %v, want %v kept", got.HeartbeatBrokerAt, b1)
 			}
 		})
 	}
@@ -250,7 +344,7 @@ func TestParity_UpdateWorkerHeartbeat_NeverHeartbeatedWorker(t *testing.T) {
 			t1, _ := subSecond()
 			farm := seedGraph(t, st, graphOpts{}).Farm
 			registerAt(t, st, farm.ID, "w-fresh", store.WorkerStatusOnline, nil)
-			if err := st.UpdateWorkerHeartbeat(t.Context(), "w-fresh", t1); err != nil {
+			if err := st.UpdateWorkerHeartbeat(t.Context(), "w-fresh", t1, nil); err != nil {
 				t.Fatalf("UpdateWorkerHeartbeat: %v", err)
 			}
 			if got := mustWorker(t, st, "w-fresh"); got.LastHeartbeatAt == nil || !got.LastHeartbeatAt.Equal(t1) {
@@ -264,7 +358,7 @@ func TestParity_UpdateWorkerHeartbeat_UnknownWorkerNotFound(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
 			t1, _ := subSecond()
-			if err := st.UpdateWorkerHeartbeat(t.Context(), "ghost", t1); !errors.Is(err, store.ErrNotFound) {
+			if err := st.UpdateWorkerHeartbeat(t.Context(), "ghost", t1, nil); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("unknown worker: err = %v, want ErrNotFound", err)
 			}
 		})

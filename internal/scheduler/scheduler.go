@@ -1002,7 +1002,7 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 		Status:          store.WorkerStatusOnline,
 		LastHeartbeatAt: &now,
 	}
-	w.RegistrationBrokerAt = s.registrationBrokerAt(ctx, msg, m.WorkerID)
+	w.RegistrationBrokerAt = s.brokerAt(ctx, msg, "worker.register", m.WorkerID)
 
 	stored, reclaimed, err := s.store.RegisterWorker(ctx, w)
 	if errors.Is(err, store.ErrStaleRegistration) {
@@ -1072,17 +1072,17 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 	s.ackMsg(ctx, msg)
 }
 
-// registrationBrokerAt returns the broker's stream timestamp of a registration
-// message, which orders registrations without regard to any worker's clock: a
-// late redelivery keeps its original stamp, a restarted worker's fresh
-// registration carries a current one. Nil when the message has no usable
-// metadata, in which case the registration is applied as it was before
-// ordering existed.
-func (s *Scheduler) registrationBrokerAt(ctx context.Context, msg jetstream.Msg, workerID string) *time.Time {
+// brokerAt returns the broker's stream timestamp of a worker's registration or
+// heartbeat message (kind names which, for the log), which orders those
+// messages without regard to any worker's clock: a late redelivery keeps its
+// original stamp, a fresh message carries a current one, whatever the worker's
+// clock reads. Nil when the message has no usable metadata, in which case it is
+// applied as it was before ordering existed.
+func (s *Scheduler) brokerAt(ctx context.Context, msg jetstream.Msg, kind, workerID string) *time.Time {
 	meta, err := msg.Metadata()
 	if err != nil {
 		s.logger.DebugContext(
-			ctx, "scheduler: worker.register message has no broker metadata; applying it unordered",
+			ctx, "scheduler: "+kind+" message has no broker metadata; applying it unordered",
 			slog.String("worker_id", workerID),
 			slog.Any("error", err),
 		)
@@ -1296,10 +1296,11 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 
 // ── Heartbeat handler and sweep ──────────────────────────────────────
 
-// handleWorkerHeartbeat processes a worker.heartbeat message by recording the
-// current time as the worker's LastHeartbeatAt. If At is zero the server
-// timestamp is used so clock skew on the worker side cannot cause false
-// timeouts.
+// handleWorkerHeartbeat processes a worker.heartbeat message by recording its
+// At as the worker's LastHeartbeatAt. If At is zero the server timestamp is
+// used so clock skew on the worker side cannot cause false timeouts. The
+// heartbeat is ordered by the broker's stream timestamp ([Scheduler.brokerAt]),
+// never by At, so a worker whose clock steps back is still heard.
 //
 // The handler reads WorkerID and At and passes AttemptsReported and
 // ActiveAttemptIDs to the reconciler (see attemptreconcile.go), but decodes the
@@ -1337,7 +1338,8 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 		at = time.Now().UTC()
 	}
 
-	if err := s.store.UpdateWorkerHeartbeat(ctx, m.WorkerID, at); err != nil {
+	stamp := s.brokerAt(ctx, msg, "worker.heartbeat", m.WorkerID)
+	if err := s.store.UpdateWorkerHeartbeat(ctx, m.WorkerID, at, stamp); err != nil {
 		if s.stopIfFenced(ctx, err) {
 			return
 		}

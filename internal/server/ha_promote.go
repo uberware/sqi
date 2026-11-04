@@ -23,7 +23,14 @@ import (
 //  4. run the scheduler;
 //  5. start the session sweeper (which also prunes members) and the mDNS
 //     responder;
-//  6. report this server leader, which opens the API and /leaderz.
+//  6. report this server leader, which opens the API and /leaderz, and
+//     answer worker connects (a standby may have stopped, when the previous
+//     leader granted workers differently).
+//
+// The one write those steps make unfenced is the member prune
+// (DeleteServerMembersUnseenFor, a leadership-store method, which the fence
+// never applies to): deleting rows unseen for a day is idempotent, and a
+// deposed leader that ran it would delete only what its successor would.
 //
 // A failure at any step is a loss of authority: the caller records it and
 // the server exits.
@@ -66,6 +73,7 @@ func (s *Server) promote(ctx context.Context, epoch int64) error {
 	}
 
 	s.ha.role.promote(s.ha.self.Name, epoch)
+	s.ha.broker.SetCalloutActive(true)
 	s.metrics.HALeader.Set(1)
 	s.metrics.HAEpoch.Set(float64(epoch))
 	s.metrics.HAPromotions.Inc()

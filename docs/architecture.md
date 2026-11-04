@@ -484,17 +484,20 @@ NATS consumer (internal/scheduler/taskstatus.go)
 
 A message whose processing fails for any other reason (the store is
 unreachable, say) is Nak'd with a delay: 1 s, doubling with each delivery up
-to 30 s. The server's task-status and task-log consumers allow ten deliveries,
-so a report outlives about 2.5 minutes of store outage (a PostgreSQL restart,
-or an HA failover while the database is down) instead of having its
-deliveries spent in milliseconds and being dropped. The cost is a lag after
-a long outage: a message already waiting out a 30 s delay when the store
-comes back waits the rest of it, so recovery can trail the store by up to
-30 s. The worker consumer allows three deliveries, so a heartbeat or a
-registration outlives only about 3 s of outage. The next heartbeat replaces
-a lost one; a worker registers only at start and after reconnecting to the
-broker, so one whose registration is lost that way is not seen until it
-does.
+to 30 s. The server's task-status, task-log and worker consumers allow ten
+deliveries, so a report outlives about 2.5 minutes of store outage (a
+PostgreSQL restart, or an HA failover while the database is down, or the gap
+between a leader fencing itself and its successor taking over) instead of
+having its deliveries spent in seconds and being dropped. A registration or
+heartbeat outlives about 2 minutes, the `SQI_WORKER` stream's `MaxAge`.
+That matters most for a registration: a worker registers only at start and
+after reconnecting to the broker, so one whose registration is dropped idles,
+unseen, until its next reconnect. A heartbeat held back this way is
+superseded by the next one, and once that has been recorded the late one is
+ignored, since heartbeats are ordered by their broker timestamp. The cost is
+a lag after a long outage: a message already waiting out a 30 s delay when
+the store comes back waits the rest of it, so recovery can trail the store by
+up to 30 s.
 
 **Durable failure reason.** Every `task_attempts` row carries a `message`
 column next to `exit_code` — the worker's human-readable reason for that
@@ -1312,9 +1315,14 @@ Upgrading from v0.3.0 changes the following behaviour.
   timestamps. A late redelivery keeps its original timestamp, so it is still
   detected, while a restarted worker's fresh registration carries a current
   one. A message whose broker metadata cannot be read is applied unordered, as
-  before. A late heartbeat is handled separately:
-  `UpdateWorkerHeartbeat` never moves `last_heartbeat_at` backwards, so an
-  older one is accepted and ignored.
+  before. Heartbeats are ordered the same way, by their stream timestamp,
+  recorded as `heartbeat_broker_at`: `UpdateWorkerHeartbeat` ignores (and the
+  scheduler acks) one the broker stamped before the recorded one, and records
+  any other with the worker's own time as `last_heartbeat_at`, whatever that
+  time is. A worker whose clock is stepped back is therefore still heard, rather
+  than having every heartbeat ignored until its clock catches up and being
+  declared offline meanwhile. A heartbeat whose broker metadata cannot be read
+  is recorded unconditionally, as before.
 - A late or redelivered deregister can no longer take a restarted worker
   offline. The deregister carries the same optional `instance_id`, and
   `OfflineWorker` writes nothing when it and the stored one are both non-empty

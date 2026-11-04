@@ -614,6 +614,37 @@ func TestHA_StandbyLeavesCalloutGroupOnFingerprintMismatch(t *testing.T) {
 	}
 }
 
+// TestHA_PromotionResumesPausedCallout: a standby that left the callout queue
+// group because the leader granted workers differently answers worker connects
+// as soon as it leads, not at its group observer's next tick. The lease is long
+// here, so that tick is ten seconds after the first observation, well after the
+// promotion.
+func TestHA_PromotionResumesPausedCallout(t *testing.T) {
+	h := startHarness(t, haSetup{
+		ha:        true,
+		mutateCfg: func(c *Config) { c.HA.LeaseTTL = 30 * time.Second },
+		seed: func(st *haStore) {
+			ctx := context.Background()
+			if err := st.Store.UpsertServerMember(ctx, store.ServerMember{
+				InstanceID: "other-instance", Name: "alpha", Host: "elsewhere",
+				GrantsFingerprint: "different", StartedAt: time.Now().UTC(), BrokerOK: true,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok, err := st.Store.AcquireLeadership(ctx, "other-instance", 2*time.Second); err != nil || !ok {
+				t.Fatalf("hold the lease: ok %v, %v", ok, err)
+			}
+		},
+	})
+	waitFor(t, 10*time.Second, "the standby to leave the callout group", func() bool {
+		return slices.Contains(h.br.calloutStates(), false)
+	})
+	h.waitLeader()
+	if got := h.br.calloutStates(); got[len(got)-1] != true {
+		t.Fatalf("callout states = %v once leading; the new leader must answer callouts at once", got)
+	}
+}
+
 func TestHA_StandbyTracksLeaderName(t *testing.T) {
 	st := newHAStore(newRecorder())
 	s, _ := observeServer(t, st, &fakeHABroker{rec: newRecorder()}, "")

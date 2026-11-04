@@ -15,7 +15,8 @@ import (
 const workerCols = `
 	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
 	os, os_version, arch, version, cpu_count, ram_mb, gpu_info, tags, expr_limits, extensions, status,
-	last_heartbeat_at, registered_at, updated_at, instance_id, disabled, registration_broker_at`
+	last_heartbeat_at, registered_at, updated_at, instance_id, disabled, registration_broker_at,
+	heartbeat_broker_at`
 
 // sqlWorkerHasWorkInFlight is true when the worker row's id holds an assigned
 // or running task. It is a fragment for a WHERE clause over workers.
@@ -30,7 +31,7 @@ const (
 	// ON CONFLICT preserves registered_at so re-registration does not reset it,
 	// and an empty instance_id (a worker that sends none) keeps the stored one,
 	// as a NULL registration_broker_at does.
-	// disabled is not in the column list, so a new worker is enabled and a
+	// disabled and heartbeat_broker_at are not in the column list, so a new worker is enabled and a
 	// re-registration never changes the flag.
 	sqlUpsertWorker = `
 INSERT INTO workers (
@@ -68,11 +69,16 @@ RETURNING ` + workerCols
 UPDATE workers SET disabled = ?, updated_at = ? WHERE id = ?
 RETURNING ` + workerCols
 
-	// sqlUpdateWorkerHeartbeat never moves last_heartbeat_at backwards: a late,
-	// older heartbeat matches no row. The bound time is the last argument.
+	// sqlUpdateWorkerHeartbeat orders heartbeats by the broker's stamp, not
+	// the worker's clock: one stamped earlier than heartbeat_broker_at (a late
+	// redelivery) matches no row, and any other is recorded whatever its
+	// last_heartbeat_at. A NULL stamp (both stamp arguments) matches as the
+	// stored one does, so an unstamped heartbeat is recorded unconditionally
+	// and keeps the stored stamp.
 	sqlUpdateWorkerHeartbeat = `
-UPDATE workers SET last_heartbeat_at = ?, updated_at = ?
-WHERE id = ? AND (last_heartbeat_at IS NULL OR last_heartbeat_at < ?)`
+UPDATE workers SET last_heartbeat_at = ?, updated_at = ?,
+	heartbeat_broker_at = COALESCE(?, heartbeat_broker_at)
+WHERE id = ? AND (heartbeat_broker_at IS NULL OR heartbeat_broker_at <= COALESCE(?, heartbeat_broker_at))`
 
 	sqlWorkerExists = `SELECT 1 FROM workers WHERE id = ?`
 
@@ -128,7 +134,7 @@ RETURNING ` + workerCols
 
 func scanWorker(row scanner) (store.Worker, error) {
 	var w store.Worker
-	var farmID, queueID, lastHeartbeat, registrationBroker sql.NullString
+	var farmID, queueID, lastHeartbeat, registrationBroker, heartbeatBroker sql.NullString
 	var gpuJSON, tagsJSON, exprJSON, extJSON, status string
 	var registeredAt, updatedAt string
 	var disabled dbBool
@@ -137,6 +143,7 @@ func scanWorker(row scanner) (store.Worker, error) {
 		&w.ID, &farmID, &queueID, &w.Name, &w.Hostname, &w.IPAddress, &w.ComputeLocation,
 		&w.OS, &w.OSVersion, &w.Arch, &w.Version, &w.CPUCount, &w.RAMMb, &gpuJSON, &tagsJSON, &exprJSON, &extJSON, &status,
 		&lastHeartbeat, &registeredAt, &updatedAt, &w.InstanceID, &disabled, &registrationBroker,
+		&heartbeatBroker,
 	); err != nil {
 		return store.Worker{}, err
 	}
@@ -146,6 +153,7 @@ func scanWorker(row scanner) (store.Worker, error) {
 	w.Status = store.WorkerStatus(status)
 	w.LastHeartbeatAt = nullTextToTime(lastHeartbeat)
 	w.RegistrationBrokerAt = nullTextToTime(registrationBroker)
+	w.HeartbeatBrokerAt = nullTextToTime(heartbeatBroker)
 	w.RegisteredAt = mustTime(registeredAt)
 	w.UpdatedAt = mustTime(updatedAt)
 	w.Disabled = bool(disabled)
@@ -373,20 +381,20 @@ func (s *Store) SetWorkerDisabled(ctx context.Context, id string, disabled bool)
 }
 
 // UpdateWorkerHeartbeat implements [store.WorkerStore].
-func (s *Store) UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Time) error {
-	now, beat := TimeText(time.Now().UTC()), TimeText(at)
+func (s *Store) UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Time, brokerAt *time.Time) error {
+	now, beat, stamp := TimeText(time.Now().UTC()), TimeText(at), nullTimeToText(brokerAt)
 	var unknown bool
 	err := s.write(ctx, "update worker heartbeat", func(w writer) error {
 		unknown = false
-		res, err := w.Stmt(ctx, s.stmtUpdateWorkerHeartbeat).ExecContext(ctx, beat, now, id, beat)
+		res, err := w.Stmt(ctx, s.stmtUpdateWorkerHeartbeat).ExecContext(ctx, beat, now, stamp, id, stamp)
 		if err != nil {
 			return err
 		}
 		if n, err := res.RowsAffected(); err != nil || n > 0 {
 			return err
 		}
-		// Nothing matched: an unknown worker, or a heartbeat no newer than the
-		// recorded one, which is ignored. Not-found is carried out rather than
+		// Nothing matched: an unknown worker, or a heartbeat the broker stamped
+		// before the recorded one, which is ignored. Not-found is carried out rather than
 		// returned, so a leadership context's fence check still runs and a
 		// deposed leader gets ErrFenced for it.
 		var one int

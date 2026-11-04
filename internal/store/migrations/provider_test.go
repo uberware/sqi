@@ -49,7 +49,7 @@ func TestNewProvider_RejectsAnUnknownDriver(t *testing.T) {
 	}
 }
 
-func TestMigration00041_DownRemovesTheHATablesAndColumn(t *testing.T) {
+func TestMigration00041_DownRemovesTheHATablesAndColumns(t *testing.T) {
 	db, err := sql.Open("sqlite", t.TempDir()+"/test.db")
 	if err != nil {
 		t.Fatal(err)
@@ -71,15 +71,15 @@ func TestMigration00041_DownRemovesTheHATablesAndColumn(t *testing.T) {
 		return n
 	}
 	const tables = `SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN ('server_lease', 'server_epoch', 'server_members')`
-	const column = `SELECT count(*) FROM pragma_table_info('workers') WHERE name = 'registration_broker_at'`
-	if count(tables) != 3 || count(column) != 1 {
-		t.Fatalf("after Up: %d of 3 tables, %d of 1 column", count(tables), count(column))
+	const column = `SELECT count(*) FROM pragma_table_info('workers') WHERE name IN ('registration_broker_at', 'heartbeat_broker_at')`
+	if count(tables) != 3 || count(column) != 2 {
+		t.Fatalf("after Up: %d of 3 tables, %d of 2 columns", count(tables), count(column))
 	}
 	if _, err := p.DownTo(t.Context(), 40); err != nil {
 		t.Fatalf("DownTo(40): %v", err)
 	}
 	if count(tables) != 0 || count(column) != 0 {
-		t.Fatalf("after Down: %d tables and %d column remain", count(tables), count(column))
+		t.Fatalf("after Down: %d tables and %d columns remain", count(tables), count(column))
 	}
 	if _, err := p.Up(t.Context()); err != nil {
 		t.Fatalf("Up again: %v", err)

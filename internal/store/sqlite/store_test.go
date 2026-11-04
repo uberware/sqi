@@ -451,7 +451,7 @@ func TestWorker_UpdateHeartbeat(t *testing.T) {
 	insertWorker(t, s, "w1", "f1")
 
 	ts := time.Now().Add(-5 * time.Second).UTC().Truncate(time.Second)
-	if err := s.UpdateWorkerHeartbeat(ctx, "w1", ts); err != nil {
+	if err := s.UpdateWorkerHeartbeat(ctx, "w1", ts, nil); err != nil {
 		t.Fatalf("UpdateWorkerHeartbeat: %v", err)
 	}
 	w, err := s.GetWorker(ctx, "w1")
@@ -476,10 +476,10 @@ func TestWorker_ListStale(t *testing.T) {
 	old := time.Now().Add(-2 * time.Minute)
 	recent := time.Now().Add(-10 * time.Second)
 
-	if err := s.UpdateWorkerHeartbeat(ctx, "w1", old); err != nil {
+	if err := s.UpdateWorkerHeartbeat(ctx, "w1", old, nil); err != nil {
 		t.Fatalf("UpdateWorkerHeartbeat w1: %v", err)
 	}
-	if err := s.UpdateWorkerHeartbeat(ctx, "w2", recent); err != nil {
+	if err := s.UpdateWorkerHeartbeat(ctx, "w2", recent, nil); err != nil {
 		t.Fatalf("UpdateWorkerHeartbeat w2: %v", err)
 	}
 
@@ -503,7 +503,7 @@ func TestWorker_DeleteOfflineWorkersBefore(t *testing.T) {
 
 	// w1: offline + stale heartbeat → removed.
 	insertWorker(t, s, "w1", "f1")
-	if err := s.UpdateWorkerHeartbeat(ctx, "w1", old); err != nil {
+	if err := s.UpdateWorkerHeartbeat(ctx, "w1", old, nil); err != nil {
 		t.Fatalf("heartbeat w1: %v", err)
 	}
 	if _, _, err := s.OfflineWorker(ctx, "w1", "", time.Now()); err != nil {
@@ -511,7 +511,7 @@ func TestWorker_DeleteOfflineWorkersBefore(t *testing.T) {
 	}
 	// w2: offline but recent heartbeat → kept.
 	insertWorker(t, s, "w2", "f1")
-	if err := s.UpdateWorkerHeartbeat(ctx, "w2", recent); err != nil {
+	if err := s.UpdateWorkerHeartbeat(ctx, "w2", recent, nil); err != nil {
 		t.Fatalf("heartbeat w2: %v", err)
 	}
 	if _, _, err := s.OfflineWorker(ctx, "w2", "", time.Now()); err != nil {
@@ -519,7 +519,7 @@ func TestWorker_DeleteOfflineWorkersBefore(t *testing.T) {
 	}
 	// w3: offline + stale heartbeat but disabled → kept (an operator removes it).
 	insertWorker(t, s, "w3", "f1")
-	if err := s.UpdateWorkerHeartbeat(ctx, "w3", old); err != nil {
+	if err := s.UpdateWorkerHeartbeat(ctx, "w3", old, nil); err != nil {
 		t.Fatalf("heartbeat w3: %v", err)
 	}
 	if _, _, err := s.OfflineWorker(ctx, "w3", "", time.Now()); err != nil {

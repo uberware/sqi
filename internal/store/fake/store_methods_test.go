@@ -839,7 +839,7 @@ func TestDeleteOfflineWorkersBefore(t *testing.T) {
 
 func mustHeartbeat(t *testing.T, s *Store, id string, at time.Time) {
 	t.Helper()
-	if err := s.UpdateWorkerHeartbeat(ctx(), id, at); err != nil {
+	if err := s.UpdateWorkerHeartbeat(ctx(), id, at, nil); err != nil {
 		t.Fatalf("UpdateWorkerHeartbeat(%q): %v", id, err)
 	}
 }
@@ -859,7 +859,7 @@ func TestUpdateWorkerHeartbeat(t *testing.T) {
 	mustCreateWorker(t, s, "w1", "f1", store.WorkerStatusOnline)
 
 	now := time.Now()
-	if err := s.UpdateWorkerHeartbeat(ctx(), "w1", now); err != nil {
+	if err := s.UpdateWorkerHeartbeat(ctx(), "w1", now, nil); err != nil {
 		t.Fatalf("UpdateWorkerHeartbeat: %v", err)
 	}
 	w := mustGetWorker(t, s, "w1")
@@ -871,7 +871,7 @@ func TestUpdateWorkerHeartbeat(t *testing.T) {
 func TestUpdateWorkerHeartbeat_NotFound(t *testing.T) {
 	s := New()
 	defer s.Close()
-	err := s.UpdateWorkerHeartbeat(ctx(), "ghost", time.Now())
+	err := s.UpdateWorkerHeartbeat(ctx(), "ghost", time.Now(), nil)
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("want ErrNotFound, got %v", err)
 	}

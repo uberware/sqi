@@ -29,7 +29,12 @@ const readPoolMaxConns = 4
 
 // leasePoolMaxConns is the lease pool's size when Options.HA is set: one
 // connection for a renewal, one beside it for the membership upsert, so
-// neither waits for the other.
+// neither waits for the other. Every leadership-store method runs on this
+// pool, so the two connections are also shared by the elector's member reads
+// on a broker loss, the broker guard's isMember check, the group observer
+// (observeGroup) and GET /api/v1/servers. A renewal that queues behind them
+// is still bounded: it runs under its own timeout of a third of the lease
+// (5 s at the default ha.lease_ttl).
 const leasePoolMaxConns = 2
 
 // DefaultLeaseTTL is Options.LeaseTTL when it is zero: ha.lease_ttl's default.

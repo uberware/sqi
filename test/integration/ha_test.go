@@ -34,6 +34,7 @@ package integration
 // asserts each test's PASS line by name.
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -268,6 +269,9 @@ type haGroup struct {
 
 	leaders  *leaderWatch
 	attempts *attemptWatch
+
+	// logLevel is the servers' --log-level; empty is info.
+	logLevel string
 }
 
 // newHAGroup makes a group of n servers, named ha-1 … ha-n, on a new empty
@@ -358,8 +362,9 @@ nats:
 func (g *haGroup) start(n *haNode) *haProc {
 	t := g.t
 	t.Helper()
+	level := cmp.Or(g.logLevel, "info")
 	cmd := exec.CommandContext(context.Background(), g.rig.serverBin,
-		"--config", n.configPath, "--log-format", "text", "--log-level", "info", "serve")
+		"--config", n.configPath, "--log-format", "text", "--log-level", level, "serve")
 	cmd.Dir = n.dir
 	cmd.Env = slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "SQI_") })
 	p := &haProc{cmd: cmd, out: &lockedBuffer{}, exited: make(chan struct{})}
@@ -1504,22 +1509,23 @@ func TestHA_NoDoubleAssignment(t *testing.T) {
 // TestHA_GracefulHandover stops the leader with SIGTERM while the worker is
 // idle, its lease request parked on the leader. The leader answers it empty
 // as it stops, and releases its lease, so the standby promotes itself at its
-// next poll and a job submitted to it has its first task leased within 2s of
-// the standby logging its promotion.
+// next poll and a job submitted to it has its first task leased within 5s of
+// the standby opening its API as the leader.
 func TestHA_GracefulHandover(t *testing.T) {
 	rig := requireHARig(t)
 	g := newHAGroup(t, rig, 2)
+	g.logLevel = "debug" // the leader logs a parked lease request at Debug
 	leader := g.startGroup()
 	standby := g.other(leader)
 	farmID, queueID := g.farm()
-	time.Sleep(3 * time.Second) // let the worker park its lease request
+	waitLogLine(t, leader, "scheduler: no work for the lease request; parking it", 30*time.Second)
 
-	const promoted = "ha: this sqi-server is now the leader"
+	const ready = "sqi-server ready as the leader"
 	stopped := time.Now()
 	leader.proc().expect(0)
 	leader.proc().signal(t, syscall.SIGTERM)
-	promotedAt := waitLogLine(t, standby, promoted, 30*time.Second)
-	t.Logf("%s logged its promotion %s after the leader's SIGTERM", standby.name, promotedAt.Sub(stopped).Round(10*time.Millisecond))
+	readyAt := waitLogLine(t, standby, ready, 30*time.Second)
+	t.Logf("%s was ready as the leader %s after the leader's SIGTERM", standby.name, readyAt.Sub(stopped).Round(10*time.Millisecond))
 	if code, ok := leader.proc().waitExit(haStopWait); !ok || code != 0 {
 		t.Fatalf("the stopped leader %s: exit %d (exited %v), want 0\n%s", leader.name, code, ok, leader.logTail())
 	}
@@ -1538,10 +1544,11 @@ func TestHA_GracefulHandover(t *testing.T) {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	if took := time.Since(promotedAt); took > 2*time.Second {
-		t.Fatalf("the first task was leased %s after %s's promotion, want within 2s", took.Round(10*time.Millisecond), standby.name)
+	if took := time.Since(readyAt); took > 5*time.Second {
+		t.Fatalf("the first task was leased %s after %s was ready as the leader, want within 5s",
+			took.Round(10*time.Millisecond), standby.name)
 	} else {
-		t.Logf("the first task was leased %s after the promotion", took.Round(10*time.Millisecond))
+		t.Logf("the first task was leased %s after the new leader was ready", took.Round(10*time.Millisecond))
 	}
 	g.waitJob(jobID, time.Minute)
 }
@@ -1560,6 +1567,25 @@ func waitLogLine(t *testing.T, n *haNode, line string, timeout time.Duration) ti
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// logLineTime is the time, as its own log record states it, at which node n's
+// current run first logged line.
+func logLineTime(t *testing.T, n *haNode, line string) time.Time {
+	t.Helper()
+	for l := range strings.Lines(n.proc().out.String()) {
+		if !strings.Contains(l, line) {
+			continue
+		}
+		stamp, _, _ := strings.Cut(strings.TrimPrefix(l, "time="), " ")
+		at, err := time.Parse(time.RFC3339Nano, stamp)
+		if err != nil {
+			t.Fatalf("%s logged %q with no readable time: %q (%v)", n.name, line, l, err)
+		}
+		return at
+	}
+	t.Fatalf("%s never logged %q\n%s", n.name, line, n.logTail())
+	return time.Time{}
 }
 
 // TestHA_LeaderLosesBroker cuts the leader off from every broker node while
@@ -1593,6 +1619,17 @@ func TestHA_LeaderLosesBroker(t *testing.T) {
 		t.Fatalf("%s leads, want %s", next.name, standby.name)
 	}
 	t.Logf("%s exited 75 %s after losing the broker; %s leads at epoch %d", leader.name, took.Round(100*time.Millisecond), next.name, epoch)
+	// The leader releases the lease just before it logs the loss, so the
+	// standby leads at its next poll plus the promotion, not when the lease
+	// lapses, and not after the old leader's own (slower) exit.
+	waitLogLine(t, standby, "sqi-server ready as the leader", 10*time.Second)
+	steppedDown := logLineTime(t, leader, "ha: lost leadership")
+	if gap := logLineTime(t, standby, "sqi-server ready as the leader").Sub(steppedDown); gap > 3*time.Second {
+		t.Fatalf("%s was ready as the leader %s after %s stepped down, want within 3s",
+			standby.name, gap.Round(10*time.Millisecond), leader.name)
+	} else {
+		t.Logf("%s was ready as the leader %s after %s stepped down", standby.name, gap.Round(10*time.Millisecond), leader.name)
+	}
 
 	leader.cutBroker(false)
 	g.start(leader)

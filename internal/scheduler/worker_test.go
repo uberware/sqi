@@ -109,12 +109,13 @@ func TestHandleRegister_StaleRegistrationAckedNotReclaimed(t *testing.T) {
 	}
 }
 
-// TestHandleRegister_OrderedByBrokerStampNotWorkerClock pins that ordering
-// never consults the worker's own clock: a restarted process whose clock reads
-// far earlier than its predecessor's (here a start time in 1970 smuggled into
-// the payload) is still accepted when the broker stamped its message later, and
-// its predecessor's tasks are reclaimed as for any restart.
-func TestHandleRegister_OrderedByBrokerStampNotWorkerClock(t *testing.T) {
+// TestHandleRegister_UnknownStartTimeFieldIgnored pins that a registration's
+// payload cannot order it: a field the protocol does not define (here
+// instance_started_at, a worker start time in 1970) is ignored when the message
+// is decoded, so the restarted process is accepted because the broker stamped
+// its message later, and its predecessor's tasks are reclaimed as for any
+// restart.
+func TestHandleRegister_UnknownStartTimeFieldIgnored(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			workerID, taskID, _ := seedStaleWorkerWithTask(t, st, 0)
@@ -147,6 +148,96 @@ func TestHandleRegister_OrderedByBrokerStampNotWorkerClock(t *testing.T) {
 			}
 			if got := mustTaskOf(t, st, taskID).Status; got != store.TaskStatusReady {
 				t.Fatalf("task = %q after the restart, want ready (reclaimed)", got)
+			}
+		})
+	}
+}
+
+// heartbeatMsgStamped is workerID's heartbeat, timed at by the worker's clock,
+// as the broker delivered it: stamp is the JetStream timestamp of the message
+// (zero for none).
+func heartbeatMsgStamped(t *testing.T, workerID string, at, stamp time.Time) *fakeJSMsg {
+	t.Helper()
+	return &fakeJSMsg{
+		subject: bus.WorkerHeartbeatSubject(workerID), stamp: stamp,
+		data: workerMsgJSON(t, protocol.HeartbeatMsg{
+			Version: protocol.ProtocolVersion, Type: protocol.TypeHeartbeat, WorkerID: workerID, At: at,
+		}),
+	}
+}
+
+// TestHandleHeartbeat_OrderedByBrokerStampNotWorkerClock pins that heartbeats
+// are ordered by the broker's stream timestamp: a worker whose clock is stepped
+// back ten minutes is still heard, its heartbeat recorded with the time it
+// sent, while a late redelivery the broker stamped earlier is acked and
+// ignored, though its own timestamp is the newest of the three.
+func TestHandleHeartbeat_OrderedByBrokerStampNotWorkerClock(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			workerID, _, _ := seedStaleWorkerWithTask(t, st, 0)
+			s := newMetricsScheduler(st, &recordBus{}, "")
+			s.ctx = t.Context()
+			stamp := time.Now().UTC()
+			first := heartbeatMsgStamped(t, workerID, stamp, stamp)
+			s.handleWorkerMessage(first)
+
+			stepped := stamp.Add(-10 * time.Minute)
+			back := heartbeatMsgStamped(t, workerID, stepped, stamp.Add(time.Second))
+			s.handleWorkerMessage(back)
+			late := heartbeatMsgStamped(t, workerID, stamp.Add(time.Hour), stamp.Add(-time.Second))
+			s.handleWorkerMessage(late)
+
+			for _, m := range []*fakeJSMsg{first, back, late} {
+				if !m.acked || m.nacked {
+					t.Fatalf("heartbeat acked=%v nacked=%v, want acked", m.acked, m.nacked)
+				}
+			}
+			got, err := st.GetWorker(t.Context(), workerID)
+			if err != nil || got.LastHeartbeatAt == nil || !got.LastHeartbeatAt.Equal(stepped) {
+				t.Fatalf("GetWorker = (last heartbeat %v, %v), want the stepped-back %v", got.LastHeartbeatAt, err, stepped)
+			}
+			if want := stamp.Add(time.Second); got.HeartbeatBrokerAt == nil || !got.HeartbeatBrokerAt.Equal(want) {
+				t.Fatalf("HeartbeatBrokerAt = %v, want %v", got.HeartbeatBrokerAt, want)
+			}
+		})
+	}
+}
+
+// TestHandleHeartbeat_NoBrokerMetadataRecordedUnordered pins the fallback: a
+// heartbeat whose metadata cannot be read, or carries no timestamp, is recorded
+// whatever its time, as heartbeats were before ordering existed, keeps the
+// recorded stamp, and says so at Debug.
+func TestHandleHeartbeat_NoBrokerMetadataRecordedUnordered(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			workerID, _, _ := seedStaleWorkerWithTask(t, st, 0)
+			var logs bytes.Buffer
+			s := newMetricsScheduler(st, &recordBus{}, "")
+			s.logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			s.ctx = t.Context()
+			stamp := time.Now().UTC()
+			s.handleWorkerMessage(heartbeatMsgStamped(t, workerID, stamp, stamp))
+
+			noTime := heartbeatMsgStamped(t, workerID, stamp.Add(-time.Minute), time.Time{})
+			s.handleWorkerMessage(noTime)
+			broken := heartbeatMsgStamped(t, workerID, stamp.Add(-2*time.Minute), time.Time{})
+			broken.metaErr = errors.New("no metadata")
+			s.handleWorkerMessage(broken)
+
+			for _, m := range []*fakeJSMsg{noTime, broken} {
+				if !m.acked || m.nacked {
+					t.Fatalf("unordered heartbeat acked=%v nacked=%v, want acked", m.acked, m.nacked)
+				}
+			}
+			got, err := st.GetWorker(t.Context(), workerID)
+			if want := stamp.Add(-2 * time.Minute); err != nil || got.LastHeartbeatAt == nil || !got.LastHeartbeatAt.Equal(want) {
+				t.Fatalf("GetWorker = (last heartbeat %v, %v), want %v", got.LastHeartbeatAt, err, want)
+			}
+			if got.HeartbeatBrokerAt == nil || !got.HeartbeatBrokerAt.Equal(stamp) {
+				t.Fatalf("HeartbeatBrokerAt = %v, want the earlier stamp %v kept", got.HeartbeatBrokerAt, stamp)
+			}
+			if out := logs.String(); !strings.Contains(out, "worker.heartbeat message has no broker metadata") {
+				t.Errorf("no Debug line for the unreadable metadata:\n%s", out)
 			}
 		})
 	}
@@ -526,6 +617,39 @@ func TestDisabledWorkerGetsNoWork(t *testing.T) {
 	}
 	if len(attempts) != 0 {
 		t.Fatalf("task has %d attempts after the refused lease, want 0", len(attempts))
+	}
+}
+
+// TestLeaseRequestWithNoWorkLogsItsPark pins the Debug line a lease request
+// that finds nothing to lease logs as it parks, naming the worker and the
+// queue: the one positive sign, from outside the process, that a worker's
+// request is outstanding. A request that is leased work parks nothing and logs
+// nothing.
+func TestLeaseRequestWithNoWorkLogsItsPark(t *testing.T) {
+	st := newCheckedFake(t)
+	var logs lockedBuffer
+	s := newMetricsScheduler(st, &recordBus{}, "f1")
+	s.logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	s.ctx = t.Context()
+	s.leaseHoldTimeout = 50 * time.Millisecond
+	one := 1
+	w, ids := seedLeaseFixture(t, st, []*int{&one})
+
+	const parked = "scheduler: no work for the lease request; parking it"
+	if got, _ := leaseAs(t, s, w.ID, ""); len(got) != 1 || got[0] != ids[0] {
+		t.Fatalf("assignments = %v, want %v", got, ids)
+	}
+	if strings.Contains(logs.String(), parked) {
+		t.Fatalf("a request that was leased work logged a park:\n%s", logs.String())
+	}
+	if got, _ := leaseAs(t, s, w.ID, ""); len(got) != 0 {
+		t.Fatalf("assignments = %v, want none", got)
+	}
+	out := logs.String()
+	for _, want := range []string{"level=DEBUG", parked, "worker_id=" + w.ID, "queue_id=q1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log missing %q:\n%s", want, out)
+		}
 	}
 }
 

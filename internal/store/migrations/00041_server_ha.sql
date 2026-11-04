@@ -22,7 +22,10 @@
 -- workers.registration_broker_at is the message broker's stream timestamp of the
 -- registration that wrote the row, so a registration the broker stamped earlier
 -- than the stored one (a late redelivery) can be recognised and ignored. NULL
--- until a registration carrying one is recorded.
+-- until a registration carrying one is recorded. workers.heartbeat_broker_at is
+-- the same for the heartbeat last recorded, so heartbeats are ordered by the
+-- broker's clock rather than the worker's. NULL until a heartbeat carrying one
+-- is recorded.
 CREATE TABLE server_lease (
     id         INTEGER PRIMARY KEY CHECK (id = 1),
     holder     TEXT,
@@ -52,8 +55,10 @@ CREATE TABLE server_members (
 );
 
 ALTER TABLE workers ADD COLUMN registration_broker_at TEXT;
+ALTER TABLE workers ADD COLUMN heartbeat_broker_at TEXT;
 
 -- +goose Down
+ALTER TABLE workers DROP COLUMN heartbeat_broker_at;
 ALTER TABLE workers DROP COLUMN registration_broker_at;
 DROP TABLE server_members;
 DROP TABLE server_epoch;

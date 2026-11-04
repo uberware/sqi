@@ -82,7 +82,9 @@ func startLock(ctx context.Context, conn *sql.Conn, l *serverLock, log *slog.Log
 // caller migrates before calling [serverLock.downgrade] to the shared lock the
 // group's servers hold together. If it is not granted, others hold it shared
 // (or one holds it exclusive, to migrate or as a command), so it asks for it
-// shared, retrying for haLockWait, and gives up with ErrServerLockHeld.
+// shared, retrying for haLockWait, and gives up with ErrServerLockHeld. A
+// shared request refused means an exclusive holder, so the first refusal is
+// logged at Info: the server is waiting, not hung.
 func acquireHAServerLock(ctx context.Context, db *sql.DB, log *slog.Logger) (*serverLock, error) {
 	conn, err := db.Conn(ctx)
 	if err != nil {
@@ -99,12 +101,18 @@ func acquireHAServerLock(ctx context.Context, db *sql.DB, log *slog.Logger) (*se
 		return startLock(ctx, conn, &serverLock{ha: true, exclusive: true}, log), nil
 	}
 	deadline := time.Now().Add(haLockWait)
+	waited := false
 	for {
 		if got, err = tryLock(ctx, conn, "pg_try_advisory_lock_shared"); err != nil {
 			return fail(err)
 		}
 		if got {
 			return startLock(ctx, conn, &serverLock{ha: true, shared: true}, log), nil
+		}
+		if !waited {
+			waited = true
+			log.InfoContext(ctx, fmt.Sprintf("store: another sqi-server is migrating, or a command holds the database alone; waiting up to %s",
+				haLockWait))
 		}
 		if !time.Now().Before(deadline) {
 			return fail(ErrServerLockHeld)

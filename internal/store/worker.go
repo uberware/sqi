@@ -143,10 +143,16 @@ type Worker struct {
 	// [WorkerStore.RegisterWorker] ignores one the broker stamped earlier than
 	// the stored one.
 	RegistrationBrokerAt *time.Time
-	CPUCount             int
-	RAMMb                int
-	GPUInfo              GPUInfo
-	Tags                 map[string]string // arbitrary capability tags
+	// HeartbeatBrokerAt is the message broker's stream timestamp of the
+	// heartbeat [WorkerStore.UpdateWorkerHeartbeat] last recorded. Nil until a
+	// heartbeat carrying one is recorded. It orders heartbeats as
+	// RegistrationBrokerAt orders registrations; RegisterWorker never writes
+	// it.
+	HeartbeatBrokerAt *time.Time
+	CPUCount          int
+	RAMMb             int
+	GPUInfo           GPUInfo
+	Tags              map[string]string // arbitrary capability tags
 	// ExprLimits holds the worker's self-reported OpenJD EXPR evaluation caps.
 	// Zero-valued for workers registered before this field existed; see
 	// [WorkerExprLimits] for what the server does with them.
@@ -256,13 +262,18 @@ type WorkerStore interface {
 	// error. Returns [ErrNotFound] if the worker does not exist.
 	SetWorkerDisabled(ctx context.Context, id string, disabled bool) (Worker, error)
 
-	// UpdateWorkerHeartbeat records the most recent heartbeat time for the
-	// given worker, never moving it backwards: a heartbeat older than the
-	// recorded one (a late redelivery) is accepted and ignored, not an error.
+	// UpdateWorkerHeartbeat records at, the worker's own timestamp of its
+	// heartbeat, as the given worker's LastHeartbeatAt. brokerAt is the message
+	// broker's stream timestamp of the heartbeat, and it alone orders
+	// heartbeats: one the broker stamped earlier than the recorded
+	// HeartbeatBrokerAt (a late redelivery) is accepted and ignored, not an
+	// error, while one stamped no earlier is recorded whatever at says, so a
+	// worker whose clock steps back is still heard. A nil brokerAt is recorded
+	// unconditionally and keeps the stored HeartbeatBrokerAt.
 	// This is a hot path; implementations should use a single UPDATE
 	// statement, reading only to tell an unknown worker from an ignored
 	// heartbeat. Returns [ErrNotFound] if the worker does not exist.
-	UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Time) error
+	UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Time, brokerAt *time.Time) error
 
 	// ListStaleWorkers returns workers whose last heartbeat is older than
 	// before and whose status is [WorkerStatusOnline], disabled or not (a dead

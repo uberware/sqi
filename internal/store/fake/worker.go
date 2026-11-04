@@ -35,7 +35,8 @@ func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.
 		return cloneWorker(existing), nil, store.ErrStaleRegistration
 	}
 	worker = cloneWorker(worker)
-	worker.Disabled = existing.Disabled // false for a new worker
+	worker.Disabled = existing.Disabled                   // false for a new worker
+	worker.HeartbeatBrokerAt = existing.HeartbeatBrokerAt // nil for a new worker
 	var reclaimed []store.Task
 	if isUpdate {
 		worker.RegisteredAt = existing.RegisteredAt
@@ -112,8 +113,9 @@ func (s *Store) SetWorkerDisabled(ctx context.Context, id string, disabled bool)
 }
 
 // UpdateWorkerHeartbeat records the most recent heartbeat time for the given
-// worker. A heartbeat older than the recorded one is ignored.
-func (s *Store) UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Time) error {
+// worker. A heartbeat the broker stamped before the recorded one is ignored; an
+// unstamped one is recorded unconditionally and keeps the recorded stamp.
+func (s *Store) UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Time, brokerAt *time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.fenceLocked(ctx); err != nil {
@@ -125,8 +127,12 @@ func (s *Store) UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Ti
 		return store.ErrNotFound
 	}
 
-	if worker.LastHeartbeatAt != nil && !worker.LastHeartbeatAt.Before(at) {
-		return nil
+	if brokerAt != nil {
+		if worker.HeartbeatBrokerAt != nil && brokerAt.Before(*worker.HeartbeatBrokerAt) {
+			return nil
+		}
+		stamp := *brokerAt
+		worker.HeartbeatBrokerAt = &stamp
 	}
 	worker.LastHeartbeatAt = &at
 	worker.UpdatedAt = time.Now()

@@ -3,10 +3,14 @@
 package postgres_test
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -138,13 +142,53 @@ func TestHALock_WaitsForAnExclusiveHolderToFinish(t *testing.T) {
 		released <- lock.Release()
 	}()
 	start := time.Now()
-	openStore(t, dsn, haServerOpts())
+	var logs syncBuffer
+	opts := haServerOpts()
+	opts.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	openStore(t, dsn, opts)
 	if took := time.Since(start); took < 500*time.Millisecond {
 		t.Fatalf("Open returned after %v, before the command released the lock", took)
 	}
 	if err := <-released; err != nil {
 		t.Fatal(err)
 	}
+	// The wait is announced once, at Info, however many polls it took.
+	const waiting = "another sqi-server is migrating, or a command holds the database alone; waiting up to 10s"
+	if out := logs.String(); strings.Count(out, waiting) != 1 || !strings.Contains(out, "level=INFO") {
+		t.Fatalf("want one Info line %q, got:\n%s", waiting, out)
+	}
+}
+
+// A server joining a running group takes the lock shared at its first try, so
+// it has nothing to wait for and announces no wait.
+func TestHALock_JoiningAGroupAnnouncesNoWait(t *testing.T) {
+	dsn := storetest.PostgresDSN(t)
+	openStore(t, dsn, haServerOpts())
+	var logs syncBuffer
+	opts := haServerOpts()
+	opts.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	openStore(t, dsn, opts)
+	if out := logs.String(); strings.Contains(out, "waiting up to") {
+		t.Fatalf("a server joining a group announced a wait:\n%s", out)
+	}
+}
+
+// syncBuffer is a log sink safe to read while a store writes to it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func TestHALock_FirstServerMigrates(t *testing.T) {
@@ -174,20 +218,30 @@ func migrateTo(t *testing.T, dsn string, v int64) {
 	}
 }
 
-// workerBrokerColumn is the column migration 00041 adds and every store
-// statement over workers names. Open prepares those statements, so a database
-// one migration behind can only be opened by a store if the column is already
-// there: behindByOne gives a test that state, without migration 00041's other
-// changes.
-const workerBrokerColumn = "registration_broker_at"
+// workerBrokerColumns are the columns migration 00041 adds to workers, which
+// every store statement over workers names. Open prepares those statements, so
+// a database one migration behind can only be opened by a store if the
+// columns are already there: behindByOne gives a test that state, without
+// migration 00041's other changes.
+var workerBrokerColumns = []string{"registration_broker_at", "heartbeat_broker_at"}
 
-// behindByOne brings an empty database to version 40, with workerBrokerColumn
+// behindByOne brings an empty database to version 40, with workerBrokerColumns
 // added by hand so that a store can be opened over it.
 func behindByOne(t *testing.T, dsn string) {
 	t.Helper()
 	migrateTo(t, dsn, 40)
-	if _, err := openRaw(t, dsn).ExecContext(t.Context(), `ALTER TABLE workers ADD COLUMN `+workerBrokerColumn+` ts`); err != nil {
-		t.Fatal(err)
+	alterWorkerBrokerColumns(t, dsn, "ADD COLUMN %s ts")
+}
+
+// alterWorkerBrokerColumns applies the ALTER TABLE workers action format to
+// each of workerBrokerColumns.
+func alterWorkerBrokerColumns(t *testing.T, dsn, format string) {
+	t.Helper()
+	db := openRaw(t, dsn)
+	for _, col := range workerBrokerColumns {
+		if _, err := db.ExecContext(t.Context(), `ALTER TABLE workers `+fmt.Sprintf(format, col)); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -219,9 +273,7 @@ func TestHALock_PendingMigrationWithOtherServerRefused(t *testing.T) {
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := openRaw(t, dsn).ExecContext(t.Context(), `ALTER TABLE workers DROP COLUMN `+workerBrokerColumn); err != nil {
-		t.Fatal(err)
-	}
+	alterWorkerBrokerColumns(t, dsn, "DROP COLUMN %s")
 	openStore(t, dsn, haServerOpts())
 	if v, err := postgres.SchemaVersionDSN(t.Context(), dsn); err != nil || v != 41 {
 		t.Fatalf("SchemaVersion = %d, %v; want 41", v, err)

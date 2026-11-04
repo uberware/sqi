@@ -117,6 +117,9 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 	// Park until work appears or the hold elapses, then try exactly once more.
 	// The park happens OUTSIDE the per-worker lock; only the selection below is
 	// serialized, so a re-woken request reads the up-to-date committed cores.
+	s.logger.DebugContext(ctx, "scheduler: no work for the lease request; parking it",
+		slog.String("worker_id", workerID), slog.String("queue_id", queueID),
+		slog.Duration("hold", s.leaseHoldTimeout))
 	if s.waiters.wait(ctx, queueID, s.leaseHoldTimeout) {
 		return marshalLeaseReply(s.leaseAfterPark(ctx, workerID, req.InstanceID))
 	}

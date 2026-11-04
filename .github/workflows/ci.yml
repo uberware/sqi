@@ -1113,6 +1113,7 @@ jobs:
             TestHALock_CommandsRefusedBesideHAServer
             TestHALock_CommandHoldsServersOff
             TestHALock_WaitsForAnExclusiveHolderToFinish
+            TestHALock_JoiningAGroupAnnouncesNoWait
             TestHALock_FirstServerMigrates
             TestHALock_PendingMigrationWithOtherServerRefused
             TestHALock_BehindDatabaseWithoutAutoMigrateJoins
@@ -1143,7 +1144,10 @@ jobs:
             TestParity_RegisterWorker_LaterBrokerStampRestarts/postgres
             TestParity_RegisterWorker_SameBrokerStampIsNotStale/postgres
             TestParity_RegisterWorker_NoBrokerStampBehavesAsBefore/postgres
-            TestParity_UpdateWorkerHeartbeat_NeverMovesBackwards/postgres
+            TestParity_RegisterWorker_NeverWritesHeartbeatBrokerAt/postgres
+            TestParity_UpdateWorkerHeartbeat_BrokerStampNeverMovesBackwards/postgres
+            TestParity_UpdateWorkerHeartbeat_WorkerClockStepBackRecorded/postgres
+            TestParity_UpdateWorkerHeartbeat_UnstampedRecordedUnconditionally/postgres
             TestParity_UpdateWorkerHeartbeat_NeverHeartbeatedWorker/postgres
             TestParity_UpdateWorkerHeartbeat_UnknownWorkerNotFound/postgres
             TestParity_Fence_IgnoredWorkerWritesStillFence/postgres

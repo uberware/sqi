@@ -173,12 +173,17 @@ func (c *Client) ConsumeTaskLogs(ctx context.Context, handler jetstream.MessageH
 //   - AckWait 10 s — heartbeats are time-sensitive; a 10 s window is well
 //     within the scheduler's heartbeat-timeout sweep interval (≈30 s) so
 //     delays are caught before workers are incorrectly marked offline.
-//   - MaxDeliver 3 — heartbeats are cheap and frequent; a low retry limit
-//     avoids piling up stale pings. The scheduler naks a failed message with
-//     a growing delay (1 s, then 2 s), so a heartbeat outlives about 3 s of
-//     store outage, and one that arrives before its worker's registration
-//     is retried a second later. A registration gets the same three
-//     deliveries.
+//   - MaxDeliver 10 — as the task-status consumer's: the scheduler naks a
+//     failed message with a growing delay (1 s, doubling to 30 s), so the ten
+//     deliveries would span about 2.5 minutes; the stream's 2-minute MaxAge
+//     caps that, so a message outlives about 2 minutes of store outage (a
+//     PostgreSQL restart, an HA failover). A registration needs that: a worker registers only at
+//     start and after a broker reconnect, so one dropped sooner would leave
+//     its worker idle and unseen until the next reconnect. A heartbeat that
+//     arrives before its worker's registration is retried a second later. The
+//     growing delay bounds the pile-up of held-back heartbeats, and once a
+//     later one is recorded a held-back one is ignored when it lands, since
+//     heartbeats are ordered by their broker timestamp.
 //   - DeliverAllPolicy — replays unprocessed registration/heartbeat messages
 //     on startup, ensuring no worker comes online without the server noticing.
 func (c *Client) ConsumeWorker(ctx context.Context, handler jetstream.MessageHandler) (jetstream.ConsumeContext, error) {
@@ -186,7 +191,7 @@ func (c *Client) ConsumeWorker(ctx context.Context, handler jetstream.MessageHan
 		Durable:       workerConsumerName,
 		AckPolicy:     jetstream.AckExplicitPolicy,
 		AckWait:       10 * time.Second,
-		MaxDeliver:    3,
+		MaxDeliver:    10,
 		DeliverPolicy: jetstream.DeliverAllPolicy,
 		Description:   "Server-side worker registration and heartbeat consumer.",
 	}

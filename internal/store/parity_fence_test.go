@@ -208,7 +208,8 @@ var singleStatementWrites = []fenceCase{
 			return fenceFixture{workerID: w.ID}
 		},
 		op: func(ctx context.Context, st store.Store, f fenceFixture) error {
-			return st.UpdateWorkerHeartbeat(ctx, f.workerID, time.Now())
+			now := time.Now().UTC()
+			return st.UpdateWorkerHeartbeat(ctx, f.workerID, now, &now)
 		},
 		observe: func(t *testing.T, st store.Store, f fenceFixture) string {
 			t.Helper()
@@ -216,7 +217,7 @@ var singleStatementWrites = []fenceCase{
 			if err != nil {
 				t.Fatalf("GetWorker: %v", err)
 			}
-			return fmt.Sprintf("heartbeat=%v status=%s", w.LastHeartbeatAt, w.Status)
+			return fmt.Sprintf("heartbeat=%v broker=%v status=%s", w.LastHeartbeatAt, w.HeartbeatBrokerAt, w.Status)
 		},
 	},
 }
@@ -308,8 +309,8 @@ func TestParity_Fence_PlainContextIsNeverFenced(t *testing.T) {
 }
 
 // TestParity_Fence_IgnoredWorkerWritesStillFence: the worker writes that can
-// end without changing anything (a stale registration, a heartbeat older than
-// the recorded one, a heartbeat for an unknown worker) are fenced like any
+// end without changing anything (a stale registration, a heartbeat the broker
+// stamped before the recorded one, a heartbeat for an unknown worker) are fenced like any
 // other, so a deposed leader sees ErrFenced from them on every backend and not
 // the result the current leader would get.
 func TestParity_Fence_IgnoredWorkerWritesStillFence(t *testing.T) {
@@ -329,7 +330,7 @@ func TestParity_Fence_IgnoredWorkerWritesStillFence(t *testing.T) {
 			if err := reg(ctx, later); err != nil {
 				t.Fatalf("register: %v", err)
 			}
-			if err := st.UpdateWorkerHeartbeat(ctx, "w-fence-order", later); err != nil {
+			if err := st.UpdateWorkerHeartbeat(ctx, "w-fence-order", later, &later); err != nil {
 				t.Fatalf("heartbeat: %v", err)
 			}
 			stale, current := takeOver(t, st)
@@ -340,11 +341,11 @@ func TestParity_Fence_IgnoredWorkerWritesStillFence(t *testing.T) {
 				wantCurrent error
 			}{
 				{"stale registration", func(c context.Context) error { return reg(c, earlier) }, store.ErrStaleRegistration},
-				{"older heartbeat", func(c context.Context) error {
-					return st.UpdateWorkerHeartbeat(c, "w-fence-order", earlier)
+				{"earlier-stamped heartbeat", func(c context.Context) error {
+					return st.UpdateWorkerHeartbeat(c, "w-fence-order", later, &earlier)
 				}, nil},
 				{"unknown worker heartbeat", func(c context.Context) error {
-					return st.UpdateWorkerHeartbeat(c, "w-ghost", later)
+					return st.UpdateWorkerHeartbeat(c, "w-ghost", later, nil)
 				}, store.ErrNotFound},
 			}
 			for _, tc := range cases {
@@ -1057,7 +1058,10 @@ var fenceMutators = map[string]fenceMutator{
 	},
 	"UpdateWorkerHeartbeat": func(t *testing.T, st store.Store) func(context.Context) error {
 		w := fenceWorker(t, st, store.WorkerStatusOnline, time.Now().Add(-time.Hour))
-		return func(ctx context.Context) error { return st.UpdateWorkerHeartbeat(ctx, w.ID, time.Now().UTC()) }
+		return func(ctx context.Context) error {
+			now := time.Now().UTC()
+			return st.UpdateWorkerHeartbeat(ctx, w.ID, now, &now)
+		}
 	},
 }
 
