@@ -25,13 +25,17 @@ const (
 	// answer. A server that stops answering fills it, after which the pacer's
 	// lag grows, which is the measurement.
 	maxPacedInFlight = 256
-	// finishTimeout bounds how long a submission already sent when the run
-	// ends waits for its answer, so the ledger accounts for it.
-	finishTimeout = 10 * time.Second
 )
 
+// finishTimeout bounds how long a submission still unanswered when the run
+// ends waits for its answer, so the ledger accounts for it. A submission in
+// a live run has no time limit: creating a million-task job takes the server
+// over a minute, and abandoning it would leave a job the ledger never saw. A
+// variable so a test can shorten it.
+var finishTimeout = 10 * time.Second
+
 // Submitter submits the scenario's jobs to the server and records what the
-// server answers. Every attempt lands in the ledger and in Metrics.ByStatus:
+// server answers. Every attempt lands in the ledger and in Metrics.StatusCounts:
 // a rejection (422, 429, 503) or a transport failure is counted, never retried
 // and never hidden.
 //
@@ -202,12 +206,27 @@ func (s *Submitter) submit(ctx context.Context, cr *classRun) error {
 		req.DependsOn = []string{dep}
 	}
 
-	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
+	rctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancel()
+	// While ctx is live the request is bounded only by the server; once it
+	// ends, the request gets finishTimeout more.
+	stop := context.AfterFunc(ctx, func() {
+		timer := time.NewTimer(finishTimeout)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			cancel()
+		case <-rctx.Done():
+		}
+	})
+	defer stop()
 	sent := time.Now()
 	id, status, err := s.c.SubmitJob(rctx, req)
 	answered := time.Now()
 
+	if err != nil && status >= http.StatusOK && status < http.StatusMultipleChoices {
+		status = StatusUndecodable
+	}
 	s.m.SubmitLatency.Record(answered.Sub(sent))
 	s.m.Status(status).Add(1)
 	if status == http.StatusTooManyRequests {

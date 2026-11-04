@@ -112,4 +112,7 @@ func TestDriver_AgainstARealServer(t *testing.T) {
 	if m.WSErrors.Load() != 0 {
 		t.Errorf("ws errors %d, want none", m.WSErrors.Load())
 	}
+	if m.WSDrops.Load() != 0 {
+		t.Errorf("ws drops %d, want none: a fresh subscription replays nothing", m.WSDrops.Load())
+	}
 }

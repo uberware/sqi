@@ -44,9 +44,18 @@ type WSConn struct {
 	closeErr  error
 }
 
+// WSOption configures DialWS.
+type WSOption func(*websocket.DialOptions)
+
+// WithWSHTTPClient dials with hc, so a wss:// connection trusts hc's CA and
+// presents its client certificate.
+func WithWSHTTPClient(hc *http.Client) WSOption {
+	return func(o *websocket.DialOptions) { o.HTTPClient = hc }
+}
+
 // DialWS opens a WebSocket to the server at baseURL, authenticating with
 // apiKey when it is non-empty.
-func DialWS(ctx context.Context, baseURL, apiKey string) (*WSConn, error) {
+func DialWS(ctx context.Context, baseURL, apiKey string, opts ...WSOption) (*WSConn, error) {
 	u, err := url.Parse(strings.TrimRight(baseURL, "/"))
 	if err != nil {
 		return nil, fmt.Errorf("ws: parse base URL: %w", err)
@@ -59,11 +68,14 @@ func DialWS(ctx context.Context, baseURL, apiKey string) (*WSConn, error) {
 	}
 	u.Path += apiPrefix + "/ws"
 
-	opts := &websocket.DialOptions{CompressionMode: websocket.CompressionDisabled}
+	dialOpts := &websocket.DialOptions{CompressionMode: websocket.CompressionDisabled}
 	if apiKey != "" {
-		opts.HTTPHeader = http.Header{"Authorization": {"Bearer " + apiKey}}
+		dialOpts.HTTPHeader = http.Header{"Authorization": {"Bearer " + apiKey}}
 	}
-	conn, resp, err := websocket.Dial(ctx, u.String(), opts) //nolint:bodyclose // coder/websocket owns the upgrade response body
+	for _, o := range opts {
+		o(dialOpts)
+	}
+	conn, resp, err := websocket.Dial(ctx, u.String(), dialOpts) //nolint:bodyclose // coder/websocket owns the upgrade response body
 	if err != nil {
 		if resp != nil {
 			return nil, fmt.Errorf("ws: dial %s: HTTP %d: %w", u.Redacted(), resp.StatusCode, err)

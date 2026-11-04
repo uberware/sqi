@@ -10,6 +10,12 @@ import (
 	"github.com/uberware/sqi/internal/loadtest/measure"
 )
 
+// StatusUndecodable is the status key of a submission the server answered 2xx
+// but whose body could not be read as a job id. The job may exist on the
+// server, but the harness cannot name it, so it is not in the ledger's accepted
+// set; the ledger and the metrics both carry this key rather than the 2xx.
+const StatusUndecodable = -1
+
 // Names of the REST endpoints a poller can hit; scenario.PollSpec.Endpoints
 // lists them.
 const (
@@ -38,10 +44,10 @@ type Metrics struct {
 	// REST is the latency of each poller endpoint's successful calls, keyed by
 	// endpoint name. The set of keys is fixed by NewMetrics.
 	REST map[string]*measure.Histogram
-	// ByStatus counts submissions by HTTP status, 0 being a transport error.
-	// Count through Status and read through StatusCounts while the driver
-	// runs; the map itself is only safe to read once it has stopped.
-	ByStatus map[int]*measure.Counter
+	// byStatus counts submissions by HTTP status: 0 is a transport error and
+	// StatusUndecodable a 2xx whose body held no job id. Count through Status
+	// and read through StatusCounts.
+	byStatus map[int]*measure.Counter
 	// WSDrops is the number of pushes the server's sequence numbers show a
 	// client missed. WSEvents is every push received.
 	WSDrops, WSEvents *measure.Counter
@@ -52,7 +58,7 @@ type Metrics struct {
 	// throttled by the server's rate limiter, not measured.
 	RateLimited atomic.Bool
 
-	mu sync.Mutex // guards ByStatus
+	mu sync.Mutex // guards byStatus
 }
 
 // NewMetrics returns Metrics with a latency histogram for each of endpoints
@@ -67,7 +73,7 @@ func NewMetrics(endpoints []string) *Metrics {
 		JobE2E:        measure.NewHistogram(),
 		WSLag:         measure.NewHistogram(),
 		REST:          make(map[string]*measure.Histogram),
-		ByStatus:      make(map[int]*measure.Counter),
+		byStatus:      make(map[int]*measure.Counter),
 		WSDrops:       &measure.Counter{},
 		WSEvents:      &measure.Counter{},
 		WSErrors:      &measure.Counter{},
@@ -89,20 +95,20 @@ func NewMetrics(endpoints []string) *Metrics {
 func (m *Metrics) Status(code int) *measure.Counter {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	c := m.ByStatus[code]
+	c := m.byStatus[code]
 	if c == nil {
 		c = &measure.Counter{}
-		m.ByStatus[code] = c
+		m.byStatus[code] = c
 	}
 	return c
 }
 
-// StatusCounts returns a snapshot of ByStatus.
+// StatusCounts returns a snapshot of the per-status counts.
 func (m *Metrics) StatusCounts() map[int]int64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make(map[int]int64, len(m.ByStatus))
-	for code, c := range m.ByStatus {
+	out := make(map[int]int64, len(m.byStatus))
+	for code, c := range m.byStatus {
 		out[code] = c.Load()
 	}
 	return out

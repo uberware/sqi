@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
+	"net/http"
 	"slices"
 	"sync"
 	"time"
 
 	"github.com/uberware/sqi/internal/loadtest/client"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
+	"github.com/uberware/sqi/internal/loadtest/target"
 	"github.com/uberware/sqi/internal/ws"
 )
 
@@ -52,12 +54,16 @@ type WSStream interface {
 // DialFunc opens a WebSocket to the server at baseURL.
 type DialFunc func(ctx context.Context, baseURL, apiKey string) (WSStream, error)
 
-func dialWS(ctx context.Context, baseURL, apiKey string) (WSStream, error) {
-	c, err := client.DialWS(ctx, baseURL, apiKey)
-	if err != nil {
-		return nil, err
+// dialWith returns a DialFunc that dials with hc, so the WebSocket trusts the
+// same CA as the REST client.
+func dialWith(hc *http.Client) DialFunc {
+	return func(ctx context.Context, baseURL, apiKey string) (WSStream, error) {
+		c, err := client.DialWS(ctx, baseURL, apiKey, client.WithWSHTTPClient(hc))
+		if err != nil {
+			return nil, err
+		}
+		return c, nil
 	}
-	return c, nil
 }
 
 // UIClients is the read-side load: WebSocket subscribers and REST pollers,
@@ -78,6 +84,8 @@ type UIClients struct {
 	rng    *syncRand
 	// retryDelay is the wait before a lost connection is redialed.
 	retryDelay time.Duration
+	// initErr is why an option failed; Run returns it.
+	initErr error
 }
 
 // UIOption configures NewUIClients.
@@ -87,6 +95,22 @@ type UIOption func(*UIClients)
 // for example one that trusts the target's CA. By default one is built from
 // the base URL and API key.
 func WithUIClient(c *client.Client) UIOption { return func(u *UIClients) { u.c = c } }
+
+// WithUITarget points the clients at t: its REST client (carrying the API key
+// and trusting its CA, which the WebSocket dial reuses) and its farm. Use it
+// rather than WithUIClient and WithUIFarm when a target is at hand, so TLS is
+// never forgotten.
+func WithUITarget(t target.Target) UIOption {
+	return func(u *UIClients) {
+		c, err := target.NewClient(t)
+		if err != nil {
+			u.initErr = err
+			return
+		}
+		u.c = c
+		u.farmID = t.FarmID()
+	}
+}
 
 // WithUIFarm limits job, task and worker lists to one farm.
 func WithUIFarm(farmID string) UIOption { return func(u *UIClients) { u.farmID = farmID } }
@@ -101,7 +125,6 @@ func WithUIRand(r *rand.Rand) UIOption { return func(u *UIClients) { u.rng = new
 func NewUIClients(baseURL, apiKey string, spec scenario.ClientsSpec, jobs *JobLedger, m *Metrics, opts ...UIOption) *UIClients {
 	u := &UIClients{
 		baseURL: baseURL, apiKey: apiKey, spec: spec, jobs: jobs, m: m,
-		dial:       dialWS,
 		rng:        newSyncRand(nil),
 		retryDelay: reconnectDelay,
 	}
@@ -115,12 +138,18 @@ func NewUIClients(baseURL, apiKey string, spec scenario.ClientsSpec, jobs *JobLe
 		}
 		u.c = client.New(baseURL, copts...)
 	}
+	if u.dial == nil {
+		u.dial = dialWith(u.c.HTTPClient())
+	}
 	return u
 }
 
 // Run starts every client and returns once ctx has ended and all of them have
 // stopped. It fails up front only for an unknown subscription or endpoint.
 func (u *UIClients) Run(ctx context.Context) error {
+	if u.initErr != nil {
+		return u.initErr
+	}
 	subs, err := chooseNames("subscription", u.spec.WebSocket.Subscribe, standardSubscriptions)
 	if err != nil {
 		return err
@@ -167,39 +196,95 @@ func sleepFor(ctx context.Context, d time.Duration) bool {
 
 // ── WebSocket clients ────────────────────────────────────────────────────────
 
+// noReplay is the since_seq that subscribes without replaying the hub's
+// buffered pushes (the hub treats it as past every sequence number). A client
+// that has seen nothing on a subject asks for it: the buffer holds up to 256
+// old pushes, which the client's 64-slot queue would drop, and they would show
+// up as drops and as lag that never happened.
+const noReplay = ^uint64(0)
+
+// maxTrackedHoles bounds the missing sequence numbers remembered per subject.
+const maxTrackedHoles = 1024
+
+// subjectSeqs is the sequence state of one subject.
+type subjectSeqs struct {
+	last uint64
+	// cursor is the since_seq the current connection subscribed with; 0 when
+	// it asked for no replay or has already seen the server's counter restart.
+	cursor  uint64
+	missing map[uint64]struct{}
+}
+
 // seqTracker finds holes in the per-subject sequence numbers a client sees.
 // It is safe for concurrent use.
 type seqTracker struct {
-	mu   sync.Mutex
-	last map[string]uint64
+	mu    sync.Mutex
+	state map[string]*subjectSeqs
 }
 
-func newSeqTracker() *seqTracker { return &seqTracker{last: map[string]uint64{}} }
+func newSeqTracker() *seqTracker { return &seqTracker{state: map[string]*subjectSeqs{}} }
 
-// observe records seq as received on subject and returns how many pushes
-// before it were missed. The first push on a subject sets the baseline: the
-// server numbers a subject across every client, so a late subscriber starts
-// anywhere. A repeat is ignored, and a lower number means the server's
-// counter restarted, so it becomes the new baseline.
-func (t *seqTracker) observe(subject string, seq uint64) uint64 {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	last, seen := t.last[subject]
-	switch {
-	case !seen || seq < last:
-		t.last[subject] = seq
-		return 0
-	case seq == last:
-		return 0
+func (t *seqTracker) get(subject string) *subjectSeqs {
+	st := t.state[subject]
+	if st == nil {
+		st = &subjectSeqs{missing: map[uint64]struct{}{}}
+		t.state[subject] = st
 	}
-	t.last[subject] = seq
-	return seq - last - 1
+	return st
 }
 
-func (t *seqTracker) lastSeq(subject string) uint64 {
+// subscribeCursor returns the since_seq a new connection should subscribe to
+// subject with, and records it as the connection's cursor: noReplay for a
+// subject never seen, else the last sequence number seen, so the server
+// replays only what the client missed.
+func (t *seqTracker) subscribeCursor(subject string) uint64 {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.last[subject]
+	st := t.get(subject)
+	if st.last == 0 {
+		st.cursor = 0
+		return noReplay
+	}
+	st.cursor = st.last
+	return st.last
+}
+
+// observe records seq as received on subject and returns the change in the
+// number of missed pushes: positive for a hole it opens, -1 for a late push
+// that fills one, 0 otherwise. The first push on a subject sets the baseline:
+// the server numbers a subject across every client, so a late subscriber starts
+// anywhere. The server registers a subscription before it replays, so a live
+// push can arrive ahead of replayed ones; the replayed ones then fill the hole
+// the live one opened, and the net count is zero. A push at or below the
+// cursor the connection subscribed with cannot be a replay, so the server's
+// counter restarted and that push is the new baseline.
+func (t *seqTracker) observe(subject string, seq uint64) int64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	st := t.get(subject)
+	switch {
+	case st.last == 0:
+		st.last = seq
+		return 0
+	case st.cursor > 0 && seq <= st.cursor:
+		st.last, st.cursor = seq, 0
+		clear(st.missing)
+		return 0
+	case seq > st.last:
+		gap := seq - st.last - 1
+		if gap > 0 && gap <= maxTrackedHoles && len(st.missing)+int(gap) <= maxTrackedHoles {
+			for m := st.last + 1; m < seq; m++ {
+				st.missing[m] = struct{}{}
+			}
+		}
+		st.last = seq
+		return safeInt64(gap)
+	}
+	if _, ok := st.missing[seq]; ok {
+		delete(st.missing, seq)
+		return -1
+	}
+	return 0
 }
 
 // wsState is what one UI client keeps across reconnects.
@@ -210,6 +295,25 @@ type wsState struct {
 	subjects []string // subscribed on every connection, in order
 	ownJob   bool
 	ownTask  bool
+	// replayCutoff is, per resubscribed subject, the time the resubscription
+	// was sent: a push whose own timestamp is older was buffered before it, so
+	// it is a replay, and its age says nothing about the server's latency.
+	replayCutoff map[string]time.Time
+}
+
+func (s *wsState) setCutoff(subject string, t time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.replayCutoff == nil {
+		s.replayCutoff = map[string]time.Time{}
+	}
+	s.replayCutoff[subject] = t
+}
+
+func (s *wsState) cutoff(subject string) time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.replayCutoff[subject]
 }
 
 func (s *wsState) add(subject string) {
@@ -266,7 +370,11 @@ func (u *UIClients) wsSession(ctx context.Context, rng *rand.Rand, st *wsState, 
 
 	known, _, _ := st.snapshot()
 	for _, subject := range known {
-		if err := conn.Subscribe(ctx, subject, st.seqs.lastSeq(subject)); err != nil {
+		since := st.seqs.subscribeCursor(subject)
+		if since != noReplay {
+			st.setCutoff(subject, time.Now())
+		}
+		if err := conn.Subscribe(ctx, subject, since); err != nil {
 			cancel()
 			<-drained
 			return err
@@ -327,7 +435,7 @@ func (u *UIClients) subscribeOwn(ctx context.Context, conn WSStream, rng *rand.R
 
 	if wantJob {
 		subject := fmt.Sprintf(ws.SubjectJobTasksFmt, job.ID)
-		if err := conn.Subscribe(ctx, subject, 0); err != nil {
+		if err := conn.Subscribe(ctx, subject, st.seqs.subscribeCursor(subject)); err != nil {
 			return err
 		}
 		st.add(subject)
@@ -344,7 +452,7 @@ func (u *UIClients) subscribeOwn(ctx context.Context, conn WSStream, rng *rand.R
 			return nil
 		}
 		subject := fmt.Sprintf(ws.SubjectTaskLogsFmt, tasks.Items[0].ID)
-		if err := conn.Subscribe(ctx, subject, 0); err != nil {
+		if err := conn.Subscribe(ctx, subject, st.seqs.subscribeCursor(subject)); err != nil {
 			return err
 		}
 		st.add(subject)
@@ -377,10 +485,10 @@ func (u *UIClients) observe(env ws.Envelope, st *wsState) {
 		return
 	}
 	u.m.WSEvents.Add(1)
-	if gap := st.seqs.observe(env.Subject, env.Seq); gap > 0 {
-		u.m.WSDrops.Add(safeInt64(gap))
+	if delta := st.seqs.observe(env.Subject, env.Seq); delta != 0 {
+		u.m.WSDrops.Add(delta)
 	}
-	if ts := eventTime(env.Payload); !ts.IsZero() {
+	if ts := eventTime(env.Payload); !ts.IsZero() && !ts.Before(st.cutoff(env.Subject)) {
 		u.m.WSLag.Record(max(time.Since(ts), 0))
 	}
 }

@@ -12,7 +12,6 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
-	"time"
 
 	"github.com/uberware/sqi/internal/loadtest/client"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
@@ -53,9 +52,6 @@ type Target interface {
 // path is never executed, but a job template needs one.
 const placeholderCommand = "sqi-load-noop"
 
-// httpTimeout bounds one REST call the harness makes.
-const httpTimeout = 30 * time.Second
-
 // NewClient returns a REST client for t, carrying its API key and trusting
 // its CA.
 func NewClient(t Target) (*client.Client, error) {
@@ -77,7 +73,8 @@ func newClient(httpURL, apiKey string, files simworker.TLSFiles) (*client.Client
 // httpClient returns an HTTP client trusting files' CA, and the default
 // transport's roots when it names none.
 func httpClient(files simworker.TLSFiles) (*http.Client, error) {
-	hc := &http.Client{Timeout: httpTimeout}
+	// No Timeout here: client.Client puts a deadline on every call but SubmitJob.
+	hc := &http.Client{}
 	if files.CAFile == "" && files.CertFile == "" && !files.InsecureSkipVerify {
 		return hc, nil
 	}

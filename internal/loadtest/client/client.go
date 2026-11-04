@@ -20,9 +20,12 @@ import (
 	"time"
 )
 
+// requestTimeout bounds every call except SubmitJob. It is a variable so a
+// test can shorten it.
+var requestTimeout = 30 * time.Second
+
 const (
 	apiPrefix        = "/api/v1"
-	defaultTimeout   = 30 * time.Second
 	maxResponseBytes = 64 << 20
 	maxDetailBytes   = 512
 	defaultCookie    = "sqi_session"
@@ -47,17 +50,23 @@ func WithAPIKey(key string) Option {
 	return func(c *Client) { c.apiKey = key }
 }
 
-// WithHTTPClient replaces the default client (30 s timeout).
+// WithHTTPClient replaces the default client. Per-request deadlines are applied
+// by the Client itself (30 s, none for SubmitJob), so the http.Client should
+// not set a Timeout of its own.
 func WithHTTPClient(hc *http.Client) Option {
 	return func(c *Client) { c.hc = hc }
 }
+
+// HTTPClient returns the client's underlying *http.Client, for dialing a
+// WebSocket that trusts the same CA.
+func (c *Client) HTTPClient() *http.Client { return c.hc }
 
 // New returns a client for the server at baseURL (for example
 // http://127.0.0.1:8080).
 func New(baseURL string, opts ...Option) *Client {
 	c := &Client{
 		base: strings.TrimRight(baseURL, "/"),
-		hc:   &http.Client{Timeout: defaultTimeout},
+		hc:   &http.Client{},
 	}
 	if u, err := url.Parse(c.base); err == nil && u.Host != "" {
 		c.origin = u.Scheme + "://" + u.Host
@@ -177,6 +186,7 @@ type call struct {
 	body        []byte
 	contentType string
 	noAuth      bool // send no API key and no session
+	noDeadline  bool // bounded only by the caller's context
 }
 
 // reply is a 2xx response.
@@ -191,6 +201,11 @@ func escape(id string) string { return url.PathEscape(id) }
 // send performs cl. A non-2xx response returns its status with an *APIError; a
 // transport error returns status 0.
 func (c *Client) send(ctx context.Context, cl call) (reply, int, error) {
+	if !cl.noDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, requestTimeout)
+		defer cancel()
+	}
 	full := c.base + apiPrefix + cl.path
 	if cl.root {
 		full = c.base + cl.path
@@ -496,7 +511,10 @@ func (c *Client) CreateAPIKey(ctx context.Context, name string) (string, error) 
 
 // ── Jobs ─────────────────────────────────────────────────────────────────────
 
-// SubmitJob submits a job (POST /jobs). It returns the HTTP status of every
+// SubmitJob submits a job (POST /jobs). It has no deadline of its own: a large
+// job takes the server a long time to create, and giving up would orphan it. The
+// caller's ctx bounds it.
+// It returns the HTTP status of every
 // response so callers can count 422, 429 and 503; a non-2xx status comes with an
 // error carrying the server's message, and a transport error returns status 0.
 func (c *Client) SubmitJob(ctx context.Context, r SubmitRequest) (jobID string, status int, err error) {
@@ -511,7 +529,7 @@ func (c *Client) SubmitJob(ctx context.Context, r SubmitRequest) (jobID string, 
 	if t := bytes.TrimSpace(r.Template); len(t) > 0 && t[0] == '{' {
 		ct = "application/json"
 	}
-	rep, status, err := c.send(ctx, call{method: http.MethodPost, path: "/jobs", query: q, body: r.Template, contentType: ct})
+	rep, status, err := c.send(ctx, call{method: http.MethodPost, path: "/jobs", query: q, body: r.Template, contentType: ct, noDeadline: true})
 	if err != nil {
 		return "", status, err
 	}

@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+
 	"github.com/uberware/sqi/internal/loadtest/client"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
 	"github.com/uberware/sqi/internal/loadtest/simworker"
@@ -348,6 +350,12 @@ func TestSubmitter_SlowServerShowsAsLagNotSkips(t *testing.T) {
 	if got := m.SubmitLatency.Count(); got < 20 {
 		t.Errorf("only %d submissions completed; the open loop must not wait for each answer", got)
 	}
+	if slots, answered := m.SubmitLag.Count(), m.SubmitLatency.Count(); slots != answered {
+		t.Errorf("%d slots issued but %d submissions answered; every slot must go out", slots, answered)
+	}
+	if m.SubmitLag.Max() <= 0 {
+		t.Error("SubmitLag.Max() = 0; a 100 ms server on a 10 ms schedule must show lag")
+	}
 	if peak.Load() < 2 {
 		t.Errorf("never more than %d request in flight; a slow server must not throttle the pacer", peak.Load())
 	}
@@ -459,6 +467,9 @@ type fakeConn struct {
 	since      map[string]uint64
 	script     []ws.Envelope
 	closed     atomic.Bool
+	// breakAfter makes Next fail once the script is used up, as a connection
+	// that drops would.
+	breakAfter bool
 }
 
 func (f *fakeConn) Subscribe(_ context.Context, subject string, since uint64) error {
@@ -481,11 +492,20 @@ func (f *fakeConn) Next(ctx context.Context) (ws.Envelope, error) {
 		return env, nil
 	}
 	f.mu.Unlock()
+	if f.breakAfter {
+		return ws.Envelope{}, errors.New("connection lost")
+	}
 	<-ctx.Done()
 	return ws.Envelope{}, ctx.Err()
 }
 
 func (f *fakeConn) Close() error { f.closed.Store(true); return nil }
+
+func (f *fakeConn) sinceOf(subject string) uint64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.since[subject]
+}
 
 func (f *fakeConn) subjects() []string {
 	f.mu.Lock()
@@ -552,13 +572,16 @@ func TestUIClients_DetectsSeqGap(t *testing.T) {
 	if got := conn.subjects(); !slices.Equal(got, []string{SubJobs}) {
 		t.Errorf("subscribed to %v, want [jobs]", got)
 	}
+	if got := conn.sinceOf(SubJobs); got != noReplay {
+		t.Errorf("first subscribe used since_seq %d, want the no-replay cursor", got)
+	}
 }
 
 func TestSeqTracker(t *testing.T) {
 	tests := []struct {
 		name string
 		seqs []uint64
-		want uint64
+		want int64
 	}{
 		{"contiguous", []uint64{1, 2, 3, 4}, 0},
 		{"late joiner baseline", []uint64{500, 501, 502}, 0},
@@ -566,12 +589,15 @@ func TestSeqTracker(t *testing.T) {
 		{"1,2,5", []uint64{1, 2, 5}, 2},
 		{"two gaps add up", []uint64{1, 3, 7}, 1 + 3},
 		{"duplicate ignored", []uint64{1, 2, 2, 3}, 0},
-		{"counter restart is a new baseline", []uint64{10, 11, 1, 2}, 0},
+		{"a lower number within a session is late, not a restart", []uint64{10, 11, 1, 2}, 0},
+		{"late push fills the hole it left", []uint64{1, 5, 3, 2, 4}, 0},
+		{"late push fills only part of the hole", []uint64{1, 5, 3}, 3 - 1},
+		{"a hole is filled once", []uint64{1, 5, 3, 3}, 3 - 1},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			tr := newSeqTracker()
-			var total uint64
+			var total int64
 			for _, s := range tc.seqs {
 				total += tr.observe("jobs", s)
 			}
@@ -588,6 +614,33 @@ func TestSeqTracker(t *testing.T) {
 			t.Errorf("gaps = %d across independent subjects", g)
 		}
 	})
+}
+
+func TestSeqTracker_SubscribeCursor(t *testing.T) {
+	tr := newSeqTracker()
+	if got := tr.subscribeCursor("jobs"); got != noReplay {
+		t.Errorf("cursor for an unseen subject = %d, want noReplay", got)
+	}
+	tr.observe("jobs", 7)
+	tr.observe("jobs", 8)
+	if got := tr.subscribeCursor("jobs"); got != 8 {
+		t.Errorf("cursor after seeing 8 = %d, want 8", got)
+	}
+	// Live 12 arrives before the replay of 9..11: net zero drops.
+	var net int64
+	for _, seq := range []uint64{12, 9, 10, 11} {
+		net += tr.observe("jobs", seq)
+	}
+	if net != 0 {
+		t.Errorf("live-before-replay left %d drops, want 0", net)
+	}
+	// A restarted server numbers from 1 again: at or below the cursor.
+	tr2 := newSeqTracker()
+	tr2.observe("jobs", 50)
+	tr2.subscribeCursor("jobs")
+	if d := tr2.observe("jobs", 1) + tr2.observe("jobs", 2) + tr2.observe("jobs", 4); d != 1 {
+		t.Errorf("after a counter restart drops = %d, want only the one hole (3)", d)
+	}
 }
 
 func TestEventTime(t *testing.T) {
@@ -646,19 +699,67 @@ func TestUIClients_SubscribesOwnJobAndTaskLogs(t *testing.T) {
 	}
 }
 
-func TestUIClients_RedialsALostConnectionAndCountsIt(t *testing.T) {
+// TestUIClients_ReconnectReplayDoesNotInflateDropsOrLag loses a connection
+// after pushes 1..10, redials, and receives a live push (14) ahead of the
+// replay of 11..13, the order the server's subscribe-then-replay allows.
+func TestUIClients_ReconnectReplayDoesNotInflateDropsOrLag(t *testing.T) {
+	old := time.Now().Add(-time.Hour)
+	live := time.Now().Add(time.Minute) // after the resubscription, whatever the test's speed
+	var first []ws.Envelope
+	for seq := uint64(1); seq <= 10; seq++ {
+		first = append(first, jobPush(t, seq, live))
+	}
+	conns := []*fakeConn{
+		{script: first, breakAfter: true},
+		{script: []ws.Envelope{jobPush(t, 14, live), jobPush(t, 11, old), jobPush(t, 12, old), jobPush(t, 13, old)}},
+	}
 	var dials atomic.Int32
 	m := NewMetrics(nil)
 	spec := scenario.ClientsSpec{WebSocket: scenario.WSSpec{Count: 1, Subscribe: []string{SubJobs}}}
-	conns := make(chan *fakeConn, 4)
+	u := NewUIClients("http://unused", "", spec, NewJobLedger(), m,
+		WithDial(func(context.Context, string, string) (WSStream, error) {
+			n := int(dials.Add(1))
+			if n > len(conns) {
+				return nil, errors.New("unexpected extra dial")
+			}
+			return conns[n-1], nil
+		}))
+	u.retryDelay = 5 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- u.Run(ctx) }()
+	waitFor(t, "fourteen events", func() bool { return m.WSEvents.Load() == 14 })
+	cancel()
+	<-done
+
+	if got := conns[0].sinceOf(SubJobs); got != noReplay {
+		t.Errorf("first connection subscribed with since_seq %d, want the no-replay cursor", got)
+	}
+	if got := conns[1].sinceOf(SubJobs); got != 10 {
+		t.Errorf("reconnect subscribed with since_seq %d, want 10 (the last seen)", got)
+	}
+	if got := m.WSDrops.Load(); got != 0 {
+		t.Errorf("WSDrops = %d, want 0: the replayed pushes fill the hole the live one opened", got)
+	}
+	if got := m.WSLag.Count(); got != 11 {
+		t.Errorf("WSLag has %d samples, want 11 (ten before the loss and the live push, none for the replay)", got)
+	}
+	if got := m.WSErrors.Load(); got != 1 {
+		t.Errorf("WSErrors = %d, want 1 for the lost connection", got)
+	}
+}
+
+func TestUIClients_RefusedDialIsCounted(t *testing.T) {
+	var dials atomic.Int32
+	m := NewMetrics(nil)
+	spec := scenario.ClientsSpec{WebSocket: scenario.WSSpec{Count: 1, Subscribe: []string{SubJobs}}}
 	u := NewUIClients("http://unused", "", spec, NewJobLedger(), m,
 		WithDial(func(context.Context, string, string) (WSStream, error) {
 			if dials.Add(1) == 1 {
 				return nil, errors.New("refused")
 			}
-			c := &fakeConn{script: []ws.Envelope{jobPush(t, 4, time.Now())}}
-			conns <- c
-			return c, nil
+			return &fakeConn{script: []ws.Envelope{jobPush(t, 4, time.Now())}}, nil
 		}))
 	u.retryDelay = 5 * time.Millisecond
 
@@ -670,6 +771,47 @@ func TestUIClients_RedialsALostConnectionAndCountsIt(t *testing.T) {
 	<-done
 	if got := m.WSErrors.Load(); got != 1 {
 		t.Errorf("WSErrors = %d, want 1 for the refused dial", got)
+	}
+}
+
+// TestUIClients_DefaultDialUsesTheRESTClientsTLS connects over wss:// to a
+// server only the REST client's http.Client trusts, without WithDial.
+func TestUIClients_DefaultDialUsesTheRESTClientsTLS(t *testing.T) {
+	var subscribed atomic.Bool
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow() //nolint:errcheck // test handler
+		_, data, err := conn.Read(r.Context())
+		if err != nil {
+			return
+		}
+		var env ws.Envelope
+		if json.Unmarshal(data, &env) != nil {
+			return
+		}
+		payload, _ := json.Marshal(ws.AckPayload{ClientSeq: env.Seq})           //nolint:errcheck // test data
+		out, _ := json.Marshal(ws.Envelope{Type: ws.TypeAck, Payload: payload}) //nolint:errcheck // test data
+		_ = conn.Write(r.Context(), websocket.MessageText, out)                 //nolint:errcheck // test handler
+		subscribed.Store(true)
+		<-r.Context().Done()
+	}))
+	defer ts.Close()
+
+	m := NewMetrics(nil)
+	spec := scenario.ClientsSpec{WebSocket: scenario.WSSpec{Count: 1, Subscribe: []string{SubJobs}}}
+	u := NewUIClients(ts.URL, "", spec, NewJobLedger(), m,
+		WithUIClient(client.New(ts.URL, client.WithHTTPClient(ts.Client()))))
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- u.Run(ctx) }()
+	waitFor(t, "a subscription over TLS", subscribed.Load)
+	cancel()
+	<-done
+	if got := m.WSErrors.Load(); got != 0 {
+		t.Errorf("WSErrors = %d, want 0", got)
 	}
 }
 
@@ -962,5 +1104,80 @@ func TestActions_FireAtTheirOffsetsAndStopWithContext(t *testing.T) {
 	}
 	if d := recs[0].Started.Sub(start); d < 50*time.Millisecond {
 		t.Errorf("fired %v after start, want at least 50 ms", d)
+	}
+}
+
+// TestSubmitter_LiveRequestHasNoTimeLimit answers slower than finishTimeout
+// while the run's ctx is live: the submission must still be accepted.
+func TestSubmitter_LiveRequestHasNoTimeLimit(t *testing.T) {
+	defer func(old time.Duration) { finishTimeout = old }(finishTimeout)
+	finishTimeout = 50 * time.Millisecond
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"id":"slow-1"}`)
+	}))
+	defer ts.Close()
+	s, ledger, m := newSubmitter(t, ts, &scenario.Scenario{Jobs: oneClass(1, 0)})
+	if err := s.Run(t.Context()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := m.StatusCounts(); got[201] != 1 || len(got) != 1 {
+		t.Errorf("statuses = %v, want one 201 (a slow answer in a live run is not a failure)", got)
+	}
+	if ledger.AcceptedCount() != 1 {
+		t.Errorf("accepted = %d, want 1: the job exists on the server", ledger.AcceptedCount())
+	}
+}
+
+// TestSubmitter_AfterTheRunEndsARequestGetsFinishTimeout hangs the server and
+// ends the run: the request is abandoned after finishTimeout and counted as a
+// transport failure, so the run does not hang.
+func TestSubmitter_AfterTheRunEndsARequestGetsFinishTimeout(t *testing.T) {
+	defer func(old time.Duration) { finishTimeout = old }(finishTimeout)
+	finishTimeout = 150 * time.Millisecond
+	release := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer ts.Close()
+	defer close(release)
+	s, _, m := newSubmitter(t, ts, &scenario.Scenario{Jobs: oneClass(0, 50)})
+
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if err := s.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if took := time.Since(start); took > 3*time.Second {
+		t.Errorf("Run took %v, want about the run plus finishTimeout", took)
+	}
+	if m.StatusCounts()[0] == 0 {
+		t.Errorf("statuses = %v, want the abandoned requests counted under 0", m.StatusCounts())
+	}
+}
+
+func TestSubmitter_UndecodableSuccessIsCountedUnderItsOwnKey(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `not json`)
+	}))
+	defer ts.Close()
+	s, ledger, m := newSubmitter(t, ts, &scenario.Scenario{Jobs: oneClass(2, 0)})
+	if err := s.Run(t.Context()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := m.StatusCounts(); got[StatusUndecodable] != 2 || got[201] != 0 {
+		t.Errorf("statuses = %v, want two under StatusUndecodable and none under 201", got)
+	}
+	for _, j := range ledger.All() {
+		if j.Status != StatusUndecodable || j.Accepted() {
+			t.Errorf("ledger entry %+v, want Status StatusUndecodable and not accepted", j)
+		}
 	}
 }
