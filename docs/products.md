@@ -636,3 +636,41 @@ bypass it.
 See the [usage pools section of the OpenJD submission
 guide](openjd-submission.md#4-usage-pools) for the full reference, multi-pool
 behavior, and the live utilization view.
+
+## Throttled file transfers
+
+sqi has no file-transfer product. A transfer is a single command, so run it
+with a built-in product and let a queue limit how many run at once, so that a
+network link or a service with a usage limit is not overloaded:
+
+1. **Install the tool and its credentials.** Use `rclone`, a cloud provider's
+   CLI, `rsync` or `robocopy`. Install it on the workers that will run
+   transfers, with its credentials (an rclone remote, an AWS profile)
+   available to the account tasks run as: the queue's `run_as_user` when one
+   is set (see *Queue identity* in [configuration](configuration.md)),
+   otherwise the worker's own account.
+2. **Cap concurrency with a queue.** Create a queue for transfers with
+   `max_concurrent_tasks` set to the number allowed at once, and submit
+   transfer jobs to it. For a cap shared across queues, use a usage pool
+   instead (see [Limiting product concurrency](#limiting-product-concurrency)).
+   A pool is named in the template's host requirements, so use **Duplicate to
+   custom** on the built-in and add the amount to the copy's step.
+3. **Route transfers to particular machines, if needed.** A queue alone does
+   not do this: a worker with an empty `worker.queue_ids` takes work from
+   every queue. Either give every other worker a `queue_ids` list that leaves
+   the transfer queue out, or tag the transfer machines
+   (`worker.capability_tags: ["uplink=true"]`) and require
+   `attr.worker.tag.uplink` with `anyOf: ["true"]` in a duplicated product's
+   host requirements.
+4. **Submit** one job per transfer with `script` (Linux and macOS) or
+   `script-powershell` (Windows):
+
+   ```sh
+   rclone copy /mnt/renders/shot010 s3remote:deliveries/shot010 --bwlimit 50M
+   ```
+
+   `--bwlimit` caps each transfer's bandwidth and the queue caps how many run
+   at once, so together they bound the total.
+
+Moving a job's own output off a worker's local disk is a different case: the
+job should do it in its own steps, on the worker that wrote the files.

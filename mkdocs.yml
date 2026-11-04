@@ -64,6 +64,7 @@ nav:
   - Operations:
       - Overview: operations.md
       - Authentication: auth.md
+      - TLS: tls.md
       - Observability: observability.md
       - Release Runbook: release-runbook.md
   - Reference:
@@ -77,6 +78,7 @@ nav:
               - Expressions (EXPR): openjd-extensions/expr.md
               - Task Chunking: openjd-extensions/task-chunking.md
               - Chunk Bounds: openjd-extensions/sqi-chunk-bounds.md
+              - Log Checks: openjd-extensions/sqi-log-checks.md
               - Path Translation: openjd-extensions/path-translation.md
               - Redacted Env Vars: openjd-extensions/redacted-env-vars.md
       - Cross-Platform Validation: cross-platform-validation.md
