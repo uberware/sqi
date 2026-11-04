@@ -63,7 +63,7 @@ func TestNew_ServesHAMetrics(t *testing.T) {
 
 // TestNew_NoHAMetricsWithoutRegisterHA: a server outside an HA group exposes
 // no sqi_server_ha_* series, so a sqi_server_ha_leader == 1 selector never
-// matches a single server and its /metrics stays as it was.
+// matches a single server.
 func TestNew_NoHAMetricsWithoutRegisterHA(t *testing.T) {
 	m := metrics.New()
 	m.HALeader.Set(1) // set but unregistered: not exposed

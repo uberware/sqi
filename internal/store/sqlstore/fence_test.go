@@ -208,7 +208,7 @@ func TestRunTx_NoEpochNoFenceStatement(t *testing.T) {
 
 // TestWrite_NoEpochRunsOnPoolWithoutTx: without a leadership context write
 // hands fn the write pool itself, so no transaction is begun and only fn's own
-// statements run, exactly as before the fence.
+// statements run.
 func TestWrite_NoEpochRunsOnPoolWithoutTx(t *testing.T) {
 	for name, fs := range fenceStores(t, nil) {
 		t.Run(name, func(t *testing.T) {

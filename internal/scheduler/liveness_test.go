@@ -282,7 +282,7 @@ func TestSweepStaleWorkers_DeferralLoggedOncePerWindow(t *testing.T) {
 	}
 }
 
-// TestLivenessDeferred_CountsFromRunStart pins hazard H-1: a standby's bus
+// TestLivenessDeferred_CountsFromRunStart pins that a standby's bus
 // connection has been up for hours when it is promoted, and its first sweep
 // must not read every worker's still-unconsumed heartbeats as silence. The
 // deferral counts from when Run started (promotion) when that is later than
@@ -328,8 +328,8 @@ func TestLivenessDeferred_CountsFromRunStart(t *testing.T) {
 }
 
 // TestLivenessDeferred_NonHAUnchanged pins that a scheduler whose Run started
-// no later than its bus came up (or has not run at all) decides exactly as it
-// did before the deferral could count from Run: by the bus-up time alone.
+// no later than its bus came up (or has not run at all) decides by the bus-up
+// time alone.
 func TestLivenessDeferred_NonHAUnchanged(t *testing.T) {
 	upAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	before := func(up, now time.Time) bool { return up.IsZero() || now.Sub(up) < testBusGrace }
@@ -353,7 +353,7 @@ func TestLivenessDeferred_NonHAUnchanged(t *testing.T) {
 				deferred, up := s.livenessDeferred(tc.now)
 
 				if want := before(tc.up, tc.now); deferred != want {
-					t.Errorf("deferred = %v, want %v as before", deferred, want)
+					t.Errorf("deferred = %v, want %v by the bus-up time alone", deferred, want)
 				}
 				if !up.Equal(tc.up) {
 					t.Errorf("judged by up = %v, want the bus-up time %v", up, tc.up)

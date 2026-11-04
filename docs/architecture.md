@@ -488,9 +488,8 @@ to 30 s. The server's task-status, task-log and worker consumers allow ten
 deliveries. The delays are 1, 2, 4, 8, 16, 30, 30 s and so on, so deliveries
 land at about 0, 1, 3, 7, 15, 31, 61, 91, 121 and 151 s. A task status or
 log report therefore outlives about 2.5 minutes of store outage (a
-PostgreSQL restart, or an HA failover while the database is down, or the gap
-between a leader fencing itself and its successor taking over) instead of
-having its deliveries spent in seconds and being dropped. A registration or
+PostgreSQL restart, an HA failover while the database is down, or the gap
+between a leader fencing itself and its successor taking over). A registration or
 heartbeat is bounded by the `SQI_WORKER` stream's 2-minute `MaxAge`, which
 removes the message before the ninth delivery at about 121 s: the last
 delivery it can get is the eighth at about 91 s, so it survives only if the
@@ -1304,7 +1303,7 @@ Upgrading from v0.3.0 changes the following behaviour.
   reclaimed by that registration while the process runs it). The refusal is
   held for `leaseRefusalDelay` (1 s), about as long as a registration takes to
   land.
-- A late or redelivered registration can no longer roll a worker back to an
+- A late or redelivered registration cannot roll a worker back to an
   earlier process. After a scheduler failover JetStream can redeliver an older
   registration after a newer one; applied, it would restore the earlier
   `instance_id`, and the live process's next registration would read that as a
@@ -1319,8 +1318,8 @@ Upgrading from v0.3.0 changes the following behaviour.
   `scheduler: stale registration — discarding` at Info, naming both
   timestamps. A late redelivery keeps its original timestamp, so it is still
   detected, while a restarted worker's fresh registration carries a current
-  one. A message whose broker metadata cannot be read is applied unordered, as
-  before. Heartbeats are ordered the same way, by their stream timestamp,
+  one. A message whose broker metadata cannot be read is applied unordered.
+  Heartbeats are ordered the same way, by their stream timestamp,
   recorded as `heartbeat_broker_at`: `UpdateWorkerHeartbeat` ignores (and the
   scheduler acks) one the broker stamped before the recorded one, and records
   any other. The time recorded as `last_heartbeat_at`, which the liveness sweep
@@ -1817,30 +1816,30 @@ reads it to see whether a standby reaches the broker, and
 
 | Component | Single server | In a group |
 |---|---|---|
-| Store open and the single-server lock | exclusive lock; migrate on open | every server; lock **shared**, migrations only by a server that got it exclusive |
+| Store open and the single-server lock | exclusive lock; migrate on open | every server; lock shared, migrations only by a server that got it exclusive |
 | PostgreSQL lock watcher | logs a lost lock | every server, unchanged |
 | SQLite WAL checkpointer | yes | n/a (no HA on SQLite) |
-| Expired-session sweeper | yes | **leader only** (also prunes member rows unseen for a day) |
-| Seeding the default farm and queue | at boot | **leader only**, at promotion |
-| Bootstrapping the first admin | at boot | **leader only**, at promotion |
-| Broker connections | yes | every server connects; **leader only** provisions the streams |
-| Broker account guard | held and refreshed | **leader only** holds it; standbys check it |
-| Broker-layout reconcile and fence | at boot | **leader only**, at promotion, under its epoch |
+| Expired-session sweeper | yes | leader only (also prunes member rows unseen for a day) |
+| Seeding the default farm and queue | at boot | leader only, at promotion |
+| Bootstrapping the first admin | at boot | leader only, at promotion |
+| Broker connections | yes | every server connects; leader only provisions the streams |
+| Broker account guard | held and refreshed | leader only holds it; standbys check it |
+| Broker-layout reconcile and fence | at boot | leader only, at promotion, under its epoch |
 | Auth-callout responder (`sqi-auth`) | yes | every server, once its standby checks pass and while its worker-grants fingerprint matches the leader's |
-| Worker registration, heartbeat and deregister consumer (`sqi-worker-srv`) | yes | **leader only** |
-| Task status consumer (`sqi-task-status-srv`) | yes | **leader only** |
-| Task log consumer (`sqi-task-logs-srv`) | yes | **leader only** |
-| Stuck- and pending-step reconcile | in `scheduler.Run` | **leader only**, at promotion, before leasing |
+| Worker registration, heartbeat and deregister consumer (`sqi-worker-srv`) | yes | leader only |
+| Task status consumer (`sqi-task-status-srv`) | yes | leader only |
+| Task log consumer (`sqi-task-logs-srv`) | yes | leader only |
+| Stuck- and pending-step reconcile | in `scheduler.Run` | leader only, at promotion, before leasing |
 | Worker diagnostic subscription | yes | every server, so a new leader has worker log history |
-| Lease subscription (`work.lease.<queue>`) | yes | **leader only** |
-| Heartbeat sweep (liveness, reclaim, reap, reconcile) | yes | **leader only**; its reconnect grace counts from the promotion |
+| Lease subscription (`work.lease.<queue>`) | yes | leader only |
+| Heartbeat sweep (liveness, reclaim, reap, reconcile) | yes | leader only; its reconnect grace counts from the promotion |
 | Retry-wake timers | in memory | in the leader's memory; lost on failover, the sweep is the backstop |
-| REST API, WebSocket hub, cancel, retry, revoke | yes | **leader only**; a standby answers 503 |
+| REST API, WebSocket hub, cancel, retry, revoke | yes | leader only; a standby answers 503 |
 | HTTP listener | yes | every server: probes and metrics on a standby |
 | Per-IP rate limiter, OIDC state key, diagnostics ring | in memory | per process |
-| mDNS responder | if enabled | **leader only** |
-| `/healthz`, `/readyz` | yes | every server, role-aware; `/leaderz` added |
-| Prometheus metrics | yes | every server; scheduler gauges meaningful on the leader only; `sqi_server_ha_*` added |
+| mDNS responder | if enabled | leader only |
+| `/healthz`, `/readyz` | yes | every server, role-aware; plus `/leaderz` |
+| Prometheus metrics | yes | every server; scheduler gauges meaningful on the leader only; plus `sqi_server_ha_*` |
 | Preset library cache | yes | every server |
 
 "Leader only" work starts in the promotion's order (guard, streams, layout

@@ -50,9 +50,9 @@ var ErrStandbyUnchecked = errors.New("bus: this standby has not checked the exte
 // failure a retry may clear is logged and the checks run again; a refusal
 // (version floor, no JetStream on the account, the guard held by another
 // database's server) is final, logged and reported by [Remote.StandbyReady],
-// and the standby stays not ready and answers no callout. [Remote.StandbyChecked] is closed when
-// the outcome is known, and [Remote.Connected] says whether the data
-// connection is up.
+// and the standby stays not ready and answers no callout.
+// [Remote.StandbyChecked] is closed when the outcome is known, and
+// [Remote.Connected] says whether the data connection is up.
 //
 // [RemoteConfig.InstanceID] must be set. StartStandby must be called instead
 // of [Remote.Start], once.

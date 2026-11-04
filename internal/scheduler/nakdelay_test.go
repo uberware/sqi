@@ -36,10 +36,10 @@ func TestNakDelay_DoublesUpToACap(t *testing.T) {
 // (a PostgreSQL restart, or a leader cut off from it until a standby takes
 // over) is still redelivered after the outage. The task-status and task-log
 // consumers allow 10 deliveries, so the 9 delays between them must outlast a
-// failover's worst case at the default lease (about 25 s) many times over;
-// without a delay all 10 deliveries were spent in milliseconds and the
-// terminal status of a task that finished during the outage was lost, so the
-// task ran again.
+// failover's worst case at the default lease (about 25 s) many times over.
+// Without a delay all 10 deliveries would be spent in milliseconds and the
+// terminal status of a task that finished during the outage would be lost, so
+// the task would run again.
 func TestNakDelay_OutlastsAFailover(t *testing.T) {
 	var total time.Duration
 	for n := uint64(1); n < 10; n++ {

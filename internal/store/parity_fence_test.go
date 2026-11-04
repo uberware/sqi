@@ -73,9 +73,9 @@ func observeJobStatus(t *testing.T, st store.Store, f fenceFixture) string {
 	return fmt.Sprintf("status=%s reason=%q", j.Status, j.ParkReason)
 }
 
-// singleStatementWrites are the writes that ran as one statement outside any
-// transaction before the fence: under a leadership context each now runs in
-// one, checked at commit.
+// singleStatementWrites are the writes that run as one statement outside any
+// transaction without a leadership context; under one, each runs in a
+// transaction and is checked at commit.
 var singleStatementWrites = []fenceCase{
 	{
 		name: "PromoteJobRunning",

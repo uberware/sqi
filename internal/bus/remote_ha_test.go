@@ -650,8 +650,8 @@ func TestRemote_StandbyLateCheckRefusesAccountWithoutJetStream(t *testing.T) {
 }
 
 // TestRemote_StartLogsNoLateConnect pins non-HA Start's logs: a broker that
-// answers only after Start's first attempt is waited for, as before, without
-// the standby's "connection established" line.
+// answers only after Start's first attempt is waited for, without the
+// standby's "connection established" line.
 func TestRemote_StartLogsNoLateConnect(t *testing.T) {
 	t.Parallel()
 	c := bustest.StartCluster(t, 1, bustest.Options{})

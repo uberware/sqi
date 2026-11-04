@@ -4,7 +4,7 @@
 
 package integration
 
-// ha_test.go: scheduler high availability end to end, run by `make test-ha`
+// Scheduler high availability end to end, run by `make test-ha`
 // (scripts/test-ha.sh).
 //
 // Every server is the real sqi-server binary in ha.enabled mode, on a
@@ -442,7 +442,8 @@ func (g *haGroup) kill(n *haNode) {
 }
 
 // close stops the watchers and every server still running, and reports what
-// the watchers saw, and any run that ended without the test ending it. On a failure it logs the end of every server's output.
+// the watchers saw, and any run that ended without the test ending it. On a
+// failure it logs the end of every server's output.
 func (g *haGroup) close() {
 	t := g.t
 	if v := g.leaders.stop(); len(v) > 0 {
@@ -1039,8 +1040,8 @@ steps:
 `, tasks, script)
 }
 
-// submit submits a job of the given number of tasks through the balancer and returns its
-// ID and the file its tasks append to.
+// submit submits a job of the given number of tasks through the balancer and
+// returns its ID and the file its tasks append to.
 func (g *haGroup) submit(farmID, queueID string, tasks, sleep int) (jobID, runs string) {
 	g.t.Helper()
 	runs = filepath.Join(g.t.TempDir(), "runs")
@@ -1208,7 +1209,7 @@ func judgeAttempts(byTask map[string][]jobAttempt) (problems []string, reclaimed
 			case a.status == "succeeded" && a.logs > 0:
 				succeeded++
 			case a.status == "succeeded":
-				problems = append(problems, task+": its succeeded attempt has no log output yet")
+				problems = append(problems, task+": its succeeded attempt has no log output")
 			case a.logs > 0:
 				problems = append(problems, fmt.Sprintf("%s: a %s attempt has %d log chunks, so it ran", task, a.status, a.logs))
 			default:

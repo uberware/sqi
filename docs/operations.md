@@ -1124,7 +1124,7 @@ timeout), and keeps running. Nothing then stops a second
 server starting on the same database. Restart the server to take the lock
 again.
 
-A server with `ha.enabled` takes the same lock **shared**, and the servers of
+A server with `ha.enabled` takes the same lock shared, and the servers of
 a group hold it together. Shared and exclusive exclude each other, so a
 server with high availability and one without refuse each other in either
 order, and `migrate up`, `restore` and `store copy`, which take it exclusive,
@@ -1915,7 +1915,7 @@ refused for a stale epoch (`fenced`), another server takes the broker guard
 a step of promotion fails (`promotion_failed`). The server logs exactly one
 Error, `ha: lost leadership`, with the reason; stops its scheduler and broker
 connections, each step bounded to 2 s; releases the lease, so a standby takes
-over at its next poll; and **exits with code 75**. Its supervisor starts it
+over at its next poll; and exits with code 75. Its supervisor starts it
 again and it rejoins as a standby. The code is distinct so alerting can tell a
 demotion from a crash (exit code 1). As a Windows service the server reports
 75 as its service-specific exit code; the service's recovery actions restart
@@ -1987,8 +1987,7 @@ one does the opposite.
   crashed leader whose lease has lapsed is not shown as leader. Rows unseen
   for a day are deleted by the leader.
 - **`sqi-server ha status`** prints the same table. It reads the database
-  directly and takes no lock, so it works while every server is down, which is
-  when it is needed most. Run it with the servers' configuration file, so it
+  directly and takes no lock, so it works while every server is down. Run it with the servers' configuration file, so it
   judges the roles against the same `lease_ttl`:
 
   ```sh

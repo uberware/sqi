@@ -285,8 +285,8 @@ func TestHandleHeartbeat_WorkerClockBehindStaysOnline(t *testing.T) {
 }
 
 // TestHandleRegister_NoBrokerMetadataAppliesUnordered pins the fallback: a
-// message whose metadata cannot be read, or carries no timestamp, is applied as
-// registrations were before ordering existed, and records no stamp.
+// message whose metadata cannot be read, or carries no timestamp, is applied
+// unordered, and records no stamp.
 func TestHandleRegister_NoBrokerMetadataAppliesUnordered(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {

@@ -388,7 +388,7 @@ func (h *holding) deadlineErr(validity time.Duration) error {
 	return fmt.Errorf("no lease renewal succeeded within %v", validity)
 }
 
-// renew sends one renewal sent at t0 and, when it succeeds, applies the
+// renew sends one renewal, stamped t0, and, when it succeeds, applies the
 // broker-loss rule, delivering the answer on out. An attempt that has not
 // answered by the next renewal is abandoned, so a hung connection does not
 // keep the next one from being sent.

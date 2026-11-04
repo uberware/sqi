@@ -81,7 +81,7 @@ func NewInstanceID() string {
 }
 
 // GuardOptions changes how the guard treats a key held by another server. The
-// zero value is the guard as it ships without HA: any other holder refuses.
+// zero value refuses on any other holder.
 type GuardOptions struct {
 	// IsMember reports whether instanceID is a server of this database. A key
 	// held by a member is overwritten at once; a key held by anyone else is

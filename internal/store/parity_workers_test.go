@@ -137,7 +137,7 @@ func TestParity_RegisterWorker_EarlierBrokerStampIgnored(t *testing.T) {
 }
 
 // TestParity_RegisterWorker_LaterBrokerStampRestarts pins that a registration
-// whose broker stamp is newer than the stored one is a restart as before.
+// whose broker stamp is newer than the stored one is a restart.
 func TestParity_RegisterWorker_LaterBrokerStampRestarts(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
@@ -288,8 +288,8 @@ func TestParity_UpdateWorkerHeartbeat_WorkerClockStepBackRecorded(t *testing.T) 
 }
 
 // TestParity_UpdateWorkerHeartbeat_UnstampedRecordedUnconditionally pins that a
-// heartbeat with no broker stamp is recorded whatever its time, as before
-// heartbeats were ordered, and keeps the recorded broker stamp.
+// heartbeat with no broker stamp is recorded whatever its time,
+// and keeps the recorded broker stamp.
 func TestParity_UpdateWorkerHeartbeat_UnstampedRecordedUnconditionally(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {

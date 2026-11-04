@@ -720,25 +720,22 @@ but run their script directly, so they need a Linux or macOS worker.
 
 ## Considered and not shipped
 
-These were considered for the reference set and left out on purpose. A
-deferred entry can come back if there is demand for it.
+These are not in the reference set.
 
-- **Clarisse iFX and BUiLDER**: struck. Isotropix was reported in 2023 to have
-  ended Clarisse development, with existing licenses receiving bug fixes only,
-  so the Clarisse job types other farm managers still list look stale.
-- **DaVinci Resolve**: struck. None of the farm managers surveyed ships a
-  Resolve job type, and no current demand was found. Fusion is covered by
+- **Clarisse iFX and BUiLDER**: Isotropix was reported in 2023 to have ended
+  Clarisse development, with existing licenses receiving bug fixes only.
+- **DaVinci Resolve**: not covered. Fusion is covered by
   `fusion-render` and `fusion-saver-render`.
-- **Adobe Media Encoder**: struck. It needs an Adobe license, and the five
+- **Adobe Media Encoder**: it needs an Adobe license, and the five
   ffmpeg presets cover the same transcoding work.
-- **RV (`rvio`), DJV and REDline**: deferred. Each is useful where a studio
-  already uses it and of no use elsewhere.
-- **File transfer**: deferred. Limiting and routing transfers are already
+- **RV (`rvio`), DJV and REDline**: each is useful only where a studio
+  already uses it.
+- **File transfer**: limiting and routing transfers are already
   done by queues, usage pools and host requirements, and a transfer is one
   command that the built-in products run. See [Throttled file
   transfers](products.md#throttled-file-transfers).
 - **Per-worker maintenance actions** (run a command once on every matching
-  worker, such as installing an application): deferred. This needs the
+  worker, such as installing an application): this needs the
   scheduler to target individual workers, which it does not do, so it is not
   something a preset can provide.
 

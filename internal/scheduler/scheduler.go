@@ -1077,7 +1077,7 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 // messages without regard to any worker's clock: a late redelivery keeps its
 // original stamp, a fresh message carries a current one, whatever the worker's
 // clock reads. Nil when the message has no usable metadata, in which case it is
-// applied as it was before ordering existed.
+// applied unordered.
 func (s *Scheduler) brokerAt(ctx context.Context, msg jetstream.Msg, kind, workerID string) *time.Time {
 	meta, err := msg.Metadata()
 	if err != nil {

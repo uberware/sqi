@@ -163,8 +163,8 @@ func TestStandbyReadiness_BrokerAndStore(t *testing.T) {
 	})
 }
 
-// TestLeaderReadiness_GuardLostDegraded pins that a leader's /readyz keeps
-// H6's check: a broker guard that is not healthy makes it not ready, until
+// TestLeaderReadiness_GuardLostDegraded pins that a leader's /readyz checks
+// the broker guard: a guard that is not healthy makes it not ready, until
 // the demotion that follows a lost guard exits the process.
 func TestLeaderReadiness_GuardLostDegraded(t *testing.T) {
 	h := startHarness(t, haSetup{ha: true})

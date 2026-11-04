@@ -145,7 +145,7 @@ func startRun(t *testing.T, s *Scheduler, b *syncBus, ctx context.Context) (
 	return handler, stop
 }
 
-// TestStop_ParkedLeaseAnsweredEmpty pins hazard H-4: a lease request parked
+// TestStop_ParkedLeaseAnsweredEmpty pins that a lease request parked
 // waiting for work is answered, empty, as soon as the scheduler stops, rather
 // than when its hold runs out (leaseHoldTimeout, 30 s), so a worker is never
 // left waiting on a server that has stepped down.

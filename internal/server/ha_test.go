@@ -27,9 +27,8 @@ import (
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
-// readyzGoldenMain is the /readyz body a server without HA serves on main,
-// with a healthy store and broker. The HA work must not change one byte of
-// it.
+// readyzGoldenMain is the /readyz body a server without HA serves with a
+// healthy store and broker. HA must not change it.
 const readyzGoldenMain = `{"status":"ok","checks":{"nats":{"status":"ok"},"sqlite":{"status":"ok"}}}`
 
 // requireDemoted checks that err is a demotion for reason.

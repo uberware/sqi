@@ -70,8 +70,8 @@ type RemoteConfig struct {
 	// InstanceID is this server's member instance id in an HA group, the one
 	// it records as a member of its database. It names the server in the
 	// account guard, so that the next leader recognizes a key a crashed
-	// leader left as a member's. [Remote.StartStandby] requires it. Empty,
-	// as without HA, gives every guard acquisition a fresh id.
+	// leader left as a member's. [Remote.StartStandby] requires it. Empty
+	// gives every guard acquisition a fresh id.
 	InstanceID string
 }
 

@@ -5,7 +5,7 @@
 --
 -- server_lease is the leadership lease: holder is the instance leading (NULL
 -- when released), epoch the epoch it leads at, and expires_us the instant the
--- lease lapses, in microseconds since the Unix epoch on the DATABASE clock.
+-- lease lapses, in microseconds since the Unix epoch on the database clock.
 -- server_epoch is the fencing token a leader's writes check; it is a separate
 -- row so a lease renewal never contends with the writes that check it. Both
 -- are pinned to one row (id = 1), seeded with no holder at epoch 0.

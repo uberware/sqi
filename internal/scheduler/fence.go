@@ -62,10 +62,10 @@ func (s *Scheduler) warnUnlessStopped(ctx context.Context, err error, msg string
 
 // fenced records that a store write was fenced. The first call logs it, at
 // ERROR without [Config.OnFenced] and at WARN with it, and invokes the
-// callback on a goroutine of its own, so the handler or
-// sweep that hit the fence is not held up by it, and a callback that stops the
-// scheduler and waits for [Scheduler.Run] to return cannot deadlock against
-// Run waiting for that same goroutine. Later calls log at Debug.
+// callback on a goroutine of its own, so the handler or sweep that hit the
+// fence is not held up by it, and a callback that stops the scheduler and
+// waits for [Scheduler.Run] to return cannot deadlock against Run waiting for
+// that same goroutine. Later calls log at Debug.
 func (s *Scheduler) fenced(ctx context.Context, err error) {
 	if !s.fence.deposed.CompareAndSwap(false, true) {
 		s.logger.DebugContext(ctx, "scheduler: store write fenced", slog.Any("error", err))

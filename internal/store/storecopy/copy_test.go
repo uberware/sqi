@@ -184,7 +184,7 @@ func TestStoreCopy_RefusesANonEmptyTarget(t *testing.T) {
 
 // migrationSeeded maps each table a migration leaves with one row to a
 // predicate that matches that row once it has been used. It is a copy of the
-// package's own map, kept apart on purpose: a test that read the map it
+// package's own map, kept separate, because a test that read the map it
 // checks would agree with any mistake in it.
 var migrationSeeded = map[string]string{
 	"server_lease": "holder IS NOT NULL OR epoch <> 0 OR expires_us <> 0",
@@ -594,7 +594,7 @@ func seedEveryTable(t *testing.T, path string) {
 }
 
 // seedServerHA fills the server leadership tables, which no store method
-// writes yet: a lease held at epoch 7, the epoch counter past it, and a member
+// writes: a lease held at epoch 7, the epoch counter past it, and a member
 // row. The lease and epoch rows exist from the migration, so this moves them
 // off their seed values, which is what a copy that kept the target's seed rows
 // instead of the source's would lose.
