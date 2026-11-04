@@ -5,6 +5,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"time"
 
 	"github.com/uberware/sqi/internal/store/sqlstore"
 )
@@ -20,3 +21,19 @@ func LockAnchors(ctx context.Context, tx *sql.Tx, anchors ...sqlstore.Anchor) er
 func ClockMicros() string { return pgDialect{}.ClockMicros() }
 
 func ForShare() string { return pgDialect{}.ForShare() }
+
+// SetHALockWaitForTest shortens how long an HA server waits for the database
+// lock to be released, and returns the function that restores it.
+func SetHALockWaitForTest(d time.Duration) (restore func()) {
+	old := haLockWait
+	haLockWait = d
+	return func() { haLockWait = old }
+}
+
+// WriteDBForTest, ReadDBForTest and LeaseDBForTest expose the store's pools so
+// a test can look at the sessions they hold. LeaseDBForTest is nil without HA.
+func (s *Store) WriteDBForTest() *sql.DB { return s.db }
+
+func (s *Store) ReadDBForTest() *sql.DB { return s.rdb }
+
+func (s *Store) LeaseDBForTest() *sql.DB { return s.leaseDB }

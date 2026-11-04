@@ -1036,6 +1036,20 @@ jobs:
             TestLeadership_WorksWithoutAnHAPool
             TestLeadership_ConcurrentAcquirersElectOne
             TestOpen_HAClosesTheLeasePool
+            TestHALock_TwoHAServersCoexist
+            TestHALock_HAAndNonHARefuseEachOther
+            TestHALock_ErrorNamesBothHolders
+            TestHALock_CommandsRefusedBesideHAServer
+            TestHALock_CommandHoldsServersOff
+            TestHALock_WaitsForAnExclusiveHolderToFinish
+            TestHALock_FirstServerMigrates
+            TestHALock_PendingMigrationWithOtherServerRefused
+            TestHALock_BehindDatabaseWithoutAutoMigrateJoins
+            TestHALock_NewerSchemaStillRefused
+            TestHASession_TimeoutsSet
+            TestHASession_DefaultLeaseTTL
+            TestHASession_IdleTransactionEnded
+            TestNonHASession_NoTimeouts
             TestParity_GetLeadership_Fresh/postgres
             TestParity_AcquireLeadership_OnEmpty/postgres
             TestParity_AcquireLeadership_RefusedWhileHeld/postgres

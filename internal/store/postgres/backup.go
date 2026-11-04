@@ -34,7 +34,7 @@ func BackupDSN(ctx context.Context, dsn, out string, log *slog.Logger) error {
 	if log == nil {
 		log = slog.Default()
 	}
-	db, err := openPool(dsn, 1)
+	db, err := openPool(dsn, 1, nil)
 	if err != nil {
 		return err
 	}

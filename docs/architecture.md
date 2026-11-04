@@ -970,7 +970,7 @@ out of the write pool and holds for its whole life, so `max_conns: 16` leaves
 15 connections for work. If another server holds the lock, start-up fails:
 
 ```
-another sqi-server is already using this database (PostgreSQL advisory lock 0x7371692d73727672 is held); only one server can use a database, so stop the other one first
+another sqi-server, or a command that needs the database alone (migrate up, restore, store copy), is already using this database (PostgreSQL advisory lock 0x7371692d73727672 is held); stop it first. Servers can share a database only when high availability is enabled on all of them
 ```
 
 Advisory locks are per database, so servers on different databases of one

@@ -1086,7 +1086,7 @@ the same database exits at once, logging `sqi-server exited with error` with
 this error:
 
 ```
-startup failed: open store: another sqi-server is already using this database (PostgreSQL advisory lock 0x7371692d73727672 is held); only one server can use a database, so stop the other one first
+startup failed: open store: another sqi-server, or a command that needs the database alone (migrate up, restore, store copy), is already using this database (PostgreSQL advisory lock 0x7371692d73727672 is held); stop it first. Servers can share a database only when high availability is enabled on all of them
 ```
 
 Another server, or one that has not finished stopping, holds the lock on this
