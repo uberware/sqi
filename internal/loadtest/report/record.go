@@ -67,6 +67,10 @@ const (
 	CounterWSDrops = "ws.drops"
 	// CounterWSEvents counts WebSocket pushes received.
 	CounterWSEvents = "ws.events"
+	// CounterWSLagNegative counts WebSocket pushes stamped later than they
+	// arrived, left out of the lag histogram: a sign of clock skew between
+	// the generator and the server.
+	CounterWSLagNegative = "ws.lag_negative"
 	// CounterWSErrors counts failed WebSocket dials and broken connections.
 	CounterWSErrors = "ws.errors"
 	// CounterRESTErrors counts failed poller calls.
@@ -174,6 +178,33 @@ func (r *Record) rate(k string, steady bool) (perSecond float64, ok bool) {
 		return 0, false
 	}
 	return float64(r.Counters[k]) / w.Seconds(), true
+}
+
+// inRun returns s with only the points taken at or before Ended. The
+// observer's last sample is taken after the fleet has stopped, so it
+// describes the teardown, not the run: every peak, end value, slope and rule
+// reads the series through this. A record with no Ended keeps every point;
+// series.csv keeps every point too.
+func (r *Record) inRun(s measure.Series) measure.Series {
+	if r.Ended.IsZero() {
+		return s
+	}
+	out := measure.Series{Name: s.Name, Unit: s.Unit}
+	for _, p := range s.Points {
+		if !p.T.After(r.Ended) {
+			out.Points = append(out.Points, p)
+		}
+	}
+	return out
+}
+
+// runSeries is every series cut to the run (see inRun).
+func (r *Record) runSeries() []measure.Series {
+	out := make([]measure.Series, len(r.Series))
+	for i, s := range r.Series {
+		out[i] = r.inRun(s)
+	}
+	return out
 }
 
 // Write writes run.json, summary.md and series.csv into dir, creating it.

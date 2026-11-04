@@ -87,7 +87,8 @@ func TestCLI_ExitCodes(t *testing.T) {
 		{name: "unknown scenario", args: []string{"run", "--scenario", "no-such-scenario"}, want: exitUsage, wantStderr: strings.Join(scenario.BuiltinNames(), ", ")},
 		{name: "bad override", args: []string{"run", "--scenario", "smoke", "--set", "workers[0].count=many"}, want: exitUsage, wantStderr: "workers[0].count"},
 		{name: "override breaks validation", args: []string{"run", "--scenario", "smoke", "--duration", "1s"}, want: exitUsage, wantStderr: "warmup"},
-		{name: "bad shard", args: []string{"run", "--scenario", "smoke", "--shard", "2/2"}, want: exitUsage, wantStderr: "shard"},
+		{name: "bad shard", args: []string{"run", "--scenario", "smoke", "--server", "http://h", "--nats", "nats://h", "--no-auth", "--shard", "2/2"}, want: exitUsage, wantStderr: "shard"},
+		{name: "shard of a managed run", args: []string{"run", "--scenario", "smoke", "--shard", "0/2"}, want: exitUsage, wantStderr: "--shard needs --server"},
 		{name: "bad run id", args: []string{"run", "--scenario", "smoke", "--run-id", "a:b"}, want: exitUsage, wantStderr: "run ID"},
 		{name: "attach without nats", args: []string{"run", "--scenario", "smoke", "--server", "http://127.0.0.1:8080"}, want: exitUsage, wantStderr: "--nats"},
 		{name: "attach with a managed flag", args: []string{"run", "--scenario", "smoke", "--server", "http://h", "--nats", "nats://h", "--no-auth", "--server-bin", "x"}, want: exitUsage, wantStderr: "--server-bin"},
@@ -113,7 +114,7 @@ func TestCLI_RunOptions(t *testing.T) {
 	f := &fakeRunner{rec: record(true, true)}
 	out := t.TempDir()
 	code, stdout, stderr := runCLI(t, f, "run", "--scenario", "smoke", "--set", "workers[0].count=7", "--duration", "30s",
-		"--out", out, "--run-id", "fixed-id", "--shard", "1/3", "--sample", "2s", "--postgres-dsn", "postgres://x/postgres")
+		"--out", out, "--run-id", "fixed-id", "--sample", "2s", "--postgres-dsn", "postgres://x/postgres")
 	if code != exitOK {
 		t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 	}
@@ -127,8 +128,6 @@ func TestCLI_RunOptions(t *testing.T) {
 		t.Errorf("run id %q out %q", o.RunID, o.OutDir)
 	case o.Seed != runner.SeedFor("fixed-id"):
 		t.Errorf("seed %d, want the one derived from the run ID", o.Seed)
-	case o.Shard != runner.ShardSpec{Index: 1, Of: 3}:
-		t.Errorf("shard %+v", o.Shard)
 	case o.Sample != 2*time.Second:
 		t.Errorf("sample %s", o.Sample)
 	case o.Mode != report.ModeLoad:
@@ -144,12 +143,13 @@ func TestCLI_RunOptions(t *testing.T) {
 func TestCLI_SoakAndAttach(t *testing.T) {
 	f := &fakeRunner{rec: record(true, true)}
 	code, _, stderr := runCLI(t, f, "soak", "--scenario", "soak-steady", "--duration", "6h",
-		"--server", "https://farm:8443", "--nats", "nats://farm:4222", "--api-key", "k", "--join-token", "tok", "--keep", "--seed", "42", "--ca-file", "ca.crt")
+		"--server", "https://farm:8443", "--nats", "nats://farm:4222", "--api-key", "k", "--join-token", "tok", "--keep", "--seed", "42", "--ca-file", "ca.crt",
+		"--shard", "1/3")
 	if code != exitOK {
 		t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 	}
 	o := f.got
-	if o.Mode != report.ModeSoak || o.Seed != 42 || o.Managed != nil || o.Attach == nil {
+	if o.Mode != report.ModeSoak || o.Seed != 42 || o.Managed != nil || o.Attach == nil || o.Shard != (runner.ShardSpec{Index: 1, Of: 3}) {
 		t.Fatalf("options %+v", o)
 	}
 	a := o.Attach

@@ -40,7 +40,12 @@ type Metrics struct {
 	// the verifier from the worker ledger; the driver only declares them.
 	FirstLease, LeaseReply, TaskE2E, JobE2E *measure.Histogram
 	// WSLag is receive time minus the event time the push payload carries.
+	// A push stamped after it was received (clock skew between hosts) is not
+	// recorded; it is counted in WSLagNegative instead.
 	WSLag *measure.Histogram
+	// WSLagNegative counts pushes whose event time was later than their
+	// arrival.
+	WSLagNegative *measure.Counter
 	// REST is the latency of each poller endpoint's successful calls, keyed by
 	// endpoint name. The set of keys is fixed by NewMetrics.
 	REST map[string]*measure.Histogram
@@ -72,6 +77,7 @@ func NewMetrics(endpoints []string) *Metrics {
 		TaskE2E:       measure.NewHistogram(),
 		JobE2E:        measure.NewHistogram(),
 		WSLag:         measure.NewHistogram(),
+		WSLagNegative: &measure.Counter{},
 		REST:          make(map[string]*measure.Histogram),
 		byStatus:      make(map[int]*measure.Counter),
 		WSDrops:       &measure.Counter{},

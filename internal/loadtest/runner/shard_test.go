@@ -3,9 +3,11 @@
 package runner
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/uberware/sqi/internal/loadtest/scenario"
+	"github.com/uberware/sqi/internal/loadtest/target"
 )
 
 func shardScenario() *scenario.Scenario {
@@ -144,5 +146,19 @@ func TestShard_String(t *testing.T) {
 		if got := tc.s.String(); got != tc.want {
 			t.Errorf("%+v.String() = %q, want %q", tc.s, got, tc.want)
 		}
+	}
+}
+
+func TestNewRun_ShardNeedsAttach(t *testing.T) {
+	sc, err := scenario.Builtin("smoke")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = newRun(Options{Scenario: sc, RunID: "r", Shard: ShardSpec{Index: 0, Of: 2}})
+	if err == nil || !strings.Contains(err.Error(), "attach") {
+		t.Errorf("a managed shard: err = %v, want a refusal naming attach", err)
+	}
+	if _, err := newRun(Options{Scenario: sc, RunID: "r", Shard: ShardSpec{Index: 0, Of: 2}, Attach: &target.AttachConfig{}}); err != nil {
+		t.Errorf("an attached shard: %v", err)
 	}
 }

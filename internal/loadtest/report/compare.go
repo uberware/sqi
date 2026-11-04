@@ -67,7 +67,7 @@ func counterDirection(name string) direction {
 	switch name {
 	case CounterTasksTerminal, CounterJobsSubmitted:
 		return higherBetter
-	case CounterWSDrops, CounterWSErrors, CounterRESTErrors:
+	case CounterWSDrops, CounterWSErrors, CounterRESTErrors, CounterWSLagNegative:
 		return lowerBetter
 	}
 	if code, ok := strings.CutPrefix(name, CounterSubmitStatusPrefix); ok {

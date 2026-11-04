@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -41,9 +43,15 @@ type AttachConfig struct {
 	// NoAuth says the server's broker authentication is off.
 	NoAuth bool
 	// Keep leaves the run's farm on the server after Close.
-	Keep     bool
-	Scenario *scenario.Scenario
-	RunID    string
+	Keep bool
+	// SharedPools says other runs use the scenario's usage pools at the same
+	// time, as the shards of one run do: Close then leaves every pool in
+	// place, created by this run or not, and logs their names. Pools are
+	// global, so a shard deleting one would pull it from under the others,
+	// and the server refuses while any claim names it.
+	SharedPools bool
+	Scenario    *scenario.Scenario
+	RunID       string
 	// Logger receives the target's own progress; nil discards it.
 	Logger *slog.Logger
 }
@@ -157,9 +165,16 @@ func (a *attached) teardown(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("delete farm: %w", err))
 		}
 	}
-	for name, id := range a.farm.poolIDs {
-		if err := a.client.DeleteUsagePool(ctx, id); err != nil && !isStatus(err, http.StatusNotFound) {
-			errs = append(errs, fmt.Errorf("delete usage pool %s: %w", name, err))
+	if a.cfg.SharedPools {
+		if len(a.farm.poolIDs) > 0 {
+			a.logger.InfoContext(ctx, "leaving the shared usage pools in place; delete them once every shard has finished",
+				slog.Any("pools", slices.Sorted(maps.Keys(a.farm.poolIDs))))
+		}
+	} else {
+		for name, id := range a.farm.poolIDs {
+			if err := a.client.DeleteUsagePool(ctx, id); err != nil && !isStatus(err, http.StatusNotFound) {
+				errs = append(errs, fmt.Errorf("delete usage pool %s: %w", name, err))
+			}
 		}
 	}
 	if err := errors.Join(errs...); err != nil {

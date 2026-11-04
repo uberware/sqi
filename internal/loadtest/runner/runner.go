@@ -240,8 +240,8 @@ func (o *Options) defaults() error {
 	if err := ValidRunID(o.RunID); err != nil {
 		return fmt.Errorf("runner: %w", err)
 	}
-	if o.Shard.active() && (o.Shard.Index < 0 || o.Shard.Index >= o.Shard.Of) {
-		return fmt.Errorf("runner: shard %d/%d is out of range", o.Shard.Index, o.Shard.Of)
+	if err := o.checkShard(); err != nil {
+		return err
 	}
 	if o.OutDir == "" {
 		o.OutDir = DefaultOutDir
@@ -257,6 +257,20 @@ func (o *Options) defaults() error {
 		o.ProfileEvery = 0
 	case o.ProfileEvery == 0 && o.Mode == report.ModeSoak:
 		o.ProfileEvery = DefaultSoakProfileEvery
+	}
+	return nil
+}
+
+// checkShard rejects a shard out of range, and a shard of a managed run: the
+// shards of a run drive one shared server, and merge adds up their counters.
+func (o *Options) checkShard() error {
+	switch {
+	case !o.Shard.active():
+		return nil
+	case o.Shard.Index < 0 || o.Shard.Index >= o.Shard.Of:
+		return fmt.Errorf("runner: shard %d/%d is out of range", o.Shard.Index, o.Shard.Of)
+	case o.Attach == nil:
+		return errors.New("runner: the shards of a run drive one shared server, so a shard must attach to it")
 	}
 	return nil
 }
@@ -371,6 +385,8 @@ func (r *run) startTarget(ctx context.Context) (target.Target, error) {
 	if r.o.Attach != nil {
 		cfg := *r.o.Attach
 		cfg.Scenario, cfg.RunID, cfg.Logger = r.sc, r.targetRunID(), r.logger
+		// The shards of one run share the server's usage pools.
+		cfg.SharedPools = cfg.SharedPools || r.o.Shard.active()
 		return target.Attach(ctx, cfg)
 	}
 	cfg := *r.o.Managed
@@ -597,7 +613,9 @@ func (r *run) teardown(ctx context.Context) {
 	}
 	if r.obsCancel != nil {
 		r.obsCancel()
-		r.wait(ctx, r.obsDone, observerStopTimeout, "observer")
+		if !r.wait(ctx, r.obsDone, observerStopTimeout, "observer") {
+			r.unavail("observer", "its last sample and end-of-run profiles did not finish (timed out or aborted), so the record may lack them")
+		}
 	}
 	if r.tgt != nil {
 		cctx, cancel := r.cleanupCtx(ctx, closeTimeout)

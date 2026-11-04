@@ -498,11 +498,13 @@ func TestAttach_CreatesAndDeletesFarm(t *testing.T) {
 	admin := mustClient(t, remote)
 
 	tests := []struct {
-		name string
-		keep bool
+		name   string
+		keep   bool
+		shared bool // SharedPools: the farm goes, the pools stay
 	}{
-		{"deleted on close", false},
-		{"kept with keep", true},
+		{"deleted on close", false, false},
+		{"kept with keep", true, false},
+		{"shared pools stay", false, true},
 	}
 	for i, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -511,7 +513,7 @@ func TestAttach_CreatesAndDeletesFarm(t *testing.T) {
 			sc.Farm.UsagePools = []scenario.PoolSpec{{Name: "attach-pool-" + strconv.Itoa(i), Limit: 2}}
 			tgt, err := Attach(t.Context(), AttachConfig{
 				HTTPURL: remote.HTTPURL(), NATSURL: remote.NATSURL(), APIKey: remote.APIKey(),
-				JoinToken: remote.joinToken, Keep: tt.keep, Scenario: sc, RunID: runID,
+				JoinToken: remote.joinToken, Keep: tt.keep, SharedPools: tt.shared, Scenario: sc, RunID: runID,
 			})
 			if err != nil {
 				t.Fatalf("Attach: %v", err)
@@ -552,8 +554,8 @@ func TestAttach_CreatesAndDeletesFarm(t *testing.T) {
 			for _, p := range pools {
 				poolLeft = poolLeft || p.Name == sc.Farm.UsagePools[0].Name
 			}
-			if poolLeft != tt.keep {
-				t.Errorf("after Close (keep=%v): pool present = %v", tt.keep, poolLeft)
+			if poolLeft != (tt.keep || tt.shared) {
+				t.Errorf("after Close (keep=%v, shared=%v): pool present = %v", tt.keep, tt.shared, poolLeft)
 			}
 		})
 	}

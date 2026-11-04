@@ -147,3 +147,26 @@ func TestFmtBytes(t *testing.T) {
 		}
 	}
 }
+
+func TestSummary_InvariantsNotRun(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		complete bool
+		want     string
+	}{
+		{"interrupted", false, "Not run (interrupted)"},
+		{"complete with none", true, "No invariants were checked."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := baseRecord()
+			r.Complete, r.Invariants = tc.complete, nil
+			var b strings.Builder
+			if err := writeSummary(&b, r); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(b.String(), tc.want) {
+				t.Errorf("summary lacks %q:\n%s", tc.want, b.String())
+			}
+		})
+	}
+}

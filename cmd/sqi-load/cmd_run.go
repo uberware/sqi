@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/pprof"
 	"slices"
 	"strings"
 	"time"
@@ -45,6 +46,7 @@ type runFlags struct {
 	allowSaturated bool
 	sample         time.Duration
 	profileEvery   time.Duration
+	cpuProfile     string
 }
 
 // attachOnly are the flags that describe an attached server; managedOnly
@@ -70,6 +72,7 @@ func (f *runFlags) register(fs *pflag.FlagSet, attach bool) {
 	fs.BoolVar(&f.allowSaturated, "allow-saturated", false, "exit 0 for an INVALID run whose generator saturated")
 	fs.DurationVar(&f.sample, "sample", runner.DefaultSample, "observation sample interval")
 	fs.DurationVar(&f.profileEvery, "profile-every", 0, "heap and goroutine profile period (default: 15m in a soak, start and end only otherwise)")
+	fs.StringVar(&f.cpuProfile, "cpuprofile", "", "write a CPU profile of sqi-load itself (the generator, not the server) to this file")
 	if !attach {
 		return
 	}
@@ -105,6 +108,11 @@ and write its record to <out>/<run-id>/.`,
 		if err != nil {
 			return err
 		}
+		stop, err := startCPUProfile(f.cpuProfile)
+		if err != nil {
+			return err
+		}
+		defer stop()
 		return a.runOnce(cmd.Context(), o, f.allowSaturated)
 	}
 	return cmd
@@ -204,6 +212,11 @@ func (f *runFlags) checkTarget(fs *pflag.FlagSet, attach bool) error {
 			return fmt.Errorf("--%s applies to an attached server and needs --server", name)
 		}
 	}
+	if f.shard != "" {
+		// Managed shards would each start a server of their own, and merge
+		// would then add up counters from different servers.
+		return errors.New("--shard needs --server: the shards of a run drive one shared, attached server")
+	}
 	return nil
 }
 
@@ -279,4 +292,24 @@ func recordedFlags(cmd *cobra.Command) []string {
 		out = append(out, "--"+fl.Name+"="+v)
 	})
 	return out
+}
+
+// startCPUProfile profiles sqi-load itself into path until the returned stop
+// is called; an empty path profiles nothing.
+func startCPUProfile(path string) (stop func(), err error) {
+	if path == "" {
+		return func() {}, nil
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return nil, fmt.Errorf("--cpuprofile: %w", err)
+	}
+	if err := pprof.StartCPUProfile(f); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("--cpuprofile: %w", err)
+	}
+	return func() {
+		pprof.StopCPUProfile()
+		f.Close()
+	}, nil
 }

@@ -304,13 +304,18 @@ func TestSubmitter_PacedRecordsLagAndStopsWithContext(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
 	defer cancel()
+	start := time.Now()
 	if err := s.Run(ctx); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	n := ledger.AcceptedCount()
-	// 200/s for 0.3 s is 60 slots; allow wide slack for a loaded CI host.
-	if n < 20 || n > 61 {
-		t.Errorf("%d jobs accepted at 200/s over 300 ms, want about 60", n)
+	// 200/s for 0.3 s is 60 slots, plus the one at time 0. A loaded host
+	// fires the deadline late, and every 5 ms slot due by then still goes
+	// out, so the ceiling follows the time the pacer actually ran; the floor
+	// leaves wide slack for a slow host.
+	ceiling := int(time.Since(start)/(5*time.Millisecond)) + 1
+	if n < 20 || n > ceiling {
+		t.Errorf("%d jobs accepted at 200/s over %s, want about 60 and at most %d", n, time.Since(start).Round(time.Millisecond), ceiling)
 	}
 	if got := m.SubmitLag.Count(); got != int64(n) {
 		t.Errorf("SubmitLag has %d samples for %d submissions, want one each", got, n)
@@ -533,6 +538,36 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	}
 }
 
+// TestUIClients_NegativeLagCounted: a push stamped after it arrived (a
+// server clock ahead of the generator's) is counted, not recorded as a zero
+// lag.
+func TestUIClients_NegativeLagCounted(t *testing.T) {
+	now := time.Now()
+	conn := &fakeConn{script: []ws.Envelope{
+		jobPush(t, 1, now.Add(-50*time.Millisecond)),
+		jobPush(t, 2, now.Add(time.Hour)),
+		jobPush(t, 3, now.Add(time.Hour)),
+	}}
+	m := NewMetrics(nil)
+	spec := scenario.ClientsSpec{WebSocket: scenario.WSSpec{Count: 1, Subscribe: []string{SubJobs}}}
+	u := NewUIClients("http://unused", "", spec, NewJobLedger(), m,
+		WithDial(func(context.Context, string, string) (WSStream, error) { return conn, nil }))
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- u.Run(ctx) }()
+	waitFor(t, "three events", func() bool { return m.WSEvents.Load() == 3 })
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := m.WSLagNegative.Load(); got != 2 {
+		t.Errorf("WSLagNegative = %d, want 2", got)
+	}
+	if got := m.WSLag.Count(); got != 1 {
+		t.Errorf("WSLag has %d samples, want only the one in the past", got)
+	}
+}
+
 func TestUIClients_DetectsSeqGap(t *testing.T) {
 	now := time.Now()
 	conn := &fakeConn{script: []ws.Envelope{
@@ -742,8 +777,10 @@ func TestUIClients_ReconnectReplayDoesNotInflateDropsOrLag(t *testing.T) {
 	if got := m.WSDrops.Load(); got != 0 {
 		t.Errorf("WSDrops = %d, want 0: the replayed pushes fill the hole the live one opened", got)
 	}
-	if got := m.WSLag.Count(); got != 11 {
-		t.Errorf("WSLag has %d samples, want 11 (ten before the loss and the live push, none for the replay)", got)
+	// The live pushes are stamped in the future so they pass the resubscribe
+	// cutoff whatever the test's speed, so they count as negative lags.
+	if got := m.WSLag.Count() + m.WSLagNegative.Load(); got != 11 {
+		t.Errorf("%d lag samples, want 11 (ten before the loss and the live push, none for the replay)", got)
 	}
 	if got := m.WSErrors.Load(); got != 1 {
 		t.Errorf("WSErrors = %d, want 1 for the lost connection", got)

@@ -3,6 +3,7 @@
 package report
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -29,16 +30,16 @@ func TestFindings(t *testing.T) {
 		{
 			name: "goroutines grow linearly", rule: RuleGoroutineGrowth, severity: SeverityWarn, fire: true,
 			build: func() *Record {
-				r := baseRecord()
-				r.Series = []measure.Series{ramp("server.goroutines", "count", 30, 20*time.Second, 1000, 5)}
+				r := longRecord()
+				r.Series = []measure.Series{ramp("server.goroutines", "count", 30, 2*time.Minute, 1000, 5)}
 				return r
 			},
 		},
 		{
 			name: "goroutines flat", rule: RuleGoroutineGrowth,
 			build: func() *Record {
-				r := baseRecord()
-				r.Series = []measure.Series{ramp("server.goroutines", "count", 30, 20*time.Second, 1000, 0)}
+				r := longRecord()
+				r.Series = []measure.Series{ramp("server.goroutines", "count", 30, 2*time.Minute, 1000, 0)}
 				return r
 			},
 		},
@@ -57,18 +58,18 @@ func TestFindings(t *testing.T) {
 		{
 			name: "rss projects past 1 GiB a week", rule: RuleRSSGrowth, severity: SeverityWarn, fire: true,
 			build: func() *Record {
-				r := baseRecord()
+				r := longRecord()
 				// 10 MiB per minute is 600 MiB/h, 100 GiB over a week.
-				r.Series = []measure.Series{ramp("server.rss_bytes", "bytes", 30, 20*time.Second, 500<<20, 10<<20/3)}
+				r.Series = []measure.Series{ramp("server.rss_bytes", "bytes", 30, 2*time.Minute, 500<<20, 20<<20)}
 				return r
 			},
 		},
 		{
 			name: "rss projects under 1 GiB a week", rule: RuleRSSGrowth,
 			build: func() *Record {
-				r := baseRecord()
-				// 1 KiB per sample is about 180 KiB/h, 30 MiB over a week.
-				r.Series = []measure.Series{ramp("server.rss_bytes", "bytes", 30, 20*time.Second, 500<<20, 1024)}
+				r := longRecord()
+				// 1 KiB per sample is 30 KiB/h, 5 MiB over a week.
+				r.Series = []measure.Series{ramp("server.rss_bytes", "bytes", 30, 2*time.Minute, 500<<20, 1024)}
 				return r
 			},
 		},
@@ -255,7 +256,7 @@ func rampFrom(start time.Time, name, unit string, n int, step time.Duration, v0,
 
 func TestFindings_GrowthGuards(t *testing.T) {
 	steady := t0.Add(2 * time.Minute)
-	zigzag := rampFrom(steady, "server.rss_bytes", "bytes", 10, 20*time.Second, 0, 0)
+	zigzag := rampFrom(steady, "server.rss_bytes", "bytes", 10, 4*time.Minute, 0, 0)
 	for i := range zigzag.Points {
 		zigzag.Points[i].V = float64(i%2) * 2 * (1 << 30)
 	}
@@ -265,16 +266,19 @@ func TestFindings_GrowthGuards(t *testing.T) {
 		s    measure.Series
 		fire bool
 	}{
-		{"goroutines: 9 points do not fire", RuleGoroutineGrowth, rampFrom(steady, "server.goroutines", "count", 9, 20*time.Second, 1000, 5), false},
-		{"goroutines: 10 points fire", RuleGoroutineGrowth, rampFrom(steady, "server.goroutines", "count", 10, 20*time.Second, 1000, 5), true},
-		{"rss: 9 points do not fire", RuleRSSGrowth, rampFrom(steady, "server.rss_bytes", "bytes", 9, 20*time.Second, 500<<20, 100<<20), false},
-		{"rss: 10 points fire", RuleRSSGrowth, rampFrom(steady, "server.rss_bytes", "bytes", 10, 20*time.Second, 500<<20, 100<<20), true},
+		{"goroutines: 9 points do not fire", RuleGoroutineGrowth, rampFrom(steady, "server.goroutines", "count", 9, 4*time.Minute, 1000, 5), false},
+		{"goroutines: 10 points fire", RuleGoroutineGrowth, rampFrom(steady, "server.goroutines", "count", 10, 4*time.Minute, 1000, 5), true},
+		{"rss: 9 points do not fire", RuleRSSGrowth, rampFrom(steady, "server.rss_bytes", "bytes", 9, 4*time.Minute, 500<<20, 100<<20), false},
+		{"rss: 10 points fire", RuleRSSGrowth, rampFrom(steady, "server.rss_bytes", "bytes", 10, 4*time.Minute, 500<<20, 100<<20), true},
+		// 29 minutes of steady state is too short to project, however steep.
+		{"goroutines: under 30 minutes does not fire", RuleGoroutineGrowth, rampFrom(steady, "server.goroutines", "count", 30, time.Minute, 1000, 5), false},
+		{"rss: under 30 minutes does not fire", RuleRSSGrowth, rampFrom(steady, "server.rss_bytes", "bytes", 30, time.Minute, 500<<20, 100<<20), false},
 		// Alternating 0 and 2 GiB has a positive slope that projects to
 		// terabytes a week, but its r² is about 0.03: noise, not a trend.
 		{"rss: a steep slope with a low r2 does not fire", RuleRSSGrowth, zigzag, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := baseRecord()
+			r := longRecord()
 			r.Series = []measure.Series{tc.s}
 			fired := false
 			for _, f := range Findings(r, steady) {
@@ -316,5 +320,88 @@ func TestStreamCapMB(t *testing.T) {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// longRecord is baseRecord running an hour, long enough for the growth rules.
+func longRecord() *Record {
+	r := baseRecord()
+	r.Ended = t0.Add(time.Hour)
+	return r
+}
+
+// TestFindings_RSSGrowthNeedsThirtyMinutes: the same steep, perfectly linear
+// RSS growth fires on a 31-minute steady state and not on a 1-minute run.
+func TestFindings_RSSGrowthNeedsThirtyMinutes(t *testing.T) {
+	const perSecond = 2 << 20 // 7 GiB/h
+	for _, tc := range []struct {
+		name  string
+		span  time.Duration
+		step  time.Duration
+		fires bool
+	}{
+		{"1-minute run", time.Minute, 5 * time.Second, false},
+		{"31-minute run", 31 * time.Minute, time.Minute, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := baseRecord()
+			r.Scenario.Warmup.Duration = 5 * time.Second
+			steady := r.SteadyFrom()
+			n := int(tc.span/tc.step) + 1
+			r.Ended = steady.Add(tc.span)
+			r.Series = []measure.Series{rampFrom(steady, "server.rss_bytes", "bytes", n, tc.step, 500<<20, perSecond*tc.step.Seconds())}
+			fired := false
+			for _, f := range Findings(r, steady) {
+				fired = fired || f.Rule == RuleRSSGrowth
+			}
+			if fired != tc.fires {
+				t.Fatalf("rss-growth fired = %v, want %v", fired, tc.fires)
+			}
+		})
+	}
+}
+
+// TestRecord_PointsAfterEndedIgnored: the observer's last sample, taken after
+// the fleet stopped (after Ended), moves no peak, end value, slope or rule.
+func TestRecord_PointsAfterEndedIgnored(t *testing.T) {
+	build := func(withLate bool) *Record {
+		r := longRecord()
+		gor := ramp("server.goroutines", "count", 40, time.Minute, 100, 0)
+		cpu := ramp("server.cpu_cores", "cores", 40, time.Minute, 1, 0)
+		if withLate {
+			late := r.Ended.Add(200 * time.Millisecond)
+			gor.Points = append(gor.Points, measure.Point{T: late, V: 99999})
+			cpu.Points = append(cpu.Points, measure.Point{T: late, V: 77})
+		}
+		r.Series = []measure.Series{gor, cpu}
+		return r
+	}
+	with, without := build(true), build(false)
+	steady := with.SteadyFrom()
+	if p, _ := seriesPeak(findSeries(with, "server.cpu_cores")); p != 1 {
+		t.Errorf("peak cpu = %v, want 1: the late point counted", p)
+	}
+	if slope, _ := measure.Slope(findSeries(with, "server.goroutines").Points, steady); slope != 0 {
+		t.Errorf("goroutine slope = %v, want 0", slope)
+	}
+	for _, f := range Findings(with, steady) {
+		if f.Rule == RuleGoroutineGrowth {
+			t.Errorf("the late point raised %+v", f)
+		}
+	}
+	var a, b strings.Builder
+	if err := writeSummary(&a, with); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSummary(&b, without); err != nil {
+		t.Fatal(err)
+	}
+	if a.String() != b.String() {
+		t.Errorf("a point after Ended changed the summary:\n%s\nvs\n%s", a.String(), b.String())
+	}
+	for _, d := range Compare(without, with) {
+		if strings.HasPrefix(d.Metric, "peak.") && d.Verdict != VerdictNoChange {
+			t.Errorf("compare %s = %+v, want no change", d.Metric, d)
+		}
 	}
 }

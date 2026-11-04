@@ -83,9 +83,12 @@ func (r *run) record() *report.Record {
 	}
 	rec.Valid = true
 	if r.obs != nil {
-		rec.Valid, rec.InvalidReason = r.obs.SelfHealth().Valid(rec.SteadyFrom(), 0)
+		rec.Valid, rec.InvalidReason = r.obs.SelfHealth().ValidBetween(rec.SteadyFrom(), rec.Ended, 0)
 	}
 	r.unavail(report.HistLeaseReply, "the simulated workers do not time their lease requests")
+	if caveat := wsLagCaveat(wallClockStep()); caveat != "" && rec.Histograms[report.HistWSLag] != nil && rec.Histograms[report.HistWSLag].Count() > 0 {
+		r.unavail(report.HistWSLag, caveat)
+	}
 	rec.Unavailable = r.unavailableList()
 	rec.Findings = append(append([]report.Finding{}, report.Findings(rec, rec.SteadyFrom())...), r.findings(rec)...)
 	return rec
@@ -147,6 +150,7 @@ func (r *run) liveCounters() map[string]int64 {
 		report.CounterWorkersLive:   int64(simulatedCount(r.sc) + realCount(r.sc)),
 		report.CounterWSDrops:       m.WSDrops.Load(),
 		report.CounterWSEvents:      m.WSEvents.Load(),
+		report.CounterWSLagNegative: m.WSLagNegative.Load(),
 		report.CounterWSErrors:      m.WSErrors.Load(),
 		report.CounterRESTErrors:    m.RESTErrors.Load(),
 	}

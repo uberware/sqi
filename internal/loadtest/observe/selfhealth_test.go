@@ -68,6 +68,24 @@ func TestSelfHealth_Invalid(t *testing.T) {
 	}
 }
 
+// TestSelfHealth_ValidBetween: samples after the end of the measured window
+// (a teardown burst) do not count; with no end they do.
+func TestSelfHealth_ValidBetween(t *testing.T) {
+	base := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	h := NewSelfHealth()
+	for i := range 5 {
+		h.Record(base.Add(time.Duration(i)*time.Second), 0.1, 0.01)
+	}
+	h.Record(base.Add(4200*time.Millisecond), 3.9, 0.01) // after until
+	until := base.Add(4 * time.Second)
+	if valid, reason := h.ValidBetween(base, until, 4); !valid {
+		t.Errorf("ValidBetween = invalid (%s), want valid: the late sample counted", reason)
+	}
+	if valid, _ := h.Valid(base, 4); valid {
+		t.Error("Valid with no end ignored the saturated sample")
+	}
+}
+
 func TestSelfHealth_ConcurrentRecord(*testing.T) {
 	h := NewSelfHealth()
 	var wg sync.WaitGroup

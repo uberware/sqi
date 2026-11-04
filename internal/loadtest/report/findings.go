@@ -38,6 +38,10 @@ const (
 	// minTrendPoints is the fewest post-warmup samples a growth rule needs
 	// before it trusts a fitted slope.
 	minTrendPoints = 10
+	// minTrendSpan is the shortest steady-state span a growth rule projects
+	// from: a few minutes of a server warming its caches looks like a leak
+	// when projected over a week.
+	minTrendSpan = 30 * time.Minute
 	// goroutineR2 is the r² a goroutine trend must exceed to be flagged.
 	goroutineR2 = 0.8
 	// rssR2 is the r² an RSS trend must reach to be projected. RSS is noisier
@@ -82,13 +86,37 @@ func Findings(r *Record, steadyFrom time.Time) []Finding {
 	return out
 }
 
+// findSeries returns the named series cut to the run (see Record.runSeries),
+// or nil.
 func findSeries(r *Record, name string) *measure.Series {
 	for i := range r.Series {
 		if r.Series[i].Name == name {
-			return &r.Series[i]
+			s := r.inRun(r.Series[i])
+			return &s
 		}
 	}
 	return nil
+}
+
+// trendSpan is how long the series' points at or after from cover.
+func trendSpan(s *measure.Series, from time.Time) time.Duration {
+	var first, last time.Time
+	for _, p := range s.Points {
+		if p.T.Before(from) {
+			continue
+		}
+		if first.IsZero() {
+			first = p.T
+		}
+		last = p.T
+	}
+	return last.Sub(first)
+}
+
+// trendReady reports whether s has enough steady-state data for a growth
+// rule: minTrendPoints samples spanning at least minTrendSpan.
+func trendReady(s *measure.Series, from time.Time) bool {
+	return s != nil && pointsFrom(s, from) >= minTrendPoints && trendSpan(s, from) >= minTrendSpan
 }
 
 // pointsFrom counts the points at or after from.
@@ -104,7 +132,7 @@ func pointsFrom(s *measure.Series, from time.Time) int {
 
 func goroutineGrowth(r *Record, from time.Time) *Finding {
 	s := findSeries(r, "server.goroutines")
-	if s == nil || pointsFrom(s, from) < minTrendPoints {
+	if !trendReady(s, from) {
 		return nil
 	}
 	slope, r2 := measure.Slope(s.Points, from)
@@ -119,7 +147,7 @@ func goroutineGrowth(r *Record, from time.Time) *Finding {
 
 func rssGrowth(r *Record, from time.Time) *Finding {
 	s := findSeries(r, "server.rss_bytes")
-	if s == nil || pointsFrom(s, from) < minTrendPoints {
+	if !trendReady(s, from) {
 		return nil
 	}
 	slope, r2 := measure.Slope(s.Points, from)

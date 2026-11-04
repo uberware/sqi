@@ -168,9 +168,10 @@ func summaryLatency(b *strings.Builder, r *Record) {
 func summaryResources(b *strings.Builder, r *Record) {
 	b.WriteString("## Server resources\n\n")
 	var rows []*measure.Series
-	for i := range r.Series {
-		if matchesAny(r.Series[i].Name, resourceSeries) && len(r.Series[i].Points) > 0 {
-			rows = append(rows, &r.Series[i])
+	series := r.runSeries()
+	for i := range series {
+		if matchesAny(series[i].Name, resourceSeries) && len(series[i].Points) > 0 {
+			rows = append(rows, &series[i])
 		}
 	}
 	if len(rows) == 0 {
@@ -205,8 +206,9 @@ func summaryGrowth(b *strings.Builder, r *Record) {
 		r2          float64
 	}
 	var rows []row
-	for i := range r.Series {
-		s := &r.Series[i]
+	series := r.runSeries()
+	for i := range series {
+		s := &series[i]
 		if !matchesAny(s.Name, growthSeries) || pointsFrom(s, from) < 2 {
 			continue
 		}
@@ -228,7 +230,11 @@ func summaryGrowth(b *strings.Builder, r *Record) {
 func summaryInvariants(b *strings.Builder, r *Record) {
 	b.WriteString("## Invariants\n\n")
 	if len(r.Invariants) == 0 {
-		b.WriteString("No invariants were checked.\n\n")
+		if !r.Complete {
+			b.WriteString("Not run (interrupted): the run ended before its invariants were checked.\n\n")
+		} else {
+			b.WriteString("No invariants were checked.\n\n")
+		}
 		return
 	}
 	for _, inv := range r.Invariants {

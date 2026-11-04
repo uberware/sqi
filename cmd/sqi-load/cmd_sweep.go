@@ -45,6 +45,11 @@ when a point could not be set up.`,
 		if _, err := runner.SweepScenarios(o.Scenario, path, values); err != nil {
 			return err
 		}
+		stopProfile, err := startCPUProfile(f.cpuProfile)
+		if err != nil {
+			return err
+		}
+		defer stopProfile()
 		ctx, abort, stop := a.interruptible(cmd.Context())
 		defer stop()
 		o.Abort = abort

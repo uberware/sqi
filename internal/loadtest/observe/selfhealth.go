@@ -59,13 +59,21 @@ func (h *SelfHealth) Record(t time.Time, cpuCores, lagP99 float64) {
 // much, for an invalid one. With no samples to judge it reports valid and says
 // so.
 func (h *SelfHealth) Valid(steadyFrom time.Time, cores int) (valid bool, reason string) {
+	return h.ValidBetween(steadyFrom, time.Time{}, cores)
+}
+
+// ValidBetween is Valid judged over the samples taken from steadyFrom up to
+// and including until; a zero until has no end. A run passes the end of its
+// measured window as until, so that samples taken while it tears down (a
+// burst of work over a short last interval) do not count.
+func (h *SelfHealth) ValidBetween(steadyFrom, until time.Time, cores int) (valid bool, reason string) {
 	if cores <= 0 {
 		cores = runtime.NumCPU()
 	}
 	h.mu.Lock()
 	var window []healthPoint
 	for _, p := range h.points {
-		if !p.t.Before(steadyFrom) {
+		if !p.t.Before(steadyFrom) && (until.IsZero() || !p.t.After(until)) {
 			window = append(window, p)
 		}
 	}

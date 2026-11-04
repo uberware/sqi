@@ -489,7 +489,11 @@ func (u *UIClients) observe(env ws.Envelope, st *wsState) {
 		u.m.WSDrops.Add(delta)
 	}
 	if ts := eventTime(env.Payload); !ts.IsZero() && !ts.Before(st.cutoff(env.Subject)) {
-		u.m.WSLag.Record(max(time.Since(ts), 0))
+		if lag := time.Since(ts); lag >= 0 {
+			u.m.WSLag.Record(lag)
+		} else {
+			u.m.WSLagNegative.Add(1)
+		}
 	}
 }
 
