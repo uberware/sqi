@@ -333,8 +333,10 @@ type HeartbeatMsg struct {
 	// WorkerID identifies the sender.
 	WorkerID string `json:"worker_id"`
 
-	// At is the worker's local timestamp when the heartbeat was composed.
-	// If zero or absent, the server substitutes its own clock.
+	// At is the worker's local timestamp when the heartbeat was composed. The
+	// server uses it only to spot a delayed or skewed worker; liveness is timed
+	// by the broker's stream timestamp, so a wrong worker clock cannot take a
+	// worker offline. If zero or absent, the server substitutes its own clock.
 	At time.Time `json:"at"`
 
 	// ActiveTaskCount is the number of task processes currently running on

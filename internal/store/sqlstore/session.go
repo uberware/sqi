@@ -45,9 +45,8 @@ func scanSession(row scanner) (store.Session, error) {
 // both are caller-supplied by design, since ExpiresAt is derived from the
 // issuance instant and the two timestamps must agree with each other.
 func (s *Store) CreateSession(ctx context.Context, sess store.Session) (store.Session, error) {
-	row := s.stmtInsertSession.QueryRowContext(ctx, sess.ID, sess.TokenHash, sess.UserID,
-		TimeText(sess.ExpiresAt), TimeText(sess.CreatedAt))
-	out, err := scanSession(row)
+	out, err := writeRow(ctx, s, "create session", scanSession, s.stmtInsertSession,
+		sess.ID, sess.TokenHash, sess.UserID, TimeText(sess.ExpiresAt), TimeText(sess.CreatedAt))
 	return out, mapErr(err)
 }
 
@@ -67,7 +66,7 @@ func (s *Store) GetSessionUserByTokenHash(ctx context.Context, tokenHash string,
 
 // DeleteSession implements [store.SessionStore].
 func (s *Store) DeleteSession(ctx context.Context, id string) error {
-	res, err := s.stmtDeleteSession.ExecContext(ctx, id)
+	res, err := s.execStmt(ctx, "delete session", s.stmtDeleteSession, id)
 	if err != nil {
 		return mapErr(err)
 	}
@@ -76,7 +75,7 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 
 // DeleteExpiredSessions implements [store.SessionStore].
 func (s *Store) DeleteExpiredSessions(ctx context.Context, now time.Time) (int, error) {
-	res, err := s.stmtDeleteExpiredSessions.ExecContext(ctx, TimeText(now))
+	res, err := s.execStmt(ctx, "delete expired sessions", s.stmtDeleteExpiredSessions, TimeText(now))
 	if err != nil {
 		return 0, mapErr(err)
 	}

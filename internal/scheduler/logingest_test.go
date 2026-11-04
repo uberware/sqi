@@ -46,6 +46,12 @@ type fakeJSMsg struct {
 	nacked  bool
 	metaErr error
 	natsSeq uint64
+	// stamp is the broker timestamp Metadata reports; zero means none.
+	stamp time.Time
+	// delivered is the delivery count Metadata reports.
+	delivered uint64
+	// nakDelay is the delay the last NakWithDelay asked for.
+	nakDelay time.Duration
 }
 
 func (m *fakeJSMsg) Data() []byte    { return m.data }
@@ -61,12 +67,19 @@ func (m *fakeJSMsg) Nak() error {
 	return nil
 }
 
+func (m *fakeJSMsg) NakWithDelay(d time.Duration) error {
+	m.nacked, m.nakDelay = true, d
+	return nil
+}
+
 func (m *fakeJSMsg) Metadata() (*jetstream.MsgMetadata, error) {
 	if m.metaErr != nil {
 		return nil, m.metaErr
 	}
 	return &jetstream.MsgMetadata{
-		Sequence: jetstream.SequencePair{Stream: m.natsSeq},
+		Sequence:     jetstream.SequencePair{Stream: m.natsSeq},
+		Timestamp:    m.stamp,
+		NumDelivered: m.delivered,
 	}, nil
 }
 

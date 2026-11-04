@@ -26,6 +26,7 @@ import (
 	"github.com/uberware/sqi/internal/store/postgres"
 	"github.com/uberware/sqi/internal/store/schemainfo"
 	"github.com/uberware/sqi/internal/store/sqlite"
+	"github.com/uberware/sqi/internal/store/sqlstore"
 	"github.com/uberware/sqi/internal/store/storecopy"
 	"github.com/uberware/sqi/internal/store/storetest"
 )
@@ -46,8 +47,8 @@ func TestStoreCopy_CopiesEveryRowVerbatim(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("copied %d tables in %s", len(res.Tables), res.Elapsed)
-	if len(res.Tables) != 21 {
-		t.Errorf("copied %d tables, want 21", len(res.Tables))
+	if len(res.Tables) != 24 {
+		t.Errorf("copied %d tables, want 24", len(res.Tables))
 	}
 	counts := sqliteCounts(t, src)
 	for _, tr := range res.Tables {
@@ -181,6 +182,53 @@ func TestStoreCopy_RefusesANonEmptyTarget(t *testing.T) {
 	assertRowsEqual(t, src, dst)
 }
 
+// migrationSeeded maps each table a migration leaves with one row to a
+// predicate that matches that row once it has been used. It is a copy of the
+// package's own map, kept separate, because a test that read the map it
+// checks would agree with any mistake in it.
+var migrationSeeded = map[string]string{
+	"server_lease": "holder IS NOT NULL OR epoch <> 0 OR expires_us <> 0",
+	"server_epoch": "epoch <> 0",
+}
+
+func TestStoreCopy_RefusesATargetWhoseSeedRowsWereUsed(t *testing.T) {
+	skipWithoutPostgres(t)
+	for tbl, set := range map[string]string{
+		"server_lease": "holder = 'instance-x', epoch = 3",
+		"server_epoch": "epoch = 3",
+	} {
+		t.Run(tbl, func(t *testing.T) {
+			src := t.TempDir() + "/sqi.db"
+			seedEveryTable(t, src)
+			dst := storetest.PostgresDSN(t) // migrated, so it already holds the seed rows
+			execPG(t, dst, `UPDATE `+tbl+` SET `+set+` WHERE id = 1`)
+
+			_, err := storecopy.Copy(t.Context(), storecopy.Options{SQLitePath: src, PostgresDSN: dst})
+			if err == nil || !strings.Contains(err.Error(), "is not empty") || !strings.Contains(err.Error(), tbl) {
+				t.Fatalf("Copy into a target with a used %s row = %v, want a refusal saying the target is not empty", tbl, err)
+			}
+		})
+	}
+}
+
+func TestStoreCopy_CopiesIntoAMigratedTargetHoldingOnlySeedRows(t *testing.T) {
+	skipWithoutPostgres(t)
+	src := t.TempDir() + "/sqi.db"
+	seedEveryTable(t, src)
+	dst := storetest.PostgresDSN(t)
+
+	if _, err := storecopy.Copy(t.Context(), storecopy.Options{SQLitePath: src, PostgresDSN: dst}); err != nil {
+		t.Fatalf("Copy into a migrated target: %v", err)
+	}
+	assertRowsEqual(t, src, dst)
+	var holder string
+	var epoch int64
+	if err := openPG(t, dst).QueryRowContext(t.Context(), `SELECT holder, epoch FROM server_lease`).Scan(&holder, &epoch); err != nil ||
+		holder != "instance-a" || epoch != 7 {
+		t.Fatalf("server_lease on the copy = %q, %d, %v; want the source's instance-a, 7", holder, epoch, err)
+	}
+}
+
 func TestStoreCopy_RefusesASourceBehindTheBinary(t *testing.T) {
 	skipWithoutPostgres(t)
 	src := t.TempDir() + "/sqi.db"
@@ -236,11 +284,11 @@ func TestStoreCopy_RefusesATargetAtAnotherVersion(t *testing.T) {
 	})
 	t.Run("behind", func(t *testing.T) {
 		dst := storetest.PostgresDSN(t)
-		execPG(t, dst, `DELETE FROM goose_db_version WHERE version_id = 40`)
+		execPG(t, dst, `DELETE FROM goose_db_version WHERE version_id = 41`)
 		_, err := storecopy.Copy(t.Context(), storecopy.Options{SQLitePath: src, PostgresDSN: dst})
 		if err == nil || !strings.Contains(err.Error(), "use an empty database") ||
 			!strings.Contains(err.Error(), "drop and recreate") {
-			t.Fatalf("Copy into a schema-39 target = %v, want a refusal saying what to do", err)
+			t.Fatalf("Copy into a schema-40 target = %v, want a refusal saying what to do", err)
 		}
 	})
 }
@@ -536,12 +584,29 @@ func seedEveryTable(t *testing.T, path string) {
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
+	seedServerHA(t, path, now)
 
 	for tbl, n := range sqliteCounts(t, path) {
 		if n == 0 {
 			t.Fatalf("seedEveryTable left %s empty; seed it so the copy tests cover it", tbl)
 		}
 	}
+}
+
+// seedServerHA fills the server leadership tables, which no store method
+// writes: a lease held at epoch 7, the epoch counter past it, and a member
+// row. The lease and epoch rows exist from the migration, so this moves them
+// off their seed values, which is what a copy that kept the target's seed rows
+// instead of the source's would lose.
+func seedServerHA(t *testing.T, path string, at time.Time) {
+	t.Helper()
+	stamp := sqlstore.TimeText(at)
+	execSQLite(t, path, `UPDATE server_lease SET holder = 'instance-a', epoch = 7, expires_us = 1788000000000000 WHERE id = 1`)
+	execSQLite(t, path, `UPDATE server_epoch SET epoch = 9 WHERE id = 1`)
+	execSQLite(t, path, `INSERT INTO server_members
+		(instance_id, name, host, pid, version, grants_fingerprint, started_at, last_seen_us, broker_ok_us)
+		VALUES ('instance-a', 'sqi-a', 'host-a', 4242, '0.9.0', 'fp-1', '`+stamp+`', 1788000000000000, NULL),
+		       ('instance-b', 'sqi-b', 'host-b', 4343, '0.9.0', 'fp-1', '`+stamp+`', 1788000001000000, 1788000001000000)`)
 }
 
 func seedFarmQueue(t *testing.T, st store.Store) {
@@ -749,6 +814,18 @@ func requireUntouched(t *testing.T, dsn string) {
 func requireNoRows(t *testing.T, dsn string) {
 	t.Helper()
 	for _, tbl := range pgTables(t, dsn) {
+		if seed, ok := migrationSeeded[tbl]; ok {
+			// The migration leaves this table one row; a failed copy leaves it at that.
+			if n := pgCount(t, dsn, tbl); n != 1 {
+				t.Errorf("%s holds %d rows after a failed copy, want its 1 seed row", tbl, n)
+			}
+			var moved int64
+			q := `SELECT count(*) FROM ` + tbl + ` WHERE ` + seed
+			if err := openPG(t, dsn).QueryRowContext(t.Context(), q).Scan(&moved); err != nil || moved != 0 {
+				t.Errorf("%s was changed from its seed row by a failed copy (%d rows moved, %v)", tbl, moved, err)
+			}
+			continue
+		}
 		if n := pgCount(t, dsn, tbl); n != 0 {
 			t.Errorf("%s holds %d rows after a failed copy, want 0", tbl, n)
 		}

@@ -103,9 +103,8 @@ func (s *Store) CreateUser(ctx context.Context, u store.User) (store.User, error
 	if u.AuthSource == "" {
 		u.AuthSource = store.AuthSourceLocal
 	}
-	row := s.stmtInsertUser.QueryRowContext(ctx, u.ID, u.Username, u.DisplayName,
-		u.PasswordHash, u.Role, u.AuthSource, u.ExternalID, u.Disabled, now, now)
-	out, err := scanUser(row)
+	out, err := writeRow(ctx, s, "create user", scanUser, s.stmtInsertUser,
+		u.ID, u.Username, u.DisplayName, u.PasswordHash, u.Role, u.AuthSource, u.ExternalID, u.Disabled, now, now)
 	return out, mapErr(err)
 }
 
@@ -147,8 +146,8 @@ func (s *Store) ListUsers(ctx context.Context) ([]store.User, error) {
 
 // UpdateUser implements [store.UserStore].
 func (s *Store) UpdateUser(ctx context.Context, u store.User) (store.User, error) {
-	row := s.stmtUpdateUser.QueryRowContext(ctx, updateUserArgs(u, TimeText(time.Now().UTC()))...)
-	out, err := scanUser(row)
+	out, err := writeRow(ctx, s, "update user", scanUser, s.stmtUpdateUser,
+		updateUserArgs(u, TimeText(time.Now().UTC()))...)
 	return out, mapErr(err)
 }
 
@@ -161,7 +160,7 @@ func updateUserArgs(u store.User, now string) []any {
 // SetUserPassword implements [store.UserStore].
 func (s *Store) SetUserPassword(ctx context.Context, id, passwordHash string) error {
 	now := TimeText(time.Now().UTC())
-	res, err := s.stmtSetUserPassword.ExecContext(ctx, passwordHash, now, id)
+	res, err := s.execStmt(ctx, "set user password", s.stmtSetUserPassword, passwordHash, now, id)
 	if err != nil {
 		return mapErr(err)
 	}
@@ -191,8 +190,8 @@ func (s *Store) SetUserPasswordAndEvictSessions(ctx context.Context, id, passwor
 
 // SetUserDisplayName implements [store.UserStore].
 func (s *Store) SetUserDisplayName(ctx context.Context, id, displayName string) (store.User, error) {
-	row := s.stmtSetUserDisplayName.QueryRowContext(ctx, displayName, TimeText(time.Now().UTC()), id)
-	out, err := scanUser(row)
+	out, err := writeRow(ctx, s, "set user display name", scanUser, s.stmtSetUserDisplayName,
+		displayName, TimeText(time.Now().UTC()), id)
 	return out, mapErr(err)
 }
 

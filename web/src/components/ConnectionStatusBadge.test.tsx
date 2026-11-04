@@ -2,7 +2,8 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, act } from '@testing-library/react'
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { WebSocketProvider } from '@/ws/context'
 import ConnectionStatusBadge from './ConnectionStatusBadge'
 
@@ -59,8 +60,14 @@ afterEach(() => {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+// WebSocketProvider refreshes queries on reconnect, so it needs a QueryClient.
 function Wrapper({ children }: { children: ReactNode }) {
-  return <WebSocketProvider url="ws://test">{children}</WebSocketProvider>
+  const [queryClient] = useState(() => new QueryClient())
+  return (
+    <QueryClientProvider client={queryClient}>
+      <WebSocketProvider url="ws://test">{children}</WebSocketProvider>
+    </QueryClientProvider>
+  )
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

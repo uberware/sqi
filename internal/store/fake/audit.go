@@ -10,9 +10,12 @@ import (
 )
 
 // AppendAuditEntry inserts a new audit log entry.
-func (s *Store) AppendAuditEntry(_ context.Context, entry store.AuditEntry) error {
+func (s *Store) AppendAuditEntry(ctx context.Context, entry store.AuditEntry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return err
+	}
 
 	entry.Details = copyMap(entry.Details)
 	s.auditEntries = append(s.auditEntries, entry)

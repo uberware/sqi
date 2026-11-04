@@ -59,7 +59,7 @@ func (s *Store) AppendAuditEntry(ctx context.Context, entry store.AuditEntry) er
 	if entry.CreatedAt.IsZero() {
 		entry.CreatedAt = time.Now().UTC()
 	}
-	_, err = s.stmtInsertAudit.ExecContext(ctx,
+	_, err = s.execStmt(ctx, "append audit entry", s.stmtInsertAudit,
 		entry.ID, entry.EntityType, entry.EntityID, entry.Action, entry.Actor,
 		detailsJSON, TimeText(entry.CreatedAt))
 	return mapErr(err)

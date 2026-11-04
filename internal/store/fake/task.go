@@ -52,9 +52,12 @@ func (s *Store) ListTasks(_ context.Context, opts store.ListTasksOptions) (store
 // SetTaskUnschedulableReason implements [store.TaskStore]. A task that is no
 // longer ready is a guarded no-op returning (false, nil); only an unknown task
 // is an error.
-func (s *Store) SetTaskUnschedulableReason(_ context.Context, id, reason string) (bool, error) {
+func (s *Store) SetTaskUnschedulableReason(ctx context.Context, id, reason string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return false, err
+	}
 
 	task, ok := s.tasks[id]
 	if !ok {
@@ -110,9 +113,12 @@ func (s *Store) transitionPendingTasksWhereLocked(
 // each reclaimed task's running attempts as failed and releases the claims of
 // its closed attempts, and returns the reclaimed tasks as they are after the
 // reset (assigned_worker_id empty), matching the SQLite store's RETURNING.
-func (s *Store) ReclaimStaleAssignedTasks(_ context.Context, cutoff time.Time) ([]store.Task, error) {
+func (s *Store) ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time) ([]store.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return nil, err
+	}
 
 	// Order mirrors SQLite's: the tasks, then their attempts, then the claims.
 	// The store lock stands in for the row locks.
@@ -241,9 +247,12 @@ func (s *Store) activeTasksLocked(inScope func(store.Job) bool) int {
 // RetryTasks revives failed/canceled tasks (ready under a ready step, else
 // pending) and resets their terminal steps and the terminal job. See
 // [store.TaskStore.RetryTasks].
-func (s *Store) RetryTasks(_ context.Context, jobID string, taskIDs []string, now time.Time) ([]store.Task, error) {
+func (s *Store) RetryTasks(ctx context.Context, jobID string, taskIDs []string, now time.Time) ([]store.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return nil, err
+	}
 
 	var only map[string]struct{}
 	if taskIDs != nil {
@@ -486,7 +495,7 @@ func (s *Store) CommittedCores(_ context.Context, workerID string, fullMachineCo
 // counters so the caller's retry/park decision is stable across redeliveries.
 // Either way the attempt's active usage claims are released (invariant I3).
 func (s *Store) RecordTaskFailure(
-	_ context.Context,
+	ctx context.Context,
 	attemptID, taskID string,
 	exitCode *int,
 	sessionID, message string,
@@ -494,6 +503,9 @@ func (s *Store) RecordTaskFailure(
 ) (taskFailed, jobFailed int, firstClose bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return 0, 0, false, err
+	}
 
 	t, ok := s.tasks[taskID]
 	if !ok {
@@ -546,9 +558,12 @@ func (s *Store) RecordTaskFailure(
 // Guarded to assigned/running and to attemptID being the task's latest attempt
 // (open or already closed, as SQLite's); anything else (including a missing
 // task) is a legitimate no-op reported as false.
-func (s *Store) RequeueTaskForRetry(_ context.Context, taskID, attemptID string, retryAfter, now time.Time) (bool, error) {
+func (s *Store) RequeueTaskForRetry(ctx context.Context, taskID, attemptID string, retryAfter, now time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return false, err
+	}
 
 	t, ok := s.tasks[taskID]
 	if !ok || !inFlightTask(t.Status) || !s.isLatestAttemptLocked(taskID, attemptID) {

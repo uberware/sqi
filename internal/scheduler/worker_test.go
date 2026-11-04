@@ -3,10 +3,13 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,10 +23,299 @@ import (
 
 func registerMsg(t *testing.T, workerID, instance string) *fakeJSMsg {
 	t.Helper()
-	return &fakeJSMsg{subject: bus.WorkerRegisterSubject(workerID), data: workerMsgJSON(t, protocol.RegisterMsg{
-		Version: protocol.ProtocolVersion, Type: protocol.TypeRegister,
-		WorkerID: workerID, FarmID: "farm-1", Hostname: "node-stale", InstanceID: instance,
-	})}
+	return registerMsgStamped(t, workerID, instance, time.Time{})
+}
+
+// registerMsgStamped is registerMsg as the broker delivered it: stamp is the
+// JetStream timestamp of the message (zero for none).
+func registerMsgStamped(t *testing.T, workerID, instance string, stamp time.Time) *fakeJSMsg {
+	t.Helper()
+	return &fakeJSMsg{
+		subject: bus.WorkerRegisterSubject(workerID), stamp: stamp,
+		data: workerMsgJSON(t, protocol.RegisterMsg{
+			Version: protocol.ProtocolVersion, Type: protocol.TypeRegister,
+			WorkerID: workerID, FarmID: "farm-1", Hostname: "node-stale", InstanceID: instance,
+		}),
+	}
+}
+
+// TestHandleRegister_StaleRegistrationAckedNotReclaimed pins the scheduler side
+// of registration ordering: a registration the broker stamped earlier than the
+// recorded one (a late redelivery of an older process's message) is acked
+// (never Nak'd, since redelivery cannot make it current), logged with both
+// stamps, and neither rolls the instance back nor reclaims the live process's
+// task, nor announces a worker event; the live process's next registration then
+// still reclaims nothing.
+func TestHandleRegister_StaleRegistrationAckedNotReclaimed(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			workerID, taskID, _ := seedStaleWorkerWithTask(t, st, 0)
+			var logs bytes.Buffer
+			s := newMetricsScheduler(st, &recordBus{}, "")
+			s.logger = slog.New(slog.NewTextHandler(&logs, nil))
+			s.ctx = t.Context()
+			rec := &workerRecordingNotifier{}
+			s.notifier = rec
+
+			older := time.Now().UTC().Add(-time.Hour)
+			newer := time.Now().UTC()
+			// B is the live process, with a task in flight.
+			s.handleWorkerMessage(registerMsgStamped(t, workerID, "B", newer))
+			if got := mustTaskOf(t, st, taskID).Status; got != store.TaskStatusRunning {
+				t.Fatalf("setup: task = %q after B registered, want running", got)
+			}
+			events := len(rec.workers)
+			logs.Reset()
+
+			late := registerMsgStamped(t, workerID, "A", older)
+			s.handleWorkerMessage(late)
+
+			if !late.acked || late.nacked {
+				t.Fatalf("stale registration acked=%v nacked=%v, want acked and not nacked", late.acked, late.nacked)
+			}
+			if got, err := st.GetWorker(t.Context(), workerID); err != nil || got.InstanceID != "B" {
+				t.Fatalf("stored worker = (%q, %v), want instance B (not rolled back)", got.InstanceID, err)
+			}
+			if got := mustTaskOf(t, st, taskID).Status; got != store.TaskStatusRunning {
+				t.Fatalf("task = %q after the stale registration, want still running", got)
+			}
+			if len(rec.workers) != events {
+				t.Fatalf("a stale registration announced a worker event: %+v", rec.workers[events:])
+			}
+			out := logs.String()
+			for _, want := range []string{
+				"level=INFO", "scheduler: stale registration — discarding", workerID,
+				"instance_id=A", "stored_instance_id=B", "broker_at=", "stored_broker_at=",
+				older.Format("2006-01-02T15:04:05"), newer.Format("2006-01-02T15:04:05"),
+			} {
+				if !strings.Contains(out, want) {
+					t.Errorf("log missing %q:\n%s", want, out)
+				}
+			}
+			if strings.Contains(out, "reclaim") {
+				t.Errorf("a stale registration logged a reclaim:\n%s", out)
+			}
+
+			// B's reconnect registration reclaims nothing.
+			b := registerMsgStamped(t, workerID, "B", newer.Add(time.Second))
+			logs.Reset()
+			s.handleWorkerMessage(b)
+			if !b.acked || strings.Contains(logs.String(), "reclaim") {
+				t.Fatalf("B re-register acked=%v, log:\n%s", b.acked, logs.String())
+			}
+			if got := mustTaskOf(t, st, taskID).Status; got != store.TaskStatusRunning {
+				t.Fatalf("task = %q after B's re-register, want still running", got)
+			}
+		})
+	}
+}
+
+// TestHandleRegister_UnknownStartTimeFieldIgnored pins that a registration's
+// payload cannot order it: a field the protocol does not define (here
+// instance_started_at, a worker start time in 1970) is ignored when the message
+// is decoded, so the restarted process is accepted because the broker stamped
+// its message later, and its predecessor's tasks are reclaimed as for any
+// restart.
+func TestHandleRegister_UnknownStartTimeFieldIgnored(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			workerID, taskID, _ := seedStaleWorkerWithTask(t, st, 0)
+			s := newMetricsScheduler(st, &recordBus{}, "")
+			s.ctx = t.Context()
+
+			t1 := time.Now().UTC().Add(-time.Minute)
+			s.handleWorkerMessage(registerMsgStamped(t, workerID, "B", t1))
+			if got := mustTaskOf(t, st, taskID).Status; got != store.TaskStatusRunning {
+				t.Fatalf("setup: task = %q, want running", got)
+			}
+
+			var payload map[string]any
+			if err := json.Unmarshal(registerMsg(t, workerID, "C").data, &payload); err != nil {
+				t.Fatal(err)
+			}
+			payload["instance_started_at"] = "1970-01-01T00:00:00Z"
+			raw, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			restart := &fakeJSMsg{subject: bus.WorkerRegisterSubject(workerID), data: raw, stamp: t1.Add(time.Minute)}
+			s.handleWorkerMessage(restart)
+
+			if !restart.acked {
+				t.Fatal("the skewed process's registration was not acked")
+			}
+			if got, err := st.GetWorker(t.Context(), workerID); err != nil || got.InstanceID != "C" {
+				t.Fatalf("stored worker = (%q, %v), want the later-stamped instance C", got.InstanceID, err)
+			}
+			if got := mustTaskOf(t, st, taskID).Status; got != store.TaskStatusReady {
+				t.Fatalf("task = %q after the restart, want ready (reclaimed)", got)
+			}
+		})
+	}
+}
+
+// heartbeatMsgStamped is workerID's heartbeat, timed at by the worker's clock,
+// as the broker delivered it: stamp is the JetStream timestamp of the message
+// (zero for none).
+func heartbeatMsgStamped(t *testing.T, workerID string, at, stamp time.Time) *fakeJSMsg {
+	t.Helper()
+	return &fakeJSMsg{
+		subject: bus.WorkerHeartbeatSubject(workerID), stamp: stamp,
+		data: workerMsgJSON(t, protocol.HeartbeatMsg{
+			Version: protocol.ProtocolVersion, Type: protocol.TypeHeartbeat, WorkerID: workerID, At: at,
+		}),
+	}
+}
+
+// TestHandleHeartbeat_OrderedByBrokerStampNotWorkerClock pins that heartbeats
+// are ordered and timed by the broker's stream timestamp, not the worker's: a
+// heartbeat whose worker time is ten minutes earlier but whose broker stamp is
+// later is recorded at its broker stamp, while a late redelivery the broker
+// stamped earlier is acked and ignored, though its own timestamp is the newest
+// of the three.
+func TestHandleHeartbeat_OrderedByBrokerStampNotWorkerClock(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			workerID, _, _ := seedStaleWorkerWithTask(t, st, 0)
+			s := newMetricsScheduler(st, &recordBus{}, "")
+			s.ctx = t.Context()
+			stamp := time.Now().UTC()
+			first := heartbeatMsgStamped(t, workerID, stamp, stamp)
+			s.handleWorkerMessage(first)
+
+			stepped := stamp.Add(-10 * time.Minute)
+			back := heartbeatMsgStamped(t, workerID, stepped, stamp.Add(time.Second))
+			s.handleWorkerMessage(back)
+			late := heartbeatMsgStamped(t, workerID, stamp.Add(time.Hour), stamp.Add(-time.Second))
+			s.handleWorkerMessage(late)
+
+			for _, m := range []*fakeJSMsg{first, back, late} {
+				if !m.acked || m.nacked {
+					t.Fatalf("heartbeat acked=%v nacked=%v, want acked", m.acked, m.nacked)
+				}
+			}
+			got, err := st.GetWorker(t.Context(), workerID)
+			if want := stamp.Add(time.Second); err != nil || got.LastHeartbeatAt == nil || !got.LastHeartbeatAt.Equal(want) {
+				t.Fatalf("GetWorker = (last heartbeat %v, %v), want the broker stamp %v, not the worker's %v",
+					got.LastHeartbeatAt, err, want, stepped)
+			}
+			if want := stamp.Add(time.Second); got.HeartbeatBrokerAt == nil || !got.HeartbeatBrokerAt.Equal(want) {
+				t.Fatalf("HeartbeatBrokerAt = %v, want %v", got.HeartbeatBrokerAt, want)
+			}
+		})
+	}
+}
+
+// TestHandleHeartbeat_NoBrokerMetadataRecordedUnordered pins the fallback: a
+// heartbeat whose metadata cannot be read, or carries no timestamp, is recorded
+// unordered at the server's receipt time (never the worker's), keeps the
+// recorded stamp, and says so at Debug.
+func TestHandleHeartbeat_NoBrokerMetadataRecordedUnordered(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			workerID, _, _ := seedStaleWorkerWithTask(t, st, 0)
+			var logs bytes.Buffer
+			s := newMetricsScheduler(st, &recordBus{}, "")
+			s.logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			s.ctx = t.Context()
+			stamp := time.Now().UTC()
+			s.handleWorkerMessage(heartbeatMsgStamped(t, workerID, stamp, stamp))
+
+			noTime := heartbeatMsgStamped(t, workerID, stamp.Add(-time.Minute), time.Time{})
+			s.handleWorkerMessage(noTime)
+			broken := heartbeatMsgStamped(t, workerID, stamp.Add(-2*time.Minute), time.Time{})
+			broken.metaErr = errors.New("no metadata")
+			before := time.Now().UTC()
+			s.handleWorkerMessage(broken)
+			after := time.Now().UTC()
+
+			for _, m := range []*fakeJSMsg{noTime, broken} {
+				if !m.acked || m.nacked {
+					t.Fatalf("unordered heartbeat acked=%v nacked=%v, want acked", m.acked, m.nacked)
+				}
+			}
+			got, err := st.GetWorker(t.Context(), workerID)
+			if err != nil || got.LastHeartbeatAt == nil || got.LastHeartbeatAt.Before(before) || got.LastHeartbeatAt.After(after) {
+				t.Fatalf("GetWorker = (last heartbeat %v, %v), want the receipt time in [%v, %v]",
+					got.LastHeartbeatAt, err, before, after)
+			}
+			if got.HeartbeatBrokerAt == nil || !got.HeartbeatBrokerAt.Equal(stamp) {
+				t.Fatalf("HeartbeatBrokerAt = %v, want the earlier stamp %v kept", got.HeartbeatBrokerAt, stamp)
+			}
+			if out := logs.String(); !strings.Contains(out, "worker.heartbeat message has no broker metadata") {
+				t.Errorf("no Debug line for the unreadable metadata:\n%s", out)
+			}
+		})
+	}
+}
+
+// TestHandleHeartbeat_WorkerClockBehindStaysOnline pins that liveness does not
+// depend on the worker's clock: a worker whose clock runs ten minutes behind,
+// far past the heartbeat timeout, stays online through a sweep and keeps its
+// running task, whether the heartbeat carries a broker stamp or not.
+func TestHandleHeartbeat_WorkerClockBehindStaysOnline(t *testing.T) {
+	for _, stamped := range []bool{true, false} {
+		for name, st := range raceBackends(t) {
+			t.Run(fmt.Sprintf("%s/stamped=%v", name, stamped), func(t *testing.T) {
+				workerID, taskID, _ := seedStaleWorkerWithTask(t, st, time.Hour)
+				s := newMetricsScheduler(st, &recordBus{}, "farm-1")
+				s.ctx = t.Context()
+				now := time.Now().UTC()
+				var stamp time.Time
+				if stamped {
+					stamp = now
+				}
+				hb := heartbeatMsgStamped(t, workerID, now.Add(-10*time.Minute), stamp)
+				s.handleWorkerMessage(hb)
+				if !hb.acked {
+					t.Fatalf("heartbeat acked=%v nacked=%v, want acked", hb.acked, hb.nacked)
+				}
+
+				s.sweepStaleWorkers(t.Context())
+
+				if got := workerStatus(t, st, workerID); got != store.WorkerStatusOnline {
+					t.Errorf("worker status = %q, want online: its heartbeat just arrived", got)
+				}
+				if got := taskStatus(t, st, taskID); got != store.TaskStatusRunning {
+					t.Errorf("task status = %q, want running (not reclaimed)", got)
+				}
+			})
+		}
+	}
+}
+
+// TestHandleRegister_NoBrokerMetadataAppliesUnordered pins the fallback: a
+// message whose metadata cannot be read, or carries no timestamp, is applied
+// unordered, and records no stamp.
+func TestHandleRegister_NoBrokerMetadataAppliesUnordered(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			workerID, _, _ := seedStaleWorkerWithTask(t, st, 0) // gives the worker a farm to join
+			s := newMetricsScheduler(st, &recordBus{}, "")
+			s.ctx = t.Context()
+			stamped := time.Now().UTC()
+			s.handleWorkerMessage(registerMsgStamped(t, workerID, "A", stamped))
+
+			noTime := registerMsg(t, workerID, "B") // zero timestamp
+			s.handleWorkerMessage(noTime)
+			broken := registerMsg(t, workerID, "C")
+			broken.metaErr = errors.New("no metadata")
+			s.handleWorkerMessage(broken)
+
+			for _, m := range []*fakeJSMsg{noTime, broken} {
+				if !m.acked || m.nacked {
+					t.Fatalf("unordered registration acked=%v nacked=%v, want acked", m.acked, m.nacked)
+				}
+			}
+			got, err := st.GetWorker(t.Context(), workerID)
+			if err != nil || got.InstanceID != "C" {
+				t.Fatalf("stored worker = (%q, %v), want instance C", got.InstanceID, err)
+			}
+			if got.RegistrationBrokerAt == nil || !got.RegistrationBrokerAt.Equal(stamped) {
+				t.Fatalf("RegistrationBrokerAt = %v, want the earlier stamp %v kept", got.RegistrationBrokerAt, stamped)
+			}
+		})
+	}
 }
 
 // TestRestartedWorkerHasItsTasksReclaimed pins end to end that a worker that
@@ -366,6 +658,39 @@ func TestDisabledWorkerGetsNoWork(t *testing.T) {
 	}
 	if len(attempts) != 0 {
 		t.Fatalf("task has %d attempts after the refused lease, want 0", len(attempts))
+	}
+}
+
+// TestLeaseRequestWithNoWorkLogsItsPark pins the Debug line a lease request
+// that finds nothing to lease logs as it parks, naming the worker and the
+// queue: the one positive sign, from outside the process, that a worker's
+// request is outstanding. A request that is leased work parks nothing and logs
+// nothing.
+func TestLeaseRequestWithNoWorkLogsItsPark(t *testing.T) {
+	st := newCheckedFake(t)
+	var logs lockedBuffer
+	s := newMetricsScheduler(st, &recordBus{}, "f1")
+	s.logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	s.ctx = t.Context()
+	s.leaseHoldTimeout = 50 * time.Millisecond
+	one := 1
+	w, ids := seedLeaseFixture(t, st, []*int{&one})
+
+	const parked = "scheduler: no work for the lease request; parking it"
+	if got, _ := leaseAs(t, s, w.ID, ""); len(got) != 1 || got[0] != ids[0] {
+		t.Fatalf("assignments = %v, want %v", got, ids)
+	}
+	if strings.Contains(logs.String(), parked) {
+		t.Fatalf("a request that was leased work logged a park:\n%s", logs.String())
+	}
+	if got, _ := leaseAs(t, s, w.ID, ""); len(got) != 0 {
+		t.Fatalf("assignments = %v, want none", got)
+	}
+	out := logs.String()
+	for _, want := range []string{"level=DEBUG", parked, "worker_id=" + w.ID, "queue_id=q1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log missing %q:\n%s", want, out)
+		}
 	}
 }
 

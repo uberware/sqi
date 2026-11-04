@@ -117,6 +117,11 @@ func (s *Scheduler) handleTaskStatusMessage(msg jetstream.Msg) {
 	}
 
 	if err := s.processTaskStatus(ctx, subjectWorkerID, m); err != nil {
+		// Fenced: another server leads now. The message is left
+		// unacknowledged, for JetStream to redeliver to it.
+		if s.stopIfFenced(ctx, err) {
+			return
+		}
 		// An illegal transition is permanent: the task has moved on (retried,
 		// canceled, already terminal) and this message describes a past state.
 		// Redelivering cannot make it legal, so discard it rather than Nak into
@@ -274,6 +279,9 @@ func (s *Scheduler) handleTaskRunning(ctx context.Context, attempt store.TaskAtt
 func (s *Scheduler) maybePromoteJobRunning(ctx context.Context, jobID string) {
 	now := time.Now().UTC()
 	promoted, err := s.store.PromoteJobRunning(ctx, jobID, now)
+	if s.stopIfFenced(ctx, err) {
+		return // recorded: the report is not acknowledged
+	}
 	if err != nil {
 		s.logger.WarnContext(
 			ctx, "scheduler: promote job running failed",
@@ -520,8 +528,13 @@ func (s *Scheduler) checkJobCompletion(ctx context.Context, jobID string) error 
 
 	// Release or cancel any jobs blocked on this one now that it is terminal.
 	// Non-fatal: the periodic sweep is the backstop, so a failure here must not
-	// block completion of the upstream job itself.
-	if err := s.ReconcileDependents(ctx, jobID); err != nil {
+	// block completion of the upstream job itself. A fenced one is returned:
+	// the report must not be acknowledged, so the new leader replays it.
+	err = s.ReconcileDependents(ctx, jobID)
+	if errors.Is(err, store.ErrFenced) {
+		return err
+	}
+	if err != nil {
 		s.logger.ErrorContext(ctx, "scheduler: reconcile dependents after completion failed",
 			slog.String("job_id", jobID), slog.Any("error", err))
 	}

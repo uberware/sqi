@@ -28,9 +28,12 @@ import (
 //   - a request naming one pool twice sees its own first claim, so it is
 //     PoolFull when that fills the pool, and ErrConflict otherwise (SQLite's
 //     unique (task_attempt_id, pool_id) index).
-func (s *Store) LeaseTask(_ context.Context, req store.LeaseRequest) (store.LeaseResult, error) {
+func (s *Store) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.LeaseResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.LeaseResult{}, err
+	}
 
 	t, ok := s.tasks[req.TaskID]
 	if !ok || !s.leasableLocked(t, req) {

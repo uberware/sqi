@@ -37,7 +37,12 @@ type Store struct {
 	w *dbPool
 	// r is the read pool, so a SELECT does not queue behind a long write. Its
 	// raw pool may alias w's (an in-memory SQLite database has only one pool).
-	r     *dbPool
+	r *dbPool
+	// lease is the pool the leadership methods use, so a lease renewal is not
+	// queued behind other writes; nil means they share the write pool
+	// ([WithLeasePool]).
+	lease *dbPool
+
 	stmts []*dbStmt // all prepared statements; closed by Close
 
 	// retries counts transaction re-runs after an ErrClassRetry error.
@@ -50,6 +55,11 @@ type Store struct {
 	// taskInsertBatch is how many tasks CreateJobSubmission inserts per
 	// statement; below 2 it inserts them one row per statement ([WithTaskInsertBatch]).
 	taskInsertBatch int
+
+	// fenceCheckSQL is the fence check in this dialect ([Store.checkFence]).
+	fenceCheckSQL string
+	// leaseSQL is the leadership statements in this dialect.
+	leaseSQL leaseStatements
 
 	// ── farms ────────────────────────────────────────────────────────────
 	stmtInsertFarm *dbStmt
@@ -204,6 +214,14 @@ func WithTaskInsertBatch(rows int) Option {
 // (32766) refuse a statement with more parameters than their limit.
 const maxTaskInsertBatch = 2000
 
+// WithLeasePool gives the leadership methods (the lease and the server
+// membership) a pool of their own, which the store owns and Close closes. A
+// lease renewal then waits for no other write, however many hold the write
+// pool's connections. Without it they share the write pool.
+func WithLeasePool(db *sql.DB) Option {
+	return func(s *Store) { s.lease = newDBPool(db, s.d) }
+}
+
 // WithLogger sets the logger retry diagnostics go to.
 func WithLogger(l *slog.Logger) Option { return func(s *Store) { s.log = l } }
 
@@ -226,6 +244,8 @@ func New(ctx context.Context, write, read *sql.DB, d Dialect, opts ...Option) (*
 	if s.log == nil {
 		s.log = slog.Default()
 	}
+	s.fenceCheckSQL = sqlCheckFence + s.d.ForShare()
+	s.leaseSQL = newLeaseStatements(s.d)
 	if err := s.prepareAll(ctx); err != nil {
 		_ = s.Close()
 		return nil, err
@@ -238,7 +258,7 @@ func New(ctx context.Context, write, read *sql.DB, d Dialect, opts ...Option) (*
 func (s *Store) Close() error {
 	var errs []error
 	for _, stmt := range s.stmts {
-		if err := stmt.Close(); err != nil {
+		if err := stmt.st.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -246,6 +266,11 @@ func (s *Store) Close() error {
 	// twice would error.
 	if s.r.db != nil && s.r.db != s.w.db {
 		if err := s.r.db.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if s.lease != nil {
+		if err := s.lease.db.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -330,7 +355,7 @@ func (s *Store) prepare(ctx context.Context, query string) (*dbStmt, error) {
 		}
 		return nil, fmt.Errorf("store: prepare %q: %w", preview, err)
 	}
-	ds := &dbStmt{st: stmt, d: s.d}
+	ds := &dbStmt{st: stmt, d: s.d, shared: true}
 	s.stmts = append(s.stmts, ds)
 	return ds, nil
 }

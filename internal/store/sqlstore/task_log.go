@@ -36,13 +36,13 @@ func (s *Store) CreateTaskLog(ctx context.Context, log store.TaskLog) (store.Tas
 	at, now := TimeText(log.At), TimeText(time.Now().UTC())
 	// RETURNING only the id: the row is the input plus received_at, and
 	// echoing data back would send every chunk's payload over the wire twice.
-	err := s.stmtInsertTaskLog.QueryRowContext(
-		ctx,
+	id, err := writeRow(
+		ctx, s, "create task log", scanTaskLogID, s.stmtInsertTaskLog,
 		log.ID, log.TaskID, log.AttemptID,
 		log.SeqNum, log.NATSSeq,
 		at, now,
 		string(log.Stream), log.Data,
-	).Scan(&log.ID)
+	)
 	if errors.Is(err, sql.ErrNoRows) {
 		// ON CONFLICT DO NOTHING returns no row: this chunk is already stored.
 		return store.TaskLog{}, store.ErrConflict
@@ -50,8 +50,16 @@ func (s *Store) CreateTaskLog(ctx context.Context, log store.TaskLog) (store.Tas
 	if err != nil {
 		return store.TaskLog{}, mapErr(err)
 	}
+	log.ID = id
 	log.At, log.ReceivedAt = mustTime(at), mustTime(now)
 	return log, nil
+}
+
+// scanTaskLogID reads the id the task log insert returns.
+func scanTaskLogID(row scanner) (string, error) {
+	var id string
+	err := row.Scan(&id)
+	return id, err
 }
 
 // ListTaskLogs implements [store.TaskLogStore].

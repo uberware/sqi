@@ -195,7 +195,10 @@ var (
 // addedAfter00037 are timestamp columns of tables a later migration creates.
 // They are written fixed-width from their first row, so 00037 has nothing to
 // rewrite in them.
-var addedAfter00037 = []string{"broker_state.recorded_at"}
+var addedAfter00037 = []string{
+	"broker_state.recorded_at", "server_members.started_at", "workers.registration_broker_at",
+	"workers.heartbeat_broker_at",
+}
 
 // TestMigration00037_CoversEveryTimestampColumn fails, by name, on a timestamp
 // column the schema has and 00037 does not rewrite, or one 00037 rewrites that

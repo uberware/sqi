@@ -99,5 +99,14 @@ func RestoreLockGuard(l *RestoreLock) *Guard { return l.guard }
 
 // AcquireGuard is acquireGuard as a server takes it, reconciling the bucket.
 func AcquireGuard(ctx context.Context, js jetstream.JetStream, replicas int, h GuardHolder, logger *slog.Logger) (*Guard, error) {
-	return acquireGuard(ctx, js, replicas, h, logger, true)
+	return acquireGuard(ctx, js, replicas, h, logger, true, GuardOptions{})
 }
+
+// AcquireGuardWith is AcquireGuard with opts.
+func AcquireGuardWith(ctx context.Context, js jetstream.JetStream, replicas int, h GuardHolder, logger *slog.Logger, opts GuardOptions) (*Guard, error) {
+	return acquireGuard(ctx, js, replicas, h, logger, true, opts)
+}
+
+// GrantsFingerprintOf is [GrantsFingerprint] over the grants perms returns,
+// so a test can show the fingerprint follows them.
+var GrantsFingerprintOf = grantsFingerprint

@@ -413,6 +413,18 @@ NATS_IMAGE         ?= $(NATS_IMAGE_CURRENT)
 test-nats-cluster: ## Run the external-broker tests against a real 3-node NATS cluster in Docker (NATS_IMAGE=..)
 	NATS_IMAGE='$(NATS_IMAGE)' TEST_FLAGS='$(TEST_FLAGS)' bash scripts/test-nats-cluster.sh
 
+# Scheduler high availability end to end: a group of real sqi-server binaries
+# with ha.enabled on one PostgreSQL container and the three-node NATS cluster
+# above, a real sqi-worker, and the failures the HA design must survive
+# (crash, freeze, graceful stop, lost broker, lost database, wrong database):
+# scripts/test-ha.sh. Runs on NATS_IMAGE (the current image by default).
+#
+# Exits 0 when Docker is unavailable, and every test skips without the rig, so
+# a local run has passed only when it prints nine `--- PASS: TestHA_` lines.
+.PHONY: test-ha
+test-ha: ## Run the high-availability tests: real servers on PostgreSQL and a 3-node NATS cluster in Docker
+	NATS_IMAGE='$(NATS_IMAGE)' TEST_FLAGS='$(TEST_FLAGS)' bash scripts/test-ha.sh
+
 .PHONY: test-discovery
 test-discovery: ## Run the mDNS discovery tests over real multicast (fails rather than skips if multicast is unavailable)
 	@echo "note: advertisements are restricted to loopback, so nothing is announced"

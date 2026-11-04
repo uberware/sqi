@@ -125,15 +125,17 @@ func (h *handler) drain(done <-chan error, r <-chan svc.ChangeRequest, s chan<- 
 }
 
 // finish records fn's result and maps it to Execute's exit codes: nil exits 0;
-// an error is traced (see trace) and exits with a service-specific code of 1,
-// so the SCM (and its recovery actions) see a failure.
+// an error is traced (see trace) and exits with a service-specific code,
+// [ExitCode]'s (1 unless the error names its own, as a demoted HA server's
+// 75 does), so the SCM (and its recovery actions) see a failure, and alerting
+// can tell a demotion from a crash.
 func (h *handler) finish(name string, err error) (specific bool, code uint32) {
 	h.err = err
 	if err == nil {
 		return false, 0
 	}
 	h.trace(name, err)
-	return true, 1
+	return true, uint32(ExitCode(err)) //nolint:gosec // ExitCode returns 1 or a small positive code
 }
 
 // trace appends err to the default log path. When that fails — its directory

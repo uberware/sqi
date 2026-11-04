@@ -683,3 +683,35 @@ export interface SubmitJobInput {
   /** IDs of upstream jobs this job waits for (whole-job, same farm). */
   dependsOn?: string[]
 }
+
+// ── Servers (high availability) ───────────────────────────────────────────────
+
+/** A server's place in its high-availability group. */
+export type ServerRole = 'leader' | 'standby' | 'missing'
+
+/** One sqi-server in the farm's high-availability group (mirrors OpenAPI `ServerMember`). */
+export interface ServerMember {
+  /** Identifies this run of the server; a restart is a new instance. */
+  instance_id: string
+  name: string
+  host: string
+  pid: number
+  version: string
+  role: ServerRole
+  /** RFC 3339 timestamp. */
+  started_at: string
+  /** Seconds since the server last refreshed its membership row, on the database's clock. */
+  last_seen_seconds_ago: number
+  /** Whether the server reached its message broker within `ha.lease_ttl`. */
+  broker_ok: boolean
+}
+
+/** Response of GET /servers (mirrors OpenAPI `ServersResponse`). */
+export interface ServersResponse {
+  /** Whether this farm runs a high-availability group. */
+  ha: boolean
+  /** The current leadership epoch; 0 without HA. */
+  epoch: number
+  /** Leader first, then by name. */
+  servers: ServerMember[]
+}

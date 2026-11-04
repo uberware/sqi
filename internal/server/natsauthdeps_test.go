@@ -127,3 +127,26 @@ func TestNATSAuthDeps_EndToEnd_EnrollRouteAbsentAtDefaults(t *testing.T) {
 		t.Fatal("test assumption broken: GET /api/v1/workers/{id} is not registered")
 	}
 }
+
+// TestAPIDeps_CarriesSessionAndBrokerSettings: both paths that build the API,
+// start and an HA standby's buildStandbyAPI, take the session cookie and
+// broker-auth settings from apiDeps, so neither can drop one.
+func TestAPIDeps_CarriesSessionAndBrokerSettings(t *testing.T) {
+	cfg := Config{
+		AuthSessionTTL:   3 * time.Hour,
+		AuthCookieName:   "sqi_test",
+		AuthCookieSecure: "true",
+		NATS: config.NATSConfig{Auth: config.NATSAuthConfig{
+			Enabled: true, EnrollmentEndpointEnabled: true, JoinTokenTTL: 9 * time.Minute, JoinTokenSingleUse: true,
+		}},
+	}
+	s := &Server{cfg: cfg, store: fake.New()}
+	deps := s.apiDeps()
+	if deps.SessionTTL != 3*time.Hour || deps.CookieName != "sqi_test" || deps.CookieSecure != "true" {
+		t.Errorf("session settings = (%s, %q, %q), want (3h, sqi_test, true)", deps.SessionTTL, deps.CookieName, deps.CookieSecure)
+	}
+	if !deps.NATSAuthEnabled || !deps.NATSAuthEnrollmentEndpointEnabled || deps.JoinTokenTTL != 9*time.Minute || !deps.JoinTokenSingleUse {
+		t.Errorf("broker-auth settings = (%v, %v, %s, %v), want all set", deps.NATSAuthEnabled,
+			deps.NATSAuthEnrollmentEndpointEnabled, deps.JoinTokenTTL, deps.JoinTokenSingleUse)
+	}
+}

@@ -28,6 +28,6 @@ func (s *Store) GetBrokerIdentity(ctx context.Context) (string, error) {
 
 // SetBrokerIdentity implements [store.BrokerStateStore].
 func (s *Store) SetBrokerIdentity(ctx context.Context, identity string, at time.Time) error {
-	_, err := s.stmtSetBrokerIdentity.ExecContext(ctx, identity, TimeText(at))
+	_, err := s.execStmt(ctx, "set broker identity", s.stmtSetBrokerIdentity, identity, TimeText(at))
 	return mapErr(err)
 }

@@ -244,6 +244,16 @@ type Config struct {
 	// default no-config path must do no extra store work — see
 	// handleWorkerRegister.
 	NATSAuthEnabled bool
+
+	// OnFenced is called once, with the error, the first time a store write
+	// made under the context [Scheduler.Run] was given fails with
+	// [store.ErrFenced]: another server has taken the leadership, so this one
+	// must stop. It runs on a goroutine of its own and may call
+	// [Scheduler.Stop] and wait for Run to return. By then the scheduler has
+	// already stopped acknowledging messages and leasing tasks (see
+	// fence.go). Nil means the loss is only logged. Not a tuning knob; the
+	// server wires it when scheduler high availability is on.
+	OnFenced func(error)
 }
 
 // busClient is the subset of [bus.Client] used by the Scheduler. Defined as
@@ -356,13 +366,24 @@ type Scheduler struct {
 	// when Config.ReconcileGrace is 0 (reconciliation disabled).
 	reconciler *reconciler
 
-	// startedAt is when [Run] started; reconciliation holds off for the first
-	// ReconcileGrace after it, while live heartbeats rebuild the reconciler.
+	// startedAt is when [Run] started, which under HA is when this server
+	// became the leader. Reconciliation holds off for the first ReconcileGrace
+	// after it, while live heartbeats rebuild the reconciler, and the liveness
+	// sweeps count their bus grace from it when the bus came up earlier (see
+	// [Scheduler.livenessDeferred]).
 	startedAt time.Time
 
 	// deferLog remembers which liveness deferral was last logged, so each is
 	// logged once rather than on every sweep tick.
 	deferLog deferralLog
+
+	// fence records a fenced store write; see fence.go.
+	fence fenceState
+
+	// diagMu guards diagStarted, which is set once the worker.diag
+	// subscription is running, by [Scheduler.StartDiag] or by Run.
+	diagMu      sync.Mutex
+	diagStarted bool
 }
 
 // deferralLog is the state behind [Scheduler.logLivenessDeferred].
@@ -459,6 +480,11 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 
 // Run starts all scheduler goroutines and blocks until ctx is canceled.
 // It returns after all goroutines have exited cleanly.
+//
+// ctx is the context every handler, sweep and lease writes under. Under
+// scheduler high availability it carries the leader's epoch
+// ([store.WithLeaderEpoch]), so a write made after another server took over
+// fails with [store.ErrFenced] (see fence.go).
 func (s *Scheduler) Run(ctx context.Context) error {
 	s.startedAt = time.Now().UTC()
 	ctx, cancel := context.WithCancel(ctx)
@@ -511,12 +537,9 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	// ── Worker diagnostic-log subscriber ─────────────────────────
 	// A core-NATS subscriber on worker.diag.> decodes worker diagnostic
 	// records into the in-memory ring buffer. No-op when diagnostics are
-	// disabled (diagBuf nil).
-	if err := s.startDiagConsumer(); err != nil {
-		return fmt.Errorf("scheduler: start diagnostic-log consumer: %w", err)
-	}
-	if s.diagBuf != nil {
-		s.logger.InfoContext(ctx, "scheduler: diagnostic-log consumer started")
+	// disabled (diagBuf nil), or when StartDiag already started it.
+	if err := s.startDiag(ctx); err != nil {
+		return err
 	}
 
 	// ── Stuck-step repair ─────────────────────────────────────────
@@ -555,8 +578,11 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	s.logger.InfoContext(ctx, "scheduler: shutdown signaled — draining goroutines")
 
 	// Unsubscribe the core-NATS diagnostic-log subscriber if active.
-	if s.diagSub != nil {
-		if err := s.diagSub.Unsubscribe(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
+	s.diagMu.Lock()
+	diagSub := s.diagSub
+	s.diagMu.Unlock()
+	if diagSub != nil {
+		if err := diagSub.Unsubscribe(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
 			s.logger.WarnContext(ctx, "scheduler: diagnostic-log unsubscribe failed", slog.Any("error", err))
 		}
 	}
@@ -622,10 +648,13 @@ func (s *Scheduler) reconcileStuckSteps(ctx context.Context) {
 		return
 	}
 	for _, step := range steps {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || s.deposed() {
 			return // shutting down: whatever is left is picked up by the next start
 		}
 		if err := s.checkStepCompletion(ctx, step.ID, step.JobID); err != nil {
+			if s.stopIfFenced(ctx, err) {
+				return
+			}
 			if !errors.Is(err, context.Canceled) {
 				s.logger.WarnContext(ctx, "scheduler: reconcile stuck step failed",
 					slog.String("step_id", step.ID), slog.String("job_id", step.JobID), slog.Any("error", err))
@@ -655,7 +684,7 @@ func (s *Scheduler) reconcilePendingSteps(ctx context.Context) {
 		return
 	}
 	for _, jobID := range ids {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || s.deposed() {
 			return // shutting down: whatever is left is picked up by the next start
 		}
 		s.reconcilePendingJob(ctx, jobID)
@@ -670,13 +699,17 @@ func (s *Scheduler) reconcilePendingSteps(ctx context.Context) {
 // releasable, cancel what never can be".
 func (s *Scheduler) reconcilePendingJob(ctx context.Context, jobID string) {
 	if err := s.propagateStepDependencies(ctx, jobID, store.StepStatusCompleted); err != nil {
-		s.logger.WarnContext(ctx, "scheduler: reconcile pending steps: release failed",
-			slog.String("job_id", jobID), slog.Any("error", err))
+		if !s.stopIfFenced(ctx, err) {
+			s.logger.WarnContext(ctx, "scheduler: reconcile pending steps: release failed",
+				slog.String("job_id", jobID), slog.Any("error", err))
+		}
 		return
 	}
 	if err := s.propagateStepDependencies(ctx, jobID, store.StepStatusFailed); err != nil {
-		s.logger.WarnContext(ctx, "scheduler: reconcile pending steps: cascade failed",
-			slog.String("job_id", jobID), slog.Any("error", err))
+		if !s.stopIfFenced(ctx, err) {
+			s.logger.WarnContext(ctx, "scheduler: reconcile pending steps: cascade failed",
+				slog.String("job_id", jobID), slog.Any("error", err))
+		}
 		return
 	}
 	// Only a cascade can leave a job with every step terminal here, and
@@ -691,7 +724,7 @@ func (s *Scheduler) reconcilePendingJob(ctx context.Context, jobID string) {
 	if open {
 		return
 	}
-	if err := s.checkJobCompletion(ctx, jobID); err != nil {
+	if err := s.checkJobCompletion(ctx, jobID); err != nil && !s.stopIfFenced(ctx, err) {
 		s.logger.WarnContext(ctx, "scheduler: reconcile pending steps: job completion failed",
 			slog.String("job_id", jobID), slog.Any("error", err))
 	}
@@ -969,8 +1002,28 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 		Status:          store.WorkerStatusOnline,
 		LastHeartbeatAt: &now,
 	}
+	w.RegistrationBrokerAt = s.brokerAt(ctx, msg, "worker.register", m.WorkerID)
 
 	stored, reclaimed, err := s.store.RegisterWorker(ctx, w)
+	if errors.Is(err, store.ErrStaleRegistration) {
+		// A registration the broker stamped before the one already recorded: a
+		// late redelivery (JetStream can return an older message after a
+		// failover). Redelivery cannot make it current, so ack it rather than
+		// Nak.
+		s.logger.InfoContext(
+			ctx, "scheduler: stale registration — discarding",
+			slog.String("worker_id", m.WorkerID),
+			slog.String("instance_id", m.InstanceID),
+			slog.Any("broker_at", w.RegistrationBrokerAt),
+			slog.String("stored_instance_id", stored.InstanceID),
+			slog.Any("stored_broker_at", stored.RegistrationBrokerAt),
+		)
+		s.ackMsg(ctx, msg)
+		return
+	}
+	if s.stopIfFenced(ctx, err) {
+		return
+	}
 	if err != nil {
 		s.logger.ErrorContext(
 			ctx, "scheduler: persist worker registration failed",
@@ -1017,6 +1070,29 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 	})
 	s.refreshWorkerGauge(ctx)
 	s.ackMsg(ctx, msg)
+}
+
+// brokerAt returns the broker's stream timestamp of a worker's registration or
+// heartbeat message (kind names which, for the log), which orders those
+// messages without regard to any worker's clock: a late redelivery keeps its
+// original stamp, a fresh message carries a current one, whatever the worker's
+// clock reads. Nil when the message has no usable metadata, in which case it is
+// applied unordered.
+func (s *Scheduler) brokerAt(ctx context.Context, msg jetstream.Msg, kind, workerID string) *time.Time {
+	meta, err := msg.Metadata()
+	if err != nil {
+		s.logger.DebugContext(
+			ctx, "scheduler: "+kind+" message has no broker metadata; applying it unordered",
+			slog.String("worker_id", workerID),
+			slog.Any("error", err),
+		)
+		return nil
+	}
+	if meta.Timestamp.IsZero() {
+		return nil
+	}
+	at := meta.Timestamp.UTC()
+	return &at
 }
 
 // warnOnExprCapShortfall logs, at most once per distinct shortfall per worker,
@@ -1082,6 +1158,9 @@ func (s *Scheduler) ensureComputeLocation(ctx context.Context, name string) {
 		CreatedAt: now,
 		UpdatedAt: now,
 	})
+	if s.stopIfFenced(ctx, err) {
+		return // recorded: the registration is not acknowledged
+	}
 	if err != nil && !errors.Is(err, store.ErrConflict) {
 		s.logger.WarnContext(ctx, "scheduler: auto-register compute location failed",
 			slog.String("compute_location", name), slog.Any("error", err))
@@ -1103,6 +1182,8 @@ func (s *Scheduler) touchWorkerCredential(ctx context.Context, workerID string, 
 	switch {
 	case err == nil:
 		return
+	case s.stopIfFenced(ctx, err):
+		return // recorded: the registration is not acknowledged
 	case errors.Is(err, store.ErrNotFound):
 		s.logger.DebugContext(ctx, "scheduler: no active broker credential to touch on registration",
 			slog.String("worker_id", workerID))
@@ -1151,6 +1232,9 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 	// instance ID. The same store call closes its attempts, releases their
 	// claims and reclaims its tasks.
 	reclaimed, offlined, err := s.store.OfflineWorker(ctx, m.WorkerID, m.InstanceID, time.Now().UTC())
+	if s.stopIfFenced(ctx, err) {
+		return // unacknowledged, unlike every other error below
+	}
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			// Worker was never registered or already removed — benign race
@@ -1212,10 +1296,17 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 
 // ── Heartbeat handler and sweep ──────────────────────────────────────
 
-// handleWorkerHeartbeat processes a worker.heartbeat message by recording the
-// current time as the worker's LastHeartbeatAt. If At is zero the server
-// timestamp is used so clock skew on the worker side cannot cause false
-// timeouts.
+// handleWorkerHeartbeat processes a worker.heartbeat message by recording, as
+// the worker's LastHeartbeatAt, the broker's stream timestamp for it
+// ([Scheduler.brokerAt]), or the server's receipt time when the message has
+// none. Never the worker's own At: [Scheduler.sweepStaleWorkers] compares
+// LastHeartbeatAt with the server's clock, so a worker whose clock runs
+// behind, or is stepped back, would otherwise look offline and have its
+// running tasks reclaimed and run again. The broker stamp is the time the
+// heartbeat was published, so a backlog delivered late (after a store outage
+// or a failover) does not make a worker that has since died look alive. The
+// same stamp orders heartbeats, so an out-of-order redelivery is ignored. At
+// is still what the reconciler checks for a delayed or skewed worker.
 //
 // The handler reads WorkerID and At and passes AttemptsReported and
 // ActiveAttemptIDs to the reconciler (see attemptreconcile.go), but decodes the
@@ -1248,12 +1339,21 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 		return
 	}
 
+	received := time.Now().UTC()
 	at := m.At
 	if at.IsZero() {
-		at = time.Now().UTC()
+		at = received
 	}
 
-	if err := s.store.UpdateWorkerHeartbeat(ctx, m.WorkerID, at); err != nil {
+	stamp := s.brokerAt(ctx, msg, "worker.heartbeat", m.WorkerID)
+	seen := received
+	if stamp != nil {
+		seen = *stamp
+	}
+	if err := s.store.UpdateWorkerHeartbeat(ctx, m.WorkerID, seen, stamp); err != nil {
+		if s.stopIfFenced(ctx, err) {
+			return
+		}
 		// ErrNotFound means the worker has not registered yet (e.g. heartbeat
 		// arrived before registration replay completes). Nak so it is retried.
 		if errors.Is(err, store.ErrNotFound) {
@@ -1277,7 +1377,7 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 	// an attempt is no longer held. Older workers send neither field and are
 	// never reconciled.
 	if s.reconciler != nil && m.AttemptsReported {
-		if s.reconciler.record(m.WorkerID, at, time.Now().UTC(), m.ActiveAttemptIDs) {
+		if s.reconciler.record(m.WorkerID, at, received, m.ActiveAttemptIDs) {
 			s.logger.WarnContext(ctx, "scheduler: worker heartbeat delayed or skewed: more than heartbeat_timeout "+
 				"between the worker's timestamp and its receipt; its tasks are not reconciled until its "+
 				"heartbeats arrive in time again",
@@ -1309,25 +1409,39 @@ func (s *Scheduler) runHeartbeatSweep(ctx context.Context) {
 	}
 }
 
-// sweepOnce is one tick of [runHeartbeatSweep].
+// sweepOnce is one tick of [runHeartbeatSweep]. A sweep whose write is
+// fenced records it and returns, and the tick stops there: once fenced, this
+// scheduler sweeps nothing more.
 func (s *Scheduler) sweepOnce(ctx context.Context) {
-	s.sweepStaleWorkers(ctx)
-	s.sweepRetiredWorkers(ctx)
-	s.sweepRetiredJobs(ctx)
-	s.reapStaleAssignedTasks(ctx)
-	// Before the demotion, so a job left with nothing in flight by a
-	// reconciliation reclaim is demoted on the same tick.
-	s.reconcileAttempts(ctx, time.Now().UTC())
-	s.demoteStalledJobs(ctx)
-	s.sweepUnschedulable(ctx)
-	if err := s.sweepBlockedJobs(ctx); err != nil {
+	for _, sweep := range []func(context.Context){
+		s.sweepStaleWorkers,
+		s.sweepRetiredWorkers,
+		s.sweepRetiredJobs,
+		s.reapStaleAssignedTasks,
+		// Before the demotion, so a job left with nothing in flight by a
+		// reconciliation reclaim is demoted on the same tick.
+		func(ctx context.Context) { s.reconcileAttempts(ctx, time.Now().UTC()) },
+		s.demoteStalledJobs,
+		s.sweepUnschedulable,
+		s.sweepBlockedJobsOnce,
+		// Refresh instrumentation gauges on the same tick so Prometheus
+		// reflects current farm state without a dedicated metrics loop.
+		s.refreshQueueDepthGauge,
+		s.refreshIdleWorkerGauge,
+		s.refreshUsageClaimGauge,
+	} {
+		if s.deposed() {
+			return
+		}
+		sweep(ctx)
+	}
+}
+
+// sweepBlockedJobsOnce is the blocked-job sweep's place in a tick.
+func (s *Scheduler) sweepBlockedJobsOnce(ctx context.Context) {
+	if err := s.sweepBlockedJobs(ctx); err != nil && !s.stopIfFenced(ctx, err) {
 		s.logger.ErrorContext(ctx, "scheduler: sweep blocked jobs failed", slog.Any("error", err))
 	}
-	// Refresh instrumentation gauges on the same tick so Prometheus
-	// reflects current farm state without a dedicated metrics loop.
-	s.refreshQueueDepthGauge(ctx)
-	s.refreshIdleWorkerGauge(ctx)
-	s.refreshUsageClaimGauge(ctx)
 }
 
 // demoteStalledJobs reconciles the JobStatusRunning invariant after a sweep or
@@ -1343,9 +1457,7 @@ func (s *Scheduler) sweepOnce(ctx context.Context) {
 func (s *Scheduler) demoteStalledJobs(ctx context.Context) {
 	demoted, err := s.store.DemoteStalledJobs(ctx, time.Now().UTC())
 	s.announceDemoted(ctx, demoted)
-	if err != nil && !errors.Is(err, context.Canceled) {
-		s.logger.WarnContext(ctx, "scheduler: demote stalled jobs failed", slog.Any("error", err))
-	}
+	s.warnUnlessStopped(ctx, err, "scheduler: demote stalled jobs failed")
 }
 
 // announceDemoted logs and fans out a pending JobEvent for each demoted job.
@@ -1389,9 +1501,7 @@ func (s *Scheduler) reapStaleAssignedTasks(ctx context.Context) {
 	cutoff := time.Now().UTC().Add(-s.cfg.AssignedTaskTimeout)
 	reclaimed, err := s.store.ReclaimStaleAssignedTasks(ctx, cutoff)
 	s.announceReaped(ctx, reclaimed)
-	if err != nil && !errors.Is(err, context.Canceled) {
-		s.logger.WarnContext(ctx, "scheduler: reclaim stale assigned tasks failed", slog.Any("error", err))
-	}
+	s.warnUnlessStopped(ctx, err, "scheduler: reclaim stale assigned tasks failed")
 }
 
 // announceReaped logs the reap and fans out a ready TaskEvent for each
@@ -1476,6 +1586,9 @@ func (s *Scheduler) sweepStaleWorkers(ctx context.Context) {
 		// keeps the worker online (invariant I1) instead of being declared dead
 		// while its tasks are still running.
 		reclaimed, marked, err := s.store.OfflineStaleWorker(ctx, w.ID, cutoff, time.Now().UTC())
+		if s.stopIfFenced(ctx, err) {
+			return
+		}
 		if err != nil {
 			s.logger.WarnContext(
 				ctx, "scheduler: mark worker offline failed",
@@ -1514,10 +1627,11 @@ func (s *Scheduler) sweepStaleWorkers(ctx context.Context) {
 // BusReconnectGrace ago, so a live worker has not yet had time to notice the
 // outage ended, redial and heartbeat. A dead worker is declared offline only
 // once the grace has passed. Exactly BusReconnectGrace after the reconnect
-// the sweep acts. With no BusUpSince source it is never deferred.
+// the sweep acts. With no BusUpSince source it is never deferred. The grace
+// counts from the bus coming up or from Run starting, whichever is later.
 //
-// It also returns the bus-up time it judged by, zero while the bus is down,
-// and remembers the first non-zero one, the connection made at startup.
+// It also returns the time it judged by, zero while the bus is down, and
+// remembers the first non-zero one, the connection made at startup.
 func (s *Scheduler) livenessDeferred(now time.Time) (deferred bool, up time.Time) {
 	if s.cfg.BusUpSince == nil {
 		return false, time.Time{}
@@ -1526,12 +1640,26 @@ func (s *Scheduler) livenessDeferred(now time.Time) (deferred bool, up time.Time
 	if up.IsZero() {
 		return true, up
 	}
+	// A server that became the leader long after its bus connection came up
+	// (a promoted standby) has not consumed a single heartbeat yet: they are
+	// all still waiting in the stream. Its grace counts from when Run started.
+	// Without HA, Run starts just after the bus comes up, so this moves the
+	// grace by milliseconds at most.
+	up = latest(up, s.startedAt)
 	s.deferLog.mu.Lock()
 	if s.deferLog.firstUp.IsZero() {
 		s.deferLog.firstUp = up
 	}
 	s.deferLog.mu.Unlock()
 	return now.Sub(up) < s.cfg.BusReconnectGrace, up
+}
+
+// latest returns the later of a and b.
+func latest(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }
 
 // logLivenessDeferred logs a deferred liveness sweep once per outage and once
@@ -1578,9 +1706,7 @@ func (s *Scheduler) sweepRetiredWorkers(ctx context.Context) {
 	cutoff := time.Now().UTC().Add(-s.cfg.OfflineWorkerRetention)
 	removed, err := s.store.DeleteOfflineWorkersBefore(ctx, cutoff)
 	if err != nil {
-		if !errors.Is(err, context.Canceled) {
-			s.logger.WarnContext(ctx, "scheduler: retention sweep failed", slog.Any("error", err))
-		}
+		s.warnUnlessStopped(ctx, err, "scheduler: retention sweep failed")
 		return
 	}
 	if len(removed) == 0 {
@@ -1618,9 +1744,7 @@ func (s *Scheduler) sweepRetiredJobs(ctx context.Context) {
 	// On error, removed still lists the jobs deleted before it: they are gone
 	// and are announced like any others.
 	removed, err := s.store.DeleteTerminalJobsBefore(ctx, cutoff, s.cfg.JobRetentionIncludeFailed)
-	if err != nil && !errors.Is(err, context.Canceled) {
-		s.logger.WarnContext(ctx, "scheduler: job retention sweep failed", slog.Any("error", err))
-	}
+	s.warnUnlessStopped(ctx, err, "scheduler: job retention sweep failed")
 	if len(removed) == 0 {
 		return
 	}
@@ -1837,7 +1961,14 @@ func (s *Scheduler) refreshIdleWorkerGauge(ctx context.Context) {
 // ackMsg acknowledges msg and logs a warning if the ack itself fails.
 // Ack failures are rare in the embedded-NATS setup but should not be silently
 // discarded, as they can indicate a connection problem.
+//
+// A scheduler whose store writes have been fenced acknowledges nothing: the
+// message stays unacknowledged, and JetStream redelivers it to the new leader
+// once its ack wait runs out.
 func (s *Scheduler) ackMsg(ctx context.Context, msg jetstream.Msg) {
+	if s.leftForNewLeader(ctx, msg) {
+		return
+	}
 	if err := msg.Ack(); err != nil {
 		s.logger.WarnContext(
 			ctx, "scheduler: ack message failed",
@@ -1847,14 +1978,59 @@ func (s *Scheduler) ackMsg(ctx context.Context, msg jetstream.Msg) {
 	}
 }
 
-// nakMsg negatively-acknowledges msg (requesting redelivery) and logs a
-// warning if the nak itself fails.
+// nakMsg negatively-acknowledges msg, asking for it to be redelivered after
+// [nakDelay], and logs a warning if the nak itself fails. Like
+// [Scheduler.ackMsg] it leaves msg alone once fenced: a nak would spend one
+// of the message's deliveries on this server, which can no longer process
+// it, and hold it back from the new leader for the delay; left
+// unacknowledged, it goes to the new leader when its ack wait runs out.
 func (s *Scheduler) nakMsg(ctx context.Context, msg jetstream.Msg) {
-	if err := msg.Nak(); err != nil {
+	if s.leftForNewLeader(ctx, msg) {
+		return
+	}
+	var delivered uint64
+	if md, err := msg.Metadata(); err == nil {
+		delivered = md.NumDelivered
+	}
+	if err := msg.NakWithDelay(nakDelay(delivered)); err != nil {
 		s.logger.WarnContext(
 			ctx, "scheduler: nak message failed",
 			slog.String("subject", msg.Subject()),
 			slog.Any("error", err),
 		)
 	}
+}
+
+// nakBaseDelay and nakMaxDelay bound how long a nak'd message waits to be
+// redelivered.
+const (
+	nakBaseDelay = time.Second
+	nakMaxDelay  = 30 * time.Second
+)
+
+// nakDelay is how long a message that has been delivered n times (its
+// NumDelivered) waits before its next delivery: nakBaseDelay, doubling with
+// each delivery, capped at nakMaxDelay. A failure is almost always the store
+// being unreachable, and a nak without a delay is redelivered at once, which
+// spends a consumer's whole MaxDeliver budget in milliseconds and drops the
+// message (a task's terminal status, say) over an outage of a second. With
+// the backoff the server's consumers ride out minutes, which covers a
+// PostgreSQL restart and an HA failover while the database is down.
+func nakDelay(n uint64) time.Duration {
+	d := nakBaseDelay
+	for i := uint64(1); i < n && d < nakMaxDelay; i++ {
+		d *= 2
+	}
+	return min(d, nakMaxDelay)
+}
+
+// leftForNewLeader reports whether this scheduler has been fenced, in which
+// case msg is left unacknowledged for the new leader.
+func (s *Scheduler) leftForNewLeader(ctx context.Context, msg jetstream.Msg) bool {
+	if !s.deposed() {
+		return false
+	}
+	s.logger.DebugContext(ctx, "scheduler: not acknowledging a message; this server is no longer the leader",
+		slog.String("subject", msg.Subject()))
+	return true
 }

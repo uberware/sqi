@@ -72,7 +72,7 @@ func (r *Remote) LockForRestore(ctx context.Context) (*RestoreLock, error) {
 		return nil, err
 	}
 	deadline := time.Now().Add(r.cfg.ConnectTimeout)
-	nc, err := r.dial(ctx, roleRestore, dialOpts, deadline)
+	nc, err := r.dial(ctx, roleRestore, nil, dialOpts, deadline)
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +86,7 @@ func (r *Remote) LockForRestore(ctx context.Context) (*RestoreLock, error) {
 
 // lockOn checks the broker nc reached and takes the guard on it.
 func (r *Remote) lockOn(ctx context.Context, nc *nats.Conn, deadline time.Time) (*RestoreLock, error) {
-	js, guard, err := r.checkAndGuard(ctx, nc, deadline, GuardPurposeRestore)
+	js, guard, err := r.checkAndGuard(ctx, nc, deadline, GuardPurposeRestore, GuardOptions{})
 	if err != nil {
 		return nil, err
 	}

@@ -104,6 +104,8 @@ tags:
       Long-lived machine credentials (Bearer tokens), self-scoped to the
       authenticated caller. The raw secret is returned exactly once, at
       creation.
+  - name: servers
+    description: The servers of a high-availability group (or the one server of a farm without HA)
   - name: meta
     description: Server metadata (version/build info)
 
@@ -960,6 +962,65 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/DiagnosticRecord"
+
+    # ── Servers ───────────────────────────────────────────────────────────────
+    ServerMember:
+      type: object
+      required:
+        - instance_id
+        - name
+        - host
+        - pid
+        - version
+        - role
+        - started_at
+        - last_seen_seconds_ago
+        - broker_ok
+      properties:
+        instance_id:
+          type: string
+          description: Identifies this run of the server; a restart is a new instance.
+        name:
+          type: string
+          description: The server's `ha.instance_name`, defaulting to its host name.
+        host:
+          type: string
+        pid:
+          type: integer
+        version:
+          type: string
+        role:
+          type: string
+          enum: [leader, standby, missing]
+        started_at:
+          type: string
+          format: date-time
+        last_seen_seconds_ago:
+          type: number
+          description: |
+            Seconds since the server last refreshed its membership row, on
+            the database's clock.
+        broker_ok:
+          type: boolean
+          description: |
+            Whether the server reached its message broker within
+            `ha.lease_ttl`.
+
+    ServersResponse:
+      type: object
+      required: [ha, epoch, servers]
+      properties:
+        ha:
+          type: boolean
+          description: Whether this farm runs a high-availability group.
+        epoch:
+          type: integer
+          format: int64
+          description: The current leadership epoch; 0 without HA.
+        servers:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServerMember"
 
     # ── Version ───────────────────────────────────────────────────────────────
     VersionResponse:
@@ -3058,6 +3119,38 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+
+  # ── Servers ────────────────────────────────────────────────────────────────
+
+  /servers:
+    get:
+      operationId: listServers
+      summary: List the servers of the farm
+      tags: [servers]
+      description: |
+        Lists the servers of a high-availability group with their roles,
+        leader first, then by name, and the current leadership epoch. A server
+        is the `leader` when it holds the unexpired leader lease, a `standby`
+        when it refreshed its membership row within `ha.lease_ttl`, and
+        `missing` otherwise. Roles, ages and broker health are judged on the
+        database's clock, so every server answers alike.
+
+        Without HA the response is `ha: false`, `epoch: 0` and the one server
+        that answered, as the leader, with `broker_ok: true` and
+        `last_seen_seconds_ago: 0`. The response comes from the leader: a
+        standby answers every route but its probes with 503. Use
+        `sqi-server ha status` to read the same list while no server leads.
+      responses:
+        "200":
+          description: The servers, leader first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServersResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
 
   # ── Version ────────────────────────────────────────────────────────────────
 

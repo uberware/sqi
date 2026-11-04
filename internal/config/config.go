@@ -23,6 +23,7 @@
 package config
 
 import (
+	"os"
 	"time"
 
 	"github.com/uberware/sqi/internal/auth/oidc"
@@ -44,6 +45,7 @@ type Config struct {
 	Diagnostics   DiagnosticsConfig   `yaml:"diagnostics"`
 	PresetLibrary PresetLibraryConfig `yaml:"preset_library"`
 	Auth          AuthConfig          `yaml:"auth"`
+	HA            HAConfig            `yaml:"ha"`
 }
 
 // HTTPConfig controls the REST and WebSocket listener.
@@ -490,6 +492,55 @@ type DiscoveryConfig struct {
 	// network. Defaults to "sqi-server".
 	// Env: SQI_DISCOVERY_INSTANCE_NAME
 	InstanceName string `yaml:"instance_name"`
+}
+
+// HAConfig controls high availability: several sqi-server processes sharing one
+// PostgreSQL database and one external NATS account, with a single leader.
+// Nothing under it is read or validated while Enabled is false.
+type HAConfig struct {
+	// Enabled lets this server join an HA group. It requires store.driver:
+	// postgres and nats.mode: external. Disabled by default; with it off the
+	// server behaves exactly as a single-server farm.
+	// Env: SQI_HA_ENABLED
+	Enabled bool `yaml:"enabled"`
+
+	// LeaseTTL is how long the leader's lease lasts without renewal, and so
+	// how long a failover waits after a crash. The renew period and the
+	// self-fence margin are derived from it. Range 6s to 60s.
+	// Env: SQI_HA_LEASE_TTL
+	LeaseTTL time.Duration `yaml:"lease_ttl"`
+
+	// InstanceName identifies this server in logs, /readyz and the servers
+	// list. Defaults to the host name.
+	// Env: SQI_HA_INSTANCE_NAME
+	InstanceName string `yaml:"instance_name"`
+}
+
+const (
+	// DefaultHALeaseTTL is the leader lease lifetime when ha.lease_ttl is unset.
+	DefaultHALeaseTTL = 15 * time.Second
+
+	// MinHALeaseTTL is the floor: the renew period is a third of the TTL, so
+	// below this a single slow database round trip would cost the lease.
+	MinHALeaseTTL = 6 * time.Second
+
+	// MaxHALeaseTTL is the ceiling: a crashed leader stays leader for the
+	// whole TTL, so a longer one only lengthens every failover.
+	MaxHALeaseTTL = 60 * time.Second
+
+	haFallbackName = "sqi-server"
+)
+
+// Name returns the name this server is known by in an HA group: InstanceName,
+// else the host name, else "sqi-server".
+func (c HAConfig) Name() string {
+	if c.InstanceName != "" {
+		return c.InstanceName
+	}
+	if host, err := os.Hostname(); err == nil && host != "" {
+		return host
+	}
+	return haFallbackName
 }
 
 // AuthConfig controls the opt-in authentication gate.
@@ -1058,6 +1109,10 @@ func DefaultConfig() Config {
 		},
 		PresetLibrary: PresetLibraryConfig{
 			URL: "https://uberware.github.io/sqi-presets/index.json",
+		},
+		HA: HAConfig{
+			Enabled:  false,
+			LeaseTTL: DefaultHALeaseTTL,
 		},
 		Auth: AuthConfig{
 			Enabled:          false,

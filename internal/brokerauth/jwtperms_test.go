@@ -3,10 +3,14 @@
 package brokerauth_test
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/nats-io/jwt/v2"
+	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nkeys"
 
 	"github.com/uberware/sqi/internal/brokerauth"
@@ -18,11 +22,13 @@ func sortedCopy(in []string) []string {
 	return out
 }
 
-func TestWorkerUserPermissions_EquivalentToWorkerPermissions(t *testing.T) {
+// TestUserPermissions_OfWorkerPermissions: a worker's grants in user-JWT form,
+// as the auth callout issues them, are its WorkerPermissions exactly.
+func TestUserPermissions_OfWorkerPermissions(t *testing.T) {
 	for _, id := range []string{"w1", "7b1f6c52-3f0e-4c2a-9d57-0a1b2c3d4e5f"} {
 		t.Run(id, func(t *testing.T) {
 			legacy := brokerauth.WorkerPermissions(id)
-			jwtForm := brokerauth.WorkerUserPermissions(id)
+			jwtForm := brokerauth.UserPermissions(legacy)
 
 			gotPub := sortedCopy(jwtForm.Pub.Allow)
 			wantPub := sortedCopy(legacy.Publish.Allow)
@@ -39,6 +45,54 @@ func TestWorkerUserPermissions_EquivalentToWorkerPermissions(t *testing.T) {
 			}
 			if jwtForm.Resp != nil {
 				t.Errorf("Resp must be nil, got %+v", jwtForm.Resp)
+			}
+		})
+	}
+}
+
+func TestUserPermissions_CarriesEveryPart(t *testing.T) {
+	tests := []struct {
+		name string
+		in   natsserver.Permissions
+		want jwt.Permissions
+	}{
+		{"empty", natsserver.Permissions{}, jwt.Permissions{}},
+		{
+			"allow and deny",
+			natsserver.Permissions{
+				Publish:   &natsserver.SubjectPermission{Allow: []string{"a.>", "b"}, Deny: []string{"a.secret"}},
+				Subscribe: &natsserver.SubjectPermission{Allow: []string{"c.*"}, Deny: []string{"c.x", "c.y"}},
+			},
+			jwt.Permissions{
+				Pub: jwt.Permission{Allow: jwt.StringList{"a.>", "b"}, Deny: jwt.StringList{"a.secret"}},
+				Sub: jwt.Permission{Allow: jwt.StringList{"c.*"}, Deny: jwt.StringList{"c.x", "c.y"}},
+			},
+		},
+		{
+			"publish only",
+			natsserver.Permissions{Publish: &natsserver.SubjectPermission{Allow: []string{"p"}}},
+			jwt.Permissions{Pub: jwt.Permission{Allow: jwt.StringList{"p"}}},
+		},
+		{
+			"response",
+			natsserver.Permissions{Response: &natsserver.ResponsePermission{MaxMsgs: 3, Expires: 2 * time.Second}},
+			jwt.Permissions{Resp: &jwt.ResponsePermission{MaxMsgs: 3, Expires: 2 * time.Second}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := brokerauth.UserPermissions(&tt.in)
+			if fmt.Sprintf("%+v", got.Pub) != fmt.Sprintf("%+v", tt.want.Pub) {
+				t.Errorf("Pub = %+v, want %+v", got.Pub, tt.want.Pub)
+			}
+			if fmt.Sprintf("%+v", got.Sub) != fmt.Sprintf("%+v", tt.want.Sub) {
+				t.Errorf("Sub = %+v, want %+v", got.Sub, tt.want.Sub)
+			}
+			switch {
+			case (got.Resp == nil) != (tt.want.Resp == nil):
+				t.Errorf("Resp = %+v, want %+v", got.Resp, tt.want.Resp)
+			case got.Resp != nil && *got.Resp != *tt.want.Resp:
+				t.Errorf("Resp = %+v, want %+v", *got.Resp, *tt.want.Resp)
 			}
 		})
 	}

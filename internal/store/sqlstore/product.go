@@ -58,10 +58,9 @@ func scanProduct(row scanner) (store.Product, error) {
 // CreateProduct implements [store.ProductStore].
 func (s *Store) CreateProduct(ctx context.Context, p store.Product) (store.Product, error) {
 	now := TimeText(time.Now().UTC())
-	row := s.stmtInsertProduct.QueryRowContext(ctx,
+	out, err := writeRow(ctx, s, "create product", scanProduct, s.stmtInsertProduct,
 		p.ID, p.Name, p.Title, p.Description, p.Readme, p.Category, p.Version,
 		string(p.Source), p.Template, string(p.Format), p.OriginRef, p.OriginFingerprint, now, now)
-	out, err := scanProduct(row)
 	return out, mapErr(err)
 }
 
@@ -93,16 +92,15 @@ func (s *Store) ListProducts(ctx context.Context) ([]store.Product, error) {
 // UpdateProduct implements [store.ProductStore].
 func (s *Store) UpdateProduct(ctx context.Context, p store.Product) (store.Product, error) {
 	now := TimeText(time.Now().UTC())
-	row := s.stmtUpdateProduct.QueryRowContext(ctx,
+	out, err := writeRow(ctx, s, "update product", scanProduct, s.stmtUpdateProduct,
 		p.Title, p.Description, p.Readme, p.Category, p.Version,
 		p.Template, string(p.Format), p.OriginRef, p.OriginFingerprint, now, p.Name)
-	out, err := scanProduct(row)
 	return out, mapErr(err)
 }
 
 // DeleteProduct implements [store.ProductStore].
 func (s *Store) DeleteProduct(ctx context.Context, name string) error {
-	res, err := s.stmtDeleteProduct.ExecContext(ctx, name)
+	res, err := s.execStmt(ctx, "delete product", s.stmtDeleteProduct, name)
 	if err != nil {
 		return mapErr(err)
 	}

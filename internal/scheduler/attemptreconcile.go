@@ -136,6 +136,9 @@ func (s *Scheduler) reconcileAttempts(ctx context.Context, now time.Time) {
 		return
 	}
 	for _, a := range s.reconciler.due(open, now) {
+		if s.deposed() {
+			return
+		}
 		s.reclaimUnreportedAttempt(ctx, a, now)
 	}
 }
@@ -153,8 +156,6 @@ func (s *Scheduler) reclaimUnreportedAttempt(ctx context.Context, a store.OpenAt
 			slog.String("worker_id", a.WorkerID), slog.String("task_id", a.TaskID),
 			slog.String("attempt_id", a.AttemptID), slog.Duration("open_for", now.Sub(a.CreatedAt)))
 	}
-	if err != nil && !errors.Is(err, context.Canceled) {
-		s.logger.WarnContext(ctx, "scheduler: reclaim unreported attempt failed",
-			slog.String("task_id", a.TaskID), slog.String("attempt_id", a.AttemptID), slog.Any("error", err))
-	}
+	s.warnUnlessStopped(ctx, err, "scheduler: reclaim unreported attempt failed",
+		slog.String("task_id", a.TaskID), slog.String("attempt_id", a.AttemptID))
 }

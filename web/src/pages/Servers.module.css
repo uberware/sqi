@@ -1,0 +1,54 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+/* Shared list-page scaffold and badge; the role colours below are the page's own. */
+
+.page {
+  composes: page from './entityList.module.css';
+}
+
+.note {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.tableWrap {
+  composes: tableWrap from './entityList.module.css';
+}
+
+.table {
+  composes: table from './entityList.module.css';
+}
+
+.table td {
+  font-variant-numeric: tabular-nums;
+}
+
+.emptyRow {
+  composes: emptyRow from './entityList.module.css';
+}
+
+.badge {
+  composes: badge from '../components/StatusBadge.module.css';
+}
+
+.leader {
+  background-color: var(--color-success-muted);
+  color: var(--color-success);
+}
+
+.standby {
+  background-color: var(--color-surface-raised);
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+}
+
+.missing {
+  background-color: var(--color-error-muted);
+  color: var(--color-error);
+}
+
+.brokerDown {
+  color: var(--color-error);
+}

@@ -11,9 +11,12 @@ import (
 )
 
 // CreateAPIKey implements [store.APIKeyStore].
-func (s *Store) CreateAPIKey(_ context.Context, k store.APIKey) (store.APIKey, error) {
+func (s *Store) CreateAPIKey(ctx context.Context, k store.APIKey) (store.APIKey, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.APIKey{}, err
+	}
 	if _, ok := s.apiKeys[k.ID]; ok {
 		return store.APIKey{}, store.ErrConflict
 	}
@@ -80,9 +83,12 @@ func (s *Store) ListAPIKeysForUser(_ context.Context, userID string) ([]store.AP
 }
 
 // RevokeAPIKey implements [store.APIKeyStore].
-func (s *Store) RevokeAPIKey(_ context.Context, id, userID string, now time.Time) error {
+func (s *Store) RevokeAPIKey(ctx context.Context, id, userID string, now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return err
+	}
 	k, ok := s.apiKeys[id]
 	if !ok || k.UserID != userID || k.RevokedAt != nil {
 		return store.ErrNotFound
@@ -93,9 +99,12 @@ func (s *Store) RevokeAPIKey(_ context.Context, id, userID string, now time.Time
 }
 
 // TouchAPIKeyLastUsed implements [store.APIKeyStore].
-func (s *Store) TouchAPIKeyLastUsed(_ context.Context, id string, now time.Time) error {
+func (s *Store) TouchAPIKeyLastUsed(ctx context.Context, id string, now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return err
+	}
 	k, ok := s.apiKeys[id]
 	if !ok {
 		return store.ErrNotFound

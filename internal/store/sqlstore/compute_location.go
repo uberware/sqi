@@ -50,8 +50,8 @@ func scanComputeLocation(row scanner) (store.ComputeLocation, error) {
 // CreateComputeLocation implements [store.ComputeLocationStore].
 func (s *Store) CreateComputeLocation(ctx context.Context, loc store.ComputeLocation) (store.ComputeLocation, error) {
 	now := TimeText(time.Now().UTC())
-	row := s.stmtInsertComputeLoc.QueryRowContext(ctx, loc.ID, loc.Name, loc.Description, now, now)
-	out, err := scanComputeLocation(row)
+	out, err := writeRow(ctx, s, "create compute location", scanComputeLocation, s.stmtInsertComputeLoc,
+		loc.ID, loc.Name, loc.Description, now, now)
 	return out, mapErr(err)
 }
 
@@ -91,14 +91,14 @@ func (s *Store) ListComputeLocations(ctx context.Context) ([]store.ComputeLocati
 // UpdateComputeLocation implements [store.ComputeLocationStore].
 func (s *Store) UpdateComputeLocation(ctx context.Context, loc store.ComputeLocation) (store.ComputeLocation, error) {
 	now := TimeText(time.Now().UTC())
-	row := s.stmtUpdateComputeLoc.QueryRowContext(ctx, loc.Name, loc.Description, now, loc.ID)
-	out, err := scanComputeLocation(row)
+	out, err := writeRow(ctx, s, "update compute location", scanComputeLocation, s.stmtUpdateComputeLoc,
+		loc.Name, loc.Description, now, loc.ID)
 	return out, mapErr(err)
 }
 
 // DeleteComputeLocation implements [store.ComputeLocationStore].
 func (s *Store) DeleteComputeLocation(ctx context.Context, id string) error {
-	res, err := s.stmtDeleteComputeLoc.ExecContext(ctx, id)
+	res, err := s.execStmt(ctx, "delete compute location", s.stmtDeleteComputeLoc, id)
 	if err != nil {
 		return mapErr(err)
 	}

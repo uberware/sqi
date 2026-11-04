@@ -12,9 +12,12 @@ import (
 
 // CreateQueue inserts a new queue. Returns [store.ErrConflict] if a queue with
 // the same name already exists within the same farm.
-func (s *Store) CreateQueue(_ context.Context, queue store.Queue) (store.Queue, error) {
+func (s *Store) CreateQueue(ctx context.Context, queue store.Queue) (store.Queue, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.Queue{}, err
+	}
 
 	if !store.RunAsComboValid(queue.RunAsUser, queue.RunAsGroup) {
 		return store.Queue{}, store.ErrRunAsGroupWithoutUser
@@ -70,9 +73,12 @@ func (s *Store) ListQueues(_ context.Context, opts store.ListQueuesOptions) (sto
 
 // UpdateQueue replaces the mutable fields of an existing queue and updates
 // UpdatedAt. Returns [store.ErrNotFound] or [store.ErrConflict] as appropriate.
-func (s *Store) UpdateQueue(_ context.Context, queue store.Queue) (store.Queue, error) {
+func (s *Store) UpdateQueue(ctx context.Context, queue store.Queue) (store.Queue, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.Queue{}, err
+	}
 
 	existing, ok := s.queues[queue.ID]
 	if !ok {
@@ -117,9 +123,12 @@ func (s *Store) UpdateQueue(_ context.Context, queue store.Queue) (store.Queue, 
 
 // DeleteQueue removes a queue by ID. Returns [store.ErrNotFound] if it does
 // not exist.
-func (s *Store) DeleteQueue(_ context.Context, id string) error {
+func (s *Store) DeleteQueue(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return err
+	}
 
 	if _, ok := s.queues[id]; !ok {
 		return store.ErrNotFound

@@ -5,6 +5,7 @@ package winsvc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -157,5 +158,34 @@ func TestWorkDir(t *testing.T) {
 	cfg := filepath.Join(t.TempDir(), "conf", "sqi-server.yaml")
 	if got := workDir(cfg); got != filepath.Dir(cfg) {
 		t.Errorf("workDir(%q) = %q", cfg, got)
+	}
+}
+
+// codedError stands in for an error that names its own exit code, as a
+// demoted HA server's does.
+type codedError struct{}
+
+func (codedError) Error() string { return "demoted" }
+
+func (codedError) ExitCode() int { return 75 }
+
+func TestExitCode(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"nil", nil, 0},
+		{"plain error", errors.New("boom"), 1},
+		{"coded", codedError{}, 75},
+		{"wrapped coded", fmt.Errorf("x: %w", codedError{}), 75},
+		{"joined coded", fmt.Errorf("%w: %w", codedError{}, errors.New("cause")), 75},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ExitCode(tt.err); got != tt.want {
+				t.Fatalf("ExitCode(%v) = %d, want %d", tt.err, got, tt.want)
+			}
+		})
 	}
 }

@@ -67,9 +67,12 @@ func (s *Store) closeRunningAttemptLocked(c store.AttemptCompletion) {
 //
 // In every non-error case the failure reason is stamped only when the task
 // ends up holding c.TaskStatus by this attempt's report.
-func (s *Store) CompleteTaskAttempt(_ context.Context, c store.AttemptCompletion) (store.CompletionResult, error) {
+func (s *Store) CompleteTaskAttempt(ctx context.Context, c store.AttemptCompletion) (store.CompletionResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.CompletionResult{}, err
+	}
 
 	t, ok := s.tasks[c.TaskID]
 	if !ok {
@@ -122,9 +125,12 @@ func (s *Store) CompleteTaskAttempt(_ context.Context, c store.AttemptCompletion
 // are released, then every open step of the job is finalized, and finally the
 // job row is canceled unless it is already terminal. The tasks go first, as the
 // interface documents.
-func (s *Store) CancelJobExecution(_ context.Context, jobID, reason string, now time.Time) ([]store.Task, error) {
+func (s *Store) CancelJobExecution(ctx context.Context, jobID, reason string, now time.Time) ([]store.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return nil, err
+	}
 
 	// Order mirrors SQLite's: the tasks, then the attempts, then the claims,
 	// then the steps, then the job row. The store lock stands in for the
@@ -191,9 +197,12 @@ func (s *Store) cancelJobFinalizeStepsLocked(jobID string, now time.Time) {
 // nothing is written (its attempts and claims are left to whatever closed it);
 // otherwise the task is canceled with its worker assignment kept, then its
 // running attempt is closed and its closed attempts' claims released.
-func (s *Store) CancelTaskExecution(_ context.Context, taskID, reason string, now time.Time) (store.Task, bool, error) {
+func (s *Store) CancelTaskExecution(ctx context.Context, taskID, reason string, now time.Time) (store.Task, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.Task{}, false, err
+	}
 
 	prior, ok := s.tasks[taskID]
 	if !ok {
@@ -261,9 +270,12 @@ func (s *Store) closeAttemptsAndReleaseClaimsLocked(matches func(taskID string) 
 // is never stale, as SQL's NULL comparison has it, and an unknown worker is
 // not stale); otherwise nothing is written. See
 // [Store.offlineWorkerLocked] for what a match does.
-func (s *Store) OfflineStaleWorker(_ context.Context, id string, cutoff, now time.Time) ([]store.Task, bool, error) {
+func (s *Store) OfflineStaleWorker(ctx context.Context, id string, cutoff, now time.Time) ([]store.Task, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return nil, false, err
+	}
 
 	w, ok := s.workers[id]
 	if !ok || w.Status != store.WorkerStatusOnline || !heartbeatBefore(w, cutoff) {
@@ -277,9 +289,12 @@ func (s *Store) OfflineStaleWorker(_ context.Context, id string, cutoff, now tim
 // and instanceID are both non-empty and differ is left untouched (false);
 // any other known worker, whatever its status, goes offline, and a disabled
 // one stays disabled.
-func (s *Store) OfflineWorker(_ context.Context, id, instanceID string, now time.Time) ([]store.Task, bool, error) {
+func (s *Store) OfflineWorker(ctx context.Context, id, instanceID string, now time.Time) ([]store.Task, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return nil, false, err
+	}
 
 	w, ok := s.workers[id]
 	if !ok {

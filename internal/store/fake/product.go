@@ -11,9 +11,12 @@ import (
 )
 
 // CreateProduct inserts a product. Returns [store.ErrConflict] on duplicate name.
-func (s *Store) CreateProduct(_ context.Context, p store.Product) (store.Product, error) {
+func (s *Store) CreateProduct(ctx context.Context, p store.Product) (store.Product, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.Product{}, err
+	}
 	for _, existing := range s.products {
 		if strings.EqualFold(existing.Name, p.Name) {
 			return store.Product{}, store.ErrConflict
@@ -53,9 +56,12 @@ func (s *Store) ListProducts(_ context.Context) ([]store.Product, error) {
 }
 
 // UpdateProduct replaces mutable fields of the product with p.Name.
-func (s *Store) UpdateProduct(_ context.Context, p store.Product) (store.Product, error) {
+func (s *Store) UpdateProduct(ctx context.Context, p store.Product) (store.Product, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.Product{}, err
+	}
 	for id, existing := range s.products {
 		if !strings.EqualFold(existing.Name, p.Name) {
 			continue
@@ -73,9 +79,12 @@ func (s *Store) UpdateProduct(_ context.Context, p store.Product) (store.Product
 }
 
 // DeleteProduct removes the product with the given name.
-func (s *Store) DeleteProduct(_ context.Context, name string) error {
+func (s *Store) DeleteProduct(ctx context.Context, name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return err
+	}
 	for id, p := range s.products {
 		if strings.EqualFold(p.Name, name) {
 			delete(s.products, id)

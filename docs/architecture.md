@@ -153,6 +153,11 @@ main()
                PostgreSQL: release the advisory lock, then both pools
 ```
 
+A server with `ha.enabled` starts as a standby instead and runs the
+leader-only steps (seeding, bootstrap, the broker-layout fence, the
+scheduler, mDNS) only when it is promoted; see
+[High availability](#high-availability).
+
 ---
 
 ## Job lifecycle data flow
@@ -476,6 +481,27 @@ NATS consumer (internal/scheduler/taskstatus.go)
   │     checkStepCompletion: store.FinalizeStep → propagateStepDependencies → store.FinalizeJob
   └─ ack message (a refused transition is acked too; its claims were still released)
 ```
+
+A message whose processing fails for any other reason (the store is
+unreachable, say) is Nak'd with a delay: 1 s, doubling with each delivery up
+to 30 s. The server's task-status, task-log and worker consumers allow ten
+deliveries. The delays are 1, 2, 4, 8, 16, 30, 30 s and so on, so deliveries
+land at about 0, 1, 3, 7, 15, 31, 61, 91, 121 and 151 s. A task status or
+log report therefore outlives about 2.5 minutes of store outage (a
+PostgreSQL restart, an HA failover while the database is down, or the gap
+between a leader fencing itself and its successor taking over). A registration or
+heartbeat is bounded by the `SQI_WORKER` stream's 2-minute `MaxAge`, which
+removes the message before the ninth delivery at about 121 s: the last
+delivery it can get is the eighth at about 91 s, so it survives only if the
+store is back within about 1.5 minutes.
+That matters most for a registration: a worker registers only at start and
+after reconnecting to the broker, so one whose registration is dropped idles,
+unseen, until its next reconnect. A heartbeat held back this way is
+superseded by the next one, and once that has been recorded the late one is
+ignored, since heartbeats are ordered by their broker timestamp. The cost is
+a lag after a long outage: a message already waiting out a 30 s delay when
+the store comes back waits the rest of it, so recovery can trail the store by
+up to 30 s.
 
 **Durable failure reason.** Every `task_attempts` row carries a `message`
 column next to `exit_code` — the worker's human-readable reason for that
@@ -970,7 +996,7 @@ out of the write pool and holds for its whole life, so `max_conns: 16` leaves
 15 connections for work. If another server holds the lock, start-up fails:
 
 ```
-another sqi-server is already using this database (PostgreSQL advisory lock 0x7371692d73727672 is held); only one server can use a database, so stop the other one first
+another sqi-server, or a command that needs the database alone (migrate up, restore, store copy), is already using this database (PostgreSQL advisory lock 0x7371692d73727672 is held); stop it first. Servers can share a database only when high availability is enabled on all of them
 ```
 
 Advisory locks are per database, so servers on different databases of one
@@ -983,9 +1009,21 @@ not: a backup or a worker-credential change against a running server is
 legitimate. The server pings the lock's connection every 30 s. If
 that connection is lost, so is the lock: the server logs it at Error and keeps
 running, because exiting would turn a network blip into an outage. In that
-window a second server could start on the same database. Running more than
-one server (scheduler high availability, on the [roadmap](roadmap.md)) is not
-supported yet.
+window a second server could start on the same database.
+
+Servers with `ha.enabled` share a PostgreSQL database instead (see
+[High availability](#high-availability)). They take the same advisory lock
+shared, so they coexist with each other and exclude a server without HA and
+the commands above, which take it exclusive. An HA server asks for it
+exclusive first, migrates if it got it (no other server is running), and then
+takes it shared before dropping the exclusive lock; otherwise it joins the
+shared holders, waiting up to 30 s while a session holds it exclusive, and
+refuses to join if the schema is behind it
+(`postgres.ErrSchemaBehindWithOtherServers`). Its sessions set
+`idle_in_transaction_session_timeout` to `ha.lease_ttl / 3` and
+`client_connection_check_interval` to 1 s, so a frozen leader's open
+transaction cannot hold row locks the next leader waits on. A server without
+HA sets neither.
 
 ---
 
@@ -1265,6 +1303,38 @@ Upgrading from v0.3.0 changes the following behaviour.
   reclaimed by that registration while the process runs it). The refusal is
   held for `leaseRefusalDelay` (1 s), about as long as a registration takes to
   land.
+- A late or redelivered registration cannot roll a worker back to an
+  earlier process. After a scheduler failover JetStream can redeliver an older
+  registration after a newer one; applied, it would restore the earlier
+  `instance_id`, and the live process's next registration would read that as a
+  restart and reclaim its tasks. Registrations are therefore ordered by the
+  broker's own stream timestamp for the message, recorded on the worker row as
+  `registration_broker_at`; nothing is added to the worker protocol and no
+  worker clock is consulted, so a worker with a wrong clock is ordered like any
+  other. `RegisterWorker` writes nothing and reclaims nothing when both the
+  incoming and the stored timestamps are set and the incoming one is strictly
+  earlier (`store.ErrStaleRegistration`); the scheduler acks the message
+  (redelivery cannot make it current) and logs
+  `scheduler: stale registration — discarding` at Info, naming both
+  timestamps. A late redelivery keeps its original timestamp, so it is still
+  detected, while a restarted worker's fresh registration carries a current
+  one. A message whose broker metadata cannot be read is applied unordered.
+  Heartbeats are ordered the same way, by their stream timestamp,
+  recorded as `heartbeat_broker_at`: `UpdateWorkerHeartbeat` ignores (and the
+  scheduler acks) one the broker stamped before the recorded one, and records
+  any other. The time recorded as `last_heartbeat_at`, which the liveness sweep
+  judges against the server's `now` minus `scheduler.heartbeat_timeout`, is
+  that same broker stamp, never the worker's own clock: a worker whose clock
+  runs behind, or is stepped back, stays online and keeps its tasks. The stamp
+  is the moment the heartbeat was published, so a backlog delivered late
+  (after a store outage or a failover) does not make a worker that has since
+  died look alive. With the embedded broker the stamp comes from the server's
+  own clock; with an external cluster, keep the sqi-server and NATS hosts'
+  clocks synchronized. A heartbeat whose broker metadata cannot be read is
+  recorded unconditionally, at the server's receipt time. The worker's own
+  timestamp is still used by attempt reconciliation, which ignores a delayed or
+  skewed heartbeat (see the Reconciliation notes in
+  [Operations](operations.md)).
 - A late or redelivered deregister can no longer take a restarted worker
   offline. The deregister carries the same optional `instance_id`, and
   `OfflineWorker` writes nothing when it and the stored one are both non-empty
@@ -1460,13 +1530,6 @@ The store does not close these yet.
   step is terminal) reaches `FinalizeJob` and repairs it. A user's job cancel
   does not leave this shape: `CancelJobExecution` cancels the job row in the
   same transaction that cancels its tasks and finalizes its steps.
-- **A stale redelivered registration can reclaim a live process's tasks.** A
-  registration message that is Nak'd and redelivered after the worker has
-  restarted again can flip the stored `instance_id` back to the earlier
-  process's value; the next registration, from the live process, then reads
-  that as a restart and reclaims the live process's tasks. Closing it needs
-  ordering metadata on the registration (a sequence or a timestamp), which the
-  message does not carry.
 - **A refused process re-requests about once a second per queue.** The refusal
   of an unregistered process's lease request is held for `leaseRefusalDelay`
   (1 s) precisely so the worker's lease loop does not spin, but the loop does
@@ -1612,7 +1675,29 @@ The guard is the key `active` in the JetStream KV bucket `SQI_SERVER`, with a
   takes no guard.
 
 The guard stops a copied configuration from pointing a second server at a
-live account. It does not fail over or elect a standby.
+live account. It does not fail over or elect a standby: that is the leader
+lease's job (see [High availability](#high-availability)).
+
+Under HA the guard binds the account to one database rather than to one
+process. The servers of a group share the account; the leader holds the key,
+taking it as it promotes itself (`Remote.TakeLeadership`), and a standby
+checks it before it reports ready (`CheckGuard`). The value's instance ID is
+looked up in the database's `server_members`:
+
+- **A member's key** (the leader's, or a leader's that crashed) passes a
+  standby's check and is overwritten at once by a promoting server, so a
+  crash costs a failover no guard TTL.
+- **A non-member's key** is watched for one guard TTL (30 s). If its revision
+  advances, the holder is a live server on another database: a standby
+  refuses to start, and a promotion fails, with the holder named and
+  `and is not a member of this database: is this server pointed at the wrong
+  database?`. If it is not, its holder is gone (the last server without HA, or
+  a finished restore) and it is taken. So the first promotion after moving a
+  farm to HA can take up to 30 s longer, and a server on the wrong database is
+  refused up to 30 s later than a single server would be.
+- **A leader whose key is taken** loses its leadership (`guard_lost`) and
+  exits, instead of reporting degraded and running on as a single server
+  does.
 
 ### Changing broker: identity and fencing
 
@@ -1682,6 +1767,87 @@ for expiry, but workers keep working.
 
 ---
 
+## High availability
+
+With `ha.enabled`, servers that share a PostgreSQL database and an external
+NATS account form a group: one leader, which does everything a single server
+does, and warm standbys (`internal/ha`, `internal/server/ha*.go`). Without
+`ha.enabled` none of this runs. The operator's guide is
+[Running more than one server](operations.md#running-more-than-one-server-high-availability).
+
+**The lease.** The `server_lease` row (holder, epoch, expiry) and the
+`server_epoch` row (the fencing epoch) live in the database, and acquire,
+renew and release are single SQL statements that compare the expiry with the
+database's own clock, so no server's clock decides. They run on a pool of
+their own, so the leader's writes never delay a renewal. A standby tries to
+acquire every second; an acquire after an expiry or a release bumps the epoch.
+The leader renews every `ha.lease_ttl / 3` and retries a failed renewal every
+`ha.lease_ttl / 10`. It notes its monotonic clock before sending each renewal
+and treats a success as authority for `0.8 × ha.lease_ttl` from that instant:
+the database set the expiry no earlier than the request was sent, so no
+standby can take over before the leader's authority has run out.
+
+**The fence.** Everything the leader does as leader runs under a context
+carrying its epoch (`store.WithLeaderEpoch`). Every write made under it, in a
+transaction or a single statement, ends with `SELECT 1 FROM server_epoch
+WHERE id = 1 AND epoch = $1 FOR SHARE` before its commit; no row means another
+server has taken over, and the write rolls back with `store.ErrFenced`. A
+takeover's `UPDATE` of the epoch row waits only for commits already past their
+check. The leader's own writes therefore cannot land after a successor
+started, however long it was frozen before committing. A fenced write is a
+loss of leadership.
+
+**Losing it.** Any loss of authority (a refused renewal, the self-fence
+deadline, a fenced write, the broker guard taken, the broker lost while a
+standby has it, a failed promotion step) logs one Error, stops the process in
+bounded steps, releases the lease and exits with code 75 (`server.ExitDemoted`),
+for the supervisor to start it again as a standby. A fresh process has no
+stale state, which making the scheduler, the consumers and the hub stoppable
+in place could not promise.
+
+**Membership.** Every server upserts its row in `server_members` (instance
+ID, name, host, PID, version, worker-grants fingerprint, start time, last
+seen, and when it last reached the broker) every `ha.lease_ttl / 3`. The
+broker guard reads it to tell a member from a stranger, the broker-loss rule
+reads it to see whether a standby reaches the broker, and
+`GET /api/v1/servers` and `sqi-server ha status` render it.
+
+### What runs where
+
+| Component | Single server | In a group |
+|---|---|---|
+| Store open and the single-server lock | exclusive lock; migrate on open | every server; lock shared, migrations only by a server that got it exclusive |
+| PostgreSQL lock watcher | logs a lost lock | every server, unchanged |
+| SQLite WAL checkpointer | yes | n/a (no HA on SQLite) |
+| Expired-session sweeper | yes | leader only (also prunes member rows unseen for a day) |
+| Seeding the default farm and queue | at boot | leader only, at promotion |
+| Bootstrapping the first admin | at boot | leader only, at promotion |
+| Broker connections | yes | every server connects; leader only provisions the streams |
+| Broker account guard | held and refreshed | leader only holds it; standbys check it |
+| Broker-layout reconcile and fence | at boot | leader only, at promotion, under its epoch |
+| Auth-callout responder (`sqi-auth`) | yes | every server, once its standby checks pass and while its worker-grants fingerprint matches the leader's |
+| Worker registration, heartbeat and deregister consumer (`sqi-worker-srv`) | yes | leader only |
+| Task status consumer (`sqi-task-status-srv`) | yes | leader only |
+| Task log consumer (`sqi-task-logs-srv`) | yes | leader only |
+| Stuck- and pending-step reconcile | in `scheduler.Run` | leader only, at promotion, before leasing |
+| Worker diagnostic subscription | yes | every server, so a new leader has worker log history |
+| Lease subscription (`work.lease.<queue>`) | yes | leader only |
+| Heartbeat sweep (liveness, reclaim, reap, reconcile) | yes | leader only; its reconnect grace counts from the promotion |
+| Retry-wake timers | in memory | in the leader's memory; lost on failover, the sweep is the backstop |
+| REST API, WebSocket hub, cancel, retry, revoke | yes | leader only; a standby answers 503 |
+| HTTP listener | yes | every server: probes and metrics on a standby |
+| Per-IP rate limiter, OIDC state key, diagnostics ring | in memory | per process |
+| mDNS responder | if enabled | leader only |
+| `/healthz`, `/readyz` | yes | every server, role-aware; plus `/leaderz` |
+| Prometheus metrics | yes | every server; scheduler gauges meaningful on the leader only; plus `sqi_server_ha_*` |
+| Preset library cache | yes | every server |
+
+"Leader only" work starts in the promotion's order (guard, streams, layout
+fence, seeding, bootstrap, scheduler, sweeper, mDNS, API) and the API opens
+last, so a client never reaches a leader that has not finished promoting.
+
+---
+
 ## NATS subjects and streams
 
 | Subject pattern | Transport | Direction | Purpose |
@@ -1690,7 +1856,7 @@ for expiry, but workers keep working.
 | `task.status.<worker_id>.<job_id>` | JetStream (`SQI_TASK`, MaxAge 24 h) | worker → server | Terminal and intermediate status updates |
 | `task.logs.<worker_id>.<task_id>` | JetStream (`SQI_LOGS`, MaxAge 96 h) | worker → server | Log chunk delivery |
 | `task.cancel.<task_id>` | JetStream (`SQI_CANCEL`, MaxAge 5 min) | server → worker | Cancellation signal; the worker holding the task interrupts the process |
-| `worker.register.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Registration at startup and on reconnect; carries the worker process's `instance_id` (a changed one reclaims the previous process's tasks) |
+| `worker.register.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Registration at startup and on reconnect; carries the worker process's `instance_id` (a changed one reclaims the previous process's tasks) (the broker's timestamp for it orders registrations: one stamped earlier than the recorded one is discarded) |
 | `worker.heartbeat.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Liveness heartbeat |
 | `worker.deregister.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Graceful departure; marks the worker offline without waiting for heartbeat timeout (a disabled worker stays disabled) and reclaims its tasks. Ignored when its `instance_id` names a process a later registration replaced |
 | `worker.diag.<workerID>` | Core NATS (best-effort) | worker → server | Diagnostic log records |

@@ -11,9 +11,12 @@ import (
 
 // CreateStorageLocation inserts a new location. Returns [store.ErrConflict] if
 // a location with the same name already exists.
-func (s *Store) CreateStorageLocation(_ context.Context, loc store.StorageLocation) (store.StorageLocation, error) {
+func (s *Store) CreateStorageLocation(ctx context.Context, loc store.StorageLocation) (store.StorageLocation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.StorageLocation{}, err
+	}
 
 	for _, existing := range s.storageLocations {
 		if existing.Name == loc.Name {
@@ -84,9 +87,12 @@ func (s *Store) ListStorageLocations(_ context.Context) ([]store.StorageLocation
 
 // UpdateStorageLocation replaces the mutable fields of an existing location
 // and updates UpdatedAt. Returns [store.ErrNotFound] or [store.ErrConflict].
-func (s *Store) UpdateStorageLocation(_ context.Context, loc store.StorageLocation) (store.StorageLocation, error) {
+func (s *Store) UpdateStorageLocation(ctx context.Context, loc store.StorageLocation) (store.StorageLocation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.StorageLocation{}, err
+	}
 
 	existing, ok := s.storageLocations[loc.ID]
 	if !ok {
@@ -111,9 +117,12 @@ func (s *Store) UpdateStorageLocation(_ context.Context, loc store.StorageLocati
 
 // DeleteStorageLocation removes a location by ID. Returns [store.ErrNotFound]
 // if it does not exist.
-func (s *Store) DeleteStorageLocation(_ context.Context, id string) error {
+func (s *Store) DeleteStorageLocation(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return err
+	}
 
 	if _, ok := s.storageLocations[id]; !ok {
 		return store.ErrNotFound

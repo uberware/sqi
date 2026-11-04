@@ -889,6 +889,77 @@ jobs:
 
           echo "Confirmed all ${#expected[@]} TestNATSCluster_ tests passed on ${{ matrix.image }}."
 
+  # ── Scheduler high availability ──────────────────────────────────────────────
+  # A group of real sqi-server binaries with ha.enabled on one PostgreSQL
+  # container and the three-node NATS cluster, a real sqi-worker, and the
+  # failures the design must survive: a crash, a frozen leader, a graceful
+  # stop, the leader losing its broker, the broker down for everyone, the
+  # database restarting, and a server on the wrong database. One arch: the
+  # behaviour under test is timing and process lifecycle, not the
+  # architecture. Runs on the current nats-server image only; the external
+  # broker's version floor is the nats-cluster-integration job's.
+  #
+  # make test-ha exits 0 when Docker is unavailable and every test skips
+  # without the rig, so the job asserts each test's PASS line by name.
+  ha-integration:
+    name: High-availability integration
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # Pulled explicitly so a registry problem fails here with a clear
+      # message, not inside the test run. Keep in step with the Makefile's
+      # NATS_IMAGE_CURRENT and scripts/test-ha.sh's POSTGRES_IMAGE.
+      - name: Pull images
+        run: |
+          docker pull nats:2.15.2@sha256:991242c32d2738ffd358fd6614dd96c735017b4b3b34bfdb2c52a072d66db211
+          docker pull postgres:18.6
+
+      - name: Run high-availability integration tests
+        run: |
+          set +e
+          make test-ha 2>&1 | tee ha-output.log
+          status=${PIPESTATUS[0]}
+          set -e
+
+          if grep -q "docker unavailable" ha-output.log; then
+            echo "::error::Docker was unavailable, so the high-availability suite did not run."
+            exit 1
+          fi
+
+          expected=(
+            TestHA_ExactlyOneLeaderUnderContention
+            TestHA_CrashFailover
+            TestHA_PauseFailover
+            TestHA_NoDoubleAssignment
+            TestHA_GracefulHandover
+            TestHA_LeaderLosesBroker
+            TestHA_BrokerDownForEveryone
+            TestHA_PostgresRestart
+            TestHA_WrongDatabaseRefused
+          )
+          missing=0
+          for name in "${expected[@]}"; do
+            if ! grep -q -- "^--- PASS: $name " ha-output.log; then
+              echo "::error::$name did not pass"
+              missing=1
+            fi
+          done
+          if [ "$status" -ne 0 ] || [ "$missing" -ne 0 ]; then
+            echo "::error::the high-availability suite did not all pass (exit=$status)."
+            exit 1
+          fi
+
+          echo "Confirmed all ${#expected[@]} TestHA_ tests passed."
+
   # ── State store on PostgreSQL ────────────────────────────────────────────────
   # Runs everything that needs a real PostgreSQL: the shared SQL layer's
   # concurrency races, schema parity with the SQLite migrations, the
@@ -1026,6 +1097,81 @@ jobs:
             TestPostgres_RequireEmptyDatabaseSeesTablesTheRoleCannotAccess
             TestPostgres_ArchiveSchemaVersionReportsToolProblemsAsSuch
             TestPostgres_ReadsAMixedCaseSchema
+            TestPostgres_ClockMicros_IsDatabaseNowInMicros
+            TestClockMicros_AdvancesWithinATransaction
+            TestPostgres_SeedRows_LeaseAndEpochStartAtZero
+            TestPostgres_ServerHA_SingletonTablesRefuseASecondRow
+            TestLeaseOps_UseDedicatedPool
+            TestLeaseRenew_NotBlockedByFencedWriters
+            TestAcquireLeadership_WaitsForFencedCommitInProgress
+            TestLeadership_WorksWithoutAnHAPool
+            TestLeadership_ConcurrentAcquirersElectOne
+            TestOpen_HAClosesTheLeasePool
+            TestHALock_TwoHAServersCoexist
+            TestHALock_HAAndNonHARefuseEachOther
+            TestHALock_ErrorNamesBothHolders
+            TestHALock_CommandsRefusedBesideHAServer
+            TestHALock_CommandHoldsServersOff
+            TestHALock_WaitsForAnExclusiveHolderToFinish
+            TestHALock_JoiningAGroupAnnouncesNoWait
+            TestHALock_FirstServerMigrates
+            TestHALock_PendingMigrationWithOtherServerRefused
+            TestHALock_BehindDatabaseWithoutAutoMigrateJoins
+            TestHALock_NewerSchemaStillRefused
+            TestServerLock_CloseAfterSessionEnded
+            TestServerLock_CloseReportsAnUnlockThatTimedOut
+            TestHASession_TimeoutsSet
+            TestHASession_DefaultLeaseTTL
+            TestHASession_IdleTransactionEnded
+            TestNonHASession_NoTimeouts
+            TestParity_GetLeadership_Fresh/postgres
+            TestParity_AcquireLeadership_OnEmpty/postgres
+            TestParity_AcquireLeadership_RefusedWhileHeld/postgres
+            TestParity_AcquireLeadership_AfterExpiryBumpsEpoch/postgres
+            TestParity_AcquireLeadership_NonPositiveTTLIsRefused/postgres
+            TestParity_RenewLeadership_ExtendsTheLease/postgres
+            TestParity_RenewLeadership_RefusedForAnyoneElse/postgres
+            TestParity_RenewLeadership_StaleEpochFails/postgres
+            TestParity_RenewLeadership_LapsedButUntakenCanBeRenewed/postgres
+            TestParity_ReleaseThenAcquireBumpsEpoch/postgres
+            TestParity_ReleaseByNonHolderIsNoop/postgres
+            TestParity_ServerMembers_UpsertListDelete/postgres
+            TestParity_ServerMembers_BrokerStampIsKept/postgres
+            TestParity_ServerMembers_ListIsOrderedByNameThenID/postgres
+            TestParity_ListServerMembers_EmptyStillReportsTheClock/postgres
+            TestParity_RegisterWorker_RegistrationBrokerAtRoundTrip/postgres
+            TestParity_RegisterWorker_EarlierBrokerStampIgnored/postgres
+            TestParity_RegisterWorker_LaterBrokerStampRestarts/postgres
+            TestParity_RegisterWorker_SameBrokerStampIsNotStale/postgres
+            TestParity_RegisterWorker_NoBrokerStampBehavesAsBefore/postgres
+            TestParity_RegisterWorker_NeverWritesHeartbeatBrokerAt/postgres
+            TestParity_UpdateWorkerHeartbeat_BrokerStampNeverMovesBackwards/postgres
+            TestParity_UpdateWorkerHeartbeat_WorkerClockStepBackRecorded/postgres
+            TestParity_UpdateWorkerHeartbeat_UnstampedRecordedUnconditionally/postgres
+            TestParity_UpdateWorkerHeartbeat_NeverHeartbeatedWorker/postgres
+            TestParity_UpdateWorkerHeartbeat_UnknownWorkerNotFound/postgres
+            TestParity_Fence_IgnoredWorkerWritesStillFence/postgres
+            TestParity_Fence_SingleStatementWrites/PromoteJobRunning/postgres
+            TestParity_Fence_SingleStatementWrites/PauseJob/postgres
+            TestParity_Fence_SingleStatementWrites/CancelJobStatus/postgres
+            TestParity_Fence_SingleStatementWrites/ParkJob/postgres
+            TestParity_Fence_SingleStatementWrites/ResumeJob/postgres
+            TestParity_Fence_SingleStatementWrites/SetTaskUnschedulableReason/postgres
+            TestParity_Fence_SingleStatementWrites/SetBrokerIdentity/postgres
+            TestParity_Fence_SingleStatementWrites/DeleteExpiredSessions/postgres
+            TestParity_Fence_SingleStatementWrites/UpdateWorkerHeartbeat/postgres
+            TestParity_Fence_LeadershipMethodsAreNeverFenced/postgres
+            TestParity_Fence_PlainContextIsNeverFenced/postgres
+            TestParity_Fence_TransactionalWriteRollsBack/postgres
+            TestFence_EveryStoreMethodClassified
+            TestParity_Fence_EveryMutatorRefusesStaleEpoch/postgres
+            TestParity_Fence_EveryMutatorSucceedsAtCurrentEpoch/postgres
+            TestFence_LongTransactionStartedBeforeTakeoverRollsBack
+            TestRunTx_FenceCheckedLastBeforeCommit/postgres
+            TestRunTx_FencedIsNeverRetried/postgres
+            TestRunTx_NoEpochNoFenceStatement/postgres
+            TestWrite_NoEpochRunsOnPoolWithoutTx/postgres
+            TestWrite_EpochRunsInTxWithFence/postgres
             TestMigration00038_DedupesLogChunksOnPostgreSQL
             TestLockDatabase_ExcludesAServerAndIsReleasable
             TestParity_ListOpenAttempts/postgres
@@ -1040,6 +1186,8 @@ jobs:
             TestStoreCopy_CopiesEveryRowVerbatim
             TestStoreCopy_NeverWritesASourceWithAPendingWAL
             TestStoreCopy_RefusesANonEmptyTarget
+            TestStoreCopy_RefusesATargetWhoseSeedRowsWereUsed
+            TestStoreCopy_CopiesIntoAMigratedTargetHoldingOnlySeedRows
             TestStoreCopy_RefusesASourceBehindTheBinary
             TestStoreCopy_RefusesASourceAheadOfTheBinary
             TestStoreCopy_RefusesATargetAtAnotherVersion

@@ -1,0 +1,227 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# A high-availability sqi farm: two sqi-servers sharing one PostgreSQL 18
+# database and one account on a three-node NATS cluster, HAProxy in front of
+# them routing to whichever server leads, and one sqi-worker. One server leads
+# and does the farm's work; the other is a warm standby that takes over when
+# the leader stops, crashes, freezes, or loses its database or broker. The
+# guide is docs/operations.md, "Running more than one server (high
+# availability)".
+#
+# Images: no published release includes high availability yet, so `--build`
+# builds the sqi images from this checkout (run `make build` first for the full
+# web UI). Once a release includes it, pin its tag on the sqi services and drop
+# `--build`.
+#
+# ── One-time setup ───────────────────────────────────────────────────────────
+#
+# Everything the containers read lives in one directory, SQI_HA_DIR. On Docker
+# Desktop and Colima keep it under a directory shared into the VM ($HOME on
+# Colima), or it mounts empty.
+#
+#   export SQI_HA_DIR=$HOME/sqi-ha
+#   mkdir -p "$SQI_HA_DIR"/nats "$SQI_HA_DIR"/sqi
+#
+# The broker's accounts and keys, and a certificate naming the three nodes as
+# the servers and the worker dial them on the Compose network:
+#
+#   sqi-server nats external init --out "$SQI_HA_DIR"/nats-init
+#   sqi-server tls init --out "$SQI_HA_DIR"/tls --host nats-1 --host nats-2 --host nats-3
+#   cp deploy/nats-cluster/nats.conf "$SQI_HA_DIR"/nats-init/sqi-accounts.conf \
+#      "$SQI_HA_DIR"/tls/server.crt "$SQI_HA_DIR"/tls/server.key "$SQI_HA_DIR"/nats/
+#   cp "$SQI_HA_DIR"/nats-init/*.nk "$SQI_HA_DIR"/tls/ca.crt "$SQI_HA_DIR"/sqi/
+#   cp deploy/ha/haproxy.cfg "$SQI_HA_DIR"/
+#
+# The private seeds go only to sqi/, which only the servers mount. They are
+# written owner-only, and the sqi-server image runs as UID 65532, so on Linux
+# give that UID the directory: sudo chown -R 65532:65532 "$SQI_HA_DIR"/sqi
+# (Docker Desktop and Colima map file ownership for you). Then write
+# "$SQI_HA_DIR"/sqi/sqi-server.yaml, the one configuration file both servers
+# read (each takes its own ha.instance_name from SQI_HA_INSTANCE_NAME below):
+#
+#   ha:
+#     enabled: true
+#   store:
+#     driver: postgres
+#     postgres:
+#       dsn: "host=postgres port=5432 user=sqi dbname=sqi sslmode=disable"
+#   discovery:
+#     enabled: false
+#   nats:
+#     mode: external
+#     auth:
+#       enabled: true
+#       enrollment_endpoint_enabled: true
+#     external:
+#       urls: ["tls://nats-1:4222", "tls://nats-2:4222", "tls://nats-3:4222"]
+#       stream_replicas: 3
+#       nkey_seed_file: /etc/sqi/sqi-data.nk
+#       tls:
+#         ca_file: /etc/sqi/ca.crt
+#       callout:
+#         nkey_seed_file: /etc/sqi/sqi-auth.nk
+#         issuer_seed_file: /etc/sqi/issuer.nk
+#         system_creds_file: /etc/sqi/sqi-sys.nk
+#
+# ── Start ────────────────────────────────────────────────────────────────────
+#
+#   export SQI_POSTGRES_PASSWORD='choose-a-strong-password'
+#   docker compose -f deploy/docker-compose.ha.yml up -d --build \
+#     postgres nats-1 nats-2 nats-3 sqi-server-1 sqi-server-2 haproxy
+#   open http://localhost:8080        # web UI, through HAProxy, on the leader
+#
+# The first server to start creates the schema; the other waits for it. Issue
+# a join token for the worker (the command reads the database directly, so it
+# runs in a one-off container beside the servers), then start the worker:
+#
+#   export SQI_WORKER_JOIN_TOKEN=$(docker compose -f deploy/docker-compose.ha.yml \
+#     run --rm -T --no-deps sqi-server-1 --config /etc/sqi/sqi-server.yaml worker token issue)
+#   docker compose -f deploy/docker-compose.ha.yml up -d sqi-worker
+#
+# ── Operate ──────────────────────────────────────────────────────────────────
+#
+#   curl -s localhost:8080/api/v1/servers           # the group, from the leader
+#   docker compose -f deploy/docker-compose.ha.yml run --rm -T --no-deps \
+#     sqi-server-1 --config /etc/sqi/sqi-server.yaml ha status
+#   docker compose -f deploy/docker-compose.ha.yml stop sqi-server-1   # a handover
+#
+# A server that loses its leadership exits with code 75 and `restart:
+# unless-stopped` brings it back as a standby; nothing else in this file is
+# needed for that. stop_grace_period is longer than the server's own 30 s
+# shutdown budget plus its hand-over, so a stop is never cut short into a
+# kill (a kill makes the standby wait out the lease).
+#
+#   docker compose -f deploy/docker-compose.ha.yml down      # stop (keeps data)
+#   docker compose -f deploy/docker-compose.ha.yml down -v   # stop and wipe data
+#
+# Only HAProxy's port 8080 is published. The NATS nodes and PostgreSQL are
+# reachable only on the Compose network; a worker on another host needs the
+# nodes' client ports published and a certificate naming the address it dials
+# (see deploy/docker-compose.nats-cluster.yml).
+
+x-nats-node: &nats-node
+  image: nats:2.15.2@sha256:991242c32d2738ffd358fd6614dd96c735017b4b3b34bfdb2c52a072d66db211
+  command: ["--config", "/etc/nats/nats.conf"]
+  restart: unless-stopped
+
+x-sqi-server: &sqi-server
+  image: ghcr.io/uberware/sqi/sqi-server:latest
+  build:
+    context: ..
+    dockerfile: deploy/docker/Dockerfile
+  command: ["--config", "/etc/sqi/sqi-server.yaml", "serve"]
+  depends_on:
+    postgres:
+      condition: service_healthy
+    nats-1:
+      condition: service_started
+    nats-2:
+      condition: service_started
+    nats-3:
+      condition: service_started
+  restart: unless-stopped
+  stop_grace_period: 45s
+  volumes:
+    - ${SQI_HA_DIR:?set SQI_HA_DIR to the setup directory}/sqi:/etc/sqi:ro
+
+services:
+  postgres:
+    image: postgres:18.6
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sqi
+      POSTGRES_DB: sqi
+      POSTGRES_PASSWORD: ${SQI_POSTGRES_PASSWORD:?set SQI_POSTGRES_PASSWORD to the database password}
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      # Over TCP: on first boot the image runs a temporary, socket-only server
+      # that a socket probe would mistake for the real one.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U sqi -d sqi"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  nats-1:
+    <<: *nats-node
+    hostname: nats-1
+    environment:
+      NATS_SERVER_NAME: nats-1
+    volumes:
+      - ${SQI_HA_DIR:?set SQI_HA_DIR to the setup directory}/nats:/etc/nats:ro
+      - nats-1-data:/data
+
+  nats-2:
+    <<: *nats-node
+    hostname: nats-2
+    environment:
+      NATS_SERVER_NAME: nats-2
+    volumes:
+      - ${SQI_HA_DIR:?set SQI_HA_DIR to the setup directory}/nats:/etc/nats:ro
+      - nats-2-data:/data
+
+  nats-3:
+    <<: *nats-node
+    hostname: nats-3
+    environment:
+      NATS_SERVER_NAME: nats-3
+    volumes:
+      - ${SQI_HA_DIR:?set SQI_HA_DIR to the setup directory}/nats:/etc/nats:ro
+      - nats-3-data:/data
+
+  sqi-server-1:
+    <<: *sqi-server
+    environment:
+      SQI_HA_INSTANCE_NAME: sqi-server-1
+      PGPASSWORD: ${SQI_POSTGRES_PASSWORD:?set SQI_POSTGRES_PASSWORD to the database password}
+
+  sqi-server-2:
+    <<: *sqi-server
+    environment:
+      SQI_HA_INSTANCE_NAME: sqi-server-2
+      PGPASSWORD: ${SQI_POSTGRES_PASSWORD:?set SQI_POSTGRES_PASSWORD to the database password}
+
+  haproxy:
+    image: haproxy:3.2.14
+    restart: unless-stopped
+    depends_on:
+      - sqi-server-1
+      - sqi-server-2
+    ports:
+      - "8080:8080" # REST API + web UI, on whichever server leads
+    volumes:
+      - ${SQI_HA_DIR:?set SQI_HA_DIR to the setup directory}/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+
+  sqi-worker:
+    image: ghcr.io/uberware/sqi/sqi-worker:latest
+    build:
+      context: ..
+      dockerfile: deploy/docker/worker/Dockerfile
+    depends_on:
+      - haproxy
+    restart: unless-stopped
+    environment:
+      SQI_WORKER_NATS_URL: "tls://nats-1:4222,tls://nats-2:4222,tls://nats-3:4222"
+      SQI_WORKER_NATS_TLS_CA_FILE: /etc/sqi/ca.crt
+      # Enrollment goes through HAProxy, so it reaches the leader.
+      SQI_WORKER_NATS_SERVER_URL: "http://haproxy:8080"
+      SQI_WORKER_NATS_JOIN_TOKEN: ${SQI_WORKER_JOIN_TOKEN:?issue a join token first (see the header)}
+      SQI_WORKER_DISCOVERY_ENABLE_MDNS: "false"
+      SQI_WORKER_DATA_DIR: /var/lib/sqi-worker
+    volumes:
+      - ${SQI_HA_DIR:?set SQI_HA_DIR to the setup directory}/tls/ca.crt:/etc/sqi/ca.crt:ro
+      - worker-data:/var/lib/sqi-worker
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:9091/readyz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  postgres-data:
+  nats-1-data:
+  nats-2-data:
+  nats-3-data:
+  worker-data:

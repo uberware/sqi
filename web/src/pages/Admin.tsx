@@ -90,6 +90,13 @@ const ADMIN_LINKS: AdminLink[] = [
     permission: 'diagnostics.read',
   },
   {
+    id: 'servers',
+    label: 'Servers',
+    description: 'Leader and standby servers',
+    to: '/servers',
+    permission: 'diagnostics.read',
+  },
+  {
     id: 'users',
     label: 'Users',
     description: 'User accounts and roles',

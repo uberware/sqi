@@ -149,7 +149,7 @@ exception of `POST /api/v1/workers/enroll` noted above (`/healthz`,
 | `POST`/`PUT`/`DELETE` on farms, queues, storage-locations, compute-locations, usage-pools | `infra.manage` |
 | `GET /products`, `GET /products/{name}`, `GET /products/{name}/parameters`, `GET /presets`, `GET /presets/{name}` | `products.read` |
 | `POST /products`, `PUT /products/{name}`, `DELETE /products/{name}`, `POST /presets/{name}/install` | `products.manage` |
-| `GET /diagnostics/logs`, WebSocket subject `diagnostics` | `diagnostics.read` |
+| `GET /diagnostics/logs`, `GET /servers`, WebSocket subject `diagnostics` | `diagnostics.read` |
 | `GET /users`, `GET /users/{id}` | `users.read` |
 | `POST /users`, `PATCH /users/{id}`, `PUT /users/{id}/password`, `DELETE /users/{id}` | `users.manage` |
 | `POST/GET /api-keys`, `DELETE /api-keys/{id}` | `apikeys.self` |
@@ -865,6 +865,7 @@ resume without missing events. (A client may also send an application-level
 |---|---|
 | `GET /healthz` | Liveness — returns `200 OK` if the process is alive |
 | `GET /readyz` | Readiness — returns `200 OK` only when the store (`sqlite` or `postgres`, the check named after `store.driver`) and the NATS broker (`nats`) pass their checks; see [Readiness](observability.md#readiness-get-readyz) |
+| `GET /leaderz` | High availability only: `200 OK` on the group's leader, `503` on a standby, `404` on a server without `ha.enabled`; what a load balancer health-checks. See [Running more than one server](operations.md#running-more-than-one-server-high-availability) |
 | `GET /metrics` | Prometheus metrics (text format) |
 | `GET /api/v1/openapi.yaml` | OpenAPI 3.1 specification |
 

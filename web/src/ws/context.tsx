@@ -3,6 +3,7 @@
 
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { WebSocketClient } from './client'
 import type { ConnectionState, MessageHandler } from './types'
 
@@ -38,15 +39,27 @@ export function WebSocketProvider({ children, url }: { children: ReactNode; url?
   // useState lazy init creates the client exactly once per mount — stable across renders.
   const [client] = useState(() => new WebSocketClient(url ?? buildWsUrl()))
   const [state, setState] = useState<ConnectionState>('disconnected')
+  const queryClient = useQueryClient()
 
   useEffect(() => {
-    const off = client.onStateChange(setState)
+    // After a drop the socket may have landed on a different server (a
+    // failover), whose event stream this browser has never seen: pushes missed
+    // in between are never replayed, so refetch whatever is on screen.
+    let dropped = false
+    const off = client.onStateChange((next) => {
+      if (next === 'reconnecting') dropped = true
+      if (next === 'connected' && dropped) {
+        dropped = false
+        void queryClient.invalidateQueries()
+      }
+      setState(next)
+    })
     client.connect()
     return () => {
       off()
       client.disconnect()
     }
-  }, [client])
+  }, [client, queryClient])
 
   return <WsContext.Provider value={{ client, state }}>{children}</WsContext.Provider>
 }

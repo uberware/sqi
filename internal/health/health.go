@@ -67,6 +67,20 @@ func (f CheckerFunc) Check(ctx context.Context) error { return f(ctx) }
 type Registry struct {
 	mu       sync.RWMutex
 	checkers map[string]Checker
+	role     func() RoleInfo
+}
+
+// RoleInfo is a server's place in its high-availability group.
+type RoleInfo struct {
+	// Role is "leader" or "standby", as /readyz and /leaderz report it.
+	Role string
+	// IsLeader reports whether this server leads: /leaderz answers 200 only
+	// when it does. The provider sets it with Role.
+	IsLeader bool
+	// Leader is the name of the server leading, "" when none is known.
+	Leader string
+	// Epoch is the leadership epoch, 0 when none is known.
+	Epoch int64
 }
 
 // NewRegistry returns an empty [Registry].
@@ -80,6 +94,36 @@ func (r *Registry) Register(name string, c Checker) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.checkers[name] = c
+}
+
+// SetRoleProvider makes /readyz report the role f returns, read on each
+// request, and is what /leaderz answers from. Nil, the default, leaves /readyz
+// without a role, exactly as a server outside a group serves it.
+func (r *Registry) SetRoleProvider(f func() RoleInfo) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.role = f
+}
+
+// roleInfo returns the provider's role, and false without a role provider.
+func (r *Registry) roleInfo() (RoleInfo, bool) {
+	r.mu.RLock()
+	f := r.role
+	r.mu.RUnlock()
+	if f == nil {
+		return RoleInfo{}, false
+	}
+	return f(), true
+}
+
+// readinessBody is the /readyz body: with the role when there is a role
+// provider, and otherwise exactly as a server outside a group serves it.
+func (r *Registry) readinessBody(status string, checks map[string]checkResult) any {
+	info, ok := r.roleInfo()
+	if !ok {
+		return readinessResponse{Status: status, Checks: checks}
+	}
+	return roleReadinessResponse{Status: status, Checks: checks, Role: info.Role, Leader: info.Leader, Epoch: info.Epoch}
 }
 
 // LivenessHandler returns an [http.Handler] for GET /healthz.
@@ -116,7 +160,7 @@ func (r *Registry) ReadinessHandler() http.Handler {
 		results := make(map[string]checkResult, len(snapshot))
 
 		if len(snapshot) == 0 {
-			writeJSON(w, http.StatusOK, readinessResponse{Status: "ok", Checks: results})
+			writeJSON(w, http.StatusOK, r.readinessBody("ok", results))
 			return
 		}
 
@@ -156,7 +200,27 @@ func (r *Registry) ReadinessHandler() http.Handler {
 			}
 		}
 
-		writeJSON(w, httpStatus, readinessResponse{Status: overallStatus, Checks: results})
+		writeJSON(w, httpStatus, r.readinessBody(overallStatus, results))
+	})
+}
+
+// LeaderHandler returns an [http.Handler] for GET /leaderz.
+//
+// It answers from the role provider alone, running no checker: a load
+// balancer routes to the leader whatever /readyz says of its dependencies.
+//
+// HTTP 200 {"status":"ok","role":"leader",…}         — this server leads.
+// HTTP 503 {"status":"standby","role":"standby",…}   — it does not.
+func (r *Registry) LeaderHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		info, _ := r.roleInfo() // no provider: no role, so not the leader
+		body := leaderResponse{Status: "standby", Role: info.Role, Leader: info.Leader, Epoch: info.Epoch}
+		if !info.IsLeader {
+			writeJSON(w, http.StatusServiceUnavailable, body)
+			return
+		}
+		body.Status = "ok"
+		writeJSON(w, http.StatusOK, body)
 	})
 }
 
@@ -169,6 +233,24 @@ type livenessResponse struct {
 type readinessResponse struct {
 	Status string                 `json:"status"`
 	Checks map[string]checkResult `json:"checks"`
+}
+
+// roleReadinessResponse is the /readyz body of a server with a role
+// provider: readinessResponse's keys, then the role's.
+type roleReadinessResponse struct {
+	Status string                 `json:"status"`
+	Checks map[string]checkResult `json:"checks"`
+	Role   string                 `json:"role"`
+	Leader string                 `json:"leader"`
+	Epoch  int64                  `json:"epoch"`
+}
+
+// leaderResponse is the /leaderz body.
+type leaderResponse struct {
+	Status string `json:"status"`
+	Role   string `json:"role"`
+	Leader string `json:"leader"`
+	Epoch  int64  `json:"epoch"`
 }
 
 // checkResult is the per-checker entry in the /readyz response body.

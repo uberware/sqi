@@ -446,7 +446,8 @@ func (s *Store) ListTasks(ctx context.Context, opts store.ListTasksOptions) (sto
 // longer ready is a guarded no-op returning (false, nil); only an unknown task
 // is an error.
 func (s *Store) SetTaskUnschedulableReason(ctx context.Context, id, reason string) (bool, error) {
-	res, err := s.stmtSetTaskUnschedulableReason.ExecContext(ctx, reason, TimeText(time.Now().UTC()), id)
+	res, err := s.execStmt(ctx, "set task unschedulable reason", s.stmtSetTaskUnschedulableReason,
+		reason, TimeText(time.Now().UTC()), id)
 	if err != nil {
 		return false, mapErr(err)
 	}

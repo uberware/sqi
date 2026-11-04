@@ -732,12 +732,11 @@ func (s *Store) ListJobs(ctx context.Context, opts store.ListJobsOptions) (store
 // scheduler's failure-limit sweep for those.
 func (s *Store) UpdateJob(ctx context.Context, job store.Job) (store.Job, error) {
 	now := TimeText(time.Now().UTC())
-	row := s.stmtUpdateJob.QueryRowContext(ctx,
+	out, err := writeRow(ctx, s, "update job", scanJob, s.stmtUpdateJob,
 		job.FarmID, job.QueueID, job.Name, job.Owner, job.Submitter, job.Priority,
 		job.Project, job.RawTemplate, string(job.TemplateFormat),
 		nullInt(job.MaxAttempts), nullInt(job.RetryDelaySeconds), nullInt(job.FailureLimit),
 		now, job.ID)
-	out, err := scanJob(row)
 	return out, mapErr(err)
 }
 
@@ -753,7 +752,7 @@ func (s *Store) CancelJobStatus(ctx context.Context, id string) error {
 	now := time.Now().UTC()
 	nowText := TimeText(now)
 
-	res, err := s.w.ExecContext(ctx, sqlCancelJobStatus, nowText, nowText, id)
+	res, err := s.exec(ctx, "cancel job", sqlCancelJobStatus, nowText, nowText, id)
 	if err != nil {
 		return mapErr(err)
 	}
@@ -1035,7 +1034,7 @@ func (s *Store) DeleteJob(ctx context.Context, id string) error {
 func (s *Store) ParkJob(ctx context.Context, jobID, reason string, now time.Time) error {
 	nowText := TimeText(now.UTC())
 
-	res, err := s.w.ExecContext(ctx, sqlParkJob, reason, nowText, jobID)
+	res, err := s.exec(ctx, "park job", sqlParkJob, reason, nowText, jobID)
 	if err != nil {
 		return mapErr(err)
 	}
@@ -1060,7 +1059,7 @@ func (s *Store) ParkJob(ctx context.Context, jobID, reason string, now time.Time
 // paused"; a follow-up GetJob disambiguates the same way [Store.ParkJob] does —
 // not-paused is a legitimate no-op (nil), missing propagates [store.ErrNotFound].
 func (s *Store) ResumeJob(ctx context.Context, jobID string, now time.Time) error {
-	res, err := s.w.ExecContext(ctx, sqlResumeJob, TimeText(now.UTC()), jobID)
+	res, err := s.exec(ctx, "resume job", sqlResumeJob, TimeText(now.UTC()), jobID)
 	if err != nil {
 		return mapErr(err)
 	}

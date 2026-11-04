@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
@@ -65,6 +66,13 @@ type RemoteConfig struct {
 
 	// Auth configures worker authentication through the auth callout.
 	Auth RemoteAuthConfig
+
+	// InstanceID is this server's member instance id in an HA group, the one
+	// it records as a member of its database. It names the server in the
+	// account guard, so that the next leader recognizes a key a crashed
+	// leader left as a member's. [Remote.StartStandby] requires it. Empty
+	// gives every guard acquisition a fresh id.
+	InstanceID string
 }
 
 // ClientTLSConfig is the client side of TLS to an external broker. The zero
@@ -187,6 +195,98 @@ type Remote struct {
 	// responders on one cluster; running without the guard is not a supported
 	// mode.
 	noGuard bool
+
+	// standby is set by StartStandby; leading is set while TakeLeadership
+	// runs and stays set once it succeeds.
+	standby, leading bool
+
+	// dataUp records when the data connection last came up.
+	dataUp connState
+
+	// standbyErr is the outcome of a standby's broker checks:
+	// ErrStandbyUnchecked until they have run, then nil or why they failed.
+	// standbyChecked is closed when it is final.
+	standbyErr     error
+	standbyChecked chan struct{}
+
+	// calloutOpen is set once the responder may answer: at Start, or when a
+	// standby's checks pass. calloutWanted is what SetCalloutActive last
+	// asked for. calloutMu orders SetCalloutActive with the opening.
+	calloutOpen, calloutWanted bool
+	calloutMu                  sync.Mutex
+
+	// checkCancel stops a standby's background check, and checkDone is
+	// closed when it has returned; both nil when there is none.
+	checkCancel context.CancelFunc
+	checkDone   chan struct{}
+}
+
+// connState records when a connection was last established. Its handlers run
+// in the order nats.go reports the events, on its callback goroutine. Every
+// method but get does nothing on a nil *connState, which a connection whose
+// state nobody reads is given.
+type connState struct {
+	mu sync.Mutex
+	// since is when the connection was last established or re-established;
+	// zero while it is down.
+	since time.Time
+	// events counts the handlers that have run, so that a connect recorded
+	// after the fact does not undo one of them.
+	events int
+}
+
+// up records a reconnect.
+func (s *connState) up() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events++
+	s.since = time.Now().UTC()
+}
+
+// connected records the first connect, reported by nats.go's connect
+// handler. The connect may already be recorded, by [connState.initialUp].
+func (s *connState) connected() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events++
+	if s.since.IsZero() {
+		s.since = time.Now().UTC()
+	}
+}
+
+func (s *connState) down() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events++
+	s.since = time.Time{}
+}
+
+// initialUp records the first connect, found connected when nats.Connect
+// returned, unless a handler has run: what it recorded is newer.
+func (s *connState) initialUp() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.events == 0 && s.since.IsZero() {
+		s.since = time.Now().UTC()
+	}
+}
+
+func (s *connState) get() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.since
 }
 
 var _ Broker = (*Remote)(nil)
@@ -196,7 +296,10 @@ var _ Broker = (*Remote)(nil)
 func NewRemote(cfg RemoteConfig, logger *slog.Logger) *Remote {
 	cfg.URLs = slices.Clone(cfg.URLs)
 	cfg.AdvertiseURLs = slices.Clone(cfg.AdvertiseURLs)
-	return &Remote{cfg: cfg, logger: logger, connzSubject: connzPingSubject, varzSubject: varzPingSubject}
+	return &Remote{
+		cfg: cfg, logger: logger, connzSubject: connzPingSubject, varzSubject: varzPingSubject,
+		standbyErr: ErrStandbyUnchecked, standbyChecked: make(chan struct{}), calloutWanted: true,
+	}
 }
 
 // AdvertiseURL returns the first [RemoteConfig.AdvertiseURLs] entry, else
@@ -350,16 +453,11 @@ func (cfg RemoteConfig) redactedURLs() string {
 // then starts answering the cluster's authorization requests and, when a
 // system credential is configured, opens the system connection revocation
 // uses. It must be called before any other method and must not be called more
-// than once.
+// than once. An HA server calls [Remote.StartStandby] instead.
 func (r *Remote) Start(ctx context.Context) error {
-	r.mu.Lock()
-	if r.started {
-		r.mu.Unlock()
-		return errors.New("bus: broker already started")
+	if err := r.markStarted(); err != nil {
+		return err
 	}
-	r.started = true
-	r.mu.Unlock()
-
 	if err := r.cfg.validate(); err != nil {
 		return err
 	}
@@ -376,7 +474,7 @@ func (r *Remote) Start(ctx context.Context) error {
 	}
 	deadline := time.Now().Add(r.cfg.ConnectTimeout)
 
-	data, err := r.dial(ctx, roleData, dialOpts, deadline)
+	data, err := r.dial(ctx, roleData, &r.dataUp, dialOpts, deadline)
 	if err != nil {
 		return err
 	}
@@ -397,7 +495,9 @@ func (r *Remote) Start(ctx context.Context) error {
 	r.callout, r.system = auth.callout, auth.system
 	r.responder = responder
 	r.cluster = auth.cluster
+	r.calloutOpen = true
 	r.mu.Unlock()
+	r.finishStandbyCheck(nil)
 
 	r.logger.InfoContext(
 		ctx, "bus: connected to external nats",
@@ -410,6 +510,18 @@ func (r *Remote) Start(ctx context.Context) error {
 		slog.Bool("worker_auth", r.cfg.Auth.Enabled),
 		slog.Bool("immediate_revocation", auth.system != nil),
 	)
+	return nil
+}
+
+// markStarted records that Start or StartStandby has been called, and fails
+// on a second call.
+func (r *Remote) markStarted() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.started {
+		return errors.New("bus: broker already started")
+	}
+	r.started = true
 	return nil
 }
 
@@ -478,16 +590,21 @@ func (r *Remote) warnLooseSeedFiles(ctx context.Context) {
 // sqi-server pointed at the same account is refused. purpose is the holder's
 // [GuardHolder.Purpose], "" for a server. Only a server brings the guard
 // bucket's replica count to its configuration; any other holder leaves the
-// bucket as the server last configured it.
-func (r *Remote) acquireGuard(ctx context.Context, js jetstream.JetStream, deadline time.Time, purpose string) (*Guard, error) {
+// bucket as the server last configured it. A server holds the guard under
+// [RemoteConfig.InstanceID] when one is set.
+func (r *Remote) acquireGuard(ctx context.Context, js jetstream.JetStream, deadline time.Time, purpose string, opts GuardOptions) (*Guard, error) {
 	if r.noGuard {
 		return nil, nil
 	}
 	host, _ := os.Hostname() //nolint:errcheck // the host is only a label in the holder's identity
 	ctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
-	h := GuardHolder{InstanceID: NewInstanceID(), Host: host, PID: os.Getpid(), StartedAt: time.Now(), Purpose: purpose}
-	return acquireGuard(ctx, js, r.cfg.StreamReplicas, h, r.logger, purpose == "")
+	id := NewInstanceID()
+	if purpose == "" && r.cfg.InstanceID != "" {
+		id = r.cfg.InstanceID
+	}
+	h := GuardHolder{InstanceID: id, Host: host, PID: os.Getpid(), StartedAt: time.Now(), Purpose: purpose}
+	return acquireGuard(ctx, js, r.cfg.StreamReplicas, h, r.logger, purpose == "", opts)
 }
 
 // releaseGuard gives the account's guard up, within a bounded time.
@@ -545,7 +662,7 @@ func (r *Remote) startAuth(ctx context.Context, responder *Responder, deadline t
 	if err != nil {
 		return a, err
 	}
-	if a.callout, err = r.dial(ctx, roleCallout, opts, deadline); err != nil {
+	if a.callout, err = r.dial(ctx, roleCallout, nil, opts, deadline); err != nil {
 		return a, err
 	}
 	if err := responder.Serve(ctx, a.callout); err != nil {
@@ -560,7 +677,7 @@ func (r *Remote) startAuth(ctx context.Context, responder *Responder, deadline t
 		a.close()
 		return remoteAuth{}, err
 	}
-	if a.system, err = r.dial(ctx, roleSystem, opts, deadline); err != nil {
+	if a.system, err = r.dial(ctx, roleSystem, nil, opts, deadline); err != nil {
 		a.close()
 		return remoteAuth{}, err
 	}
@@ -661,7 +778,12 @@ func isNoResponders(m *nats.Msg) bool {
 // the guard. The guard comes before the streams so that a server refused as a
 // second one on the account has not changed anything the first one owns.
 func (r *Remote) provision(ctx context.Context, data *nats.Conn, deadline time.Time) (string, *Guard, error) {
-	js, guard, err := r.checkAndGuard(ctx, data, deadline, "")
+	return r.provisionWith(ctx, data, deadline, GuardOptions{})
+}
+
+// provisionWith is provision with the guard taken under opts.
+func (r *Remote) provisionWith(ctx context.Context, data *nats.Conn, deadline time.Time, opts GuardOptions) (string, *Guard, error) {
+	js, guard, err := r.checkAndGuard(ctx, data, deadline, "", opts)
 	if err != nil {
 		return "", nil, err
 	}
@@ -677,22 +799,32 @@ func (r *Remote) provision(ctx context.Context, data *nats.Conn, deadline time.T
 // account has JetStream) and takes the account's guard for purpose. Both the
 // server and a restore pass through it, so neither skips a precondition the
 // other enforces.
-func (r *Remote) checkAndGuard(ctx context.Context, nc *nats.Conn, deadline time.Time, purpose string) (jetstream.JetStream, *Guard, error) {
-	if err := CheckBrokerVersion(brokerVersion(nc)); err != nil {
-		return nil, nil, fmt.Errorf("%w (broker at %s)", err, redact.URL(nc.ConnectedUrl()))
-	}
-	js, err := jetstream.New(nc)
+func (r *Remote) checkAndGuard(ctx context.Context, nc *nats.Conn, deadline time.Time, purpose string, opts GuardOptions) (jetstream.JetStream, *Guard, error) {
+	js, err := r.checkBroker(ctx, nc, deadline)
 	if err != nil {
-		return nil, nil, fmt.Errorf("bus: jetstream context: %w", err)
-	}
-	if err := r.requireAccountJetStream(ctx, js, deadline); err != nil {
 		return nil, nil, err
 	}
-	guard, err := r.acquireGuard(ctx, js, deadline, purpose)
+	guard, err := r.acquireGuard(ctx, js, deadline, purpose, opts)
 	if err != nil {
 		return nil, nil, err
 	}
 	return js, guard, nil
+}
+
+// checkBroker checks the broker nc reached: its version, and that the
+// account has JetStream.
+func (r *Remote) checkBroker(ctx context.Context, nc *nats.Conn, deadline time.Time) (jetstream.JetStream, error) {
+	if err := CheckBrokerVersion(brokerVersion(nc)); err != nil {
+		return nil, fmt.Errorf("%w (broker at %s)", err, redact.URL(nc.ConnectedUrl()))
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return nil, fmt.Errorf("bus: jetstream context: %w", err)
+	}
+	if err := r.requireAccountJetStream(ctx, js, deadline); err != nil {
+		return nil, err
+	}
+	return js, nil
 }
 
 // connRole names one of sqi's own connections to the broker.
@@ -715,57 +847,25 @@ var (
 
 // dial connects one of sqi's connections, retrying across every URL until a
 // broker answers or deadline passes. After that, the connection reconnects
-// for as long as it lives.
-func (r *Remote) dial(ctx context.Context, role connRole, dialOpts []nats.Option, deadline time.Time) (*nats.Conn, error) {
-	connected := make(chan struct{}, 1)
-	closed := make(chan struct{}, 1)
-	var lastErr lastError
-	notify := func(ch chan struct{}) {
-		select {
-		case ch <- struct{}{}:
-		default:
-		}
-	}
-
-	opts := append(
-		slices.Clone(dialOpts),
-		nats.Name(role.name),
-		nats.RetryOnFailedConnect(true),
-		nats.MaxReconnects(-1),
-		nats.ReconnectWait(remoteReconnectWait),
-		nats.ConnectHandler(func(*nats.Conn) { notify(connected) }),
-		nats.ClosedHandler(func(*nats.Conn) { notify(closed) }),
-		nats.ReconnectErrHandler(func(_ *nats.Conn, err error) { lastErr.set(err) }),
-		nats.DisconnectErrHandler(func(nc *nats.Conn, err error) {
-			lastErr.set(err)
-			if nc.IsReconnecting() && err != nil {
-				r.logger.WarnContext(context.Background(), "bus: external nats "+role.label+" connection lost; reconnecting",
-					slog.Any("error", err))
-			}
-		}),
-		nats.ReconnectHandler(func(nc *nats.Conn) {
-			// A connect that drops and comes back inside the startup
-			// window arrives here, not at the ConnectHandler.
-			notify(connected)
-			r.onReconnect(nc, role)
-		}),
-	)
-	nc, err := nats.Connect(r.cfg.urlList(), opts...)
+// for as long as it lives. state is as for [Remote.open].
+func (r *Remote) dial(ctx context.Context, role connRole, state *connState, dialOpts []nats.Option, deadline time.Time) (*nats.Conn, error) {
+	rc, err := r.open(role, state, dialOpts, false)
 	if err != nil {
-		return nil, fmt.Errorf("bus: connect the %s connection to external nats (%s): %w", role.label, r.cfg.redactedURLs(), err)
+		return nil, err
 	}
+	nc := rc.nc
 
 	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	for !nc.IsConnected() {
 		select {
-		case <-connected:
-		case <-closed:
+		case <-rc.connected:
+		case <-rc.closed:
 			nc.Close()
-			return nil, r.dialError(role, "the connection was closed", lastErr.get())
+			return nil, r.dialError(role, "the connection was closed", rc.lastErr.get())
 		case <-timer.C:
 			nc.Close()
-			return nil, r.dialError(role, "no broker answered within "+r.cfg.ConnectTimeout.String(), lastErr.get())
+			return nil, r.dialError(role, "no broker answered within "+r.cfg.ConnectTimeout.String(), rc.lastErr.get())
 		case <-ctx.Done():
 			nc.Close()
 			return nil, r.dialError(role, "startup was canceled", ctx.Err())
@@ -774,12 +874,89 @@ func (r *Remote) dial(ctx context.Context, role connRole, dialOpts []nats.Option
 	return nc, nil
 }
 
-// onReconnect logs a restored data connection, and warns when it landed on a
-// node older than the version floor: Start checks only the node it first
-// reaches, and a cluster can be upgraded or downgraded node by node.
-func (r *Remote) onReconnect(nc *nats.Conn, role connRole) {
+// roleConn is a connection [Remote.open] made, with what its handlers report.
+type roleConn struct {
+	nc *nats.Conn
+	// connected is signaled on every connect, closed when the connection
+	// closes for good.
+	connected, closed chan struct{}
+	lastErr           *lastError
+}
+
+// open makes one of sqi's connections without waiting for it: nats.Connect
+// tries every URL once and, when none answers, returns a connection that
+// keeps trying in the background (nats.RetryOnFailedConnect). It fails only
+// on options nats.go rejects. With announceLate, a connect that follows a
+// failed first attempt is logged as a reconnect is; [Remote.dial] passes
+// false, since it waits for that connect itself. The connection's ups and
+// downs are recorded in state, [Remote.dataUp] for the data connection that
+// [Remote.Connected] reports; nil records nothing.
+func (r *Remote) open(role connRole, state *connState, dialOpts []nats.Option, announceLate bool) (roleConn, error) {
+	rc := roleConn{connected: make(chan struct{}, 1), closed: make(chan struct{}, 1), lastErr: &lastError{}}
+	notify := func(ch chan struct{}) {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+	// deferred is set when the first attempt found no broker and
+	// announceLate asks for the connect that follows to be logged.
+	var deferred atomic.Bool
+
+	opts := append(
+		slices.Clone(dialOpts),
+		nats.Name(role.name),
+		nats.RetryOnFailedConnect(true),
+		nats.MaxReconnects(-1),
+		nats.ReconnectWait(remoteReconnectWait),
+		nats.ConnectHandler(func(nc *nats.Conn) {
+			state.connected()
+			notify(rc.connected)
+			if deferred.Load() {
+				r.onConnect(nc, role, "established")
+			}
+		}),
+		nats.ClosedHandler(func(*nats.Conn) {
+			state.down()
+			notify(rc.closed)
+		}),
+		nats.ReconnectErrHandler(func(_ *nats.Conn, err error) { rc.lastErr.set(err) }),
+		nats.DisconnectErrHandler(func(nc *nats.Conn, err error) {
+			state.down()
+			rc.lastErr.set(err)
+			if nc.IsReconnecting() && err != nil {
+				r.logger.WarnContext(context.Background(), "bus: external nats "+role.label+" connection lost; reconnecting",
+					slog.Any("error", err))
+			}
+		}),
+		nats.ReconnectHandler(func(nc *nats.Conn) {
+			state.up()
+			// A connect that drops and comes back inside the startup
+			// window arrives here, not at the ConnectHandler.
+			notify(rc.connected)
+			r.onConnect(nc, role, "restored")
+		}),
+	)
+	nc, err := nats.Connect(r.cfg.urlList(), opts...)
+	if err != nil {
+		return roleConn{}, fmt.Errorf("bus: connect the %s connection to external nats (%s): %w", role.label, r.cfg.redactedURLs(), err)
+	}
+	if nc.IsConnected() {
+		state.initialUp()
+	} else {
+		deferred.Store(announceLate)
+	}
+	rc.nc = nc
+	return rc, nil
+}
+
+// onConnect logs a connection restored, or established after startup went
+// on without it, and warns when it landed on a node older than the version
+// floor: startup checks only the node it first reaches, and a cluster can be
+// upgraded or downgraded node by node.
+func (r *Remote) onConnect(nc *nats.Conn, role connRole, what string) {
 	ctx := context.Background()
-	r.logger.InfoContext(ctx, "bus: external nats "+role.label+" connection restored",
+	r.logger.InfoContext(ctx, "bus: external nats "+role.label+" connection "+what,
 		slog.String("url", redact.URL(nc.ConnectedUrl())))
 	if !role.checkVersion {
 		return
@@ -1010,6 +1187,14 @@ func logReplicaChanges(ctx context.Context, logger *slog.Logger, before map[stri
 // account's guard is released before the data connection closes.
 func (r *Remote) Shutdown() {
 	r.mu.Lock()
+	cancelCheck, checkDone := r.checkCancel, r.checkDone
+	r.mu.Unlock()
+	if cancelCheck != nil {
+		cancelCheck()
+		<-checkDone
+	}
+
+	r.mu.Lock()
 	data, callout, system := r.data, r.callout, r.system
 	responder, guard := r.responder, r.guard
 	r.data, r.callout, r.system = nil, nil, nil
@@ -1033,14 +1218,20 @@ func (r *Remote) Shutdown() {
 // checked: without it revocation waits for the user JWT's expiry, and Revoke
 // reports that, but workers keep working. Check also returns the guard's
 // [Guard.Healthy] error, so a server that lost its account reports degraded.
+// A standby is not ready until its broker checks have passed
+// ([Remote.StandbyReady]).
 // It makes no round trip, so it answers within the health budget during a
 // partition.
 func (r *Remote) Check(_ context.Context) error {
 	r.mu.Lock()
 	data, callout, guard := r.data, r.callout, r.guard
+	standby, standbyErr := r.standby, r.standbyErr
 	r.mu.Unlock()
 	if err := requireConnected("nats data connection", data); err != nil {
 		return err
+	}
+	if standby && standbyErr != nil {
+		return standbyErr
 	}
 	if r.cfg.Auth.Enabled {
 		if err := requireConnected("nats auth callout connection", callout); err != nil {

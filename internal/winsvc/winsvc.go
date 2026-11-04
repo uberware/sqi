@@ -17,6 +17,7 @@ package winsvc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -24,6 +25,27 @@ import (
 
 	sqilog "github.com/uberware/sqi/internal/log"
 )
+
+// ExitCoder is an error that names the exit code its process should end
+// with, such as a demoted HA server's.
+type ExitCoder interface {
+	error
+	ExitCode() int
+}
+
+// ExitCode is the exit code for a run command's error: 0 for nil, the code of
+// the first [ExitCoder] in its chain, and 1 for any other error. The console
+// exit and the Windows service's service-specific exit code both use it, so
+// a supervisor sees the same code either way.
+func ExitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	if c, ok := errors.AsType[ExitCoder](err); ok {
+		return c.ExitCode()
+	}
+	return 1
+}
 
 type ctxKey struct{}
 

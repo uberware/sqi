@@ -15,21 +15,34 @@ import (
 // worker record for the given ID, except that an empty InstanceID keeps the
 // stored one and Disabled is never taken from the registration: a new worker is
 // enabled and an existing one keeps its flag, as SQLite's upsert leaves the
-// column alone. A non-empty stored InstanceID that differs from a non-empty
+// column alone, and a nil RegistrationBrokerAt keeps the stored one. A
+// registration stamped earlier than the stored one ([store.StaleRegistration]) is
+// refused with [store.ErrStaleRegistration], returning the stored worker.
+// A non-empty stored InstanceID that differs from a non-empty
 // incoming one is a restarted worker process, whose assigned and running tasks
 // are reclaimed as the offline transitions reclaim them, with
 // [store.FailureReasonWorkerRestarted]; the store lock stands in for SQLite's
 // worker-row and job-row anchors.
-func (s *Store) RegisterWorker(_ context.Context, worker store.Worker) (store.Worker, []store.Task, error) {
+func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.Worker, []store.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.Worker{}, nil, err
+	}
 
 	existing, isUpdate := s.workers[worker.ID]
+	if isUpdate && store.StaleRegistration(existing, worker) {
+		return cloneWorker(existing), nil, store.ErrStaleRegistration
+	}
 	worker = cloneWorker(worker)
-	worker.Disabled = existing.Disabled // false for a new worker
+	worker.Disabled = existing.Disabled                   // false for a new worker
+	worker.HeartbeatBrokerAt = existing.HeartbeatBrokerAt // nil for a new worker
 	var reclaimed []store.Task
 	if isUpdate {
 		worker.RegisteredAt = existing.RegisteredAt
+		if worker.RegistrationBrokerAt == nil {
+			worker.RegistrationBrokerAt = existing.RegistrationBrokerAt
+		}
 		if worker.InstanceID == "" {
 			worker.InstanceID = existing.InstanceID
 		} else if existing.InstanceID != "" && existing.InstanceID != worker.InstanceID {
@@ -80,9 +93,12 @@ func (s *Store) ListWorkers(_ context.Context, opts store.ListWorkersOptions) (s
 }
 
 // SetWorkerDisabled implements [store.WorkerStore].
-func (s *Store) SetWorkerDisabled(_ context.Context, id string, disabled bool) (store.Worker, error) {
+func (s *Store) SetWorkerDisabled(ctx context.Context, id string, disabled bool) (store.Worker, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.Worker{}, err
+	}
 
 	worker, ok := s.workers[id]
 	if !ok {
@@ -96,16 +112,28 @@ func (s *Store) SetWorkerDisabled(_ context.Context, id string, disabled bool) (
 	return worker, nil
 }
 
-// UpdateWorkerHeartbeat records the most recent heartbeat time for the given worker.
-func (s *Store) UpdateWorkerHeartbeat(_ context.Context, id string, at time.Time) error {
+// UpdateWorkerHeartbeat records the most recent heartbeat time for the given
+// worker. A heartbeat the broker stamped before the recorded one is ignored; an
+// unstamped one is recorded unconditionally and keeps the recorded stamp.
+func (s *Store) UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Time, brokerAt *time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return err
+	}
 
 	worker, ok := s.workers[id]
 	if !ok {
 		return store.ErrNotFound
 	}
 
+	if brokerAt != nil {
+		if worker.HeartbeatBrokerAt != nil && brokerAt.Before(*worker.HeartbeatBrokerAt) {
+			return nil
+		}
+		stamp := *brokerAt
+		worker.HeartbeatBrokerAt = &stamp
+	}
 	worker.LastHeartbeatAt = &at
 	worker.UpdatedAt = time.Now()
 	s.workers[id] = worker
@@ -174,9 +202,12 @@ func (s *Store) CountIdleWorkers(_ context.Context, farmID string) (int, error) 
 // DeleteWorkerIfRemovable implements [store.WorkerStore]. The rule is
 // [store.Worker.Removable], which SQLite restates in its DELETE, plus the
 // in-flight condition a Worker value cannot see.
-func (s *Store) DeleteWorkerIfRemovable(_ context.Context, id string) error {
+func (s *Store) DeleteWorkerIfRemovable(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return err
+	}
 
 	w, ok := s.workers[id]
 	if !ok {
@@ -204,9 +235,12 @@ func (s *Store) hasWorkInFlightLocked(workerID string) bool {
 // DeleteOfflineWorkersBefore hard-deletes every enabled offline worker last
 // seen before cutoff and returns the removed records. Online workers, disabled
 // ones and workers that have never sent a heartbeat are left untouched.
-func (s *Store) DeleteOfflineWorkersBefore(_ context.Context, cutoff time.Time) ([]store.Worker, error) {
+func (s *Store) DeleteOfflineWorkersBefore(ctx context.Context, cutoff time.Time) ([]store.Worker, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return nil, err
+	}
 
 	var removed []store.Worker
 	for id, w := range s.workers {

@@ -310,16 +310,12 @@ func runWorkerList(cmd *cobra.Command, _ []string) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "WORKER ID\tNAME\tPUBLIC KEY\tENROLLED\tLAST SEEN")
 	for _, c := range creds {
-		name := c.Name
-		if name == "" {
-			name = "-"
-		}
 		lastSeen := "never"
 		if c.LastSeenAt != nil {
 			lastSeen = c.LastSeenAt.Format(time.RFC3339)
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-			c.WorkerID, name, c.PublicKey, c.EnrolledAt.Format(time.RFC3339), lastSeen)
+			c.WorkerID, orDash(c.Name), c.PublicKey, c.EnrolledAt.Format(time.RFC3339), lastSeen)
 	}
 	return w.Flush()
 }

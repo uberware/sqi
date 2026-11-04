@@ -109,7 +109,7 @@ func parseGooseCopy(script string) (int64, error) {
 // Tables are listed from pg_class, which every role can read in full, not
 // information_schema, which hides tables the role has no privilege on.
 func RequireEmptyDatabase(ctx context.Context, dsn string) error {
-	db, err := openPool(dsn, 1)
+	db, err := openPool(dsn, 1, nil)
 	if err != nil {
 		return err
 	}
@@ -143,7 +143,7 @@ func restoreTool(ctx context.Context, dsn string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	db, err := openPool(dsn, 1)
+	db, err := openPool(dsn, 1, nil)
 	if err != nil {
 		return "", err
 	}

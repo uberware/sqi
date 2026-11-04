@@ -33,6 +33,7 @@ import ProductSubmit from '@/pages/ProductSubmit'
 import Submit from '@/pages/Submit'
 import Admin from '@/pages/Admin'
 import ServerLog from '@/pages/ServerLog'
+import Servers from '@/pages/Servers'
 import NotFound from '@/pages/NotFound'
 
 export default function AppRoutes() {
@@ -214,6 +215,14 @@ export default function AppRoutes() {
         element={
           <RequireRole permission="diagnostics.read">
             <ServerLog />
+          </RequireRole>
+        }
+      />
+      <Route
+        path="/servers"
+        element={
+          <RequireRole permission="diagnostics.read">
+            <Servers />
           </RequireRole>
         }
       />

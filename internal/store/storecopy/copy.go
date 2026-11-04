@@ -344,12 +344,25 @@ func columnDiffs(table string, src, dst []schemainfo.Column) []string {
 	return diffs
 }
 
-// requireEmpty refuses a target any of whose tables holds a row. sameShape
-// has already refused a table sqi does not own, so these are sqi's tables.
+// migrationSeeded maps each table a migration leaves holding its one row to a
+// predicate matching that row once a server has used it. A migrated target
+// holds these rows before any copy, so they are not "a row" to refuse; the
+// copy replaces them with the source's ([clearSeedRow]).
+var migrationSeeded = map[string]string{
+	"server_lease": "holder IS NOT NULL OR epoch <> 0 OR expires_us <> 0",
+	"server_epoch": "epoch <> 0",
+}
+
+// requireEmpty refuses a target any of whose tables holds a row, other than a
+// migration-seeded table still at its seed row. sameShape has already refused
+// a table sqi does not own, so these are sqi's tables.
 func requireEmpty(ctx context.Context, db *sql.DB, info map[string]schemainfo.Table) error {
 	for _, n := range slices.Sorted(maps.Keys(info)) {
 		var rows int64
 		q := `SELECT count(*) FROM ` + quoteIdent(n)
+		if used, ok := migrationSeeded[n]; ok {
+			q += ` WHERE ` + used
+		}
 		if err := db.QueryRowContext(ctx, q).Scan(&rows); err != nil {
 			return fmt.Errorf("store copy: count the rows of %s: %w", n, err)
 		}
@@ -441,6 +454,9 @@ func copyAll(ctx context.Context, src, dst *sql.DB, plans []*tablePlan, log *slo
 	}
 	defer dstTx.Rollback() //nolint:errcheck // a no-op after Commit; otherwise the rollback is the point
 	for _, p := range plans {
+		if err := clearSeedRow(ctx, dstTx, p); err != nil {
+			return err
+		}
 		n, err := copyAndVerify(ctx, srcTx, dstTx, p)
 		if err != nil {
 			return fmt.Errorf("%w; no sqi rows were committed (a schema store copy created stays, empty)", err)
@@ -450,6 +466,19 @@ func copyAll(ctx context.Context, src, dst *sql.DB, plans []*tablePlan, log *slo
 	}
 	if err := dstTx.Commit(); err != nil {
 		return fmt.Errorf("store copy: commit: %w; no sqi rows were committed (a schema store copy created stays, empty)", err)
+	}
+	return nil
+}
+
+// clearSeedRow deletes the row a migration seeded into p's table, so the
+// source's row takes its place. requireEmpty has already established that the
+// row is unused, and the delete is rolled back with the rest of a failed copy.
+func clearSeedRow(ctx context.Context, tx *sql.Tx, p *tablePlan) error {
+	if _, ok := migrationSeeded[p.name]; !ok {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM `+quoteIdent(p.name)); err != nil { //nolint:gosec // G202: p.name is a migrationSeeded key, and quoted
+		return fmt.Errorf("store copy: clear the seed row of %s: %w; no sqi rows were committed", p.name, err)
 	}
 	return nil
 }

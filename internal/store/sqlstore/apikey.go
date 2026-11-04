@@ -45,10 +45,10 @@ func scanAPIKey(row scanner) (store.APIKey, error) {
 
 // CreateAPIKey implements [store.APIKeyStore].
 func (s *Store) CreateAPIKey(ctx context.Context, k store.APIKey) (store.APIKey, error) {
-	row := s.stmtInsertAPIKey.QueryRowContext(ctx, k.ID, k.UserID, k.Name, k.TokenHash, k.Prefix,
+	out, err := writeRow(ctx, s, "create api key", scanAPIKey, s.stmtInsertAPIKey,
+		k.ID, k.UserID, k.Name, k.TokenHash, k.Prefix,
 		nullTimeToText(k.ExpiresAt), nullTimeToText(k.LastUsedAt), nullTimeToText(k.RevokedAt),
 		TimeText(k.CreatedAt))
-	out, err := scanAPIKey(row)
 	return out, mapErr(err)
 }
 
@@ -93,7 +93,7 @@ func (s *Store) ListAPIKeysForUser(ctx context.Context, userID string) ([]store.
 
 // RevokeAPIKey implements [store.APIKeyStore].
 func (s *Store) RevokeAPIKey(ctx context.Context, id, userID string, now time.Time) error {
-	res, err := s.stmtRevokeAPIKey.ExecContext(ctx, TimeText(now), id, userID)
+	res, err := s.execStmt(ctx, "revoke api key", s.stmtRevokeAPIKey, TimeText(now), id, userID)
 	if err != nil {
 		return mapErr(err)
 	}
@@ -102,7 +102,7 @@ func (s *Store) RevokeAPIKey(ctx context.Context, id, userID string, now time.Ti
 
 // TouchAPIKeyLastUsed implements [store.APIKeyStore].
 func (s *Store) TouchAPIKeyLastUsed(ctx context.Context, id string, now time.Time) error {
-	res, err := s.stmtTouchAPIKeyLastUsed.ExecContext(ctx, TimeText(now), id)
+	res, err := s.execStmt(ctx, "touch api key", s.stmtTouchAPIKeyLastUsed, TimeText(now), id)
 	if err != nil {
 		return mapErr(err)
 	}

@@ -34,7 +34,13 @@ type Options struct {
 	// never create one; migrate drives goose itself.
 	AutoMigrate bool
 	ServerLock  bool // take the single-server lock (both drivers)
-	Logger      *slog.Logger
+	// HA says the server runs in a high-availability group: on PostgreSQL its
+	// lock is shared with the group's other servers and its sessions are
+	// bounded by LeaseTTL (see postgres.Options). Ignored by SQLite, which
+	// cannot run a group.
+	HA       bool
+	LeaseTTL time.Duration
+	Logger   *slog.Logger
 }
 
 // Backend is a store plus what the server and the CLIs need beyond
@@ -61,7 +67,8 @@ func Open(ctx context.Context, o Options) (Backend, error) {
 		return st, nil
 	case DriverPostgres:
 		st, err := postgres.Open(ctx, o.PostgresDSN, postgres.Options{
-			MaxConns: o.MaxConns, AutoMigrate: o.AutoMigrate, ServerLock: o.ServerLock, Logger: o.Logger,
+			MaxConns: o.MaxConns, AutoMigrate: o.AutoMigrate, ServerLock: o.ServerLock,
+			HA: o.HA, LeaseTTL: o.LeaseTTL, Logger: o.Logger,
 		})
 		if err != nil {
 			return nil, err

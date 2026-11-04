@@ -1925,6 +1925,85 @@ index format and full integration guide.
 
 ---
 
+## `ha` — High availability
+
+Opt-in. With `ha.enabled: false` (the default) nothing under `ha` is read or
+validated and the server behaves as a single-server farm. When enabled, any
+number of `sqi-server` processes share one PostgreSQL database and one
+external NATS account; exactly one is the **leader** and does the farm's work,
+and the rest are warm standbys. Use one configuration file for every server in
+the group.
+
+### `ha.enabled`
+
+| | |
+|---|---|
+| **Type** | `bool` |
+| **Default** | `false` |
+| **Env var** | `SQI_HA_ENABLED` |
+
+Lets this server join an HA group. It requires
+[`store.driver: postgres`](#storedriver) and
+[`nats.mode: external`](#natsmode); either missing fails config validation with
+an error on `ha.enabled` naming the key to change, and the server does not
+start. Both conflicts are reported together when both apply.
+
+```yaml
+ha:
+  enabled: true
+store:
+  driver: postgres
+nats:
+  mode: external
+```
+
+---
+
+### `ha.lease_ttl`
+
+| | |
+|---|---|
+| **Type** | duration |
+| **Default** | `15s` |
+| **Env var** | `SQI_HA_LEASE_TTL` |
+
+How long the leader's lease lasts without being renewed, and therefore how long
+a standby waits to take over after a crash. The renew period (`lease_ttl / 3`)
+and the point at which a leader that cannot renew stops itself (`lease_ttl x
+0.8`) are derived from it rather than configured.
+
+Must be between `6s` and `60s`; a value outside that range fails config
+validation. It is checked only when `ha.enabled` is `true`. Shorter values fail
+over sooner but tolerate less database latency before a healthy leader loses
+its lease; longer values do the opposite.
+
+```yaml
+ha:
+  lease_ttl: 15s
+```
+
+---
+
+### `ha.instance_name`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` (the host name) |
+| **Env var** | `SQI_HA_INSTANCE_NAME` |
+
+The name this server is known by in logs, `/readyz` and the list of servers.
+When empty it is the host name, or `sqi-server` if the host name cannot be
+read. Give each server in a group a distinct name when several share a host
+name, as containers started from one image can.
+
+```yaml
+ha:
+  instance_name: sched-a
+```
+
+---
+
 ## `auth` — Authentication (opt-in)
 
 ### `auth.enabled`
@@ -2551,6 +2630,9 @@ for the detector schema reference.
 | `openjd.expr_submission_deadline` | duration | `5s` | `SQI_OPENJD_EXPR_SUBMISSION_DEADLINE` | — |
 | `diagnostics.buffer_size` | int | `1000` | `SQI_DIAGNOSTICS_BUFFER_SIZE` | — |
 | `preset_library.url` | string | `https://uberware.github.io/sqi-presets/index.json` | `SQI_PRESET_LIBRARY_URL` | — |
+| `ha.enabled` | bool | `false` | `SQI_HA_ENABLED` | — |
+| `ha.lease_ttl` | duration | `15s` | `SQI_HA_LEASE_TTL` | — |
+| `ha.instance_name` | string | `""` (host name) | `SQI_HA_INSTANCE_NAME` | — |
 | `auth.enabled` | bool | `false` | `SQI_AUTH_ENABLED` | `--auth-enabled` |
 | `auth.validate_job_owner` | bool | `true` | `SQI_AUTH_VALIDATE_JOB_OWNER` | `--auth-validate-job-owner` |
 | `auth.session.ttl` | duration | `168h` | `SQI_AUTH_SESSION_TTL` | — |
