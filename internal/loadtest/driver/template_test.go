@@ -5,6 +5,7 @@ package driver
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -137,15 +138,18 @@ func TestBuildTemplate_Structure(t *testing.T) {
 			},
 		},
 		{
-			name: "command and name",
-			jc:   scenario.JobClass{Steps: 1, TasksPerStep: 1},
+			name: "command, name and class arg",
+			jc:   scenario.JobClass{Name: "shot-render", Steps: 2, TasksPerStep: 1},
 			check: func(t *testing.T, tmpl *openjd.JobTemplate) {
 				if tmpl.Name != "load-job" {
 					t.Errorf("name = %q", tmpl.Name)
 				}
-				run := tmpl.Steps[0].Script.Actions.OnRun
-				if run.Command != noopCmd.Path || !reflect.DeepEqual(run.Args, noopCmd.Args) {
-					t.Errorf("onRun = %q %q, want %q %q", run.Command, run.Args, noopCmd.Path, noopCmd.Args)
+				wantArgs := append(slices.Clone(noopCmd.Args), "--sqi-load-class=shot-render")
+				for _, st := range tmpl.Steps {
+					run := st.Script.Actions.OnRun
+					if run.Command != noopCmd.Path || !reflect.DeepEqual(run.Args, wantArgs) {
+						t.Errorf("%s onRun = %q %q, want %q %q", st.Name, run.Command, run.Args, noopCmd.Path, wantArgs)
+					}
 				}
 				if len(tmpl.Extensions) != 0 {
 					t.Errorf("extensions = %v, want none", tmpl.Extensions)
@@ -154,7 +158,7 @@ func TestBuildTemplate_Structure(t *testing.T) {
 		},
 		{
 			name: "EXPR chunked",
-			jc:   scenario.JobClass{Steps: 1, TasksPerStep: 4, Chunk: 2, EXPR: true},
+			jc:   scenario.JobClass{Name: "comp", Steps: 1, TasksPerStep: 4, Chunk: 2, EXPR: true},
 			check: func(t *testing.T, tmpl *openjd.JobTemplate) {
 				if got, want := tmpl.Extensions, []string{"TASK_CHUNKING", "EXPR"}; !reflect.DeepEqual(got, want) {
 					t.Errorf("extensions = %v, want %v", got, want)
@@ -163,8 +167,9 @@ func TestBuildTemplate_Structure(t *testing.T) {
 				if len(st.Script.Let) != 1 {
 					t.Errorf("let = %v, want one binding", st.Script.Let)
 				}
-				if args := st.Script.Actions.OnRun.Args; len(args) != len(noopCmd.Args)+1 {
-					t.Errorf("args = %v, want the command's plus one expression", args)
+				args := st.Script.Actions.OnRun.Args
+				if len(args) != len(noopCmd.Args)+2 || args[len(args)-1] != "--sqi-load-class=comp" {
+					t.Errorf("args = %v, want the command's, one expression, then the class arg", args)
 				}
 			},
 		},

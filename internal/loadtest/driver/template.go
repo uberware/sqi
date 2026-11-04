@@ -75,7 +75,8 @@ type tmplRun struct {
 }
 
 // BuildTemplate returns the OpenJD YAML for one job of class jc. Step i+1
-// depends on step i, and each step expands to exactly jc.TasksPerStep tasks:
+// depends on step i, every step's onRun ends with [scenario.ClassArg] naming
+// jc, and each step expands to exactly jc.TasksPerStep tasks:
 // sqi caps a task parameter at 1024 values, so a large step splits into a
 // Frame range and a Block range whose product is the task count.
 func BuildTemplate(jc scenario.JobClass, jobName string, cmd scenario.Command) ([]byte, error) {
@@ -136,6 +137,8 @@ func buildStep(jc scenario.JobClass, cmd scenario.Command, n, frames, blocks, ch
 		st.Script.Let = []string{"tag = '" + exprLetTag + "'"}
 		st.Script.Actions.OnRun.Args = append(st.Script.Actions.OnRun.Args, "{{ tag + string(Task.Param.Frame) }}")
 	}
+	// Last, so a simulated worker finds the class whatever came before it.
+	st.Script.Actions.OnRun.Args = append(st.Script.Actions.OnRun.Args, scenario.ClassArg(jc.Name))
 	return st
 }
 

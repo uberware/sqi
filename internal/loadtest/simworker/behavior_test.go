@@ -18,7 +18,7 @@ func specFor(seconds float64) scenario.TaskSpec {
 	return scenario.TaskSpec{Duration: constDist(seconds)}
 }
 
-func TestScenarioBehavior_ClassByJobName(t *testing.T) {
+func TestScenarioBehavior_Class(t *testing.T) {
 	classes := map[string]scenario.TaskSpec{
 		"render":      specFor(2),
 		"comp-render": specFor(3),
@@ -34,22 +34,31 @@ func TestScenarioBehavior_ClassByJobName(t *testing.T) {
 		name    string
 		jobName string
 		jobID   string
+		args    []string
 		want    time.Duration
 	}{
-		{"plain class", "render-1", "", 2 * time.Second},
-		{"hyphenated class beats its suffix", "comp-render-12", "", 3 * time.Second},
-		{"shard prefix", "s1-comp-render-3", "", 3 * time.Second},
-		{"shorter class", "comp-7", "", 4 * time.Second},
-		{"shard prefix, short class", "s0-render-9", "", 2 * time.Second},
-		{"unknown class falls back", "other-1", "", time.Second},
-		{"class name inside another word does not match", "prerender-1", "", time.Second},
-		{"lookup by job id", "", "job-a", 3 * time.Second},
-		{"lookup with shard prefix", "", "job-b", 2 * time.Second},
-		{"no name and no lookup hit falls back", "", "job-zzz", time.Second},
+		{"class arg on a base-spec assignment", "", "", []string{"-x", scenario.ClassArg("comp")}, 4 * time.Second},
+		{"class arg beats the job name", "render-1", "", []string{scenario.ClassArg("comp-render")}, 3 * time.Second},
+		{"last class arg wins", "", "", []string{scenario.ClassArg("render"), scenario.ClassArg("comp")}, 4 * time.Second},
+		{"unknown class arg falls to the job name", "render-1", "", []string{scenario.ClassArg("nope")}, 2 * time.Second},
+		{"unknown class arg and no name falls back", "", "", []string{scenario.ClassArg("nope")}, time.Second},
+		{"plain class", "render-1", "", nil, 2 * time.Second},
+		{"hyphenated class beats its suffix", "comp-render-12", "", nil, 3 * time.Second},
+		{"shard prefix", "s1-comp-render-3", "", nil, 3 * time.Second},
+		{"shorter class", "comp-7", "", nil, 4 * time.Second},
+		{"shard prefix, short class", "s0-render-9", "", nil, 2 * time.Second},
+		{"unknown class falls back", "other-1", "", nil, time.Second},
+		{"class name inside another word does not match", "prerender-1", "", nil, time.Second},
+		{"lookup by job id", "", "job-a", nil, 3 * time.Second},
+		{"lookup with shard prefix", "", "job-b", nil, 2 * time.Second},
+		{"no name and no lookup hit falls back", "", "job-zzz", nil, time.Second},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := &protocol.AssignMsg{JobName: tt.jobName, JobID: tt.jobID}
+			if tt.args != nil {
+				m.OnRun = &protocol.Action{Command: "noop", Args: tt.args}
+			}
 			got := b.Plan(m, rand.New(rand.NewPCG(1, 2)))
 			if got.Duration != tt.want {
 				t.Errorf("Duration = %v, want %v", got.Duration, tt.want)

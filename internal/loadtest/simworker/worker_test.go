@@ -157,7 +157,12 @@ func fixedPlan(p simworker.TaskPlan) simworker.Behavior {
 func TestWorker_RegistersAndCompletesTasks(t *testing.T) {
 	f := newFarm(t)
 	l := simworker.NewLedger()
-	b := fixedPlan(simworker.TaskPlan{Duration: 50 * time.Millisecond, Outcome: simworker.OutcomeSucceeded, LogLines: 3, LineBytes: 32})
+	// A base-spec job carries no name in its assignments and no lookup is
+	// wired, so the class can only come from the template's class argument:
+	// the fallback plan would write no lines.
+	b := simworker.ScenarioBehavior(map[string]scenario.TaskSpec{"sim": {
+		Duration: constDist(0.05), LogLines: constDist(3), LogLineBytes: 32,
+	}})
 	for n := range 3 {
 		f.startWorker(t, n, b, l)
 	}

@@ -68,13 +68,17 @@ type scenarioBehavior struct {
 
 // ScenarioBehavior plans each task from the TaskSpec of its job's class.
 //
-// Job names are "<class>-<seq>", or "<prefix>-<class>-<seq>" for a shard. The
+// The class is the one named by the assignment's last onRun argument starting
+// with [scenario.ClassArgPrefix], which the driver adds to every template. An
+// assignment without one (or naming an unknown class) falls back to the job's
+// name. Job names are "<class>-<seq>", or "<prefix>-<class>-<seq>" for a shard. The
 // class is found by dropping the last hyphen-separated token (the sequence
 // number) and taking the longest class name that equals what is left or ends
 // it after a hyphen, so "comp-render-3" is class "comp-render" even when a
 // "render" class exists too. The name is the assignment's JobName when the
-// server sent one, otherwise the [WithJobNames] lookup's. A task whose job
-// matches no class runs for one second, succeeds and writes no lines.
+// server sent one (EXPR jobs only), otherwise the [WithJobNames] lookup's. A
+// task whose class is found by none of these runs for one second, succeeds
+// and writes no lines.
 //
 // Sampling, in a fixed number of draws per plan: Duration is the class's
 // duration sample in seconds and LogLines its line-count sample rounded down;
@@ -90,7 +94,7 @@ func ScenarioBehavior(classes map[string]scenario.TaskSpec, opts ...BehaviorOpti
 }
 
 func (b *scenarioBehavior) Plan(m *protocol.AssignMsg, r *rand.Rand) TaskPlan {
-	spec, ok := b.classFor(b.jobName(m))
+	spec, ok := b.specFor(m)
 	if !ok {
 		return TaskPlan{Duration: fallbackDuration, Outcome: OutcomeSucceeded}
 	}
@@ -108,6 +112,19 @@ func (b *scenarioBehavior) Plan(m *protocol.AssignMsg, r *rand.Rand) TaskPlan {
 		p.Outcome = OutcomeFailed
 	}
 	return p
+}
+
+// specFor finds m's class: the class argument the driver puts last in every
+// onRun, else the job's name.
+func (b *scenarioBehavior) specFor(m *protocol.AssignMsg) (scenario.TaskSpec, bool) {
+	if m.OnRun != nil {
+		if class, ok := scenario.ClassFromArgs(m.OnRun.Args); ok {
+			if spec, known := b.classes[class]; known {
+				return spec, true
+			}
+		}
+	}
+	return b.classFor(b.jobName(m))
 }
 
 func (b *scenarioBehavior) jobName(m *protocol.AssignMsg) string {
