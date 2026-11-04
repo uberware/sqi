@@ -34,6 +34,14 @@ func goldenRecord() *Record {
 		CounterWorkersLive:  100,
 		"submit.status.201": 120,
 	}
+	// Submissions stopped ten minutes in; the jobs drained over two more.
+	r.WindowEnd = t0.Add(10 * time.Minute)
+	r.WindowCounters = map[string]int64{
+		"jobs.submitted":    504,
+		"tasks.terminal":    10080,
+		CounterWorkersLive:  100,
+		"submit.status.201": 504,
+	}
 	r.Series = []measure.Series{
 		ramp("server.rss_bytes", "bytes", 12, time.Minute, 200<<20, 4<<20),
 		ramp("server.goroutines", "count", 12, time.Minute, 1000, 0),
@@ -69,9 +77,11 @@ func TestSummary_Golden(t *testing.T) {
 }
 
 func TestSummary_ThroughputMethods(t *testing.T) {
-	// 12000 tasks in a 12 minute run with 2 minutes of warmup, 2400 of them
-	// by the end of warmup: 9600 tasks over the 600 s steady window is 16/s,
-	// where the run average over 720 s is 16.67/s.
+	// Submissions ran for 10 minutes, then the jobs drained for 2. 10080
+	// tasks had finished when submissions stopped, 2400 of them by the end of
+	// the 2 minute warmup: 7680 tasks over the 480 s steady window is 16/s,
+	// where the average from the start to the end of submissions is 10080
+	// over 600 s, 16.80/s. Neither counts the drain.
 	steady := goldenRecord()
 	average := goldenRecord()
 	average.SteadyCounters = nil
@@ -80,8 +90,8 @@ func TestSummary_ThroughputMethods(t *testing.T) {
 		rec  *Record
 		want []string
 	}{
-		{"steady window", steady, []string{"steady-window rates", "| tasks.terminal | 12000 | 16.00 |", "| jobs.submitted | 600 | 0.80 |", "| workers.live | 100 | - |"}},
-		{"run average", average, []string{"run averages", "| tasks.terminal | 12000 | 16.67 |", "warmup included"}},
+		{"steady window", steady, []string{"steady-window rates", "(8m0s)", "| tasks.terminal | 12000 | 7680 | 16.00 |", "| jobs.submitted | 600 | 384 | 0.80 |", "| workers.live | 100 | - | - |", "drain 2m0s"}},
+		{"run average", average, []string{"run averages", "| tasks.terminal | 12000 | 10080 | 16.80 |", "warmup included"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var sb strings.Builder

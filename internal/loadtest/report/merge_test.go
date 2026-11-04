@@ -176,3 +176,22 @@ func TestMerge_SingleUnshardedRecord(t *testing.T) {
 		t.Fatalf("%v", got.Counters)
 	}
 }
+
+func TestMerge_WindowCounters(t *testing.T) {
+	a, b := baseRecord(), baseRecord()
+	a.Shard, b.Shard = "0/2", "1/2"
+	a.WindowEnd, b.WindowEnd = t0.Add(8*time.Minute), t0.Add(8*time.Minute+time.Second)
+	a.WindowCounters = map[string]int64{CounterJobsSubmitted: 10}
+	b.WindowCounters = map[string]int64{CounterJobsSubmitted: 15}
+	m, err := Merge([]*Record{a, b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.WindowCounters[CounterJobsSubmitted] != 25 || !m.WindowEnd.Equal(b.WindowEnd) {
+		t.Errorf("merged window counters %v ending %s, want 25 ending at the later shard's %s", m.WindowCounters, m.WindowEnd, b.WindowEnd)
+	}
+	b.WindowCounters = nil
+	if m, err = Merge([]*Record{a, b}); err != nil || m.WindowCounters != nil {
+		t.Errorf("a shard without window counters: merged %v (err %v), want nil", m.WindowCounters, err)
+	}
+}

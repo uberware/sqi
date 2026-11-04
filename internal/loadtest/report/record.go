@@ -122,17 +122,29 @@ type Record struct {
 	// farm.
 	Scenario *scenario.Scenario `json:"scenario"`
 	Env      Env                `json:"env"`
-	Started  time.Time          `json:"started"`
-	Ended    time.Time          `json:"ended"`
+	// Started is when submissions began, Ended when the run's jobs had
+	// drained (or the drain timed out) and its invariants were about to be
+	// checked.
+	Started time.Time `json:"started"`
+	Ended   time.Time `json:"ended"`
+	// WindowEnd is when submissions stopped: the end of the measured window,
+	// which runs from SteadyFrom to WindowEnd. The run drains from WindowEnd
+	// to Ended. Zero (an older record, or a run stopped before submissions
+	// ended) makes the window end at Ended.
+	WindowEnd time.Time `json:"window_end"`
 	// Histograms cover the whole run, warmup included.
 	Histograms map[string]*measure.Histogram `json:"histograms"`
 	// Counters are the counter values at the end of the run.
 	Counters map[string]int64 `json:"counters"`
 	// SteadyCounters are the counter values at SteadyFrom, snapshotted by the
-	// runner. A rate over the steady window is (Counters - SteadyCounters)
-	// divided by that window. Nil (no snapshot: warmup 0, or an older record)
-	// makes every rate a run average, Counters over Ended - Started.
+	// runner. A rate over the measured window is (WindowCounters -
+	// SteadyCounters) divided by WindowEnd - SteadyFrom. Nil (no snapshot:
+	// warmup 0, or an older record) makes every rate a run average,
+	// WindowCounters over WindowEnd - Started.
 	SteadyCounters map[string]int64 `json:"steady_counters"`
+	// WindowCounters are the counter values at WindowEnd, with every key of
+	// Counters. Nil (an older record, or no snapshot) means Counters.
+	WindowCounters map[string]int64 `json:"window_counters"`
 	Series         []measure.Series `json:"series"`
 	Invariants     []verify.Result  `json:"invariants"`
 	Unavailable    []string         `json:"unavailable"`
@@ -151,10 +163,38 @@ func (r *Record) warmup() time.Duration {
 // scenario's warmup.
 func (r *Record) SteadyFrom() time.Time { return r.Started.Add(r.warmup()) }
 
-// steadyWindow is the length of the steady-state window: Ended - Started -
-// warmup, never negative.
+// windowEnd is the end of the measured window: WindowEnd, or Ended when the
+// record has none.
+func (r *Record) windowEnd() time.Time {
+	if r.WindowEnd.IsZero() {
+		return r.Ended
+	}
+	return r.WindowEnd
+}
+
+// atWindowEnd is counter k at the end of the measured window.
+func (r *Record) atWindowEnd(k string) int64 {
+	if r.WindowCounters == nil {
+		return r.Counters[k]
+	}
+	return r.WindowCounters[k]
+}
+
+// Drain is how long the run waited, after submissions stopped, for its jobs
+// to finish: Ended - WindowEnd, or 0 when the record has no WindowEnd.
+func (r *Record) Drain() time.Duration {
+	if r.WindowEnd.IsZero() {
+		return 0
+	}
+	return max(r.Ended.Sub(r.WindowEnd), 0)
+}
+
+// steadyWindow is the length of the steady-state window, from the end of
+// warmup to the end of submissions, never negative. The drain is not in it:
+// counting it would dilute every rate by however long the jobs took to
+// finish after the generator stopped offering work.
 func (r *Record) steadyWindow() time.Duration {
-	return max(r.Ended.Sub(r.Started)-r.warmup(), 0)
+	return max(r.windowEnd().Sub(r.Started)-r.warmup(), 0)
 }
 
 // hasSteadyBasis reports whether rates can be measured over the steady window:
@@ -162,22 +202,28 @@ func (r *Record) steadyWindow() time.Duration {
 // empty.
 func (r *Record) hasSteadyBasis() bool { return r.SteadyCounters != nil && r.steadyWindow() > 0 }
 
-// rate returns counter k per second: over the steady window from the
-// SteadyCounters snapshot when steady is true (use hasSteadyBasis), else the
-// run average. ok is false when the window is empty.
-func (r *Record) rate(k string, steady bool) (perSecond float64, ok bool) {
+// inWindow is how much counter k grew in the measured window: from the
+// SteadyCounters snapshot when steady is true, else from the start.
+func (r *Record) inWindow(k string, steady bool) int64 {
 	if steady {
-		w := r.steadyWindow()
-		if w <= 0 {
-			return 0, false
-		}
-		return float64(r.Counters[k]-r.SteadyCounters[k]) / w.Seconds(), true
+		return r.atWindowEnd(k) - r.SteadyCounters[k]
 	}
-	w := r.Ended.Sub(r.Started)
+	return r.atWindowEnd(k)
+}
+
+// rate returns counter k per second: its growth over the steady window, from
+// the end of warmup to the end of submissions, when steady is true (use
+// hasSteadyBasis), else the average from the start to the end of
+// submissions. ok is false when the window is empty.
+func (r *Record) rate(k string, steady bool) (perSecond float64, ok bool) {
+	w := r.windowEnd().Sub(r.Started)
+	if steady {
+		w = r.steadyWindow()
+	}
 	if w <= 0 {
 		return 0, false
 	}
-	return float64(r.Counters[k]) / w.Seconds(), true
+	return float64(r.inWindow(k, steady)) / w.Seconds(), true
 }
 
 // inRun returns s with only the points taken at or before Ended. The

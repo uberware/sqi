@@ -126,6 +126,17 @@ func TestRunner_Smoke(t *testing.T) {
 		if _, ok := rec.SteadyCounters[k]; !ok {
 			t.Errorf("SteadyCounters lacks %q", k)
 		}
+		if _, ok := rec.WindowCounters[k]; !ok {
+			t.Errorf("WindowCounters lacks %q", k)
+		}
+	}
+	// The measured window ends when submissions stop, 20 s in, before the
+	// drain; the record's Ended is after the drain.
+	if want := rec.Started.Add(20 * time.Second); !rec.WindowEnd.Equal(want) || rec.WindowEnd.After(rec.Ended) {
+		t.Errorf("WindowEnd = %s, want Started + duration (%s), not after Ended %s", rec.WindowEnd, want, rec.Ended)
+	}
+	if got := rec.WindowCounters[report.CounterJobsSubmitted]; got != 50 {
+		t.Errorf("jobs.submitted when submissions stopped = %d, want 50", got)
 	}
 	for _, k := range []string{report.HistSubmitLatency, report.HistFirstLease, report.HistTaskE2E, report.HistJobE2E} {
 		if h := rec.Histograms[k]; h == nil || h.Count() == 0 {

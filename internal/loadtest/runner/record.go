@@ -38,14 +38,15 @@ const listPage = 1000
 // taken its last sample.
 func (r *run) record() *report.Record {
 	rec := &report.Record{
-		RunID:    r.o.RunID,
-		Mode:     r.o.Mode,
-		Shard:    r.o.Shard.String(),
-		Complete: r.complete,
-		Scenario: r.sc,
-		Env:      r.env(),
-		Started:  r.started,
-		Ended:    r.ended,
+		RunID:     r.o.RunID,
+		Mode:      r.o.Mode,
+		Shard:     r.o.Shard.String(),
+		Complete:  r.complete,
+		Scenario:  r.sc,
+		Env:       r.env(),
+		Started:   r.started,
+		Ended:     r.ended,
+		WindowEnd: r.windowEnd,
 	}
 	if rec.Started.IsZero() { // interrupted before the first submission
 		rec.Started, rec.Ended = r.began, time.Now()
@@ -72,6 +73,8 @@ func (r *run) record() *report.Record {
 	r.mu.Lock()
 	rec.SteadyCounters = completeSteady(r.steady, rec.Counters)
 	r.mu.Unlock()
+	// Every key, as for SteadyCounters: one first seen in the drain was 0.
+	rec.WindowCounters = completeSteady(r.window, rec.Counters)
 	rec.Series = r.recorder.Series()
 	if rec.Series == nil {
 		rec.Series = []measure.Series{}
@@ -83,7 +86,12 @@ func (r *run) record() *report.Record {
 	}
 	rec.Valid = true
 	if r.obs != nil {
-		rec.Valid, rec.InvalidReason = r.obs.SelfHealth().ValidBetween(rec.SteadyFrom(), rec.Ended, 0)
+		// Judged over the measured window: an idle drain would dilute it.
+		until := rec.Ended
+		if !rec.WindowEnd.IsZero() {
+			until = rec.WindowEnd
+		}
+		rec.Valid, rec.InvalidReason = r.obs.SelfHealth().ValidBetween(rec.SteadyFrom(), until, 0)
 	}
 	r.unavail(report.HistLeaseReply, "the simulated workers do not time their lease requests")
 	if caveat := wsLagCaveat(wallClockStep()); caveat != "" && rec.Histograms[report.HistWSLag] != nil && rec.Histograms[report.HistWSLag].Count() > 0 {

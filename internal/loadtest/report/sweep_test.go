@@ -79,15 +79,15 @@ func TestKnee_ZeroBaselineDisablesLatencyRule(t *testing.T) {
 }
 
 func TestSweepThroughput(t *testing.T) {
-	r := goldenRecord() // 12000 tasks, 2400 at the end of warmup, 600 s steady window
+	r := goldenRecord() // 10080 tasks when submissions stopped, 2400 at the end of warmup, 480 s steady window
 	if got, ok := throughput(r); !ok || got != 16 {
 		t.Fatalf("steady throughput = %v, %v, want 16", got, ok)
 	}
 	r.SteadyCounters = nil
-	if got, ok := throughput(r); !ok || math.Abs(got-12000.0/720) > 1e-9 {
+	if got, ok := throughput(r); !ok || math.Abs(got-10080.0/600) > 1e-9 {
 		t.Fatalf("run-average throughput = %v, %v", got, ok)
 	}
-	r.Ended = r.Started
+	r.Ended, r.WindowEnd = r.Started, r.Started
 	if _, ok := throughput(r); ok {
 		t.Fatal("a run with no duration has no throughput")
 	}

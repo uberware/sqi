@@ -69,9 +69,13 @@ func summaryHeader(b *strings.Builder, r *Record) {
 	if r.Shard != "" {
 		fmt.Fprintf(b, "- Shard: %s\n", r.Shard)
 	}
-	fmt.Fprintf(b, "- Window: %s to %s (%s); warmup %s\n",
+	fmt.Fprintf(b, "- Run: %s to %s (%s); warmup %s\n",
 		r.Started.UTC().Format(time.RFC3339), r.Ended.UTC().Format(time.RFC3339),
 		fmtDur(r.Ended.Sub(r.Started)), fmtDur(r.warmup()))
+	if !r.WindowEnd.IsZero() {
+		fmt.Fprintf(b, "- Submissions stopped: %s (%s in); drain %s\n",
+			r.WindowEnd.UTC().Format(time.RFC3339), fmtDur(r.WindowEnd.Sub(r.Started)), fmtDur(r.Drain()))
+	}
 	fmt.Fprintf(b, "- Environment: %s/%s, %d CPUs, sqi %s (%s), store %s\n",
 		r.Env.OS, r.Env.Arch, r.Env.CPUs, orDash(r.Env.SQIVersion), orDash(r.Env.Commit), orDash(r.Env.Store))
 	if len(r.Env.Flags) > 0 {
@@ -126,21 +130,22 @@ func summaryThroughput(b *strings.Builder, r *Record) {
 	steady := r.hasSteadyBasis()
 	b.WriteString("## Throughput\n\n")
 	if steady {
-		fmt.Fprintf(b, "Rates are steady-window rates: each counter's growth since the end of warmup divided by the steady window (%s, the run minus its warmup).\n\n", fmtDur(r.steadyWindow()))
+		fmt.Fprintf(b, "Rates are steady-window rates: each counter's growth from the end of warmup to the end of submissions, divided by that window (%s). ", fmtDur(r.steadyWindow()))
 	} else {
-		fmt.Fprintf(b, "Rates are run averages: each counter's total divided by the whole run (%s), warmup included, because no counters were snapshotted at the end of warmup.\n\n", fmtDur(r.Ended.Sub(r.Started)))
+		fmt.Fprintf(b, "Rates are run averages: each counter's count from the start to the end of submissions (%s), warmup included, because no counters were snapshotted at the end of warmup. ", fmtDur(r.windowEnd().Sub(r.Started)))
 	}
+	b.WriteString("Total is the count at the end of the run, drain included; In window is the part the rate is taken over.\n\n")
 	if len(r.Counters) == 0 {
 		b.WriteString("No counters were recorded.\n\n")
 		return
 	}
-	b.WriteString("| Counter | Total | Per second |\n|---|---:|---:|\n")
+	b.WriteString("| Counter | Total | In window | Per second |\n|---|---:|---:|---:|\n")
 	for _, k := range slices.Sorted(maps.Keys(r.Counters)) {
-		rate := "-"
+		in, rate := "-", "-"
 		if v, ok := r.rate(k, steady); ok && !gaugeCounters[k] {
-			rate = strconv.FormatFloat(v, 'f', 2, 64)
+			in, rate = strconv.FormatInt(r.inWindow(k, steady), 10), strconv.FormatFloat(v, 'f', 2, 64)
 		}
-		fmt.Fprintf(b, "| %s | %d | %s |\n", k, r.Counters[k], rate)
+		fmt.Fprintf(b, "| %s | %d | %s | %s |\n", k, r.Counters[k], in, rate)
 	}
 	b.WriteString("\n")
 }

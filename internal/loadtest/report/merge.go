@@ -69,9 +69,10 @@ func parseShards(rs []*Record) ([]shardEntry, error) {
 // which are per shard, not for the whole farm); the run is Valid and Complete
 // only if every shard is; an invariant holds only if it held in every shard,
 // with the shards' evidence concatenated; findings are recomputed from the
-// merged data. SteadyCounters add like Counters, unless a shard has none, in
-// which case the merged record has none and its rates are run averages. The
-// inputs are not modified.
+// merged data. SteadyCounters and WindowCounters add like Counters, unless a
+// shard has none, in which case the merged record has none (no
+// SteadyCounters makes its rates run averages); WindowEnd is the latest
+// shard's. The inputs are not modified.
 func Merge(rs []*Record) (*Record, error) {
 	shards, err := parseShards(rs)
 	if err != nil {
@@ -83,7 +84,8 @@ func Merge(rs []*Record) (*Record, error) {
 	m.Histograms = map[string]*measure.Histogram{}
 	m.Counters = map[string]int64{}
 	m.SteadyCounters = map[string]int64{}
-	steadyAll := true
+	m.WindowCounters = map[string]int64{}
+	steadyAll, windowAll := true, true
 	m.Series = slices.Clone(shards[0].rec.Series)
 	m.Complete, m.Valid, m.InvalidReason = true, true, ""
 	unavailable := map[string]bool{}
@@ -105,6 +107,15 @@ func Merge(rs []*Record) (*Record, error) {
 		for k, v := range r.SteadyCounters {
 			m.SteadyCounters[k] += v
 		}
+		if r.WindowCounters == nil {
+			windowAll = false
+		}
+		for k, v := range r.WindowCounters {
+			m.WindowCounters[k] += v
+		}
+		if r.WindowEnd.After(m.WindowEnd) {
+			m.WindowEnd = r.WindowEnd
+		}
 		if r.Started.Before(m.Started) {
 			m.Started = r.Started
 		}
@@ -122,6 +133,9 @@ func Merge(rs []*Record) (*Record, error) {
 	}
 	if !steadyAll {
 		m.SteadyCounters = nil
+	}
+	if !windowAll {
+		m.WindowCounters = nil
 	}
 	m.InvalidReason = strings.Join(reasons, "; ")
 	if len(shards) < total {

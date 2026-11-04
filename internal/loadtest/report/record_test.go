@@ -3,6 +3,7 @@
 package report
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -88,5 +89,51 @@ func TestSeriesCSV(t *testing.T) {
 		"b.series,s,2026-11-03T10:01:00Z,2\n"
 	if sb.String() != want {
 		t.Fatalf("got\n%s\nwant\n%s", sb.String(), want)
+	}
+}
+
+// TestRecord_RatesExcludeTheDrain checks that a rate is taken over the
+// measured window, from the end of warmup to the end of submissions, and not
+// over the drain after it: two runs that differ only in how long their jobs
+// took to finish after submissions stopped have the same rates.
+func TestRecord_RatesExcludeTheDrain(t *testing.T) {
+	rec := func(drain time.Duration) *Record {
+		r := baseRecord()
+		r.Scenario.Warmup.Duration = time.Minute
+		r.WindowEnd = t0.Add(11 * time.Minute) // a 10 minute window after warmup
+		r.Ended = r.WindowEnd.Add(drain)
+		r.SteadyCounters = map[string]int64{CounterJobsSubmitted: 10, CounterTasksTerminal: 100}
+		r.WindowCounters = map[string]int64{CounterJobsSubmitted: 70, CounterTasksTerminal: 700}
+		r.Counters = map[string]int64{CounterJobsSubmitted: 70, CounterTasksTerminal: 1000}
+		return r
+	}
+	short, long := rec(time.Minute), rec(8*time.Minute)
+	for _, r := range []*Record{short, long} {
+		for k, want := range map[string]float64{CounterJobsSubmitted: 0.1, CounterTasksTerminal: 1.0} {
+			got, ok := r.rate(k, r.hasSteadyBasis())
+			if !ok || math.Abs(got-want) > 1e-9 {
+				t.Errorf("drain %s: rate(%s) = %v (ok %v), want %v over the 600 s window", r.Drain(), k, got, ok, want)
+			}
+		}
+	}
+	if short.Drain() != time.Minute || long.Drain() != 8*time.Minute {
+		t.Errorf("Drain = %s and %s, want 1m and 8m", short.Drain(), long.Drain())
+	}
+	for _, d := range Compare(short, long) {
+		if strings.HasPrefix(d.Metric, CounterJobsSubmitted) || strings.HasPrefix(d.Metric, CounterTasksTerminal) {
+			if d.Verdict != VerdictNoChange {
+				t.Errorf("compare %s: %v -> %v is %q, want no change: only the drain differs", d.Metric, d.A, d.B, d.Verdict)
+			}
+		}
+	}
+
+	// An older record, with no window, keeps rating up to Ended.
+	old := rec(4 * time.Minute)
+	old.WindowEnd, old.WindowCounters = time.Time{}, nil
+	if got, _ := old.rate(CounterJobsSubmitted, true); math.Abs(got-60.0/(14*60)) > 1e-9 {
+		t.Errorf("record without a window: rate = %v, want 60 over the 14 minutes to Ended", got)
+	}
+	if old.Drain() != 0 {
+		t.Errorf("record without a window: Drain = %s, want 0", old.Drain())
 	}
 }

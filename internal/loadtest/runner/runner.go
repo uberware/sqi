@@ -176,12 +176,15 @@ type run struct {
 	uiDone, obsDone     chan struct{}
 
 	began, started, ended time.Time
-	complete              bool
-	tornDown              bool
-	uiRunning             bool // the UI clients did not stop in time
-	invariants            []verify.Result
-	serverJobs            map[string]client.Job
-	serverErr             error
+	// windowEnd is when submissions stopped, and window the counters then.
+	windowEnd  time.Time
+	window     map[string]int64
+	complete   bool
+	tornDown   bool
+	uiRunning  bool // the UI clients did not stop in time
+	invariants []verify.Result
+	serverJobs map[string]client.Job
+	serverErr  error
 
 	mu          sync.Mutex // guards the fields below
 	steady      map[string]int64
@@ -489,10 +492,16 @@ func (r *run) measure(ctx context.Context) {
 	wg.Go(func() { r.profileCPU(subCtx, steadyFrom, end) })
 	<-subCtx.Done()
 	wg.Wait()
+	// Submissions stop at end; one in flight then is still the window's.
+	r.windowEnd = time.Now()
+	if r.windowEnd.After(end) {
+		r.windowEnd = end
+	}
 	r.ended = time.Now()
 	if ctx.Err() != nil || r.failed() {
 		return
 	}
+	r.snapshotWindow(ctx)
 
 	r.logger.InfoContext(ctx, "submissions stopped; waiting for the jobs to finish",
 		slog.Int("jobs", r.jobs.AcceptedCount()), slog.Duration("drain_timeout", sc.DrainTimeout.Duration))
@@ -528,6 +537,23 @@ func (r *run) snapshotSteady(ctx context.Context, at time.Time) {
 	r.mu.Lock()
 	r.steady = counters
 	r.mu.Unlock()
+}
+
+// snapshotWindow takes the counters at the end of submissions, the end of the
+// measured window: every rate is taken over the window, not over the drain
+// that follows it.
+func (r *run) snapshotWindow(ctx context.Context) {
+	counters := r.liveCounters()
+	jobs, err := listFarmJobs(ctx, r.c, r.tgt.FarmID())
+	if err != nil {
+		if ctx.Err() == nil {
+			r.unavail("window_counters", "listing the farm's jobs when submissions stopped failed, so tasks.terminal is rated at its end-of-run value: "+err.Error())
+		}
+		r.window = counters
+		return
+	}
+	counters[report.CounterTasksTerminal] = terminalTasks(jobs)
+	r.window = counters
 }
 
 // profileCPU takes one CPU profile of the server centered on the middle of
