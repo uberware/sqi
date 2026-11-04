@@ -1066,12 +1066,12 @@ func TestCheck_RealWorkerTasks(t *testing.T) {
 	addRealTasks := func(w *world) {
 		w.view.tasks["j1"] = append(w.view.tasks["j1"], client.Task{ID: "tr", Status: "succeeded", AssignedWorkerID: "real-1"})
 		w.view.attempts["tr"] = []client.Attempt{attempt(w.t0, 1, "succeeded", 0, 5)}
-		w.view.attempts["tr"][0].ID, w.view.attempts["tr"][0].WorkerID = "ra1", "real-1"
+		w.view.attempts["tr"][0].WorkerID = "real-1" // its ID is the attempt number, as the client reports it
 		w.view.logs["tr"] = w.chunks("tr", "ra1", 1, 10)
-		// A canceled task's row no longer names its worker; its attempt does.
+		// A canceled task's row does not name its worker; its attempt does.
 		w.view.tasks["j2"] = append(w.view.tasks["j2"], client.Task{ID: "tc", Status: "canceled"})
 		w.view.attempts["tc"] = []client.Attempt{attempt(w.t0, 1, "canceled", 0, 3)}
-		w.view.attempts["tc"][0].ID, w.view.attempts["tc"][0].WorkerID = "ra2", "real-1"
+		w.view.attempts["tc"][0].WorkerID = "real-1"
 		w.view.logs["tc"] = w.chunks("tc", "ra2", 1, 4)
 	}
 	tests := []struct {

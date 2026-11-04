@@ -342,8 +342,8 @@ func (c *checker) singleAttempt(ctx context.Context, refs []taskRef) Result {
 // clock. The server's attempt list cannot show it: a worker that keeps
 // running an attempt the server already closed (reclaimed after its
 // heartbeats were lost, or canceled with the cancel lost) leaves the server
-// with sequential attempts and the stale worker's report rejected, while the
-// task really ran twice at once.
+// with sequential attempts and the stale worker's report rejected, although
+// the task ran twice at once.
 func (c *checker) ledgerOverlaps() []string {
 	x := c.ledger
 	x.refresh()
@@ -439,7 +439,8 @@ func stamp(t time.Time) string { return t.UTC().Format("15:04:05.000000") }
 // lines the simulator sent for that attempt, in order. With overflow expected,
 // losing the attempt's oldest whole chunks is allowed and nothing else is: at
 // least the newest chunk must be there. A chunk lost on a connection drop
-// (log chunks go over core NATS, at most once) is a finding, not excused.
+// counts as a violation: the worker publishes log chunks with a core NATS
+// publish, which has no acknowledgement and no retry.
 func (c *checker) logs(ctx context.Context, refs []taskRef) Result {
 	var ev evidence
 	ev.addAll(settleLoop(ctx, c.logSettle, refs, func(rs []taskRef) []string {
@@ -455,7 +456,7 @@ func (c *checker) logMsg(ctx context.Context, ref taskRef, x *ledgerIndex) strin
 	if err != nil {
 		return fmt.Sprintf("job %s task %s: reading logs: %v", ref.jobID, ref.taskID, err)
 	}
-	if len(chunks) > 0 && x.byID[chunks[0].AttemptID] == nil && c.realAttempt(ctx, ref.taskID, chunks[0].AttemptID) {
+	if len(chunks) > 0 && x.byID[chunks[0].AttemptID] == nil && c.latestOnRealWorker(ctx, ref.taskID) {
 		return ""
 	}
 	where := fmt.Sprintf("job %s task %s", ref.jobID, ref.taskID)
@@ -488,24 +489,21 @@ func (c *checker) logMsg(ctx context.Context, ref taskRef, x *ledgerIndex) strin
 	return exactDiff(where, lines, 1, a.end.LogLines, want)
 }
 
-// realAttempt reports whether attemptID, which the ledger does not know, ran
-// on a worker outside the simulated fleet, so the ledger cannot speak for its
-// logs. A canceled task's server row no longer names its worker, so this asks
-// the attempt list, one read for such a task only.
-func (c *checker) realAttempt(ctx context.Context, taskID, attemptID string) bool {
+// latestOnRealWorker reports whether the task's latest attempt, whose chunks
+// the logs endpoint serves, ran on a worker outside the simulated fleet, so
+// the ledger cannot speak for its logs. A canceled task's server row does not
+// name its worker, so this reads the attempt list (ordered by attempt number;
+// it carries no attempt row ID to match a chunk's against), once, for a task
+// whose chunks name an attempt the ledger does not know.
+func (c *checker) latestOnRealWorker(ctx context.Context, taskID string) bool {
 	if c.in.Simulated == nil {
 		return false
 	}
 	atts, err := c.v.ListAttempts(ctx, taskID)
-	if err != nil {
+	if err != nil || len(atts) == 0 {
 		return false
 	}
-	for _, a := range atts {
-		if a.ID == attemptID {
-			return c.realWorker(a.WorkerID)
-		}
-	}
-	return false
+	return c.realWorker(atts[len(atts)-1].WorkerID)
 }
 
 // logAttempt finds the ledger attempt the server's chunks belong to: the
@@ -650,16 +648,16 @@ func (c *checker) countWorkers(ctx context.Context) (online, disabled int, err e
 // An attempt is held from its leased event to its first end event (or to the
 // end of the ledger when it has none), on the worker's clock. That window sits
 // inside the server's: the server commits the lease before the worker records
-// leased, and a dispatcher stamps an attempt's end event with a time taken
-// before it publishes the terminal status, so before the server can free the
-// slot. A peak above a server-enforced cap is therefore a real violation, with
-// one difference. The server frees a
-// canceled task's slot and claims when it commits the cancel, while the
-// simulator ends the attempt only once the cancel message has reached it and
-// its logs are flushed, so another lease can land in between. An attempt the
-// simulator ended as canceled, of a job a cancel action targeted, is therefore
-// held no later than that action's start (CanceledAt). Everything else keeps
-// the simulator's window, which sits inside the server's.
+// leased, and the simulator's dispatcher stamps an attempt's end event with a
+// time taken before it publishes the terminal status, so before the server can
+// free the slot. A peak above a server-enforced cap is therefore a violation.
+//
+// Canceled attempts are the exception. The server frees a canceled task's slot
+// and claims when it commits the cancel, while the simulator ends the attempt
+// only once the cancel message has reached it and its logs are flushed, so
+// another lease can land in between. An attempt the simulator ended as
+// canceled, of a job a cancel action targeted, is therefore held no later than
+// that action's start (CanceledAt).
 func (c *checker) caps() Result {
 	var ev evidence
 	if c.in.Ledger == nil || c.in.Scenario == nil {
