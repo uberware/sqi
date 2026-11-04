@@ -290,7 +290,9 @@ test-expr-oracle: ## Differential-test the EXPR evaluator against the OpenJD ref
 # The managed target builds sqi-server, sqi-worker and the no-op task command
 # itself, so none of these needs a prior `make build`. `load-smoke` is the Go
 # test (build tag `load`, never part of `make test`); the other three drive
-# the CLI, which writes a run directory under ./runs.
+# the CLI, which writes a run directory under ./runs. Through `go run` any
+# non-zero sqi-load exit status comes back as 1; run the built binary to tell
+# an invariant failure (1) from an INVALID run (2).
 SCENARIO ?= mixed-medium
 DURATION ?= 8h
 VARY     ?=
@@ -303,9 +305,13 @@ load-smoke: ## Run the smoke scenario end to end as a Go test (SQLite; PostgreSQ
 load: ## Run one load scenario (SCENARIO=mixed-medium)
 	go run ./cmd/sqi-load run --scenario $(SCENARIO)
 
+# A soak defaults to soak-steady rather than load's mixed-medium; a SCENARIO
+# given on the command line or in the environment wins.
+SOAK_SCENARIO = $(if $(filter command line environment environment override,$(origin SCENARIO)),$(SCENARIO),soak-steady)
+
 .PHONY: soak
-soak: ## Run a long soak of the soak-steady scenario (DURATION=8h)
-	go run ./cmd/sqi-load soak --scenario soak-steady --duration $(DURATION)
+soak: ## Run a long soak (SCENARIO=soak-steady, DURATION=8h)
+	go run ./cmd/sqi-load soak --scenario $(SOAK_SCENARIO) --duration $(DURATION)
 
 .PHONY: load-sweep
 load-sweep: ## Sweep one parameter (SCENARIO=..., VARY='workers[0].count=100,200,400')
