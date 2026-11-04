@@ -248,7 +248,22 @@ func TestRun_StartFailureReleasesExternalBroker(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	err := New(cfg, logger, nil).Run(ctx)
+	srv := New(cfg, logger, nil)
+	// A failed start leaves the store open, since the process exits. Windows
+	// cannot remove an open database file when the test directory is cleaned
+	// up, so release it here, once the checkpointer has finished.
+	t.Cleanup(func() {
+		cancel()
+		if srv.checkpointDone != nil {
+			<-srv.checkpointDone
+		}
+		if srv.store != nil {
+			if err := srv.store.Close(); err != nil {
+				t.Errorf("close the store left open by the failed start: %v", err)
+			}
+		}
+	})
+	err := srv.Run(ctx)
 	if err == nil || !strings.Contains(err.Error(), "discovery") {
 		t.Fatalf("Run = %v, want a discovery failure at startup", err)
 	}
