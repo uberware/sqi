@@ -569,7 +569,11 @@ func (c *checker) caps() Result {
 	}
 	for _, p := range c.in.Scenario.Farm.UsagePools {
 		if p.Limit > 0 && pools[p.Name] > p.Limit {
-			ev.add(fmt.Sprintf("usage pool %s: %d tasks in flight at once, limit %d", p.Name, pools[p.Name], p.Limit))
+			name := p.Name
+			if server := c.in.PoolNames[p.Name]; server != "" && server != p.Name {
+				name += " (" + server + " on the server)"
+			}
+			ev.add(fmt.Sprintf("usage pool %s: %d tasks in flight at once, limit %d", name, pools[p.Name], p.Limit))
 		}
 	}
 	return ev.result(NameCaps)

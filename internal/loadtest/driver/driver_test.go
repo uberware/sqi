@@ -199,6 +199,33 @@ func TestSubmitter_CountsRejectionsByStatus(t *testing.T) {
 	}
 }
 
+// poolTarget is a target whose usage pools have names of their own on the
+// server, as an attached run's do.
+type poolTarget struct{ fakeTarget }
+
+func (poolTarget) PoolName(name string) string { return "load_r1_" + name }
+
+func TestSubmitter_ClaimsThePoolByItsServerName(t *testing.T) {
+	js := &jobServer{}
+	srv := js.start(t)
+	sc := &scenario.Scenario{Jobs: oneClass(1, 0)}
+	sc.Jobs[0].UsagePool = "arnold"
+	s := NewSubmitter(client.New(srv.URL), poolTarget{newFakeTarget(srv.URL)}, sc, NewJobLedger(), NewMetrics(nil), nil)
+	if err := s.Run(t.Context()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	seen := js.seen()
+	if len(seen) != 1 {
+		t.Fatalf("server saw %d submissions, want 1", len(seen))
+	}
+	if body := seen[0].Body; !strings.Contains(body, "amount.worker.usagepool.load_r1_arnold") || strings.Contains(body, "usagepool.arnold") {
+		t.Errorf("template does not claim the pool by its server name load_r1_arnold:\n%s", body)
+	}
+	if sc.Jobs[0].UsagePool != "arnold" {
+		t.Errorf("the scenario's class was changed: usage_pool %q", sc.Jobs[0].UsagePool)
+	}
+}
+
 func TestSubmitter_NoRateLimitFlagWithout429(t *testing.T) {
 	js := &jobServer{statuses: []int{201, 503}}
 	srv := js.start(t)

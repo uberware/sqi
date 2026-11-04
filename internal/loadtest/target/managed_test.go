@@ -176,7 +176,7 @@ func assertFarm(t *testing.T, c *client.Client, tgt Target, sc *scenario.Scenari
 	for _, want := range sc.Farm.UsagePools {
 		found := false
 		for _, p := range pools {
-			if p.Name == want.Name && p.MaxConcurrent == want.Limit {
+			if p.Name == PoolName(tgt, want.Name) && p.MaxConcurrent == want.Limit {
 				found = true
 			}
 		}
@@ -552,7 +552,7 @@ func TestAttach_CreatesAndDeletesFarm(t *testing.T) {
 			}
 			poolLeft := false
 			for _, p := range pools {
-				poolLeft = poolLeft || p.Name == sc.Farm.UsagePools[0].Name
+				poolLeft = poolLeft || p.Name == PoolName(tgt, sc.Farm.UsagePools[0].Name)
 			}
 			if poolLeft != (tt.keep || tt.shared) {
 				t.Errorf("after Close (keep=%v, shared=%v): pool present = %v", tt.keep, tt.shared, poolLeft)
@@ -560,3 +560,133 @@ func TestAttach_CreatesAndDeletesFarm(t *testing.T) {
 		})
 	}
 }
+
+// poolByName returns the server's usage pool of that name.
+func poolByName(t *testing.T, c *client.Client, name string) (client.UsagePool, bool) {
+	t.Helper()
+	pools, err := c.ListUsagePools(t.Context())
+	if err != nil {
+		t.Fatalf("ListUsagePools: %v", err)
+	}
+	for _, p := range pools {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return client.UsagePool{}, false
+}
+
+// TestAttach_NamespacesUsagePools checks that an attached run never claims a
+// usage pool somebody else uses: the server already has a production pool
+// named like the scenario's, and the run must create, claim and delete a pool
+// of its own beside it, and leave the production one exactly as it was. A
+// pool the run's own name already exists under fails the setup, unless the
+// shards of one run share it.
+func TestAttach_NamespacesUsagePools(t *testing.T) {
+	skipShort(t)
+	server, _, _ := binaries(t)
+	remote := startManaged(t, ManagedConfig{
+		RunDir: t.TempDir(), ServerBin: server,
+		Scenario: testScenario(scenario.ServerSpec{Store: "sqlite", BrokerAuth: true, HTTPAuth: true}),
+	})
+	admin := mustClient(t, remote)
+	ctx := t.Context()
+	// The managed remote created the scenario's "arnold" pool, limit 3, under
+	// its own name: the production pool here.
+	prod, ok := poolByName(t, admin, "arnold")
+	if !ok {
+		t.Fatal("the remote has no production pool arnold")
+	}
+	attach := func(runID, poolRunID string, shared bool) (Target, error) {
+		sc := testScenario(scenario.ServerSpec{})
+		sc.Farm.UsagePools = []scenario.PoolSpec{{Name: "arnold", Limit: 2}}
+		return Attach(ctx, AttachConfig{
+			HTTPURL: remote.HTTPURL(), NATSURL: remote.NATSURL(), APIKey: remote.APIKey(),
+			JoinToken: remote.joinToken, SharedPools: shared, Scenario: sc, RunID: runID, PoolRunID: poolRunID,
+			Logger: testLogger(t),
+		})
+	}
+
+	t.Run("own pool beside the production one", func(t *testing.T) {
+		tgt, err := attach("ns-1", "", false)
+		if err != nil {
+			t.Fatalf("Attach: %v", err)
+		}
+		own := PoolName(tgt, "arnold")
+		if own != "load_ns_1_arnold" {
+			t.Fatalf("PoolName(arnold) = %q, want load_ns_1_arnold", own)
+		}
+		if p, ok := poolByName(t, admin, own); !ok || p.MaxConcurrent != 2 {
+			t.Fatalf("the run's pool %s = %+v (found %v), want limit 2", own, p, ok)
+		}
+		// A job claiming the run's pool by its server name is accepted.
+		tmpl := fmt.Sprintf(poolJob, own)
+		if _, _, err := admin.SubmitJob(ctx, client.SubmitRequest{FarmID: tgt.FarmID(), QueueID: tgt.QueueIDs()["render"], Template: []byte(tmpl)}); err != nil {
+			t.Fatalf("SubmitJob claiming %s: %v", own, err)
+		}
+		if err := tgt.Close(ctx); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if _, ok := poolByName(t, admin, own); ok {
+			t.Errorf("the run's pool %s is still there after Close", own)
+		}
+		if p, ok := poolByName(t, admin, "arnold"); !ok || p != prod {
+			t.Errorf("production pool after the run = %+v (found %v), want it untouched: %+v", p, ok, prod)
+		}
+	})
+
+	t.Run("an existing pool of the run's name fails the setup", func(t *testing.T) {
+		taken := RunPoolName("ns-2", "arnold")
+		id, err := admin.CreateUsagePool(ctx, taken, 9)
+		if err != nil {
+			t.Fatalf("CreateUsagePool(%s): %v", taken, err)
+		}
+		t.Cleanup(func() { admin.DeleteUsagePool(context.Background(), id) }) //nolint:errcheck // best-effort cleanup
+		tgt, err := attach("ns-2", "", false)
+		if err == nil {
+			tgt.Close(context.Background()) //nolint:errcheck // the assertion below fails anyway
+			t.Fatal("Attach succeeded on a server that already has the run's pool")
+		}
+		if !strings.Contains(err.Error(), taken) || !strings.Contains(err.Error(), "already exists") {
+			t.Errorf("err = %v, want one naming %s as already existing", err, taken)
+		}
+		farms, err := admin.ListFarms(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range farms {
+			if f.Name == "load-ns-2" {
+				t.Errorf("the failed setup left farm %s behind", f.Name)
+			}
+		}
+
+		// A shard of run ns-2 shares the pool another shard created.
+		shard, err := attach("ns-2-s1", "ns-2", true)
+		if err != nil {
+			t.Fatalf("Attach as a shard: %v", err)
+		}
+		if got := PoolName(shard, "arnold"); got != taken {
+			t.Errorf("shard PoolName = %q, want the run's %q", got, taken)
+		}
+		if err := shard.Close(ctx); err != nil {
+			t.Fatalf("shard Close: %v", err)
+		}
+		if p, ok := poolByName(t, admin, taken); !ok || p.MaxConcurrent != 9 {
+			t.Errorf("the shared pool after a shard's Close = %+v (found %v), want it left in place", p, ok)
+		}
+	})
+}
+
+const poolJob = `specificationVersion: jobtemplate-2023-09
+name: pool
+steps:
+  - name: step-1
+    hostRequirements:
+      amounts:
+        - name: amount.worker.usagepool.%s
+          min: 1
+    script:
+      actions:
+        onRun:
+          command: sqi-load-noop
+`

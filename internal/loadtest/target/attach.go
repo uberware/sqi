@@ -3,6 +3,7 @@
 package target
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -51,7 +52,12 @@ type AttachConfig struct {
 	// and the server refuses while any claim names it.
 	SharedPools bool
 	Scenario    *scenario.Scenario
-	RunID       string
+	// RunID names the run's farm, load-<RunID>.
+	RunID string
+	// PoolRunID names the run's usage pools, load_<PoolRunID>_<pool> (see
+	// [RunPoolName]); "" means RunID. The shards of one run pass the run's
+	// own ID here, so they share their pools while each has a farm.
+	PoolRunID string
 	// Logger receives the target's own progress; nil discards it.
 	Logger *slog.Logger
 }
@@ -70,8 +76,10 @@ type attached struct {
 }
 
 // Attach creates the run's farm, its queues and its usage pools on a running
-// server. A usage pool that already exists there is used as it is and never
-// deleted. If setup fails part way, Attach deletes what it created.
+// server. The pools are the run's own, named load_<PoolRunID>_<pool>, so the
+// run never claims slots from a pool somebody else uses; one that already
+// exists fails the setup unless SharedPools says another shard of the run
+// made it. If setup fails part way, Attach deletes what it created.
 func Attach(ctx context.Context, cfg AttachConfig) (Target, error) {
 	if err := validateAttach(cfg); err != nil {
 		return nil, err
@@ -92,7 +100,7 @@ func Attach(ctx context.Context, cfg AttachConfig) (Target, error) {
 	if !cfg.NoAuth {
 		a.creds = simworker.JoinTokenCredentials(c, cfg.JoinToken)
 	}
-	a.farm, err = setupFarm(ctx, c, farmName(cfg.RunID), cfg.Scenario.Farm, a.logger)
+	a.farm, err = setupFarm(ctx, c, farmName(cfg.RunID), cfg.Scenario.Farm, poolPolicy{name: a.PoolName, reuse: cfg.SharedPools}, a.logger)
 	if err != nil {
 		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), workerRemovalTimeout)
 		defer cancel()
@@ -128,6 +136,12 @@ func (a *attached) QueueIDs() map[string]string        { return copyMap(a.farm.q
 func (a *attached) DataDir() string                    { return a.cfg.DataDir }
 func (a *attached) Credentials() simworker.Credentials { return a.creds }
 func (a *attached) TLS() simworker.TLSFiles            { return a.cfg.TLS }
+
+// PoolName is the server's name of the scenario's usage pool name: the run's
+// own namespaced pool.
+func (a *attached) PoolName(name string) string {
+	return RunPoolName(cmp.Or(a.cfg.PoolRunID, a.cfg.RunID), name)
+}
 
 // NoopCommand is a placeholder: an attached run has no real workers, and
 // simulated workers never execute the command.

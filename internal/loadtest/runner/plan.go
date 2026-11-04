@@ -10,6 +10,7 @@ import (
 	"github.com/uberware/sqi/internal/loadtest/driver"
 	"github.com/uberware/sqi/internal/loadtest/report"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
+	"github.com/uberware/sqi/internal/loadtest/target"
 )
 
 const (
@@ -23,6 +24,15 @@ const (
 	// lognormalP95Z is the standard normal's 95th percentile.
 	lognormalP95Z = 1.6449
 )
+
+// poolNames maps each scenario usage pool to the name the target knows it by.
+func poolNames(t target.Target, sc *scenario.Scenario) map[string]string {
+	out := make(map[string]string, len(sc.Farm.UsagePools))
+	for _, p := range sc.Farm.UsagePools {
+		out[p.Name] = target.PoolName(t, p.Name)
+	}
+	return out
+}
 
 // taskSpecs maps each job class to the task behavior its workers simulate.
 func taskSpecs(sc *scenario.Scenario) map[string]scenario.TaskSpec {

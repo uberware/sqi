@@ -112,6 +112,8 @@ func (s *Submitter) Run(ctx context.Context) error {
 		if jc.Rate.PerSecond <= 0 && jc.Total <= 0 {
 			return fmt.Errorf("driver: job class %q has neither a rate nor a total", jc.Name)
 		}
+		// The template claims the pool by the name the server knows it by.
+		jc.UsagePool = target.PoolName(s.t, jc.UsagePool)
 		runs = append(runs, &classRun{jc: jc, queueID: qid})
 	}
 

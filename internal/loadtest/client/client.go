@@ -391,6 +391,13 @@ func (c *Client) DeleteUsagePool(ctx context.Context, id string) error {
 	return c.do(ctx, call{method: http.MethodDelete, path: "/usage-pools/" + escape(id)}, nil)
 }
 
+// ListFarms lists every farm (GET /farms).
+func (c *Client) ListFarms(ctx context.Context) ([]Farm, error) {
+	var out []Farm
+	err := c.do(ctx, call{method: http.MethodGet, path: "/farms"}, &out)
+	return out, err
+}
+
 // GetFarm returns a farm (GET /farms/{id}).
 func (c *Client) GetFarm(ctx context.Context, id string) (Farm, error) {
 	var f Farm

@@ -9,9 +9,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"maps"
 	"net/http"
+	"strings"
 
 	"github.com/uberware/sqi/internal/loadtest/client"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
@@ -125,18 +127,89 @@ func httpClient(files simworker.TLSFiles) (*http.Client, error) {
 // farmName is the name of the farm a run creates.
 func farmName(runID string) string { return "load-" + runID }
 
+// PoolName returns the name the server knows the scenario's usage pool name
+// by: on an attached server the run's own namespaced pool (see
+// [RunPoolName]), and name itself on any other target.
+func PoolName(t Target, name string) string {
+	if pn, ok := t.(interface{ PoolName(string) string }); ok && name != "" {
+		return pn.PoolName(name)
+	}
+	return name
+}
+
+// maxPoolName is the longest usage pool name a job template can claim: OpenJD
+// caps a capability name at 100 characters, and "amount.worker.usagepool."
+// takes 24 of them.
+const maxPoolName = 100 - len("amount.worker.usagepool.")
+
+// poolHashLen is the length of the hash that stands in for a pool name too
+// long to fit beside its run ID.
+const poolHashLen = 8
+
+// RunPoolName returns the usage pool an attached run creates for the
+// scenario's pool name: load_<runID>_<name>, with every character outside
+// letters, digits and '_' turned into '_' (a capability name is made of
+// identifiers), at most 76 characters. A name that does not fit beside the
+// run ID is shortened and suffixed with a hash of itself; the
+// load_<runID>_ prefix is always kept, which is how cleanup finds a run's
+// pools. Pools are global to the server, so a run claiming them by their
+// scenario names would take slots from a production pool of the same name.
+func RunPoolName(runID, name string) string {
+	prefix := PoolPrefix(runID)
+	n := identifier(name)
+	avail := maxPoolName - len(prefix)
+	if len(n) <= avail {
+		return prefix + n
+	}
+	h := fnv.New32a()
+	h.Write([]byte(name))
+	sum := fmt.Sprintf("%08x", h.Sum32())
+	if avail <= poolHashLen {
+		return prefix + sum[:avail]
+	}
+	return prefix + n[:avail-poolHashLen-1] + "_" + sum
+}
+
+// PoolPrefix is the prefix every usage pool of run runID carries:
+// load_<runID>_, with the run ID made an identifier.
+func PoolPrefix(runID string) string { return "load_" + identifier(runID) + "_" }
+
+// identifier returns s with every character outside letters, digits and '_'
+// replaced by '_'.
+func identifier(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
 // farm is what setupFarm created.
 type farm struct {
 	id       string
 	queueIDs map[string]string
-	// poolIDs are the usage pools this run created, by name; a pool that
-	// already existed on the server is reused and left out.
+	// poolIDs are the usage pools this run created, by scenario name; a pool
+	// that already existed on the server and was reused is left out.
 	poolIDs map[string]string
+}
+
+// poolPolicy says how setupFarm names the scenario's usage pools and what it
+// does when one already exists.
+type poolPolicy struct {
+	// name maps a scenario pool name to the server's.
+	name func(string) string
+	// reuse accepts a pool that already exists (the shards of one run share
+	// theirs); otherwise an existing pool fails the setup.
+	reuse bool
 }
 
 // setupFarm creates the run's farm, its queues and its usage pools. When it
 // fails part way, the returned farm holds what was created, for teardown.
-func setupFarm(ctx context.Context, c *client.Client, name string, spec scenario.FarmSpec, logger *slog.Logger) (farm, error) {
+func setupFarm(ctx context.Context, c *client.Client, name string, spec scenario.FarmSpec, pools poolPolicy, logger *slog.Logger) (farm, error) {
 	f := farm{queueIDs: map[string]string{}, poolIDs: map[string]string{}}
 	id, err := c.CreateFarm(ctx, name)
 	if err != nil {
@@ -151,21 +224,27 @@ func setupFarm(ctx context.Context, c *client.Client, name string, spec scenario
 		f.queueIDs[q.Name] = qid
 	}
 	for _, p := range spec.UsagePools {
-		pid, err := c.CreateUsagePool(ctx, p.Name, p.Limit)
+		server := pools.name(p.Name)
+		pid, err := c.CreateUsagePool(ctx, server, p.Limit)
 		if isStatus(err, http.StatusConflict) {
-			// Pools are global and a job names one by name, so an existing
-			// pool of that name is the one the run's jobs claim.
-			logger.WarnContext(ctx, "usage pool already exists; using it and leaving it in place",
-				slog.String("pool", p.Name))
+			if !pools.reuse {
+				return f, fmt.Errorf("target: usage pool %s already exists on the server; the run creates pools of its own and never claims slots from an existing one (a leftover of an earlier run with this run ID is removed by sqi-load cleanup)", server)
+			}
+			// Another shard of this run created it first.
+			logger.InfoContext(ctx, "usage pool already created by another shard of the run; sharing it", slog.String("pool", server))
 			continue
 		}
 		if err != nil {
-			return f, fmt.Errorf("target: create usage pool %s: %w", p.Name, err)
+			return f, fmt.Errorf("target: create usage pool %s: %w", server, err)
 		}
 		f.poolIDs[p.Name] = pid
 	}
 	return f, nil
 }
+
+// samePoolName is the pool policy of a managed target: a fresh server, whose
+// pools take the scenario's names, and on which none can exist already.
+var samePoolName = poolPolicy{name: func(n string) string { return n }}
 
 // isStatus reports whether err is an API error with HTTP status code.
 func isStatus(err error, code int) bool {

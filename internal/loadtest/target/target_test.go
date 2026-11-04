@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -302,6 +303,45 @@ func TestDatabaseName(t *testing.T) {
 		if len(got) > 63 {
 			t.Errorf("databaseName(%q) is %d bytes, over PostgreSQL's 63", tt.runID, len(got))
 		}
+	}
+}
+
+func TestRunPoolName(t *testing.T) {
+	identifier := regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	long := strings.Repeat("r", 64)
+	tests := []struct {
+		name, runID, pool, want string
+	}{
+		{"default run ID", "20261104-120000-ab12", "arnold", "load_20261104_120000_ab12_arnold"},
+		{"dashes and dots become underscores", "big-1", "lic.nuke-x", "load_big_1_lic_nuke_x"},
+		{"a long pool name is shortened with a hash", "r1", strings.Repeat("p", 100), ""},
+		{"a long run ID leaves room only for a hash", long, "arnold", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := RunPoolName(tt.runID, tt.pool)
+			if tt.want != "" && got != tt.want {
+				t.Errorf("RunPoolName(%q, %q) = %q, want %q", tt.runID, tt.pool, got, tt.want)
+			}
+			if len(got) > maxPoolName {
+				t.Errorf("RunPoolName = %q, %d characters, over %d", got, len(got), maxPoolName)
+			}
+			if !strings.HasPrefix(got, PoolPrefix(tt.runID)) {
+				t.Errorf("RunPoolName = %q lacks the run's prefix %q", got, PoolPrefix(tt.runID))
+			}
+			if !identifier.MatchString(got) {
+				t.Errorf("RunPoolName = %q is not an OpenJD identifier", got)
+			}
+			if got == tt.pool {
+				t.Errorf("RunPoolName = %q is the scenario's own name", got)
+			}
+			if again := RunPoolName(tt.runID, tt.pool); again != got {
+				t.Errorf("RunPoolName is not stable: %q then %q", got, again)
+			}
+		})
+	}
+	if a, b := RunPoolName("r1", strings.Repeat("p", 100)+"a"), RunPoolName("r1", strings.Repeat("p", 100)+"b"); a == b {
+		t.Errorf("two long pool names shorten to the same %q", a)
 	}
 }
 

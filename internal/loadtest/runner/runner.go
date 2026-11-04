@@ -385,7 +385,8 @@ func (r *run) startTarget(ctx context.Context) (target.Target, error) {
 	if r.o.Attach != nil {
 		cfg := *r.o.Attach
 		cfg.Scenario, cfg.RunID, cfg.Logger = r.sc, r.targetRunID(), r.logger
-		// The shards of one run share the server's usage pools.
+		// The shards of one run share its usage pools, named for the run.
+		cfg.PoolRunID = r.o.RunID
 		cfg.SharedPools = cfg.SharedPools || r.o.Shard.active()
 		return target.Attach(ctx, cfg)
 	}
@@ -556,6 +557,7 @@ func (r *run) check(ctx context.Context) {
 		Jobs:                accepted,
 		Ledger:              r.ledger,
 		Scenario:            r.sc,
+		PoolNames:           poolNames(r.tgt, r.sc),
 		FarmID:              r.tgt.FarmID(),
 		LiveWorkers:         r.fleet.Live() + realCount(r.sc),
 		LogSample:           share,

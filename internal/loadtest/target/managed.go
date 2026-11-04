@@ -471,7 +471,7 @@ func (m *managed) authenticate(ctx context.Context) error {
 }
 
 func (m *managed) createFarm(ctx context.Context) error {
-	f, err := setupFarm(ctx, m.client, farmName(m.runID), m.cfg.Scenario.Farm, m.logger)
+	f, err := setupFarm(ctx, m.client, farmName(m.runID), m.cfg.Scenario.Farm, samePoolName, m.logger)
 	m.farm = f
 	return err
 }

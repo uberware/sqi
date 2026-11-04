@@ -112,7 +112,11 @@ type Input struct {
 	// Scenario gives each job class's queue, usage pool and log line size,
 	// and the farm's caps.
 	Scenario *scenario.Scenario
-	FarmID   string
+	// PoolNames maps a scenario usage pool name to the server's, for
+	// evidence: an attached run's pools are its own, namespaced ones. A
+	// missing entry is the scenario's name.
+	PoolNames map[string]string
+	FarmID    string
 	// LiveWorkers is how many workers of the farm are running when Check is
 	// called: the simulated fleet's live count plus any real workers.
 	LiveWorkers int
