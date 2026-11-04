@@ -12,7 +12,11 @@ func TestApplyDefaults(t *testing.T) {
 		Workers: []WorkerGroup{{Name: "w", Count: 1}, {Name: "x", Count: 1, Heartbeat: Duration{5 * time.Second}}},
 		Jobs: []JobClass{
 			{Name: "a", Total: 1},
-			{Name: "b", Total: 1, Queue: "other", Weight: 3, Steps: 4, Chunk: 5, Task: TaskSpec{LogLineBytes: 7}},
+			{Name: "b", Total: 1, Queue: "other", Weight: 3, Steps: 4, Chunk: 5, Task: TaskSpec{
+				LogLineBytes: 7,
+				Duration:     Dist{Kind: DistUniform, Min: 1, Max: 2, Unit: "s"},
+				LogLines:     Dist{Kind: DistConstant, Value: 9},
+			}},
 		},
 	}
 	s.ApplyDefaults()
@@ -32,6 +36,10 @@ func TestApplyDefaults(t *testing.T) {
 		{"chunk", s.Jobs[0].Chunk, 1},
 		{"weight", s.Jobs[0].Weight, 1},
 		{"log_line_bytes", s.Jobs[0].Task.LogLineBytes, 120},
+		{"task duration", s.Jobs[0].Task.Duration, Dist{Kind: DistConstant, Value: 5, Unit: "s"}},
+		{"task log_lines", s.Jobs[0].Task.LogLines, Dist{Kind: DistConstant}},
+		{"task duration kept", s.Jobs[1].Task.Duration, Dist{Kind: DistUniform, Min: 1, Max: 2, Unit: "s"}},
+		{"task log_lines kept", s.Jobs[1].Task.LogLines, Dist{Kind: DistConstant, Value: 9}},
 		{"empty job queue", s.Jobs[0].Queue, "default"},
 		{"queue kept", s.Jobs[1].Queue, "other"},
 		{"weight kept", s.Jobs[1].Weight, 3},

@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: mixed-medium
+description: mixed - 2,000 workers (1,800 simulated and 2 real), steady mixed submissions, 30 min
+duration: 30m
+warmup: 2m
+
+server:
+  store: sqlite
+  broker_auth: false
+  http_auth: false
+  tls: false
+
+farm:
+  queues: [{name: render, max_concurrent_tasks: 0}, {name: comp}]
+  usage_pools: [{name: arnold, limit: 200}]
+
+workers:
+  - name: linux-render
+    count: 1800
+    ramp: 200/s
+    cpu: 32
+    os: linux
+    tags: {arnold: "true"}
+    heartbeat: 15s
+    churn: {crash_per_hour: 0.05, restart_after: 30s, disconnect_per_hour: 0.1}
+  - name: real
+    real: 2
+
+jobs:
+  - name: shot-render
+    weight: 8
+    rate: 2/s
+    queue: render
+    steps: 2
+    tasks_per_step: 100
+    chunk: 1
+    cores: 8
+    usage_pool: arnold
+    expr: false
+    task:
+      duration: {dist: lognormal, median: 20s, p95: 90s}
+      fail_rate: 0.01
+      hang_rate: 0.0005
+      log_lines: {median: 200, p95: 2000}
+      log_line_bytes: 120
+  - name: big-sim
+    weight: 1
+    total: 3
+    queue: comp
+    tasks_per_step: 250000
+
+clients:
+  websocket: {count: 200, subscribe: [jobs, workers, own-job-tasks, own-task-logs]}
+  rest_pollers: {count: 20, interval: 5s, endpoints: [jobs-list, job-detail, task-list, workers-list]}
+
+actions:
+  - at: 10m
+    cancel_jobs: {fraction: 0.1}
+  - at: 20m
+    retry_failed: true

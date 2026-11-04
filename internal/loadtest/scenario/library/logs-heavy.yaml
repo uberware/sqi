@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: logs-heavy
+description: logs - 500 workers each streaming about 1 MB/min (8,000 lines x 128 bytes per 60 s task); SQI_LOGS growth and eviction, 1 h
+duration: 1h
+warmup: 3m
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: sim
+    count: 500
+    ramp: 200/s
+    cpu: 1
+    os: linux
+
+jobs:
+  - name: chatty
+    rate: 1/s
+    queue: render
+    steps: 1
+    tasks_per_step: 10
+    task:
+      duration: 60s
+      log_lines: 8000
+      log_line_bytes: 128
+
+clients:
+  websocket: {count: 10, subscribe: [own-task-logs]}

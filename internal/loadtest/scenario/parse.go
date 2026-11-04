@@ -19,6 +19,8 @@ const (
 	defaultLogLineBytes = 120
 	defaultQueue        = "default"
 	defaultStore        = "sqlite"
+	// defaultTaskSeconds is how long a task runs when the job class says nothing.
+	defaultTaskSeconds = 5
 )
 
 // Parse decodes a scenario and applies its defaults. A key the schema does not
@@ -66,6 +68,12 @@ func (s *Scenario) ApplyDefaults() {
 		}
 		if j.Queue == "" {
 			j.Queue = s.Farm.Queues[0].Name
+		}
+		if j.Task.Duration == (Dist{}) {
+			j.Task.Duration = Dist{Kind: DistConstant, Value: defaultTaskSeconds, Unit: "s"}
+		}
+		if j.Task.LogLines == (Dist{}) {
+			j.Task.LogLines = Dist{Kind: DistConstant}
 		}
 		if j.Task.LogLineBytes == 0 {
 			j.Task.LogLineBytes = defaultLogLineBytes

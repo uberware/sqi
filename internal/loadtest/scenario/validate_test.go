@@ -67,6 +67,22 @@ func TestValidate_RejectsUnsatisfiable(t *testing.T) {
 			"server.store", `"mysql"`,
 		},
 		{
+			"task duration without a unit", TargetManaged, func(s *Scenario) { s.Jobs[0].Task.Duration = Dist{Kind: DistConstant, Value: 20} },
+			"jobs[0].task.duration", "duration",
+		},
+		{
+			"task duration uniform counts", TargetManaged, func(s *Scenario) {
+				s.Jobs[1].Task.Duration = Dist{Kind: DistUniform, Min: 1, Max: 5}
+			},
+			"jobs[1].task.duration", "duration",
+		},
+		{
+			"log_lines given as a duration", TargetManaged, func(s *Scenario) {
+				s.Jobs[0].Task.LogLines = Dist{Kind: DistConstant, Value: 5, Unit: "s"}
+			},
+			"jobs[0].task.log_lines", "unitless",
+		},
+		{
 			"job_deps out of range", TargetManaged, func(s *Scenario) { s.JobDeps = 2 },
 			"job_deps", "[0, 1]",
 		},

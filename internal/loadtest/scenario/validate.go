@@ -214,6 +214,12 @@ func (v *validator) jobTask(path string, t *TaskSpec) {
 	if t.LogLineBytes < 1 {
 		v.failf(path+".log_line_bytes", "must be at least 1")
 	}
+	if t.Duration.Kind != "" && t.Duration.Unit != "s" {
+		v.failf(path+".duration", "must be a duration like 20s, not a plain number")
+	}
+	if t.LogLines.Kind != "" && t.LogLines.Unit != "" {
+		v.failf(path+".log_lines", "must be a unitless count like 200, not a duration")
+	}
 }
 
 func (v *validator) clients() {

@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: steps-deep
+description: dependencies - 1,000 jobs of 20-step chains, 30% depending on an earlier job, 45 min
+duration: 45m
+warmup: 2m
+job_deps: 0.3
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: sim
+    count: 500
+    ramp: 200/s
+    cpu: 8
+    os: linux
+
+jobs:
+  - name: chain
+    total: 1000
+    queue: render
+    steps: 20
+    tasks_per_step: 5
+    cores: 1
+    task:
+      duration: {dist: lognormal, median: 5s, p95: 20s}
+      log_lines: 10
+
+clients:
+  rest_pollers: {count: 5, interval: 5s, endpoints: [jobs-list, job-detail, task-list]}

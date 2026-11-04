@@ -1,0 +1,192 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package scenario
+
+import (
+	"slices"
+	"strings"
+	"testing"
+	"time"
+)
+
+var builtinNames = []string{
+	"ci-medium", "expr-mix", "jobs-flood", "logs-heavy", "mixed-medium", "queues-many",
+	"smoke", "soak-steady", "steps-deep", "tasks-wide", "ui-heavy", "workers-churn", "workers-ramp",
+}
+
+func TestBuiltins_AllValidate(t *testing.T) {
+	names := BuiltinNames()
+	if !slices.Equal(names, builtinNames) {
+		t.Fatalf("BuiltinNames() = %v, want %v", names, builtinNames)
+	}
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			s, err := Builtin(name)
+			if err != nil {
+				t.Fatalf("Builtin(%q): %v", name, err)
+			}
+			if s.Name != name {
+				t.Errorf("name = %q, want it to match the file", s.Name)
+			}
+			if err := s.Validate(TargetManaged); err != nil {
+				t.Errorf("does not validate:\n%v", err)
+			}
+			if s.Description == "" || strings.Contains(s.Description, "\n") {
+				t.Errorf("description %q must be one non-empty line", s.Description)
+			}
+		})
+	}
+}
+
+func TestBuiltin_Unknown(t *testing.T) {
+	_, err := Builtin("nope")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "nope") || !strings.Contains(err.Error(), "smoke") {
+		t.Errorf("error %q should name the request and list the built-ins", err)
+	}
+}
+
+func TestBuiltin_ReturnsIndependentCopies(t *testing.T) {
+	a, err := Builtin("smoke")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Workers[0].Count = 1
+	b, err := Builtin("smoke")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Workers[0].Count == 1 {
+		t.Error("mutating one Builtin result changed the next")
+	}
+}
+
+func TestBuiltin_Smoke(t *testing.T) {
+	s, err := Builtin("smoke")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Duration.Duration != time.Minute {
+		t.Errorf("duration = %s, want 1m", s.Duration)
+	}
+	if len(s.Workers) != 1 || s.Workers[0].Count != 20 {
+		t.Fatalf("workers = %+v, want one group of 20", s.Workers)
+	}
+	c := s.Workers[0].Churn
+	if c.CrashPerHour != 3 || c.RestartAfter.Duration != 10*time.Second {
+		t.Errorf("churn = %+v, want crash_per_hour 3, restart_after 10s", c)
+	}
+	if len(s.Jobs) != 1 {
+		t.Fatalf("jobs = %+v, want one class", s.Jobs)
+	}
+	j := s.Jobs[0]
+	if j.Total != 50 || j.Steps != 2 || j.TasksPerStep != 10 {
+		t.Errorf("job = total %d steps %d tasks_per_step %d, want 50 x 2 x 10", j.Total, j.Steps, j.TasksPerStep)
+	}
+	if l := j.Task.LogLines; l.Kind == "" || l.Value+l.Median+l.Max == 0 {
+		t.Errorf("smoke must write logs, got log_lines %+v", l)
+	}
+	if s.Clients.WebSocket.Count != 5 {
+		t.Errorf("websocket clients = %d, want 5", s.Clients.WebSocket.Count)
+	}
+}
+
+// TestBuiltin_Sizes pins each scenario's headline number, so a stray edit to a
+// library file cannot quietly turn one axis into another.
+func TestBuiltin_Sizes(t *testing.T) {
+	workers := func(s *Scenario) int {
+		n := 0
+		for _, w := range s.Workers {
+			n += w.Count
+		}
+		return n
+	}
+	tests := []struct {
+		name  string
+		check func(t *testing.T, s *Scenario)
+	}{
+		{"workers-ramp", func(t *testing.T, s *Scenario) {
+			if got := workers(s); got != 10000 {
+				t.Errorf("workers = %d, want 10000", got)
+			}
+		}},
+		{"workers-churn", func(t *testing.T, s *Scenario) {
+			c := s.Workers[0].Churn
+			if workers(s) != 2000 || c.CrashPerHour <= 0 || c.DisconnectPerHour <= 0 || c.RestartAfter.Duration <= 0 {
+				t.Errorf("want 2000 workers with crash, disconnect and restart; got %d, %+v", workers(s), c)
+			}
+		}},
+		{"jobs-flood", func(t *testing.T, s *Scenario) {
+			j := s.Jobs[0]
+			if j.Total != 100000 || j.Steps != 1 || j.TasksPerStep != 1 {
+				t.Errorf("job = %+v, want 100000 one-task jobs", j)
+			}
+		}},
+		{"tasks-wide", func(t *testing.T, s *Scenario) {
+			j := s.Jobs[0]
+			if len(s.Jobs) != 1 || j.Total != 1 || j.Steps != 1 || j.TasksPerStep != 1_000_000 {
+				t.Errorf("jobs = %+v, want one job of 1,000,000 tasks", s.Jobs)
+			}
+		}},
+		{"steps-deep", func(t *testing.T, s *Scenario) {
+			j := s.Jobs[0]
+			if j.Total != 1000 || j.Steps != 20 || s.JobDeps <= 0 {
+				t.Errorf("want 1000 jobs x 20 steps with job_deps; got %d x %d, job_deps %v", j.Total, j.Steps, s.JobDeps)
+			}
+		}},
+		{"queues-many", func(t *testing.T, s *Scenario) {
+			if len(s.Farm.Queues) != 200 || len(s.Farm.UsagePools) != 50 {
+				t.Errorf("queues = %d, pools = %d, want 200 and 50", len(s.Farm.Queues), len(s.Farm.UsagePools))
+			}
+		}},
+		{"logs-heavy", func(t *testing.T, s *Scenario) {
+			if got := workers(s); got != 500 {
+				t.Errorf("workers = %d, want 500", got)
+			}
+			j := s.Jobs[0]
+			if j.Task.LogLines.Kind != DistConstant || j.Task.Duration.Kind != DistConstant || j.Task.Duration.Value <= 0 {
+				t.Fatalf("logs-heavy needs a constant duration and constant log_lines, got %+v and %+v", j.Task.Duration, j.Task.LogLines)
+			}
+			perMin := j.Task.LogLines.Value * float64(j.Task.LogLineBytes) * 60 / j.Task.Duration.Value
+			if perMin < 0.9e6 || perMin > 1.1e6 {
+				t.Errorf("each worker streams %.0f B/min, want about 1 MB", perMin)
+			}
+		}},
+		{"ui-heavy", func(t *testing.T, s *Scenario) {
+			if s.Clients.WebSocket.Count != 1000 || s.Clients.RESTPollers.Count != 100 {
+				t.Errorf("clients = %+v, want 1000 WS and 100 pollers", s.Clients)
+			}
+		}},
+		{"expr-mix", func(t *testing.T, s *Scenario) {
+			if !slices.ContainsFunc(s.Jobs, func(j JobClass) bool { return j.EXPR }) {
+				t.Error("no job class sets expr: true")
+			}
+		}},
+		{"ci-medium", func(t *testing.T, s *Scenario) {
+			if got := workers(s); got != 300 || s.Duration.Duration != 15*time.Minute {
+				t.Errorf("workers = %d, duration = %s, want 300 for 15m", got, s.Duration)
+			}
+		}},
+		{"mixed-medium", func(t *testing.T, s *Scenario) {
+			if workers(s) != 1800 || s.Workers[1].Real != 2 || s.Duration.Duration != 30*time.Minute {
+				t.Error("want the 1800 + 2 real workers for 30m of the spec example")
+			}
+		}},
+		{"soak-steady", func(t *testing.T, s *Scenario) {
+			if s.Duration.Duration != 8*time.Hour {
+				t.Errorf("duration = %s, want 8h", s.Duration)
+			}
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := Builtin(tc.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.check(t, s)
+		})
+	}
+}

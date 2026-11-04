@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: jobs-flood
+description: jobs - 100,000 one-task jobs submitted as fast as accepted; submission path and GET /jobs cost, 1 h
+duration: 1h
+warmup: 1m
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: sim
+    count: 200
+    ramp: 200/s
+    cpu: 16
+    os: linux
+
+jobs:
+  - name: tiny
+    total: 100000
+    queue: render
+    steps: 1
+    tasks_per_step: 1
+    cores: 1
+    task:
+      duration: 1s
+      log_lines: 2
+
+clients:
+  rest_pollers: {count: 5, interval: 5s, endpoints: [jobs-list, job-detail]}

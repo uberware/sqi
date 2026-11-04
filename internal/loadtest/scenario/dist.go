@@ -5,6 +5,7 @@ package scenario
 import (
 	"fmt"
 	"math"
+	"math/rand/v2"
 	"slices"
 	"strconv"
 	"strings"
@@ -182,4 +183,28 @@ func (d Dist) check(line int) error {
 		}
 	}
 	return nil
+}
+
+// p95Z is the standard normal's 95th percentile.
+const p95Z = 1.6449
+
+// Sample draws one value: seconds for a duration, a count otherwise. It never
+// returns a negative number. A lognormal whose p95 is not above its median has
+// no spread and always returns the median. The zero Dist samples 0.
+func (d Dist) Sample(r *rand.Rand) float64 {
+	var v float64
+	switch d.Kind {
+	case DistConstant:
+		v = d.Value
+	case DistUniform:
+		v = d.Min + r.Float64()*(d.Max-d.Min)
+	case DistLognormal:
+		mu := math.Log(d.Median)
+		sigma := 0.0
+		if d.P95 > d.Median {
+			sigma = (math.Log(d.P95) - mu) / p95Z
+		}
+		v = math.Exp(mu + sigma*r.NormFloat64())
+	}
+	return max(v, 0)
 }
