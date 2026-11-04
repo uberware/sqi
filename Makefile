@@ -67,8 +67,13 @@ endif
 # is 10m, and ./test/integration/ runs every preset's Tier-3 case and the
 # real-ffmpeg Tier-2 cases untagged, under -race, in one package. On a Windows
 # host that package needs more than 20 minutes because each preset outcome case
-# waits out three retry attempts.
+# waits out three retry attempts. The HA tests have since pushed it past 30
+# minutes there, so a Windows host gets an hour; override on the command line.
+ifeq ($(OS),Windows_NT)
+TEST_TIMEOUT ?= 60m
+else
 TEST_TIMEOUT ?= 30m
+endif
 
 # PostgreSQL major version for `make test-postgres` (16 or 18; CI runs both).
 PG_VERSION ?= 18
