@@ -12,9 +12,12 @@ import (
 
 // CreateComputeLocation inserts a new location. Returns [store.ErrConflict] if a
 // location with the same name already exists.
-func (s *Store) CreateComputeLocation(_ context.Context, loc store.ComputeLocation) (store.ComputeLocation, error) {
+func (s *Store) CreateComputeLocation(ctx context.Context, loc store.ComputeLocation) (store.ComputeLocation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.ComputeLocation{}, err
+	}
 
 	for _, existing := range s.computeLocations {
 		if existing.Name == loc.Name {
@@ -70,9 +73,12 @@ func (s *Store) ListComputeLocations(_ context.Context) ([]store.ComputeLocation
 
 // UpdateComputeLocation replaces the mutable fields of an existing location and
 // updates UpdatedAt. Returns [store.ErrNotFound] or [store.ErrConflict].
-func (s *Store) UpdateComputeLocation(_ context.Context, loc store.ComputeLocation) (store.ComputeLocation, error) {
+func (s *Store) UpdateComputeLocation(ctx context.Context, loc store.ComputeLocation) (store.ComputeLocation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.ComputeLocation{}, err
+	}
 
 	existing, ok := s.computeLocations[loc.ID]
 	if !ok {
@@ -93,9 +99,12 @@ func (s *Store) UpdateComputeLocation(_ context.Context, loc store.ComputeLocati
 
 // DeleteComputeLocation removes a location by ID. Returns [store.ErrNotFound] if
 // it does not exist.
-func (s *Store) DeleteComputeLocation(_ context.Context, id string) error {
+func (s *Store) DeleteComputeLocation(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return err
+	}
 
 	if _, ok := s.computeLocations[id]; !ok {
 		return store.ErrNotFound

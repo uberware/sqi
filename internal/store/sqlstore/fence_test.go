@@ -5,6 +5,7 @@ package sqlstore_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -289,6 +290,35 @@ func TestWrite_StmtOnPoolIsTheStatement(t *testing.T) {
 	stmt := s.AnyPreparedStmt()
 	if got := s.WritePool().Stmt(t.Context(), stmt); got != stmt {
 		t.Fatalf("WritePool().Stmt = %p, want the statement itself (%p)", got, stmt)
+	}
+}
+
+// TestWrite_ClosingTheStatementLeavesTheStoreUsable: a write that closes the
+// statement [Writer.Stmt] gave it, as one does with a transaction's, closes a
+// copy bound to that transaction on a leadership context, and nothing at all
+// without one, where the statement is the store's own and every later call
+// shares it.
+func TestWrite_ClosingTheStatementLeavesTheStoreUsable(t *testing.T) {
+	for name, ctx := range map[string]context.Context{
+		"no epoch": t.Context(),
+		"epoch":    store.WithLeaderEpoch(t.Context(), 0),
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := openTestStoreWB(t).Store
+			stmt := s.AnyPreparedStmt() // the farm insert, the first statement prepared
+			err := s.Write(ctx, "test", func(w sqlstore.Writer) error {
+				return w.Stmt(ctx, stmt).Close()
+			})
+			if err != nil {
+				t.Fatalf("closing the statement Write handed out: %v", err)
+			}
+			for i := range 2 {
+				id := fmt.Sprintf("f%d", i)
+				if _, err := s.CreateFarm(ctx, store.Farm{ID: id, Name: id}); err != nil {
+					t.Fatalf("CreateFarm %d after the close: %v", i, err)
+				}
+			}
+		})
 	}
 }
 

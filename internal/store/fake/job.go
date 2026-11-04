@@ -39,9 +39,12 @@ func normalizeDeclaredExtensions(job store.Job) store.Job {
 // submission before mutating anything, so a rejected submission leaves the
 // store untouched — the in-memory equivalent of the SQLite implementation's
 // transaction.
-func (s *Store) CreateJobSubmission(_ context.Context, sub store.JobSubmission) (store.JobSubmission, error) {
+func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission) (store.JobSubmission, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.JobSubmission{}, err
+	}
 
 	if err := s.validateSubmission(sub); err != nil {
 		return store.JobSubmission{}, err
@@ -293,9 +296,12 @@ func (s *Store) ListJobs(_ context.Context, opts store.ListJobsOptions) (store.P
 // Lifecycle and submission fields (status, started_at, completed_at,
 // created_at, parameters, declared extensions, failed_attempts, park_reason)
 // keep their stored values, as on SQLite, whose UPDATE does not set them.
-func (s *Store) UpdateJob(_ context.Context, job store.Job) (store.Job, error) {
+func (s *Store) UpdateJob(ctx context.Context, job store.Job) (store.Job, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.Job{}, err
+	}
 
 	existing, ok := s.jobs[job.ID]
 	if !ok {
@@ -325,9 +331,12 @@ func (s *Store) UpdateJob(_ context.Context, job store.Job) (store.Job, error) {
 // DemoteStalledJobs implements [store.JobStore]. It returns every running job
 // with no assigned/running task — but at least one ready/pending task — to
 // pending, and returns the demoted job IDs.
-func (s *Store) DemoteStalledJobs(_ context.Context, now time.Time) ([]string, error) {
+func (s *Store) DemoteStalledJobs(ctx context.Context, now time.Time) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return nil, err
+	}
 
 	// Tally each job's task statuses in one pass.
 	type counts struct{ active, schedulable int }
@@ -365,9 +374,12 @@ func (s *Store) DemoteStalledJobs(_ context.Context, now time.Time) ([]string, e
 
 // CancelJobStatus implements [store.JobStore].
 // Transitions the job to canceled unless it is already completed or failed.
-func (s *Store) CancelJobStatus(_ context.Context, id string) error {
+func (s *Store) CancelJobStatus(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return err
+	}
 
 	job, ok := s.jobs[id]
 	if !ok {
@@ -401,10 +413,13 @@ func (s *Store) CancelJobStatus(_ context.Context, id string) error {
 // if it no longer matches. The whole sweep holds s.mu, so here the re-check can
 // never skip; it is kept so the fake runs the same steps as the SQL store.
 func (s *Store) DeleteTerminalJobsBefore(
-	_ context.Context, cutoff time.Time, includeFailed bool,
+	ctx context.Context, cutoff time.Time, includeFailed bool,
 ) ([]store.DeletedJob, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return nil, err
+	}
 
 	var ids []string
 	for id, j := range s.jobs {
@@ -474,9 +489,12 @@ func terminalJobEligible(status store.JobStatus, includeFailed bool) bool {
 // row that belongs to it: usage claims (by attempt), task logs (by task), task
 // attempts, tasks, and steps, mirroring the SQLite cascade. Returns
 // [store.ErrNotFound] when the job is absent.
-func (s *Store) DeleteJob(_ context.Context, id string) error {
+func (s *Store) DeleteJob(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return err
+	}
 
 	if _, ok := s.jobs[id]; !ok {
 		return store.ErrNotFound
@@ -538,9 +556,12 @@ func (s *Store) deleteJobLocked(id string) {
 // [store.JobStatusPaused] and records reason, but only while the job is
 // non-terminal; a terminal job (completed/failed/canceled) is a legitimate
 // no-op.
-func (s *Store) ParkJob(_ context.Context, jobID, reason string, now time.Time) error {
+func (s *Store) ParkJob(ctx context.Context, jobID, reason string, now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return err
+	}
 
 	j, ok := s.jobs[jobID]
 	if !ok {
@@ -561,9 +582,12 @@ func (s *Store) ParkJob(_ context.Context, jobID, reason string, now time.Time) 
 // [store.JobStatusPending]; an auto-parked job (non-empty ParkReason) also has
 // its ParkReason cleared and FailedAttempts reset. A job that is no longer
 // paused is a legitimate no-op.
-func (s *Store) ResumeJob(_ context.Context, jobID string, now time.Time) error {
+func (s *Store) ResumeJob(ctx context.Context, jobID string, now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return err
+	}
 
 	j, ok := s.jobs[jobID]
 	if !ok {

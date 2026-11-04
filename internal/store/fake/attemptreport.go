@@ -18,9 +18,12 @@ func (s *Store) liveAttemptLocked(attemptID string, t store.Task) bool {
 }
 
 // StartTaskAttempt implements [store.TaskStore]; outcomes match SQLite's.
-func (s *Store) StartTaskAttempt(_ context.Context, attemptID, taskID, sessionID string, now time.Time) (bool, error) {
+func (s *Store) StartTaskAttempt(ctx context.Context, attemptID, taskID, sessionID string, now time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return false, err
+	}
 	t, ok := s.tasks[taskID]
 	if !ok {
 		return false, store.ErrNotFound
@@ -41,9 +44,12 @@ func (s *Store) StartTaskAttempt(_ context.Context, attemptID, taskID, sessionID
 }
 
 // ReclaimTaskAttempt implements [store.TaskStore]; outcomes match SQLite's.
-func (s *Store) ReclaimTaskAttempt(_ context.Context, attemptID, taskID string, now time.Time) (bool, error) {
+func (s *Store) ReclaimTaskAttempt(ctx context.Context, attemptID, taskID string, now time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return false, err
+	}
 	t, ok := s.tasks[taskID]
 	if !ok {
 		return false, store.ErrNotFound

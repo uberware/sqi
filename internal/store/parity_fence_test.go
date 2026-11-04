@@ -6,33 +6,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/postgres"
-	"github.com/uberware/sqi/internal/store/sqlite"
 	"github.com/uberware/sqi/internal/store/sqlstore"
 	"github.com/uberware/sqi/internal/store/storetest"
 )
-
-// newSQLStores is newStores without the fake, for the write fence, which the
-// fake does not implement yet.
-func newSQLStores(t *testing.T) map[string]store.Store {
-	t.Helper()
-	sq, err := sqlite.Open(t.Context(), t.TempDir()+"/test.db", sqlite.DefaultOptions())
-	if err != nil {
-		t.Fatalf("sqlite.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = sq.Close() })
-	out := map[string]store.Store{"sqlite": sq}
-	if storetest.PostgresEnabled() {
-		out["postgres"] = storetest.Postgres(t)
-	}
-	return out
-}
 
 // takeOver makes "a" the leader at epoch 1, lets its lease lapse and makes
 // "b" the leader at epoch 2. It returns a leadership context for each: a's is
@@ -239,7 +227,7 @@ var singleStatementWrites = []fenceCase{
 func TestParity_Fence_SingleStatementWrites(t *testing.T) {
 	for _, tc := range singleStatementWrites {
 		t.Run(tc.name, func(t *testing.T) {
-			for name, st := range newSQLStores(t) {
+			for name, st := range newStores(t) {
 				t.Run(name, func(t *testing.T) {
 					f := tc.seed(t, st)
 					stale, current := takeOver(t, st)
@@ -268,7 +256,7 @@ func TestParity_Fence_SingleStatementWrites(t *testing.T) {
 // methods are how a server comes to lead, so a leadership context, even a
 // stale one, never refuses them.
 func TestParity_Fence_LeadershipMethodsAreNeverFenced(t *testing.T) {
-	for name, st := range newSQLStores(t) {
+	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
 			stale, _ := takeOver(t, st)
 			// b, the current leader, renews and releases under a's stale context.
@@ -305,7 +293,7 @@ func TestParity_Fence_LeadershipMethodsAreNeverFenced(t *testing.T) {
 // context (a REST handler's) is not checked against the epoch at all, so it
 // lands whoever leads.
 func TestParity_Fence_PlainContextIsNeverFenced(t *testing.T) {
-	for name, st := range newSQLStores(t) {
+	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
 			f := seedFenceJob(t, st)
 			takeOver(t, st)
@@ -322,7 +310,7 @@ func TestParity_Fence_PlainContextIsNeverFenced(t *testing.T) {
 // TestParity_Fence_TransactionalWriteRollsBack: a write that is already a
 // transaction is fenced too, and leaves nothing behind.
 func TestParity_Fence_TransactionalWriteRollsBack(t *testing.T) {
-	for name, st := range newSQLStores(t) {
+	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
 			f := seedFenceJob(t, st)
 			stale, current := takeOver(t, st)
@@ -438,5 +426,723 @@ func TestFence_LongTransactionStartedBeforeTakeoverRollsBack(t *testing.T) {
 	}
 	if total != nTasks {
 		t.Fatalf("tasks after the fenced delete = %d, want %d", total, nTasks)
+	}
+}
+
+// fenceReadOnly lists every Store method that is not a fenced write: the reads,
+// and the seven LeadershipStore methods, which are never fenced because they
+// are how a server comes to lead. Close is not a database operation.
+var fenceReadOnly = []string{
+	"AcquireLeadership", "RenewLeadership", "ReleaseLeadership", "GetLeadership",
+	"UpsertServerMember", "ListServerMembers", "DeleteServerMembersUnseenFor",
+	"Close",
+	"ActiveClaimCount", "CommittedCores", "FailureReasonSummary", "LatestTaskAttempt",
+	"CountActiveTasksInFarm", "CountActiveTasksInQueue", "CountIdleWorkers", "CountReadyTasksByQueue",
+	"CountTasksByJob", "CountUnschedulableTasksByJob", "CountUsers",
+	"GetAPIKeyUserByTokenHash", "GetActiveWorkerCredentialByPublicKey", "GetBrokerIdentity",
+	"GetComputeLocation", "GetComputeLocationByName", "GetFarm", "GetJob", "GetProductByName", "GetQueue",
+	"GetSessionByTokenHash", "GetSessionUserByTokenHash", "GetStep", "GetStorageLocation",
+	"GetStorageLocationByName", "GetTask", "GetTaskAttempt", "GetUsagePool", "GetUser",
+	"GetUserByExternalID", "GetUserByUsername", "GetWorker", "GetWorkerJoinTokenByHash",
+	"ListAPIKeysForUser", "ListActiveWorkerCredentials", "ListBlockedJobs", "ListComputeLocations",
+	"ListDependents", "ListFarms", "ListJobDependencyIDs", "ListJobIDsWithPendingSteps", "ListJobs",
+	"ListOpenAttempts", "ListProducts", "ListQueues", "ListReadyTasks", "ListStaleWorkers", "ListSteps",
+	"ListStorageLocations", "ListStuckSteps", "ListTaskAttempts", "ListTaskLogs", "ListTasks",
+	"ListUsagePoolUtilization", "ListUsagePools", "ListUsers", "ListWorkers",
+}
+
+// fenceMutator builds, with a plain context, the rows one store write needs,
+// and returns the write: a call that succeeds when made under the current
+// leader's epoch and writes something, so a stale epoch has a write to refuse.
+type fenceMutator func(t *testing.T, st store.Store) func(ctx context.Context) error
+
+// fenceMutators has one entry for every Store method that writes and is
+// fenced. Fixtures are named by UUID, so every entry runs against one store.
+var fenceMutators = map[string]fenceMutator{
+	"AppendAuditEntry": func(_ *testing.T, st store.Store) func(context.Context) error {
+		e := store.AuditEntry{
+			ID: uuid.NewString(), EntityType: "job", EntityID: uuid.NewString(), Action: "canceled",
+			Details: map[string]any{}, CreatedAt: time.Now().UTC(),
+		}
+		return func(ctx context.Context) error { return st.AppendAuditEntry(ctx, e) }
+	},
+	"CancelBlockedJob": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := fenceBlockedJob(t, st)
+		return func(ctx context.Context) error {
+			_, _, err := st.CancelBlockedJob(ctx, g.Job.ID, "fenced", time.Now().UTC())
+			return err
+		}
+	},
+	"CancelJobExecution": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := fenceLiveJob(t, st, store.TaskStatusReady)
+		return func(ctx context.Context) error {
+			_, err := st.CancelJobExecution(ctx, g.Job.ID, "fenced", time.Now().UTC())
+			return err
+		}
+	},
+	"CancelJobStatus": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := fenceLiveJob(t, st, store.TaskStatusReady)
+		return func(ctx context.Context) error { return st.CancelJobStatus(ctx, g.Job.ID) }
+	},
+	"CancelPendingStep": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning}, failedUpstream, stepSpec{
+			name: "a", status: store.StepStatusPending, dependsOn: []string{"up"},
+			tasks: []store.TaskStatus{store.TaskStatusPending},
+		})
+		return func(ctx context.Context) error {
+			_, _, err := st.CancelPendingStep(ctx, g.Steps["a"].ID, store.FailureReasonUpstreamFailed, time.Now().UTC())
+			return err
+		}
+	},
+	"CancelTaskExecution": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := fenceLiveJob(t, st, store.TaskStatusReady)
+		return func(ctx context.Context) error {
+			_, _, err := st.CancelTaskExecution(ctx, g.Tasks["a"][0].ID, "fenced", time.Now().UTC())
+			return err
+		}
+	},
+	"CompleteTaskAttempt": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := fenceLiveJob(t, st, store.TaskStatusRunning)
+		task := g.Tasks["a"][0]
+		c := completion(task, g.Attempts[task.ID], store.TaskStatusSucceeded, store.AttemptStatusSucceeded)
+		return func(ctx context.Context) error {
+			_, err := st.CompleteTaskAttempt(ctx, c)
+			return err
+		}
+	},
+	"CreateAPIKey": func(t *testing.T, st store.Store) func(context.Context) error {
+		u := fenceUser(t, st, "viewer")
+		k := mkAPIKey(u.ID, "hash-"+uuid.NewString())
+		return func(ctx context.Context) error {
+			_, err := st.CreateAPIKey(ctx, k)
+			return err
+		}
+	},
+	"CreateComputeLocation": func(_ *testing.T, st store.Store) func(context.Context) error {
+		return func(ctx context.Context) error {
+			_, err := st.CreateComputeLocation(ctx, mkComputeLocation(uuid.NewString()))
+			return err
+		}
+	},
+	"CreateFarm": func(_ *testing.T, st store.Store) func(context.Context) error {
+		return func(ctx context.Context) error {
+			_, err := st.CreateFarm(ctx, store.Farm{ID: uuid.NewString(), Name: uuid.NewString()})
+			return err
+		}
+	},
+	"CreateJobSubmission": func(t *testing.T, st store.Store) func(context.Context) error {
+		farm, queue := fenceFarmQueue(t, st)
+		sub := storetest.NewJob(uuid.NewString(), farm.ID, queue.ID).
+			Step(uuid.NewString(), store.StepStatusReady).Sub
+		sub.Tasks = []store.Task{{
+			ID: uuid.NewString(), JobID: sub.Job.ID, StepID: sub.Steps[0].ID, Name: "t",
+			Status: store.TaskStatusReady, Parameters: map[string]string{},
+		}}
+		return func(ctx context.Context) error {
+			_, err := st.CreateJobSubmission(ctx, sub)
+			return err
+		}
+	},
+	"CreateProduct": func(_ *testing.T, st store.Store) func(context.Context) error {
+		return func(ctx context.Context) error {
+			_, err := st.CreateProduct(ctx, mkProduct(uuid.NewString()))
+			return err
+		}
+	},
+	"CreateQueue": func(t *testing.T, st store.Store) func(context.Context) error {
+		farm := fenceFarm(t, st)
+		return func(ctx context.Context) error {
+			_, err := st.CreateQueue(ctx, store.Queue{ID: uuid.NewString(), FarmID: farm.ID, Name: uuid.NewString()})
+			return err
+		}
+	},
+	"CreateSession": func(t *testing.T, st store.Store) func(context.Context) error {
+		u := fenceUser(t, st, "viewer")
+		return func(ctx context.Context) error {
+			_, err := st.CreateSession(ctx, store.Session{
+				ID: uuid.NewString(), TokenHash: uuid.NewString(), UserID: u.ID,
+				ExpiresAt: time.Now().Add(time.Hour), CreatedAt: time.Now(),
+			})
+			return err
+		}
+	},
+	"CreateStorageLocation": func(_ *testing.T, st store.Store) func(context.Context) error {
+		return func(ctx context.Context) error {
+			_, err := st.CreateStorageLocation(ctx, mkStorageLocation(uuid.NewString()))
+			return err
+		}
+	},
+	"CreateTaskLog": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := fenceLiveJob(t, st, store.TaskStatusRunning)
+		l := mkTaskLog(g.Attempts[g.Tasks["a"][0].ID], 1, "fenced\n")
+		return func(ctx context.Context) error {
+			_, err := st.CreateTaskLog(ctx, l)
+			return err
+		}
+	},
+	"CreateUsagePool": func(_ *testing.T, st store.Store) func(context.Context) error {
+		return func(ctx context.Context) error {
+			_, err := st.CreateUsagePool(ctx, store.UsagePool{ID: uuid.NewString(), Name: uuid.NewString(), MaxConcurrent: 1})
+			return err
+		}
+	},
+	"CreateUser": func(_ *testing.T, st store.Store) func(context.Context) error {
+		return func(ctx context.Context) error {
+			_, err := st.CreateUser(ctx, mkUser("viewer"))
+			return err
+		}
+	},
+	"CreateWorkerCredential": func(_ *testing.T, st store.Store) func(context.Context) error {
+		return func(ctx context.Context) error {
+			_, err := st.CreateWorkerCredential(ctx, mkCredential(uuid.NewString()))
+			return err
+		}
+	},
+	"CreateWorkerJoinToken": func(_ *testing.T, st store.Store) func(context.Context) error {
+		return func(ctx context.Context) error {
+			_, err := st.CreateWorkerJoinToken(ctx, mkJoinToken())
+			return err
+		}
+	},
+	"DeleteComputeLocation": func(t *testing.T, st store.Store) func(context.Context) error {
+		loc := mustCreateComputeLocation(t, st, uuid.NewString())
+		return func(ctx context.Context) error { return st.DeleteComputeLocation(ctx, loc.ID) }
+	},
+	"DeleteExpiredSessions": func(t *testing.T, st store.Store) func(context.Context) error {
+		u := fenceUser(t, st, "viewer")
+		if _, err := st.CreateSession(t.Context(), store.Session{
+			ID: uuid.NewString(), TokenHash: uuid.NewString(), UserID: u.ID,
+			ExpiresAt: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-2 * time.Hour),
+		}); err != nil {
+			t.Fatalf("CreateSession: %v", err)
+		}
+		return func(ctx context.Context) error {
+			_, err := st.DeleteExpiredSessions(ctx, time.Now())
+			return err
+		}
+	},
+	"DeleteFarm": func(t *testing.T, st store.Store) func(context.Context) error {
+		farm := fenceFarm(t, st)
+		return func(ctx context.Context) error { return st.DeleteFarm(ctx, farm.ID) }
+	},
+	"DeleteJob": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := fenceLiveJob(t, st, store.TaskStatusReady)
+		return func(ctx context.Context) error { return st.DeleteJob(ctx, g.Job.ID) }
+	},
+	"DeleteOfflineWorkersBefore": func(t *testing.T, st store.Store) func(context.Context) error {
+		fenceWorker(t, st, store.WorkerStatusOffline, time.Now().Add(-time.Hour))
+		return func(ctx context.Context) error {
+			_, err := st.DeleteOfflineWorkersBefore(ctx, time.Now())
+			return err
+		}
+	},
+	"DeleteProduct": func(t *testing.T, st store.Store) func(context.Context) error {
+		p := mustCreateProduct(t, st, uuid.NewString())
+		return func(ctx context.Context) error { return st.DeleteProduct(ctx, p.Name) }
+	},
+	"DeleteQueue": func(t *testing.T, st store.Store) func(context.Context) error {
+		_, q := fenceFarmQueue(t, st)
+		return func(ctx context.Context) error { return st.DeleteQueue(ctx, q.ID) }
+	},
+	"DeleteSession": func(t *testing.T, st store.Store) func(context.Context) error {
+		u := fenceUser(t, st, "viewer")
+		s, err := st.CreateSession(t.Context(), store.Session{
+			ID: uuid.NewString(), TokenHash: uuid.NewString(), UserID: u.ID,
+			ExpiresAt: time.Now().Add(time.Hour), CreatedAt: time.Now(),
+		})
+		if err != nil {
+			t.Fatalf("CreateSession: %v", err)
+		}
+		return func(ctx context.Context) error { return st.DeleteSession(ctx, s.ID) }
+	},
+	"DeleteStorageLocation": func(t *testing.T, st store.Store) func(context.Context) error {
+		loc := mustCreateStorageLocation(t, st, uuid.NewString())
+		return func(ctx context.Context) error { return st.DeleteStorageLocation(ctx, loc.ID) }
+	},
+	"DeleteTerminalJobsBefore": func(t *testing.T, st store.Store) func(context.Context) error {
+		seedGraph(t, st, graphOpts{jobStatus: store.JobStatusCompleted},
+			stepSpec{name: "a", status: store.StepStatusCompleted, tasks: []store.TaskStatus{store.TaskStatusSucceeded}})
+		return func(ctx context.Context) error {
+			_, err := st.DeleteTerminalJobsBefore(ctx, time.Now().Add(time.Hour), true)
+			return err
+		}
+	},
+	"DeleteUsagePool": func(t *testing.T, st store.Store) func(context.Context) error {
+		p := seedPool(t, st, 1)
+		return func(ctx context.Context) error { return st.DeleteUsagePool(ctx, p.ID) }
+	},
+	"DeleteUser": func(t *testing.T, st store.Store) func(context.Context) error {
+		u := fenceUser(t, st, "viewer")
+		return func(ctx context.Context) error { return st.DeleteUser(ctx, u.ID) }
+	},
+	"DeleteWorkerIfRemovable": func(t *testing.T, st store.Store) func(context.Context) error {
+		w := fenceWorker(t, st, store.WorkerStatusOffline, time.Now().Add(-time.Hour))
+		return func(ctx context.Context) error { return st.DeleteWorkerIfRemovable(ctx, w.ID) }
+	},
+	"DemoteStalledJobs": func(t *testing.T, st store.Store) func(context.Context) error {
+		seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning},
+			stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusReady}})
+		return func(ctx context.Context) error {
+			_, err := st.DemoteStalledJobs(ctx, time.Now().UTC())
+			return err
+		}
+	},
+	"FinalizeJob": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning},
+			stepSpec{name: "a", status: store.StepStatusCompleted, tasks: []store.TaskStatus{store.TaskStatusSucceeded}})
+		return func(ctx context.Context) error {
+			_, _, err := st.FinalizeJob(ctx, g.Job.ID, time.Now().UTC())
+			return err
+		}
+	},
+	"FinalizeStep": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := fenceLiveJob(t, st, store.TaskStatusSucceeded)
+		return func(ctx context.Context) error {
+			_, _, err := st.FinalizeStep(ctx, g.Steps["a"].ID, time.Now().UTC())
+			return err
+		}
+	},
+	"LeaseTask": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := fenceLiveJob(t, st, store.TaskStatusReady)
+		req := leaseReq(g.Tasks["a"][0])
+		return func(ctx context.Context) error {
+			res, err := st.LeaseTask(ctx, req)
+			if err == nil && res.Outcome != store.LeaseLeased {
+				return fmt.Errorf("LeaseTask outcome = %q, want %q", res.Outcome, store.LeaseLeased)
+			}
+			return err
+		}
+	},
+	"MarkWorkerJoinTokenUsed": func(t *testing.T, st store.Store) func(context.Context) error {
+		tok := mustCreateJoinToken(t, st)
+		return func(ctx context.Context) error { return st.MarkWorkerJoinTokenUsed(ctx, tok.ID, time.Now().UTC()) }
+	},
+	"OfflineStaleWorker": func(t *testing.T, st store.Store) func(context.Context) error {
+		w := fenceWorker(t, st, store.WorkerStatusOnline, time.Now().Add(-time.Hour))
+		return func(ctx context.Context) error {
+			_, ok, err := st.OfflineStaleWorker(ctx, w.ID, time.Now().UTC(), time.Now().UTC())
+			if err == nil && !ok {
+				return errors.New("OfflineStaleWorker wrote nothing")
+			}
+			return err
+		}
+	},
+	"OfflineWorker": func(t *testing.T, st store.Store) func(context.Context) error {
+		w := fenceWorker(t, st, store.WorkerStatusOnline, time.Now())
+		return func(ctx context.Context) error {
+			_, ok, err := st.OfflineWorker(ctx, w.ID, "", time.Now().UTC())
+			if err == nil && !ok {
+				return errors.New("OfflineWorker wrote nothing")
+			}
+			return err
+		}
+	},
+	"ParkJob": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := fenceLiveJob(t, st, store.TaskStatusReady)
+		return func(ctx context.Context) error {
+			return st.ParkJob(ctx, g.Job.ID, "too many failures", time.Now().UTC())
+		}
+	},
+	"PauseJob": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := fenceLiveJob(t, st, store.TaskStatusReady)
+		return func(ctx context.Context) error { return st.PauseJob(ctx, g.Job.ID, time.Now().UTC()) }
+	},
+	"PromoteJobRunning": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := fenceLiveJob(t, st, store.TaskStatusReady)
+		return func(ctx context.Context) error {
+			ok, err := st.PromoteJobRunning(ctx, g.Job.ID, time.Now().UTC())
+			if err == nil && !ok {
+				return errors.New("PromoteJobRunning wrote nothing")
+			}
+			return err
+		}
+	},
+	"ReclaimStaleAssignedTasks": func(t *testing.T, st store.Store) func(context.Context) error {
+		fenceLiveJob(t, st, store.TaskStatusAssigned)
+		return func(ctx context.Context) error {
+			_, err := st.ReclaimStaleAssignedTasks(ctx, time.Now().UTC().Add(time.Minute))
+			return err
+		}
+	},
+	"ReclaimTaskAttempt": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := fenceLiveJob(t, st, store.TaskStatusRunning)
+		task := g.Tasks["a"][0]
+		return func(ctx context.Context) error {
+			ok, err := st.ReclaimTaskAttempt(ctx, g.Attempts[task.ID].ID, task.ID, time.Now().UTC())
+			if err == nil && !ok {
+				return errors.New("ReclaimTaskAttempt reclaimed nothing")
+			}
+			return err
+		}
+	},
+	"RecordTaskFailure": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := fenceLiveJob(t, st, store.TaskStatusRunning)
+		task := g.Tasks["a"][0]
+		return func(ctx context.Context) error {
+			_, _, first, err := st.RecordTaskFailure(ctx, g.Attempts[task.ID].ID, task.ID, nil, "", "boom", time.Now().UTC())
+			if err == nil && !first {
+				return errors.New("RecordTaskFailure was not the first close")
+			}
+			return err
+		}
+	},
+	"RedeemWorkerJoinToken": func(t *testing.T, st store.Store) func(context.Context) error {
+		tok := mustCreateJoinToken(t, st)
+		return func(ctx context.Context) error {
+			_, err := st.RedeemWorkerJoinToken(ctx, tok.TokenHash, time.Now().UTC(), mkCredential(uuid.NewString()))
+			return err
+		}
+	},
+	"RegisterWorker": func(t *testing.T, st store.Store) func(context.Context) error {
+		farm := fenceFarm(t, st)
+		beat := time.Now().UTC()
+		return func(ctx context.Context) error {
+			_, _, err := st.RegisterWorker(ctx, store.Worker{
+				ID: uuid.NewString(), FarmID: farm.ID, Hostname: "node", Status: store.WorkerStatusOnline, LastHeartbeatAt: &beat,
+			})
+			return err
+		}
+	},
+	"ReleaseBlockedJob": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := fenceBlockedJob(t, st)
+		return func(ctx context.Context) error {
+			ok, err := st.ReleaseBlockedJob(ctx, g.Job.ID, time.Now().UTC())
+			if err == nil && !ok {
+				return errors.New("ReleaseBlockedJob released nothing")
+			}
+			return err
+		}
+	},
+	"ReleaseStep": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning},
+			stepSpec{name: "a", status: store.StepStatusPending, tasks: []store.TaskStatus{store.TaskStatusPending}})
+		return func(ctx context.Context) error {
+			ok, _, err := st.ReleaseStep(ctx, g.Steps["a"].ID, time.Now().UTC())
+			if err == nil && !ok {
+				return errors.New("ReleaseStep released nothing")
+			}
+			return err
+		}
+	},
+	"RequeueTaskForRetry": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := fenceLiveJob(t, st, store.TaskStatusReady)
+		task := g.Tasks["a"][0]
+		a := storetest.Lease(t, st, leaseReq(task))
+		if _, _, first, err := st.RecordTaskFailure(t.Context(), a.ID, task.ID, nil, "", "boom", time.Now().UTC()); err != nil || !first {
+			t.Fatalf("RecordTaskFailure = (first %v, %v)", first, err)
+		}
+		return func(ctx context.Context) error {
+			ok, err := st.RequeueTaskForRetry(ctx, task.ID, a.ID, time.Now().UTC(), time.Now().UTC())
+			if err == nil && !ok {
+				return errors.New("RequeueTaskForRetry requeued nothing")
+			}
+			return err
+		}
+	},
+	"ResumeJob": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := fenceLiveJob(t, st, store.TaskStatusReady)
+		if err := st.PauseJob(t.Context(), g.Job.ID, time.Now().UTC()); err != nil {
+			t.Fatalf("PauseJob: %v", err)
+		}
+		return func(ctx context.Context) error { return st.ResumeJob(ctx, g.Job.ID, time.Now().UTC()) }
+	},
+	"RetryTasks": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning},
+			stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusFailed, store.TaskStatusRunning}})
+		ids := []string{g.Tasks["a"][0].ID}
+		return func(ctx context.Context) error {
+			revived, err := st.RetryTasks(ctx, g.Job.ID, ids, time.Now().UTC())
+			if err == nil && len(revived) != 1 {
+				return fmt.Errorf("RetryTasks revived %d tasks, want 1", len(revived))
+			}
+			return err
+		}
+	},
+	"RevokeAPIKey": func(t *testing.T, st store.Store) func(context.Context) error {
+		u := fenceUser(t, st, "viewer")
+		k, err := st.CreateAPIKey(t.Context(), mkAPIKey(u.ID, "hash-"+uuid.NewString()))
+		if err != nil {
+			t.Fatalf("CreateAPIKey: %v", err)
+		}
+		return func(ctx context.Context) error { return st.RevokeAPIKey(ctx, k.ID, u.ID, time.Now().UTC()) }
+	},
+	"RevokeWorkerCredential": func(t *testing.T, st store.Store) func(context.Context) error {
+		c := mustCreateCredential(t, st, mkCredential(uuid.NewString()))
+		return func(ctx context.Context) error { return st.RevokeWorkerCredential(ctx, c.WorkerID, time.Now().UTC()) }
+	},
+	"SetBrokerIdentity": func(_ *testing.T, st store.Store) func(context.Context) error {
+		return func(ctx context.Context) error { return st.SetBrokerIdentity(ctx, "embedded:SQI", time.Now().UTC()) }
+	},
+	"SetTaskUnschedulableReason": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := fenceLiveJob(t, st, store.TaskStatusReady)
+		return func(ctx context.Context) error {
+			ok, err := st.SetTaskUnschedulableReason(ctx, g.Tasks["a"][0].ID, "no worker has houdini")
+			if err == nil && !ok {
+				return errors.New("SetTaskUnschedulableReason changed nothing")
+			}
+			return err
+		}
+	},
+	"SetUserDisplayName": func(t *testing.T, st store.Store) func(context.Context) error {
+		u := fenceUser(t, st, "viewer")
+		return func(ctx context.Context) error {
+			_, err := st.SetUserDisplayName(ctx, u.ID, "Renamed")
+			return err
+		}
+	},
+	"SetUserPassword": func(t *testing.T, st store.Store) func(context.Context) error {
+		u := fenceUser(t, st, "viewer")
+		return func(ctx context.Context) error { return st.SetUserPassword(ctx, u.ID, "$argon2id$new") }
+	},
+	"SetUserPasswordAndEvictSessions": func(t *testing.T, st store.Store) func(context.Context) error {
+		u := fenceUser(t, st, "viewer")
+		return func(ctx context.Context) error { return st.SetUserPasswordAndEvictSessions(ctx, u.ID, "$argon2id$new") }
+	},
+	"SetWorkerDisabled": func(t *testing.T, st store.Store) func(context.Context) error {
+		w := fenceWorker(t, st, store.WorkerStatusOnline, time.Now())
+		return func(ctx context.Context) error {
+			_, err := st.SetWorkerDisabled(ctx, w.ID, true)
+			return err
+		}
+	},
+	"StartTaskAttempt": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := fenceLiveJob(t, st, store.TaskStatusAssigned)
+		task := g.Tasks["a"][0]
+		a := g.Attempts[task.ID]
+		return func(ctx context.Context) error {
+			started, err := st.StartTaskAttempt(ctx, a.ID, task.ID, "", a.StartedAt)
+			if err == nil && !started {
+				return errors.New("StartTaskAttempt started nothing")
+			}
+			return err
+		}
+	},
+	"TouchAPIKeyLastUsed": func(t *testing.T, st store.Store) func(context.Context) error {
+		u := fenceUser(t, st, "viewer")
+		k, err := st.CreateAPIKey(t.Context(), mkAPIKey(u.ID, "hash-"+uuid.NewString()))
+		if err != nil {
+			t.Fatalf("CreateAPIKey: %v", err)
+		}
+		return func(ctx context.Context) error { return st.TouchAPIKeyLastUsed(ctx, k.ID, time.Now().UTC()) }
+	},
+	"TouchWorkerCredential": func(t *testing.T, st store.Store) func(context.Context) error {
+		c := mustCreateCredential(t, st, mkCredential(uuid.NewString()))
+		return func(ctx context.Context) error { return st.TouchWorkerCredential(ctx, c.WorkerID, time.Now().UTC()) }
+	},
+	"UpdateComputeLocation": func(t *testing.T, st store.Store) func(context.Context) error {
+		loc := mustCreateComputeLocation(t, st, uuid.NewString())
+		loc.Description = "fenced"
+		return func(ctx context.Context) error {
+			_, err := st.UpdateComputeLocation(ctx, loc)
+			return err
+		}
+	},
+	"UpdateFarm": func(t *testing.T, st store.Store) func(context.Context) error {
+		farm := fenceFarm(t, st)
+		farm.MaxConcurrentTasks = 7
+		return func(ctx context.Context) error {
+			_, err := st.UpdateFarm(ctx, farm)
+			return err
+		}
+	},
+	"UpdateJob": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := fenceLiveJob(t, st, store.TaskStatusReady)
+		job := g.Job
+		job.Priority = 77
+		return func(ctx context.Context) error {
+			_, err := st.UpdateJob(ctx, job)
+			return err
+		}
+	},
+	"UpdateProduct": func(t *testing.T, st store.Store) func(context.Context) error {
+		p := mustCreateProduct(t, st, uuid.NewString())
+		p.Description = "fenced"
+		return func(ctx context.Context) error {
+			_, err := st.UpdateProduct(ctx, p)
+			return err
+		}
+	},
+	"UpdateQueue": func(t *testing.T, st store.Store) func(context.Context) error {
+		_, q := fenceFarmQueue(t, st)
+		q.MaxConcurrentTasks = 7
+		return func(ctx context.Context) error {
+			_, err := st.UpdateQueue(ctx, q)
+			return err
+		}
+	},
+	"UpdateStorageLocation": func(t *testing.T, st store.Store) func(context.Context) error {
+		loc := mustCreateStorageLocation(t, st, uuid.NewString())
+		loc.Description = "fenced"
+		return func(ctx context.Context) error {
+			_, err := st.UpdateStorageLocation(ctx, loc)
+			return err
+		}
+	},
+	"UpdateUsagePool": func(t *testing.T, st store.Store) func(context.Context) error {
+		p := seedPool(t, st, 1)
+		p.MaxConcurrent = 5
+		return func(ctx context.Context) error {
+			_, err := st.UpdateUsagePool(ctx, p)
+			return err
+		}
+	},
+	"UpdateUser": func(t *testing.T, st store.Store) func(context.Context) error {
+		u := fenceUser(t, st, "viewer")
+		u.DisplayName = "Renamed"
+		return func(ctx context.Context) error {
+			_, err := st.UpdateUser(ctx, u)
+			return err
+		}
+	},
+	"UpdateUserKeepingAdmin": func(t *testing.T, st store.Store) func(context.Context) error {
+		u := fenceUser(t, st, "viewer")
+		u.DisplayName = "Renamed"
+		return func(ctx context.Context) error {
+			_, err := st.UpdateUserKeepingAdmin(ctx, u)
+			return err
+		}
+	},
+	"UpdateWorkerHeartbeat": func(t *testing.T, st store.Store) func(context.Context) error {
+		w := fenceWorker(t, st, store.WorkerStatusOnline, time.Now().Add(-time.Hour))
+		return func(ctx context.Context) error { return st.UpdateWorkerHeartbeat(ctx, w.ID, time.Now().UTC()) }
+	},
+}
+
+// fenceFarm creates a farm of its own.
+func fenceFarm(t *testing.T, st store.Store) store.Farm {
+	t.Helper()
+	return mustCreateFarm(t, st, uuid.NewString())
+}
+
+// fenceFarmQueue creates a farm and a queue in it, both of their own.
+func fenceFarmQueue(t *testing.T, st store.Store) (store.Farm, store.Queue) {
+	t.Helper()
+	farm := fenceFarm(t, st)
+	return farm, mustCreateQueue(t, st, store.Queue{FarmID: farm.ID, Name: uuid.NewString()})
+}
+
+func fenceUser(t *testing.T, st store.Store, role string) store.User {
+	t.Helper()
+	u, err := st.CreateUser(t.Context(), mkUser(role))
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	return u
+}
+
+// fenceWorker registers a worker of its own, in a farm of its own.
+func fenceWorker(t *testing.T, st store.Store, status store.WorkerStatus, beat time.Time) store.Worker {
+	t.Helper()
+	beat = beat.UTC()
+	w, _, err := st.RegisterWorker(t.Context(), store.Worker{
+		ID: uuid.NewString(), FarmID: fenceFarm(t, st).ID, Hostname: "node", Status: status, LastHeartbeatAt: &beat,
+	})
+	if err != nil {
+		t.Fatalf("RegisterWorker: %v", err)
+	}
+	return w
+}
+
+// fenceLiveJob seeds a pending job with one ready step "a" holding one task in
+// the given status (leased and started, for assigned and running).
+func fenceLiveJob(t *testing.T, st store.Store, task store.TaskStatus) jobGraph {
+	t.Helper()
+	return seedGraph(t, st, graphOpts{},
+		stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{task}})
+}
+
+// fenceBlockedJob seeds a blocked job whose only upstream has completed, so it
+// can be released as well as canceled.
+func fenceBlockedJob(t *testing.T, st store.Store) jobGraph {
+	t.Helper()
+	up := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning})
+	if _, _, err := st.FinalizeJob(t.Context(), up.Job.ID, time.Now().UTC()); err != nil {
+		t.Fatalf("FinalizeJob upstream: %v", err)
+	}
+	return blockedOn(t, st, up)
+}
+
+// TestFence_EveryStoreMethodClassified: every method of store.Store is either a
+// fenced write with an entry in fenceMutators or is listed in fenceReadOnly,
+// and never both. A method added to the interface fails here until it is
+// classified, so a new write cannot ship outside the fence unnoticed.
+func TestFence_EveryStoreMethodClassified(t *testing.T) {
+	iface := reflect.TypeFor[store.Store]()
+	readOnly := map[string]bool{}
+	for _, name := range fenceReadOnly {
+		if readOnly[name] {
+			t.Errorf("%s is listed twice in fenceReadOnly", name)
+		}
+		readOnly[name] = true
+	}
+	methods := map[string]bool{}
+	for m := range iface.Methods() {
+		name := m.Name
+		methods[name] = true
+		_, mutator := fenceMutators[name]
+		switch {
+		case mutator && readOnly[name]:
+			t.Errorf("%s is in both fenceMutators and fenceReadOnly", name)
+		case !mutator && !readOnly[name]:
+			t.Errorf("%s is in neither fenceMutators nor fenceReadOnly: classify it", name)
+		}
+	}
+	for name := range fenceMutators {
+		if !methods[name] {
+			t.Errorf("fenceMutators has %s, which is not a store.Store method", name)
+		}
+	}
+	for name := range readOnly {
+		if !methods[name] {
+			t.Errorf("fenceReadOnly has %s, which is not a store.Store method", name)
+		}
+	}
+}
+
+// fenceStoresAfterTakeover returns every backend, the fake included, with the lease taken
+// over so that epoch 1 is stale and epoch 2 current.
+func fenceStoresAfterTakeover(t *testing.T) (stores map[string]store.Store, stale, current context.Context) {
+	t.Helper()
+	stores = newStores(t)
+	for _, st := range stores {
+		takeOver(t, st)
+	}
+	return stores, store.WithLeaderEpoch(t.Context(), 1), store.WithLeaderEpoch(t.Context(), 2)
+}
+
+// TestParity_Fence_EveryMutatorRefusesStaleEpoch: on every backend, every
+// fenced write made under a deposed leader's epoch fails with ErrFenced.
+func TestParity_Fence_EveryMutatorRefusesStaleEpoch(t *testing.T) {
+	stores, stale, _ := fenceStoresAfterTakeover(t)
+	for name, st := range stores {
+		t.Run(name, func(t *testing.T) {
+			for _, m := range slices.Sorted(maps.Keys(fenceMutators)) {
+				t.Run(m, func(t *testing.T) {
+					call := fenceMutators[m](t, st)
+					if err := call(stale); !errors.Is(err, store.ErrFenced) {
+						t.Fatalf("%s under a stale epoch: err = %v, want ErrFenced", m, err)
+					}
+				})
+			}
+		})
+	}
+}
+
+// TestParity_Fence_EveryMutatorSucceedsAtCurrentEpoch: the same writes under
+// the current leader's epoch succeed, so the fence is not a blanket refusal
+// and each fixture is a write that would have landed.
+func TestParity_Fence_EveryMutatorSucceedsAtCurrentEpoch(t *testing.T) {
+	stores, _, current := fenceStoresAfterTakeover(t)
+	for name, st := range stores {
+		t.Run(name, func(t *testing.T) {
+			for _, m := range slices.Sorted(maps.Keys(fenceMutators)) {
+				t.Run(m, func(t *testing.T) {
+					call := fenceMutators[m](t, st)
+					if err := call(current); err != nil {
+						t.Fatalf("%s under the current epoch: %v", m, err)
+					}
+				})
+			}
+		})
 	}
 }

@@ -15,9 +15,12 @@ func (s *Store) GetBrokerIdentity(_ context.Context) (string, error) {
 }
 
 // SetBrokerIdentity implements [store.BrokerStateStore].
-func (s *Store) SetBrokerIdentity(_ context.Context, identity string, _ time.Time) error {
+func (s *Store) SetBrokerIdentity(ctx context.Context, identity string, _ time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return err
+	}
 	s.brokerIdentity = identity
 	return nil
 }

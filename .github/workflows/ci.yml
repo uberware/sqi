@@ -1063,6 +1063,9 @@ jobs:
             TestParity_Fence_LeadershipMethodsAreNeverFenced/postgres
             TestParity_Fence_PlainContextIsNeverFenced/postgres
             TestParity_Fence_TransactionalWriteRollsBack/postgres
+            TestFence_EveryStoreMethodClassified
+            TestParity_Fence_EveryMutatorRefusesStaleEpoch/postgres
+            TestParity_Fence_EveryMutatorSucceedsAtCurrentEpoch/postgres
             TestFence_LongTransactionStartedBeforeTakeoverRollsBack
             TestRunTx_FenceCheckedLastBeforeCommit/postgres
             TestRunTx_FencedIsNeverRetried/postgres

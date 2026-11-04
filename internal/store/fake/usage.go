@@ -14,9 +14,12 @@ import (
 
 // CreateUsagePool inserts a new pool. Returns [store.ErrConflict] if a pool with
 // the same name (compared case-insensitively) already exists.
-func (s *Store) CreateUsagePool(_ context.Context, pool store.UsagePool) (store.UsagePool, error) {
+func (s *Store) CreateUsagePool(ctx context.Context, pool store.UsagePool) (store.UsagePool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.UsagePool{}, err
+	}
 
 	// Pool names are case-insensitive (OpenJD jobtemplate-2023-09), mirroring the
 	// SQLite NOCASE unique index.
@@ -101,9 +104,12 @@ func (s *Store) ListUsagePoolUtilization(_ context.Context) ([]store.UsagePoolUt
 
 // UpdateUsagePool replaces the mutable fields of an existing pool and
 // updates UpdatedAt. Returns [store.ErrNotFound] or [store.ErrConflict].
-func (s *Store) UpdateUsagePool(_ context.Context, pool store.UsagePool) (store.UsagePool, error) {
+func (s *Store) UpdateUsagePool(ctx context.Context, pool store.UsagePool) (store.UsagePool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.UsagePool{}, err
+	}
 
 	existing, ok := s.usagePools[pool.ID]
 	if !ok {
@@ -128,9 +134,12 @@ func (s *Store) UpdateUsagePool(_ context.Context, pool store.UsagePool) (store.
 
 // DeleteUsagePool removes a pool by ID. Returns [store.ErrNotFound] if it
 // does not exist, and [store.ErrConflict] while any claim names it.
-func (s *Store) DeleteUsagePool(_ context.Context, id string) error {
+func (s *Store) DeleteUsagePool(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return err
+	}
 
 	if _, ok := s.usagePools[id]; !ok {
 		return store.ErrNotFound

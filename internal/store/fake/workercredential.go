@@ -11,9 +11,12 @@ import (
 )
 
 // CreateWorkerCredential implements [store.WorkerCredentialStore].
-func (s *Store) CreateWorkerCredential(_ context.Context, c store.WorkerCredential) (store.WorkerCredential, error) {
+func (s *Store) CreateWorkerCredential(ctx context.Context, c store.WorkerCredential) (store.WorkerCredential, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.WorkerCredential{}, err
+	}
 	if _, ok := s.workerCredentials[c.ID]; ok {
 		return store.WorkerCredential{}, store.ErrConflict
 	}
@@ -60,9 +63,12 @@ func (s *Store) GetActiveWorkerCredentialByPublicKey(_ context.Context, publicKe
 }
 
 // RevokeWorkerCredential implements [store.WorkerCredentialStore].
-func (s *Store) RevokeWorkerCredential(_ context.Context, workerID string, at time.Time) error {
+func (s *Store) RevokeWorkerCredential(ctx context.Context, workerID string, at time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return err
+	}
 	// Scan the WHOLE map before giving up. Go's map iteration order is
 	// randomized, and after a key rotation a worker can legitimately have
 	// both a revoked row and an active one for the same worker_id — mirror
@@ -83,9 +89,12 @@ func (s *Store) RevokeWorkerCredential(_ context.Context, workerID string, at ti
 }
 
 // TouchWorkerCredential implements [store.WorkerCredentialStore].
-func (s *Store) TouchWorkerCredential(_ context.Context, workerID string, at time.Time) error {
+func (s *Store) TouchWorkerCredential(ctx context.Context, workerID string, at time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return err
+	}
 	// Scan the whole map rather than stopping at the first match, for the
 	// same reason RevokeWorkerCredential does: a worker can have both a
 	// revoked row and an active one after a key rotation, and map iteration
@@ -102,9 +111,12 @@ func (s *Store) TouchWorkerCredential(_ context.Context, workerID string, at tim
 }
 
 // CreateWorkerJoinToken implements [store.WorkerCredentialStore].
-func (s *Store) CreateWorkerJoinToken(_ context.Context, t store.WorkerJoinToken) (store.WorkerJoinToken, error) {
+func (s *Store) CreateWorkerJoinToken(ctx context.Context, t store.WorkerJoinToken) (store.WorkerJoinToken, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.WorkerJoinToken{}, err
+	}
 	if _, ok := s.workerJoinTokens[t.ID]; ok {
 		return store.WorkerJoinToken{}, store.ErrConflict
 	}
@@ -130,9 +142,12 @@ func (s *Store) GetWorkerJoinTokenByHash(_ context.Context, hash string) (store.
 }
 
 // MarkWorkerJoinTokenUsed implements [store.WorkerCredentialStore].
-func (s *Store) MarkWorkerJoinTokenUsed(_ context.Context, id string, at time.Time) error {
+func (s *Store) MarkWorkerJoinTokenUsed(ctx context.Context, id string, at time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return err
+	}
 	t, ok := s.workerJoinTokens[id]
 	if !ok {
 		return store.ErrNotFound
@@ -151,9 +166,12 @@ func (s *Store) MarkWorkerJoinTokenUsed(_ context.Context, id string, at time.Ti
 // uncreated; a cred that collides with an existing worker_id or public_key
 // is store.ErrConflict with the token left unclaimed — mirroring SQLite's
 // rollback, since nothing here is written until both checks pass.
-func (s *Store) RedeemWorkerJoinToken(_ context.Context, hash string, now time.Time, cred store.WorkerCredential) (store.WorkerCredential, error) {
+func (s *Store) RedeemWorkerJoinToken(ctx context.Context, hash string, now time.Time, cred store.WorkerCredential) (store.WorkerCredential, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.WorkerCredential{}, err
+	}
 
 	var tokID string
 	found := false

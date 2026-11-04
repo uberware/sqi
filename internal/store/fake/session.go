@@ -10,9 +10,12 @@ import (
 )
 
 // CreateSession implements [store.SessionStore].
-func (s *Store) CreateSession(_ context.Context, sess store.Session) (store.Session, error) {
+func (s *Store) CreateSession(ctx context.Context, sess store.Session) (store.Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.Session{}, err
+	}
 	// Mirror SQLite's `id TEXT PRIMARY KEY`: re-using an ID is a conflict, not
 	// a silent overwrite of the live session it collides with.
 	if _, ok := s.sessions[sess.ID]; ok {
@@ -65,9 +68,12 @@ func (s *Store) GetSessionUserByTokenHash(_ context.Context, tokenHash string, n
 }
 
 // DeleteSession implements [store.SessionStore].
-func (s *Store) DeleteSession(_ context.Context, id string) error {
+func (s *Store) DeleteSession(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return err
+	}
 	if _, ok := s.sessions[id]; !ok {
 		return store.ErrNotFound
 	}
@@ -76,9 +82,12 @@ func (s *Store) DeleteSession(_ context.Context, id string) error {
 }
 
 // DeleteExpiredSessions implements [store.SessionStore].
-func (s *Store) DeleteExpiredSessions(_ context.Context, now time.Time) (int, error) {
+func (s *Store) DeleteExpiredSessions(ctx context.Context, now time.Time) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return 0, err
+	}
 	n := 0
 	for id, sess := range s.sessions {
 		if !sess.ExpiresAt.After(now) {

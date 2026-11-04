@@ -58,9 +58,12 @@ func (s *Store) stepOutcomeLocked(stepID string) store.StepStatus {
 }
 
 // FinalizeStep implements [store.StepStore].
-func (s *Store) FinalizeStep(_ context.Context, id string, now time.Time) (store.StepStatus, bool, error) {
+func (s *Store) FinalizeStep(ctx context.Context, id string, now time.Time) (store.StepStatus, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return "", false, err
+	}
 	st, ok := s.steps[id]
 	if !ok {
 		return "", false, store.ErrNotFound
@@ -78,9 +81,12 @@ func (s *Store) FinalizeStep(_ context.Context, id string, now time.Time) (store
 }
 
 // FinalizeJob implements [store.JobStore].
-func (s *Store) FinalizeJob(_ context.Context, id string, now time.Time) (store.JobStatus, bool, error) {
+func (s *Store) FinalizeJob(ctx context.Context, id string, now time.Time) (store.JobStatus, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return "", false, err
+	}
 	j, ok := s.jobs[id]
 	if !ok {
 		return "", false, store.ErrNotFound
@@ -165,22 +171,25 @@ func (s *Store) ListJobIDsWithPendingSteps(_ context.Context) ([]string, error) 
 }
 
 // ReleaseStep implements [store.StepStore].
-func (s *Store) ReleaseStep(_ context.Context, id string, now time.Time) (bool, []store.Task, error) {
-	return s.movePendingStep(id, store.StepStatusReady, store.TaskStatusReady, "", now)
+func (s *Store) ReleaseStep(ctx context.Context, id string, now time.Time) (bool, []store.Task, error) {
+	return s.movePendingStep(ctx, id, store.StepStatusReady, store.TaskStatusReady, "", now)
 }
 
 // CancelPendingStep implements [store.StepStore].
-func (s *Store) CancelPendingStep(_ context.Context, id, reason string, now time.Time) (bool, []store.Task, error) {
-	return s.movePendingStep(id, store.StepStatusCanceled, store.TaskStatusCanceled, reason, now)
+func (s *Store) CancelPendingStep(ctx context.Context, id, reason string, now time.Time) (bool, []store.Task, error) {
+	return s.movePendingStep(ctx, id, store.StepStatusCanceled, store.TaskStatusCanceled, reason, now)
 }
 
 // movePendingStep moves a pending step and its pending tasks together under
 // one lock. Like the SQLite version it writes nothing unless the step is
 // still pending, and, for a cancel, unless one of its upstream steps is failed
 // or canceled (invariant I4); it stamps reason only on tasks that carry none.
-func (s *Store) movePendingStep(id string, stepTo store.StepStatus, taskTo store.TaskStatus, reason string, now time.Time) (bool, []store.Task, error) {
+func (s *Store) movePendingStep(ctx context.Context, id string, stepTo store.StepStatus, taskTo store.TaskStatus, reason string, now time.Time) (bool, []store.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return false, nil, err
+	}
 	st, ok := s.steps[id]
 	if !ok {
 		return false, nil, store.ErrNotFound
@@ -212,9 +221,12 @@ func (s *Store) anyUpstreamUnsuccessfulLocked(st store.Step) bool {
 }
 
 // ReleaseBlockedJob implements [store.JobStore].
-func (s *Store) ReleaseBlockedJob(_ context.Context, id string, now time.Time) (bool, error) {
+func (s *Store) ReleaseBlockedJob(ctx context.Context, id string, now time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return false, err
+	}
 	j, ok := s.jobs[id]
 	if !ok {
 		return false, store.ErrNotFound
@@ -235,9 +247,12 @@ func (s *Store) ReleaseBlockedJob(_ context.Context, id string, now time.Time) (
 }
 
 // CancelBlockedJob implements [store.JobStore].
-func (s *Store) CancelBlockedJob(_ context.Context, id, reason string, now time.Time) (bool, []store.Task, error) {
+func (s *Store) CancelBlockedJob(ctx context.Context, id, reason string, now time.Time) (bool, []store.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return false, nil, err
+	}
 	j, ok := s.jobs[id]
 	if !ok {
 		return false, nil, store.ErrNotFound
@@ -264,9 +279,12 @@ func (s *Store) CancelBlockedJob(_ context.Context, id, reason string, now time.
 // PromoteJobRunning implements [store.JobStore]. Like the SQLite statement it
 // writes only a pending job and reports false, without error, for an unknown
 // job.
-func (s *Store) PromoteJobRunning(_ context.Context, id string, now time.Time) (bool, error) {
+func (s *Store) PromoteJobRunning(ctx context.Context, id string, now time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return false, err
+	}
 	j, ok := s.jobs[id]
 	if !ok || j.Status != store.JobStatusPending {
 		return false, nil
@@ -282,9 +300,12 @@ func (s *Store) PromoteJobRunning(_ context.Context, id string, now time.Time) (
 }
 
 // PauseJob implements [store.JobStore].
-func (s *Store) PauseJob(_ context.Context, id string, now time.Time) error {
+func (s *Store) PauseJob(ctx context.Context, id string, now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return err
+	}
 	j, ok := s.jobs[id]
 	if !ok {
 		return store.ErrNotFound

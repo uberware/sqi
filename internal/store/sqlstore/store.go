@@ -251,7 +251,7 @@ func New(ctx context.Context, write, read *sql.DB, d Dialect, opts ...Option) (*
 func (s *Store) Close() error {
 	var errs []error
 	for _, stmt := range s.stmts {
-		if err := stmt.Close(); err != nil {
+		if err := stmt.st.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -348,7 +348,7 @@ func (s *Store) prepare(ctx context.Context, query string) (*dbStmt, error) {
 		}
 		return nil, fmt.Errorf("store: prepare %q: %w", preview, err)
 	}
-	ds := &dbStmt{st: stmt, d: s.d}
+	ds := &dbStmt{st: stmt, d: s.d, shared: true}
 	s.stmts = append(s.stmts, ds)
 	return ds, nil
 }

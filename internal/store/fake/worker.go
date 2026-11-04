@@ -20,9 +20,12 @@ import (
 // are reclaimed as the offline transitions reclaim them, with
 // [store.FailureReasonWorkerRestarted]; the store lock stands in for SQLite's
 // worker-row and job-row anchors.
-func (s *Store) RegisterWorker(_ context.Context, worker store.Worker) (store.Worker, []store.Task, error) {
+func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.Worker, []store.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.Worker{}, nil, err
+	}
 
 	existing, isUpdate := s.workers[worker.ID]
 	worker = cloneWorker(worker)
@@ -80,9 +83,12 @@ func (s *Store) ListWorkers(_ context.Context, opts store.ListWorkersOptions) (s
 }
 
 // SetWorkerDisabled implements [store.WorkerStore].
-func (s *Store) SetWorkerDisabled(_ context.Context, id string, disabled bool) (store.Worker, error) {
+func (s *Store) SetWorkerDisabled(ctx context.Context, id string, disabled bool) (store.Worker, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.Worker{}, err
+	}
 
 	worker, ok := s.workers[id]
 	if !ok {
@@ -97,9 +103,12 @@ func (s *Store) SetWorkerDisabled(_ context.Context, id string, disabled bool) (
 }
 
 // UpdateWorkerHeartbeat records the most recent heartbeat time for the given worker.
-func (s *Store) UpdateWorkerHeartbeat(_ context.Context, id string, at time.Time) error {
+func (s *Store) UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return err
+	}
 
 	worker, ok := s.workers[id]
 	if !ok {
@@ -174,9 +183,12 @@ func (s *Store) CountIdleWorkers(_ context.Context, farmID string) (int, error) 
 // DeleteWorkerIfRemovable implements [store.WorkerStore]. The rule is
 // [store.Worker.Removable], which SQLite restates in its DELETE, plus the
 // in-flight condition a Worker value cannot see.
-func (s *Store) DeleteWorkerIfRemovable(_ context.Context, id string) error {
+func (s *Store) DeleteWorkerIfRemovable(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return err
+	}
 
 	w, ok := s.workers[id]
 	if !ok {
@@ -204,9 +216,12 @@ func (s *Store) hasWorkInFlightLocked(workerID string) bool {
 // DeleteOfflineWorkersBefore hard-deletes every enabled offline worker last
 // seen before cutoff and returns the removed records. Online workers, disabled
 // ones and workers that have never sent a heartbeat are left untouched.
-func (s *Store) DeleteOfflineWorkersBefore(_ context.Context, cutoff time.Time) ([]store.Worker, error) {
+func (s *Store) DeleteOfflineWorkersBefore(ctx context.Context, cutoff time.Time) ([]store.Worker, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return nil, err
+	}
 
 	var removed []store.Worker
 	for id, w := range s.workers {

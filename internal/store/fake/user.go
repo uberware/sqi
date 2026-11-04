@@ -34,9 +34,12 @@ func asciiToLower(s string) string {
 }
 
 // CreateUser implements [store.UserStore].
-func (s *Store) CreateUser(_ context.Context, u store.User) (store.User, error) {
+func (s *Store) CreateUser(ctx context.Context, u store.User) (store.User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.User{}, err
+	}
 	if _, ok := s.users[u.ID]; ok {
 		return store.User{}, store.ErrConflict
 	}
@@ -140,17 +143,23 @@ func (s *Store) lastLiveAdminLocked(id string) bool {
 
 // UpdateUser implements [store.UserStore]. It is deliberately unguarded; see
 // [Store.UpdateUserKeepingAdmin].
-func (s *Store) UpdateUser(_ context.Context, u store.User) (store.User, error) {
+func (s *Store) UpdateUser(ctx context.Context, u store.User) (store.User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.User{}, err
+	}
 	return s.updateUserLocked(u)
 }
 
 // UpdateUserKeepingAdmin implements [store.UserStore]. The guard and the write
 // run under one lock hold, so no other writer can slip between them.
-func (s *Store) UpdateUserKeepingAdmin(_ context.Context, u store.User) (store.User, error) {
+func (s *Store) UpdateUserKeepingAdmin(ctx context.Context, u store.User) (store.User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.User{}, err
+	}
 	if _, ok := s.users[u.ID]; !ok {
 		return store.User{}, store.ErrNotFound
 	}
@@ -179,9 +188,12 @@ func (s *Store) updateUserLocked(u store.User) (store.User, error) {
 }
 
 // SetUserPassword implements [store.UserStore].
-func (s *Store) SetUserPassword(_ context.Context, id, passwordHash string) error {
+func (s *Store) SetUserPassword(ctx context.Context, id, passwordHash string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return err
+	}
 	u, ok := s.users[id]
 	if !ok {
 		return store.ErrNotFound
@@ -194,9 +206,12 @@ func (s *Store) SetUserPassword(_ context.Context, id, passwordHash string) erro
 
 // SetUserPasswordAndEvictSessions implements [store.UserStore]. The whole
 // operation runs under one lock, mirroring SQLite's transaction.
-func (s *Store) SetUserPasswordAndEvictSessions(_ context.Context, id, passwordHash string) error {
+func (s *Store) SetUserPasswordAndEvictSessions(ctx context.Context, id, passwordHash string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return err
+	}
 	u, ok := s.users[id]
 	if !ok {
 		return store.ErrNotFound
@@ -213,9 +228,12 @@ func (s *Store) SetUserPasswordAndEvictSessions(_ context.Context, id, passwordH
 }
 
 // SetUserDisplayName implements [store.UserStore].
-func (s *Store) SetUserDisplayName(_ context.Context, id, displayName string) (store.User, error) {
+func (s *Store) SetUserDisplayName(ctx context.Context, id, displayName string) (store.User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.User{}, err
+	}
 	u, ok := s.users[id]
 	if !ok {
 		return store.User{}, store.ErrNotFound
@@ -227,9 +245,12 @@ func (s *Store) SetUserDisplayName(_ context.Context, id, displayName string) (s
 }
 
 // DeleteUser implements [store.UserStore].
-func (s *Store) DeleteUser(_ context.Context, id string) error {
+func (s *Store) DeleteUser(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return err
+	}
 	if _, ok := s.users[id]; !ok {
 		return store.ErrNotFound
 	}

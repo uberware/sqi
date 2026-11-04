@@ -64,7 +64,9 @@ func (s *Store) checkFence(ctx context.Context, tx *dbTx, op string) error {
 }
 
 // writer runs a write's statements: the write pool itself, or a transaction
-// on it. [*dbPool] and [*dbTx] both satisfy it.
+// on it. [*dbPool] and [*dbTx] both satisfy it. Stmt's result may be closed
+// either way: on a transaction that closes the transaction's copy, on the pool
+// it does nothing, the statement being the store's own.
 type writer interface {
 	ExecContext(ctx context.Context, q string, args ...any) (sql.Result, error)
 	QueryContext(ctx context.Context, q string, args ...any) (*sql.Rows, error)

@@ -11,9 +11,12 @@ import (
 
 // CreateFarm inserts a new farm. Returns [store.ErrConflict] if a farm with
 // the same name already exists.
-func (s *Store) CreateFarm(_ context.Context, farm store.Farm) (store.Farm, error) {
+func (s *Store) CreateFarm(ctx context.Context, farm store.Farm) (store.Farm, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.Farm{}, err
+	}
 
 	for _, existing := range s.farms {
 		if existing.Name == farm.Name {
@@ -66,9 +69,12 @@ func (s *Store) ListFarms(_ context.Context) ([]store.Farm, error) {
 // MaxConcurrentTasks) of an existing farm and updates UpdatedAt.
 // Returns [store.ErrNotFound] if the farm does not exist, or
 // [store.ErrConflict] if the new name is already taken.
-func (s *Store) UpdateFarm(_ context.Context, farm store.Farm) (store.Farm, error) {
+func (s *Store) UpdateFarm(ctx context.Context, farm store.Farm) (store.Farm, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.Farm{}, err
+	}
 
 	existing, ok := s.farms[farm.ID]
 	if !ok {
@@ -93,9 +99,12 @@ func (s *Store) UpdateFarm(_ context.Context, farm store.Farm) (store.Farm, erro
 // DeleteFarm removes a farm by ID. Returns [store.ErrNotFound] if it does
 // not exist, and [store.ErrConflict] while a queue, job or worker still names
 // it.
-func (s *Store) DeleteFarm(_ context.Context, id string) error {
+func (s *Store) DeleteFarm(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return err
+	}
 
 	if _, ok := s.farms[id]; !ok {
 		return store.ErrNotFound

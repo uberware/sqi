@@ -14,9 +14,12 @@ import (
 // appended even when AttemptID names no existing task_attempts row. Tests
 // that exercise a log-ingest error path tied to a missing/deleted attempt
 // need the real SQLite store, or a wrapper around this one, to observe it.
-func (s *Store) CreateTaskLog(_ context.Context, log store.TaskLog) (store.TaskLog, error) {
+func (s *Store) CreateTaskLog(ctx context.Context, log store.TaskLog) (store.TaskLog, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.TaskLog{}, err
+	}
 
 	for _, l := range s.taskLogs {
 		if l.AttemptID == log.AttemptID && l.SeqNum == log.SeqNum {

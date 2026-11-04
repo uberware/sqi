@@ -182,7 +182,9 @@ func newDBPool(db *sql.DB, d Dialect) *dbPool {
 
 // Stmt returns stmt itself: a statement prepared on the pool runs on it. It is
 // [dbTx.Stmt]'s counterpart, so [Store.write]'s function runs the same code on
-// the pool or in a transaction.
+// the pool or in a transaction. The result is the store's own statement, shared
+// by every call; closing it is a no-op (see dbStmt), where closing a
+// transaction's closes that transaction's copy.
 func (*dbPool) Stmt(_ context.Context, stmt *dbStmt) *dbStmt { return stmt }
 
 // dbTx runs statements in a transaction through the dialect. tx is the raw
@@ -215,10 +217,14 @@ func (t *dbTx) lockAnchors(ctx context.Context, anchors ...Anchor) error {
 }
 
 // dbStmt is a prepared statement whose arguments and errors go through the
-// dialect. Its query was rebound when it was prepared.
+// dialect. Its query was rebound when it was prepared. shared marks one of the
+// store's own statements, which every call uses: Close does nothing on it, so a
+// write that closes the statement [writer.Stmt] gave it (as it would a
+// transaction's) cannot close the store's.
 type dbStmt struct {
-	st *sql.Stmt
-	d  Dialect
+	st     *sql.Stmt
+	d      Dialect
+	shared bool
 }
 
 func (s *dbStmt) ExecContext(ctx context.Context, args ...any) (sql.Result, error) {
@@ -235,5 +241,11 @@ func (s *dbStmt) QueryRowContext(ctx context.Context, args ...any) *dbRow {
 	return &dbRow{row: s.st.QueryRowContext(ctx, bindArgs(s.d, args)...), d: s.d}
 }
 
-// Close closes the statement.
-func (s *dbStmt) Close() error { return s.st.Close() }
+// Close closes the statement, unless it is one of the store's own (see
+// dbStmt), whose lifetime is the store's: [Store.Close] closes those.
+func (s *dbStmt) Close() error {
+	if s.shared {
+		return nil
+	}
+	return s.st.Close()
+}
