@@ -46,6 +46,8 @@ type fakeJSMsg struct {
 	nacked  bool
 	metaErr error
 	natsSeq uint64
+	// stamp is the broker timestamp Metadata reports; zero means none.
+	stamp time.Time
 }
 
 func (m *fakeJSMsg) Data() []byte    { return m.data }
@@ -66,7 +68,8 @@ func (m *fakeJSMsg) Metadata() (*jetstream.MsgMetadata, error) {
 		return nil, m.metaErr
 	}
 	return &jetstream.MsgMetadata{
-		Sequence: jetstream.SequencePair{Stream: m.natsSeq},
+		Sequence:  jetstream.SequencePair{Stream: m.natsSeq},
+		Timestamp: m.stamp,
 	}, nil
 }
 

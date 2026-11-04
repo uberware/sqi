@@ -81,6 +81,13 @@ var ErrNotFound = errors.New("store: not found")
 // constraint (e.g. creating a farm with a name that already exists).
 var ErrConflict = errors.New("store: conflict")
 
+// ErrStaleRegistration is returned by [WorkerStore.RegisterWorker] when the
+// registration was stamped by the broker earlier than the one already
+// recorded: a late redelivery. Nothing is written; the returned worker is the
+// stored row. Redelivery cannot make it current, so a caller acknowledges it
+// rather than retrying.
+var ErrStaleRegistration = errors.New("store: registration is older than the one recorded")
+
 // ErrLastAdmin is returned when a write would leave the farm with no enabled
 // admin account. The guard is evaluated inside the write itself (invariant
 // I4), so two concurrent demotions cannot both pass it.

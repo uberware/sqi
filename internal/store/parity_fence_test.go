@@ -307,6 +307,59 @@ func TestParity_Fence_PlainContextIsNeverFenced(t *testing.T) {
 	}
 }
 
+// TestParity_Fence_IgnoredWorkerWritesStillFence: the worker writes that can
+// end without changing anything (a stale registration, a heartbeat older than
+// the recorded one, a heartbeat for an unknown worker) are fenced like any
+// other, so a deposed leader sees ErrFenced from them on every backend and not
+// the result the current leader would get.
+func TestParity_Fence_IgnoredWorkerWritesStillFence(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			farm := fenceFarm(t, st)
+			earlier, later := subSecond()
+			beat := later
+			reg := func(c context.Context, stamp time.Time) error {
+				_, _, err := st.RegisterWorker(c, store.Worker{
+					ID: "w-fence-order", FarmID: farm.ID, Hostname: "node", Status: store.WorkerStatusOnline,
+					LastHeartbeatAt: &beat, InstanceID: "B", RegistrationBrokerAt: &stamp,
+				})
+				return err
+			}
+			if err := reg(ctx, later); err != nil {
+				t.Fatalf("register: %v", err)
+			}
+			if err := st.UpdateWorkerHeartbeat(ctx, "w-fence-order", later); err != nil {
+				t.Fatalf("heartbeat: %v", err)
+			}
+			stale, current := takeOver(t, st)
+
+			cases := []struct {
+				name        string
+				op          func(context.Context) error
+				wantCurrent error
+			}{
+				{"stale registration", func(c context.Context) error { return reg(c, earlier) }, store.ErrStaleRegistration},
+				{"older heartbeat", func(c context.Context) error {
+					return st.UpdateWorkerHeartbeat(c, "w-fence-order", earlier)
+				}, nil},
+				{"unknown worker heartbeat", func(c context.Context) error {
+					return st.UpdateWorkerHeartbeat(c, "w-ghost", later)
+				}, store.ErrNotFound},
+			}
+			for _, tc := range cases {
+				if err := tc.op(stale); !errors.Is(err, store.ErrFenced) {
+					t.Errorf("%s under a stale epoch: err = %v, want ErrFenced", tc.name, err)
+				}
+				err := tc.op(current)
+				if tc.wantCurrent == nil && err != nil || tc.wantCurrent != nil && !errors.Is(err, tc.wantCurrent) {
+					t.Errorf("%s under the current epoch: err = %v, want %v", tc.name, err, tc.wantCurrent)
+				}
+			}
+		})
+	}
+}
+
 // TestParity_Fence_TransactionalWriteRollsBack: a write that is already a
 // transaction is fenced too, and leaves nothing behind.
 func TestParity_Fence_TransactionalWriteRollsBack(t *testing.T) {

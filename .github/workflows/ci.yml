@@ -1065,6 +1065,15 @@ jobs:
             TestParity_ServerMembers_BrokerStampIsKept/postgres
             TestParity_ServerMembers_ListIsOrderedByNameThenID/postgres
             TestParity_ListServerMembers_EmptyStillReportsTheClock/postgres
+            TestParity_RegisterWorker_RegistrationBrokerAtRoundTrip/postgres
+            TestParity_RegisterWorker_EarlierBrokerStampIgnored/postgres
+            TestParity_RegisterWorker_LaterBrokerStampRestarts/postgres
+            TestParity_RegisterWorker_SameBrokerStampIsNotStale/postgres
+            TestParity_RegisterWorker_NoBrokerStampBehavesAsBefore/postgres
+            TestParity_UpdateWorkerHeartbeat_NeverMovesBackwards/postgres
+            TestParity_UpdateWorkerHeartbeat_NeverHeartbeatedWorker/postgres
+            TestParity_UpdateWorkerHeartbeat_UnknownWorkerNotFound/postgres
+            TestParity_Fence_IgnoredWorkerWritesStillFence/postgres
             TestParity_Fence_SingleStatementWrites/PromoteJobRunning/postgres
             TestParity_Fence_SingleStatementWrites/PauseJob/postgres
             TestParity_Fence_SingleStatementWrites/CancelJobStatus/postgres

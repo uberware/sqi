@@ -15,7 +15,10 @@ import (
 // worker record for the given ID, except that an empty InstanceID keeps the
 // stored one and Disabled is never taken from the registration: a new worker is
 // enabled and an existing one keeps its flag, as SQLite's upsert leaves the
-// column alone. A non-empty stored InstanceID that differs from a non-empty
+// column alone, and a nil RegistrationBrokerAt keeps the stored one. A
+// registration stamped earlier than the stored one ([store.StaleRegistration]) is
+// refused with [store.ErrStaleRegistration], returning the stored worker.
+// A non-empty stored InstanceID that differs from a non-empty
 // incoming one is a restarted worker process, whose assigned and running tasks
 // are reclaimed as the offline transitions reclaim them, with
 // [store.FailureReasonWorkerRestarted]; the store lock stands in for SQLite's
@@ -28,11 +31,17 @@ func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.
 	}
 
 	existing, isUpdate := s.workers[worker.ID]
+	if isUpdate && store.StaleRegistration(existing, worker) {
+		return cloneWorker(existing), nil, store.ErrStaleRegistration
+	}
 	worker = cloneWorker(worker)
 	worker.Disabled = existing.Disabled // false for a new worker
 	var reclaimed []store.Task
 	if isUpdate {
 		worker.RegisteredAt = existing.RegisteredAt
+		if worker.RegistrationBrokerAt == nil {
+			worker.RegistrationBrokerAt = existing.RegistrationBrokerAt
+		}
 		if worker.InstanceID == "" {
 			worker.InstanceID = existing.InstanceID
 		} else if existing.InstanceID != "" && existing.InstanceID != worker.InstanceID {
@@ -102,7 +111,8 @@ func (s *Store) SetWorkerDisabled(ctx context.Context, id string, disabled bool)
 	return worker, nil
 }
 
-// UpdateWorkerHeartbeat records the most recent heartbeat time for the given worker.
+// UpdateWorkerHeartbeat records the most recent heartbeat time for the given
+// worker. A heartbeat older than the recorded one is ignored.
 func (s *Store) UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -115,6 +125,9 @@ func (s *Store) UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Ti
 		return store.ErrNotFound
 	}
 
+	if worker.LastHeartbeatAt != nil && !worker.LastHeartbeatAt.Before(at) {
+		return nil
+	}
 	worker.LastHeartbeatAt = &at
 	worker.UpdatedAt = time.Now()
 	s.workers[id] = worker

@@ -137,10 +137,16 @@ type Worker struct {
 	// changes when the worker restarts and is empty for a worker that does not
 	// send one.
 	InstanceID string
-	CPUCount   int
-	RAMMb      int
-	GPUInfo    GPUInfo
-	Tags       map[string]string // arbitrary capability tags
+	// RegistrationBrokerAt is the message broker's stream timestamp of the
+	// registration that wrote this row. Nil when the registration carried none.
+	// It orders registrations without reference to any worker's clock:
+	// [WorkerStore.RegisterWorker] ignores one the broker stamped earlier than
+	// the stored one.
+	RegistrationBrokerAt *time.Time
+	CPUCount             int
+	RAMMb                int
+	GPUInfo              GPUInfo
+	Tags                 map[string]string // arbitrary capability tags
 	// ExprLimits holds the worker's self-reported OpenJD EXPR evaluation caps.
 	// Zero-valued for workers registered before this field existed; see
 	// [WorkerExprLimits] for what the server does with them.
@@ -161,6 +167,16 @@ type Worker struct {
 	LastHeartbeatAt *time.Time
 	RegisteredAt    time.Time
 	UpdatedAt       time.Time
+}
+
+// StaleRegistration reports whether incoming, a registration for the worker
+// stored describes, is a late redelivery of one the broker delivered before:
+// both carry a broker timestamp and incoming's is strictly the earlier. It is
+// the one statement of the rule [WorkerStore.RegisterWorker] applies, shared by
+// the SQL stores and the fake.
+func StaleRegistration(stored, incoming Worker) bool {
+	return stored.RegistrationBrokerAt != nil && incoming.RegistrationBrokerAt != nil &&
+		incoming.RegistrationBrokerAt.Before(*stored.RegistrationBrokerAt)
 }
 
 // EffectiveStatus is the status the API and the worker gauge report:
@@ -215,6 +231,14 @@ type WorkerStore interface {
 	// reclaims them (attempts closed as failed with
 	// [FailureReasonWorkerRestarted], claims released, tasks ready) and
 	// returned as they are after the reset.
+	//
+	// A registration whose RegistrationBrokerAt is earlier than the stored one
+	// is a late redelivery of a message the broker stamped before the one that
+	// wrote the row, typically from a process since replaced. It writes nothing
+	// and reclaims nothing: it returns the stored worker with
+	// [ErrStaleRegistration]. Equal timestamps are not stale, and a missing
+	// timestamp on either side is never stale. An incoming nil
+	// RegistrationBrokerAt keeps the stored one.
 	RegisterWorker(ctx context.Context, worker Worker) (Worker, []Task, error)
 
 	// GetWorker returns the worker with the given ID, or [ErrNotFound].
@@ -233,8 +257,11 @@ type WorkerStore interface {
 	SetWorkerDisabled(ctx context.Context, id string, disabled bool) (Worker, error)
 
 	// UpdateWorkerHeartbeat records the most recent heartbeat time for the
-	// given worker. This is a hot path; implementations should use a single
-	// UPDATE statement with no unnecessary reads.
+	// given worker, never moving it backwards: a heartbeat older than the
+	// recorded one (a late redelivery) is accepted and ignored, not an error.
+	// This is a hot path; implementations should use a single UPDATE
+	// statement, reading only to tell an unknown worker from an ignored
+	// heartbeat. Returns [ErrNotFound] if the worker does not exist.
 	UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Time) error
 
 	// ListStaleWorkers returns workers whose last heartbeat is older than

@@ -196,7 +196,7 @@ var (
 // They are written fixed-width from their first row, so 00037 has nothing to
 // rewrite in them.
 var addedAfter00037 = []string{
-	"broker_state.recorded_at", "server_members.started_at", "workers.instance_started_at",
+	"broker_state.recorded_at", "server_members.started_at", "workers.registration_broker_at",
 }
 
 // TestMigration00037_CoversEveryTimestampColumn fails, by name, on a timestamp

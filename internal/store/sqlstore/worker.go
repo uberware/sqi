@@ -15,7 +15,7 @@ import (
 const workerCols = `
 	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
 	os, os_version, arch, version, cpu_count, ram_mb, gpu_info, tags, expr_limits, extensions, status,
-	last_heartbeat_at, registered_at, updated_at, instance_id, disabled`
+	last_heartbeat_at, registered_at, updated_at, instance_id, disabled, registration_broker_at`
 
 // sqlWorkerHasWorkInFlight is true when the worker row's id holds an assigned
 // or running task. It is a fragment for a WHERE clause over workers.
@@ -28,15 +28,16 @@ const sqlWorkerEffectiveStatus = `CASE WHEN disabled THEN 'disabled' ELSE status
 
 const (
 	// ON CONFLICT preserves registered_at so re-registration does not reset it,
-	// and an empty instance_id (a worker that sends none) keeps the stored one.
+	// and an empty instance_id (a worker that sends none) keeps the stored one,
+	// as a NULL registration_broker_at does.
 	// disabled is not in the column list, so a new worker is enabled and a
 	// re-registration never changes the flag.
 	sqlUpsertWorker = `
 INSERT INTO workers (
 	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
 	os, os_version, arch, version, cpu_count, ram_mb, gpu_info, tags, expr_limits, extensions, status,
-	last_heartbeat_at, registered_at, updated_at, instance_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	last_heartbeat_at, registered_at, updated_at, instance_id, registration_broker_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET
 	farm_id           = excluded.farm_id,
 	queue_id          = excluded.queue_id,
@@ -57,7 +58,8 @@ ON CONFLICT (id) DO UPDATE SET
 	status            = excluded.status,
 	last_heartbeat_at = excluded.last_heartbeat_at,
 	updated_at        = excluded.updated_at,
-	instance_id       = CASE WHEN excluded.instance_id = '' THEN workers.instance_id ELSE excluded.instance_id END
+	instance_id       = CASE WHEN excluded.instance_id = '' THEN workers.instance_id ELSE excluded.instance_id END,
+	registration_broker_at = COALESCE(excluded.registration_broker_at, workers.registration_broker_at)
 RETURNING ` + workerCols
 
 	sqlGetWorker = `SELECT ` + workerCols + ` FROM workers WHERE id = ?`
@@ -66,8 +68,13 @@ RETURNING ` + workerCols
 UPDATE workers SET disabled = ?, updated_at = ? WHERE id = ?
 RETURNING ` + workerCols
 
+	// sqlUpdateWorkerHeartbeat never moves last_heartbeat_at backwards: a late,
+	// older heartbeat matches no row. The bound time is the last argument.
 	sqlUpdateWorkerHeartbeat = `
-UPDATE workers SET last_heartbeat_at = ?, updated_at = ? WHERE id = ?`
+UPDATE workers SET last_heartbeat_at = ?, updated_at = ?
+WHERE id = ? AND (last_heartbeat_at IS NULL OR last_heartbeat_at < ?)`
+
+	sqlWorkerExists = `SELECT 1 FROM workers WHERE id = ?`
 
 	// sqlListStaleWorkers lists the heartbeat sweep's candidates: online
 	// workers, disabled or not, whose heartbeat is older than the cutoff.
@@ -121,7 +128,7 @@ RETURNING ` + workerCols
 
 func scanWorker(row scanner) (store.Worker, error) {
 	var w store.Worker
-	var farmID, queueID, lastHeartbeat sql.NullString
+	var farmID, queueID, lastHeartbeat, registrationBroker sql.NullString
 	var gpuJSON, tagsJSON, exprJSON, extJSON, status string
 	var registeredAt, updatedAt string
 	var disabled dbBool
@@ -129,7 +136,7 @@ func scanWorker(row scanner) (store.Worker, error) {
 	if err := row.Scan(
 		&w.ID, &farmID, &queueID, &w.Name, &w.Hostname, &w.IPAddress, &w.ComputeLocation,
 		&w.OS, &w.OSVersion, &w.Arch, &w.Version, &w.CPUCount, &w.RAMMb, &gpuJSON, &tagsJSON, &exprJSON, &extJSON, &status,
-		&lastHeartbeat, &registeredAt, &updatedAt, &w.InstanceID, &disabled,
+		&lastHeartbeat, &registeredAt, &updatedAt, &w.InstanceID, &disabled, &registrationBroker,
 	); err != nil {
 		return store.Worker{}, err
 	}
@@ -138,6 +145,7 @@ func scanWorker(row scanner) (store.Worker, error) {
 	w.QueueID = queueID.String
 	w.Status = store.WorkerStatus(status)
 	w.LastHeartbeatAt = nullTextToTime(lastHeartbeat)
+	w.RegistrationBrokerAt = nullTextToTime(registrationBroker)
 	w.RegisteredAt = mustTime(registeredAt)
 	w.UpdatedAt = mustTime(updatedAt)
 	w.Disabled = bool(disabled)
@@ -222,20 +230,26 @@ func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.
 	if err != nil {
 		return store.Worker{}, nil, err
 	}
-	args = append(args, worker.InstanceID)
+	args = append(args, worker.InstanceID, nullTimeToText(worker.RegistrationBrokerAt))
 
 	type result struct {
 		worker    store.Worker
 		reclaimed []store.Task
+		stale     bool
 	}
 	r, err := inTxValue(ctx, s, "register worker", func(tx *dbTx) (result, txOutcome, error) {
 		if err := tx.lockAnchors(ctx, workerAnchor(worker.ID)); err != nil {
 			return result{}, txRollback, err
 		}
-		var prior string
-		err := tx.QueryRowContext(ctx, `SELECT instance_id FROM workers WHERE id = ?`, worker.ID).Scan(&prior)
+		stored, err := scanWorker(tx.QueryRowContext(ctx, sqlGetWorker, worker.ID))
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return result{}, txRollback, fmt.Errorf("store: read worker %s instance: %w", worker.ID, mapErr(err))
+			return result{}, txRollback, fmt.Errorf("store: read worker %s: %w", worker.ID, mapErr(err))
+		}
+		prior := stored.InstanceID
+		if err == nil && store.StaleRegistration(stored, worker) {
+			// Nothing was written; committing runs the fence check, so a deposed
+			// leader gets ErrFenced here as it does for any other write.
+			return result{worker: stored, stale: true}, txCommit, nil
 		}
 		upsert := tx.Stmt(ctx, s.stmtUpsertWorker)
 		defer upsert.Close()
@@ -251,6 +265,11 @@ func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.
 		}
 		return out, txCommit, nil
 	})
+	if err == nil && r.stale {
+		err = fmt.Errorf("store: register worker %s stamped %s, recorded %s: %w", worker.ID,
+			worker.RegistrationBrokerAt.Format(time.RFC3339Nano), r.worker.RegistrationBrokerAt.Format(time.RFC3339Nano),
+			store.ErrStaleRegistration)
+	}
 	return r.worker, r.reclaimed, err
 }
 
@@ -355,12 +374,34 @@ func (s *Store) SetWorkerDisabled(ctx context.Context, id string, disabled bool)
 
 // UpdateWorkerHeartbeat implements [store.WorkerStore].
 func (s *Store) UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Time) error {
-	now := TimeText(time.Now().UTC())
-	res, err := s.execStmt(ctx, "update worker heartbeat", s.stmtUpdateWorkerHeartbeat, TimeText(at), now, id)
-	if err != nil {
-		return mapErr(err)
+	now, beat := TimeText(time.Now().UTC()), TimeText(at)
+	var unknown bool
+	err := s.write(ctx, "update worker heartbeat", func(w writer) error {
+		unknown = false
+		res, err := w.Stmt(ctx, s.stmtUpdateWorkerHeartbeat).ExecContext(ctx, beat, now, id, beat)
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err != nil || n > 0 {
+			return err
+		}
+		// Nothing matched: an unknown worker, or a heartbeat no newer than the
+		// recorded one, which is ignored. Not-found is carried out rather than
+		// returned, so a leadership context's fence check still runs and a
+		// deposed leader gets ErrFenced for it.
+		var one int
+		switch err := w.QueryRowContext(ctx, sqlWorkerExists, id).Scan(&one); {
+		case errors.Is(err, sql.ErrNoRows):
+			unknown = true
+			return nil
+		default:
+			return err
+		}
+	})
+	if err == nil && unknown {
+		return store.ErrNotFound
 	}
-	return checkRowsAffected(res)
+	return mapErr(err)
 }
 
 // ListStaleWorkers implements [store.WorkerStore].

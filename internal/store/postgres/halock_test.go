@@ -174,9 +174,26 @@ func migrateTo(t *testing.T, dsn string, v int64) {
 	}
 }
 
+// workerBrokerColumn is the column migration 00041 adds and every store
+// statement over workers names. Open prepares those statements, so a database
+// one migration behind can only be opened by a store if the column is already
+// there: behindByOne gives a test that state, without migration 00041's other
+// changes.
+const workerBrokerColumn = "registration_broker_at"
+
+// behindByOne brings an empty database to version 40, with workerBrokerColumn
+// added by hand so that a store can be opened over it.
+func behindByOne(t *testing.T, dsn string) {
+	t.Helper()
+	migrateTo(t, dsn, 40)
+	if _, err := openRaw(t, dsn).ExecContext(t.Context(), `ALTER TABLE workers ADD COLUMN `+workerBrokerColumn+` ts`); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestHALock_PendingMigrationWithOtherServerRefused(t *testing.T) {
 	dsn := storetest.PostgresEmptyDSN(t)
-	migrateTo(t, dsn, 40)
+	behindByOne(t, dsn)
 
 	// The first server joins a database that is behind: it takes the lock
 	// exclusive, so it is alone, and leaves the schema be (AutoMigrate off).
@@ -202,6 +219,9 @@ func TestHALock_PendingMigrationWithOtherServerRefused(t *testing.T) {
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := openRaw(t, dsn).ExecContext(t.Context(), `ALTER TABLE workers DROP COLUMN `+workerBrokerColumn); err != nil {
+		t.Fatal(err)
+	}
 	openStore(t, dsn, haServerOpts())
 	if v, err := postgres.SchemaVersionDSN(t.Context(), dsn); err != nil || v != 41 {
 		t.Fatalf("SchemaVersion = %d, %v; want 41", v, err)
@@ -212,7 +232,7 @@ func TestHALock_PendingMigrationWithOtherServerRefused(t *testing.T) {
 // is not this refusal's business (the store behaves as a non-HA one does).
 func TestHALock_BehindDatabaseWithoutAutoMigrateJoins(t *testing.T) {
 	dsn := storetest.PostgresEmptyDSN(t)
-	migrateTo(t, dsn, 40)
+	behindByOne(t, dsn)
 	opts := haServerOpts()
 	opts.AutoMigrate = false
 	openStore(t, dsn, opts)

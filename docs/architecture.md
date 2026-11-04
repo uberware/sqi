@@ -1265,6 +1265,25 @@ Upgrading from v0.3.0 changes the following behaviour.
   reclaimed by that registration while the process runs it). The refusal is
   held for `leaseRefusalDelay` (1 s), about as long as a registration takes to
   land.
+- A late or redelivered registration can no longer roll a worker back to an
+  earlier process. After a scheduler failover JetStream can redeliver an older
+  registration after a newer one; applied, it would restore the earlier
+  `instance_id`, and the live process's next registration would read that as a
+  restart and reclaim its tasks. Registrations are therefore ordered by the
+  broker's own stream timestamp for the message, recorded on the worker row as
+  `registration_broker_at`; nothing is added to the worker protocol and no
+  worker clock is consulted, so a worker with a wrong clock is ordered like any
+  other. `RegisterWorker` writes nothing and reclaims nothing when both the
+  incoming and the stored timestamps are set and the incoming one is strictly
+  earlier (`store.ErrStaleRegistration`); the scheduler acks the message
+  (redelivery cannot make it current) and logs
+  `scheduler: stale registration — discarding` at Info, naming both
+  timestamps. A late redelivery keeps its original timestamp, so it is still
+  detected, while a restarted worker's fresh registration carries a current
+  one. A message whose broker metadata cannot be read is applied unordered, as
+  before. A late heartbeat is handled separately:
+  `UpdateWorkerHeartbeat` never moves `last_heartbeat_at` backwards, so an
+  older one is accepted and ignored.
 - A late or redelivered deregister can no longer take a restarted worker
   offline. The deregister carries the same optional `instance_id`, and
   `OfflineWorker` writes nothing when it and the stored one are both non-empty
@@ -1460,13 +1479,6 @@ The store does not close these yet.
   step is terminal) reaches `FinalizeJob` and repairs it. A user's job cancel
   does not leave this shape: `CancelJobExecution` cancels the job row in the
   same transaction that cancels its tasks and finalizes its steps.
-- **A stale redelivered registration can reclaim a live process's tasks.** A
-  registration message that is Nak'd and redelivered after the worker has
-  restarted again can flip the stored `instance_id` back to the earlier
-  process's value; the next registration, from the live process, then reads
-  that as a restart and reclaims the live process's tasks. Closing it needs
-  ordering metadata on the registration (a sequence or a timestamp), which the
-  message does not carry.
 - **A refused process re-requests about once a second per queue.** The refusal
   of an unregistered process's lease request is held for `leaseRefusalDelay`
   (1 s) precisely so the worker's lease loop does not spin, but the loop does
@@ -1690,7 +1702,7 @@ for expiry, but workers keep working.
 | `task.status.<worker_id>.<job_id>` | JetStream (`SQI_TASK`, MaxAge 24 h) | worker → server | Terminal and intermediate status updates |
 | `task.logs.<worker_id>.<task_id>` | JetStream (`SQI_LOGS`, MaxAge 96 h) | worker → server | Log chunk delivery |
 | `task.cancel.<task_id>` | JetStream (`SQI_CANCEL`, MaxAge 5 min) | server → worker | Cancellation signal; the worker holding the task interrupts the process |
-| `worker.register.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Registration at startup and on reconnect; carries the worker process's `instance_id` (a changed one reclaims the previous process's tasks) |
+| `worker.register.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Registration at startup and on reconnect; carries the worker process's `instance_id` (a changed one reclaims the previous process's tasks) (the broker's timestamp for it orders registrations: one stamped earlier than the recorded one is discarded) |
 | `worker.heartbeat.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Liveness heartbeat |
 | `worker.deregister.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Graceful departure; marks the worker offline without waiting for heartbeat timeout (a disabled worker stays disabled) and reclaims its tasks. Ignored when its `instance_id` names a process a later registration replaced |
 | `worker.diag.<workerID>` | Core NATS (best-effort) | worker → server | Diagnostic log records |

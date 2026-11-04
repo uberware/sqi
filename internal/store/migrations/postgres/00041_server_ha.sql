@@ -18,9 +18,10 @@
 -- database: who it is, what it runs, when it last checked in, and when it last
 -- saw the message broker (NULL until it has).
 --
--- workers.instance_started_at is the start time of the worker process behind a
--- registration, so a registration older than the stored one can be recognised
--- and ignored. NULL for a worker that does not send it.
+-- workers.registration_broker_at is the message broker's stream timestamp of the
+-- registration that wrote the row, so a registration the broker stamped earlier
+-- than the stored one (a late redelivery) can be recognised and ignored. NULL
+-- until a registration carrying one is recorded.
 CREATE TABLE server_lease (
     id         BIGINT NOT NULL PRIMARY KEY CHECK (id = 1),
     holder     TEXT COLLATE "C",
@@ -49,10 +50,10 @@ CREATE TABLE server_members (
     broker_ok_us       BIGINT
 );
 
-ALTER TABLE workers ADD COLUMN instance_started_at ts;
+ALTER TABLE workers ADD COLUMN registration_broker_at ts;
 
 -- +goose Down
-ALTER TABLE workers DROP COLUMN instance_started_at;
+ALTER TABLE workers DROP COLUMN registration_broker_at;
 DROP TABLE server_members;
 DROP TABLE server_epoch;
 DROP TABLE server_lease;

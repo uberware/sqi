@@ -969,8 +969,25 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 		Status:          store.WorkerStatusOnline,
 		LastHeartbeatAt: &now,
 	}
+	w.RegistrationBrokerAt = s.registrationBrokerAt(ctx, msg, m.WorkerID)
 
 	stored, reclaimed, err := s.store.RegisterWorker(ctx, w)
+	if errors.Is(err, store.ErrStaleRegistration) {
+		// A registration the broker stamped before the one already recorded: a
+		// late redelivery (JetStream can return an older message after a
+		// failover). Redelivery cannot make it current, so ack it rather than
+		// Nak.
+		s.logger.InfoContext(
+			ctx, "scheduler: stale registration — discarding",
+			slog.String("worker_id", m.WorkerID),
+			slog.String("instance_id", m.InstanceID),
+			slog.Any("broker_at", w.RegistrationBrokerAt),
+			slog.String("stored_instance_id", stored.InstanceID),
+			slog.Any("stored_broker_at", stored.RegistrationBrokerAt),
+		)
+		s.ackMsg(ctx, msg)
+		return
+	}
 	if err != nil {
 		s.logger.ErrorContext(
 			ctx, "scheduler: persist worker registration failed",
@@ -1017,6 +1034,29 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 	})
 	s.refreshWorkerGauge(ctx)
 	s.ackMsg(ctx, msg)
+}
+
+// registrationBrokerAt returns the broker's stream timestamp of a registration
+// message, which orders registrations without regard to any worker's clock: a
+// late redelivery keeps its original stamp, a restarted worker's fresh
+// registration carries a current one. Nil when the message has no usable
+// metadata, in which case the registration is applied as it was before
+// ordering existed.
+func (s *Scheduler) registrationBrokerAt(ctx context.Context, msg jetstream.Msg, workerID string) *time.Time {
+	meta, err := msg.Metadata()
+	if err != nil {
+		s.logger.DebugContext(
+			ctx, "scheduler: worker.register message has no broker metadata; applying it unordered",
+			slog.String("worker_id", workerID),
+			slog.Any("error", err),
+		)
+		return nil
+	}
+	if meta.Timestamp.IsZero() {
+		return nil
+	}
+	at := meta.Timestamp.UTC()
+	return &at
 }
 
 // warnOnExprCapShortfall logs, at most once per distinct shortfall per worker,

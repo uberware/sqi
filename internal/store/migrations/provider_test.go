@@ -71,7 +71,7 @@ func TestMigration00041_DownRemovesTheHATablesAndColumn(t *testing.T) {
 		return n
 	}
 	const tables = `SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN ('server_lease', 'server_epoch', 'server_members')`
-	const column = `SELECT count(*) FROM pragma_table_info('workers') WHERE name = 'instance_started_at'`
+	const column = `SELECT count(*) FROM pragma_table_info('workers') WHERE name = 'registration_broker_at'`
 	if count(tables) != 3 || count(column) != 1 {
 		t.Fatalf("after Up: %d of 3 tables, %d of 1 column", count(tables), count(column))
 	}

@@ -36,6 +36,241 @@ func TestParity_UpdateWorkerHeartbeat(t *testing.T) {
 	}
 }
 
+// registerStamped registers the fixture worker as instance, the broker having stamped
+// the message at stamp (nil is a message with no usable metadata).
+func registerStamped(t *testing.T, st store.Store, farmID, instance string, stamp *time.Time) (store.Worker, []store.Task, error) {
+	t.Helper()
+	now := time.Now().UTC()
+	return st.RegisterWorker(t.Context(), store.Worker{
+		ID: fixtureWorkerID, FarmID: farmID, Hostname: "node", Status: store.WorkerStatusOnline,
+		LastHeartbeatAt: &now, InstanceID: instance, RegistrationBrokerAt: stamp,
+	})
+}
+
+func TestParity_RegisterWorker_RegistrationBrokerAtRoundTrip(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			farm := seedGraph(t, st, graphOpts{}).Farm
+			t1, _ := subSecond()
+
+			got, _, err := registerStamped(t, st, farm.ID, "B", &t1)
+			if err != nil || got.RegistrationBrokerAt == nil || !got.RegistrationBrokerAt.Equal(t1) {
+				t.Fatalf("RegisterWorker = (%+v, %v), want RegistrationBrokerAt %v", got, err, t1)
+			}
+			if stored := mustWorker(t, st, fixtureWorkerID); stored.RegistrationBrokerAt == nil || !stored.RegistrationBrokerAt.Equal(t1) {
+				t.Fatalf("GetWorker RegistrationBrokerAt = %v, want %v", stored.RegistrationBrokerAt, t1)
+			}
+
+			// A registration that sends no broker stamp keeps the stored one.
+			if _, _, err := registerStamped(t, st, farm.ID, "", nil); err != nil {
+				t.Fatalf("RegisterWorker (no broker stamp): %v", err)
+			}
+			if stored := mustWorker(t, st, fixtureWorkerID); stored.RegistrationBrokerAt == nil || !stored.RegistrationBrokerAt.Equal(t1) {
+				t.Fatalf("after a registration with no broker stamp: RegistrationBrokerAt = %v, want %v kept", stored.RegistrationBrokerAt, t1)
+			}
+		})
+	}
+}
+
+// TestParity_RegisterWorker_EarlierBrokerStampIgnored pins that a late
+// redelivery of an earlier-stamped registration neither rolls the stored
+// instance back nor reclaims the live process's tasks, and that the live
+// process's own next registration still finds nothing to reclaim.
+func TestParity_RegisterWorker_EarlierBrokerStampIgnored(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning},
+				stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusReady}})
+			task := g.Tasks["a"][0]
+			t1, t2 := subSecond()
+
+			// Process A starts, then restarts as B.
+			if _, _, err := registerStamped(t, st, g.Farm.ID, "A", &t1); err != nil {
+				t.Fatalf("register A: %v", err)
+			}
+			if _, _, err := registerStamped(t, st, g.Farm.ID, "B", &t2); err != nil {
+				t.Fatalf("register B: %v", err)
+			}
+			pool := seedPool(t, st, 1)
+			leaseClaiming(t, st, task.ID, true, pool)
+			before := mustWorker(t, st, fixtureWorkerID)
+
+			// A's registration is redelivered late.
+			got, reclaimed, err := registerStamped(t, st, g.Farm.ID, "A", &t1)
+			if !errors.Is(err, store.ErrStaleRegistration) {
+				t.Fatalf("stale register err = %v, want ErrStaleRegistration", err)
+			}
+			if len(reclaimed) != 0 {
+				t.Fatalf("stale register reclaimed %d tasks", len(reclaimed))
+			}
+			if got.InstanceID != "B" || got.RegistrationBrokerAt == nil || !got.RegistrationBrokerAt.Equal(t2) {
+				t.Fatalf("stale register returned instance %q stamped %v, want the stored B stamped %v", got.InstanceID, got.RegistrationBrokerAt, t2)
+			}
+
+			after := mustWorker(t, st, fixtureWorkerID)
+			if after.InstanceID != "B" || after.RegistrationBrokerAt == nil || !after.RegistrationBrokerAt.Equal(t2) {
+				t.Fatalf("stored instance = %q stamped %v, want B stamped %v", after.InstanceID, after.RegistrationBrokerAt, t2)
+			}
+			if !after.UpdatedAt.Equal(before.UpdatedAt) {
+				t.Fatalf("a stale registration wrote the row: UpdatedAt %v -> %v", before.UpdatedAt, after.UpdatedAt)
+			}
+			if got := mustTask(t, st, task.ID); got.Status != store.TaskStatusRunning || got.AssignedWorkerID != fixtureWorkerID {
+				t.Fatalf("task = %q on %q, want still running on %q", got.Status, got.AssignedWorkerID, fixtureWorkerID)
+			}
+
+			// B's next (reconnect) registration reclaims nothing: the roll-back
+			// that would have made it look like a restart never happened.
+			if _, r, err := registerStamped(t, st, g.Farm.ID, "B", &t2); err != nil || len(r) != 0 {
+				t.Fatalf("B re-register = (%d reclaimed, %v), want (0, nil)", len(r), err)
+			}
+			if got := mustTask(t, st, task.ID).Status; got != store.TaskStatusRunning {
+				t.Fatalf("task = %q after B's re-register, want running", got)
+			}
+		})
+	}
+}
+
+// TestParity_RegisterWorker_LaterBrokerStampRestarts pins that a registration
+// whose broker stamp is newer than the stored one is a restart as before.
+func TestParity_RegisterWorker_LaterBrokerStampRestarts(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning},
+				stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusReady}})
+			task := g.Tasks["a"][0]
+			t1, t2 := subSecond()
+
+			if _, _, err := registerStamped(t, st, g.Farm.ID, "A", &t1); err != nil {
+				t.Fatalf("register A: %v", err)
+			}
+			leaseClaiming(t, st, task.ID, true)
+			_, r, err := registerStamped(t, st, g.Farm.ID, "B", &t2)
+			if err != nil || len(r) != 1 || r[0].ID != task.ID {
+				t.Fatalf("newer register = (%+v, %v), want the task reclaimed", r, err)
+			}
+			if w := mustWorker(t, st, fixtureWorkerID); w.InstanceID != "B" || w.RegistrationBrokerAt == nil || !w.RegistrationBrokerAt.Equal(t2) {
+				t.Fatalf("stored instance = %q stamped %v, want B stamped %v", w.InstanceID, w.RegistrationBrokerAt, t2)
+			}
+		})
+	}
+}
+
+// TestParity_RegisterWorker_SameBrokerStampIsNotStale pins that equal broker stamps
+// (a reconnect delivered twice) are accepted: only strictly earlier is stale.
+func TestParity_RegisterWorker_SameBrokerStampIsNotStale(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			farm := seedGraph(t, st, graphOpts{}).Farm
+			t1, _ := subSecond()
+			for i := range 2 {
+				if _, _, err := registerStamped(t, st, farm.ID, "A", &t1); err != nil {
+					t.Fatalf("register #%d: %v", i+1, err)
+				}
+			}
+		})
+	}
+}
+
+// TestParity_RegisterWorker_NoBrokerStampBehavesAsBefore pins that a registration
+// with no broker stamp, on either side, is decided by instance ID alone.
+func TestParity_RegisterWorker_NoBrokerStampBehavesAsBefore(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning},
+				stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusReady}})
+			task := g.Tasks["a"][0]
+			t1, _ := subSecond()
+
+			// Neither side has a broker stamp: a changed instance reclaims.
+			if _, _, err := registerStamped(t, st, g.Farm.ID, "A", nil); err != nil {
+				t.Fatalf("register A: %v", err)
+			}
+			leaseClaiming(t, st, task.ID, true)
+			if _, r, err := registerStamped(t, st, g.Farm.ID, "B", nil); err != nil || len(r) != 1 {
+				t.Fatalf("B (no broker stamps) = (%d reclaimed, %v), want (1, nil)", len(r), err)
+			}
+
+			// The stored side has none, the incoming one does: not stale.
+			if _, _, err := registerStamped(t, st, g.Farm.ID, "C", &t1); err != nil {
+				t.Fatalf("C (stored has no broker stamp): %v", err)
+			}
+			// The incoming side has none, the stored one does: not stale, and a
+			// changed instance still reclaims.
+			leaseClaiming(t, st, task.ID, true)
+			if _, r, err := registerStamped(t, st, g.Farm.ID, "D", nil); err != nil || len(r) != 1 {
+				t.Fatalf("D (incoming has no broker stamp) = (%d reclaimed, %v), want (1, nil)", len(r), err)
+			}
+		})
+	}
+}
+
+func TestParity_UpdateWorkerHeartbeat_NeverMovesBackwards(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			t1, t2 := subSecond()
+			farm := seedGraph(t, st, graphOpts{}).Farm
+			w := seedWorker(t, st, farm.ID, store.WorkerStatusOnline, t1.Add(-time.Hour))
+
+			if err := st.UpdateWorkerHeartbeat(ctx, w.ID, t2); err != nil {
+				t.Fatalf("UpdateWorkerHeartbeat(t2): %v", err)
+			}
+			updated := mustWorker(t, st, w.ID)
+			// A late, older heartbeat is accepted and ignored.
+			if err := st.UpdateWorkerHeartbeat(ctx, w.ID, t1); err != nil {
+				t.Fatalf("UpdateWorkerHeartbeat(t1, older): %v", err)
+			}
+			got := mustWorker(t, st, w.ID)
+			if got.LastHeartbeatAt == nil || !got.LastHeartbeatAt.Equal(t2) {
+				t.Fatalf("LastHeartbeatAt = %v, want %v kept", got.LastHeartbeatAt, t2)
+			}
+			if !got.UpdatedAt.Equal(updated.UpdatedAt) {
+				t.Fatalf("UpdatedAt moved to %v on an ignored heartbeat, want %v", got.UpdatedAt, updated.UpdatedAt)
+			}
+			// The same instant again, and then a newer one.
+			if err := st.UpdateWorkerHeartbeat(ctx, w.ID, t2); err != nil {
+				t.Fatalf("UpdateWorkerHeartbeat(t2, equal): %v", err)
+			}
+			t3 := t2.Add(time.Second)
+			if err := st.UpdateWorkerHeartbeat(ctx, w.ID, t3); err != nil {
+				t.Fatalf("UpdateWorkerHeartbeat(t3): %v", err)
+			}
+			if got := mustWorker(t, st, w.ID); got.LastHeartbeatAt == nil || !got.LastHeartbeatAt.Equal(t3) {
+				t.Fatalf("LastHeartbeatAt = %v, want %v", got.LastHeartbeatAt, t3)
+			}
+		})
+	}
+}
+
+// TestParity_UpdateWorkerHeartbeat_NeverHeartbeatedWorker pins that a worker
+// with no heartbeat on record takes the first one.
+func TestParity_UpdateWorkerHeartbeat_NeverHeartbeatedWorker(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			t1, _ := subSecond()
+			farm := seedGraph(t, st, graphOpts{}).Farm
+			registerAt(t, st, farm.ID, "w-fresh", store.WorkerStatusOnline, nil)
+			if err := st.UpdateWorkerHeartbeat(t.Context(), "w-fresh", t1); err != nil {
+				t.Fatalf("UpdateWorkerHeartbeat: %v", err)
+			}
+			if got := mustWorker(t, st, "w-fresh"); got.LastHeartbeatAt == nil || !got.LastHeartbeatAt.Equal(t1) {
+				t.Fatalf("LastHeartbeatAt = %v, want %v", got.LastHeartbeatAt, t1)
+			}
+		})
+	}
+}
+
+func TestParity_UpdateWorkerHeartbeat_UnknownWorkerNotFound(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			t1, _ := subSecond()
+			if err := st.UpdateWorkerHeartbeat(t.Context(), "ghost", t1); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("unknown worker: err = %v, want ErrNotFound", err)
+			}
+		})
+	}
+}
+
 func mkCredential(workerID string) store.WorkerCredential {
 	return store.WorkerCredential{
 		ID: uuid.NewString(), WorkerID: workerID, PublicKey: "U" + uuid.NewString(), Name: workerID,
