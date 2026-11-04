@@ -210,6 +210,7 @@ var expectedRoutes = []routeExpectation{
 
 	// diagnostics.read
 	{method: http.MethodGet, pattern: "/api/v1/diagnostics/logs", perm: policy.DiagnosticsRead},
+	{method: http.MethodGet, pattern: "/api/v1/servers", perm: policy.DiagnosticsRead},
 }
 
 // routeKey identifies a route by method and chi pattern, matching what

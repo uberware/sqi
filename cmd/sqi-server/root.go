@@ -63,6 +63,7 @@ func init() {
 		restoreCmd,
 		storeCmd,
 		workerCmd,
+		haCmd,
 		tlsCmd,
 		natsCmd,
 	)

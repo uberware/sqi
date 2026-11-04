@@ -149,7 +149,7 @@ exception of `POST /api/v1/workers/enroll` noted above (`/healthz`,
 | `POST`/`PUT`/`DELETE` on farms, queues, storage-locations, compute-locations, usage-pools | `infra.manage` |
 | `GET /products`, `GET /products/{name}`, `GET /products/{name}/parameters`, `GET /presets`, `GET /presets/{name}` | `products.read` |
 | `POST /products`, `PUT /products/{name}`, `DELETE /products/{name}`, `POST /presets/{name}/install` | `products.manage` |
-| `GET /diagnostics/logs`, WebSocket subject `diagnostics` | `diagnostics.read` |
+| `GET /diagnostics/logs`, `GET /servers`, WebSocket subject `diagnostics` | `diagnostics.read` |
 | `GET /users`, `GET /users/{id}` | `users.read` |
 | `POST /users`, `PATCH /users/{id}`, `PUT /users/{id}/password`, `DELETE /users/{id}` | `users.manage` |
 | `POST/GET /api-keys`, `DELETE /api-keys/{id}` | `apikeys.self` |

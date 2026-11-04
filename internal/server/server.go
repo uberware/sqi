@@ -796,6 +796,7 @@ func (s *Server) apiDeps() api.Deps {
 		Scheduler:     s.sched,
 		Hub:           s.wsHub,
 		Version:       version.Get(),
+		Servers:       s.serversConfig(),
 		WorkerRevoker: s,
 	}
 	// Only expose the diagnostics reader when diagnostics are enabled. Leaving

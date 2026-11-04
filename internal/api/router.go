@@ -175,6 +175,11 @@ type Deps struct {
 	// endpoints respond 503.
 	PresetLib PresetLibrary
 
+	// Servers describes this server and its high-availability group for
+	// GET /api/v1/servers. The zero value is acceptable: the endpoint then
+	// reports one server with no identity, as a farm without HA does.
+	Servers ServersConfig
+
 	// Version is the server build metadata reported by GET /api/v1/version.
 	// The zero value is acceptable (fields default to empty strings).
 	Version version.Info
@@ -459,6 +464,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	presets := newPresetHandler(deps.PresetLib, deps.Products, deps.Store, logger,
 		cfg.ExprLimits, cfg.ExprSubmissionDeadline)
 	diagnostics := newDiagnosticsHandler(deps.DiagReader, logger)
+	servers := newServersHandler(deps.Store, deps.Servers, logger)
 	versionH := newVersionHandler(deps.Version)
 	authH := newAuthHandler(authHandlerDeps{
 		Store:        deps.Store,
@@ -748,6 +754,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 			rest.Group(func(g chi.Router) {
 				g.Use(az.require(policy.DiagnosticsRead))
 				g.Get("/diagnostics/logs", diagnostics.getDiagnosticsLogs)
+				g.Get("/servers", servers.listServers)
 			})
 		})
 	})
