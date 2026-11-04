@@ -1026,6 +1026,29 @@ jobs:
             TestPostgres_RequireEmptyDatabaseSeesTablesTheRoleCannotAccess
             TestPostgres_ArchiveSchemaVersionReportsToolProblemsAsSuch
             TestPostgres_ReadsAMixedCaseSchema
+            TestClockMicros_IsDatabaseNowInMicros
+            TestClockMicros_AdvancesWithinATransaction
+            TestSeedRows_LeaseAndEpochStartAtZero
+            TestServerHA_SingletonTablesRefuseASecondRow
+            TestLeaseOps_UseDedicatedPool
+            TestLeadership_WorksWithoutAnHAPool
+            TestLeadership_ConcurrentAcquirersElectOne
+            TestOpen_HAClosesTheLeasePool
+            TestParity_GetLeadership_Fresh/postgres
+            TestParity_AcquireLeadership_OnEmpty/postgres
+            TestParity_AcquireLeadership_RefusedWhileHeld/postgres
+            TestParity_AcquireLeadership_AfterExpiryBumpsEpoch/postgres
+            TestParity_AcquireLeadership_NonPositiveTTLIsRefused/postgres
+            TestParity_RenewLeadership_ExtendsTheLease/postgres
+            TestParity_RenewLeadership_RefusedForAnyoneElse/postgres
+            TestParity_RenewLeadership_StaleEpochFails/postgres
+            TestParity_RenewLeadership_LapsedButUntakenCanBeRenewed/postgres
+            TestParity_ReleaseThenAcquireBumpsEpoch/postgres
+            TestParity_ReleaseByNonHolderIsNoop/postgres
+            TestParity_ServerMembers_UpsertListDelete/postgres
+            TestParity_ServerMembers_BrokerStampIsKept/postgres
+            TestParity_ServerMembers_ListIsOrderedByNameThenID/postgres
+            TestParity_ListServerMembers_EmptyStillReportsTheClock/postgres
             TestMigration00038_DedupesLogChunksOnPostgreSQL
             TestLockDatabase_ExcludesAServerAndIsReleasable
             TestParity_ListOpenAttempts/postgres
@@ -1040,6 +1063,8 @@ jobs:
             TestStoreCopy_CopiesEveryRowVerbatim
             TestStoreCopy_NeverWritesASourceWithAPendingWAL
             TestStoreCopy_RefusesANonEmptyTarget
+            TestStoreCopy_RefusesATargetWhoseSeedRowsWereUsed
+            TestStoreCopy_CopiesIntoAMigratedTargetHoldingOnlySeedRows
             TestStoreCopy_RefusesASourceBehindTheBinary
             TestStoreCopy_RefusesASourceAheadOfTheBinary
             TestStoreCopy_RefusesATargetAtAnotherVersion

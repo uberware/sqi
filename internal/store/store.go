@@ -64,6 +64,7 @@ type Store interface {
 	APIKeyStore
 	WorkerCredentialStore
 	BrokerStateStore
+	LeadershipStore
 	io.Closer
 }
 

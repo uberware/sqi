@@ -36,16 +36,23 @@ const maxTxAttempts = 5
 // A store built [WithForcedRetry] runs every fn once more, first, and rolls
 // that run back, so the tests exercise the re-run path on every operation.
 func (s *Store) inTx(ctx context.Context, op string, fn func(tx *dbTx) (txOutcome, error)) error {
+	return s.inTxOn(ctx, s.w, op, fn)
+}
+
+// inTxOn is [Store.inTx] on pool p, which must be one of the store's own
+// (the write pool, or the lease pool [WithLeasePool] sets), so the retry
+// counter and diagnostics stay the store's.
+func (s *Store) inTxOn(ctx context.Context, p *dbPool, op string, fn func(tx *dbTx) (txOutcome, error)) error {
 	if s.forceRetry {
 		// The rehearsal's outcome is discarded: its writes are rolled back and
 		// its error ignored, exactly as a run the database aborted would be.
-		_ = s.runTx(ctx, op, func(tx *dbTx) (txOutcome, error) { //nolint:errcheck // a rehearsal; see above
+		_ = s.runTx(ctx, p, op, func(tx *dbTx) (txOutcome, error) { //nolint:errcheck // a rehearsal; see above
 			_, err := fn(tx)
 			return txRollback, err
 		})
 	}
 	for attempt := 1; ; attempt++ {
-		err := s.runTx(ctx, op, fn)
+		err := s.runTx(ctx, p, op, fn)
 		if err == nil || attempt == maxTxAttempts || errClass(classifyErr(s.d, err)) != ErrClassRetry {
 			return err
 		}
@@ -78,8 +85,8 @@ func inTxValue[T any](ctx context.Context, s *Store, op string, fn func(tx *dbTx
 	return out, nil
 }
 
-func (s *Store) runTx(ctx context.Context, op string, fn func(tx *dbTx) (txOutcome, error)) error {
-	tx, err := s.w.db.BeginTx(ctx, nil)
+func (s *Store) runTx(ctx context.Context, p *dbPool, op string, fn func(tx *dbTx) (txOutcome, error)) error {
+	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("store: begin %s: %w", op, mapErr(classifyErr(s.d, err)))
 	}

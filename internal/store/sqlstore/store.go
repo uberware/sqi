@@ -37,7 +37,12 @@ type Store struct {
 	w *dbPool
 	// r is the read pool, so a SELECT does not queue behind a long write. Its
 	// raw pool may alias w's (an in-memory SQLite database has only one pool).
-	r     *dbPool
+	r *dbPool
+	// lease is the pool the leadership methods use, so a lease renewal is not
+	// queued behind other writes; nil means they share the write pool
+	// ([WithLeasePool]).
+	lease *dbPool
+
 	stmts []*dbStmt // all prepared statements; closed by Close
 
 	// retries counts transaction re-runs after an ErrClassRetry error.
@@ -204,6 +209,14 @@ func WithTaskInsertBatch(rows int) Option {
 // (32766) refuse a statement with more parameters than their limit.
 const maxTaskInsertBatch = 2000
 
+// WithLeasePool gives the leadership methods (the lease and the server
+// membership) a pool of their own, which the store owns and Close closes. A
+// lease renewal then waits for no other write, however many hold the write
+// pool's connections. Without it they share the write pool.
+func WithLeasePool(db *sql.DB) Option {
+	return func(s *Store) { s.lease = newDBPool(db, s.d) }
+}
+
 // WithLogger sets the logger retry diagnostics go to.
 func WithLogger(l *slog.Logger) Option { return func(s *Store) { s.log = l } }
 
@@ -246,6 +259,11 @@ func (s *Store) Close() error {
 	// twice would error.
 	if s.r.db != nil && s.r.db != s.w.db {
 		if err := s.r.db.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if s.lease != nil {
+		if err := s.lease.db.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}

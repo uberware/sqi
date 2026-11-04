@@ -25,6 +25,11 @@ var _ store.Store = (*Store)(nil)
 // queues behind writers holding every write connection.
 const readPoolMaxConns = 4
 
+// leasePoolMaxConns is the lease pool's size when Options.HA is set: one
+// connection for a renewal, one beside it for the membership upsert, so
+// neither waits for the other.
+const leasePoolMaxConns = 2
+
 // Options configures [Open].
 type Options struct {
 	// MaxConns is the write pool's size (store.postgres.max_conns).
@@ -36,6 +41,12 @@ type Options struct {
 	// connection comes out of the write pool, so a server with MaxConns 16 has
 	// 15 for its work, and ServerLock needs MaxConns of at least 2.
 	ServerLock bool
+	// HA opens a pool of its own for the leader lease and the server
+	// membership (see leasePoolMaxConns), outside the write pool, so a lease
+	// renewal never waits behind other writes however many hold its
+	// connections. Set it for a server that runs in a group; without it the
+	// lease methods share the write pool.
+	HA bool
 	// ForceTxRetry rehearses every transaction once (sqlstore.WithForcedRetry).
 	// Tests only.
 	ForceTxRetry bool
@@ -109,9 +120,8 @@ func Open(ctx context.Context, dsn string, opts Options) (*Store, error) {
 	if s.rdb, err = openPool(dsn, readPoolMaxConns); err != nil {
 		return fail(err)
 	}
-	d, sopts := sharedConfig(opts, log)
-	if s.Store, err = sqlstore.New(ctx, db, s.rdb, d, sopts...); err != nil {
-		// New closed both pools itself; only the lock is left to release.
+	if s.Store, err = newSQLStore(ctx, dsn, db, s.rdb, opts, log); err != nil {
+		// New closed every pool itself; only the lock is left to release.
 		s.db, s.rdb = nil, nil
 		return fail(err)
 	}
@@ -154,6 +164,22 @@ func sharedConfig(opts Options, log *slog.Logger) (sqlstore.Dialect, []sqlstore.
 		sopts = append(sopts, sqlstore.WithForcedRetry())
 	}
 	return d, sopts
+}
+
+// newSQLStore builds the shared SQL store over the write and read pools. With
+// opts.HA it also opens the dedicated lease pool, which the store owns from
+// then on: New closes every pool it was given, this one included, when it
+// fails.
+func newSQLStore(ctx context.Context, dsn string, write, read *sql.DB, opts Options, log *slog.Logger) (*sqlstore.Store, error) {
+	d, sopts := sharedConfig(opts, log)
+	if opts.HA {
+		leaseDB, err := openPool(dsn, leasePoolMaxConns)
+		if err != nil {
+			return nil, errors.Join(err, write.Close(), read.Close())
+		}
+		sopts = append(sopts, sqlstore.WithLeasePool(leaseDB))
+	}
+	return sqlstore.New(ctx, write, read, d, sopts...)
 }
 
 // openPool opens a database/sql pool over pgx with READ COMMITTED pinned.
@@ -200,7 +226,7 @@ func (s *Store) Ping(ctx context.Context) error { return s.rdb.PingContext(ctx) 
 func (s *Store) DSNForTest() string { return s.dsn }
 
 // Close releases the server lock, then closes every prepared statement and
-// both pools (sqlstore.Store.Close owns the pools from Open's success on).
+// every pool (sqlstore.Store.Close owns the pools from Open's success on).
 // Safe to call more than once; later calls return nil.
 func (s *Store) Close() error {
 	s.closeMu.Lock()

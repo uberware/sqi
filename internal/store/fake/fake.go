@@ -37,6 +37,7 @@ type Store struct {
 	apiKeys           map[string]store.APIKey
 	workerCredentials map[string]store.WorkerCredential
 	brokerIdentity    string
+	leadership        leadershipState
 	workerJoinTokens  map[string]store.WorkerJoinToken
 }
 
