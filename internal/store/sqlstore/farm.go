@@ -57,10 +57,9 @@ func scanFarm(row scanner) (store.Farm, error) {
 // CreateFarm implements [store.FarmStore].
 func (s *Store) CreateFarm(ctx context.Context, farm store.Farm) (store.Farm, error) {
 	now := TimeText(time.Now().UTC())
-	row := s.stmtInsertFarm.QueryRowContext(ctx,
+	out, err := writeRow(ctx, s, "create farm", scanFarm, s.stmtInsertFarm,
 		farm.ID, farm.Name, farm.Description, farm.MaxConcurrentTasks,
 		nullInt(farm.MaxAttempts), nullInt(farm.RetryDelaySeconds), nullInt(farm.FailureLimit), now, now)
-	out, err := scanFarm(row)
 	return out, mapErr(err)
 }
 
@@ -93,16 +92,15 @@ func (s *Store) ListFarms(ctx context.Context) ([]store.Farm, error) {
 // UpdateFarm implements [store.FarmStore].
 func (s *Store) UpdateFarm(ctx context.Context, farm store.Farm) (store.Farm, error) {
 	now := TimeText(time.Now().UTC())
-	row := s.stmtUpdateFarm.QueryRowContext(ctx,
+	out, err := writeRow(ctx, s, "update farm", scanFarm, s.stmtUpdateFarm,
 		farm.Name, farm.Description, farm.MaxConcurrentTasks,
 		nullInt(farm.MaxAttempts), nullInt(farm.RetryDelaySeconds), nullInt(farm.FailureLimit), now, farm.ID)
-	out, err := scanFarm(row)
 	return out, mapErr(err)
 }
 
 // DeleteFarm implements [store.FarmStore].
 func (s *Store) DeleteFarm(ctx context.Context, id string) error {
-	res, err := s.stmtDeleteFarm.ExecContext(ctx, id)
+	res, err := s.execStmt(ctx, "delete farm", s.stmtDeleteFarm, id)
 	if err != nil {
 		return mapErr(err)
 	}

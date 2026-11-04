@@ -85,6 +85,7 @@ func leaseTTLMicros(ttl time.Duration) (int64, error) {
 
 // AcquireLeadership implements [store.LeadershipStore].
 func (s *Store) AcquireLeadership(ctx context.Context, holder string, ttl time.Duration) (epoch int64, ok bool, err error) {
+	ctx = unfenced(ctx)
 	ttlUS, err := leaseTTLMicros(ttl)
 	if err != nil {
 		return 0, false, err
@@ -120,6 +121,7 @@ func (s *Store) AcquireLeadership(ctx context.Context, holder string, ttl time.D
 
 // RenewLeadership implements [store.LeadershipStore].
 func (s *Store) RenewLeadership(ctx context.Context, holder string, epoch int64, ttl time.Duration) (bool, error) {
+	ctx = unfenced(ctx)
 	ttlUS, err := leaseTTLMicros(ttl)
 	if err != nil {
 		return false, err
@@ -134,6 +136,7 @@ func (s *Store) RenewLeadership(ctx context.Context, holder string, epoch int64,
 
 // ReleaseLeadership implements [store.LeadershipStore].
 func (s *Store) ReleaseLeadership(ctx context.Context, holder string, epoch int64) error {
+	ctx = unfenced(ctx)
 	_, err := s.leasePool().ExecContext(ctx, s.leaseSQL(sqlReleaseLease), holder, epoch)
 	return mapErr(err)
 }
@@ -152,6 +155,7 @@ func (s *Store) GetLeadership(ctx context.Context) (store.Lease, error) {
 
 // UpsertServerMember implements [store.LeadershipStore].
 func (s *Store) UpsertServerMember(ctx context.Context, m store.ServerMember) error {
+	ctx = unfenced(ctx)
 	brokerOK := int64(0)
 	if m.BrokerOK {
 		brokerOK = 1
@@ -202,6 +206,7 @@ func (s *Store) ListServerMembers(ctx context.Context) ([]store.ServerMember, in
 
 // DeleteServerMembersUnseenFor implements [store.LeadershipStore].
 func (s *Store) DeleteServerMembersUnseenFor(ctx context.Context, d time.Duration) (int, error) {
+	ctx = unfenced(ctx)
 	res, err := s.leasePool().ExecContext(ctx, s.leaseSQL(sqlDeleteServerMembersUnseen), d.Microseconds())
 	if err != nil {
 		return 0, mapErr(err)

@@ -348,15 +348,15 @@ func (s *Store) ListWorkers(ctx context.Context, opts store.ListWorkersOptions) 
 
 // SetWorkerDisabled implements [store.WorkerStore].
 func (s *Store) SetWorkerDisabled(ctx context.Context, id string, disabled bool) (store.Worker, error) {
-	row := s.stmtSetWorkerDisabled.QueryRowContext(ctx, disabled, TimeText(time.Now().UTC()), id)
-	out, err := scanWorker(row)
+	out, err := writeRow(ctx, s, "set worker disabled", scanWorker, s.stmtSetWorkerDisabled,
+		disabled, TimeText(time.Now().UTC()), id)
 	return out, mapErr(err)
 }
 
 // UpdateWorkerHeartbeat implements [store.WorkerStore].
 func (s *Store) UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Time) error {
 	now := TimeText(time.Now().UTC())
-	res, err := s.stmtUpdateWorkerHeartbeat.ExecContext(ctx, TimeText(at), now, id)
+	res, err := s.execStmt(ctx, "update worker heartbeat", s.stmtUpdateWorkerHeartbeat, TimeText(at), now, id)
 	if err != nil {
 		return mapErr(err)
 	}
@@ -404,7 +404,7 @@ func (s *Store) CountIdleWorkers(ctx context.Context, farmID string) (int, error
 // [store.ErrNotFound]. A concurrent change between the two statements can only
 // move the answer between those two errors, never delete a row the rule refused.
 func (s *Store) DeleteWorkerIfRemovable(ctx context.Context, id string) error {
-	res, err := s.w.ExecContext(ctx, sqlDeleteWorkerIfRemovable, id)
+	res, err := s.exec(ctx, "delete worker", sqlDeleteWorkerIfRemovable, id)
 	if err != nil {
 		return mapErr(err)
 	}
@@ -418,20 +418,27 @@ func (s *Store) DeleteWorkerIfRemovable(ctx context.Context, id string) error {
 }
 
 // DeleteOfflineWorkersBefore implements [store.WorkerStore].
+// The deleted rows are read inside the write, before a fenced one commits.
 func (s *Store) DeleteOfflineWorkersBefore(ctx context.Context, cutoff time.Time) ([]store.Worker, error) {
-	rows, err := s.stmtDeleteOfflineWorkers.QueryContext(ctx, TimeText(cutoff))
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	defer rows.Close()
-
 	var workers []store.Worker
-	for rows.Next() {
-		w, err := scanWorker(rows)
+	err := s.write(ctx, "delete offline workers", func(w writer) error {
+		workers = nil
+		rows, err := w.Stmt(ctx, s.stmtDeleteOfflineWorkers).QueryContext(ctx, TimeText(cutoff))
 		if err != nil {
-			return nil, err
+			return mapErr(err)
 		}
-		workers = append(workers, w)
+		defer rows.Close()
+		for rows.Next() {
+			worker, err := scanWorker(rows)
+			if err != nil {
+				return err
+			}
+			workers = append(workers, worker)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
 	}
-	return workers, rows.Err()
+	return workers, nil
 }

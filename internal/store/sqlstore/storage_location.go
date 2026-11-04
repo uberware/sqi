@@ -63,9 +63,8 @@ func (s *Store) CreateStorageLocation(ctx context.Context, loc store.StorageLoca
 		return store.StorageLocation{}, err
 	}
 	now := TimeText(time.Now().UTC())
-	row := s.stmtInsertStorageLoc.QueryRowContext(ctx,
+	out, err := writeRow(ctx, s, "create storage location", scanStorageLocation, s.stmtInsertStorageLoc,
 		loc.ID, loc.Name, string(loc.Type), loc.Description, rootsJSON, now, now)
-	out, err := scanStorageLocation(row)
 	return out, mapErr(err)
 }
 
@@ -109,15 +108,14 @@ func (s *Store) UpdateStorageLocation(ctx context.Context, loc store.StorageLoca
 		return store.StorageLocation{}, err
 	}
 	now := TimeText(time.Now().UTC())
-	row := s.stmtUpdateStorageLoc.QueryRowContext(ctx,
+	out, err := writeRow(ctx, s, "update storage location", scanStorageLocation, s.stmtUpdateStorageLoc,
 		loc.Name, string(loc.Type), loc.Description, rootsJSON, now, loc.ID)
-	out, err := scanStorageLocation(row)
 	return out, mapErr(err)
 }
 
 // DeleteStorageLocation implements [store.StorageLocationStore].
 func (s *Store) DeleteStorageLocation(ctx context.Context, id string) error {
-	res, err := s.stmtDeleteStorageLoc.ExecContext(ctx, id)
+	res, err := s.execStmt(ctx, "delete storage location", s.stmtDeleteStorageLoc, id)
 	if err != nil {
 		return mapErr(err)
 	}

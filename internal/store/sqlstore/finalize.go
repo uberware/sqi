@@ -475,7 +475,7 @@ WHERE id = ? AND status IN ('pending', 'running')`
 // nothing and return false.
 func (s *Store) PromoteJobRunning(ctx context.Context, id string, now time.Time) (bool, error) {
 	nowText := TimeText(now.UTC())
-	res, err := s.w.ExecContext(ctx, sqlPromoteJobRunning, nowText, nowText, id)
+	res, err := s.exec(ctx, "promote job running", sqlPromoteJobRunning, nowText, nowText, id)
 	if err != nil {
 		return false, fmt.Errorf("store: promote job %s running: %w", id, mapErr(err))
 	}
@@ -490,7 +490,7 @@ func (s *Store) PromoteJobRunning(ctx context.Context, id string, now time.Time)
 // zero-row result is ambiguous between an unknown job and one in another
 // status, and a follow-up read tells them apart.
 func (s *Store) PauseJob(ctx context.Context, id string, now time.Time) error {
-	res, err := s.w.ExecContext(ctx, sqlPauseJob, TimeText(now.UTC()), id)
+	res, err := s.exec(ctx, "pause job", sqlPauseJob, TimeText(now.UTC()), id)
 	if err != nil {
 		return fmt.Errorf("store: pause job %s: %w", id, mapErr(err))
 	}

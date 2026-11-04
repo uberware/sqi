@@ -6,12 +6,17 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/postgres"
+	"github.com/uberware/sqi/internal/store/sqlstore"
 	"github.com/uberware/sqi/internal/store/storetest"
 )
 
@@ -23,8 +28,15 @@ const leaseBudget = time.Second
 // returns it with its DSN.
 func openHA(t *testing.T, maxConns int) (*postgres.Store, string) {
 	t.Helper()
+	return openHAWith(t, postgres.Options{MaxConns: maxConns})
+}
+
+// openHAWith is openHA with further options; AutoMigrate and HA are set.
+func openHAWith(t *testing.T, opts postgres.Options) (*postgres.Store, string) {
+	t.Helper()
 	dsn := storetest.PostgresDSN(t)
-	st, err := postgres.Open(t.Context(), dsn, postgres.Options{MaxConns: maxConns, AutoMigrate: true, HA: true})
+	opts.AutoMigrate, opts.HA = true, true
+	st, err := postgres.Open(t.Context(), dsn, opts)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -34,8 +46,9 @@ func openHA(t *testing.T, maxConns int) (*postgres.Store, string) {
 
 // holdFencedShare starts a transaction on its own connection that does what a
 // fenced transaction does at its check: it takes the server_epoch row FOR
-// SHARE and keeps it until release is called. Task 3's write fence does this
-// at the end of each leader transaction; raw SQL stands in until it exists.
+// SHARE and keeps it until release is called. It stands in for a leader
+// frozen between its check and its commit, a moment the store's own write
+// fence passes through in microseconds and offers no hook to hold.
 func holdFencedShare(t *testing.T, db *sql.DB) (release func()) {
 	t.Helper()
 	ctx := context.Background()
@@ -85,6 +98,27 @@ func lockFarmRow(t *testing.T, db *sql.DB, id string) (release func()) {
 	}
 	t.Cleanup(release)
 	return release
+}
+
+// stallDialect holds the first statement whose text contains stmt for hold,
+// after closing hit: a slow step inside an otherwise real store write.
+type stallDialect struct {
+	sqlstore.Dialect
+
+	stmt string
+	hold time.Duration
+	once *sync.Once
+	hit  chan struct{}
+}
+
+func (d stallDialect) Rebind(q string) string {
+	if strings.Contains(q, d.stmt) {
+		d.once.Do(func() {
+			close(d.hit)
+			time.Sleep(d.hold)
+		})
+	}
+	return d.Dialect.Rebind(q)
 }
 
 // waitForLockWaiters blocks until at least n backends of the database are
@@ -184,34 +218,79 @@ func TestLeaseOps_UseDedicatedPool(t *testing.T) {
 }
 
 // TestLeaseRenew_NotBlockedByFencedWriters: a renewal touches only the lease
-// row, so many transactions holding the epoch row FOR SHARE, and a long
-// write beside them, never delay it.
+// row, so a busy leader's fenced writes never delay it: 32 writers committing
+// through the fence in a loop, each taking the epoch row FOR SHARE at its
+// check, and beside them one slow fenced write (a job delete holding its rows
+// for 3s mid-transaction, as a large retention delete would) that then
+// commits through the fence too.
 func TestLeaseRenew_NotBlockedByFencedWriters(t *testing.T) {
-	t.Skip("needs Task 3")
-	st, dsn := openHA(t, 16)
-	raw := openRaw(t, dsn)
-	raw.SetMaxOpenConns(40)
+	const (
+		writers = 32
+		hold    = 3 * time.Second
+	)
+	stall := stallDialect{stmt: "DELETE FROM steps", hold: hold, once: new(sync.Once), hit: make(chan struct{})}
+	st, _ := openHAWith(t, postgres.Options{
+		MaxConns:    16,
+		WrapDialect: func(d sqlstore.Dialect) sqlstore.Dialect { stall.Dialect = d; return stall },
+	})
 	ctx := t.Context()
 
 	epoch, ok, err := st.AcquireLeadership(ctx, "a", time.Hour)
 	if err != nil || !ok {
 		t.Fatalf("acquire: ok=%v err=%v", ok, err)
 	}
+	lead := store.WithLeaderEpoch(ctx, epoch)
 
-	for range 32 {
-		holdFencedShare(t, raw)
+	farms := make([]store.Farm, writers+1)
+	for i := range farms {
+		if farms[i], err = st.CreateFarm(ctx, store.Farm{ID: fmt.Sprintf("f%d", i), Name: fmt.Sprintf("F%d", i)}); err != nil {
+			t.Fatal(err)
+		}
 	}
-	// One slow write, as a large retention delete would be.
-	slow, err := raw.Conn(ctx)
-	if err != nil {
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "q", FarmID: farms[writers].ID, Name: "q"}); err != nil {
 		t.Fatal(err)
 	}
-	defer slow.Close()
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		_, _ = slow.ExecContext(ctx, `SELECT pg_sleep(3)`) //nolint:errcheck // only its duration matters
-	})
+	job := storetest.NewJob("slow", farms[writers].ID, "q").Step("slow-step", store.StepStatusReady)
+	for i := range 1000 {
+		job.Task(fmt.Sprintf("slow-t%d", i), "slow-step", store.TaskStatusReady)
+	}
+	job.Submit(t, st)
+
+	stop := make(chan struct{})
+	var (
+		wg     sync.WaitGroup
+		writes atomic.Int64
+	)
+	for i := range writers {
+		f := farms[i]
+		wg.Go(func() {
+			for n := 0; ; n++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				f.Description = strconv.Itoa(n)
+				if _, err := st.UpdateFarm(lead, f); err != nil {
+					t.Errorf("fenced UpdateFarm %s: %v", f.ID, err)
+					return
+				}
+				writes.Add(1)
+			}
+		})
+	}
 	defer wg.Wait()
+	defer close(stop)
+
+	slow := make(chan error, 1)
+	go func() { slow <- st.DeleteJob(lead, "slow") }()
+	select {
+	case <-stall.hit: // the tasks are deleted, uncommitted, and the write sleeps
+	case err := <-slow:
+		t.Fatalf("the slow delete finished before its slow step: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("the slow delete never reached its slow step")
+	}
 
 	for range 5 {
 		within(t, leaseBudget, "renew beside fenced writers", func(ctx context.Context) error {
@@ -222,6 +301,26 @@ func TestLeaseRenew_NotBlockedByFencedWriters(t *testing.T) {
 			return err
 		})
 	}
+	select {
+	case err := <-slow:
+		t.Fatalf("the slow write finished (%v) before the renewals did; they were not measured beside it", err)
+	default:
+	}
+	if writes.Load() == 0 {
+		t.Fatal("no fenced write committed while the renewals ran")
+	}
+
+	select {
+	case err := <-slow:
+		if err != nil {
+			t.Fatalf("the slow fenced delete: %v, want it committed", err)
+		}
+	case <-time.After(hold + 30*time.Second):
+		t.Fatal("the slow fenced delete never finished")
+	}
+	if _, err := st.GetJob(ctx, "slow"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("job after the slow fenced delete: err = %v, want it deleted", err)
+	}
 }
 
 // TestAcquireLeadership_WaitsForFencedCommitInProgress: a transaction that has
@@ -229,7 +328,6 @@ func TestLeaseRenew_NotBlockedByFencedWriters(t *testing.T) {
 // committed delays a takeover until it commits, which is what orders the old
 // leader's last write before the new leader's first.
 func TestAcquireLeadership_WaitsForFencedCommitInProgress(t *testing.T) {
-	t.Skip("needs Task 3")
 	st, dsn := openHA(t, 4)
 	raw := openRaw(t, dsn)
 	ctx := t.Context()
@@ -281,7 +379,7 @@ func TestLeadership_WorksWithoutAnHAPool(t *testing.T) {
 // TestLeadership_ConcurrentAcquirersElectOne: many servers polling at
 // once produce exactly one leader per epoch.
 func TestLeadership_ConcurrentAcquirersElectOne(t *testing.T) {
-	st, _ := openHA(t, 8)
+	st, dsn := openHA(t, 8)
 	ctx := t.Context()
 	const n = 12
 	var (
@@ -308,6 +406,10 @@ func TestLeadership_ConcurrentAcquirersElectOne(t *testing.T) {
 	l, err := st.GetLeadership(ctx)
 	if err != nil || l.Holder != winners[0] || l.Epoch != 1 {
 		t.Fatalf("lease = %+v, err=%v, want %s at epoch 1", l, err, winners[0])
+	}
+	var fence int64
+	if err := openRaw(t, dsn).QueryRowContext(ctx, `SELECT epoch FROM server_epoch`).Scan(&fence); err != nil || fence != l.Epoch {
+		t.Fatalf("server_epoch = %d, err=%v, want the winning epoch %d", fence, err, l.Epoch)
 	}
 }
 

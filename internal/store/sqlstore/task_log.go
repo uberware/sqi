@@ -36,13 +36,15 @@ func (s *Store) CreateTaskLog(ctx context.Context, log store.TaskLog) (store.Tas
 	at, now := TimeText(log.At), TimeText(time.Now().UTC())
 	// RETURNING only the id: the row is the input plus received_at, and
 	// echoing data back would send every chunk's payload over the wire twice.
-	err := s.stmtInsertTaskLog.QueryRowContext(
-		ctx,
-		log.ID, log.TaskID, log.AttemptID,
-		log.SeqNum, log.NATSSeq,
-		at, now,
-		string(log.Stream), log.Data,
-	).Scan(&log.ID)
+	err := s.write(ctx, "create task log", func(w writer) error {
+		return w.Stmt(ctx, s.stmtInsertTaskLog).QueryRowContext(
+			ctx,
+			log.ID, log.TaskID, log.AttemptID,
+			log.SeqNum, log.NATSSeq,
+			at, now,
+			string(log.Stream), log.Data,
+		).Scan(&log.ID)
+	})
 	if errors.Is(err, sql.ErrNoRows) {
 		// ON CONFLICT DO NOTHING returns no row: this chunk is already stored.
 		return store.TaskLog{}, store.ErrConflict

@@ -180,6 +180,11 @@ func newDBPool(db *sql.DB, d Dialect) *dbPool {
 	return &dbPool{dbConn: dbConn{q: db, d: d}, db: db}
 }
 
+// Stmt returns stmt itself: a statement prepared on the pool runs on it. It is
+// [dbTx.Stmt]'s counterpart, so [Store.write]'s function runs the same code on
+// the pool or in a transaction.
+func (*dbPool) Stmt(_ context.Context, stmt *dbStmt) *dbStmt { return stmt }
+
 // dbTx runs statements in a transaction through the dialect. tx is the raw
 // transaction, for Stmt and the anchor locks. order is where it stands in the
 // global lock order ([lockOrder]); a dbTx is built for each run of a

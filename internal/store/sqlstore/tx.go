@@ -4,10 +4,13 @@ package sqlstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
 	"time"
+
+	"github.com/uberware/sqi/internal/store"
 )
 
 // txOutcome tells inTx whether to commit the transaction fn ran in. A nil
@@ -33,6 +36,11 @@ const maxTxAttempts = 5
 // maxTxAttempts runs in all, so fn must not depend on state left by a failed
 // run. op names the operation in errors.
 //
+// Under a leadership context ([store.WithLeaderEpoch]) the transaction
+// commits only after the fence check ([Store.checkFence]) finds the epoch
+// still current; otherwise it rolls back with [store.ErrFenced], which is
+// never retried.
+//
 // A store built [WithForcedRetry] runs every fn once more, first, and rolls
 // that run back, so the tests exercise the re-run path on every operation.
 func (s *Store) inTx(ctx context.Context, op string, fn func(tx *dbTx) (txOutcome, error)) error {
@@ -53,7 +61,7 @@ func (s *Store) inTxOn(ctx context.Context, p *dbPool, op string, fn func(tx *db
 	}
 	for attempt := 1; ; attempt++ {
 		err := s.runTx(ctx, p, op, fn)
-		if err == nil || attempt == maxTxAttempts || errClass(classifyErr(s.d, err)) != ErrClassRetry {
+		if err == nil || attempt == maxTxAttempts || !retryable(s.d, err) {
 			return err
 		}
 		s.retries.Add(1)
@@ -92,14 +100,31 @@ func (s *Store) runTx(ctx context.Context, p *dbPool, op string, fn func(tx *dbT
 	}
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
 
-	outcome, err := fn(newDBTx(tx, s.d))
+	dtx := newDBTx(tx, s.d)
+	outcome, err := fn(dtx)
 	if err != nil || outcome == txRollback {
+		return err
+	}
+	// Under a leadership context the epoch check is the last statement before
+	// the commit, so the epoch row is held for microseconds however long fn ran.
+	if err := s.checkFence(ctx, dtx, op); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: commit %s: %w", op, mapErr(classifyErr(s.d, err)))
 	}
 	return nil
+}
+
+// retryable reports whether a transaction that ended in err may run again:
+// the dialect classified err as ErrClassRetry. [store.ErrFenced] never may,
+// whatever the dialect says: a deposed leader's next run would only be fenced
+// again.
+func retryable(d Dialect, err error) bool {
+	if errors.Is(err, store.ErrFenced) {
+		return false
+	}
+	return errClass(classifyErr(d, err)) == ErrClassRetry
 }
 
 // retryBackoff returns a jittered pause of 5–50 ms before a retry, so two

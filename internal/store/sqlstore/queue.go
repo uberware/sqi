@@ -82,13 +82,12 @@ func (s *Store) CreateQueue(ctx context.Context, queue store.Queue) (store.Queue
 		return store.Queue{}, store.ErrRunAsGroupWithoutUser
 	}
 	now := TimeText(time.Now().UTC())
-	row := s.stmtInsertQueue.QueryRowContext(ctx,
+	out, err := writeRow(ctx, s, "create queue", scanQueue, s.stmtInsertQueue,
 		queue.ID, queue.FarmID, queue.Name, queue.Description,
 		queue.Priority, queue.MaxConcurrentTasks, queue.Paused,
 		nullInt(queue.MaxAttempts), nullInt(queue.RetryDelaySeconds), nullInt(queue.FailureLimit),
 		nullStrPtr(queue.RunAsUser), nullStrPtr(queue.RunAsGroup),
 		now, now)
-	out, err := scanQueue(row)
 	return out, mapErr(err)
 }
 
@@ -200,7 +199,7 @@ func (s *Store) UpdateQueue(ctx context.Context, queue store.Queue) (store.Queue
 
 // DeleteQueue implements [store.QueueStore].
 func (s *Store) DeleteQueue(ctx context.Context, id string) error {
-	res, err := s.stmtDeleteQueue.ExecContext(ctx, id)
+	res, err := s.execStmt(ctx, "delete queue", s.stmtDeleteQueue, id)
 	if err != nil {
 		return mapErr(err)
 	}

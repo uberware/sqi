@@ -206,6 +206,10 @@ var concatAllowed = []string{
 	// job.go lockJobLoggedTasksTx: Dialect.ForUpdate, a constant clause per
 	// dialect (" FOR UPDATE" on PostgreSQL; SQLite's "" is never appended).
 	"forUpdate",
+
+	// fence.go checkFence: Dialect.ForShare, a constant clause per dialect
+	// (" FOR SHARE" on PostgreSQL, "" on SQLite).
+	"s.d.ForShare()",
 }
 
 // sqlKeyword marks a string literal as SQL.

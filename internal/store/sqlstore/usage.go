@@ -62,9 +62,8 @@ func scanPool(row scanner) (store.UsagePool, error) {
 // CreateUsagePool implements [store.UsagePoolStore].
 func (s *Store) CreateUsagePool(ctx context.Context, pool store.UsagePool) (store.UsagePool, error) {
 	now := TimeText(time.Now().UTC())
-	row := s.stmtInsertPool.QueryRowContext(ctx,
+	out, err := writeRow(ctx, s, "create usage pool", scanPool, s.stmtInsertPool,
 		pool.ID, pool.Name, pool.ServerHint, pool.MaxConcurrent, now, now)
-	out, err := scanPool(row)
 	return out, mapErr(err)
 }
 
@@ -122,15 +121,14 @@ func (s *Store) ListUsagePoolUtilization(ctx context.Context) ([]store.UsagePool
 // UpdateUsagePool implements [store.UsagePoolStore].
 func (s *Store) UpdateUsagePool(ctx context.Context, pool store.UsagePool) (store.UsagePool, error) {
 	now := TimeText(time.Now().UTC())
-	row := s.stmtUpdatePool.QueryRowContext(ctx,
+	out, err := writeRow(ctx, s, "update usage pool", scanPool, s.stmtUpdatePool,
 		pool.Name, pool.ServerHint, pool.MaxConcurrent, now, pool.ID)
-	out, err := scanPool(row)
 	return out, mapErr(err)
 }
 
 // DeleteUsagePool implements [store.UsagePoolStore].
 func (s *Store) DeleteUsagePool(ctx context.Context, id string) error {
-	res, err := s.stmtDeletePool.ExecContext(ctx, id)
+	res, err := s.execStmt(ctx, "delete usage pool", s.stmtDeletePool, id)
 	if err != nil {
 		return mapErr(err)
 	}

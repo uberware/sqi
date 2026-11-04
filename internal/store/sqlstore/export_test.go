@@ -20,6 +20,7 @@ type (
 	DBBool    = dbBool
 	TxOutcome = txOutcome
 	CasResult = casResult
+	Writer    = writer
 )
 
 const (
@@ -77,6 +78,14 @@ func (s *Store) WrapTx(tx *sql.Tx) *DBTx { return newDBTx(tx, s.d) }
 func (s *Store) InTx(ctx context.Context, op string, fn func(tx *DBTx) (TxOutcome, error)) error {
 	return s.inTx(ctx, op, fn)
 }
+
+// Write runs fn as the store's single-statement writes do ([Store.write]).
+func (s *Store) Write(ctx context.Context, op string, fn func(w Writer) error) error {
+	return s.write(ctx, op, fn)
+}
+
+// AnyPreparedStmt returns one of the store's prepared statements.
+func (s *Store) AnyPreparedStmt() *dbStmt { return s.stmts[0] }
 
 // SearchClause is searchClause, for the tests that pin its output.
 var SearchClause = searchClause

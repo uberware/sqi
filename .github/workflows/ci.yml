@@ -1026,11 +1026,13 @@ jobs:
             TestPostgres_RequireEmptyDatabaseSeesTablesTheRoleCannotAccess
             TestPostgres_ArchiveSchemaVersionReportsToolProblemsAsSuch
             TestPostgres_ReadsAMixedCaseSchema
-            TestClockMicros_IsDatabaseNowInMicros
+            TestPostgres_ClockMicros_IsDatabaseNowInMicros
             TestClockMicros_AdvancesWithinATransaction
-            TestSeedRows_LeaseAndEpochStartAtZero
-            TestServerHA_SingletonTablesRefuseASecondRow
+            TestPostgres_SeedRows_LeaseAndEpochStartAtZero
+            TestPostgres_ServerHA_SingletonTablesRefuseASecondRow
             TestLeaseOps_UseDedicatedPool
+            TestLeaseRenew_NotBlockedByFencedWriters
+            TestAcquireLeadership_WaitsForFencedCommitInProgress
             TestLeadership_WorksWithoutAnHAPool
             TestLeadership_ConcurrentAcquirersElectOne
             TestOpen_HAClosesTheLeasePool
@@ -1049,6 +1051,24 @@ jobs:
             TestParity_ServerMembers_BrokerStampIsKept/postgres
             TestParity_ServerMembers_ListIsOrderedByNameThenID/postgres
             TestParity_ListServerMembers_EmptyStillReportsTheClock/postgres
+            TestParity_Fence_SingleStatementWrites/PromoteJobRunning/postgres
+            TestParity_Fence_SingleStatementWrites/PauseJob/postgres
+            TestParity_Fence_SingleStatementWrites/CancelJobStatus/postgres
+            TestParity_Fence_SingleStatementWrites/ParkJob/postgres
+            TestParity_Fence_SingleStatementWrites/ResumeJob/postgres
+            TestParity_Fence_SingleStatementWrites/SetTaskUnschedulableReason/postgres
+            TestParity_Fence_SingleStatementWrites/SetBrokerIdentity/postgres
+            TestParity_Fence_SingleStatementWrites/DeleteExpiredSessions/postgres
+            TestParity_Fence_SingleStatementWrites/UpdateWorkerHeartbeat/postgres
+            TestParity_Fence_LeadershipMethodsAreNeverFenced/postgres
+            TestParity_Fence_PlainContextIsNeverFenced/postgres
+            TestParity_Fence_TransactionalWriteRollsBack/postgres
+            TestFence_LongTransactionStartedBeforeTakeoverRollsBack
+            TestRunTx_FenceCheckedLastBeforeCommit/postgres
+            TestRunTx_FencedIsNeverRetried/postgres
+            TestRunTx_NoEpochNoFenceStatement/postgres
+            TestWrite_NoEpochRunsOnPoolWithoutTx/postgres
+            TestWrite_EpochRunsInTxWithFence/postgres
             TestMigration00038_DedupesLogChunksOnPostgreSQL
             TestLockDatabase_ExcludesAServerAndIsReleasable
             TestParity_ListOpenAttempts/postgres

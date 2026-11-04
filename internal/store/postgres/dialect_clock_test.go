@@ -21,7 +21,7 @@ func clockMicros(t *testing.T, db *sql.DB) int64 {
 	return v
 }
 
-func TestClockMicros_IsDatabaseNowInMicros(t *testing.T) {
+func TestPostgres_ClockMicros_IsDatabaseNowInMicros(t *testing.T) {
 	db := openRaw(t, storetest.PostgresDSN(t))
 	got := clockMicros(t, db)
 	diff := time.Duration(got-time.Now().UnixMicro()) * time.Microsecond
@@ -54,7 +54,7 @@ func TestClockMicros_AdvancesWithinATransaction(t *testing.T) {
 	}
 }
 
-func TestSeedRows_LeaseAndEpochStartAtZero(t *testing.T) {
+func TestPostgres_SeedRows_LeaseAndEpochStartAtZero(t *testing.T) {
 	db := openRaw(t, storetest.PostgresDSN(t))
 	var (
 		holder  sql.NullString
@@ -77,7 +77,7 @@ func TestSeedRows_LeaseAndEpochStartAtZero(t *testing.T) {
 	}
 }
 
-func TestServerHA_SingletonTablesRefuseASecondRow(t *testing.T) {
+func TestPostgres_ServerHA_SingletonTablesRefuseASecondRow(t *testing.T) {
 	db := openRaw(t, storetest.PostgresDSN(t))
 	for _, q := range []string{
 		`INSERT INTO server_lease (id, holder, epoch, expires_us) VALUES (2, NULL, 0, 0)`,

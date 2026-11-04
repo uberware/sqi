@@ -39,8 +39,9 @@ type ServerMember struct {
 // LeadershipStore is the leader lease and the membership of the servers
 // sharing one database.
 //
-// Its methods never carry a leader epoch (see the write fence): they are how
-// a server comes to hold one, so they must work without it. Where the store
+// Its methods are never fenced ([WithLeaderEpoch]), even when called with a
+// leadership context, stale or current: they are how a server comes to hold
+// an epoch and keeps it, so they must work whatever epoch it holds. Where the store
 // has a connection of its own for them they use it, so a renewal is never
 // queued behind other writes.
 type LeadershipStore interface {

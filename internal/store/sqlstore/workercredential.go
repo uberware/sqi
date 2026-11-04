@@ -78,9 +78,9 @@ func scanWorkerJoinToken(row scanner) (store.WorkerJoinToken, error) {
 
 // CreateWorkerCredential implements [store.WorkerCredentialStore].
 func (s *Store) CreateWorkerCredential(ctx context.Context, c store.WorkerCredential) (store.WorkerCredential, error) {
-	row := s.stmtInsertWorkerCredential.QueryRowContext(ctx, c.ID, c.WorkerID, c.PublicKey, c.Name,
+	out, err := writeRow(ctx, s, "create worker credential", scanWorkerCredential, s.stmtInsertWorkerCredential,
+		c.ID, c.WorkerID, c.PublicKey, c.Name,
 		TimeText(c.EnrolledAt), nullTimeToText(c.LastSeenAt), nullTimeToText(c.RevokedAt))
-	out, err := scanWorkerCredential(row)
 	return out, mapErr(err)
 }
 
@@ -111,7 +111,7 @@ func (s *Store) GetActiveWorkerCredentialByPublicKey(ctx context.Context, public
 
 // RevokeWorkerCredential implements [store.WorkerCredentialStore].
 func (s *Store) RevokeWorkerCredential(ctx context.Context, workerID string, at time.Time) error {
-	res, err := s.stmtRevokeWorkerCredential.ExecContext(ctx, TimeText(at), workerID)
+	res, err := s.execStmt(ctx, "revoke worker credential", s.stmtRevokeWorkerCredential, TimeText(at), workerID)
 	if err != nil {
 		return mapErr(err)
 	}
@@ -120,7 +120,7 @@ func (s *Store) RevokeWorkerCredential(ctx context.Context, workerID string, at 
 
 // TouchWorkerCredential implements [store.WorkerCredentialStore].
 func (s *Store) TouchWorkerCredential(ctx context.Context, workerID string, at time.Time) error {
-	res, err := s.stmtTouchWorkerCredential.ExecContext(ctx, TimeText(at), workerID)
+	res, err := s.execStmt(ctx, "touch worker credential", s.stmtTouchWorkerCredential, TimeText(at), workerID)
 	if err != nil {
 		return mapErr(err)
 	}
@@ -129,9 +129,9 @@ func (s *Store) TouchWorkerCredential(ctx context.Context, workerID string, at t
 
 // CreateWorkerJoinToken implements [store.WorkerCredentialStore].
 func (s *Store) CreateWorkerJoinToken(ctx context.Context, t store.WorkerJoinToken) (store.WorkerJoinToken, error) {
-	row := s.stmtInsertWorkerJoinToken.QueryRowContext(ctx, t.ID, t.TokenHash, t.Prefix, t.Name,
+	out, err := writeRow(ctx, s, "create worker join token", scanWorkerJoinToken, s.stmtInsertWorkerJoinToken,
+		t.ID, t.TokenHash, t.Prefix, t.Name,
 		TimeText(t.ExpiresAt), nullTimeToText(t.UsedAt), t.CreatedBy, TimeText(t.CreatedAt))
-	out, err := scanWorkerJoinToken(row)
 	return out, mapErr(err)
 }
 
@@ -144,7 +144,7 @@ func (s *Store) GetWorkerJoinTokenByHash(ctx context.Context, hash string) (stor
 
 // MarkWorkerJoinTokenUsed implements [store.WorkerCredentialStore].
 func (s *Store) MarkWorkerJoinTokenUsed(ctx context.Context, id string, at time.Time) error {
-	res, err := s.stmtMarkWorkerJoinTokenUsed.ExecContext(ctx, TimeText(at), id)
+	res, err := s.execStmt(ctx, "mark worker join token used", s.stmtMarkWorkerJoinTokenUsed, TimeText(at), id)
 	if err != nil {
 		return mapErr(err)
 	}
