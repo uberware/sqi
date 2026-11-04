@@ -183,7 +183,9 @@ func TestStoreCopy_RefusesANonEmptyTarget(t *testing.T) {
 }
 
 // migrationSeeded maps each table a migration leaves with one row to a
-// predicate that matches that row once it has been used.
+// predicate that matches that row once it has been used. It is a copy of the
+// package's own map, kept apart on purpose: a test that read the map it
+// checks would agree with any mistake in it.
 var migrationSeeded = map[string]string{
 	"server_lease": "holder IS NOT NULL OR epoch <> 0 OR expires_us <> 0",
 	"server_epoch": "epoch <> 0",

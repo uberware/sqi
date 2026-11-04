@@ -4,7 +4,6 @@ package fake
 
 import (
 	"context"
-	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -40,26 +39,28 @@ func (s *Store) SetClock(now func() int64) {
 
 // AcquireLeadership implements [store.LeadershipStore].
 func (s *Store) AcquireLeadership(_ context.Context, holder string, ttl time.Duration) (epoch int64, ok bool, err error) {
-	if ttl.Microseconds() <= 0 {
-		return 0, false, fmt.Errorf("store: lease ttl %v must be at least 1µs", ttl)
+	ttlUS, err := store.LeaseTTLMicros(ttl)
+	if err != nil {
+		return 0, false, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	l := &s.leadership
 	now := l.now()
-	if l.holder != "" && l.expiresUS >= now {
+	if (store.Lease{Holder: l.holder, ExpiresUS: l.expiresUS, NowUS: now}).Held() {
 		return 0, false, nil
 	}
 	l.holder = holder
 	l.epoch++
-	l.expiresUS = now + ttl.Microseconds()
+	l.expiresUS = now + ttlUS
 	return l.epoch, true, nil
 }
 
 // RenewLeadership implements [store.LeadershipStore].
 func (s *Store) RenewLeadership(_ context.Context, holder string, epoch int64, ttl time.Duration) (bool, error) {
-	if ttl.Microseconds() <= 0 {
-		return false, fmt.Errorf("store: lease ttl %v must be at least 1µs", ttl)
+	ttlUS, err := store.LeaseTTLMicros(ttl)
+	if err != nil {
+		return false, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -67,7 +68,7 @@ func (s *Store) RenewLeadership(_ context.Context, holder string, epoch int64, t
 	if l.holder != holder || l.epoch != epoch {
 		return false, nil
 	}
-	l.expiresUS = l.now() + ttl.Microseconds()
+	l.expiresUS = l.now() + ttlUS
 	return true, nil
 }
 

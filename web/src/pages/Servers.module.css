@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 
+/* Shared list-page scaffold and badge; the role colours below are the page's own. */
+
 .page {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
+  composes: page from './entityList.module.css';
 }
 
 .note {
@@ -14,55 +14,23 @@
 }
 
 .tableWrap {
-  flex: 1;
-  overflow-x: auto;
-  overflow-y: auto;
+  composes: tableWrap from './entityList.module.css';
 }
 
 .table {
-  font-size: var(--font-size-sm);
-}
-
-.table th {
-  position: sticky;
-  top: 0;
-  background: var(--color-surface-raised);
-  border-bottom: 1px solid var(--color-border);
-  padding: var(--space-3) var(--space-4);
-  text-align: left;
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-text-secondary);
-  white-space: nowrap;
-  z-index: var(--z-sticky);
+  composes: table from './entityList.module.css';
 }
 
 .table td {
-  padding: var(--space-3) var(--space-4);
-  border-bottom: 1px solid var(--color-border-subtle);
-  color: var(--color-text-primary);
-  vertical-align: middle;
   font-variant-numeric: tabular-nums;
 }
 
-.table tbody tr {
-  background: var(--color-surface);
-}
-
-.emptyRow td {
-  text-align: center;
-  padding: var(--space-16) var(--space-8);
-  color: var(--color-text-muted);
+.emptyRow {
+  composes: emptyRow from './entityList.module.css';
 }
 
 .badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px var(--space-2);
-  border-radius: var(--radius-full);
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-medium);
-  line-height: var(--line-height-tight);
-  white-space: nowrap;
+  composes: badge from '../components/StatusBadge.module.css';
 }
 
 .leader {

@@ -7,13 +7,14 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/uberware/sqi/internal/ha"
 	"github.com/uberware/sqi/internal/store"
 )
 
-// watchGroup observes the group at once and then every third of the lease,
-// the membership cadence, until ctx ends.
+// watchGroup observes the group at once and then at the membership cadence
+// ([ha.RenewInterval]), until ctx ends.
 func (s *Server) watchGroup(ctx context.Context) {
-	t := time.NewTicker(s.cfg.HA.LeaseTTL / 3)
+	t := time.NewTicker(ha.RenewInterval(s.cfg.HA.LeaseTTL))
 	defer t.Stop()
 	for {
 		s.observeGroup(ctx)
@@ -32,7 +33,11 @@ func (s *Server) watchGroup(ctx context.Context) {
 // sqi-auth queue group so a worker is never authorized differently depending
 // on which server answers. The leader always answers callouts.
 func (s *Server) observeGroup(ctx context.Context) {
-	octx, cancel := context.WithTimeout(ctx, s.observeTimeout())
+	if s.ha.role.isLeader() {
+		s.ha.broker.SetCalloutActive(true)
+		return
+	}
+	octx, cancel := context.WithTimeout(ctx, ha.RenewInterval(s.cfg.HA.LeaseTTL))
 	defer cancel()
 	lease, err := s.store.GetLeadership(octx)
 	if err != nil {
@@ -45,15 +50,11 @@ func (s *Server) observeGroup(ctx context.Context) {
 		return
 	}
 
-	if s.ha.role.isLeader() {
-		s.ha.broker.SetCalloutActive(true)
-		return
-	}
 	leader := leaseHolder(lease, members)
 	name := ""
 	if leader != nil {
 		name = leader.Name
-	} else if lease.Holder != "" && lease.ExpiresUS >= lease.NowUS {
+	} else if lease.Held() {
 		name = lease.Holder // a holder with no member row: name it by its id
 	}
 	s.ha.role.observe(name, lease.Epoch)
@@ -67,14 +68,6 @@ func (s *Server) observeGroup(ctx context.Context) {
 	s.ha.broker.SetCalloutActive(s.compareGrants(ctx, leader))
 }
 
-// observeTimeout bounds one observation's store reads.
-func (s *Server) observeTimeout() time.Duration {
-	if d := s.cfg.HA.LeaseTTL / 3; d > 0 {
-		return d
-	}
-	return memberLookupTimeout
-}
-
 // warnObserve logs a failed observation, unless the server is stopping.
 func (s *Server) warnObserve(ctx context.Context, err error) {
 	if ctx.Err() == nil {
@@ -85,7 +78,7 @@ func (s *Server) warnObserve(ctx context.Context, err error) {
 // leaseHolder is the member row of the server holding an unexpired lease, or
 // nil when no live lease is held or its holder has no row.
 func leaseHolder(lease store.Lease, members []store.ServerMember) *store.ServerMember {
-	if lease.Holder == "" || lease.ExpiresUS < lease.NowUS {
+	if !lease.Held() {
 		return nil
 	}
 	for i := range members {

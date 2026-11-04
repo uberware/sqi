@@ -111,6 +111,12 @@ func TestParity_RegisterWorker_EarlierBrokerStampIgnored(t *testing.T) {
 			if after.InstanceID != "B" || after.RegistrationBrokerAt == nil || !after.RegistrationBrokerAt.Equal(t2) {
 				t.Fatalf("stored instance = %q stamped %v, want B stamped %v", after.InstanceID, after.RegistrationBrokerAt, t2)
 			}
+			// The refusal returns the whole stored row, not only what the
+			// staleness check read.
+			if got.ID != after.ID || got.Hostname != after.Hostname || got.FarmID != after.FarmID ||
+				!got.RegisteredAt.Equal(after.RegisteredAt) || !got.UpdatedAt.Equal(after.UpdatedAt) {
+				t.Fatalf("stale register returned %+v, want the stored worker %+v", got, after)
+			}
 			if !after.UpdatedAt.Equal(before.UpdatedAt) {
 				t.Fatalf("a stale registration wrote the row: UpdatedAt %v -> %v", before.UpdatedAt, after.UpdatedAt)
 			}

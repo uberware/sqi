@@ -41,7 +41,7 @@ func (e *Elector) upsertSelf(ctx context.Context) {
 // against. The local clock never enters it.
 func standbyHasBroker(members []store.ServerMember, self string, nowUS int64, ttl time.Duration) bool {
 	for _, m := range members {
-		if m.InstanceID != self && m.BrokerOKUS != nil && nowUS-*m.BrokerOKUS <= ttl.Microseconds() {
+		if m.InstanceID != self && m.BrokerSeenWithin(nowUS, ttl) {
 			return true
 		}
 	}

@@ -19,6 +19,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/uberware/sqi/internal/bus"
+	"github.com/uberware/sqi/internal/config"
 	"github.com/uberware/sqi/internal/diag"
 	"github.com/uberware/sqi/internal/ha"
 	"github.com/uberware/sqi/internal/metrics"
@@ -518,6 +519,7 @@ func observeServer(t *testing.T, st *haStore, br *fakeHABroker, version string) 
 	t.Helper()
 	buf := &syncBuffer{}
 	s := &Server{
+		cfg:     Config{HA: config.HAConfig{Enabled: true, LeaseTTL: config.DefaultHALeaseTTL}},
 		logger:  slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		store:   st,
 		metrics: metrics.New(),
@@ -737,5 +739,29 @@ func TestHA_RefusedStandbyExits(t *testing.T) {
 	}
 	if n := h.rec.count("AcquireAttempt"); n != 0 {
 		t.Fatalf("a refused standby tried the lease %d times", n)
+	}
+}
+
+// TestBounded: f runs with a deadline d from the call, under the parent's
+// values, and the context ends when f returns.
+func TestBounded(t *testing.T) {
+	type key struct{}
+	parent := context.WithValue(context.Background(), key{}, "v")
+	var done <-chan struct{}
+	start := time.Now()
+	bounded(parent, time.Minute, func(ctx context.Context) {
+		done = ctx.Done()
+		deadline, ok := ctx.Deadline()
+		if !ok || deadline.Before(start.Add(time.Minute)) || deadline.After(time.Now().Add(time.Minute)) {
+			t.Errorf("deadline = %v (set %v), want a minute from the call", deadline, ok)
+		}
+		if ctx.Value(key{}) != "v" {
+			t.Error("the parent's values are lost")
+		}
+	})
+	select {
+	case <-done:
+	default:
+		t.Error("the context outlived f")
 	}
 }

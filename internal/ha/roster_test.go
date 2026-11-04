@@ -68,6 +68,13 @@ func TestBuildRoster(t *testing.T) {
 			want:      []struct{ id, role string }{{"a", "missing"}},
 		},
 		{
+			name:      "a lease expiring at the clock read still leads, as acquire treats it",
+			lease:     store.Lease{Holder: "a", Epoch: 4, ExpiresUS: rosterNow, NowUS: rosterNow},
+			wantEpoch: 4,
+			members:   []store.ServerMember{{InstanceID: "a", Name: "a", LastSeenUS: ago(time.Second)}},
+			want:      []struct{ id, role string }{{"a", "leader"}},
+		},
+		{
 			name:      "a released lease leads nobody",
 			lease:     store.Lease{Holder: "", Epoch: 4, NowUS: rosterNow},
 			wantEpoch: 4,

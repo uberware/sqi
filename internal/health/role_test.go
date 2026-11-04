@@ -59,7 +59,7 @@ func TestReadiness_CarriesRole(t *testing.T) {
 		},
 		{
 			name:     "leader",
-			info:     health.RoleInfo{Role: "leader", Leader: "beta", Epoch: 8},
+			info:     health.RoleInfo{Role: "leader", IsLeader: true, Leader: "beta", Epoch: 8},
 			wantCode: http.StatusOK,
 			want:     `{"status":"ok","checks":{"postgres":{"status":"ok"}},"role":"leader","leader":"beta","epoch":8}`,
 		},
@@ -100,7 +100,7 @@ func TestLeaderHandler(t *testing.T) {
 	}{
 		{
 			name:     "leader answers 200",
-			info:     health.RoleInfo{Role: "leader", Leader: "beta", Epoch: 3},
+			info:     health.RoleInfo{Role: "leader", IsLeader: true, Leader: "beta", Epoch: 3},
 			wantCode: http.StatusOK,
 			want:     `{"status":"ok","role":"leader","leader":"beta","epoch":3}`,
 		},
@@ -147,12 +147,12 @@ func TestLeaderHandler_NoRoleProvider(t *testing.T) {
 // a promotion shows without rebuilding anything.
 func TestRoleProvider_ReadEachRequest(t *testing.T) {
 	reg := health.NewRegistry()
-	role := "standby"
-	reg.SetRoleProvider(func() health.RoleInfo { return health.RoleInfo{Role: role, Leader: "a", Epoch: 1} })
+	info := health.RoleInfo{Role: "standby", Leader: "a", Epoch: 1}
+	reg.SetRoleProvider(func() health.RoleInfo { return info })
 	if code, _ := serve(t, reg.LeaderHandler(), "/leaderz"); code != http.StatusServiceUnavailable {
 		t.Fatalf("standby /leaderz = %d, want 503", code)
 	}
-	role = "leader"
+	info.Role, info.IsLeader = "leader", true
 	if code, _ := serve(t, reg.LeaderHandler(), "/leaderz"); code != http.StatusOK {
 		t.Fatalf("leader /leaderz = %d, want 200", code)
 	}

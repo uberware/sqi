@@ -164,3 +164,35 @@ func TestRestoreLock_TargetDeadline(t *testing.T) {
 		})
 	}
 }
+
+// TestConnState_NilRecordsNothing: a connection whose state nobody reads is
+// given a nil *connState, and its handlers must not panic on it.
+func TestConnState_NilRecordsNothing(*testing.T) {
+	var s *connState
+	s.connected()
+	s.up()
+	s.down()
+	s.initialUp()
+}
+
+// TestConnState_Records: a connect sets since, a drop clears it, and a
+// connect found after a handler ran does not undo the handler.
+func TestConnState_Records(t *testing.T) {
+	var s connState
+	s.initialUp()
+	if s.get().IsZero() {
+		t.Fatal("initialUp left since zero")
+	}
+	s.down()
+	if !s.get().IsZero() {
+		t.Fatal("down left since set")
+	}
+	s.initialUp()
+	if !s.get().IsZero() {
+		t.Fatal("initialUp after a handler undid its drop")
+	}
+	s.up()
+	if s.get().IsZero() {
+		t.Fatal("up left since zero")
+	}
+}

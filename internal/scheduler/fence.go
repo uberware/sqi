@@ -22,7 +22,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"sync"
 	"sync/atomic"
 
 	"github.com/uberware/sqi/internal/store"
@@ -31,10 +30,9 @@ import (
 // fenceState is the scheduler's record of a fenced write.
 type fenceState struct {
 	// deposed is set by the first fenced write and never cleared: a fenced
-	// server stays fenced until it exits.
+	// server stays fenced until it exits. The write that sets it is the one
+	// that logs the loss and calls OnFenced.
 	deposed atomic.Bool
-	// once guards the ERROR log and the OnFenced call.
-	once sync.Once
 }
 
 // stopIfFenced reports whether err is (or wraps) [store.ErrFenced], recording
@@ -48,6 +46,20 @@ func (s *Scheduler) stopIfFenced(ctx context.Context, err error) bool {
 	return true
 }
 
+// warnUnlessStopped logs err at WARN as msg, with attrs and then the error,
+// unless err is nil, the context's cancellation, or a fenced write, which
+// [Scheduler.stopIfFenced] records instead.
+func (s *Scheduler) warnUnlessStopped(ctx context.Context, err error, msg string, attrs ...slog.Attr) {
+	if err == nil || errors.Is(err, context.Canceled) || s.stopIfFenced(ctx, err) {
+		return
+	}
+	args := make([]any, 0, len(attrs)+1)
+	for _, a := range attrs {
+		args = append(args, a)
+	}
+	s.logger.WarnContext(ctx, msg, append(args, slog.Any("error", err))...)
+}
+
 // fenced records that a store write was fenced. The first call logs it, at
 // ERROR without [Config.OnFenced] and at WARN with it, and invokes the
 // callback on a goroutine of its own, so the handler or
@@ -55,23 +67,19 @@ func (s *Scheduler) stopIfFenced(ctx context.Context, err error) bool {
 // scheduler and waits for [Scheduler.Run] to return cannot deadlock against
 // Run waiting for that same goroutine. Later calls log at Debug.
 func (s *Scheduler) fenced(ctx context.Context, err error) {
-	s.fence.deposed.Store(true)
-	first := false
-	s.fence.once.Do(func() {
-		first = true
-		const msg = "scheduler: this server is no longer the leader; stopping"
-		if s.cfg.OnFenced == nil {
-			s.logger.ErrorContext(ctx, msg, slog.Any("error", err))
-			return
-		}
-		// The callback's owner reports the loss at ERROR, once; a second
-		// ERROR for the same loss would read as two failures.
-		s.logger.WarnContext(ctx, msg, slog.Any("error", err))
-		go s.cfg.OnFenced(err)
-	})
-	if !first {
+	if !s.fence.deposed.CompareAndSwap(false, true) {
 		s.logger.DebugContext(ctx, "scheduler: store write fenced", slog.Any("error", err))
+		return
 	}
+	const msg = "scheduler: this server is no longer the leader; stopping"
+	if s.cfg.OnFenced == nil {
+		s.logger.ErrorContext(ctx, msg, slog.Any("error", err))
+		return
+	}
+	// The callback's owner reports the loss at ERROR, once; a second
+	// ERROR for the same loss would read as two failures.
+	s.logger.WarnContext(ctx, msg, slog.Any("error", err))
+	go s.cfg.OnFenced(err)
 }
 
 // deposed reports whether a store write of this scheduler has been fenced.

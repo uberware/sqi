@@ -5,8 +5,11 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync/atomic"
 	"testing"
+
+	"github.com/go-chi/chi/v5"
 
 	"github.com/uberware/sqi/internal/health"
 	"github.com/uberware/sqi/internal/metrics"
@@ -40,7 +43,7 @@ func TestNewRouter_HAGate(t *testing.T) {
 		hr := health.NewRegistry()
 		hr.SetRoleProvider(func() health.RoleInfo {
 			if leader.Load() {
-				return health.RoleInfo{Role: "leader", Leader: "self", Epoch: 2}
+				return health.RoleInfo{Role: "leader", IsLeader: true, Leader: "self", Epoch: 2}
 			}
 			return health.RoleInfo{Role: "standby", Leader: "alpha", Epoch: 1}
 		})
@@ -68,4 +71,27 @@ func TestNewRouter_HAGate(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestMountProbes_MountsEveryProbePath: the paths a standby lets through are
+// the paths MountProbes mounts, with or without HA.
+func TestMountProbes_MountsEveryProbePath(t *testing.T) {
+	for _, haGroup := range []bool{false, true} {
+		r := chi.NewRouter()
+		MountProbes(r, haGroup, health.NewRegistry(), metrics.New())
+		var mounted []string
+		if err := chi.Walk(r, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+			if method == http.MethodGet && !slices.Contains(mounted, route) {
+				mounted = append(mounted, route)
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("walk: %v", err)
+		}
+		slices.Sort(mounted)
+		want := slices.Sorted(slices.Values(ProbePaths))
+		if !slices.Equal(mounted, want) {
+			t.Errorf("HA %v: GET routes %v, want ProbePaths %v", haGroup, mounted, want)
+		}
+	}
 }

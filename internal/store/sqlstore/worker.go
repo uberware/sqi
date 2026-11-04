@@ -65,6 +65,10 @@ RETURNING ` + workerCols
 
 	sqlGetWorker = `SELECT ` + workerCols + ` FROM workers WHERE id = ?`
 
+	// sqlGetWorkerRegistration reads what RegisterWorker compares a
+	// registration with: the instance it last came from and its broker stamp.
+	sqlGetWorkerRegistration = `SELECT instance_id, registration_broker_at FROM workers WHERE id = ?`
+
 	sqlSetWorkerDisabled = `
 UPDATE workers SET disabled = ?, updated_at = ? WHERE id = ?
 RETURNING ` + workerCols
@@ -249,14 +253,20 @@ func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.
 		if err := tx.lockAnchors(ctx, workerAnchor(worker.ID)); err != nil {
 			return result{}, txRollback, err
 		}
-		stored, err := scanWorker(tx.QueryRowContext(ctx, sqlGetWorker, worker.ID))
+		var prior string
+		var brokerAt sql.NullString
+		err := tx.QueryRowContext(ctx, sqlGetWorkerRegistration, worker.ID).Scan(&prior, &brokerAt)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return result{}, txRollback, fmt.Errorf("store: read worker %s: %w", worker.ID, mapErr(err))
 		}
-		prior := stored.InstanceID
-		if err == nil && store.StaleRegistration(stored, worker) {
-			// Nothing was written; committing runs the fence check, so a deposed
-			// leader gets ErrFenced here as it does for any other write.
+		if err == nil && store.StaleRegistration(store.Worker{RegistrationBrokerAt: nullTextToTime(brokerAt)}, worker) {
+			// Nothing is written; the refusal returns the worker as stored.
+			// Committing runs the fence check, so a deposed leader gets
+			// ErrFenced here as it does for any other write.
+			stored, err := scanWorker(tx.QueryRowContext(ctx, sqlGetWorker, worker.ID))
+			if err != nil {
+				return result{}, txRollback, fmt.Errorf("store: read worker %s: %w", worker.ID, mapErr(err))
+			}
 			return result{worker: stored, stale: true}, txCommit, nil
 		}
 		upsert := tx.Stmt(ctx, s.stmtUpsertWorker)

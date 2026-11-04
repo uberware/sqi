@@ -4,6 +4,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -22,6 +23,13 @@ type Lease struct {
 	NowUS int64
 }
 
+// Held reports whether the lease has a holder and has not lapsed at NowUS. A
+// lease lapses only once the clock is past ExpiresUS: at ExpiresUS itself it
+// is still held, which is the rule the acquire statement applies.
+func (l Lease) Held() bool {
+	return l.Holder != "" && l.ExpiresUS >= l.NowUS
+}
+
 // ServerMember is one server instance that has run against this database.
 type ServerMember struct {
 	InstanceID        string
@@ -34,6 +42,23 @@ type ServerMember struct {
 	LastSeenUS        int64  // set by the store from the database clock
 	BrokerOK          bool   // input to Upsert: stamp BrokerOKUS now
 	BrokerOKUS        *int64 // output of List: the last stamp, nil if never
+}
+
+// BrokerSeenWithin reports whether the member reached its broker within ttl
+// of nowUS, the database clock its stamps were read against.
+func (m ServerMember) BrokerSeenWithin(nowUS int64, ttl time.Duration) bool {
+	return m.BrokerOKUS != nil && nowUS-*m.BrokerOKUS <= ttl.Microseconds()
+}
+
+// LeaseTTLMicros converts ttl to the integer microseconds a lease is held
+// for, refusing one that rounds to nothing: a lease that expires as it is
+// granted could never be told from a lost one.
+func LeaseTTLMicros(ttl time.Duration) (int64, error) {
+	us := ttl.Microseconds()
+	if us <= 0 {
+		return 0, fmt.Errorf("store: lease ttl %v must be at least 1µs", ttl)
+	}
+	return us, nil
 }
 
 // LeadershipStore is the leader lease and the membership of the servers

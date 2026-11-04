@@ -88,7 +88,7 @@ func newServersHandler(st store.LeadershipStore, cfg ServersConfig, logger *slog
 func (h *serversHandler) listServers(w http.ResponseWriter, r *http.Request) {
 	if !h.cfg.HA {
 		s := h.cfg.Self
-		writeJSON(w, http.StatusOK, serversResponse{Servers: []serverResponse{{
+		writeJSON(w, http.StatusOK, serversResponse{Servers: []serverResponse{toServerResponse(ha.RosterMember{
 			InstanceID: s.InstanceID,
 			Name:       s.Name,
 			Host:       s.Host,
@@ -97,7 +97,7 @@ func (h *serversHandler) listServers(w http.ResponseWriter, r *http.Request) {
 			Role:       ha.RoleLeader,
 			StartedAt:  s.StartedAt,
 			BrokerOK:   true,
-		}}})
+		})}})
 		return
 	}
 
@@ -109,17 +109,22 @@ func (h *serversHandler) listServers(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := serversResponse{HA: true, Epoch: roster.Epoch, Servers: make([]serverResponse, 0, len(roster.Members))}
 	for _, m := range roster.Members {
-		resp.Servers = append(resp.Servers, serverResponse{
-			InstanceID:         m.InstanceID,
-			Name:               m.Name,
-			Host:               m.Host,
-			PID:                m.PID,
-			Version:            m.Version,
-			Role:               m.Role,
-			StartedAt:          m.StartedAt,
-			LastSeenSecondsAgo: math.Round(m.LastSeenAgo.Seconds()*1000) / 1000,
-			BrokerOK:           m.BrokerOK,
-		})
+		resp.Servers = append(resp.Servers, toServerResponse(m))
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// toServerResponse is m on the wire, its age rounded to the millisecond.
+func toServerResponse(m ha.RosterMember) serverResponse {
+	return serverResponse{
+		InstanceID:         m.InstanceID,
+		Name:               m.Name,
+		Host:               m.Host,
+		PID:                m.PID,
+		Version:            m.Version,
+		Role:               m.Role,
+		StartedAt:          m.StartedAt,
+		LastSeenSecondsAgo: math.Round(m.LastSeenAgo.Seconds()*1000) / 1000,
+		BrokerOK:           m.BrokerOK,
+	}
 }

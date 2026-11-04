@@ -72,7 +72,7 @@ func (r *Remote) LockForRestore(ctx context.Context) (*RestoreLock, error) {
 		return nil, err
 	}
 	deadline := time.Now().Add(r.cfg.ConnectTimeout)
-	nc, err := r.dial(ctx, roleRestore, dialOpts, deadline)
+	nc, err := r.dial(ctx, roleRestore, nil, dialOpts, deadline)
 	if err != nil {
 		return nil, err
 	}

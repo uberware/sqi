@@ -12,8 +12,12 @@ import (
 	"github.com/uberware/sqi/internal/ha"
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/server"
+	"github.com/uberware/sqi/internal/winsvc"
 )
 
+// TestExitCode_Demoted: the error a demoted server returns exits with
+// server.ExitDemoted, and the loss on its own does not. winsvc's tests cover
+// the mapping in general.
 func TestExitCode_Demoted(t *testing.T) {
 	lost := &ha.LostError{Reason: ha.ReasonFenced, Err: errors.New("stale epoch")}
 	tests := []struct {
@@ -21,23 +25,16 @@ func TestExitCode_Demoted(t *testing.T) {
 		err  error
 		want int
 	}{
-		{"nil", nil, 0},
-		{"plain error", errors.New("boom"), 1},
-		{"startup failure", fmt.Errorf("startup failed: %w", errors.New("open store")), 1},
 		{"demoted", server.ErrDemoted, server.ExitDemoted},
-		{"wrapped demotion", fmt.Errorf("x: %w", server.ErrDemoted), 75},
-		{"demotion with its loss", fmt.Errorf("%w: %w", server.ErrDemoted, lost), 75},
+		{"demotion with its loss", fmt.Errorf("%w: %w", server.ErrDemoted, lost), server.ExitDemoted},
 		{"a loss alone is not a demotion", lost, 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := exitCode(tt.err); got != tt.want {
-				t.Fatalf("exitCode(%v) = %d, want %d", tt.err, got, tt.want)
+			if got := winsvc.ExitCode(tt.err); got != tt.want {
+				t.Fatalf("winsvc.ExitCode(%v) = %d, want %d", tt.err, got, tt.want)
 			}
 		})
-	}
-	if server.ExitDemoted != 75 {
-		t.Fatalf("ExitDemoted = %d; the documented demotion exit code is 75", server.ExitDemoted)
 	}
 }
 

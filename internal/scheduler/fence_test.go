@@ -118,6 +118,41 @@ func TestFenced_NoCallbackLogsError(t *testing.T) {
 	}
 }
 
+// TestWarnUnlessStopped: a store error is logged at WARN with its attributes
+// and then the error; nil, the context's cancellation and a fenced write are
+// not, and only the fenced one deposes the scheduler.
+func TestWarnUnlessStopped(t *testing.T) {
+	const msg = "scheduler: test sweep failed"
+	tests := []struct {
+		name        string
+		err         error
+		wantWarn    bool
+		wantDeposed bool
+	}{
+		{"nil", nil, false, false},
+		{"canceled", fmt.Errorf("sweep: %w", context.Canceled), false, false},
+		{"fenced", fmt.Errorf("sweep: %w", store.ErrFenced), false, true},
+		{"store error", errors.New("disk full"), true, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := &lockedBuffer{}
+			s := New(DefaultConfig(), fake.New(), &recordBus{}, metrics.New(), slog.New(slog.NewTextHandler(logs, nil)), ws.NoopNotifier{}, nil)
+			s.warnUnlessStopped(context.Background(), tc.err, msg, slog.String("task_id", "t1"))
+			want := `level=WARN msg="` + msg + `" task_id=t1 error="disk full"`
+			if got := strings.Contains(logs.String(), want); got != tc.wantWarn {
+				t.Errorf("WARN %q logged = %v, want %v:\n%s", want, got, tc.wantWarn, logs.String())
+			}
+			if !tc.wantWarn && strings.Contains(logs.String(), msg) {
+				t.Errorf("logged %q, want nothing of it:\n%s", msg, logs.String())
+			}
+			if got := s.deposed(); got != tc.wantDeposed {
+				t.Errorf("deposed = %v, want %v", got, tc.wantDeposed)
+			}
+		})
+	}
+}
+
 // assertNotFenced checks OnFenced was not called.
 func (r *fenceRecorder) assertNotFenced(t *testing.T) {
 	t.Helper()

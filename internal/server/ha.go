@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,7 +34,6 @@ import (
 	"github.com/uberware/sqi/internal/middleware"
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/store"
-	"github.com/uberware/sqi/internal/version"
 )
 
 // ErrDemoted is what [Server.Run] returns, wrapping the [*ha.LostError], when
@@ -94,11 +92,6 @@ func newHAState(self store.ServerMember) *haState {
 	return &haState{self: self, role: newRoleState(), handler: &handlerSwap{}, warned: map[string]bool{}}
 }
 
-// goLoop runs f on a goroutine counted by loops.
-func (h *haState) goLoop(f func()) {
-	h.loops.Go(f)
-}
-
 // stopLoops ends the HA loops and waits for them. It does nothing on a
 // server without HA (nil h).
 func (h *haState) stopLoops() {
@@ -121,22 +114,12 @@ func (s *handlerSwap) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	(*s.h.Load()).ServeHTTP(w, r)
 }
 
-// haSelf is this process's membership row. The instance id is new on every
-// start, so each process is a member of its own.
+// haSelf is this process's membership row: its [Server.identity] and the
+// broker permissions it grants workers.
 func (s *Server) haSelf() store.ServerMember {
-	host, err := os.Hostname()
-	if err != nil {
-		host = ""
-	}
-	return store.ServerMember{
-		InstanceID:        bus.NewInstanceID(),
-		Name:              s.cfg.HA.Name(),
-		Host:              host,
-		PID:               os.Getpid(),
-		Version:           version.Get().Version,
-		GrantsFingerprint: bus.GrantsFingerprint(),
-		StartedAt:         time.Now().UTC(),
-	}
+	self := s.identity()
+	self.GrantsFingerprint = bus.GrantsFingerprint()
+	return self
 }
 
 // runHA is [Server.Run] for a server in an HA group: boot as a standby,
@@ -232,14 +215,14 @@ func (s *Server) startStandby(ctx context.Context) error {
 		BrokerUp: hb.Connected,
 		Logger:   s.logger,
 	}, s.store)
-	s.ha.goLoop(func() { s.ha.elector.RunMembership(ctx) })
+	s.ha.loops.Go(func() { s.ha.elector.RunMembership(ctx) })
 
 	if err := hb.StartStandby(ctx, s.guardOptions()); err != nil {
 		return fmt.Errorf("start bus: %w", err)
 	}
 	s.health.Register("nats", health.CheckerFunc(hb.Check))
 	s.health.SetRoleProvider(s.ha.role.info)
-	s.ha.goLoop(func() { s.watchGroup(ctx) })
+	s.ha.loops.Go(func() { s.watchGroup(ctx) })
 
 	s.ha.handler.set(s.probeHandler())
 	s.httpServer = &http.Server{
@@ -253,13 +236,15 @@ func (s *Server) startStandby(ctx context.Context) error {
 // probeHandler is what a standby serves until its API is built: the probes
 // and its metrics, everything else gated.
 func (s *Server) probeHandler() http.Handler {
-	mux := http.NewServeMux()
-	mux.Handle("GET /healthz", s.health.LivenessHandler())
-	mux.Handle("GET /readyz", s.health.ReadinessHandler())
-	mux.Handle("GET /leaderz", s.health.LeaderHandler())
-	mux.Handle("/metrics", s.metrics.Handler())
-	return middleware.Standby(s.ha.role.isLeader, s.ha.role.leaderName)(mux)
+	mux := probeMux{http.NewServeMux()}
+	api.MountProbes(mux, true, s.health, s.metrics)
+	return middleware.Standby(s.ha.role.isLeader, s.ha.role.leaderName, api.ProbePaths)(mux)
 }
+
+// probeMux is a [http.ServeMux] as an [api.ProbeRouter].
+type probeMux struct{ *http.ServeMux }
+
+func (m probeMux) Get(pattern string, h http.HandlerFunc) { m.Handle("GET "+pattern, h) }
 
 // guardOptions are the broker guard's view of this database's membership,
 // and what losing the guard means: another server leads.
@@ -368,10 +353,6 @@ func (s *Server) buildStandbyAPI(ctx context.Context) error {
 	if err := s.wireDirectoryDeps(ctx, &deps); err != nil {
 		return err
 	}
-	deps.SessionTTL = s.cfg.AuthSessionTTL
-	deps.CookieName = s.cfg.AuthCookieName
-	deps.CookieSecure = s.cfg.AuthCookieSecure
-	natsAuthDeps(s.cfg, &deps)
 	rc := routerConfig(s.cfg)
 	rc.HA = &api.HAGate{IsLeader: s.ha.role.isLeader, LeaderName: s.ha.role.leaderName}
 	s.ha.handler.set(api.NewRouter(rc, deps, s.logger, s.metrics, s.health))

@@ -118,13 +118,6 @@ func ServerPermissions() *natsserver.Permissions {
 	}
 }
 
-// WorkerUserPermissions returns the same grants as [WorkerPermissions] in the
-// form carried by a NATS user JWT. It is derived from WorkerPermissions so the
-// grant list is defined once; the two cannot drift.
-func WorkerUserPermissions(workerID string) jwt.Permissions {
-	return UserPermissions(WorkerPermissions(workerID))
-}
-
 // UserPermissions converts p to the form carried by a NATS user JWT.
 func UserPermissions(p *natsserver.Permissions) jwt.Permissions {
 	var out jwt.Permissions

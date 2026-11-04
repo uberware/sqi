@@ -1457,9 +1457,7 @@ func (s *Scheduler) sweepBlockedJobsOnce(ctx context.Context) {
 func (s *Scheduler) demoteStalledJobs(ctx context.Context) {
 	demoted, err := s.store.DemoteStalledJobs(ctx, time.Now().UTC())
 	s.announceDemoted(ctx, demoted)
-	if err != nil && !errors.Is(err, context.Canceled) && !s.stopIfFenced(ctx, err) {
-		s.logger.WarnContext(ctx, "scheduler: demote stalled jobs failed", slog.Any("error", err))
-	}
+	s.warnUnlessStopped(ctx, err, "scheduler: demote stalled jobs failed")
 }
 
 // announceDemoted logs and fans out a pending JobEvent for each demoted job.
@@ -1503,9 +1501,7 @@ func (s *Scheduler) reapStaleAssignedTasks(ctx context.Context) {
 	cutoff := time.Now().UTC().Add(-s.cfg.AssignedTaskTimeout)
 	reclaimed, err := s.store.ReclaimStaleAssignedTasks(ctx, cutoff)
 	s.announceReaped(ctx, reclaimed)
-	if err != nil && !errors.Is(err, context.Canceled) && !s.stopIfFenced(ctx, err) {
-		s.logger.WarnContext(ctx, "scheduler: reclaim stale assigned tasks failed", slog.Any("error", err))
-	}
+	s.warnUnlessStopped(ctx, err, "scheduler: reclaim stale assigned tasks failed")
 }
 
 // announceReaped logs the reap and fans out a ready TaskEvent for each
@@ -1710,9 +1706,7 @@ func (s *Scheduler) sweepRetiredWorkers(ctx context.Context) {
 	cutoff := time.Now().UTC().Add(-s.cfg.OfflineWorkerRetention)
 	removed, err := s.store.DeleteOfflineWorkersBefore(ctx, cutoff)
 	if err != nil {
-		if !errors.Is(err, context.Canceled) && !s.stopIfFenced(ctx, err) {
-			s.logger.WarnContext(ctx, "scheduler: retention sweep failed", slog.Any("error", err))
-		}
+		s.warnUnlessStopped(ctx, err, "scheduler: retention sweep failed")
 		return
 	}
 	if len(removed) == 0 {
@@ -1750,9 +1744,7 @@ func (s *Scheduler) sweepRetiredJobs(ctx context.Context) {
 	// On error, removed still lists the jobs deleted before it: they are gone
 	// and are announced like any others.
 	removed, err := s.store.DeleteTerminalJobsBefore(ctx, cutoff, s.cfg.JobRetentionIncludeFailed)
-	if err != nil && !errors.Is(err, context.Canceled) && !s.stopIfFenced(ctx, err) {
-		s.logger.WarnContext(ctx, "scheduler: job retention sweep failed", slog.Any("error", err))
-	}
+	s.warnUnlessStopped(ctx, err, "scheduler: job retention sweep failed")
 	if len(removed) == 0 {
 		return
 	}

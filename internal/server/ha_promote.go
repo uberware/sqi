@@ -152,18 +152,7 @@ func (s *Server) startLeaderSweeper(lctx context.Context) {
 	// The first sweep runs in line, so promotion's next loss check sees a
 	// fenced one.
 	sweep()
-	s.ha.goLoop(func() {
-		ticker := time.NewTicker(sessionSweepInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-lctx.Done():
-				return
-			case <-ticker.C:
-				sweep()
-			}
-		}
-	})
+	s.ha.loops.Go(func() { sweepEvery(lctx, false, sweep) })
 	s.logger.InfoContext(lctx, "ha: leader sweeper started",
 		slog.Duration("interval", sessionSweepInterval), slog.Bool("sessions", s.cfg.AuthEnabled))
 }
@@ -197,8 +186,7 @@ func (s *Server) demote(lost error) error {
 		reason = le.Reason
 	}
 	bg := context.Background()
-	s.ha.role.demote()
-	s.metrics.HALeader.Set(0)
+	s.markNotLeading()
 	s.metrics.HADemotions.WithLabelValues(string(reason)).Inc()
 	s.logger.InfoContext(bg, "ha: this sqi-server is no longer the leader; exiting so its supervisor restarts it as a standby",
 		slog.String("reason", string(reason)), slog.Int("exit_code", ExitDemoted))
@@ -211,21 +199,19 @@ func (s *Server) demote(lost error) error {
 			s.logger.WarnContext(bg, "http: close after a demotion", slog.Any("error", err))
 		}
 	}
-	ctx, cancel := context.WithTimeout(bg, demoteTimeout)
-	s.stopScheduler(ctx)
-	cancel()
+	bounded(bg, demoteTimeout, s.stopScheduler)
 	if s.busClient != nil {
-		ctx, cancel := context.WithTimeout(bg, demoteTimeout)
-		if err := s.busClient.Drain(ctx); err != nil {
-			s.busClient.Close()
+		bounded(bg, demoteTimeout, func(ctx context.Context) {
+			if err := s.busClient.Drain(ctx); err != nil {
+				s.busClient.Close()
+			}
+		})
+	}
+	bounded(bg, demoteTimeout, func(ctx context.Context) {
+		if err := s.ha.elector.Release(ctx); err != nil {
+			s.logger.WarnContext(bg, "ha: lease release after a demotion failed; it lapses on its own", slog.Any("error", err))
 		}
-		cancel()
-	}
-	ctx, cancel = context.WithTimeout(bg, demoteTimeout)
-	if err := s.ha.elector.Release(ctx); err != nil {
-		s.logger.WarnContext(bg, "ha: lease release after a demotion failed; it lapses on its own", slog.Any("error", err))
-	}
-	cancel()
+	})
 	if s.broker != nil {
 		s.broker.Shutdown()
 	}
@@ -245,20 +231,31 @@ func (s *Server) handOver(ctx context.Context) error {
 	if s.ha == nil {
 		return nil
 	}
-	s.ha.role.demote()
-	s.metrics.HALeader.Set(0)
+	s.markNotLeading()
 	// Each step has its own bound: neither may spend the whole shutdown
 	// budget, nor depend on what is left of it, since a release that fails
 	// leaves the standby waiting a full lease.
-	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), demoteTimeout)
-	s.stopScheduler(sctx)
-	cancel()
+	bounded(context.WithoutCancel(ctx), demoteTimeout, s.stopScheduler)
 	if s.ha.elector == nil {
 		return nil
 	}
-	rctx, cancel := context.WithTimeout(context.Background(), releaseTimeout)
+	var err error
+	bounded(context.Background(), releaseTimeout, func(rctx context.Context) { err = s.ha.elector.Release(rctx) })
+	return err
+}
+
+// markNotLeading reports this server no longer the leader: the role, which
+// closes the API and /leaderz, and the leader gauge.
+func (s *Server) markNotLeading() {
+	s.ha.role.demote()
+	s.metrics.HALeader.Set(0)
+}
+
+// bounded runs f with a context derived from parent that ends after d.
+func bounded(parent context.Context, d time.Duration, f func(ctx context.Context)) {
+	ctx, cancel := context.WithTimeout(parent, d)
 	defer cancel()
-	return s.ha.elector.Release(rctx)
+	f(ctx)
 }
 
 // releaseTimeout bounds releasing the lease on a graceful stop.

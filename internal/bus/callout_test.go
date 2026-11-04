@@ -195,7 +195,7 @@ func TestResponder_AllowsEnrolledKey(t *testing.T) {
 	if uc.Name != workerID {
 		t.Errorf("Name = %q, want %q", uc.Name, workerID)
 	}
-	want := brokerauth.WorkerUserPermissions(workerID)
+	want := brokerauth.UserPermissions(brokerauth.WorkerPermissions(workerID))
 	if fmt.Sprint(uc.Permissions) != fmt.Sprint(want) {
 		t.Errorf("Permissions = %+v, want %+v", uc.Permissions, want)
 	}

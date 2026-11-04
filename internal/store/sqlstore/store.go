@@ -56,6 +56,11 @@ type Store struct {
 	// statement; below 2 it inserts them one row per statement ([WithTaskInsertBatch]).
 	taskInsertBatch int
 
+	// fenceCheckSQL is the fence check in this dialect ([Store.checkFence]).
+	fenceCheckSQL string
+	// leaseSQL is the leadership statements in this dialect.
+	leaseSQL leaseStatements
+
 	// ── farms ────────────────────────────────────────────────────────────
 	stmtInsertFarm *dbStmt
 	stmtGetFarm    *dbStmt
@@ -239,6 +244,8 @@ func New(ctx context.Context, write, read *sql.DB, d Dialect, opts ...Option) (*
 	if s.log == nil {
 		s.log = slog.Default()
 	}
+	s.fenceCheckSQL = sqlCheckFence + s.d.ForShare()
+	s.leaseSQL = newLeaseStatements(s.d)
 	if err := s.prepareAll(ctx); err != nil {
 		_ = s.Close()
 		return nil, err

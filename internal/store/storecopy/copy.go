@@ -347,16 +347,10 @@ func columnDiffs(table string, src, dst []schemainfo.Column) []string {
 // migrationSeeded maps each table a migration leaves holding its one row to a
 // predicate matching that row once a server has used it. A migrated target
 // holds these rows before any copy, so they are not "a row" to refuse; the
-// copy replaces them with the source's.
+// copy replaces them with the source's ([clearSeedRow]).
 var migrationSeeded = map[string]string{
 	"server_lease": "holder IS NOT NULL OR epoch <> 0 OR expires_us <> 0",
 	"server_epoch": "epoch <> 0",
-}
-
-// deleteSeedRow is the statement that removes each migrationSeeded table's row.
-var deleteSeedRow = map[string]string{
-	"server_lease": `DELETE FROM server_lease`,
-	"server_epoch": `DELETE FROM server_epoch`,
 }
 
 // requireEmpty refuses a target any of whose tables holds a row, other than a
@@ -483,7 +477,7 @@ func clearSeedRow(ctx context.Context, tx *sql.Tx, p *tablePlan) error {
 	if _, ok := migrationSeeded[p.name]; !ok {
 		return nil
 	}
-	if _, err := tx.ExecContext(ctx, deleteSeedRow[p.name]); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM `+quoteIdent(p.name)); err != nil { //nolint:gosec // G202: p.name is a migrationSeeded key, and quoted
 		return fmt.Errorf("store copy: clear the seed row of %s: %w; no sqi rows were committed", p.name, err)
 	}
 	return nil

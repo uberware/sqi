@@ -76,7 +76,7 @@ func (r *Remote) StartStandby(ctx context.Context, opts GuardOptions) error {
 		return err
 	}
 
-	data, err := r.open(roleData, dialOpts, true)
+	data, err := r.open(roleData, &r.dataUp, dialOpts, true)
 	if err != nil {
 		return err
 	}
@@ -274,7 +274,7 @@ func (r *Remote) openAuth(responder *Responder) (remoteAuth, error) {
 	if err != nil {
 		return a, err
 	}
-	callout, err := r.open(roleCallout, opts, true)
+	callout, err := r.open(roleCallout, nil, opts, true)
 	if err != nil {
 		return a, err
 	}
@@ -287,7 +287,7 @@ func (r *Remote) openAuth(responder *Responder) (remoteAuth, error) {
 		a.close()
 		return remoteAuth{}, err
 	}
-	system, err := r.open(roleSystem, opts, true)
+	system, err := r.open(roleSystem, nil, opts, true)
 	if err != nil {
 		a.close()
 		return remoteAuth{}, err

@@ -22,11 +22,13 @@ func sortedCopy(in []string) []string {
 	return out
 }
 
-func TestWorkerUserPermissions_EquivalentToWorkerPermissions(t *testing.T) {
+// TestUserPermissions_OfWorkerPermissions: a worker's grants in user-JWT form,
+// as the auth callout issues them, are its WorkerPermissions exactly.
+func TestUserPermissions_OfWorkerPermissions(t *testing.T) {
 	for _, id := range []string{"w1", "7b1f6c52-3f0e-4c2a-9d57-0a1b2c3d4e5f"} {
 		t.Run(id, func(t *testing.T) {
 			legacy := brokerauth.WorkerPermissions(id)
-			jwtForm := brokerauth.WorkerUserPermissions(id)
+			jwtForm := brokerauth.UserPermissions(legacy)
 
 			gotPub := sortedCopy(jwtForm.Pub.Allow)
 			wantPub := sortedCopy(legacy.Publish.Allow)

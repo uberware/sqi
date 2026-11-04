@@ -72,16 +72,16 @@ type Registry struct {
 
 // RoleInfo is a server's place in its high-availability group.
 type RoleInfo struct {
-	// Role is "leader" or "standby".
+	// Role is "leader" or "standby", as /readyz and /leaderz report it.
 	Role string
+	// IsLeader reports whether this server leads: /leaderz answers 200 only
+	// when it does. The provider sets it with Role.
+	IsLeader bool
 	// Leader is the name of the server leading, "" when none is known.
 	Leader string
 	// Epoch is the leadership epoch, 0 when none is known.
 	Epoch int64
 }
-
-// roleLeader is the [RoleInfo.Role] of the server that leads.
-const roleLeader = "leader"
 
 // NewRegistry returns an empty [Registry].
 func NewRegistry() *Registry {
@@ -215,7 +215,7 @@ func (r *Registry) LeaderHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		info, _ := r.roleInfo() // no provider: no role, so not the leader
 		body := leaderResponse{Status: "standby", Role: info.Role, Leader: info.Leader, Epoch: info.Epoch}
-		if info.Role != roleLeader {
+		if !info.IsLeader {
 			writeJSON(w, http.StatusServiceUnavailable, body)
 			return
 		}

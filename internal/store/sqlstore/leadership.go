@@ -13,10 +13,10 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-// The leadership statements name the database clock as {now}; [Store.leaseSQL]
-// substitutes the dialect's expression, so a lease is always aged by the
-// database and never by a server. Both pools of a database see one clock, and
-// SQLite's reads it once per statement.
+// The leadership statements name the database clock as {now};
+// [newLeaseStatements] substitutes the dialect's expression, so a lease is
+// always aged by the database and never by a server. Both pools of a database
+// see one clock, and SQLite's reads it once per statement.
 const (
 	// sqlAcquireLease takes an unheld or lapsed lease and returns the epoch it
 	// now leads at. No row back means someone else holds it.
@@ -36,8 +36,6 @@ WHERE id = 1 AND holder = ? AND epoch = ?`
 
 	sqlGetLease = `SELECT holder, epoch, expires_us, {now} FROM server_lease WHERE id = 1`
 
-	sqlNowMicros = `SELECT {now}`
-
 	// sqlUpsertServerMember stamps last_seen_us from the database clock, and
 	// broker_ok_us only for a member that saw its broker (? = 1): COALESCE
 	// keeps the earlier stamp for one that did not.
@@ -50,16 +48,37 @@ ON CONFLICT (instance_id) DO UPDATE SET
   last_seen_us = excluded.last_seen_us,
   broker_ok_us = COALESCE(excluded.broker_ok_us, server_members.broker_ok_us)`
 
-	sqlListServerMembers = `SELECT instance_id, name, host, pid, version, grants_fingerprint, started_at,
-  last_seen_us, broker_ok_us
-FROM server_members ORDER BY name, instance_id`
+	// sqlListServerMembers returns every member with the database clock on
+	// each row. The outer join on a one-row table yields one row, the clock
+	// with every member column NULL, when there are no members, so the clock
+	// is read by the same statement whatever the table holds. Only members a
+	// committed write had stamped are visible to it, so no stamp is ahead of
+	// the clock it is compared with.
+	sqlListServerMembers = `SELECT {now}, m.instance_id, m.name, m.host, m.pid, m.version, m.grants_fingerprint,
+  m.started_at, m.last_seen_us, m.broker_ok_us
+FROM (SELECT 1 AS one) AS clock LEFT JOIN server_members AS m ON 1 = 1
+ORDER BY m.name, m.instance_id`
 
 	sqlDeleteServerMembersUnseen = `DELETE FROM server_members WHERE last_seen_us < {now} - ?`
 )
 
-// leaseSQL returns query with the database clock expression in place of {now}.
-func (s *Store) leaseSQL(query string) string {
-	return strings.ReplaceAll(query, "{now}", s.d.ClockMicros())
+// leaseStatements is the leadership statements with the dialect's clock
+// expression in place of {now}, built once by [New].
+type leaseStatements struct {
+	acquire, renew, release, get, upsertMember, listMembers, deleteMembersUnseen string
+}
+
+func newLeaseStatements(d Dialect) leaseStatements {
+	clock := func(query string) string { return strings.ReplaceAll(query, "{now}", d.ClockMicros()) }
+	return leaseStatements{
+		acquire:             clock(sqlAcquireLease),
+		renew:               clock(sqlRenewLease),
+		release:             clock(sqlReleaseLease),
+		get:                 clock(sqlGetLease),
+		upsertMember:        clock(sqlUpsertServerMember),
+		listMembers:         clock(sqlListServerMembers),
+		deleteMembersUnseen: clock(sqlDeleteServerMembersUnseen),
+	}
 }
 
 // leasePool returns the pool the leadership methods run on: the one
@@ -72,27 +91,16 @@ func (s *Store) leasePool() *dbPool {
 	return s.w
 }
 
-// leaseTTLMicros converts ttl to the integer microseconds the lease columns
-// hold, refusing one that rounds to nothing: a lease that expires as it is
-// granted could never be told from a lost one.
-func leaseTTLMicros(ttl time.Duration) (int64, error) {
-	us := ttl.Microseconds()
-	if us <= 0 {
-		return 0, fmt.Errorf("store: lease ttl %v must be at least 1µs", ttl)
-	}
-	return us, nil
-}
-
 // AcquireLeadership implements [store.LeadershipStore].
 func (s *Store) AcquireLeadership(ctx context.Context, holder string, ttl time.Duration) (epoch int64, ok bool, err error) {
 	ctx = unfenced(ctx)
-	ttlUS, err := leaseTTLMicros(ttl)
+	ttlUS, err := store.LeaseTTLMicros(ttl)
 	if err != nil {
 		return 0, false, err
 	}
 	err = s.inTxOn(ctx, s.leasePool(), "acquire leadership", func(tx *dbTx) (txOutcome, error) {
 		epoch, ok = 0, false
-		err := tx.QueryRowContext(ctx, s.leaseSQL(sqlAcquireLease), holder, ttlUS).Scan(&epoch)
+		err := tx.QueryRowContext(ctx, s.leaseSQL.acquire, holder, ttlUS).Scan(&epoch)
 		if errors.Is(err, sql.ErrNoRows) {
 			return txRollback, nil // held, and nothing written
 		}
@@ -121,12 +129,11 @@ func (s *Store) AcquireLeadership(ctx context.Context, holder string, ttl time.D
 
 // RenewLeadership implements [store.LeadershipStore].
 func (s *Store) RenewLeadership(ctx context.Context, holder string, epoch int64, ttl time.Duration) (bool, error) {
-	ctx = unfenced(ctx)
-	ttlUS, err := leaseTTLMicros(ttl)
+	ttlUS, err := store.LeaseTTLMicros(ttl)
 	if err != nil {
 		return false, err
 	}
-	res, err := s.leasePool().ExecContext(ctx, s.leaseSQL(sqlRenewLease), ttlUS, holder, epoch)
+	res, err := s.leasePool().ExecContext(ctx, s.leaseSQL.renew, ttlUS, holder, epoch)
 	if err != nil {
 		return false, mapErr(err)
 	}
@@ -136,8 +143,7 @@ func (s *Store) RenewLeadership(ctx context.Context, holder string, epoch int64,
 
 // ReleaseLeadership implements [store.LeadershipStore].
 func (s *Store) ReleaseLeadership(ctx context.Context, holder string, epoch int64) error {
-	ctx = unfenced(ctx)
-	_, err := s.leasePool().ExecContext(ctx, s.leaseSQL(sqlReleaseLease), holder, epoch)
+	_, err := s.leasePool().ExecContext(ctx, s.leaseSQL.release, holder, epoch)
 	return mapErr(err)
 }
 
@@ -145,7 +151,7 @@ func (s *Store) ReleaseLeadership(ctx context.Context, holder string, epoch int6
 func (s *Store) GetLeadership(ctx context.Context) (store.Lease, error) {
 	var l store.Lease
 	var holder sql.NullString
-	err := s.leasePool().QueryRowContext(ctx, s.leaseSQL(sqlGetLease)).Scan(&holder, &l.Epoch, &l.ExpiresUS, &l.NowUS)
+	err := s.leasePool().QueryRowContext(ctx, s.leaseSQL.get).Scan(&holder, &l.Epoch, &l.ExpiresUS, &l.NowUS)
 	if err != nil {
 		return store.Lease{}, mapErr(err)
 	}
@@ -155,59 +161,72 @@ func (s *Store) GetLeadership(ctx context.Context) (store.Lease, error) {
 
 // UpsertServerMember implements [store.LeadershipStore].
 func (s *Store) UpsertServerMember(ctx context.Context, m store.ServerMember) error {
-	ctx = unfenced(ctx)
 	brokerOK := int64(0)
 	if m.BrokerOK {
 		brokerOK = 1
 	}
-	_, err := s.leasePool().ExecContext(ctx, s.leaseSQL(sqlUpsertServerMember),
+	_, err := s.leasePool().ExecContext(ctx, s.leaseSQL.upsertMember,
 		m.InstanceID, m.Name, m.Host, int64(m.PID), m.Version, m.GrantsFingerprint, TimeText(m.StartedAt), brokerOK)
 	return mapErr(err)
 }
 
 // ListServerMembers implements [store.LeadershipStore].
 func (s *Store) ListServerMembers(ctx context.Context) ([]store.ServerMember, int64, error) {
-	p := s.leasePool()
-	rows, err := p.QueryContext(ctx, sqlListServerMembers)
+	rows, err := s.leasePool().QueryContext(ctx, s.leaseSQL.listMembers)
 	if err != nil {
 		return nil, 0, mapErr(err)
 	}
 	defer rows.Close()
 	var out []store.ServerMember
+	var now int64
 	for rows.Next() {
-		var m store.ServerMember
-		var pid int64
-		var started string
-		var brokerOK sql.NullInt64
-		if err := rows.Scan(&m.InstanceID, &m.Name, &m.Host, &pid, &m.Version, &m.GrantsFingerprint,
-			&started, &m.LastSeenUS, &brokerOK); err != nil {
-			return nil, 0, mapErr(err)
-		}
-		m.PID = int(pid)
-		if m.StartedAt, err = textToTime(started); err != nil {
+		m, rowNow, ok, err := scanServerMemberRow(rows)
+		if err != nil {
 			return nil, 0, err
 		}
-		if brokerOK.Valid {
-			m.BrokerOKUS = &brokerOK.Int64
+		now = max(now, rowNow)
+		if ok {
+			out = append(out, m)
 		}
-		out = append(out, m)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, 0, mapErr(err)
-	}
-	// Read after the members, so no stamp is ahead of the clock it is
-	// compared with.
-	var now int64
-	if err := p.QueryRowContext(ctx, s.leaseSQL(sqlNowMicros)).Scan(&now); err != nil {
 		return nil, 0, mapErr(err)
 	}
 	return out, now, nil
 }
 
+// scanServerMemberRow reads one row of sqlListServerMembers: the clock, and
+// the member when the row has one (ok false is the empty table's row).
+func scanServerMemberRow(row scanner) (m store.ServerMember, nowUS int64, ok bool, err error) {
+	var id, name, host, version, grants, started sql.NullString
+	var pid, lastSeen, brokerOK sql.NullInt64
+	if err := row.Scan(&nowUS, &id, &name, &host, &pid, &version, &grants, &started, &lastSeen, &brokerOK); err != nil {
+		return store.ServerMember{}, 0, false, mapErr(err)
+	}
+	if !id.Valid {
+		return store.ServerMember{}, nowUS, false, nil
+	}
+	m = store.ServerMember{
+		InstanceID:        id.String,
+		Name:              name.String,
+		Host:              host.String,
+		PID:               int(pid.Int64),
+		Version:           version.String,
+		GrantsFingerprint: grants.String,
+		LastSeenUS:        lastSeen.Int64,
+	}
+	if m.StartedAt, err = textToTime(started.String); err != nil {
+		return store.ServerMember{}, 0, false, err
+	}
+	if brokerOK.Valid {
+		m.BrokerOKUS = &brokerOK.Int64
+	}
+	return m, nowUS, true, nil
+}
+
 // DeleteServerMembersUnseenFor implements [store.LeadershipStore].
 func (s *Store) DeleteServerMembersUnseenFor(ctx context.Context, d time.Duration) (int, error) {
-	ctx = unfenced(ctx)
-	res, err := s.leasePool().ExecContext(ctx, s.leaseSQL(sqlDeleteServerMembersUnseen), d.Microseconds())
+	res, err := s.leasePool().ExecContext(ctx, s.leaseSQL.deleteMembersUnseen, d.Microseconds())
 	if err != nil {
 		return 0, mapErr(err)
 	}

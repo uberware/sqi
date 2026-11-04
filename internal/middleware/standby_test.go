@@ -12,6 +12,9 @@ import (
 	"github.com/uberware/sqi/internal/middleware"
 )
 
+// probes is what the router passes: the paths a standby serves.
+var probes = []string{"/healthz", "/readyz", "/leaderz", "/metrics"}
+
 func TestStandby(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -40,7 +43,7 @@ func TestStandby(t *testing.T) {
 				called.Store(true)
 				w.WriteHeader(http.StatusTeapot)
 			})
-			h := middleware.Standby(func() bool { return tt.leader }, func() string { return "alpha" })(inner)
+			h := middleware.Standby(func() bool { return tt.leader }, func() string { return "alpha" }, probes)(inner)
 
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, tt.path, nil)
 			rr := httptest.NewRecorder()
@@ -71,7 +74,7 @@ func TestStandby(t *testing.T) {
 
 // TestStandby_NoLeaderKnown names no leader rather than inventing one.
 func TestStandby_NoLeaderKnown(t *testing.T) {
-	h := middleware.Standby(func() bool { return false }, func() string { return "" })(http.NotFoundHandler())
+	h := middleware.Standby(func() bool { return false }, func() string { return "" }, probes)(http.NotFoundHandler())
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/jobs", nil)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
@@ -84,7 +87,7 @@ func TestStandby_NoLeaderKnown(t *testing.T) {
 // rebuilding the handler.
 func TestStandby_ReadsRolePerRequest(t *testing.T) {
 	var leader atomic.Bool
-	h := middleware.Standby(leader.Load, func() string { return "self" })(
+	h := middleware.Standby(leader.Load, func() string { return "self" }, probes)(
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }),
 	)
 	get := func() int {
@@ -99,5 +102,22 @@ func TestStandby_ReadsRolePerRequest(t *testing.T) {
 	leader.Store(true)
 	if got := get(); got != http.StatusOK {
 		t.Fatalf("after promotion = %d, want 200", got)
+	}
+}
+
+// TestStandby_ServesOnlyTheGivenProbes: the probes are the caller's list, so
+// a path left out of it is gated like any other.
+func TestStandby_ServesOnlyTheGivenProbes(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
+	h := middleware.Standby(func() bool { return false }, func() string { return "alpha" }, []string{"/healthz"})(inner)
+	for path, want := range map[string]int{
+		"/healthz": http.StatusTeapot,
+		"/metrics": http.StatusServiceUnavailable,
+	} {
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, nil))
+		if rr.Code != want {
+			t.Errorf("%s = %d, want %d", path, rr.Code, want)
+		}
 	}
 }

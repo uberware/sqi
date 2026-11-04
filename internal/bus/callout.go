@@ -459,14 +459,15 @@ func (r *Responder) Serve(ctx context.Context, nc *nats.Conn) error {
 func (r *Responder) Listen(nc *nats.Conn) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.nc != nil {
-		return errors.New("bus: auth callout responder already serving")
+	if err := r.attachLocked(nc); err != nil {
+		return err
 	}
 	sub, err := r.subscribe(nc)
 	if err != nil {
+		r.nc = nil
 		return err
 	}
-	r.nc, r.sub = nc, sub
+	r.sub = sub
 	return nil
 }
 
@@ -476,6 +477,11 @@ func (r *Responder) Listen(nc *nats.Conn) error {
 func (r *Responder) attach(nc *nats.Conn) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.attachLocked(nc)
+}
+
+// attachLocked is [Responder.attach] with r.mu held.
+func (r *Responder) attachLocked(nc *nats.Conn) error {
 	if r.nc != nil {
 		return errors.New("bus: auth callout responder already serving")
 	}

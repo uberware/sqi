@@ -739,10 +739,6 @@ func (s *Server) start(ctx context.Context) error {
 	if err := s.wireAuthDeps(ctx, &deps); err != nil {
 		return err
 	}
-	deps.SessionTTL = s.cfg.AuthSessionTTL
-	deps.CookieName = s.cfg.AuthCookieName
-	deps.CookieSecure = s.cfg.AuthCookieSecure
-	natsAuthDeps(s.cfg, &deps)
 	router := api.NewRouter(
 		routerConfig(s.cfg),
 		deps,
@@ -782,9 +778,9 @@ func (s *Server) notifyDiagToHub() {
 	})
 }
 
-// apiDeps assembles the REST handlers' dependencies from what start has
-// built, short of authentication (wireAuthDeps) and the session and broker
-// settings start adds after it.
+// apiDeps assembles the REST handlers' dependencies from what start (or an
+// HA standby's buildStandbyAPI) has built, with the session and broker
+// settings, short of authentication, which each path wires itself.
 func (s *Server) apiDeps() api.Deps {
 	deps := api.Deps{
 		Store: s.store,
@@ -798,7 +794,11 @@ func (s *Server) apiDeps() api.Deps {
 		Version:       version.Get(),
 		Servers:       s.serversConfig(),
 		WorkerRevoker: s,
+		SessionTTL:    s.cfg.AuthSessionTTL,
+		CookieName:    s.cfg.AuthCookieName,
+		CookieSecure:  s.cfg.AuthCookieSecure,
 	}
+	natsAuthDeps(s.cfg, &deps)
 	// Only expose the diagnostics reader when diagnostics are enabled. Leaving
 	// DiagReader as a nil interface (rather than a typed-nil *diag.Buffer) makes
 	// the endpoint return 503 instead of panicking on Query.
@@ -1299,6 +1299,25 @@ func (s *Server) waitCheckpoint(ctx context.Context) {
 // tracks the live session count rather than the all-time login count.
 const sessionSweepInterval = time.Hour
 
+// sweepEvery runs sweep every [sessionSweepInterval] until ctx ends, and
+// once at the start too when now is set: the loop of the expired-session
+// sweeper, and of an HA leader's sweeper, which prunes member rows too.
+func sweepEvery(ctx context.Context, now bool, sweep func()) {
+	ticker := time.NewTicker(sessionSweepInterval)
+	defer ticker.Stop()
+	if now {
+		sweep()
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sweep()
+		}
+	}
+}
+
 // startSessionSweeper runs a periodic DeleteExpiredSessions until ctx is
 // canceled. It sweeps once immediately so a server that is restarted more
 // often than the interval still makes progress, rather than never reaching
@@ -1324,19 +1343,7 @@ func (s *Server) startSessionSweeper(ctx context.Context) {
 		}
 	}
 
-	go func() {
-		ticker := time.NewTicker(sessionSweepInterval)
-		defer ticker.Stop()
-		sweep()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				sweep()
-			}
-		}
-	}()
+	go sweepEvery(ctx, true, sweep)
 
 	s.logger.InfoContext(
 		ctx, "auth: expired-session sweeper started",

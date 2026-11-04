@@ -309,21 +309,46 @@ func resolveCORSOrigins(cfg Config, logger *slog.Logger) []string {
 	return slices.DeleteFunc(slices.Clone(origins), func(o string) bool { return o == "*" })
 }
 
-// mountObservability mounts the probes, /metrics and, when enabled, the
-// pprof endpoints. /leaderz is the HA leader probe; without HA it is mounted
-// as a 404.
-func mountObservability(r chi.Router, cfg Config, logger *slog.Logger, m *metrics.Metrics, hr *health.Registry) {
-	r.Get("/healthz", hr.LivenessHandler().ServeHTTP)
-	r.Get("/readyz", hr.ReadinessHandler().ServeHTTP)
-	if cfg.HA != nil {
-		r.Get("/leaderz", hr.LeaderHandler().ServeHTTP)
+// The probe paths [MountProbes] mounts.
+const (
+	pathHealthz = "/healthz"
+	pathReadyz  = "/readyz"
+	pathLeaderz = "/leaderz"
+	pathMetrics = "/metrics"
+)
+
+// ProbePaths are the paths [MountProbes] mounts: the probes a supervisor or
+// load balancer reads, and /metrics. A standby serves exactly these
+// ([middleware.Standby]) and answers everything else 503.
+var ProbePaths = []string{pathHealthz, pathReadyz, pathLeaderz, pathMetrics}
+
+// ProbeRouter is what [MountProbes] mounts on. A [chi.Router] is one; Get
+// registers a GET-only route, Handle one for every method.
+type ProbeRouter interface {
+	Get(pattern string, h http.HandlerFunc)
+	Handle(pattern string, h http.Handler)
+}
+
+// MountProbes mounts the probes and /metrics ([ProbePaths]) on r. /leaderz is
+// the leader probe of a server in a high-availability group (haGroup); outside
+// one it is mounted as a 404, so the web UI's catch-all cannot answer it 200:
+// a load balancer pointed at /leaderz of a server outside a group must not
+// take it for a leader.
+func MountProbes(r ProbeRouter, haGroup bool, hr *health.Registry, m *metrics.Metrics) {
+	r.Get(pathHealthz, hr.LivenessHandler().ServeHTTP)
+	r.Get(pathReadyz, hr.ReadinessHandler().ServeHTTP)
+	if haGroup {
+		r.Get(pathLeaderz, hr.LeaderHandler().ServeHTTP)
 	} else {
-		// Mounted as a 404 so the web UI's catch-all cannot answer it 200: a
-		// load balancer pointed at /leaderz of a server outside a group must
-		// not take it for a leader.
-		r.Get("/leaderz", http.NotFound)
+		r.Get(pathLeaderz, http.NotFound)
 	}
-	r.Handle("/metrics", m.Handler())
+	r.Handle(pathMetrics, m.Handler())
+}
+
+// mountObservability mounts the probes and /metrics ([MountProbes]) and, when
+// enabled, the pprof endpoints.
+func mountObservability(r chi.Router, cfg Config, logger *slog.Logger, m *metrics.Metrics, hr *health.Registry) {
+	MountProbes(r, cfg.HA != nil, hr, m)
 
 	if cfg.EnablePprof {
 		logger.WarnContext(
@@ -431,7 +456,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	// the probes and its metrics and answers everything else 503. After
 	// logging and metrics, so a gated request is still logged and counted.
 	if cfg.HA != nil {
-		r.Use(middleware.Standby(cfg.HA.IsLeader, cfg.HA.LeaderName))
+		r.Use(middleware.Standby(cfg.HA.IsLeader, cfg.HA.LeaderName, ProbePaths))
 	}
 
 	// ── Observability routes ──────────────────────────────────────────────────

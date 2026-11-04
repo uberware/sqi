@@ -222,7 +222,9 @@ type Remote struct {
 }
 
 // connState records when a connection was last established. Its handlers run
-// in the order nats.go reports the events, on its callback goroutine.
+// in the order nats.go reports the events, on its callback goroutine. Every
+// method but get does nothing on a nil *connState, which a connection whose
+// state nobody reads is given.
 type connState struct {
 	mu sync.Mutex
 	// since is when the connection was last established or re-established;
@@ -235,6 +237,9 @@ type connState struct {
 
 // up records a reconnect.
 func (s *connState) up() {
+	if s == nil {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.events++
@@ -244,6 +249,9 @@ func (s *connState) up() {
 // connected records the first connect, reported by nats.go's connect
 // handler. The connect may already be recorded, by [connState.initialUp].
 func (s *connState) connected() {
+	if s == nil {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.events++
@@ -253,6 +261,9 @@ func (s *connState) connected() {
 }
 
 func (s *connState) down() {
+	if s == nil {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.events++
@@ -262,6 +273,9 @@ func (s *connState) down() {
 // initialUp records the first connect, found connected when nats.Connect
 // returned, unless a handler has run: what it recorded is newer.
 func (s *connState) initialUp() {
+	if s == nil {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.events == 0 && s.since.IsZero() {
@@ -460,7 +474,7 @@ func (r *Remote) Start(ctx context.Context) error {
 	}
 	deadline := time.Now().Add(r.cfg.ConnectTimeout)
 
-	data, err := r.dial(ctx, roleData, dialOpts, deadline)
+	data, err := r.dial(ctx, roleData, &r.dataUp, dialOpts, deadline)
 	if err != nil {
 		return err
 	}
@@ -648,7 +662,7 @@ func (r *Remote) startAuth(ctx context.Context, responder *Responder, deadline t
 	if err != nil {
 		return a, err
 	}
-	if a.callout, err = r.dial(ctx, roleCallout, opts, deadline); err != nil {
+	if a.callout, err = r.dial(ctx, roleCallout, nil, opts, deadline); err != nil {
 		return a, err
 	}
 	if err := responder.Serve(ctx, a.callout); err != nil {
@@ -663,7 +677,7 @@ func (r *Remote) startAuth(ctx context.Context, responder *Responder, deadline t
 		a.close()
 		return remoteAuth{}, err
 	}
-	if a.system, err = r.dial(ctx, roleSystem, opts, deadline); err != nil {
+	if a.system, err = r.dial(ctx, roleSystem, nil, opts, deadline); err != nil {
 		a.close()
 		return remoteAuth{}, err
 	}
@@ -822,13 +836,10 @@ type connRole struct {
 	// checkVersion warns when a reconnect lands on a node below the
 	// version floor. One connection checking is enough.
 	checkVersion bool
-	// tracked records the connection's state in [Remote.dataUp], for
-	// [Remote.Connected].
-	tracked bool
 }
 
 var (
-	roleData    = connRole{name: "sqi-server data", label: "data", checkVersion: true, tracked: true}
+	roleData    = connRole{name: "sqi-server data", label: "data", checkVersion: true}
 	roleCallout = connRole{name: "sqi-server auth callout", label: "auth callout"}
 	roleSystem  = connRole{name: "sqi-server system", label: "system"}
 	roleRestore = connRole{name: "sqi-server restore", label: "restore", checkVersion: true}
@@ -836,9 +847,9 @@ var (
 
 // dial connects one of sqi's connections, retrying across every URL until a
 // broker answers or deadline passes. After that, the connection reconnects
-// for as long as it lives.
-func (r *Remote) dial(ctx context.Context, role connRole, dialOpts []nats.Option, deadline time.Time) (*nats.Conn, error) {
-	rc, err := r.open(role, dialOpts, false)
+// for as long as it lives. state is as for [Remote.open].
+func (r *Remote) dial(ctx context.Context, role connRole, state *connState, dialOpts []nats.Option, deadline time.Time) (*nats.Conn, error) {
+	rc, err := r.open(role, state, dialOpts, false)
 	if err != nil {
 		return nil, err
 	}
@@ -877,8 +888,10 @@ type roleConn struct {
 // keeps trying in the background (nats.RetryOnFailedConnect). It fails only
 // on options nats.go rejects. With announceLate, a connect that follows a
 // failed first attempt is logged as a reconnect is; [Remote.dial] passes
-// false, since it waits for that connect itself.
-func (r *Remote) open(role connRole, dialOpts []nats.Option, announceLate bool) (roleConn, error) {
+// false, since it waits for that connect itself. The connection's ups and
+// downs are recorded in state, [Remote.dataUp] for the data connection that
+// [Remote.Connected] reports; nil records nothing.
+func (r *Remote) open(role connRole, state *connState, dialOpts []nats.Option, announceLate bool) (roleConn, error) {
 	rc := roleConn{connected: make(chan struct{}, 1), closed: make(chan struct{}, 1), lastErr: &lastError{}}
 	notify := func(ch chan struct{}) {
 		select {
@@ -897,25 +910,19 @@ func (r *Remote) open(role connRole, dialOpts []nats.Option, announceLate bool) 
 		nats.MaxReconnects(-1),
 		nats.ReconnectWait(remoteReconnectWait),
 		nats.ConnectHandler(func(nc *nats.Conn) {
-			if role.tracked {
-				r.dataUp.connected()
-			}
+			state.connected()
 			notify(rc.connected)
 			if deferred.Load() {
 				r.onConnect(nc, role, "established")
 			}
 		}),
 		nats.ClosedHandler(func(*nats.Conn) {
-			if role.tracked {
-				r.dataUp.down()
-			}
+			state.down()
 			notify(rc.closed)
 		}),
 		nats.ReconnectErrHandler(func(_ *nats.Conn, err error) { rc.lastErr.set(err) }),
 		nats.DisconnectErrHandler(func(nc *nats.Conn, err error) {
-			if role.tracked {
-				r.dataUp.down()
-			}
+			state.down()
 			rc.lastErr.set(err)
 			if nc.IsReconnecting() && err != nil {
 				r.logger.WarnContext(context.Background(), "bus: external nats "+role.label+" connection lost; reconnecting",
@@ -923,9 +930,7 @@ func (r *Remote) open(role connRole, dialOpts []nats.Option, announceLate bool) 
 			}
 		}),
 		nats.ReconnectHandler(func(nc *nats.Conn) {
-			if role.tracked {
-				r.dataUp.up()
-			}
+			state.up()
 			// A connect that drops and comes back inside the startup
 			// window arrives here, not at the ConnectHandler.
 			notify(rc.connected)
@@ -936,11 +941,10 @@ func (r *Remote) open(role connRole, dialOpts []nats.Option, announceLate bool) 
 	if err != nil {
 		return roleConn{}, fmt.Errorf("bus: connect the %s connection to external nats (%s): %w", role.label, r.cfg.redactedURLs(), err)
 	}
-	switch {
-	case !nc.IsConnected():
+	if nc.IsConnected() {
+		state.initialUp()
+	} else {
 		deferred.Store(announceLate)
-	case role.tracked:
-		r.dataUp.initialUp()
 	}
 	rc.nc = nc
 	return rc, nil

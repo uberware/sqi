@@ -53,7 +53,7 @@ type Roster struct {
 // then by instance id. Members is never nil.
 func BuildRoster(lease store.Lease, members []store.ServerMember, nowUS int64, ttl time.Duration) Roster {
 	out := make([]RosterMember, 0, len(members))
-	leased := lease.Holder != "" && lease.ExpiresUS > lease.NowUS
+	leased := lease.Held()
 	for _, m := range members {
 		age := max(time.Duration(nowUS-m.LastSeenUS)*time.Microsecond, 0)
 		role := RoleMissing
@@ -72,7 +72,7 @@ func BuildRoster(lease store.Lease, members []store.ServerMember, nowUS int64, t
 			Role:        role,
 			StartedAt:   m.StartedAt,
 			LastSeenAgo: age,
-			BrokerOK:    m.BrokerOKUS != nil && nowUS-*m.BrokerOKUS <= ttl.Microseconds(),
+			BrokerOK:    m.BrokerSeenWithin(nowUS, ttl),
 		})
 	}
 	slices.SortFunc(out, func(a, b RosterMember) int {

@@ -116,9 +116,13 @@ func New(cfg Config, st store.LeadershipStore) *Elector {
 	return &Elector{cfg: cfg, st: st, clock: cfg.Clock, log: cfg.Logger, lostCh: make(chan struct{})}
 }
 
-// renewInterval is the time between renewals, and between membership
-// upserts.
-func (e *Elector) renewInterval() time.Duration { return e.cfg.LeaseTTL / 3 }
+// RenewInterval is the time between renewals, and between membership
+// upserts, for a group whose lease lasts ttl: a third of it. A server
+// watching its group observes at the same cadence.
+func RenewInterval(ttl time.Duration) time.Duration { return ttl / 3 }
+
+// renewInterval is [RenewInterval] for this elector's lease.
+func (e *Elector) renewInterval() time.Duration { return RenewInterval(e.cfg.LeaseTTL) }
 
 // validity is how long a successful renewal, or the winning acquire, keeps
 // the leader's authority, counted from when the request was sent.

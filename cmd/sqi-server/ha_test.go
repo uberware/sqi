@@ -203,3 +203,13 @@ func TestHAStatusCLI_NoDatabase(t *testing.T) {
 		t.Fatalf("ha status on a missing database = %v, want a no-database error", err)
 	}
 }
+
+// TestOrDash: a blank table field prints as "-", so it cannot shift the
+// columns after it; anything else prints as it is.
+func TestOrDash(t *testing.T) {
+	for in, want := range map[string]string{"": "-", "alpha": "alpha", " ": " "} {
+		if got := orDash(in); got != want {
+			t.Errorf("orDash(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

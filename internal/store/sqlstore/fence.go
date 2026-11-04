@@ -21,26 +21,38 @@ import (
 // UPDATE of that row waits only for commits already past their check.
 
 // sqlCheckFence finds the epoch row only while it still holds the leader's
-// epoch. On PostgreSQL it is run with FOR SHARE (see [Store.checkFence]).
+// epoch. On PostgreSQL it is run with FOR SHARE (see [Store.checkFence]);
+// [New] appends the dialect's clause once, as Store.fenceCheckSQL.
 const sqlCheckFence = `SELECT 1 FROM server_epoch WHERE id = 1 AND epoch = ?`
 
 // unfencedKey marks a context whose writes are never fenced ([unfenced]).
 type unfencedKey struct{}
 
 // unfenced returns ctx with any leader epoch it carries ignored by the fence.
-// The leadership methods run under it: they are how a server comes to lead,
-// and a renewal fenced by its own epoch row would defeat the lease.
+// It exists for [Store.AcquireLeadership], the one leadership method that
+// runs a transaction ([Store.inTxOn], which checks the fence at commit): a
+// server taking the lead must not be fenced by the epoch it is replacing. The
+// other leadership methods issue their statements on the lease pool directly
+// and never reach the fence.
 func unfenced(ctx context.Context) context.Context {
 	return context.WithValue(ctx, unfencedKey{}, true)
 }
 
 // fenceEpoch returns the epoch a write under ctx is fenced by, and whether it
-// is fenced at all.
+// is fenced at all. A context with no epoch, the default farm's every write,
+// costs one lookup.
 func fenceEpoch(ctx context.Context) (int64, bool) {
-	if ctx.Value(unfencedKey{}) != nil {
+	epoch, ok := store.LeaderEpoch(ctx)
+	if !ok || ctx.Value(unfencedKey{}) != nil {
 		return 0, false
 	}
-	return store.LeaderEpoch(ctx)
+	return epoch, true
+}
+
+// fenced reports whether a write under ctx is fenced.
+func fenced(ctx context.Context) bool {
+	_, ok := fenceEpoch(ctx)
+	return ok
 }
 
 // checkFence runs the fence check in tx when ctx carries a leader epoch: the
@@ -53,7 +65,7 @@ func (s *Store) checkFence(ctx context.Context, tx *dbTx, op string) error {
 		return nil
 	}
 	var one int
-	err := tx.QueryRowContext(ctx, sqlCheckFence+s.d.ForShare(), epoch).Scan(&one)
+	err := tx.QueryRowContext(ctx, s.fenceCheckSQL, epoch).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("store: %s at epoch %d: %w", op, epoch, store.ErrFenced)
 	}
@@ -77,14 +89,20 @@ type writer interface {
 // write runs fn, a write that needs no transaction of its own, so that a
 // leadership context fences it. Without a leader epoch on ctx fn runs on the
 // write pool itself and issues exactly its own statements. With one fn runs in
-// a transaction ([Store.inTx], retried as any other), committed when it
-// returns nil after the fence check, and rolled back when it returns an error.
-// fn must finish reading any rows it queries before it returns, and must not
-// depend on state left by an earlier run. op names the operation in errors.
+// a transaction ([Store.writeTx]). op names the operation in errors.
 func (s *Store) write(ctx context.Context, op string, fn func(w writer) error) error {
-	if _, ok := fenceEpoch(ctx); !ok {
+	if !fenced(ctx) {
 		return fn(s.w)
 	}
+	return s.writeTx(ctx, op, fn)
+}
+
+// writeTx runs fn in a transaction ([Store.inTx], retried as any other),
+// committed when it returns nil after the fence check, and rolled back when it
+// returns an error: [Store.write]'s path under a leadership context. fn must
+// finish reading any rows it queries before it returns, and must not depend on
+// state left by an earlier run.
+func (s *Store) writeTx(ctx context.Context, op string, fn func(w writer) error) error {
 	return s.inTx(ctx, op, func(tx *dbTx) (txOutcome, error) {
 		if err := fn(tx); err != nil {
 			return txRollback, err
@@ -93,31 +111,42 @@ func (s *Store) write(ctx context.Context, op string, fn func(w writer) error) e
 	})
 }
 
-// execStmt runs stmt, a write, through [Store.write] and returns its result.
+// execStmt runs stmt, a write, as [Store.write] would and returns its result.
+// Without a leader epoch it is stmt run on the write pool, where Stmt would
+// hand back stmt itself.
 func (s *Store) execStmt(ctx context.Context, op string, stmt *dbStmt, args ...any) (sql.Result, error) {
+	if !fenced(ctx) {
+		return stmt.ExecContext(ctx, args...)
+	}
 	var res sql.Result
-	err := s.write(ctx, op, func(w writer) (err error) {
+	err := s.writeTx(ctx, op, func(w writer) (err error) {
 		res, err = w.Stmt(ctx, stmt).ExecContext(ctx, args...)
 		return err
 	})
 	return res, err
 }
 
-// exec runs query, a write, through [Store.write] and returns its result.
+// exec runs query, a write, as [Store.write] would and returns its result.
 func (s *Store) exec(ctx context.Context, op, query string, args ...any) (sql.Result, error) {
+	if !fenced(ctx) {
+		return s.w.ExecContext(ctx, query, args...)
+	}
 	var res sql.Result
-	err := s.write(ctx, op, func(w writer) (err error) {
+	err := s.writeTx(ctx, op, func(w writer) (err error) {
 		res, err = w.ExecContext(ctx, query, args...)
 		return err
 	})
 	return res, err
 }
 
-// writeRow runs stmt, a write that returns one row (… RETURNING), through
-// [Store.write] and returns the row as scan reads it.
+// writeRow runs stmt, a write that returns one row (… RETURNING), as
+// [Store.write] would and returns the row as scan reads it.
 func writeRow[T any](ctx context.Context, s *Store, op string, scan func(scanner) (T, error), stmt *dbStmt, args ...any) (T, error) {
+	if !fenced(ctx) {
+		return scan(stmt.QueryRowContext(ctx, args...))
+	}
 	var out T
-	err := s.write(ctx, op, func(w writer) (err error) {
+	err := s.writeTx(ctx, op, func(w writer) (err error) {
 		out, err = scan(w.Stmt(ctx, stmt).QueryRowContext(ctx, args...))
 		return err
 	})

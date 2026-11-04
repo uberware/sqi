@@ -302,8 +302,7 @@ func takeGuardKey(ctx context.Context, kv jetstream.KeyValue, instanceID string,
 		if p.contested {
 			continue
 		}
-		logger.InfoContext(ctx, "bus: the broker account guard is held by a server that is not a member of this database; watching it for one TTL",
-			slog.Duration("ttl", guardTTL))
+		logWatchingNonMember(ctx, logger)
 		held, moved, err := watchGuardKey(ctx, kv, p.holderRev)
 		if err != nil {
 			return 0, fmt.Errorf("bus: take guard: %w", err)
@@ -353,19 +352,18 @@ func probeGuardKey(ctx context.Context, kv jetstream.KeyValue, instanceID string
 		if !errors.Is(err, jetstream.ErrKeyExists) {
 			return err
 		}
-		entry, err := kv.Get(opCtx, guardKey)
+		entry, err := readGuardKey(opCtx, kv)
 		switch {
-		case errors.Is(err, jetstream.ErrKeyNotFound):
-			return jetstream.ErrKeyExists // expired meanwhile; try again
 		case err != nil:
 			return err
+		case entry == nil:
+			return jetstream.ErrKeyExists // expired meanwhile; try again
 		case valueOwnedBy(entry.Value(), instanceID):
 			p.rev, p.taken = entry.Revision(), true
 			return nil
 		}
 		p.holder, p.holderRev = entry.Value(), entry.Revision()
-		id := holderInstanceID(p.holder)
-		if id == "" || !isMember(id) {
+		if !isGuardMember(isMember, p.holder) {
 			return nil
 		}
 		p.member = true
@@ -484,25 +482,32 @@ func CheckGuard(ctx context.Context, js jetstream.JetStream, opts GuardOptions, 
 	if entry == nil {
 		return nil
 	}
-	if isGuardMember(opts, entry.Value()) {
+	if isGuardMember(opts.IsMember, entry.Value()) {
 		return nil
 	}
-	logger.InfoContext(ctx, "bus: the broker account guard is held by a server that is not a member of this database; watching it for one TTL",
-		slog.Duration("ttl", guardTTL))
+	logWatchingNonMember(ctx, logger)
 	value, moved, err := watchGuardKey(ctx, kv, entry.Revision())
 	switch {
 	case err != nil:
 		return fmt.Errorf("bus: watch guard: %w", err)
-	case moved && !isGuardMember(opts, value):
+	case moved && !isGuardMember(opts.IsMember, value):
 		return notMemberError(value)
 	}
 	return nil
 }
 
-// isGuardMember reports whether value names a server opts.IsMember accepts.
-func isGuardMember(opts GuardOptions, value []byte) bool {
+// logWatchingNonMember says the guard's holder is outside this database, and
+// is being watched for one TTL before the key is taken or refused.
+func logWatchingNonMember(ctx context.Context, logger *slog.Logger) {
+	logger.InfoContext(ctx, "bus: the broker account guard is held by a server that is not a member of this database; watching it for one TTL",
+		slog.Duration("ttl", guardTTL))
+}
+
+// isGuardMember reports whether value names a server isMember accepts. A nil
+// isMember accepts none.
+func isGuardMember(isMember func(string) bool, value []byte) bool {
 	id := holderInstanceID(value)
-	return id != "" && opts.IsMember != nil && opts.IsMember(id)
+	return id != "" && isMember != nil && isMember(id)
 }
 
 // holderInstanceID is the instance in value, or "" when it is unreadable.
@@ -593,9 +598,11 @@ func (g *Guard) ownedBy(value []byte) bool {
 	return valueOwnedBy(value, g.holder.InstanceID)
 }
 
+// valueOwnedBy reports whether value names instanceID as the holder. An
+// unreadable value is nobody's.
 func valueOwnedBy(value []byte, instanceID string) bool {
-	var h GuardHolder
-	return json.Unmarshal(value, &h) == nil && h.InstanceID == instanceID
+	id := holderInstanceID(value)
+	return id != "" && id == instanceID
 }
 
 func isWrongRevision(err error) bool {
@@ -662,19 +669,19 @@ func (g *Guard) refreshed(rev uint64) {
 // reconcile handles a refused refresh: the key expired and nobody took it,
 // which is retaken, or another server holds it, which is final.
 func (g *Guard) reconcile(ctx context.Context) bool {
-	entry, err := g.kv.Get(ctx, guardKey)
+	entry, err := readGuardKey(ctx, g.kv)
 	switch {
-	case err == nil && g.ownedBy(entry.Value()):
-		g.refreshed(entry.Revision())
-		return false
-	case err == nil:
-		g.markLost(ctx, entry.Value())
-		return true
-	case errors.Is(err, jetstream.ErrKeyNotFound):
-		return g.retakeExpired(ctx)
-	default:
+	case err != nil:
 		g.logger.ErrorContext(ctx, "bus: could not read the broker account guard", slog.Any("error", err))
 		return false
+	case entry == nil:
+		return g.retakeExpired(ctx)
+	case g.ownedBy(entry.Value()):
+		g.refreshed(entry.Revision())
+		return false
+	default:
+		g.markLost(ctx, entry.Value())
+		return true
 	}
 }
 
