@@ -3,10 +3,13 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -383,8 +386,10 @@ func loadFileConfig(explicit string) (*fileConfig, error) {
 		return nil, err
 	}
 
+	// A key the loader does not know is an error, not a skipped line: a
+	// misspelled key would otherwise leave the server on the default.
 	var fc fileConfig
-	if err := yaml.Unmarshal(data, &fc); err != nil {
+	if err := decodeStrict(data, &fc); err != nil {
 		return nil, fmt.Errorf("parse config file %q: %w", path, err)
 	}
 
@@ -1047,9 +1052,8 @@ func applyNATSEnv(cfg *Config, collect func(error)) {
 var removedNATSKeys = []string{"addr", "data_dir", "max_store_mb", "tls"}
 
 // rejectRemovedNATSKeys fails a config file that still uses a nats.* key that
-// moved under nats.embedded. Unknown keys are otherwise ignored, so without
-// this a stale file would run silently on the defaults. Only these four paths
-// are checked: the loader does not reject unknown keys in general.
+// moved under nats.embedded. The strict decode would reject them as unknown
+// keys too, but without naming where they went.
 func rejectRemovedNATSKeys(path string, data []byte) error {
 	root := yamlRoot(data)
 	if root == nil || root.Kind != yaml.MappingNode {
@@ -1220,4 +1224,86 @@ func applyFlags(cfg *Config, f FlagOverrides) {
 	if f.ValidateJobOwner != nil {
 		cfg.Auth.ValidateJobOwner = *f.ValidateJobOwner
 	}
+}
+
+// CheckFileKeys reports every key in a config file's data that sqi-server
+// would not accept: one it does not know, or one holding a value of the wrong
+// shape (a section where a value belongs, or the reverse). Each message names
+// the key by its dotted path. It decodes the file as the loader does and
+// merges nothing, so it does not read the environment or validate values.
+func CheckFileKeys(data []byte) error {
+	if err := rejectRemovedNATSKeys("config", data); err != nil {
+		return err
+	}
+	var fc fileConfig
+	return decodeStrict(data, &fc)
+}
+
+// decodeStrict decodes data into fc and fails on a key the file shape does not
+// have. yaml reports such a key by line and bare name only, so a failure is
+// rewritten to name the key's dotted path.
+func decodeStrict(data []byte, fc *fileConfig) error {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	err := dec.Decode(fc)
+	if err == nil || errors.Is(err, io.EOF) { // io.EOF: an empty file
+		return nil
+	}
+	var typeErr *yaml.TypeError
+	if !errors.As(err, &typeErr) {
+		return err
+	}
+	root := yamlRoot(data)
+	msgs := make([]string, len(typeErr.Errors))
+	for i, m := range typeErr.Errors {
+		msgs[i] = nameKey(root, m)
+	}
+	return errors.New(strings.Join(msgs, "; "))
+}
+
+// yamlKeyErr matches the two shapes of yaml.v3 decode error that point at a
+// key: "line N: field NAME not found in type T" (unknown key) and
+// "line N: cannot unmarshal ..." (wrong shape).
+var yamlKeyErr = regexp.MustCompile(`^line (\d+): (?:field (\S+) not found in type .*|(.*))$`)
+
+// nameKey rewrites one yaml decode error to say which key it is about.
+func nameKey(root *yaml.Node, msg string) string {
+	m := yamlKeyErr.FindStringSubmatch(msg)
+	if m == nil {
+		return msg
+	}
+	line, err := strconv.Atoi(m[1])
+	if err != nil {
+		return msg
+	}
+	path, ok := keyPathAtLine(root, line, m[2], nil)
+	switch {
+	case !ok:
+		return msg
+	case m[2] != "":
+		return fmt.Sprintf("line %d: unknown key %s", line, path)
+	default:
+		return fmt.Sprintf("line %d: %s: %s", line, path, m[3])
+	}
+}
+
+// keyPathAtLine returns the dotted path of the deepest key in n that sits on
+// line. With name set only a key of that name counts (an unknown key); with it
+// empty a key whose value starts on that line counts too (a value of the wrong
+// shape).
+func keyPathAtLine(n *yaml.Node, line int, name string, prefix []string) (string, bool) {
+	if n == nil || n.Kind != yaml.MappingNode {
+		return "", false
+	}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		k, v := n.Content[i], n.Content[i+1]
+		path := append(slices.Clone(prefix), k.Value)
+		if p, ok := keyPathAtLine(v, line, name, path); ok {
+			return p, true
+		}
+		if name != "" && k.Value == name && k.Line == line || name == "" && (k.Line == line || v.Line == line) {
+			return strings.Join(path, "."), true
+		}
+	}
+	return "", false
 }

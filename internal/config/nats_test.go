@@ -119,12 +119,35 @@ func TestLoad_RemovedNATSKeys(t *testing.T) {
 			t.Errorf("embedded = %+v", cfg.NATS.Embedded)
 		}
 	})
+}
 
-	t.Run("other unknown keys stay ignored", func(t *testing.T) {
-		if _, err := config.Load(writeNATSFile(t, "nats:\n  bogus: 1\n"), config.FlagOverrides{}); err != nil {
-			t.Fatalf("Load rejected an unrelated unknown key: %v", err)
-		}
-	})
+func TestLoad_UnknownKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string // empty: the file loads
+	}{
+		{"unknown top-level section", "bogus:\n  x: 1\n", "bogus"},
+		{"unknown nested key", "nats:\n  bogus: 1\n", "bogus"},
+		{"misspelled key", "scheduler:\n  heartbeat_timeot: 1m\n", "unknown key scheduler.heartbeat_timeot"},
+		{"unknown key in a later section", "http:\n  addr: :9090\nstore:\n  drivr: sqlite\n", "unknown key store.drivr"},
+		{"known keys load", "http:\n  addr: 127.0.0.1:9090\n", ""},
+		{"empty file loads", "", ""},
+		{"comment-only file loads", "# nothing set\n", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := config.Load(writeNATSFile(t, tt.body), config.FlagOverrides{})
+			switch {
+			case tt.want == "" && err != nil:
+				t.Fatalf("Load: %v", err)
+			case tt.want != "" && err == nil:
+				t.Fatalf("Load accepted the unknown key %q", tt.want)
+			case tt.want != "" && !strings.Contains(err.Error(), tt.want):
+				t.Errorf("error %q does not name %q", err, tt.want)
+			}
+		})
+	}
 }
 
 func TestLoad_RemovedNATSEnvVars(t *testing.T) {
@@ -700,5 +723,39 @@ func TestValidate_BrokerURLErrorsRedactCredentials(t *testing.T) {
 		if strings.Contains(joined, secret) {
 			t.Fatalf("Validate repeats the credential %q:\n%s", secret, joined)
 		}
+	}
+}
+
+func TestCheckFileKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want []string // each must appear in the error; none: the keys are valid
+	}{
+		{"valid", "http:\n  enable_pprof: true\nscheduler:\n  heartbeat_timeout: 45s\n", nil},
+		{"unknown", "scheduler:\n  heartbeat_timout: 1s\n", []string{"unknown key scheduler.heartbeat_timout"}},
+		{"section where a value belongs", "http:\n  enable_pprof:\n    x: 1\n", []string{"http.enable_pprof"}},
+		{"value where a section belongs", "http: true\n", []string{"http"}},
+		{"removed nats key", "nats:\n  data_dir: x\n", []string{"nats.embedded.data_dir"}},
+		{"every unknown key is named", "bogus: 1\nhttp:\n  nope: 2\n", []string{"unknown key bogus", "unknown key http.nope"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := config.CheckFileKeys([]byte(tt.body))
+			if len(tt.want) == 0 {
+				if err != nil {
+					t.Fatalf("CheckFileKeys: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("CheckFileKeys accepted %q", tt.body)
+			}
+			for _, w := range tt.want {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("error %q does not contain %q", err, w)
+				}
+			}
+		})
 	}
 }
