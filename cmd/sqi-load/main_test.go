@@ -103,6 +103,7 @@ func TestCLI_ExitCodes(t *testing.T) {
 		{name: "attach without nats", args: []string{"run", "--scenario", "smoke", "--server", "http://127.0.0.1:8080"}, want: exitUsage, wantStderr: "--nats"},
 		{name: "attach with a managed flag", args: []string{"run", "--scenario", "smoke", "--server", "http://h", "--nats", "nats://h", "--no-auth", "--server-bin", "x"}, want: exitUsage, wantStderr: "--server-bin"},
 		{name: "unknown flag", args: []string{"run", "--scenario", "smoke", "--frobnicate"}, want: exitUsage},
+		{name: "postgres DSN on a sqlite run", args: []string{"run", "--scenario", "smoke", "--postgres-dsn", "postgres://x/postgres"}, want: exitUsage, wantStderr: "--set server.store=postgres"},
 		{name: "unknown command", args: []string{"frobnicate"}, want: exitUsage},
 		{name: "missing scenario", args: []string{"run"}, want: exitUsage, wantStderr: "--scenario"},
 	}
@@ -124,7 +125,7 @@ func TestCLI_RunOptions(t *testing.T) {
 	f := &fakeRunner{rec: record(true, true)}
 	out := t.TempDir()
 	code, stdout, stderr := runCLI(t, f, "run", "--scenario", "smoke", "--set", "workers[0].count=7", "--duration", "30s",
-		"--out", out, "--run-id", "fixed-id", "--sample", "2s", "--postgres-dsn", "postgres://x/postgres")
+		"--out", out, "--run-id", "fixed-id", "--sample", "2s", "--set", "server.store=postgres", "--postgres-dsn", "postgres://x/postgres")
 	if code != exitOK {
 		t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 	}

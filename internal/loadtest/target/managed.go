@@ -22,6 +22,7 @@ import (
 	"github.com/uberware/sqi/internal/loadtest/client"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
 	"github.com/uberware/sqi/internal/loadtest/simworker"
+	"github.com/uberware/sqi/internal/pgdsn"
 )
 
 const (
@@ -131,8 +132,13 @@ func newManaged(cfg ManagedConfig) (*managed, error) {
 	if cfg.Scenario == nil {
 		return nil, errors.New("target: ManagedConfig has no scenario")
 	}
-	if cfg.Scenario.Server.Store == "postgres" && cfg.PostgresDSN == "" {
+	switch store := cfg.Scenario.Server.Store; {
+	case store == "postgres" && cfg.PostgresDSN == "":
 		return nil, errors.New("target: the scenario's store is postgres but ManagedConfig.PostgresDSN is empty")
+	case store != "postgres" && cfg.PostgresDSN != "":
+		// A DSN given for a SQLite run would be silently ignored, and the
+		// record would describe SQLite while its reader expects PostgreSQL.
+		return nil, fmt.Errorf("target: a PostgreSQL DSN was given but the scenario's store is %q; set server.store to postgres to run on it", cmpOrSQLite(store))
 	}
 	runDir, err := filepath.Abs(cfg.RunDir)
 	if err != nil {
@@ -155,6 +161,14 @@ func newManaged(cfg ManagedConfig) (*managed, error) {
 		m.runID = filepath.Base(runDir)
 	}
 	return m, nil
+}
+
+// cmpOrSQLite is store, or sqlite (the default) when it is empty.
+func cmpOrSQLite(store string) string {
+	if store == "" {
+		return "sqlite"
+	}
+	return store
 }
 
 // orDefault returns v, or def when v is not positive.
@@ -230,6 +244,17 @@ func (m *managed) preparePostgres(ctx context.Context) error {
 		return err
 	}
 	if !admin {
+		// The harness uses this database as it is and leaves the run in it,
+		// so it must be one made for the run: a server's own database would
+		// be migrated forward and filled with the load farm.
+		n, err := publicTables(ctx, m.cfg.PostgresDSN)
+		if err != nil {
+			return err
+		}
+		if n > 0 {
+			return fmt.Errorf("target: PostgreSQL database %s is not empty (%d tables in its public schema); give an empty database, or a DSN naming the postgres database for a throwaway one",
+				pgdsn.Redact(m.cfg.PostgresDSN), n)
+		}
 		m.pgDSN = m.cfg.PostgresDSN
 		return nil
 	}

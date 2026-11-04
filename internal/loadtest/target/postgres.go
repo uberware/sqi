@@ -76,6 +76,21 @@ func withDatabase(dsn, name string) (string, error) {
 	return out, nil
 }
 
+// publicTables counts the tables in the public schema of the database dsn
+// names. A variable so a test can stand in for a server.
+var publicTables = func(ctx context.Context, dsn string) (int, error) {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return 0, fmt.Errorf("target: open %s: %w", pgdsn.Redact(dsn), err)
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("target: inspect %s: %w", pgdsn.Redact(dsn), err)
+	}
+	return n, nil
+}
+
 // createDatabase creates database name through the administrative DSN.
 func createDatabase(ctx context.Context, adminDSN, name string) error {
 	return execAdmin(ctx, adminDSN, `CREATE DATABASE "`+name+`"`) // name is databaseName's: letters, digits, underscores

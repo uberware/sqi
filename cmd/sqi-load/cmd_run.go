@@ -189,6 +189,9 @@ func (f *runFlags) options(cmd *cobra.Command, mode string) (runner.Options, err
 		}
 		o.PostgresDSN = f.postgresDSN
 	} else {
+		if f.postgresDSN != "" && sc.Server.Store != "postgres" {
+			return runner.Options{}, fmt.Errorf("--postgres-dsn needs --set server.store=postgres: scenario %s runs on %s, which would ignore the DSN", sc.Name, sc.Server.Store)
+		}
 		o.Managed = &target.ManagedConfig{ServerBin: f.serverBin, WorkerBin: f.workerBin, PostgresDSN: f.postgresDSN}
 	}
 	return o, nil

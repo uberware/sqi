@@ -124,15 +124,17 @@ jobs:
           echo "::error::PostgreSQL did not come up"
           exit 1
 
-      # sqi-load builds sqi-server and sqi-worker from this checkout. A DSN
-      # naming the postgres database is an admin DSN: the harness creates a
-      # throwaway database for the run and drops it afterwards.
+      # sqi-load builds sqi-server and sqi-worker from this checkout. The
+      # postgres leg sets the store and gives the DSN (sqi-load refuses a DSN
+      # on a SQLite run). A DSN naming the postgres database is an admin DSN:
+      # the harness creates a throwaway database for the run and drops it
+      # afterwards.
       - name: Run the scenario
         shell: bash
         run: |
           args=(--scenario "$SCENARIO" --out "$OUT_DIR")
           if [ "${{ matrix.store }}" = "postgres" ]; then
-            args+=(--postgres-dsn "postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable")
+            args+=(--set server.store=postgres --postgres-dsn "postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable")
           fi
           if [ -n "$DURATION" ]; then
             go run ./cmd/sqi-load soak "${args[@]}" --duration "$DURATION"

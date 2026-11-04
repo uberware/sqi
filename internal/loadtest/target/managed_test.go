@@ -765,3 +765,22 @@ func TestCleanup_RemovesWhatARunLeft(t *testing.T) {
 		t.Error("the other run's pool survived its own cleanup")
 	}
 }
+
+// TestStartManaged_RefusesANonEmptyPostgres gives a managed run a DSN naming
+// a database that already holds sqi's schema, as a server's own database
+// does: the run must refuse it before starting a server on it.
+func TestStartManaged_RefusesANonEmptyPostgres(t *testing.T) {
+	if !storetest.PostgresEnabled() {
+		t.Skip("PostgreSQL not configured: set SQI_TEST_POSTGRES_DSN, or run make test-postgres")
+	}
+	dsn := storetest.PostgresDSN(t) // migrated: it has tables
+	sc := testScenario(scenario.ServerSpec{Store: "postgres"})
+	tgt, err := StartManaged(t.Context(), ManagedConfig{RunDir: t.TempDir(), ServerBin: "never-started", Scenario: sc, PostgresDSN: dsn})
+	if err == nil {
+		tgt.Close(context.Background()) //nolint:errcheck // the test fails anyway
+		t.Fatal("StartManaged accepted a database that already holds tables")
+	}
+	if !strings.Contains(err.Error(), "not empty") {
+		t.Errorf("err = %v, want one saying the database is not empty", err)
+	}
+}

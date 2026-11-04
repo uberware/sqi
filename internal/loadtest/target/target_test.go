@@ -487,6 +487,12 @@ func TestStartManaged_RejectsIncompleteConfig(t *testing.T) {
 		{"no run dir", ManagedConfig{Scenario: &scenario.Scenario{}}, "RunDir"},
 		{"no scenario", ManagedConfig{RunDir: t.TempDir()}, "scenario"},
 		{"postgres without a DSN", ManagedConfig{RunDir: t.TempDir(), Scenario: sc}, "PostgresDSN"},
+		{
+			"a DSN on a sqlite run",
+			ManagedConfig{RunDir: t.TempDir(), Scenario: &scenario.Scenario{Server: scenario.ServerSpec{Store: "sqlite"}}, PostgresDSN: "postgres://u@h/postgres"},
+			`store is "sqlite"`,
+		},
+		{"a DSN on a run with no store", ManagedConfig{RunDir: t.TempDir(), Scenario: &scenario.Scenario{}, PostgresDSN: "postgres://u@h/postgres"}, `store is "sqlite"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -526,5 +532,50 @@ func TestProcessHelpers_NotManaged(t *testing.T) {
 	}
 	if !ProcessAlive(os.Getpid()) {
 		t.Error("ProcessAlive(own pid) = false")
+	}
+}
+
+// TestPreparePostgres_RefusesANonEmptyDatabase checks that a DSN naming a
+// database other than postgres is used only when that database has no
+// tables: a server's own database would otherwise be migrated forward and
+// left holding the load farm.
+func TestPreparePostgres_RefusesANonEmptyDatabase(t *testing.T) {
+	tests := []struct {
+		name    string
+		tables  int
+		wantErr string
+	}{
+		{"empty database is used", 0, ""},
+		{"a database with tables is refused", 42, "not empty (42 tables"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			old := publicTables
+			t.Cleanup(func() { publicTables = old })
+			var asked string
+			publicTables = func(_ context.Context, dsn string) (int, error) {
+				asked = dsn
+				return tt.tables, nil
+			}
+			const dsn = "postgres://sqi:secret@db.example:5432/sqi_prod"
+			m, err := newManaged(ManagedConfig{RunDir: t.TempDir(), Scenario: &scenario.Scenario{Server: scenario.ServerSpec{Store: "postgres"}}, PostgresDSN: dsn})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = m.preparePostgres(t.Context())
+			if asked != dsn {
+				t.Errorf("inspected %q, want the given DSN", asked)
+			}
+			switch {
+			case tt.wantErr == "" && err != nil:
+				t.Fatalf("preparePostgres: %v", err)
+			case tt.wantErr == "" && m.pgDSN != dsn:
+				t.Errorf("pgDSN = %q, want the given DSN", m.pgDSN)
+			case tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)):
+				t.Fatalf("preparePostgres err = %v, want one containing %q", err, tt.wantErr)
+			case tt.wantErr != "" && strings.Contains(err.Error(), "secret"):
+				t.Errorf("the error shows the DSN's password: %v", err)
+			}
+		})
 	}
 }
