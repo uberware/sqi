@@ -80,7 +80,13 @@ type Fleet struct {
 	stopCh   chan struct{} // closed when Stop begins
 
 	crashes, disconnects, skipped, failures atomic.Int64
+
+	// stopHook, when set, replaces Worker.Stop in Fleet.Stop. A test hook.
+	stopHook func(ctx context.Context, w *Worker) error
 }
+
+// errFleetStopped is what a start that lost a race with Stop returns.
+var errFleetStopped = errors.New("simworker: fleet is stopping")
 
 // member is one worker slot. The Worker exists from the start of its Start
 // attempt on, once its credential has been fetched.
@@ -273,6 +279,9 @@ func sleepUntil(ctx context.Context, t time.Time) bool {
 }
 
 func (f *Fleet) startMember(ctx context.Context, m *member) error {
+	if f.stopping() {
+		return errFleetStopped
+	}
 	spec := m.spec
 	if f.cfg.Creds != nil {
 		seed, pub, err := f.cfg.Creds.For(ctx, spec.ID)
@@ -283,7 +292,16 @@ func (f *Fleet) startMember(ctx context.Context, m *member) error {
 	}
 	w := NewWorker(spec, f.behavior, f.ledger, f.logger)
 	m.worker.Store(w)
-	return w.Start(ctx)
+	if err := w.Start(ctx); err != nil {
+		return err
+	}
+	// Stop may have passed this member before the worker was stored; it will
+	// not stop a worker it never saw.
+	if f.stopping() {
+		w.Crash()
+		return errFleetStopped
+	}
+	return nil
 }
 
 func (f *Fleet) checkUnique() error {
@@ -312,17 +330,17 @@ func (f *Fleet) Stop(ctx context.Context) error {
 		errs  []error
 		total int
 		wg    sync.WaitGroup
-		sem   = make(chan struct{}, startConcurrency)
 	)
+	// Every worker stops at once, with no concurrency bound: a worker waiting
+	// its turn would keep leasing work that then ends "worker_shutdown", and
+	// would find the shared deadline spent by the workers ahead of it.
 	for _, m := range f.members {
 		w := m.worker.Load()
 		if w == nil {
 			continue
 		}
-		sem <- struct{}{}
 		wg.Go(func() {
-			defer func() { <-sem }()
-			if err := w.Stop(sctx); err != nil {
+			if err := f.stopWorker(sctx, w); err != nil {
 				mu.Lock()
 				total++
 				if len(errs) < stopErrorsShown {
@@ -339,6 +357,14 @@ func (f *Fleet) Stop(ctx context.Context) error {
 		errs = append(errs, fmt.Errorf("simworker: %d more workers failed to stop", total-len(errs)))
 	}
 	return errors.Join(errs...)
+}
+
+// stopWorker is Worker.Stop, replaceable by a test.
+func (f *Fleet) stopWorker(ctx context.Context, w *Worker) error {
+	if f.stopHook != nil {
+		return f.stopHook(ctx, w)
+	}
+	return w.Stop(ctx)
 }
 
 // sweepCrash crashes any worker still running after the graceful stop: a churn
@@ -535,9 +561,12 @@ func (f *Fleet) runEvent(ctx context.Context, m *member, kind churnKind) {
 }
 
 func (f *Fleet) crashAndRestart(ctx context.Context, m *member, w *Worker) {
-	f.crashes.Add(1)
 	f.logger.InfoContext(ctx, "fleet: crashing worker", slog.String("worker_id", m.spec.ID))
 	w.Crash()
+	if f.stopping() {
+		return // Stop may have ended the worker first, making the crash a no-op
+	}
+	f.crashes.Add(1)
 	select {
 	case <-time.After(f.groups[m.group].spec.Churn.RestartAfter.Duration):
 	case <-f.stopCh:
@@ -556,11 +585,15 @@ func (f *Fleet) crashAndRestart(ctx context.Context, m *member, w *Worker) {
 }
 
 func (f *Fleet) disconnect(ctx context.Context, m *member, w *Worker) {
-	f.disconnects.Add(1)
 	f.logger.InfoContext(ctx, "fleet: disconnecting worker", slog.String("worker_id", m.spec.ID))
 	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), disconnectTimeout)
 	defer cancel()
-	if err := w.Disconnect(dctx); err != nil {
+	err := w.Disconnect(dctx)
+	if f.stopping() {
+		return // a Stop that landed first makes Disconnect fail with errNotRunning
+	}
+	f.disconnects.Add(1)
+	if err != nil {
 		f.failures.Add(1)
 		f.logger.WarnContext(ctx, "fleet: disconnect failed", slog.String("worker_id", m.spec.ID), slog.Any("error", err))
 	}

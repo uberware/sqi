@@ -3,8 +3,12 @@
 package simworker
 
 import (
+	"context"
+	"errors"
 	"math"
 	"slices"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -120,5 +124,41 @@ func TestWorkerSeed(t *testing.T) {
 	}
 	if workerSeed(5, 0) == workerSeed(6, 0) {
 		t.Error("run seeds 5 and 6 give worker 0 the same seed")
+	}
+}
+
+// Stop must start stopping every worker before any of them finishes, however
+// many there are: a worker held back by a concurrency bound keeps leasing work
+// that then ends "worker_shutdown", and finds the shared deadline spent.
+func TestFleet_StopIsConcurrent(t *testing.T) {
+	const n = startConcurrency + 44
+	g := scenario.WorkerGroup{Name: "g", Count: n}
+	fl := NewFleet(FleetConfig{RunID: "r", FarmID: "f", NATSURL: "nats://unused", Groups: []scenario.WorkerGroup{g}},
+		nil, NewLedger(), nil)
+	for _, m := range fl.members {
+		m.worker.Store(NewWorker(m.spec, nil, fl.ledger, nil))
+	}
+
+	var (
+		entered atomic.Int64
+		allIn   = make(chan struct{})
+		once    sync.Once
+	)
+	fl.stopHook = func(ctx context.Context, w *Worker) error {
+		if entered.Add(1) == n {
+			once.Do(func() { close(allIn) })
+		}
+		select {
+		case <-allIn:
+			return w.Stop(ctx)
+		case <-time.After(10 * time.Second):
+			return errors.New("workers were stopped in waves: not all entered Stop before the first returned")
+		}
+	}
+	if err := fl.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if got := entered.Load(); got != n {
+		t.Errorf("%d workers were stopped, want %d", got, n)
 	}
 }

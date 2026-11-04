@@ -188,6 +188,54 @@ func TestFleet_ChurnRuns(t *testing.T) {
 	}
 }
 
+// Stop while churn is running ends the churn, leaves nothing running, and
+// counts no event that merely lost the race with it as a failure.
+func TestFleet_StopDuringChurn(t *testing.T) {
+	f := newFarm(t)
+	g := fleetGroup("s", 3, 0)
+	g.Churn = scenario.Churn{
+		CrashPerHour: 7200, DisconnectPerHour: 3600,
+		RestartAfter: scenario.Duration{Duration: 300 * time.Millisecond},
+	}
+	fl := simworker.NewFleet(simworker.FleetConfig{
+		RunID: "r", FarmID: f.farmID, NATSURL: f.srv.NATSURL(), IDPrefix: "stopchurn",
+		Groups: []scenario.WorkerGroup{g}, Seed: 21,
+	}, idleBehavior(), simworker.NewLedger(), nil)
+	if err := fl.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	stopFleet(t, fl)
+
+	churnCtx, cancelChurn := context.WithCancel(t.Context())
+	defer cancelChurn()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		fl.RunChurn(churnCtx)
+	}()
+	waitFor(t, 10*time.Second, "some churn", func() bool {
+		c := fl.ChurnCounts()
+		return c.Crashes+c.Disconnects > 0
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+	if err := fl.Stop(ctx); err != nil {
+		t.Errorf("Stop: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(45 * time.Second):
+		t.Fatal("RunChurn did not return after Stop")
+	}
+	if got := fl.Live(); got != 0 {
+		t.Errorf("Live() = %d after Stop, want 0", got)
+	}
+	if c := fl.ChurnCounts(); c.Failures != 0 {
+		t.Errorf("%d churn events counted as failures, want 0: %+v", c.Failures, c)
+	}
+}
+
 func TestJoinTokenCredentials(t *testing.T) {
 	srv := testserver.Start(t, testserver.Options{BrokerAuth: true})
 	if srv.JoinToken() == "" {
