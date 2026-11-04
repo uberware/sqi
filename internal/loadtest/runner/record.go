@@ -100,13 +100,29 @@ func (r *run) record() *report.Record {
 		}
 		rec.Valid, rec.InvalidReason = r.obs.SelfHealth().ValidBetween(rec.SteadyFrom(), until, 0)
 	}
+	saturated := !rec.Valid
+	if r.complete && rec.NoneAccepted() {
+		rec.Valid = false
+		rec.InvalidReason = joinReasons(noneAcceptedReason, rec.InvalidReason)
+	}
 	r.unavail(report.HistLeaseReply, "the simulated workers do not time their lease requests")
 	if caveat := wsLagCaveat(wallClockStep()); caveat != "" && rec.Histograms[report.HistWSLag] != nil && rec.Histograms[report.HistWSLag].Count() > 0 {
 		r.unavail(report.HistWSLag, caveat)
 	}
 	rec.Unavailable = r.unavailableList()
-	rec.Findings = append(append([]report.Finding{}, report.Findings(rec, rec.SteadyFrom())...), r.findings(rec)...)
+	rec.Findings = append(append([]report.Finding{}, report.Findings(rec, rec.SteadyFrom())...), r.findings(rec, saturated)...)
 	return rec
+}
+
+// noneAcceptedReason is the InvalidReason of a run whose submissions were all
+// refused.
+const noneAcceptedReason = "no submission accepted: the scenario submits jobs but the server accepted none, so every invariant held vacuously (see the submissions-rejected finding)"
+
+func joinReasons(a, b string) string {
+	if b == "" {
+		return a
+	}
+	return a + "; " + b
 }
 
 func (r *run) env() report.Env {
@@ -134,9 +150,9 @@ func (r *run) unavailableList() []string {
 	return slices.Compact(out)
 }
 
-// findings are the runner's own findings: failed churn and an INVALID run
-// accepted with AllowSaturated.
-func (r *run) findings(rec *report.Record) []report.Finding {
+// findings are the runner's own findings: failed churn and, when saturated
+// says the generator was the bottleneck, a run accepted with AllowSaturated.
+func (r *run) findings(rec *report.Record, saturated bool) []report.Finding {
 	var out []report.Finding
 	if r.fleet != nil {
 		if cc := r.fleet.ChurnCounts(); cc.Failures > 0 {
@@ -147,7 +163,7 @@ func (r *run) findings(rec *report.Record) []report.Finding {
 			})
 		}
 	}
-	if !rec.Valid && r.o.AllowSaturated {
+	if saturated && r.o.AllowSaturated {
 		out = append(out, report.Finding{
 			Rule: RuleGeneratorSaturated, Severity: report.SeverityWarn,
 			Message: "the generator saturated (" + rec.InvalidReason + "); accepted with --allow-saturated, so its latencies describe the generator as much as the server",

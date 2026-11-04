@@ -74,8 +74,9 @@ Use "sqi-load scenarios" to list the built-in scenarios and
 "sqi-load run --scenario smoke" for a one-minute check of every axis.
 
 Exit status: 0 valid and every invariant held, 1 an invariant failed,
-2 INVALID (generator saturated) or interrupted, 3 usage or setup error.
-An invariant failure wins over the others.`,
+2 INVALID (generator saturated, or no submission accepted) or interrupted,
+3 usage, setup or teardown error. An invariant failure wins over the
+others. Findings, errors included, never change the exit status.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -97,8 +98,9 @@ func (a *app) logger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(a.stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 }
 
-// verdict is the exit status a run record earns. allowSaturated accepts an
-// INVALID run but not an incomplete one.
+// verdict is the exit status a run record earns. allowSaturated accepts a run
+// INVALID because the generator saturated, but not an incomplete one, nor one
+// whose submissions the server all refused. Findings never change it.
 func verdict(rec *report.Record, allowSaturated bool) int {
 	switch {
 	case rec == nil:
@@ -107,7 +109,7 @@ func verdict(rec *report.Record, allowSaturated bool) int {
 		return exitInvariant
 	case !rec.Complete:
 		return exitInvalid
-	case !rec.Valid && !allowSaturated:
+	case !rec.Valid && (!allowSaturated || rec.NoneAccepted()):
 		return exitInvalid
 	}
 	return exitOK

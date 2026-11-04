@@ -11,14 +11,20 @@
 //
 //	0  the run is valid, complete, and every invariant held
 //	1  an invariant failed
-//	2  the run is INVALID (the generator saturated; --allow-saturated
-//	   accepts that) or incomplete (interrupted)
+//	2  the run is INVALID (the generator saturated, which --allow-saturated
+//	   accepts, or the server accepted none of its submissions) or
+//	   incomplete (interrupted)
 //	3  a usage or setup error: bad flags, an unknown scenario, a target that
-//	   would not start, or a teardown that failed
+//	   would not start, a teardown that failed, or a failed cleanup
 //
 // When several apply, 1 wins over 3, which wins over 2: an invariant failure
 // is a correctness finding about the server, which a saturated generator
 // slows but does not excuse, so it is never hidden behind another status.
+// Findings, of either severity, never change the exit status: they are
+// reported in summary.md for a person to judge.
+//
+// These are sqi-load's own statuses. Run through "go run" (as the make
+// targets do), any non-zero status comes back as 1.
 package main
 
 import (

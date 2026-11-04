@@ -286,6 +286,8 @@ func TestVerdict(t *testing.T) {
 		{"incomplete", record(false, true), true, exitInvalid},
 		{"both", record(true, false, verify.NameLogs), false, exitInvariant},
 		{"nil", nil, false, exitUsage},
+		{"no submission accepted", noneAccepted(), false, exitInvalid},
+		{"no submission accepted is not excused by allow-saturated", noneAccepted(), true, exitInvalid},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -337,4 +339,14 @@ func TestCLI_Cleanup(t *testing.T) {
 	if c := f.gotCleanup; c == nil || c.HTTPURL != "https://farm:8443" || c.RunID != "big-1" || c.APIKey != "k" || c.TLS.CAFile != "ca.crt" {
 		t.Errorf("cleanup config %+v", c)
 	}
+}
+
+// noneAccepted is a complete record whose scenario submits jobs but whose
+// server accepted none: INVALID, every invariant holding vacuously.
+func noneAccepted() *report.Record {
+	rec := record(true, false)
+	rec.InvalidReason = "no submission accepted"
+	rec.Scenario = &scenario.Scenario{Jobs: []scenario.JobClass{{Name: "shot"}}}
+	rec.Counters = map[string]int64{report.CounterJobsSubmitted: 0, report.CounterSubmitStatusPrefix + "403": 50}
+	return rec
 }

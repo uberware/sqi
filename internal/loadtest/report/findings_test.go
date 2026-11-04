@@ -36,6 +36,30 @@ func TestFindings(t *testing.T) {
 			},
 		},
 		{
+			name: "one submission in a thousand refused", rule: RuleRejected, severity: SeverityWarn, fire: true,
+			build: func() *Record {
+				r := baseRecord()
+				r.Counters = map[string]int64{"submit.status.201": 999, "submit.status.503": 1}
+				return r
+			},
+		},
+		{
+			name: "every submission refused", rule: RuleRejected, severity: SeverityError, fire: true,
+			build: func() *Record {
+				r := baseRecord()
+				r.Counters = map[string]int64{"submit.status.403": 40, "submit.status.0": 2}
+				return r
+			},
+		},
+		{
+			name: "accepted and undecodable submissions are not rejections", rule: RuleRejected,
+			build: func() *Record {
+				r := baseRecord()
+				r.Counters = map[string]int64{"submit.status.201": 50, "submit.status.-1": 1}
+				return r
+			},
+		},
+		{
 			name: "goroutines flat", rule: RuleGoroutineGrowth,
 			build: func() *Record {
 				r := longRecord()
@@ -402,6 +426,49 @@ func TestRecord_PointsAfterEndedIgnored(t *testing.T) {
 	for _, d := range Compare(without, with) {
 		if strings.HasPrefix(d.Metric, "peak.") && d.Verdict != VerdictNoChange {
 			t.Errorf("compare %s = %+v, want no change", d.Metric, d)
+		}
+	}
+}
+
+func TestFindings_RejectedMessage(t *testing.T) {
+	r := baseRecord()
+	r.Counters = map[string]int64{"submit.status.201": 96, "submit.status.429": 3, "submit.status.0": 1}
+	for _, f := range Findings(r, t0) {
+		if f.Rule != RuleRejected {
+			continue
+		}
+		for _, want := range []string{"4 of 100", "4.0%", "429 x3", "0 (no answer) x1"} {
+			if !strings.Contains(f.Message, want) {
+				t.Errorf("message %q lacks %q", f.Message, want)
+			}
+		}
+		if f.Severity != SeverityError {
+			t.Errorf("4%% refused is %s, want error", f.Severity)
+		}
+		return
+	}
+	t.Fatal("submissions-rejected did not fire")
+}
+
+func TestRecord_NoneAccepted(t *testing.T) {
+	withJobs := func(submitted int64) *Record {
+		r := baseRecord()
+		r.Scenario.Jobs = []scenario.JobClass{{Name: "shot"}}
+		r.Counters = map[string]int64{CounterJobsSubmitted: submitted}
+		return r
+	}
+	noJobs := baseRecord()
+	for _, tc := range []struct {
+		name string
+		r    *Record
+		want bool
+	}{
+		{"jobs offered, none accepted", withJobs(0), true},
+		{"jobs offered and accepted", withJobs(3), false},
+		{"a scenario with no jobs", noJobs, false},
+	} {
+		if got := tc.r.NoneAccepted(); got != tc.want {
+			t.Errorf("%s: NoneAccepted = %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }

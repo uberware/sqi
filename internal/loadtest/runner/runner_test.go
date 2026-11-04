@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -450,5 +452,50 @@ func TestTerminalIngest(t *testing.T) {
 	}
 	if lo, hi := m.TerminalIngest.Min(), m.TerminalIngest.Max(); lo > time.Millisecond || !near(hi, 500*time.Millisecond) {
 		t.Errorf("terminal_ingest min %s max %s, want about 0 (t5, clamped) and 500ms (t2)", lo, hi)
+	}
+}
+
+// TestRecord_NoSubmissionAccepted checks that a complete run whose scenario
+// submits jobs, but whose submissions the server all refused, is INVALID with
+// a submissions-rejected error, and not a run in which every invariant held.
+func TestRecord_NoSubmissionAccepted(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		accepted  bool
+		wantValid bool
+	}{
+		{"all refused", false, false},
+		{"one accepted", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, err := newRun(Options{Scenario: smokeScenario(t, "20s"), AllowSaturated: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.complete = true
+			r.invariants = []verify.Result{{Name: verify.NameTerminal, OK: true}}
+			r.metrics.Status(403).Add(49)
+			if tc.accepted {
+				r.metrics.Status(201).Add(1)
+				r.jobs.Record(driver.SubmittedJob{ID: "j1", Class: "shot", Status: 201})
+			}
+			rec := r.record()
+			if rec.Valid != tc.wantValid {
+				t.Errorf("Valid = %v (%s), want %v", rec.Valid, rec.InvalidReason, tc.wantValid)
+			}
+			if !tc.wantValid && !strings.Contains(rec.InvalidReason, "no submission accepted") {
+				t.Errorf("InvalidReason = %q, want it to say no submission was accepted", rec.InvalidReason)
+			}
+			var rules []string
+			for _, f := range rec.Findings {
+				rules = append(rules, f.Rule+"/"+f.Severity)
+			}
+			if !slices.Contains(rules, report.RuleRejected+"/"+report.SeverityError) {
+				t.Errorf("findings %v, want a submissions-rejected error", rules)
+			}
+			if slices.Contains(rules, RuleGeneratorSaturated+"/"+report.SeverityWarn) {
+				t.Errorf("findings %v: refused submissions are not a saturated generator", rules)
+			}
+		})
 	}
 }

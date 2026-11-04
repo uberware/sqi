@@ -4,7 +4,10 @@ package report
 
 import (
 	"fmt"
+	"maps"
 	"math"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/uberware/sqi/internal/bus"
@@ -17,7 +20,8 @@ import (
 // unreliable or points at a defect in sqi: dropped pushes, a throttled
 // generator, workers lost without cause, or a leak large enough to end in an
 // out-of-memory kill. A "warn" is something to look at that does not on its
-// own invalidate the run.
+// own invalidate the run. Neither changes the run's exit status, which only
+// invariants, validity and completeness decide.
 const (
 	SeverityWarn  = "warn"
 	SeverityError = "error"
@@ -32,6 +36,7 @@ const (
 	RuleRateLimited     = "rate-limited"
 	RuleStreamAtCap     = "stream-at-cap"
 	RuleWorkersOffline  = "workers-offline-under-load"
+	RuleRejected        = "submissions-rejected"
 )
 
 const (
@@ -56,6 +61,9 @@ const (
 	walWindow = 5 * time.Minute
 	// capFraction is the share of max_store_mb at which a stream is "at cap".
 	capFraction = 0.95
+	// rejectedErrorPct is the share of submission attempts, in percent, above
+	// which rejected submissions are an error rather than a warning.
+	rejectedErrorPct = 1.0
 )
 
 // streamLogs is the JetStream stream of task logs, the one that fills first.
@@ -77,7 +85,7 @@ func Findings(r *Record, steadyFrom time.Time) []Finding {
 	}
 	var out []Finding
 	for _, rule := range []func(*Record, time.Time) *Finding{
-		goroutineGrowth, rssGrowth, walNeverShrank, wsDrops, rateLimited, streamAtCap, workersOffline,
+		goroutineGrowth, rssGrowth, walNeverShrank, wsDrops, rateLimited, submissionsRejected, streamAtCap, workersOffline,
 	} {
 		if f := rule(r, steadyFrom); f != nil {
 			out = append(out, *f)
@@ -208,6 +216,52 @@ func rateLimited(r *Record, _ time.Time) *Finding {
 		Rule: RuleRateLimited, Severity: SeverityError,
 		Message: fmt.Sprintf("%d submissions were answered 429: the server's rate limiter throttled the run; set http.rate_limit.enabled: false or use more source addresses", n),
 	}
+}
+
+// submissionsRejected flags submissions the server did not accept: answered
+// with a status outside 2xx, or not answered at all (status 0). A 2xx whose
+// body could not be read is not counted: the server took the job.
+func submissionsRejected(r *Record, _ time.Time) *Finding {
+	var attempts, rejected int64
+	var parts []string
+	for _, k := range slices.Sorted(maps.Keys(r.Counters)) {
+		code, ok := strings.CutPrefix(k, CounterSubmitStatusPrefix)
+		n := r.Counters[k]
+		if !ok || n <= 0 {
+			continue
+		}
+		attempts += n
+		if strings.HasPrefix(code, "2") || strings.HasPrefix(code, "-") {
+			continue
+		}
+		rejected += n
+		label := code
+		if code == "0" {
+			label = "0 (no answer)"
+		}
+		parts = append(parts, fmt.Sprintf("%s x%d", label, n))
+	}
+	if rejected == 0 {
+		return nil
+	}
+	pct := float64(rejected) * 100 / float64(attempts)
+	sev := SeverityWarn
+	if pct > rejectedErrorPct {
+		sev = SeverityError
+	}
+	return &Finding{
+		Rule: RuleRejected, Severity: sev,
+		Message: fmt.Sprintf("%d of %d submissions (%.1f%%) were not accepted: %s; their jobs are not in the run, so it measured less load than the scenario offers",
+			rejected, attempts, pct, strings.Join(parts, ", ")),
+	}
+}
+
+// NoneAccepted reports whether the run's scenario submits jobs but the server
+// accepted none of them. Every invariant holds vacuously on such a run, so it
+// says nothing about the server: a key without jobs.write, a template the
+// server refuses, or every submission throttled.
+func (r *Record) NoneAccepted() bool {
+	return r.Scenario != nil && len(r.Scenario.Jobs) > 0 && r.Counters[CounterJobsSubmitted] == 0
 }
 
 // StreamCapMB is the JetStream store cap the run's server was configured
