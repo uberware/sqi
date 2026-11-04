@@ -34,6 +34,7 @@ const (
 // checkpointed away has no size to report.
 func sampleDisk(rec *measure.Recorder, t time.Time, dataDir string) error {
 	var firstErr error
+	recorded := 0
 	note := func(err error) {
 		if err != nil && !errors.Is(err, fs.ErrNotExist) && firstErr == nil {
 			firstErr = err
@@ -49,12 +50,17 @@ func sampleDisk(rec *measure.Recorder, t time.Time, dataDir string) error {
 			continue
 		}
 		rec.Add(f.series, "bytes", t, float64(fi.Size()))
+		recorded++
 	}
 	size, err := dirSize(filepath.Join(dataDir, natsSubdir))
 	if err != nil {
 		note(err)
 	} else {
 		rec.Add("disk.nats_bytes", "bytes", t, float64(size))
+		recorded++
+	}
+	if recorded == 0 && firstErr == nil {
+		return fmt.Errorf("none of %s, %s or %s%c exists under %s", sqliteDBFile, sqliteWALFile, natsSubdir, filepath.Separator, dataDir)
 	}
 	return firstErr
 }

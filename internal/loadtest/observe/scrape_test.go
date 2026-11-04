@@ -228,6 +228,7 @@ func TestRouteCollapse(t *testing.T) {
 		{"/api/v1/workers", "/api/v1/workers"},
 		{"/api/v1/workers/12345", "/api/v1/workers/{id}"},
 		{"/api/v1/jobs/", "/api/v1/jobs/"},
+		{"/api/v1/jobs/active", "/api/v1/jobs/active"},
 		{"/", "/"},
 		{"", ""},
 	}

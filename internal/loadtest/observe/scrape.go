@@ -180,9 +180,10 @@ func (s *scrapeState) recordProcess(rec *measure.Recorder, t time.Time, fams map
 	s.prevCPU = cpu
 }
 
-// summaryTail returns the 0.99 quantile of a summary, or the highest quantile
-// it reports. The Go collector's GC pause summary reports 0, .25, .5, .75 and
-// 1, so its highest is the maximum pause the runtime has seen.
+// summaryTail returns the 0.99 quantile of a summary when it has one, and
+// otherwise the highest quantile it reports. The Go collector's GC pause
+// summary reports only 0, .25, .5, .75 and 1, so for it this is the maximum
+// pause in the runtime's recent-pause window, not a 99th percentile.
 func summaryTail(fams map[string]*dto.MetricFamily, name string) (float64, bool) {
 	f, ok := fams[name]
 	if !ok || len(f.GetMetric()) == 0 || f.GetMetric()[0].GetSummary() == nil {

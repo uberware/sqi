@@ -4,6 +4,7 @@ package observe
 
 import (
 	"context"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -87,9 +88,8 @@ func TestLagSampler_MeasuresLateness(t *testing.T) {
 	l := startLagSampler(ctx, 5*time.Millisecond)
 	defer l.stop()
 
-	// Stall every goroutine's progress is not possible portably; what can be
-	// checked is that a running sampler yields non-negative lateness and
-	// drains what it collected.
+	// A stall cannot be forced portably, so check what can be: a running
+	// sampler yields non-negative lateness and drain empties its window.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		p99, n := l.drain()
@@ -148,7 +148,7 @@ func TestGenSampler_RecordsSelfHealth(t *testing.T) {
 	defer g.stop()
 
 	t0 := time.Now()
-	g.sample(t0)
+	g.sample()
 	if !hasSeries(rec, "gen.goroutines") {
 		t.Fatal("first sample did not record gen.goroutines")
 	}
@@ -160,7 +160,7 @@ func TestGenSampler_RecordsSelfHealth(t *testing.T) {
 	spinUntil := time.Now().Add(150 * time.Millisecond)
 	for time.Now().Before(spinUntil) {
 	}
-	g.sample(time.Now())
+	g.sample()
 	if got := lastValue(t, rec, "gen.cpu_cores"); got <= 0 {
 		t.Fatalf("gen.cpu_cores = %v after a busy interval, want > 0", got)
 	}
@@ -172,5 +172,52 @@ func TestGenSampler_RecordsSelfHealth(t *testing.T) {
 	}
 	if valid, reason := h.Valid(t0.Add(-time.Second), 1024); !valid {
 		t.Fatalf("a tiny test run on 1024 cores is invalid: %s", reason)
+	}
+}
+
+func TestGenSampler_RateUsesTheInstantsOfTheReads(t *testing.T) {
+	rec := measure.NewRecorder()
+	h := NewSelfHealth()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	g := newGenSampler(ctx, rec, h, time.Millisecond)
+	defer g.stop()
+
+	base := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	reads := []struct {
+		at  time.Duration // clock when the CPU is read
+		cpu time.Duration // CPU time the process has used
+	}{
+		{0, 0},
+		{10 * time.Second, 5 * time.Second},  // 0.5 cores
+		{12 * time.Second, 5 * time.Second},  // idle for 2 s: 0 cores
+		{20 * time.Second, 13 * time.Second}, // 1 core over 8 s
+	}
+	var i int
+	g.now = func() time.Time { return base.Add(reads[i].at) }
+	g.cpu = func() (time.Duration, error) { return reads[i].cpu, nil }
+	for i = range reads {
+		time.Sleep(5 * time.Millisecond) // let the lag sampler collect something
+		g.sample()
+	}
+
+	var cpu measure.Series
+	for _, s := range rec.Series() {
+		if s.Name == "gen.cpu_cores" {
+			cpu = s
+		}
+	}
+	want := []struct {
+		at    time.Duration
+		cores float64
+	}{{10 * time.Second, 0.5}, {12 * time.Second, 0}, {20 * time.Second, 1}}
+	if len(cpu.Points) != len(want) {
+		t.Fatalf("gen.cpu_cores has %d points, want %d", len(cpu.Points), len(want))
+	}
+	for k, w := range want {
+		p := cpu.Points[k]
+		if !p.T.Equal(base.Add(w.at)) || math.Abs(p.V-w.cores) > 1e-9 {
+			t.Errorf("point %d = (%v, %v), want (%v, %v)", k, p.T, p.V, base.Add(w.at), w.cores)
+		}
 	}
 }

@@ -192,13 +192,15 @@ func invert(ids map[string]string) map[string]string {
 
 // sample takes every measurement once. phase is "start", "periodic" or "end".
 func (s *sampler) sample(ctx context.Context, phase string) {
+	// The generator is sampled first, and stamps itself: its CPU rate is a
+	// difference of two reads, and the network calls below can take seconds.
+	s.gen.sample()
 	t := time.Now()
 	s.sampleMetrics(ctx, t)
 	s.sampleDisk(ctx, t)
 	s.samplePostgres(ctx, t)
 	s.sampleJetStream(ctx, t)
 	s.sampleProfiles(ctx, t, phase)
-	s.gen.sample(t)
 }
 
 // failed records err against measurement unless the run's own cancellation

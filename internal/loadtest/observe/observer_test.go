@@ -339,3 +339,19 @@ func TestObserver_PostgresUnreachableIsUnavailableAndRedacted(t *testing.T) {
 		t.Error("recorded pg.db_bytes without a database")
 	}
 }
+
+func TestObserver_EmptyDataDirIsUnavailable(t *testing.T) {
+	srv := httptest.NewServer(serve(capture(t)))
+	defer srv.Close()
+	o := observe.New(fakeTarget{httpURL: srv.URL, natsURL: "nats://" + deadPort(t), dataDir: t.TempDir()},
+		measure.NewRecorder(), observe.Config{Interval: time.Hour}, quiet())
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := o.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	u, ok := unavailableFor(o.Unavailable(), "disk")
+	if !ok || !strings.Contains(u, "sqi.db") {
+		t.Fatalf("Unavailable() = %q, want a disk entry naming the files it looked for", o.Unavailable())
+	}
+}
