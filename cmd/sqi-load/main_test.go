@@ -254,6 +254,18 @@ func TestCLI_CompareAndMerge(t *testing.T) {
 	if code != exitOK || !strings.Contains(stdout, report.CounterTasksTerminal) {
 		t.Errorf("compare exit %d stdout:\n%s\nstderr:\n%s", code, stdout, stderr)
 	}
+	if strings.Contains(stdout, "WARNING") {
+		t.Errorf("compare of two valid, complete runs warns:\n%s", stdout)
+	}
+	inv := record(true, false)
+	inv.RunID = "sat"
+	pi := filepath.Join(dir, "invalid")
+	if err := inv.Write(pi); err != nil {
+		t.Fatal(err)
+	}
+	if _, stdout, _ := runCLI(t, &fakeRunner{}, "compare", pa, pi); !strings.Contains(stdout, "WARNING: B (sat) is INVALID") {
+		t.Errorf("compare against an INVALID run does not warn:\n%s", stdout)
+	}
 	if code, _, _ := runCLI(t, &fakeRunner{}, "compare", pa); code != exitUsage {
 		t.Errorf("compare with one record: exit %d, want %d", code, exitUsage)
 	}

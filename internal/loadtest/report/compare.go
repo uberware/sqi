@@ -173,6 +173,27 @@ func newDelta(metric string, a, b float64, dir direction) Delta {
 	return d
 }
 
+// CompareWarnings returns a warning for each of the two records a comparison
+// cannot trust: one that is INVALID, whose numbers describe a saturated
+// generator rather than the server, or one that is incomplete, whose counters
+// and histograms stop early. The deltas are still computed; the warnings say
+// what they are worth.
+func CompareWarnings(a, b *Record) []string {
+	var out []string
+	for _, x := range []struct {
+		label string
+		r     *Record
+	}{{"A", a}, {"B", b}} {
+		if !x.r.Valid {
+			out = append(out, fmt.Sprintf("%s (%s) is INVALID (%s): its numbers describe the generator as much as the server", x.label, x.r.RunID, orDash(x.r.InvalidReason)))
+		}
+		if !x.r.Complete {
+			out = append(out, fmt.Sprintf("%s (%s) is INCOMPLETE: it ended before its planned duration, so its totals and rates stop early", x.label, x.r.RunID))
+		}
+	}
+	return out
+}
+
 // RenderDeltas formats deltas as an aligned text table.
 func RenderDeltas(ds []Delta) string {
 	var sb strings.Builder

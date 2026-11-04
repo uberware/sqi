@@ -31,6 +31,12 @@ a difference within 5% is reported as no change.`,
 				return err
 			}
 			fmt.Fprintf(a.stdout, "A: %s\nB: %s\n\n", args[0], args[1])
+			if ws := report.CompareWarnings(ra, rb); len(ws) > 0 {
+				for _, w := range ws {
+					fmt.Fprintf(a.stdout, "WARNING: %s\n", w)
+				}
+				fmt.Fprintln(a.stdout)
+			}
 			fmt.Fprint(a.stdout, report.RenderDeltas(report.Compare(ra, rb)))
 			return nil
 		},

@@ -156,3 +156,20 @@ func TestRenderDeltas(t *testing.T) {
 		}
 	}
 }
+
+func TestCompareWarnings(t *testing.T) {
+	ok := baseRecord()
+	invalid := baseRecord()
+	invalid.RunID, invalid.Valid, invalid.InvalidReason = "run-2", false, "generator CPU above 85%"
+	partial := baseRecord()
+	partial.RunID, partial.Complete = "run-3", false
+	if ws := CompareWarnings(ok, ok); len(ws) != 0 {
+		t.Errorf("two valid, complete runs: warnings %v, want none", ws)
+	}
+	ws := strings.Join(CompareWarnings(invalid, partial), "\n")
+	for _, want := range []string{"A (run-2) is INVALID (generator CPU above 85%)", "B (run-3) is INCOMPLETE"} {
+		if !strings.Contains(ws, want) {
+			t.Errorf("warnings %q lack %q", ws, want)
+		}
+	}
+}
