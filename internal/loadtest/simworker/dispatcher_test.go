@@ -321,3 +321,123 @@ func TestDispatcher_FailedPath(t *testing.T) {
 		}
 	}
 }
+
+// assignmentWithTimeout is an assignment whose onRun carries a timeout.
+func assignmentWithTimeout(task, attempt string, seconds int) *protocol.AssignMsg {
+	m := assignment(task, attempt)
+	m.OnRun = &protocol.Action{Command: "/bin/true", TimeoutSeconds: seconds}
+	return m
+}
+
+func TestDispatcher_Timeout(t *testing.T) {
+	tests := []struct {
+		name        string
+		plan        simworker.TaskPlan
+		timeout     int // seconds
+		cancelAfter time.Duration
+		wantStatus  string
+		wantKind    string
+		wantMessage string // prefix
+	}{
+		{
+			name:        "a hang is failed at the timeout",
+			plan:        simworker.TaskPlan{Duration: 10 * time.Millisecond, Outcome: simworker.OutcomeHang, LogLines: 2, LineBytes: 10},
+			timeout:     1,
+			wantStatus:  "failed",
+			wantKind:    simworker.KindTerminal,
+			wantMessage: "execution timeout after 1s",
+		},
+		{
+			name:        "a plan longer than the timeout is failed at the timeout",
+			plan:        simworker.TaskPlan{Duration: time.Minute, Outcome: simworker.OutcomeSucceeded},
+			timeout:     1,
+			wantStatus:  "failed",
+			wantKind:    simworker.KindTerminal,
+			wantMessage: "execution timeout after 1s",
+		},
+		{
+			name:        "a cancel before the timeout wins",
+			plan:        simworker.TaskPlan{Duration: 10 * time.Millisecond, Outcome: simworker.OutcomeHang},
+			timeout:     30,
+			cancelAfter: 100 * time.Millisecond,
+			wantStatus:  "canceled",
+			wantKind:    simworker.KindCanceled,
+		},
+		{
+			name:       "a plan shorter than the timeout succeeds",
+			plan:       simworker.TaskPlan{Duration: 20 * time.Millisecond, Outcome: simworker.OutcomeSucceeded},
+			timeout:    30,
+			wantStatus: "succeeded",
+			wantKind:   simworker.KindTerminal,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, conn, l := newTestDispatcher(t, tt.plan)
+			start := time.Now()
+			if err := d.Dispatch(t.Context(), assignmentWithTimeout("t1", "a1", tt.timeout)); err != nil {
+				t.Fatalf("Dispatch: %v", err)
+			}
+			if tt.cancelAfter > 0 {
+				waitFor(t, 5*time.Second, "running", func() bool { return ledgerHas(l, "t1", simworker.KindRunning) })
+				time.Sleep(tt.cancelAfter)
+				if !d.Cancel("t1") {
+					t.Fatal("Cancel = false, want true")
+				}
+			}
+			waitFor(t, 10*time.Second, "end event", func() bool { return ledgerHas(l, "t1", tt.wantKind) })
+			waitFor(t, 5*time.Second, "attempt release", func() bool { return len(d.ActiveAttemptIDs()) == 0 })
+			elapsed := time.Since(start)
+
+			st := conn.statuses(t)
+			if len(st) != 2 || st[0].Status != "running" || st[1].Status != tt.wantStatus {
+				t.Fatalf("statuses = %+v, want running then %s", st, tt.wantStatus)
+			}
+			if tt.wantMessage != "" && !strings.HasPrefix(st[1].Message, tt.wantMessage) {
+				t.Errorf("message = %q, want prefix %q", st[1].Message, tt.wantMessage)
+			}
+			if tt.wantStatus == "failed" && (st[1].ExitCode == nil || *st[1].ExitCode == 0) {
+				t.Errorf("exit code = %v, want non-zero", st[1].ExitCode)
+			}
+			if tt.wantMessage != "" && elapsed < time.Second {
+				t.Errorf("timed out after %s, before the 1s timeout", elapsed)
+			}
+			// Exactly one end event for the attempt, of the expected kind.
+			ends := countKind(l, "t1", simworker.KindTerminal) + countKind(l, "t1", simworker.KindCanceled)
+			if ends != 1 {
+				t.Errorf("%d end events, want exactly 1", ends)
+			}
+			for _, e := range l.Events() {
+				if e.Kind == simworker.KindTerminal && e.TaskID == "t1" && e.Outcome != tt.wantStatus {
+					t.Errorf("terminal outcome = %q, want %q", e.Outcome, tt.wantStatus)
+				}
+			}
+		})
+	}
+}
+
+// A cancel and the timeout landing together publish one terminal.
+func TestDispatcher_TimeoutRacingCancel(t *testing.T) {
+	for range 20 {
+		d, conn, l := newTestDispatcher(t, simworker.TaskPlan{Duration: time.Minute, Outcome: simworker.OutcomeHang})
+		if err := d.Dispatch(t.Context(), assignmentWithTimeout("t1", "a1", 1)); err != nil {
+			t.Fatalf("Dispatch: %v", err)
+		}
+		waitFor(t, 5*time.Second, "running", func() bool { return ledgerHas(l, "t1", simworker.KindRunning) })
+		time.Sleep(time.Second - 2*time.Millisecond)
+		d.Cancel("t1")
+		waitFor(t, 5*time.Second, "release", func() bool { return len(d.ActiveAttemptIDs()) == 0 })
+		terminals := 0
+		for _, s := range conn.statuses(t) {
+			if s.Status != "running" {
+				terminals++
+			}
+		}
+		if terminals != 1 {
+			t.Fatalf("%d terminal statuses, want exactly 1", terminals)
+		}
+		if ends := countKind(l, "t1", simworker.KindTerminal) + countKind(l, "t1", simworker.KindCanceled); ends != 1 {
+			t.Fatalf("%d end events, want exactly 1", ends)
+		}
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -173,11 +174,69 @@ func TestBuildTemplate_Structure(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "hang rate bounds the action",
+			jc: scenario.JobClass{Steps: 2, TasksPerStep: 1, Task: scenario.TaskSpec{
+				Duration: scenario.Dist{Kind: scenario.DistConstant, Value: 5, Unit: "s"}, HangRate: 0.001,
+			}},
+			check: func(t *testing.T, tmpl *openjd.JobTemplate) {
+				for _, st := range tmpl.Steps {
+					if got := st.Script.Actions.OnRun.TimeoutSeconds; got != 60 {
+						t.Errorf("%s timeout = %d, want 60", st.Name, got)
+					}
+				}
+			},
+		},
+		{
+			name: "no hang rate leaves the action unbounded",
+			jc: scenario.JobClass{Steps: 1, TasksPerStep: 1, Task: scenario.TaskSpec{
+				Duration: scenario.Dist{Kind: scenario.DistConstant, Value: 500, Unit: "s"},
+			}},
+			check: func(t *testing.T, tmpl *openjd.JobTemplate) {
+				run := tmpl.Steps[0].Script.Actions.OnRun
+				if run.TimeoutSet || run.TimeoutSeconds != 0 {
+					t.Errorf("timeout = %d (set %v), want none", run.TimeoutSeconds, run.TimeoutSet)
+				}
+			},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			tmpl, _ := buildAndValidate(t, tc.jc)
 			tc.check(t, tmpl)
+		})
+	}
+}
+
+func TestBuildTemplate_HangTimeout(t *testing.T) {
+	sec := func(d scenario.Dist) scenario.Dist { d.Unit = "s"; return d }
+	tests := []struct {
+		name string
+		dist scenario.Dist
+		want int // seconds; 0 = no timeout key
+	}{
+		{"constant under the floor", sec(scenario.Dist{Kind: scenario.DistConstant, Value: 5}), 60},
+		{"constant over the floor", sec(scenario.Dist{Kind: scenario.DistConstant, Value: 40}), 120},
+		{"uniform uses max", sec(scenario.Dist{Kind: scenario.DistUniform, Min: 1, Max: 30}), 90},
+		{"lognormal uses p95", sec(scenario.Dist{Kind: scenario.DistLognormal, Median: 10, P95: 50}), 150},
+		{"fractional rounds up", sec(scenario.Dist{Kind: scenario.DistConstant, Value: 20.2}), 61},
+		{"unset duration", scenario.Dist{}, 60},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			jc := scenario.JobClass{Steps: 1, TasksPerStep: 1, Task: scenario.TaskSpec{Duration: tc.dist, HangRate: 0.5}}
+			tmpl, _ := buildAndValidate(t, jc)
+			if got := tmpl.Steps[0].Script.Actions.OnRun.TimeoutSeconds; got != tc.want {
+				t.Errorf("timeout = %d, want %d", got, tc.want)
+			}
+			jc.Task.HangRate = 0
+			b, err := BuildTemplate(jc, "j", noopCmd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(b), "timeout") {
+				t.Errorf("template with hang_rate 0 mentions a timeout:\n%s", b)
+			}
 		})
 	}
 }
@@ -212,6 +271,10 @@ func TestBuildTemplate_SubmitsLikeTheServer(t *testing.T) {
 		slow bool
 	}{
 		{"EXPR chunked", scenario.JobClass{Steps: 2, TasksPerStep: 40, Chunk: 5, EXPR: true}, false},
+		{"hang rate with a timeout", scenario.JobClass{
+			Steps: 2, TasksPerStep: 10, EXPR: true,
+			Task: scenario.TaskSpec{Duration: scenario.Dist{Kind: scenario.DistConstant, Value: 5, Unit: "s"}, HangRate: 0.01},
+		}, false},
 		{"EXPR split with chunk", scenario.JobClass{Steps: 1, TasksPerStep: 4000, Chunk: 2, EXPR: true}, false},
 		{"three step chain", scenario.JobClass{Steps: 3, TasksPerStep: 100}, false},
 		{"usage pool and cores", scenario.JobClass{Steps: 2, TasksPerStep: 10, Cores: 4, UsagePool: "gpu"}, false},

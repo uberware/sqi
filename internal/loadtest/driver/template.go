@@ -6,7 +6,9 @@ package driver
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -72,6 +74,8 @@ type tmplActions struct {
 type tmplRun struct {
 	Command string   `yaml:"command"`
 	Args    []string `yaml:"args,omitempty"`
+	// Timeout is the action's limit in whole seconds; zero is omitted.
+	Timeout int `yaml:"timeout,omitempty"`
 }
 
 // BuildTemplate returns the OpenJD YAML for one job of class jc. Step i+1
@@ -137,9 +141,34 @@ func buildStep(jc scenario.JobClass, cmd scenario.Command, n, frames, blocks, ch
 		st.Script.Let = []string{"tag = '" + exprLetTag + "'"}
 		st.Script.Actions.OnRun.Args = append(st.Script.Actions.OnRun.Args, "{{ tag + string(Task.Param.Frame) }}")
 	}
+	if jc.Task.HangRate > 0 {
+		st.Script.Actions.OnRun.Timeout = hangTimeoutSeconds(jc.Task.Duration)
+	}
 	// Last, so a simulated worker finds the class whatever came before it.
 	st.Script.Actions.OnRun.Args = append(st.Script.Actions.OnRun.Args, scenario.ClassArg(jc.Name))
 	return st
+}
+
+// Bounds on the onRun timeout given to a class whose tasks may hang: a hung
+// task would otherwise never end and its job never settle.
+const (
+	hangTimeoutFloor  = 60 * time.Second
+	hangTimeoutFactor = 3
+)
+
+// hangTimeoutSeconds is the onRun timeout for a class that hangs: the larger of
+// 60 s and three times the longest duration the dist produces (its max,
+// p95 or value), in whole seconds.
+func hangTimeoutSeconds(d scenario.Dist) int {
+	upper := d.Value
+	switch d.Kind {
+	case scenario.DistUniform:
+		upper = d.Max
+	case scenario.DistLognormal:
+		upper = d.P95
+	}
+	secs := math.Ceil(max(upper, 0) * hangTimeoutFactor)
+	return int(max(secs, hangTimeoutFloor.Seconds()))
 }
 
 func frameParam(frames, chunk int) tmplParam {

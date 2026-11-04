@@ -11,6 +11,7 @@ package simworker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"math/rand/v2"
@@ -32,6 +33,9 @@ const minLineTick = 10 * time.Millisecond
 // simulatedFailure is the failure reason of a task whose plan fails.
 const simulatedFailure = "simulated failure"
 
+// timeoutExitCode is the exit code reported for a task killed at its timeout.
+const timeoutExitCode = -1
+
 // errClosed is returned by Dispatch once the dispatcher has been shut down.
 var errClosed = errors.New("simworker: dispatcher is shut down")
 
@@ -44,6 +48,7 @@ const (
 	endCanceled                  // a cancel signal arrived
 	endShutdown                  // a graceful stop gave up waiting for it
 	endCrashed                   // the worker crashed or restarted
+	endTimedOut                  // the action's timeout elapsed
 )
 
 // simTask is one dispatched attempt.
@@ -54,7 +59,8 @@ type simTask struct {
 	stop chan struct{}
 	// reason is guarded by Dispatcher.mu. Whoever moves it off endNone
 	// decides how the task ends: the task itself (endDone), Cancel, or the
-	// worker shutting the dispatcher down.
+	// worker shutting the dispatcher down. A timeout is another claimant: the
+	// timer set by run moves it to endTimedOut the same way Cancel does.
 	reason endReason
 }
 
@@ -208,9 +214,32 @@ func (d *Dispatcher) run(t *simTask) {
 	}
 	d.st.Running(context.Background(), m, "", nil, time.Now())
 	d.record(m, KindRunning, "", 0, time.Time{})
+	if timeout := timeoutOf(m); timeout > 0 {
+		timer := time.AfterFunc(timeout, func() { d.expire(t) })
+		defer timer.Stop()
+	}
 
 	lines := d.emit(t)
 	d.finish(t, d.settle(t), lines)
+}
+
+// timeoutOf is m's onRun timeout, or zero for none.
+func timeoutOf(m *protocol.AssignMsg) time.Duration {
+	if m.OnRun == nil || m.OnRun.TimeoutSeconds <= 0 {
+		return 0
+	}
+	return time.Duration(m.OnRun.TimeoutSeconds) * time.Second
+}
+
+// expire ends t as timed out unless a cancel, a shutdown or the plan's own end
+// got there first.
+func (d *Dispatcher) expire(t *simTask) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if t.reason == endNone {
+		t.reason = endTimedOut
+		close(t.stop)
+	}
 }
 
 // emit writes the plan's lines evenly over its duration and returns how many
@@ -304,6 +333,13 @@ func (d *Dispatcher) finish(t *simTask, reason endReason, lines int) {
 	case endCanceled:
 		d.st.Terminal(ctx, m, "", "canceled", nil, "", nil, now)
 		d.record(m, KindCanceled, "", lines, now)
+	case endTimedOut:
+		// The reason matches the real executor's, so the server and any reader
+		// of a failure reason see the same text.
+		code := timeoutExitCode
+		msg := fmt.Sprintf("execution timeout after %s", timeoutOf(m))
+		d.st.Terminal(ctx, m, "", OutcomeFailed, &code, msg, nil, now)
+		d.record(m, KindTerminal, OutcomeFailed, lines, now)
 	case endShutdown:
 		d.st.Terminal(ctx, m, "", "failed", nil, protocol.MessageWorkerShutdown, nil, now)
 		d.record(m, KindTerminal, protocol.MessageWorkerShutdown, lines, now)
