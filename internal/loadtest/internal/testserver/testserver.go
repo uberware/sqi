@@ -34,6 +34,8 @@ type Options struct {
 	// endpoint mounted and a reusable join token (join_token_single_use
 	// false) minted before the server boots. Server.JoinToken returns it.
 	BrokerAuth bool
+	// Pprof mounts the /debug/pprof endpoints.
+	Pprof bool
 }
 
 // Server is a running in-process sqi-server.
@@ -86,6 +88,7 @@ func Start(tb testing.TB, opts Options) *Server {
 		},
 		DiscoveryEnabled: false,
 		DisableRateLimit: true,
+		EnablePprof:      opts.Pprof,
 	}
 	var joinToken string
 	if opts.BrokerAuth {
