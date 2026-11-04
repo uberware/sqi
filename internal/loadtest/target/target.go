@@ -48,6 +48,35 @@ type Target interface {
 	Close(ctx context.Context) error
 }
 
+// PIDs returns the process IDs of the processes a managed target is running,
+// the server first and then its real workers, and nil for any other target.
+// Call it while the target runs: Close forgets the server it stopped.
+func PIDs(t Target) []int {
+	m, ok := t.(*managed)
+	if !ok {
+		return nil
+	}
+	var pids []int
+	if pid := m.serverPID(); pid != 0 {
+		pids = append(pids, pid)
+	}
+	return append(pids, m.workerPIDs()...)
+}
+
+// ProcessAlive reports whether a process with this id is still running. A
+// process the harness started and has since reaped is not.
+func ProcessAlive(pid int) bool { return processAlive(pid) }
+
+// PostgresDSN returns the DSN of the PostgreSQL database a managed target's
+// server uses (the one it created, when it was given an administrative DSN),
+// and "" for SQLite or any other target.
+func PostgresDSN(t Target) string {
+	if m, ok := t.(*managed); ok {
+		return m.pgDSN
+	}
+	return ""
+}
+
 // placeholderCommand is the command of a target with no real workers. The
 // path is never executed, but a job template needs one.
 const placeholderCommand = "sqi-load-noop"

@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -245,10 +246,19 @@ func TestStartManaged_SQLite(t *testing.T) {
 			}
 
 			pid := m.serverPID()
+			if got := PIDs(m); !slices.Equal(got, []int{pid}) {
+				t.Errorf("PIDs = %v, want [%d]", got, pid)
+			}
+			if !ProcessAlive(pid) {
+				t.Errorf("ProcessAlive(%d) = false for the running server", pid)
+			}
+			if dsn := PostgresDSN(m); dsn != "" {
+				t.Errorf("PostgresDSN = %q on SQLite", dsn)
+			}
 			if err := m.Close(t.Context()); err != nil {
 				t.Fatalf("Close: %v", err)
 			}
-			if processAlive(pid) {
+			if ProcessAlive(pid) {
 				t.Errorf("server pid %d still running after Close", pid)
 			}
 			info, err := os.Stat(filepath.Join(runDir, "server.log"))
@@ -404,6 +414,9 @@ func TestStartManaged_Postgres(t *testing.T) {
 	}
 	if !exists() {
 		t.Fatalf("database %s does not exist while the target runs", db)
+	}
+	if dsn := PostgresDSN(m); !strings.Contains(dsn, db) {
+		t.Errorf("PostgresDSN = %q, want the run's database %s", dsn, db)
 	}
 	if err := m.Close(t.Context()); err != nil {
 		t.Fatalf("Close: %v", err)

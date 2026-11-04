@@ -200,6 +200,17 @@ func TestFindings(t *testing.T) {
 			},
 		},
 		{
+			name: "workers offline only after the run ended", rule: RuleWorkersOffline,
+			build: func() *Record {
+				// The observer's final sample is taken after the fleet stops.
+				r := baseRecord()
+				r.Counters[CounterWorkersLive] = 100
+				r.Series = []measure.Series{ramp("workers.online", "workers", 20, 30*time.Second, 100, 0)}
+				r.Series[0].Points = append(r.Series[0].Points, measure.Point{T: r.Ended.Add(30 * time.Second), V: 0})
+				return r
+			},
+		},
+		{
 			name: "queue depth that never drains is not a finding", rule: "any",
 			build: func() *Record {
 				// F5: the server keeps a drained queue's last non-zero depth.
@@ -301,7 +312,7 @@ func TestStreamCapMB(t *testing.T) {
 		{"wrong nesting", &scenario.Scenario{Server: scenario.ServerSpec{Config: map[string]any{"nats": "x"}}}, float64(defaultMaxStoreMB)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := streamCapMB(tc.sc); got != tc.want {
+			if got := StreamCapMB(tc.sc); got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
 		})

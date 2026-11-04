@@ -13,6 +13,9 @@ coverage.html
 cpu.prof
 mem.prof
 
+# sqi-load run directories (the default --out) and their binary cache
+/runs/
+
 # Go workspace (go work)
 go.work
 go.work.sum

@@ -182,10 +182,10 @@ func rateLimited(r *Record, _ time.Time) *Finding {
 	}
 }
 
-// streamCapMB is the JetStream store cap the run's server was configured
+// StreamCapMB is the JetStream store cap the run's server was configured
 // with: nats.embedded.max_store_mb from the scenario's server config, else the
 // server default.
-func streamCapMB(sc *scenario.Scenario) float64 {
+func StreamCapMB(sc *scenario.Scenario) float64 {
 	def := float64(defaultMaxStoreMB)
 	if sc == nil {
 		return def
@@ -208,7 +208,7 @@ func streamAtCap(r *Record, _ time.Time) *Finding {
 	if s == nil || len(s.Points) == 0 {
 		return nil
 	}
-	capBytes := streamCapMB(r.Scenario) * (1 << 20)
+	capBytes := StreamCapMB(r.Scenario) * (1 << 20)
 	peak := 0.0
 	for _, p := range s.Points {
 		peak = math.Max(peak, p.V)
@@ -254,7 +254,9 @@ func workersOffline(r *Record, from time.Time) *Finding {
 	}
 	lowest, below := math.Inf(1), 0
 	for _, p := range s.Points {
-		if p.T.Before(from) {
+		// Past Ended the fleet is being stopped: the run's last sample is
+		// taken after its workers have gone.
+		if p.T.Before(from) || (!r.Ended.IsZero() && p.T.After(r.Ended)) {
 			continue
 		}
 		lowest = math.Min(lowest, p.V)
@@ -267,7 +269,7 @@ func workersOffline(r *Record, from time.Time) *Finding {
 	}
 	return &Finding{
 		Rule: RuleWorkersOffline, Severity: SeverityError,
-		Message: fmt.Sprintf("workers.online fell below the %d live workers in %d samples after warmup (lowest %.0f) although no churn ran",
+		Message: fmt.Sprintf("workers.online fell below the %d live workers in %d samples between warmup and the end of the run (lowest %.0f) although no churn ran",
 			live, below, lowest),
 	}
 }

@@ -465,3 +465,26 @@ var (
 	_ Target                = (*attached)(nil)
 	_ simworker.Credentials = simworker.NoCredentials{}
 )
+
+func TestProcessHelpers_NotManaged(t *testing.T) {
+	tests := []struct {
+		name string
+		tgt  Target
+	}{
+		{"attached", &attached{}},
+		{"nil", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := PIDs(tt.tgt); got != nil {
+				t.Errorf("PIDs = %v, want nil", got)
+			}
+			if got := PostgresDSN(tt.tgt); got != "" {
+				t.Errorf("PostgresDSN = %q, want empty", got)
+			}
+		})
+	}
+	if !ProcessAlive(os.Getpid()) {
+		t.Error("ProcessAlive(own pid) = false")
+	}
+}
