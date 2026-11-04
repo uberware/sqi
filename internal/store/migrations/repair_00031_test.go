@@ -115,12 +115,15 @@ func openSeedable(t *testing.T) (path string, s *sqlite.Store, poolID string) {
 
 // dumpTables renders every application table deterministically, for a
 // byte-for-byte before/after comparison. goose's own bookkeeping table is
-// excluded because rewinding and re-applying a version rewrites it by design.
+// excluded because rewinding and re-applying a version rewrites it by design,
+// and so are the tables a later migration creates already holding their seed
+// row, which a rewound database lacks and so would differ by design.
 func dumpTables(t *testing.T, db *sql.DB) string {
 	t.Helper()
 	tables := queryStrings(t, db,
 		`SELECT name FROM sqlite_master
 		 WHERE type = 'table' AND name NOT LIKE 'goose%' AND name NOT LIKE 'sqlite_%'
+		   AND name NOT IN ('server_lease', 'server_epoch')
 		 ORDER BY name`)
 	var b strings.Builder
 	for _, tbl := range tables {

@@ -34,6 +34,14 @@ type Dialect interface {
 	// serializes every writer). A statement that exists only to take those
 	// locks is not run when it is "".
 	ForUpdate() string
+	// ForShare is ForUpdate's shared form (PostgreSQL: " FOR SHARE"): the rows
+	// a SELECT reads cannot change until the transaction ends, though other
+	// readers may share them. It is "" where the database takes no row locks.
+	ForShare() string
+	// ClockMicros returns a SQL expression for the database's wall clock now
+	// as integer microseconds since the Unix epoch. It reads the clock at
+	// each evaluation, not once per transaction.
+	ClockMicros() string
 }
 
 // ErrClass is what a driver error means to the store.

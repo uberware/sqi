@@ -171,3 +171,14 @@ func (pgDialect) CILike(col string) string { return col + " ILIKE ? ESCAPE ''" }
 
 // ForUpdate locks the rows a SELECT reads until the transaction ends.
 func (pgDialect) ForUpdate() string { return " FOR UPDATE" }
+
+// ForShare keeps the rows a SELECT reads from changing until the transaction
+// ends, without excluding other readers.
+func (pgDialect) ForShare() string { return " FOR SHARE" }
+
+// ClockMicros reads clock_timestamp(), not now(): now() is frozen at the
+// start of the transaction, which would age a lease check made late in a long
+// transaction.
+func (pgDialect) ClockMicros() string {
+	return "(extract(epoch from clock_timestamp()) * 1000000)::bigint"
+}

@@ -42,8 +42,9 @@ func TestSQLite_ReadsTheMigratedSchema(t *testing.T) {
 	}
 	want := []string{
 		"api_keys", "audit_log", "broker_state", "compute_locations", "farms", "job_dependencies", "jobs", "products",
-		"queues", "sessions", "steps", "storage_locations", "task_attempts", "task_logs", "tasks",
-		"usage_claims", "usage_pools", "users", "worker_credentials", "worker_join_tokens", "workers",
+		"queues", "server_epoch", "server_lease", "server_members", "sessions", "steps", "storage_locations",
+		"task_attempts", "task_logs", "tasks", "usage_claims", "usage_pools", "users", "worker_credentials",
+		"worker_join_tokens", "workers",
 	}
 	if got := slices.Sorted(maps.Keys(info)); !slices.Equal(got, want) {
 		t.Fatalf("tables = %v\nwant     %v", got, want)

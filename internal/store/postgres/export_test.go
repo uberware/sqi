@@ -14,3 +14,9 @@ import (
 func LockAnchors(ctx context.Context, tx *sql.Tx, anchors ...sqlstore.Anchor) error {
 	return pgDialect{}.LockAnchors(ctx, tx, anchors...)
 }
+
+// ClockMicros and ForShare expose the dialect's fragments to the external
+// tests.
+func ClockMicros() string { return pgDialect{}.ClockMicros() }
+
+func ForShare() string { return pgDialect{}.ForShare() }

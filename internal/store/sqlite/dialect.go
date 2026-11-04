@@ -61,3 +61,12 @@ func (sqliteDialect) CILike(col string) string { return col + " LIKE ?" }
 // ForUpdate returns "": SQLite has no row locks, and its single write
 // connection already serializes every write transaction.
 func (sqliteDialect) ForUpdate() string { return "" }
+
+// ForShare returns "": SQLite has no row locks.
+func (sqliteDialect) ForShare() string { return "" }
+
+// ClockMicros is the Julian day number of now, rebased to the Unix epoch and
+// scaled to microseconds. julianday('now') is one value per statement.
+func (sqliteDialect) ClockMicros() string {
+	return "CAST((julianday('now') - 2440587.5) * 86400000000 AS INTEGER)"
+}
