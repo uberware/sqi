@@ -5,6 +5,7 @@ package target
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -577,5 +578,122 @@ func TestPreparePostgres_RefusesANonEmptyDatabase(t *testing.T) {
 				t.Errorf("the error shows the DSN's password: %v", err)
 			}
 		})
+	}
+}
+
+// git runs git in dir for a test, failing it on error.
+func git(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), "git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false"}, args...)...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+func TestGitState_UntrackedFilesAreNotDirty(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	dir := t.TempDir()
+	git(t, dir, "init", "-q")
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "add", "a.go")
+	git(t, dir, "commit", "-q", "-m", "a")
+	if err := os.MkdirAll(filepath.Join(dir, ".claude"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".claude", "settings.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if head, dirty := gitState(t.Context(), dir); head == "" || dirty {
+		t.Errorf("with only an untracked file: head %q dirty %v, want a head and clean", head, dirty)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package b\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, dirty := gitState(t.Context(), dir); !dirty {
+		t.Error("a modified tracked file does not count as dirty")
+	}
+}
+
+func TestAcquireBuildLock_WaitsForAnotherBuild(t *testing.T) {
+	old := lockPoll
+	lockPoll = 10 * time.Millisecond
+	t.Cleanup(func() { lockPoll = old })
+	dir := t.TempDir()
+	held, err := acquireBuildLock(t.Context(), dir)
+	if err != nil {
+		t.Fatalf("first lock: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	if l, err := acquireBuildLock(ctx, dir); err == nil {
+		l.Release() //nolint:errcheck // the test fails anyway
+		t.Fatal("a second build took the lock while the first held it")
+	}
+	got := make(chan error, 1)
+	go func() {
+		l, err := acquireBuildLock(t.Context(), dir)
+		if err == nil {
+			err = l.Release()
+		}
+		got <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	if err := held.Release(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-got:
+		if err != nil {
+			t.Errorf("the waiting build: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the waiting build never got the lock after it was released")
+	}
+}
+
+func TestInstall_ReplacesARunningBinary(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, scratch := t.TempDir(), t.TempDir()
+	name := "sqi-server" + exeSuffix()
+	running := filepath.Join(out, name)
+	data, err := os.ReadFile(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(running, data, 0o700); err != nil { //nolint:gosec // G306: an executable for the test
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scratch, name), []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Another run is still running the old binary: this test's own binary,
+	// copied, as a server that never exits on its own.
+	cmd := exec.CommandContext(t.Context(), running) //nolint:gosec // G204: the test's own binary
+	cmd.Env = append(os.Environ(), helperEnv+"=hang")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cmd.Process.Kill() //nolint:errcheck // may have exited
+		cmd.Wait()         //nolint:errcheck // killed
+	})
+	if err := install(scratch, out, []string{name}); err != nil {
+		t.Fatalf("install over a running binary: %v", err)
+	}
+	if b, _ := os.ReadFile(running); string(b) != "new" {
+		t.Errorf("installed binary holds %d bytes, want the new build", len(b))
+	}
+	cmd.Process.Kill() //nolint:errcheck // checked by Wait
+	cmd.Wait()         //nolint:errcheck // killed
+	removeOld(out)
+	if left, _ := filepath.Glob(filepath.Join(out, "*"+oldSuffix+"*")); len(left) != 0 {
+		t.Errorf("old binaries left once nothing runs them: %v", left)
 	}
 }
