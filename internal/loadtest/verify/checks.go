@@ -253,16 +253,36 @@ func (c *checker) droppedTasks(jobID string, tasks []client.Task, total int, x *
 	return out
 }
 
-// listTasks returns all of a job's tasks and the total the server reports.
+// listTasks returns all of a job's tasks, in the server's order, and the total
+// the server reports. The first page gives the total; the remaining pages are
+// read in parallel, since a job of a million tasks is a thousand pages and the
+// server takes longer over each as its offset grows.
 func (c *checker) listTasks(ctx context.Context, jobID string) (tasks []client.Task, total int, err error) {
-	err = client.EachPage(maxPage, func(limit, offset int) (client.Page[client.Task], error) {
-		return c.v.ListTasks(ctx, jobID, limit, offset)
-	}, func(p client.Page[client.Task]) {
-		tasks = append(tasks, p.Items...)
-		total = p.Total
-	})
+	first, err := c.v.ListTasks(ctx, jobID, maxPage, 0)
 	if err != nil {
 		return nil, 0, err
+	}
+	tasks, total = first.Items, first.Total
+	if len(first.Items) == 0 {
+		return tasks, total, nil
+	}
+	var offsets []int
+	for off := len(first.Items); off < total; off += maxPage {
+		offsets = append(offsets, off)
+	}
+	type tail struct {
+		items []client.Task
+		err   error
+	}
+	rest := parallelMap(len(offsets), func(i int) tail {
+		p, err := c.v.ListTasks(ctx, jobID, maxPage, offsets[i])
+		return tail{p.Items, err}
+	})
+	for _, r := range rest {
+		if r.err != nil {
+			return nil, 0, r.err
+		}
+		tasks = append(tasks, r.items...)
 	}
 	return tasks, total, nil
 }

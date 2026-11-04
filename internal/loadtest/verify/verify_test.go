@@ -37,6 +37,7 @@ type fakeView struct {
 	workers     func(poll int) []client.Worker
 	polls       int
 	failAttempt map[string]bool
+	failTasksAt int                 // a ListTasks at this offset fails; 0 means none
 	calls       map[string][]string // method -> arguments, in call order
 }
 
@@ -92,6 +93,9 @@ func (f *fakeView) ListTasks(_ context.Context, jobID string, limit, offset int)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.called("ListTasks", jobID)
+	if offset > 0 && offset == f.failTasksAt {
+		return client.Page[client.Task]{}, &client.APIError{Status: 500, Method: "GET", Path: "/jobs/" + jobID + "/tasks", Detail: "boom"}
+	}
 	return page(f.tasks[jobID], limit, offset), nil
 }
 
@@ -1090,4 +1094,33 @@ func TestCheck_RealWorkerTasks(t *testing.T) {
 			assertResults(t, verify.Check(t.Context(), w.view, w.in), tt.fail)
 		})
 	}
+}
+
+func TestCheck_ListsTasksInServerOrder(t *testing.T) {
+	w := manyTasks(3500)
+	w.in.AttemptSample, w.in.LogSample = 0, 0
+	var (
+		mu   sync.Mutex
+		seen []string
+	)
+	w.in.TaskSeen = func(_ string, task client.Task) {
+		mu.Lock()
+		defer mu.Unlock()
+		seen = append(seen, task.ID)
+	}
+	assertResults(t, verify.Check(t.Context(), w.view, w.in), nil)
+	want := make([]string, 3500)
+	for i := range want {
+		want[i] = "t" + strconv.Itoa(i)
+	}
+	if !slices.Equal(seen, want) {
+		t.Errorf("tasks were seen out of order or not once each: %d seen, want %d in the server's order", len(seen), len(want))
+	}
+}
+
+func TestCheck_ReportsAFailedLaterTaskPage(t *testing.T) {
+	w := manyTasks(2500)
+	w.in.AttemptSample, w.in.LogSample = 0, 0
+	w.view.failTasksAt = 2000
+	assertResults(t, verify.Check(t.Context(), w.view, w.in), map[string]string{"outcomes": "job j1: listing tasks"})
 }
