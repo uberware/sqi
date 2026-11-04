@@ -209,7 +209,7 @@ func TestMerge_Backlog(t *testing.T) {
 		t.Errorf("merged backlog %+v, want 15 open and 70 finished from the earlier shard's tail", m.Backlog)
 	}
 	b.Backlog = nil
-	if m, _ = Merge([]*Record{a, b}); m.Backlog != nil {
+	if m, err = Merge([]*Record{a, b}); err != nil || m.Backlog != nil {
 		t.Errorf("a shard without a backlog: merged %+v, want nil", m.Backlog)
 	}
 }

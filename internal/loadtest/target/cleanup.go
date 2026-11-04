@@ -39,7 +39,7 @@ type Cleaned struct {
 }
 
 // shardSuffix matches what a shard adds to its run ID for its farm.
-var shardSuffix = regexp.MustCompile(`-s[0-9]+$`)
+var shardSuffix = regexp.MustCompile(`-s\d+$`)
 
 // Cleanup removes what an attached run left on a server, for a run whose
 // teardown failed or that was kept: the run's farm, load-<RunID>, or the

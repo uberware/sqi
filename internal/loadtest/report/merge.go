@@ -93,27 +93,9 @@ func Merge(rs []*Record) (*Record, error) {
 	var reasons []string
 	for _, s := range shards {
 		r := s.rec
-		for k, h := range r.Histograms {
-			if m.Histograms[k] == nil {
-				m.Histograms[k] = measure.NewHistogram()
-			}
-			m.Histograms[k].Merge(h)
-		}
-		for k, v := range r.Counters {
-			m.Counters[k] += v
-		}
-		if r.SteadyCounters == nil {
-			steadyAll = false
-		}
-		for k, v := range r.SteadyCounters {
-			m.SteadyCounters[k] += v
-		}
-		if r.WindowCounters == nil {
-			windowAll = false
-		}
-		for k, v := range r.WindowCounters {
-			m.WindowCounters[k] += v
-		}
+		addMeasurements(&m, r)
+		steadyAll = steadyAll && r.SteadyCounters != nil
+		windowAll = windowAll && r.WindowCounters != nil
 		if r.WindowEnd.After(m.WindowEnd) {
 			m.WindowEnd = r.WindowEnd
 		}
@@ -167,6 +149,24 @@ func carriedFindings(shards []shardEntry) []Finding {
 		}
 	}
 	return out
+}
+
+// addMeasurements adds r's histograms and counters (final, steady and window)
+// into m's.
+func addMeasurements(m, r *Record) {
+	for k, h := range r.Histograms {
+		if m.Histograms[k] == nil {
+			m.Histograms[k] = measure.NewHistogram()
+		}
+		m.Histograms[k].Merge(h)
+	}
+	for _, c := range []struct{ into, from map[string]int64 }{
+		{m.Counters, r.Counters}, {m.SteadyCounters, r.SteadyCounters}, {m.WindowCounters, r.WindowCounters},
+	} {
+		for k, v := range c.from {
+			c.into[k] += v
+		}
+	}
 }
 
 // mergeBacklog adds up the shards' backlogs, or returns nil when a shard has

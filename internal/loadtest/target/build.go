@@ -155,7 +155,8 @@ func install(dir, outDir string, names []string) error {
 			if err := os.Rename(dst, aside); err != nil {
 				return fmt.Errorf("target: move the old %s aside: %w", n, err)
 			}
-			os.Remove(aside) //nolint:errcheck // fails while another run still runs it; removeOld retries later
+			// Fails while another run still runs it; removeOld retries later.
+			os.Remove(aside)
 		}
 		if err := os.Rename(filepath.Join(dir, n), dst); err != nil {
 			return fmt.Errorf("target: install %s: %w", n, err)
@@ -172,7 +173,7 @@ func removeOld(outDir string) {
 		return
 	}
 	for _, f := range old {
-		os.Remove(f) //nolint:errcheck // still running somewhere; a later build retries
+		os.Remove(f) // still running somewhere when it fails; a later build retries
 	}
 }
 

@@ -93,7 +93,7 @@ func TestClient_RetriesThrottledCalls(t *testing.T) {
 	}
 }
 
-func TestClient_RetryHonoursRetryAfter(t *testing.T) {
+func TestClient_RetryHonorsRetryAfter(t *testing.T) {
 	th := &throttler{throttled: 1, status: 429, retryAfter: "1"}
 	ts := th.start(t)
 	start := time.Now()
@@ -101,7 +101,7 @@ func TestClient_RetryHonoursRetryAfter(t *testing.T) {
 		t.Fatalf("CreateFarm: %v", err)
 	}
 	if elapsed := time.Since(start); elapsed < 900*time.Millisecond {
-		t.Errorf("retried after %s, want the 1 s Retry-After honoured", elapsed)
+		t.Errorf("retried after %s, want the 1 s Retry-After honored", elapsed)
 	}
 	if th.calls.Load() != 2 {
 		t.Errorf("server saw %d calls, want 2", th.calls.Load())

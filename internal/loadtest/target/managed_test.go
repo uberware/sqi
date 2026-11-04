@@ -644,7 +644,7 @@ func TestAttach_NamespacesUsagePools(t *testing.T) {
 		t.Cleanup(func() { admin.DeleteUsagePool(context.Background(), id) }) //nolint:errcheck // best-effort cleanup
 		tgt, err := attach("ns-2", "", false)
 		if err == nil {
-			tgt.Close(context.Background()) //nolint:errcheck // the assertion below fails anyway
+			tgt.Close(context.Background()) // the assertion below fails anyway
 			t.Fatal("Attach succeeded on a server that already has the run's pool")
 		}
 		if !strings.Contains(err.Error(), taken) || !strings.Contains(err.Error(), "already exists") {
@@ -777,7 +777,7 @@ func TestStartManaged_RefusesANonEmptyPostgres(t *testing.T) {
 	sc := testScenario(scenario.ServerSpec{Store: "postgres"})
 	tgt, err := StartManaged(t.Context(), ManagedConfig{RunDir: t.TempDir(), ServerBin: "never-started", Scenario: sc, PostgresDSN: dsn})
 	if err == nil {
-		tgt.Close(context.Background()) //nolint:errcheck // the test fails anyway
+		tgt.Close(context.Background()) // the test fails anyway
 		t.Fatal("StartManaged accepted a database that already holds tables")
 	}
 	if !strings.Contains(err.Error(), "not empty") {

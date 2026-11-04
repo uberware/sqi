@@ -667,7 +667,7 @@ func TestInstall_ReplacesARunningBinary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(running, data, 0o700); err != nil { //nolint:gosec // G306: an executable for the test
+	if err := os.WriteFile(running, data, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(scratch, name), []byte("new"), 0o600); err != nil {
@@ -675,7 +675,7 @@ func TestInstall_ReplacesARunningBinary(t *testing.T) {
 	}
 	// Another run is still running the old binary: this test's own binary,
 	// copied, as a server that never exits on its own.
-	cmd := exec.CommandContext(t.Context(), running) //nolint:gosec // G204: the test's own binary
+	cmd := exec.CommandContext(t.Context(), running)
 	cmd.Env = append(os.Environ(), helperEnv+"=hang")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -687,13 +687,13 @@ func TestInstall_ReplacesARunningBinary(t *testing.T) {
 	if err := install(scratch, out, []string{name}); err != nil {
 		t.Fatalf("install over a running binary: %v", err)
 	}
-	if b, _ := os.ReadFile(running); string(b) != "new" {
-		t.Errorf("installed binary holds %d bytes, want the new build", len(b))
+	if b, err := os.ReadFile(running); err != nil || string(b) != "new" {
+		t.Errorf("installed binary holds %d bytes (err %v), want the new build", len(b), err)
 	}
 	cmd.Process.Kill() //nolint:errcheck // checked by Wait
 	cmd.Wait()         //nolint:errcheck // killed
 	removeOld(out)
-	if left, _ := filepath.Glob(filepath.Join(out, "*"+oldSuffix+"*")); len(left) != 0 {
-		t.Errorf("old binaries left once nothing runs them: %v", left)
+	if left, err := filepath.Glob(filepath.Join(out, "*"+oldSuffix+"*")); err != nil || len(left) != 0 {
+		t.Errorf("old binaries left once nothing runs them: %v (err %v)", left, err)
 	}
 }

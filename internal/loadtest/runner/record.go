@@ -92,20 +92,7 @@ func (r *run) record() *report.Record {
 		rec.Invariants = []verify.Result{}
 		r.unavail("invariants", "the run ended early (interrupted, or a driver failed) before they were checked")
 	}
-	rec.Valid = true
-	if r.obs != nil {
-		// Judged over the measured window: an idle drain would dilute it.
-		until := rec.Ended
-		if !rec.WindowEnd.IsZero() {
-			until = rec.WindowEnd
-		}
-		rec.Valid, rec.InvalidReason = r.obs.SelfHealth().ValidBetween(rec.SteadyFrom(), until, 0)
-	}
-	saturated := !rec.Valid
-	if r.complete && rec.NoneAccepted() {
-		rec.Valid = false
-		rec.InvalidReason = joinReasons(noneAcceptedReason, rec.InvalidReason)
-	}
+	saturated := r.judgeValidity(rec)
 	r.unavail(report.HistLeaseReply, "the simulated workers do not time their lease requests")
 	if caveat := wsLagCaveat(wallClockStep()); caveat != "" && rec.Histograms[report.HistWSLag] != nil && rec.Histograms[report.HistWSLag].Count() > 0 {
 		r.unavail(report.HistWSLag, caveat)
@@ -113,6 +100,27 @@ func (r *run) record() *report.Record {
 	rec.Unavailable = r.unavailableList()
 	rec.Findings = append(append([]report.Finding{}, report.Findings(rec, rec.SteadyFrom())...), r.findings(rec, saturated)...)
 	return rec
+}
+
+// judgeValidity sets rec's validity and returns whether the generator
+// saturated. The generator's health is judged over the measured window (an
+// idle drain would dilute it), and a complete run whose server accepted none
+// of the scenario's submissions is INVALID too.
+func (r *run) judgeValidity(rec *report.Record) (saturated bool) {
+	rec.Valid, rec.InvalidReason = true, ""
+	if r.obs != nil {
+		until := rec.Ended
+		if !rec.WindowEnd.IsZero() {
+			until = rec.WindowEnd
+		}
+		rec.Valid, rec.InvalidReason = r.obs.SelfHealth().ValidBetween(rec.SteadyFrom(), until, 0)
+	}
+	saturated = !rec.Valid
+	if r.complete && rec.NoneAccepted() {
+		rec.Valid = false
+		rec.InvalidReason = joinReasons(noneAcceptedReason, rec.InvalidReason)
+	}
+	return saturated
 }
 
 // noneAcceptedReason is the InvalidReason of a run whose submissions were all

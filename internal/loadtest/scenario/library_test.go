@@ -254,7 +254,7 @@ func TestBuiltins_FeasibleLoad(t *testing.T) {
 				tasks := float64(j.Steps * j.TasksPerStep)
 				offered := j.Rate.PerSecond * tasks // tasks/s
 				if j.Total > 0 {
-					offered = float64(j.Total) * tasks / s.Duration.Duration.Seconds()
+					offered = float64(j.Total) * tasks / s.Duration.Seconds()
 				}
 				inFlight := offered * meanSeconds(j.Task.Duration)
 				perTask := float64(j.Cores)
