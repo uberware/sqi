@@ -24,10 +24,10 @@ import (
 const (
 	// RuleChurnFailed flags churn events whose restart or reconnect failed:
 	// the fleet ran short of the workers the scenario asked for.
-	RuleChurnFailed = "churn-failed"
+	RuleChurnFailed = report.RuleChurnFailed
 	// RuleGeneratorSaturated flags an INVALID run accepted with
 	// AllowSaturated.
-	RuleGeneratorSaturated = "generator-saturated"
+	RuleGeneratorSaturated = report.RuleGeneratorSaturated
 )
 
 // listPage is the page size when the runner lists the farm's jobs.

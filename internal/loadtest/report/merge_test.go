@@ -213,3 +213,32 @@ func TestMerge_Backlog(t *testing.T) {
 		t.Errorf("a shard without a backlog: merged %+v, want nil", m.Backlog)
 	}
 }
+
+// TestMerge_CarriesRunnerFindings checks that a finding only a live run can
+// make (a failed churn restart, a saturated generator accepted with
+// --allow-saturated) survives the merge, where every other finding is
+// recomputed: otherwise a merged verdict would hide a fleet that ran short.
+func TestMerge_CarriesRunnerFindings(t *testing.T) {
+	a, b := baseRecord(), baseRecord()
+	a.Shard, b.Shard = "0/2", "1/2"
+	b.Findings = []Finding{
+		{Rule: RuleChurnFailed, Severity: SeverityError, Message: "2 churn events failed"},
+		{Rule: RuleWSDrops, Severity: SeverityError, Message: "recomputed, not carried"},
+	}
+	m, err := Merge([]*Record{a, b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var carried, stale int
+	for _, f := range m.Findings {
+		switch {
+		case f.Rule == RuleChurnFailed && f.Severity == SeverityError && f.Message == "shard 1/2: 2 churn events failed":
+			carried++
+		case f.Rule == RuleWSDrops:
+			stale++
+		}
+	}
+	if carried != 1 || stale != 0 {
+		t.Errorf("merged findings %+v: want the shard's churn-failed carried once and its ws-drops recomputed away", m.Findings)
+	}
+}

@@ -69,7 +69,8 @@ func parseShards(rs []*Record) ([]shardEntry, error) {
 // which are per shard, not for the whole farm); the run is Valid and Complete
 // only if every shard is; an invariant holds only if it held in every shard,
 // with the shards' evidence concatenated; findings are recomputed from the
-// merged data. SteadyCounters and WindowCounters add like Counters, unless a
+// merged data, and the runner's own (churn-failed, generator-saturated),
+// which a record cannot recompute, are carried over from the shards. SteadyCounters and WindowCounters add like Counters, unless a
 // shard has none, in which case the merged record has none (no
 // SteadyCounters makes its rates run averages); WindowEnd is the latest
 // shard's. The inputs are not modified.
@@ -145,8 +146,27 @@ func Merge(rs []*Record) (*Record, error) {
 	}
 	m.Unavailable = slices.Sorted(maps.Keys(unavailable))
 	m.Invariants = mergeInvariants(shards)
-	m.Findings = Findings(&m, m.SteadyFrom())
+	m.Findings = append(Findings(&m, m.SteadyFrom()), carriedFindings(shards)...)
 	return &m, nil
+}
+
+// carriedFindings are the shards' findings of the runner's own rules, which
+// no rule can recompute from the merged record, each labeled with its shard
+// when there are several.
+func carriedFindings(shards []shardEntry) []Finding {
+	var out []Finding
+	for _, s := range shards {
+		for _, f := range s.rec.Findings {
+			if !runnerRules[f.Rule] {
+				continue
+			}
+			if len(shards) > 1 {
+				f.Message = fmt.Sprintf("shard %d/%d: %s", s.idx, s.num, f.Message)
+			}
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // mergeBacklog adds up the shards' backlogs, or returns nil when a shard has

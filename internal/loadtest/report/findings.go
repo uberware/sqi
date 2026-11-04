@@ -38,7 +38,16 @@ const (
 	RuleWorkersOffline  = "workers-offline-under-load"
 	RuleRejected        = "submissions-rejected"
 	RuleFellBehind      = "server-fell-behind"
+
+	// The runner's own rules, which read what only a live run knows (the
+	// fleet's churn, the --allow-saturated flag) and so cannot be recomputed
+	// from a record: Merge carries them over from the shards.
+	RuleChurnFailed        = "churn-failed"
+	RuleGeneratorSaturated = "generator-saturated"
 )
+
+// runnerRules are the rules Merge carries over from the shards' findings.
+var runnerRules = map[string]bool{RuleChurnFailed: true, RuleGeneratorSaturated: true}
 
 const (
 	// minTrendPoints is the fewest post-warmup samples a growth rule needs
