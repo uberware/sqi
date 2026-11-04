@@ -3,11 +3,17 @@
 package driver
 
 import (
-	"strings"
+	"fmt"
+	"reflect"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/loadtest/scenario"
 	"github.com/uberware/sqi/internal/openjd"
+	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/fake"
 )
 
 var noopCmd = scenario.Command{Path: "/bin/true", Args: []string{"-x"}}
@@ -69,66 +75,203 @@ func TestBuildTemplate_ValidatesLikeTheServer(t *testing.T) {
 	}
 }
 
-func TestBuildTemplate_StepChain(t *testing.T) {
-	_, b := buildAndValidate(t, scenario.JobClass{Steps: 3, TasksPerStep: 2})
-	tmpl, err := openjd.Parse(b, openjd.FormatYAML)
-	if err != nil {
-		t.Fatal(err)
+// amountMins returns the parsed host requirement amounts as name -> min.
+func amountMins(st openjd.StepTemplate) map[string]string {
+	got := map[string]string{}
+	if st.HostRequirements == nil {
+		return got
 	}
-	for i, st := range tmpl.Steps {
-		if want := "step-" + string(rune('1'+i)); st.Name != want {
-			t.Fatalf("step %d name = %q, want %q", i, st.Name, want)
+	for _, a := range st.HostRequirements.Amounts {
+		if a.Min != nil {
+			got[a.Name] = *a.Min
+		} else {
+			got[a.Name] = ""
 		}
 	}
-	if len(tmpl.Steps[0].Dependencies) != 0 {
-		t.Fatalf("step-1 has dependencies: %v", tmpl.Steps[0].Dependencies)
+	return got
+}
+
+func TestBuildTemplate_Structure(t *testing.T) {
+	tests := []struct {
+		name  string
+		jc    scenario.JobClass
+		check func(t *testing.T, tmpl *openjd.JobTemplate)
+	}{
+		{
+			name: "step chain",
+			jc:   scenario.JobClass{Steps: 3, TasksPerStep: 2},
+			check: func(t *testing.T, tmpl *openjd.JobTemplate) {
+				for i, st := range tmpl.Steps {
+					if want := fmt.Sprintf("step-%d", i+1); st.Name != want {
+						t.Errorf("step %d name = %q, want %q", i, st.Name, want)
+					}
+				}
+				if len(tmpl.Steps[0].Dependencies) != 0 {
+					t.Errorf("step-1 has dependencies: %v", tmpl.Steps[0].Dependencies)
+				}
+				for i := 1; i < 3; i++ {
+					deps := tmpl.Steps[i].Dependencies
+					if want := fmt.Sprintf("step-%d", i); len(deps) != 1 || deps[0].DependsOn != want {
+						t.Errorf("step-%d dependencies = %v, want %s", i+1, deps, want)
+					}
+				}
+			},
+		},
+		{
+			name: "cores and usage pool",
+			jc:   scenario.JobClass{Steps: 1, TasksPerStep: 1, Cores: 8, UsagePool: "gpu"},
+			check: func(t *testing.T, tmpl *openjd.JobTemplate) {
+				want := map[string]string{"amount.worker.vcpu": "8", "amount.worker.usagepool.gpu": "1"}
+				if got := amountMins(tmpl.Steps[0]); !reflect.DeepEqual(got, want) {
+					t.Errorf("amounts = %v, want %v", got, want)
+				}
+			},
+		},
+		{
+			name: "no host requirements",
+			jc:   scenario.JobClass{Steps: 1, TasksPerStep: 1},
+			check: func(t *testing.T, tmpl *openjd.JobTemplate) {
+				if hr := tmpl.Steps[0].HostRequirements; hr != nil {
+					t.Errorf("host requirements = %+v, want none", hr)
+				}
+			},
+		},
+		{
+			name: "command and name",
+			jc:   scenario.JobClass{Steps: 1, TasksPerStep: 1},
+			check: func(t *testing.T, tmpl *openjd.JobTemplate) {
+				if tmpl.Name != "load-job" {
+					t.Errorf("name = %q", tmpl.Name)
+				}
+				run := tmpl.Steps[0].Script.Actions.OnRun
+				if run.Command != noopCmd.Path || !reflect.DeepEqual(run.Args, noopCmd.Args) {
+					t.Errorf("onRun = %q %q, want %q %q", run.Command, run.Args, noopCmd.Path, noopCmd.Args)
+				}
+				if len(tmpl.Extensions) != 0 {
+					t.Errorf("extensions = %v, want none", tmpl.Extensions)
+				}
+			},
+		},
+		{
+			name: "EXPR chunked",
+			jc:   scenario.JobClass{Steps: 1, TasksPerStep: 4, Chunk: 2, EXPR: true},
+			check: func(t *testing.T, tmpl *openjd.JobTemplate) {
+				if got, want := tmpl.Extensions, []string{"TASK_CHUNKING", "EXPR"}; !reflect.DeepEqual(got, want) {
+					t.Errorf("extensions = %v, want %v", got, want)
+				}
+				st := tmpl.Steps[0]
+				if len(st.Script.Let) != 1 {
+					t.Errorf("let = %v, want one binding", st.Script.Let)
+				}
+				if args := st.Script.Actions.OnRun.Args; len(args) != len(noopCmd.Args)+1 {
+					t.Errorf("args = %v, want the command's plus one expression", args)
+				}
+			},
+		},
 	}
-	deps := tmpl.Steps[2].Dependencies
-	if len(deps) != 1 || deps[0].DependsOn != "step-2" {
-		t.Fatalf("step-3 dependencies = %v, want step-2", deps)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpl, _ := buildAndValidate(t, tc.jc)
+			tc.check(t, tmpl)
+		})
 	}
 }
 
-func TestBuildTemplate_HostRequirements(t *testing.T) {
-	_, b := buildAndValidate(t, scenario.JobClass{Steps: 1, TasksPerStep: 1, Cores: 8, UsagePool: "gpu"})
-	s := string(b)
-	for _, want := range []string{"amount.worker.vcpu", "min: 8", "amount.worker.usagepool.gpu", "min: 1"} {
-		if !strings.Contains(s, want) {
-			t.Errorf("template lacks %q:\n%s", want, s)
-		}
+func TestBuildTemplate_Errors(t *testing.T) {
+	tests := []struct {
+		name string
+		jc   scenario.JobClass
+		cmd  scenario.Command
+	}{
+		{"empty command path", scenario.JobClass{Steps: 1, TasksPerStep: 1}, scenario.Command{}},
+		{"zero steps", scenario.JobClass{Steps: 0, TasksPerStep: 1}, noopCmd},
+		{"unsplittable task count", scenario.JobClass{Steps: 1, TasksPerStep: 1031}, noopCmd},
 	}
-	_, plain := buildAndValidate(t, scenario.JobClass{Steps: 1, TasksPerStep: 1})
-	if strings.Contains(string(plain), "hostRequirements") {
-		t.Errorf("plain template carries hostRequirements:\n%s", plain)
-	}
-}
-
-func TestBuildTemplate_CommandAndName(t *testing.T) {
-	_, b := buildAndValidate(t, scenario.JobClass{Steps: 1, TasksPerStep: 1})
-	s := string(b)
-	for _, want := range []string{"name: load-job", "command: /bin/true", "-x"} {
-		if !strings.Contains(s, want) {
-			t.Errorf("template lacks %q:\n%s", want, s)
-		}
-	}
-	if _, err := BuildTemplate(scenario.JobClass{Steps: 1, TasksPerStep: 1}, "j", scenario.Command{}); err == nil {
-		t.Error("empty command path accepted")
-	}
-	if _, err := BuildTemplate(scenario.JobClass{Steps: 0, TasksPerStep: 1}, "j", noopCmd); err == nil {
-		t.Error("zero steps accepted")
-	}
-	if _, err := BuildTemplate(scenario.JobClass{Steps: 1, TasksPerStep: 1031}, "j", noopCmd); err == nil {
-		t.Error("unsplittable task count accepted")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := BuildTemplate(tc.jc, "j", tc.cmd); err == nil {
+				t.Error("BuildTemplate succeeded, want an error")
+			}
+		})
 	}
 }
 
-func TestBuildTemplate_EXPRDeclaresExtension(t *testing.T) {
-	_, b := buildAndValidate(t, scenario.JobClass{Steps: 1, TasksPerStep: 4, Chunk: 2, EXPR: true})
-	s := string(b)
-	for _, want := range []string{"EXPR", "TASK_CHUNKING", "let:"} {
-		if !strings.Contains(s, want) {
-			t.Errorf("template lacks %q:\n%s", want, s)
-		}
+// TestBuildTemplate_SubmitsLikeTheServer runs each template through the
+// submitter the server's POST /jobs path uses: phase-1 validation, the phase-2
+// expression re-check with concrete parameters, parameter-space resolution and
+// the single-transaction store write.
+func TestBuildTemplate_SubmitsLikeTheServer(t *testing.T) {
+	tests := []struct {
+		name string
+		jc   scenario.JobClass
+		slow bool
+	}{
+		{"EXPR chunked", scenario.JobClass{Steps: 2, TasksPerStep: 40, Chunk: 5, EXPR: true}, false},
+		{"EXPR split with chunk", scenario.JobClass{Steps: 1, TasksPerStep: 4000, Chunk: 2, EXPR: true}, false},
+		{"three step chain", scenario.JobClass{Steps: 3, TasksPerStep: 100}, false},
+		{"usage pool and cores", scenario.JobClass{Steps: 2, TasksPerStep: 10, Cores: 4, UsagePool: "gpu"}, false},
+		{"one step of 250000", scenario.JobClass{Steps: 1, TasksPerStep: 250000}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.slow && testing.Short() {
+				t.Skip("large submission skipped in -short mode")
+			}
+			ctx := t.Context()
+			st := fake.New()
+			farm, err := st.CreateFarm(ctx, store.Farm{ID: uuid.NewString(), Name: "f"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			queue, err := st.CreateQueue(ctx, store.Queue{ID: uuid.NewString(), FarmID: farm.ID, Name: "q"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			b, err := BuildTemplate(tc.jc, "submit-job", noopCmd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sub := openjd.NewSubmitterWithOptions(st, openjd.SubmitterOptions{
+				EnforceLimits: true,
+				ExprLimits:    openjd.DefaultExprLimits(),
+			})
+			res, err := sub.Submit(ctx, string(b), store.TemplateFormatYAML, openjd.SubmitOptions{
+				FarmID:   farm.ID,
+				QueueID:  queue.ID,
+				Deadline: time.Now().Add(5 * time.Second),
+			})
+			if err != nil {
+				t.Fatalf("Submit: %v\n%s", err, b)
+			}
+			steps, err := st.ListSteps(ctx, res.Job.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(steps) != tc.jc.Steps {
+				t.Fatalf("stored %d steps, want %d", len(steps), tc.jc.Steps)
+			}
+			for i, step := range steps {
+				var want []string
+				if i > 0 {
+					want = []string{fmt.Sprintf("step-%d", i)}
+				}
+				if !reflect.DeepEqual(step.DependsOn, want) && (len(step.DependsOn) != 0 || len(want) != 0) {
+					t.Errorf("%s depends on %v, want %v", step.Name, step.DependsOn, want)
+				}
+				page, err := st.ListTasks(ctx, store.ListTasksOptions{
+					JobID: res.Job.ID, StepID: step.ID, Pagination: store.Pagination{Limit: 1},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if page.Total != tc.jc.TasksPerStep {
+					t.Errorf("%s stored %d tasks, want %d", step.Name, page.Total, tc.jc.TasksPerStep)
+				}
+			}
+			if want := tc.jc.Steps * tc.jc.TasksPerStep; len(res.Tasks) != want {
+				t.Errorf("submit result holds %d tasks, want %d", len(res.Tasks), want)
+			}
+		})
 	}
 }
 
