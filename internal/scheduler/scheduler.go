@@ -1300,7 +1300,10 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 // At as the worker's LastHeartbeatAt. If At is zero the server timestamp is
 // used so clock skew on the worker side cannot cause false timeouts. The
 // heartbeat is ordered by the broker's stream timestamp ([Scheduler.brokerAt]),
-// never by At, so a worker whose clock steps back is still heard.
+// never by At, which only rejects out-of-order redeliveries. The stored time is
+// still the worker's, so [Scheduler.sweepStaleWorkers] judges it against the
+// server's clock: a worker whose clock is behind, or stepped back, by more
+// than the heartbeat timeout looks offline.
 //
 // The handler reads WorkerID and At and passes AttemptsReported and
 // ActiveAttemptIDs to the reconciler (see attemptreconcile.go), but decodes the

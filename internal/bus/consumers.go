@@ -174,10 +174,12 @@ func (c *Client) ConsumeTaskLogs(ctx context.Context, handler jetstream.MessageH
 //     within the scheduler's heartbeat-timeout sweep interval (≈30 s) so
 //     delays are caught before workers are incorrectly marked offline.
 //   - MaxDeliver 10 — as the task-status consumer's: the scheduler naks a
-//     failed message with a growing delay (1 s, doubling to 30 s), so the ten
-//     deliveries would span about 2.5 minutes; the stream's 2-minute MaxAge
-//     caps that, so a message outlives about 2 minutes of store outage (a
-//     PostgreSQL restart, an HA failover). A registration needs that: a worker registers only at
+//     failed message with a growing delay (1, 2, 4, 8, 16, 30, 30 s…), so the
+//     ten deliveries would land at about 0, 1, 3, 7, 15, 31, 61, 91, 121 and
+//     151 s. The stream's 2-minute MaxAge removes the message before the ninth,
+//     so the last delivery it can get is the eighth at about 91 s: a message
+//     outlives only about 1.5 minutes of store outage (a PostgreSQL restart,
+//     an HA failover). A registration needs that: a worker registers only at
 //     start and after a broker reconnect, so one dropped sooner would leave
 //     its worker idle and unseen until the next reconnect. A heartbeat that
 //     arrives before its worker's registration is retried a second later. The

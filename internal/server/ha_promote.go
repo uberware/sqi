@@ -72,8 +72,10 @@ func (s *Server) promote(ctx context.Context, epoch int64) error {
 		return err
 	}
 
-	s.ha.role.promote(s.ha.self.Name, epoch)
+	// The callout resumes before the role flips, so whoever observes the
+	// leader role sees the callout already answering.
 	s.ha.broker.SetCalloutActive(true)
+	s.ha.role.promote(s.ha.self.Name, epoch)
 	s.metrics.HALeader.Set(1)
 	s.metrics.HAEpoch.Set(float64(epoch))
 	s.metrics.HAPromotions.Inc()

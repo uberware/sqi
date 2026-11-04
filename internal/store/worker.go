@@ -267,8 +267,11 @@ type WorkerStore interface {
 	// broker's stream timestamp of the heartbeat, and it alone orders
 	// heartbeats: one the broker stamped earlier than the recorded
 	// HeartbeatBrokerAt (a late redelivery) is accepted and ignored, not an
-	// error, while one stamped no earlier is recorded whatever at says, so a
-	// worker whose clock steps back is still heard. A nil brokerAt is recorded
+	// error, while one stamped no earlier is recorded whatever at says. The
+	// broker stamp only orders redeliveries; LastHeartbeatAt stays the worker's
+	// time, so the liveness sweep still compares it with the server's clock and
+	// a worker whose clock is behind, or stepped back, by more than the
+	// heartbeat timeout looks offline. A nil brokerAt is recorded
 	// unconditionally and keeps the stored HeartbeatBrokerAt.
 	// This is a hot path; implementations should use a single UPDATE
 	// statement, reading only to tell an unknown worker from an ignored

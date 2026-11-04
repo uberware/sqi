@@ -368,11 +368,16 @@ func TestPublishTaskCancel(t *testing.T) {
 // ── Server consumer redelivery budget ─────────────────────────────────────────
 
 // TestServerConsumers_TenDeliveries pins that every server-side consumer whose
-// handler Naks on a store error allows ten deliveries, which the scheduler's
-// growing Nak delay spreads over about 2.5 minutes. The worker consumer is the
-// one this matters most for: a registration dropped after a short store outage
-// (a PostgreSQL restart, an HA failover) leaves its worker idle and unseen
-// until it next reconnects to the broker.
+// handler Naks on a store error allows ten deliveries. The scheduler's growing
+// Nak delay (1, 2, 4, 8, 16, 30 s…) puts them at about 0, 1, 3, 7, 15, 31, 61,
+// 91, 121 and 151 s. For the task-status and task-log consumers that spans
+// about 2.5 minutes. The worker consumer's stream (SQI_WORKER) expires
+// messages after 2 minutes, so its ninth and tenth deliveries never happen and
+// a message survives only about 1.5 minutes of store outage (the eighth
+// delivery, at about 91 s). That consumer is the one this matters most for: a
+// registration dropped after a short store outage (a PostgreSQL restart, an HA
+// failover) leaves its worker idle and unseen until it next reconnects to the
+// broker. The test asserts only the MaxDeliver setting.
 func TestServerConsumers_TenDeliveries(t *testing.T) {
 	b := startBroker(t)
 	c := newClient(t, b)

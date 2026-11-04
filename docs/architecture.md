@@ -485,11 +485,16 @@ NATS consumer (internal/scheduler/taskstatus.go)
 A message whose processing fails for any other reason (the store is
 unreachable, say) is Nak'd with a delay: 1 s, doubling with each delivery up
 to 30 s. The server's task-status, task-log and worker consumers allow ten
-deliveries, so a report outlives about 2.5 minutes of store outage (a
+deliveries. The delays are 1, 2, 4, 8, 16, 30, 30 s and so on, so deliveries
+land at about 0, 1, 3, 7, 15, 31, 61, 91, 121 and 151 s. A task status or
+log report therefore outlives about 2.5 minutes of store outage (a
 PostgreSQL restart, or an HA failover while the database is down, or the gap
 between a leader fencing itself and its successor taking over) instead of
 having its deliveries spent in seconds and being dropped. A registration or
-heartbeat outlives about 2 minutes, the `SQI_WORKER` stream's `MaxAge`.
+heartbeat is bounded by the `SQI_WORKER` stream's 2-minute `MaxAge`, which
+removes the message before the ninth delivery at about 121 s: the last
+delivery it can get is the eighth at about 91 s, so it survives only if the
+store is back within about 1.5 minutes.
 That matters most for a registration: a worker registers only at start and
 after reconnecting to the broker, so one whose registration is dropped idles,
 unseen, until its next reconnect. A heartbeat held back this way is
@@ -1319,10 +1324,16 @@ Upgrading from v0.3.0 changes the following behaviour.
   recorded as `heartbeat_broker_at`: `UpdateWorkerHeartbeat` ignores (and the
   scheduler acks) one the broker stamped before the recorded one, and records
   any other with the worker's own time as `last_heartbeat_at`, whatever that
-  time is. A worker whose clock is stepped back is therefore still heard, rather
-  than having every heartbeat ignored until its clock catches up and being
-  declared offline meanwhile. A heartbeat whose broker metadata cannot be read
-  is recorded unconditionally, as before.
+  time is. The broker stamp only orders redeliveries; it does not take worker
+  clocks out of liveness. The stored heartbeat time is the worker's own, and
+  the liveness sweep judges it against the server's `now` minus
+  `scheduler.heartbeat_timeout`, as before. A worker whose clock runs behind,
+  or is stepped back, by more than `heartbeat_timeout` therefore looks offline,
+  and its running tasks are reclaimed, even though its heartbeats arrive and
+  are recorded. Keep worker clocks synchronized (see the Reconciliation notes
+  in [Operations](operations.md)); moving liveness onto server or broker time
+  is a separate change. A heartbeat whose broker metadata cannot be read is
+  recorded unconditionally, as before.
 - A late or redelivered deregister can no longer take a restarted worker
   offline. The deregister carries the same optional `instance_id`, and
   `OfflineWorker` writes nothing when it and the stored one are both non-empty

@@ -262,8 +262,11 @@ func TestParity_UpdateWorkerHeartbeat_BrokerStampNeverMovesBackwards(t *testing.
 }
 
 // TestParity_UpdateWorkerHeartbeat_WorkerClockStepBackRecorded pins that a
-// worker whose clock is stepped back is still heard: its heartbeat carries an
-// earlier worker timestamp but a later broker stamp, and is recorded as sent.
+// heartbeat carrying an earlier worker timestamp but a later broker stamp is
+// recorded, with the worker's own (stepped-back) time as LastHeartbeatAt and
+// the broker stamp as HeartbeatBrokerAt. Only the broker stamp orders it; the
+// stored time is still the worker's, so the liveness sweep would judge it
+// against the server's clock.
 func TestParity_UpdateWorkerHeartbeat_WorkerClockStepBackRecorded(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {

@@ -167,10 +167,12 @@ func heartbeatMsgStamped(t *testing.T, workerID string, at, stamp time.Time) *fa
 }
 
 // TestHandleHeartbeat_OrderedByBrokerStampNotWorkerClock pins that heartbeats
-// are ordered by the broker's stream timestamp: a worker whose clock is stepped
-// back ten minutes is still heard, its heartbeat recorded with the time it
-// sent, while a late redelivery the broker stamped earlier is acked and
-// ignored, though its own timestamp is the newest of the three.
+// are ordered by the broker's stream timestamp, not the worker's: a heartbeat
+// whose worker time is ten minutes earlier but whose broker stamp is later is
+// recorded with the worker's own time, while a late redelivery the broker
+// stamped earlier is acked and ignored, though its own timestamp is the newest
+// of the three. It does not assert liveness: the stored time is the worker's,
+// so the sweep still compares it with the server's clock.
 func TestHandleHeartbeat_OrderedByBrokerStampNotWorkerClock(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
