@@ -116,7 +116,7 @@ jobs:
       - name: Wait for PostgreSQL
         if: ${{ matrix.store == 'postgres' }}
         run: |
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if (echo > /dev/tcp/127.0.0.1/5432) 2>/dev/null; then
               echo "PostgreSQL is accepting connections."
               exit 0
