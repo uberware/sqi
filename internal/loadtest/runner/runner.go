@@ -186,7 +186,9 @@ type run struct {
 	serverJobs map[string]client.Job
 	serverErr  error
 
-	mu          sync.Mutex // guards the fields below
+	mu sync.Mutex // guards the fields below
+	// tasks are the tasks the invariant checks listed, by ID.
+	tasks       map[string]client.Task
 	steady      map[string]int64
 	unavailable []string
 	errs        []error
@@ -593,6 +595,7 @@ func (r *run) check(ctx context.Context) {
 		CanceledJobs:        verify.CanceledJobs(records),
 		CanceledAt:          verify.CancelTimes(records),
 		ConvergeWithin:      convergeWithin(r.sc),
+		TaskSeen:            r.taskSeen,
 	}
 	if r.o.BeforeVerify != nil {
 		r.o.BeforeVerify(&in)
@@ -606,6 +609,16 @@ func (r *run) check(ctx context.Context) {
 	}
 	r.invariants = results
 	r.complete = true
+}
+
+// taskSeen keeps a task the invariant checks listed, for terminal_ingest.
+func (r *run) taskSeen(_ string, t client.Task) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.tasks == nil {
+		r.tasks = map[string]client.Task{}
+	}
+	r.tasks[t.ID] = t
 }
 
 // teardown stops the clients and the fleet, reads what the record needs from

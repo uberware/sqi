@@ -163,6 +163,9 @@ func (c *checker) sweepJob(ctx context.Context, jobID, jobStatus string, x *ledg
 	}
 	s.evidence = append(s.evidence, c.droppedTasks(jobID, tasks, total, x)...)
 	for _, t := range tasks {
+		if c.in.TaskSeen != nil {
+			c.in.TaskSeen(jobID, t)
+		}
 		ref := taskRef{jobID: jobID, taskID: t.ID, status: t.Status}
 		if jobStatus == jobCompleted && t.Status != statusOK {
 			s.evidence = append(s.evidence, fmt.Sprintf("job %s is completed but task %s is %s, want succeeded", jobID, t.ID, t.Status))

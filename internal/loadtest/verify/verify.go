@@ -149,6 +149,9 @@ type Input struct {
 	// LogSettle is the same for logs, whose chunks are ingested on a stream of
 	// their own. Zero means DefaultLogSettle.
 	LogSettle time.Duration
+	// TaskSeen, when set, is called with every task the checks list, as the
+	// server first lists it. Calls come from several goroutines at once.
+	TaskSeen func(jobID string, t client.Task)
 }
 
 // Result is one invariant's verdict. Evidence names the job, task, attempt,

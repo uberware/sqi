@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -987,5 +988,26 @@ func TestCanceledJobs(t *testing.T) {
 	slices.Sort(got)
 	if want := []string{"a", "b", "c"}; !slices.Equal(got, want) {
 		t.Errorf("CanceledJobs = %v, want %v", got, want)
+	}
+}
+
+func TestCheck_TaskSeen(t *testing.T) {
+	w := healthyWorld()
+	var (
+		mu   sync.Mutex
+		seen = map[string]string{}
+	)
+	w.in.TaskSeen = func(jobID string, task client.Task) {
+		mu.Lock()
+		defer mu.Unlock()
+		seen[task.ID] = jobID + "/" + task.Status
+	}
+	verify.Check(t.Context(), w.view, w.in)
+	want := map[string]string{
+		"t1": "j1/succeeded", "t2": "j1/succeeded", "t3": "j1/succeeded", "t8": "j1/succeeded",
+		"t4": "j2/canceled", "t5": "j2/canceled", "t6": "j2/canceled",
+	}
+	if !maps.Equal(seen, want) {
+		t.Errorf("TaskSeen saw %v, want every listed task once: %v", seen, want)
 	}
 }

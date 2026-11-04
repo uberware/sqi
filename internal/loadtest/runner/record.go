@@ -52,8 +52,15 @@ func (r *run) record() *report.Record {
 		rec.Started, rec.Ended = r.began, time.Now()
 	}
 	accepted := r.jobs.Accepted()
-	ledgerHistograms(r.ledger.Events(), accepted, r.metrics)
+	events := r.ledger.Events()
+	ledgerHistograms(events, accepted, r.metrics)
 	jobHistogram(r.serverJobs, accepted, r.metrics)
+	r.mu.Lock()
+	ingested := terminalIngest(events, r.tasks, r.metrics)
+	r.mu.Unlock()
+	if r.complete && ingested == 0 {
+		r.unavail(report.HistTerminalIngest, "no task the server lists as succeeded or failed matched a terminal status a simulated worker published")
+	}
 	rec.Histograms = histograms(r.metrics)
 	if r.uiRunning {
 		for k := range rec.Histograms {
@@ -189,12 +196,13 @@ func completeSteady(steady, final map[string]int64) map[string]int64 {
 // reply histogram is left out: nothing fills it (see Unavailable).
 func histograms(m *driver.Metrics) map[string]*measure.Histogram {
 	h := map[string]*measure.Histogram{
-		report.HistSubmitLatency: m.SubmitLatency,
-		report.HistSubmitLag:     m.SubmitLag,
-		report.HistFirstLease:    m.FirstLease,
-		report.HistTaskE2E:       m.TaskE2E,
-		report.HistJobE2E:        m.JobE2E,
-		report.HistWSLag:         m.WSLag,
+		report.HistSubmitLatency:  m.SubmitLatency,
+		report.HistSubmitLag:      m.SubmitLag,
+		report.HistFirstLease:     m.FirstLease,
+		report.HistTaskE2E:        m.TaskE2E,
+		report.HistTerminalIngest: m.TerminalIngest,
+		report.HistJobE2E:         m.JobE2E,
+		report.HistWSLag:          m.WSLag,
 	}
 	for name, rh := range m.REST {
 		h[report.HistRESTPrefix+name] = rh
@@ -206,9 +214,10 @@ func histograms(m *driver.Metrics) map[string]*measure.Histogram {
 // workers did. FirstLease is a job's submission (SubmittedAt: when the
 // request left, since a task can be leased before the server's answer
 // arrives) to the first lease of any of its tasks. TaskE2E is one attempt's
-// lease to its terminal status: succeeded, failed or canceled; a crash or a
-// shutdown give-up does not end a task. Real workers keep no ledger, so work
-// only they ran is not counted.
+// lease reaching the worker to the worker publishing its terminal status
+// (succeeded, failed or canceled), so it holds the task's sampled duration; a
+// crash or a shutdown give-up does not end a task. Real workers keep no
+// ledger, so work only they ran is not counted.
 func ledgerHistograms(events []simworker.Event, jobs []driver.SubmittedJob, m *driver.Metrics) {
 	firstLease := map[string]time.Time{}
 	leasedAt := map[string]time.Time{}
@@ -234,6 +243,32 @@ func ledgerHistograms(events []simworker.Event, jobs []driver.SubmittedJob, m *d
 			m.FirstLease.Record(max(t.Sub(j.SubmittedAt), 0))
 		}
 	}
+}
+
+// terminalIngest fills TerminalIngest and returns how many tasks it measured:
+// for each task the server lists as succeeded or failed, the task's
+// updated_at minus the moment a simulated worker published that same final
+// status (the task's last succeeded or failed terminal event). A task whose
+// last report disagrees with the server, or that only a real worker ran, is
+// left out. A negative difference, a generator clock ahead of an attached
+// server's, is recorded as 0.
+func terminalIngest(events []simworker.Event, tasks map[string]client.Task, m *driver.Metrics) int {
+	last := map[string]simworker.Event{}
+	for _, e := range events {
+		if e.Kind == simworker.KindTerminal && (e.Outcome == simworker.OutcomeSucceeded || e.Outcome == simworker.OutcomeFailed) {
+			last[e.TaskID] = e
+		}
+	}
+	n := 0
+	for id, t := range tasks {
+		e, ok := last[id]
+		if !ok || t.UpdatedAt.IsZero() || t.Status != e.Outcome {
+			continue
+		}
+		m.TerminalIngest.Record(max(t.UpdatedAt.Sub(e.At), 0))
+		n++
+	}
+	return n
 }
 
 // jobHistogram fills JobE2E: each accepted job's submission to the time the

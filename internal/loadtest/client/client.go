@@ -135,10 +135,11 @@ type Job struct {
 
 // Task is a task row.
 type Task struct {
-	ID               string `json:"id"`
-	Status           string `json:"status"`
-	AssignedWorkerID string `json:"assigned_worker_id"`
-	FailureReason    string `json:"failure_reason"`
+	ID               string    `json:"id"`
+	Status           string    `json:"status"`
+	AssignedWorkerID string    `json:"assigned_worker_id"`
+	FailureReason    string    `json:"failure_reason"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 // Attempt is one execution attempt of a task. The API identifies an attempt by

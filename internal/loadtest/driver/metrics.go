@@ -36,9 +36,10 @@ type Metrics struct {
 	// SubmitLag is how late each paced submission left the generator, measured
 	// against its due time. Bursts (total) have no schedule and record none.
 	SubmitLag *measure.Histogram
-	// FirstLease, LeaseReply, TaskE2E and JobE2E are filled by the runner and
-	// the verifier from the worker ledger; the driver only declares them.
-	FirstLease, LeaseReply, TaskE2E, JobE2E *measure.Histogram
+	// FirstLease, LeaseReply, TaskE2E, TerminalIngest and JobE2E are filled
+	// by the runner from the worker ledger and the server's task and job
+	// lists; the driver only declares them.
+	FirstLease, LeaseReply, TaskE2E, TerminalIngest, JobE2E *measure.Histogram
 	// WSLag is receive time minus the event time the push payload carries.
 	// A push stamped after it was received (clock skew between hosts) is not
 	// recorded; it is counted in WSLagNegative instead.
@@ -70,20 +71,21 @@ type Metrics struct {
 // and for every standard endpoint.
 func NewMetrics(endpoints []string) *Metrics {
 	m := &Metrics{
-		SubmitLatency: measure.NewHistogram(),
-		SubmitLag:     measure.NewHistogram(),
-		FirstLease:    measure.NewHistogram(),
-		LeaseReply:    measure.NewHistogram(),
-		TaskE2E:       measure.NewHistogram(),
-		JobE2E:        measure.NewHistogram(),
-		WSLag:         measure.NewHistogram(),
-		WSLagNegative: &measure.Counter{},
-		REST:          make(map[string]*measure.Histogram),
-		byStatus:      make(map[int]*measure.Counter),
-		WSDrops:       &measure.Counter{},
-		WSEvents:      &measure.Counter{},
-		WSErrors:      &measure.Counter{},
-		RESTErrors:    &measure.Counter{},
+		SubmitLatency:  measure.NewHistogram(),
+		SubmitLag:      measure.NewHistogram(),
+		FirstLease:     measure.NewHistogram(),
+		LeaseReply:     measure.NewHistogram(),
+		TaskE2E:        measure.NewHistogram(),
+		TerminalIngest: measure.NewHistogram(),
+		JobE2E:         measure.NewHistogram(),
+		WSLag:          measure.NewHistogram(),
+		WSLagNegative:  &measure.Counter{},
+		REST:           make(map[string]*measure.Histogram),
+		byStatus:       make(map[int]*measure.Counter),
+		WSDrops:        &measure.Counter{},
+		WSEvents:       &measure.Counter{},
+		WSErrors:       &measure.Counter{},
+		RESTErrors:     &measure.Counter{},
 	}
 	for _, e := range StandardEndpoints {
 		m.REST[e] = measure.NewHistogram()

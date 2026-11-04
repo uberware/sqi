@@ -42,8 +42,15 @@ const (
 	HistFirstLease = "first_lease"
 	// HistLeaseReply is a simulated worker's lease request to reply time.
 	HistLeaseReply = "lease_reply"
-	// HistTaskE2E is a task's assignment to its acknowledged terminal status.
+	// HistTaskE2E is one simulated attempt from its lease reaching the worker
+	// to the worker publishing its terminal status. It holds the scenario's
+	// sampled task duration, so it describes the input as much as the server.
 	HistTaskE2E = "task_e2e"
+	// HistTerminalIngest is how long the server took to store a task's
+	// terminal status: the task's updated_at once terminal minus the moment
+	// the simulated worker published that status. A clock difference between
+	// the generator and an attached server shifts it.
+	HistTerminalIngest = "terminal_ingest"
 	// HistJobE2E is a job's submission to its terminal status.
 	HistJobE2E = "job_e2e"
 	// HistWSLag is the WebSocket push lag.

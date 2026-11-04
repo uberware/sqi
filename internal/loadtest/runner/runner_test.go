@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/uberware/sqi/internal/loadtest/client"
 	"github.com/uberware/sqi/internal/loadtest/driver"
 	"github.com/uberware/sqi/internal/loadtest/report"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
@@ -138,7 +139,7 @@ func TestRunner_Smoke(t *testing.T) {
 	if got := rec.WindowCounters[report.CounterJobsSubmitted]; got != 50 {
 		t.Errorf("jobs.submitted when submissions stopped = %d, want 50", got)
 	}
-	for _, k := range []string{report.HistSubmitLatency, report.HistFirstLease, report.HistTaskE2E, report.HistJobE2E} {
+	for _, k := range []string{report.HistSubmitLatency, report.HistFirstLease, report.HistTaskE2E, report.HistTerminalIngest, report.HistJobE2E} {
 		if h := rec.Histograms[k]; h == nil || h.Count() == 0 {
 			t.Errorf("histogram %s is empty", k)
 		}
@@ -415,5 +416,39 @@ func TestSampleShare(t *testing.T) {
 				t.Errorf("sampleShare = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestTerminalIngest(t *testing.T) {
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	at := func(s float64) time.Time { return t0.Add(time.Duration(s * float64(time.Second))) }
+	events := []simworker.Event{
+		{At: at(1), TaskID: "t1", AttemptID: "a1", Kind: simworker.KindLeased},
+		{At: at(5), TaskID: "t1", AttemptID: "a1", Kind: simworker.KindTerminal, Outcome: simworker.OutcomeSucceeded},
+		// Failed, then retried and succeeded: the last report counts.
+		{At: at(2), TaskID: "t2", AttemptID: "a2", Kind: simworker.KindTerminal, Outcome: simworker.OutcomeFailed},
+		{At: at(8), TaskID: "t2", AttemptID: "a3", Kind: simworker.KindTerminal, Outcome: simworker.OutcomeSucceeded},
+		// The server disagrees with the last report: left out.
+		{At: at(3), TaskID: "t3", AttemptID: "a4", Kind: simworker.KindTerminal, Outcome: simworker.OutcomeSucceeded},
+		// Canceled: the server's cancel commits before the worker's report.
+		{At: at(4), TaskID: "t4", AttemptID: "a5", Kind: simworker.KindCanceled},
+		// A server clock behind the generator's: recorded as 0.
+		{At: at(9), TaskID: "t5", AttemptID: "a6", Kind: simworker.KindTerminal, Outcome: simworker.OutcomeFailed},
+	}
+	tasks := map[string]client.Task{
+		"t1": {ID: "t1", Status: "succeeded", UpdatedAt: at(5.25)},
+		"t2": {ID: "t2", Status: "succeeded", UpdatedAt: at(8.5)},
+		"t3": {ID: "t3", Status: "failed", UpdatedAt: at(3.1)},
+		"t4": {ID: "t4", Status: "canceled", UpdatedAt: at(3.9)},
+		"t5": {ID: "t5", Status: "failed", UpdatedAt: at(8.9)},
+		"t6": {ID: "t6", Status: "succeeded", UpdatedAt: at(1)}, // a real worker's: no ledger event
+		"t7": {ID: "t7", Status: "succeeded"},                   // no updated_at
+	}
+	m := driver.NewMetrics(nil)
+	if n := terminalIngest(events, tasks, m); n != 3 {
+		t.Errorf("terminalIngest measured %d tasks, want 3 (t1, t2, t5)", n)
+	}
+	if lo, hi := m.TerminalIngest.Min(), m.TerminalIngest.Max(); lo > time.Millisecond || !near(hi, 500*time.Millisecond) {
+		t.Errorf("terminal_ingest min %s max %s, want about 0 (t5, clamped) and 500ms (t2)", lo, hi)
 	}
 }
