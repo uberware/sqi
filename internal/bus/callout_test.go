@@ -785,3 +785,137 @@ func TestResponder_DenialTruncatesTheClientNkey(t *testing.T) {
 		})
 	}
 }
+
+// startTestServer starts a plain in-process nats-server for the duration of
+// the test and returns a connection to it.
+func startTestServer(t *testing.T) *nats.Conn {
+	t.Helper()
+	srv, err := natsserver.NewServer(&natsserver.Options{Host: "127.0.0.1", Port: -1, NoLog: true, NoSigs: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Start()
+	if !srv.ReadyForConnections(5 * time.Second) {
+		t.Fatal("test broker did not start")
+	}
+	t.Cleanup(srv.Shutdown)
+	nc, err := nats.Connect(srv.ClientURL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(nc.Close)
+	return nc
+}
+
+// askCallout sends one authorization request and reports whether a responder
+// answered it.
+func askCallout(t *testing.T, g *calloutRig, nc *nats.Conn) bool {
+	t.Helper()
+	_, err := nc.Request(calloutSubject, g.encode(g.request(newCallerKeys(t), nil)), 2*time.Second)
+	switch {
+	case err == nil:
+		return true
+	case errors.Is(err, nats.ErrNoResponders):
+		return false
+	}
+	t.Fatalf("callout request: %v", err)
+	return false
+}
+
+func TestResponder_PauseAndResume(t *testing.T) {
+	t.Parallel()
+	nc := startTestServer(t)
+	g := newCalloutRig(t, staticLookup("w1"))
+
+	if changed, err := g.resp.Pause(); changed || err != nil {
+		t.Errorf("Pause before Serve = %t, %v, want false, nil", changed, err)
+	}
+	if changed, err := g.resp.Resume(); changed || err != nil {
+		t.Errorf("Resume before Serve = %t, %v, want false, nil", changed, err)
+	}
+	if err := g.resp.Serve(context.Background(), nc); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.resp.Listen(nc); err == nil {
+		t.Error("Listen after Serve succeeded")
+	}
+	if !askCallout(t, g, nc) {
+		t.Fatal("a serving responder did not answer")
+	}
+
+	steps := []struct {
+		name        string
+		run         func() (bool, error)
+		wantChanged bool
+		wantAnswer  bool
+	}{
+		{"pause", g.resp.Pause, true, false},
+		{"pause again", g.resp.Pause, false, false},
+		{"resume", g.resp.Resume, true, true},
+		{"resume again", g.resp.Resume, false, true},
+		{"pause once more", g.resp.Pause, true, false},
+	}
+	for _, s := range steps {
+		changed, err := s.run()
+		if err != nil || changed != s.wantChanged {
+			t.Errorf("%s = %t, %v, want %t, nil", s.name, changed, err, s.wantChanged)
+		}
+		if got := askCallout(t, g, nc); got != s.wantAnswer {
+			t.Errorf("after %s, answered = %t, want %t", s.name, got, s.wantAnswer)
+		}
+	}
+
+	// Stop on a paused responder has no subscription to drain and returns
+	// at once; nothing resumes it afterwards.
+	began := time.Now()
+	g.resp.Stop()
+	if took := time.Since(began); took > time.Second {
+		t.Errorf("Stop on a paused responder took %s", took)
+	}
+	if changed, err := g.resp.Resume(); changed || err != nil {
+		t.Errorf("Resume after Stop = %t, %v, want false, nil", changed, err)
+	}
+	if askCallout(t, g, nc) {
+		t.Error("a stopped responder answered")
+	}
+}
+
+// TestResponder_PauseLetsAcceptedRequestsFinish pauses while requests are
+// being answered: every one already taken is still answered, and Stop waits
+// for them.
+func TestResponder_PauseLetsAcceptedRequestsFinish(t *testing.T) {
+	t.Parallel()
+	const requests = 8
+	nc := startTestServer(t)
+	release := make(chan struct{})
+	var started sync.WaitGroup
+	started.Add(requests)
+	g := newCalloutRig(t, func(context.Context, string) (string, error) {
+		started.Done()
+		<-release
+		return "w1", nil
+	})
+	if err := g.resp.Serve(context.Background(), nc); err != nil {
+		t.Fatal(err)
+	}
+
+	answered := make(chan error, requests)
+	for range requests {
+		payload := g.encode(g.request(newCallerKeys(t), nil))
+		go func() {
+			_, err := nc.Request(calloutSubject, payload, 10*time.Second)
+			answered <- err
+		}()
+	}
+	started.Wait()
+	if changed, err := g.resp.Pause(); !changed || err != nil {
+		t.Fatalf("Pause = %t, %v, want true, nil", changed, err)
+	}
+	close(release)
+	for range requests {
+		if err := <-answered; err != nil {
+			t.Errorf("a request taken before the pause: %v", err)
+		}
+	}
+	g.resp.Stop()
+}

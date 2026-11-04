@@ -89,10 +89,26 @@ type Responder struct {
 	cfg ResponderConfig
 	pub string
 
-	// inflight counts the requests Serve has accepted and not yet answered.
+	// inflight counts the requests accepted and not yet answered.
 	inflight sync.WaitGroup
-	// sub is the subscription Serve made; nil before it succeeds.
+	// slots bounds the requests handled at once, to [calloutMaxInFlight],
+	// across every subscription the responder has made.
+	slots chan struct{}
+
+	// mu guards the fields below. [Responder.Pause] and [Responder.Resume]
+	// may run concurrently with requests and with [Responder.Stop].
+	mu sync.Mutex
+	// nc is the connection Serve was given; nil before Serve succeeds.
+	nc *nats.Conn
+	// sub is the queue subscription; nil before Serve succeeds, while
+	// paused, and once Stop has begun.
 	sub *nats.Subscription
+	// stopped is set when Stop begins; Resume does nothing after it.
+	stopped bool
+	// closing is set once Stop's subscription has drained. A request a
+	// handler reaches after it is not taken, so the in-flight count Stop
+	// waits on can only fall.
+	closing bool
 }
 
 // NewResponder validates cfg and returns a Responder.
@@ -125,7 +141,7 @@ func NewResponder(cfg ResponderConfig) (*Responder, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
-	return &Responder{cfg: cfg, pub: pub}, nil
+	return &Responder{cfg: cfg, pub: pub, slots: make(chan struct{}, calloutMaxInFlight)}, nil
 }
 
 // Authorize decides one request. On success it returns the signed user JWT
@@ -274,9 +290,7 @@ func (r *Responder) issueUserJWT(ctx context.Context, subject, workerID string) 
 	uc.Audience = r.cfg.Account
 	uc.Name = workerID
 	uc.Expires = r.cfg.Now().Add(r.cfg.UserTTL).Unix()
-	uc.Permissions = brokerauth.WorkerUserPermissions(workerID)
-	// nats-server enforces this for callout users from version 2.15.2.
-	uc.AllowedConnectionTypes.Add(jwt.ConnectionTypeStandard)
+	applyWorkerGrants(&uc.User, brokerauth.WorkerPermissions(workerID))
 	// No NotBefore: a worker whose clock trails the broker's would be refused
 	// for the length of the skew.
 
@@ -422,44 +436,174 @@ func decodeRequest(requestJWT []byte) (req *jwt.AuthorizationRequestClaims, time
 // carry no deadline, so that round trip is bounded by [calloutFlushTimeout].
 // Call it once, and [Responder.Stop] when the connection is about to close.
 func (r *Responder) Serve(ctx context.Context, nc *nats.Conn) error {
-	slots := make(chan struct{}, calloutMaxInFlight)
-	sub, err := nc.QueueSubscribe(calloutSubject, calloutQueue, func(m *nats.Msg) {
-		slots <- struct{}{}
-		r.inflight.Go(func() {
-			defer func() { <-slots }()
-			ctx := context.Background()
-			if err := m.Respond(r.Handle(ctx, m.Data)); err != nil {
-				r.cfg.Logger.ErrorContext(
-					ctx,
-					"bus: auth callout could not send its reply",
-					slog.Any("error", err),
-					slog.String("impact", "the connection that asked is refused when nats-server times out"),
-					slog.String("remediation", "check the callout connection to the cluster"),
-				)
-			}
-		})
-	})
-	if err != nil {
-		return fmt.Errorf("bus: subscribe auth callout: %w", err)
+	if err := r.Listen(nc); err != nil {
+		return err
 	}
 	flushCtx, cancel := context.WithTimeout(ctx, calloutFlushTimeout)
 	defer cancel()
 	if err := nc.FlushWithContext(flushCtx); err != nil {
+		r.mu.Lock()
+		sub := r.sub
+		r.nc, r.sub = nil, nil
+		r.mu.Unlock()
+		sub.Unsubscribe() //nolint:errcheck // Serve failed; the caller closes the connection
 		return fmt.Errorf("bus: subscribe auth callout: %w", err)
 	}
+	return nil
+}
+
+// Listen is [Responder.Serve] without waiting for the server: the
+// subscription reaches it when nc next sends, or, on a connection still
+// trying to connect for the first time, as soon as it connects. Call it, or
+// Serve, once.
+func (r *Responder) Listen(nc *nats.Conn) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.nc != nil {
+		return errors.New("bus: auth callout responder already serving")
+	}
+	sub, err := r.subscribe(nc)
+	if err != nil {
+		return err
+	}
+	r.nc, r.sub = nc, sub
+	return nil
+}
+
+// attach gives the responder its connection without joining the queue
+// group: it starts paused, and [Responder.Resume] joins. Call it, Listen or
+// Serve, once.
+func (r *Responder) attach(nc *nats.Conn) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.nc != nil {
+		return errors.New("bus: auth callout responder already serving")
+	}
+	r.nc = nc
+	return nil
+}
+
+// subscribe joins the callout queue group on nc.
+func (r *Responder) subscribe(nc *nats.Conn) (*nats.Subscription, error) {
+	sub, err := nc.QueueSubscribe(calloutSubject, calloutQueue, r.dispatch)
+	if err != nil {
+		return nil, fmt.Errorf("bus: subscribe auth callout: %w", err)
+	}
+	return sub, nil
+}
+
+// dispatch takes one request off the subscription and answers it on its own
+// goroutine, once one of the [calloutMaxInFlight] slots is free.
+func (r *Responder) dispatch(m *nats.Msg) {
+	r.slots <- struct{}{}
+	if !r.accept() {
+		<-r.slots
+		return
+	}
+	go func() {
+		defer r.inflight.Done()
+		defer func() { <-r.slots }()
+		ctx := context.Background()
+		if err := m.Respond(r.Handle(ctx, m.Data)); err != nil {
+			r.cfg.Logger.ErrorContext(
+				ctx,
+				"bus: auth callout could not send its reply",
+				slog.Any("error", err),
+				slog.String("impact", "the connection that asked is refused when nats-server times out"),
+				slog.String("remediation", "check the callout connection to the cluster"),
+			)
+		}
+	}()
+}
+
+// accept counts one request in flight, unless Stop has finished draining.
+func (r *Responder) accept() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closing {
+		return false
+	}
+	r.inflight.Add(1)
+	return true
+}
+
+// Pause takes the responder out of the callout queue group, so that the
+// cluster sends every authorization request to the other servers in it. It
+// reports whether the responder was serving. Requests already being answered
+// are answered; requests delivered but not yet taken are dropped, and their
+// connects are refused when the broker's auth timeout passes and retried by
+// the workers. While nc is connected Pause returns once the server has the
+// change, bounded by [calloutFlushTimeout]. It does nothing when the
+// responder is not serving.
+func (r *Responder) Pause() (bool, error) {
+	r.mu.Lock()
+	sub, nc := r.sub, r.nc
+	r.sub = nil
+	r.mu.Unlock()
+	if sub == nil {
+		return false, nil
+	}
+	// Unsubscribe, not Drain: a draining subscription is resubscribed if the
+	// connection reconnects before it finishes, and would then hold queue
+	// interest that nothing answers.
+	if err := sub.Unsubscribe(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
+		return true, fmt.Errorf("bus: leave the auth callout queue group: %w", err)
+	}
+	return true, flushIfConnected(nc)
+}
+
+// Resume rejoins the callout queue group after [Responder.Pause], and reports
+// whether it did. It does nothing while serving, before Serve and after
+// Stop.
+func (r *Responder) Resume() (bool, error) {
+	r.mu.Lock()
+	if r.stopped || r.nc == nil || r.sub != nil {
+		r.mu.Unlock()
+		return false, nil
+	}
+	sub, err := r.subscribe(r.nc)
+	if err != nil {
+		r.mu.Unlock()
+		return false, err
+	}
 	r.sub = sub
+	nc := r.nc
+	r.mu.Unlock()
+	return true, flushIfConnected(nc)
+}
+
+// flushIfConnected waits, for at most [calloutFlushTimeout], until the server
+// has processed what nc has sent. A connection that is not connected sends its
+// subscriptions afresh when it reconnects, so there is nothing to wait for.
+func flushIfConnected(nc *nats.Conn) error {
+	if !nc.IsConnected() {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), calloutFlushTimeout)
+	defer cancel()
+	if err := nc.FlushWithContext(ctx); err != nil {
+		return fmt.Errorf("bus: auth callout: confirm the queue group change with the server: %w", err)
+	}
 	return nil
 }
 
 // Stop stops the subscription [Responder.Serve] made from taking new
 // requests and waits, for at most [calloutMaxTimeout], for the requests it
 // already accepted to be answered, so a shutdown does not close the
-// connection under them. It logs when some were not. Stop does nothing if
-// Serve did not succeed, or on a second call.
+// connection under them. It logs when some were not. A paused responder has
+// no subscription to stop and only waits. Stop does nothing if Serve did not
+// succeed, or on a second call.
 func (r *Responder) Stop() {
+	r.mu.Lock()
+	if r.nc == nil || r.stopped {
+		r.mu.Unlock()
+		return
+	}
+	r.stopped = true
 	sub := r.sub
 	r.sub = nil
-	if sub == nil || r.drain(sub) {
+	r.mu.Unlock()
+	if r.drain(sub) {
 		return
 	}
 	r.cfg.Logger.WarnContext(
@@ -468,23 +612,30 @@ func (r *Responder) Stop() {
 	)
 }
 
-// drain is [Responder.Stop] for sub, reporting whether every accepted request
-// was answered in time.
+// drain is [Responder.Stop] for sub, nil when paused, reporting whether every
+// accepted request was answered in time.
 func (r *Responder) drain(sub *nats.Subscription) bool {
 	deadline := time.After(calloutMaxTimeout)
 
 	// The subscription reports closed only after its last message handler
 	// has returned, and each handler counts its request in inflight before
-	// returning, so waiting for it first makes the count final.
-	closed := sub.StatusChanged(nats.SubscriptionClosed)
-	if err := sub.Drain(); err != nil {
-		return false
+	// returning, so waiting for it first means nothing is left to count but
+	// what a paused subscription's handler may still be holding, which
+	// closing turns away.
+	if sub != nil {
+		closed := sub.StatusChanged(nats.SubscriptionClosed)
+		if err := sub.Drain(); err != nil {
+			return false
+		}
+		select {
+		case <-closed:
+		case <-deadline:
+			return false
+		}
 	}
-	select {
-	case <-closed:
-	case <-deadline:
-		return false
-	}
+	r.mu.Lock()
+	r.closing = true
+	r.mu.Unlock()
 
 	answered := make(chan struct{})
 	go func() {

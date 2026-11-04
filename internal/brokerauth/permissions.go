@@ -122,9 +122,22 @@ func ServerPermissions() *natsserver.Permissions {
 // form carried by a NATS user JWT. It is derived from WorkerPermissions so the
 // grant list is defined once; the two cannot drift.
 func WorkerUserPermissions(workerID string) jwt.Permissions {
-	legacy := WorkerPermissions(workerID)
+	return UserPermissions(WorkerPermissions(workerID))
+}
+
+// UserPermissions converts p to the form carried by a NATS user JWT.
+func UserPermissions(p *natsserver.Permissions) jwt.Permissions {
 	var out jwt.Permissions
-	out.Pub.Allow.Add(legacy.Publish.Allow...)
-	out.Sub.Allow.Add(legacy.Subscribe.Allow...)
+	if p.Publish != nil {
+		out.Pub.Allow.Add(p.Publish.Allow...)
+		out.Pub.Deny.Add(p.Publish.Deny...)
+	}
+	if p.Subscribe != nil {
+		out.Sub.Allow.Add(p.Subscribe.Allow...)
+		out.Sub.Deny.Add(p.Subscribe.Deny...)
+	}
+	if p.Response != nil {
+		out.Resp = &jwt.ResponsePermission{MaxMsgs: p.Response.MaxMsgs, Expires: p.Response.Expires}
+	}
 	return out
 }
