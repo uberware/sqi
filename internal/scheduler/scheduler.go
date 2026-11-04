@@ -1973,20 +1973,50 @@ func (s *Scheduler) ackMsg(ctx context.Context, msg jetstream.Msg) {
 	}
 }
 
-// nakMsg negatively-acknowledges msg (requesting redelivery) and logs a
-// warning if the nak itself fails. Like [Scheduler.ackMsg] it leaves msg alone
-// once fenced: a nak would redeliver it at once, to this server again.
+// nakMsg negatively-acknowledges msg, asking for it to be redelivered after
+// [nakDelay], and logs a warning if the nak itself fails. Like
+// [Scheduler.ackMsg] it leaves msg alone once fenced: a nak would spend one
+// of the message's deliveries on this server, which can no longer process
+// it, and hold it back from the new leader for the delay; left
+// unacknowledged, it goes to the new leader when its ack wait runs out.
 func (s *Scheduler) nakMsg(ctx context.Context, msg jetstream.Msg) {
 	if s.leftForNewLeader(ctx, msg) {
 		return
 	}
-	if err := msg.Nak(); err != nil {
+	var delivered uint64
+	if md, err := msg.Metadata(); err == nil {
+		delivered = md.NumDelivered
+	}
+	if err := msg.NakWithDelay(nakDelay(delivered)); err != nil {
 		s.logger.WarnContext(
 			ctx, "scheduler: nak message failed",
 			slog.String("subject", msg.Subject()),
 			slog.Any("error", err),
 		)
 	}
+}
+
+// nakBaseDelay and nakMaxDelay bound how long a nak'd message waits to be
+// redelivered.
+const (
+	nakBaseDelay = time.Second
+	nakMaxDelay  = 30 * time.Second
+)
+
+// nakDelay is how long a message that has been delivered n times (its
+// NumDelivered) waits before its next delivery: nakBaseDelay, doubling with
+// each delivery, capped at nakMaxDelay. A failure is almost always the store
+// being unreachable, and a nak without a delay is redelivered at once, which
+// spends a consumer's whole MaxDeliver budget in milliseconds and drops the
+// message (a task's terminal status, say) over an outage of a second. With
+// the backoff the server's consumers ride out minutes, which covers a
+// PostgreSQL restart and an HA failover while the database is down.
+func nakDelay(n uint64) time.Duration {
+	d := nakBaseDelay
+	for i := uint64(1); i < n && d < nakMaxDelay; i++ {
+		d *= 2
+	}
+	return min(d, nakMaxDelay)
 }
 
 // leftForNewLeader reports whether this scheduler has been fenced, in which

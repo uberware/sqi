@@ -88,6 +88,8 @@ const workerConsumerName = "sqi-worker-srv"
 //   - AckWait 30 s — the server has 30 s to persist a status update to SQLite
 //     before NATS redelivers.
 //   - MaxDeliver 10 — allows for transient DB errors without dropping updates.
+//     The scheduler naks a failed message with a growing delay, so the ten
+//     deliveries span minutes of store outage, not milliseconds.
 //   - DeliverAllPolicy — on first consumer creation, replay any unprocessed
 //     messages from before the last server restart so no state transitions are
 //     silently lost.  NATS tracks the consumer sequence for existing durables,
@@ -126,9 +128,12 @@ func (c *Client) ConsumeTaskStatus(ctx context.Context, handler jetstream.Messag
 // Ack / redelivery policy:
 //   - AckWait 30 s — the server has 30 s to persist a log chunk to the store.
 //     The write is a single INSERT.
-//   - MaxDeliver 5 — allows for transient DB errors without re-filling the
-//     stream indefinitely.  After exhaustion the chunk is discarded; the
-//     stream is not read back by the API, so the gap stays.
+//   - MaxDeliver 10 — allows for transient DB errors without re-filling the
+//     stream indefinitely: with the scheduler's growing nak delay the
+//     deliveries span minutes, as the task-status consumer's do, so a chunk
+//     survives a store outage as long as its task's status does. After
+//     exhaustion the chunk is discarded; the stream is not read back by the
+//     API, so the gap stays.
 //   - DeliverAllPolicy — redelivers unacked log chunks from before the last
 //     server restart so no output is permanently lost across restarts.  A chunk
 //     already stored is acked without being written again (task_logs is unique
@@ -138,7 +143,7 @@ func (c *Client) ConsumeTaskLogs(ctx context.Context, handler jetstream.MessageH
 		Durable:       taskLogsConsumerName,
 		AckPolicy:     jetstream.AckExplicitPolicy,
 		AckWait:       30 * time.Second,
-		MaxDeliver:    5,
+		MaxDeliver:    10,
 		DeliverPolicy: jetstream.DeliverAllPolicy,
 		Description:   "Server-side task log chunk ingestion consumer.",
 	}
@@ -169,7 +174,11 @@ func (c *Client) ConsumeTaskLogs(ctx context.Context, handler jetstream.MessageH
 //     within the scheduler's heartbeat-timeout sweep interval (≈30 s) so
 //     delays are caught before workers are incorrectly marked offline.
 //   - MaxDeliver 3 — heartbeats are cheap and frequent; a low retry limit
-//     avoids piling up stale pings.
+//     avoids piling up stale pings. The scheduler naks a failed message with
+//     a growing delay (1 s, then 2 s), so a heartbeat outlives about 3 s of
+//     store outage, and one that arrives before its worker's registration
+//     is retried a second later. A registration gets the same three
+//     deliveries.
 //   - DeliverAllPolicy — replays unprocessed registration/heartbeat messages
 //     on startup, ensuring no worker comes online without the server noticing.
 func (c *Client) ConsumeWorker(ctx context.Context, handler jetstream.MessageHandler) (jetstream.ConsumeContext, error) {
