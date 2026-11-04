@@ -690,3 +690,78 @@ steps:
         onRun:
           command: sqi-load-noop
 `
+
+// TestCleanup_RemovesWhatARunLeft keeps a run's farm (and a shard's) on a
+// real server, beside a production pool and another live load run whose name
+// extends this one's, and checks that Cleanup removes exactly the run's farms
+// and pools.
+func TestCleanup_RemovesWhatARunLeft(t *testing.T) {
+	skipShort(t)
+	server, _, _ := binaries(t)
+	remote := startManaged(t, ManagedConfig{
+		RunDir: t.TempDir(), ServerBin: server,
+		Scenario: testScenario(scenario.ServerSpec{Store: "sqlite", BrokerAuth: true, HTTPAuth: true}),
+	})
+	admin := mustClient(t, remote)
+	ctx := t.Context()
+	keep := func(runID, poolRunID string, shared bool) Target {
+		t.Helper()
+		sc := testScenario(scenario.ServerSpec{})
+		tgt, err := Attach(ctx, AttachConfig{
+			HTTPURL: remote.HTTPURL(), NATSURL: remote.NATSURL(), APIKey: remote.APIKey(),
+			JoinToken: remote.joinToken, Keep: true, SharedPools: shared, Scenario: sc, RunID: runID, PoolRunID: poolRunID,
+		})
+		if err != nil {
+			t.Fatalf("Attach %s: %v", runID, err)
+		}
+		tmpl := fmt.Sprintf(noopJob, "sqi-load-noop", strconv.Quote(scenario.ClassArg("x")))
+		if _, _, err := admin.SubmitJob(ctx, client.SubmitRequest{FarmID: tgt.FarmID(), QueueID: tgt.QueueIDs()["render"], Template: []byte(tmpl)}); err != nil {
+			t.Fatalf("SubmitJob: %v", err)
+		}
+		if _, _, err := tgt.Credentials().For(ctx, runID+"-worker"); err != nil {
+			t.Fatalf("enroll: %v", err)
+		}
+		if err := tgt.Close(ctx); err != nil {
+			t.Fatalf("Close (kept): %v", err)
+		}
+		return tgt
+	}
+	keep("cl-1", "", false)
+	keep("cl-1-s1", "cl-1", true)
+	keep("cl-1-2", "", false) // another run, still on the server
+
+	done, err := Cleanup(ctx, CleanupConfig{HTTPURL: remote.HTTPURL(), APIKey: remote.APIKey(), RunID: "cl-1", Logger: testLogger(t)})
+	if err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	slices.Sort(done.Farms)
+	if !slices.Equal(done.Farms, []string{"load-cl-1", "load-cl-1-s1"}) {
+		t.Errorf("removed farms %v, want load-cl-1 and load-cl-1-s1", done.Farms)
+	}
+	if !slices.Equal(done.Pools, []string{"load_cl_1_arnold"}) {
+		t.Errorf("removed pools %v, want load_cl_1_arnold", done.Pools)
+	}
+	farms, err := admin.ListFarms(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, f := range farms {
+		names = append(names, f.Name)
+	}
+	if slices.Contains(names, "load-cl-1") || slices.Contains(names, "load-cl-1-s1") || !slices.Contains(names, "load-cl-1-2") {
+		t.Errorf("farms after cleanup: %v, want only the other run's load-cl-1-2 of the three", names)
+	}
+	for _, p := range []string{"arnold", "load_cl_1_2_arnold"} {
+		if _, ok := poolByName(t, admin, p); !ok {
+			t.Errorf("pool %s was removed; it is not the run's", p)
+		}
+	}
+
+	if _, err := Cleanup(ctx, CleanupConfig{HTTPURL: remote.HTTPURL(), APIKey: remote.APIKey(), RunID: "cl-1-2"}); err != nil {
+		t.Errorf("Cleanup of the other run: %v", err)
+	}
+	if _, ok := poolByName(t, admin, "load_cl_1_2_arnold"); ok {
+		t.Error("the other run's pool survived its own cleanup")
+	}
+}

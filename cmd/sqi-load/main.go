@@ -27,6 +27,7 @@ import (
 
 	"github.com/uberware/sqi/internal/loadtest/report"
 	"github.com/uberware/sqi/internal/loadtest/runner"
+	"github.com/uberware/sqi/internal/loadtest/target"
 )
 
 func main() {
@@ -37,6 +38,12 @@ func main() {
 type Runner interface {
 	Run(ctx context.Context, o runner.Options) (*report.Record, error)
 	Sweep(ctx context.Context, base runner.Options, path string, values []string) ([]report.SweepPoint, error)
+}
+
+// Cleaner is what the cleanup command drives, when the Runner provides it;
+// otherwise it is target.Cleanup. The tests replace it.
+type Cleaner interface {
+	Cleanup(ctx context.Context, cfg target.CleanupConfig) (target.Cleaned, error)
 }
 
 // realRunner is the runner package.

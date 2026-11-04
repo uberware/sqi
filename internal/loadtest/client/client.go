@@ -24,6 +24,18 @@ import (
 // test can shorten it.
 var requestTimeout = 30 * time.Second
 
+// The pauses between retries of a throttled call (see [WithRetry]) when the
+// server sends no Retry-After: they start at retryBase and double up to
+// retryMax. Variables so a test can shorten them.
+var (
+	retryBase = 250 * time.Millisecond
+	retryMax  = 10 * time.Second
+)
+
+// DefaultRetryBudget is the longest one call spends retrying 429 and 503
+// answers on a client made with WithRetry(DefaultRetryBudget).
+const DefaultRetryBudget = 2 * time.Minute
+
 const (
 	apiPrefix        = "/api/v1"
 	maxResponseBytes = 64 << 20
@@ -37,6 +49,9 @@ type Client struct {
 	origin string
 	apiKey string
 	hc     *http.Client
+	// retryBudget bounds the time one call spends retrying 429 and 503
+	// answers; 0 never retries.
+	retryBudget time.Duration
 
 	mu      sync.RWMutex
 	session *http.Cookie
@@ -48,6 +63,18 @@ type Option func(*Client)
 // WithAPIKey sends "Authorization: Bearer <key>" on every request.
 func WithAPIKey(key string) Option {
 	return func(c *Client) { c.apiKey = key }
+}
+
+// WithRetry makes every call but SubmitJob and Ready retry a 429 or 503
+// answer, waiting as the server's Retry-After says (or backing off from
+// 250 ms to 10 s without one), until the call succeeds, fails otherwise, or
+// would wait past budget in all. A server's rate limiter answers 429, and an
+// attached server keeps its limiter on, so the harness's own setup, actions,
+// checks and teardown must ride it out. Submissions never retry: a 429 or
+// 503 answer to one is what the run measures. A budget of 0 turns retries
+// off, as for the UI pollers, whose errors are counted.
+func WithRetry(budget time.Duration) Option {
+	return func(c *Client) { c.retryBudget = max(budget, 0) }
 }
 
 // WithHTTPClient replaces the default client. Per-request deadlines are applied
@@ -187,6 +214,7 @@ type call struct {
 	contentType string
 	noAuth      bool // send no API key and no session
 	noDeadline  bool // bounded only by the caller's context
+	noRetry     bool // never retried, whatever WithRetry says
 }
 
 // reply is a 2xx response.
@@ -198,9 +226,60 @@ type reply struct {
 
 func escape(id string) string { return url.PathEscape(id) }
 
-// send performs cl. A non-2xx response returns its status with an *APIError; a
-// transport error returns status 0.
+// send performs cl, retrying a 429 or 503 answer within the client's retry
+// budget (see [WithRetry]). A non-2xx response returns its status with an
+// *APIError; a transport error returns status 0.
 func (c *Client) send(ctx context.Context, cl call) (reply, int, error) {
+	r, status, wait, err := c.sendOnce(ctx, cl)
+	if c.retryBudget <= 0 || cl.noRetry {
+		return r, status, err
+	}
+	deadline := time.Now().Add(c.retryBudget)
+	backoff := retryBase
+	for err != nil && (status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable) {
+		if wait <= 0 {
+			wait = backoff
+		}
+		if time.Until(deadline) < wait || !sleepCtx(ctx, wait) {
+			return r, status, err
+		}
+		backoff = min(2*backoff, retryMax)
+		r, status, wait, err = c.sendOnce(ctx, cl)
+	}
+	return r, status, err
+}
+
+// retryAfter reads a Retry-After header: delta seconds or an HTTP date. It
+// returns 0 when there is none, or none that parses.
+func retryAfter(h http.Header) time.Duration {
+	v := strings.TrimSpace(h.Get("Retry-After"))
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(v); err == nil {
+		return time.Duration(max(secs, 0)) * time.Second
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		return max(time.Until(t), 0)
+	}
+	return 0
+}
+
+// sleepCtx waits d and reports whether ctx was still live at the end.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+// sendOnce performs cl once. A non-2xx response also returns the wait its
+// Retry-After header asks for.
+func (c *Client) sendOnce(ctx context.Context, cl call) (rep reply, status int, wait time.Duration, err error) {
 	if !cl.noDeadline {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, requestTimeout)
@@ -219,7 +298,7 @@ func (c *Client) send(ctx context.Context, cl call) (reply, int, error) {
 	}
 	req, err := http.NewRequestWithContext(ctx, cl.method, full, body)
 	if err != nil {
-		return reply{}, 0, fmt.Errorf("%s %s: %w", cl.method, cl.path, err)
+		return reply{}, 0, 0, fmt.Errorf("%s %s: %w", cl.method, cl.path, err)
 	}
 	if cl.contentType != "" {
 		req.Header.Set("Content-Type", cl.contentType)
@@ -229,19 +308,19 @@ func (c *Client) send(ctx context.Context, cl call) (reply, int, error) {
 
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return reply{}, 0, fmt.Errorf("%s %s: %w", cl.method, cl.path, err)
+		return reply{}, 0, 0, fmt.Errorf("%s %s: %w", cl.method, cl.path, err)
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
-		return reply{}, resp.StatusCode, fmt.Errorf("%s %s: read body: %w", cl.method, cl.path, err)
+		return reply{}, resp.StatusCode, 0, fmt.Errorf("%s %s: read body: %w", cl.method, cl.path, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return reply{}, resp.StatusCode, &APIError{
+		return reply{}, resp.StatusCode, retryAfter(resp.Header), &APIError{
 			Status: resp.StatusCode, Method: cl.method, Path: cl.path, Detail: problemDetail(data),
 		}
 	}
-	return reply{status: resp.StatusCode, header: resp.Header, body: data}, resp.StatusCode, nil
+	return reply{status: resp.StatusCode, header: resp.Header, body: data}, resp.StatusCode, 0, nil
 }
 
 // authorize attaches the API key and, when a session exists, its cookie. The
@@ -339,7 +418,8 @@ func pageQuery(q url.Values, limit, offset int) url.Values {
 
 // Ready returns nil when the server's readiness probe (GET /readyz) answers 200.
 func (c *Client) Ready(ctx context.Context) error {
-	return c.do(ctx, call{method: http.MethodGet, path: "/readyz", root: true}, nil)
+	// Never retried: a caller polling for readiness keeps its own pace.
+	return c.do(ctx, call{method: http.MethodGet, path: "/readyz", root: true, noRetry: true}, nil)
 }
 
 // CreateFarm creates a farm (POST /farms) and returns its id.
@@ -518,7 +598,8 @@ func (c *Client) CreateAPIKey(ctx context.Context, name string) (string, error) 
 
 // ── Jobs ─────────────────────────────────────────────────────────────────────
 
-// SubmitJob submits a job (POST /jobs). It has no deadline of its own: a large
+// SubmitJob submits a job (POST /jobs). It is never retried, so a 429 or 503
+// answer reaches the caller to be counted. It has no deadline of its own: a large
 // job takes the server a long time to create, and giving up would orphan it. The
 // caller's ctx bounds it.
 // It returns the HTTP status of every
@@ -536,7 +617,7 @@ func (c *Client) SubmitJob(ctx context.Context, r SubmitRequest) (jobID string, 
 	if t := bytes.TrimSpace(r.Template); len(t) > 0 && t[0] == '{' {
 		ct = "application/json"
 	}
-	rep, status, err := c.send(ctx, call{method: http.MethodPost, path: "/jobs", query: q, body: r.Template, contentType: ct, noDeadline: true})
+	rep, status, err := c.send(ctx, call{method: http.MethodPost, path: "/jobs", query: q, body: r.Template, contentType: ct, noDeadline: true, noRetry: true})
 	if err != nil {
 		return "", status, err
 	}

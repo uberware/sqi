@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/uberware/sqi/internal/loadtest/report"
+	"github.com/uberware/sqi/internal/loadtest/target"
 )
 
 // Exit statuses; see the package documentation.
@@ -25,6 +26,7 @@ const (
 // app is one invocation of sqi-load.
 type app struct {
 	r              Runner
+	cleanup        func(context.Context, target.CleanupConfig) (target.Cleaned, error)
 	stdout, stderr io.Writer
 	args           []string
 	// code is the exit status a command that succeeded decided on.
@@ -33,7 +35,10 @@ type app struct {
 
 // execute runs sqi-load with args and returns its exit status.
 func execute(ctx context.Context, args []string, stdout, stderr io.Writer, r Runner) int {
-	a := &app{r: r, stdout: stdout, stderr: stderr, args: args}
+	a := &app{r: r, stdout: stdout, stderr: stderr, args: args, cleanup: target.Cleanup}
+	if c, ok := r.(Cleaner); ok {
+		a.cleanup = c.Cleanup
+	}
 	root := a.rootCmd()
 	root.SetArgs(args)
 	root.SetOut(stdout)
@@ -80,6 +85,7 @@ An invariant failure wins over the others.`,
 		a.sweepCmd(),
 		a.compareCmd(),
 		a.mergeCmd(),
+		a.cleanupCmd(),
 		a.scenariosCmd(),
 		versionCmd(),
 	)

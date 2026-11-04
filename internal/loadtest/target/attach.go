@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"net/http"
 	"slices"
 	"sync"
@@ -20,13 +19,23 @@ import (
 )
 
 const (
+	removalRetry      = 2 * time.Second
+	deleteParallelism = 8
+	listPage          = 1000
+)
+
+// The teardown bounds, variables so a test can shorten them.
+var (
 	// workerRemovalTimeout bounds the wait for the farm's workers to go
 	// offline, which a crashed simulated worker does only when the server's
 	// heartbeat timeout passes.
 	workerRemovalTimeout = 2 * time.Minute
-	removalRetry         = 2 * time.Second
-	deleteParallelism    = 8
-	listPage             = 1000
+	// jobDeletionTimeout bounds deleting the farm's jobs.
+	jobDeletionTimeout = 5 * time.Minute
+	// removalPause is the pause between two passes over the farm's jobs or
+	// workers, so a listing that lags the deletes is not re-read in a tight
+	// loop.
+	removalPause = 200 * time.Millisecond
 )
 
 // AttachConfig configures Attach.
@@ -181,13 +190,18 @@ func (a *attached) teardown(ctx context.Context) error {
 	}
 	if a.cfg.SharedPools {
 		if len(a.farm.poolIDs) > 0 {
-			a.logger.InfoContext(ctx, "leaving the shared usage pools in place; delete them once every shard has finished",
-				slog.Any("pools", slices.Sorted(maps.Keys(a.farm.poolIDs))))
+			names := make([]string, 0, len(a.farm.poolIDs))
+			for n := range a.farm.poolIDs {
+				names = append(names, a.PoolName(n))
+			}
+			slices.Sort(names)
+			a.logger.InfoContext(ctx, "leaving the shared usage pools in place; once every shard has finished, remove them with sqi-load cleanup --run-id "+cmp.Or(a.cfg.PoolRunID, a.cfg.RunID),
+				slog.Any("pools", names))
 		}
 	} else {
 		for name, id := range a.farm.poolIDs {
 			if err := a.client.DeleteUsagePool(ctx, id); err != nil && !isStatus(err, http.StatusNotFound) {
-				errs = append(errs, fmt.Errorf("delete usage pool %s: %w", name, err))
+				errs = append(errs, fmt.Errorf("delete usage pool %s: %w", a.PoolName(name), err))
 			}
 		}
 	}
@@ -197,9 +211,11 @@ func (a *attached) teardown(ctx context.Context) error {
 	return nil
 }
 
-// deleteJobs deletes every job of the farm, several at a time. The server
-// cancels a job's unfinished tasks as it deletes it.
+// deleteJobs deletes every job of the farm, several at a time, until the
+// farm lists none or jobDeletionTimeout passes. The server cancels a job's
+// unfinished tasks as it deletes it.
 func (a *attached) deleteJobs(ctx context.Context) error {
+	deadline := time.Now().Add(jobDeletionTimeout)
 	for {
 		page, err := a.client.ListJobs(ctx, a.farm.id, listPage, 0)
 		if err != nil {
@@ -208,12 +224,20 @@ func (a *attached) deleteJobs(ctx context.Context) error {
 		if len(page.Items) == 0 {
 			return nil
 		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%d jobs still listed after %s", page.Total, jobDeletionTimeout)
+		}
 		ids := make([]string, len(page.Items))
 		for i, j := range page.Items {
 			ids[i] = j.ID
 		}
 		if err := a.deleteAll(ctx, ids); err != nil {
 			return err
+		}
+		// A listing that has not caught up with the deletes yet would
+		// otherwise be re-read, and re-deleted, as fast as the server answers.
+		if !sleepCtx(ctx, removalPause) {
+			return fmt.Errorf("delete jobs: %w", ctx.Err())
 		}
 	}
 }
@@ -238,7 +262,10 @@ func (a *attached) deleteAll(ctx context.Context, ids []string) error {
 }
 
 // removeWorkers removes every worker of the farm, retrying the ones the
-// server still counts as online until workerRemovalTimeout passes.
+// server still counts as online, until the farm lists none or
+// workerRemovalTimeout passes. Every pass pauses: removalRetry when a worker
+// is still online (it goes offline only when the server's heartbeat timeout
+// passes), removalPause otherwise.
 func (a *attached) removeWorkers(ctx context.Context) error {
 	deadline := time.Now().Add(workerRemovalTimeout)
 	for {
@@ -248,6 +275,9 @@ func (a *attached) removeWorkers(ctx context.Context) error {
 		}
 		if len(page.Items) == 0 {
 			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%d workers still listed after %s", page.Total, workerRemovalTimeout)
 		}
 		busy := 0
 		var errs []error
@@ -264,16 +294,24 @@ func (a *attached) removeWorkers(ctx context.Context) error {
 		if len(errs) > 0 {
 			return errors.Join(errs...)
 		}
-		if busy == 0 {
-			continue // the next page, if any
+		pause := removalPause
+		if busy > 0 {
+			pause = removalRetry
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("%d workers still online after %s", busy, workerRemovalTimeout)
-		}
-		select {
-		case <-ctx.Done():
+		if !sleepCtx(ctx, pause) {
 			return fmt.Errorf("remove workers: %w", ctx.Err())
-		case <-time.After(removalRetry):
 		}
+	}
+}
+
+// sleepCtx waits d and reports whether ctx was still live at the end.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
 	}
 }

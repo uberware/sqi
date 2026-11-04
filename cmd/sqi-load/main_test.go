@@ -14,6 +14,7 @@ import (
 	"github.com/uberware/sqi/internal/loadtest/report"
 	"github.com/uberware/sqi/internal/loadtest/runner"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
+	"github.com/uberware/sqi/internal/loadtest/target"
 	"github.com/uberware/sqi/internal/loadtest/verify"
 )
 
@@ -28,6 +29,15 @@ type fakeRunner struct {
 	gotPath  string
 	gotVals  []string
 	runCalls int
+
+	cleaned    target.Cleaned
+	cleanErr   error
+	gotCleanup *target.CleanupConfig
+}
+
+func (f *fakeRunner) Cleanup(_ context.Context, cfg target.CleanupConfig) (target.Cleaned, error) {
+	f.gotCleanup = &cfg
+	return f.cleaned, f.cleanErr
 }
 
 func (f *fakeRunner) Run(_ context.Context, o runner.Options) (*report.Record, error) {
@@ -282,5 +292,48 @@ func TestVerdict(t *testing.T) {
 				t.Errorf("verdict = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestCLI_Cleanup(t *testing.T) {
+	cases := []struct {
+		name       string
+		args       []string
+		cleaned    target.Cleaned
+		err        error
+		want       int
+		wantOut    string
+		wantCalled bool
+	}{
+		{
+			name: "removes a run's leftovers", args: []string{"cleanup", "--server", "https://farm:8443", "--run-id", "big-1", "--api-key", "k", "--ca-file", "ca.crt"},
+			cleaned: target.Cleaned{Farms: []string{"load-big-1"}, Pools: []string{"load_big_1_arnold"}},
+			want:    exitOK, wantOut: "removed 1 farms (load-big-1) and 1 usage pools (load_big_1_arnold)", wantCalled: true,
+		},
+		{name: "nothing to remove", args: []string{"cleanup", "--server", "http://h", "--run-id", "r"}, want: exitOK, wantOut: "removed 0 farms (none)", wantCalled: true},
+		{name: "a failed cleanup", args: []string{"cleanup", "--server", "http://h", "--run-id", "r"}, err: errors.New("target: list farms: HTTP 403"), want: exitUsage, wantCalled: true},
+		{name: "no server", args: []string{"cleanup", "--run-id", "r"}, want: exitUsage},
+		{name: "no run id", args: []string{"cleanup", "--server", "http://h"}, want: exitUsage},
+		{name: "bad run id", args: []string{"cleanup", "--server", "http://h", "--run-id", "a:b"}, want: exitUsage},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeRunner{cleaned: tc.cleaned, cleanErr: tc.err}
+			code, stdout, stderr := runCLI(t, f, tc.args...)
+			if code != tc.want {
+				t.Errorf("exit %d, want %d; stderr:\n%s", code, tc.want, stderr)
+			}
+			if !strings.Contains(stdout, tc.wantOut) {
+				t.Errorf("stdout does not say %q:\n%s", tc.wantOut, stdout)
+			}
+			if (f.gotCleanup != nil) != tc.wantCalled {
+				t.Fatalf("cleanup called = %v, want %v", f.gotCleanup != nil, tc.wantCalled)
+			}
+		})
+	}
+	f := &fakeRunner{}
+	runCLI(t, f, "cleanup", "--server", "https://farm:8443", "--run-id", "big-1", "--api-key", "k", "--ca-file", "ca.crt")
+	if c := f.gotCleanup; c == nil || c.HTTPURL != "https://farm:8443" || c.RunID != "big-1" || c.APIKey != "k" || c.TLS.CAFile != "ca.crt" {
+		t.Errorf("cleanup config %+v", c)
 	}
 }

@@ -102,7 +102,8 @@ func WithUIClient(c *client.Client) UIOption { return func(u *UIClients) { u.c =
 // never forgotten.
 func WithUITarget(t target.Target) UIOption {
 	return func(u *UIClients) {
-		c, err := target.NewClient(t)
+		// No retries: a poller's throttled call is an error it counts.
+		c, err := target.NewClient(t, client.WithRetry(0))
 		if err != nil {
 			u.initErr = err
 			return

@@ -84,21 +84,23 @@ func PostgresDSN(t Target) string {
 const placeholderCommand = "sqi-load-noop"
 
 // NewClient returns a REST client for t, carrying its API key and trusting
-// its CA.
-func NewClient(t Target) (*client.Client, error) {
-	return newClient(t.HTTPURL(), t.APIKey(), t.TLS())
+// its CA. It retries throttled calls (429 and 503, but never a submission)
+// for up to client.DefaultRetryBudget each; opts are applied after, so
+// client.WithRetry(0) turns that off.
+func NewClient(t Target, opts ...client.Option) (*client.Client, error) {
+	return newClient(t.HTTPURL(), t.APIKey(), t.TLS(), opts...)
 }
 
-func newClient(httpURL, apiKey string, files simworker.TLSFiles) (*client.Client, error) {
+func newClient(httpURL, apiKey string, files simworker.TLSFiles, extra ...client.Option) (*client.Client, error) {
 	hc, err := httpClient(files)
 	if err != nil {
 		return nil, err
 	}
-	opts := []client.Option{client.WithHTTPClient(hc)}
+	opts := []client.Option{client.WithHTTPClient(hc), client.WithRetry(client.DefaultRetryBudget)}
 	if apiKey != "" {
 		opts = append(opts, client.WithAPIKey(apiKey))
 	}
-	return client.New(httpURL, opts...), nil
+	return client.New(httpURL, append(opts, extra...)...), nil
 }
 
 // httpClient returns an HTTP client trusting files' CA, and the default
