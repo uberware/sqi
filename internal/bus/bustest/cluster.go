@@ -41,6 +41,15 @@ const (
 // sees every node.
 const readyTimeout = 30 * time.Second
 
+// startAttempts is how many times [StartCluster] boots a cluster on freshly
+// reserved ports before giving up. A reserved port can be taken by another
+// process before the node binds it, which is likely when many test packages
+// run at once.
+const startAttempts = 3
+
+// reservePorts is [freePorts]; a test replaces it to inject a collision.
+var reservePorts = freePorts
+
 // Options shapes the cluster [StartCluster] boots.
 type Options struct {
 	// Account is sqi's account name. Empty means [bus.DefaultAccount].
@@ -120,7 +129,39 @@ type node struct {
 	name string
 	conf string
 	srv  *natsserver.Server
+	log  *bootLog
 }
+
+// bootLog keeps what a node's server logged as fatal. The servers run with
+// logging off, so without it a failure to bind a port is invisible and shows
+// only as a node that never becomes ready. Error-level lines are dropped: a
+// node dialing a route to a peer that has not started yet logs one, and that
+// is routine while a cluster boots.
+type bootLog struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (l *bootLog) recordf(format string, v ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lines = append(l.lines, fmt.Sprintf(format, v...))
+}
+
+// failure returns what the node logged as fatal, or "" if nothing.
+func (l *bootLog) failure() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.Join(l.lines, "; ")
+}
+
+func (*bootLog) Noticef(string, ...any) {}
+func (*bootLog) Warnf(string, ...any)   {}
+func (*bootLog) Errorf(string, ...any)  {}
+func (*bootLog) Debugf(string, ...any)  {}
+func (*bootLog) Tracef(string, ...any)  {}
+
+func (l *bootLog) Fatalf(format string, v ...any) { l.recordf(format, v...) }
 
 // StartCluster boots `nodes` routed nats-server nodes from sqi's account layout
 // and waits until each accepts connections and, with more than one node, a
@@ -133,9 +174,31 @@ func StartCluster(t testing.TB, nodes int, o Options) *Cluster {
 	}
 	c := &Cluster{t: t, authTimeout: o.AuthTimeout}
 	frag := c.fragment(o)
+	t.Cleanup(c.Shutdown)
 
-	clientPorts := freePorts(t, nodes)
-	clusterPorts := freePorts(t, nodes)
+	var err error
+	for attempt := 1; attempt <= startAttempts; attempt++ {
+		if err = c.startNodes(nodes, frag); err == nil {
+			return c
+		}
+		c.Shutdown()
+		c.nodes, c.URLs = nil, nil
+		if attempt < startAttempts {
+			t.Logf("bustest: cluster start attempt %d of %d failed, retrying on new ports: %v", attempt, startAttempts, err)
+		}
+	}
+	t.Fatalf("bustest: cluster did not start after %d attempts: %v", startAttempts, err)
+	return nil
+}
+
+// startNodes reserves ports, writes each node's config, boots the nodes and
+// waits until they accept connections and elect a meta leader. It returns
+// an error rather than failing the test so [StartCluster] can retry.
+func (c *Cluster) startNodes(nodes int, frag string) error {
+	t := c.t
+	t.Helper()
+	clientPorts := reservePorts(t, nodes)
+	clusterPorts := reservePorts(t, nodes)
 	if nodes > 1 {
 		c.ClusterName = "sqi-test-" + randomHex(t, 4)
 	}
@@ -150,16 +213,16 @@ func StartCluster(t testing.TB, nodes int, o Options) *Cluster {
 		c.nodes = append(c.nodes, &node{name: name, conf: conf})
 		c.URLs = append(c.URLs, fmt.Sprintf("nats://127.0.0.1:%d", clientPorts[i]))
 	}
-	t.Cleanup(c.Shutdown)
 
 	for _, n := range c.nodes {
 		c.boot(n)
 	}
 	for _, n := range c.nodes {
-		c.waitReady(n)
+		if err := c.awaitReady(n); err != nil {
+			return err
+		}
 	}
-	c.waitMetaLeader()
-	return c
+	return c.awaitMetaLeader()
 }
 
 // fragment returns the account layout text every node includes, generating
@@ -286,39 +349,68 @@ func (c *Cluster) boot(n *node) {
 	if err != nil {
 		t.Fatalf("bustest: %s: create server: %v", n.name, err)
 	}
+	bl := &bootLog{}
+	srv.SetLoggerV2(bl, false, false, false)
 	srv.Start()
 	c.mu.Lock()
 	n.srv = srv
+	n.log = bl
 	c.mu.Unlock()
 }
 
 func (c *Cluster) waitReady(n *node) {
-	t := c.t
-	t.Helper()
+	c.t.Helper()
+	if err := c.awaitReady(n); err != nil {
+		c.t.Fatalf("bustest: %v", err)
+	}
+}
+
+// awaitReady waits for n to accept client connections, giving up early if
+// the server logged an error, as it does when it cannot bind a port.
+func (c *Cluster) awaitReady(n *node) error {
 	c.mu.Lock()
-	srv := n.srv
+	srv, bl := n.srv, n.log
 	c.mu.Unlock()
-	if !srv.ReadyForConnections(readyTimeout) {
-		t.Fatalf("bustest: %s did not accept connections within %s", n.name, readyTimeout)
+	deadline := time.Now().Add(readyTimeout)
+	for {
+		if srv.ReadyForConnections(50 * time.Millisecond) {
+			return nil
+		}
+		if f := bl.failure(); f != "" {
+			return fmt.Errorf("%s failed to start: %s", n.name, f)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%s did not accept connections within %s", n.name, readyTimeout)
+		}
 	}
 }
 
 // waitMetaLeader waits until a JetStream meta leader sees every node. A
 // single node is not clustered and has no meta leader.
 func (c *Cluster) waitMetaLeader() {
-	t := c.t
-	t.Helper()
+	c.t.Helper()
+	if err := c.awaitMetaLeader(); err != nil {
+		c.t.Fatalf("bustest: %v", err)
+	}
+}
+
+func (c *Cluster) awaitMetaLeader() error {
 	if len(c.nodes) < 2 {
-		return
+		return nil
 	}
 	deadline := time.Now().Add(readyTimeout)
 	for time.Now().Before(deadline) {
 		if c.metaLeaderSeesAll() {
-			return
+			return nil
+		}
+		for _, n := range c.nodes {
+			if f := n.log.failure(); f != "" {
+				return fmt.Errorf("%s failed to start: %s", n.name, f)
+			}
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	t.Fatalf("bustest: no JetStream meta leader saw all %d nodes within %s", len(c.nodes), readyTimeout)
+	return fmt.Errorf("no JetStream meta leader saw all %d nodes within %s", len(c.nodes), readyTimeout)
 }
 
 func (c *Cluster) metaLeaderSeesAll() bool {
