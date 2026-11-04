@@ -286,6 +286,33 @@ test-expr-oracle: ## Differential-test the EXPR evaluator against the OpenJD ref
 	SQI_EXPR_ORACLE_EXPECT_VERSION=$$([ -n "$$SQI_EXPR_ORACLE_PYTHON" ] || echo $(OPENJD_MODEL_VERSION)) \
 	  go test $(TEST_FLAGS) -tags oracle -run 'TestExprOracle' -v -timeout 5m ./test/oracle/
 
+# Load and soak harness (internal/loadtest, cmd/sqi-load, docs/load-testing.md).
+# The managed target builds sqi-server, sqi-worker and the no-op task command
+# itself, so none of these needs a prior `make build`. `load-smoke` is the Go
+# test (build tag `load`, never part of `make test`); the other three drive
+# the CLI, which writes a run directory under ./runs.
+SCENARIO ?= mixed-medium
+DURATION ?= 8h
+VARY     ?=
+
+.PHONY: load-smoke
+load-smoke: ## Run the smoke scenario end to end as a Go test (SQLite; PostgreSQL too with SQI_TEST_POSTGRES_DSN)
+	go test $(TEST_FLAGS) -tags load -run TestLoadSmoke -v -timeout 15m ./test/load/
+
+.PHONY: load
+load: ## Run one load scenario (SCENARIO=mixed-medium)
+	go run ./cmd/sqi-load run --scenario $(SCENARIO)
+
+.PHONY: soak
+soak: ## Run a long soak of the soak-steady scenario (DURATION=8h)
+	go run ./cmd/sqi-load soak --scenario soak-steady --duration $(DURATION)
+
+.PHONY: load-sweep
+load-sweep: ## Sweep one parameter (SCENARIO=..., VARY='workers[0].count=100,200,400')
+	@if [ -z '$(VARY)' ]; then \
+	  echo "load-sweep needs VARY, e.g. make load-sweep SCENARIO=workers-ramp VARY='workers[0].count=100,200,400'"; exit 1; fi
+	go run ./cmd/sqi-load sweep --scenario $(SCENARIO) --vary '$(VARY)'
+
 # Validates the published preset library against the validator in this working
 # tree. A validator change can invalidate content already published: a change
 # that tightens validation and fixes every preset in this repo still leaves the
