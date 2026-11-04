@@ -153,6 +153,11 @@ main()
                PostgreSQL: release the advisory lock, then both pools
 ```
 
+A server with `ha.enabled` starts as a standby instead and runs the
+leader-only steps (seeding, bootstrap, the broker-layout fence, the
+scheduler, mDNS) only when it is promoted; see
+[High availability](#high-availability).
+
 ---
 
 ## Job lifecycle data flow
@@ -476,6 +481,20 @@ NATS consumer (internal/scheduler/taskstatus.go)
   │     checkStepCompletion: store.FinalizeStep → propagateStepDependencies → store.FinalizeJob
   └─ ack message (a refused transition is acked too; its claims were still released)
 ```
+
+A message whose processing fails for any other reason (the store is
+unreachable, say) is Nak'd with a delay: 1 s, doubling with each delivery up
+to 30 s. The server's task-status and task-log consumers allow ten deliveries,
+so a report outlives about 2.5 minutes of store outage (a PostgreSQL restart,
+or an HA failover while the database is down) instead of having its
+deliveries spent in milliseconds and being dropped. The cost is a lag after
+a long outage: a message already waiting out a 30 s delay when the store
+comes back waits the rest of it, so recovery can trail the store by up to
+30 s. The worker consumer allows three deliveries, so a heartbeat or a
+registration outlives only about 3 s of outage. The next heartbeat replaces
+a lost one; a worker registers only at start and after reconnecting to the
+broker, so one whose registration is lost that way is not seen until it
+does.
 
 **Durable failure reason.** Every `task_attempts` row carries a `message`
 column next to `exit_code` — the worker's human-readable reason for that
@@ -983,9 +1002,21 @@ not: a backup or a worker-credential change against a running server is
 legitimate. The server pings the lock's connection every 30 s. If
 that connection is lost, so is the lock: the server logs it at Error and keeps
 running, because exiting would turn a network blip into an outage. In that
-window a second server could start on the same database. Running more than
-one server (scheduler high availability, on the [roadmap](roadmap.md)) is not
-supported yet.
+window a second server could start on the same database.
+
+Servers with `ha.enabled` share a PostgreSQL database instead (see
+[High availability](#high-availability)). They take the same advisory lock
+shared, so they coexist with each other and exclude a server without HA and
+the commands above, which take it exclusive. An HA server asks for it
+exclusive first, migrates if it got it (no other server is running), and then
+takes it shared before dropping the exclusive lock; otherwise it joins the
+shared holders, waiting up to 30 s while a session holds it exclusive, and
+refuses to join if the schema is behind it
+(`postgres.ErrSchemaBehindWithOtherServers`). Its sessions set
+`idle_in_transaction_session_timeout` to `ha.lease_ttl / 3` and
+`client_connection_check_interval` to 1 s, so a frozen leader's open
+transaction cannot hold row locks the next leader waits on. A server without
+HA sets neither.
 
 ---
 
@@ -1624,7 +1655,29 @@ The guard is the key `active` in the JetStream KV bucket `SQI_SERVER`, with a
   takes no guard.
 
 The guard stops a copied configuration from pointing a second server at a
-live account. It does not fail over or elect a standby.
+live account. It does not fail over or elect a standby: that is the leader
+lease's job (see [High availability](#high-availability)).
+
+Under HA the guard binds the account to one database rather than to one
+process. The servers of a group share the account; the leader holds the key,
+taking it as it promotes itself (`Remote.TakeLeadership`), and a standby
+checks it before it reports ready (`CheckGuard`). The value's instance ID is
+looked up in the database's `server_members`:
+
+- **A member's key** (the leader's, or a leader's that crashed) passes a
+  standby's check and is overwritten at once by a promoting server, so a
+  crash costs a failover no guard TTL.
+- **A non-member's key** is watched for one guard TTL (30 s). If its revision
+  advances, the holder is a live server on another database: a standby
+  refuses to start, and a promotion fails, with the holder named and
+  `and is not a member of this database: is this server pointed at the wrong
+  database?`. If it is not, its holder is gone (the last server without HA, or
+  a finished restore) and it is taken. So the first promotion after moving a
+  farm to HA can take up to 30 s longer, and a server on the wrong database is
+  refused up to 30 s later than a single server would be.
+- **A leader whose key is taken** loses its leadership (`guard_lost`) and
+  exits, instead of reporting degraded and running on as a single server
+  does.
 
 ### Changing broker: identity and fencing
 
@@ -1691,6 +1744,87 @@ degraded unless:
 
 The external system connection is not checked: without it revocation waits
 for expiry, but workers keep working.
+
+---
+
+## High availability
+
+With `ha.enabled`, servers that share a PostgreSQL database and an external
+NATS account form a group: one leader, which does everything a single server
+does, and warm standbys (`internal/ha`, `internal/server/ha*.go`). Without
+`ha.enabled` none of this runs. The operator's guide is
+[Running more than one server](operations.md#running-more-than-one-server-high-availability).
+
+**The lease.** The `server_lease` row (holder, epoch, expiry) and the
+`server_epoch` row (the fencing epoch) live in the database, and acquire,
+renew and release are single SQL statements that compare the expiry with the
+database's own clock, so no server's clock decides. They run on a pool of
+their own, so the leader's writes never delay a renewal. A standby tries to
+acquire every second; an acquire after an expiry or a release bumps the epoch.
+The leader renews every `ha.lease_ttl / 3` and retries a failed renewal every
+`ha.lease_ttl / 10`. It notes its monotonic clock before sending each renewal
+and treats a success as authority for `0.8 × ha.lease_ttl` from that instant:
+the database set the expiry no earlier than the request was sent, so no
+standby can take over before the leader's authority has run out.
+
+**The fence.** Everything the leader does as leader runs under a context
+carrying its epoch (`store.WithLeaderEpoch`). Every write made under it, in a
+transaction or a single statement, ends with `SELECT 1 FROM server_epoch
+WHERE id = 1 AND epoch = $1 FOR SHARE` before its commit; no row means another
+server has taken over, and the write rolls back with `store.ErrFenced`. A
+takeover's `UPDATE` of the epoch row waits only for commits already past their
+check. The leader's own writes therefore cannot land after a successor
+started, however long it was frozen before committing. A fenced write is a
+loss of leadership.
+
+**Losing it.** Any loss of authority (a refused renewal, the self-fence
+deadline, a fenced write, the broker guard taken, the broker lost while a
+standby has it, a failed promotion step) logs one Error, stops the process in
+bounded steps, releases the lease and exits with code 75 (`server.ExitDemoted`),
+for the supervisor to start it again as a standby. A fresh process has no
+stale state, which making the scheduler, the consumers and the hub stoppable
+in place could not promise.
+
+**Membership.** Every server upserts its row in `server_members` (instance
+ID, name, host, PID, version, worker-grants fingerprint, start time, last
+seen, and when it last reached the broker) every `ha.lease_ttl / 3`. The
+broker guard reads it to tell a member from a stranger, the broker-loss rule
+reads it to see whether a standby reaches the broker, and
+`GET /api/v1/servers` and `sqi-server ha status` render it.
+
+### What runs where
+
+| Component | Single server | In a group |
+|---|---|---|
+| Store open and the single-server lock | exclusive lock; migrate on open | every server; lock **shared**, migrations only by a server that got it exclusive |
+| PostgreSQL lock watcher | logs a lost lock | every server, unchanged |
+| SQLite WAL checkpointer | yes | n/a (no HA on SQLite) |
+| Expired-session sweeper | yes | **leader only** (also prunes member rows unseen for a day) |
+| Seeding the default farm and queue | at boot | **leader only**, at promotion |
+| Bootstrapping the first admin | at boot | **leader only**, at promotion |
+| Broker connections | yes | every server connects; **leader only** provisions the streams |
+| Broker account guard | held and refreshed | **leader only** holds it; standbys check it |
+| Broker-layout reconcile and fence | at boot | **leader only**, at promotion, under its epoch |
+| Auth-callout responder (`sqi-auth`) | yes | every server, once its standby checks pass and while its worker-grants fingerprint matches the leader's |
+| Worker registration, heartbeat and deregister consumer (`sqi-worker-srv`) | yes | **leader only** |
+| Task status consumer (`sqi-task-status-srv`) | yes | **leader only** |
+| Task log consumer (`sqi-task-logs-srv`) | yes | **leader only** |
+| Stuck- and pending-step reconcile | in `scheduler.Run` | **leader only**, at promotion, before leasing |
+| Worker diagnostic subscription | yes | every server, so a new leader has worker log history |
+| Lease subscription (`work.lease.<queue>`) | yes | **leader only** |
+| Heartbeat sweep (liveness, reclaim, reap, reconcile) | yes | **leader only**; its reconnect grace counts from the promotion |
+| Retry-wake timers | in memory | in the leader's memory; lost on failover, the sweep is the backstop |
+| REST API, WebSocket hub, cancel, retry, revoke | yes | **leader only**; a standby answers 503 |
+| HTTP listener | yes | every server: probes and metrics on a standby |
+| Per-IP rate limiter, OIDC state key, diagnostics ring | in memory | per process |
+| mDNS responder | if enabled | **leader only** |
+| `/healthz`, `/readyz` | yes | every server, role-aware; `/leaderz` added |
+| Prometheus metrics | yes | every server; scheduler gauges meaningful on the leader only; `sqi_server_ha_*` added |
+| Preset library cache | yes | every server |
+
+"Leader only" work starts in the promotion's order (guard, streams, layout
+fence, seeding, bootstrap, scheduler, sweeper, mDNS, API) and the API opens
+last, so a client never reaches a leader that has not finished promoting.
 
 ---
 

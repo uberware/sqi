@@ -289,9 +289,11 @@ you give `--name`, like `sc.exe`.
 Schema migrations are forward-only. A new `sqi-server` applies its migrations
 when it starts, and from then on an older binary refuses the database (see
 [Rollback](#rollback)), so the only way back is the backup you take first.
-Upgrading is a stop and a start, not a rolling restart: two servers cannot
-share one database (see [One server per database](#one-server-per-database)),
-and on one host they cannot share its ports either.
+Upgrading a single server is a stop and a start, not a rolling restart: two
+servers cannot share one database (see
+[One server per database](#one-server-per-database)), and on one host they
+cannot share its ports either. A high-availability group is upgraded as
+[Upgrading a group](#upgrading-a-group) describes.
 
 Workers do not need to stop: they reconnect when the server is back. On a
 current worker, a report it could not deliver while the server was down is
@@ -1043,9 +1045,13 @@ stored once, identified by its attempt and the worker's sequence number.
 
 ## One server per database
 
-Only one `sqi-server` may use a database at a time, on either backend. The
+Only one `sqi-server` may use a database at a time, on either backend, unless
+every server using it runs with
+[high availability](#running-more-than-one-server-high-availability) on: then
+any number of them share a PostgreSQL database, and one of them leads. The
 same guard keeps the commands that rewrite the database (`migrate up`,
-`restore`, `store copy`) from running beside a server:
+`restore`, `store copy`) from running beside any server, with high
+availability or without:
 
 | Takes the lock | Does not |
 |---|---|
@@ -1053,10 +1059,13 @@ same guard keeps the commands that rewrite the database (`migrate up`,
 
 The commands in the right-hand column work while a server runs.
 
-A consequence for upgrades and supervisors: **no overlapping restarts.** Stop
-the old server before starting the new one. A supervisor that starts the
-replacement first (a rolling update with surge) sees it refused until the old
-one exits. `systemctl restart` stops first and is fine.
+A consequence for upgrades and supervisors of a single server: **no
+overlapping restarts.** Stop the old server before starting the new one. A
+supervisor that starts the replacement first (a rolling update with surge)
+sees it refused until the old one exits. `systemctl restart` stops first and
+is fine. A high-availability group rolls a release that keeps the schema, and
+stops every server for one that changes it (see
+[Upgrading a group](#upgrading-a-group)).
 
 ### SQLite: the lock file
 
@@ -1080,10 +1089,10 @@ as that filesystem's locking (NFS and SMB emulate it with varying fidelity).
 
 ### PostgreSQL: the advisory lock
 
-At start-up the server takes the PostgreSQL advisory lock
-`0x7371692d73727672` and holds it until it stops. A second server started on
-the same database exits at once, logging `sqi-server exited with error` with
-this error:
+At start-up a server takes the PostgreSQL advisory lock `0x7371692d73727672`
+and holds it until it stops. A server without high availability takes it
+exclusive, and a second server started on the same database exits at once,
+logging `sqi-server exited with error` with this error:
 
 ```
 startup failed: open store: another sqi-server, or a command that needs the database alone (migrate up, restore, store copy), is already using this database (PostgreSQL advisory lock 0x7371692d73727672 is held); stop it first. Servers can share a database only when high availability is enabled on all of them
@@ -1113,26 +1122,59 @@ timeout), and keeps running. Nothing then stops a second
 server starting on the same database. Restart the server to take the lock
 again.
 
+A server with `ha.enabled` takes the same lock **shared**, and the servers of
+a group hold it together. Shared and exclusive exclude each other, so a
+server with high availability and one without refuse each other in either
+order, and `migrate up`, `restore` and `store copy`, which take it exclusive,
+refuse to run beside any server of a group. An HA server asks for the lock
+exclusive first: granted, it means no other server is running, so the server
+applies pending migrations and then trades the exclusive lock for the shared
+one, taking the shared lock before it drops the exclusive one. Otherwise it
+joins the holders of the shared lock; if a session holds the lock exclusive
+(a server that is migrating, or one of the commands), it keeps asking for up
+to 30 s before it fails with the error above. A server that would need to
+migrate the database refuses to join servers already using it:
+
+```
+postgres: schema is at version 41 and this sqi-server needs 42, but 2 other sqi-server(s) are using this database; stop them all to migrate, or run `sqi-server migrate up` once they are stopped
+```
+
+An HA server's sessions also set `idle_in_transaction_session_timeout` to a
+third of `ha.lease_ttl` and `client_connection_check_interval` to 1 s, so
+PostgreSQL ends the open transaction of a server that has frozen (a paused
+VM) and releases its row locks, instead of leaving the server that takes over
+waiting on it. A server without high availability sets neither.
+
+When a group's lock connection is lost, each server logs the Error above and
+keeps running, as a single server does, and that server no longer holds its
+share: with every server's lost (PostgreSQL restarted, say), nothing stops a
+server without high availability, or one of the commands, from taking the
+database beside the group. Restart the servers, standbys first and the leader
+last, to take the lock again.
+
 Advisory locks belong to one database, so servers on different databases of
-the same PostgreSQL cluster do not collide. Running several servers against
-one database, for high availability, is not supported.
+the same PostgreSQL cluster do not collide.
 
 ---
 
 ## One server per broker account
 
-With an external broker, only one `sqi-server` may use a broker account at a
-time, as only one may use a database. Two servers on one account would both
-answer every lease and split the status messages between their databases,
-losing work, and two servers with two databases never meet at either
-database's lock, so this guard lives on the broker. It exists only in external
-mode: an embedded broker cannot be shared.
+With an external broker, a broker account belongs to one database. A single
+server has it to itself; the servers of a
+[high-availability group](#running-more-than-one-server-high-availability)
+share it, because they share the database, and only their leader works on it.
+A server on any other database is refused. Two servers working one account
+would both answer every lease and split the status messages between their
+databases, losing work, and two servers with two databases never meet at
+either database's lock, so this guard lives on the broker. It exists only in
+external mode: an embedded broker cannot be shared.
 
-At startup the server takes the key `active` in the KV bucket `SQI_SERVER` in
-its account, before it touches anything else there, and refreshes it every
-10 s. `sqi-server restore` takes the same key for as long as it runs (except
-with `--skip-nats-purge`, which does not connect to the broker). A second
-server, or a server started during a restore, exits at once:
+The guard is the key `active` in the KV bucket `SQI_SERVER` in the account. A
+single server takes it at startup, before it touches anything else there, and
+refreshes it every 10 s. `sqi-server restore` takes the same key for as long
+as it runs (except with `--skip-nats-purge`, which does not connect to the
+broker). A second server, or a server started during a restore, exits at
+once:
 
 ```
 startup failed: start bus: bus: another sqi-server holds this broker account: host render-db-01, pid 4242, started 2026-11-02T09:14:03Z (instance 3f9c2a7d1e5b8046); it is still running, or exited less than 30s ago
@@ -1141,17 +1183,43 @@ startup failed: start bus: bus: another sqi-server holds this broker account: ho
 The holder is named, so the other server can be found. A server that stops
 cleanly deletes its key; one that crashed leaves it for at most 30 s, so a
 supervisor restarting the server sees this refusal for up to 30 s and then
-gets through. As with the database lock, do not overlap restarts, and never
-point a copied configuration (a staging server, say) at a live account.
+gets through. As with the database lock, do not overlap restarts of a single
+server, and never point a copied configuration (a staging server, say) at a
+live account.
 
-If a running server loses the key (its refreshes failed for more than 30 s
-during a partition and another server took the account), it logs
+If a running single server loses the key (its refreshes failed for more than
+30 s during a partition and another server took the account), it logs
 `bus: this sqi-server no longer holds the broker account; another sqi-server
 took it` at Error and reports degraded on `/readyz` until it is restarted. It does
 not stop on its own: stop one of the two. A server whose refreshes fail but
 whose key nobody took keeps running, reports degraded while the last refresh
-is more than 30 s old, and retakes the key with a Warn once it can. See
-[The one-server-per-account guard](architecture.md#the-one-server-per-account-guard).
+is more than 30 s old, and retakes the key with a Warn once it can.
+
+In a high-availability group the leader holds the key, taking it as it
+promotes itself, and the key's holder says which database's group the account
+belongs to:
+
+- A standby checks the key before it reports ready, and the server that
+  promotes itself checks it again as it takes it. A key held by a member of
+  the same database (the leader, or a leader that crashed) is overwritten at
+  once on promotion, so a crashed leader's key costs a failover nothing.
+- A key held by a server that is not a member of this database is watched
+  for one guard TTL, 30 s. If its holder refreshes it in that time, the server
+  refuses to start (or, at promotion, stops leading):
+
+  ```
+  startup failed: bus: another sqi-server holds this broker account: host render-db-01, pid 4242, started 2026-11-02T09:14:03Z (instance 3f9c2a7d1e5b8046); it is still running, or exited less than 30s ago and is not a member of this database: is this server pointed at the wrong database?
+  ```
+
+  If it is not refreshed (the last single server of a farm moving to high
+  availability, or a restore that has finished), it is taken. So the first
+  server of a new group can take up to 30 s longer to lead, and a server
+  pointed at the wrong database is refused up to 30 s later than a single
+  server would be.
+- A leader whose key another server takes stops leading and exits with code
+  75 (`guard_lost`).
+
+See [The one-server-per-account guard](architecture.md#the-one-server-per-account-guard).
 
 ---
 
@@ -1446,9 +1514,12 @@ What the cluster must provide:
   cluster in NATS operator (JWT) mode can host sqi only with broker
   authentication off.
 
-This is not high availability for `sqi-server` itself: one server runs per
-account (see [One server per broker account](#one-server-per-broker-account)),
-and while it is stopped no work is leased.
+An external cluster is not, on its own, high availability for `sqi-server`:
+without `ha.enabled` one server runs per account (see
+[One server per broker account](#one-server-per-broker-account)), and while
+it is stopped no work is leased. With it, several servers share the account
+and a standby takes over (see
+[Running more than one server](#running-more-than-one-server-high-availability)).
 
 ### Supported nats-server versions
 
@@ -1707,6 +1778,266 @@ at every start, with its path, and leaves it there.
 
 ---
 
+## Running more than one server (high availability)
+
+With [`ha.enabled`](configuration.md#ha--high-availability), several
+`sqi-server` processes share one PostgreSQL database and one account on an
+external NATS cluster. One of them is the **leader**: it schedules, reads the
+workers' reports, and serves the REST API, the web UI and the WebSocket
+gateway. The others are **warm standbys**. When the leader stops, crashes,
+freezes, or loses its database or its broker, a standby takes over, in seconds
+(see [Failover timing](#failover-timing)). Tasks running on workers are not
+touched by a failover: the workers keep running them, and their reports wait
+in the broker until the new leader reads them.
+
+High availability is off by default. A server with no `ha` block, or with
+`ha.enabled: false`, runs exactly as a single server does.
+
+### Prerequisites
+
+- **PostgreSQL.** Every server of the group uses the same database
+  (`store.driver: postgres`). SQLite cannot be shared.
+- **An external NATS cluster**, with every server on the same account
+  (`nats.mode: external`). Use `stream_replicas: 3` on a three-node cluster, so
+  losing a node loses no message (see
+  [Running on an external NATS cluster](#running-on-an-external-nats-cluster)).
+- **One configuration file** for every server. Only
+  [`ha.instance_name`](configuration.md#hainstance_name) differs, and it can
+  come from `SQI_HA_INSTANCE_NAME`; give each server its own name when several
+  share a host name, as containers started from one image do.
+- **A supervisor that restarts a server when it exits**: systemd
+  `Restart=on-failure` or `Restart=always`, Compose `restart: unless-stopped`,
+  or the Windows service's recovery actions. A leader that loses its leadership
+  exits with code `75` (see [Demotion](#demotion-exit-code-75)) and comes back,
+  as a standby, only if something starts it again. Its stop timeout must also
+  be longer than the server's 30 s shutdown deadline plus up to 7 s of handing
+  over (stopping the scheduler, at most 2 s, and releasing the lease, at most
+  5 s): the example unit's `TimeoutStopSec=60s` and the Windows service's 45 s
+  PreShutdown timeout both are; give Compose a `stop_grace_period` of 45 s or
+  more.
+- **A load balancer that health-checks `GET /leaderz`**, which answers 200 on
+  the leader only. Point clients (browsers, `sqi-cli`, the SDK, and workers
+  enrolling with a join token through `nats.server_url`) at the balancer.
+  Workers' broker connections go to the NATS cluster, not through it. A
+  standby that receives a request (in the moment between a failover and the
+  balancer's next check) answers 503 with `Retry-After: 2` and processes
+  nothing, and the client retries it. Do not have the balancer retry 503s:
+  the leader returns 503 for reasons of its own (an EXPR submission past
+  `openjd.expr_submission_deadline`, say), and replaying those repeats the
+  most expensive requests. Retrying a connection that could not be made is
+  safe; retrying any other failure is safe only for `GET` and `HEAD`. The
+  reference HAProxy configuration does exactly that.
+
+`deploy/docker-compose.ha.yml` is a complete example: PostgreSQL, a
+three-node NATS cluster, two servers, HAProxy
+([`deploy/ha/haproxy.cfg`](https://github.com/uberware/sqi/blob/main/deploy/ha/haproxy.cfg))
+and a worker. Its header has the setup steps. Kubernetes leader routing (a
+Service that follows the leader) is not provided.
+
+The `ha` part of the configuration is:
+
+```yaml
+ha:
+  enabled: true
+  lease_ttl: 15s          # the default
+  # instance_name: sched-a  (or SQI_HA_INSTANCE_NAME)
+store:
+  driver: postgres
+nats:
+  mode: external
+```
+
+Every HA start logs one Warn,
+`ha: a leader that loses its leadership exits with code 75, and stays stopped
+unless a supervisor restarts it`, as a reminder of the supervisor requirement.
+
+### Leader and standbys
+
+The leader holds a lease kept in the database (the `server_lease` and
+`server_epoch` rows), and every judgement of whether it has lapsed is made on
+the database's clock, so servers whose clocks disagree still agree on who
+leads. The leader renews it every third of `ha.lease_ttl` (5 s), retrying a
+failed renewal every tenth (1.5 s). If no renewal has succeeded within 0.8 ×
+`ha.lease_ttl` (12 s) of the start of the last successful one, the leader stops
+itself, before a standby can take the lease. A standby tries to take it every
+second. Each new leader leads at a higher **epoch**, and every write the
+scheduler makes carries it: the database checks it last before committing, so
+a write by a server that has been replaced rolls back instead, and that server
+exits.
+
+A standby is warm: it has the database open, has recorded itself in the
+group's membership, is connected to the broker and has passed the broker
+checks a leader needs (the version floor, JetStream on the account, and the
+account's [guard](#one-server-per-broker-account)). It answers the auth
+callout, so workers can connect while no server leads, and it collects worker
+diagnostic logs, so a new leader's Server Log already has the workers'
+history. It does not schedule, read worker reports, run sweeps or advertise
+over mDNS. A standby starts even while the broker is down; it runs its broker
+checks when it first connects and is not ready until they pass. A check that
+fails for another reason than a refusal (a broker that is still starting, a
+system credential the cluster does not accept) is retried every 2 s, with a
+Warn each time.
+
+On becoming leader a standby, in order: takes the broker account's guard,
+provisions the streams, applies the
+[broker-layout fence](architecture.md#changing-broker-identity-and-fencing)
+if the broker changed, seeds the default farm and the first admin, runs the
+scheduler, starts the session sweeper and the mDNS responder, and only then
+opens its API and `/leaderz`. It logs
+`ha: this sqi-server is now the leader` as it begins and
+`sqi-server ready as the leader` when it is done. The liveness sweep's
+[reconnect grace](architecture.md#after-a-broker-outage-the-reconnect-grace)
+counts from the promotion, so a new leader does not mark workers offline
+whose heartbeats it has not read yet.
+
+The probes:
+
+| | Leader | Standby | Without HA |
+|---|---|---|---|
+| `GET /healthz` | 200 | 200 | 200 |
+| `GET /readyz` | 200 when its checks pass | 200 when warm and its checks pass | unchanged |
+| `GET /leaderz` | 200 | 503 | 404 |
+| anything else | served | 503, `Retry-After: 2`, `{"error":"standby","leader":"<name>"}` | served |
+
+Under HA the `/readyz` and `/leaderz` bodies carry `role`, `leader` (the
+leader's `ha.instance_name`, empty when none is known) and `epoch`. `/readyz`
+says whether the process is healthy, not whether it leads: route traffic on
+`/leaderz`. Without HA, `/readyz` is unchanged.
+
+### Demotion: exit code 75
+
+Any loss of authority ends a leader: a renewal finds the lease taken
+(`renew_refused`), the self-fence deadline passes (`deadline`), a write is
+refused for a stale epoch (`fenced`), another server takes the broker guard
+(`guard_lost`), the broker is lost while a standby has it (`broker_lost`), or
+a step of promotion fails (`promotion_failed`). The server logs exactly one
+Error, `ha: lost leadership`, with the reason; stops its scheduler and broker
+connections, each step bounded to 2 s; releases the lease, so a standby takes
+over at its next poll; and **exits with code 75**. Its supervisor starts it
+again and it rejoins as a standby. The code is distinct so alerting can tell a
+demotion from a crash (exit code 1). As a Windows service the server reports
+75 as its service-specific exit code; the service's recovery actions restart
+it after 5 s, then 30 s, then 60 s (reset after a day), so a Windows server
+demoted repeatedly comes back as a standby more slowly. That does not slow
+down another server taking over.
+
+A graceful stop (`SIGTERM`, `systemctl stop`, a service Stop) of the leader is
+not a demotion: it answers the workers' waiting lease requests empty, releases
+the lease, and exits 0. A standby takes over within about a second.
+
+### Losing the broker
+
+A leader whose own connection to the broker is down steps down only when both
+hold: the connection has been down for longer than `ha.lease_ttl`, timed on
+its own clock, and another server of the group has reached the broker within
+`ha.lease_ttl`. It checks at each renewal, so at the defaults it releases the
+lease and steps down about 20–25 s after losing the broker, and the standby
+that has it leads about a second later. The old leader's own exit follows a
+few seconds after that, since stopping its scheduler and draining a broker
+connection that is down each take their full 2 s bound. When the broker is down for every server, the leader keeps
+leading and reconnects as a single server would; stepping down then would only
+turn a broker outage into a restart loop.
+
+### Failover timing
+
+At the default `lease_ttl` of 15 s:
+
+| Event | Leader gone → new leader acting | Idle workers leased again |
+|---|---|---|
+| Graceful stop of the leader | about 1 s (one poll) plus the promotion (seconds) | at once: their waiting requests are answered empty as it stops |
+| Crash or `kill -9` | up to 15 s (the lease) + 1 s (poll) + promotion, about 20 s | up to 35 s (the workers' lease-request timeout) |
+| Leader frozen (a paused VM, `SIGSTOP`) | about 20 s, or about 25 s if it froze between a fence check and its commit (PostgreSQL ends that session after 5 s idle); on resuming it is fenced and exits 75 | up to 35 s |
+| Leader loses PostgreSQL | it stops itself within 12 s; a standby that reaches PostgreSQL takes over at about 16 s, or once PostgreSQL is back | up to 35 s |
+| Leader loses the broker, a standby has it | it steps down about 20–25 s after the broker went; the standby leads about 1 s later | up to 35 s |
+| Broker down for every server | no change of leader | when the broker returns |
+
+Running tasks are untouched in every row. Their reports wait in `SQI_TASK`
+(kept 24 h) and heartbeats in `SQI_WORKER` (kept 2 min, longer than every
+figure here; a failover longer than that drops queued heartbeats, which the
+new leader's reconnect grace covers). A longer `lease_ttl` lengthens the rows
+that wait on the lease and tolerates slower database round trips; a shorter
+one does the opposite.
+
+### What is lost on failover
+
+- **The old leader's own diagnostic log records.** Every server collects the
+  workers' diagnostics, so the Server Log keeps worker history; the old
+  leader's own records go with it. The Server Log shows the server answering.
+- **Prometheus counters** start again at the new leader, which is a new
+  process. Scrape every server, and select the leader with
+  `sqi_server_ha_leader == 1`.
+- **WebSocket sessions** drop and reconnect through the balancer; the web UI
+  fetches its data again when it reconnects.
+- **An OIDC login in progress** fails once, because the state key is per
+  process. **Retry-wake timers** fall back to the sweep.
+- **A worker whose lease request was waiting on a crashed leader** waits out
+  its 35 s request timeout before asking again. (A graceful stop answers it
+  at once.)
+
+### Seeing the group
+
+- **`GET /api/v1/servers`** (permission `diagnostics.read`; served by the
+  leader, like the rest of the API) lists every server that has run against
+  the database, leader first, with its role, host, version, start time, how
+  long ago it was last seen, and whether it reaches the broker, plus the
+  current epoch. A server is `leader` while it holds the unexpired lease,
+  `standby` while it checked in within `lease_ttl`, and `missing` otherwise; a
+  crashed leader whose lease has lapsed is not shown as leader. Rows unseen
+  for a day are deleted by the leader.
+- **`sqi-server ha status`** prints the same table. It reads the database
+  directly and takes no lock, so it works while every server is down, which is
+  when it is needed most. Run it with the servers' configuration file, so it
+  judges the roles against the same `lease_ttl`:
+
+  ```sh
+  sqi-server ha status --config /etc/sqi/sqi-server.yaml
+  ```
+
+- **The web UI**: Admin → Servers.
+- **Metrics**, registered only when HA is on: `sqi_server_ha_leader` (1 on
+  the leader), `sqi_server_ha_epoch`, `sqi_server_ha_promotions_total` and
+  `sqi_server_ha_demotions_total{reason}`. Alert on demotions and on no server
+  reporting `sqi_server_ha_leader == 1`.
+
+### Upgrading a group
+
+- **A release with the same schema** (a patch release) rolls: upgrade and
+  restart each standby in turn, then stop the leader; an upgraded standby takes
+  over, and the old leader is then upgraded and rejoins. While versions are
+  mixed, each standby logs `ha: the leader runs another version of sqi-server
+  than this standby` once. A standby that would grant workers different broker
+  permissions from the leader's leaves the auth callout's queue group (logging
+  `ha: this standby grants workers different broker permissions than the
+  leader; it answers no worker connects`) until it leads or they match again,
+  so a worker is never admitted with permissions the leader does not expect.
+- **A release that changes the schema** needs every server stopped. Back up,
+  then run `sqi-server migrate up`, or let the first server to start apply the
+  migrations, and start the rest. A server with pending migrations refuses to
+  join servers already running:
+
+  ```
+  postgres: schema is at version 41 and this sqi-server needs 42, but 2 other sqi-server(s) are using this database; stop them all to migrate, or run `sqi-server migrate up` once they are stopped
+  ```
+
+  The [release notes](https://github.com/uberware/sqi/releases) say whether
+  a release changes the schema; `sqi-server migrate status` shows what a
+  binary would apply.
+- **Rollback** is as for a single server: stop every server and
+  [restore the pre-upgrade backup](#rollback).
+
+### Moving a single server to HA
+
+Stop the single server first: its database lock and an HA server's exclude
+each other. Turn `ha.enabled` on in its configuration (it must already be on
+PostgreSQL and an external broker; see
+[Moving to PostgreSQL](#moving-to-postgresql) and
+[Switching broker mode](#switching-broker-mode)), and start the servers of the
+group. The single server's guard key is still on the account and names a
+server that is not a member of the group, so the first server to lead watches
+it for up to 30 s before taking it.
+
+---
+
 ## Worker broker credentials
 
 `sqi-server worker` groups the offline CLI commands for NATS broker
@@ -1913,6 +2244,10 @@ described in [Writing to a file](#writing-to-a-file).
 | `sqi_scheduler_task_retries_total` | counter | `queue` | Tasks re-queued by automatic retry, by queue |
 | `sqi_scheduler_jobs_autoparked_total` | counter | `queue` | Jobs auto-parked at their failure limit, by queue |
 | `sqi_scheduler_tasks_reconciled_total` | counter | — | Attempts reclaimed because their live worker stopped reporting them (see [Reconciliation](#reconciliation)) |
+| `sqi_server_ha_leader` | gauge | — | 1 while this server leads its high-availability group, 0 otherwise. HA only |
+| `sqi_server_ha_epoch` | gauge | — | The leadership epoch this server leads at, or last saw the leader hold. HA only |
+| `sqi_server_ha_promotions_total` | counter | — | Promotions of this server to leader. HA only |
+| `sqi_server_ha_demotions_total` | counter | `reason` | Losses of leadership by this server, by [reason](#demotion-exit-code-75). HA only |
 
 > **Five of these are registered but not yet populated**, so they emit no
 > samples at all — a Prometheus `*Vec` with no children produces no series, and
@@ -1999,6 +2334,13 @@ server actually waits.
 As a Windows service, a service **Stop** or a shutdown (PreShutdown) request
 starts the same sequence. The service is registered with a 45 s PreShutdown
 timeout: the 30 s deadline plus 15 s.
+
+In a [high-availability group](#running-more-than-one-server-high-availability)
+the leader hands over first: it closes its API and `/leaderz`, stops the
+scheduler (answering workers' waiting lease requests empty, at most 2 s) and
+releases the lease (at most 5 s), so a standby takes over at its next poll.
+That can add up to 7 s to the 30 s deadline, which both the example unit's
+`TimeoutStopSec` and the Windows PreShutdown timeout cover.
 
 ---
 

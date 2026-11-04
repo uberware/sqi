@@ -710,6 +710,17 @@ start, `scheduler: bus connected at startup; liveness sweep deferred for the
 reconnect grace`); see
 [After a broker outage](architecture.md#after-a-broker-outage-the-reconnect-grace).
 
+In a [high-availability group](operations.md#running-more-than-one-server-high-availability)
+the body also carries `role` (`leader` or `standby`), `leader` (the leader's
+`ha.instance_name`, empty when none is known) and `epoch`, and a standby is
+ready once it is warm and its broker checks have passed. `/readyz` says
+whether the process is healthy, not whether it leads: `GET /leaderz`, 200 on
+the leader and 503 on a standby, is what a load balancer routes on. Without
+high availability the body is unchanged and `/leaderz` is 404. The Server Log
+shows the diagnostic records of the server answering, so after a failover the
+old leader's own records are gone; worker records survive, because every
+server of the group collects them.
+
 ---
 
 ## Configuration reference

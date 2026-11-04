@@ -98,9 +98,49 @@ func TestNATSImagePins(t *testing.T) {
 	}
 }
 
-// ciJobImages returns every `image:` value in the job named job of the
-// workflow ci: the lines from its key to the next job's.
-func ciJobImages(t *testing.T, ci, job string) []string {
+// TestNATSImagePins_HA keeps the nats-server image of the high-availability
+// rig at the current image: the reference HA Compose file's nodes and the
+// image the ha-integration job pulls for `make test-ha`, which runs on the
+// Makefile's NATS_IMAGE (the current image by default).
+func TestNATSImagePins_HA(t *testing.T) {
+	root := filepath.Join("..", "..")
+	makefile, err := os.ReadFile(filepath.Join(root, "Makefile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := makefileVar(t, string(makefile), "NATS_IMAGE_CURRENT")
+
+	compose, err := os.ReadFile(filepath.Join(root, "deploy", "docker-compose.ha.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	images := regexp.MustCompile(`(?m)^\s+image: (nats:\S+)\s*$`).FindAllStringSubmatch(string(compose), -1)
+	if len(images) == 0 {
+		t.Fatal("deploy/docker-compose.ha.yml names no nats image")
+	}
+	for _, m := range images {
+		if m[1] != current {
+			t.Errorf("deploy/docker-compose.ha.yml runs %s, want NATS_IMAGE_CURRENT %s", m[1], current)
+		}
+	}
+
+	ci, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pulls := regexp.MustCompile(`(?m)^\s+docker pull (nats:\S+)\s*$`).FindAllStringSubmatch(ciJob(t, string(ci), "ha-integration"), -1)
+	if len(pulls) != 1 || pulls[0][1] != current {
+		got := make([]string, 0, len(pulls))
+		for _, m := range pulls {
+			got = append(got, m[1])
+		}
+		t.Errorf(".github/workflows/ci.yml's ha-integration job pulls %v, want exactly NATS_IMAGE_CURRENT %s", got, current)
+	}
+}
+
+// ciJob returns the job named job of the workflow ci: the lines from its key
+// to the next job's.
+func ciJob(t *testing.T, ci, job string) string {
 	t.Helper()
 	start := strings.Index(ci, "\n  "+job+":\n")
 	if start < 0 {
@@ -110,8 +150,15 @@ func ciJobImages(t *testing.T, ci, job string) []string {
 	if next := regexp.MustCompile(`\n  [A-Za-z0-9_-]+:\n`).FindStringIndex(body[len(job)+3:]); next != nil {
 		body = body[:len(job)+3+next[0]]
 	}
+	return body
+}
+
+// ciJobImages returns every `image:` value in the job named job of the
+// workflow ci.
+func ciJobImages(t *testing.T, ci, job string) []string {
+	t.Helper()
 	var images []string
-	for _, m := range regexp.MustCompile(`(?m)^\s+image: (\S+)\s*$`).FindAllStringSubmatch(body, -1) {
+	for _, m := range regexp.MustCompile(`(?m)^\s+image: (\S+)\s*$`).FindAllStringSubmatch(ciJob(t, ci, job), -1) {
 		images = append(images, m[1])
 	}
 	return images

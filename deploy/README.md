@@ -16,6 +16,10 @@ Deployment artifacts for `sqi`:
   Compose network. `make test-nats-cluster` runs the external-mode tests
   against it; the full guide is
   [Running on an external NATS cluster](../docs/operations.md#running-on-an-external-nats-cluster).
+- `deploy/docker-compose.ha.yml` and `deploy/ha/haproxy.cfg` — a
+  high-availability farm: two servers sharing a PostgreSQL 18 database and a
+  three-node NATS cluster, HAProxy routing to whichever server leads, and a
+  worker (see below).
 - `deploy/systemd/` — sample unit files for bare-metal Linux worker installs.
 - `deploy/config/` — pointer to the canonical example configs under `config/`.
 
@@ -45,9 +49,38 @@ runs again afterwards. To use an existing PostgreSQL server instead of the
 container, see
 [`docs/operations.md`](../docs/operations.md#running-on-postgresql).
 
+## High availability
+
+`deploy/docker-compose.ha.yml` runs two `sqi-server`s with `ha.enabled` on one
+PostgreSQL database and one account on a three-node NATS cluster, with
+HAProxy in front of them and one worker. One server leads; the other is a
+warm standby that takes over when the leader stops or fails. HAProxy
+health-checks `GET /leaderz`, which only the leader answers 200, so port 8080
+always reaches the leader. Both servers read one configuration file; each
+takes its name from `SQI_HA_INSTANCE_NAME`.
+
+The file's header has the setup: generate the broker's accounts and a
+certificate naming the three nodes, write the shared `sqi-server.yaml`, start
+everything but the worker, issue a join token, then start the worker. As with
+the PostgreSQL file, `--build` builds the images from this checkout until a
+release includes high availability.
+
+The servers run with `restart: unless-stopped`, which high availability
+depends on: a server that loses its leadership exits with code 75, and is
+restarted as a standby. `stop_grace_period` is 45 s, longer than a server's
+shutdown with its hand-over.
+
+The tests do not run this file (they signal the servers, so they run them as
+processes), but `make test-ha` checks that it is valid and runs the same
+topology: the cluster from `deploy/docker-compose.nats-cluster.yml`, a
+PostgreSQL container, real `sqi-server` and `sqi-worker` binaries, and a
+balancer that follows `/leaderz`. The full guide is
+[Running more than one server (high availability)](../docs/operations.md#running-more-than-one-server-high-availability).
+
 ## TLS
 
-Every artifact here except the NATS cluster deploys sqi in its plaintext
+Every artifact here except the NATS cluster (and the high-availability
+farm's broker, which is that cluster) deploys sqi in its plaintext
 default: the REST API, the WebSocket gateway and the embedded broker all serve
 unencrypted. TLS is opt-in, so none of these files is production-ready as
 shipped on an untrusted network.
