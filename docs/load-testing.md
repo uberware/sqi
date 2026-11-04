@@ -660,7 +660,7 @@ Neither changes the exit status.
 | `wal-never-shrank` | warn | On SQLite, the WAL grew over at least 5 minutes without once shrinking. |
 | `stream-at-cap` | warn | The `SQI_LOGS` stream reached 95% of `nats.embedded.max_store_mb`, so the broker evicts the oldest log chunks from here on. |
 | `generator-saturated` | warn | The generator saturated but the run was accepted with `--allow-saturated`. |
-| `server-fell-behind` | warn | The server did not keep up with the load offered: the drain took more than 25% of the scenario's `duration`, or more tasks were open when submissions stopped than the server finished in the last 10% of the measured window. The run's latencies and slopes then describe a backlog; size the scenario down or the server up. |
+| `server-fell-behind` | warn | The server did not keep up with the load offered: the drain took more than 25% of the scenario's `duration`, or more tasks were open when submissions stopped than the server finished in the last 10% of the measured window. The run's latencies and slopes then describe a backlog; size the scenario down or the server up. **Known issue:** this rule currently misfires. It fires on healthy runs (including `smoke`, whose drain took 22 ms) because its open-task count at the end of submissions is wrong, and it is being corrected. Do not read it as a finding until then. |
 
 The two growth rules need at least 10 samples spanning at least 30 minutes
 after warmup, so only soaks and long runs raise them. Every statistic uses
@@ -879,17 +879,44 @@ The first baseline runs. They are the numbers later runs and the large-scale
 follow-up compare against; they were taken at a stated commit on the stated
 hardware, and a different host will differ.
 
-<!-- BASELINES: filled from the first baseline runs -->
 | Host | Store | Scenario | Tasks/s | Submit→first lease p50 / p95 / p99 | Job end-to-end p95 | Peak server RSS | Peak server CPU | Invariants |
 |---|---|---|---|---|---|---|---|---|
+| WSL | SQLite | smoke | 13.45 | 2.88 s / 9.16 s / 11.04 s | 15.33 s | 130 MiB | 1.47 cores | 6/6 |
+| WSL | PostgreSQL 18 | smoke | 14.42 | 3.11 s / 10.23 s / 10.47 s | 16.74 s | 121 MiB | 1.54 cores | 6/6 |
+| WSL | SQLite | ci-medium | 5.44 | 326 ms / 967 ms / 1.32 s | 2m50s | 665 MiB | 4.42 cores | 6/6 |
+| WSL | PostgreSQL 18 | ci-medium | 5.17 | 12.99 s / 47.11 s / 53.02 s | 3m48s | 657 MiB | 1.81 cores | 6/6 |
+| Windows | SQLite | smoke | 13.65 | 2.83 s / 9.09 s / 10.36 s | 14.93 s | 134 MiB | 2.42 cores | 6/6 |
+| Windows | SQLite | ci-medium | 5.38 | 284 ms / 849 ms / 1.16 s | 2m57s | 681 MiB | 5.41 cores | 6/6 |
 
 The hardware for each row is stated beneath the table.
 
-<!-- HARDWARE: filled from the first baseline runs -->
+**Hardware.** Both hosts are the same physical laptop, and the runs were
+sequential, never concurrent. All runs were `sqi-load run` against a managed
+target with default seeds, on the branch at commit `365833d2`, measured on
+2026-11-04.
+
+- **Windows:** Intel Core i7-10750H at 2.60 GHz (6 cores, 12 threads), 16 GB
+  RAM, a WDC PC SN530 NVMe SSD, Windows 11 Home, native Windows binaries.
+- **WSL:** WSL2 Ubuntu (kernel 6.18, microsoft-standard-WSL2) on the same
+  machine, with 12 vCPUs, 7.7 GiB RAM and ext4 on the same NVMe. **The WSL runs
+  were not pinned to a CPU set**, so they are not comparable with the
+  4-vCPU-pinned sizing measurements quoted for `ci-medium` above. PostgreSQL
+  18.6 ran in Docker on the same WSL VM.
+
+All six runs are VALID: the generator peaked at 0.41 cores or less of 12.
+
+**Windows with PostgreSQL was not measured.** The only PostgreSQL available to
+the Windows host was the WSL Docker container, and it became unreachable 12 s
+into the Windows smoke run (most likely the WSL VM idling out). The harness
+reported that correctly as failed invariants (`terminal`, `outcomes` and
+`workers-converge`, with `GET /jobs` answering HTTP 500) and exit status 1.
+Measuring it needs a PostgreSQL that stays up; that is left to H12m.
 
 How to read the columns: **Tasks/s** is the rate of `tasks.terminal` over
 the measured window, from the end of warmup to the end of submissions. The latencies are the whole-run histograms. **Peak server
-CPU** is in cores, so 2.3 on a 4-CPU host is 58% of the machine. **Invariants**
+CPU** is in cores, so 2.3 on a 4-CPU host is 58% of the machine. It is the
+`sqi-server` process's CPU only: on a PostgreSQL row the database runs in its own
+process, which this column does not include. **Invariants**
 is how many of the six held. Every row is a VALID run.
 
 ---
@@ -930,6 +957,34 @@ restart. A real restart takes seconds, so real workers are unlikely to hit it,
 and the harness's churn therefore crashes, waits `restart_after`, then
 restarts. Keep `restart_after` realistic in your own scenarios.
 
+### First baseline observations
+
+From the six [baseline](#baselines) runs. Each is a single run on one laptop,
+so treat them as leads for H12m rather than conclusions.
+
+- **PostgreSQL scheduled far more slowly than SQLite at `ci-medium`** on the same
+  host. Submit to first lease had a p50 of 12.99 s against 326 ms (about 40
+  times) and a p95 of 47 s against 967 ms. Terminal ingest (the server's task
+  `updated_at` minus the worker's terminal publish) had a p50 of 2.54 s against
+  15 ms. Throughput was similar (5.17 against 5.44 tasks/s) because it is bounded
+  by the offered load, not by the scheduler. At `smoke` the two stores were close.
+- **`GET /api/v1/jobs` (50 per page) was slow on PostgreSQL at `ci-medium`:** p50
+  2.79 s against 8.6 ms on SQLite, and p95 3.52 s against 280 ms. See hypothesis
+  5 below.
+- **Server CPU on SQLite was high:** peaks of 4.4 to 5.4 cores on `ci-medium`
+  (unpinned) against 1.8 on PostgreSQL. SQLite's single writer runs inside the
+  server process, while PostgreSQL's work happens in a separate database
+  process that `server.cpu_cores` does not include, so the two figures are not a
+  like-for-like measure of total cost.
+- **Server RSS** was about 660 to 680 MiB at 300 workers and 120 to 135 MiB at
+  20 workers.
+- **RSS rose steadily through the 17-minute `ci-medium` run** (about 2 GiB/h,
+  r² 0.97 to 0.99 in the growth table). That run is too short for the growth
+  rule, which needs 30 minutes of steady samples, so no `rss-growth` finding was
+  raised. Whether it plateaus is a soak question for H12m.
+- **The SQLite WAL never shrank** across the 17-minute WSL `ci-medium` run (3.9 to
+  9.6 MiB), and `wal-never-shrank` warned. See hypothesis 9.
+
 ### Sizing facts
 
 - **The original `ci-medium` rates saturated a 4-CPU host.** At 1 and 0.5
@@ -960,12 +1015,12 @@ the first baselines cannot host the scale each needs.
 | 1 | Heartbeat ingest is one serialized store write per heartbeat. At what worker count does N workers / 15 s saturate it on SQLite and on PostgreSQL? The `SQI_WORKER` stream drops messages older than 2 minutes, so saturation means lost heartbeats and workers marked offline. | `workers-ramp` swept over `workers[0].count`; `workers-offline-under-load`, `workers.online`, `server.cpu_cores`. | Not yet measured; needs H12m scale. |
 | 2 | What do parked lease goroutines and timers cost at 10,000 workers across queues, and what does `WakeQueue` waking every waiter on a busy queue cost? | `workers-ramp`; `server.goroutines`, `server.rss_bytes`, `first_lease`. | Not yet measured. |
 | 3 | `sweepUnschedulable` considers at most 1,000 online workers. Above 1,000 workers, are tasks wrongly flagged unschedulable? | `workers-ramp`, `mixed-medium` (1,800 workers); watch for tasks flagged unschedulable that the fleet could run. | Not yet measured. |
-| 4 | Per-worker `sync.Map` entries are never pruned. Does churn grow server memory without bound in a soak? | `soak-steady` or `workers-churn` as a soak; `rss-growth`, `goroutine-growth`. | Not yet measured. The 15 minute `ci-medium` run is too short for the growth rules, which need 30 minutes of steady samples. |
-| 5 | `GET /api/v1/jobs` issues two count queries per job on the page. How does read latency grow with job count? | `jobs-flood`; the `rest.jobs-list` histogram. | Not yet measured. |
+| 4 | Per-worker `sync.Map` entries are never pruned. Does churn grow server memory without bound in a soak? | `soak-steady` or `workers-churn` as a soak; `rss-growth`, `goroutine-growth`. | Not yet measured. The 15 minute `ci-medium` run is too short for the growth rules, which need 30 minutes of steady samples. In the 17-minute baseline runs RSS rose at about 2 GiB/h (r² 0.97 to 0.99); whether it plateaus is the soak's question. |
+| 5 | `GET /api/v1/jobs` issues two count queries per job on the page. How does read latency grow with job count? | `jobs-flood`; the `rest.jobs-list` histogram. | Not yet measured as job count grows. At `ci-medium` the first baseline had `GET /jobs` (50 per page) at p50 2.79 s on PostgreSQL against 8.6 ms on SQLite, so the cost is already visible on PostgreSQL at a modest job count. |
 | 6 | WebSocket clients silently drop pushes when their 64-message buffer is full. At what fan-out does `ui-heavy` start dropping? | `ui-heavy` swept over `clients.websocket.count`; the `ws-drops` finding and `ws.drops`. | Not yet measured at fan-out. The drop counting itself is tested. |
 | 7 | SQLite serializes writes behind a large submission (1,000,000 tasks takes about 1 min 20 s). What happens to heartbeats and status ingest meanwhile? | `tasks-wide` on SQLite and on PostgreSQL; `submit_latency`, `workers-converge`, `workers.online`. | Not yet measured. |
 | 8 | How does `SQI_LOGS` growth toward `max_store_mb` (1024 by default) and eviction behave, and does log ingest keep up with `logs-heavy`? | `logs-heavy`; `stream-at-cap`, `js.bytes{SQI_LOGS}`, the `logs` invariant. | Not yet measured. |
-| 9 | How large does the WAL grow between the 5 minute PASSIVE checkpoints under sustained writes? | Any SQLite run of 5 minutes or more; `disk.sqlite_wal_bytes`, `wal-never-shrank`. | Series are recorded in every SQLite run. See the baseline runs; not conclusive at this scale. |
+| 9 | How large does the WAL grow between the 5 minute PASSIVE checkpoints under sustained writes? | Any SQLite run of 5 minutes or more; `disk.sqlite_wal_bytes`, `wal-never-shrank`. | In the first baseline the WAL never shrank across the 17-minute WSL `ci-medium` run (3.9 to 9.6 MiB) and `wal-never-shrank` warned. One run at this scale does not say how large it gets under longer sustained writes. |
 | 10 | The diagnostics buffer has a 512-component ceiling. What happens with more than 512 workers publishing diagnostics? | Not testable with the harness as built. | **Not covered.** Simulated workers do not publish worker diagnostics (`worker.diag.<workerID>`), so this needs either a simulator addition or real workers. |
 
 H12m also covers what the first runs could not: the generator's own cost at
