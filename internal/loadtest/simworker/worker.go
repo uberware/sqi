@@ -97,6 +97,7 @@ type Worker struct {
 
 	opMu     sync.Mutex   // serializes Start, Stop, Crash, Restart, Disconnect
 	cur      *incarnation // the running process; nil when stopped or crashed
+	up       atomic.Bool  // cur != nil, readable without opMu (which Disconnect holds for seconds)
 	instance atomic.Pointer[string]
 
 	// registerFault, when set, runs before each registration publish and
@@ -117,6 +118,16 @@ func NewWorker(spec WorkerSpec, b Behavior, l *Ledger, logger *slog.Logger) *Wor
 		rng:      rand.New(rand.NewPCG(spec.RandSeed, spec.RandSeed^0x9e3779b97f4a7c15)), //nolint:gosec // G404: sampling must be reproducible from the run seed
 	}
 }
+
+// setCur records the running process. The caller holds opMu.
+func (w *Worker) setCur(inc *incarnation) {
+	w.cur = inc
+	w.up.Store(inc != nil)
+}
+
+// alive reports whether the worker has a running process, without waiting for
+// a lifecycle operation in progress.
+func (w *Worker) alive() bool { return w.up.Load() }
 
 // InstanceID returns the instance ID of the current or most recent process,
 // or "" before the first Start.
@@ -140,7 +151,7 @@ func (w *Worker) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	w.cur = inc
+	w.setCur(inc)
 	return nil
 }
 
@@ -152,7 +163,7 @@ func (w *Worker) Stop(ctx context.Context) error {
 	w.opMu.Lock()
 	defer w.opMu.Unlock()
 	inc := w.cur
-	w.cur = nil
+	w.setCur(nil)
 	if inc == nil {
 		return nil
 	}
@@ -167,7 +178,7 @@ func (w *Worker) Crash() {
 	defer w.opMu.Unlock()
 	if w.cur != nil {
 		w.cur.crash()
-		w.cur = nil
+		w.setCur(nil)
 	}
 }
 
@@ -179,13 +190,13 @@ func (w *Worker) Restart(ctx context.Context) error {
 	defer w.opMu.Unlock()
 	if w.cur != nil {
 		w.cur.crash()
-		w.cur = nil
+		w.setCur(nil)
 	}
 	inc, err := w.launch(ctx)
 	if err != nil {
 		return err
 	}
-	w.cur = inc
+	w.setCur(inc)
 	return nil
 }
 
@@ -354,7 +365,7 @@ func (w *Worker) watchClosed(inc *incarnation, closed <-chan struct{}) {
 	}
 	w.logger.WarnContext(context.Background(), "simworker: connection closed for good; treating it as a crash")
 	inc.crash()
-	w.cur = nil
+	w.setCur(nil)
 }
 
 // connect dials the broker through natsclient exactly as sqi-worker does, with

@@ -15,9 +15,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/uberware/sqi/internal/auth/jointoken"
 	"github.com/uberware/sqi/internal/config"
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/server"
+	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/backend"
 )
 
@@ -26,13 +28,19 @@ const (
 	shutdownTimeout = 60 * time.Second
 )
 
-// Options configures Start. It is empty for now.
-type Options struct{}
+// Options configures Start.
+type Options struct {
+	// BrokerAuth turns NATS broker authentication on, with the enrollment
+	// endpoint mounted and a reusable join token (join_token_single_use
+	// false) minted before the server boots. Server.JoinToken returns it.
+	BrokerAuth bool
+}
 
 // Server is a running in-process sqi-server.
 type Server struct {
-	httpAddr string
-	natsAddr string
+	httpAddr  string
+	natsAddr  string
+	joinToken string
 }
 
 // HTTPURL returns the base URL of the REST and WebSocket API.
@@ -41,10 +49,14 @@ func (s *Server) HTTPURL() string { return "http://" + s.httpAddr }
 // NATSURL returns the URL of the embedded NATS broker.
 func (s *Server) NATSURL() string { return "nats://" + s.natsAddr }
 
+// JoinToken returns the reusable join token of a server started with
+// Options.BrokerAuth, and "" otherwise.
+func (s *Server) JoinToken() string { return s.joinToken }
+
 // Start boots a server tuned for throughput (tight assign interval, rate
 // limiting off) and returns once /readyz passes. It stops the server, and waits
 // for Run to return, through tb.Cleanup.
-func Start(tb testing.TB, _ Options) *Server {
+func Start(tb testing.TB, opts Options) *Server {
 	tb.Helper()
 
 	// TempDir is registered before the stop cleanup below, so cleanups (LIFO)
@@ -74,6 +86,10 @@ func Start(tb testing.TB, _ Options) *Server {
 		},
 		DiscoveryEnabled: false,
 		DisableRateLimit: true,
+	}
+	var joinToken string
+	if opts.BrokerAuth {
+		joinToken = enableBrokerAuth(tb, &cfg)
 	}
 
 	srv := server.New(cfg, slog.New(slog.DiscardHandler), nil)
@@ -105,7 +121,44 @@ func Start(tb testing.TB, _ Options) *Server {
 	if !waitForReadyz(httpAddr, startupTimeout) {
 		tb.Fatalf("testserver: /readyz not ready within %s (HTTP %s, NATS %s)", startupTimeout, httpAddr, natsAddr)
 	}
-	return &Server{httpAddr: httpAddr, natsAddr: natsAddr}
+	return &Server{httpAddr: httpAddr, natsAddr: natsAddr, joinToken: joinToken}
+}
+
+// enableBrokerAuth configures cfg for broker authentication and returns a join
+// token minted straight into cfg's database, as the integration suite seeds
+// one: the store handle used for it is closed before the server opens its own,
+// because SQLite allows one writer.
+func enableBrokerAuth(tb testing.TB, cfg *server.Config) string {
+	tb.Helper()
+	// A hand-built Config skips config defaults, and the auth callout needs a
+	// positive user JWT lifetime.
+	cfg.NATS.Auth = config.NATSAuthConfig{
+		Enabled:                   true,
+		UserTTL:                   time.Hour,
+		EnrollmentEndpointEnabled: true,
+		JoinTokenSingleUse:        false,
+	}
+	raw, hash, prefix, err := jointoken.Generate()
+	if err != nil {
+		tb.Fatalf("testserver: jointoken.Generate: %v", err)
+	}
+	ctx := context.Background()
+	st, err := backend.Open(ctx, backend.Options{Driver: backend.DriverSQLite, SQLitePath: cfg.SQLitePath, AutoMigrate: true})
+	if err != nil {
+		tb.Fatalf("testserver: open store to seed a join token: %v", err)
+	}
+	now := time.Now().UTC()
+	_, err = st.CreateWorkerJoinToken(ctx, store.WorkerJoinToken{
+		ID: "loadtest-token", TokenHash: hash, Prefix: prefix, Name: "loadtest",
+		ExpiresAt: now.Add(24 * time.Hour), CreatedAt: now,
+	})
+	if cerr := st.Close(); cerr != nil && err == nil {
+		err = cerr
+	}
+	if err != nil {
+		tb.Fatalf("testserver: seed join token: %v", err)
+	}
+	return raw
 }
 
 var (
