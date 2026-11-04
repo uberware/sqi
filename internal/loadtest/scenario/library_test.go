@@ -140,6 +140,28 @@ func TestBuiltin_Sizes(t *testing.T) {
 			if len(s.Farm.Queues) != 200 || len(s.Farm.UsagePools) != 50 {
 				t.Errorf("queues = %d, pools = %d, want 200 and 50", len(s.Farm.Queues), len(s.Farm.UsagePools))
 			}
+			caps := map[string]int{}
+			for _, q := range s.Farm.Queues {
+				caps[q.Name] = q.MaxConcurrentTasks
+			}
+			limits := map[string]int{}
+			for _, p := range s.Farm.UsagePools {
+				limits[p.Name] = p.Limit
+			}
+			usedCaps, usedLimits := map[int]bool{}, map[int]bool{}
+			for _, j := range s.Jobs {
+				usedCaps[caps[j.Queue]] = true
+				usedLimits[limits[j.UsagePool]] = true
+			}
+			if len(usedCaps) < 5 {
+				t.Errorf("job classes use queues with caps %v, want every cap in the cycle (including non-zero ones)", usedCaps)
+			}
+			if usedCaps[0] && len(usedCaps) < 2 {
+				t.Error("every used queue is unlimited, so no queue cap can bite")
+			}
+			if len(usedLimits) < 2 {
+				t.Errorf("job classes use pools with limits %v, want at least two distinct limits", usedLimits)
+			}
 		}},
 		{"logs-heavy", func(t *testing.T, s *Scenario) {
 			if got := workers(s); got != 500 {

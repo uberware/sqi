@@ -278,8 +278,8 @@ jobs:
       log_lines: 20
   - name: class02
     rate: 0.5/s
-    queue: q021
-    usage_pool: pool06
+    queue: q022
+    usage_pool: pool05
     steps: 2
     tasks_per_step: 20
     cores: 1
@@ -288,8 +288,8 @@ jobs:
       log_lines: 20
   - name: class03
     rate: 0.5/s
-    queue: q041
-    usage_pool: pool11
+    queue: q043
+    usage_pool: pool09
     steps: 2
     tasks_per_step: 20
     cores: 1
@@ -298,8 +298,8 @@ jobs:
       log_lines: 20
   - name: class04
     rate: 0.5/s
-    queue: q061
-    usage_pool: pool16
+    queue: q064
+    usage_pool: pool13
     steps: 2
     tasks_per_step: 20
     cores: 1
@@ -308,8 +308,8 @@ jobs:
       log_lines: 20
   - name: class05
     rate: 0.5/s
-    queue: q081
-    usage_pool: pool21
+    queue: q085
+    usage_pool: pool17
     steps: 2
     tasks_per_step: 20
     cores: 1
@@ -318,8 +318,8 @@ jobs:
       log_lines: 20
   - name: class06
     rate: 0.5/s
-    queue: q101
-    usage_pool: pool26
+    queue: q106
+    usage_pool: pool21
     steps: 2
     tasks_per_step: 20
     cores: 1
@@ -328,8 +328,8 @@ jobs:
       log_lines: 20
   - name: class07
     rate: 0.5/s
-    queue: q121
-    usage_pool: pool31
+    queue: q127
+    usage_pool: pool25
     steps: 2
     tasks_per_step: 20
     cores: 1
@@ -338,8 +338,8 @@ jobs:
       log_lines: 20
   - name: class08
     rate: 0.5/s
-    queue: q141
-    usage_pool: pool36
+    queue: q148
+    usage_pool: pool29
     steps: 2
     tasks_per_step: 20
     cores: 1
@@ -348,8 +348,8 @@ jobs:
       log_lines: 20
   - name: class09
     rate: 0.5/s
-    queue: q161
-    usage_pool: pool41
+    queue: q169
+    usage_pool: pool33
     steps: 2
     tasks_per_step: 20
     cores: 1
@@ -358,8 +358,8 @@ jobs:
       log_lines: 20
   - name: class10
     rate: 0.5/s
-    queue: q181
-    usage_pool: pool46
+    queue: q190
+    usage_pool: pool37
     steps: 2
     tasks_per_step: 20
     cores: 1

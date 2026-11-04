@@ -190,7 +190,9 @@ const p95Z = 1.6449
 
 // Sample draws one value: seconds for a duration, a count otherwise. It never
 // returns a negative number. A lognormal whose p95 is not above its median has
-// no spread and always returns the median. The zero Dist samples 0.
+// no spread and always returns the median. The zero Dist samples 0. Sample
+// assumes a Dist that parsing or validation accepted: a lognormal with a median
+// at or below zero yields NaN.
 func (d Dist) Sample(r *rand.Rand) float64 {
 	var v float64
 	switch d.Kind {
