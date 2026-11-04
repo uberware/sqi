@@ -1,0 +1,733 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package target
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/uberware/sqi/internal/loadtest/client"
+	"github.com/uberware/sqi/internal/loadtest/scenario"
+	"github.com/uberware/sqi/internal/loadtest/simworker"
+)
+
+const (
+	defaultReadyTimeout = 60 * time.Second
+	defaultStopTimeout  = 30 * time.Second
+	workerOnlineTimeout = 60 * time.Second
+	cliTimeout          = 2 * time.Minute
+	// cleanupMargin is added to the stop grace when a failed start cleans up.
+	cleanupMargin = 30 * time.Second
+	logTail       = 40
+	pollInterval  = 100 * time.Millisecond
+
+	bootstrapUser = "sqi-load"
+	// joinTokenTTL is the CLI's maximum, so a soak run's restarted workers
+	// can still enroll hours in.
+	joinTokenTTL = "24h"
+	// workerGrace is a real worker's shutdown grace period, kept inside the
+	// harness's stop timeout.
+	workerGrace = "10s"
+)
+
+// ManagedConfig configures StartManaged.
+type ManagedConfig struct {
+	// RunDir holds everything of the run: server.yaml, server.log, data/,
+	// tls/, workers/ and, when the harness builds them, bin/.
+	RunDir string
+	// RunID names the farm (load-<RunID>) and a created PostgreSQL database;
+	// "" means RunDir's base name.
+	RunID string
+	// ServerBin, WorkerBin and NoopBin are prebuilt binaries; "" builds them
+	// into RunDir/bin. WorkerBin and NoopBin are needed only for real
+	// workers.
+	ServerBin, WorkerBin, NoopBin string
+	Scenario                      *scenario.Scenario
+	// PostgresDSN is the store when Scenario.Server.Store is postgres. A DSN
+	// naming the maintenance database "postgres" is administrative: the
+	// harness creates sqi_load_<RunID> through it and drops it on Close. Any
+	// other DSN names an empty database the harness uses as it is.
+	PostgresDSN string
+	// RealWorkers are the groups started as real sqi-worker processes, one
+	// per Real count. Only their name, Real, Queues, Tags and Heartbeat apply.
+	RealWorkers []scenario.WorkerGroup
+	// Logger receives the target's own progress; nil discards it.
+	Logger *slog.Logger
+
+	readyTimeout time.Duration // how long to wait for /readyz; 0 is defaultReadyTimeout
+	stopTimeout  time.Duration // grace between interrupt and kill; 0 is defaultStopTimeout
+}
+
+// managed is a target whose server, and real workers, the harness runs.
+type managed struct {
+	cfg          ManagedConfig
+	logger       *slog.Logger
+	runID        string
+	readyTimeout time.Duration
+	stopTimeout  time.Duration
+
+	serverBin, workerBin, noopBin string
+	settings                      serverSettings
+	configPath                    string
+
+	pgDSN      string // the run's DSN
+	pgAdminDSN string // set when the harness created pgDB
+	pgDB       string
+
+	bootstrapPassword string
+	joinToken         string
+	tlsFiles          simworker.TLSFiles
+	httpURL, natsURL  string
+	apiKey            string
+	client            *client.Client
+	farm              farm
+	creds             simworker.Credentials
+
+	mu      sync.Mutex // guards server and workers against Close during start
+	server  *proc
+	workers []*proc
+
+	closeOnce sync.Once
+	closeErr  error
+}
+
+// StartManaged starts an sqi-server configured for the scenario, waits for it
+// to be ready, creates the run's farm, queues and usage pools, and starts the
+// real workers. On any error it stops whatever it had started before
+// returning.
+func StartManaged(ctx context.Context, cfg ManagedConfig) (Target, error) {
+	m, err := newManaged(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.start(ctx); err != nil {
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.stopTimeout+cleanupMargin)
+		defer cancel()
+		if cerr := m.Close(cctx); cerr != nil {
+			err = errors.Join(err, cerr)
+		}
+		return nil, err
+	}
+	return m, nil
+}
+
+func newManaged(cfg ManagedConfig) (*managed, error) {
+	if cfg.RunDir == "" {
+		return nil, errors.New("target: ManagedConfig.RunDir is empty")
+	}
+	if cfg.Scenario == nil {
+		return nil, errors.New("target: ManagedConfig has no scenario")
+	}
+	if cfg.Scenario.Server.Store == "postgres" && cfg.PostgresDSN == "" {
+		return nil, errors.New("target: the scenario's store is postgres but ManagedConfig.PostgresDSN is empty")
+	}
+	runDir, err := filepath.Abs(cfg.RunDir)
+	if err != nil {
+		return nil, fmt.Errorf("target: run directory: %w", err)
+	}
+	m := &managed{
+		cfg:          cfg,
+		logger:       discardIfNil(cfg.Logger).With(slog.String("target", "managed")),
+		runID:        cfg.RunID,
+		readyTimeout: orDefault(cfg.readyTimeout, defaultReadyTimeout),
+		stopTimeout:  orDefault(cfg.stopTimeout, defaultStopTimeout),
+		serverBin:    cfg.ServerBin,
+		workerBin:    cfg.WorkerBin,
+		noopBin:      cfg.NoopBin,
+		settings:     serverSettings{RunDir: runDir, Spec: cfg.Scenario.Server, BootstrapUser: bootstrapUser},
+		configPath:   filepath.Join(runDir, "server.yaml"),
+		creds:        simworker.NoCredentials{},
+	}
+	if m.runID == "" {
+		m.runID = filepath.Base(runDir)
+	}
+	return m, nil
+}
+
+// orDefault returns v, or def when v is not positive.
+func orDefault(v, def time.Duration) time.Duration {
+	if v <= 0 {
+		return def
+	}
+	return v
+}
+
+func (m *managed) realCount() int {
+	n := 0
+	for _, g := range m.cfg.RealWorkers {
+		n += g.Real
+	}
+	return n
+}
+
+func (m *managed) start(ctx context.Context) error {
+	for _, dir := range []string{m.settings.dataDir(), filepath.Join(m.settings.RunDir, "workers")} {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			return fmt.Errorf("target: create %s: %w", dir, err)
+		}
+	}
+	steps := []func(context.Context) error{
+		m.resolveBinaries,
+		m.preparePostgres,
+		m.prepareTLS,
+		m.startServer,
+		m.authenticate,
+		m.createFarm,
+		m.startWorkers,
+	}
+	for _, step := range steps {
+		if err := step(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// resolveBinaries builds whatever binary the run needs and was not given.
+func (m *managed) resolveBinaries(ctx context.Context) error {
+	needWorkers := m.realCount() > 0
+	if m.serverBin != "" && (!needWorkers || (m.workerBin != "" && m.noopBin != "")) {
+		return nil
+	}
+	m.logger.InfoContext(ctx, "building sqi binaries")
+	server, worker, noop, err := BuildBinaries(ctx, filepath.Join(m.settings.RunDir, "bin"))
+	if err != nil {
+		return err
+	}
+	if m.serverBin == "" {
+		m.serverBin = server
+	}
+	if m.workerBin == "" {
+		m.workerBin = worker
+	}
+	if m.noopBin == "" {
+		m.noopBin = noop
+	}
+	return nil
+}
+
+// preparePostgres decides the run's database, creating it through an
+// administrative DSN.
+func (m *managed) preparePostgres(ctx context.Context) error {
+	if m.settings.Spec.Store != "postgres" {
+		return nil
+	}
+	admin, err := isAdminDSN(m.cfg.PostgresDSN)
+	if err != nil {
+		return err
+	}
+	if !admin {
+		m.pgDSN = m.cfg.PostgresDSN
+		return nil
+	}
+	name := databaseName(m.runID)
+	dsn, err := withDatabase(m.cfg.PostgresDSN, name)
+	if err != nil {
+		return err
+	}
+	if err := createDatabase(ctx, m.cfg.PostgresDSN, name); err != nil {
+		return err
+	}
+	m.pgAdminDSN, m.pgDB, m.pgDSN = m.cfg.PostgresDSN, name, dsn
+	m.logger.InfoContext(ctx, "created the run's PostgreSQL database", slog.String("database", name))
+	return nil
+}
+
+// prepareTLS generates a farm CA and a server certificate for 127.0.0.1 with
+// sqi-server tls init.
+func (m *managed) prepareTLS(ctx context.Context) error {
+	if !m.settings.Spec.TLS {
+		return nil
+	}
+	dir := m.settings.tlsDir()
+	if _, err := m.runCLI(ctx, "tls", "init", "--out", dir, "--host", "127.0.0.1", "--host", "localhost"); err != nil {
+		return err
+	}
+	m.tlsFiles = simworker.TLSFiles{Enabled: "true", CAFile: filepath.Join(dir, "ca.crt")}
+	return nil
+}
+
+// startServer writes server.yaml and starts sqi-server, retrying once with
+// fresh ports when one of the ports it was given was taken in the meantime.
+func (m *managed) startServer(ctx context.Context) error {
+	if m.settings.Spec.HTTPAuth {
+		pw, err := randomHex(24)
+		if err != nil {
+			return err
+		}
+		m.bootstrapPassword = pw
+	}
+	for attempt := 1; ; attempt++ {
+		if err := m.writeConfig(); err != nil {
+			return err
+		}
+		if attempt == 1 && m.settings.Spec.BrokerAuth {
+			if err := m.issueJoinToken(ctx); err != nil {
+				return err
+			}
+		}
+		err := m.spawnServer(ctx)
+		if err == nil {
+			return nil
+		}
+		if attempt > 1 || !m.serverExited() || !isBindError(tailLines(m.serverLog(), logTail)) {
+			return err
+		}
+		m.logger.WarnContext(ctx, "sqi-server could not bind its ports; retrying with new ones", slog.Any("error", err))
+	}
+}
+
+func (m *managed) serverLog() string { return filepath.Join(m.settings.RunDir, "server.log") }
+
+func (m *managed) serverExited() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.server != nil && m.server.exited()
+}
+
+// writeConfig picks two free loopback ports and writes server.yaml.
+func (m *managed) writeConfig() error {
+	ports, err := freePorts(2)
+	if err != nil {
+		return err
+	}
+	m.settings.HTTPAddr = "127.0.0.1:" + strconv.Itoa(ports[0])
+	m.settings.NATSAddr = "127.0.0.1:" + strconv.Itoa(ports[1])
+	scheme := "http://"
+	if m.settings.Spec.TLS {
+		scheme = "https://"
+	}
+	m.httpURL = scheme + m.settings.HTTPAddr
+	m.natsURL = "nats://" + m.settings.NATSAddr
+	data, err := renderServerConfig(m.settings)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(m.configPath, data, 0o600); err != nil {
+		return fmt.Errorf("target: write server.yaml: %w", err)
+	}
+	return nil
+}
+
+// issueJoinToken creates the database and mints a reusable join token with
+// the server's own CLI, before the server starts (SQLite allows one server
+// process at a time). The token goes to a file, as a worker reads it.
+func (m *managed) issueJoinToken(ctx context.Context) error {
+	if _, err := m.runCLI(ctx, "-c", m.configPath, "migrate", "up"); err != nil {
+		return err
+	}
+	out, err := m.runCLI(ctx, "-c", m.configPath, "worker", "token", "issue", "--ttl", joinTokenTTL, "--name", "sqi-load")
+	if err != nil {
+		return err
+	}
+	m.joinToken = strings.TrimSpace(out)
+	if m.joinToken == "" {
+		return errors.New("target: sqi-server worker token issue printed no token")
+	}
+	if err := os.WriteFile(m.joinTokenFile(), []byte(m.joinToken), 0o600); err != nil {
+		return fmt.Errorf("target: write join token: %w", err)
+	}
+	return nil
+}
+
+func (m *managed) joinTokenFile() string { return filepath.Join(m.settings.RunDir, "join-token") }
+
+// serverEnv is the server's environment: the harness's own without any SQI_
+// variable, plus the secrets server.yaml leaves out.
+func (m *managed) serverEnv() []string {
+	var extra []string
+	if m.bootstrapPassword != "" {
+		extra = append(extra, "SQI_AUTH_BOOTSTRAP_PASSWORD="+m.bootstrapPassword)
+	}
+	if m.pgDSN != "" {
+		extra = append(extra, "SQI_STORE_POSTGRES_DSN="+m.pgDSN)
+	}
+	return childEnv(os.Environ(), extra...)
+}
+
+// runCLI runs an sqi-server subcommand to completion and returns its
+// standard output. The error carries standard error only, since standard
+// output can hold a secret.
+func (m *managed) runCLI(ctx context.Context, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, cliTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, m.serverBin, args...) //nolint:gosec // G204: the binary the harness built or was given
+	cmd.Env = m.serverEnv()
+	cmd.Dir = m.settings.RunDir
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("target: sqi-server %s: %w\n%s", strings.Join(args, " "), err, stderr.String())
+	}
+	return string(out), nil
+}
+
+// spawnServer starts sqi-server and waits for /readyz.
+func (m *managed) spawnServer(ctx context.Context) error {
+	if err := m.stopServer(ctx); err != nil { // a previous attempt's
+		return err
+	}
+	p, err := startProc(ctx, procSpec{
+		name:    "sqi-server",
+		bin:     m.serverBin,
+		args:    []string{"-c", m.configPath, "serve"},
+		env:     m.serverEnv(),
+		logPath: m.serverLog(),
+	}, m.logger)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.server = p
+	m.mu.Unlock()
+	m.logger.InfoContext(ctx, "started sqi-server", slog.Int("pid", p.pid()), slog.String("http", m.httpURL), slog.String("nats", m.natsURL))
+
+	probe, err := newClient(m.httpURL, "", m.tlsFiles)
+	if err != nil {
+		return err
+	}
+	return m.waitReady(ctx, p, probe)
+}
+
+func (m *managed) stopServer(ctx context.Context) error {
+	m.mu.Lock()
+	p := m.server
+	m.server = nil
+	m.mu.Unlock()
+	if p == nil {
+		return nil
+	}
+	return p.stopCtx(ctx, m.stopTimeout)
+}
+
+// waitReady polls /readyz until it answers 200, the server exits, or
+// readyTimeout passes.
+func (m *managed) waitReady(ctx context.Context, p *proc, probe *client.Client) error {
+	deadline := time.Now().Add(m.readyTimeout)
+	for {
+		rctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		err := probe.Ready(rctx)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		if p.exited() {
+			return fmt.Errorf("target: sqi-server exited before it was ready (%w); last lines of %s:\n%s",
+				p.exitError(), m.serverLog(), tailLines(m.serverLog(), logTail))
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("target: sqi-server not ready after %s (%w); last lines of %s:\n%s",
+				m.readyTimeout, err, m.serverLog(), tailLines(m.serverLog(), logTail))
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("target: waiting for sqi-server: %w", ctx.Err())
+		case <-p.done:
+		case <-time.After(pollInterval):
+		}
+	}
+}
+
+// authenticate logs in as the bootstrap admin and creates the run's API key
+// when the auth gate is on, then builds the target's client.
+func (m *managed) authenticate(ctx context.Context) error {
+	if m.settings.Spec.HTTPAuth {
+		session, err := newClient(m.httpURL, "", m.tlsFiles)
+		if err != nil {
+			return err
+		}
+		if _, err := session.Login(ctx, bootstrapUser, m.bootstrapPassword); err != nil {
+			return fmt.Errorf("target: log in as the bootstrap admin: %w", err)
+		}
+		key, err := session.CreateAPIKey(ctx, "sqi-load "+m.runID)
+		if err != nil {
+			return fmt.Errorf("target: create the run's API key: %w", err)
+		}
+		m.apiKey = key
+	}
+	c, err := newClient(m.httpURL, m.apiKey, m.tlsFiles)
+	if err != nil {
+		return err
+	}
+	m.client = c
+	if m.joinToken != "" {
+		m.creds = simworker.JoinTokenCredentials(c, m.joinToken)
+	}
+	return nil
+}
+
+func (m *managed) createFarm(ctx context.Context) error {
+	f, err := setupFarm(ctx, m.client, farmName(m.runID), m.cfg.Scenario.Farm, m.logger)
+	m.farm = f
+	return err
+}
+
+// startWorkers starts the real workers and waits until all are online.
+func (m *managed) startWorkers(ctx context.Context) error {
+	n := 0
+	for _, g := range m.cfg.RealWorkers {
+		for range g.Real {
+			n++
+			if err := m.startWorker(ctx, g, n); err != nil {
+				return err
+			}
+		}
+	}
+	if n == 0 {
+		return nil
+	}
+	return m.waitWorkersOnline(ctx, n)
+}
+
+func (m *managed) startWorker(ctx context.Context, g scenario.WorkerGroup, n int) error {
+	env, err := m.workerEnv(g, n)
+	if err != nil {
+		return err
+	}
+	p, err := startProc(ctx, procSpec{
+		name:    "sqi-worker " + strconv.Itoa(n),
+		bin:     m.workerBin,
+		args:    []string{"start"},
+		env:     env,
+		logPath: filepath.Join(m.settings.RunDir, "workers", strconv.Itoa(n)+".log"),
+	}, m.logger)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.workers = append(m.workers, p)
+	m.mu.Unlock()
+	return nil
+}
+
+// workerEnv is real worker n's environment, as the integration suite
+// configures a real worker.
+func (m *managed) workerEnv(g scenario.WorkerGroup, n int) ([]string, error) {
+	ports, err := freePorts(1)
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(m.settings.RunDir, "workers", strconv.Itoa(n))
+	name := g.Name
+	if name == "" {
+		name = "real"
+	}
+	env := []string{
+		"SQI_WORKER_NATS_URL=" + m.natsURL,
+		"SQI_WORKER_DISCOVERY_ENABLE_MDNS=false",
+		"SQI_WORKER_FARM_ID=" + m.farm.id,
+		"SQI_WORKER_NAME=" + name + "-" + strconv.Itoa(n),
+		"SQI_WORKER_DATA_DIR=" + dir,
+		"SQI_WORKER_SESSION_DIR=" + dir + "-sessions",
+		"SQI_WORKER_ALLOW_ROOT=true",
+		"SQI_WORKER_LOG_FORMAT=text",
+		"SQI_WORKER_LOG_LEVEL=info",
+		"SQI_WORKER_SHUTDOWN_GRACE_PERIOD=" + workerGrace,
+		"SQI_WORKER_METRICS_ADDR=127.0.0.1:" + strconv.Itoa(ports[0]),
+	}
+	if len(g.Queues) > 0 {
+		ids := make([]string, len(g.Queues))
+		for i, q := range g.Queues {
+			id, ok := m.farm.queueIDs[q]
+			if !ok {
+				return nil, fmt.Errorf("target: real worker group %s names queue %q, which the scenario's farm does not declare", name, q)
+			}
+			ids[i] = id
+		}
+		env = append(env, "SQI_WORKER_QUEUE_IDS="+strings.Join(ids, ","))
+	}
+	if tags := capabilityTags(g.Tags); tags != "" {
+		env = append(env, "SQI_WORKER_CAPABILITY_TAGS="+tags)
+	}
+	if g.Heartbeat.Duration > 0 {
+		env = append(env, "SQI_WORKER_HEARTBEAT_INTERVAL="+g.Heartbeat.String())
+	}
+	if m.joinToken != "" {
+		env = append(env, "SQI_WORKER_NATS_JOIN_TOKEN_FILE="+m.joinTokenFile(), "SQI_WORKER_NATS_SERVER_URL="+m.httpURL)
+	}
+	if m.tlsFiles.CAFile != "" {
+		env = append(
+			env,
+			"SQI_WORKER_NATS_TLS_ENABLED=true",
+			"SQI_WORKER_NATS_TLS_CA_FILE="+m.tlsFiles.CAFile,
+			"SQI_WORKER_NATS_SERVER_TLS_CA_FILE="+m.tlsFiles.CAFile,
+		)
+	}
+	return childEnv(os.Environ(), env...), nil
+}
+
+// capabilityTags renders tags as sqi-worker's comma-separated key=value
+// list, in a stable order.
+func capabilityTags(tags map[string]string) string {
+	keys := make([]string, 0, len(tags))
+	for k := range tags {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = k + "=" + tags[k]
+	}
+	return strings.Join(parts, ",")
+}
+
+// waitWorkersOnline polls the farm's workers until n are online, failing fast
+// when a worker process exits.
+func (m *managed) waitWorkersOnline(ctx context.Context, n int) error {
+	deadline := time.Now().Add(workerOnlineTimeout)
+	online := 0
+	for {
+		for i, p := range m.workerProcs() {
+			if p.exited() {
+				log := filepath.Join(m.settings.RunDir, "workers", strconv.Itoa(i+1)+".log")
+				return fmt.Errorf("target: real worker: %w; last lines of %s:\n%s", p.exitError(), log, tailLines(log, logTail))
+			}
+		}
+		page, err := m.client.ListWorkers(ctx, m.farm.id, 1000, 0)
+		if err == nil {
+			online = 0
+			for _, w := range page.Items {
+				if w.Status == "online" {
+					online++
+				}
+			}
+			if online >= n {
+				return nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return errors.Join(fmt.Errorf("target: %d of %d real workers online after %s", online, n, workerOnlineTimeout), err)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("target: waiting for real workers: %w", ctx.Err())
+		case <-time.After(5 * pollInterval):
+		}
+	}
+}
+
+func (m *managed) workerProcs() []*proc {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return slices.Clone(m.workers)
+}
+
+func (m *managed) HTTPURL() string                    { return m.httpURL }
+func (m *managed) NATSURL() string                    { return m.natsURL }
+func (m *managed) APIKey() string                     { return m.apiKey }
+func (m *managed) FarmID() string                     { return m.farm.id }
+func (m *managed) QueueIDs() map[string]string        { return copyMap(m.farm.queueIDs) }
+func (m *managed) DataDir() string                    { return m.settings.dataDir() }
+func (m *managed) Credentials() simworker.Credentials { return m.creds }
+func (m *managed) TLS() simworker.TLSFiles            { return m.tlsFiles }
+
+// NoopCommand is the built no-op binary, or a placeholder when the run has
+// no real workers and was given its binaries.
+func (m *managed) NoopCommand() scenario.Command {
+	if m.noopBin == "" {
+		return scenario.Command{Path: placeholderCommand}
+	}
+	return scenario.Command{Path: m.noopBin}
+}
+
+func (m *managed) serverPID() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.server == nil {
+		return 0
+	}
+	return m.server.pid()
+}
+
+func (m *managed) workerPIDs() []int {
+	procs := m.workerProcs()
+	pids := make([]int, len(procs))
+	for i, p := range procs {
+		pids[i] = p.pid()
+	}
+	return pids
+}
+
+// Close stops the real workers (together), then the server: each gets an
+// interrupt and the stop grace (30 s) to exit before it is killed, and a
+// done ctx kills at once. It then drops a database the harness created.
+// Every process is reaped before Close returns, whatever the error.
+func (m *managed) Close(ctx context.Context) error {
+	m.closeOnce.Do(func() {
+		var errs []error
+		procs := m.workerProcs()
+		werrs := make([]error, len(procs))
+		var wg sync.WaitGroup
+		for i, p := range procs {
+			wg.Go(func() { werrs[i] = p.stopCtx(ctx, m.stopTimeout) })
+		}
+		wg.Wait()
+		errs = append(errs, werrs...)
+		errs = append(errs, m.stopServer(ctx))
+		if m.pgDB != "" {
+			dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cliTimeout)
+			if err := dropDatabase(dctx, m.pgAdminDSN, m.pgDB); err != nil {
+				errs = append(errs, err)
+			}
+			cancel()
+		}
+		m.closeErr = errors.Join(errs...)
+	})
+	return m.closeErr
+}
+
+// freePorts returns n distinct loopback ports the OS reported free. Another
+// process can take one before the server binds it; startServer retries once.
+func freePorts(n int) ([]int, error) {
+	var lc net.ListenConfig
+	listeners := make([]net.Listener, 0, n)
+	defer func() {
+		for _, l := range listeners {
+			l.Close()
+		}
+	}()
+	ports := make([]int, 0, n)
+	for range n {
+		// Held open until all are drawn, so the n ports differ.
+		l, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+		if err != nil {
+			return nil, fmt.Errorf("target: find a free port: %w", err)
+		}
+		listeners = append(listeners, l)
+		addr, ok := l.Addr().(*net.TCPAddr)
+		if !ok {
+			return nil, fmt.Errorf("target: unexpected listener address %T", l.Addr())
+		}
+		ports = append(ports, addr.Port)
+	}
+	return ports, nil
+}
+
+// isBindError reports whether a server log shows a listener failing to bind
+// its address.
+func isBindError(log string) bool {
+	l := strings.ToLower(log)
+	return strings.Contains(l, "bind:") || strings.Contains(l, "address already in use")
+}
+
+func randomHex(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("target: random: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}

@@ -128,6 +128,26 @@ type LogLine struct {
 	At        time.Time `json:"at"`
 }
 
+// Farm is a farm.
+type Farm struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// Queue is a queue.
+type Queue struct {
+	ID     string `json:"id"`
+	FarmID string `json:"farm_id"`
+	Name   string `json:"name"`
+}
+
+// UsagePool is a usage pool.
+type UsagePool struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	MaxConcurrent int    `json:"max_concurrent"`
+}
+
 // Worker is a registered worker.
 type Worker struct {
 	ID       string `json:"id"`
@@ -151,7 +171,8 @@ type SubmitRequest struct {
 // call is one HTTP request.
 type call struct {
 	method      string
-	path        string // relative to /api/v1
+	path        string // relative to /api/v1, or to the server root when root is set
+	root        bool
 	query       url.Values
 	body        []byte
 	contentType string
@@ -171,6 +192,9 @@ func escape(id string) string { return url.PathEscape(id) }
 // transport error returns status 0.
 func (c *Client) send(ctx context.Context, cl call) (reply, int, error) {
 	full := c.base + apiPrefix + cl.path
+	if cl.root {
+		full = c.base + cl.path
+	}
 	if len(cl.query) > 0 {
 		full += "?" + cl.query.Encode()
 	}
@@ -298,6 +322,11 @@ func pageQuery(q url.Values, limit, offset int) url.Values {
 
 // ── Setup ────────────────────────────────────────────────────────────────────
 
+// Ready returns nil when the server's readiness probe (GET /readyz) answers 200.
+func (c *Client) Ready(ctx context.Context) error {
+	return c.do(ctx, call{method: http.MethodGet, path: "/readyz", root: true}, nil)
+}
+
 // CreateFarm creates a farm (POST /farms) and returns its id.
 func (c *Client) CreateFarm(ctx context.Context, name string) (string, error) {
 	var out struct {
@@ -322,14 +351,70 @@ func (c *Client) CreateQueue(ctx context.Context, farmID, name string, maxConcur
 	return out.ID, nil
 }
 
-// CreateUsagePool creates a usage pool (POST /usage-pools).
-func (c *Client) CreateUsagePool(ctx context.Context, name string, limit int) error {
-	return c.doJSON(ctx, http.MethodPost, "/usage-pools", map[string]any{"name": name, "max_concurrent": limit}, nil)
+// CreateUsagePool creates a usage pool (POST /usage-pools) and returns its id.
+func (c *Client) CreateUsagePool(ctx context.Context, name string, limit int) (string, error) {
+	var out struct {
+		ID string `json:"id"`
+	}
+	body := map[string]any{"name": name, "max_concurrent": limit}
+	if err := c.doJSON(ctx, http.MethodPost, "/usage-pools", body, &out); err != nil {
+		return "", err
+	}
+	return out.ID, nil
 }
 
-// DeleteFarm deletes a farm (DELETE /farms/{id}).
+// ListUsagePools lists every usage pool (GET /usage-pools). Pools are global,
+// not per farm.
+func (c *Client) ListUsagePools(ctx context.Context) ([]UsagePool, error) {
+	var out []UsagePool
+	err := c.do(ctx, call{method: http.MethodGet, path: "/usage-pools"}, &out)
+	return out, err
+}
+
+// DeleteUsagePool deletes a usage pool (DELETE /usage-pools/{id}).
+func (c *Client) DeleteUsagePool(ctx context.Context, id string) error {
+	return c.do(ctx, call{method: http.MethodDelete, path: "/usage-pools/" + escape(id)}, nil)
+}
+
+// GetFarm returns a farm (GET /farms/{id}).
+func (c *Client) GetFarm(ctx context.Context, id string) (Farm, error) {
+	var f Farm
+	err := c.do(ctx, call{method: http.MethodGet, path: "/farms/" + escape(id)}, &f)
+	return f, err
+}
+
+// DeleteFarm deletes a farm (DELETE /farms/{id}). The server refuses while
+// the farm still has queues, jobs or workers.
 func (c *Client) DeleteFarm(ctx context.Context, id string) error {
 	return c.do(ctx, call{method: http.MethodDelete, path: "/farms/" + escape(id)}, nil)
+}
+
+// maxQueuePage is the largest page GET /queues serves.
+const maxQueuePage = 1000
+
+// ListQueues returns every queue of a farm (GET /queues), reading page by page.
+func (c *Client) ListQueues(ctx context.Context, farmID string) ([]Queue, error) {
+	var all []Queue
+	for {
+		q := url.Values{
+			"farm_id": {farmID},
+			"limit":   {strconv.Itoa(maxQueuePage)},
+			"offset":  {strconv.Itoa(len(all))},
+		}
+		var p Page[Queue]
+		if err := c.do(ctx, call{method: http.MethodGet, path: "/queues", query: q}, &p); err != nil {
+			return nil, err
+		}
+		all = append(all, p.Items...)
+		if len(p.Items) == 0 || len(all) >= p.Total {
+			return all, nil
+		}
+	}
+}
+
+// DeleteQueue deletes a queue (DELETE /queues/{id}).
+func (c *Client) DeleteQueue(ctx context.Context, id string) error {
+	return c.do(ctx, call{method: http.MethodDelete, path: "/queues/" + escape(id)}, nil)
 }
 
 // PauseQueue sets a queue's paused flag. The API has no partial update, so this
@@ -462,6 +547,12 @@ func (c *Client) CancelJob(ctx context.Context, id string) error {
 	return c.do(ctx, call{method: http.MethodPost, path: "/jobs/" + escape(id) + "/cancel"}, nil)
 }
 
+// DeleteJob deletes a job (DELETE /jobs/{id}), canceling its unfinished tasks
+// first.
+func (c *Client) DeleteJob(ctx context.Context, id string) error {
+	return c.do(ctx, call{method: http.MethodDelete, path: "/jobs/" + escape(id)}, nil)
+}
+
 // RetryJob revives a job's failed and canceled tasks (POST /jobs/{id}/retry).
 func (c *Client) RetryJob(ctx context.Context, id string) error {
 	return c.do(ctx, call{method: http.MethodPost, path: "/jobs/" + escape(id) + "/retry"}, nil)
@@ -533,6 +624,12 @@ func (c *Client) ListWorkers(ctx context.Context, farmID string, limit, offset i
 	var p Page[Worker]
 	err := c.do(ctx, call{method: http.MethodGet, path: "/workers", query: pageQuery(q, limit, offset)}, &p)
 	return p, err
+}
+
+// RemoveWorker deletes a worker (DELETE /workers/{id}). The server refuses a
+// worker that is not offline, or that still has a task assigned or running.
+func (c *Client) RemoveWorker(ctx context.Context, id string) error {
+	return c.do(ctx, call{method: http.MethodDelete, path: "/workers/" + escape(id)}, nil)
 }
 
 // SetWorkerDisabled disables or enables a worker

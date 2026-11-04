@@ -38,7 +38,7 @@ func TestClient_SetupAndSubmit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateQueue: %v", err)
 	}
-	if err := c.CreateUsagePool(ctx, "pool-a", 3); err != nil {
+	if _, err := c.CreateUsagePool(ctx, "pool-a", 3); err != nil {
 		t.Fatalf("CreateUsagePool: %v", err)
 	}
 

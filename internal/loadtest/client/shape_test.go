@@ -80,8 +80,14 @@ func TestClient_RequestShapes(t *testing.T) {
 			wantBody: `{"farm_id":"f1","max_concurrent_tasks":4,"name":"q"}`,
 		},
 		{
-			name: "CreateUsagePool", reply: `{}`, replyCode: 201,
-			call:       func(c *client.Client) error { return c.CreateUsagePool(t.Context(), "p", 2) },
+			name: "CreateUsagePool", reply: `{"id":"p1"}`, replyCode: 201,
+			call: func(c *client.Client) error {
+				id, err := c.CreateUsagePool(t.Context(), "p", 2)
+				if err == nil && id != "p1" {
+					return errors.New("id not decoded")
+				}
+				return err
+			},
 			wantMethod: "POST", wantPath: "/api/v1/usage-pools",
 			wantBody: `{"max_concurrent":2,"name":"p"}`,
 		},
@@ -89,6 +95,64 @@ func TestClient_RequestShapes(t *testing.T) {
 			name: "DeleteFarm", replyCode: 204,
 			call:       func(c *client.Client) error { return c.DeleteFarm(t.Context(), "f/1") },
 			wantMethod: "DELETE", wantPath: "/api/v1/farms/f/1",
+		},
+		{
+			name: "GetFarm", reply: `{"id":"f1","name":"load-x"}`, replyCode: 200,
+			call: func(c *client.Client) error {
+				f, err := c.GetFarm(t.Context(), "f1")
+				if err == nil && (f.ID != "f1" || f.Name != "load-x") {
+					return errors.New("farm not decoded")
+				}
+				return err
+			},
+			wantMethod: "GET", wantPath: "/api/v1/farms/f1",
+		},
+		{
+			name: "ListQueues", reply: `{"items":[{"id":"q1","farm_id":"f1","name":"render"}],"total":1}`, replyCode: 200,
+			call: func(c *client.Client) error {
+				qs, err := c.ListQueues(t.Context(), "f1")
+				if err == nil && (len(qs) != 1 || qs[0].ID != "q1" || qs[0].Name != "render") {
+					return errors.New("queues not decoded")
+				}
+				return err
+			},
+			wantMethod: "GET", wantPath: "/api/v1/queues", wantQuery: "farm_id=f1&limit=1000&offset=0",
+		},
+		{
+			name: "DeleteQueue", replyCode: 204,
+			call:       func(c *client.Client) error { return c.DeleteQueue(t.Context(), "q1") },
+			wantMethod: "DELETE", wantPath: "/api/v1/queues/q1",
+		},
+		{
+			name: "ListUsagePools", reply: `[{"id":"p1","name":"arnold","max_concurrent":3}]`, replyCode: 200,
+			call: func(c *client.Client) error {
+				ps, err := c.ListUsagePools(t.Context())
+				if err == nil && (len(ps) != 1 || ps[0].ID != "p1" || ps[0].MaxConcurrent != 3) {
+					return errors.New("pools not decoded")
+				}
+				return err
+			},
+			wantMethod: "GET", wantPath: "/api/v1/usage-pools",
+		},
+		{
+			name: "DeleteUsagePool", replyCode: 204,
+			call:       func(c *client.Client) error { return c.DeleteUsagePool(t.Context(), "p1") },
+			wantMethod: "DELETE", wantPath: "/api/v1/usage-pools/p1",
+		},
+		{
+			name: "DeleteJob", replyCode: 204,
+			call:       func(c *client.Client) error { return c.DeleteJob(t.Context(), "j1") },
+			wantMethod: "DELETE", wantPath: "/api/v1/jobs/j1",
+		},
+		{
+			name: "RemoveWorker", replyCode: 204,
+			call:       func(c *client.Client) error { return c.RemoveWorker(t.Context(), "w1") },
+			wantMethod: "DELETE", wantPath: "/api/v1/workers/w1",
+		},
+		{
+			name: "Ready", reply: `{"status":"ok"}`, replyCode: 200,
+			call:       func(c *client.Client) error { return c.Ready(t.Context()) },
+			wantMethod: "GET", wantPath: "/readyz",
 		},
 		{
 			name: "ListJobs paging", reply: `{"items":[],"total":0,"limit":5,"offset":10}`, replyCode: 200,
