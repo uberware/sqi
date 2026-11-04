@@ -94,7 +94,6 @@ func TestCheck_AgainstARealServer(t *testing.T) {
 		t.Fatalf("CancelJob: %v", err)
 	}
 	recs := []driver.ActionRecord{cancelRec}
-	canceled := verify.CanceledJobs(recs)
 
 	if err := verify.WaitDrained(ctx, c, farmID, jobs, time.Minute); err != nil {
 		t.Fatalf("WaitDrained: %v", err)
@@ -104,7 +103,7 @@ func TestCheck_AgainstARealServer(t *testing.T) {
 	results := verify.Check(ctx, c, verify.Input{
 		Jobs: jobs, Ledger: ledger, Scenario: sc, FarmID: farmID,
 		LiveWorkers: fleet.Live(), LogSample: 1, AttemptSample: 1, Seed: 1,
-		CanceledJobs: canceled, CanceledAt: verify.CancelTimes(recs), ConvergeWithin: 10 * time.Second,
+		CanceledAt: verify.CancelTimes(recs), ConvergeWithin: 10 * time.Second,
 	})
 	for _, r := range results {
 		if !r.OK {
@@ -163,7 +162,7 @@ func TestCheck_AgainstARealServer(t *testing.T) {
 	}
 	in := verify.Input{
 		Jobs: jobs, Ledger: ledger, Scenario: sc, FarmID: farmID, LiveWorkers: fleet.Live(),
-		CanceledJobs: canceled, Settle: time.Millisecond,
+		CanceledAt: verify.CancelTimes(recs), Settle: time.Millisecond,
 	}
 	if r := verify.Check(ctx, c, in)[1]; r.OK || len(r.Evidence) != 1 {
 		t.Errorf("outcomes after SetOutcome = %+v, want one violation naming task %s", r, succeeded)

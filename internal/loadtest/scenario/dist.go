@@ -201,12 +201,31 @@ func (d Dist) Sample(r *rand.Rand) float64 {
 	case DistUniform:
 		v = d.Min + r.Float64()*(d.Max-d.Min)
 	case DistLognormal:
-		mu := math.Log(d.Median)
-		sigma := 0.0
-		if d.P95 > d.Median {
-			sigma = (math.Log(d.P95) - mu) / p95Z
-		}
-		v = math.Exp(mu + sigma*r.NormFloat64())
+		v = math.Exp(math.Log(d.Median) + d.sigma()*r.NormFloat64())
 	}
 	return max(v, 0)
+}
+
+// Mean is the distribution's mean: what Sample returns on average. The zero
+// Dist's mean is 0.
+func (d Dist) Mean() float64 {
+	switch d.Kind {
+	case DistConstant:
+		return d.Value
+	case DistUniform:
+		return (d.Min + d.Max) / 2
+	case DistLognormal:
+		s := d.sigma()
+		return d.Median * math.Exp(s*s/2)
+	}
+	return 0
+}
+
+// sigma is a lognormal's log-space standard deviation, from its median and
+// p95, and 0 when p95 is not above the median.
+func (d Dist) sigma() float64 {
+	if d.P95 <= d.Median {
+		return 0
+	}
+	return (math.Log(d.P95) - math.Log(d.Median)) / p95Z
 }

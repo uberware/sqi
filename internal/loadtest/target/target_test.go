@@ -494,6 +494,12 @@ func TestStartManaged_RejectsIncompleteConfig(t *testing.T) {
 			`store is "sqlite"`,
 		},
 		{"a DSN on a run with no store", ManagedConfig{RunDir: t.TempDir(), Scenario: &scenario.Scenario{}, PostgresDSN: "postgres://u@h/postgres"}, `store is "sqlite"`},
+		{"no server binary", ManagedConfig{RunDir: t.TempDir(), Scenario: &scenario.Scenario{}}, "ServerBin"},
+		{
+			"real workers without their binaries",
+			ManagedConfig{RunDir: t.TempDir(), ServerBin: "sqi-server", Scenario: &scenario.Scenario{Workers: []scenario.WorkerGroup{{Real: 1}}}},
+			"WorkerBin",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -513,26 +519,71 @@ var (
 	_ simworker.Credentials = simworker.NoCredentials{}
 )
 
-func TestProcessHelpers_NotManaged(t *testing.T) {
-	tests := []struct {
-		name string
-		tgt  Target
+// TestResolveBinaries_KeepsGivenBinaries checks that a config naming every
+// binary it needs builds nothing.
+func TestResolveBinaries_KeepsGivenBinaries(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		cfg     ManagedConfig
+		workers bool
 	}{
-		{"attached", &attached{}},
-		{"nil", nil},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := PIDs(tt.tgt); got != nil {
-				t.Errorf("PIDs = %v, want nil", got)
+		{"server only", ManagedConfig{ServerBin: "s"}, false},
+		{"with workers", ManagedConfig{ServerBin: "s", WorkerBin: "w", NoopBin: "n"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := tc.cfg
+			// A directory that cannot be created: a build would fail.
+			dir := filepath.Join(t.TempDir(), "file")
+			if err := os.WriteFile(dir, nil, 0o600); err != nil {
+				t.Fatal(err)
 			}
-			if got := PostgresDSN(tt.tgt); got != "" {
-				t.Errorf("PostgresDSN = %q, want empty", got)
+			if err := cfg.ResolveBinaries(t.Context(), filepath.Join(dir, "bin"), tc.workers); err != nil {
+				t.Fatalf("ResolveBinaries: %v", err)
+			}
+			if cfg != tc.cfg {
+				t.Errorf("config changed to %+v", cfg)
 			}
 		})
 	}
-	if !ProcessAlive(os.Getpid()) {
-		t.Error("ProcessAlive(own pid) = false")
+}
+
+// TestTarget_StoreAndPools checks what each kind of target says of its store
+// and its usage pools' names.
+func TestTarget_StoreAndPools(t *testing.T) {
+	managedFor := func(store string) Target {
+		t.Helper()
+		m, err := newManaged(ManagedConfig{RunDir: t.TempDir(), Scenario: &scenario.Scenario{Server: scenario.ServerSpec{Store: store}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	tests := []struct {
+		name      string
+		tgt       Target
+		wantLabel string
+		wantDSN   string
+		wantPool  string
+	}{
+		{"managed", managedFor("sqlite"), "sqlite", "", "arnold"},
+		{"attached", &attached{cfg: AttachConfig{RunID: "r1"}}, "attached (unknown)", "", "load_r1_arnold"},
+		{"attached with its database", &attached{cfg: AttachConfig{RunID: "r1", PoolRunID: "run", PostgresDSN: "postgres://h/sqi"}}, "postgres (attached)", "postgres://h/sqi", "load_run_arnold"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.tgt.StoreLabel(); got != tt.wantLabel {
+				t.Errorf("StoreLabel = %q, want %q", got, tt.wantLabel)
+			}
+			if got := tt.tgt.PostgresDSN(); got != tt.wantDSN {
+				t.Errorf("PostgresDSN = %q, want %q", got, tt.wantDSN)
+			}
+			if got := tt.tgt.PoolName("arnold"); got != tt.wantPool {
+				t.Errorf("PoolName(arnold) = %q, want %q", got, tt.wantPool)
+			}
+			if got := tt.tgt.PoolName(""); got != "" {
+				t.Errorf(`PoolName("") = %q, want ""`, got)
+			}
+		})
 	}
 }
 

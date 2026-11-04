@@ -314,7 +314,7 @@ func (e *Embedded) Start(ctx context.Context) error {
 
 	e.logger.InfoContext(
 		ctx, "bus: jetstream streams provisioned",
-		slog.String("streams", strings.Join(streamNames(), ",")),
+		slog.String("streams", strings.Join(StreamNames(), ",")),
 	)
 	return nil
 }

@@ -44,39 +44,21 @@ type Target interface {
 	// NoopCommand is the command a job's tasks run: the no-op real workers
 	// execute. Simulated workers never execute it.
 	NoopCommand() scenario.Command
+	// PoolName is the name the server knows the scenario's usage pool name
+	// by: on an attached server the run's own namespaced pool (see
+	// [RunPoolName]), on a managed one name itself. "" stays "".
+	PoolName(name string) string
+	// PostgresDSN is the DSN of the server's PostgreSQL database, for
+	// measuring its size: a managed target's own (the one it created, when
+	// given an administrative DSN), an attached target's as configured, and
+	// "" for SQLite or an unknown store.
+	PostgresDSN() string
+	// StoreLabel names the server's store for the run's record.
+	StoreLabel() string
 	// Close releases what the target created: a managed target stops every
 	// process it started, an attached one deletes its farm unless kept. It is
 	// safe to call more than once.
 	Close(ctx context.Context) error
-}
-
-// PIDs returns the process IDs of the processes a managed target is running,
-// the server first and then its real workers, and nil for any other target.
-// Call it while the target runs: Close forgets the server it stopped.
-func PIDs(t Target) []int {
-	m, ok := t.(*managed)
-	if !ok {
-		return nil
-	}
-	var pids []int
-	if pid := m.serverPID(); pid != 0 {
-		pids = append(pids, pid)
-	}
-	return append(pids, m.workerPIDs()...)
-}
-
-// ProcessAlive reports whether a process with this id is still running. A
-// process the harness started and has since reaped is not.
-func ProcessAlive(pid int) bool { return processAlive(pid) }
-
-// PostgresDSN returns the DSN of the PostgreSQL database a managed target's
-// server uses (the one it created, when it was given an administrative DSN),
-// and "" for SQLite or any other target.
-func PostgresDSN(t Target) string {
-	if m, ok := t.(*managed); ok {
-		return m.pgDSN
-	}
-	return ""
 }
 
 // placeholderCommand is the command of a target with no real workers. The
@@ -128,16 +110,6 @@ func httpClient(files simworker.TLSFiles) (*http.Client, error) {
 
 // farmName is the name of the farm a run creates.
 func farmName(runID string) string { return "load-" + runID }
-
-// PoolName returns the name the server knows the scenario's usage pool name
-// by: on an attached server the run's own namespaced pool (see
-// [RunPoolName]), and name itself on any other target.
-func PoolName(t Target, name string) string {
-	if pn, ok := t.(interface{ PoolName(string) string }); ok && name != "" {
-		return pn.PoolName(name)
-	}
-	return name
-}
 
 // maxPoolName is the longest usage pool name a job template can claim: OpenJD
 // caps a capability name at 100 characters, and "amount.worker.usagepool."

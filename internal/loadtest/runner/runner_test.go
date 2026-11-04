@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/uberware/sqi/internal/loadtest/client"
 	"github.com/uberware/sqi/internal/loadtest/driver"
+	"github.com/uberware/sqi/internal/loadtest/internal/proctest"
 	"github.com/uberware/sqi/internal/loadtest/report"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
 	"github.com/uberware/sqi/internal/loadtest/simworker"
@@ -198,7 +198,11 @@ func TestRunner_InterruptWritesPartialRecord(t *testing.T) {
 		OutDir:   out,
 		Managed:  managed,
 		Logger:   testLogger(t),
-		OnTarget: func(tg target.Target) { pids = target.PIDs(tg) },
+		OnTarget: func(tg target.Target) {
+			if p, ok := tg.(interface{ PIDs() []int }); ok {
+				pids = p.PIDs()
+			}
+		},
 	})
 	t.Logf("Run returned %s after it started", time.Since(began).Round(time.Millisecond))
 	if err != nil {
@@ -211,7 +215,7 @@ func TestRunner_InterruptWritesPartialRecord(t *testing.T) {
 		t.Fatal("OnTarget saw no process ids")
 	}
 	for _, pid := range pids {
-		if target.ProcessAlive(pid) {
+		if proctest.Alive(pid) {
 			t.Errorf("process %d of the run is still alive", pid)
 		}
 	}
@@ -279,7 +283,11 @@ func TestValidRunID(t *testing.T) {
 		ok bool
 	}{
 		{"20261104-170507-ab12", true},
-		{"nightly_ci-7", true},
+		{"nightly-ci-7", true},
+		{"nightly_ci", false},
+		{"big-s1", false},
+		{"big-s", true},
+		{"big-s1x", true},
 		{"", false},
 		{"a.b", false},
 		{"a b", false},
@@ -445,14 +453,14 @@ func TestTerminalIngest(t *testing.T) {
 		// A server clock behind the generator's: recorded as 0.
 		{At: at(9), TaskID: "t5", AttemptID: "a6", Kind: simworker.KindTerminal, Outcome: simworker.OutcomeFailed},
 	}
-	tasks := map[string]client.Task{
-		"t1": {ID: "t1", Status: "succeeded", UpdatedAt: at(5.25)},
-		"t2": {ID: "t2", Status: "succeeded", UpdatedAt: at(8.5)},
-		"t3": {ID: "t3", Status: "failed", UpdatedAt: at(3.1)},
-		"t4": {ID: "t4", Status: "canceled", UpdatedAt: at(3.9)},
-		"t5": {ID: "t5", Status: "failed", UpdatedAt: at(8.9)},
-		"t6": {ID: "t6", Status: "succeeded", UpdatedAt: at(1)}, // a real worker's: no ledger event
-		"t7": {ID: "t7", Status: "succeeded"},                   // no updated_at
+	tasks := map[string]taskEnd{
+		"t1": {status: "succeeded", updatedAt: at(5.25)},
+		"t2": {status: "succeeded", updatedAt: at(8.5)},
+		"t3": {status: "failed", updatedAt: at(3.1)},
+		"t4": {status: "canceled", updatedAt: at(3.9)},
+		"t5": {status: "failed", updatedAt: at(8.9)},
+		"t6": {status: "succeeded", updatedAt: at(1)}, // a real worker's: no ledger event
+		"t7": {status: "succeeded"},                   // no updated_at
 	}
 	m := driver.NewMetrics(nil)
 	if n := terminalIngest(events, tasks, m); n != 3 {
@@ -501,7 +509,7 @@ func TestRecord_NoSubmissionAccepted(t *testing.T) {
 			if !slices.Contains(rules, report.RuleRejected+"/"+report.SeverityError) {
 				t.Errorf("findings %v, want a submissions-rejected error", rules)
 			}
-			if slices.Contains(rules, RuleGeneratorSaturated+"/"+report.SeverityWarn) {
+			if slices.Contains(rules, report.RuleGeneratorSaturated+"/"+report.SeverityWarn) {
 				t.Errorf("findings %v: refused submissions are not a saturated generator", rules)
 			}
 		})
@@ -542,7 +550,7 @@ func TestRunner_ResumesPausedQueues(t *testing.T) {
 	}
 }
 
-func TestAttach_StoreLabelAndIgnoredServerSettings(t *testing.T) {
+func TestAttach_IgnoredServerSettings(t *testing.T) {
 	sc := smokeScenario(t, "20s")
 	sc.Server.BrokerAuth = true
 	sc.Server.Config = map[string]any{"scheduler": map[string]any{"heartbeat_timeout": "45s"}}
@@ -552,22 +560,55 @@ func TestAttach_StoreLabelAndIgnoredServerSettings(t *testing.T) {
 	if got := serverSettings(smokeScenario(t, "20s")); len(got) != 0 {
 		t.Errorf("serverSettings of a default scenario = %v, want none", got)
 	}
+}
+
+func TestOptions_Normalize(t *testing.T) {
+	sc := smokeScenario(t, "20s")
+	o := Options{Scenario: sc, RunID: "n1", Mode: report.ModeSoak}
+	if err := o.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	switch {
+	case o.Managed == nil || o.Attach != nil || o.TargetKind() != scenario.TargetManaged:
+		t.Errorf("target: managed %+v attach %+v, want a default managed one", o.Managed, o.Attach)
+	case o.OutDir != DefaultOutDir || o.Seed != SeedFor("n1") || o.Sample != DefaultSample:
+		t.Errorf("defaults not filled: out %q seed %d sample %s", o.OutDir, o.Seed, o.Sample)
+	case o.ProfileEvery != DefaultSoakProfileEvery:
+		t.Errorf("a soak's profile period = %s, want %s", o.ProfileEvery, DefaultSoakProfileEvery)
+	}
+	again := o
+	if err := again.Normalize(); err != nil || again.Seed != o.Seed || again.Managed != o.Managed {
+		t.Errorf("Normalize is not idempotent: err %v, %+v", err, again)
+	}
+	endsOnly := Options{Scenario: sc, Mode: report.ModeSoak, ProfileEvery: -1}
+	for range 2 {
+		if err := endsOnly.Normalize(); err != nil || endsOnly.ProfileEvery >= 0 {
+			t.Errorf("a soak profiling at its start and end only: err %v, period %s", err, endsOnly.ProfileEvery)
+		}
+	}
+
+	bad := sc.Clone()
+	if err := bad.Set("duration", "1s"); err != nil {
+		t.Fatal(err)
+	}
+	o.Scenario = bad
+	if err := o.Normalize(); err == nil || !strings.Contains(err.Error(), "warmup") {
+		t.Errorf("a new, invalid scenario: err = %v, want it validated", err)
+	}
+
 	for _, tc := range []struct {
 		name string
 		o    Options
 		want string
 	}{
-		{"managed", Options{Scenario: sc}, "sqlite"},
-		{"attached", Options{Scenario: sc, Attach: &target.AttachConfig{HTTPURL: "http://h", NATSURL: "nats://h", NoAuth: true}}, "attached (unknown)"},
-		{"attached with its database", Options{Scenario: sc, Attach: &target.AttachConfig{HTTPURL: "http://h", NATSURL: "nats://h", NoAuth: true}, PostgresDSN: "postgres://h/sqi"}, "postgres (attached)"},
+		{"no scenario", Options{}, "no scenario"},
+		{"both targets", Options{Scenario: sc, Managed: &target.ManagedConfig{}, Attach: &target.AttachConfig{}}, "not both"},
+		{"bad mode", Options{Scenario: sc, Mode: "sprint"}, "mode"},
+		{"bad run id", Options{Scenario: sc, RunID: "a:b"}, "run ID"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r, err := newRun(tc.o)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := r.env().Store; got != tc.want {
-				t.Errorf("env store = %q, want %q", got, tc.want)
+			if err := tc.o.Normalize(); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("err = %v, want one mentioning %q", err, tc.want)
 			}
 		})
 	}

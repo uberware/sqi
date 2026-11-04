@@ -30,6 +30,9 @@ func (realTarget) Credentials() simworker.Credentials { return nil }
 func (realTarget) TLS() simworker.TLSFiles            { return simworker.TLSFiles{} }
 func (realTarget) NoopCommand() scenario.Command      { return scenario.Command{Path: "/bin/true"} }
 func (realTarget) Close(context.Context) error        { return nil }
+func (realTarget) PoolName(name string) string        { return name }
+func (realTarget) PostgresDSN() string                { return "" }
+func (realTarget) StoreLabel() string                 { return "" }
 
 // TestDriver_AgainstARealServer submits the generated templates to a real
 // sqi-server, watches the farm over the real WebSocket protocol, polls it over
@@ -49,14 +52,14 @@ func TestDriver_AgainstARealServer(t *testing.T) {
 	}
 	tgt := realTarget{url: srv.HTTPURL(), farm: farm, queues: map[string]string{"q": queue}}
 
-	jc := scenario.JobClass{Name: "shot", Weight: 1, Total: 6, Queue: "q", Steps: 2, TasksPerStep: 4, Chunk: 2}
+	jc := scenario.JobClass{Name: "shot", Total: 6, Queue: "q", Steps: 2, TasksPerStep: 4, Chunk: 2}
 	sc := &scenario.Scenario{JobDeps: 0.5, Jobs: []scenario.JobClass{jc}}
 	ledger, m := driver.NewJobLedger(), driver.NewMetrics(nil)
 
-	ui := driver.NewUIClients(srv.HTTPURL(), "", scenario.ClientsSpec{
+	ui := driver.NewUIClients(c, tgt, scenario.ClientsSpec{
 		WebSocket:   scenario.WSSpec{Count: 2},
 		RESTPollers: scenario.PollSpec{Count: 1, Interval: scenario.Duration{Duration: 50 * time.Millisecond}},
-	}, ledger, m, driver.WithUIFarm(farm))
+	}, ledger, m)
 	uiCtx, stopUI := context.WithCancel(ctx)
 	uiDone := make(chan error, 1)
 	go func() { uiDone <- ui.Run(uiCtx) }()

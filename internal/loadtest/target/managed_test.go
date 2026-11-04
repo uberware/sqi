@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/loadtest/client"
+	"github.com/uberware/sqi/internal/loadtest/internal/proctest"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
 	"github.com/uberware/sqi/internal/loadtest/simworker"
 	"github.com/uberware/sqi/internal/store/storetest"
@@ -176,7 +177,7 @@ func assertFarm(t *testing.T, c *client.Client, tgt Target, sc *scenario.Scenari
 	for _, want := range sc.Farm.UsagePools {
 		found := false
 		for _, p := range pools {
-			if p.Name == PoolName(tgt, want.Name) && p.MaxConcurrent == want.Limit {
+			if p.Name == tgt.PoolName(want.Name) && p.MaxConcurrent == want.Limit {
 				found = true
 			}
 		}
@@ -246,19 +247,22 @@ func TestStartManaged_SQLite(t *testing.T) {
 			}
 
 			pid := m.serverPID()
-			if got := PIDs(m); !slices.Equal(got, []int{pid}) {
+			if got := m.PIDs(); !slices.Equal(got, []int{pid}) {
 				t.Errorf("PIDs = %v, want [%d]", got, pid)
 			}
-			if !ProcessAlive(pid) {
-				t.Errorf("ProcessAlive(%d) = false for the running server", pid)
+			if !proctest.Alive(pid) {
+				t.Errorf("proctest.Alive(%d) = false for the running server", pid)
 			}
-			if dsn := PostgresDSN(m); dsn != "" {
+			if dsn := m.PostgresDSN(); dsn != "" {
 				t.Errorf("PostgresDSN = %q on SQLite", dsn)
+			}
+			if l := m.StoreLabel(); l != "sqlite" {
+				t.Errorf("StoreLabel = %q, want sqlite", l)
 			}
 			if err := m.Close(t.Context()); err != nil {
 				t.Fatalf("Close: %v", err)
 			}
-			if ProcessAlive(pid) {
+			if proctest.Alive(pid) {
 				t.Errorf("server pid %d still running after Close", pid)
 			}
 			info, err := os.Stat(filepath.Join(runDir, "server.log"))
@@ -321,9 +325,9 @@ func TestStartManaged_RealWorker(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			runDir := t.TempDir()
 			sc := testScenario(tt.spec)
+			sc.Workers = []scenario.WorkerGroup{{Name: "real", Real: 1, Queues: []string{"render"}, Tags: map[string]string{"load": "real"}}}
 			m := startManaged(t, ManagedConfig{
 				RunDir: runDir, ServerBin: server, WorkerBin: worker, NoopBin: noop, Scenario: sc,
-				RealWorkers: []scenario.WorkerGroup{{Name: "real", Real: 1, Queues: []string{"render"}, Tags: map[string]string{"load": "real"}}},
 			})
 			c := mustClient(t, m)
 			ctx := t.Context()
@@ -370,7 +374,7 @@ func TestStartManaged_RealWorker(t *testing.T) {
 				t.Fatalf("Close: %v", err)
 			}
 			for _, pid := range pids {
-				if processAlive(pid) {
+				if proctest.Alive(pid) {
 					t.Errorf("pid %d still running after Close", pid)
 				}
 			}
@@ -415,7 +419,7 @@ func TestStartManaged_Postgres(t *testing.T) {
 	if !exists() {
 		t.Fatalf("database %s does not exist while the target runs", db)
 	}
-	if dsn := PostgresDSN(m); !strings.Contains(dsn, db) {
+	if dsn := m.PostgresDSN(); !strings.Contains(dsn, db) {
 		t.Errorf("PostgresDSN = %q, want the run's database %s", dsn, db)
 	}
 	if err := m.Close(t.Context()); err != nil {
@@ -480,7 +484,7 @@ func TestStartManaged_FailedStartLeavesNoProcess(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if processAlive(pid) {
+				if proctest.Alive(pid) {
 					t.Errorf("helper pid %d still running after the failed start", pid)
 				}
 			}
@@ -552,7 +556,7 @@ func TestAttach_CreatesAndDeletesFarm(t *testing.T) {
 			}
 			poolLeft := false
 			for _, p := range pools {
-				poolLeft = poolLeft || p.Name == PoolName(tgt, sc.Farm.UsagePools[0].Name)
+				poolLeft = poolLeft || p.Name == tgt.PoolName(sc.Farm.UsagePools[0].Name)
 			}
 			if poolLeft != (tt.keep || tt.shared) {
 				t.Errorf("after Close (keep=%v, shared=%v): pool present = %v", tt.keep, tt.shared, poolLeft)
@@ -612,7 +616,7 @@ func TestAttach_NamespacesUsagePools(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Attach: %v", err)
 		}
-		own := PoolName(tgt, "arnold")
+		own := tgt.PoolName("arnold")
 		if own != "load_ns_1_arnold" {
 			t.Fatalf("PoolName(arnold) = %q, want load_ns_1_arnold", own)
 		}
@@ -665,7 +669,7 @@ func TestAttach_NamespacesUsagePools(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Attach as a shard: %v", err)
 		}
-		if got := PoolName(shard, "arnold"); got != taken {
+		if got := shard.PoolName("arnold"); got != taken {
 			t.Errorf("shard PoolName = %q, want the run's %q", got, taken)
 		}
 		if err := shard.Close(ctx); err != nil {

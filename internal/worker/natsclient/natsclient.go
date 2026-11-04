@@ -139,7 +139,7 @@ func dial(ctx context.Context, cfg workerconfig.NATSConfig, opts []nats.Option, 
 		if err == nil {
 			return nc, nil
 		}
-		if !isAuthRefusal(err) {
+		if !IsAuthRefusal(err) {
 			return nil, dialError(ctx, cfg.URL, err)
 		}
 		now := time.Now()
@@ -176,10 +176,10 @@ func dialError(ctx context.Context, url string, err error) error {
 	return fmt.Errorf("natsclient: connect %q: %w", redact.List(url), err)
 }
 
-// isAuthRefusal reports whether err is the broker refusing this connection's
+// IsAuthRefusal reports whether err is the broker refusing this connection's
 // credential: every auth error nats.go recognizes. With IgnoreAuthErrorAbort
 // set, one left out here would be retried silently forever.
-func isAuthRefusal(err error) bool {
+func IsAuthRefusal(err error) bool {
 	if err == nil {
 		return false
 	}
@@ -208,7 +208,7 @@ func isAuthRefusal(err error) bool {
 }
 
 // credentialRejectedError reports whether err is the broker refusing this
-// connection's credential (see [isAuthRefusal]). When it is, the second
+// connection's credential (see [IsAuthRefusal]). When it is, the second
 // return is true and the first is the single crafted message every
 // credential-rejection path uses — the initial dial, a refusal streak that
 // outlasted the grace, and a closure observed via [nats.Conn.LastError] all
@@ -217,7 +217,7 @@ func isAuthRefusal(err error) bool {
 // grace is how long the refusals were retried, and keyed whether the worker
 // presented a key at all; each adds the cause only it makes possible.
 func credentialRejectedError(err error, grace time.Duration, keyed bool) (error, bool) {
-	if err == nil || !isAuthRefusal(err) {
+	if err == nil || !IsAuthRefusal(err) {
 		return nil, false
 	}
 	msg := "natsclient: the broker rejected this worker's credential: it may have been revoked (re-enroll with a new join token)"
@@ -360,7 +360,7 @@ func (lc *lifecycle) endStreakLocked() {
 // streak, so the next refusal starts a fresh one rather than being judged
 // against a start that predates the outage.
 func (lc *lifecycle) onReconnectErr(_ *nats.Conn, err error) {
-	if isAuthRefusal(err) {
+	if IsAuthRefusal(err) {
 		return
 	}
 	lc.mu.Lock()
@@ -405,7 +405,7 @@ func (lc *lifecycle) capDelay(next func(int) time.Duration) func(int) time.Durat
 
 // onError is the connection's ErrorHandler.
 func (lc *lifecycle) onError(nc *nats.Conn, _ *nats.Subscription, err error) {
-	if !isAuthRefusal(err) {
+	if !IsAuthRefusal(err) {
 		lc.logger.ErrorContext(lc.ctx, "natsclient: async error", slog.Any("error", err))
 		return
 	}
@@ -425,7 +425,7 @@ func (lc *lifecycle) onError(nc *nats.Conn, _ *nats.Subscription, err error) {
 // onDisconnect is the connection's DisconnectErrHandler.
 func (lc *lifecycle) onDisconnect(nc *nats.Conn, err error) {
 	lc.mu.Lock()
-	if isAuthRefusal(err) && lc.since.IsZero() && !nc.IsConnected() {
+	if IsAuthRefusal(err) && lc.since.IsZero() && !nc.IsConnected() {
 		lc.since = time.Now()
 	}
 	expected := lc.expiring
@@ -570,7 +570,7 @@ func buildOptions(
 	opts = append(opts, nats.CustomInboxPrefix(brokerauth.InboxPrefix(workerID)))
 
 	// ── TLS ──────────────────────────────────────────────────────
-	tlsOpts, err := buildTLSOptions(cfg)
+	tlsOpts, err := TLSOptions(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -615,14 +615,14 @@ func exponentialBackoff(base time.Duration) func(int) time.Duration {
 	}
 }
 
-// buildTLSOptions returns the nats.Option(s) needed to configure TLS on the
+// TLSOptions returns the nats.Option(s) needed to configure TLS on the
 // connection. It returns an empty slice when no TLS configuration is provided.
 //
 // TLS is activated when any of the following are set:
 //   - cfg.TLSCertFile / cfg.TLSKeyFile  — mutual TLS client certificate
 //   - cfg.TLSCAFile                     — custom CA for server cert verification
 //   - cfg.InsecureSkipVerify            — disable server cert verification
-func buildTLSOptions(cfg workerconfig.NATSConfig) ([]nats.Option, error) {
+func TLSOptions(cfg workerconfig.NATSConfig) ([]nats.Option, error) {
 	// The three-valued nats.tls_enabled decides this; see NATSConfig.UseTLS.
 	// Any mDNS signal has already been folded into cfg by the caller (see
 	// discovery.ApplyTLS), so false here means "nothing, including mDNS, gave a

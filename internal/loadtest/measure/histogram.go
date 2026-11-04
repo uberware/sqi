@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package measure holds the harness's measurement primitives: a mergeable
-// latency histogram, atomic counters, named time series and growth slopes.
+// latency histogram, named time series and growth slopes.
 // It is a leaf package with no dependencies outside the standard library.
 package measure
 
@@ -266,28 +266,5 @@ func (h *Histogram) UnmarshalJSON(b []byte) error {
 		h.sum.Store(0)
 	}
 	h.count.Store(w.Count)
-	return nil
-}
-
-// Counter is an atomic int64 counter. The zero value is zero. It marshals as
-// a plain JSON number.
-type Counter struct{ v atomic.Int64 }
-
-// Add adds n, which may be negative.
-func (c *Counter) Add(n int64) { c.v.Add(n) }
-
-// Load returns the current value.
-func (c *Counter) Load() int64 { return c.v.Load() }
-
-// MarshalJSON writes the value as a JSON number.
-func (c *Counter) MarshalJSON() ([]byte, error) { return json.Marshal(c.v.Load()) }
-
-// UnmarshalJSON sets the value from a JSON number.
-func (c *Counter) UnmarshalJSON(b []byte) error {
-	var n int64
-	if err := json.Unmarshal(b, &n); err != nil {
-		return fmt.Errorf("counter: %w", err)
-	}
-	c.v.Store(n)
 	return nil
 }

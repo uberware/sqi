@@ -17,17 +17,8 @@ import (
 	"github.com/uberware/sqi/internal/loadtest/report"
 	"github.com/uberware/sqi/internal/loadtest/simworker"
 	"github.com/uberware/sqi/internal/loadtest/verify"
+	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/version"
-)
-
-// Rules of the findings the runner adds to the report's own.
-const (
-	// RuleChurnFailed flags churn events whose restart or reconnect failed:
-	// the fleet ran short of the workers the scenario asked for.
-	RuleChurnFailed = report.RuleChurnFailed
-	// RuleGeneratorSaturated flags an INVALID run accepted with
-	// AllowSaturated.
-	RuleGeneratorSaturated = report.RuleGeneratorSaturated
 )
 
 // listPage is the page size when the runner lists the farm's jobs.
@@ -87,13 +78,13 @@ func (r *run) record() *report.Record {
 	if rec.Series == nil {
 		rec.Series = []measure.Series{}
 	}
+	r.unavail("lease_reply", "a lease request parks on the server until work appears, so its reply time is idle wait, not server latency; first_lease measures dispatch")
 	rec.Invariants = r.invariants
 	if rec.Invariants == nil {
 		rec.Invariants = []verify.Result{}
 		r.unavail("invariants", "the run ended early (interrupted, or a driver failed) before they were checked")
 	}
 	saturated := r.judgeValidity(rec)
-	r.unavail(report.HistLeaseReply, "the simulated workers do not time their lease requests")
 	if caveat := wsLagCaveat(wallClockStep()); caveat != "" && rec.Histograms[report.HistWSLag] != nil && rec.Histograms[report.HistWSLag].Count() > 0 {
 		r.unavail(report.HistWSLag, caveat)
 	}
@@ -109,11 +100,7 @@ func (r *run) record() *report.Record {
 func (r *run) judgeValidity(rec *report.Record) (saturated bool) {
 	rec.Valid, rec.InvalidReason = true, ""
 	if r.obs != nil {
-		until := rec.Ended
-		if !rec.WindowEnd.IsZero() {
-			until = rec.WindowEnd
-		}
-		rec.Valid, rec.InvalidReason = r.obs.SelfHealth().ValidBetween(rec.SteadyFrom(), until, 0)
+		rec.Valid, rec.InvalidReason = r.obs.SelfHealth().Valid(rec.SteadyFrom(), rec.MeasuredEnd())
 	}
 	saturated = !rec.Valid
 	if r.complete && rec.NoneAccepted() {
@@ -137,14 +124,8 @@ func joinReasons(a, b string) string {
 func (r *run) env() report.Env {
 	env := report.LocalEnv()
 	env.SQIVersion, env.Commit = version.Version, version.Commit
-	env.Store = r.sc.Server.Store
-	if r.o.Attach != nil {
-		// An attached server keeps its own store, whatever the scenario says;
-		// a DSN for its database is the one sign of which it is.
-		env.Store = "attached (unknown)"
-		if r.o.PostgresDSN != "" {
-			env.Store = "postgres (attached)"
-		}
+	if r.tgt != nil { // else the run ended before its target started
+		env.Store = r.tgt.StoreLabel()
 	}
 	env.Flags = slices.Clone(r.o.Flags)
 	if env.Flags == nil {
@@ -174,7 +155,7 @@ func (r *run) findings(rec *report.Record, saturated bool) []report.Finding {
 	if r.fleet != nil {
 		if cc := r.fleet.ChurnCounts(); cc.Failures > 0 {
 			out = append(out, report.Finding{
-				Rule: RuleChurnFailed, Severity: report.SeverityError,
+				Rule: report.RuleChurnFailed, Severity: report.SeverityError,
 				Message: fmt.Sprintf("%d churn events failed to restart or reconnect their worker (of %d crashes and %d disconnects), so the fleet ran short of the scenario's workers",
 					cc.Failures, cc.Crashes, cc.Disconnects),
 			})
@@ -182,7 +163,7 @@ func (r *run) findings(rec *report.Record, saturated bool) []report.Finding {
 	}
 	if saturated && r.o.AllowSaturated {
 		out = append(out, report.Finding{
-			Rule: RuleGeneratorSaturated, Severity: report.SeverityWarn,
+			Rule: report.RuleGeneratorSaturated, Severity: report.SeverityWarn,
 			Message: "the generator saturated (" + rec.InvalidReason + "); accepted with --allow-saturated, so its latencies describe the generator as much as the server",
 		})
 	}
@@ -193,10 +174,11 @@ func (r *run) findings(rec *report.Record, saturated bool) []report.Finding {
 // from the server and is added by the caller.
 func (r *run) liveCounters() map[string]int64 {
 	m := r.metrics
+	simulated, procs := r.sc.WorkerCounts()
 	out := map[string]int64{
 		report.CounterJobsSubmitted: int64(r.jobs.AcceptedCount()),
 		report.CounterLogLines:      r.ledger.LogLines(),
-		report.CounterWorkersLive:   int64(simulatedCount(r.sc) + realCount(r.sc)),
+		report.CounterWorkersLive:   int64(simulated + procs),
 		report.CounterWSDrops:       m.WSDrops.Load(),
 		report.CounterWSEvents:      m.WSEvents.Load(),
 		report.CounterWSLagNegative: m.WSLagNegative.Load(),
@@ -226,8 +208,7 @@ func completeSteady(steady, final map[string]int64) map[string]int64 {
 	return out
 }
 
-// histograms maps the driver's histograms to the record's keys. The lease
-// reply histogram is left out: nothing fills it (see Unavailable).
+// histograms maps the driver's histograms to the record's keys.
 func histograms(m *driver.Metrics) map[string]*measure.Histogram {
 	h := map[string]*measure.Histogram{
 		report.HistSubmitLatency:  m.SubmitLatency,
@@ -279,6 +260,12 @@ func ledgerHistograms(events []simworker.Event, jobs []driver.SubmittedJob, m *d
 	}
 }
 
+// taskEnd is what terminalIngest needs of a task the server listed.
+type taskEnd struct {
+	status    string
+	updatedAt time.Time
+}
+
 // terminalIngest fills TerminalIngest and returns how many tasks it measured:
 // for each task the server lists as succeeded or failed, the task's
 // updated_at minus the moment a simulated worker published that same final
@@ -286,7 +273,7 @@ func ledgerHistograms(events []simworker.Event, jobs []driver.SubmittedJob, m *d
 // last report disagrees with the server, or that only a real worker ran, is
 // left out. A negative difference, a generator clock ahead of an attached
 // server's, is recorded as 0.
-func terminalIngest(events []simworker.Event, tasks map[string]client.Task, m *driver.Metrics) int {
+func terminalIngest(events []simworker.Event, tasks map[string]taskEnd, m *driver.Metrics) int {
 	last := map[string]simworker.Event{}
 	for _, e := range events {
 		if e.Kind == simworker.KindTerminal && (e.Outcome == simworker.OutcomeSucceeded || e.Outcome == simworker.OutcomeFailed) {
@@ -296,10 +283,10 @@ func terminalIngest(events []simworker.Event, tasks map[string]client.Task, m *d
 	n := 0
 	for id, t := range tasks {
 		e, ok := last[id]
-		if !ok || t.UpdatedAt.IsZero() || t.Status != e.Outcome {
+		if !ok || t.updatedAt.IsZero() || t.status != e.Outcome {
 			continue
 		}
-		m.TerminalIngest.Record(max(t.UpdatedAt.Sub(e.At), 0))
+		m.TerminalIngest.Record(max(t.updatedAt.Sub(e.At), 0))
 		n++
 	}
 	return n
@@ -310,34 +297,35 @@ func terminalIngest(events []simworker.Event, tasks map[string]client.Task, m *d
 func jobHistogram(server map[string]client.Job, jobs []driver.SubmittedJob, m *driver.Metrics) {
 	for _, j := range jobs {
 		s, ok := server[j.ID]
-		if !ok || !terminalJob(s.Status) {
+		if !ok || !store.JobStatus(s.Status).IsTerminal() {
 			continue
 		}
 		m.JobE2E.Record(max(s.UpdatedAt.Sub(j.SubmittedAt), 0))
 	}
 }
 
-func terminalJob(status string) bool {
-	return status == "completed" || status == "failed" || status == "canceled"
-}
+// terminalTaskStatuses are the statuses of a finished task.
+var terminalTaskStatuses = []store.TaskStatus{store.TaskStatusSucceeded, store.TaskStatusFailed, store.TaskStatusCanceled}
 
 // terminalTasks counts the tasks the server holds as succeeded, failed or
 // canceled: each task once, whatever its attempts.
 func terminalTasks(jobs map[string]client.Job) int64 {
 	var n int64
 	for _, j := range jobs {
-		n += int64(j.TaskCounts["succeeded"] + j.TaskCounts["failed"] + j.TaskCounts["canceled"])
+		for _, s := range terminalTaskStatuses {
+			n += int64(j.TaskCounts[string(s)])
+		}
 	}
 	return n
 }
 
-// allTasks counts every task of the jobs, whatever its status.
+// allTasks counts every task of the jobs, whatever its status: each job's
+// task_counts total. The other keys are not all statuses (unschedulable is a
+// subset of ready), so summing them would count tasks twice.
 func allTasks(jobs map[string]client.Job) int64 {
 	var n int64
 	for _, j := range jobs {
-		for _, c := range j.TaskCounts {
-			n += int64(c)
-		}
+		n += int64(j.TaskCounts["total"])
 	}
 	return n
 }
@@ -345,17 +333,15 @@ func allTasks(jobs map[string]client.Job) int64 {
 // listFarmJobs reads every job of the farm, a page at a time, by ID.
 func listFarmJobs(ctx context.Context, c *client.Client, farmID string) (map[string]client.Job, error) {
 	out := map[string]client.Job{}
-	for offset := 0; ; {
-		page, err := c.ListJobs(ctx, farmID, listPage, offset)
-		if err != nil {
-			return nil, err
-		}
-		for _, j := range page.Items {
+	err := client.EachPage(listPage, func(limit, offset int) (client.Page[client.Job], error) {
+		return c.ListJobs(ctx, farmID, limit, offset)
+	}, func(p client.Page[client.Job]) {
+		for _, j := range p.Items {
 			out[j.ID] = j
 		}
-		offset += len(page.Items)
-		if len(page.Items) == 0 || offset >= page.Total {
-			return out, nil
-		}
+	})
+	if err != nil {
+		return nil, err
 	}
+	return out, nil
 }

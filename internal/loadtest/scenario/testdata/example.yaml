@@ -30,7 +30,6 @@ workers:
 
 jobs:
   - name: shot-render
-    weight: 8
     rate: 2/s             # or: total: 10000 (burst as fast as accepted)
     queue: render
     steps: 2              # step i+1 depends on step i
@@ -46,7 +45,6 @@ jobs:
       log_lines: {median: 200, p95: 2000}
       log_line_bytes: 120
   - name: big-sim
-    weight: 1
     total: 3
     tasks_per_step: 250000
 

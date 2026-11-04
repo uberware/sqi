@@ -143,10 +143,9 @@ func (o *Observer) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("observe: %w", err)
 	}
-	httpClient := hc.HTTPClient()
 	s := &sampler{
 		o:      o,
-		scrape: scraper{client: httpClient, url: o.tgt.HTTPURL(), apiKey: o.tgt.APIKey(), timeout: callTimeout},
+		scrape: scraper{c: hc, timeout: callTimeout},
 		state:  newScrapeState(invert(o.tgt.QueueIDs())),
 		js:     &jsReader{url: o.tgt.NATSURL(), files: o.tgt.TLS()},
 		gen:    newGenSampler(ctx, o.rec, o.health, lagPeriod),
@@ -154,7 +153,7 @@ func (o *Observer) Run(ctx context.Context) error {
 	if o.cfg.PostgresDSN != "" {
 		s.pg = &pgSizer{dsn: o.cfg.PostgresDSN}
 	}
-	o.setProfiler(profiler{client: httpClient, url: o.tgt.HTTPURL(), apiKey: o.tgt.APIKey(), dir: o.cfg.ProfileDir, timeout: callTimeout})
+	o.setProfiler(profiler{c: hc, dir: o.cfg.ProfileDir, timeout: callTimeout})
 	defer s.js.close()
 	if s.pg != nil {
 		defer s.pg.close()
@@ -341,12 +340,12 @@ func (o *Observer) CPUProfile(ctx context.Context, d time.Duration) error {
 		return errPprofUnavailable
 	}
 	p := o.profiler()
-	if p.client == nil {
+	if p.c == nil {
 		hc, err := target.NewClient(o.tgt)
 		if err != nil {
 			return fmt.Errorf("observe: %w", err)
 		}
-		p = profiler{client: hc.HTTPClient(), url: o.tgt.HTTPURL(), apiKey: o.tgt.APIKey(), dir: o.cfg.ProfileDir, timeout: callTimeout}
+		p = profiler{c: hc, dir: o.cfg.ProfileDir, timeout: callTimeout}
 		o.setProfiler(p)
 	}
 	err := p.cpu(ctx, time.Now(), d)

@@ -28,7 +28,7 @@ type DurableConsumer struct {
 // RestoreTargets returns what [RestoreLock.Purge] empties: every one of sqi's
 // streams, and the durable consumers a running sqi-server keeps on them.
 func RestoreTargets() (streams []string, consumers []DurableConsumer) {
-	return streamNames(), []DurableConsumer{
+	return StreamNames(), []DurableConsumer{
 		{Stream: StreamTask, Name: taskStatusConsumerName},
 		{Stream: StreamLogs, Name: taskLogsConsumerName},
 		{Stream: StreamWorker, Name: workerConsumerName},

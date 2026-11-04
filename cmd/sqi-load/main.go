@@ -56,9 +56,6 @@ type Cleaner interface {
 type realRunner struct{}
 
 func (realRunner) Run(ctx context.Context, o runner.Options) (*report.Record, error) {
-	if o.Mode == report.ModeSoak {
-		return runner.Soak(ctx, o)
-	}
 	return runner.Run(ctx, o)
 }
 

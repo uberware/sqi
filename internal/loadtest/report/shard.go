@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package runner
+package report
 
 import (
 	"fmt"
@@ -29,12 +29,12 @@ func ParseShard(s string) (ShardSpec, error) {
 	return ShardSpec{Index: i, Of: n}, nil
 }
 
-// active reports whether s is a real slice of a run of several shards.
-func (s ShardSpec) active() bool { return s.Of > 1 }
+// Active reports whether s is a real slice of a run of several shards.
+func (s ShardSpec) Active() bool { return s.Of > 1 }
 
 // String is "i/n", the record's Shard label, or "" for an unsharded run.
 func (s ShardSpec) String() string {
-	if !s.active() {
+	if !s.Active() {
 		return ""
 	}
 	return fmt.Sprintf("%d/%d", s.Index, s.Of)
@@ -43,7 +43,7 @@ func (s ShardSpec) String() string {
 // Prefix is "s<i>", which a shard puts in front of its worker IDs and job
 // names so that shards never collide on one server, or "" when not sharded.
 func (s ShardSpec) Prefix() string {
-	if !s.active() {
+	if !s.Active() {
 		return ""
 	}
 	return "s" + strconv.Itoa(s.Index)
@@ -51,7 +51,7 @@ func (s ShardSpec) Prefix() string {
 
 // share is this shard's part of n: n/Of, with the remainder going to shard 0.
 func (s ShardSpec) share(n int) int {
-	if !s.active() || n <= 0 {
+	if !s.Active() || n <= 0 {
 		return n
 	}
 	q := n / s.Of
@@ -72,7 +72,7 @@ func (s ShardSpec) share(n int) int {
 // of it.
 func (s ShardSpec) Apply(sc *scenario.Scenario) *scenario.Scenario {
 	c := sc.Clone()
-	if !s.active() {
+	if !s.Active() {
 		return c
 	}
 	for i := range c.Workers {

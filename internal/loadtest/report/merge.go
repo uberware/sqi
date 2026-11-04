@@ -41,9 +41,11 @@ func parseShards(rs []*Record) ([]shardEntry, error) {
 		}
 		i, n := 0, 1
 		if r.Shard != "" || len(rs) > 1 {
-			if _, err := fmt.Sscanf(r.Shard, "%d/%d", &i, &n); err != nil || i < 0 || n < 1 || i >= n {
-				return nil, fmt.Errorf("report: merge: shard %q is not a label like 0/2", r.Shard)
+			s, err := ParseShard(r.Shard)
+			if err != nil {
+				return nil, fmt.Errorf("report: merge: %w", err)
 			}
+			i, n = s.Index, s.Of
 		}
 		if total != 0 && n != total {
 			return nil, fmt.Errorf("report: merge: shard %q disagrees with the others about the shard count (%d)", r.Shard, total)

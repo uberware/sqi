@@ -55,7 +55,6 @@ func TestParse_ExampleScenario(t *testing.T) {
 		{"workers[1].real", s.Workers[1].Real, 2},
 		{"workers[1].count", s.Workers[1].Count, 0},
 		{"jobs[0].rate", s.Jobs[0].Rate.PerSecond, 2.0},
-		{"jobs[0].weight", s.Jobs[0].Weight, 8},
 		{"jobs[0].steps", s.Jobs[0].Steps, 2},
 		{"jobs[0].cores", s.Jobs[0].Cores, 8},
 		{"jobs[0].task.fail_rate", s.Jobs[0].Task.FailRate, 0.01},

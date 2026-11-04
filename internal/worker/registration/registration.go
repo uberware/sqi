@@ -111,10 +111,27 @@ type Registrar struct {
 	caps   capabilities.Capabilities
 	logger *slog.Logger
 
+	// host, when set by [WithHost], replaces the host's own name and address
+	// in every RegisterMsg.
+	host *hostInfo
+
 	// lastRegisteredAt records the Unix nanosecond timestamp of the most
 	// recent successful Register call. Stored atomically so the heartbeat
 	// watchdog can read it without a mutex.
 	lastRegisteredAt atomic.Int64
+}
+
+// hostInfo is the hostname and IP address a registration reports.
+type hostInfo struct{ name, ip string }
+
+// Option configures a [Registrar].
+type Option func(*Registrar)
+
+// WithHost reports hostname and ip in every registration instead of the
+// host's own (os.Hostname and the outbound interface's address). The load
+// harness's simulated workers, thousands to one host, each report their own.
+func WithHost(hostname, ip string) Option {
+	return func(r *Registrar) { r.host = &hostInfo{name: hostname, ip: ip} }
 }
 
 // New creates a Registrar over an established NATS connection. caps should
@@ -136,12 +153,13 @@ func New(
 	exprLimits fmtres.ExprLimits,
 	caps capabilities.Capabilities,
 	logger *slog.Logger,
+	opts ...Option,
 ) (*Registrar, error) {
 	js, err := jetstream.New(nc)
 	if err != nil {
 		return nil, fmt.Errorf("registration: jetstream context: %w", err)
 	}
-	return &Registrar{
+	r := &Registrar{
 		nc:         nc,
 		js:         js,
 		workerID:   workerID,
@@ -150,7 +168,11 @@ func New(
 		exprLimits: exprLimits.Normalized(),
 		caps:       caps,
 		logger:     logger,
-	}, nil
+	}
+	for _, o := range opts {
+		o(r)
+	}
+	return r, nil
 }
 
 // Register publishes a RegisterMsg to worker.register.<worker> and returns once the
@@ -160,11 +182,7 @@ func New(
 // It blocks while the SQI_WORKER stream does not exist yet, returning an error
 // once [RetryBudget] or ctx expires (see package-level documentation).
 func (r *Registrar) Register(ctx context.Context) error {
-	hostname, err := os.Hostname()
-	if err != nil {
-		hostname = "" // best-effort; server accepts empty hostname
-	}
-	ip := outboundIP()
+	hostname, ip := r.hostAddr()
 
 	// QueueID is set only when the worker is restricted to exactly one queue.
 	// A wildcard worker (no queue_ids) or a multi-queue worker leaves it empty
@@ -238,6 +256,19 @@ func (r *Registrar) Register(ctx context.Context) error {
 		slog.Int("tag_count", len(r.caps.Tags)),
 	)
 	return nil
+}
+
+// hostAddr returns the hostname and IP address to register: the ones given
+// to [WithHost], or the host's own.
+func (r *Registrar) hostAddr() (hostname, ip string) {
+	if r.host != nil {
+		return r.host.name, r.host.ip
+	}
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = "" // best-effort; server accepts empty hostname
+	}
+	return hostname, outboundIP()
 }
 
 // publishRegister publishes data to this worker's worker.register subject and

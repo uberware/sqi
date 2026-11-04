@@ -468,3 +468,30 @@ func TestRegister_SendsAStablePerProcessInstanceID(t *testing.T) {
 		t.Fatal("two Registrars (two processes) share an instance ID")
 	}
 }
+
+// TestRegister_WithHostReportsTheGivenHost pins that WithHost replaces the
+// host's own name and address in the registration.
+func TestRegister_WithHostReportsTheGivenHost(t *testing.T) {
+	url := startTestNATS(t)
+	nc := connectNATS(t, url)
+
+	reg, err := registration.New(
+		nc, "worker-host", minimalCfg(), fmtres.ExprLimits{},
+		capabilities.Capabilities{OS: "linux"}, discardLogger(),
+		registration.WithHost("sim-host-7", "10.1.2.3"),
+	)
+	if err != nil {
+		t.Fatalf("registration.New: %v", err)
+	}
+	if err := reg.Register(context.Background()); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	var got protocol.RegisterMsg
+	if err := json.Unmarshal(firstWorkerStreamMsg(t, nc), &got); err != nil {
+		t.Fatalf("unmarshal RegisterMsg: %v", err)
+	}
+	if got.Hostname != "sim-host-7" || got.IPAddress != "10.1.2.3" {
+		t.Fatalf("registered hostname %q, ip %q; want sim-host-7, 10.1.2.3", got.Hostname, got.IPAddress)
+	}
+}

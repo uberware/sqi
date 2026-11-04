@@ -52,7 +52,7 @@ func TestSelfHealth_Invalid(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			valid, reason := tt.h.Valid(tt.steadyFrom, cores)
+			valid, reason := tt.h.validOn(tt.steadyFrom, time.Time{}, cores)
 			if valid != tt.wantValid {
 				t.Fatalf("Valid = %v (%q), want %v", valid, reason, tt.wantValid)
 			}
@@ -68,9 +68,9 @@ func TestSelfHealth_Invalid(t *testing.T) {
 	}
 }
 
-// TestSelfHealth_ValidBetween: samples after the end of the measured window
-// (a teardown burst) do not count; with no end they do.
-func TestSelfHealth_ValidBetween(t *testing.T) {
+// TestSelfHealth_ValidUntil: samples after the end of the measured window (a
+// teardown burst) do not count; with no end they do.
+func TestSelfHealth_ValidUntil(t *testing.T) {
 	base := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
 	h := NewSelfHealth()
 	for i := range 5 {
@@ -78,10 +78,10 @@ func TestSelfHealth_ValidBetween(t *testing.T) {
 	}
 	h.Record(base.Add(4200*time.Millisecond), 3.9, 0.01) // after until
 	until := base.Add(4 * time.Second)
-	if valid, reason := h.ValidBetween(base, until, 4); !valid {
-		t.Errorf("ValidBetween = invalid (%s), want valid: the late sample counted", reason)
+	if valid, reason := h.validOn(base, until, 4); !valid {
+		t.Errorf("valid = false (%s), want true: the late sample counted", reason)
 	}
-	if valid, _ := h.Valid(base, 4); valid {
+	if valid, _ := h.validOn(base, time.Time{}, 4); valid {
 		t.Error("Valid with no end ignored the saturated sample")
 	}
 }
@@ -93,7 +93,7 @@ func TestSelfHealth_ConcurrentRecord(*testing.T) {
 		wg.Go(func() {
 			for j := range 100 {
 				h.Record(time.Unix(int64(i*100+j), 0), 0.1, 0.01)
-				h.Valid(time.Unix(0, 0), 4)
+				h.Valid(time.Unix(0, 0), time.Time{})
 			}
 		})
 	}
@@ -188,7 +188,7 @@ func TestGenSampler_RecordsSelfHealth(t *testing.T) {
 	if pointCount(rec, "gen.goroutines") != 2 {
 		t.Fatalf("gen.goroutines has %d points, want 2", pointCount(rec, "gen.goroutines"))
 	}
-	if valid, reason := h.Valid(t0.Add(-time.Second), 1024); !valid {
+	if valid, reason := h.validOn(t0.Add(-time.Second), time.Time{}, 1024); !valid {
 		t.Fatalf("a tiny test run on 1024 cores is invalid: %s", reason)
 	}
 }

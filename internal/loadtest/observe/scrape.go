@@ -6,9 +6,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
+	"maps"
 	"math"
-	"net/http"
 	"regexp"
 	"slices"
 	"strings"
@@ -18,6 +17,7 @@ import (
 	"github.com/prometheus/common/expfmt"
 	"github.com/prometheus/common/model"
 
+	"github.com/uberware/sqi/internal/loadtest/client"
 	"github.com/uberware/sqi/internal/loadtest/measure"
 )
 
@@ -291,7 +291,7 @@ func (s *scrapeState) recordHTTP(rec *measure.Recorder, t time.Time, fams map[st
 	cur := s.routeHistograms(fams)
 	prev := s.prevHist
 	s.prevHist = cur
-	for _, route := range sortedKeys(cur) {
+	for _, route := range slices.Sorted(maps.Keys(cur)) {
 		before, ok := prev[route]
 		if !ok {
 			// A route first seen this scrape has no baseline; its next sample does.
@@ -312,15 +312,6 @@ func (s *scrapeState) recordHTTP(rec *measure.Recorder, t time.Time, fams map[st
 	}
 	s.havePrev = true
 	s.prevAt = t
-}
-
-func sortedKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
-	return keys
 }
 
 // minus returns h less before, bucket by bucket. It reports false when any
@@ -386,29 +377,12 @@ func quantileFromBuckets(bounds, cum []float64, q float64) (float64, bool) {
 
 // scraper fetches /metrics.
 type scraper struct {
-	client  *http.Client
-	url     string
-	apiKey  string
+	c       *client.Client
 	timeout time.Duration
 }
 
-func (c scraper) fetch(ctx context.Context) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+func (s scraper) fetch(ctx context.Context) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url+"/metrics", http.NoBody)
-	if err != nil {
-		return nil, err
-	}
-	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	}
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET /metrics: %s", resp.Status)
-	}
-	return io.ReadAll(io.LimitReader(resp.Body, maxMetricsBytes))
+	return s.c.GetRaw(ctx, "/metrics", maxMetricsBytes)
 }

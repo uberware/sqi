@@ -161,9 +161,6 @@ func (v *validator) jobs() {
 }
 
 func (v *validator) jobArrival(path string, j *JobClass) {
-	if j.Weight < 1 {
-		v.failf(path+".weight", "must be at least 1")
-	}
 	if j.Total < 0 {
 		v.failf(path+".total", "must not be negative")
 	}

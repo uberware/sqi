@@ -17,9 +17,6 @@ type SubmittedJob struct {
 	Name string
 	// Class is the scenario job class.
 	Class string
-	// Weight is the class's weight. It is recorded, not used: each class is
-	// paced by its own rate or total.
-	Weight int
 	// SubmittedAt is when the request left the generator; AcceptedAt is when
 	// the 2xx answer arrived, and the zero time for a rejection.
 	SubmittedAt, AcceptedAt time.Time
@@ -62,13 +59,6 @@ func (l *JobLedger) Accepted() []SubmittedJob {
 		out[i] = l.all[idx]
 	}
 	return out
-}
-
-// All returns every attempt, accepted or not, in the order recorded.
-func (l *JobLedger) All() []SubmittedJob {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return append([]SubmittedJob(nil), l.all...)
 }
 
 // AcceptedCount returns how many jobs the server accepted.

@@ -122,3 +122,122 @@ func TestClient_RetryStopsWithContext(t *testing.T) {
 		t.Errorf("a canceled context took %s to end the retries", elapsed)
 	}
 }
+
+func TestClient_WithoutRetry(t *testing.T) {
+	defer client.SetRetryBackoff(5*time.Millisecond, 20*time.Millisecond)()
+	th := &throttler{throttled: 1, status: http.StatusTooManyRequests}
+	ts := th.start(t)
+	c := client.New(ts.URL, client.WithRetry(time.Minute)).WithoutRetry()
+	_, err := c.CreateFarm(t.Context(), "f")
+	var apiErr *client.APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusTooManyRequests {
+		t.Fatalf("CreateFarm = %v, want the 429", err)
+	}
+	if n := th.calls.Load(); n != 1 {
+		t.Errorf("server saw %d calls, want 1: the copy must not retry", n)
+	}
+}
+
+func TestClient_RetryingReads(t *testing.T) {
+	defer client.SetRetryBackoff(5*time.Millisecond, 20*time.Millisecond)()
+	type call func(context.Context, *client.Client) error
+	getJob := func(ctx context.Context, c *client.Client) error {
+		_, err := c.GetJob(ctx, "j1")
+		return err
+	}
+	createFarm := func(ctx context.Context, c *client.Client) error {
+		_, err := c.CreateFarm(ctx, "f")
+		return err
+	}
+	tests := []struct {
+		name       string
+		status     int
+		reads      bool
+		fn         call
+		wantStatus int // 0: success
+		wantCalls  int64
+	}{
+		{"a read's 500 is retried", 500, true, getJob, 0, 2},
+		{"a read's 502 is retried", 502, true, getJob, 0, 2},
+		{"a write's 500 is not", 500, true, createFarm, 500, 1},
+		{"a write's 429 still is", 429, true, createFarm, 0, 2},
+		{"without RetryingReads a read's 500 is not", 500, false, getJob, 500, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			th := &throttler{throttled: 1, status: tt.status}
+			ts := th.start(t)
+			c := client.New(ts.URL, client.WithRetry(time.Minute))
+			if tt.reads {
+				c = c.RetryingReads()
+			}
+			err := tt.fn(t.Context(), c)
+			var apiErr *client.APIError
+			switch {
+			case tt.wantStatus == 0 && err != nil:
+				t.Fatalf("err = %v, want success", err)
+			case tt.wantStatus != 0 && (!errors.As(err, &apiErr) || apiErr.Status != tt.wantStatus):
+				t.Fatalf("err = %v, want an HTTP %d", err, tt.wantStatus)
+			}
+			if n := th.calls.Load(); n != tt.wantCalls {
+				t.Errorf("server saw %d calls, want %d", n, tt.wantCalls)
+			}
+		})
+	}
+}
+
+// TestClient_RetryingReadsRetriesATransportError drops the first connection
+// without an answer: a read from a RetryingReads client tries again.
+func TestClient_RetryingReadsRetriesATransportError(t *testing.T) {
+	defer client.SetRetryBackoff(5*time.Millisecond, 20*time.Millisecond)()
+	var calls atomic.Int64
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			conn, _, err := http.NewResponseController(w).Hijack()
+			if err == nil {
+				conn.Close()
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"j1"}`)) //nolint:errcheck // test server
+	}))
+	t.Cleanup(ts.Close)
+	c := client.New(ts.URL, client.WithRetry(time.Minute)).RetryingReads()
+	if _, err := c.GetJob(t.Context(), "j1"); err != nil {
+		t.Fatalf("GetJob = %v, want success after one dropped connection", err)
+	}
+	if n := calls.Load(); n != 2 {
+		t.Errorf("server saw %d calls, want 2", n)
+	}
+}
+
+// TestClient_RetryingReadsStopsOnceTheServerIsDown pins the breaker: once one
+// read has retried a 5xx for the whole budget, later reads from the same copy
+// fail at once, while a fresh copy retries again.
+func TestClient_RetryingReadsStopsOnceTheServerIsDown(t *testing.T) {
+	defer client.SetRetryBackoff(5*time.Millisecond, 10*time.Millisecond)()
+	th := &throttler{throttled: 1 << 30, status: http.StatusInternalServerError}
+	ts := th.start(t)
+	base := client.New(ts.URL, client.WithRetry(50*time.Millisecond))
+	c := base.RetryingReads()
+
+	if _, err := c.GetJob(t.Context(), "j1"); err == nil {
+		t.Fatal("GetJob succeeded against a server that only fails")
+	}
+	if n := th.calls.Load(); n < 2 {
+		t.Fatalf("the first read was tried %d times, want it retried", n)
+	}
+	before := th.calls.Load()
+	if _, err := c.GetJob(t.Context(), "j1"); err == nil {
+		t.Fatal("second GetJob succeeded")
+	}
+	if n := th.calls.Load() - before; n != 1 {
+		t.Errorf("a read after the budget ran out was tried %d times, want 1", n)
+	}
+	before = th.calls.Load()
+	base.RetryingReads().GetJob(t.Context(), "j1") //nolint:errcheck // only the call count matters
+	if n := th.calls.Load() - before; n < 2 {
+		t.Errorf("a fresh copy tried the read %d times, want it retried", n)
+	}
+}

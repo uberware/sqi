@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/uberware/sqi/internal/loadtest/internal/sleep"
+
 	"github.com/uberware/sqi/internal/loadtest/client"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
 	"github.com/uberware/sqi/internal/loadtest/target"
@@ -42,8 +44,7 @@ var finishTimeout = 10 * time.Second
 // Each job class runs on its own: a class with a rate is paced open-loop, and
 // a class with a total is submitted as fast as the server accepts, with a
 // bounded number in flight, until total attempts have been made, rejected ones
-// included. A class's weight does not pick between classes, because every
-// class already has its own arrival process; it is recorded in the ledger only.
+// included.
 type Submitter struct {
 	c      *client.Client
 	t      target.Target
@@ -113,7 +114,7 @@ func (s *Submitter) Run(ctx context.Context) error {
 			return fmt.Errorf("driver: job class %q has neither a rate nor a total", jc.Name)
 		}
 		// The template claims the pool by the name the server knows it by.
-		jc.UsagePool = target.PoolName(s.t, jc.UsagePool)
+		jc.UsagePool = s.t.PoolName(jc.UsagePool)
 		runs = append(runs, &classRun{jc: jc, queueID: qid})
 	}
 
@@ -154,7 +155,7 @@ func (s *Submitter) runPaced(ctx context.Context, cr *classRun, fail func(error)
 	defer wg.Wait()
 	for {
 		due := pacer.Next()
-		if !sleepUntil(ctx, due) {
+		if !sleep.Until(ctx, due) {
 			return
 		}
 		select {
@@ -231,10 +232,7 @@ func (s *Submitter) submit(ctx context.Context, cr *classRun) error {
 	}
 	s.m.SubmitLatency.Record(answered.Sub(sent))
 	s.m.Status(status).Add(1)
-	if status == http.StatusTooManyRequests {
-		s.m.RateLimited.Store(true)
-	}
-	job := SubmittedJob{Name: name, Class: cr.jc.Name, Weight: cr.jc.Weight, SubmittedAt: sent, Status: status}
+	job := SubmittedJob{Name: name, Class: cr.jc.Name, SubmittedAt: sent, Status: status}
 	if err == nil {
 		job.ID = id
 		job.AcceptedAt = answered

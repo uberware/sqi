@@ -168,9 +168,8 @@ func TestWorker_RegistersAndCompletesTasks(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newFarm(t)
 			l := simworker.NewLedger()
-			// A base-spec job carries no name in its assignments and no lookup
-			// is wired, so the class can only come from the template's class
-			// argument: the fallback plan would write no lines.
+			// The class comes from the template's class argument: the
+			// fallback plan would write no lines.
 			b := simworker.ScenarioBehavior(map[string]scenario.TaskSpec{"sim": {
 				Duration: constDist(0.05), LogLines: constDist(3), LogLineBytes: 32,
 			}})

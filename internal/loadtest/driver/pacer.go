@@ -3,7 +3,6 @@
 package driver
 
 import (
-	"context"
 	"sync/atomic"
 	"time"
 )
@@ -36,21 +35,4 @@ func (p *Pacer) Next() time.Time {
 		return p.start
 	}
 	return p.start.Add(time.Duration(float64(n) / p.rate * float64(time.Second)))
-}
-
-// sleepUntil blocks until t or until ctx ends, and reports whether t was
-// reached. A t already past returns true at once while ctx is live.
-func sleepUntil(ctx context.Context, t time.Time) bool {
-	d := time.Until(t)
-	if d <= 0 {
-		return ctx.Err() == nil
-	}
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-		return true
-	case <-ctx.Done():
-		return false
-	}
 }

@@ -3,9 +3,8 @@
 package scenario
 
 import (
-	"maps"
 	"math"
-	"slices"
+	"reflect"
 	"strconv"
 	"time"
 )
@@ -16,61 +15,8 @@ func (s *Scenario) Clone() *Scenario {
 	if s == nil {
 		return nil
 	}
-	c := *s
-	c.Server.Config = cloneMap(s.Server.Config)
-	c.Farm.Queues = slices.Clone(s.Farm.Queues)
-	c.Farm.UsagePools = slices.Clone(s.Farm.UsagePools)
-	c.Workers = slices.Clone(s.Workers)
-	for i := range c.Workers {
-		c.Workers[i].Tags = maps.Clone(s.Workers[i].Tags)
-		c.Workers[i].Queues = slices.Clone(s.Workers[i].Queues)
-	}
-	c.Jobs = slices.Clone(s.Jobs)
-	c.Clients.WebSocket.Subscribe = slices.Clone(s.Clients.WebSocket.Subscribe)
-	c.Clients.RESTPollers.Endpoints = slices.Clone(s.Clients.RESTPollers.Endpoints)
-	c.Actions = slices.Clone(s.Actions)
-	for i := range c.Actions {
-		c.Actions[i].CancelJobs = cloneFraction(s.Actions[i].CancelJobs)
-		c.Actions[i].DisableWorkers = cloneFraction(s.Actions[i].DisableWorkers)
-	}
-	c.Assert = maps.Clone(s.Assert)
+	c := deepCopy(reflect.ValueOf(s).Elem()).Interface().(Scenario) //nolint:errcheck,forcetypeassert // deepCopy keeps the type
 	return &c
-}
-
-func cloneFraction(f *Fraction) *Fraction {
-	if f == nil {
-		return nil
-	}
-	c := *f
-	return &c
-}
-
-// cloneMap deep-copies a decoded YAML mapping: nested mappings and sequences
-// are copied, scalars are shared (they are immutable).
-func cloneMap(m map[string]any) map[string]any {
-	if m == nil {
-		return nil
-	}
-	out := make(map[string]any, len(m))
-	for k, v := range m {
-		out[k] = cloneValue(v)
-	}
-	return out
-}
-
-func cloneValue(v any) any {
-	switch x := v.(type) {
-	case map[string]any:
-		return cloneMap(x)
-	case []any:
-		out := make([]any, len(x))
-		for i, e := range x {
-			out[i] = cloneValue(e)
-		}
-		return out
-	default:
-		return v
-	}
 }
 
 // MarshalYAML writes a duration the way it is read, like 1m30s.

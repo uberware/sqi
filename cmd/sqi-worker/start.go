@@ -17,7 +17,6 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/health"
 	sqilog "github.com/uberware/sqi/internal/log"
 	"github.com/uberware/sqi/internal/redact"
@@ -406,8 +405,8 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	// whatever the server leases it. The server gates capacity (CPU-core fit,
 	// policy, usage pools), so the worker simply runs what it is given.
 	leaseLoop := lease.New(
-		leaseTransport{nc: nc}, // adapts *nats.Conn to lease.Transport
-		exec,                   // *executor.Executor implements lease.Dispatcher
+		lease.NATSTransport{NC: nc},
+		exec, // *executor.Executor implements lease.Dispatcher
 		leaseConfig(cfg.Worker.QueueIDs, workerID, reg.InstanceID()),
 		logger,
 	)
@@ -700,48 +699,13 @@ func withDiagnosticSink(
 	return l, nil
 }
 
-// leaseTransport adapts a raw *nats.Conn to [lease.Transport], issuing
-// core-NATS request/reply work-lease requests on the work.lease.<worker>.<queue>
-// subject. The worker connects via natsclient (which yields a *nats.Conn), so
-// this thin wrapper provides the same RequestLease behavior as
-// [bus.Client.RequestLease] without a second client connection.
-type leaseTransport struct {
-	nc *nats.Conn
-}
-
-// RequestLease sends a work-lease request for queueID on behalf of workerID and
-// waits up to timeout for the server's reply. It returns the raw reply bytes (a
-// marshaled leaseReply) for the lease loop to decode.
-func (t leaseTransport) RequestLease(ctx context.Context, workerID, queueID string, data []byte, timeout time.Duration) ([]byte, error) {
-	reqCtx, cancelReq := context.WithTimeout(ctx, timeout)
-	defer cancelReq()
-	msg, err := t.nc.RequestWithContext(reqCtx, bus.WorkLeaseSubject(workerID, queueID), data)
-	if err != nil {
-		return nil, fmt.Errorf("worker: request lease for queue %q: %w", queueID, err)
-	}
-	return msg.Data, nil
-}
-
-// leaseQueueIDs maps the worker's configured queue list to the queues it
-// requests leases on. A worker with no configured queues serves any queue; it
-// must still request on a valid subject, so it uses [bus.WildcardQueueToken]
-// (work.lease.<worker>._any) rather than an empty queue token, which routes to no
-// responder). The server selects tasks farm-wide and gates by eligibility, so a
-// queue-unaffiliated worker is matched to any queue's ready work.
-func leaseQueueIDs(configured []string) []string {
-	if len(configured) == 0 {
-		return []string{bus.WildcardQueueToken}
-	}
-	return configured
-}
-
 // leaseConfig builds the lease loop's configuration. Every lease request
 // carries the same instance ID as this process's registration, so the server
 // can tell a request from a process whose registration it has not applied
 // yet.
 func leaseConfig(queueIDs []string, workerID, instanceID string) lease.Config {
 	return lease.Config{
-		QueueIDs:   leaseQueueIDs(queueIDs),
+		QueueIDs:   lease.QueueIDs(queueIDs),
 		WorkerID:   workerID,
 		InstanceID: instanceID,
 	}

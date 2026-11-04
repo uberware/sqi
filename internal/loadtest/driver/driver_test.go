@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
@@ -46,13 +47,16 @@ func (fakeTarget) NoopCommand() scenario.Command {
 	return scenario.Command{Path: "/bin/true"}
 }
 func (fakeTarget) Close(context.Context) error { return nil }
+func (fakeTarget) PoolName(name string) string { return name }
+func (fakeTarget) PostgresDSN() string         { return "" }
+func (fakeTarget) StoreLabel() string          { return "" }
 
 func newFakeTarget(url string) fakeTarget {
 	return fakeTarget{url: url, farm: "farm-1", queues: map[string]string{"q": "queue-1", "other": "queue-2"}}
 }
 
 func oneClass(total int, rate float64) []scenario.JobClass {
-	jc := scenario.JobClass{Name: "c", Weight: 1, Total: total, Queue: "q", Steps: 1, TasksPerStep: 1}
+	jc := scenario.JobClass{Name: "c", Total: total, Queue: "q", Steps: 1, TasksPerStep: 1}
 	jc.Rate.PerSecond = rate
 	return []scenario.JobClass{jc}
 }
@@ -182,9 +186,6 @@ func TestSubmitter_CountsRejectionsByStatus(t *testing.T) {
 	if len(got) != len(want) {
 		t.Errorf("ByStatus has %v, want only %v", got, want)
 	}
-	if !m.RateLimited.Load() {
-		t.Error("RateLimited = false after a 429")
-	}
 	if n := len(js.seen()); n != 4 {
 		t.Errorf("server saw %d requests, want 4: a rejection must not be retried", n)
 	}
@@ -223,18 +224,6 @@ func TestSubmitter_ClaimsThePoolByItsServerName(t *testing.T) {
 	}
 	if sc.Jobs[0].UsagePool != "arnold" {
 		t.Errorf("the scenario's class was changed: usage_pool %q", sc.Jobs[0].UsagePool)
-	}
-}
-
-func TestSubmitter_NoRateLimitFlagWithout429(t *testing.T) {
-	js := &jobServer{statuses: []int{201, 503}}
-	srv := js.start(t)
-	s, _, m := newSubmitter(t, srv, &scenario.Scenario{Jobs: oneClass(2, 0)})
-	if err := s.Run(t.Context()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if m.RateLimited.Load() {
-		t.Error("RateLimited = true without a 429")
 	}
 }
 
@@ -410,23 +399,18 @@ func TestSubmitter_UnknownQueueIsAnError(t *testing.T) {
 func TestSubmitter_ClassesRunIndependently(t *testing.T) {
 	js := &jobServer{}
 	srv := js.start(t)
-	a := scenario.JobClass{Name: "a", Weight: 3, Total: 4, Queue: "q", Steps: 1, TasksPerStep: 1}
-	b := scenario.JobClass{Name: "b", Weight: 1, Total: 6, Queue: "other", Steps: 1, TasksPerStep: 1}
+	a := scenario.JobClass{Name: "a", Total: 4, Queue: "q", Steps: 1, TasksPerStep: 1}
+	b := scenario.JobClass{Name: "b", Total: 6, Queue: "other", Steps: 1, TasksPerStep: 1}
 	s, ledger, _ := newSubmitter(t, srv, &scenario.Scenario{Jobs: []scenario.JobClass{a, b}})
 	if err := s.Run(t.Context()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	count := map[string]int{}
-	weight := map[string]int{}
 	for _, j := range ledger.All() {
 		count[j.Class]++
-		weight[j.Class] = j.Weight
 	}
 	if count["a"] != 4 || count["b"] != 6 {
 		t.Errorf("per-class attempts = %v, want a:4 b:6", count)
-	}
-	if weight["a"] != 3 || weight["b"] != 1 {
-		t.Errorf("recorded weights = %v, want a:3 b:1", weight)
 	}
 }
 
@@ -480,8 +464,8 @@ func TestMetrics_StatusIsSafeUnderConcurrency(t *testing.T) {
 	if total != 16*500 {
 		t.Errorf("counted %d, want %d", total, 16*500)
 	}
-	if !slices.Equal(m.StatusCodes(), []int{200, 201, 202, 203}) {
-		t.Errorf("StatusCodes = %v", m.StatusCodes())
+	if codes := slices.Sorted(maps.Keys(m.StatusCounts())); !slices.Equal(codes, []int{200, 201, 202, 203}) {
+		t.Errorf("status codes = %v", codes)
 	}
 	for _, e := range append([]string{"extra"}, StandardEndpoints...) {
 		if m.REST[e] == nil {
@@ -545,6 +529,11 @@ func (f *fakeConn) subjects() []string {
 	return slices.Clone(f.subscribed)
 }
 
+// newUIClients returns UI clients for the server at url, watching farm-1.
+func newUIClients(url string, spec scenario.ClientsSpec, jobs *JobLedger, m *Metrics, opts ...UIOption) *UIClients {
+	return NewUIClients(client.New(url), newFakeTarget(url), spec, jobs, m, opts...)
+}
+
 func jobPush(t *testing.T, seq uint64, updated time.Time) ws.Envelope {
 	t.Helper()
 	p, err := json.Marshal(ws.JobSummaryPush{JobID: "j", Status: "running", UpdatedAt: updated})
@@ -577,7 +566,7 @@ func TestUIClients_NegativeLagCounted(t *testing.T) {
 	}}
 	m := NewMetrics(nil)
 	spec := scenario.ClientsSpec{WebSocket: scenario.WSSpec{Count: 1, Subscribe: []string{SubJobs}}}
-	u := NewUIClients("http://unused", "", spec, NewJobLedger(), m,
+	u := newUIClients("http://unused", spec, NewJobLedger(), m,
 		WithDial(func(context.Context, string, string) (WSStream, error) { return conn, nil }))
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
@@ -604,7 +593,7 @@ func TestUIClients_DetectsSeqGap(t *testing.T) {
 	}}
 	m := NewMetrics(nil)
 	spec := scenario.ClientsSpec{WebSocket: scenario.WSSpec{Count: 1, Subscribe: []string{SubJobs}}}
-	u := NewUIClients("http://unused", "", spec, NewJobLedger(), m,
+	u := newUIClients("http://unused", spec, NewJobLedger(), m,
 		WithDial(func(context.Context, string, string) (WSStream, error) { return conn, nil }))
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -719,6 +708,8 @@ func TestEventTime(t *testing.T) {
 		{"job summary", enc(ws.JobSummaryPush{UpdatedAt: ts}), ts},
 		{"task update", enc(ws.TaskUpdatePush{UpdatedAt: ts}), ts},
 		{"log chunk", enc(ws.TaskLogPush{At: ts}), ts},
+		{"log chunk quoting a key", enc(ws.TaskLogPush{Data: `{"at":"2020-01-01T00:00:00Z"}`, At: ts}), ts},
+		{"zero time", enc(ws.JobSummaryPush{}), time.Time{}},
 		{"worker status has none", enc(ws.WorkerStatusPush{WorkerID: "w"}), time.Time{}},
 		{"garbage", json.RawMessage(`nope`), time.Time{}},
 	}
@@ -747,7 +738,7 @@ func TestUIClients_SubscribesOwnJobAndTaskLogs(t *testing.T) {
 	ledger.Record(SubmittedJob{ID: "job-7", Status: 201})
 	m := NewMetrics(nil)
 	spec := scenario.ClientsSpec{WebSocket: scenario.WSSpec{Count: 1}} // every subscription
-	u := NewUIClients(ts.URL, "", spec, ledger, m,
+	u := newUIClients(ts.URL, spec, ledger, m,
 		WithDial(func(context.Context, string, string) (WSStream, error) { return conn, nil }))
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -778,7 +769,7 @@ func TestUIClients_ReconnectReplayDoesNotInflateDropsOrLag(t *testing.T) {
 	var dials atomic.Int32
 	m := NewMetrics(nil)
 	spec := scenario.ClientsSpec{WebSocket: scenario.WSSpec{Count: 1, Subscribe: []string{SubJobs}}}
-	u := NewUIClients("http://unused", "", spec, NewJobLedger(), m,
+	u := newUIClients("http://unused", spec, NewJobLedger(), m,
 		WithDial(func(context.Context, string, string) (WSStream, error) {
 			n := int(dials.Add(1))
 			if n > len(conns) {
@@ -818,7 +809,7 @@ func TestUIClients_RefusedDialIsCounted(t *testing.T) {
 	var dials atomic.Int32
 	m := NewMetrics(nil)
 	spec := scenario.ClientsSpec{WebSocket: scenario.WSSpec{Count: 1, Subscribe: []string{SubJobs}}}
-	u := NewUIClients("http://unused", "", spec, NewJobLedger(), m,
+	u := newUIClients("http://unused", spec, NewJobLedger(), m,
 		WithDial(func(context.Context, string, string) (WSStream, error) {
 			if dials.Add(1) == 1 {
 				return nil, errors.New("refused")
@@ -866,8 +857,7 @@ func TestUIClients_DefaultDialUsesTheRESTClientsTLS(t *testing.T) {
 
 	m := NewMetrics(nil)
 	spec := scenario.ClientsSpec{WebSocket: scenario.WSSpec{Count: 1, Subscribe: []string{SubJobs}}}
-	u := NewUIClients(ts.URL, "", spec, NewJobLedger(), m,
-		WithUIClient(client.New(ts.URL, client.WithHTTPClient(ts.Client()))))
+	u := NewUIClients(client.New(ts.URL, client.WithHTTPClient(ts.Client())), newFakeTarget(ts.URL), spec, NewJobLedger(), m)
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- u.Run(ctx) }()
@@ -885,7 +875,7 @@ func TestUIClients_UnknownNamesFailUpFront(t *testing.T) {
 		{WebSocket: scenario.WSSpec{Count: 1, Subscribe: []string{"bogus"}}},
 		{RESTPollers: scenario.PollSpec{Count: 1, Endpoints: []string{"bogus"}}},
 	} {
-		if err := NewUIClients("http://unused", "", spec, NewJobLedger(), m).Run(t.Context()); err == nil {
+		if err := newUIClients("http://unused", spec, NewJobLedger(), m).Run(t.Context()); err == nil {
 			t.Errorf("Run accepted %+v", spec)
 		}
 	}
@@ -924,7 +914,7 @@ func TestUIClients_RESTPollers(t *testing.T) {
 	spec := scenario.ClientsSpec{RESTPollers: scenario.PollSpec{
 		Count: 2, Interval: scenario.Duration{Duration: 20 * time.Millisecond},
 	}}
-	u := NewUIClients(ts.URL, "", spec, ledger, m, WithUIFarm("farm-1"))
+	u := newUIClients(ts.URL, spec, ledger, m)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)

@@ -52,24 +52,20 @@ func (h *SelfHealth) Record(t time.Time, cpuCores, lagP99 float64) {
 }
 
 // Valid reports whether the generator kept up, judged over the samples taken
-// at or after steadyFrom on a machine with the given number of cores
-// (non-positive means runtime.NumCPU). A run is invalid when CPU use exceeded 85% of cores, or
-// p99 schedule lag exceeded one second, in more than 10% of those samples. The
-// reason is empty for a valid run, and names every threshold hit, and by how
-// much, for an invalid one. With no samples to judge it reports valid and says
-// so.
-func (h *SelfHealth) Valid(steadyFrom time.Time, cores int) (valid bool, reason string) {
-	return h.ValidBetween(steadyFrom, time.Time{}, cores)
+// from steadyFrom up to and including until (a zero until has no end) on this
+// machine's cores. A run passes the end of its measured window as until, so
+// that samples taken while it tears down (a burst of work over a short last
+// interval) do not count. A run is invalid when CPU use exceeded 85% of the
+// cores, or p99 schedule lag exceeded one second, in more than 10% of those
+// samples. The reason is empty for a valid run, and names every threshold hit,
+// and by how much, for an invalid one. With no samples to judge it reports
+// valid and says so.
+func (h *SelfHealth) Valid(steadyFrom, until time.Time) (valid bool, reason string) {
+	return h.validOn(steadyFrom, until, runtime.NumCPU())
 }
 
-// ValidBetween is Valid judged over the samples taken from steadyFrom up to
-// and including until; a zero until has no end. A run passes the end of its
-// measured window as until, so that samples taken while it tears down (a
-// burst of work over a short last interval) do not count.
-func (h *SelfHealth) ValidBetween(steadyFrom, until time.Time, cores int) (valid bool, reason string) {
-	if cores <= 0 {
-		cores = runtime.NumCPU()
-	}
+// validOn is Valid on a machine with the given number of cores.
+func (h *SelfHealth) validOn(steadyFrom, until time.Time, cores int) (valid bool, reason string) {
 	h.mu.Lock()
 	var window []healthPoint
 	for _, p := range h.points {

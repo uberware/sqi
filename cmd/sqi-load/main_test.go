@@ -160,7 +160,7 @@ func TestCLI_SoakAndAttach(t *testing.T) {
 		t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 	}
 	o := f.got
-	if o.Mode != report.ModeSoak || o.Seed != 42 || o.Managed != nil || o.Attach == nil || o.Shard != (runner.ShardSpec{Index: 1, Of: 3}) {
+	if o.Mode != report.ModeSoak || o.Seed != 42 || o.Managed != nil || o.Attach == nil || o.Shard != (report.ShardSpec{Index: 1, Of: 3}) {
 		t.Fatalf("options %+v", o)
 	}
 	a := o.Attach

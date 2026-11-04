@@ -25,12 +25,11 @@ func (s *Scenario) Set(path, value string) error {
 	if err != nil {
 		return err
 	}
-	cp := reflect.New(reflect.TypeFor[Scenario]())
-	cp.Elem().Set(deepCopy(reflect.ValueOf(s).Elem()))
-	if err := setField(cp.Elem(), segs, value, path); err != nil {
+	cp := s.Clone()
+	if err := setField(reflect.ValueOf(cp).Elem(), segs, value, path); err != nil {
 		return err
 	}
-	*s = cp.Elem().Interface().(Scenario) //nolint:errcheck,forcetypeassert // cp is a *Scenario by construction
+	*s = *cp
 	return nil
 }
 

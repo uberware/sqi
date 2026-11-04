@@ -87,16 +87,3 @@ func killTree(p *os.Process, plat platformProc) error {
 	}
 	return p.Kill()
 }
-
-// processAlive reports whether a process with this id is still running.
-func processAlive(pid int) bool {
-	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.SYNCHRONIZE, false, uint32(pid)) //nolint:gosec // G115: PIDs fit in uint32
-	if err != nil {
-		// No such process is ERROR_INVALID_PARAMETER; one we may not open
-		// still exists.
-		return errors.Is(err, windows.ERROR_ACCESS_DENIED)
-	}
-	defer windows.CloseHandle(h) //nolint:errcheck // done with it either way
-	ev, err := windows.WaitForSingleObject(h, 0)
-	return err == nil && ev == uint32(windows.WAIT_TIMEOUT)
-}

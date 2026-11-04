@@ -57,9 +57,6 @@ func (s *Scenario) ApplyDefaults() {
 	}
 	for i := range s.Jobs {
 		j := &s.Jobs[i]
-		if j.Weight == 0 {
-			j.Weight = 1
-		}
 		if j.Steps == 0 {
 			j.Steps = 1
 		}

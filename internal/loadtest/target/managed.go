@@ -3,12 +3,14 @@
 package target
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"os"
 	"os/exec"
@@ -23,6 +25,7 @@ import (
 	"github.com/uberware/sqi/internal/loadtest/scenario"
 	"github.com/uberware/sqi/internal/loadtest/simworker"
 	"github.com/uberware/sqi/internal/pgdsn"
+	"github.com/uberware/sqi/internal/store"
 )
 
 const (
@@ -47,24 +50,24 @@ const (
 // ManagedConfig configures StartManaged.
 type ManagedConfig struct {
 	// RunDir holds everything of the run: server.yaml, server.log, data/,
-	// tls/, workers/ and, when the harness builds them, bin/.
+	// tls/ and workers/.
 	RunDir string
 	// RunID names the farm (load-<RunID>) and a created PostgreSQL database;
 	// "" means RunDir's base name.
 	RunID string
-	// ServerBin, WorkerBin and NoopBin are prebuilt binaries; "" builds them
-	// into RunDir/bin. WorkerBin and NoopBin are needed only for real
-	// workers.
+	// ServerBin, WorkerBin and NoopBin are the binaries the target runs.
+	// ServerBin is required; WorkerBin and NoopBin are needed only when the
+	// scenario has real workers. ResolveBinaries builds those not given.
 	ServerBin, WorkerBin, NoopBin string
-	Scenario                      *scenario.Scenario
+	// Scenario is the run's scenario. Each worker group's Real count is
+	// started as real sqi-worker processes, of which only the group's name,
+	// Queues, Tags and Heartbeat apply.
+	Scenario *scenario.Scenario
 	// PostgresDSN is the store when Scenario.Server.Store is postgres. A DSN
 	// naming the maintenance database "postgres" is administrative: the
 	// harness creates sqi_load_<RunID> through it and drops it on Close. Any
 	// other DSN names an empty database the harness uses as it is.
 	PostgresDSN string
-	// RealWorkers are the groups started as real sqi-worker processes, one
-	// per Real count. Only their name, Real, Queues, Tags and Heartbeat apply.
-	RealWorkers []scenario.WorkerGroup
 	// Logger receives the target's own progress; nil discards it.
 	Logger *slog.Logger
 
@@ -80,9 +83,8 @@ type managed struct {
 	readyTimeout time.Duration
 	stopTimeout  time.Duration
 
-	serverBin, workerBin, noopBin string
-	settings                      serverSettings
-	configPath                    string
+	settings   serverSettings
+	configPath string
 
 	pgDSN      string // the run's DSN
 	pgAdminDSN string // set when the harness created pgDB
@@ -132,13 +134,13 @@ func newManaged(cfg ManagedConfig) (*managed, error) {
 	if cfg.Scenario == nil {
 		return nil, errors.New("target: ManagedConfig has no scenario")
 	}
-	switch store := cfg.Scenario.Server.Store; {
-	case store == "postgres" && cfg.PostgresDSN == "":
+	switch st := cfg.Scenario.Server.Store; {
+	case st == "postgres" && cfg.PostgresDSN == "":
 		return nil, errors.New("target: the scenario's store is postgres but ManagedConfig.PostgresDSN is empty")
-	case store != "postgres" && cfg.PostgresDSN != "":
+	case st != "postgres" && cfg.PostgresDSN != "":
 		// A DSN given for a SQLite run would be silently ignored, and the
 		// record would describe SQLite while its reader expects PostgreSQL.
-		return nil, fmt.Errorf("target: a PostgreSQL DSN was given but the scenario's store is %q; set server.store to postgres to run on it", cmpOrSQLite(store))
+		return nil, fmt.Errorf("target: a PostgreSQL DSN was given but the scenario's store is %q; set server.store to postgres to run on it", cmp.Or(st, "sqlite"))
 	}
 	runDir, err := filepath.Abs(cfg.RunDir)
 	if err != nil {
@@ -150,9 +152,6 @@ func newManaged(cfg ManagedConfig) (*managed, error) {
 		runID:        cfg.RunID,
 		readyTimeout: orDefault(cfg.readyTimeout, defaultReadyTimeout),
 		stopTimeout:  orDefault(cfg.stopTimeout, defaultStopTimeout),
-		serverBin:    cfg.ServerBin,
-		workerBin:    cfg.WorkerBin,
-		noopBin:      cfg.NoopBin,
 		settings:     serverSettings{RunDir: runDir, Spec: cfg.Scenario.Server, BootstrapUser: bootstrapUser},
 		configPath:   filepath.Join(runDir, "server.yaml"),
 		creds:        simworker.NoCredentials{},
@@ -163,14 +162,6 @@ func newManaged(cfg ManagedConfig) (*managed, error) {
 	return m, nil
 }
 
-// cmpOrSQLite is store, or sqlite (the default) when it is empty.
-func cmpOrSQLite(store string) string {
-	if store == "" {
-		return "sqlite"
-	}
-	return store
-}
-
 // orDefault returns v, or def when v is not positive.
 func orDefault(v, def time.Duration) time.Duration {
 	if v <= 0 {
@@ -179,12 +170,23 @@ func orDefault(v, def time.Duration) time.Duration {
 	return v
 }
 
-func (m *managed) realCount() int {
-	n := 0
-	for _, g := range m.cfg.RealWorkers {
-		n += g.Real
+// ResolveBinaries fills in the binaries c does not name, building sqi-server,
+// sqi-worker and the no-op task command into dir when one is missing:
+// sqi-server always, and the other two when workers says the run starts real
+// workers.
+func (c *ManagedConfig) ResolveBinaries(ctx context.Context, dir string, workers bool) error {
+	if c.ServerBin != "" && (!workers || (c.WorkerBin != "" && c.NoopBin != "")) {
+		return nil
 	}
-	return n
+	discardIfNil(c.Logger).InfoContext(ctx, "building sqi binaries")
+	server, worker, noop, err := BuildBinaries(ctx, dir)
+	if err != nil {
+		return err
+	}
+	c.ServerBin = cmp.Or(c.ServerBin, server)
+	c.WorkerBin = cmp.Or(c.WorkerBin, worker)
+	c.NoopBin = cmp.Or(c.NoopBin, noop)
+	return nil
 }
 
 func (m *managed) start(ctx context.Context) error {
@@ -194,7 +196,7 @@ func (m *managed) start(ctx context.Context) error {
 		}
 	}
 	steps := []func(context.Context) error{
-		m.resolveBinaries,
+		m.checkBinaries,
 		m.preparePostgres,
 		m.prepareTLS,
 		m.startServer,
@@ -210,25 +212,13 @@ func (m *managed) start(ctx context.Context) error {
 	return nil
 }
 
-// resolveBinaries builds whatever binary the run needs and was not given.
-func (m *managed) resolveBinaries(ctx context.Context) error {
-	needWorkers := m.realCount() > 0
-	if m.serverBin != "" && (!needWorkers || (m.workerBin != "" && m.noopBin != "")) {
-		return nil
+// checkBinaries rejects a config missing a binary the run needs.
+func (m *managed) checkBinaries(context.Context) error {
+	if m.cfg.ServerBin == "" {
+		return errors.New("target: ManagedConfig.ServerBin is empty (ResolveBinaries builds it)")
 	}
-	m.logger.InfoContext(ctx, "building sqi binaries")
-	server, worker, noop, err := BuildBinaries(ctx, filepath.Join(m.settings.RunDir, "bin"))
-	if err != nil {
-		return err
-	}
-	if m.serverBin == "" {
-		m.serverBin = server
-	}
-	if m.workerBin == "" {
-		m.workerBin = worker
-	}
-	if m.noopBin == "" {
-		m.noopBin = noop
+	if _, procs := m.cfg.Scenario.WorkerCounts(); procs > 0 && (m.cfg.WorkerBin == "" || m.cfg.NoopBin == "") {
+		return errors.New("target: the scenario has real workers but ManagedConfig.WorkerBin or NoopBin is empty (ResolveBinaries builds them)")
 	}
 	return nil
 }
@@ -389,7 +379,7 @@ func (m *managed) serverEnv() []string {
 func (m *managed) runCLI(ctx context.Context, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, cliTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, m.serverBin, args...) //nolint:gosec // G204: the binary the harness built or was given
+	cmd := exec.CommandContext(ctx, m.cfg.ServerBin, args...) //nolint:gosec // G204: the binary the harness built or was given
 	cmd.Env = m.serverEnv()
 	cmd.Dir = m.settings.RunDir
 	var stderr strings.Builder
@@ -408,7 +398,7 @@ func (m *managed) spawnServer(ctx context.Context) error {
 	}
 	p, err := startProc(ctx, procSpec{
 		name:    "sqi-server",
-		bin:     m.serverBin,
+		bin:     m.cfg.ServerBin,
 		args:    []string{"-c", m.configPath, "serve"},
 		env:     m.serverEnv(),
 		logPath: m.serverLog(),
@@ -504,7 +494,7 @@ func (m *managed) createFarm(ctx context.Context) error {
 // startWorkers starts the real workers and waits until all are online.
 func (m *managed) startWorkers(ctx context.Context) error {
 	n := 0
-	for _, g := range m.cfg.RealWorkers {
+	for _, g := range m.cfg.Scenario.Workers {
 		for range g.Real {
 			n++
 			if err := m.startWorker(ctx, g, n); err != nil {
@@ -525,7 +515,7 @@ func (m *managed) startWorker(ctx context.Context, g scenario.WorkerGroup, n int
 	}
 	p, err := startProc(ctx, procSpec{
 		name:    "sqi-worker " + strconv.Itoa(n),
-		bin:     m.workerBin,
+		bin:     m.cfg.WorkerBin,
 		args:    []string{"start"},
 		env:     env,
 		logPath: filepath.Join(m.settings.RunDir, "workers", strconv.Itoa(n)+".log"),
@@ -598,11 +588,7 @@ func (m *managed) workerEnv(g scenario.WorkerGroup, n int) ([]string, error) {
 // capabilityTags renders tags as sqi-worker's comma-separated key=value
 // list, in a stable order.
 func capabilityTags(tags map[string]string) string {
-	keys := make([]string, 0, len(tags))
-	for k := range tags {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
+	keys := slices.Sorted(maps.Keys(tags))
 	parts := make([]string, len(keys))
 	for i, k := range keys {
 		parts[i] = k + "=" + tags[k]
@@ -626,7 +612,7 @@ func (m *managed) waitWorkersOnline(ctx context.Context, n int) error {
 		if err == nil {
 			online = 0
 			for _, w := range page.Items {
-				if w.Status == "online" {
+				if w.Status == string(store.WorkerStatusOnline) {
 					online++
 				}
 			}
@@ -660,13 +646,34 @@ func (m *managed) DataDir() string                    { return m.settings.dataDi
 func (m *managed) Credentials() simworker.Credentials { return m.creds }
 func (m *managed) TLS() simworker.TLSFiles            { return m.tlsFiles }
 
-// NoopCommand is the built no-op binary, or a placeholder when the run has
-// no real workers and was given its binaries.
+// NoopCommand is the no-op binary, or a placeholder when the run has no real
+// workers and was given no no-op binary.
 func (m *managed) NoopCommand() scenario.Command {
-	if m.noopBin == "" {
+	if m.cfg.NoopBin == "" {
 		return scenario.Command{Path: placeholderCommand}
 	}
-	return scenario.Command{Path: m.noopBin}
+	return scenario.Command{Path: m.cfg.NoopBin}
+}
+
+// PoolName is name itself: the server is the run's own, so its usage pools
+// take the scenario's names.
+func (*managed) PoolName(name string) string { return name }
+
+func (m *managed) PostgresDSN() string { return m.pgDSN }
+
+// StoreLabel is the scenario's store, which the harness configured.
+func (m *managed) StoreLabel() string { return m.settings.Spec.Store }
+
+// PIDs returns the process IDs of the processes the target is running, the
+// server first and then its real workers. Call it while the target runs:
+// Close forgets the server it stopped. It is not part of Target; the tests
+// use it to check that no process outlives its run.
+func (m *managed) PIDs() []int {
+	var pids []int
+	if pid := m.serverPID(); pid != 0 {
+		pids = append(pids, pid)
+	}
+	return append(pids, m.workerPIDs()...)
 }
 
 func (m *managed) serverPID() int {

@@ -6,13 +6,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
+
+	"github.com/uberware/sqi/internal/loadtest/client"
 )
 
 // maxProfileBytes bounds one profile the observer will read.
@@ -28,9 +28,7 @@ var errPprofUnavailable = errors.New("pprof is not available")
 
 // profiler fetches pprof profiles from the server into a directory.
 type profiler struct {
-	client  *http.Client
-	url     string
-	apiKey  string
+	c       *client.Client
 	dir     string
 	timeout time.Duration
 }
@@ -40,32 +38,14 @@ type profiler struct {
 func (p profiler) fetch(ctx context.Context, path, name string, timeout time.Duration) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.url+"/debug/pprof/"+path, http.NoBody)
+	body, err := p.c.GetRaw(ctx, "/debug/pprof/"+path, maxProfileBytes)
+	var apiErr *client.APIError
+	if errors.As(err, &apiErr) && (apiErr.Status == http.StatusNotFound ||
+		apiErr.Status == http.StatusForbidden || apiErr.Status == http.StatusUnauthorized) {
+		return "", fmt.Errorf("%w: %w", errPprofUnavailable, err)
+	}
 	if err != nil {
 		return "", err
-	}
-	if p.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+p.apiKey)
-	}
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	switch resp.StatusCode {
-	case http.StatusOK:
-	case http.StatusNotFound, http.StatusForbidden, http.StatusUnauthorized:
-		return "", fmt.Errorf("%w: GET /debug/pprof/%s: %s", errPprofUnavailable, path, resp.Status)
-	default:
-		msg, readErr := io.ReadAll(io.LimitReader(resp.Body, 512))
-		if readErr != nil {
-			msg = nil
-		}
-		return "", fmt.Errorf("GET /debug/pprof/%s: %s: %s", path, resp.Status, strings.TrimSpace(string(msg)))
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxProfileBytes))
-	if err != nil {
-		return "", fmt.Errorf("read /debug/pprof/%s: %w", path, err)
 	}
 	if err := os.MkdirAll(p.dir, 0o750); err != nil {
 		return "", err

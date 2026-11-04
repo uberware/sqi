@@ -230,7 +230,11 @@ func (w *world) job(id, status string, canceledByRun bool) {
 	w.view.jobs = append(w.view.jobs, client.Job{ID: id, Status: status})
 	w.in.Jobs = append(w.in.Jobs, driver.SubmittedJob{ID: id, Name: "shot-" + id, Class: "shot", Status: 201})
 	if canceledByRun {
-		w.in.CanceledJobs = append(w.in.CanceledJobs, id)
+		if w.in.CanceledAt == nil {
+			w.in.CanceledAt = map[string]time.Time{}
+		}
+		// Far enough ahead never to shorten a canceled attempt's window.
+		w.in.CanceledAt[id] = time.Now().Add(24 * time.Hour)
 	}
 }
 
@@ -978,19 +982,6 @@ func TestWaitDrained(t *testing.T) {
 	})
 }
 
-func TestCanceledJobs(t *testing.T) {
-	recs := []driver.ActionRecord{
-		{Kind: driver.ActionCancelJobs, JobIDs: []string{"a", "b"}},
-		{Kind: "retry_failed"},
-		{Kind: driver.ActionCancelJobs, JobIDs: []string{"c", "a"}},
-	}
-	got := verify.CanceledJobs(recs)
-	slices.Sort(got)
-	if want := []string{"a", "b", "c"}; !slices.Equal(got, want) {
-		t.Errorf("CanceledJobs = %v, want %v", got, want)
-	}
-}
-
 func TestCheck_TaskSeen(t *testing.T) {
 	w := healthyWorld()
 	var (
@@ -1063,6 +1054,40 @@ func TestCheck_LedgerOverlap(t *testing.T) {
 					}
 				}
 			}
+		})
+	}
+}
+
+// TestCheck_RealWorkerTasks pins how tasks real sqi-workers ran are judged.
+// The ledger has nothing for them, so outcomes and logs must leave them out
+// once Simulated says the worker is not the fleet's; without it they read as
+// tasks the simulator never ran.
+func TestCheck_RealWorkerTasks(t *testing.T) {
+	addRealTasks := func(w *world) {
+		w.view.tasks["j1"] = append(w.view.tasks["j1"], client.Task{ID: "tr", Status: "succeeded", AssignedWorkerID: "real-1"})
+		w.view.attempts["tr"] = []client.Attempt{attempt(w.t0, 1, "succeeded", 0, 5)}
+		w.view.attempts["tr"][0].ID, w.view.attempts["tr"][0].WorkerID = "ra1", "real-1"
+		w.view.logs["tr"] = w.chunks("tr", "ra1", 1, 10)
+		// A canceled task's row no longer names its worker; its attempt does.
+		w.view.tasks["j2"] = append(w.view.tasks["j2"], client.Task{ID: "tc", Status: "canceled"})
+		w.view.attempts["tc"] = []client.Attempt{attempt(w.t0, 1, "canceled", 0, 3)}
+		w.view.attempts["tc"][0].ID, w.view.attempts["tc"][0].WorkerID = "ra2", "real-1"
+		w.view.logs["tc"] = w.chunks("tc", "ra2", 1, 4)
+	}
+	tests := []struct {
+		name      string
+		simulated func(string) bool
+		fail      map[string]string
+	}{
+		{name: "left out when Simulated names the fleet", simulated: func(id string) bool { return id == "w0" }},
+		{name: "judged against the ledger without Simulated", fail: map[string]string{"outcomes": "tr", "logs": "attempt ra"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := healthyWorld()
+			addRealTasks(w)
+			w.in.Simulated = tt.simulated
+			assertResults(t, verify.Check(t.Context(), w.view, w.in), tt.fail)
 		})
 	}
 }

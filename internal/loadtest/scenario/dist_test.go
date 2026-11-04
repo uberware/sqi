@@ -119,3 +119,39 @@ func TestDist_UniformCoversRange(t *testing.T) {
 		t.Errorf("5000 samples cover only [%.2f, %.2f] of [10, 20]", lo, hi)
 	}
 }
+
+// TestDist_Mean checks Mean against the average of many samples, so the two
+// cannot disagree about a distribution's parameters.
+func TestDist_Mean(t *testing.T) {
+	tests := []struct {
+		name string
+		d    Dist
+	}{
+		{"zero Dist", Dist{}},
+		{"constant", Dist{Kind: DistConstant, Value: 5}},
+		{"uniform", Dist{Kind: DistUniform, Min: 3, Max: 8}},
+		{"lognormal", Dist{Kind: DistLognormal, Median: 20, P95: 90}},
+		{"lognormal without spread", Dist{Kind: DistLognormal, Median: 12, P95: 12}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRand(7)
+			const n = 200_000
+			var sum float64
+			for range n {
+				sum += tc.d.Sample(r)
+			}
+			got, want := tc.d.Mean(), sum/n
+			if math.Abs(got-want) > 0.02*math.Max(want, 1) {
+				t.Errorf("Mean = %v, the samples average %v", got, want)
+			}
+		})
+	}
+}
+
+func TestScenario_WorkerCounts(t *testing.T) {
+	s := &Scenario{Workers: []WorkerGroup{{Count: 3, Real: 1}, {Count: 4}, {Real: 2}}}
+	if sim, procs := s.WorkerCounts(); sim != 7 || procs != 3 {
+		t.Errorf("WorkerCounts = %d, %d, want 7, 3", sim, procs)
+	}
+}

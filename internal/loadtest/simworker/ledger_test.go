@@ -76,63 +76,6 @@ func TestLedger_SetOutcome(t *testing.T) {
 	}
 }
 
-func TestLedger_ConcurrentPeak(t *testing.T) {
-	at := func(s int) time.Time { return time.Unix(int64(1000+s), 0) }
-	ev := func(s int, attempt, job, kind string) simworker.Event {
-		return simworker.Event{At: at(s), AttemptID: attempt, TaskID: "task-" + attempt, JobID: job, Kind: kind}
-	}
-	tests := []struct {
-		name   string
-		events []simworker.Event
-		want   map[string]int
-	}{
-		{
-			name: "overlapping attempts in one key",
-			events: []simworker.Event{
-				ev(0, "a1", "j1", simworker.KindLeased),
-				ev(1, "a2", "j1", simworker.KindLeased),
-				ev(2, "a3", "j2", simworker.KindLeased),
-				ev(3, "a1", "j1", simworker.KindTerminal),
-				ev(4, "a4", "j1", simworker.KindLeased),
-				ev(5, "a2", "j1", simworker.KindCanceled),
-				ev(6, "a4", "j1", simworker.KindCrashed),
-			},
-			want: map[string]int{"j1": 2, "j2": 1},
-		},
-		{
-			name: "an end and a start at the same instant do not overlap",
-			events: []simworker.Event{
-				ev(0, "a1", "j1", simworker.KindLeased),
-				ev(1, "a2", "j1", simworker.KindLeased),
-				ev(1, "a1", "j1", simworker.KindTerminal),
-			},
-			want: map[string]int{"j1": 1},
-		},
-		{
-			name: "an attempt with no end stays counted",
-			events: []simworker.Event{
-				ev(0, "a1", "j1", simworker.KindLeased),
-				ev(1, "a1", "j1", simworker.KindRunning),
-				ev(2, "a2", "j1", simworker.KindLeased),
-			},
-			want: map[string]int{"j1": 2},
-		},
-		{name: "empty", events: nil, want: map[string]int{}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			l := simworker.NewLedger()
-			for _, e := range tt.events {
-				l.Record(e)
-			}
-			got := l.ConcurrentPeak(func(e simworker.Event) string { return e.JobID })
-			if !maps.Equal(got, tt.want) {
-				t.Errorf("ConcurrentPeak = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestLedger_LogLines(t *testing.T) {
 	l := simworker.NewLedger()
 	l.Record(simworker.Event{TaskID: "t1", AttemptID: "a1", Kind: simworker.KindLeased})

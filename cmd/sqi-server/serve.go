@@ -140,6 +140,7 @@ func serve(ctx context.Context, overrides config.FlagOverrides) error {
 	}
 
 	warnIgnoredStoreKeys(ctx, logger, cfg, src)
+	warnRateLimitOff(ctx, logger, cfg)
 
 	// ── Run ───────────────────────────────────────────────────────────────────
 	// Map the layered config into the scheduler's tuning parameters. Other
@@ -192,6 +193,15 @@ func ignoredStoreKeys(cfg config.Config, src config.Sources) []string {
 func warnIgnoredStoreKeys(ctx context.Context, logger *slog.Logger, cfg config.Config, src config.Sources) {
 	for _, key := range ignoredStoreKeys(cfg, src) {
 		logger.WarnContext(ctx, key+" is ignored when store.driver is postgres")
+	}
+}
+
+// warnRateLimitOff warns when auth is on and the HTTP rate limiter is off:
+// the limiter is the only capacity guard in front of /auth/login and
+// /workers/enroll (see docs/auth.md).
+func warnRateLimitOff(ctx context.Context, logger *slog.Logger, cfg config.Config) {
+	if cfg.Auth.Enabled && !cfg.HTTP.RateLimit.Enabled {
+		logger.WarnContext(ctx, "http.rate_limit.enabled is false with auth enabled: nothing limits requests to /auth/login or /workers/enroll")
 	}
 }
 

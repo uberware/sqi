@@ -17,7 +17,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/uberware/sqi/internal/loadtest/internal/sleep"
 )
 
 // requestTimeout bounds every call except SubmitJob. It is a variable so a
@@ -52,6 +55,9 @@ type Client struct {
 	// retryBudget bounds the time one call spends retrying 429 and 503
 	// answers; 0 never retries.
 	retryBudget time.Duration
+	// reads, set on a client from [Client.RetryingReads], also retries a
+	// GET's transport error or other 5xx, within the same budget.
+	reads *readRetry
 
 	mu      sync.RWMutex
 	session *http.Cookie
@@ -87,6 +93,40 @@ func WithHTTPClient(hc *http.Client) Option {
 // HTTPClient returns the client's underlying *http.Client, for dialing a
 // WebSocket that trusts the same CA.
 func (c *Client) HTTPClient() *http.Client { return c.hc }
+
+// WithoutRetry returns a client for the same server, with c's HTTP client and
+// its credentials as they are now, that never retries a throttled call (see
+// [WithRetry]).
+func (c *Client) WithoutRetry() *Client {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return &Client{base: c.base, origin: c.origin, apiKey: c.apiKey, hc: c.hc, session: c.session}
+}
+
+// readRetry is the state the reads of one [Client.RetryingReads] copy share.
+type readRetry struct {
+	// down is set once a read has retried a transport error or 5xx for the
+	// whole budget: the server is taken to be down, and later reads fail such
+	// an answer at once instead of each spending the budget again.
+	down atomic.Bool
+}
+
+// RetryingReads returns a client like c, with its credentials as they are
+// now, that within c's retry budget also retries a GET that fails with a
+// transport error or any 5xx: a read is safe to repeat, so a reader that must
+// not give up on a passing fault (the verifier) needs no retry of its own.
+// Once one read has retried such a failure for the whole budget, the copy
+// stops retrying them, so a server that is down fails the remaining reads
+// promptly; take a new copy for each pass that should start afresh. Other
+// calls keep c's policy, and a call that is never retried still is not.
+func (c *Client) RetryingReads() *Client {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return &Client{
+		base: c.base, origin: c.origin, apiKey: c.apiKey, hc: c.hc, session: c.session,
+		retryBudget: c.retryBudget, reads: &readRetry{},
+	}
+}
 
 // New returns a client for the server at baseURL (for example
 // http://127.0.0.1:8080).
@@ -213,9 +253,11 @@ type call struct {
 	query       url.Values
 	body        []byte
 	contentType string
-	noAuth      bool // send no API key and no session
-	noDeadline  bool // bounded only by the caller's context
-	noRetry     bool // never retried, whatever WithRetry says
+	noAuth      bool  // send no API key and no session
+	noDeadline  bool  // bounded only by the caller's context
+	noRetry     bool  // never retried, whatever WithRetry says
+	raw         bool  // the body is not JSON: send no Accept header
+	maxBytes    int64 // the most of the body read; 0 is maxResponseBytes
 }
 
 // reply is a 2xx response.
@@ -227,9 +269,9 @@ type reply struct {
 
 func escape(id string) string { return url.PathEscape(id) }
 
-// send performs cl, retrying a 429 or 503 answer within the client's retry
-// budget (see [WithRetry]). A non-2xx response returns its status with an
-// *APIError; a transport error returns status 0.
+// send performs cl, retrying a failure [Client.retryable] allows within the
+// client's retry budget (see [WithRetry]). A non-2xx response returns its
+// status with an *APIError; a transport error returns status 0.
 func (c *Client) send(ctx context.Context, cl call) (reply, int, error) {
 	r, status, wait, err := c.sendOnce(ctx, cl)
 	if c.retryBudget <= 0 || cl.noRetry {
@@ -237,17 +279,46 @@ func (c *Client) send(ctx context.Context, cl call) (reply, int, error) {
 	}
 	deadline := time.Now().Add(c.retryBudget)
 	backoff := retryBase
-	for err != nil && (status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable) {
+	for err != nil && c.retryable(ctx, cl, status) {
 		if wait <= 0 {
 			wait = backoff
 		}
-		if time.Until(deadline) < wait || !sleepCtx(ctx, wait) {
+		if time.Until(deadline) < wait {
+			if c.readFailure(cl, status) {
+				c.reads.down.Store(true)
+			}
+			return r, status, err
+		}
+		if !sleep.For(ctx, wait) {
 			return r, status, err
 		}
 		backoff = min(2*backoff, retryMax)
 		r, status, wait, err = c.sendOnce(ctx, cl)
 	}
 	return r, status, err
+}
+
+// retryable reports whether a call that failed with status (0 for a
+// transport error) may be tried again: a 429 or 503 always, and on a client
+// from [Client.RetryingReads] a GET's transport error, while ctx is live, or
+// any other 5xx.
+func (c *Client) retryable(ctx context.Context, cl call, status int) bool {
+	switch {
+	case status == http.StatusTooManyRequests, status == http.StatusServiceUnavailable:
+		return true
+	case !c.readFailure(cl, status) || c.reads.down.Load():
+		return false
+	default:
+		return status != 0 || ctx.Err() == nil
+	}
+}
+
+// readFailure reports whether a call that failed with status is a read only a
+// [Client.RetryingReads] copy retries: a GET's transport error (status 0) or
+// a 5xx other than 503.
+func (c *Client) readFailure(cl call, status int) bool {
+	return c.reads != nil && cl.method == http.MethodGet &&
+		(status == 0 || status >= http.StatusInternalServerError && status != http.StatusServiceUnavailable)
 }
 
 // retryAfter reads a Retry-After header: delta seconds or an HTTP date. It
@@ -264,18 +335,6 @@ func retryAfter(h http.Header) time.Duration {
 		return max(time.Until(t), 0)
 	}
 	return 0
-}
-
-// sleepCtx waits d and reports whether ctx was still live at the end.
-func sleepCtx(ctx context.Context, d time.Duration) bool {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-t.C:
-		return true
-	}
 }
 
 // sendOnce performs cl once. A non-2xx response also returns the wait its
@@ -304,7 +363,9 @@ func (c *Client) sendOnce(ctx context.Context, cl call) (rep reply, status int, 
 	if cl.contentType != "" {
 		req.Header.Set("Content-Type", cl.contentType)
 	}
-	req.Header.Set("Accept", "application/json")
+	if !cl.raw {
+		req.Header.Set("Accept", "application/json")
+	}
 	c.authorize(req, cl)
 
 	resp, err := c.hc.Do(req)
@@ -312,7 +373,11 @@ func (c *Client) sendOnce(ctx context.Context, cl call) (rep reply, status int, 
 		return reply{}, 0, 0, fmt.Errorf("%s %s: %w", cl.method, cl.path, err)
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	limit := int64(maxResponseBytes)
+	if cl.maxBytes > 0 {
+		limit = cl.maxBytes
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, limit))
 	if err != nil {
 		return reply{}, resp.StatusCode, 0, fmt.Errorf("%s %s: read body: %w", cl.method, cl.path, err)
 	}
@@ -371,6 +436,22 @@ func problemDetail(body []byte) string {
 	return s
 }
 
+// GetRaw fetches path, relative to the server root and with any query (for
+// example /metrics), and returns its body read up to maxBytes. It sends the
+// client's credentials, is bounded only by ctx and is never retried, so a
+// caller with a deadline of its own, such as a profile request, sets it. A
+// non-2xx answer is an *APIError.
+func (c *Client) GetRaw(ctx context.Context, path string, maxBytes int64) ([]byte, error) {
+	r, _, err := c.send(ctx, call{
+		method: http.MethodGet, path: path, root: true,
+		raw: true, noDeadline: true, noRetry: true, maxBytes: maxBytes,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return r.body, nil
+}
+
 // do performs cl and decodes the response body into out when out is non-nil.
 func (c *Client) do(ctx context.Context, cl call, out any) error {
 	r, _, err := c.send(ctx, cl)
@@ -400,6 +481,24 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body, out any)
 		return err
 	}
 	return c.do(ctx, cl, out)
+}
+
+// EachPage reads a paged listing: it calls fetch for successive pages of up
+// to limit items, from offset zero, and fn with each page, until a page comes
+// back empty or the pages read cover the Total the server reports. It returns
+// fetch's first error.
+func EachPage[T any](limit int, fetch func(limit, offset int) (Page[T], error), fn func(Page[T])) error {
+	for offset := 0; ; {
+		p, err := fetch(limit, offset)
+		if err != nil {
+			return err
+		}
+		fn(p)
+		offset += len(p.Items)
+		if len(p.Items) == 0 || offset >= p.Total {
+			return nil
+		}
+	}
 }
 
 func pageQuery(q url.Values, limit, offset int) url.Values {
@@ -498,21 +597,16 @@ const maxQueuePage = 1000
 // ListQueues returns every queue of a farm (GET /queues), reading page by page.
 func (c *Client) ListQueues(ctx context.Context, farmID string) ([]Queue, error) {
 	var all []Queue
-	for {
-		q := url.Values{
-			"farm_id": {farmID},
-			"limit":   {strconv.Itoa(maxQueuePage)},
-			"offset":  {strconv.Itoa(len(all))},
-		}
+	err := EachPage(maxQueuePage, func(limit, offset int) (Page[Queue], error) {
 		var p Page[Queue]
-		if err := c.do(ctx, call{method: http.MethodGet, path: "/queues", query: q}, &p); err != nil {
-			return nil, err
-		}
-		all = append(all, p.Items...)
-		if len(p.Items) == 0 || len(all) >= p.Total {
-			return all, nil
-		}
+		q := pageQuery(url.Values{"farm_id": {farmID}}, limit, offset)
+		err := c.do(ctx, call{method: http.MethodGet, path: "/queues", query: q}, &p)
+		return p, err
+	}, func(p Page[Queue]) { all = append(all, p.Items...) })
+	if err != nil {
+		return nil, err
 	}
+	return all, nil
 }
 
 // DeleteQueue deletes a queue (DELETE /queues/{id}).

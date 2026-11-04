@@ -193,7 +193,9 @@ Things to know before attaching:
   out for its own calls: setting up the farm, enrolling simulated workers,
   the timed actions, the invariant checks and the teardown all retry a 429 or
   503 answer, waiting as the server's `Retry-After` says, for up to two
-  minutes per call, so setup and teardown are slower but complete. Job
+  minutes per call, so setup and teardown are slower but complete. The
+  invariant checks also retry a read that fails with a connection error or
+  any other 5xx, within the same two minutes. Job
   submissions are never retried: a 429 is counted, raising the `rate-limited`
   and `submissions-rejected` findings, because the throttled submissions are
   load the scenario offered and the server did not take. REST pollers count
@@ -229,7 +231,7 @@ way, and the server refuses to delete a pool a job still claims. It takes
 | `--duration D` | scenario's | Override `duration`. |
 | `--seed N` | derived from the run ID | Seeds every random choice. The seed is printed, so a run is reproducible. |
 | `--out DIR` | `runs` | Where run directories go. |
-| `--run-id ID` | `<UTC yyyymmdd-hhmmss>-<4 hex>` | Shards of one run share it. |
+| `--run-id ID` | `<UTC yyyymmdd-hhmmss>-<4 hex>` | Up to 64 letters, digits and dashes, not ending in `-s<digits>` (a shard's farm ends that way). Shards of one run share it. |
 | `--shard i/n` | | Run one slice of the scenario; see [Sharding](#sharding-across-machines). |
 | `--server-bin`, `--worker-bin` | built from source | Binaries of a managed run. Swapping `--server-bin` between two runs is how two server revisions are compared. |
 | `--sample D` | `5s` | Observation sample interval. |
@@ -398,7 +400,6 @@ Each class submits on its own schedule. Set exactly one of `rate` and `total`.
 | Field | Default | Meaning |
 |---|---|---|
 | `name` | none | Class name; unique. |
-| `weight` | `1` | Recorded, and must be at least 1, but **unused**: each class runs on its own `rate` or `total`. |
 | `rate` | none | Submissions per second, paced open loop: a late submission is recorded as lag, never silently skipped. |
 | `total` | `0` | Submit this many jobs as fast as the server accepts them, with a bounded number in flight. |
 | `queue` | the first queue | The queue the jobs go to. |
@@ -660,7 +661,7 @@ Neither changes the exit status.
 | `wal-never-shrank` | warn | On SQLite, the WAL grew over at least 5 minutes without once shrinking. |
 | `stream-at-cap` | warn | The `SQI_LOGS` stream reached 95% of `nats.embedded.max_store_mb`, so the broker evicts the oldest log chunks from here on. |
 | `generator-saturated` | warn | The generator saturated but the run was accepted with `--allow-saturated`. |
-| `server-fell-behind` | warn | The server did not keep up with the load offered: the drain took more than 25% of the scenario's `duration`, or more tasks were open when submissions stopped than the server finished in the last 10% of the measured window. The run's latencies and slopes then describe a backlog; size the scenario down or the server up. **Known issue:** this rule currently misfires. It fires on healthy runs (including `smoke`, whose drain took 22 ms) because its open-task count at the end of submissions is wrong, and it is being corrected. Do not read it as a finding until then. |
+| `server-fell-behind` | warn | The server did not keep up with the load offered: the drain took more than 25% of the scenario's `duration`, or more tasks were open when submissions stopped than the server finished in the last 10% of the measured window. The run's latencies and slopes then describe a backlog; size the scenario down or the server up. |
 
 The two growth rules need at least 10 samples spanning at least 30 minutes
 after warmup, so only soaks and long runs raise them. Every statistic uses
@@ -671,8 +672,6 @@ only samples up to the end of the run.
 The report lists every measurement it could not make, with the reason, rather
 than leaving it out. Common entries:
 
-- `lease_reply`: the simulated workers do not time their lease requests, so
-  this histogram is always empty.
 - `ws_lag` on Windows: the wall clock steps by about 0.5 ms in Go on a typical
   Windows host, so a push delivered within one step reads 0 (shown as the
   histogram's 1 microsecond floor). WSL and Linux resolve it (about 243
@@ -680,6 +679,9 @@ than leaving it out. Common entries:
 - JetStream stream sizes when broker authentication is on; disk sizes against
   an attached server without `--data-dir`.
 - `invariants`, when the run ended early.
+- `lease_reply`, always: a lease request parks on the server until work
+  appears, so its reply time measures how long the worker sat idle, not how
+  fast the server answered. `first_lease` measures dispatch.
 - `cpu_profile`, when the steady window is too short for a profile.
 - `terminal_ingest`, when no task the server lists as succeeded or failed
   matched a terminal status a simulated worker published (only real workers

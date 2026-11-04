@@ -11,7 +11,6 @@ package simworker
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"maps"
 	"math/rand/v2"
@@ -27,8 +26,10 @@ import (
 
 // minLineTick is the shortest wait between two rounds of log lines. A plan
 // with lines closer together than this emits them in batches, so a heavy log
-// plan costs one timer per tick rather than one per line.
-const minLineTick = 10 * time.Millisecond
+// plan costs one timer per tick rather than one per line. It stays well under
+// the log streamer's 500 ms flush interval, so batching here does not change
+// when lines reach the server by much.
+const minLineTick = 100 * time.Millisecond
 
 // simulatedFailure is the failure reason of a task whose plan fails.
 const simulatedFailure = "simulated failure"
@@ -261,8 +262,10 @@ func (d *Dispatcher) emit(t *simTask) int {
 		var wait <-chan time.Time
 		switch {
 		case emitted < p.LogLines:
+			// The tick never carries the task past its duration, where the
+			// last line is due.
 			next := lineTime(p, emitted+1)
-			timer.Reset(max(next-elapsed, minLineTick))
+			timer.Reset(min(max(next-elapsed, minLineTick), p.Duration-elapsed))
 			wait = timer.C
 		case elapsed < p.Duration:
 			timer.Reset(p.Duration - elapsed)
@@ -334,10 +337,8 @@ func (d *Dispatcher) finish(t *simTask, reason endReason, lines int) {
 		d.st.Terminal(ctx, m, "", "canceled", nil, "", nil, now)
 		d.record(m, KindCanceled, "", lines, now)
 	case endTimedOut:
-		// The reason matches the real executor's, so the server and any reader
-		// of a failure reason see the same text.
 		code := timeoutExitCode
-		msg := fmt.Sprintf("execution timeout after %s", timeoutOf(m))
+		msg := protocol.TimeoutReason(timeoutOf(m))
 		d.st.Terminal(ctx, m, "", OutcomeFailed, &code, msg, nil, now)
 		d.record(m, KindTerminal, OutcomeFailed, lines, now)
 	case endShutdown:

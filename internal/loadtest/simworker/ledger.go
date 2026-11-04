@@ -3,9 +3,9 @@
 package simworker
 
 import (
-	"cmp"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -48,6 +48,8 @@ type Event struct {
 type Ledger struct {
 	mu     sync.Mutex
 	events []Event
+	// logLines is the sum of every recorded event's LogLines.
+	logLines atomic.Int64
 }
 
 // NewLedger returns an empty ledger.
@@ -61,27 +63,25 @@ func (l *Ledger) Record(e Event) {
 	l.mu.Lock()
 	l.events = append(l.events, e)
 	l.mu.Unlock()
+	l.logLines.Add(int64(e.LogLines))
 }
 
 // Events returns a copy of every event in record order.
-func (l *Ledger) Events() []Event {
+func (l *Ledger) Events() []Event { return l.EventsSince(0) }
+
+// EventsSince returns a copy of the events recorded after the first n, in
+// record order. The ledger only grows, so a reader that has seen n events
+// reads only the new ones.
+func (l *Ledger) EventsSince(n int) []Event {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return slices.Clone(l.events)
+	return slices.Clone(l.events[min(n, len(l.events)):])
 }
 
 // LogLines returns how many log lines the simulated workers emitted in the
 // attempts that have ended so far (by a terminal, canceled or crashed event):
 // the sum of those events' LogLines.
-func (l *Ledger) LogLines() int64 {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	var n int64
-	for i := range l.events {
-		n += int64(l.events[i].LogLines)
-	}
-	return n
-}
+func (l *Ledger) LogLines() int64 { return l.logLines.Load() }
 
 // SetOutcome rewrites the outcome of the last terminal event recorded for
 // taskID and reports whether there was one. It is a test hook: it lets a test
@@ -96,54 +96,4 @@ func (l *Ledger) SetOutcome(taskID, outcome string) bool {
 		}
 	}
 	return false
-}
-
-// ConcurrentPeak returns, per key, the most attempts that were in flight at
-// once. An attempt is in flight from its leased event to its terminal,
-// canceled or crashed event (or to the end of the ledger when it has none), and
-// is counted under key(its leased event). An attempt that ends at the instant
-// another starts does not overlap it.
-//
-// The window is the worker's view, which sits inside the server's: the server
-// commits the lease before the worker records leased, and a dispatcher stamps
-// an attempt's end event with a time taken before it publishes the terminal
-// status, so before the server can free the slot. A peak above a
-// server-enforced cap is therefore a real violation, not an artifact of
-// measuring. That holds for events the dispatcher records; an event recorded
-// with At left zero is stamped when Record runs.
-func (l *Ledger) ConcurrentPeak(key func(Event) string) map[string]int {
-	type edge struct {
-		at    time.Time
-		key   string
-		delta int
-	}
-	starts := map[string]Event{}
-	ended := map[string]bool{}
-	var edges []edge
-	for _, e := range l.Events() {
-		switch e.Kind {
-		case KindLeased:
-			if _, dup := starts[e.AttemptID]; !dup {
-				starts[e.AttemptID] = e
-				edges = append(edges, edge{at: e.At, key: key(e), delta: 1})
-			}
-		case KindTerminal, KindCanceled, KindCrashed:
-			s, ok := starts[e.AttemptID]
-			if ok && !ended[e.AttemptID] {
-				ended[e.AttemptID] = true
-				edges = append(edges, edge{at: e.At, key: key(s), delta: -1})
-			}
-		}
-	}
-	// Ends sort before starts at the same instant.
-	slices.SortStableFunc(edges, func(a, b edge) int {
-		return cmp.Or(a.at.Compare(b.at), cmp.Compare(a.delta, b.delta))
-	})
-	cur := map[string]int{}
-	peak := map[string]int{}
-	for _, e := range edges {
-		cur[e.key] += e.delta
-		peak[e.key] = max(peak[e.key], cur[e.key])
-	}
-	return peak
 }

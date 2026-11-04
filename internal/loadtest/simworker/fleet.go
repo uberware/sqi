@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/uberware/sqi/internal/loadtest/internal/sleep"
+
 	"github.com/uberware/sqi/internal/loadtest/scenario"
 )
 
@@ -74,6 +76,7 @@ type Fleet struct {
 
 	members []*member
 	groups  []groupRange
+	ids     map[string]bool // every member's worker ID
 
 	started  atomic.Bool
 	stopOnce sync.Once
@@ -123,8 +126,15 @@ func NewFleet(cfg FleetConfig, b Behavior, l *Ledger, logger *slog.Logger) *Flee
 			f.members = append(f.members, &member{group: gi, spec: f.specFor(g, n, idx)})
 		}
 	}
+	f.ids = make(map[string]bool, len(f.members))
+	for _, m := range f.members {
+		f.ids[m.spec.ID] = true
+	}
 	return f
 }
+
+// Simulates reports whether workerID is one of the fleet's workers.
+func (f *Fleet) Simulates(workerID string) bool { return f.ids[workerID] }
 
 func (f *Fleet) specFor(g scenario.WorkerGroup, n, global int) WorkerSpec {
 	g.Queues = f.resolveQueues(g.Queues)
@@ -250,7 +260,7 @@ func (f *Fleet) pace(ctx context.Context, gi int, t0 time.Time, sem chan struct{
 	for k := range g.count {
 		if rate > 0 {
 			due := t0.Add(time.Duration(float64(k) / rate * float64(time.Second)))
-			if !sleepUntil(ctx, due) {
+			if !sleep.Until(ctx, due) {
 				return
 			}
 		}
@@ -267,15 +277,6 @@ func (f *Fleet) pace(ctx context.Context, gi int, t0 time.Time, sem chan struct{
 			}
 		})
 	}
-}
-
-// sleepUntil waits for t and reports whether ctx was still live.
-func sleepUntil(ctx context.Context, t time.Time) bool {
-	d := time.Until(t)
-	if d <= 0 {
-		return ctx.Err() == nil
-	}
-	return sleepCtx(ctx, d)
 }
 
 func (f *Fleet) startMember(ctx context.Context, m *member) error {

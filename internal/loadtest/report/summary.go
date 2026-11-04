@@ -132,7 +132,7 @@ func summaryThroughput(b *strings.Builder, r *Record) {
 	if steady {
 		fmt.Fprintf(b, "Rates are steady-window rates: each counter's growth from the end of warmup to the end of submissions, divided by that window (%s). ", fmtDur(r.steadyWindow()))
 	} else {
-		fmt.Fprintf(b, "Rates are run averages: each counter's count from the start to the end of submissions (%s), warmup included, because no counters were snapshotted at the end of warmup. ", fmtDur(r.windowEnd().Sub(r.Started)))
+		fmt.Fprintf(b, "Rates are run averages: each counter's count from the start to the end of submissions (%s), warmup included, because no counters were snapshotted at the end of warmup. ", fmtDur(r.MeasuredEnd().Sub(r.Started)))
 	}
 	b.WriteString("Total is the count at the end of the run, drain included; In window is the part the rate is taken over.\n\n")
 	if len(r.Counters) == 0 {

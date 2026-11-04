@@ -40,10 +40,3 @@ func killTree(p *os.Process, _ platformProc) error {
 	}
 	return err
 }
-
-// processAlive reports whether a process with this id exists. A process the
-// harness has reaped no longer does.
-func processAlive(pid int) bool {
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
-}

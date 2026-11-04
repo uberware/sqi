@@ -41,6 +41,9 @@ func (fakeTarget) Credentials() simworker.Credentials { return simworker.NoCrede
 func (fakeTarget) TLS() simworker.TLSFiles            { return simworker.TLSFiles{} }
 func (fakeTarget) NoopCommand() scenario.Command      { return scenario.Command{} }
 func (fakeTarget) Close(context.Context) error        { return nil }
+func (fakeTarget) PoolName(name string) string        { return name }
+func (fakeTarget) PostgresDSN() string                { return "" }
+func (fakeTarget) StoreLabel() string                 { return "" }
 
 func capture(t *testing.T) []byte {
 	t.Helper()

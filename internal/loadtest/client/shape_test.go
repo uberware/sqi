@@ -116,7 +116,7 @@ func TestClient_RequestShapes(t *testing.T) {
 				}
 				return err
 			},
-			wantMethod: "GET", wantPath: "/api/v1/queues", wantQuery: "farm_id=f1&limit=1000&offset=0",
+			wantMethod: "GET", wantPath: "/api/v1/queues", wantQuery: "farm_id=f1&limit=1000",
 		},
 		{
 			name: "DeleteQueue", replyCode: 204,

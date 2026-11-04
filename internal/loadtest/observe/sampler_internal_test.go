@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/uberware/sqi/internal/loadtest/client"
 	"github.com/uberware/sqi/internal/loadtest/measure"
 	"github.com/uberware/sqi/internal/loadtest/target"
 )
@@ -57,7 +58,7 @@ func TestSampler_ReadsGeneratorBeforeSlowCalls(t *testing.T) {
 	}
 	s := &sampler{
 		o:      o,
-		scrape: scraper{client: srv.Client(), url: srv.URL, timeout: 5 * time.Second},
+		scrape: scraper{c: client.New(srv.URL, client.WithHTTPClient(srv.Client())), timeout: 5 * time.Second},
 		state:  newScrapeState(nil),
 		js:     &jsReader{url: "nats://" + dead},
 		gen:    gen,

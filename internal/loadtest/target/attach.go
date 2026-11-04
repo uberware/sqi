@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/uberware/sqi/internal/loadtest/internal/sleep"
+
 	"github.com/uberware/sqi/internal/loadtest/client"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
 	"github.com/uberware/sqi/internal/loadtest/simworker"
@@ -50,6 +52,9 @@ type AttachConfig struct {
 	// for disk measurements; "" otherwise.
 	DataDir string
 	TLS     simworker.TLSFiles
+	// PostgresDSN is the server's PostgreSQL database when the harness can
+	// reach it, for measuring its size; "" otherwise.
+	PostgresDSN string
 	// NoAuth says the server's broker authentication is off.
 	NoAuth bool
 	// Keep leaves the run's farm on the server after Close.
@@ -149,7 +154,22 @@ func (a *attached) TLS() simworker.TLSFiles            { return a.cfg.TLS }
 // PoolName is the server's name of the scenario's usage pool name: the run's
 // own namespaced pool.
 func (a *attached) PoolName(name string) string {
+	if name == "" {
+		return ""
+	}
 	return RunPoolName(cmp.Or(a.cfg.PoolRunID, a.cfg.RunID), name)
+}
+
+func (a *attached) PostgresDSN() string { return a.cfg.PostgresDSN }
+
+// StoreLabel says what the harness knows of an attached server's store, which
+// is its own whatever the scenario says: a DSN for its database is the one
+// sign of which it is.
+func (a *attached) StoreLabel() string {
+	if a.cfg.PostgresDSN != "" {
+		return "postgres (attached)"
+	}
+	return "attached (unknown)"
 }
 
 // NoopCommand is a placeholder: an attached run has no real workers, and
@@ -236,7 +256,7 @@ func (a *attached) deleteJobs(ctx context.Context) error {
 		}
 		// A listing that has not caught up with the deletes yet would
 		// otherwise be re-read, and re-deleted, as fast as the server answers.
-		if !sleepCtx(ctx, removalPause) {
+		if !sleep.For(ctx, removalPause) {
 			return fmt.Errorf("delete jobs: %w", ctx.Err())
 		}
 	}
@@ -298,20 +318,8 @@ func (a *attached) removeWorkers(ctx context.Context) error {
 		if busy > 0 {
 			pause = removalRetry
 		}
-		if !sleepCtx(ctx, pause) {
+		if !sleep.For(ctx, pause) {
 			return fmt.Errorf("remove workers: %w", ctx.Err())
 		}
-	}
-}
-
-// sleepCtx waits d and reports whether ctx was still live at the end.
-func sleepCtx(ctx context.Context, d time.Duration) bool {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-t.C:
-		return true
 	}
 }

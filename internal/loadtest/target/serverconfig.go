@@ -4,6 +4,7 @@ package target
 
 import (
 	"fmt"
+	"maps"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -140,12 +141,7 @@ var ownedKeys = []struct{ path, use string }{
 // owns, or that sqi-server would ignore: its loader skips unknown keys, so a
 // misspelled one would silently leave the server at a default.
 func checkOverride(m map[string]any, prefix string) error {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
-	for _, k := range keys {
+	for _, k := range slices.Sorted(maps.Keys(m)) {
 		path := k
 		if prefix != "" {
 			path = prefix + "." + k

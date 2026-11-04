@@ -40,8 +40,6 @@ const (
 	// HistFirstLease is the time from a job's submission to its first task's
 	// lease; driver.Metrics.FirstLease. A sweep's knee reads its p95.
 	HistFirstLease = "first_lease"
-	// HistLeaseReply is a simulated worker's lease request to reply time.
-	HistLeaseReply = "lease_reply"
 	// HistTaskE2E is one simulated attempt from its lease reaching the worker
 	// to the worker publishing its terminal status. It holds the scenario's
 	// sampled task duration, so it describes the input as much as the server.
@@ -188,9 +186,9 @@ func (r *Record) warmup() time.Duration {
 // scenario's warmup.
 func (r *Record) SteadyFrom() time.Time { return r.Started.Add(r.warmup()) }
 
-// windowEnd is the end of the measured window: WindowEnd, or Ended when the
+// MeasuredEnd is the end of the measured window: WindowEnd, or Ended when the
 // record has none.
-func (r *Record) windowEnd() time.Time {
+func (r *Record) MeasuredEnd() time.Time {
 	if r.WindowEnd.IsZero() {
 		return r.Ended
 	}
@@ -219,7 +217,7 @@ func (r *Record) Drain() time.Duration {
 // counting it would dilute every rate by however long the jobs took to
 // finish after the generator stopped offering work.
 func (r *Record) steadyWindow() time.Duration {
-	return max(r.windowEnd().Sub(r.Started)-r.warmup(), 0)
+	return max(r.MeasuredEnd().Sub(r.Started)-r.warmup(), 0)
 }
 
 // hasSteadyBasis reports whether rates can be measured over the steady window:
@@ -241,7 +239,7 @@ func (r *Record) inWindow(k string, steady bool) int64 {
 // hasSteadyBasis), else the average from the start to the end of
 // submissions. ok is false when the window is empty.
 func (r *Record) rate(k string, steady bool) (perSecond float64, ok bool) {
-	w := r.windowEnd().Sub(r.Started)
+	w := r.MeasuredEnd().Sub(r.Started)
 	if steady {
 		w = r.steadyWindow()
 	}

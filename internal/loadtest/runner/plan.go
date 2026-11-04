@@ -4,7 +4,6 @@ package runner
 
 import (
 	"maps"
-	"math"
 	"slices"
 	"time"
 
@@ -23,8 +22,6 @@ const (
 	// convergeMargin is added to the server's heartbeat timeout and the
 	// slowest worker heartbeat for the online worker count to settle.
 	convergeMargin = 10 * time.Second
-	// lognormalP95Z is the standard normal's 95th percentile.
-	lognormalP95Z = 1.6449
 )
 
 // serverSettings lists the scenario's server settings that differ from a
@@ -53,7 +50,7 @@ func serverSettings(sc *scenario.Scenario) []string {
 func poolNames(t target.Target, sc *scenario.Scenario) map[string]string {
 	out := make(map[string]string, len(sc.Farm.UsagePools))
 	for _, p := range sc.Farm.UsagePools {
-		out[p.Name] = target.PoolName(t, p.Name)
+		out[p.Name] = t.PoolName(p.Name)
 	}
 	return out
 }
@@ -65,24 +62,6 @@ func taskSpecs(sc *scenario.Scenario) map[string]scenario.TaskSpec {
 		out[j.Name] = j.Task
 	}
 	return out
-}
-
-// simulatedCount is the size of the simulated fleet.
-func simulatedCount(sc *scenario.Scenario) int {
-	n := 0
-	for _, g := range sc.Workers {
-		n += g.Count
-	}
-	return n
-}
-
-// realCount is how many real sqi-worker processes the scenario runs.
-func realCount(sc *scenario.Scenario) int {
-	n := 0
-	for _, g := range sc.Workers {
-		n += g.Real
-	}
-	return n
 }
 
 // sampleShare is the share of tasks the logs and attempts checks read: all of
@@ -127,7 +106,10 @@ func convergeWithin(sc *scenario.Scenario) time.Duration {
 // log bytes than the server's log stream keeps (its max_store_mb), in which
 // case the broker evicting a task's oldest whole chunks is not a defect. The
 // plan is the jobs the classes submit (total, or rate over the duration),
-// times their tasks, times the mean log lines per task and the line size.
+// times their tasks, times the mean log lines per task and the line size. The
+// cap is read from the scenario's server config, so against an attached
+// server, whose own cap the harness cannot see, a lower cap there turns an
+// expected eviction into a logs violation.
 func logOverflowExpected(sc *scenario.Scenario) bool {
 	var planned float64
 	for _, j := range sc.Jobs {
@@ -136,21 +118,7 @@ func logOverflowExpected(sc *scenario.Scenario) bool {
 			jobs = j.Rate.PerSecond * sc.Duration.Seconds()
 		}
 		tasks := jobs * float64(max(j.Steps, 1)*j.TasksPerStep)
-		planned += tasks * distMean(j.Task.LogLines) * float64(j.Task.LogLineBytes)
+		planned += tasks * j.Task.LogLines.Mean() * float64(j.Task.LogLineBytes)
 	}
 	return planned > report.StreamCapMB(sc)*(1<<20)
-}
-
-// distMean is the mean of a distribution.
-func distMean(d scenario.Dist) float64 {
-	switch d.Kind {
-	case scenario.DistConstant:
-		return d.Value
-	case scenario.DistUniform:
-		return (d.Min + d.Max) / 2
-	case scenario.DistLognormal:
-		sigma := math.Log(d.P95/d.Median) / lognormalP95Z
-		return d.Median * math.Exp(sigma*sigma/2)
-	}
-	return 0
 }

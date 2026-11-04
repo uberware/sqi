@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/uberware/sqi/internal/loadtest/report"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
@@ -39,7 +38,9 @@ func Sweep(ctx context.Context, base Options, path string, values []string) ([]r
 	if err != nil {
 		return nil, err
 	}
-	if err := sweepBinaries(ctx, &base); err != nil {
+	// Built once for every point, workers included: a point's value can give
+	// it real workers.
+	if err := base.Managed.ResolveBinaries(ctx, buildDir(base.OutDir), true); err != nil {
 		return nil, err
 	}
 	logger := base.Logger
@@ -56,6 +57,7 @@ func Sweep(ctx context.Context, base Options, path string, values []string) ([]r
 		m := *base.Managed
 		o.Managed = &m
 		o.Scenario = scs[i]
+		o.validated = validation{sc: scs[i], kind: scenario.TargetManaged} // by SweepScenarios
 		o.Mode = report.ModeSweepPoint
 		o.RunID = base.RunID + "-p" + strconv.Itoa(i)
 		o.Dir = filepath.Join(dir, strconv.Itoa(i)+"-"+safeName(v))
@@ -75,13 +77,11 @@ func Sweep(ctx context.Context, base Options, path string, values []string) ([]r
 	return points, errors.Join(errs...)
 }
 
-// sweepPlan checks base and resolves the scenario of every point.
+// sweepPlan normalizes base and resolves the scenario of every point.
 func sweepPlan(base *Options, path string, values []string) ([]*scenario.Scenario, error) {
 	switch {
 	case base.Attach != nil:
 		return nil, errors.New("runner: a sweep runs a fresh managed server per point, so it cannot attach to one")
-	case base.Scenario == nil:
-		return nil, errors.New("runner: no scenario")
 	case path == "" || len(values) == 0:
 		return nil, errors.New("runner: a sweep needs a parameter path and at least one value")
 	}
@@ -90,17 +90,8 @@ func sweepPlan(base *Options, path string, values []string) ([]*scenario.Scenari
 		m = *base.Managed
 	}
 	base.Managed = &m // the caller's config is not changed
-	if base.RunID == "" {
-		base.RunID = NewRunID(time.Now())
-	}
-	if err := ValidRunID(base.RunID); err != nil {
-		return nil, fmt.Errorf("runner: %w", err)
-	}
-	if base.OutDir == "" {
-		base.OutDir = DefaultOutDir
-	}
-	if base.Seed == 0 {
-		base.Seed = SeedFor(base.RunID)
+	if err := base.Normalize(); err != nil {
+		return nil, err
 	}
 	return SweepScenarios(base.Scenario, path, values)
 }
@@ -122,21 +113,6 @@ func SweepScenarios(base *scenario.Scenario, path string, values []string) ([]*s
 		scs[i] = sc
 	}
 	return scs, nil
-}
-
-// sweepBinaries builds the binaries once for every point when base was not
-// given them.
-func sweepBinaries(ctx context.Context, base *Options) error {
-	m := base.Managed
-	if m.ServerBin != "" && m.WorkerBin != "" && m.NoopBin != "" {
-		return nil
-	}
-	server, worker, noop, err := target.BuildBinaries(ctx, filepath.Join(base.OutDir, ".bin"))
-	if err != nil {
-		return err
-	}
-	m.ServerBin, m.WorkerBin, m.NoopBin = cmpOr(m.ServerBin, server), cmpOr(m.WorkerBin, worker), cmpOr(m.NoopBin, noop)
-	return nil
 }
 
 // safeName makes a sweep value usable in a directory name on every platform:

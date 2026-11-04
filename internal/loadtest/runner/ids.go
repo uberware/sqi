@@ -19,8 +19,14 @@ const maxRunIDLen = 64
 // runIDPattern is what a run ID may contain. A run ID ends up in a directory
 // name (so no colon or separator, for Windows), in worker IDs that are NATS
 // subject tokens (so no dot, space, '*' or '>'), and in a PostgreSQL
-// database name.
-var runIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+// database name. No '_' either: usage pool names map '-' to '_', so allowing
+// both would give runs a-b and a_b the same pools.
+var runIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*$`)
+
+// shardSuffixPattern is the ending a shard adds to its run ID for its farm,
+// -s<index>. A run ID may not end that way, or cleaning up run x would also
+// remove run x-s1.
+var shardSuffixPattern = regexp.MustCompile(`-s\d+$`)
 
 // NewRunID returns a run ID for a run starting at now: the UTC time as
 // yyyymmdd-hhmmss and four random hex digits, like 20261104-170507-3fa2.
@@ -35,8 +41,8 @@ func NewRunID(now time.Time) string {
 }
 
 // ValidRunID reports why id cannot name a run, or nil when it can: it must
-// be 1 to 64 letters, digits, dashes and underscores, starting with a letter
-// or digit.
+// be 1 to 64 letters, digits and dashes, starting with a letter or digit, and
+// not end in -s<digits>, which shards use.
 func ValidRunID(id string) error {
 	switch {
 	case id == "":
@@ -44,7 +50,9 @@ func ValidRunID(id string) error {
 	case len(id) > maxRunIDLen:
 		return fmt.Errorf("run ID %q is longer than %d characters", id, maxRunIDLen)
 	case !runIDPattern.MatchString(id):
-		return fmt.Errorf("run ID %q may hold only letters, digits, '-' and '_', starting with a letter or digit", id)
+		return fmt.Errorf("run ID %q may hold only letters, digits and '-', starting with a letter or digit", id)
+	case shardSuffixPattern.MatchString(id):
+		return fmt.Errorf("run ID %q ends in -s<digits>, which names a shard of a run", id)
 	}
 	return nil
 }

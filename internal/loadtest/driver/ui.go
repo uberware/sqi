@@ -3,14 +3,16 @@
 package driver
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"math/rand/v2"
 	"net/http"
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/uberware/sqi/internal/loadtest/internal/sleep"
 
 	"github.com/uberware/sqi/internal/loadtest/client"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
@@ -19,9 +21,10 @@ import (
 )
 
 // Subscriptions a WebSocket client can ask for in scenario.WSSpec.Subscribe.
+// SubJobs and SubWorkers are subscribed as the hub subjects of the same name.
 const (
-	SubJobs        = "jobs"
-	SubWorkers     = "workers"
+	SubJobs        = ws.SubjectJobs
+	SubWorkers     = ws.SubjectWorkers
 	SubOwnJobTasks = "own-job-tasks"
 	SubOwnTaskLogs = "own-task-logs"
 )
@@ -84,37 +87,10 @@ type UIClients struct {
 	rng    *syncRand
 	// retryDelay is the wait before a lost connection is redialed.
 	retryDelay time.Duration
-	// initErr is why an option failed; Run returns it.
-	initErr error
 }
 
 // UIOption configures NewUIClients.
 type UIOption func(*UIClients)
-
-// WithUIClient sets the REST client the pollers and the own-job lookups use,
-// for example one that trusts the target's CA. By default one is built from
-// the base URL and API key.
-func WithUIClient(c *client.Client) UIOption { return func(u *UIClients) { u.c = c } }
-
-// WithUITarget points the clients at t: its REST client (carrying the API key
-// and trusting its CA, which the WebSocket dial reuses) and its farm. Use it
-// rather than WithUIClient and WithUIFarm when a target is at hand, so TLS is
-// never forgotten.
-func WithUITarget(t target.Target) UIOption {
-	return func(u *UIClients) {
-		// No retries: a poller's throttled call is an error it counts.
-		c, err := target.NewClient(t, client.WithRetry(0))
-		if err != nil {
-			u.initErr = err
-			return
-		}
-		u.c = c
-		u.farmID = t.FarmID()
-	}
-}
-
-// WithUIFarm limits job, task and worker lists to one farm.
-func WithUIFarm(farmID string) UIOption { return func(u *UIClients) { u.farmID = farmID } }
 
 // WithDial replaces the WebSocket dialer (tests).
 func WithDial(d DialFunc) UIOption { return func(u *UIClients) { u.dial = d } }
@@ -122,22 +98,20 @@ func WithDial(d DialFunc) UIOption { return func(u *UIClients) { u.dial = d } }
 // WithUIRand seeds the clients' random choices; without it a fixed seed is used.
 func WithUIRand(r *rand.Rand) UIOption { return func(u *UIClients) { u.rng = newSyncRand(r) } }
 
-// NewUIClients returns UI clients for the server at baseURL.
-func NewUIClients(baseURL, apiKey string, spec scenario.ClientsSpec, jobs *JobLedger, m *Metrics, opts ...UIOption) *UIClients {
+// NewUIClients returns UI clients watching t's farm. The pollers and the
+// own-job lookups call through c without its retries, because a poller's
+// throttled call is an error it counts; the WebSocket dial reuses c's HTTP
+// client, so it trusts the same CA.
+func NewUIClients(c *client.Client, t target.Target, spec scenario.ClientsSpec, jobs *JobLedger, m *Metrics, opts ...UIOption) *UIClients {
 	u := &UIClients{
-		baseURL: baseURL, apiKey: apiKey, spec: spec, jobs: jobs, m: m,
+		baseURL: t.HTTPURL(), apiKey: t.APIKey(), spec: spec, jobs: jobs, m: m,
+		c:          c.WithoutRetry(),
+		farmID:     t.FarmID(),
 		rng:        newSyncRand(nil),
 		retryDelay: reconnectDelay,
 	}
 	for _, o := range opts {
 		o(u)
-	}
-	if u.c == nil {
-		var copts []client.Option
-		if apiKey != "" {
-			copts = append(copts, client.WithAPIKey(apiKey))
-		}
-		u.c = client.New(baseURL, copts...)
 	}
 	if u.dial == nil {
 		u.dial = dialWith(u.c.HTTPClient())
@@ -148,9 +122,6 @@ func NewUIClients(baseURL, apiKey string, spec scenario.ClientsSpec, jobs *JobLe
 // Run starts every client and returns once ctx has ended and all of them have
 // stopped. It fails up front only for an unknown subscription or endpoint.
 func (u *UIClients) Run(ctx context.Context) error {
-	if u.initErr != nil {
-		return u.initErr
-	}
 	subs, err := chooseNames("subscription", u.spec.WebSocket.Subscribe, standardSubscriptions)
 	if err != nil {
 		return err
@@ -188,11 +159,6 @@ func chooseNames(kind string, names, known []string) ([]string, error) {
 		}
 	}
 	return names, nil
-}
-
-// sleepFor waits d or until ctx ends, and reports whether d elapsed.
-func sleepFor(ctx context.Context, d time.Duration) bool {
-	return sleepUntil(ctx, time.Now().Add(d))
 }
 
 // ── WebSocket clients ────────────────────────────────────────────────────────
@@ -348,7 +314,7 @@ func (u *UIClients) wsClient(ctx context.Context, rng *rand.Rand, subs []string,
 		}
 		u.m.WSErrors.Add(1)
 		_ = err // the count is the record; a per-error log line would drown the run at 1,000 clients
-		if !sleepFor(ctx, u.retryDelay) {
+		if !sleep.For(ctx, u.retryDelay) {
 			return
 		}
 	}
@@ -489,6 +455,9 @@ func (u *UIClients) observe(env ws.Envelope, st *wsState) {
 	if delta := st.seqs.observe(env.Subject, env.Seq); delta != 0 {
 		u.m.WSDrops.Add(delta)
 	}
+	if env.Subject == ws.SubjectWorkers {
+		return // worker status pushes carry no event time
+	}
 	if ts := eventTime(env.Payload); !ts.IsZero() && !ts.Before(st.cutoff(env.Subject)) {
 		if lag := time.Since(ts); lag >= 0 {
 			u.m.WSLag.Record(lag)
@@ -506,21 +475,35 @@ func safeInt64(v uint64) int64 {
 	return int64(v)
 }
 
-// eventTime returns the server-side time a push payload carries: updated_at
-// for job and task updates, at for log chunks, zero for a payload with
-// neither (worker status).
-func eventTime(payload json.RawMessage) time.Time {
-	var p struct {
-		UpdatedAt time.Time `json:"updated_at"`
-		At        time.Time `json:"at"`
+// Keys of the event time in push payloads: updated_at in job and task
+// updates, at in log chunks.
+var (
+	updatedAtKey = []byte(`"updated_at":"`)
+	atKey        = []byte(`"at":"`)
+)
+
+// eventTime returns the server-side time a push payload carries, or zero for a
+// payload with none. It finds the key in the payload's bytes rather than
+// decoding it a second time: a quote inside a JSON string is escaped, so a
+// key's bytes cannot occur inside a value, and the hub writes the time last,
+// so the search from the end finds it at once even after a long log chunk.
+func eventTime(payload []byte) time.Time {
+	for _, key := range [][]byte{atKey, updatedAtKey} {
+		i := bytes.LastIndex(payload, key)
+		if i < 0 {
+			continue
+		}
+		v, _, ok := bytes.Cut(payload[i+len(key):], []byte(`"`))
+		if !ok {
+			return time.Time{}
+		}
+		ts, err := time.Parse(time.RFC3339Nano, string(v))
+		if err != nil {
+			return time.Time{}
+		}
+		return ts
 	}
-	if err := json.Unmarshal(payload, &p); err != nil {
-		return time.Time{}
-	}
-	if !p.UpdatedAt.IsZero() {
-		return p.UpdatedAt
-	}
-	return p.At
+	return time.Time{}
 }
 
 // ── REST pollers ─────────────────────────────────────────────────────────────
@@ -534,7 +517,7 @@ func (u *UIClients) poller(ctx context.Context, rng *rand.Rand, endpoints []stri
 	if interval <= 0 {
 		return
 	}
-	if !sleepFor(ctx, time.Duration(rng.Float64()*float64(interval))) {
+	if !sleep.For(ctx, time.Duration(rng.Float64()*float64(interval))) {
 		return
 	}
 	tick := time.NewTicker(interval)

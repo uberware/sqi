@@ -305,3 +305,30 @@ func TestServerConfig_DefaultsKeepTheRateLimit(t *testing.T) {
 		t.Error("DisableRateLimit = true at defaults, want the limiter on")
 	}
 }
+
+// TestWarnRateLimitOff pins that turning the limiter off is warned about only
+// when auth is on, where it guards the login and enrollment routes.
+func TestWarnRateLimitOff(t *testing.T) {
+	tests := []struct {
+		name            string
+		auth, rateLimit bool
+		wantWarn        bool
+	}{
+		{"auth on, limiter off", true, false, true},
+		{"auth on, limiter on", true, true, false},
+		{"auth off, limiter off", false, false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			cfg := config.DefaultConfig()
+			cfg.Auth.Enabled = tt.auth
+			cfg.HTTP.RateLimit.Enabled = tt.rateLimit
+			warnRateLimitOff(context.Background(), logger, cfg)
+			if got := strings.Contains(buf.String(), "level=WARN"); got != tt.wantWarn {
+				t.Errorf("warned = %v, want %v: %q", got, tt.wantWarn, buf.String())
+			}
+		})
+	}
+}

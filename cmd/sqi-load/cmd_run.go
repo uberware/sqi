@@ -142,57 +142,44 @@ func (a *app) runOnce(ctx context.Context, o runner.Options, allowSaturated bool
 }
 
 // options turns the flags into runner options, rejecting what does not go
-// together.
+// together, and normalizes them: the run ID, seed and directory are known
+// before the run starts.
 func (f *runFlags) options(cmd *cobra.Command, mode string) (runner.Options, error) {
-	fs := cmd.Flags()
 	attach := f.server != ""
-	if err := f.checkTarget(fs, attach); err != nil {
+	if err := f.checkTarget(cmd.Flags(), attach); err != nil {
 		return runner.Options{}, err
 	}
-	kind := scenario.TargetManaged
-	if attach {
-		kind = scenario.TargetAttach
-	}
-	sc, err := resolveScenario(f.scenario, f.sets, f.duration, kind)
+	sc, err := loadScenario(f.scenario, f.sets, f.duration)
 	if err != nil {
 		return runner.Options{}, err
 	}
-	runID := f.runID
-	if runID == "" {
-		runID = runner.NewRunID(time.Now())
-	}
-	if err := runner.ValidRunID(runID); err != nil {
-		return runner.Options{}, err
-	}
-	seed := f.seed
-	if !fs.Changed("seed") || seed == 0 {
-		seed = runner.SeedFor(runID)
-	}
-	var shard runner.ShardSpec
+	var shard report.ShardSpec
 	if f.shard != "" {
-		if shard, err = runner.ParseShard(f.shard); err != nil {
+		if shard, err = report.ParseShard(f.shard); err != nil {
 			return runner.Options{}, err
 		}
 	}
 	o := runner.Options{
-		Scenario: sc, Mode: mode, RunID: runID, OutDir: f.out, Seed: seed,
+		Scenario: sc, Mode: mode, RunID: f.runID, OutDir: f.out, Seed: f.seed,
 		Sample: f.sample, ProfileEvery: f.profileEvery, Shard: shard, AllowSaturated: f.allowSaturated,
 		Flags: recordedFlags(cmd),
 	}
 	if attach {
 		o.Attach = &target.AttachConfig{
 			HTTPURL: f.server, NATSURL: f.nats, APIKey: f.apiKey, JoinToken: f.joinToken,
-			NoAuth: f.noAuth, DataDir: f.dataDir, Keep: f.keep,
+			NoAuth: f.noAuth, DataDir: f.dataDir, PostgresDSN: f.postgresDSN, Keep: f.keep,
 		}
 		if f.caFile != "" {
 			o.Attach.TLS = simworker.TLSFiles{Enabled: "true", CAFile: f.caFile}
 		}
-		o.PostgresDSN = f.postgresDSN
 	} else {
 		if f.postgresDSN != "" && sc.Server.Store != "postgres" {
 			return runner.Options{}, fmt.Errorf("--postgres-dsn needs --set server.store=postgres: scenario %s runs on %s, which would ignore the DSN", sc.Name, sc.Server.Store)
 		}
 		o.Managed = &target.ManagedConfig{ServerBin: f.serverBin, WorkerBin: f.workerBin, PostgresDSN: f.postgresDSN}
+	}
+	if err := o.Normalize(); err != nil {
+		return runner.Options{}, err
 	}
 	return o, nil
 }
@@ -223,10 +210,10 @@ func (f *runFlags) checkTarget(fs *pflag.FlagSet, attach bool) error {
 	return nil
 }
 
-// resolveScenario loads a built-in or a scenario file, applies the --set
-// overrides and then --duration, fills the defaults and validates the result
-// for the target.
-func resolveScenario(name string, sets []string, duration string, kind scenario.TargetKind) (*scenario.Scenario, error) {
+// loadScenario loads a built-in or a scenario file, applies the --set
+// overrides and then --duration, and fills the defaults. Normalizing the run
+// options validates the result for the target.
+func loadScenario(name string, sets []string, duration string) (*scenario.Scenario, error) {
 	if name == "" {
 		return nil, errors.New("--scenario is required (built-ins: " + strings.Join(scenario.BuiltinNames(), ", ") + ")")
 	}
@@ -266,9 +253,6 @@ func resolveScenario(name string, sets []string, duration string, kind scenario.
 		}
 	}
 	sc.ApplyDefaults()
-	if err := sc.Validate(kind); err != nil {
-		return nil, fmt.Errorf("scenario %s: %w", sc.Name, err)
-	}
 	return sc, nil
 }
 

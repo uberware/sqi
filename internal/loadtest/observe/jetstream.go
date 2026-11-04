@@ -4,10 +4,8 @@ package observe
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -16,11 +14,11 @@ import (
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/loadtest/measure"
 	"github.com/uberware/sqi/internal/loadtest/simworker"
-	"github.com/uberware/sqi/internal/tlsutil"
+	"github.com/uberware/sqi/internal/worker/natsclient"
 )
 
 // jsStreams are the streams the server provisions.
-var jsStreams = []string{bus.StreamTask, bus.StreamLogs, bus.StreamWorker, bus.StreamCancel}
+var jsStreams = bus.StreamNames()
 
 // jsConnectTimeout bounds one dial of the broker.
 const jsConnectTimeout = 3 * time.Second
@@ -51,17 +49,16 @@ func (r *jsReader) connect() error {
 	if r.nc != nil && !r.nc.IsClosed() {
 		return nil
 	}
-	opts := []nats.Option{nats.Name("sqi-load-observe"), nats.Timeout(jsConnectTimeout), nats.MaxReconnects(-1)}
-	cfg, err := r.tlsConfig()
+	// TLS follows sqi-worker's rule, so the observer reaches the broker the
+	// way the simulated workers do.
+	tlsOpts, err := natsclient.TLSOptions(r.files.NATSConfig())
 	if err != nil {
 		return err
 	}
-	if cfg != nil {
-		opts = append(opts, nats.Secure(cfg))
-	}
+	opts := append([]nats.Option{nats.Name("sqi-load-observe"), nats.Timeout(jsConnectTimeout), nats.MaxReconnects(-1)}, tlsOpts...)
 	nc, err := nats.Connect(r.url, opts...)
 	if err != nil {
-		if errors.Is(err, nats.ErrAuthorization) || strings.Contains(strings.ToLower(err.Error()), "authorization") {
+		if natsclient.IsAuthRefusal(err) {
 			r.refused = fmt.Errorf("%w: %w", errBrokerAuth, err)
 			return r.refused
 		}
@@ -74,19 +71,6 @@ func (r *jsReader) connect() error {
 	}
 	r.nc, r.js = nc, js
 	return nil
-}
-
-func (r *jsReader) tlsConfig() (*tls.Config, error) {
-	f := r.files
-	if f.CAFile == "" && f.CertFile == "" && f.Enabled != "true" && !f.InsecureSkipVerify {
-		return nil, nil
-	}
-	cfg, err := tlsutil.ClientConfig(f.CAFile, f.CertFile, f.KeyFile)
-	if err != nil {
-		return nil, fmt.Errorf("broker TLS: %w", err)
-	}
-	cfg.InsecureSkipVerify = f.InsecureSkipVerify
-	return cfg, nil
 }
 
 func (r *jsReader) close() {
@@ -114,10 +98,9 @@ func (r *jsReader) sampleStream(ctx context.Context, rec *measure.Recorder, t ti
 	if err != nil {
 		return fmt.Errorf("stream %s: %w", name, err)
 	}
-	info, err := stream.Info(ctx)
-	if err != nil {
-		return fmt.Errorf("stream %s info: %w", name, err)
-	}
+	// Stream already fetched the stream's info; a second Info would repeat
+	// the request.
+	info := stream.CachedInfo()
 	rec.Add(labeled("js.bytes", name), "bytes", t, float64(info.State.Bytes))
 	rec.Add(labeled("js.msgs", name), "msgs", t, float64(info.State.Msgs))
 

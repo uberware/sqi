@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/uberware/sqi/internal/loadtest/internal/sleep"
+
 	"github.com/uberware/sqi/internal/loadtest/client"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
 	"github.com/uberware/sqi/internal/loadtest/simworker"
@@ -122,7 +124,7 @@ func (a *Actions) Run(ctx context.Context, start time.Time) error {
 	var wg sync.WaitGroup
 	for i, act := range a.acts {
 		wg.Go(func() {
-			if sleepUntil(ctx, start.Add(act.At.Duration)) {
+			if sleep.Until(ctx, start.Add(act.At.Duration)) {
 				a.fire(ctx, act, rngs[i])
 			}
 		})
@@ -197,18 +199,14 @@ func (a *Actions) retryFailed(ctx context.Context, act scenario.Action) {
 // error it returns what it had read so far with the error.
 func (a *Actions) jobStatuses(ctx context.Context) (map[string]string, error) {
 	out := map[string]string{}
-	for offset := 0; ; offset += actionPageSize {
-		page, err := a.c.ListJobs(ctx, a.t.FarmID(), actionPageSize, offset)
-		if err != nil {
-			return out, err
-		}
-		for _, j := range page.Items {
+	err := client.EachPage(actionPageSize, func(limit, offset int) (client.Page[client.Job], error) {
+		return a.c.ListJobs(ctx, a.t.FarmID(), limit, offset)
+	}, func(p client.Page[client.Job]) {
+		for _, j := range p.Items {
 			out[j.ID] = j.Status
 		}
-		if len(page.Items) < actionPageSize || offset+len(page.Items) >= page.Total {
-			return out, nil
-		}
-	}
+	})
+	return out, err
 }
 
 func (a *Actions) pauseQueue(ctx context.Context, act scenario.Action) {
@@ -282,20 +280,13 @@ func (a *Actions) disableWorkers(ctx context.Context, act scenario.Action, rng *
 // choice does not depend on the server's listing order.
 func (a *Actions) workerIDs(ctx context.Context) ([]string, error) {
 	var ids []string
-	var listErr error
-	for offset := 0; ; offset += actionPageSize {
-		page, err := a.c.ListWorkers(ctx, a.t.FarmID(), actionPageSize, offset)
-		if err != nil {
-			listErr = err
-			break
-		}
-		for _, w := range page.Items {
+	listErr := client.EachPage(actionPageSize, func(limit, offset int) (client.Page[client.Worker], error) {
+		return a.c.ListWorkers(ctx, a.t.FarmID(), limit, offset)
+	}, func(p client.Page[client.Worker]) {
+		for _, w := range p.Items {
 			ids = append(ids, w.ID)
 		}
-		if len(page.Items) < actionPageSize || offset+len(page.Items) >= page.Total {
-			break
-		}
-	}
+	})
 	if a.fleet != nil {
 		mine := map[string]bool{}
 		for _, s := range a.fleet.Specs() {

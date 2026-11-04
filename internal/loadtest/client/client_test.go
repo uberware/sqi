@@ -3,6 +3,7 @@
 package client_test
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -205,5 +206,35 @@ func TestClient_BearerHeader(t *testing.T) {
 				t.Fatal("server saw no request")
 			}
 		})
+	}
+}
+
+func TestClient_GetRaw(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Header.Get("Authorization") != "Bearer k":
+			w.WriteHeader(http.StatusUnauthorized)
+		case r.Header.Get("Accept") != "":
+			w.WriteHeader(http.StatusNotAcceptable)
+		case r.URL.Path == "/metrics" && r.URL.Query().Get("x") == "1":
+			_, _ = w.Write([]byte("0123456789")) //nolint:errcheck // test handler
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+	c := client.New(ts.URL, client.WithAPIKey("k"))
+
+	body, err := c.GetRaw(t.Context(), "/metrics?x=1", 4)
+	if err != nil {
+		t.Fatalf("GetRaw: %v", err)
+	}
+	if string(body) != "0123" {
+		t.Errorf("body = %q, want the first 4 bytes", body)
+	}
+	_, err = c.GetRaw(t.Context(), "/missing", 0)
+	var apiErr *client.APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusNotFound {
+		t.Errorf("GetRaw of a missing path = %v, want a 404 APIError", err)
 	}
 }

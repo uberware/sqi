@@ -285,7 +285,7 @@ func fellBehind(r *Record, _ time.Time) *Finding {
 	}
 	if b := r.Backlog; b != nil && b.Open > b.TailCompleted {
 		why = append(why, fmt.Sprintf("%d tasks were still open when submissions stopped, more than the %d it finished in the window's last %s",
-			b.Open, b.TailCompleted, fmtDur(r.windowEnd().Sub(b.TailFrom).Round(time.Second))))
+			b.Open, b.TailCompleted, fmtDur(r.MeasuredEnd().Sub(b.TailFrom).Round(time.Second))))
 	}
 	if len(why) == 0 {
 		return nil

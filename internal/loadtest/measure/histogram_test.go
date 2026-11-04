@@ -276,37 +276,3 @@ func TestHistogram_ConcurrentRecord(t *testing.T) {
 	}
 	within(t, "p50", h.Quantile(0.5), 40000*time.Microsecond, 0.01)
 }
-
-func TestCounter(t *testing.T) {
-	var c measure.Counter
-	var wg sync.WaitGroup
-	for range 8 {
-		wg.Go(func() {
-			for range 1000 {
-				c.Add(1)
-			}
-		})
-	}
-	wg.Wait()
-	c.Add(-3)
-	if got := c.Load(); got != 7997 {
-		t.Errorf("Load = %d, want 7997", got)
-	}
-	b, err := json.Marshal(&c)
-	if err != nil || string(b) != "7997" {
-		t.Fatalf("marshal = %s, %v", b, err)
-	}
-	m := map[string]*measure.Counter{"a": {}}
-	m["a"].Add(5)
-	b, err = json.Marshal(m)
-	if err != nil || string(b) != `{"a":5}` {
-		t.Fatalf("map marshal = %s, %v", b, err)
-	}
-	var back measure.Counter
-	if err := json.Unmarshal([]byte("42"), &back); err != nil || back.Load() != 42 {
-		t.Errorf("unmarshal: %d, %v", back.Load(), err)
-	}
-	if err := json.Unmarshal([]byte(`"x"`), &back); err == nil {
-		t.Error("accepted a string")
-	}
-}

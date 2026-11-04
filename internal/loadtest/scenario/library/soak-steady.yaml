@@ -30,7 +30,6 @@ workers:
 
 jobs:
   - name: shot-render
-    weight: 4
     rate: 0.11/s
     queue: render
     steps: 2
@@ -41,7 +40,6 @@ jobs:
       fail_rate: 0.005
       log_lines: {median: 100, p95: 500}
   - name: comp
-    weight: 1
     rate: 0.06/s
     queue: comp
     steps: 1

@@ -80,6 +80,16 @@ type WorkerGroup struct {
 	Churn     Churn             `yaml:"churn"`
 }
 
+// WorkerCounts is the size of the simulated fleet and the number of real
+// sqi-worker processes, each summed over the worker groups.
+func (s *Scenario) WorkerCounts() (simulated, processes int) {
+	for _, g := range s.Workers {
+		simulated += g.Count
+		processes += g.Real
+	}
+	return simulated, processes
+}
+
 // Churn is how often a worker in the group crashes or loses its connection.
 type Churn struct {
 	CrashPerHour      float64  `yaml:"crash_per_hour"`
@@ -90,7 +100,6 @@ type Churn struct {
 // JobClass is a family of jobs submitted at a rate, or in a burst of Total.
 type JobClass struct {
 	Name         string   `yaml:"name"`
-	Weight       int      `yaml:"weight"`
 	Rate         Rate     `yaml:"rate"`
 	Total        int      `yaml:"total"`
 	Queue        string   `yaml:"queue"`
@@ -106,7 +115,7 @@ type JobClass struct {
 // TaskSpec describes how a simulated worker runs the tasks of a job class.
 type TaskSpec struct {
 	Duration     Dist    `yaml:"duration"`
-	FailRate     float64 `yaml:"fail_rate"` // the first attempt fails
+	FailRate     float64 `yaml:"fail_rate"` // each attempt fails with this probability
 	HangRate     float64 `yaml:"hang_rate"` // runs until canceled or timed out
 	LogLines     Dist    `yaml:"log_lines"`
 	LogLineBytes int     `yaml:"log_line_bytes"`

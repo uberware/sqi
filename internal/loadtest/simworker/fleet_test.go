@@ -323,3 +323,20 @@ func TestJoinTokenCredentials(t *testing.T) {
 		}
 	})
 }
+
+func TestFleet_Simulates(t *testing.T) {
+	fl := simworker.NewFleet(simworker.FleetConfig{
+		RunID: "r", FarmID: "f", NATSURL: "nats://127.0.0.1:1", IDPrefix: "p",
+		Groups: []scenario.WorkerGroup{fleetGroup("a", 2, 1)}, Seed: 1,
+	}, idleBehavior(), simworker.NewLedger(), slog.New(slog.DiscardHandler))
+	for _, s := range fl.Specs() {
+		if !fl.Simulates(s.ID) {
+			t.Errorf("Simulates(%q) = false for a fleet member", s.ID)
+		}
+	}
+	for _, id := range []string{"", "p-a-3", "6f1c2d3e-real-worker"} {
+		if fl.Simulates(id) {
+			t.Errorf("Simulates(%q) = true, want false", id)
+		}
+	}
+}

@@ -24,6 +24,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/uberware/sqi/internal/loadtest/internal/sleep"
+
 	"github.com/uberware/sqi/internal/loadtest/client"
 	"github.com/uberware/sqi/internal/loadtest/driver"
 	"github.com/uberware/sqi/internal/loadtest/measure"
@@ -72,8 +74,8 @@ const (
 
 // Options configures a run.
 type Options struct {
-	// Scenario is the resolved scenario: overrides applied, defaults filled
-	// and validated (Run validates it again for its target).
+	// Scenario is the resolved scenario, overrides applied and defaults
+	// filled. Normalize validates it for the target.
 	Scenario *scenario.Scenario
 	// Mode is report.ModeLoad (the default), report.ModeSoak or
 	// report.ModeSweepPoint.
@@ -91,21 +93,18 @@ type Options struct {
 	// DefaultSoakProfileEvery in a soak and start and end only otherwise; a
 	// negative value means start and end only.
 	Sample, ProfileEvery time.Duration
-	// Shard runs one slice of the scenario (see ShardSpec.Apply).
-	Shard ShardSpec
+	// Shard runs one slice of the scenario (see report.ShardSpec.Apply).
+	Shard report.ShardSpec
 	// AllowSaturated keeps an INVALID run (a saturated generator) from
 	// counting against it: the record stays marked INVALID and gains a
 	// warning finding. The CLI uses it to choose its exit status.
 	AllowSaturated bool
 	// Managed starts the run's own sqi-server; Attach drives one somebody
 	// else runs. Neither set means a managed target with defaults. Run fills
-	// RunDir, RunID, Scenario, RealWorkers and Logger itself; an empty
-	// ServerBin builds the binaries into OutDir/.bin.
+	// RunDir, RunID, Scenario and Logger itself, and builds the binaries
+	// Managed does not name into OutDir/.bin.
 	Managed *target.ManagedConfig
 	Attach  *target.AttachConfig
-	// PostgresDSN, for an attached target, is the server's database, so the
-	// observer can measure its size. A managed target supplies its own.
-	PostgresDSN string
 	// Flags is the command line, for the record's environment.
 	Flags  []string
 	Logger *slog.Logger
@@ -118,6 +117,102 @@ type Options struct {
 	// OnTarget, when set, is called with the target once it has started. A
 	// test hook.
 	OnTarget func(target.Target)
+
+	// validated is the scenario and target kind Normalize last validated.
+	validated validation
+}
+
+// validation is a scenario validated for a kind of target.
+type validation struct {
+	sc   *scenario.Scenario
+	kind scenario.TargetKind
+}
+
+// Normalize fills in what the options leave to Run (a managed target when
+// neither Managed nor Attach is set, the mode, run ID, output directory,
+// seed, and the sample and profile periods), rejects options that do not go
+// together, and validates the scenario for the target. Run and Sweep call it;
+// a caller that wants the run ID, seed or directory before the run starts
+// calls it first. It is idempotent, and does not validate a scenario again
+// that it validated for the same target, so the scenario must not be changed
+// in place once it has.
+func (o *Options) Normalize() error {
+	switch {
+	case o.Scenario == nil:
+		return errors.New("runner: no scenario")
+	case o.Managed != nil && o.Attach != nil:
+		return errors.New("runner: a run is either managed or attached, not both")
+	case o.Managed == nil && o.Attach == nil:
+		o.Managed = &target.ManagedConfig{}
+	}
+	if err := o.fill(); err != nil {
+		return err
+	}
+	v := validation{sc: o.Scenario, kind: o.TargetKind()}
+	if o.validated == v {
+		return nil
+	}
+	if err := o.Scenario.Validate(v.kind); err != nil {
+		return fmt.Errorf("runner: scenario %s: %w", o.Scenario.Name, err)
+	}
+	o.validated = v
+	return nil
+}
+
+// TargetKind is the kind of target the options run on.
+func (o *Options) TargetKind() scenario.TargetKind {
+	if o.Attach != nil {
+		return scenario.TargetAttach
+	}
+	return scenario.TargetManaged
+}
+
+// fill fills and checks the options besides the target and the scenario.
+func (o *Options) fill() error {
+	switch o.Mode {
+	case "":
+		o.Mode = report.ModeLoad
+	case report.ModeLoad, report.ModeSoak, report.ModeSweepPoint:
+	default:
+		return fmt.Errorf("runner: unknown mode %q", o.Mode)
+	}
+	if o.RunID == "" {
+		o.RunID = NewRunID(time.Now())
+	}
+	if err := ValidRunID(o.RunID); err != nil {
+		return fmt.Errorf("runner: %w", err)
+	}
+	if err := o.checkShard(); err != nil {
+		return err
+	}
+	if o.OutDir == "" {
+		o.OutDir = DefaultOutDir
+	}
+	if o.Seed == 0 {
+		o.Seed = SeedFor(o.RunID)
+	}
+	if o.Sample <= 0 {
+		o.Sample = DefaultSample
+	}
+	// A negative ProfileEvery stays negative, so a second fill keeps it.
+	if o.ProfileEvery == 0 && o.Mode == report.ModeSoak {
+		o.ProfileEvery = DefaultSoakProfileEvery
+	}
+	return nil
+}
+
+// checkShard rejects a shard out of range, and a shard of a managed run: the
+// shards of a run drive one shared server, and merge adds up their counters.
+func (o *Options) checkShard() error {
+	switch {
+	case !o.Shard.Active():
+		return nil
+	case o.Shard.Index < 0 || o.Shard.Index >= o.Shard.Of:
+		return fmt.Errorf("runner: shard %d/%d is out of range", o.Shard.Index, o.Shard.Of)
+	case o.Attach == nil:
+		return errors.New("runner: the shards of a run drive one shared server, so a shard must attach to it")
+	}
+	return nil
 }
 
 // Directory is the run directory the options name.
@@ -125,11 +220,17 @@ func (o *Options) Directory() string {
 	if o.Dir != "" {
 		return o.Dir
 	}
-	name := o.RunID
-	if o.Shard.active() {
-		name += "-" + o.Shard.Prefix()
+	return filepath.Join(o.OutDir, o.shardRunID())
+}
+
+// shardRunID is the run ID with a shard's prefix, for a shard of several: it
+// names the shard's directory, farm and worker hostnames, so that the shards
+// never collide.
+func (o *Options) shardRunID() string {
+	if o.Shard.Active() {
+		return o.RunID + "-" + o.Shard.Prefix()
 	}
-	return filepath.Join(o.OutDir, name)
+	return o.RunID
 }
 
 // Run runs the scenario once and writes its record into the run directory.
@@ -194,29 +295,14 @@ type run struct {
 	tailTerminal int64
 	tailOK       bool
 	// tasks are the tasks the invariant checks listed, by ID.
-	tasks       map[string]client.Task
+	tasks       map[string]taskEnd
 	steady      map[string]int64
 	unavailable []string
 	errs        []error
 }
 
 func newRun(o Options) (*run, error) {
-	if o.Scenario == nil {
-		return nil, errors.New("runner: no scenario")
-	}
-	kind := scenario.TargetManaged
-	switch {
-	case o.Managed != nil && o.Attach != nil:
-		return nil, errors.New("runner: a run is either managed or attached, not both")
-	case o.Attach != nil:
-		kind = scenario.TargetAttach
-	case o.Managed == nil:
-		o.Managed = &target.ManagedConfig{}
-	}
-	if err := o.Scenario.Validate(kind); err != nil {
-		return nil, fmt.Errorf("runner: scenario %s: %w", o.Scenario.Name, err)
-	}
-	if err := o.defaults(); err != nil {
+	if err := o.Normalize(); err != nil {
 		return nil, err
 	}
 	logger := o.Logger
@@ -234,65 +320,6 @@ func newRun(o Options) (*run, error) {
 		metrics:  driver.NewMetrics(o.Scenario.Clients.RESTPollers.Endpoints),
 		recorder: measure.NewRecorder(),
 	}, nil
-}
-
-// defaults fills and checks the options Run may fill itself.
-func (o *Options) defaults() error {
-	switch o.Mode {
-	case "":
-		o.Mode = report.ModeLoad
-	case report.ModeLoad, report.ModeSoak, report.ModeSweepPoint:
-	default:
-		return fmt.Errorf("runner: unknown mode %q", o.Mode)
-	}
-	if o.RunID == "" {
-		o.RunID = NewRunID(time.Now())
-	}
-	if err := ValidRunID(o.RunID); err != nil {
-		return fmt.Errorf("runner: %w", err)
-	}
-	if err := o.checkShard(); err != nil {
-		return err
-	}
-	if o.OutDir == "" {
-		o.OutDir = DefaultOutDir
-	}
-	if o.Seed == 0 {
-		o.Seed = SeedFor(o.RunID)
-	}
-	if o.Sample <= 0 {
-		o.Sample = DefaultSample
-	}
-	switch {
-	case o.ProfileEvery < 0:
-		o.ProfileEvery = 0
-	case o.ProfileEvery == 0 && o.Mode == report.ModeSoak:
-		o.ProfileEvery = DefaultSoakProfileEvery
-	}
-	return nil
-}
-
-// checkShard rejects a shard out of range, and a shard of a managed run: the
-// shards of a run drive one shared server, and merge adds up their counters.
-func (o *Options) checkShard() error {
-	switch {
-	case !o.Shard.active():
-		return nil
-	case o.Shard.Index < 0 || o.Shard.Index >= o.Shard.Of:
-		return fmt.Errorf("runner: shard %d/%d is out of range", o.Shard.Index, o.Shard.Of)
-	case o.Attach == nil:
-		return errors.New("runner: the shards of a run drive one shared server, so a shard must attach to it")
-	}
-	return nil
-}
-
-// targetRunID is the run ID the target and fleet are given: a shard's is
-// suffixed with its prefix, so the shards' farms and hostnames differ.
-func (r *run) targetRunID() string {
-	if r.o.Shard.active() {
-		return r.o.RunID + "-" + r.o.Shard.Prefix()
-	}
-	return r.o.RunID
 }
 
 // rand returns the run's random stream number stream.
@@ -371,17 +398,18 @@ func (r *run) setup(ctx context.Context) error {
 		return err
 	}
 	r.fleet = simworker.NewFleet(simworker.FleetConfig{
-		RunID:    r.targetRunID(),
+		RunID:    r.o.shardRunID(),
 		FarmID:   tgt.FarmID(),
 		NATSURL:  tgt.NATSURL(),
-		IDPrefix: r.targetRunID(),
+		IDPrefix: r.o.shardRunID(),
 		Groups:   r.sc.Workers,
 		QueueIDs: tgt.QueueIDs(),
 		Creds:    tgt.Credentials(),
 		TLS:      tgt.TLS(),
 		Seed:     r.seed,
 	}, simworker.ScenarioBehavior(taskSpecs(r.sc)), r.ledger, withLevelFloor(r.logger, fleetLogLevel))
-	r.logger.InfoContext(ctx, "ramping the simulated fleet", slog.Int("workers", simulatedCount(r.sc)))
+	simulated, _ := r.sc.WorkerCounts()
+	r.logger.InfoContext(ctx, "ramping the simulated fleet", slog.Int("workers", simulated))
 	if err := r.fleet.Start(ctx); err != nil {
 		return fmt.Errorf("runner: start the simulated fleet: %w", err)
 	}
@@ -399,49 +427,35 @@ func (r *run) startTarget(ctx context.Context) (target.Target, error) {
 				slog.Any("ignored", set))
 		}
 		cfg := *r.o.Attach
-		cfg.Scenario, cfg.RunID, cfg.Logger = r.sc, r.targetRunID(), r.logger
+		cfg.Scenario, cfg.RunID, cfg.Logger = r.sc, r.o.shardRunID(), r.logger
 		// The shards of one run share its usage pools, named for the run.
 		cfg.PoolRunID = r.o.RunID
-		cfg.SharedPools = cfg.SharedPools || r.o.Shard.active()
+		cfg.SharedPools = cfg.SharedPools || r.o.Shard.Active()
 		return target.Attach(ctx, cfg)
 	}
 	cfg := *r.o.Managed
 	cfg.RunDir = filepath.Join(r.dir, "target")
-	cfg.RunID, cfg.Scenario, cfg.RealWorkers, cfg.Logger = r.targetRunID(), r.sc, r.sc.Workers, r.logger
-	if cfg.ServerBin == "" || (realCount(r.sc) > 0 && (cfg.WorkerBin == "" || cfg.NoopBin == "")) {
-		r.logger.InfoContext(ctx, "building sqi binaries")
-		server, worker, noop, err := target.BuildBinaries(ctx, filepath.Join(r.o.OutDir, ".bin"))
-		if err != nil {
-			return nil, err
-		}
-		cfg.ServerBin = cmpOr(cfg.ServerBin, server)
-		cfg.WorkerBin = cmpOr(cfg.WorkerBin, worker)
-		cfg.NoopBin = cmpOr(cfg.NoopBin, noop)
+	cfg.RunID, cfg.Scenario, cfg.Logger = r.o.shardRunID(), r.sc, r.logger
+	_, procs := r.sc.WorkerCounts()
+	if err := cfg.ResolveBinaries(ctx, buildDir(r.o.OutDir), procs > 0); err != nil {
+		return nil, err
 	}
 	r.logger.InfoContext(ctx, "starting sqi-server", slog.String("store", r.sc.Server.Store))
 	return target.StartManaged(ctx, cfg)
 }
 
-func cmpOr(a, b string) string {
-	if a != "" {
-		return a
-	}
-	return b
-}
+// buildDir is where a run, or a sweep, builds the binaries it was not given.
+func buildDir(outDir string) string { return filepath.Join(outDir, ".bin") }
 
 // startObserver samples the target until teardown stops it. Its context is
 // not the run's, so an interrupt does not take the last sample before the
 // fleet has stopped.
 func (r *run) startObserver(ctx context.Context) {
-	dsn := r.o.PostgresDSN
-	if r.o.Attach == nil {
-		dsn = target.PostgresDSN(r.tgt)
-	}
 	r.obs = observe.New(r.tgt, r.recorder, observe.Config{
 		Interval:     r.o.Sample,
-		ProfileEvery: r.o.ProfileEvery,
+		ProfileEvery: max(r.o.ProfileEvery, 0),
 		ProfileDir:   filepath.Join(r.dir, "profiles"),
-		PostgresDSN:  dsn,
+		PostgresDSN:  r.tgt.PostgresDSN(),
 	}, r.logger)
 	octx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	r.obsCancel, r.obsDone = cancel, make(chan struct{})
@@ -455,8 +469,7 @@ func (r *run) startObserver(ctx context.Context) {
 
 // startUI runs the WebSocket clients and REST pollers until teardown.
 func (r *run) startUI(ctx context.Context) {
-	ui := driver.NewUIClients(r.tgt.HTTPURL(), r.tgt.APIKey(), r.sc.Clients, r.jobs, r.metrics,
-		driver.WithUITarget(r.tgt), driver.WithUIRand(r.rand(3)))
+	ui := driver.NewUIClients(r.c, r.tgt, r.sc.Clients, r.jobs, r.metrics, driver.WithUIRand(r.rand(3)))
 	uctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	r.uiCancel, r.uiDone = cancel, make(chan struct{})
 	go func() {
@@ -479,7 +492,7 @@ func (r *run) measure(ctx context.Context) {
 	defer cancelSub()
 
 	var opts []driver.SubmitterOption
-	if r.o.Shard.active() {
+	if r.o.Shard.Active() {
 		opts = append(opts, driver.WithNamePrefix(r.o.Shard.Prefix()))
 	}
 	sub := driver.NewSubmitter(r.c, r.tgt, sc, r.jobs, r.metrics, r.rand(1), opts...)
@@ -522,7 +535,7 @@ func (r *run) measure(ctx context.Context) {
 	r.logger.InfoContext(ctx, "submissions stopped; waiting for the jobs to finish",
 		slog.Int("jobs", r.jobs.AcceptedCount()), slog.Duration("drain_timeout", sc.DrainTimeout.Duration))
 	dctx, cancel := context.WithTimeout(ctx, sc.DrainTimeout.Duration+drainSlack)
-	err := verify.WaitDrained(dctx, r.c, r.tgt.FarmID(), r.jobs.Accepted(), sc.DrainTimeout.Duration)
+	err := verify.WaitDrained(dctx, r.c.RetryingReads(), r.tgt.FarmID(), r.jobs.Accepted(), sc.DrainTimeout.Duration)
 	cancel()
 	r.ended = time.Now()
 	if ctx.Err() != nil {
@@ -538,7 +551,7 @@ func (r *run) measure(ctx context.Context) {
 // snapshotSteady takes the counters at the end of warmup, the base of every
 // steady-window rate.
 func (r *run) snapshotSteady(ctx context.Context, at time.Time) {
-	if !sleepUntil(ctx, at) {
+	if !sleep.Until(ctx, at) {
 		return
 	}
 	counters := r.liveCounters()
@@ -585,7 +598,7 @@ func (r *run) snapshotWindow(ctx context.Context) {
 // last tenth, the base of how much the server finished just before
 // submissions stopped.
 func (r *run) snapshotTail(ctx context.Context, at time.Time) {
-	if !sleepUntil(ctx, at) {
+	if !sleep.Until(ctx, at) {
 		return
 	}
 	jobs, err := listFarmJobs(ctx, r.c, r.tgt.FarmID())
@@ -609,7 +622,7 @@ func (r *run) profileCPU(ctx context.Context, steadyFrom, end time.Time) {
 		r.unavail("cpu_profile", fmt.Sprintf("the steady window (%s) is too short for a CPU profile", window))
 		return
 	}
-	if !sleepUntil(ctx, steadyFrom.Add(window/2-d/2)) {
+	if !sleep.Until(ctx, steadyFrom.Add(window/2-d/2)) {
 		return
 	}
 	if err := r.obs.CPUProfile(ctx, d); err != nil && ctx.Err() == nil {
@@ -623,20 +636,21 @@ func (r *run) check(ctx context.Context) {
 	accepted := r.jobs.Accepted()
 	records := r.actions.Records()
 	share := sampleShare(r.sc, accepted)
+	_, procs := r.sc.WorkerCounts()
 	in := verify.Input{
 		Jobs:                accepted,
 		Ledger:              r.ledger,
 		Scenario:            r.sc,
 		PoolNames:           poolNames(r.tgt, r.sc),
 		FarmID:              r.tgt.FarmID(),
-		LiveWorkers:         r.fleet.Live() + realCount(r.sc),
+		LiveWorkers:         r.fleet.Live() + procs,
 		LogSample:           share,
 		LogOverflowExpected: logOverflowExpected(r.sc),
 		AttemptSample:       share,
 		Seed:                uint64(r.seed), //nolint:gosec // G115: a seed is a bit pattern
-		CanceledJobs:        verify.CanceledJobs(records),
 		CanceledAt:          verify.CancelTimes(records),
 		ConvergeWithin:      convergeWithin(r.sc),
+		Simulated:           r.fleet.Simulates,
 		TaskSeen:            r.taskSeen,
 	}
 	if r.o.BeforeVerify != nil {
@@ -645,7 +659,7 @@ func (r *run) check(ctx context.Context) {
 	r.logger.InfoContext(ctx, "checking the invariants", slog.Int("jobs", len(accepted)), slog.Float64("sample", share))
 	cctx, cancel := context.WithTimeout(ctx, checkTimeout)
 	defer cancel()
-	results := verify.Check(cctx, r.c, in)
+	results := verify.Check(cctx, r.c.RetryingReads(), in)
 	if ctx.Err() != nil {
 		return
 	}
@@ -653,14 +667,15 @@ func (r *run) check(ctx context.Context) {
 	r.complete = true
 }
 
-// taskSeen keeps a task the invariant checks listed, for terminal_ingest.
+// taskSeen keeps what terminal_ingest needs of a task the invariant checks
+// listed.
 func (r *run) taskSeen(_ string, t client.Task) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.tasks == nil {
-		r.tasks = map[string]client.Task{}
+		r.tasks = map[string]taskEnd{}
 	}
-	r.tasks[t.ID] = t
+	r.tasks[t.ID] = taskEnd{status: t.Status, updatedAt: t.UpdatedAt}
 }
 
 // teardown stops the clients and the fleet, reads what the record needs from
@@ -756,17 +771,5 @@ func (r *run) wait(ctx context.Context, done <-chan struct{}, d time.Duration, w
 	case <-wctx.Done():
 		r.logger.WarnContext(ctx, "gave up waiting for the "+what+" to stop", slog.Duration("after", d))
 		return false
-	}
-}
-
-// sleepUntil waits until t and reports whether ctx was still live then.
-func sleepUntil(ctx context.Context, t time.Time) bool {
-	timer := time.NewTimer(time.Until(t))
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return ctx.Err() == nil
 	}
 }

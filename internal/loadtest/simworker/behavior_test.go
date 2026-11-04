@@ -18,44 +18,37 @@ func specFor(seconds float64) scenario.TaskSpec {
 	return scenario.TaskSpec{Duration: constDist(seconds)}
 }
 
+// assignFor is an assignment whose onRun names class the way the driver's
+// templates do.
+func assignFor(class string) *protocol.AssignMsg {
+	return &protocol.AssignMsg{OnRun: &protocol.Action{Command: "noop", Args: []string{"-x", scenario.ClassArg(class)}}}
+}
+
 func TestScenarioBehavior_Class(t *testing.T) {
 	classes := map[string]scenario.TaskSpec{
 		"render":      specFor(2),
 		"comp-render": specFor(3),
 		"comp":        specFor(4),
 	}
-	lookup := map[string]string{"job-a": "comp-render-5", "job-b": "s2-render-8"}
-	b := simworker.ScenarioBehavior(classes, simworker.WithJobNames(func(id string) (string, bool) {
-		n, ok := lookup[id]
-		return n, ok
-	}))
+	b := simworker.ScenarioBehavior(classes)
 
 	tests := []struct {
 		name    string
 		jobName string
-		jobID   string
 		args    []string
 		want    time.Duration
 	}{
-		{"class arg on a base-spec assignment", "", "", []string{"-x", scenario.ClassArg("comp")}, 4 * time.Second},
-		{"class arg beats the job name", "render-1", "", []string{scenario.ClassArg("comp-render")}, 3 * time.Second},
-		{"last class arg wins", "", "", []string{scenario.ClassArg("render"), scenario.ClassArg("comp")}, 4 * time.Second},
-		{"unknown class arg falls to the job name", "render-1", "", []string{scenario.ClassArg("nope")}, 2 * time.Second},
-		{"unknown class arg and no name falls back", "", "", []string{scenario.ClassArg("nope")}, time.Second},
-		{"plain class", "render-1", "", nil, 2 * time.Second},
-		{"hyphenated class beats its suffix", "comp-render-12", "", nil, 3 * time.Second},
-		{"shard prefix", "s1-comp-render-3", "", nil, 3 * time.Second},
-		{"shorter class", "comp-7", "", nil, 4 * time.Second},
-		{"shard prefix, short class", "s0-render-9", "", nil, 2 * time.Second},
-		{"unknown class falls back", "other-1", "", nil, time.Second},
-		{"class name inside another word does not match", "prerender-1", "", nil, time.Second},
-		{"lookup by job id", "", "job-a", nil, 3 * time.Second},
-		{"lookup with shard prefix", "", "job-b", nil, 2 * time.Second},
-		{"no name and no lookup hit falls back", "", "job-zzz", nil, time.Second},
+		{"class arg", "", []string{"-x", scenario.ClassArg("comp")}, 4 * time.Second},
+		{"hyphenated class", "", []string{scenario.ClassArg("comp-render")}, 3 * time.Second},
+		{"class arg beats the job name", "render-1", []string{scenario.ClassArg("comp-render")}, 3 * time.Second},
+		{"last class arg wins", "", []string{scenario.ClassArg("render"), scenario.ClassArg("comp")}, 4 * time.Second},
+		{"unknown class arg falls back", "render-1", []string{scenario.ClassArg("nope")}, time.Second},
+		{"no class arg falls back", "render-1", []string{"-x"}, time.Second},
+		{"no onRun falls back", "render-1", nil, time.Second},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := &protocol.AssignMsg{JobName: tt.jobName, JobID: tt.jobID}
+			m := &protocol.AssignMsg{JobName: tt.jobName}
 			if tt.args != nil {
 				m.OnRun = &protocol.Action{Command: "noop", Args: tt.args}
 			}
@@ -69,7 +62,7 @@ func TestScenarioBehavior_Class(t *testing.T) {
 
 func TestScenarioBehavior_Fallback(t *testing.T) {
 	b := simworker.ScenarioBehavior(nil)
-	got := b.Plan(&protocol.AssignMsg{JobName: "x-1"}, rand.New(rand.NewPCG(1, 2)))
+	got := b.Plan(assignFor("x"), rand.New(rand.NewPCG(1, 2)))
 	want := simworker.TaskPlan{Duration: time.Second, Outcome: simworker.OutcomeSucceeded}
 	if got != want {
 		t.Errorf("Plan = %+v, want %+v", got, want)
@@ -101,7 +94,7 @@ func TestScenarioBehavior_Sampling(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			b := simworker.ScenarioBehavior(map[string]scenario.TaskSpec{"c": tt.spec})
-			got := b.Plan(&protocol.AssignMsg{JobName: "c-1"}, rand.New(rand.NewPCG(1, 2)))
+			got := b.Plan(assignFor("c"), rand.New(rand.NewPCG(1, 2)))
 			if got != tt.want {
 				t.Errorf("Plan = %+v, want %+v", got, tt.want)
 			}
@@ -120,7 +113,7 @@ func TestScenarioBehavior_SeededIsReproducible(t *testing.T) {
 		r := rand.New(rand.NewPCG(42, 7))
 		var out []simworker.TaskPlan
 		for range 50 {
-			out = append(out, b.Plan(&protocol.AssignMsg{JobName: "c-1"}, r))
+			out = append(out, b.Plan(assignFor("c"), r))
 		}
 		return out
 	}

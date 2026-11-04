@@ -4,7 +4,6 @@ package simworker
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,21 +12,20 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
-	nats "github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
+	"github.com/uberware/sqi/internal/loadtest/internal/sleep"
 
-	"github.com/uberware/sqi/internal/bus"
+	nats "github.com/nats-io/nats.go"
+
 	"github.com/uberware/sqi/internal/loadtest/scenario"
-	"github.com/uberware/sqi/internal/version"
 	"github.com/uberware/sqi/internal/worker/cancel"
+	"github.com/uberware/sqi/internal/worker/capabilities"
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
 	"github.com/uberware/sqi/internal/worker/fmtres"
 	"github.com/uberware/sqi/internal/worker/heartbeat"
 	"github.com/uberware/sqi/internal/worker/lease"
 	"github.com/uberware/sqi/internal/worker/logstreamer"
 	"github.com/uberware/sqi/internal/worker/natsclient"
-	"github.com/uberware/sqi/internal/worker/protocol"
+	"github.com/uberware/sqi/internal/worker/registration"
 	"github.com/uberware/sqi/internal/worker/status"
 )
 
@@ -36,9 +34,8 @@ const (
 	reconnectWait = 2 * time.Second
 	// defaultHeartbeat is sqi-worker's default heartbeat interval.
 	defaultHeartbeat = 15 * time.Second
-	// registerBudget bounds how long one registration waits for the
-	// SQI_WORKER stream to exist (registration.RetryBudget).
-	registerBudget = 30 * time.Second
+	// registerRetry and registerMaxGap pace Disconnect's own re-registration
+	// attempts: the first wait, and the most it doubles to.
 	registerRetry  = 100 * time.Millisecond
 	registerMaxGap = 2 * time.Second
 	// registerPoll is how often Disconnect checks for the re-registration.
@@ -48,8 +45,8 @@ const (
 	handlerGrace = time.Second
 	// disconnectBound caps Disconnect: natsclient's first redial waits about
 	// reconnectWait (plus jitter), and one registration may take
-	// registerBudget.
-	disconnectBound = 2*reconnectWait + registerBudget
+	// registration.RetryBudget.
+	disconnectBound = 2*reconnectWait + registration.RetryBudget
 	// simArch is the architecture every simulated worker reports. Scenarios
 	// have no arch field, and a fixed value keeps a run independent of the
 	// generator host's.
@@ -85,9 +82,20 @@ type TLSFiles struct {
 	InsecureSkipVerify bool
 }
 
-// Worker is one simulated sqi-worker: one NATS connection, a hand-built
-// registration, and the real heartbeat, lease, status, log and cancel
-// packages driving a [Dispatcher]. Its lifecycle methods are serialized.
+// NATSConfig returns f as the TLS fields of sqi-worker's NATS configuration.
+func (f TLSFiles) NATSConfig() workerconfig.NATSConfig {
+	return workerconfig.NATSConfig{
+		TLSEnabled:         f.Enabled,
+		TLSCAFile:          f.CAFile,
+		TLSCertFile:        f.CertFile,
+		TLSKeyFile:         f.KeyFile,
+		InsecureSkipVerify: f.InsecureSkipVerify,
+	}
+}
+
+// Worker is one simulated sqi-worker: one NATS connection, and the real
+// registration, heartbeat, lease, status, log and cancel packages driving a
+// [Dispatcher]. Its lifecycle methods are serialized.
 type Worker struct {
 	spec     WorkerSpec
 	behavior Behavior
@@ -167,7 +175,8 @@ func (w *Worker) Stop(ctx context.Context) error {
 	if inc == nil {
 		return nil
 	}
-	return inc.stop(ctx)
+	inc.stop(ctx)
+	return nil
 }
 
 // Crash drops the connection without deregistering. Heartbeats stop, and
@@ -216,7 +225,7 @@ func (w *Worker) Disconnect(ctx context.Context) error {
 	if inc == nil {
 		return errNotRunning
 	}
-	before := inc.registrations.Load()
+	before := inc.reg.LastRegisteredAt()
 	if err := inc.nc.ForceReconnect(); err != nil {
 		return fmt.Errorf("simworker: force reconnect: %w", err)
 	}
@@ -230,7 +239,7 @@ type incarnation struct {
 	w          *Worker
 	instanceID string
 	nc         *nats.Conn
-	js         jetstream.JetStream
+	reg        *registration.Registrar
 	disp       *Dispatcher
 
 	stopHB, stopLease context.CancelFunc
@@ -238,18 +247,20 @@ type incarnation struct {
 	// ended is closed when this process is torn down on purpose, so the
 	// closed-connection watcher can tell that from natsclient giving up.
 	ended chan struct{}
-
-	lastRegistered atomic.Int64 // UnixNano of the last successful registration
-	registrations  atomic.Int64 // successful registrations so far
 }
 
-// awaitReregistration waits for a registration after the before'th, making it
-// itself once the reconnect handler has had handlerGrace to.
-func (inc *incarnation) awaitReregistration(ctx context.Context, before int64) error {
+// reregistered reports whether a registration has succeeded since before.
+func (inc *incarnation) reregistered(before time.Time) bool {
+	return inc.reg.LastRegisteredAt().After(before)
+}
+
+// awaitReregistration waits for a registration after the one at before,
+// making it itself once the reconnect handler has had handlerGrace to.
+func (inc *incarnation) awaitReregistration(ctx context.Context, before time.Time) error {
 	tick := time.NewTicker(registerPoll)
 	defer tick.Stop()
 	var direct time.Time // when to stop waiting for the reconnect handler
-	for inc.registrations.Load() == before {
+	for !inc.reregistered(before) {
 		if direct.IsZero() && inc.nc.IsConnected() {
 			direct = time.Now().Add(handlerGrace)
 		}
@@ -265,34 +276,22 @@ func (inc *incarnation) awaitReregistration(ctx context.Context, before int64) e
 	return nil
 }
 
-// registerUntil registers, with backoff, until a registration after the
-// before'th has landed (its own or anyone's) or ctx ends.
-func (inc *incarnation) registerUntil(ctx context.Context, before int64) error {
+// registerUntil registers, with backoff, until a registration after the one
+// at before has landed (its own or anyone's) or ctx ends.
+func (inc *incarnation) registerUntil(ctx context.Context, before time.Time) error {
 	backoff := registerRetry
-	for inc.registrations.Load() == before {
+	for !inc.reregistered(before) {
 		err := inc.Register(ctx)
 		if err == nil {
 			return nil
 		}
 		inc.w.logger.DebugContext(ctx, "simworker: re-registration failed; retrying", slog.Any("error", err))
-		if !sleepCtx(ctx, backoff) {
+		if !sleep.For(ctx, backoff) {
 			return fmt.Errorf("simworker: re-registering after disconnect: %w", err)
 		}
 		backoff = min(backoff*2, registerMaxGap)
 	}
 	return nil
-}
-
-// sleepCtx waits d and reports whether ctx was still live at the end.
-func sleepCtx(ctx context.Context, d time.Duration) bool {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-t.C:
-		return true
-	}
 }
 
 // launch connects and registers a new process, then starts its loops.
@@ -301,12 +300,12 @@ func (w *Worker) launch(ctx context.Context) (*incarnation, error) {
 	if err != nil {
 		return nil, err
 	}
-	js, err := jetstream.New(nc)
+	reg, err := w.registrar(nc)
 	if err != nil {
 		nc.Close()
-		return nil, fmt.Errorf("simworker: jetstream: %w", err)
+		return nil, err
 	}
-	inc := &incarnation{w: w, instanceID: uuid.NewString(), nc: nc, js: js, ended: make(chan struct{})}
+	inc := &incarnation{w: w, instanceID: reg.InstanceID(), nc: nc, reg: reg, ended: make(chan struct{})}
 	nc.SetReconnectHandler(inc.onReconnect)
 	if err := inc.Register(ctx); err != nil {
 		nc.Close()
@@ -328,8 +327,8 @@ func (w *Worker) launch(ctx context.Context) (*incarnation, error) {
 		interval = defaultHeartbeat
 	}
 	hb := heartbeat.New(nc, id, g.CPU, interval, d, inc, w.logger)
-	loop := lease.New(leaseTransport{nc: nc}, d, lease.Config{
-		QueueIDs: leaseQueueIDs(g.Queues), WorkerID: id, InstanceID: inc.instanceID,
+	loop := lease.New(lease.NATSTransport{NC: nc}, d, lease.Config{
+		QueueIDs: lease.QueueIDs(g.Queues), WorkerID: id, InstanceID: inc.instanceID,
 	}, w.logger)
 
 	hbCtx, stopHB := context.WithCancel(context.Background())
@@ -374,16 +373,10 @@ func (w *Worker) watchClosed(inc *incarnation, closed <-chan struct{}) {
 // connection closes for good.
 func (w *Worker) connect(ctx context.Context) (*nats.Conn, <-chan struct{}, error) {
 	s := w.spec
-	cfg := workerconfig.NATSConfig{
-		URL:                  s.NATSURL,
-		TLSEnabled:           s.TLS.Enabled,
-		TLSCAFile:            s.TLS.CAFile,
-		TLSCertFile:          s.TLS.CertFile,
-		TLSKeyFile:           s.TLS.KeyFile,
-		InsecureSkipVerify:   s.TLS.InsecureSkipVerify,
-		MaxReconnectAttempts: -1,
-		ReconnectWait:        reconnectWait,
-	}
+	cfg := s.TLS.NATSConfig()
+	cfg.URL = s.NATSURL
+	cfg.MaxReconnectAttempts = -1
+	cfg.ReconnectWait = reconnectWait
 	nc, closed, err := natsclient.Connect(ctx, cfg, s.ID, s.Seed, s.PublicKey, w.logger)
 	if err != nil {
 		return nil, nil, fmt.Errorf("simworker: connect: %w", err)
@@ -391,127 +384,50 @@ func (w *Worker) connect(ctx context.Context) (*nats.Conn, <-chan struct{}, erro
 	return nc, closed, nil
 }
 
-// leaseQueueIDs is sqi-worker's mapping: no queues means the wildcard token.
-func leaseQueueIDs(queues []string) []string {
-	if len(queues) == 0 {
-		return []string{bus.WildcardQueueToken}
-	}
-	return queues
-}
-
-// registerMsg builds the registration sqi-worker's registration package would
-// send for this worker's group.
-func (w *Worker) registerMsg(instanceID string) protocol.RegisterMsg {
+// registrar builds the real registrar for one process of this worker: its
+// group's queues, cores, memory, tags and OS, the default EXPR limits, and its
+// own hostname rather than the generator host's.
+func (w *Worker) registrar(nc *nats.Conn) (*registration.Registrar, error) {
 	s, g := w.spec, w.spec.Group
-	var queueID string
-	if len(g.Queues) == 1 {
-		queueID = g.Queues[0]
-	}
 	osName := g.OS
 	if osName == "" {
 		osName = defaultOS
 	}
-	lim := fmtres.DefaultExprLimits()
-	return protocol.RegisterMsg{
-		Version:       protocol.ProtocolVersion,
-		Type:          protocol.TypeRegister,
-		WorkerID:      s.ID,
-		InstanceID:    instanceID,
-		FarmID:        s.FarmID,
-		QueueID:       queueID,
-		Name:          s.Hostname,
-		Hostname:      s.Hostname,
-		OS:            osName,
-		Arch:          simArch,
-		WorkerVersion: version.Version,
-		CPUCount:      g.CPU,
-		RAMMb:         g.RAMMb,
-		Tags:          g.Tags,
-		ExprLimits: protocol.ExprLimits{
-			OperationLimit:          lim.OperationLimit,
-			MemoryLimit:             lim.MemoryLimit,
-			AssignmentPositions:     lim.AssignmentPositions,
-			AssignmentRetainedBytes: lim.AssignmentRetainedBytes,
-			LetRetainedBytes:        lim.LetRetainedBytes,
-		},
-		Extensions: protocol.WorkerEnforcedExtensions(),
+	settings := workerconfig.WorkerSettings{FarmID: s.FarmID, QueueIDs: g.Queues, Name: s.Hostname}
+	caps := capabilities.Capabilities{OS: osName, Arch: simArch, CPUCount: g.CPU, RAMMb: g.RAMMb, Tags: g.Tags}
+	reg, err := registration.New(nc, s.ID, settings, fmtres.DefaultExprLimits(), caps, w.logger, registration.WithHost(s.Hostname, ""))
+	if err != nil {
+		return nil, fmt.Errorf("simworker: %w", err)
 	}
+	return reg, nil
 }
 
-// Register publishes this process's registration and waits for the stream
-// ack, retrying while the SQI_WORKER stream does not exist yet. It implements
-// heartbeat.Registrar, whose watchdog calls it after a reconnect the reconnect
-// handler did not cover.
+// Register publishes this process's registration through the real registrar.
+// It implements heartbeat.Registrar, whose watchdog calls it after a
+// reconnect the reconnect handler did not cover.
 func (inc *incarnation) Register(ctx context.Context) error {
-	data, err := json.Marshal(inc.w.registerMsg(inc.instanceID))
-	if err != nil {
-		return fmt.Errorf("simworker: marshal registration: %w", err)
-	}
 	if fault := inc.w.registerFault.Load(); fault != nil {
 		if err := (*fault)(); err != nil {
 			return err
 		}
 	}
-	ctx, cancelFn := context.WithTimeout(ctx, registerBudget)
-	defer cancelFn()
-	subj := bus.WorkerRegisterSubject(inc.w.spec.ID)
-	backoff := registerRetry
-	for {
-		_, err := inc.js.Publish(ctx, subj, data)
-		if err == nil {
-			break
-		}
-		if !errors.Is(err, jetstream.ErrNoStreamResponse) {
-			return fmt.Errorf("simworker: register: %w", err)
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("simworker: register: no stream: %w", ctx.Err())
-		case <-time.After(backoff):
-		}
-		backoff = min(backoff*2, registerMaxGap)
-	}
-	inc.lastRegistered.Store(time.Now().UnixNano())
-	inc.registrations.Add(1)
-	return nil
+	return inc.reg.Register(ctx)
 }
 
 // LastRegisteredAt implements heartbeat.Registrar.
-func (inc *incarnation) LastRegisteredAt() time.Time {
-	ns := inc.lastRegistered.Load()
-	if ns == 0 {
-		return time.Time{}
-	}
-	return time.Unix(0, ns)
-}
+func (inc *incarnation) LastRegisteredAt() time.Time { return inc.reg.LastRegisteredAt() }
 
 // onReconnect re-registers with the same instance ID after NATS reconnects.
+// It stands in for Registrar.SetupReconnectHook so the test fault applies to
+// this path too.
 func (inc *incarnation) onReconnect(*nats.Conn) {
 	if err := inc.Register(context.Background()); err != nil {
 		inc.w.logger.WarnContext(context.Background(), "simworker: re-registration after reconnect failed", slog.Any("error", err))
 	}
 }
 
-// deregister publishes the departure, best effort, as sqi-worker does.
-func (inc *incarnation) deregister(reason string) error {
-	data, err := json.Marshal(protocol.DeregisterMsg{
-		Version:    protocol.ProtocolVersion,
-		Type:       protocol.TypeDeregister,
-		WorkerID:   inc.w.spec.ID,
-		InstanceID: inc.instanceID,
-		Reason:     reason,
-	})
-	if err != nil {
-		return fmt.Errorf("simworker: marshal deregistration: %w", err)
-	}
-	if err := inc.nc.Publish(bus.WorkerDeregisterSubject(inc.w.spec.ID), data); err != nil {
-		return fmt.Errorf("simworker: deregister: %w", err)
-	}
-	return nil
-}
-
 // stop is the graceful shutdown behind Worker.Stop.
-func (inc *incarnation) stop(ctx context.Context) error {
+func (inc *incarnation) stop(ctx context.Context) {
 	close(inc.ended)
 	inc.stopLease()
 	<-inc.leaseDone
@@ -522,9 +438,8 @@ func (inc *incarnation) stop(ctx context.Context) error {
 	inc.disp.shutdown(endShutdown) // refuses any late dispatch
 	inc.stopHB()
 	<-inc.hbDone
-	err := inc.deregister("graceful shutdown")
-	inc.nc.Close() // flushes the deregistration and any terminal statuses
-	return err
+	inc.reg.Deregister("graceful shutdown") // best effort, logged, as in sqi-worker
+	inc.nc.Close()                          // flushes the deregistration and any terminal statuses
 }
 
 // crash is the abrupt end behind Crash and Restart: loops stop, attempts are
@@ -547,20 +462,4 @@ func (inc *incarnation) crash() {
 	inc.disp.shutdown(endCrashed)
 	inc.disp.wait(context.Background())
 	inc.nc.Close()
-}
-
-// leaseTransport adapts a connection to lease.Transport, as sqi-worker's does.
-type leaseTransport struct {
-	nc *nats.Conn
-}
-
-// RequestLease asks for work on the worker's lease subject for queueID.
-func (t leaseTransport) RequestLease(ctx context.Context, workerID, queueID string, data []byte, timeout time.Duration) ([]byte, error) {
-	reqCtx, cancelReq := context.WithTimeout(ctx, timeout)
-	defer cancelReq()
-	msg, err := t.nc.RequestWithContext(reqCtx, bus.WorkLeaseSubject(workerID, queueID), data)
-	if err != nil {
-		return nil, fmt.Errorf("simworker: request lease for queue %q: %w", queueID, err)
-	}
-	return msg.Data, nil
 }

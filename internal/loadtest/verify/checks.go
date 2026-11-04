@@ -10,8 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/uberware/sqi/internal/loadtest/internal/sleep"
+
 	"github.com/uberware/sqi/internal/loadtest/client"
-	"github.com/uberware/sqi/internal/loadtest/scenario"
 	"github.com/uberware/sqi/internal/loadtest/simworker"
 )
 
@@ -29,8 +30,12 @@ type ledgerAttempt struct {
 	end *simworker.Event
 }
 
-// ledgerIndex is the ledger by task and by attempt.
+// ledgerIndex is the ledger by task and by attempt. It is built once per
+// [Check] and brought up to date with [ledgerIndex.refresh] before each read
+// that must see events recorded since: the ledger only grows.
 type ledgerIndex struct {
+	l    *simworker.Ledger
+	seen int // events folded in so far
 	// byTask lists each task's attempts in the order they were leased. The
 	// server leases a task's next attempt only after closing the previous
 	// one, so the last is the attempt the server holds as the task's latest.
@@ -41,33 +46,44 @@ type ledgerIndex struct {
 }
 
 func indexLedger(l *simworker.Ledger) *ledgerIndex {
-	x := &ledgerIndex{byTask: map[string][]*ledgerAttempt{}, byID: map[string]*ledgerAttempt{}, byJob: map[string][]string{}}
-	if l == nil {
-		return x
-	}
-	for _, e := range l.Events() {
-		a := x.byID[e.AttemptID]
-		if a == nil {
-			a = &ledgerAttempt{id: e.AttemptID, taskID: e.TaskID, jobID: e.JobID}
-			x.byID[e.AttemptID] = a
-			if len(x.byTask[e.TaskID]) == 0 {
-				x.byJob[e.JobID] = append(x.byJob[e.JobID], e.TaskID)
-			}
-			x.byTask[e.TaskID] = append(x.byTask[e.TaskID], a)
-		}
-		switch e.Kind {
-		case simworker.KindLeased:
-			if a.leased.IsZero() {
-				a.leased, a.workerID = e.At, e.WorkerID
-			}
-		case simworker.KindTerminal, simworker.KindCanceled, simworker.KindCrashed:
-			if a.end == nil {
-				ev := e
-				a.end = &ev
-			}
-		}
-	}
+	x := &ledgerIndex{l: l, byTask: map[string][]*ledgerAttempt{}, byID: map[string]*ledgerAttempt{}, byJob: map[string][]string{}}
+	x.refresh()
 	return x
+}
+
+// refresh folds in the events recorded since the last refresh. It must not
+// run concurrently with a read of x.
+func (x *ledgerIndex) refresh() {
+	if x.l == nil {
+		return
+	}
+	events := x.l.EventsSince(x.seen)
+	x.seen += len(events)
+	for _, e := range events {
+		x.add(e)
+	}
+}
+
+func (x *ledgerIndex) add(e simworker.Event) {
+	a := x.byID[e.AttemptID]
+	if a == nil {
+		a = &ledgerAttempt{id: e.AttemptID, taskID: e.TaskID, jobID: e.JobID}
+		x.byID[e.AttemptID] = a
+		if len(x.byTask[e.TaskID]) == 0 {
+			x.byJob[e.JobID] = append(x.byJob[e.JobID], e.TaskID)
+		}
+		x.byTask[e.TaskID] = append(x.byTask[e.TaskID], a)
+	}
+	switch e.Kind {
+	case simworker.KindLeased:
+		if a.leased.IsZero() {
+			a.leased, a.workerID = e.At, e.WorkerID
+		}
+	case simworker.KindTerminal, simworker.KindCanceled, simworker.KindCrashed:
+		if a.end == nil {
+			a.end = &e
+		}
+	}
 }
 
 // decision is what the simulator decided for a task: the outcome of its
@@ -75,8 +91,8 @@ func indexLedger(l *simworker.Ledger) *ledgerIndex {
 type decision struct {
 	status  string // the task status it implies, when decided
 	decided bool
-	leased  int    // how many attempts the simulator leased
-	why     string // for evidence
+	leased  int            // how many attempts the simulator leased
+	last    *ledgerAttempt // the last of them, nil when never leased
 }
 
 // decide returns the task's decision. Only a succeeded or failed terminal
@@ -86,24 +102,40 @@ type decision struct {
 func (x *ledgerIndex) decide(taskID string) decision {
 	atts := x.byTask[taskID]
 	if len(atts) == 0 {
-		return decision{why: "never leased"}
+		return decision{}
 	}
 	a := atts[len(atts)-1]
-	d := decision{leased: len(atts)}
-	prefix := fmt.Sprintf("last of %d attempts, %s, ", len(atts), a.id)
+	d := decision{leased: len(atts), last: a}
 	switch {
-	case a.end == nil:
-		d.why = prefix + "not ended"
+	case a.end == nil, a.end.Kind == simworker.KindCrashed:
 	case a.end.Kind == simworker.KindCanceled:
-		d.status, d.decided, d.why = statusCancel, true, prefix+"canceled"
-	case a.end.Kind == simworker.KindCrashed:
-		d.why = prefix + "crashed"
+		d.status, d.decided = statusCancel, true
 	case a.end.Outcome == simworker.OutcomeSucceeded, a.end.Outcome == simworker.OutcomeFailed:
-		d.status, d.decided, d.why = a.end.Outcome, true, prefix+a.end.Outcome
-	default:
-		d.why = prefix + "ended " + a.end.Outcome
+		d.status, d.decided = a.end.Outcome, true
 	}
 	return d
+}
+
+// why describes the decision for evidence. It is formatted only when a check
+// reports one, not for every task it decides.
+func (d decision) why() string {
+	a := d.last
+	if a == nil {
+		return "never leased"
+	}
+	prefix := fmt.Sprintf("last of %d attempts, %s, ", d.leased, a.id)
+	switch {
+	case a.end == nil:
+		return prefix + "not ended"
+	case a.end.Kind == simworker.KindCanceled:
+		return prefix + "canceled"
+	case a.end.Kind == simworker.KindCrashed:
+		return prefix + "crashed"
+	case d.decided:
+		return prefix + a.end.Outcome
+	default:
+		return prefix + "ended " + a.end.Outcome
+	}
 }
 
 // ── terminal ─────────────────────────────────────────────────────────────────
@@ -116,7 +148,7 @@ func (c *checker) terminal(statuses map[string]string, errs map[string]error) Re
 			ev.add(fmt.Sprintf("job %s: reading its status: %v", id, err))
 			continue
 		}
-		if s := statuses[id]; !terminalJob[s] {
+		if s := statuses[id]; !terminalJob(s) {
 			ev.add(fmt.Sprintf("job %s is %s, want completed, failed or canceled", id, s))
 		}
 	}
@@ -147,7 +179,7 @@ type sweep struct {
 // sweepTasks reads every accepted job's tasks a page at a time, applies the
 // outcome rules and draws the attempt and log samples.
 func (c *checker) sweepTasks(ctx context.Context, statuses map[string]string) sweep {
-	x := indexLedger(c.in.Ledger)
+	x := c.ledger
 	parts := parallelMap(len(c.order), func(i int) sweep {
 		id := c.order[i]
 		return c.sweepJob(ctx, id, statuses[id], x)
@@ -178,11 +210,16 @@ func (c *checker) sweepJob(ctx context.Context, jobID, jobStatus string, x *ledg
 		if jobStatus == jobCompleted && t.Status != statusOK {
 			s.evidence = append(s.evidence, fmt.Sprintf("job %s is completed but task %s is %s, want succeeded", jobID, t.ID, t.Status))
 		}
-		if c.outcomeMsg(ref, t.Status, x) != "" {
-			s.suspects = append(s.suspects, suspect{taskRef: ref, server: t.Status})
-		}
 		if sampled(c.in.Seed, saltAttempts, t.ID, c.in.AttemptSample) {
 			s.attempts = append(s.attempts, ref)
+		}
+		// A real worker's task has no ledger to compare with; the server-side
+		// rules above and the attempt sample still apply to it.
+		if c.realWorker(t.AssignedWorkerID) {
+			continue
+		}
+		if c.outcomeMsg(ref, t.Status, x) != "" {
+			s.suspects = append(s.suspects, suspect{taskRef: ref, server: t.Status})
 		}
 		if sampled(c.in.Seed, saltLogs, t.ID, c.in.LogSample) {
 			s.logs = append(s.logs, ref)
@@ -218,22 +255,16 @@ func (c *checker) droppedTasks(jobID string, tasks []client.Task, total int, x *
 
 // listTasks returns all of a job's tasks and the total the server reports.
 func (c *checker) listTasks(ctx context.Context, jobID string) (tasks []client.Task, total int, err error) {
-	for {
-		var p client.Page[client.Task]
-		err = withRetry(ctx, func() error {
-			var err error
-			p, err = c.v.ListTasks(ctx, jobID, maxPage, len(tasks))
-			return err
-		})
-		if err != nil {
-			return nil, 0, err
-		}
+	err = client.EachPage(maxPage, func(limit, offset int) (client.Page[client.Task], error) {
+		return c.v.ListTasks(ctx, jobID, limit, offset)
+	}, func(p client.Page[client.Task]) {
 		tasks = append(tasks, p.Items...)
 		total = p.Total
-		if len(p.Items) == 0 || len(tasks) >= p.Total {
-			return tasks, total, nil
-		}
+	})
+	if err != nil {
+		return nil, 0, err
 	}
+	return tasks, total, nil
 }
 
 // ── outcomes ─────────────────────────────────────────────────────────────────
@@ -244,7 +275,8 @@ func (c *checker) outcomes(ctx context.Context, s sweep) Result {
 	var ev evidence
 	ev.addAll(s.evidence)
 	ev.addAll(settleLoop(ctx, c.settle, s.suspects, func(sus []suspect) []string {
-		x := indexLedger(c.in.Ledger)
+		x := c.ledger
+		x.refresh()
 		msgs := make([]string, len(sus))
 		for i, t := range sus {
 			msgs[i] = c.outcomeMsg(t.taskRef, t.server, x)
@@ -279,7 +311,7 @@ func (c *checker) outcomeMsg(ref taskRef, server string, x *ledgerIndex) string 
 	case d.leased > 0:
 		want = "a status the simulator decided (it decided none)"
 	}
-	return fmt.Sprintf("job %s task %s: server %s, want %s (simulator: %s)", ref.jobID, ref.taskID, server, want, d.why)
+	return fmt.Sprintf("job %s task %s: server %s, want %s (simulator: %s)", ref.jobID, ref.taskID, server, want, d.why())
 }
 
 // ── single-attempt ───────────────────────────────────────────────────────────
@@ -292,12 +324,7 @@ func (c *checker) outcomeMsg(ref taskRef, server string, x *ledgerIndex) string 
 func (c *checker) singleAttempt(ctx context.Context, refs []taskRef) Result {
 	msgs := parallelMap(len(refs), func(i int) string {
 		ref := refs[i]
-		var atts []client.Attempt
-		err := withRetry(ctx, func() error {
-			var err error
-			atts, err = c.v.ListAttempts(ctx, ref.taskID)
-			return err
-		})
+		atts, err := c.v.ListAttempts(ctx, ref.taskID)
 		if err != nil {
 			return fmt.Sprintf("job %s task %s: listing attempts: %v", ref.jobID, ref.taskID, err)
 		}
@@ -318,10 +345,14 @@ func (c *checker) singleAttempt(ctx context.Context, refs []taskRef) Result {
 // with sequential attempts and the stale worker's report rejected, while the
 // task really ran twice at once.
 func (c *checker) ledgerOverlaps() []string {
-	x := indexLedger(c.in.Ledger)
+	x := c.ledger
+	x.refresh()
 	var out []string
 	for _, jobID := range c.order {
 		for _, taskID := range x.byJob[jobID] {
+			if len(x.byTask[taskID]) < 2 {
+				continue
+			}
 			atts := slices.Clone(x.byTask[taskID])
 			atts = slices.DeleteFunc(atts, func(a *ledgerAttempt) bool { return a.leased.IsZero() })
 			slices.SortStableFunc(atts, func(a, b *ledgerAttempt) int { return a.leased.Compare(b.leased) })
@@ -412,7 +443,8 @@ func stamp(t time.Time) string { return t.UTC().Format("15:04:05.000000") }
 func (c *checker) logs(ctx context.Context, refs []taskRef) Result {
 	var ev evidence
 	ev.addAll(settleLoop(ctx, c.logSettle, refs, func(rs []taskRef) []string {
-		x := indexLedger(c.in.Ledger)
+		x := c.ledger
+		x.refresh()
 		return parallelMap(len(rs), func(i int) string { return c.logMsg(ctx, rs[i], x) })
 	}))
 	return ev.result(NameLogs)
@@ -422,6 +454,9 @@ func (c *checker) logMsg(ctx context.Context, ref taskRef, x *ledgerIndex) strin
 	chunks, err := c.readLogs(ctx, ref.taskID)
 	if err != nil {
 		return fmt.Sprintf("job %s task %s: reading logs: %v", ref.jobID, ref.taskID, err)
+	}
+	if len(chunks) > 0 && x.byID[chunks[0].AttemptID] == nil && c.realAttempt(ctx, ref.taskID, chunks[0].AttemptID) {
+		return ""
 	}
 	where := fmt.Sprintf("job %s task %s", ref.jobID, ref.taskID)
 	a, msg := logAttempt(where, ref.taskID, chunks, x)
@@ -453,6 +488,26 @@ func (c *checker) logMsg(ctx context.Context, ref taskRef, x *ledgerIndex) strin
 	return exactDiff(where, lines, 1, a.end.LogLines, want)
 }
 
+// realAttempt reports whether attemptID, which the ledger does not know, ran
+// on a worker outside the simulated fleet, so the ledger cannot speak for its
+// logs. A canceled task's server row no longer names its worker, so this asks
+// the attempt list, one read for such a task only.
+func (c *checker) realAttempt(ctx context.Context, taskID, attemptID string) bool {
+	if c.in.Simulated == nil {
+		return false
+	}
+	atts, err := c.v.ListAttempts(ctx, taskID)
+	if err != nil {
+		return false
+	}
+	for _, a := range atts {
+		if a.ID == attemptID {
+			return c.realWorker(a.WorkerID)
+		}
+	}
+	return false
+}
+
 // logAttempt finds the ledger attempt the server's chunks belong to: the
 // chunks' own attempt, or the task's last leased attempt when there are none.
 func logAttempt(where, taskID string, chunks []client.LogLine, x *ledgerIndex) (a *ledgerAttempt, violation string) {
@@ -481,13 +536,7 @@ func (c *checker) readLogs(ctx context.Context, taskID string) ([]client.LogLine
 	var all []client.LogLine
 	var after int64
 	for {
-		var items []client.LogLine
-		var next int64
-		err := withRetry(ctx, func() error {
-			var err error
-			items, next, err = c.v.TaskLogs(ctx, taskID, after, maxPage)
-			return err
-		})
+		items, next, err := c.v.TaskLogs(ctx, taskID, after, maxPage)
 		if err != nil {
 			return nil, err
 		}
@@ -567,21 +616,14 @@ func (c *checker) workersConverge(ctx context.Context) Result {
 			}
 			return ev.result(NameWorkersConverge)
 		}
-		sleepCtx(ctx, min(poll, time.Until(deadline)))
+		sleep.For(ctx, min(poll, time.Until(deadline)))
 	}
 }
 
 func (c *checker) countWorkers(ctx context.Context) (online, disabled int, err error) {
-	for offset := 0; ; {
-		var p client.Page[client.Worker]
-		err := withRetry(ctx, func() error {
-			var err error
-			p, err = c.v.ListWorkers(ctx, c.in.FarmID, maxPage, offset)
-			return err
-		})
-		if err != nil {
-			return 0, 0, err
-		}
+	err = client.EachPage(maxPage, func(limit, offset int) (client.Page[client.Worker], error) {
+		return c.v.ListWorkers(ctx, c.in.FarmID, limit, offset)
+	}, func(p client.Page[client.Worker]) {
 		for _, w := range p.Items {
 			switch w.Status {
 			case workerOnline:
@@ -590,21 +632,28 @@ func (c *checker) countWorkers(ctx context.Context) (online, disabled int, err e
 				disabled++
 			}
 		}
-		offset += len(p.Items)
-		if len(p.Items) == 0 || offset >= p.Total {
-			return online, disabled, nil
-		}
+	})
+	if err != nil {
+		return 0, 0, err
 	}
+	return online, disabled, nil
 }
 
 // ── caps ─────────────────────────────────────────────────────────────────────
 
 // caps: the most attempts the simulator held at once on a queue, or on a
 // usage pool (each task claims one unit), is within the queue's
-// max_concurrent_tasks (0 is unlimited) or the pool's limit.
+// max_concurrent_tasks (0 is unlimited) or the pool's limit. Attempts real
+// sqi-workers ran are not in the ledger and are not counted, so with real
+// workers in the farm caps can miss a violation but never invent one.
 //
-// An attempt is held from its leased event to its end event, as in
-// [simworker.Ledger.ConcurrentPeak], with one difference. The server frees a
+// An attempt is held from its leased event to its first end event (or to the
+// end of the ledger when it has none), on the worker's clock. That window sits
+// inside the server's: the server commits the lease before the worker records
+// leased, and a dispatcher stamps an attempt's end event with a time taken
+// before it publishes the terminal status, so before the server can free the
+// slot. A peak above a server-enforced cap is therefore a real violation, with
+// one difference. The server frees a
 // canceled task's slot and claims when it commits the cancel, while the
 // simulator ends the attempt only once the cancel message has reached it and
 // its logs are flushed, so another lease can land in between. An attempt the
@@ -634,51 +683,41 @@ func (c *checker) caps() Result {
 	return ev.result(NameCaps)
 }
 
-// edge is an attempt starting (+1) or ending (-1) on a job class.
+// edge is an attempt starting (+1) or ending (-1) on a queue and usage pool.
 type edge struct {
-	at    time.Time
-	jc    scenario.JobClass
-	delta int
+	at          time.Time
+	queue, pool string
+	delta       int
 }
 
 // peaks returns the most attempts in flight at once per queue and per usage
 // pool. An attempt that ends at the instant another starts does not overlap it.
 func (c *checker) peaks() (queues, pools map[string]int) {
-	type start struct {
-		at time.Time
-		jc scenario.JobClass
-	}
-	starts := map[string]start{}
-	ended := map[string]bool{}
+	x := c.ledger
+	x.refresh()
 	var edges []edge
-	for _, e := range c.in.Ledger.Events() {
-		switch e.Kind {
-		case simworker.KindLeased:
-			jc, ok := c.classOf(e.JobID)
-			if _, dup := starts[e.AttemptID]; ok && !dup {
-				starts[e.AttemptID] = start{at: e.At, jc: jc}
-				edges = append(edges, edge{at: e.At, jc: jc, delta: 1})
-			}
-		case simworker.KindTerminal, simworker.KindCanceled, simworker.KindCrashed:
-			s, ok := starts[e.AttemptID]
-			if ok && !ended[e.AttemptID] {
-				ended[e.AttemptID] = true
-				edges = append(edges, edge{at: c.heldUntil(e, s.at), jc: s.jc, delta: -1})
-			}
+	for _, a := range x.byID {
+		jc, ok := c.classOf(a.jobID)
+		if !ok || a.leased.IsZero() {
+			continue
+		}
+		edges = append(edges, edge{at: a.leased, queue: jc.Queue, pool: jc.UsagePool, delta: 1})
+		if a.end != nil {
+			edges = append(edges, edge{at: c.heldUntil(*a.end, a.leased), queue: jc.Queue, pool: jc.UsagePool, delta: -1})
 		}
 	}
 	// Ends sort before starts at the same instant.
-	slices.SortStableFunc(edges, func(a, b edge) int {
+	slices.SortFunc(edges, func(a, b edge) int {
 		return cmp.Or(a.at.Compare(b.at), cmp.Compare(a.delta, b.delta))
 	})
 	queues, pools = map[string]int{}, map[string]int{}
 	curQ, curP := map[string]int{}, map[string]int{}
 	for _, e := range edges {
-		curQ[e.jc.Queue] += e.delta
-		queues[e.jc.Queue] = max(queues[e.jc.Queue], curQ[e.jc.Queue])
-		if e.jc.UsagePool != "" {
-			curP[e.jc.UsagePool] += e.delta
-			pools[e.jc.UsagePool] = max(pools[e.jc.UsagePool], curP[e.jc.UsagePool])
+		curQ[e.queue] += e.delta
+		queues[e.queue] = max(queues[e.queue], curQ[e.queue])
+		if e.pool != "" {
+			curP[e.pool] += e.delta
+			pools[e.pool] = max(pools[e.pool], curP[e.pool])
 		}
 	}
 	return queues, pools

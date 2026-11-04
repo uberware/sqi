@@ -16,7 +16,6 @@ workers:
 
 jobs:
   - name: expr-small
-    weight: 4
     rate: 2/s
     queue: render
     expr: true
@@ -27,7 +26,6 @@ jobs:
       duration: {dist: lognormal, median: 10s, p95: 40s}
       log_lines: 20
   - name: expr-large
-    weight: 1
     rate: 0.2/s
     queue: render
     expr: true
@@ -38,7 +36,6 @@ jobs:
       duration: {dist: lognormal, median: 10s, p95: 40s}
       log_lines: 20
   - name: plain
-    weight: 2
     rate: 1/s
     queue: render
     steps: 2

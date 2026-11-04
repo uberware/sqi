@@ -26,17 +26,19 @@ package verify
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"hash/fnv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/uberware/sqi/internal/loadtest/internal/sleep"
+
 	"github.com/uberware/sqi/internal/loadtest/client"
 	"github.com/uberware/sqi/internal/loadtest/driver"
 	"github.com/uberware/sqi/internal/loadtest/scenario"
 	"github.com/uberware/sqi/internal/loadtest/simworker"
+	"github.com/uberware/sqi/internal/store"
 )
 
 // Invariant names, in the order [Check] returns them.
@@ -73,27 +75,30 @@ const (
 	settlePollMax = time.Second
 )
 
-// retryWaits are the pauses before each try of a server call; a call is tried
-// once per entry. Only a transport error, a 429 or a 5xx is retried.
-var retryWaits = []time.Duration{0, 100 * time.Millisecond, 400 * time.Millisecond}
-
-// Server statuses.
+// Server statuses, as the REST API spells them.
 const (
-	jobCompleted = "completed"
-	statusOK     = "succeeded"
-	statusFailed = "failed"
-	statusCancel = "canceled"
-	workerOnline = "online"
-	workerOff    = "disabled"
+	jobCompleted = string(store.JobStatusCompleted)
+	statusOK     = string(store.TaskStatusSucceeded)
+	statusFailed = string(store.TaskStatusFailed)
+	statusCancel = string(store.TaskStatusCanceled)
+	workerOnline = string(store.WorkerStatusOnline)
+	workerOff    = string(store.WorkerStatusDisabled)
+)
+
+// Sampling salts.
+const (
 	saltAttempts = "attempts"
 	saltLogs     = "logs"
 )
 
-// terminalJob holds the job statuses a job cannot leave on its own.
-var terminalJob = map[string]bool{jobCompleted: true, statusFailed: true, statusCancel: true}
+// terminalJob reports whether a job status is one a job cannot leave on its
+// own.
+func terminalJob(status string) bool { return store.JobStatus(status).IsTerminal() }
 
 // ServerView is the part of the server's REST API the checks read.
-// *client.Client satisfies it.
+// *client.Client satisfies it. The checks do not retry a failed read, so pass
+// a client from [client.Client.RetryingReads]: a passing fault is then
+// retried, and only one that outlasts the client's retry budget is reported.
 type ServerView interface {
 	GetJob(ctx context.Context, id string) (client.Job, error)
 	ListJobs(ctx context.Context, farmID string, limit, offset int) (client.Page[client.Job], error)
@@ -130,13 +135,10 @@ type Input struct {
 	AttemptSample float64
 	// Seed picks the sampled tasks: the same seed picks the same tasks.
 	Seed uint64
-	// CanceledJobs are the jobs the run's actions canceled ([CanceledJobs]).
-	// A task of one of them may be canceled whatever the simulator did.
-	CanceledJobs []string
 	// CanceledAt is when the first cancel action targeting each job started
-	// ([CancelTimes]). Its jobs count as canceled too, and caps ends a
-	// canceled attempt of one of them no later than that time, when the
-	// server may already have freed its slot.
+	// ([CancelTimes]). A task of one of its jobs may be canceled whatever the
+	// simulator did, and caps ends a canceled attempt of one of them no later
+	// than that time, when the server may already have freed its slot.
 	CanceledAt map[string]time.Time
 	// ConvergeWithin is how long the online worker count may take to reach
 	// LiveWorkers: the heartbeat timeout plus a margin. Zero checks once.
@@ -149,6 +151,11 @@ type Input struct {
 	// LogSettle is the same for logs, whose chunks are ingested on a stream of
 	// their own. Zero means DefaultLogSettle.
 	LogSettle time.Duration
+	// Simulated reports whether a worker ID is one of the simulated fleet's.
+	// The ledger records only what simulated workers did, so the outcomes and
+	// logs checks leave out a task a real sqi-worker ran, and caps does not
+	// count its attempts. Nil means every worker is simulated.
+	Simulated func(workerID string) bool
 	// TaskSeen, when set, is called with every task the checks list, as the
 	// server first lists it. Calls come from several goroutines at once.
 	TaskSeen func(jobID string, t client.Task)
@@ -175,6 +182,7 @@ type Result struct {
 // and the farm's worker list once per poll.
 func Check(ctx context.Context, v ServerView, in Input) []Result {
 	c := newChecker(v, in)
+	c.ledger = indexLedger(in.Ledger)
 	workers := make(chan Result, 1)
 	go func() { workers <- c.workersConverge(ctx) }()
 
@@ -201,6 +209,7 @@ type checker struct {
 	settle   time.Duration
 	// logSettle is the logs check's settle time.
 	logSettle time.Duration
+	ledger    *ledgerIndex
 }
 
 func newChecker(v ServerView, in Input) *checker {
@@ -218,9 +227,6 @@ func newChecker(v ServerView, in Input) *checker {
 			c.jobs[j.ID] = j
 		}
 	}
-	for _, id := range in.CanceledJobs {
-		c.canceled[id] = true
-	}
 	for id := range in.CanceledAt {
 		c.canceled[id] = true
 	}
@@ -230,6 +236,12 @@ func newChecker(v ServerView, in Input) *checker {
 		}
 	}
 	return c
+}
+
+// realWorker reports whether the server names a worker outside the
+// simulated fleet, whose work the ledger cannot speak for.
+func (c *checker) realWorker(workerID string) bool {
+	return workerID != "" && c.in.Simulated != nil && !c.in.Simulated(workerID)
 }
 
 // classOf returns the scenario class of an accepted job.
@@ -261,7 +273,7 @@ func WaitDrained(ctx context.Context, v ServerView, farmID string, jobs []driver
 			case errs[id] != nil:
 				last[id] = "unknown: " + errs[id].Error()
 				open = append(open, id)
-			case !terminalJob[statuses[id]]:
+			case !terminalJob(statuses[id]):
 				last[id] = statuses[id]
 				open = append(open, id)
 			}
@@ -276,7 +288,7 @@ func WaitDrained(ctx context.Context, v ServerView, farmID string, jobs []driver
 		if !time.Now().Before(deadline) {
 			return fmt.Errorf("verify: %d of %d jobs not terminal after %s: %s", len(pending), total, timeout, describeJobs(pending, last))
 		}
-		sleepCtx(ctx, min(poll, time.Until(deadline)))
+		sleep.For(ctx, min(poll, time.Until(deadline)))
 	}
 }
 
@@ -291,25 +303,6 @@ func describeJobs(ids []string, status map[string]string) string {
 		s += fmt.Sprintf(" and %d more", len(ids)-MaxEvidence)
 	}
 	return s
-}
-
-// CanceledJobs returns the jobs the run's cancel_jobs actions targeted, each
-// once, for Input.CanceledJobs.
-func CanceledJobs(records []driver.ActionRecord) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, r := range records {
-		if r.Kind != driver.ActionCancelJobs {
-			continue
-		}
-		for _, id := range r.JobIDs {
-			if !seen[id] {
-				seen[id] = true
-				out = append(out, id)
-			}
-		}
-	}
-	return out
 }
 
 // CancelTimes returns, for each job a cancel_jobs action targeted, when the
@@ -379,12 +372,7 @@ func jobStatuses(ctx context.Context, v ServerView, farmID string, ids []string)
 		return statuses, errs
 	}
 	for _, id := range missing {
-		var j client.Job
-		err := withRetry(ctx, func() error {
-			var err error
-			j, err = v.GetJob(ctx, id)
-			return err
-		})
+		j, err := v.GetJob(ctx, id)
 		if err != nil {
 			errs[id] = err
 			continue
@@ -396,24 +384,17 @@ func jobStatuses(ctx context.Context, v ServerView, farmID string, ids []string)
 
 // listFarmJobs calls fn for every job of the farm, page by page.
 func listFarmJobs(ctx context.Context, v ServerView, farmID string, fn func(client.Job)) error {
-	for offset := 0; ; {
-		var p client.Page[client.Job]
-		err := withRetry(ctx, func() error {
-			var err error
-			p, err = v.ListJobs(ctx, farmID, maxPage, offset)
-			return err
-		})
-		if err != nil {
-			return fmt.Errorf("listing jobs of farm %q: %w", farmID, err)
-		}
+	err := client.EachPage(maxPage, func(limit, offset int) (client.Page[client.Job], error) {
+		return v.ListJobs(ctx, farmID, limit, offset)
+	}, func(p client.Page[client.Job]) {
 		for _, j := range p.Items {
 			fn(j)
 		}
-		offset += len(p.Items)
-		if len(p.Items) == 0 || offset >= p.Total {
-			return nil
-		}
+	})
+	if err != nil {
+		return fmt.Errorf("listing jobs of farm %q: %w", farmID, err)
 	}
+	return nil
 }
 
 // evidence collects violations, keeping the first MaxEvidence.
@@ -487,50 +468,10 @@ func parallelMap[T any](n int, fn func(i int) T) []T {
 	return out
 }
 
-// withRetry calls fn up to len(retryWaits) times while it fails with a
-// transport error, a 429 or a 5xx and ctx is live.
-func withRetry(ctx context.Context, fn func() error) error {
-	var err error
-	for i, wait := range retryWaits {
-		if i > 0 && !sleepCtx(ctx, wait) {
-			return err
-		}
-		if err = fn(); err == nil || !retryable(ctx, err) {
-			return err
-		}
-	}
-	return err
-}
-
-func retryable(ctx context.Context, err error) bool {
-	if ctx.Err() != nil {
-		return false
-	}
-	if ae, ok := errors.AsType[*client.APIError](err); ok {
-		return ae.Status == 429 || ae.Status >= 500
-	}
-	return true
-}
-
 // pollInterval is how often to re-read something that has d to settle: a
 // twentieth of d, between 10 ms and 1 s.
 func pollInterval(d time.Duration) time.Duration {
 	return min(max(d/20, 10*time.Millisecond), time.Second)
-}
-
-// sleepCtx sleeps for d and reports whether ctx is still live.
-func sleepCtx(ctx context.Context, d time.Duration) bool {
-	if d <= 0 {
-		return ctx.Err() == nil
-	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-t.C:
-		return true
-	case <-ctx.Done():
-		return false
-	}
 }
 
 // settleLoop calls check on items and keeps re-checking the ones it reports
@@ -556,7 +497,7 @@ func settleLoop[T any](ctx context.Context, d time.Duration, items []T, check fu
 		if len(items) == 0 || ctx.Err() != nil || (rechecked && !time.Now().Before(deadline)) {
 			return msgs
 		}
-		sleepCtx(ctx, min(wait, time.Until(deadline)))
+		sleep.For(ctx, min(wait, time.Until(deadline)))
 		wait = min(2*wait, settlePollMax)
 		msgs = check(items)
 		rechecked = true
