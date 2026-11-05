@@ -877,3 +877,62 @@ func TestElector_LossRacingContextEnd(t *testing.T) {
 		cancel()
 	}
 }
+
+// Authorized is what a request handler asks, so it must be false the moment
+// the self-fence deadline passes, not only once Hold's loop has noticed: a
+// process that was frozen and has just resumed answers requests before its
+// loop runs.
+func TestElector_AuthorizedLapsesAtTheDeadlineWithoutHold(t *testing.T) {
+	h := newHarness(t)
+	a := h.elector("a")
+	if a.Authorized() {
+		t.Fatal("Authorized() before winning the lease")
+	}
+	acquiredAt := h.clk.Now()
+	campaign(t, a)
+	if !a.Authorized() {
+		t.Fatal("Authorized() right after winning the lease = false")
+	}
+
+	// No Hold is running, as in a process that has not been scheduled since
+	// it resumed.
+	h.clk.Advance(acquiredAt.Add(validity).Sub(h.clk.Now()) - time.Millisecond)
+	if !a.Authorized() {
+		t.Error("Authorized() 1ms before the deadline = false")
+	}
+	h.clk.Advance(time.Millisecond)
+	if a.Authorized() {
+		t.Error("Authorized() at the deadline = true, want false")
+	}
+}
+
+func TestElector_AuthorizedFollowsRenewals(t *testing.T) {
+	h := newHarness(t)
+	a := h.elector("a")
+	acquiredAt := h.clk.Now()
+	epoch := campaign(t, a)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := holdAsync(ctx, a, epoch)
+
+	// Run well past the winning acquire's deadline; renewals keep extending it.
+	h.step(t, validity+3*time.Second, 250*time.Millisecond, 1, nil, returned(done))
+	if h.clk.Now().Before(acquiredAt.Add(validity)) {
+		t.Fatalf("test clock at +%v, want past the acquire's deadline +%v", h.clk.Now().Sub(acquiredAt), validity)
+	}
+	notReturned(t, done, "after renewals extended the window")
+	if !a.Authorized() {
+		t.Error("Authorized() after renewals extended the window = false")
+	}
+}
+
+func TestElector_AuthorizedFalseAfterLoss(t *testing.T) {
+	h := newHarness(t)
+	a := h.elector("a")
+	campaign(t, a)
+	a.Lose(ha.ReasonPromotion, errors.New("promotion step failed"))
+	if a.Authorized() {
+		t.Error("Authorized() after Lose = true")
+	}
+}

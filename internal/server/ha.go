@@ -215,6 +215,7 @@ func (s *Server) startStandby(ctx context.Context) error {
 		BrokerUp: hb.Connected,
 		Logger:   s.logger,
 	}, s.store)
+	s.ha.role.setAuthority(func() bool { return s.ha.elector.Authorized() })
 	s.ha.loops.Go(func() { s.ha.elector.RunMembership(ctx) })
 
 	if err := hb.StartStandby(ctx, s.guardOptions()); err != nil {

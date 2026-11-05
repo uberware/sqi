@@ -19,21 +19,47 @@ type roleState struct {
 	role   string
 	leader string // the leader's name, "" when none is known
 	epoch  int64
+
+	// authority, when set, is asked whether this server's lease authority
+	// still stands. A leader whose authority has lapsed reports as a standby
+	// from that moment, without waiting for the elector to record the loss:
+	// a process that was frozen and has just resumed answers requests before
+	// the elector's loop runs.
+	authority func() bool
 }
 
 func newRoleState() *roleState { return &roleState{role: ha.RoleStandby} }
+
+// setAuthority sets the source of truth for whether a leader's lease
+// authority still stands. It is called once, before the server answers
+// requests.
+func (r *roleState) setAuthority(f func() bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.authority = f
+}
+
+// leading reports whether this server leads and still holds the authority to.
+// The caller holds r.mu.
+func (r *roleState) leading() bool {
+	return r.role == ha.RoleLeader && (r.authority == nil || r.authority())
+}
 
 // isLeader reports whether this server leads.
 func (r *roleState) isLeader() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.role == ha.RoleLeader
+	return r.leading()
 }
 
-// leaderName is the leader's name, this server's own while it leads.
+// leaderName is the leader's name, this server's own while it leads. A leader
+// whose authority has lapsed knows of none.
 func (r *roleState) leaderName() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.role == ha.RoleLeader && !r.leading() {
+		return ""
+	}
 	return r.leader
 }
 
@@ -41,6 +67,9 @@ func (r *roleState) leaderName() string {
 func (r *roleState) info() health.RoleInfo {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.role == ha.RoleLeader && !r.leading() {
+		return health.RoleInfo{Role: ha.RoleStandby, Epoch: r.epoch}
+	}
 	return health.RoleInfo{Role: r.role, IsLeader: r.role == ha.RoleLeader, Leader: r.leader, Epoch: r.epoch}
 }
 
