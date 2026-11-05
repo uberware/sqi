@@ -1126,7 +1126,7 @@ func provisionRemoteStreams(ctx context.Context, js jetstream.JetStream, replica
 	logReplicaChanges(ctx, logger, before, replicas)
 	logger.InfoContext(
 		ctx, "bus: jetstream streams provisioned",
-		slog.String("streams", strings.Join(streamNames(), ",")),
+		slog.String("streams", strings.Join(StreamNames(), ",")),
 		slog.Int("replicas", replicas),
 	)
 	return nil

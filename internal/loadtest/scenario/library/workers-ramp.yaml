@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: workers-ramp
+description: nodes - ramp to 10,000 idle workers, then light load; heartbeat and parked-lease cost, 20 min
+duration: 20m
+warmup: 2m
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: sim
+    count: 10000
+    ramp: 250/s
+    cpu: 8
+    os: linux
+    heartbeat: 15s
+
+jobs:
+  - name: light
+    rate: 1/s
+    queue: render
+    steps: 1
+    tasks_per_step: 10
+    cores: 1
+    task:
+      duration: {dist: lognormal, median: 20s, p95: 60s}
+      log_lines: 20
+
+clients:
+  rest_pollers: {count: 2, interval: 5s, endpoints: [workers-list]}

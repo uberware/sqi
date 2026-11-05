@@ -60,6 +60,9 @@ type HTTPConfig struct {
 	// Env: SQI_HTTP_ENABLE_PPROF
 	EnablePprof bool `yaml:"enable_pprof"`
 
+	// RateLimit configures the per-IP API rate limit.
+	RateLimit RateLimitConfig `yaml:"rate_limit"`
+
 	// CORSOrigins is the list of browser origins the CORS middleware allows.
 	// Empty means "*" (the router's default). With auth enabled a wildcard is
 	// dropped at startup — credentials cannot be combined with "*" — so a
@@ -69,6 +72,15 @@ type HTTPConfig struct {
 
 	// TLS terminates HTTPS in-process on this listener. Off by default.
 	TLS TLSConfig `yaml:"tls"`
+}
+
+// RateLimitConfig controls the per-IP rate limit on the HTTP API.
+type RateLimitConfig struct {
+	// Enabled applies the per-IP rate limit to API requests. On by default.
+	// Turn it off only behind a trusted network or for load testing: with it
+	// off nothing throttles a client that floods the API.
+	// Env: SQI_HTTP_RATE_LIMIT_ENABLED
+	Enabled bool `yaml:"enabled"`
 }
 
 // The NATS broker modes.
@@ -1045,7 +1057,8 @@ const (
 func DefaultConfig() Config {
 	return Config{
 		HTTP: HTTPConfig{
-			Addr: "0.0.0.0:8080",
+			Addr:      "0.0.0.0:8080",
+			RateLimit: RateLimitConfig{Enabled: true},
 		},
 		NATS: NATSConfig{
 			Mode: NATSModeEmbedded,

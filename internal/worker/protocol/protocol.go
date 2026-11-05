@@ -50,7 +50,10 @@
 // curl, jq) which is valuable during development and debugging.
 package protocol
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // ProtocolVersion is the current wire-protocol version.  Increment this when a
 // breaking change is made to any message type — workers and servers agree on
@@ -103,6 +106,11 @@ const (
 // publishes for each task it abandons on a forced shutdown. The server treats
 // it as a reclaim, not a genuine failure.
 const MessageWorkerShutdown = "worker_shutdown"
+
+// TimeoutReason is the failure reason of a task killed at its onRun timeout.
+func TimeoutReason(timeout time.Duration) string {
+	return fmt.Sprintf("execution timeout after %s", timeout)
+}
 
 // ── RegisterMsg ───────────────────────────────────────────────────────────────
 

@@ -12,7 +12,8 @@ layers overriding earlier ones:
    path with `--config /path/to/file` (a path that does not exist is an
    error, unlike the search). A Windows service does not search: it refuses
    to start without `--config` (see
-   [Windows service](operations.md#windows-service)).
+   [Windows service](operations.md#windows-service)). A key the server does
+   not know, such as a misspelled one, is an error that names its line.
 3. **Environment variables** — prefixed `SQI_`, e.g. `SQI_HTTP_ADDR`.
 4. **CLI flags** — highest priority. `--config`, `--log-level` and
    `--log-format` are available on every subcommand; the remaining flags
@@ -76,6 +77,30 @@ loopback-only instance for performance diagnosis.
 ```yaml
 http:
   enable_pprof: false
+```
+
+---
+
+### `http.rate_limit.enabled`
+
+| | |
+|---|---|
+| **Type** | `bool` |
+| **Default** | `true` |
+| **Env var** | `SQI_HTTP_RATE_LIMIT_ENABLED` |
+| **CLI flag** | *(none — set via config file or env var)* |
+
+Apply the per-IP rate limit to API requests. With it on, a client that sends
+requests faster than the limit allows is answered with `429 Too Many Requests`.
+
+Turn it off only behind a trusted network or for load testing. With it off
+nothing throttles a client that floods the API, and a load generator driving
+the server from one address does not hit the limit.
+
+```yaml
+http:
+  rate_limit:
+    enabled: true
 ```
 
 ---
@@ -2567,6 +2592,7 @@ for the detector schema reference.
 |---|---|---|---|---|
 | `http.addr` | string | `0.0.0.0:8080` | `SQI_HTTP_ADDR` | `--http-addr` |
 | `http.enable_pprof` | bool | `false` | `SQI_HTTP_ENABLE_PPROF` | — |
+| `http.rate_limit.enabled` | bool | `true` | `SQI_HTTP_RATE_LIMIT_ENABLED` | — |
 | `http.cors_origins` | []string | `[]` (= `*`) | `SQI_HTTP_CORS_ORIGINS` | `--http-cors-origins` |
 | `http.tls.enabled` | bool | `false` | `SQI_HTTP_TLS_ENABLED` | — |
 | `http.tls.cert_file` | string | `""` | `SQI_HTTP_TLS_CERT_FILE` | — |

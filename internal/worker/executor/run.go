@@ -293,7 +293,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 		// Per-task timeout exceeded.
 		failed = true
 		exitCode := result.ExitCode
-		reason := fmt.Sprintf("execution timeout after %s", time.Duration(msg.OnRun.TimeoutSeconds)*time.Second)
+		reason := protocol.TimeoutReason(time.Duration(msg.OnRun.TimeoutSeconds) * time.Second)
 		e.logger.WarnContext(
 			ctx, "executor: task timed out",
 			slog.String("task_id", msg.TaskID),

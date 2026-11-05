@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: smoke
+description: all axes, tiny - 20 workers, 50 jobs x 2 steps x 10 tasks with logs, 5 WebSocket clients and one expected crash, 1 min
+duration: 1m
+warmup: 5s
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: sim
+    count: 20
+    ramp: 20/s
+    cpu: 8
+    os: linux
+    churn: {crash_per_hour: 3, restart_after: 10s}
+
+jobs:
+  - name: shot
+    total: 50
+    queue: render
+    steps: 2
+    tasks_per_step: 10
+    cores: 1
+    task:
+      duration: {dist: uniform, min: 1s, max: 3s}
+      log_lines: 20
+      log_line_bytes: 120
+
+clients:
+  websocket: {count: 5, subscribe: [jobs, workers, own-job-tasks, own-task-logs]}

@@ -106,6 +106,10 @@ Run `make` (no arguments) to see all available targets with descriptions.
 | `make vet` | Run `go vet` over the filtered package list (excludes `web/node_modules/`) |
 | `make generate` | Run `go generate` across the module |
 | `make docs` | Serve Go package docs at `localhost:8080` via `pkgsite` |
+| `make load-smoke` | Run the load harness's smoke scenario end to end as a Go test (SQLite; PostgreSQL too with `SQI_TEST_POSTGRES_DSN`) |
+| `make load` | Run one load scenario with `sqi-load` (`SCENARIO=mixed-medium`) |
+| `make soak` | Run a scenario as a soak (`SCENARIO=soak-steady`, `DURATION=8h`) |
+| `make load-sweep` | Sweep one scenario parameter and find the knee (`SCENARIO=…`, `VARY='workers[0].count=100,200,400'`) |
 | `make docs-site-install` | Create `.venv-docs/` and install the pinned MkDocs dependencies |
 | `make docs-site` | Build the MkDocs documentation site with `--strict` (the CI gate) |
 | `make docs-site-serve` | Serve the documentation site locally with live reload |
@@ -550,6 +554,18 @@ waiting on a lock, then resumes `paused`, and reports both errors and whether
 The hook runs on PostgreSQL only, so these tests skip without a DSN, and
 under `SQI_TEST_PG_FORCE_TX_RETRY=1`, where the pause would fire in the
 rehearsal that is rolled back.
+
+### Load testing
+
+`sqi-load` (`cmd/sqi-load`, `internal/loadtest`) is the load and soak harness:
+it drives a real `sqi-server` with simulated workers, job submissions and UI
+clients, and checks six correctness invariants. `make load-smoke` runs its
+one-minute `smoke` scenario as a Go test (build tag `load`, not part of
+`make test`; CI runs it as `load-smoke`), and `make load`, `make soak` and
+`make load-sweep` drive the CLI. Like the other real-server suites, a skipped
+run verifies nothing: look for `--- PASS: TestLoadSmoke`. Scenario format,
+built-in library, reading a report and baselines are in
+[Load testing](load-testing.md).
 
 ### Differential-testing EXPR against the reference implementation
 

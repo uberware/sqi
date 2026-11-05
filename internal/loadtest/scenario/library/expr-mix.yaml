@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: expr-mix
+description: submission CPU - EXPR templates of 2 to 4 steps and up to 500 tasks per step beside plain ones, 30 min
+duration: 30m
+warmup: 2m
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: sim
+    count: 300
+    ramp: 100/s
+    cpu: 8
+    os: linux
+
+jobs:
+  - name: expr-small
+    rate: 2/s
+    queue: render
+    expr: true
+    steps: 2
+    tasks_per_step: 100
+    cores: 1
+    task:
+      duration: {dist: lognormal, median: 10s, p95: 40s}
+      log_lines: 20
+  - name: expr-large
+    rate: 0.2/s
+    queue: render
+    expr: true
+    steps: 4
+    tasks_per_step: 500
+    cores: 1
+    task:
+      duration: {dist: lognormal, median: 10s, p95: 40s}
+      log_lines: 20
+  - name: plain
+    rate: 1/s
+    queue: render
+    steps: 2
+    tasks_per_step: 100
+    cores: 1
+    task:
+      duration: {dist: lognormal, median: 10s, p95: 40s}
+      log_lines: 20

@@ -143,8 +143,8 @@ func ensureStreams(ctx context.Context, js jetstream.JetStream, replicas int) er
 	return nil
 }
 
-// streamNames lists sqi's streams by name.
-func streamNames() []string {
+// StreamNames lists sqi's streams by name, in the order they are provisioned.
+func StreamNames() []string {
 	defs := streamDefs(1)
 	names := make([]string, 0, len(defs))
 	for _, def := range defs {

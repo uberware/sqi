@@ -1,0 +1,297 @@
+# HELP go_gc_duration_seconds A summary of the wall-time pause (stop-the-world) duration in garbage collection cycles.
+# TYPE go_gc_duration_seconds summary
+go_gc_duration_seconds{quantile="0"} 0
+go_gc_duration_seconds{quantile="0.25"} 0
+go_gc_duration_seconds{quantile="0.5"} 0
+go_gc_duration_seconds{quantile="0.75"} 0.0005274
+go_gc_duration_seconds{quantile="1"} 0.0005274
+go_gc_duration_seconds_sum 0.0005274
+go_gc_duration_seconds_count 3
+# HELP go_gc_gogc_percent Heap size target percentage configured by the user, otherwise 100. This value is set by the GOGC environment variable, and the runtime/debug.SetGCPercent function. Sourced from /gc/gogc:percent.
+# TYPE go_gc_gogc_percent gauge
+go_gc_gogc_percent 100
+# HELP go_gc_gomemlimit_bytes Go runtime memory limit configured by the user, otherwise math.MaxInt64. This value is set by the GOMEMLIMIT environment variable, and the runtime/debug.SetMemoryLimit function. Sourced from /gc/gomemlimit:bytes.
+# TYPE go_gc_gomemlimit_bytes gauge
+go_gc_gomemlimit_bytes 9.223372036854776e+18
+# HELP go_goroutines Number of goroutines that currently exist.
+# TYPE go_goroutines gauge
+go_goroutines 83
+# HELP go_info Information about the Go environment.
+# TYPE go_info gauge
+go_info{version="go1.26.3"} 1
+# HELP go_memstats_alloc_bytes Number of bytes allocated in heap and currently in use. Equals to /memory/classes/heap/objects:bytes.
+# TYPE go_memstats_alloc_bytes gauge
+go_memstats_alloc_bytes 3.6076968e+07
+# HELP go_memstats_alloc_bytes_total Total number of bytes allocated in heap until now, even if released already. Equals to /gc/heap/allocs:bytes.
+# TYPE go_memstats_alloc_bytes_total counter
+go_memstats_alloc_bytes_total 3.7789464e+07
+# HELP go_memstats_buck_hash_sys_bytes Number of bytes used by the profiling bucket hash table. Equals to /memory/classes/profiling/buckets:bytes.
+# TYPE go_memstats_buck_hash_sys_bytes gauge
+go_memstats_buck_hash_sys_bytes 1.458904e+06
+# HELP go_memstats_frees_total Total number of heap objects frees. Equals to /gc/heap/frees:objects + /gc/heap/tiny/allocs:objects.
+# TYPE go_memstats_frees_total counter
+go_memstats_frees_total 19993
+# HELP go_memstats_gc_sys_bytes Number of bytes used for garbage collection system metadata. Equals to /memory/classes/metadata/other:bytes.
+# TYPE go_memstats_gc_sys_bytes gauge
+go_memstats_gc_sys_bytes 3.20144e+06
+# HELP go_memstats_heap_alloc_bytes Number of heap bytes allocated and currently in use, same as go_memstats_alloc_bytes. Equals to /memory/classes/heap/objects:bytes.
+# TYPE go_memstats_heap_alloc_bytes gauge
+go_memstats_heap_alloc_bytes 3.6076968e+07
+# HELP go_memstats_heap_idle_bytes Number of heap bytes waiting to be used. Equals to /memory/classes/heap/released:bytes + /memory/classes/heap/free:bytes.
+# TYPE go_memstats_heap_idle_bytes gauge
+go_memstats_heap_idle_bytes 8.3968e+06
+# HELP go_memstats_heap_inuse_bytes Number of heap bytes that are in use. Equals to /memory/classes/heap/objects:bytes + /memory/classes/heap/unused:bytes
+# TYPE go_memstats_heap_inuse_bytes gauge
+go_memstats_heap_inuse_bytes 3.9706624e+07
+# HELP go_memstats_heap_objects Number of currently allocated objects. Equals to /gc/heap/objects:objects.
+# TYPE go_memstats_heap_objects gauge
+go_memstats_heap_objects 29410
+# HELP go_memstats_heap_released_bytes Number of heap bytes released to OS. Equals to /memory/classes/heap/released:bytes.
+# TYPE go_memstats_heap_released_bytes gauge
+go_memstats_heap_released_bytes 8.3968e+06
+# HELP go_memstats_heap_sys_bytes Number of heap bytes obtained from system. Equals to /memory/classes/heap/objects:bytes + /memory/classes/heap/unused:bytes + /memory/classes/heap/released:bytes + /memory/classes/heap/free:bytes.
+# TYPE go_memstats_heap_sys_bytes gauge
+go_memstats_heap_sys_bytes 4.8103424e+07
+# HELP go_memstats_last_gc_time_seconds Number of seconds since 1970 of last garbage collection.
+# TYPE go_memstats_last_gc_time_seconds gauge
+go_memstats_last_gc_time_seconds 1.793778292397061e+09
+# HELP go_memstats_mallocs_total Total number of heap objects allocated, both live and gc-ed. Semantically a counter version for go_memstats_heap_objects gauge. Equals to /gc/heap/allocs:objects + /gc/heap/tiny/allocs:objects.
+# TYPE go_memstats_mallocs_total counter
+go_memstats_mallocs_total 49403
+# HELP go_memstats_mcache_inuse_bytes Number of bytes in use by mcache structures. Equals to /memory/classes/metadata/mcache/inuse:bytes.
+# TYPE go_memstats_mcache_inuse_bytes gauge
+go_memstats_mcache_inuse_bytes 27168
+# HELP go_memstats_mcache_sys_bytes Number of bytes used for mcache structures obtained from system. Equals to /memory/classes/metadata/mcache/inuse:bytes + /memory/classes/metadata/mcache/free:bytes.
+# TYPE go_memstats_mcache_sys_bytes gauge
+go_memstats_mcache_sys_bytes 31696
+# HELP go_memstats_mspan_inuse_bytes Number of bytes in use by mspan structures. Equals to /memory/classes/metadata/mspan/inuse:bytes.
+# TYPE go_memstats_mspan_inuse_bytes gauge
+go_memstats_mspan_inuse_bytes 160000
+# HELP go_memstats_mspan_sys_bytes Number of bytes used for mspan structures obtained from system. Equals to /memory/classes/metadata/mspan/inuse:bytes + /memory/classes/metadata/mspan/free:bytes.
+# TYPE go_memstats_mspan_sys_bytes gauge
+go_memstats_mspan_sys_bytes 163200
+# HELP go_memstats_next_gc_bytes Number of heap bytes when next garbage collection will take place. Equals to /gc/heap/goal:bytes.
+# TYPE go_memstats_next_gc_bytes gauge
+go_memstats_next_gc_bytes 5.2899682e+07
+# HELP go_memstats_other_sys_bytes Number of bytes used for other system allocations. Equals to /memory/classes/other:bytes.
+# TYPE go_memstats_other_sys_bytes gauge
+go_memstats_other_sys_bytes 1.741616e+06
+# HELP go_memstats_stack_inuse_bytes Number of bytes obtained from system for stack allocator in non-CGO environments. Equals to /memory/classes/heap/stacks:bytes.
+# TYPE go_memstats_stack_inuse_bytes gauge
+go_memstats_stack_inuse_bytes 2.228224e+06
+# HELP go_memstats_stack_sys_bytes Number of bytes obtained from system for stack allocator. Equals to /memory/classes/heap/stacks:bytes + /memory/classes/os-stacks:bytes.
+# TYPE go_memstats_stack_sys_bytes gauge
+go_memstats_stack_sys_bytes 2.228224e+06
+# HELP go_memstats_sys_bytes Number of bytes obtained from system. Equals to /memory/classes/total:byte.
+# TYPE go_memstats_sys_bytes gauge
+go_memstats_sys_bytes 5.6928504e+07
+# HELP go_sched_gomaxprocs_threads The current runtime.GOMAXPROCS setting, or the number of operating system threads that can execute user-level Go code simultaneously. Sourced from /sched/gomaxprocs:threads.
+# TYPE go_sched_gomaxprocs_threads gauge
+go_sched_gomaxprocs_threads 12
+# HELP go_threads Number of OS threads created.
+# TYPE go_threads gauge
+go_threads 11
+# HELP process_cpu_seconds_total Total user and system CPU time spent in seconds.
+# TYPE process_cpu_seconds_total counter
+process_cpu_seconds_total 0.640625
+# HELP process_max_fds Maximum number of open file descriptors.
+# TYPE process_max_fds gauge
+process_max_fds 1.6777216e+07
+# HELP process_open_fds Number of open file descriptors.
+# TYPE process_open_fds gauge
+process_open_fds 274
+# HELP process_resident_memory_bytes Resident memory size in bytes.
+# TYPE process_resident_memory_bytes gauge
+process_resident_memory_bytes 4.3225088e+07
+# HELP process_start_time_seconds Start time of the process since unix epoch in seconds.
+# TYPE process_start_time_seconds gauge
+process_start_time_seconds 1.793778292e+09
+# HELP process_virtual_memory_bytes Virtual memory size in bytes.
+# TYPE process_virtual_memory_bytes gauge
+process_virtual_memory_bytes 1.032192e+08
+# HELP sqi_http_request_duration_seconds HTTP request latency in seconds, partitioned by method and path.
+# TYPE sqi_http_request_duration_seconds histogram
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/farms",le="0.005"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/farms",le="0.01"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/farms",le="0.025"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/farms",le="0.05"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/farms",le="0.1"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/farms",le="0.25"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/farms",le="0.5"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/farms",le="1"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/farms",le="2.5"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/farms",le="5"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/farms",le="10"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/farms",le="+Inf"} 1
+sqi_http_request_duration_seconds_sum{method="GET",path="/api/v1/farms"} 0
+sqi_http_request_duration_seconds_count{method="GET",path="/api/v1/farms"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b",le="0.005"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b",le="0.01"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b",le="0.025"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b",le="0.05"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b",le="0.1"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b",le="0.25"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b",le="0.5"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b",le="1"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b",le="2.5"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b",le="5"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b",le="10"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b",le="+Inf"} 1
+sqi_http_request_duration_seconds_sum{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b"} 0
+sqi_http_request_duration_seconds_count{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks",le="0.005"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks",le="0.01"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks",le="0.025"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks",le="0.05"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks",le="0.1"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks",le="0.25"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks",le="0.5"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks",le="1"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks",le="2.5"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks",le="5"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks",le="10"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks",le="+Inf"} 1
+sqi_http_request_duration_seconds_sum{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks"} 0
+sqi_http_request_duration_seconds_count{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/7c1d3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks",le="0.005"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/7c1d3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks",le="0.01"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/7c1d3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks",le="0.025"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/7c1d3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks",le="0.05"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/7c1d3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks",le="0.1"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/7c1d3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks",le="0.25"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/7c1d3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks",le="0.5"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/7c1d3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks",le="1"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/7c1d3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks",le="2.5"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/7c1d3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks",le="5"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/7c1d3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks",le="10"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/jobs/7c1d3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks",le="+Inf"} 1
+sqi_http_request_duration_seconds_sum{method="GET",path="/api/v1/jobs/7c1d3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks"} 0
+sqi_http_request_duration_seconds_count{method="GET",path="/api/v1/jobs/7c1d3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/queues/68217730-1642-4621-88a3-af59439ab1bc",le="0.005"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/queues/68217730-1642-4621-88a3-af59439ab1bc",le="0.01"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/queues/68217730-1642-4621-88a3-af59439ab1bc",le="0.025"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/queues/68217730-1642-4621-88a3-af59439ab1bc",le="0.05"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/queues/68217730-1642-4621-88a3-af59439ab1bc",le="0.1"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/queues/68217730-1642-4621-88a3-af59439ab1bc",le="0.25"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/queues/68217730-1642-4621-88a3-af59439ab1bc",le="0.5"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/queues/68217730-1642-4621-88a3-af59439ab1bc",le="1"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/queues/68217730-1642-4621-88a3-af59439ab1bc",le="2.5"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/queues/68217730-1642-4621-88a3-af59439ab1bc",le="5"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/queues/68217730-1642-4621-88a3-af59439ab1bc",le="10"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/queues/68217730-1642-4621-88a3-af59439ab1bc",le="+Inf"} 1
+sqi_http_request_duration_seconds_sum{method="GET",path="/api/v1/queues/68217730-1642-4621-88a3-af59439ab1bc"} 0.0005602
+sqi_http_request_duration_seconds_count{method="GET",path="/api/v1/queues/68217730-1642-4621-88a3-af59439ab1bc"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/workers",le="0.005"} 2
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/workers",le="0.01"} 2
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/workers",le="0.025"} 2
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/workers",le="0.05"} 2
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/workers",le="0.1"} 2
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/workers",le="0.25"} 2
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/workers",le="0.5"} 2
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/workers",le="1"} 2
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/workers",le="2.5"} 2
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/workers",le="5"} 2
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/workers",le="10"} 2
+sqi_http_request_duration_seconds_bucket{method="GET",path="/api/v1/workers",le="+Inf"} 2
+sqi_http_request_duration_seconds_sum{method="GET",path="/api/v1/workers"} 0.000642
+sqi_http_request_duration_seconds_count{method="GET",path="/api/v1/workers"} 2
+sqi_http_request_duration_seconds_bucket{method="GET",path="/readyz",le="0.005"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/readyz",le="0.01"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/readyz",le="0.025"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/readyz",le="0.05"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/readyz",le="0.1"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/readyz",le="0.25"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/readyz",le="0.5"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/readyz",le="1"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/readyz",le="2.5"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/readyz",le="5"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/readyz",le="10"} 1
+sqi_http_request_duration_seconds_bucket{method="GET",path="/readyz",le="+Inf"} 1
+sqi_http_request_duration_seconds_sum{method="GET",path="/readyz"} 0.0005738
+sqi_http_request_duration_seconds_count{method="GET",path="/readyz"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/farms",le="0.005"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/farms",le="0.01"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/farms",le="0.025"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/farms",le="0.05"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/farms",le="0.1"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/farms",le="0.25"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/farms",le="0.5"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/farms",le="1"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/farms",le="2.5"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/farms",le="5"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/farms",le="10"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/farms",le="+Inf"} 1
+sqi_http_request_duration_seconds_sum{method="POST",path="/api/v1/farms"} 0.0006596
+sqi_http_request_duration_seconds_count{method="POST",path="/api/v1/farms"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/jobs",le="0.005"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/jobs",le="0.01"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/jobs",le="0.025"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/jobs",le="0.05"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/jobs",le="0.1"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/jobs",le="0.25"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/jobs",le="0.5"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/jobs",le="1"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/jobs",le="2.5"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/jobs",le="5"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/jobs",le="10"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/jobs",le="+Inf"} 1
+sqi_http_request_duration_seconds_sum{method="POST",path="/api/v1/jobs"} 0.0011065
+sqi_http_request_duration_seconds_count{method="POST",path="/api/v1/jobs"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/queues",le="0.005"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/queues",le="0.01"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/queues",le="0.025"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/queues",le="0.05"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/queues",le="0.1"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/queues",le="0.25"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/queues",le="0.5"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/queues",le="1"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/queues",le="2.5"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/queues",le="5"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/queues",le="10"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/queues",le="+Inf"} 1
+sqi_http_request_duration_seconds_sum{method="POST",path="/api/v1/queues"} 0.0011386
+sqi_http_request_duration_seconds_count{method="POST",path="/api/v1/queues"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/usage-pools",le="0.005"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/usage-pools",le="0.01"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/usage-pools",le="0.025"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/usage-pools",le="0.05"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/usage-pools",le="0.1"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/usage-pools",le="0.25"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/usage-pools",le="0.5"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/usage-pools",le="1"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/usage-pools",le="2.5"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/usage-pools",le="5"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/usage-pools",le="10"} 1
+sqi_http_request_duration_seconds_bucket{method="POST",path="/api/v1/usage-pools",le="+Inf"} 1
+sqi_http_request_duration_seconds_sum{method="POST",path="/api/v1/usage-pools"} 0.000551
+sqi_http_request_duration_seconds_count{method="POST",path="/api/v1/usage-pools"} 1
+# HELP sqi_http_requests_total Total HTTP requests completed, partitioned by method, path, and status code.
+# TYPE sqi_http_requests_total counter
+sqi_http_requests_total{method="GET",path="/api/v1/farms",status_code="200"} 1
+sqi_http_requests_total{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b",status_code="404"} 1
+sqi_http_requests_total{method="GET",path="/api/v1/jobs/0b9a3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks",status_code="404"} 1
+sqi_http_requests_total{method="GET",path="/api/v1/jobs/7c1d3f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/tasks",status_code="404"} 1
+sqi_http_requests_total{method="GET",path="/api/v1/queues/68217730-1642-4621-88a3-af59439ab1bc",status_code="200"} 1
+sqi_http_requests_total{method="GET",path="/api/v1/workers",status_code="200"} 2
+sqi_http_requests_total{method="GET",path="/readyz",status_code="200"} 1
+sqi_http_requests_total{method="POST",path="/api/v1/farms",status_code="201"} 1
+sqi_http_requests_total{method="POST",path="/api/v1/jobs",status_code="201"} 1
+sqi_http_requests_total{method="POST",path="/api/v1/queues",status_code="201"} 1
+sqi_http_requests_total{method="POST",path="/api/v1/usage-pools",status_code="201"} 1
+# HELP sqi_scheduler_idle_workers Current number of online workers with no active (assigned or running) task, partitioned by farm ID.
+# TYPE sqi_scheduler_idle_workers gauge
+sqi_scheduler_idle_workers{farm=""} 0
+# HELP sqi_scheduler_queue_depth Current number of ready tasks waiting for assignment, partitioned by queue name. Excludes tasks in retry backoff, tasks on a paused queue, and tasks under a paused, parked or terminal job.
+# TYPE sqi_scheduler_queue_depth gauge
+sqi_scheduler_queue_depth{queue="68217730-1642-4621-88a3-af59439ab1bc"} 1
+# HELP sqi_scheduler_tasks_reconciled_total Attempts reclaimed because their live worker no longer reported them.
+# TYPE sqi_scheduler_tasks_reconciled_total counter
+sqi_scheduler_tasks_reconciled_total 0
+# HELP sqi_usage_active_claims Current number of active (unreleased) usage-pool claims per pool name.
+# TYPE sqi_usage_active_claims gauge
+sqi_usage_active_claims{pool="gpu"} 0
+# HELP sqi_workers_total Current number of registered workers, partitioned by status (online, offline, disabled).
+# TYPE sqi_workers_total gauge
+sqi_workers_total{status="disabled"} 0
+sqi_workers_total{status="offline"} 0
+sqi_workers_total{status="online"} 0

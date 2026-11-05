@@ -79,7 +79,7 @@ func TestBuildTLSOptions(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			opts, err := buildTLSOptions(tc.cfg)
+			opts, err := TLSOptions(tc.cfg)
 			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
 				t.Fatalf("err = %v, want one containing %q", err, tc.wantErr)
 			}
@@ -971,8 +971,8 @@ func TestLifecycle_CappedDelayKeepsBackoffFloor(t *testing.T) {
 func TestIsAuthRefusal(t *testing.T) {
 	t.Parallel()
 	for _, err := range []error{nats.ErrAuthorization, nats.ErrAuthExpired, nats.ErrAuthRevoked, nats.ErrAccountAuthExpired} {
-		if !isAuthRefusal(err) {
-			t.Errorf("isAuthRefusal(%v) = false, want true", err)
+		if !IsAuthRefusal(err) {
+			t.Errorf("IsAuthRefusal(%v) = false, want true", err)
 		}
 	}
 	// The initial dial's errors carry the server's -ERR text, not the
@@ -983,13 +983,13 @@ func TestIsAuthRefusal(t *testing.T) {
 		"nats: User Authentication Revoked",
 		"nats: Account Authentication Expired",
 	} {
-		if !isAuthRefusal(errors.New(text)) {
-			t.Errorf("isAuthRefusal(%q) = false, want true", text)
+		if !IsAuthRefusal(errors.New(text)) {
+			t.Errorf("IsAuthRefusal(%q) = false, want true", text)
 		}
 	}
 	for _, err := range []error{nil, nats.ErrNoServers, errors.New("EOF"), errors.New("nats: maximum connections exceeded")} {
-		if isAuthRefusal(err) {
-			t.Errorf("isAuthRefusal(%v) = true, want false", err)
+		if IsAuthRefusal(err) {
+			t.Errorf("IsAuthRefusal(%v) = true, want false", err)
 		}
 	}
 }

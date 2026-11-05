@@ -283,6 +283,9 @@ func TestParity_Fence_LeadershipMethodsAreNeverFenced(t *testing.T) {
 			if got, _, err := st.ListServerMembers(stale); err != nil || len(got) != 1 {
 				t.Fatalf("ListServerMembers under a stale epoch = %v, %v, want one member", got, err)
 			}
+			// A member counts as unseen only once the clock has moved past its
+			// stamp; without a pause both can read the same microsecond.
+			time.Sleep(10 * time.Millisecond)
 			if n, err := st.DeleteServerMembersUnseenFor(stale, 0); err != nil || n != 1 {
 				t.Fatalf("DeleteServerMembersUnseenFor under a stale epoch = (%d, %v), want (1, nil)", n, err)
 			}

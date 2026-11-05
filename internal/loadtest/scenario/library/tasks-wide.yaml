@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: tasks-wide
+description: tasks - one job of 1,000,000 tasks (the per-job ceiling); submission write time and drain rate, 1 h
+duration: 1h
+warmup: 1m
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: sim
+    count: 1000
+    ramp: 200/s
+    cpu: 32
+    os: linux
+
+jobs:
+  - name: wide
+    total: 1
+    queue: render
+    steps: 1
+    tasks_per_step: 1000000
+    cores: 1
+    task:
+      duration: 1s
+      log_lines: 1
+
+clients:
+  rest_pollers: {count: 2, interval: 10s, endpoints: [jobs-list, job-detail]}

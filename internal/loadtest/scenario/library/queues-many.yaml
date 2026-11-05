@@ -1,0 +1,368 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: queues-many
+description: queues and pools - 200 queues with mixed concurrency caps and 50 usage pools over a 500-worker farm; policy-gate cost, 30 min
+duration: 30m
+warmup: 2m
+
+farm:
+  queues:
+    - {name: q001, max_concurrent_tasks: 0}
+    - {name: q002, max_concurrent_tasks: 10}
+    - {name: q003, max_concurrent_tasks: 25}
+    - {name: q004, max_concurrent_tasks: 50}
+    - {name: q005, max_concurrent_tasks: 100}
+    - {name: q006, max_concurrent_tasks: 0}
+    - {name: q007, max_concurrent_tasks: 10}
+    - {name: q008, max_concurrent_tasks: 25}
+    - {name: q009, max_concurrent_tasks: 50}
+    - {name: q010, max_concurrent_tasks: 100}
+    - {name: q011, max_concurrent_tasks: 0}
+    - {name: q012, max_concurrent_tasks: 10}
+    - {name: q013, max_concurrent_tasks: 25}
+    - {name: q014, max_concurrent_tasks: 50}
+    - {name: q015, max_concurrent_tasks: 100}
+    - {name: q016, max_concurrent_tasks: 0}
+    - {name: q017, max_concurrent_tasks: 10}
+    - {name: q018, max_concurrent_tasks: 25}
+    - {name: q019, max_concurrent_tasks: 50}
+    - {name: q020, max_concurrent_tasks: 100}
+    - {name: q021, max_concurrent_tasks: 0}
+    - {name: q022, max_concurrent_tasks: 10}
+    - {name: q023, max_concurrent_tasks: 25}
+    - {name: q024, max_concurrent_tasks: 50}
+    - {name: q025, max_concurrent_tasks: 100}
+    - {name: q026, max_concurrent_tasks: 0}
+    - {name: q027, max_concurrent_tasks: 10}
+    - {name: q028, max_concurrent_tasks: 25}
+    - {name: q029, max_concurrent_tasks: 50}
+    - {name: q030, max_concurrent_tasks: 100}
+    - {name: q031, max_concurrent_tasks: 0}
+    - {name: q032, max_concurrent_tasks: 10}
+    - {name: q033, max_concurrent_tasks: 25}
+    - {name: q034, max_concurrent_tasks: 50}
+    - {name: q035, max_concurrent_tasks: 100}
+    - {name: q036, max_concurrent_tasks: 0}
+    - {name: q037, max_concurrent_tasks: 10}
+    - {name: q038, max_concurrent_tasks: 25}
+    - {name: q039, max_concurrent_tasks: 50}
+    - {name: q040, max_concurrent_tasks: 100}
+    - {name: q041, max_concurrent_tasks: 0}
+    - {name: q042, max_concurrent_tasks: 10}
+    - {name: q043, max_concurrent_tasks: 25}
+    - {name: q044, max_concurrent_tasks: 50}
+    - {name: q045, max_concurrent_tasks: 100}
+    - {name: q046, max_concurrent_tasks: 0}
+    - {name: q047, max_concurrent_tasks: 10}
+    - {name: q048, max_concurrent_tasks: 25}
+    - {name: q049, max_concurrent_tasks: 50}
+    - {name: q050, max_concurrent_tasks: 100}
+    - {name: q051, max_concurrent_tasks: 0}
+    - {name: q052, max_concurrent_tasks: 10}
+    - {name: q053, max_concurrent_tasks: 25}
+    - {name: q054, max_concurrent_tasks: 50}
+    - {name: q055, max_concurrent_tasks: 100}
+    - {name: q056, max_concurrent_tasks: 0}
+    - {name: q057, max_concurrent_tasks: 10}
+    - {name: q058, max_concurrent_tasks: 25}
+    - {name: q059, max_concurrent_tasks: 50}
+    - {name: q060, max_concurrent_tasks: 100}
+    - {name: q061, max_concurrent_tasks: 0}
+    - {name: q062, max_concurrent_tasks: 10}
+    - {name: q063, max_concurrent_tasks: 25}
+    - {name: q064, max_concurrent_tasks: 50}
+    - {name: q065, max_concurrent_tasks: 100}
+    - {name: q066, max_concurrent_tasks: 0}
+    - {name: q067, max_concurrent_tasks: 10}
+    - {name: q068, max_concurrent_tasks: 25}
+    - {name: q069, max_concurrent_tasks: 50}
+    - {name: q070, max_concurrent_tasks: 100}
+    - {name: q071, max_concurrent_tasks: 0}
+    - {name: q072, max_concurrent_tasks: 10}
+    - {name: q073, max_concurrent_tasks: 25}
+    - {name: q074, max_concurrent_tasks: 50}
+    - {name: q075, max_concurrent_tasks: 100}
+    - {name: q076, max_concurrent_tasks: 0}
+    - {name: q077, max_concurrent_tasks: 10}
+    - {name: q078, max_concurrent_tasks: 25}
+    - {name: q079, max_concurrent_tasks: 50}
+    - {name: q080, max_concurrent_tasks: 100}
+    - {name: q081, max_concurrent_tasks: 0}
+    - {name: q082, max_concurrent_tasks: 10}
+    - {name: q083, max_concurrent_tasks: 25}
+    - {name: q084, max_concurrent_tasks: 50}
+    - {name: q085, max_concurrent_tasks: 100}
+    - {name: q086, max_concurrent_tasks: 0}
+    - {name: q087, max_concurrent_tasks: 10}
+    - {name: q088, max_concurrent_tasks: 25}
+    - {name: q089, max_concurrent_tasks: 50}
+    - {name: q090, max_concurrent_tasks: 100}
+    - {name: q091, max_concurrent_tasks: 0}
+    - {name: q092, max_concurrent_tasks: 10}
+    - {name: q093, max_concurrent_tasks: 25}
+    - {name: q094, max_concurrent_tasks: 50}
+    - {name: q095, max_concurrent_tasks: 100}
+    - {name: q096, max_concurrent_tasks: 0}
+    - {name: q097, max_concurrent_tasks: 10}
+    - {name: q098, max_concurrent_tasks: 25}
+    - {name: q099, max_concurrent_tasks: 50}
+    - {name: q100, max_concurrent_tasks: 100}
+    - {name: q101, max_concurrent_tasks: 0}
+    - {name: q102, max_concurrent_tasks: 10}
+    - {name: q103, max_concurrent_tasks: 25}
+    - {name: q104, max_concurrent_tasks: 50}
+    - {name: q105, max_concurrent_tasks: 100}
+    - {name: q106, max_concurrent_tasks: 0}
+    - {name: q107, max_concurrent_tasks: 10}
+    - {name: q108, max_concurrent_tasks: 25}
+    - {name: q109, max_concurrent_tasks: 50}
+    - {name: q110, max_concurrent_tasks: 100}
+    - {name: q111, max_concurrent_tasks: 0}
+    - {name: q112, max_concurrent_tasks: 10}
+    - {name: q113, max_concurrent_tasks: 25}
+    - {name: q114, max_concurrent_tasks: 50}
+    - {name: q115, max_concurrent_tasks: 100}
+    - {name: q116, max_concurrent_tasks: 0}
+    - {name: q117, max_concurrent_tasks: 10}
+    - {name: q118, max_concurrent_tasks: 25}
+    - {name: q119, max_concurrent_tasks: 50}
+    - {name: q120, max_concurrent_tasks: 100}
+    - {name: q121, max_concurrent_tasks: 0}
+    - {name: q122, max_concurrent_tasks: 10}
+    - {name: q123, max_concurrent_tasks: 25}
+    - {name: q124, max_concurrent_tasks: 50}
+    - {name: q125, max_concurrent_tasks: 100}
+    - {name: q126, max_concurrent_tasks: 0}
+    - {name: q127, max_concurrent_tasks: 10}
+    - {name: q128, max_concurrent_tasks: 25}
+    - {name: q129, max_concurrent_tasks: 50}
+    - {name: q130, max_concurrent_tasks: 100}
+    - {name: q131, max_concurrent_tasks: 0}
+    - {name: q132, max_concurrent_tasks: 10}
+    - {name: q133, max_concurrent_tasks: 25}
+    - {name: q134, max_concurrent_tasks: 50}
+    - {name: q135, max_concurrent_tasks: 100}
+    - {name: q136, max_concurrent_tasks: 0}
+    - {name: q137, max_concurrent_tasks: 10}
+    - {name: q138, max_concurrent_tasks: 25}
+    - {name: q139, max_concurrent_tasks: 50}
+    - {name: q140, max_concurrent_tasks: 100}
+    - {name: q141, max_concurrent_tasks: 0}
+    - {name: q142, max_concurrent_tasks: 10}
+    - {name: q143, max_concurrent_tasks: 25}
+    - {name: q144, max_concurrent_tasks: 50}
+    - {name: q145, max_concurrent_tasks: 100}
+    - {name: q146, max_concurrent_tasks: 0}
+    - {name: q147, max_concurrent_tasks: 10}
+    - {name: q148, max_concurrent_tasks: 25}
+    - {name: q149, max_concurrent_tasks: 50}
+    - {name: q150, max_concurrent_tasks: 100}
+    - {name: q151, max_concurrent_tasks: 0}
+    - {name: q152, max_concurrent_tasks: 10}
+    - {name: q153, max_concurrent_tasks: 25}
+    - {name: q154, max_concurrent_tasks: 50}
+    - {name: q155, max_concurrent_tasks: 100}
+    - {name: q156, max_concurrent_tasks: 0}
+    - {name: q157, max_concurrent_tasks: 10}
+    - {name: q158, max_concurrent_tasks: 25}
+    - {name: q159, max_concurrent_tasks: 50}
+    - {name: q160, max_concurrent_tasks: 100}
+    - {name: q161, max_concurrent_tasks: 0}
+    - {name: q162, max_concurrent_tasks: 10}
+    - {name: q163, max_concurrent_tasks: 25}
+    - {name: q164, max_concurrent_tasks: 50}
+    - {name: q165, max_concurrent_tasks: 100}
+    - {name: q166, max_concurrent_tasks: 0}
+    - {name: q167, max_concurrent_tasks: 10}
+    - {name: q168, max_concurrent_tasks: 25}
+    - {name: q169, max_concurrent_tasks: 50}
+    - {name: q170, max_concurrent_tasks: 100}
+    - {name: q171, max_concurrent_tasks: 0}
+    - {name: q172, max_concurrent_tasks: 10}
+    - {name: q173, max_concurrent_tasks: 25}
+    - {name: q174, max_concurrent_tasks: 50}
+    - {name: q175, max_concurrent_tasks: 100}
+    - {name: q176, max_concurrent_tasks: 0}
+    - {name: q177, max_concurrent_tasks: 10}
+    - {name: q178, max_concurrent_tasks: 25}
+    - {name: q179, max_concurrent_tasks: 50}
+    - {name: q180, max_concurrent_tasks: 100}
+    - {name: q181, max_concurrent_tasks: 0}
+    - {name: q182, max_concurrent_tasks: 10}
+    - {name: q183, max_concurrent_tasks: 25}
+    - {name: q184, max_concurrent_tasks: 50}
+    - {name: q185, max_concurrent_tasks: 100}
+    - {name: q186, max_concurrent_tasks: 0}
+    - {name: q187, max_concurrent_tasks: 10}
+    - {name: q188, max_concurrent_tasks: 25}
+    - {name: q189, max_concurrent_tasks: 50}
+    - {name: q190, max_concurrent_tasks: 100}
+    - {name: q191, max_concurrent_tasks: 0}
+    - {name: q192, max_concurrent_tasks: 10}
+    - {name: q193, max_concurrent_tasks: 25}
+    - {name: q194, max_concurrent_tasks: 50}
+    - {name: q195, max_concurrent_tasks: 100}
+    - {name: q196, max_concurrent_tasks: 0}
+    - {name: q197, max_concurrent_tasks: 10}
+    - {name: q198, max_concurrent_tasks: 25}
+    - {name: q199, max_concurrent_tasks: 50}
+    - {name: q200, max_concurrent_tasks: 100}
+  usage_pools:
+    - {name: pool01, limit: 20}
+    - {name: pool02, limit: 50}
+    - {name: pool03, limit: 100}
+    - {name: pool04, limit: 200}
+    - {name: pool05, limit: 400}
+    - {name: pool06, limit: 20}
+    - {name: pool07, limit: 50}
+    - {name: pool08, limit: 100}
+    - {name: pool09, limit: 200}
+    - {name: pool10, limit: 400}
+    - {name: pool11, limit: 20}
+    - {name: pool12, limit: 50}
+    - {name: pool13, limit: 100}
+    - {name: pool14, limit: 200}
+    - {name: pool15, limit: 400}
+    - {name: pool16, limit: 20}
+    - {name: pool17, limit: 50}
+    - {name: pool18, limit: 100}
+    - {name: pool19, limit: 200}
+    - {name: pool20, limit: 400}
+    - {name: pool21, limit: 20}
+    - {name: pool22, limit: 50}
+    - {name: pool23, limit: 100}
+    - {name: pool24, limit: 200}
+    - {name: pool25, limit: 400}
+    - {name: pool26, limit: 20}
+    - {name: pool27, limit: 50}
+    - {name: pool28, limit: 100}
+    - {name: pool29, limit: 200}
+    - {name: pool30, limit: 400}
+    - {name: pool31, limit: 20}
+    - {name: pool32, limit: 50}
+    - {name: pool33, limit: 100}
+    - {name: pool34, limit: 200}
+    - {name: pool35, limit: 400}
+    - {name: pool36, limit: 20}
+    - {name: pool37, limit: 50}
+    - {name: pool38, limit: 100}
+    - {name: pool39, limit: 200}
+    - {name: pool40, limit: 400}
+    - {name: pool41, limit: 20}
+    - {name: pool42, limit: 50}
+    - {name: pool43, limit: 100}
+    - {name: pool44, limit: 200}
+    - {name: pool45, limit: 400}
+    - {name: pool46, limit: 20}
+    - {name: pool47, limit: 50}
+    - {name: pool48, limit: 100}
+    - {name: pool49, limit: 200}
+    - {name: pool50, limit: 400}
+
+workers:
+  - name: sim
+    count: 500
+    ramp: 200/s
+    cpu: 8
+    os: linux
+
+jobs:
+  - name: class01
+    rate: 0.5/s
+    queue: q001
+    usage_pool: pool01
+    steps: 2
+    tasks_per_step: 20
+    cores: 1
+    task:
+      duration: {dist: lognormal, median: 10s, p95: 40s}
+      log_lines: 20
+  - name: class02
+    rate: 0.5/s
+    queue: q022
+    usage_pool: pool05
+    steps: 2
+    tasks_per_step: 20
+    cores: 1
+    task:
+      duration: {dist: lognormal, median: 10s, p95: 40s}
+      log_lines: 20
+  - name: class03
+    rate: 0.5/s
+    queue: q043
+    usage_pool: pool09
+    steps: 2
+    tasks_per_step: 20
+    cores: 1
+    task:
+      duration: {dist: lognormal, median: 10s, p95: 40s}
+      log_lines: 20
+  - name: class04
+    rate: 0.5/s
+    queue: q064
+    usage_pool: pool13
+    steps: 2
+    tasks_per_step: 20
+    cores: 1
+    task:
+      duration: {dist: lognormal, median: 10s, p95: 40s}
+      log_lines: 20
+  - name: class05
+    rate: 0.5/s
+    queue: q085
+    usage_pool: pool17
+    steps: 2
+    tasks_per_step: 20
+    cores: 1
+    task:
+      duration: {dist: lognormal, median: 10s, p95: 40s}
+      log_lines: 20
+  - name: class06
+    rate: 0.5/s
+    queue: q106
+    usage_pool: pool21
+    steps: 2
+    tasks_per_step: 20
+    cores: 1
+    task:
+      duration: {dist: lognormal, median: 10s, p95: 40s}
+      log_lines: 20
+  - name: class07
+    rate: 0.5/s
+    queue: q127
+    usage_pool: pool25
+    steps: 2
+    tasks_per_step: 20
+    cores: 1
+    task:
+      duration: {dist: lognormal, median: 10s, p95: 40s}
+      log_lines: 20
+  - name: class08
+    rate: 0.5/s
+    queue: q148
+    usage_pool: pool29
+    steps: 2
+    tasks_per_step: 20
+    cores: 1
+    task:
+      duration: {dist: lognormal, median: 10s, p95: 40s}
+      log_lines: 20
+  - name: class09
+    rate: 0.5/s
+    queue: q169
+    usage_pool: pool33
+    steps: 2
+    tasks_per_step: 20
+    cores: 1
+    task:
+      duration: {dist: lognormal, median: 10s, p95: 40s}
+      log_lines: 20
+  - name: class10
+    rate: 0.5/s
+    queue: q190
+    usage_pool: pool37
+    steps: 2
+    tasks_per_step: 20
+    cores: 1
+    task:
+      duration: {dist: lognormal, median: 10s, p95: 40s}
+      log_lines: 20

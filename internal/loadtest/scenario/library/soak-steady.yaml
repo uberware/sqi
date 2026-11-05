@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: soak-steady
+description: time - 500 workers under a steady mixed load of about 5 tasks/s for 8 h; growth detection
+# Sizing: offered load at most 70% of the scenario's own capacity and of what
+# a server can take, so the soak measures a steady state, not a backlog.
+#   shot-render: 0.11/s x 2 steps x 20 tasks = 4.4 tasks/s. Lognormal, median
+#     15 s, p95 60 s: sigma = ln(60/15) / 1.645 = 0.843, mean 15 s x
+#     e^(0.843^2 / 2) = 21.4 s, so 4.4 x 21.4 = 94 tasks in flight.
+#   comp: 0.06/s x 10 tasks = 0.6 tasks/s, uniform 2 to 10 s (mean 6 s): 3.6
+#     tasks in flight.
+#   Slots: 500 workers x 8 cores / 2 cores = 2,000; about 98 in flight is 5%.
+#   Server: 5.0 tasks/s in all, under 70% of ci-medium's knee on 4 CPUs
+#     (about 7.4 tasks/s; 0.7 x 7.4 = 5.2). Above the knee an 8 h soak grows
+#     a backlog, and its growth slopes describe that backlog, not leaks.
+duration: 8h
+warmup: 10m
+
+farm:
+  queues: [{name: render}, {name: comp}]
+
+workers:
+  - name: linux-render
+    count: 500
+    ramp: 100/s
+    cpu: 8
+    os: linux
+    churn: {crash_per_hour: 0.1, disconnect_per_hour: 0.2, restart_after: 30s}
+
+jobs:
+  - name: shot-render
+    rate: 0.11/s
+    queue: render
+    steps: 2
+    tasks_per_step: 20
+    cores: 2
+    task:
+      duration: {dist: lognormal, median: 15s, p95: 60s}
+      fail_rate: 0.005
+      log_lines: {median: 100, p95: 500}
+  - name: comp
+    rate: 0.06/s
+    queue: comp
+    steps: 1
+    tasks_per_step: 10
+    cores: 1
+    task:
+      duration: {dist: uniform, min: 2s, max: 10s}
+      log_lines: 30
+
+clients:
+  websocket: {count: 20, subscribe: [jobs, workers, own-job-tasks, own-task-logs]}
+  rest_pollers: {count: 5, interval: 5s, endpoints: [jobs-list, job-detail, task-list, workers-list]}

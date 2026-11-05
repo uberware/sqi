@@ -236,6 +236,26 @@ are visible (component `server`) in Admin → Server log and
 
 ---
 
+## Known gap: server metrics declared but not recorded
+
+`GET /metrics` on `sqi-server` registers five metric families that nothing in
+the server records, so they never carry a sample and should not be graphed or
+alerted on:
+
+| Metric | Declared as |
+|---|---|
+| `sqi_scheduler_tasks_total` | task completions by queue and terminal status |
+| `sqi_scheduler_assignment_duration_seconds` | time spent in one assignment attempt, by result |
+| `sqi_nats_published_total` | messages published to the broker |
+| `sqi_nats_consumed_total` | messages consumed from the broker |
+| `sqi_db_query_duration_seconds` | store query latency |
+
+The load harness measures the same things from the client side: task completions per second, submit-to-first-lease and job
+end-to-end latency, and server CPU, memory and goroutines scraped from the
+metrics that are recorded. See [Load testing](load-testing.md).
+
+---
+
 ## In-UI diagnostics
 
 ### Worker diagnostics panel

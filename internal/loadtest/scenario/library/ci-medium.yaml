@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: ci-medium
+description: "mixed - 300 workers, shot-render 0.12/s and comp 0.07/s (about 5.5 tasks/s offered) with churn, cancels and retries, 15 min; sized for a 4-vCPU CI runner"
+# Sizing: shot-render 0.12/s x 2 steps x 20 tasks = 4.8 tasks/s, comp
+# 0.07/s x 10 tasks = 0.7 tasks/s, 5.5 tasks/s in all. A 4-CPU server reaches
+# its knee at 0.16/s and 0.10/s (about 7.4 tasks/s), the reference the other
+# locally run scenarios are sized against; well above it (about 45 tasks/s) the
+# server builds a backlog and jobs are left unfinished after the drain.
+duration: 15m
+warmup: 1m
+
+farm:
+  queues: [{name: render}, {name: comp}]
+  usage_pools: [{name: arnold, limit: 100}]
+
+workers:
+  - name: linux-render
+    count: 300
+    ramp: 100/s
+    cpu: 8
+    os: linux
+    tags: {arnold: "true"}
+    churn: {crash_per_hour: 0.2, disconnect_per_hour: 0.4, restart_after: 30s}
+
+jobs:
+  - name: shot-render
+    rate: 0.12/s
+    queue: render
+    steps: 2
+    tasks_per_step: 20
+    cores: 2
+    usage_pool: arnold
+    task:
+      duration: {dist: lognormal, median: 10s, p95: 40s}
+      fail_rate: 0.01
+      log_lines: {median: 100, p95: 500}
+  - name: comp
+    rate: 0.07/s
+    queue: comp
+    steps: 1
+    tasks_per_step: 10
+    cores: 1
+    task:
+      duration: {dist: uniform, min: 2s, max: 10s}
+      log_lines: 30
+
+clients:
+  websocket: {count: 20, subscribe: [jobs, workers, own-job-tasks, own-task-logs]}
+  rest_pollers: {count: 5, interval: 5s, endpoints: [jobs-list, job-detail, task-list, workers-list]}
+
+actions:
+  - at: 5m
+    cancel_jobs: {fraction: 0.1}
+  - at: 10m
+    retry_failed: true

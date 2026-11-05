@@ -32,6 +32,13 @@ http:
   # Type: bool   Env: SQI_HTTP_ENABLE_PPROF
   enable_pprof: false
 
+  # Per-IP rate limit on API requests. Turn it off only behind a trusted
+  # network or for load testing.
+  rate_limit:
+    # Default: true
+    # Type: bool   Env: SQI_HTTP_RATE_LIMIT_ENABLED
+    enabled: true
+
   # In-process TLS termination for the REST API, WebSocket gateway and web UI.
   #
   # OFF by default. When enabled the listener above UPGRADES IN PLACE — there

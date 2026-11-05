@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: mixed-medium
+description: 1,800 simulated and 2 real workers, steady mixed submissions, 30 min
+duration: 30m            # load: hard stop; soak: run length
+warmup: 2m               # excluded from summary statistics and growth slopes
+
+server:                  # managed target only
+  store: sqlite          # sqlite | postgres (needs --postgres-dsn)
+  broker_auth: false
+  http_auth: false       # the opt-in auth gate (docs/auth.md)
+  tls: false
+  config: {}             # extra sqi-server YAML merged over the harness defaults
+
+farm:
+  queues: [{name: render, max_concurrent_tasks: 0}, {name: comp}]
+  usage_pools: [{name: arnold, limit: 200}]
+
+workers:
+  - name: linux-render
+    count: 1800
+    ramp: 200/s           # connect + register rate
+    cpu: 32
+    os: linux
+    tags: {arnold: "true"}
+    queues: []            # [] = every queue
+    heartbeat: 15s
+    churn: {crash_per_hour: 0.05, restart_after: 30s, disconnect_per_hour: 0.1}
+  - name: real
+    real: 2               # real sqi-worker processes (managed target only)
+
+jobs:
+  - name: shot-render
+    rate: 2/s             # or: total: 10000 (burst as fast as accepted)
+    queue: render
+    steps: 2              # step i+1 depends on step i
+    tasks_per_step: 100
+    chunk: 1              # frames per task (TASK_CHUNKING when > 1)
+    cores: 8              # amount.worker.vcpu min; 0 = whole worker
+    usage_pool: arnold
+    expr: false
+    task:
+      duration: {dist: lognormal, median: 20s, p95: 90s}
+      fail_rate: 0.01     # each attempt fails with this probability; retry policy applies
+      hang_rate: 0.0005   # runs until canceled or timeout
+      log_lines: {median: 200, p95: 2000}
+      log_line_bytes: 120
+  - name: big-sim
+    total: 3
+    tasks_per_step: 250000
+
+clients:
+  websocket: {count: 200, subscribe: [jobs, workers, own-job-tasks, own-task-logs]}
+  rest_pollers: {count: 20, interval: 5s, endpoints: [jobs-list, job-detail, task-list, workers-list]}
+
+actions:                  # timed events
+  - at: 10m
+    cancel_jobs: {fraction: 0.1}
+  - at: 20m
+    retry_failed: true
+
+assert:                   # optional thresholds; validated and recorded, never evaluated
+  p95_submit_to_first_lease: 2s

@@ -1362,6 +1362,11 @@ IP**. Treat that as no brute-force control at all. It is a capacity guard
 that keeps one client from saturating the API; it is not a credential
 defense and does not become one because the login route sits behind it.
 
+`http.rate_limit.enabled: false` turns even that off (the load harness does
+so on the servers it starts). Leave it on for any server untrusted clients
+can reach: with it off, nothing throttles `/auth/login` or
+`/workers/enroll`.
+
 **Failed logins against directory accounts hit your directory.** For an
 account whose `auth_source` is `ldap`, every wrong password produces a real
 bind against a real DN. In Active Directory that increments

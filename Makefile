@@ -15,6 +15,11 @@
 # GO_PKGS shells out, so it is assigned with the deferred `=` described under
 # "Deferred shell-outs" below rather than `:=`.
 GO_PKGS    = $(eval GO_PKGS := $(shell go list ./... | grep -v '/node_modules/'))$(GO_PKGS)
+# TEST_EXCLUDE_PKGS: import paths (space-separated, exact) that test and
+# test-cover leave out of GO_PKGS. Empty by default, so a local run covers
+# everything; CI sets it for packages another job already runs in full.
+TEST_EXCLUDE_PKGS ?=
+TEST_PKGS  = $(filter-out $(TEST_EXCLUDE_PKGS),$(GO_PKGS))
 LINT_PKGS := ./cmd/... ./internal/... ./pkg/... ./test/... ./web
 FMT_DIRS  := ./cmd ./internal ./pkg ./test web/embed.go
 
@@ -67,8 +72,13 @@ endif
 # is 10m, and ./test/integration/ runs every preset's Tier-3 case and the
 # real-ffmpeg Tier-2 cases untagged, under -race, in one package. On a Windows
 # host that package needs more than 20 minutes because each preset outcome case
-# waits out three retry attempts.
+# waits out three retry attempts. The HA tests have since pushed it past 30
+# minutes there, so a Windows host gets an hour; override on the command line.
+ifeq ($(OS),Windows_NT)
+TEST_TIMEOUT ?= 60m
+else
 TEST_TIMEOUT ?= 30m
+endif
 
 # PostgreSQL major version for `make test-postgres` (16 or 18; CI runs both).
 PG_VERSION ?= 18
@@ -193,11 +203,11 @@ run-workers: build-worker ## Spin up N sqi-worker instances locally (N=3 default
 
 .PHONY: test
 test: ## Run all tests (race detector on by default; override with RACE=off)
-	go test $(TEST_FLAGS) -timeout $(TEST_TIMEOUT) $(GO_PKGS)
+	go test $(TEST_FLAGS) -timeout $(TEST_TIMEOUT) $(TEST_PKGS)
 
 .PHONY: test-cover
 test-cover: ## Run tests and emit coverage report
-	go test $(TEST_FLAGS) -timeout $(TEST_TIMEOUT) -coverprofile=$(COVERAGE_OUT) -covermode=atomic $(GO_PKGS)
+	go test $(TEST_FLAGS) -timeout $(TEST_TIMEOUT) -coverprofile=$(COVERAGE_OUT) -covermode=atomic $(TEST_PKGS)
 	go tool cover -func=$(COVERAGE_OUT) | tail -1
 	@cov=$$(go tool cover -func=$(COVERAGE_OUT) | tail -1 | awk '{print int($$3)}'); \
 	  echo "Coverage: $$cov% (minimum: $(COVERAGE_MIN)%)"; \
@@ -285,6 +295,39 @@ test-expr-oracle: ## Differential-test the EXPR evaluator against the OpenJD ref
 	fi
 	SQI_EXPR_ORACLE_EXPECT_VERSION=$$([ -n "$$SQI_EXPR_ORACLE_PYTHON" ] || echo $(OPENJD_MODEL_VERSION)) \
 	  go test $(TEST_FLAGS) -tags oracle -run 'TestExprOracle' -v -timeout 5m ./test/oracle/
+
+# Load and soak harness (internal/loadtest, cmd/sqi-load, docs/load-testing.md).
+# The managed target builds sqi-server, sqi-worker and the no-op task command
+# itself, so none of these needs a prior `make build`. `load-smoke` is the Go
+# test (build tag `load`, never part of `make test`); the other three drive
+# the CLI, which writes a run directory under ./runs. Through `go run` any
+# non-zero sqi-load exit status comes back as 1; run the built binary to tell
+# an invariant failure (1) from an INVALID run (2).
+SCENARIO ?= mixed-medium
+DURATION ?= 8h
+VARY     ?=
+
+.PHONY: load-smoke
+load-smoke: ## Run the smoke scenario end to end as a Go test (SQLite; PostgreSQL too with SQI_TEST_POSTGRES_DSN)
+	go test $(TEST_FLAGS) -tags load -run TestLoadSmoke -v -timeout 15m ./test/load/
+
+.PHONY: load
+load: ## Run one load scenario (SCENARIO=mixed-medium)
+	go run ./cmd/sqi-load run --scenario $(SCENARIO)
+
+# A soak defaults to soak-steady rather than load's mixed-medium; a SCENARIO
+# given on the command line or in the environment wins.
+SOAK_SCENARIO = $(if $(filter command line environment environment override,$(origin SCENARIO)),$(SCENARIO),soak-steady)
+
+.PHONY: soak
+soak: ## Run a long soak (SCENARIO=soak-steady, DURATION=8h)
+	go run ./cmd/sqi-load soak --scenario $(SOAK_SCENARIO) --duration $(DURATION)
+
+.PHONY: load-sweep
+load-sweep: ## Sweep one parameter (SCENARIO=..., VARY='workers[0].count=100,200,400')
+	@if [ -z '$(VARY)' ]; then \
+	  echo "load-sweep needs VARY, e.g. make load-sweep SCENARIO=workers-ramp VARY='workers[0].count=100,200,400'"; exit 1; fi
+	go run ./cmd/sqi-load sweep --scenario $(SCENARIO) --vary '$(VARY)'
 
 # Validates the published preset library against the validator in this working
 # tree. A validator change can invalidate content already published: a change

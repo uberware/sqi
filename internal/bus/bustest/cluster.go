@@ -118,6 +118,7 @@ type Cluster struct {
 
 	t           testing.TB
 	authTimeout time.Duration
+	dir         string // holds every node's store; see [scratchDir]
 	mu          sync.Mutex
 	nodes       []*node
 }
@@ -172,7 +173,7 @@ func StartCluster(t testing.TB, nodes int, o Options) *Cluster {
 	if nodes < 1 {
 		t.Fatalf("bustest: StartCluster needs at least one node, got %d", nodes)
 	}
-	c := &Cluster{t: t, authTimeout: o.AuthTimeout}
+	c := &Cluster{t: t, authTimeout: o.AuthTimeout, dir: scratchDir(t)}
 	frag := c.fragment(o)
 	t.Cleanup(c.Shutdown)
 
@@ -202,7 +203,10 @@ func (c *Cluster) startNodes(nodes int, frag string) error {
 	if nodes > 1 {
 		c.ClusterName = "sqi-test-" + randomHex(t, 4)
 	}
-	dir := t.TempDir()
+	dir, err := os.MkdirTemp(c.dir, "start-*") // a retry gets fresh stores
+	if err != nil {
+		t.Fatalf("bustest: create the node directory: %v", err)
+	}
 	for i := range nodes {
 		name := fmt.Sprintf("n%d", i)
 		text := c.nodeConfig(name, filepath.Join(dir, name, "jetstream"), i, clientPorts, clusterPorts) + frag
@@ -596,4 +600,28 @@ func mustReplace(t testing.TB, s, old, replacement string) string {
 		t.Fatalf("bustest: layout has no %q to replace:\n%s", old, s)
 	}
 	return strings.ReplaceAll(s, old, replacement)
+}
+
+// scratchDir returns a directory that is removed when the test ends. Unlike
+// t.TempDir it keeps retrying the removal for a while, and only logs a failure:
+// on Windows a JetStream block file can stay locked for several seconds after
+// its node has stopped, longer than the testing package waits, and that is not
+// a failure of the code under test. Register it before the cleanup that stops
+// the nodes, so that cleanup runs first.
+func scratchDir(t testing.TB) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "sqi-bustest-*") //nolint:usetesting // t.TempDir gives up on a locked file after about 2s
+	if err != nil {
+		t.Fatalf("bustest: create a scratch directory: %v", err)
+	}
+	t.Cleanup(func() {
+		var err error
+		for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(250 * time.Millisecond) {
+			if err = os.RemoveAll(dir); err == nil {
+				return
+			}
+		}
+		t.Logf("bustest: could not remove %s: %v", dir, err)
+	})
+	return dir
 }

@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: workers-churn
+description: nodes - 2,000 workers with high crash, restart and disconnect rates; reclaim correctness, 30 min
+duration: 30m
+warmup: 2m
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: flaky
+    count: 2000
+    ramp: 200/s
+    cpu: 8
+    os: linux
+    churn: {crash_per_hour: 6, disconnect_per_hour: 12, restart_after: 30s}
+
+jobs:
+  - name: shot
+    rate: 5/s
+    queue: render
+    steps: 2
+    tasks_per_step: 20
+    cores: 1
+    task:
+      duration: {dist: lognormal, median: 30s, p95: 120s}
+      log_lines: {median: 50, p95: 400}

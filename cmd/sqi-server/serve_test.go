@@ -276,3 +276,59 @@ func TestWarnIgnoredStoreKeys(t *testing.T) {
 		}
 	}
 }
+
+// TestServerConfig_RateLimit pins the mapping between http.rate_limit.enabled
+// and the server's inverted DisableRateLimit: a flipped sense would leave every
+// default server unthrottled.
+func TestServerConfig_RateLimit(t *testing.T) {
+	tests := []struct {
+		name        string
+		enabled     bool
+		wantDisable bool
+	}{
+		{name: "enabled keeps the limiter", enabled: true, wantDisable: false},
+		{name: "disabled turns the limiter off", enabled: false, wantDisable: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.HTTP.RateLimit.Enabled = tt.enabled
+			if got := serverConfig(cfg, scheduler.Config{}).DisableRateLimit; got != tt.wantDisable {
+				t.Errorf("DisableRateLimit = %v, want %v", got, tt.wantDisable)
+			}
+		})
+	}
+}
+
+func TestServerConfig_DefaultsKeepTheRateLimit(t *testing.T) {
+	if serverConfig(config.DefaultConfig(), scheduler.Config{}).DisableRateLimit {
+		t.Error("DisableRateLimit = true at defaults, want the limiter on")
+	}
+}
+
+// TestWarnRateLimitOff pins that turning the limiter off is warned about only
+// when auth is on, where it guards the login and enrollment routes.
+func TestWarnRateLimitOff(t *testing.T) {
+	tests := []struct {
+		name            string
+		auth, rateLimit bool
+		wantWarn        bool
+	}{
+		{"auth on, limiter off", true, false, true},
+		{"auth on, limiter on", true, true, false},
+		{"auth off, limiter off", false, false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			cfg := config.DefaultConfig()
+			cfg.Auth.Enabled = tt.auth
+			cfg.HTTP.RateLimit.Enabled = tt.rateLimit
+			warnRateLimitOff(context.Background(), logger, cfg)
+			if got := strings.Contains(buf.String(), "level=WARN"); got != tt.wantWarn {
+				t.Errorf("warned = %v, want %v: %q", got, tt.wantWarn, buf.String())
+			}
+		})
+	}
+}

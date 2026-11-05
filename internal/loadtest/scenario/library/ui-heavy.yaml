@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: ui-heavy
+description: UI - 1,000 WebSocket clients and 100 REST pollers over a 500-worker farm; fan-out, drops and read latency, 30 min
+duration: 30m
+warmup: 2m
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: sim
+    count: 500
+    ramp: 200/s
+    cpu: 8
+    os: linux
+
+jobs:
+  - name: shot
+    rate: 3/s
+    queue: render
+    steps: 2
+    tasks_per_step: 20
+    cores: 1
+    task:
+      duration: {dist: lognormal, median: 20s, p95: 60s}
+      log_lines: {median: 100, p95: 500}
+
+clients:
+  websocket: {count: 1000, subscribe: [jobs, workers, own-job-tasks, own-task-logs]}
+  rest_pollers: {count: 100, interval: 5s, endpoints: [jobs-list, job-detail, task-list, workers-list]}
