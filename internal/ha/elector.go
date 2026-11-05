@@ -165,6 +165,17 @@ func (e *Elector) Epoch() int64 {
 	return e.epoch
 }
 
+// Authorized reports whether this server may act as the leader now: it leads
+// at an epoch and the self-fence deadline of its last acquire or renewal has
+// not passed. Unlike [Elector.Epoch] it judges the deadline itself rather than
+// waiting for Hold to notice it, so a process that was frozen and has just
+// resumed answers false before Hold's loop has run.
+func (e *Elector) Authorized() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.epoch != 0 && e.clock.Now().Before(e.authAt.Add(e.validity()))
+}
+
 // Campaign tries to take the lease every second while the broker is up, and
 // returns the epoch won. A standby without a broker never tries: it could do
 // no work as leader. Campaign returns ctx.Err() when ctx ends first.
