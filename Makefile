@@ -15,6 +15,11 @@
 # GO_PKGS shells out, so it is assigned with the deferred `=` described under
 # "Deferred shell-outs" below rather than `:=`.
 GO_PKGS    = $(eval GO_PKGS := $(shell go list ./... | grep -v '/node_modules/'))$(GO_PKGS)
+# TEST_EXCLUDE_PKGS: import paths (space-separated, exact) that test and
+# test-cover leave out of GO_PKGS. Empty by default, so a local run covers
+# everything; CI sets it for packages another job already runs in full.
+TEST_EXCLUDE_PKGS ?=
+TEST_PKGS  = $(filter-out $(TEST_EXCLUDE_PKGS),$(GO_PKGS))
 LINT_PKGS := ./cmd/... ./internal/... ./pkg/... ./test/... ./web
 FMT_DIRS  := ./cmd ./internal ./pkg ./test web/embed.go
 
@@ -198,11 +203,11 @@ run-workers: build-worker ## Spin up N sqi-worker instances locally (N=3 default
 
 .PHONY: test
 test: ## Run all tests (race detector on by default; override with RACE=off)
-	go test $(TEST_FLAGS) -timeout $(TEST_TIMEOUT) $(GO_PKGS)
+	go test $(TEST_FLAGS) -timeout $(TEST_TIMEOUT) $(TEST_PKGS)
 
 .PHONY: test-cover
 test-cover: ## Run tests and emit coverage report
-	go test $(TEST_FLAGS) -timeout $(TEST_TIMEOUT) -coverprofile=$(COVERAGE_OUT) -covermode=atomic $(GO_PKGS)
+	go test $(TEST_FLAGS) -timeout $(TEST_TIMEOUT) -coverprofile=$(COVERAGE_OUT) -covermode=atomic $(TEST_PKGS)
 	go tool cover -func=$(COVERAGE_OUT) | tail -1
 	@cov=$$(go tool cover -func=$(COVERAGE_OUT) | tail -1 | awk '{print int($$3)}'); \
 	  echo "Coverage: $$cov% (minimum: $(COVERAGE_MIN)%)"; \

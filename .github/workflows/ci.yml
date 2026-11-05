@@ -194,21 +194,18 @@ jobs:
         with:
           python-version: "3.13"
 
-      # The preset tests are untagged, so `make test-cover` runs
-      # TestZZPresetTierRegistrySatisfied here, and the registry's tier2
-      # blocks require the real-ffmpeg and real-oiiotool cases to run, not skip.
-      - name: Install ffmpeg and oiiotool (the registry's tier-2 claims require them)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg openimageio-tools
-          ffmpeg -version | head -1
-          oiiotool --help | head -2
-
       # `make test-cover` runs the suite with -race (RACE=on, the Makefile
       # default), writes coverage.out, and fails below COVERAGE_MIN. The
       # threshold is set only in the Makefile (default 70).
+      #
+      # ./test/integration is left out. It has no statements of its own, so it
+      # adds nothing to coverage, and the integration job runs all of it (the
+      # preset tests are untagged, so the `integration` tag only adds to them),
+      # including TestZZPresetTierRegistrySatisfied, whose tier-2 claims need
+      # ffmpeg and oiiotool. Running it here as well would need the same apt
+      # install on this job's critical path.
       - name: Test (race detector + coverage gate)
-        run: make test-cover
+        run: make test-cover TEST_EXCLUDE_PKGS=github.com/uberware/sqi/test/integration
 
       # Needs the CODECOV_TOKEN repository secret (setup in
       # docs/development.md). fail_ci_if_error is false so a Codecov outage
@@ -1776,6 +1773,10 @@ jobs:
             TestAutoRetry_RetryThenSucceed
             TestTLSEndToEnd
             TestTLSWorkerWithoutCAIsRefused
+            # Fails if a tier-2 case the preset registry claims skipped for
+            # want of ffmpeg or oiiotool, so it must be seen to pass here: the
+            # unit-test job does not run ./test/integration.
+            TestZZPresetTierRegistrySatisfied
             # Skips without a working Python 3. Runs the Houdini preset's
             # driver against every chunk spelling sqi emits.
             TestHoudiniROPRender_DriverRendersEachRange
