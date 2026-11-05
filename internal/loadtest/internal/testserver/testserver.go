@@ -7,6 +7,7 @@ package testserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -24,9 +25,53 @@ import (
 )
 
 const (
-	startupTimeout  = 15 * time.Second
-	shutdownTimeout = 60 * time.Second
+	startupTimeout   = 15 * time.Second
+	shutdownTimeout  = 60 * time.Second
+	maxStartAttempts = 5
 )
+
+// nextPort supplies the ports a server binds. It is a variable so a test can
+// hand out a port that something else already holds.
+var nextPort = freePort
+
+// errStartupFailed marks a server that stopped, or failed to bind its HTTP
+// port, before /readyz passed: what a lost race for a port looks like.
+var errStartupFailed = errors.New("server failed to start")
+
+// httpServerErrorMsg is the record server.Run logs when ListenAndServe fails.
+// Run does not return in that case, so the log is the only signal of a lost
+// HTTP port; TestStart_RecoversFromAPortTakenByAnotherProcess fails if the
+// message changes.
+const httpServerErrorMsg = "http: server error"
+
+// bindWatch is a slog.Handler that reports an HTTP listen failure on failed
+// and drops every record.
+type bindWatch struct{ failed chan error }
+
+func (*bindWatch) Enabled(_ context.Context, l slog.Level) bool { return l >= slog.LevelError }
+
+func (h *bindWatch) Handle(_ context.Context, r slog.Record) error {
+	if r.Message != httpServerErrorMsg {
+		return nil
+	}
+	err := errors.New(r.Message)
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == "error" {
+			err = fmt.Errorf("%s: %v", r.Message, a.Value.Any())
+			return false
+		}
+		return true
+	})
+	select {
+	case h.failed <- err:
+	default:
+	}
+	return nil
+}
+
+func (h *bindWatch) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h *bindWatch) WithGroup(string) slog.Handler { return h }
 
 // Options configures Start.
 type Options struct {
@@ -58,15 +103,37 @@ func (s *Server) JoinToken() string { return s.joinToken }
 // Start boots a server tuned for throughput (tight assign interval, rate
 // limiting off) and returns once /readyz passes. It stops the server, and waits
 // for Run to return, through tb.Cleanup.
+//
+// A port is drawn and released before the server binds it, so a parallel test
+// process can take it in between; Start retries on fresh ports when the server
+// exits during startup.
 func Start(tb testing.TB, opts Options) *Server {
+	tb.Helper()
+	var err error
+	for attempt := 1; attempt <= maxStartAttempts; attempt++ {
+		var srv *Server
+		srv, err = startOnce(tb, opts)
+		if err == nil {
+			return srv
+		}
+		if !errors.Is(err, errStartupFailed) {
+			break
+		}
+		tb.Logf("testserver: start attempt %d/%d: %v", attempt, maxStartAttempts, err)
+	}
+	tb.Fatalf("testserver: %v", err)
+	return nil
+}
+
+func startOnce(tb testing.TB, opts Options) (*Server, error) {
 	tb.Helper()
 
 	// TempDir is registered before the stop cleanup below, so cleanups (LIFO)
 	// stop the server before the directory is removed.
 	tmpDir := tb.TempDir()
 
-	httpAddr := fmt.Sprintf("127.0.0.1:%d", freePort(tb))
-	natsAddr := fmt.Sprintf("127.0.0.1:%d", freePort(tb))
+	httpAddr := fmt.Sprintf("127.0.0.1:%d", nextPort(tb))
+	natsAddr := fmt.Sprintf("127.0.0.1:%d", nextPort(tb))
 
 	cfg := server.Config{
 		HTTPAddr:    httpAddr,
@@ -95,7 +162,8 @@ func Start(tb testing.TB, opts Options) *Server {
 		joinToken = enableBrokerAuth(tb, &cfg)
 	}
 
-	srv := server.New(cfg, slog.New(slog.DiscardHandler), nil)
+	bindFailed := make(chan error, 1)
+	srv := server.New(cfg, slog.New(&bindWatch{failed: bindFailed}), nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- srv.Run(ctx) }()
@@ -113,18 +181,11 @@ func Start(tb testing.TB, opts Options) *Server {
 	}
 	tb.Cleanup(stop)
 
-	select {
-	case err := <-done:
-		tb.Fatalf("testserver: server exited during startup: %v", err)
-	case <-time.After(50 * time.Millisecond):
+	if err := awaitReady(httpAddr, done, bindFailed, startupTimeout); err != nil {
+		stop()
+		return nil, fmt.Errorf("%w (HTTP %s, NATS %s)", err, httpAddr, natsAddr)
 	}
-	if !waitForTCP(httpAddr, startupTimeout) {
-		tb.Fatalf("testserver: HTTP not up on %s (NATS %s) within %s", httpAddr, natsAddr, startupTimeout)
-	}
-	if !waitForReadyz(httpAddr, startupTimeout) {
-		tb.Fatalf("testserver: /readyz not ready within %s (HTTP %s, NATS %s)", startupTimeout, httpAddr, natsAddr)
-	}
-	return &Server{httpAddr: httpAddr, natsAddr: natsAddr, joinToken: joinToken}
+	return &Server{httpAddr: httpAddr, natsAddr: natsAddr, joinToken: joinToken}, nil
 }
 
 // enableBrokerAuth configures cfg for broker authentication and returns a join
@@ -208,35 +269,32 @@ func drawPort(tb testing.TB) int {
 	return tcpAddr.Port
 }
 
-func waitForTCP(addr string, timeout time.Duration) bool {
-	dialer := &net.Dialer{Timeout: 200 * time.Millisecond}
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		conn, err := dialer.DialContext(context.Background(), "tcp", addr)
-		if err == nil {
-			_ = conn.Close()
-			return true
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	return false
-}
-
-func waitForReadyz(httpAddr string, timeout time.Duration) bool {
+// awaitReady polls /readyz until it answers 200. It returns early if the
+// server's Run returns, or its HTTP listener fails to bind, so a lost port is
+// reported as such instead of as a timeout: a foreign listener on httpAddr
+// still accepts connections, but never answers with a 200.
+func awaitReady(httpAddr string, done, bindFailed <-chan error, timeout time.Duration) error {
 	client := &http.Client{Timeout: 2 * time.Second}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
+		select {
+		case err := <-done:
+			return fmt.Errorf("%w: Run returned: %w", errStartupFailed, err)
+		case err := <-bindFailed:
+			return fmt.Errorf("%w: %w", errStartupFailed, err)
+		default:
+		}
 		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+httpAddr+"/readyz", http.NoBody)
 		if err == nil {
 			resp, err := client.Do(req)
 			if err == nil {
 				_ = resp.Body.Close()
 				if resp.StatusCode == http.StatusOK {
-					return true
+					return nil
 				}
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return false
+	return fmt.Errorf("/readyz not ready within %s", timeout)
 }
