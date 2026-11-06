@@ -49,7 +49,8 @@ The snapshot is exposed as:
 - **Tasks** (`GET /api/v1/jobs/{id}/tasks`, `GET /api/v1/tasks/{id}`) and
   **attempts** (`GET /api/v1/tasks/{id}/attempts`): `progress` (integer
   percent), `status_text` and `progress_at` (RFC 3339). A task shows its latest
-  attempt's snapshot; all three are omitted until one is reported.
+  attempt's snapshot; all three are omitted until one is reported, and for a
+  `pending` or `ready` task (never leased, or requeued for a retry).
 - **Jobs** (list items and job detail): `progress_percent`, a number from 0 to
   100. It is `(succeeded + running progress) / (total - canceled) * 100`, where
   running progress is the sum of each running task's `progress` as a fraction of

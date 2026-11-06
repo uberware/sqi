@@ -944,7 +944,7 @@ Each comes from a single run on one laptop.
 `progress-heavy` measures what a running task's progress snapshots cost the
 server. Each simulated task writes `openjd_progress` every second through the
 real `internal/worker/openjd` interceptor, whose throttle sends at most one
-snapshot per 2 s per attempt, so a farm with about 175 tasks running sends
+snapshot per 2 s per attempt, so a farm with about 180 tasks running sends
 about 85 snapshots/s. The server records each with `RecordAttemptProgress`.
 
 **These runs are shortened.** The scenario is 30 minutes with a 3 minute
@@ -990,12 +990,17 @@ cores or less.
   from 43 to 72 ms on SQLite and from 101 to 263 ms on PostgreSQL, and the p99
   from 144 to 181 ms and from 343 to 627 ms. Terminal statuses and snapshots
   share the `SQI_TASK` consumer, so terminal statuses queue behind snapshots.
-  `js.pending` stayed at 0 throughout.
+  `js.pending` stayed at 0 throughout. This change does not address the
+  increase: the gate metrics (`first_lease` p99 and the backlog drain estimate
+  below) passed. If it becomes a problem, the remedy is a last-value-per-attempt
+  subject for snapshots (a maintainer decision), so snapshots stop queueing
+  ahead of terminal statuses.
 - **Estimated drain of a 10 minute outage backlog:** 200 running tasks times
   300 snapshots each (one per 2 s for 10 minutes) is 60,000 snapshots. At the
   CPU cost per snapshot above, assuming one at a time, the drain is about
   47 s on SQLite and 84 s on PostgreSQL. At the benchmark's 72 microseconds it
-  would be 4.3 s. Every figure is under the 10 minute limit. These are
+  would be 4.3 s. Every figure is under the 10 minutes of outage the backlog
+  is sized for, so the farm catches up faster than the outage lasted. These are
   estimates from the mean CPU cost, not a measured outage and recovery.
 
 ---

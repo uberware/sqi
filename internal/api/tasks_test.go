@@ -867,6 +867,89 @@ func TestGetTask_IncludesProgress(t *testing.T) {
 	}
 }
 
+// failWithProgress records progress on a leased task's attempt, fails the
+// attempt, and (when requeue is set) returns the task to ready.
+func failWithProgress(t *testing.T, st *fake.Store, task store.Task, a store.TaskAttempt, requeue bool) {
+	t.Helper()
+	now := time.Now().UTC()
+	recordProgress(t, st, task.ID, 77, "frame 40", now)
+	if !requeue {
+		if _, err := st.CompleteTaskAttempt(t.Context(), store.AttemptCompletion{
+			AttemptID: a.ID, TaskID: task.ID, TaskStatus: store.TaskStatusFailed,
+			AttemptStatus: store.AttemptStatusFailed, Message: "boom", EndedAt: now,
+		}); err != nil {
+			t.Fatalf("CompleteTaskAttempt: %v", err)
+		}
+		return
+	}
+	if _, _, _, err := st.RecordTaskFailure(t.Context(), a.ID, task.ID, nil, "", "boom", now); err != nil {
+		t.Fatalf("RecordTaskFailure: %v", err)
+	}
+	if ok, err := st.RequeueTaskForRetry(t.Context(), task.ID, a.ID, now.Add(-time.Minute), now); err != nil || !ok {
+		t.Fatalf("RequeueTaskForRetry = (%v, %v)", ok, err)
+	}
+}
+
+func TestTaskProgress_NotShownForRequeuedTask(t *testing.T) {
+	st := fake.New()
+	r := newTaskRouter(st)
+	job, tk, a := seedTaskWith(t, st, seedTaskSpec{status: store.TaskStatusRunning})
+	failWithProgress(t, st, tk, a, true)
+
+	for _, path := range []string{"/api/v1/tasks/" + tk.ID, "/api/v1/jobs/" + job.ID + "/tasks"} {
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, newReq(t, http.MethodGet, path, nil))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s: status %d: %s", path, rr.Code, rr.Body)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if items, ok := got["items"].([]any); ok {
+			first, isMap := items[0].(map[string]any)
+			if !isMap {
+				t.Fatalf("%s: item is %T", path, items[0])
+			}
+			got = first
+		}
+		if got["status"] != "ready" {
+			t.Fatalf("%s: status = %v, want ready", path, got["status"])
+		}
+		for _, k := range []string{"progress", "status_text", "progress_at"} {
+			if _, ok := got[k]; ok {
+				t.Errorf("%s: requeued task has key %q: %v", path, k, got)
+			}
+		}
+	}
+}
+
+func TestTaskProgress_KeptForFailedTask(t *testing.T) {
+	st := fake.New()
+	r := newTaskRouter(st)
+	job, tk, a := seedTaskWith(t, st, seedTaskSpec{status: store.TaskStatusRunning})
+	failWithProgress(t, st, tk, a, false)
+
+	for _, path := range []string{"/api/v1/tasks/" + tk.ID, "/api/v1/jobs/" + job.ID + "/tasks"} {
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, newReq(t, http.MethodGet, path, nil))
+		var got map[string]any
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if items, ok := got["items"].([]any); ok {
+			first, isMap := items[0].(map[string]any)
+			if !isMap {
+				t.Fatalf("%s: item is %T", path, items[0])
+			}
+			got = first
+		}
+		if got["status"] != "failed" || got["progress"] != float64(77) || got["status_text"] != "frame 40" {
+			t.Errorf("%s: got %v", path, got)
+		}
+	}
+}
+
 func TestGetTaskAttempts_IncludesProgress(t *testing.T) {
 	st := fake.New()
 	r := newTaskRouter(st)

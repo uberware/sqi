@@ -51,7 +51,7 @@ export interface ListResponse<T> {
 
 /** Wire shape returned by GET /api/v1/jobs and POST /api/v1/jobs. */
 export interface Job {
-  /** Aggregate completion across the job's tasks, 0-100; null when no task has progress to report. */
+  /** Aggregate completion across the job's tasks, 0-100; null when the job has no non-canceled tasks. */
   progress_percent?: number | null
   id: string
   farm_id: string
