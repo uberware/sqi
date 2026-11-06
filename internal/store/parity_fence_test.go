@@ -832,6 +832,19 @@ var fenceMutators = map[string]fenceMutator{
 			return err
 		}
 	},
+	"RecordAttemptProgress": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := fenceLiveJob(t, st, store.TaskStatusRunning)
+		task := g.Tasks["a"][0]
+		a := g.Attempts[task.ID]
+		one := 1
+		return func(ctx context.Context) error {
+			out, err := st.RecordAttemptProgress(ctx, store.AttemptProgress{AttemptID: a.ID, TaskID: task.ID, Progress: &one, At: time.Now().UTC()})
+			if err == nil && out != store.ProgressRecorded {
+				return fmt.Errorf("RecordAttemptProgress outcome = %v, want recorded", out)
+			}
+			return err
+		}
+	},
 	"RecordTaskFailure": func(t *testing.T, st store.Store) func(context.Context) error {
 		g := fenceLiveJob(t, st, store.TaskStatusRunning)
 		task := g.Tasks["a"][0]

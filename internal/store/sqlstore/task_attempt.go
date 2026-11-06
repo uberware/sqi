@@ -19,7 +19,8 @@ func (s *Store) LatestTaskAttempt(ctx context.Context, taskID string) (store.Tas
 
 const attemptCols = `
 	id, task_id, worker_id, session_id, attempt_number, status,
-	exit_code, started_at, ended_at, created_at, message`
+	exit_code, started_at, ended_at, created_at, message,
+	progress, status_text, progress_at`
 
 const (
 	sqlInsertAttempt = `
@@ -86,11 +87,13 @@ func scanAttempt(row scanner) (store.TaskAttempt, error) {
 	var sessionID sql.NullString
 	var status, startedAt, createdAt string
 	var exitCode sql.NullInt64
-	var endedAt sql.NullString
+	var endedAt, progressAt sql.NullString
+	var progress sql.NullInt64
 
 	if err := row.Scan(
 		&a.ID, &a.TaskID, &a.WorkerID, &sessionID, &a.AttemptNumber, &status,
 		&exitCode, &startedAt, &endedAt, &createdAt, &a.Message,
+		&progress, &a.StatusText, &progressAt,
 	); err != nil {
 		return store.TaskAttempt{}, err
 	}
@@ -100,6 +103,11 @@ func scanAttempt(row scanner) (store.TaskAttempt, error) {
 	a.StartedAt = mustTime(startedAt)
 	a.CreatedAt = mustTime(createdAt)
 	a.EndedAt = nullTextToTime(endedAt)
+	a.ProgressAt = nullTextToTime(progressAt)
+	if progress.Valid {
+		v := int(progress.Int64)
+		a.Progress = &v
+	}
 
 	if exitCode.Valid {
 		code := int(exitCode.Int64)

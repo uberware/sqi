@@ -44,7 +44,38 @@ type TaskAttempt struct {
 	StartedAt time.Time
 	EndedAt   *time.Time // nil while running
 	CreatedAt time.Time
+	// Progress, StatusText and ProgressAt are the latest progress snapshot the
+	// worker reported for this attempt. Progress is a percent, nil when the
+	// task reports none; ProgressAt is nil until a snapshot is recorded.
+	Progress   *int
+	StatusText string
+	ProgressAt *time.Time
 }
+
+// AttemptProgress is one progress snapshot a worker reports for an attempt. At
+// is the worker's stamp and orders snapshots of the same attempt.
+type AttemptProgress struct {
+	AttemptID, TaskID string
+	Progress          *int
+	StatusText        string
+	At                time.Time
+}
+
+// ProgressOutcome is what [TaskStore.RecordAttemptProgress] did with a snapshot.
+type ProgressOutcome int
+
+const (
+	// ProgressRecorded means the snapshot replaced the attempt's previous one.
+	ProgressRecorded ProgressOutcome = iota
+	// ProgressOutOfOrder means a snapshot at or after At is already stored.
+	ProgressOutOfOrder
+	// ProgressNotLive means the attempt is closed or superseded, or the task is
+	// not in flight.
+	ProgressNotLive
+	// ProgressTaskAssigned means the attempt is live but the task has not yet
+	// been reported running.
+	ProgressTaskAssigned
+)
 
 // OpenAttempt is an attempt a worker may still be executing: running, its
 // task's latest, while the task is assigned or running.

@@ -262,6 +262,15 @@ type TaskStore interface {
 	// check and the write.
 	StartTaskAttempt(ctx context.Context, attemptID, taskID, sessionID string, now time.Time) (started bool, err error)
 
+	// RecordAttemptProgress overwrites the progress snapshot of a live attempt
+	// (a nil Progress stores NULL). An attempt that is not live (see
+	// StartTaskAttempt) is [ProgressNotLive]; a live attempt whose task is still
+	// assigned is [ProgressTaskAssigned]; a snapshot not strictly newer than the
+	// stored one is [ProgressOutOfOrder]. None of those write. An unknown task
+	// is [ErrNotFound]. No job-row anchor is taken: the write is one guarded
+	// statement on the attempt row.
+	RecordAttemptProgress(ctx context.Context, p AttemptProgress) (ProgressOutcome, error)
+
 	// ReclaimTaskAttempt hands one task back as the offline reclaim does: it
 	// returns the task to ready with no worker, closes attemptID as failed with
 	// [FailureReasonWorkerShutdown] and releases its claims, without touching

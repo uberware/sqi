@@ -98,6 +98,51 @@ func (s *Store) StartTaskAttempt(ctx context.Context, attemptID, taskID, session
 	})
 }
 
+// sqlRecordAttemptProgress overwrites an open attempt's progress snapshot
+// unless a snapshot at or after the new one is stored. Times are fixed-width
+// text, so the comparison orders them. Binds: progress, status_text,
+// progress_at, id, progress_at.
+const sqlRecordAttemptProgress = `
+UPDATE task_attempts SET progress = ?, status_text = ?, progress_at = ?
+WHERE  id = ? AND status = 'running' AND (progress_at IS NULL OR progress_at < ?)`
+
+// RecordAttemptProgress implements [store.TaskStore].
+//
+// No job-row anchor is taken: the liveness read and the guarded update touch
+// only the task and attempt rows, and a snapshot that races a close is
+// harmless because the update re-checks status = 'running'.
+func (s *Store) RecordAttemptProgress(ctx context.Context, p store.AttemptProgress) (store.ProgressOutcome, error) {
+	return inTxValue(ctx, s, "record attempt progress", func(tx *dbTx) (store.ProgressOutcome, txOutcome, error) {
+		live, current, err := liveAttemptTx(ctx, tx, p.AttemptID, p.TaskID)
+		if err != nil {
+			return store.ProgressNotLive, txRollback, err
+		}
+		if !live {
+			return store.ProgressNotLive, txCommit, nil
+		}
+		if current == store.TaskStatusAssigned {
+			return store.ProgressTaskAssigned, txCommit, nil
+		}
+		var progress any
+		if p.Progress != nil {
+			progress = int64(*p.Progress)
+		}
+		at := TimeText(p.At.UTC())
+		res, err := tx.ExecContext(ctx, sqlRecordAttemptProgress, progress, p.StatusText, at, p.AttemptID, at)
+		if err != nil {
+			return store.ProgressNotLive, txRollback, fmt.Errorf("store: record progress of attempt %s: %w", p.AttemptID, mapErr(err))
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return store.ProgressNotLive, txRollback, fmt.Errorf("store: record progress of attempt %s: %w", p.AttemptID, mapErr(err))
+		}
+		if n == 0 {
+			return store.ProgressOutOfOrder, txCommit, nil
+		}
+		return store.ProgressRecorded, txCommit, nil
+	})
+}
+
 // sqlReclaimOneTask returns one in-flight task to ready. Binds: updated_at, id.
 const sqlReclaimOneTask = sqlReclaimTaskSet + `
 WHERE  id = ? AND status IN ('assigned', 'running')`

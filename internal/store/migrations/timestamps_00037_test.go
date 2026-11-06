@@ -197,7 +197,7 @@ var (
 // rewrite in them.
 var addedAfter00037 = []string{
 	"broker_state.recorded_at", "server_members.started_at", "workers.registration_broker_at",
-	"workers.heartbeat_broker_at",
+	"workers.heartbeat_broker_at", "task_attempts.progress_at",
 }
 
 // TestMigration00037_CoversEveryTimestampColumn fails, by name, on a timestamp

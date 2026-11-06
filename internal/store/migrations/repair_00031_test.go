@@ -136,7 +136,12 @@ func dumpTables(t *testing.T, db *sql.DB) string {
 func dumpTable(t *testing.T, db *sql.DB, table string) string {
 	t.Helper()
 	// The table name comes from sqlite_master, never from input.
-	rows, err := db.QueryContext(t.Context(), `SELECT * FROM "`+table+`" ORDER BY rowid`)
+	// Columns a later migration adds are left out: a rewound database lacks them
+	// until the migration is re-applied, so they would differ by design.
+	colList := strings.Join(queryStrings(t, db, `SELECT '"' || name || '"' FROM pragma_table_info('`+table+`')
+		WHERE ('`+table+`.' || name) NOT IN ('task_attempts.progress', 'task_attempts.status_text', 'task_attempts.progress_at')
+		ORDER BY cid`), ", ")
+	rows, err := db.QueryContext(t.Context(), `SELECT `+colList+` FROM "`+table+`" ORDER BY rowid`)
 	if err != nil {
 		t.Fatalf("dump %s: %v", table, err)
 	}
