@@ -1663,14 +1663,14 @@ type stubCancelRegistrarError struct {
 	deregCalls    int
 }
 
-func (s *stubCancelRegistrarError) Register(_ string) error {
+func (s *stubCancelRegistrarError) Register(_, _ string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.registerCalls++
 	return errors.New("stub: NATS subscribe failed")
 }
 
-func (s *stubCancelRegistrarError) Deregister(_ string) {
+func (s *stubCancelRegistrarError) Deregister(_, _ string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.deregCalls++

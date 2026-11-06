@@ -376,7 +376,8 @@ type HeartbeatMsg struct {
 	// ActiveAttemptIDs lists every attempt this worker process holds, from the
 	// moment its lease reply is decoded until its task goroutine exits (after
 	// the terminal status is published). The server reclaims an attempt a
-	// live worker has stopped reporting (scheduler.reconcile_grace).
+	// live worker has stopped reporting (scheduler.reconcile_grace), and sends
+	// a cancel naming one the worker still reports after the store closed it.
 	ActiveAttemptIDs []string `json:"active_attempt_ids,omitempty"`
 
 	// UptimeSeconds is the number of seconds the worker process has been
@@ -812,8 +813,9 @@ type TaskCancelMsg struct {
 
 	// AttemptID, when set, limits the cancel to that attempt: a worker
 	// running another attempt of the task ignores it. The server sets it when
-	// it stops an attempt it has already closed (a stale "running" report),
-	// because the task's newer attempt listens on the same subject. Empty
+	// it stops an attempt it has already closed (a stale "running" report, or
+	// a heartbeat still listing the attempt), because the task's newer attempt
+	// listens on the same subject. Empty
 	// cancels whichever attempt of the task the worker is running, which is
 	// what a job or task cancel wants.
 	AttemptID string `json:"attempt_id,omitempty"`

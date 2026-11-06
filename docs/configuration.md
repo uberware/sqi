@@ -1281,7 +1281,11 @@ Nothing is reclaimed during the first `reconcile_grace` after the server
 starts. Each reclaim is logged at Warn and counted in
 `sqi_scheduler_tasks_reconciled_total`.
 
-`0` disables reconciliation. Any other value must be at least
+The same sweep sends a cancel to a worker whose heartbeats still list an
+attempt the store has closed (a cancel the worker missed, or a task fenced by
+a restore), on every sweep while they do.
+
+`0` disables reconciliation, including that cancel. Any other value must be at least
 `scheduler.heartbeat_timeout`, or start-up fails validation. When the key is
 set neither in the file nor in the environment, the default follows a raised
 `heartbeat_timeout`; set explicitly, it is used exactly as given.

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"runtime"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -115,16 +116,16 @@ func TestDispatcher_ShutdownLeavesNoGoroutines(t *testing.T) {
 
 func TestDispatcher_CancelBeatsAFinishingTask(t *testing.T) {
 	d, _, _ := newInternalDispatcher(TaskPlan{})
-	tk := &simTask{m: &protocol.AssignMsg{TaskID: "t1"}, stop: make(chan struct{})}
-	d.active["t1"] = tk
+	tk := &simTask{m: &protocol.AssignMsg{TaskID: "t1", AttemptID: "a1"}, stop: make(chan struct{})}
+	d.active["a1"] = tk
 	if got := d.settle(tk); got != endDone {
 		t.Fatalf("settle = %v, want endDone", got)
 	}
 	if d.Cancel("t1", "") {
 		t.Error("Cancel of a finishing task = true, want false")
 	}
-	tk2 := &simTask{m: &protocol.AssignMsg{TaskID: "t2"}, stop: make(chan struct{})}
-	d.active["t2"] = tk2
+	tk2 := &simTask{m: &protocol.AssignMsg{TaskID: "t2", AttemptID: "a2"}, stop: make(chan struct{})}
+	d.active["a2"] = tk2
 	first, repeat := d.Cancel("t2", ""), d.Cancel("t2", "")
 	if !first || !repeat {
 		t.Error("Cancel, then a repeat Cancel, of a running task should both be true")
@@ -141,7 +142,7 @@ func TestDispatcher_CancelBeatsAFinishingTask(t *testing.T) {
 func TestDispatcher_CancelNamingAnotherAttemptIsIgnored(t *testing.T) {
 	d, _, _ := newInternalDispatcher(TaskPlan{})
 	tk := &simTask{m: &protocol.AssignMsg{TaskID: "t1", AttemptID: "a-new"}, stop: make(chan struct{})}
-	d.active["t1"] = tk
+	d.active["a-new"] = tk
 	if d.Cancel("t1", "a-old") {
 		t.Fatal("Cancel naming another attempt = true, want false")
 	}
@@ -150,6 +151,46 @@ func TestDispatcher_CancelNamingAnotherAttemptIsIgnored(t *testing.T) {
 	}
 	if got := d.settle(tk); got != endCanceled {
 		t.Errorf("settle after Cancel = %v, want endCanceled", got)
+	}
+}
+
+// TestDispatcher_TwoAttemptsOfOneTask pins that a simulated worker re-leased
+// a task while a stale attempt of it still runs keeps both: a cancel naming
+// the stale attempt stops it alone, and the stale attempt's end leaves the
+// newer one reachable.
+func TestDispatcher_TwoAttemptsOfOneTask(t *testing.T) {
+	d, _, l := newInternalDispatcher(TaskPlan{Duration: time.Minute, Outcome: OutcomeHang})
+	for _, a := range []string{"a-old", "a-new"} {
+		if err := d.Dispatch(context.Background(), &protocol.AssignMsg{TaskID: "t1", AttemptID: a, JobID: "j"}); err != nil {
+			t.Fatalf("Dispatch %s: %v", a, err)
+		}
+	}
+	t.Cleanup(func() {
+		d.shutdown(endCrashed)
+		d.wait(context.Background())
+	})
+	if got := d.ActiveTaskCount(); got != 2 {
+		t.Fatalf("ActiveTaskCount = %d, want 2", got)
+	}
+	if got := d.ActiveTaskIDs(); !slices.Equal(got, []string{"t1"}) {
+		t.Fatalf("ActiveTaskIDs = %v, want [t1]", got)
+	}
+
+	if !d.Cancel("t1", "a-old") {
+		t.Fatal("Cancel naming the stale attempt = false, want it found")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for d.ActiveTaskCount() != 1 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := countKindIn(l, KindCanceled); got != 1 {
+		t.Fatalf("canceled events = %d, want 1 (the stale attempt only)", got)
+	}
+	if got := d.ActiveTaskCount(); got != 1 {
+		t.Fatalf("ActiveTaskCount after the stale attempt ended = %d, want 1", got)
+	}
+	if !d.Cancel("t1", "a-new") {
+		t.Fatal("the newer attempt was lost with the stale one's end")
 	}
 }
 

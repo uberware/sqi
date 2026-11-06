@@ -128,10 +128,10 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	// arrive after the task is gone from activeTasks.  wg.Done runs last so
 	// DrainAndShutdown.wg.Wait() returns only after all cleanup is complete.
 	defer func() { e.sessionMgr.Cleanup(context.Background(), sess, failed) }()
-	defer e.removeActiveTask(run.taskID)
+	defer e.removeActiveTask(run)
 	// Register per-task cancel subscription; cleanup Deregisters when the task
 	// exits (runs before removeActiveTask in LIFO order).
-	defer e.registerCancelSubscription(ctx, msg.TaskID)()
+	defer e.registerCancelSubscription(ctx, msg.TaskID, msg.AttemptID)()
 
 	// ── Nil-action guard ──────────────────────────────────────────────────────
 	if msg.OnRun == nil {

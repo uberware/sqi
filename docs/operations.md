@@ -925,8 +925,12 @@ The restored farm is the farm at the moment of the backup:
   `scheduler: task.logs for unknown attempt — discarding`, and at Info,
   `scheduler: stale running report — discarding` and
   `scheduler: stale failure report — discarding`.
-- **A ghost run still occupies its worker.** The fence closes the attempt in
-  the database, not the process: the worker runs the task to its end. The
+- **A ghost run occupies its worker until it is canceled.** The fence closes
+  the attempt in the database, not the process. Once the restored server has
+  run for [`scheduler.reconcile_grace`](configuration.md#schedulerreconcile_grace),
+  it sends a cancel to each worker whose heartbeats still list a fenced
+  attempt (see [Reconciliation](#reconciliation)). A ghost of an attempt the
+  backup never recorded cannot be addressed and runs to its end. The
   scheduler counts a worker's busy cores from the database, so meanwhile it can
   lease that worker more work than it has cores for, and the task's re-run on
   another worker can write the same outputs at the same time. Where that
@@ -1008,6 +1012,15 @@ that listed it). Reclaiming is what a worker shutdown does: the task returns to
 failure is counted. The server logs a Warn, `scheduler: reclaimed an attempt
 its worker no longer reports`, with the worker, task, attempt and how long it
 was open, and counts it in `sqi_scheduler_tasks_reconciled_total`.
+
+The same tick does the reverse. When a worker's current heartbeat lists an
+attempt the store has already closed (the task was canceled, reclaimed or
+fenced by a restore, and the worker missed the cancel), the server sends that
+worker a cancel naming the attempt, on every tick while the worker lists it.
+It logs each at Info, `scheduler: cancel signal published to worker` with
+`cause` `closed attempt still reported`. A worker that has just finished an
+attempt can list it in one more heartbeat; that cancel names an attempt the
+worker no longer runs and is ignored.
 
 - **On by default.** Left unset, `reconcile_grace` is 2 minutes, or
   `scheduler.heartbeat_timeout` when that is longer. `0` turns

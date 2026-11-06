@@ -90,7 +90,7 @@ type Dispatcher struct {
 
 	mu         sync.Mutex
 	held       map[string]struct{} // attempt IDs, from Hold until release
-	active     map[string]*simTask // task ID -> dispatched attempt
+	active     map[string]*simTask // attempt ID -> dispatched attempt; a re-leased task can have two
 	lastAssign *time.Time
 	closed     bool
 
@@ -148,7 +148,7 @@ func (d *Dispatcher) Dispatch(_ context.Context, m *protocol.AssignMsg) error {
 		return errClosed
 	}
 	d.held[m.AttemptID] = struct{}{}
-	d.active[m.TaskID] = t
+	d.active[m.AttemptID] = t
 	d.lastAssign = &now
 	d.wg.Add(1)
 	d.mu.Unlock()
@@ -158,22 +158,25 @@ func (d *Dispatcher) Dispatch(_ context.Context, m *protocol.AssignMsg) error {
 	return nil
 }
 
-// Cancel stops taskID's attempt and reports whether one was running and is
+// Cancel stops taskID's attempts and reports whether one was running and is
 // now being canceled (true again for a repeat cancel). A non-empty attemptID
 // limits it to that attempt. A task already finishing, abandoned by a
-// shutdown, or running another attempt reports false.
+// shutdown, or running only another attempt reports false.
 func (d *Dispatcher) Cancel(taskID, attemptID string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	t, ok := d.active[taskID]
-	if !ok || (attemptID != "" && t.m.AttemptID != attemptID) {
-		return false
+	canceled := false
+	for _, t := range d.active {
+		if t.m.TaskID != taskID || (attemptID != "" && t.m.AttemptID != attemptID) {
+			continue
+		}
+		if t.reason == endNone {
+			t.reason = endCanceled
+			close(t.stop)
+		}
+		canceled = canceled || t.reason == endCanceled
 	}
-	if t.reason == endNone {
-		t.reason = endCanceled
-		close(t.stop)
-	}
-	return t.reason == endCanceled
+	return canceled
 }
 
 // ActiveTaskCount returns how many attempts are dispatched and not yet ended.
@@ -183,11 +186,17 @@ func (d *Dispatcher) ActiveTaskCount() int {
 	return len(d.active)
 }
 
-// ActiveTaskIDs returns the task IDs of the dispatched attempts.
+// ActiveTaskIDs returns the task IDs of the dispatched attempts, each once.
 func (d *Dispatcher) ActiveTaskIDs() []string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return slices.Collect(maps.Keys(d.active))
+	ids := make([]string, 0, len(d.active))
+	for _, t := range d.active {
+		if !slices.Contains(ids, t.m.TaskID) {
+			ids = append(ids, t.m.TaskID)
+		}
+	}
+	return ids
 }
 
 // ActiveAttemptIDs returns the held attempts, sorted.
@@ -209,10 +218,10 @@ func (d *Dispatcher) run(t *simTask) {
 	defer d.wg.Done()
 	m := t.m
 	if d.cancels != nil {
-		if err := d.cancels.Register(m.TaskID); err != nil {
+		if err := d.cancels.Register(m.TaskID, m.AttemptID); err != nil {
 			d.logger.DebugContext(context.Background(), "simworker: cancel subscription failed", slog.String("task_id", m.TaskID), slog.Any("error", err))
 		}
-		defer d.cancels.Deregister(m.TaskID)
+		defer d.cancels.Deregister(m.TaskID, m.AttemptID)
 	}
 	d.st.Running(context.Background(), m, "", nil, time.Now())
 	d.record(m, KindRunning, "", 0, time.Time{})
@@ -355,8 +364,8 @@ func (d *Dispatcher) finish(t *simTask, reason endReason, lines int) {
 func (d *Dispatcher) release(t *simTask) {
 	d.mu.Lock()
 	delete(d.held, t.m.AttemptID)
-	if d.active[t.m.TaskID] == t {
-		delete(d.active, t.m.TaskID)
+	if d.active[t.m.AttemptID] == t {
+		delete(d.active, t.m.AttemptID)
 	}
 	d.mu.Unlock()
 }

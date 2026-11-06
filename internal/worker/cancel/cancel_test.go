@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -171,7 +173,7 @@ func TestHandler_Register_and_receive(t *testing.T) {
 	h := cancel.New(nc, c, testLogger())
 
 	taskID := "task-001"
-	if err := h.Register(taskID); err != nil {
+	if err := h.Register(taskID, "attempt-1"); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
@@ -192,9 +194,9 @@ func TestHandler_Register_and_receive(t *testing.T) {
 	}
 }
 
-// TestHandler_passes_attempt_id verifies that a cancel naming an attempt
-// reaches TaskCanceler.Cancel with that attempt, and one naming none with an
-// empty attempt: the canceler, not the handler, decides which run to stop.
+// TestHandler_passes_attempt_id verifies that a subscription hands
+// TaskCanceler.Cancel its own attempt: for a cancel naming that attempt, and
+// for one naming none. A cancel naming another attempt never reaches it.
 func TestHandler_passes_attempt_id(t *testing.T) {
 	url := startTestNATSServer(t)
 	nc := connectTestNATS(t, url)
@@ -203,10 +205,11 @@ func TestHandler_passes_attempt_id(t *testing.T) {
 	h := cancel.New(nc, c, testLogger())
 
 	taskID := "task-att"
-	if err := h.Register(taskID); err != nil {
+	if err := h.Register(taskID, "attempt-1"); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	for _, payload := range [][]byte{
+		attemptCancelPayload(t, taskID, "attempt-other", "job-1"),
 		attemptCancelPayload(t, taskID, "attempt-1", "job-1"),
 		cancelPayload(t, taskID, "job-1"),
 	} {
@@ -219,11 +222,65 @@ func TestHandler_passes_attempt_id(t *testing.T) {
 	}
 
 	waitFor(t, 2*time.Second, func() bool {
-		return len(c.cancelCalls()) == 2
+		return len(c.cancelCalls()) >= 2
 	})
-	want := []cancelCall{{taskID, "attempt-1"}, {taskID, ""}}
-	if got := c.cancelCalls(); got[0] != want[0] || got[1] != want[1] {
+	time.Sleep(50 * time.Millisecond) // a third call would be a defect
+	want := []cancelCall{{taskID, "attempt-1"}, {taskID, "attempt-1"}}
+	if got := c.cancelCalls(); !slices.Equal(got, want) {
 		t.Errorf("Cancel calls = %+v, want %+v", got, want)
+	}
+}
+
+// TestHandler_two_attempts_of_one_task verifies that a worker holding two
+// attempts of one task (re-leased while a stale attempt still runs) keeps a
+// subscription for each: a cancel naming one reaches only it, the stale
+// attempt's Deregister leaves the newer one subscribed, and a cancel naming
+// no attempt reaches every attempt still subscribed.
+func TestHandler_two_attempts_of_one_task(t *testing.T) {
+	url := startTestNATSServer(t)
+	nc := connectTestNATS(t, url)
+
+	c := &stubCanceler{}
+	h := cancel.New(nc, c, testLogger())
+
+	const taskID = "task-twice"
+	for _, a := range []string{"attempt-old", "attempt-new"} {
+		if err := h.Register(taskID, a); err != nil {
+			t.Fatalf("Register %s: %v", a, err)
+		}
+	}
+	publish := func(payload []byte) {
+		t.Helper()
+		if err := nc.Publish(bus.TaskCancelSubject(taskID), payload); err != nil {
+			t.Fatalf("Publish: %v", err)
+		}
+		if err := nc.Flush(); err != nil {
+			t.Fatalf("Flush: %v", err)
+		}
+	}
+	settle := func(n int) []cancelCall {
+		t.Helper()
+		waitFor(t, 2*time.Second, func() bool { return len(c.cancelCalls()) >= n })
+		time.Sleep(50 * time.Millisecond) // a further call would be a defect
+		return c.cancelCalls()
+	}
+
+	publish(attemptCancelPayload(t, taskID, "attempt-old", "job-1"))
+	if got, want := settle(1), []cancelCall{{taskID, "attempt-old"}}; !slices.Equal(got, want) {
+		t.Fatalf("after a cancel naming attempt-old: calls = %+v, want %+v", got, want)
+	}
+
+	publish(cancelPayload(t, taskID, "job-1"))
+	got := settle(3)[1:]
+	slices.SortFunc(got, func(a, b cancelCall) int { return strings.Compare(a.attemptID, b.attemptID) })
+	if want := []cancelCall{{taskID, "attempt-new"}, {taskID, "attempt-old"}}; !slices.Equal(got, want) {
+		t.Fatalf("after a task-wide cancel: calls = %+v, want %+v", got, want)
+	}
+
+	h.Deregister(taskID, "attempt-old")
+	publish(attemptCancelPayload(t, taskID, "attempt-new", "job-1"))
+	if got, want := settle(4)[3], (cancelCall{taskID, "attempt-new"}); got != want {
+		t.Fatalf("after the stale attempt deregistered: call = %+v, want %+v", got, want)
 	}
 }
 
@@ -237,10 +294,10 @@ func TestHandler_Deregister_stops_delivery(t *testing.T) {
 	h := cancel.New(nc, c, testLogger())
 
 	taskID := "task-002"
-	if err := h.Register(taskID); err != nil {
+	if err := h.Register(taskID, "attempt-1"); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	h.Deregister(taskID)
+	h.Deregister(taskID, "attempt-1")
 
 	if err := nc.Publish(bus.TaskCancelSubject(taskID), cancelPayload(t, taskID, "job-2")); err != nil {
 		t.Fatalf("Publish: %v", err)
@@ -266,7 +323,7 @@ func TestHandler_multiple_tasks(t *testing.T) {
 	h := cancel.New(nc, c, testLogger())
 
 	for _, id := range []string{"task-A", "task-B", "task-C"} {
-		if err := h.Register(id); err != nil {
+		if err := h.Register(id, "attempt-"+id); err != nil {
 			t.Fatalf("Register %q: %v", id, err)
 		}
 	}
@@ -302,7 +359,7 @@ func TestHandler_task_not_found(t *testing.T) {
 	h := cancel.New(nc, c, testLogger())
 
 	taskID := "task-done"
-	if err := h.Register(taskID); err != nil {
+	if err := h.Register(taskID, "attempt-1"); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
@@ -329,7 +386,7 @@ func TestHandler_malformed_payload(t *testing.T) {
 	h := cancel.New(nc, c, testLogger())
 
 	taskID := "task-bad"
-	if err := h.Register(taskID); err != nil {
+	if err := h.Register(taskID, "attempt-1"); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
@@ -356,12 +413,12 @@ func TestHandler_deregister_idempotent(t *testing.T) {
 	h := cancel.New(nc, c, testLogger())
 
 	taskID := "task-idem"
-	if err := h.Register(taskID); err != nil {
+	if err := h.Register(taskID, "attempt-1"); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
 	// Must not panic.
-	h.Deregister(taskID)
-	h.Deregister(taskID)
-	h.Deregister(taskID)
+	h.Deregister(taskID, "attempt-1")
+	h.Deregister(taskID, "attempt-1")
+	h.Deregister(taskID, "attempt-1")
 }

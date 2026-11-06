@@ -428,18 +428,29 @@ neither and is never reconciled, and a worker holding nothing sends
 `attempts_reported: true` with no IDs, which is a report like any other.
 The heartbeat handler records each report in an in-memory, per-process
 `reconciler`, unless the worker's timestamp is more than
-`scheduler.heartbeat_timeout` from its receipt. The sweep lists the store's
-open attempts created before `now − reconcile_grace`
-(`store.ListOpenAttempts`) and reclaims one through `store.ReclaimTaskAttempt`
-when its worker's latest report is fresh, omits it, and has omitted it for at
-least `scheduler.reconcile_grace`, measured on the server's clock from the
-later of the attempt's creation and the last report that named it. Nothing is
-reclaimed during the first `reconcile_grace` after the scheduler starts. A
-reclaim counts in `sqi_scheduler_tasks_reconciled_total`. If the status
-consumer falls more than the grace behind, a finished task can be reclaimed
-before its report is read; the report then names a closed attempt and is
-discarded, so the cost is a re-run, never a lost or doubled result. See
-[Reconciliation](operations.md#reconciliation).
+`scheduler.heartbeat_timeout` from its receipt. The sweep takes the attempts
+the fresh reports hold, then lists every open attempt in the store
+(`store.ListOpenAttempts`), in that order, so that every attempt a report
+names was leased before the list was read. It reclaims an open attempt
+through `store.ReclaimTaskAttempt` when its worker's latest report is fresh,
+omits it, and has omitted it for at least `scheduler.reconcile_grace`,
+measured on the server's clock from the later of the attempt's creation and
+the last report that named it. A reclaim counts in
+`sqi_scheduler_tasks_reconciled_total`. If the status consumer falls more
+than the grace behind, a finished task can be reclaimed before its report is
+read; the report then names a closed attempt and is discarded, so the cost is
+a re-run, never a lost or doubled result.
+
+The same sweep repairs the opposite case. An attempt a fresh report still
+holds that is missing from the open list has been closed in the store (a
+cancel, a reclaim, a restore fence, a newer lease) while its worker still runs
+it, so the cancel that should have stopped it was lost. The sweep looks the
+attempt up and publishes `task.cancel.<task_id>` naming it (`attempt_id`), on
+every tick for as long as the worker reports it. An attempt the store does not
+know (a database restored from before its lease) has no task to address the
+cancel to and is skipped. Neither repair runs during the first
+`reconcile_grace` after the scheduler starts, or at all with
+`reconcile_grace` 0. See [Reconciliation](operations.md#reconciliation).
 
 ### 4. Worker execution
 
@@ -791,9 +802,17 @@ publishes a cancel that names the attempt (`attempt_id`), and the worker stops
 that attempt. The task's newer attempt listens on the same subject, so a worker
 running another attempt of the task ignores a cancel that names one. The resend
 rides on the `running` report, so it is not immediate: a cancel that commits
-during session setup or stage-in reaches the worker only once those finish. It
-is also sent once. A worker whose `running` report is dropped, or that is
-disconnected when the resend goes out, runs the attempt to the end.
+during session setup or stage-in reaches the worker only once those finish. A
+worker whose `running` report is dropped, or that is disconnected when the
+resend goes out, still lists the attempt in its heartbeats, and attempt
+reconciliation (see the heartbeat sweep above) sends the cancel again on every
+sweep while it does.
+
+A worker holds one cancel subscription per attempt, not per task, and keys its
+running attempts the same way. A worker leased a task again while a stale
+attempt of it still runs holds both: a cancel naming one stops only it, one
+naming none stops both, and the stale attempt's exit leaves the newer one
+running and subscribed.
 
 Two arrows deserve note. `assigned` → `succeeded`/`failed` is permitted even
 though it appears to skip `running`: the worker publishes `running` first, but
@@ -1506,10 +1525,14 @@ broker: it renames the embedded broker's `nats.embedded.data_dir` to
 `<dir>.pre-restore-<time>`, or, on an external broker, purges sqi's streams
 and deletes the server's durable consumers while holding the account's guard. Workers still running a fenced
 task become ghost runs: their status reports name a closed attempt and are
-discarded, and their log chunks land on that closed attempt. A database
-restored without the fence is recovered by attempt reconciliation instead
-(see the heartbeat sweep above), within `scheduler.reconcile_grace` once a
-worker's heartbeats show it no longer holds the attempt.
+discarded, and their log chunks land on that closed attempt. Once the restored
+server has run for `scheduler.reconcile_grace`, attempt reconciliation sends
+each ghost run a cancel on every sweep while its worker's heartbeats list it.
+A ghost of an attempt the backup never recorded cannot be addressed and runs
+to its end. A database restored without the fence is recovered by attempt
+reconciliation instead (see the heartbeat sweep above), within
+`scheduler.reconcile_grace` once a worker's heartbeats show it no longer holds
+the attempt.
 
 ### Known gaps
 

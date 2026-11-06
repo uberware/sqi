@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
 // reconciler remembers, per process, which attempts each worker's recent
@@ -18,6 +19,11 @@ import (
 // restored database, or a task the worker silently dropped. A false reclaim
 // (the status consumer more than grace behind) costs a re-run, never a lost or
 // doubled result: the late report names a closed attempt and is discarded.
+//
+// The same reports drive the opposite repair: an attempt a live worker still
+// reports holding after the store has closed it (canceled, reclaimed, fenced
+// by a restore, superseded) is a run whose cancel was lost, and the sweep
+// sends it another ([Scheduler.cancelClosedAttempts]).
 type reconciler struct {
 	mu       sync.Mutex
 	grace    time.Duration
@@ -103,6 +109,23 @@ func (r *reconciler) due(open []store.OpenAttempt, now time.Time) []store.OpenAt
 	return out
 }
 
+// held returns the attempts the fresh reports at now hold, attempt ID →
+// worker ID: the same freshness bound due applies.
+func (r *reconciler) held(now time.Time) map[string]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := map[string]string{}
+	for w, rep := range r.reports {
+		if now.Sub(rep.receivedAt) > r.skew {
+			continue
+		}
+		for id := range rep.attempts {
+			out[id] = w
+		}
+	}
+	return out
+}
+
 // pruneLocked forgets reports and sightings older than 2×grace. Pruning cannot
 // change a decision: an entry older than 2×grace yields a gap of at least grace
 // whether it is kept or replaced by CreatedAt, and a report that old is far
@@ -120,15 +143,26 @@ func (r *reconciler) pruneLocked(now time.Time) {
 	}
 }
 
-// reconcileAttempts reclaims open attempts their workers no longer report.
-// Runs on the heartbeat-sweep tick; does nothing while disabled or during the
-// first grace after the scheduler started (state is rebuilt from live
-// heartbeats and any JetStream replay drains before anything acts on it).
+// allOpen is how far past the sweep's clock the open-attempt list reaches, so
+// that it holds every attempt open when it is read, whatever the clock: the
+// list is what tells a reported attempt that is open from one that is closed.
+const allOpen = 24 * time.Hour
+
+// reconcileAttempts reclaims open attempts their workers no longer report, and
+// cancels closed attempts their workers still report. Runs on the
+// heartbeat-sweep tick; does nothing while disabled or during the first grace
+// after the scheduler started (state is rebuilt from live heartbeats and any
+// JetStream replay drains before anything acts on it).
+//
+// The held reports are taken before the open attempts are listed: every
+// attempt they name was leased before the list was read, so one missing from
+// the list is closed, not leased since.
 func (s *Scheduler) reconcileAttempts(ctx context.Context, now time.Time) {
 	if s.reconciler == nil || now.Sub(s.startedAt) < s.cfg.ReconcileGrace {
 		return
 	}
-	open, err := s.store.ListOpenAttempts(ctx, now.Add(-s.cfg.ReconcileGrace))
+	held := s.reconciler.held(now)
+	open, err := s.store.ListOpenAttempts(ctx, now.Add(allOpen))
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			s.logger.WarnContext(ctx, "scheduler: list open attempts failed", slog.Any("error", err))
@@ -140,6 +174,44 @@ func (s *Scheduler) reconcileAttempts(ctx context.Context, now time.Time) {
 			return
 		}
 		s.reclaimUnreportedAttempt(ctx, a, now)
+	}
+	for _, a := range open {
+		delete(held, a.AttemptID)
+	}
+	s.cancelClosedAttempts(ctx, held, now)
+}
+
+// cancelClosedAttempts sends a cancel naming each attempt in held (attempt ID
+// → the worker reporting it), all of which the store has closed. It is sent
+// on every sweep while the worker reports the attempt, because a core-NATS
+// cancel reaches only a connected worker already subscribed. An attempt the
+// store does not know (a database restored from before its lease) has no task
+// to address it to and is skipped.
+func (s *Scheduler) cancelClosedAttempts(ctx context.Context, held map[string]string, now time.Time) {
+	for attemptID, workerID := range held {
+		if s.deposed() {
+			return
+		}
+		a, err := s.store.GetTaskAttempt(ctx, attemptID)
+		if errors.Is(err, store.ErrNotFound) {
+			s.logger.DebugContext(ctx, "scheduler: worker reports an attempt the store does not know",
+				slog.String("worker_id", workerID), slog.String("attempt_id", attemptID))
+			continue
+		}
+		if err != nil {
+			s.warnUnlessStopped(ctx, err, "scheduler: read reported closed attempt failed",
+				slog.String("attempt_id", attemptID))
+			continue
+		}
+		task, err := s.store.GetTask(ctx, a.TaskID)
+		if err != nil {
+			s.warnUnlessStopped(ctx, err, "scheduler: read reported closed attempt's task failed",
+				slog.String("task_id", a.TaskID), slog.String("attempt_id", attemptID))
+			continue
+		}
+		s.publishCancel(ctx, protocol.TaskCancelMsg{
+			TaskID: a.TaskID, AttemptID: attemptID, JobID: task.JobID, CanceledAt: now,
+		}, workerID, "closed attempt still reported")
 	}
 }
 

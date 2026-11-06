@@ -197,18 +197,19 @@ type Config struct {
 // Implementations must be safe for concurrent use from multiple goroutines
 // (multiple tasks may register/deregister simultaneously).
 type CancelRegistrar interface {
-	// Register subscribes to cancel messages for the given taskID.
+	// Register subscribes attemptID's run to cancel messages for taskID.
 	// Errors are logged as warnings and do not abort task execution.
-	Register(taskID string) error
-	// Deregister unsubscribes from cancel messages for the given taskID.
-	Deregister(taskID string)
+	Register(taskID, attemptID string) error
+	// Deregister removes the subscription Register made for attemptID's run,
+	// leaving any other attempt of taskID subscribed.
+	Deregister(taskID, attemptID string)
 }
 
 // ── Internal types ────────────────────────────────────────────────────────────
 
 // taskRun holds the in-memory runtime state of an executing task.  It is
-// stored in [Executor.activeTasks] from Dispatch until the task goroutine
-// exits.
+// stored in [Executor.activeTasks], keyed by attempt ID, from Dispatch until
+// the task goroutine exits.
 type taskRun struct {
 	taskID    string
 	attemptID string
@@ -249,7 +250,10 @@ type Executor struct {
 	cfg           Config
 	stager        *staging.Stager
 
-	mu               sync.Mutex
+	mu sync.Mutex
+	// activeTasks is keyed by attempt ID, not task ID: a worker re-leased a
+	// task while a stale attempt of it still runs holds both, and each must
+	// stay reachable by a cancel naming it until its own goroutine exits.
 	activeTasks      map[string]*taskRun
 	lastAssignmentAt *time.Time
 
@@ -426,14 +430,17 @@ func (e *Executor) ActiveTaskCount() int {
 	return len(e.activeTasks)
 }
 
-// ActiveTaskIDs returns a snapshot of the IDs of all currently running tasks.
-// Implements [heartbeat.StateSource].
+// ActiveTaskIDs returns a snapshot of the IDs of all currently running tasks,
+// each once, however many attempts of it run. Implements
+// [heartbeat.StateSource].
 func (e *Executor) ActiveTaskIDs() []string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	ids := make([]string, 0, len(e.activeTasks))
-	for id := range e.activeTasks {
-		ids = append(ids, id)
+	for _, run := range e.activeTasks {
+		if !slices.Contains(ids, run.taskID) {
+			ids = append(ids, run.taskID)
+		}
 	}
 	return ids
 }
@@ -454,17 +461,19 @@ func (e *Executor) LastAssignmentAt() *time.Time {
 func (e *Executor) addActiveTask(run *taskRun) {
 	now := time.Now()
 	e.mu.Lock()
-	e.activeTasks[run.taskID] = run
+	e.activeTasks[run.attemptID] = run
 	e.lastAssignmentAt = &now
 	e.mu.Unlock()
 	e.m.ActiveTasks.Inc()
 }
 
-// removeActiveTask removes taskID from the active-tasks map and decrements
-// the Prometheus gauge.
-func (e *Executor) removeActiveTask(taskID string) {
+// removeActiveTask removes run from the active-tasks map and decrements the
+// Prometheus gauge.
+func (e *Executor) removeActiveTask(run *taskRun) {
 	e.mu.Lock()
-	delete(e.activeTasks, taskID)
+	if e.activeTasks[run.attemptID] == run {
+		delete(e.activeTasks, run.attemptID)
+	}
 	e.mu.Unlock()
 	e.m.ActiveTasks.Dec()
 }
@@ -488,23 +497,24 @@ func (e *Executor) applyCancelFunc(run *taskRun, taskCancel context.CancelFunc) 
 // goroutine exits.
 //
 // If no CancelRegistrar is wired, the returned function is a no-op.
-func (e *Executor) registerCancelSubscription(ctx context.Context, taskID string) func() {
+func (e *Executor) registerCancelSubscription(ctx context.Context, taskID, attemptID string) func() {
 	e.mu.Lock()
 	cr := e.cancelReg
 	e.mu.Unlock()
 	if cr == nil {
 		return func() {}
 	}
-	if regErr := cr.Register(taskID); regErr != nil {
+	if regErr := cr.Register(taskID, attemptID); regErr != nil {
 		e.logger.WarnContext(
 			ctx, "executor: cancel subscription registration failed",
 			slog.String("task_id", taskID),
+			slog.String("attempt_id", attemptID),
 			slog.Any("error", regErr),
 		)
 		// Nothing was registered so there is nothing to deregister.
 		return func() {}
 	}
-	return func() { cr.Deregister(taskID) }
+	return func() { cr.Deregister(taskID, attemptID) }
 }
 
 // lastProgress returns the most-recently seen openjd_progress value for
@@ -546,29 +556,34 @@ func (e *Executor) SetCancelRegistrar(cr CancelRegistrar) {
 // as soon as runTask initializes its context.
 //
 // A non-empty attemptID limits the cancel to that attempt
-// ([protocol.TaskCancelMsg.AttemptID]); a task running another is left alone.
+// ([protocol.TaskCancelMsg.AttemptID]); a run of another attempt is left
+// alone. An empty one stops every run of the task.
 //
 // Returns true if a matching run was found in the active-tasks map
 // (regardless of whether cancellation completed), false if none was (already
 // finished, never dispatched, or another attempt).
 func (e *Executor) Cancel(taskID, attemptID string) bool {
 	e.mu.Lock()
-	run, ok := e.activeTasks[taskID]
-	if !ok || (attemptID != "" && run.attemptID != attemptID) {
-		e.mu.Unlock()
-		return false
+	var stop []context.CancelFunc
+	found := false
+	for _, run := range e.activeTasks {
+		if run.taskID != taskID || (attemptID != "" && run.attemptID != attemptID) {
+			continue
+		}
+		found = true
+		if run.cancelFunc != nil {
+			stop = append(stop, run.cancelFunc)
+			continue
+		}
+		// cancelFunc not yet set: the runTask goroutine hasn't initialized its
+		// per-task context yet.  Flag the run so runTask handles it on startup.
+		run.cancelRequested = true
 	}
-	if run.cancelFunc != nil {
-		f := run.cancelFunc
-		e.mu.Unlock()
-		f()
-		return true
-	}
-	// cancelFunc not yet set: the runTask goroutine hasn't initialized its
-	// per-task context yet.  Flag the run so runTask handles it on startup.
-	run.cancelRequested = true
 	e.mu.Unlock()
-	return true
+	for _, f := range stop {
+		f()
+	}
+	return found
 }
 
 // DrainAndShutdown implements the worker graceful-shutdown sequence (tasks
@@ -622,13 +637,9 @@ func (e *Executor) DrainAndShutdown(gracePeriod time.Duration) (completed, kille
 	// Grace period expired (or gracePeriod == 0): snapshot the survivors, set
 	// the shutdown flag, and cancel all task execution contexts.
 	e.mu.Lock()
-	killedIDs := make([]string, 0, len(e.activeTasks))
-	for taskID := range e.activeTasks {
-		killedIDs = append(killedIDs, taskID)
-	}
+	killed = len(e.activeTasks)
 	e.mu.Unlock()
 
-	killed = len(killedIDs)
 	completed = initial - killed
 
 	e.shuttingDown.Store(true)

@@ -30,13 +30,15 @@ package scheduler
 // NATS publish failures are non-fatal: the scheduler logs a warning and
 // continues.
 //
-// A worker receives cancels on a core-NATS subscription it opens per task
+// A worker receives cancels on a core-NATS subscription it opens per attempt
 // after the lease, so a cancel that commits between the lease and that
 // subscription reaches no one. The worker then publishes "running" for an
 // attempt the cancel closed, and [Scheduler.handleTaskRunning] answers that
-// stale report with a cancel naming the attempt. That resend rides on the
-// report: a worker whose "running" is dropped, or that is disconnected when the
-// resend goes out, is not told again.
+// stale report with a cancel naming the attempt. A worker whose "running" is
+// dropped, or that is disconnected when that resend goes out, still lists the
+// attempt in its heartbeats, and attempt reconciliation
+// ([Scheduler.cancelClosedAttempts]) sends the cancel again on every sweep
+// while it does.
 
 import (
 	"context"
