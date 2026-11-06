@@ -182,7 +182,7 @@ function MetadataCard({ job }: { job: JobDetailType }) {
         <div className={styles.metaField}>
           <dt>Progress</dt>
           <dd>
-            <TaskProgressBar counts={job.task_counts} />
+            <TaskProgressBar counts={job.task_counts} progressPercent={job.progress_percent} />
           </dd>
         </div>
         <div className={styles.metaField}>

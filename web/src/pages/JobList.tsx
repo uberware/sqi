@@ -129,7 +129,7 @@ function sortAriaValue(
 function ProgressCell({ job }: { job: Job }) {
   const counts = job.task_counts
   if (!counts) return <span>—</span>
-  return <TaskProgressBar counts={counts} />
+  return <TaskProgressBar counts={counts} progressPercent={job.progress_percent} />
 }
 
 // ── Task-count delta helper ───────────────────────────────────────────────────

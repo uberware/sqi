@@ -213,6 +213,28 @@ describe('JobList', () => {
       expect(badges.length).toBeGreaterThan(0)
     })
 
+    it('passes progress_percent to the bar', async () => {
+      const job = makeJob({
+        progress_percent: 75,
+        task_counts: {
+          total: 2,
+          pending: 0,
+          ready: 0,
+          assigned: 0,
+          running: 1,
+          succeeded: 1,
+          failed: 0,
+          canceled: 0,
+        },
+      })
+      fetchMock.mockResolvedValueOnce(okJson(makeListResponse([job])))
+
+      render(<JobList />, { wrapper: Wrapper })
+
+      const bar = await screen.findByRole('progressbar', { name: /task progress/i })
+      expect(bar).toHaveAttribute('aria-valuenow', '75')
+    })
+
     it('renders task progress fraction', async () => {
       const job = makeJob({
         task_counts: {
