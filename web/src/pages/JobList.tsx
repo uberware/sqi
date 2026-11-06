@@ -198,8 +198,10 @@ export default function JobList() {
   const invalidateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const scheduleListInvalidate = useCallback(() => {
-    if (invalidateTimerRef.current) clearTimeout(invalidateTimerRef.current)
+    // Never reset a pending timer: a steady event stream would starve it.
+    if (invalidateTimerRef.current) return
     invalidateTimerRef.current = setTimeout(() => {
+      invalidateTimerRef.current = null
       void queryClient.invalidateQueries({ queryKey: queryKeys.jobs.all })
     }, 5_000)
   }, [queryClient])

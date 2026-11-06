@@ -8,6 +8,7 @@ import { useState } from 'react'
 import type { ReactNode } from 'react'
 import JobDetail from './JobDetail'
 import { WebSocketProvider } from '@/ws/context'
+import { queryKeys } from '@/api/queries'
 import type { JobDetail as JobDetailType, ListResponse, Principal, Task, Worker } from '@/api/types'
 
 // ── Auth mock ─────────────────────────────────────────────────────────────────
@@ -672,6 +673,123 @@ describe('JobDetail', () => {
       })
 
       await waitFor(() => expect(attemptCalls()).toBeGreaterThan(1))
+    })
+
+    function clientWrapper(client: QueryClient) {
+      return function ClientWrapper({ children }: { children: ReactNode }) {
+        return (
+          <QueryClientProvider client={client}>
+            <MemoryRouter initialEntries={['/jobs/job-aabbccdd-eeff']}>
+              <WebSocketProvider url="ws://test">
+                <Routes>
+                  <Route path="/jobs/:id" element={children} />
+                </Routes>
+              </WebSocketProvider>
+            </MemoryRouter>
+          </QueryClientProvider>
+        )
+      }
+    }
+
+    function pushTaskEvent(taskId: string, status: string, extra: object = {}) {
+      act(() => {
+        wsInstance(0).simulateMessage({
+          type: 'push',
+          subject: 'jobs/job-aabbccdd-eeff/tasks',
+          payload: {
+            job_id: 'job-aabbccdd-eeff',
+            task_id: taskId,
+            status,
+            updated_at: '2024-01-15T10:10:00Z',
+            ...extra,
+          },
+          seq: 1,
+        })
+      })
+    }
+
+    it('does not throw when a single-task cache entry exists', async () => {
+      const task = makeTask({ id: 'task-x', status: 'running' })
+      const client = makeClient()
+      client.setQueryData(queryKeys.tasks.detail('task-x'), task)
+      fetchMock.mockImplementation((url) => {
+        const u = String(url)
+        if (u.includes('/workers')) return Promise.resolve(okJson(makeWorkerListResponse([])))
+        if (u.includes('/tasks')) return Promise.resolve(okJson(makeTaskListResponse([task])))
+        return Promise.resolve(okJson(makeJob()))
+      })
+
+      render(<JobDetail />, { wrapper: clientWrapper(client) })
+      await waitFor(() => screen.getAllByLabelText('Status: Running'))
+      act(() => wsInstance(0).simulateOpen())
+
+      expect(() => pushTaskEvent('task-x', 'running', { progress: 40 })).not.toThrow()
+      expect(client.getQueryData(queryKeys.tasks.detail('task-x'))).toEqual(task)
+    })
+
+    it('keeps refreshing the job while progress events stream', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      try {
+        const task = makeTask({ id: 'task-p', status: 'running' })
+        fetchMock.mockImplementation((url) => {
+          const u = String(url)
+          if (u.includes('/workers')) return Promise.resolve(okJson(makeWorkerListResponse([])))
+          if (u.includes('/tasks')) return Promise.resolve(okJson(makeTaskListResponse([task])))
+          return Promise.resolve(okJson(makeJob()))
+        })
+        const jobFetches = () =>
+          fetchMock.mock.calls.filter(([url]) =>
+            /\/jobs\/job-aabbccdd-eeff(\?|$)/.test(String(url)),
+          ).length
+
+        render(<JobDetail />, { wrapper: Wrapper })
+        await waitFor(() => screen.getAllByLabelText('Status: Running'))
+        act(() => wsInstance(0).simulateOpen())
+        const before = jobFetches()
+
+        for (let i = 0; i < 6; i++) {
+          pushTaskEvent('task-p', 'running', { progress: i * 10 })
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(2_000)
+          })
+        }
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(100)
+        })
+
+        expect(jobFetches() - before).toBeGreaterThanOrEqual(2)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('does not refetch attempts on progress-only events', async () => {
+      const task = makeTask({ id: 't5', name: 'render[Frame=5]', status: 'running' })
+      fetchMock.mockImplementation((url) => {
+        const u = String(url)
+        if (u.includes('/attempts')) return Promise.resolve(okJson({ items: [] }))
+        if (u.includes('/workers')) return Promise.resolve(okJson(makeWorkerListResponse([])))
+        if (u.includes('/tasks')) return Promise.resolve(okJson(makeTaskListResponse([task])))
+        return Promise.resolve(okJson(makeJob()))
+      })
+
+      render(<JobDetail />, { wrapper: Wrapper })
+      fireEvent.click(
+        await screen.findByRole('button', { name: /attempts for render\[Frame=5\]/i }),
+      )
+      const attemptCalls = () =>
+        fetchMock.mock.calls.filter(([url]) => String(url).includes('/attempts')).length
+      await waitFor(() => expect(attemptCalls()).toBe(1))
+      act(() => wsInstance(0).simulateOpen())
+
+      for (let i = 0; i < 3; i++) pushTaskEvent('t5', 'running', { progress: 10 + i })
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 50))
+      })
+      expect(attemptCalls()).toBe(1)
+
+      pushTaskEvent('t5', 'failed')
+      await waitFor(() => expect(attemptCalls()).toBe(2))
     })
   })
 

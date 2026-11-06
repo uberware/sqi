@@ -568,6 +568,41 @@ describe('JobList', () => {
       )
     })
 
+    it('keeps refreshing the list while progress events stream', async () => {
+      const job = makeJob({ id: 'job-stream', status: 'running', name: 'Stream Job' })
+      fetchMock.mockImplementation(() => Promise.resolve(okJson(makeListResponse([job]))))
+
+      render(<JobList />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByText('Stream Job'))
+      act(() => wsInstance(0).simulateOpen())
+      const before = fetchMock.mock.calls.length
+
+      for (let i = 0; i < 6; i++) {
+        act(() => {
+          wsInstance(0).simulateMessage({
+            type: 'push',
+            subject: 'jobs',
+            payload: {
+              job_id: 'job-stream',
+              task_id: 'task-stream',
+              status: 'running',
+              progress: i * 10,
+              updated_at: '2024-01-01T10:10:00Z',
+            },
+            seq: i + 1,
+          })
+        })
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(2_000)
+        })
+      }
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100)
+      })
+
+      expect(fetchMock.mock.calls.length - before).toBeGreaterThanOrEqual(2)
+    })
+
     it('ignores JobEvents for jobs not in the current list', async () => {
       const job = makeJob({ id: 'job-visible', status: 'running', name: 'Visible Job' })
       fetchMock.mockResolvedValueOnce(okJson(makeListResponse([job])))
