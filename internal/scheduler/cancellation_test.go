@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"testing"
 
 	"github.com/google/uuid"
@@ -34,6 +35,7 @@ import (
 type stubBus struct {
 	cancelErr error
 	cancels   []protocol.TaskCancelMsg // decoded payloads, in publish order
+	cancelTo  []string                 // the worker each of cancels was addressed to
 }
 
 func (*stubBus) ConsumeWorker(_ context.Context, _ jetstream.MessageHandler) (jetstream.ConsumeContext, error) {
@@ -56,12 +58,13 @@ func (*stubBus) SubscribeLease(_ func(string, string, []byte) []byte) (*nats.Sub
 	return nil, nil
 }
 
-func (b *stubBus) PublishTaskCancel(_ context.Context, taskID string, data []byte) error {
+func (b *stubBus) PublishTaskCancel(_ context.Context, workerID string, data []byte) error {
 	var m protocol.TaskCancelMsg
-	if err := json.Unmarshal(data, &m); err != nil || m.TaskID != taskID {
-		panic(fmt.Sprintf("stubBus: cancel published to task %s carries %q", taskID, data))
+	if err := json.Unmarshal(data, &m); err != nil || workerID == "" {
+		panic(fmt.Sprintf("stubBus: cancel published to worker %q carries %q", workerID, data))
 	}
 	b.cancels = append(b.cancels, m)
+	b.cancelTo = append(b.cancelTo, workerID)
 	return b.cancelErr
 }
 
@@ -166,9 +169,12 @@ func TestCancelJob_WithAssignedWorkers(t *testing.T) {
 	if err := s.CancelJob(t.Context(), job.ID); err != nil {
 		t.Fatalf("CancelJob: %v", err)
 	}
-	// Both active tasks had workers → 2 cancel signals.
+	// Both active tasks had workers → 2 cancel signals, one to each.
 	if len(bus.cancels) != 2 {
 		t.Errorf("expected 2 NATS publishes, got %d", len(bus.cancels))
+	}
+	if got := slices.Sorted(slices.Values(bus.cancelTo)); !slices.Equal(got, []string{"worker-1", "worker-2"}) {
+		t.Errorf("cancels addressed to %v, want [worker-1 worker-2]", got)
 	}
 }
 
@@ -302,8 +308,8 @@ func TestCancelTask_AssignedTask_CanceledAndSignaled(t *testing.T) {
 	if stored.FailureReason != "canceled by user" {
 		t.Errorf("task failure_reason = %q, want %q", stored.FailureReason, "canceled by user")
 	}
-	if len(bus.cancels) != 1 {
-		t.Errorf("expected 1 NATS cancel signal, got %d", len(bus.cancels))
+	if len(bus.cancels) != 1 || bus.cancelTo[0] != "worker-99" {
+		t.Errorf("cancels = %+v to %v, want 1 to worker-99", bus.cancels, bus.cancelTo)
 	}
 }
 

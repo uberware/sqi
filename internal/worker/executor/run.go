@@ -118,20 +118,15 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	// LIFO defers — registration order (first→last) and execution order (last→first):
 	//   Registered 1st → runs last:        wg.Done
 	//   Registered 2nd → runs next-to-last: release (the held attempt)
-	//   Registered 3rd → runs 5th:         taskCancel
-	//   Registered 4th → runs 4th:         hook.Deregister (if hook is wired)
-	//   Registered 5th → runs 3rd:         sessionMgr.Cleanup
-	//   Registered 6th → runs 2nd:         removeActiveTask
-	//   Registered 7th → runs 1st:         registerCancelSubscription cleanup
+	//   Registered 3rd → runs 4th:         taskCancel
+	//   Registered 4th → runs 3rd:         hook.Deregister (if hook is wired)
+	//   Registered 5th → runs 2nd:         sessionMgr.Cleanup
+	//   Registered 6th → runs 1st:         removeActiveTask
 	//
-	// Deregistering the cancel subscription first ensures no cancel signal can
-	// arrive after the task is gone from activeTasks.  wg.Done runs last so
-	// DrainAndShutdown.wg.Wait() returns only after all cleanup is complete.
+	// wg.Done runs last so DrainAndShutdown.wg.Wait() returns only after all
+	// cleanup is complete.
 	defer func() { e.sessionMgr.Cleanup(context.Background(), sess, failed) }()
 	defer e.removeActiveTask(run)
-	// Register per-task cancel subscription; cleanup Deregisters when the task
-	// exits (runs before removeActiveTask in LIFO order).
-	defer e.registerCancelSubscription(ctx, msg.TaskID, msg.AttemptID)()
 
 	// ── Nil-action guard ──────────────────────────────────────────────────────
 	if msg.OnRun == nil {

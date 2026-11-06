@@ -12,17 +12,24 @@ import (
 // TestCancel_NamedAttemptMustMatch pins that a cancel naming an attempt stops
 // the task's run only when that is the attempt it runs, and a cancel naming
 // none stops whatever run the task has ([protocol.TaskCancelMsg.AttemptID]).
+// A cancel naming an attempt and no task (one the server's store has no record
+// of) stops that attempt's run, and a cancel naming neither stops nothing.
 // Both the started path (cancelFunc set) and the early path (cancelRequested)
 // are checked.
 func TestCancel_NamedAttemptMustMatch(t *testing.T) {
 	tests := []struct {
 		name      string
+		taskID    string
 		attemptID string
 		want      bool
 	}{
-		{name: "another attempt", attemptID: "attempt-old", want: false},
-		{name: "this attempt", attemptID: "attempt-new", want: true},
-		{name: "no attempt named", attemptID: "", want: true},
+		{name: "another attempt", taskID: "task-1", attemptID: "attempt-old", want: false},
+		{name: "this attempt", taskID: "task-1", attemptID: "attempt-new", want: true},
+		{name: "no attempt named", taskID: "task-1", attemptID: "", want: true},
+		{name: "another task", taskID: "task-2", attemptID: "", want: false},
+		{name: "this attempt, no task", taskID: "", attemptID: "attempt-new", want: true},
+		{name: "another attempt, no task", taskID: "", attemptID: "attempt-old", want: false},
+		{name: "nothing named", taskID: "", attemptID: "", want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name+"/started", func(t *testing.T) {
@@ -30,7 +37,7 @@ func TestCancel_NamedAttemptMustMatch(t *testing.T) {
 			calls := 0
 			e.activeTasks["attempt-new"] = &taskRun{taskID: "task-1", attemptID: "attempt-new", cancelFunc: func() { calls++ }}
 
-			if got := e.Cancel("task-1", tt.attemptID); got != tt.want {
+			if got := e.Cancel(tt.taskID, tt.attemptID); got != tt.want {
 				t.Fatalf("Cancel = %v, want %v", got, tt.want)
 			}
 			if (calls == 1) != tt.want {
@@ -42,7 +49,7 @@ func TestCancel_NamedAttemptMustMatch(t *testing.T) {
 			run := &taskRun{taskID: "task-1", attemptID: "attempt-new"}
 			e.activeTasks["attempt-new"] = run
 
-			if got := e.Cancel("task-1", tt.attemptID); got != tt.want {
+			if got := e.Cancel(tt.taskID, tt.attemptID); got != tt.want {
 				t.Fatalf("Cancel = %v, want %v", got, tt.want)
 			}
 			if run.cancelRequested != tt.want {

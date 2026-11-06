@@ -456,7 +456,7 @@ func openAttemptCount(t *testing.T, so backend.Options) int {
 		t.Fatalf("open the restored store: %v", err)
 	}
 	defer st.Close()
-	open, err := st.ListOpenAttempts(t.Context(), time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC))
+	open, err := st.ListOpenAttempts(t.Context())
 	if err != nil {
 		t.Fatalf("list open attempts: %v", err)
 	}
@@ -573,7 +573,7 @@ func assertRestoredFenced(t *testing.T, so backend.Options, jobIDs ...string) {
 		t.Fatalf("open the restored store: %v", err)
 	}
 	defer st.Close()
-	open, err := st.ListOpenAttempts(t.Context(), time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC))
+	open, err := st.ListOpenAttempts(t.Context())
 	if err != nil {
 		t.Fatalf("list open attempts: %v", err)
 	}

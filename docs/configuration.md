@@ -1285,8 +1285,8 @@ The same sweep sends a cancel to a worker whose heartbeats still list an
 attempt the store has closed (a cancel the worker missed, or a task fenced by
 a restore), on every sweep while they do.
 
-`0` disables reconciliation, including that cancel. Any other value must be at least
-`scheduler.heartbeat_timeout`, or start-up fails validation. When the key is
+`0` disables reconciliation, including that cancel. Any other value must be at
+least `scheduler.heartbeat_timeout`, or start-up fails validation. When the key is
 set neither in the file nor in the environment, the default follows a raised
 `heartbeat_timeout`; set explicitly, it is used exactly as given.
 

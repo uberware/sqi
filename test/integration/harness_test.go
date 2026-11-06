@@ -769,6 +769,15 @@ func (w *mockWorker) register() {
 // worker offline during long test runs.
 func (w *mockWorker) startHeartbeat(interval time.Duration) {
 	w.t.Helper()
+	w.startHeartbeatHolding(interval, nil)
+}
+
+// startHeartbeatHolding is [mockWorker.startHeartbeat] for a worker that
+// reports the attempts it holds: each heartbeat lists attempts(). With a nil
+// attempts the heartbeat carries no attempt list, and the server reconciles
+// nothing from it.
+func (w *mockWorker) startHeartbeatHolding(interval time.Duration, attempts func() []string) {
+	w.t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	w.t.Cleanup(cancel)
@@ -786,6 +795,9 @@ func (w *mockWorker) startHeartbeat(interval time.Duration) {
 					Type:     protocol.TypeHeartbeat,
 					WorkerID: w.id,
 					At:       time.Now().UTC(),
+				}
+				if attempts != nil {
+					msg.AttemptsReported, msg.ActiveAttemptIDs = true, attempts()
 				}
 				data, err := json.Marshal(msg)
 				if err != nil {

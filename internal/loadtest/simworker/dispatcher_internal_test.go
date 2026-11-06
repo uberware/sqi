@@ -43,7 +43,6 @@ func newInternalDispatcher(plan TaskPlan) (*Dispatcher, *countingConn, *Ledger) 
 	d := NewDispatcher("w1",
 		status.New(conn, status.Config{WorkerID: "w1"}, logger),
 		logstreamer.New(conn, "w1", logstreamer.DefaultConfig(), logger),
-		nil,
 		BehaviorFunc(func(*protocol.AssignMsg, *rand.Rand) TaskPlan { return plan }),
 		l, rand.New(rand.NewPCG(1, 2)))
 	return d, conn, l
@@ -138,16 +137,17 @@ func TestDispatcher_CancelBeatsAFinishingTask(t *testing.T) {
 // TestDispatcher_CancelNamingAnotherAttemptIsIgnored: a cancel naming an
 // attempt other than the one the task runs (the server stopping a closed
 // attempt of the same task) leaves the run going; naming the run's own
-// attempt cancels it.
+// attempt, even with no task (one the server's store has no record of),
+// cancels it.
 func TestDispatcher_CancelNamingAnotherAttemptIsIgnored(t *testing.T) {
 	d, _, _ := newInternalDispatcher(TaskPlan{})
 	tk := &simTask{m: &protocol.AssignMsg{TaskID: "t1", AttemptID: "a-new"}, stop: make(chan struct{})}
 	d.active["a-new"] = tk
-	if d.Cancel("t1", "a-old") {
+	if d.Cancel("t1", "a-old") || d.Cancel("", "a-old") {
 		t.Fatal("Cancel naming another attempt = true, want false")
 	}
-	if !d.Cancel("t1", "a-new") {
-		t.Fatal("Cancel naming the run's attempt = false, want true")
+	if !d.Cancel("", "a-new") {
+		t.Fatal("Cancel naming the run's attempt and no task = false, want true")
 	}
 	if got := d.settle(tk); got != endCanceled {
 		t.Errorf("settle after Cancel = %v, want endCanceled", got)

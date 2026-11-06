@@ -33,10 +33,24 @@ type reconciler struct {
 	warned   map[string]bool      // workers warned about a delayed or skewed heartbeat, until their next in-window one
 }
 
+// maxReportedAttempts bounds the attempt list one heartbeat may carry. Leasing
+// is gated on cores, so a worker holds at most its CPU count of attempts plus
+// the few closed ones it is still stopping; a longer list is broken or
+// hostile, and acting on it would cost a store read per listed attempt on
+// every sweep. Such a list is ignored whole, never truncated: an attempt left
+// off a report reads as no longer held, and would be reclaimed.
+const maxReportedAttempts = 4096
+
 type workerReport struct {
 	workerAt   time.Time // the worker's own timestamp, for ordering its reports
 	receivedAt time.Time
 	attempts   map[string]struct{}
+}
+
+// freshLocked reports whether rep is recent enough at now to act on. Caller
+// holds r.mu.
+func (r *reconciler) freshLocked(rep workerReport, now time.Time) bool {
+	return now.Sub(rep.receivedAt) <= r.skew
 }
 
 func newReconciler(grace, skew time.Duration) *reconciler {
@@ -91,7 +105,7 @@ func (r *reconciler) due(open []store.OpenAttempt, now time.Time) []store.OpenAt
 	var out []store.OpenAttempt
 	for _, a := range open {
 		rep, ok := r.reports[a.WorkerID]
-		if !ok || now.Sub(rep.receivedAt) > r.skew {
+		if !ok || !r.freshLocked(rep, now) {
 			continue
 		}
 		if _, held := rep.attempts[a.AttemptID]; held {
@@ -109,18 +123,24 @@ func (r *reconciler) due(open []store.OpenAttempt, now time.Time) []store.OpenAt
 	return out
 }
 
-// held returns the attempts the fresh reports at now hold, attempt ID →
-// worker ID: the same freshness bound due applies.
-func (r *reconciler) held(now time.Time) map[string]string {
+// heldAttempt is a worker's report of an attempt it holds.
+type heldAttempt struct {
+	workerID   string
+	receivedAt time.Time // when the server received the report
+}
+
+// held returns the attempts the fresh reports at now hold, by attempt ID: the
+// same freshness bound due applies.
+func (r *reconciler) held(now time.Time) map[string]heldAttempt {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := map[string]string{}
+	out := map[string]heldAttempt{}
 	for w, rep := range r.reports {
-		if now.Sub(rep.receivedAt) > r.skew {
+		if !r.freshLocked(rep, now) {
 			continue
 		}
 		for id := range rep.attempts {
-			out[id] = w
+			out[id] = heldAttempt{workerID: w, receivedAt: rep.receivedAt}
 		}
 	}
 	return out
@@ -143,11 +163,6 @@ func (r *reconciler) pruneLocked(now time.Time) {
 	}
 }
 
-// allOpen is how far past the sweep's clock the open-attempt list reaches, so
-// that it holds every attempt open when it is read, whatever the clock: the
-// list is what tells a reported attempt that is open from one that is closed.
-const allOpen = 24 * time.Hour
-
 // reconcileAttempts reclaims open attempts their workers no longer report, and
 // cancels closed attempts their workers still report. Runs on the
 // heartbeat-sweep tick; does nothing while disabled or during the first grace
@@ -162,7 +177,7 @@ func (s *Scheduler) reconcileAttempts(ctx context.Context, now time.Time) {
 		return
 	}
 	held := s.reconciler.held(now)
-	open, err := s.store.ListOpenAttempts(ctx, now.Add(allOpen))
+	open, err := s.store.ListOpenAttempts(ctx)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			s.logger.WarnContext(ctx, "scheduler: list open attempts failed", slog.Any("error", err))
@@ -181,26 +196,35 @@ func (s *Scheduler) reconcileAttempts(ctx context.Context, now time.Time) {
 	s.cancelClosedAttempts(ctx, held, now)
 }
 
-// cancelClosedAttempts sends a cancel naming each attempt in held (attempt ID
-// → the worker reporting it), all of which the store has closed. It is sent
-// on every sweep while the worker reports the attempt, because a core-NATS
-// cancel reaches only a connected worker already subscribed. An attempt the
-// store does not know (a database restored from before its lease) has no task
-// to address it to and is skipped.
-func (s *Scheduler) cancelClosedAttempts(ctx context.Context, held map[string]string, now time.Time) {
-	for attemptID, workerID := range held {
+// cancelClosedAttempts sends a cancel naming each attempt in held, none of
+// which is open in the store. It is sent on every sweep while the worker
+// reports the attempt, because a core-NATS cancel reaches only a connected
+// worker already subscribed. A report received before the store closed the
+// attempt is skipped: it says nothing about the run since.
+//
+// An attempt the store does not know (a database restored from before its
+// lease, or a job deleted while it ran) is canceled by attempt ID alone, with
+// no task. The reports were read before the open attempts were listed, so
+// every attempt they name was leased before this read; one the store does not
+// have is gone, not yet to be written.
+func (s *Scheduler) cancelClosedAttempts(ctx context.Context, held map[string]heldAttempt, now time.Time) {
+	for attemptID, h := range held {
 		if s.deposed() {
 			return
 		}
 		a, err := s.store.GetTaskAttempt(ctx, attemptID)
 		if errors.Is(err, store.ErrNotFound) {
-			s.logger.DebugContext(ctx, "scheduler: worker reports an attempt the store does not know",
-				slog.String("worker_id", workerID), slog.String("attempt_id", attemptID))
+			s.countCancelResent("unknown")
+			s.publishCancel(ctx, protocol.TaskCancelMsg{AttemptID: attemptID, CanceledAt: now},
+				h.workerID, "unknown attempt still reported")
 			continue
 		}
 		if err != nil {
 			s.warnUnlessStopped(ctx, err, "scheduler: read reported closed attempt failed",
 				slog.String("attempt_id", attemptID))
+			continue
+		}
+		if a.EndedAt != nil && !h.receivedAt.After(*a.EndedAt) {
 			continue
 		}
 		task, err := s.store.GetTask(ctx, a.TaskID)
@@ -209,9 +233,17 @@ func (s *Scheduler) cancelClosedAttempts(ctx context.Context, held map[string]st
 				slog.String("task_id", a.TaskID), slog.String("attempt_id", attemptID))
 			continue
 		}
+		s.countCancelResent("closed")
 		s.publishCancel(ctx, protocol.TaskCancelMsg{
 			TaskID: a.TaskID, AttemptID: attemptID, JobID: task.JobID, CanceledAt: now,
-		}, workerID, "closed attempt still reported")
+		}, h.workerID, "closed attempt still reported")
+	}
+}
+
+// countCancelResent counts one cancel cancelClosedAttempts sends, by cause.
+func (s *Scheduler) countCancelResent(cause string) {
+	if s.metrics != nil {
+		s.metrics.SchedulerCancelsResent.WithLabelValues(cause).Inc()
 	}
 }
 

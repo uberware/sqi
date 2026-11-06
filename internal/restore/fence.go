@@ -14,16 +14,13 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-// farFuture is a cutoff after every attempt's creation.
-var farFuture = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
-
 // Fence hands back every open attempt as a worker shutdown does: the task
 // returns to ready, the attempt closes as failed (worker shutdown), its claims
 // are released, and no retry or job failure is counted. It returns how many it
 // reclaimed. It must run with the single-server lock held, so nothing can open
 // an attempt meanwhile; it fails if any attempt is still open afterwards.
 func Fence(ctx context.Context, st store.Store, now time.Time) (int, error) {
-	open, err := st.ListOpenAttempts(ctx, farFuture)
+	open, err := st.ListOpenAttempts(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("restore: list open attempts: %w", err)
 	}
@@ -37,7 +34,7 @@ func Fence(ctx context.Context, st store.Store, now time.Time) (int, error) {
 			n++
 		}
 	}
-	left, err := st.ListOpenAttempts(ctx, farFuture)
+	left, err := st.ListOpenAttempts(ctx)
 	if err != nil {
 		return n, fmt.Errorf("restore: re-check open attempts: %w", err)
 	}

@@ -8,6 +8,7 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -220,11 +221,25 @@ func armReconciler(s *Scheduler, created time.Time) {
 // sqi_scheduler_tasks_reconciled_total, so the test pins the exported name too.
 func reconciledTotal(t *testing.T, s *Scheduler) float64 {
 	t.Helper()
+	return scrapedValue(t, s, "sqi_scheduler_tasks_reconciled_total")
+}
+
+// cancelsResent scrapes the value of sqi_scheduler_cancels_resent_total for
+// cause.
+func cancelsResent(t *testing.T, s *Scheduler, cause string) float64 {
+	t.Helper()
+	return scrapedValue(t, s, `sqi_scheduler_cancels_resent_total{cause="`+cause+`"}`)
+}
+
+// scrapedValue scrapes s's metrics endpoint and returns the value of series,
+// a metric name with its label set as the exposition writes it.
+func scrapedValue(t *testing.T, s *Scheduler, series string) float64 {
+	t.Helper()
 	rec := httptest.NewRecorder()
 	s.metrics.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 	for line := range strings.Lines(body) {
-		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "sqi_scheduler_tasks_reconciled_total "); ok {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), series+" "); ok {
 			f, err := strconv.ParseFloat(v, 64)
 			if err != nil {
 				t.Fatalf("parse %q: %v", line, err)
@@ -232,7 +247,7 @@ func reconciledTotal(t *testing.T, s *Scheduler) float64 {
 			return f
 		}
 	}
-	t.Fatalf("exposition has no sqi_scheduler_tasks_reconciled_total:\n%s", body)
+	t.Fatalf("exposition has no %s:\n%s", series, body)
 	return 0
 }
 
@@ -286,6 +301,45 @@ func TestHandleWorkerHeartbeat_RecordsReportedAttempts(t *testing.T) {
 	s.handleWorkerMessage(heartbeatMsg(t, protocol.HeartbeatMsg{At: time.Now().UTC(), AttemptsReported: true}))
 	if attempts, ok := held(); !ok || len(attempts) != 0 {
 		t.Fatalf("report = %v (recorded %v), want an empty set: the worker holds nothing", attempts, ok)
+	}
+}
+
+// TestHandleWorkerHeartbeat_IgnoresAnOversizedAttemptList pins that a heartbeat
+// listing more attempts than a worker can hold is ignored whole: the worker's
+// previous report stands (and goes stale) rather than being replaced by the
+// oversized list or a truncated one, so the sweep makes no per-attempt store
+// reads for it and reclaims nothing it may still hold.
+func TestHandleWorkerHeartbeat_IgnoresAnOversizedAttemptList(t *testing.T) {
+	st := newCheckedFake(t)
+	s := newMetricsScheduler(st, &recordBus{}, "")
+	now := time.Now().UTC()
+	if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
+		ID: reconcileWorker, FarmID: "f1", Status: store.WorkerStatusOnline, LastHeartbeatAt: &now,
+	}); err != nil {
+		t.Fatalf("RegisterWorker: %v", err)
+	}
+	s.handleWorkerMessage(heartbeatMsg(t, protocol.HeartbeatMsg{
+		At: time.Now().UTC(), AttemptsReported: true, ActiveAttemptIDs: []string{"a1"},
+	}))
+
+	ids := make([]string, maxReportedAttempts+1)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("bogus-%d", i)
+	}
+	msg := heartbeatMsg(t, protocol.HeartbeatMsg{At: time.Now().UTC(), AttemptsReported: true, ActiveAttemptIDs: ids})
+	s.handleWorkerMessage(msg)
+	if !msg.acked {
+		t.Fatal("an oversized heartbeat should still be acked: it is a liveness ping")
+	}
+	rep := s.reconciler.reports[reconcileWorker]
+	if _, has := rep.attempts["a1"]; !has || len(rep.attempts) != 1 {
+		t.Fatalf("report holds %d attempts, want the previous report (a1) to stand", len(rep.attempts))
+	}
+
+	ids = ids[:maxReportedAttempts]
+	s.handleWorkerMessage(heartbeatMsg(t, protocol.HeartbeatMsg{At: time.Now().UTC(), AttemptsReported: true, ActiveAttemptIDs: ids}))
+	if got := len(s.reconciler.reports[reconcileWorker].attempts); got != maxReportedAttempts {
+		t.Fatalf("a list at the limit recorded %d attempts, want %d", got, maxReportedAttempts)
 	}
 }
 
@@ -400,7 +454,7 @@ func TestReconcileAttempts_DisabledAtZero(t *testing.T) {
 	if got := reconciledTotal(t, s); got != 0 {
 		t.Fatalf("sqi_scheduler_tasks_reconciled_total = %v, want 0", got)
 	}
-	open, err := st.ListOpenAttempts(t.Context(), time.Now().UTC().Add(time.Hour))
+	open, err := st.ListOpenAttempts(t.Context())
 	if err != nil {
 		t.Fatalf("ListOpenAttempts: %v", err)
 	}
@@ -585,7 +639,7 @@ func TestReconcileAttempts_CancelsAReportedClosedAttempt(t *testing.T) {
 			s := newMetricsScheduler(st, b, "f1")
 			armReconciler(s, attempt.CreatedAt)
 			closeAttempt(t, s, attempt)
-			b.cancels = nil
+			b.cancels, b.cancelTo = nil, nil
 
 			for sweep := 1; sweep <= 2; sweep++ {
 				at := attempt.CreatedAt.Add(time.Duration(sweep) * time.Minute)
@@ -594,29 +648,33 @@ func TestReconcileAttempts_CancelsAReportedClosedAttempt(t *testing.T) {
 				if len(b.cancels) != sweep {
 					t.Fatalf("after sweep %d: cancels = %+v, want %d", sweep, b.cancels, sweep)
 				}
-				if got := b.cancels[sweep-1]; got.TaskID != "t1" || got.AttemptID != attempt.ID || got.JobID != "j1" {
-					t.Fatalf("cancel = %+v, want task t1 attempt %s job j1", got, attempt.ID)
+				if got, to := b.cancels[sweep-1], b.cancelTo[sweep-1]; got.TaskID != "t1" || got.AttemptID != attempt.ID || got.JobID != "j1" || to != reconcileWorker {
+					t.Fatalf("cancel = %+v to %s, want task t1 attempt %s job j1 to %s", got, to, attempt.ID, reconcileWorker)
 				}
+			}
+			if closed, unknown := cancelsResent(t, s, "closed"), cancelsResent(t, s, "unknown"); closed != 2 || unknown != 0 {
+				t.Fatalf("cancels_resent_total closed = %v, unknown = %v; want 2 and 0", closed, unknown)
 			}
 		})
 	}
 }
 
 // TestReconcileAttempts_CancelsOnlyReportedClosedAttempts pins what the sweep
-// leaves alone: an attempt still open, an attempt the store does not know (a
-// database restored from before its lease), a report too old to be fresh, and
-// any report during the startup hold.
+// leaves alone: an attempt still open, a report too old to be fresh, a
+// report received before the store closed the attempt (the last heartbeat of a
+// run that finished normally), and any report during the startup hold.
 func TestReconcileAttempts_CancelsOnlyReportedClosedAttempts(t *testing.T) {
 	tests := []struct {
-		name    string
-		close   bool
-		report  func(a store.TaskAttempt) []string
-		age     time.Duration // how long before the sweep the report arrived
-		startup bool
+		name        string
+		close       bool
+		report      func(a store.TaskAttempt) []string
+		age         time.Duration // how long before the sweep the report arrived
+		beforeClose bool          // the report arrived before the close, and the sweep within skew of it
+		startup     bool
 	}{
 		{name: "open attempt", report: func(a store.TaskAttempt) []string { return []string{a.ID} }},
-		{name: "unknown attempt", close: true, report: func(store.TaskAttempt) []string { return []string{"no-such-attempt"} }},
 		{name: "stale report", close: true, report: func(a store.TaskAttempt) []string { return []string{a.ID} }, age: time.Minute},
+		{name: "report before the close", close: true, report: func(a store.TaskAttempt) []string { return []string{a.ID} }, beforeClose: true},
 		{name: "startup hold", close: true, report: func(a store.TaskAttempt) []string { return []string{a.ID} }, startup: true},
 	}
 	for _, tt := range tests {
@@ -632,15 +690,51 @@ func TestReconcileAttempts_CancelsOnlyReportedClosedAttempts(t *testing.T) {
 			}
 			b.cancels = nil
 			at := attempt.CreatedAt.Add(2 * time.Minute)
+			reportAt := at.Add(-tt.age)
+			if tt.beforeClose {
+				reportAt = attempt.CreatedAt.Add(-time.Second)
+				at = reportAt.Add(10 * time.Second)
+			}
 			if tt.startup {
 				s.startedAt = at.Add(-time.Second)
 			}
-			s.reconciler.record(reconcileWorker, at.Add(-tt.age), at.Add(-tt.age), tt.report(attempt))
+			s.reconciler.record(reconcileWorker, reportAt, reportAt, tt.report(attempt))
 			s.reconcileAttempts(t.Context(), at)
 			if len(b.cancels) != 0 {
 				t.Fatalf("cancels = %+v, want none", b.cancels)
 			}
+			if closed, unknown := cancelsResent(t, s, "closed"), cancelsResent(t, s, "unknown"); closed != 0 || unknown != 0 {
+				t.Fatalf("cancels_resent_total closed = %v, unknown = %v; want both 0", closed, unknown)
+			}
 		})
+	}
+}
+
+// TestReconcileAttempts_CancelsAReportedUnknownAttempt pins that an attempt a
+// worker's fresh heartbeat reports and the store has no record of (a database
+// restored from before its lease, or a job deleted while it ran) is sent a
+// cancel naming the attempt alone, with no task to name, on every sweep while
+// it is reported.
+func TestReconcileAttempts_CancelsAReportedUnknownAttempt(t *testing.T) {
+	st, attempt := seedReconcileAttempt(t)
+	b := &stubBus{}
+	s := newMetricsScheduler(st, b, "f1")
+	armReconciler(s, attempt.CreatedAt)
+
+	for sweep := 1; sweep <= 2; sweep++ {
+		at := attempt.CreatedAt.Add(time.Duration(sweep) * time.Minute)
+		s.reconciler.record(reconcileWorker, at, at, []string{attempt.ID, "attempt-the-store-never-saw"})
+		s.reconcileAttempts(t.Context(), at)
+		if len(b.cancels) != sweep {
+			t.Fatalf("after sweep %d: cancels = %+v, want %d", sweep, b.cancels, sweep)
+		}
+		got, to := b.cancels[sweep-1], b.cancelTo[sweep-1]
+		if got.AttemptID != "attempt-the-store-never-saw" || got.TaskID != "" || to != reconcileWorker {
+			t.Fatalf("cancel = %+v to %s, want attempt attempt-the-store-never-saw and no task, to %s", got, to, reconcileWorker)
+		}
+	}
+	if closed, unknown := cancelsResent(t, s, "closed"), cancelsResent(t, s, "unknown"); closed != 0 || unknown != 2 {
+		t.Fatalf("cancels_resent_total closed = %v, unknown = %v; want 0 and 2", closed, unknown)
 	}
 }
 
@@ -656,8 +750,8 @@ type leaseDuringList struct {
 	fresh string // the attempt leased during the list
 }
 
-func (l *leaseDuringList) ListOpenAttempts(ctx context.Context, createdBefore time.Time) ([]store.OpenAttempt, error) {
-	open, err := l.Store.ListOpenAttempts(ctx, createdBefore)
+func (l *leaseDuringList) ListOpenAttempts(ctx context.Context) ([]store.OpenAttempt, error) {
+	open, err := l.Store.ListOpenAttempts(ctx)
 	if l.fresh == "" {
 		_, attempts := storetest.NewJob("j2", "f1", "q1").
 			Step("s2", store.StepStatusReady).

@@ -854,8 +854,8 @@ The nightly can fail on `logs` with every other invariant holding, and more
 rarely on `caps`. `ci-medium` has cancels, churn and disconnects, and core
 NATS delivers at most once: log chunks published during a forced disconnect
 are lost, and a cancel published while its worker is disconnected arrives
-only after the reconnect (see [Known server defects](#known-server-defects)). The evidence names the
-tasks and attempts involved.
+only after the reconnect (see [Known server defects](#known-server-defects)).
+The evidence names the tasks and attempts involved.
 
 `workflow_dispatch` takes two inputs: `scenario` (default `ci-medium`) and
 `duration`. Giving a duration runs the scenario as a soak of that length, up

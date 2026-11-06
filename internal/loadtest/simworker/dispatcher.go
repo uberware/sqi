@@ -76,7 +76,6 @@ type Dispatcher struct {
 	instanceID string
 	st         *status.Publisher
 	logs       *logstreamer.Publisher
-	cancels    *cancel.Handler
 	behavior   Behavior
 	ledger     *Ledger
 	logger     *slog.Logger // the worker sets its own; discard otherwise
@@ -97,14 +96,13 @@ type Dispatcher struct {
 	wg sync.WaitGroup // task goroutines
 }
 
-// NewDispatcher returns a dispatcher publishing as workerID. cancels may be
-// nil, in which case cancel signals are not subscribed (unit tests). r seeds
-// every plan this dispatcher samples.
+// NewDispatcher returns a dispatcher publishing as workerID. r seeds every
+// plan this dispatcher samples. Cancel signals reach it through
+// [cancel.Subscribe], which the worker opens before its lease loop starts.
 func NewDispatcher(
 	workerID string,
 	st *status.Publisher,
 	logs *logstreamer.Publisher,
-	cancels *cancel.Handler,
 	b Behavior,
 	l *Ledger,
 	r *rand.Rand,
@@ -113,7 +111,6 @@ func NewDispatcher(
 		workerID: workerID,
 		st:       st,
 		logs:     logs,
-		cancels:  cancels,
 		behavior: b,
 		ledger:   l,
 		rng:      r,
@@ -160,14 +157,15 @@ func (d *Dispatcher) Dispatch(_ context.Context, m *protocol.AssignMsg) error {
 
 // Cancel stops taskID's attempts and reports whether one was running and is
 // now being canceled (true again for a repeat cancel). A non-empty attemptID
-// limits it to that attempt. A task already finishing, abandoned by a
-// shutdown, or running only another attempt reports false.
+// limits it to that attempt, and an empty taskID with one stops that attempt
+// whatever its task ([cancel.Applies]). A task already finishing, abandoned by
+// a shutdown, or running only another attempt reports false.
 func (d *Dispatcher) Cancel(taskID, attemptID string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	canceled := false
 	for _, t := range d.active {
-		if t.m.TaskID != taskID || (attemptID != "" && t.m.AttemptID != attemptID) {
+		if !cancel.Applies(taskID, attemptID, t.m.TaskID, t.m.AttemptID) {
 			continue
 		}
 		if t.reason == endNone {
@@ -190,13 +188,11 @@ func (d *Dispatcher) ActiveTaskCount() int {
 func (d *Dispatcher) ActiveTaskIDs() []string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	ids := make([]string, 0, len(d.active))
+	ids := make(map[string]struct{}, len(d.active))
 	for _, t := range d.active {
-		if !slices.Contains(ids, t.m.TaskID) {
-			ids = append(ids, t.m.TaskID)
-		}
+		ids[t.m.TaskID] = struct{}{}
 	}
-	return ids
+	return slices.Collect(maps.Keys(ids))
 }
 
 // ActiveAttemptIDs returns the held attempts, sorted.
@@ -217,12 +213,6 @@ func (d *Dispatcher) LastAssignmentAt() *time.Time {
 func (d *Dispatcher) run(t *simTask) {
 	defer d.wg.Done()
 	m := t.m
-	if d.cancels != nil {
-		if err := d.cancels.Register(m.TaskID, m.AttemptID); err != nil {
-			d.logger.DebugContext(context.Background(), "simworker: cancel subscription failed", slog.String("task_id", m.TaskID), slog.Any("error", err))
-		}
-		defer d.cancels.Deregister(m.TaskID, m.AttemptID)
-	}
 	d.st.Running(context.Background(), m, "", nil, time.Now())
 	d.record(m, KindRunning, "", 0, time.Time{})
 	if timeout := timeoutOf(m); timeout > 0 {

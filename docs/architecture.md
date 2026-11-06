@@ -30,7 +30,7 @@ through scheduling, worker execution, and final state.
 │             │   NATS broker: embedded, or an external cluster            │ │
 │             │                                                            │ │
 │             │  work.lease.<worker>.<queue>   task.status.<worker>.<job>  │ │
-│             │  task.logs.<worker>.<task>     task.cancel.<task>          │ │
+│             │  task.logs.<worker>.<task>     task.cancel.<worker>        │ │
 │             │  worker.register.<worker>      worker.heartbeat.<worker>   │ │
 │             │  worker.deregister.<worker>    worker.diag.<worker>        │ │
 │             └────────┬────────────────────────────────────────────────┬─┘ │
@@ -445,11 +445,15 @@ The same sweep repairs the opposite case. An attempt a fresh report still
 holds that is missing from the open list has been closed in the store (a
 cancel, a reclaim, a restore fence, a newer lease) while its worker still runs
 it, so the cancel that should have stopped it was lost. The sweep looks the
-attempt up and publishes `task.cancel.<task_id>` naming it (`attempt_id`), on
-every tick for as long as the worker reports it. An attempt the store does not
-know (a database restored from before its lease) has no task to address the
-cancel to and is skipped. Neither repair runs during the first
-`reconcile_grace` after the scheduler starts, or at all with
+attempt up and publishes a cancel naming it (`attempt_id`) to the worker, on
+every tick for as long as the worker reports it. A report received before the
+store closed the attempt is ignored: it says nothing about the run since. An
+attempt the store has no record of (a database restored from before its
+lease, or a job deleted while it ran) is sent a cancel naming the attempt
+alone, with no `task_id`. The reports are read before the open attempts are
+listed, so every attempt they name was leased before that read, and one the
+store lacks is gone rather than not yet written. Neither repair runs during
+the first `reconcile_grace` after the scheduler starts, or at all with
 `reconcile_grace` 0. See [Reconciliation](operations.md#reconciliation).
 
 ### 4. Worker execution
@@ -789,30 +793,32 @@ reports a job that completed or failed first. After a job cancel every step is
 terminal, so `RetryJob` on a canceled job works: the revived tasks sit under a
 step that `RetryTasks` resets and `ResolveDependencies` releases.
 
-**Resending a missed cancel.** After the store write, the
-scheduler publishes `task.cancel.<task_id>` for each task that was assigned or
-running. A worker receives it on a core-NATS subscription that it opens per task
-after the lease, so a cancel that commits between the lease and that
-subscription reaches no one, and nothing on the worker reads the `SQI_CANCEL`
-stream's copy. The worker opens the subscription before it publishes `running`,
-on the same connection. When `StartTaskAttempt` refuses a `running` report
-because its attempt is already closed (a cancel, a reap, an offline or
+**Delivering a cancel.** After the store write, the scheduler publishes a
+cancel for each task that was assigned or running, to the worker holding it, on
+`task.cancel.<worker_id>`. Each worker subscribes to its own subject once,
+before its first lease request, and waits for the broker to confirm the
+subscription, so a cancel committed after any lease the worker takes finds it
+in place. A job or task cancel names no attempt and stops every run of the task
+on that worker.
+
+**Resending a missed cancel.** Core NATS keeps nothing for an absent
+subscriber, and nothing on the worker reads the `SQI_CANCEL` stream's copy, so
+a worker disconnected when a cancel goes out misses it. A cancel that arrives
+between the lease reply and the worker recording the run also finds nothing to
+stop. Two repairs cover both. When `StartTaskAttempt` refuses a `running`
+report because its attempt is already closed (a cancel, a reap, an offline or
 unreported-attempt reclaim) or a newer lease superseded it, the scheduler
 publishes a cancel that names the attempt (`attempt_id`), and the worker stops
-that attempt. The task's newer attempt listens on the same subject, so a worker
-running another attempt of the task ignores a cancel that names one. The resend
-rides on the `running` report, so it is not immediate: a cancel that commits
-during session setup or stage-in reaches the worker only once those finish. A
-worker whose `running` report is dropped, or that is disconnected when the
-resend goes out, still lists the attempt in its heartbeats, and attempt
-reconciliation (see the heartbeat sweep above) sends the cancel again on every
-sweep while it does.
+that attempt. A worker whose `running` report is dropped, or that is
+disconnected when that resend goes out, still lists the attempt in its
+heartbeats, and attempt reconciliation (see the heartbeat sweep above) sends
+the cancel again on every sweep while it does. A cancel that names an attempt
+leaves the task's other attempts alone.
 
-A worker holds one cancel subscription per attempt, not per task, and keys its
-running attempts the same way. A worker leased a task again while a stale
-attempt of it still runs holds both: a cancel naming one stops only it, one
-naming none stops both, and the stale attempt's exit leaves the newer one
-running and subscribed.
+A worker tracks each run by its attempt ID. A worker leased a task again while
+a stale attempt of it still runs holds both: a cancel naming one
+stops only it, one naming none stops both, and the stale attempt's exit leaves
+the newer one running.
 
 Two arrows deserve note. `assigned` → `succeeded`/`failed` is permitted even
 though it appears to skip `running`: the worker publishes `running` first, but
@@ -1517,8 +1523,8 @@ put back (a backup, point-in-time recovery, a snapshot) records as open the
 attempts that were in flight (assigned or running) when it was taken, and the
 JetStream directory beside it does not match it. `sqi-server restore`
 (`internal/restore`) therefore fences before any server starts: with the
-single-server lock held, it lists every open attempt (`store.ListOpenAttempts`
-with a far-future cutoff), reclaims each through `store.ReclaimTaskAttempt`
+single-server lock held, it lists every open attempt (`store.ListOpenAttempts`),
+reclaims each through `store.ReclaimTaskAttempt`
 (task back to `ready`, attempt closed as `worker shut down`, claims released,
 no retry used), fails if any is still open afterwards, and then clears the
 broker: it renames the embedded broker's `nats.embedded.data_dir` to
@@ -1527,10 +1533,10 @@ and deletes the server's durable consumers while holding the account's guard. Wo
 task become ghost runs: their status reports name a closed attempt and are
 discarded, and their log chunks land on that closed attempt. Once the restored
 server has run for `scheduler.reconcile_grace`, attempt reconciliation sends
-each ghost run a cancel on every sweep while its worker's heartbeats list it.
-A ghost of an attempt the backup never recorded cannot be addressed and runs
-to its end. A database restored without the fence is recovered by attempt
-reconciliation instead (see the heartbeat sweep above), within
+each ghost run a cancel on every sweep while its worker's heartbeats list it,
+including a ghost of an attempt the backup never recorded, which the cancel
+names by attempt alone. A database restored without the fence is recovered by
+attempt reconciliation instead (see the heartbeat sweep above), within
 `scheduler.reconcile_grace` once a worker's heartbeats show it no longer holds
 the attempt.
 
@@ -1895,7 +1901,7 @@ last, so a client never reaches a leader that has not finished promoting.
 | `work.lease.<worker_id>.<queue>` | Core NATS request/reply | worker → server (request); server → worker (reply) | Worker requests a batch of tasks; server replies with assignments or empty on timeout |
 | `task.status.<worker_id>.<job_id>` | JetStream (`SQI_TASK`, MaxAge 24 h) | worker → server | Terminal and intermediate status updates |
 | `task.logs.<worker_id>.<task_id>` | JetStream (`SQI_LOGS`, MaxAge 96 h) | worker → server | Log chunk delivery |
-| `task.cancel.<task_id>` | JetStream (`SQI_CANCEL`, MaxAge 5 min) | server → worker | Cancellation signal; the worker holding the task interrupts the process. Workers receive it on a per-task core subscription and nothing reads the stream's copy. An `attempt_id` limits it to that attempt (sent in answer to a `running` report for a closed attempt) |
+| `task.cancel.<worker_id>` | JetStream (`SQI_CANCEL`, MaxAge 5 min) | server → worker | Cancellation signal for a run the worker holds; the worker interrupts the process. Each worker receives its own on one core subscription made before its first lease request, and nothing reads the stream's copy. An `attempt_id` limits it to that attempt (sent for an attempt the server has closed: in answer to a `running` report, or while heartbeats still list it) |
 | `worker.register.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Registration at startup and on reconnect; carries the worker process's `instance_id` (a changed one reclaims the previous process's tasks) (the broker's timestamp for it orders registrations: one stamped earlier than the recorded one is discarded) |
 | `worker.heartbeat.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Liveness heartbeat |
 | `worker.deregister.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Graceful departure; marks the worker offline without waiting for heartbeat timeout (a disabled worker stays disabled) and reclaims its tasks. Ignored when its `instance_id` names a process a later registration replaced |

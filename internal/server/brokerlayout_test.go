@@ -73,7 +73,7 @@ func requireFenced(t *testing.T, st store.Store, taskIDs []string) {
 			t.Fatalf("task %s = %+v, %v; want ready with no failed attempt consumed", id, task, err)
 		}
 	}
-	open, err := st.ListOpenAttempts(t.Context(), time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC))
+	open, err := st.ListOpenAttempts(t.Context())
 	if err != nil || len(open) != 0 {
 		t.Fatalf("open attempts = %v, %v; want none", open, err)
 	}
@@ -101,7 +101,7 @@ func recordedIdentity(t *testing.T, st store.Store) string {
 func TestReconcileBrokerLayout_FirstStartFencesOpenAttempts(t *testing.T) {
 	st := fake.New()
 	ids := seedOpenAttempts(t, st)
-	attempts, err := st.ListOpenAttempts(t.Context(), time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC))
+	attempts, err := st.ListOpenAttempts(t.Context())
 	if err != nil || len(attempts) != 2 {
 		t.Fatalf("open attempts = %v, %v; want 2", attempts, err)
 	}
@@ -201,7 +201,7 @@ type failingFenceStore struct {
 	store.Store
 }
 
-func (failingFenceStore) ListOpenAttempts(context.Context, time.Time) ([]store.OpenAttempt, error) {
+func (failingFenceStore) ListOpenAttempts(context.Context) ([]store.OpenAttempt, error) {
 	return nil, context.DeadlineExceeded
 }
 

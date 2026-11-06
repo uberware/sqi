@@ -929,9 +929,9 @@ The restored farm is the farm at the moment of the backup:
   the attempt in the database, not the process. Once the restored server has
   run for [`scheduler.reconcile_grace`](configuration.md#schedulerreconcile_grace),
   it sends a cancel to each worker whose heartbeats still list a fenced
-  attempt (see [Reconciliation](#reconciliation)). A ghost of an attempt the
-  backup never recorded cannot be addressed and runs to its end. The
-  scheduler counts a worker's busy cores from the database, so meanwhile it can
+  attempt, or an attempt the backup never recorded (see
+  [Reconciliation](#reconciliation)). Until the cancel lands, the
+  scheduler counts a worker's busy cores from the database, so it can
   lease that worker more work than it has cores for, and the task's re-run on
   another worker can write the same outputs at the same time. Where that
   matters (long tasks, outputs written in place), stop the workers that were
@@ -1002,7 +1002,8 @@ JetStream directory, the database was restored by hand, or the worker dropped
 the task. The worker is healthy, so the offline sweep never reclaims it.
 
 A worker lists, in every heartbeat, the attempts it holds, from the moment
-it receives them until their final status is sent. On every
+it receives them until it has sent their final status and cleaned up their
+session. On every
 heartbeat-sweep tick the server reclaims an open attempt when the worker's
 latest heartbeat is current, does not list it, and has not listed it for
 [`scheduler.reconcile_grace`](configuration.md#schedulerreconcile_grace)
@@ -1018,9 +1019,20 @@ attempt the store has already closed (the task was canceled, reclaimed or
 fenced by a restore, and the worker missed the cancel), the server sends that
 worker a cancel naming the attempt, on every tick while the worker lists it.
 It logs each at Info, `scheduler: cancel signal published to worker` with
-`cause` `closed attempt still reported`. A worker that has just finished an
-attempt can list it in one more heartbeat; that cancel names an attempt the
-worker no longer runs and is ignored.
+`cause` `closed attempt still reported`. An attempt the store has no record of
+(a database restored from a backup taken before its lease, or a job deleted
+while it ran) is sent a cancel naming the attempt alone, with `cause`
+`unknown attempt still reported`. Each is counted in
+`sqi_scheduler_cancels_resent_total`, by `cause` (`closed` or `unknown`). Only
+a heartbeat received after the store closed the attempt counts, so heartbeats
+from while the attempt ran send nothing. A worker still lists a finished
+attempt while it cleans up its session, so a heartbeat sent during that
+cleanup can trigger one; that cancel names an attempt the worker no longer
+runs and is ignored. A worker that is stopping a canceled run lists it, and is
+sent the cancel again, until the process has exited and its session is cleaned
+up. The counter therefore rises a little with ordinary cancels and
+completions. A sustained rate while no job was canceled, no database restored
+and no task reclaimed means workers are missing cancels.
 
 - **On by default.** Left unset, `reconcile_grace` is 2 minutes, or
   `scheduler.heartbeat_timeout` when that is longer. `0` turns
@@ -1043,14 +1055,22 @@ worker no longer runs and is ignored.
   until its clock or its delivery recovers. Keep worker clocks synchronized.
   A skewed clock does not take a worker offline: liveness is timed by the
   broker's timestamp for each heartbeat, not by the worker's.
+- **A heartbeat listing more than 4,096 attempts is ignored.** No worker can
+  hold that many (leasing is gated on cores), so the server treats the list as
+  broken and logs a Warn, `scheduler: worker heartbeat lists more attempts
+  than a worker can hold`. The worker stays online, but its tasks are not
+  reconciled until it sends a shorter list.
 - **Workers from v0.3.0 and earlier are never reconciled.** They send no
   attempt list, and are covered only by the offline sweep and by `restore`'s
   fence. A current worker holding nothing sends an empty list, which counts.
 
 Executed by `TestRestore_MixedAgeNATSDir` (a database restored by hand beside a
 newer NATS directory is recovered by reconciliation, and a replayed older one
-duplicates no log row) and, for the late-report case, by
-`TestReconcileAttempts_LateTerminalReportIsDiscarded`.
+duplicates no log row), for the late-report case by
+`TestReconcileAttempts_LateTerminalReportIsDiscarded`, and, for the reverse
+repair, by `TestReconcileAttempts_CancelsAReportedClosedAttempt`,
+`TestReconcileAttempts_CancelsAReportedUnknownAttempt` and
+`TestCancelResentToAWorkerHoldingAClosedAttempt`.
 
 JetStream can deliver a log chunk to the server more than once (after a crash,
 or when an acknowledgement is lost; not after a clean stop). Each chunk is
@@ -2258,6 +2278,7 @@ described in [Writing to a file](#writing-to-a-file).
 | `sqi_scheduler_task_retries_total` | counter | `queue` | Tasks re-queued by automatic retry, by queue |
 | `sqi_scheduler_jobs_autoparked_total` | counter | `queue` | Jobs auto-parked at their failure limit, by queue |
 | `sqi_scheduler_tasks_reconciled_total` | counter | — | Attempts reclaimed because their live worker stopped reporting them (see [Reconciliation](#reconciliation)) |
+| `sqi_scheduler_cancels_resent_total` | counter | `cause` | Cancels sent to a live worker still reporting an attempt the store has closed (`closed`) or has no record of (`unknown`) (see [Reconciliation](#reconciliation)) |
 | `sqi_server_ha_leader` | gauge | — | 1 while this server leads its high-availability group, 0 otherwise. HA only |
 | `sqi_server_ha_epoch` | gauge | — | The leadership epoch this server leads at, or last saw the leader hold. HA only |
 | `sqi_server_ha_promotions_total` | counter | — | Promotions of this server to leader. HA only |
