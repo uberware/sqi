@@ -5,7 +5,6 @@ package sqlstore
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"time"
 
@@ -13,15 +12,18 @@ import (
 )
 
 const (
-	// sqlSelectAttemptLive reports whether an attempt of the task is still
-	// running and is the task's latest attempt (sqlIsLatestAttempt's rule). No
-	// row means the attempt does not exist or belongs to another task. Binds:
+	// sqlSelectTaskAndAttemptLive reads a task's status and whether one of its
+	// attempts is still running and is the task's latest (sqlIsLatestAttempt's
+	// rule) in one statement. No row means the task does not exist; a NULL live
+	// column means the attempt does not exist or belongs to another task. Binds:
 	// attempt id, task id.
-	sqlSelectAttemptLive = `
-SELECT a.status = 'running'
+	sqlSelectTaskAndAttemptLive = `
+SELECT t.status,
+       a.status = 'running'
    AND a.attempt_number = (SELECT MAX(attempt_number) FROM task_attempts WHERE task_id = a.task_id)
-FROM   task_attempts a
-WHERE  a.id = ? AND a.task_id = ?`
+FROM   tasks t
+LEFT JOIN task_attempts a ON a.id = ? AND a.task_id = t.id
+WHERE  t.id = ?`
 
 	// sqlSetRunningAttemptSession records a session ID on an attempt only while
 	// it is open. Binds: session_id, id.
@@ -35,22 +37,15 @@ UPDATE task_attempts SET session_id = ? WHERE id = ? AND status = 'running'`
 // current status. sql.ErrNoRows on the task maps to store.ErrNotFound.
 func liveAttemptTx(ctx context.Context, tx *dbTx, attemptID, taskID string) (bool, store.TaskStatus, error) {
 	var current string
-	if err := tx.QueryRowContext(ctx, sqlSelectTaskStatus, taskID).Scan(&current); err != nil {
-		return false, "", mapErr(err)
+	var live sql.NullBool
+	if err := tx.QueryRowContext(ctx, sqlSelectTaskAndAttemptLive, attemptID, taskID).Scan(&current, &live); err != nil {
+		return false, "", fmt.Errorf("store: attempt %s of task %s: %w", attemptID, taskID, mapErr(err))
 	}
 	cur := store.TaskStatus(current)
 	if cur != store.TaskStatusAssigned && cur != store.TaskStatusRunning {
 		return false, cur, nil
 	}
-	var live bool
-	err := tx.QueryRowContext(ctx, sqlSelectAttemptLive, attemptID, taskID).Scan(&live)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, cur, nil
-	}
-	if err != nil {
-		return false, "", fmt.Errorf("store: attempt %s of task %s: %w", attemptID, taskID, mapErr(err))
-	}
-	return live, cur, nil
+	return live.Valid && live.Bool, cur, nil
 }
 
 // lockTaskJobTx takes the task's job-row anchor inside tx.
