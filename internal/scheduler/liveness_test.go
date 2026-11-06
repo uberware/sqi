@@ -374,6 +374,12 @@ func TestReconcileAttempts_GraceFromRunStart(t *testing.T) {
 	cfg.FarmID = "f1"
 	cfg.ReconcileGrace = time.Minute
 	s := New(cfg, st, b, metrics.New(), slog.New(slog.DiscardHandler), ws.NoopNotifier{}, nil)
+	// The fake stamps rows a nanosecond apart within one clock tick, so on a
+	// coarse clock (Windows) the attempt's CreatedAt can be at or after the
+	// instant Run reads. Wait for the clock to pass it.
+	for !time.Now().After(attempt.CreatedAt) {
+		time.Sleep(time.Millisecond)
+	}
 	startRun(t, s, b, t.Context())
 	started := s.startedAt
 
