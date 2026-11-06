@@ -8,19 +8,51 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite"
 
 	"github.com/uberware/sqi/internal/store/migrations"
 )
 
-func TestPostgresFS_HoldsTheBaselineAndLaterMigrations(t *testing.T) {
-	names, err := fs.Glob(migrations.PostgresFS, "*.sql")
-	if err != nil {
-		t.Fatal(err)
+// Version N is the same schema on both backends, so every migration after the
+// PostgreSQL baseline ships as a pair: the two sets hold the same versions from
+// the baseline on, with no gap.
+func TestPostgresFS_HoldsTheBaselineAndEveryLaterMigrationOfTheSQLiteSet(t *testing.T) {
+	const baseline = 37
+	versions := func(fsys fs.FS) []int64 {
+		t.Helper()
+		names, err := fs.Glob(fsys, "*.sql")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []int64
+		for _, n := range names {
+			v, err := goose.NumericComponent(n)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if v >= baseline {
+				out = append(out, v)
+			}
+		}
+		slices.Sort(out)
+		return out
 	}
-	want := []string{"00037_baseline.sql", "00038_task_logs_unique_seq.sql", "00039_worker_extensions.sql", "00040_broker_state.sql", "00041_server_ha.sql", "00042_attempt_progress.sql"}
-	if !slices.Equal(names, want) {
-		t.Fatalf("PostgresFS = %v, want %v", names, want)
+	pg, lite := versions(migrations.PostgresFS), versions(migrations.FS)
+	if len(pg) == 0 || pg[0] != baseline {
+		t.Fatalf("PostgresFS versions = %v, want them to start at the baseline %d", pg, baseline)
+	}
+	if !slices.Equal(pg, lite) {
+		t.Fatalf("PostgresFS versions = %v, SQLite versions from %d = %v; a migration must ship in both", pg, baseline, lite)
+	}
+	for i, v := range pg {
+		if v != baseline+int64(i) {
+			t.Fatalf("versions %v have a gap at %d", pg, v)
+		}
+	}
+	names, err := fs.Glob(migrations.PostgresFS, "00037_baseline.sql")
+	if err != nil || len(names) != 1 {
+		t.Fatalf("PostgresFS lacks 00037_baseline.sql: %v, %v", names, err)
 	}
 }
 
@@ -37,9 +69,13 @@ func TestNewProvider_SQLiteUpReachesTheLatestVersion(t *testing.T) {
 	if _, err := p.Up(t.Context()); err != nil {
 		t.Fatalf("Up: %v", err)
 	}
+	want, err := migrations.MaxVersion("sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
 	v, err := p.GetDBVersion(t.Context())
-	if err != nil || v != 42 {
-		t.Fatalf("version = %d, %v; want 42", v, err)
+	if err != nil || v != want {
+		t.Fatalf("version = %d, %v; want %d", v, err, want)
 	}
 }
 

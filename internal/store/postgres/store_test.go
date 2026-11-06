@@ -33,8 +33,12 @@ func TestOpen_MigratesToTheLatestVersionAndReapplyIsANoop(t *testing.T) {
 	}
 	db := openRaw(t, dsn)
 	v, err := postgres.SchemaVersion(t.Context(), db)
-	if err != nil || v != 42 {
-		t.Fatalf("SchemaVersion = %d, %v; want 42", v, err)
+	want, werr := migrations.MaxVersion("postgres")
+	if werr != nil {
+		t.Fatal(werr)
+	}
+	if err != nil || v != want {
+		t.Fatalf("SchemaVersion = %d, %v; want %d", v, err, want)
 	}
 }
 

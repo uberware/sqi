@@ -88,7 +88,8 @@ func TestMigration00037_RewritesEveryStoredForm(t *testing.T) {
 
 	// Applying it again changes nothing: its down is a no-op and every row it
 	// recognized is now 30 characters, which it skips.
-	before := dumpTables(t, db)
+	keep := columnsAt(t, 36)
+	before := dumpTables(t, db, keep)
 	if err := goose.DownTo(db, ".", 36); err != nil {
 		t.Fatalf("DownTo(36): %v", err)
 	}
@@ -100,7 +101,7 @@ func TestMigration00037_RewritesEveryStoredForm(t *testing.T) {
 	if err := goose.Up(db, "."); err != nil {
 		t.Fatalf("goose.Up after UpTo(37): %v", err)
 	}
-	if after := dumpTables(t, db); after != before {
+	if after := dumpTables(t, db, keep); after != before {
 		t.Fatalf("re-applying 00037 changed the database:\n--- before\n%s--- after\n%s", before, after)
 	}
 }
@@ -192,14 +193,6 @@ var (
 	caseColumnLine  = regexp.MustCompile(`^    (\w+) = CASE$`)
 )
 
-// addedAfter00037 are timestamp columns of tables a later migration creates.
-// They are written fixed-width from their first row, so 00037 has nothing to
-// rewrite in them.
-var addedAfter00037 = []string{
-	"broker_state.recorded_at", "server_members.started_at", "workers.registration_broker_at",
-	"workers.heartbeat_broker_at", "task_attempts.progress_at",
-}
-
 // TestMigration00037_CoversEveryTimestampColumn fails, by name, on a timestamp
 // column the schema has and 00037 does not rewrite, or one 00037 rewrites that
 // the schema does not have. A timestamp column is one named at, retry_after or
@@ -216,8 +209,12 @@ FROM   sqlite_master m JOIN pragma_table_info(m.name) p
 WHERE  m.type = 'table' AND m.name NOT LIKE 'sqlite_%' AND m.name <> 'goose_db_version'
   AND  (p.name IN ('at', 'retry_after') OR p.name LIKE '%\_at' ESCAPE '\')`)
 	rewritten := migrationColumns(t)
+	// A column a later migration adds is written fixed-width from its first
+	// row, so 00037 has nothing to rewrite in it: the schema at 36 is what
+	// 00037 is responsible for.
+	existedAt36 := columnsAt(t, 36)
 	for _, c := range schema {
-		if slices.Contains(addedAfter00037, c) {
+		if !existedAt36[c] {
 			continue
 		}
 		if !slices.Contains(rewritten, c) {
