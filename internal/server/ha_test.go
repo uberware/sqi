@@ -222,7 +222,7 @@ func TestHA_ReconcileBrokerLayoutNeverOnStandby(t *testing.T) {
 	if n := h.rec.count("reconcileBrokerLayout"); n != 0 {
 		t.Fatalf("a standby read the broker identity %d times; the reconcile is the leader's", n)
 	}
-	open, err := h.st.ListOpenAttempts(context.Background(), time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC))
+	open, err := h.st.ListOpenAttempts(context.Background())
 	if err != nil || len(open) != len(taskIDs) {
 		t.Fatalf("open attempts = %v, %v; want the leader's %d untouched", open, err, len(taskIDs))
 	}

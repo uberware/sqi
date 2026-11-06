@@ -340,13 +340,13 @@ func TestPublishTaskCancel(t *testing.T) {
 	defer cancel()
 
 	want := payload{ID: "task-c", Body: "cancel"}
-	if err := c.PublishTaskCancel(ctx, "task-c", mustJSON(t, want)); err != nil {
+	if err := c.PublishTaskCancel(ctx, "worker-c", mustJSON(t, want)); err != nil {
 		t.Fatalf("PublishTaskCancel: %v", err)
 	}
 
 	// Verify it landed durably in SQI_CANCEL by reading via an ephemeral consumer.
 	consumer, err := c.js.CreateOrUpdateConsumer(ctx, StreamCancel, jetstream.ConsumerConfig{
-		FilterSubject: TaskCancelSubject("task-c"),
+		FilterSubject: TaskCancelSubject("worker-c"),
 		AckPolicy:     jetstream.AckExplicitPolicy,
 	})
 	if err != nil {

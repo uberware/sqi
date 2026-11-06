@@ -317,10 +317,13 @@ func (w *Worker) launch(ctx context.Context) (*incarnation, error) {
 	id, g := w.spec.ID, w.spec.Group
 	st := status.New(nc, status.Config{WorkerID: id}, w.logger)
 	logs := logstreamer.New(nc, id, logstreamer.DefaultConfig(), w.logger)
-	d := NewDispatcher(id, st, logs, nil, w.behavior, w.ledger, w.rng)
+	d := NewDispatcher(id, st, logs, w.behavior, w.ledger, w.rng)
 	d.instanceID = inc.instanceID
 	d.logger = w.logger
-	d.cancels = cancel.New(nc, d, w.logger)
+	if _, err := cancel.Subscribe(nc, id, d, w.logger); err != nil {
+		nc.Close()
+		return nil, err
+	}
 	d.SetProgress(openjd.New(logs, nc, id, w.logger))
 	inc.disp = d
 

@@ -64,6 +64,11 @@ type Metrics struct {
 	// stopped reporting them (scheduler.reconcile_grace).
 	SchedulerTasksReconciled prometheus.Counter
 
+	// SchedulerCancelsResent counts the cancels the heartbeat sweep sends to a
+	// worker whose heartbeat still lists an attempt the store has closed
+	// (cause "closed") or has no record of (cause "unknown").
+	SchedulerCancelsResent *prometheus.CounterVec
+
 	// SchedulerAssignmentDuration records the wall-clock time spent in a
 	// single call to tryAssign, labeled by result:
 	//   - "assigned"  — a worker was found and the task was dispatched.
@@ -206,6 +211,16 @@ func New() *Metrics {
 			},
 		),
 
+		SchedulerCancelsResent: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sqi",
+				Subsystem: "scheduler",
+				Name:      "cancels_resent_total",
+				Help:      "Cancels sent to a live worker still reporting an attempt the store has closed or has no record of, by cause (closed, unknown).",
+			},
+			[]string{"cause"},
+		),
+
 		SchedulerAssignmentDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Namespace: "sqi",
@@ -342,6 +357,7 @@ func New() *Metrics {
 		m.SchedulerQueueDepth,
 		m.SchedulerTasksTotal,
 		m.SchedulerTasksReconciled,
+		m.SchedulerCancelsResent,
 		m.SchedulerAssignmentDuration,
 		m.SchedulerIdleWorkers,
 		m.WorkersTotal,
@@ -352,6 +368,12 @@ func New() *Metrics {
 		m.TaskRetriesTotal,
 		m.JobsAutoParkedTotal,
 	)
+
+	// Both causes are exported from the start, at 0, so a rate over them is
+	// defined before the first resend.
+	for _, cause := range []string{"closed", "unknown"} {
+		m.SchedulerCancelsResent.WithLabelValues(cause)
+	}
 
 	return m
 }

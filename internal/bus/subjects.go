@@ -14,10 +14,12 @@
 //	worker.heartbeat.<worker>   — worker → server: periodic liveness pings
 //	worker.register.<worker>    — worker → server: capability advertisement
 //	worker.deregister.<worker>  — worker → server: graceful departure notification
-//	task.cancel.<task>          — server → worker: interrupt a running task
+//	task.cancel.<worker>        — server → worker: interrupt a running task
 //
 // Every worker → server subject carries the publishing worker's ID directly
-// after its class prefix. That placement is what makes the broker's per-worker
+// after its class prefix, and so does the one server → worker subject,
+// task.cancel.<worker>, so that a worker may subscribe to its own cancels and
+// no other worker's. That placement is what makes the broker's per-worker
 // publish permissions expressible: NATS permissions are static per credential
 // and JetStream does not stamp publisher identity onto a message, so a scheme
 // keyed only by job, task and queue would offer no way to say "only this
@@ -44,10 +46,11 @@ const (
 	SubjectTaskLogsPrefix = "task.logs"
 
 	// SubjectTaskCancelPrefix is the prefix for task-cancellation subjects.
-	// Full subject: SubjectTaskCancelPrefix + "." + taskID.
-	// The server publishes to this subject; the worker assigned to the task
-	// consumes it and interrupts the running process. This is the one subject
-	// class that travels server → worker, so it carries no worker token.
+	// Full subject: SubjectTaskCancelPrefix + "." + workerID.
+	// The server publishes to the subject of the worker holding the task; the
+	// worker subscribes to it once, before it asks for work, and interrupts
+	// the run the message names. This is the one subject class that travels
+	// server → worker.
 	SubjectTaskCancelPrefix = "task.cancel"
 
 	// SubjectWorkerHeartbeatPrefix is the prefix for worker liveness pings.
@@ -96,10 +99,10 @@ func TaskLogsSubject(workerID, taskID string) string {
 	return SubjectTaskLogsPrefix + "." + workerID + "." + taskID
 }
 
-// TaskCancelSubject returns the full NATS subject for a task-cancellation
-// signal targeting the worker that holds the given task.
-func TaskCancelSubject(taskID string) string {
-	return SubjectTaskCancelPrefix + "." + taskID
+// TaskCancelSubject returns the full NATS subject on which the given worker
+// receives task-cancellation signals.
+func TaskCancelSubject(workerID string) string {
+	return SubjectTaskCancelPrefix + "." + workerID
 }
 
 // WorkerRegisterSubject returns the full NATS subject the given worker

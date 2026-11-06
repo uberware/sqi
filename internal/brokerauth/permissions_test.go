@@ -76,7 +76,7 @@ func TestWorkerPermissions_ConfinesToOwnSubtree(t *testing.T) {
 		"task.logs." + other + ".task-1",
 		"worker.deregister." + other,
 		"work.lease." + other + ".queue-1",
-		"task.cancel.task-1",
+		"task.cancel." + me,
 		"task.status.>",
 	}
 	for _, s := range deniedPublish {
@@ -88,8 +88,13 @@ func TestWorkerPermissions_ConfinesToOwnSubtree(t *testing.T) {
 	if subjectAllowed(p.Subscribe, "task.status.>") {
 		t.Error("a worker must not be able to subscribe to task.status.>")
 	}
-	if !subjectAllowed(p.Subscribe, "task.cancel.task-1") {
-		t.Error("a worker must be able to subscribe to task.cancel.<taskID>")
+	if !subjectAllowed(p.Subscribe, "task.cancel."+me) {
+		t.Error("a worker must be able to subscribe to its own task.cancel.<workerID>")
+	}
+	for _, s := range []string{"task.cancel." + other, "task.cancel.>"} {
+		if subjectAllowed(p.Subscribe, s) {
+			t.Errorf("subscribe %q must NOT be allowed", s)
+		}
 	}
 
 	// Reply inboxes. A worker needs its own, because a work lease is

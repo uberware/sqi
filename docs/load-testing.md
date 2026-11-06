@@ -636,9 +636,9 @@ about 2,000 and a seeded random sample of that size beyond.
 | `workers-converge` | Within the server's heartbeat timeout plus the slowest worker heartbeat plus 10 s, the farm's online worker count equals the number of workers the harness has running. |
 | `caps` | The most attempts the simulator held at once on a queue never exceeded `max_concurrent_tasks` (0 is unlimited), and on a usage pool never exceeded its `limit` (each task claims one unit). A canceled attempt counts as released when the cancel action started, since the server frees the slot when it commits the cancel. |
 
-A lost cancel (see [Known server defects](#known-server-defects)) fails `caps`:
-the server's own claim count stays at the limit while concurrent execution
-exceeds it.
+A late cancel (see [Known server defects](#known-server-defects)) can fail
+`caps`: the server's own claim count stays at the limit while concurrent
+execution exceeds it.
 
 ### Findings
 
@@ -855,9 +855,9 @@ for a dispatched soak to finish, and the reverse.
 The nightly can fail on `logs` with every other invariant holding, and more
 rarely on `caps`. `ci-medium` has cancels, churn and disconnects, and core
 NATS delivers at most once: log chunks published during a forced disconnect
-are lost, and so is a cancel published while its worker is disconnected
-(see [Known server defects](#known-server-defects)). The evidence names the
-tasks and attempts involved.
+are lost, and a cancel published while its worker is disconnected arrives
+only after the reconnect (see [Known server defects](#known-server-defects)).
+The evidence names the tasks and attempts involved.
 
 `workflow_dispatch` takes two inputs: `scenario` (default `ci-medium`) and
 `duration`. Giving a duration runs the scenario as a soak of that length, up
@@ -1013,15 +1013,16 @@ cores or less.
 
 Defects in `sqi-server` that a run can hit.
 
-### A cancel sent during a disconnect is lost
+### A cancel sent during a disconnect arrives late
 
 A cancel published while the worker running the attempt is disconnected never
-reaches it, and nothing sends it again: the server resends a cancel only when
-the worker reports a closed attempt `running`, and a worker that reported
-`running` before the cancel committed does not report it again. The same holds
-when that resend is itself lost. The server has already released the
-attempt's usage-pool claim, so concurrent execution can exceed a cap while the
-server's claim count stays at the limit, and `caps` fails.
+reaches it. The server sends it again on the first heartbeat sweep after the
+worker's heartbeats resume and still list the attempt (attempt
+reconciliation), so the attempt runs on for up to a sweep interval plus a
+heartbeat interval after the reconnect. The server has already released the
+attempt's usage-pool claim, so in that window concurrent execution can exceed
+a cap while the server's claim count stays at the limit, and `caps` can
+fail.
 
 ### An instant restart can strand an attempt
 

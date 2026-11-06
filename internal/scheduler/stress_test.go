@@ -751,7 +751,7 @@ func (r *stressRun) restart(n int) {
 // that it is still open under the job's anchor and reports false if not.
 func (r *stressRun) reconcile(n int) {
 	ctx := r.t.Context()
-	open, err := r.st.ListOpenAttempts(ctx, time.Now().UTC().Add(time.Second))
+	open, err := r.st.ListOpenAttempts(ctx)
 	if !r.expect("ListOpenAttempts", err) || len(open) == 0 {
 		return
 	}

@@ -17,7 +17,7 @@ func TestSubjectHelpers(t *testing.T) {
 		{"work lease wildcard queue", WorkLeaseSubject("w-1", WildcardQueueToken), "work.lease.w-1._any"},
 		{"task status", TaskStatusSubject("w-1", "job-abc"), "task.status.w-1.job-abc"},
 		{"task logs", TaskLogsSubject("w-1", "task-xyz"), "task.logs.w-1.task-xyz"},
-		{"task cancel", TaskCancelSubject("task-xyz"), "task.cancel.task-xyz"},
+		{"task cancel", TaskCancelSubject("w-1"), "task.cancel.w-1"},
 		{"worker register", WorkerRegisterSubject("w-1"), "worker.register.w-1"},
 		{"worker heartbeat", WorkerHeartbeatSubject("w-1"), "worker.heartbeat.w-1"},
 		{"worker deregister", WorkerDeregisterSubject("w-1"), "worker.deregister.w-1"},
@@ -77,7 +77,7 @@ func TestParseWorkerSubject(t *testing.T) {
 		// so it must be rejected rather than parsed into a partial answer.
 		{"task.status.j1", "", "", false},
 		{"worker.register", "", "", false},
-		{"task.cancel.t1", "", "", false}, // server → worker
+		{"task.cancel.w1", "", "", false}, // server → worker
 		{"worker.diag.w1", "", "", false}, // core NATS, not a stream subject
 		{"task.status.w1.j1.extra", "", "", false},
 		{"task.status..j1", "", "", false},

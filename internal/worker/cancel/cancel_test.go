@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -161,207 +162,144 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-// TestHandler_Register_and_receive verifies that a cancel message published to
-// task.cancel.<taskID> after Register is delivered to TaskCanceler.Cancel.
-func TestHandler_Register_and_receive(t *testing.T) {
-	url := startTestNATSServer(t)
-	nc := connectTestNATS(t, url)
-
-	c := &stubCanceler{}
-	h := cancel.New(nc, c, testLogger())
-
-	taskID := "task-001"
-	if err := h.Register(taskID); err != nil {
-		t.Fatalf("Register: %v", err)
+// subscribe subscribes canceler as workerID on nc, failing the test on error.
+func subscribe(t *testing.T, nc *nats.Conn, workerID string, canceler cancel.TaskCanceler) *nats.Subscription {
+	t.Helper()
+	sub, err := cancel.Subscribe(nc, workerID, canceler, testLogger())
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
 	}
+	return sub
+}
 
-	if err := nc.Publish(bus.TaskCancelSubject(taskID), cancelPayload(t, taskID, "job-1")); err != nil {
+// publish publishes payload to workerID's cancel subject on nc and flushes.
+func publish(t *testing.T, nc *nats.Conn, workerID string, payload []byte) {
+	t.Helper()
+	if err := nc.Publish(bus.TaskCancelSubject(workerID), payload); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	if err := nc.Flush(); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
-
-	waitFor(t, 2*time.Second, func() bool {
-		return len(c.canceledTasks()) > 0
-	})
-
-	tasks := c.canceledTasks()
-	if len(tasks) != 1 || tasks[0] != taskID {
-		t.Errorf("Cancel called with %v; want [%q]", tasks, taskID)
-	}
 }
 
-// TestHandler_passes_attempt_id verifies that a cancel naming an attempt
-// reaches TaskCanceler.Cancel with that attempt, and one naming none with an
-// empty attempt: the canceler, not the handler, decides which run to stop.
-func TestHandler_passes_attempt_id(t *testing.T) {
-	url := startTestNATSServer(t)
-	nc := connectTestNATS(t, url)
-
+// TestSubscribe_delivers_cancels verifies that a cancel published to the
+// worker's subject reaches TaskCanceler.Cancel with the task and attempt it
+// names: a task-wide cancel names no attempt, and a cancel for an attempt the
+// server has no record of names no task.
+func TestSubscribe_delivers_cancels(t *testing.T) {
+	nc := connectTestNATS(t, startTestNATSServer(t))
 	c := &stubCanceler{}
-	h := cancel.New(nc, c, testLogger())
+	subscribe(t, nc, "worker-1", c)
 
-	taskID := "task-att"
-	if err := h.Register(taskID); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	for _, payload := range [][]byte{
-		attemptCancelPayload(t, taskID, "attempt-1", "job-1"),
-		cancelPayload(t, taskID, "job-1"),
-	} {
-		if err := nc.Publish(bus.TaskCancelSubject(taskID), payload); err != nil {
-			t.Fatalf("Publish: %v", err)
-		}
-	}
-	if err := nc.Flush(); err != nil {
-		t.Fatalf("Flush: %v", err)
-	}
+	publish(t, nc, "worker-1", cancelPayload(t, "task-1", "job-1"))
+	publish(t, nc, "worker-1", attemptCancelPayload(t, "task-2", "attempt-2", "job-1"))
+	publish(t, nc, "worker-1", attemptCancelPayload(t, "", "attempt-3", ""))
 
-	waitFor(t, 2*time.Second, func() bool {
-		return len(c.cancelCalls()) == 2
-	})
-	want := []cancelCall{{taskID, "attempt-1"}, {taskID, ""}}
-	if got := c.cancelCalls(); got[0] != want[0] || got[1] != want[1] {
+	waitFor(t, 2*time.Second, func() bool { return len(c.cancelCalls()) >= 3 })
+	want := []cancelCall{{"task-1", ""}, {"task-2", "attempt-2"}, {"", "attempt-3"}}
+	if got := c.cancelCalls(); !slices.Equal(got, want) {
 		t.Errorf("Cancel calls = %+v, want %+v", got, want)
 	}
 }
 
-// TestHandler_Deregister_stops_delivery verifies that messages published after
-// Deregister are not delivered to the TaskCanceler.
-func TestHandler_Deregister_stops_delivery(t *testing.T) {
+// TestSubscribe_live_on_return verifies that the subscription is in place on
+// the server when Subscribe returns: a cancel another connection publishes
+// straight afterwards is delivered. That is what lets the worker subscribe
+// before its first lease request and miss no cancel for a lease it takes.
+func TestSubscribe_live_on_return(t *testing.T) {
 	url := startTestNATSServer(t)
-	nc := connectTestNATS(t, url)
-
+	nc, server := connectTestNATS(t, url), connectTestNATS(t, url)
 	c := &stubCanceler{}
-	h := cancel.New(nc, c, testLogger())
+	subscribe(t, nc, "worker-1", c)
 
-	taskID := "task-002"
-	if err := h.Register(taskID); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	h.Deregister(taskID)
+	publish(t, server, "worker-1", cancelPayload(t, "task-1", "job-1"))
 
-	if err := nc.Publish(bus.TaskCancelSubject(taskID), cancelPayload(t, taskID, "job-2")); err != nil {
-		t.Fatalf("Publish: %v", err)
-	}
-	if err := nc.Flush(); err != nil {
-		t.Fatalf("Flush: %v", err)
-	}
+	waitFor(t, 2*time.Second, func() bool { return len(c.cancelCalls()) == 1 })
+}
 
-	// Wait briefly to confirm no delivery.
-	time.Sleep(150 * time.Millisecond)
-	if tasks := c.canceledTasks(); len(tasks) != 0 {
-		t.Errorf("Cancel called %d time(s) after Deregister; want 0", len(tasks))
+// TestSubscribe_only_own_worker verifies that a worker receives cancels sent
+// to it and none sent to another worker.
+func TestSubscribe_only_own_worker(t *testing.T) {
+	nc := connectTestNATS(t, startTestNATSServer(t))
+	mine, theirs := &stubCanceler{}, &stubCanceler{}
+	subscribe(t, nc, "worker-1", mine)
+	subscribe(t, nc, "worker-2", theirs)
+
+	publish(t, nc, "worker-2", cancelPayload(t, "task-B", "job-X"))
+
+	waitFor(t, 2*time.Second, func() bool { return len(theirs.cancelCalls()) == 1 })
+	time.Sleep(50 * time.Millisecond) // give a misrouted cancel time to arrive
+	if got := mine.canceledTasks(); len(got) != 0 {
+		t.Errorf("worker-1 canceled %v on a cancel sent to worker-2", got)
 	}
 }
 
-// TestHandler_multiple_tasks verifies correct per-task routing when several
-// tasks are registered simultaneously.
-func TestHandler_multiple_tasks(t *testing.T) {
-	url := startTestNATSServer(t)
-	nc := connectTestNATS(t, url)
-
+// TestSubscribe_unsubscribe_stops_delivery verifies that nothing is delivered
+// after the subscription is unsubscribed.
+func TestSubscribe_unsubscribe_stops_delivery(t *testing.T) {
+	nc := connectTestNATS(t, startTestNATSServer(t))
 	c := &stubCanceler{}
-	h := cancel.New(nc, c, testLogger())
+	sub := subscribe(t, nc, "worker-1", c)
+	if err := sub.Unsubscribe(); err != nil {
+		t.Fatalf("Unsubscribe: %v", err)
+	}
 
-	for _, id := range []string{"task-A", "task-B", "task-C"} {
-		if err := h.Register(id); err != nil {
-			t.Fatalf("Register %q: %v", id, err)
+	publish(t, nc, "worker-1", cancelPayload(t, "task-1", "job-2"))
+
+	time.Sleep(150 * time.Millisecond)
+	if tasks := c.canceledTasks(); len(tasks) != 0 {
+		t.Errorf("Cancel called %d time(s) after Unsubscribe; want 0", len(tasks))
+	}
+}
+
+// TestSubscribe_task_not_found verifies that a cancel for a run that already
+// finished is handled quietly.
+func TestSubscribe_task_not_found(t *testing.T) {
+	nc := connectTestNATS(t, startTestNATSServer(t))
+	c := &stubCancelerNotFound{}
+	subscribe(t, nc, "worker-1", c)
+
+	publish(t, nc, "worker-1", cancelPayload(t, "task-done", "job-Z"))
+
+	waitFor(t, 2*time.Second, func() bool { return c.calls.Load() > 0 })
+}
+
+// TestSubscribe_malformed_payload verifies that a cancel message that cannot
+// be parsed, or names neither a task nor an attempt, never reaches
+// TaskCanceler.Cancel.
+func TestSubscribe_malformed_payload(t *testing.T) {
+	nc := connectTestNATS(t, startTestNATSServer(t))
+	c := &stubCanceler{}
+	subscribe(t, nc, "worker-1", c)
+
+	publish(t, nc, "worker-1", []byte("not json {{{"))
+	publish(t, nc, "worker-1", cancelPayload(t, "", "job-1"))
+
+	time.Sleep(150 * time.Millisecond)
+	if tasks := c.canceledTasks(); len(tasks) != 0 {
+		t.Errorf("Cancel called on a malformed payload; want 0 calls, got %v", tasks)
+	}
+}
+
+// TestApplies pins which runs a cancel stops: each name it gives must match,
+// and a cancel that names nothing stops nothing.
+func TestApplies(t *testing.T) {
+	tests := []struct {
+		task, attempt string
+		want          bool
+	}{
+		{"t1", "", true},
+		{"t1", "a1", true},
+		{"", "a1", true},
+		{"t2", "", false},
+		{"t1", "a2", false},
+		{"", "a2", false},
+		{"", "", false},
+	}
+	for _, tt := range tests {
+		if got := cancel.Applies(tt.task, tt.attempt, "t1", "a1"); got != tt.want {
+			t.Errorf("Applies(%q, %q) on run t1/a1 = %v, want %v", tt.task, tt.attempt, got, tt.want)
 		}
 	}
-
-	// Cancel only task-B.
-	if err := nc.Publish(bus.TaskCancelSubject("task-B"), cancelPayload(t, "task-B", "job-X")); err != nil {
-		t.Fatalf("Publish: %v", err)
-	}
-	if err := nc.Flush(); err != nil {
-		t.Fatalf("Flush: %v", err)
-	}
-
-	waitFor(t, 2*time.Second, func() bool {
-		return len(c.canceledTasks()) > 0
-	})
-
-	tasks := c.canceledTasks()
-	if len(tasks) != 1 {
-		t.Errorf("Cancel called %d time(s); want exactly 1", len(tasks))
-	}
-	if len(tasks) > 0 && tasks[0] != "task-B" {
-		t.Errorf("Cancel called for %q; want %q", tasks[0], "task-B")
-	}
-}
-
-// TestHandler_task_not_found verifies that a cancel signal for an already-
-// finished task is handled silently without panicking.
-func TestHandler_task_not_found(t *testing.T) {
-	url := startTestNATSServer(t)
-	nc := connectTestNATS(t, url)
-
-	c := &stubCancelerNotFound{}
-	h := cancel.New(nc, c, testLogger())
-
-	taskID := "task-done"
-	if err := h.Register(taskID); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-
-	if err := nc.Publish(bus.TaskCancelSubject(taskID), cancelPayload(t, taskID, "job-Z")); err != nil {
-		t.Fatalf("Publish: %v", err)
-	}
-	if err := nc.Flush(); err != nil {
-		t.Fatalf("Flush: %v", err)
-	}
-
-	// Cancel should be called (returning false) without panicking.
-	waitFor(t, 2*time.Second, func() bool {
-		return c.calls.Load() > 0
-	})
-}
-
-// TestHandler_malformed_payload verifies that a malformed cancel message does
-// not panic and does not invoke TaskCanceler.Cancel.
-func TestHandler_malformed_payload(t *testing.T) {
-	url := startTestNATSServer(t)
-	nc := connectTestNATS(t, url)
-
-	c := &stubCanceler{}
-	h := cancel.New(nc, c, testLogger())
-
-	taskID := "task-bad"
-	if err := h.Register(taskID); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-
-	if err := nc.Publish(bus.TaskCancelSubject(taskID), []byte("not json {{{")); err != nil {
-		t.Fatalf("Publish: %v", err)
-	}
-	if err := nc.Flush(); err != nil {
-		t.Fatalf("Flush: %v", err)
-	}
-
-	time.Sleep(150 * time.Millisecond)
-	if tasks := c.canceledTasks(); len(tasks) != 0 {
-		t.Errorf("Cancel called on malformed payload; want 0 calls, got %d", len(tasks))
-	}
-}
-
-// TestHandler_deregister_idempotent verifies that calling Deregister multiple
-// times does not panic.
-func TestHandler_deregister_idempotent(t *testing.T) {
-	url := startTestNATSServer(t)
-	nc := connectTestNATS(t, url)
-
-	c := &stubCanceler{}
-	h := cancel.New(nc, c, testLogger())
-
-	taskID := "task-idem"
-	if err := h.Register(taskID); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-
-	// Must not panic.
-	h.Deregister(taskID)
-	h.Deregister(taskID)
-	h.Deregister(taskID)
 }

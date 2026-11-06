@@ -47,6 +47,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/uberware/sqi/internal/worker/cancel"
 	"github.com/uberware/sqi/internal/worker/metrics"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/worker/session"
@@ -102,7 +103,7 @@ type TaskLifecycleHook interface {
 	// is seen; termination then honors the action's OpenJD cancelation method
 	// (TERMINATE by default → immediate SIGKILL; NOTIFY_THEN_TERMINATE →
 	// SIGTERM then SIGKILL after the notify period).
-	RegisterTask(attemptID, taskID, jobID, sessionID string, cancel context.CancelFunc)
+	RegisterTask(attemptID, taskID, jobID, sessionID string, taskCancel context.CancelFunc)
 
 	// Deregister removes the per-task state for attemptID.  Safe to call
 	// multiple times.
@@ -186,29 +187,11 @@ type Config struct {
 	StagingIsolationCapable bool
 }
 
-// ── CancelRegistrar ───────────────────────────────────────────────────────────
-
-// CancelRegistrar is an optional hook that the executor calls to subscribe to
-// and unsubscribe from per-task cancel NATS messages.
-//
-// Register is called after the per-task context is set up, immediately before
-// the task process starts.  Deregister is called when the task goroutine exits.
-//
-// Implementations must be safe for concurrent use from multiple goroutines
-// (multiple tasks may register/deregister simultaneously).
-type CancelRegistrar interface {
-	// Register subscribes to cancel messages for the given taskID.
-	// Errors are logged as warnings and do not abort task execution.
-	Register(taskID string) error
-	// Deregister unsubscribes from cancel messages for the given taskID.
-	Deregister(taskID string)
-}
-
 // ── Internal types ────────────────────────────────────────────────────────────
 
 // taskRun holds the in-memory runtime state of an executing task.  It is
-// stored in [Executor.activeTasks] from Dispatch until the task goroutine
-// exits.
+// stored in [Executor.activeTasks], keyed by attempt ID, from Dispatch until
+// the task goroutine exits.
 type taskRun struct {
 	taskID    string
 	attemptID string
@@ -238,8 +221,8 @@ type taskRun struct {
 //
 // Create an instance with [New] and wire it into the pull loop and heartbeat
 // publisher.  Call [CheckRootUser] before creating an Executor to verify the
-// process is not running as root.  After construction, call
-// [SetCancelRegistrar] to wire in the NATS cancel subscription handler.
+// process is not running as root.  The worker's cancel subscription
+// (package cancel) delivers the server's cancels to [Executor.Cancel].
 type Executor struct {
 	statusPub     *status.Publisher
 	sessionMgr    *session.Manager
@@ -249,7 +232,10 @@ type Executor struct {
 	cfg           Config
 	stager        *staging.Stager
 
-	mu               sync.Mutex
+	mu sync.Mutex
+	// activeTasks is keyed by attempt ID, not task ID: a worker re-leased a
+	// task while a stale attempt of it still runs holds both, and each must
+	// stay reachable by a cancel naming it until its own goroutine exits.
 	activeTasks      map[string]*taskRun
 	lastAssignmentAt *time.Time
 
@@ -260,11 +246,6 @@ type Executor struct {
 	// server can tell an attempt a live worker lost track of from one still in
 	// flight. Protected by mu.
 	held map[string]struct{}
-
-	// cancelReg, if non-nil, is notified when tasks start and end so it can
-	// subscribe to per-task cancel NATS messages.
-	// Protected by mu; set via SetCancelRegistrar before any Dispatch calls.
-	cancelReg CancelRegistrar
 
 	// execCtx / execCancel control the lifetime of all task goroutines (tasks
 	// 86–87).  Task goroutines derive their taskCtx from execCtx rather than
@@ -426,16 +407,17 @@ func (e *Executor) ActiveTaskCount() int {
 	return len(e.activeTasks)
 }
 
-// ActiveTaskIDs returns a snapshot of the IDs of all currently running tasks.
-// Implements [heartbeat.StateSource].
+// ActiveTaskIDs returns a snapshot of the IDs of all currently running tasks,
+// each once, however many attempts of it run. Implements
+// [heartbeat.StateSource].
 func (e *Executor) ActiveTaskIDs() []string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	ids := make([]string, 0, len(e.activeTasks))
-	for id := range e.activeTasks {
-		ids = append(ids, id)
+	ids := make(map[string]struct{}, len(e.activeTasks))
+	for _, run := range e.activeTasks {
+		ids[run.taskID] = struct{}{}
 	}
-	return ids
+	return slices.Collect(maps.Keys(ids))
 }
 
 // LastAssignmentAt returns the time of the most recent task assignment
@@ -454,17 +436,19 @@ func (e *Executor) LastAssignmentAt() *time.Time {
 func (e *Executor) addActiveTask(run *taskRun) {
 	now := time.Now()
 	e.mu.Lock()
-	e.activeTasks[run.taskID] = run
+	e.activeTasks[run.attemptID] = run
 	e.lastAssignmentAt = &now
 	e.mu.Unlock()
 	e.m.ActiveTasks.Inc()
 }
 
-// removeActiveTask removes taskID from the active-tasks map and decrements
-// the Prometheus gauge.
-func (e *Executor) removeActiveTask(taskID string) {
+// removeActiveTask removes run from the active-tasks map and decrements the
+// Prometheus gauge.
+func (e *Executor) removeActiveTask(run *taskRun) {
 	e.mu.Lock()
-	delete(e.activeTasks, taskID)
+	if e.activeTasks[run.attemptID] == run {
+		delete(e.activeTasks, run.attemptID)
+	}
 	e.mu.Unlock()
 	e.m.ActiveTasks.Dec()
 }
@@ -480,31 +464,6 @@ func (e *Executor) applyCancelFunc(run *taskRun, taskCancel context.CancelFunc) 
 	if early {
 		taskCancel()
 	}
-}
-
-// registerCancelSubscription subscribes to the per-task NATS cancel subject
-// via the configured CancelRegistrar. It returns a cleanup
-// function that the caller must defer — it calls Deregister when the task
-// goroutine exits.
-//
-// If no CancelRegistrar is wired, the returned function is a no-op.
-func (e *Executor) registerCancelSubscription(ctx context.Context, taskID string) func() {
-	e.mu.Lock()
-	cr := e.cancelReg
-	e.mu.Unlock()
-	if cr == nil {
-		return func() {}
-	}
-	if regErr := cr.Register(taskID); regErr != nil {
-		e.logger.WarnContext(
-			ctx, "executor: cancel subscription registration failed",
-			slog.String("task_id", taskID),
-			slog.Any("error", regErr),
-		)
-		// Nothing was registered so there is nothing to deregister.
-		return func() {}
-	}
-	return func() { cr.Deregister(taskID) }
 }
 
 // lastProgress returns the most-recently seen openjd_progress value for
@@ -536,18 +495,6 @@ func (e *Executor) finishProgress(attemptID string) *int {
 	return e.lastProgress(attemptID)
 }
 
-// SetCancelRegistrar wires a [CancelRegistrar] into the executor so that
-// per-task NATS cancel subscriptions are managed automatically.
-//
-// Must be called before any task is dispatched; it is safe to call
-// concurrently with other methods but races with active Dispatch calls are
-// not supported.
-func (e *Executor) SetCancelRegistrar(cr CancelRegistrar) {
-	e.mu.Lock()
-	e.cancelReg = cr
-	e.mu.Unlock()
-}
-
 // Cancel requests cancellation of the task identified by taskID.
 //
 // If the task is actively executing its per-task context is canceled,
@@ -559,29 +506,36 @@ func (e *Executor) SetCancelRegistrar(cr CancelRegistrar) {
 // as soon as runTask initializes its context.
 //
 // A non-empty attemptID limits the cancel to that attempt
-// ([protocol.TaskCancelMsg.AttemptID]); a task running another is left alone.
+// ([protocol.TaskCancelMsg.AttemptID]); a run of another attempt is left
+// alone. An empty one stops every run of the task. An empty taskID with a
+// non-empty attemptID stops that attempt whatever its task; both empty stop
+// nothing.
 //
 // Returns true if a matching run was found in the active-tasks map
 // (regardless of whether cancellation completed), false if none was (already
 // finished, never dispatched, or another attempt).
 func (e *Executor) Cancel(taskID, attemptID string) bool {
 	e.mu.Lock()
-	run, ok := e.activeTasks[taskID]
-	if !ok || (attemptID != "" && run.attemptID != attemptID) {
-		e.mu.Unlock()
-		return false
+	var stop []context.CancelFunc
+	found := false
+	for _, run := range e.activeTasks {
+		if !cancel.Applies(taskID, attemptID, run.taskID, run.attemptID) {
+			continue
+		}
+		found = true
+		if run.cancelFunc != nil {
+			stop = append(stop, run.cancelFunc)
+			continue
+		}
+		// cancelFunc not yet set: the runTask goroutine hasn't initialized its
+		// per-task context yet.  Flag the run so runTask handles it on startup.
+		run.cancelRequested = true
 	}
-	if run.cancelFunc != nil {
-		f := run.cancelFunc
-		e.mu.Unlock()
-		f()
-		return true
-	}
-	// cancelFunc not yet set: the runTask goroutine hasn't initialized its
-	// per-task context yet.  Flag the run so runTask handles it on startup.
-	run.cancelRequested = true
 	e.mu.Unlock()
-	return true
+	for _, f := range stop {
+		f()
+	}
+	return found
 }
 
 // DrainAndShutdown implements the worker graceful-shutdown sequence (tasks
@@ -635,13 +589,9 @@ func (e *Executor) DrainAndShutdown(gracePeriod time.Duration) (completed, kille
 	// Grace period expired (or gracePeriod == 0): snapshot the survivors, set
 	// the shutdown flag, and cancel all task execution contexts.
 	e.mu.Lock()
-	killedIDs := make([]string, 0, len(e.activeTasks))
-	for taskID := range e.activeTasks {
-		killedIDs = append(killedIDs, taskID)
-	}
+	killed = len(e.activeTasks)
 	e.mu.Unlock()
 
-	killed = len(killedIDs)
 	completed = initial - killed
 
 	e.shuttingDown.Store(true)
@@ -684,7 +634,7 @@ func (e *Executor) FlushShutdownStatuses() {
 		"executor: publishing worker_shutdown status for in-flight tasks",
 		slog.Int("count", len(tasks)),
 	)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stop()
 	e.statusPub.ShutdownFailed(ctx, tasks)
 }

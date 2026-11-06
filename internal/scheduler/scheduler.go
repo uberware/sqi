@@ -58,10 +58,10 @@
 // Cancellation. [CancelJob] and [CancelTask] are the server-side entry points
 // called by the REST layer: each makes one store call that transitions tasks to
 // [store.TaskStatusCanceled], closes their running attempts and releases their
-// usage pool slots in a single transaction, then publishes task.cancel.<taskID>
-// signals to the workers that held them ([bus.Client.PublishTaskCancel]). The
-// logic lives in cancellation.go; the SQI_CANCEL stream and publish helper live
-// in the bus package.
+// usage pool slots in a single transaction, then publishes a cancel signal to
+// each worker that held one, on its task.cancel.<workerID> subject
+// ([bus.Client.PublishTaskCancel]). The logic lives in cancellation.go; the
+// SQI_CANCEL stream and publish helper live in the bus package.
 //
 // Wire protocol and metrics. All worker messages use the versioned JSON types
 // in [worker/protocol] ([protocol.RegisterMsg], [protocol.HeartbeatMsg],
@@ -262,7 +262,7 @@ type busClient interface {
 	ConsumeWorker(ctx context.Context, handler jetstream.MessageHandler) (jetstream.ConsumeContext, error)
 	ConsumeTaskStatus(ctx context.Context, handler jetstream.MessageHandler) (jetstream.ConsumeContext, error)
 	ConsumeTaskLogs(ctx context.Context, handler jetstream.MessageHandler) (jetstream.ConsumeContext, error)
-	PublishTaskCancel(ctx context.Context, taskID string, data []byte) error
+	PublishTaskCancel(ctx context.Context, workerID string, data []byte) error
 	SubscribeWorkerDiag(handler func(subject string, data []byte)) (*nats.Subscription, error)
 	SubscribeLease(handler func(workerID, queueID string, data []byte) []byte) (*nats.Subscription, error)
 }
@@ -1376,13 +1376,21 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 	// sends an empty list, and that empty report is how the reconciler learns
 	// an attempt is no longer held. Older workers send neither field and are
 	// never reconciled.
-	if s.reconciler != nil && m.AttemptsReported {
-		if s.reconciler.record(m.WorkerID, at, received, m.ActiveAttemptIDs) {
-			s.logger.WarnContext(ctx, "scheduler: worker heartbeat delayed or skewed: more than heartbeat_timeout "+
-				"between the worker's timestamp and its receipt; its tasks are not reconciled until its "+
-				"heartbeats arrive in time again",
-				slog.String("worker_id", m.WorkerID), slog.Time("worker_at", at))
-		}
+	// A list longer than any worker can hold is ignored, leaving the
+	// worker's last report to go stale, so its tasks are not reconciled
+	// until it sends a list of a sane length again.
+	switch {
+	case s.reconciler == nil || !m.AttemptsReported:
+	case len(m.ActiveAttemptIDs) > maxReportedAttempts:
+		s.logger.WarnContext(ctx, "scheduler: worker heartbeat lists more attempts than a worker can hold; "+
+			"ignoring its attempt list, and its tasks are not reconciled until it sends a shorter one",
+			slog.String("worker_id", m.WorkerID), slog.Int("attempts", len(m.ActiveAttemptIDs)),
+			slog.Int("limit", maxReportedAttempts))
+	case s.reconciler.record(m.WorkerID, at, received, m.ActiveAttemptIDs):
+		s.logger.WarnContext(ctx, "scheduler: worker heartbeat delayed or skewed: more than heartbeat_timeout "+
+			"between the worker's timestamp and its receipt; its tasks are not reconciled until its "+
+			"heartbeats arrive in time again",
+			slog.String("worker_id", m.WorkerID), slog.Time("worker_at", at))
 	}
 	s.ackMsg(ctx, msg)
 }
