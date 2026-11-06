@@ -104,15 +104,8 @@ func scanAttempt(row scanner) (store.TaskAttempt, error) {
 	a.CreatedAt = mustTime(createdAt)
 	a.EndedAt = nullTextToTime(endedAt)
 	a.ProgressAt = nullTextToTime(progressAt)
-	if progress.Valid {
-		v := int(progress.Int64)
-		a.Progress = &v
-	}
-
-	if exitCode.Valid {
-		code := int(exitCode.Int64)
-		a.ExitCode = &code
-	}
+	a.Progress = nullIntPtr(progress)
+	a.ExitCode = nullIntPtr(exitCode)
 
 	return a, nil
 }
@@ -144,11 +137,15 @@ func (s *Store) ListTaskAttempts(ctx context.Context, taskID string) ([]store.Ta
 }
 
 // sqlLatestAttemptProgress selects the snapshot of each listed task's latest
-// attempt; the IN list is completed with one placeholder per task.
+// attempt; the IN list is completed with one placeholder per task. Attempts are
+// opened at lease time, so a pending or ready task (never leased, or requeued)
+// only has a closed earlier attempt, whose snapshot is stale and excluded.
 const sqlLatestAttemptProgress = `
 SELECT a.task_id, a.progress, a.status_text, a.progress_at
 FROM   task_attempts a
+JOIN   tasks t ON t.id = a.task_id
 WHERE  a.attempt_number = (SELECT MAX(m.attempt_number) FROM task_attempts m WHERE m.task_id = a.task_id)
+  AND  t.status NOT IN ('pending', 'ready')
   AND  (a.progress_at IS NOT NULL OR a.status_text != '')
   AND  a.task_id IN (`
 
@@ -176,10 +173,7 @@ func (s *Store) LatestAttemptProgress(ctx context.Context, taskIDs []string) (ma
 		if err := rows.Scan(&id, &progress, &p.StatusText, &progressAt); err != nil {
 			return nil, mapErr(err)
 		}
-		if progress.Valid {
-			v := int(progress.Int64)
-			p.Progress = &v
-		}
+		p.Progress = nullIntPtr(progress)
 		p.ProgressAt = nullTextToTime(progressAt)
 		out[id] = p
 	}

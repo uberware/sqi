@@ -258,8 +258,8 @@ func TestParity_LatestAttemptProgress(t *testing.T) {
 			t0 := time.Now().UTC().Truncate(time.Microsecond)
 			t1 := t0.Add(time.Second)
 			g := seedStepA(t, st, graphOpts{jobStatus: store.JobStatusRunning},
-				store.TaskStatusRunning, store.TaskStatusRunning, store.TaskStatusRunning, store.TaskStatusReady)
-			a, b, c, d := g.Tasks["a"][0], g.Tasks["a"][1], g.Tasks["a"][2], g.Tasks["a"][3]
+				store.TaskStatusRunning, store.TaskStatusRunning, store.TaskStatusRunning, store.TaskStatusReady, store.TaskStatusReady)
+			a, b, c, d, e := g.Tasks["a"][0], g.Tasks["a"][1], g.Tasks["a"][2], g.Tasks["a"][3], g.Tasks["a"][4]
 
 			recordProgress(t, st, g.Attempts[a.ID], 42, "frame 3", t0)
 
@@ -284,8 +284,19 @@ func TestParity_LatestAttemptProgress(t *testing.T) {
 			}
 			storetest.Lease(t, st, leaseReq(d))
 
+			// E: a snapshot on an attempt whose task is requeued to ready and
+			// not yet leased again; the closed attempt's snapshot is stale.
+			eFirst := storetest.Running(t, st, leaseReq(e))
+			recordProgress(t, st, eFirst, 55, "stale", t0)
+			if _, _, ok, err := st.RecordTaskFailure(ctx, eFirst.ID, e.ID, nil, "", "boom", now); err != nil || !ok {
+				t.Fatalf("RecordTaskFailure(E) = (%v, %v)", ok, err)
+			}
+			if ok, err := st.RequeueTaskForRetry(ctx, e.ID, eFirst.ID, now.Add(-time.Minute), now); err != nil || !ok {
+				t.Fatalf("RequeueTaskForRetry(E) = (%v, %v)", ok, err)
+			}
+
 			unknown := uuid.NewString()
-			got, err := st.LatestAttemptProgress(ctx, []string{a.ID, b.ID, c.ID, d.ID, unknown})
+			got, err := st.LatestAttemptProgress(ctx, []string{a.ID, b.ID, c.ID, d.ID, e.ID, unknown})
 			if err != nil {
 				t.Fatalf("LatestAttemptProgress: %v", err)
 			}

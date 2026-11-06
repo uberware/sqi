@@ -387,11 +387,7 @@ func (i *Interceptor) noteChange(ctx context.Context, attemptID string, st *atte
 	}
 	now := time.Now()
 	if elapsed := now.Sub(st.lastSent); st.lastSent.IsZero() || elapsed >= i.interval {
-		st.lastSent = now
-		st.pending = false
-		msg := i.snapshotLocked(attemptID, st, now)
-		st.mu.Unlock()
-		i.publish(ctx, attemptID, msg)
+		i.sendLockedThenPublish(ctx, attemptID, st, now)
 		return
 	}
 	st.pending = true
@@ -412,12 +408,18 @@ func (i *Interceptor) sendTrailing(attemptID string, st *attemptState) {
 		st.mu.Unlock()
 		return
 	}
-	now := time.Now()
-	st.pending = false
+	i.sendLockedThenPublish(context.Background(), attemptID, st, time.Now())
+}
+
+// sendLockedThenPublish records a send at now, then publishes the snapshot. It
+// is called with st.mu held and returns with it released: the publish itself
+// runs outside the lock.
+func (i *Interceptor) sendLockedThenPublish(ctx context.Context, attemptID string, st *attemptState, now time.Time) {
 	st.lastSent = now
+	st.pending = false
 	msg := i.snapshotLocked(attemptID, st, now)
 	st.mu.Unlock()
-	i.publish(context.Background(), attemptID, msg)
+	i.publish(ctx, attemptID, msg)
 }
 
 // snapshotLocked builds the snapshot message; st.mu must be held.

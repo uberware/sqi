@@ -122,22 +122,27 @@ func (s *Store) LatestAttemptProgress(_ context.Context, taskIDs []string) (map[
 
 	out := make(map[string]store.TaskProgress, len(taskIDs))
 	for _, id := range taskIDs {
+		t, ok := s.tasks[id]
+		if !ok || t.Status == store.TaskStatusPending || t.Status == store.TaskStatusReady {
+			continue
+		}
 		a, ok := s.latestAttemptLocked(id)
 		if !ok || (a.ProgressAt == nil && a.StatusText == "") {
 			continue
 		}
-		p := store.TaskProgress{StatusText: a.StatusText}
-		if a.Progress != nil {
-			v := *a.Progress
-			p.Progress = &v
-		}
-		if a.ProgressAt != nil {
-			at := *a.ProgressAt
-			p.ProgressAt = &at
-		}
-		out[id] = p
+		out[id] = store.TaskProgress{Progress: ptrCopy(a.Progress), StatusText: a.StatusText, ProgressAt: ptrCopy(a.ProgressAt)}
 	}
 	return out, nil
+}
+
+// ptrCopy returns a pointer to a copy of *p, nil when p is nil, so a returned
+// snapshot does not alias the stored row.
+func ptrCopy[T any](p *T) *T {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
 }
 
 // RunningProgressByJob implements [store.TaskAttemptStore].

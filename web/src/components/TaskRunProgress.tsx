@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { clamp } from '@/lib/math'
 import { formatDuration, timeLeftMs } from '@/lib/time'
 import styles from './TaskRunProgress.module.css'
 
@@ -24,8 +25,10 @@ export default function TaskRunProgress({
   const hasText = statusText !== undefined && statusText !== ''
   if (progress === undefined && !hasText) return null
 
-  const pct = progress === undefined ? undefined : Math.min(Math.max(progress, 0), 100)
+  const pct = progress === undefined ? undefined : clamp(progress, 0, 100)
   const left = timeLeftMs(startedAt, now, progress)
+  const leftText =
+    left === undefined ? undefined : `≈ ${formatDuration(Math.round(left / 1000) * 1000)} left`
 
   return (
     <div className={styles.root}>
@@ -35,7 +38,7 @@ export default function TaskRunProgress({
         aria-label="Task progress"
         aria-valuemin={0}
         aria-valuemax={100}
-        {...(pct !== undefined ? { 'aria-valuenow': pct } : {})}
+        aria-valuenow={pct}
       >
         {pct !== undefined && <div className={styles.fill} style={{ width: `${pct}%` }} />}
       </div>
@@ -46,11 +49,7 @@ export default function TaskRunProgress({
             {statusText}
           </span>
         )}
-        {left !== undefined && (
-          <span
-            className={styles.left}
-          >{`≈ ${formatDuration(Math.round(left / 1000) * 1000)} left`}</span>
-        )}
+        {leftText !== undefined && <span className={styles.left}>{leftText}</span>}
       </div>
     </div>
   )

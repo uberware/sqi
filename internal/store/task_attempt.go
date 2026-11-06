@@ -117,9 +117,10 @@ type TaskAttemptStore interface {
 	ListOpenAttempts(ctx context.Context, createdBefore time.Time) ([]OpenAttempt, error)
 
 	// LatestAttemptProgress returns, for each given task, the progress snapshot
-	// of its latest attempt, whatever that attempt's status. A task with no
-	// attempt, or whose latest attempt has no snapshot (no ProgressAt and no
-	// status text), is absent from the map. No tasks returns an empty map
+	// of its latest attempt, for a task that is in flight or finished (not
+	// pending or ready: a requeued task's earlier attempt is closed and its
+	// snapshot stale). A task with no attempt, or whose latest attempt has no
+	// snapshot (no ProgressAt and no status text), is absent from the map. No tasks returns an empty map
 	// without querying.
 	LatestAttemptProgress(ctx context.Context, taskIDs []string) (map[string]TaskProgress, error)
 

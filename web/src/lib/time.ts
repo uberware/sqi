@@ -74,7 +74,7 @@ export function timeLeftMs(
 ): number | undefined {
   if (startIso === undefined || progress === undefined || progress < 1) return undefined
   const elapsed = now - new Date(startIso).getTime()
-  if (!(elapsed >= MIN_ELAPSED_FOR_ESTIMATE_MS)) return undefined
+  if (Number.isNaN(elapsed) || elapsed < MIN_ELAPSED_FOR_ESTIMATE_MS) return undefined
   if (progress >= 100) return 0
   return (elapsed * (100 - progress)) / progress
 }

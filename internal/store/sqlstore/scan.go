@@ -107,6 +107,16 @@ func nullTextToTime(s sql.NullString) *time.Time {
 	return &t
 }
 
+// nullIntPtr converts a sql.NullInt64 read from a nullable integer column to
+// *int, nil when the column is NULL.
+func nullIntPtr(n sql.NullInt64) *int {
+	if !n.Valid {
+		return nil
+	}
+	v := int(n.Int64)
+	return &v
+}
+
 // ── JSON helpers ─────────────────────────────────────────────────────────────
 
 // marshalJSON serializes v to a JSON string for storage in a TEXT column.

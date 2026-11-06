@@ -65,11 +65,7 @@ func (s *Store) RecordAttemptProgress(ctx context.Context, p store.AttemptProgre
 	if a.ProgressAt != nil && !a.ProgressAt.Before(at) {
 		return store.ProgressOutOfOrder, nil
 	}
-	a.Progress, a.StatusText, a.ProgressAt = nil, p.StatusText, &at
-	if p.Progress != nil {
-		v := *p.Progress
-		a.Progress = &v
-	}
+	a.Progress, a.StatusText, a.ProgressAt = ptrCopy(p.Progress), p.StatusText, &at
 	s.taskAttempts[p.AttemptID] = a
 	return store.ProgressRecorded, nil
 }

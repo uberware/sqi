@@ -226,7 +226,7 @@ func (d *Dispatcher) run(t *simTask) {
 		}
 		defer d.cancels.Deregister(m.TaskID)
 	}
-	if d.progress != nil && t.plan.ProgressEvery > 0 {
+	if d.writesProgress(t) {
 		d.progress.RegisterTask(m.AttemptID, m.TaskID, m.JobID, "", func() {})
 		defer d.progress.Deregister(m.AttemptID)
 	}
@@ -238,11 +238,17 @@ func (d *Dispatcher) run(t *simTask) {
 	}
 
 	lines := d.emit(t)
-	if d.progress != nil && t.plan.ProgressEvery > 0 {
+	if d.writesProgress(t) {
 		// No snapshot may follow the terminal status.
 		d.progress.FinishProgress(m.AttemptID)
 	}
 	d.finish(t, d.settle(t), lines)
+}
+
+// writesProgress reports whether t's plan writes progress through the
+// interceptor.
+func (d *Dispatcher) writesProgress(t *simTask) bool {
+	return d.progress != nil && t.plan.ProgressEvery > 0
 }
 
 // timeoutOf is m's onRun timeout, or zero for none.
@@ -306,7 +312,7 @@ func (d *Dispatcher) emit(t *simTask) int {
 // writeLine sends one stdout line of t, through the progress interceptor when
 // t's plan writes progress.
 func (d *Dispatcher) writeLine(t *simTask, line string) {
-	if d.progress != nil && t.plan.ProgressEvery > 0 {
+	if d.writesProgress(t) {
 		d.progress.HandleLine(context.Background(), t.m.TaskID, t.m.AttemptID, "", "stdout", line)
 		return
 	}

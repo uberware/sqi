@@ -205,7 +205,7 @@ func (h *taskHandler) listJobTasks(w http.ResponseWriter, r *http.Request) {
 		h.logger.WarnContext(ctx, "tasks: latest progress failed", slog.String("job_id", jobID), slog.Any("error", err))
 	}
 	for i := range resp.Items {
-		if p, ok := progress[resp.Items[i].ID]; ok && hasCurrentAttempt(resp.Items[i].Status) {
+		if p, ok := progress[resp.Items[i].ID]; ok {
 			applyTaskProgress(&resp.Items[i], p)
 		}
 	}
@@ -236,19 +236,11 @@ func (h *taskHandler) getTask(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.logger.WarnContext(ctx, "tasks: latest progress failed", slog.String("id", id), slog.Any("error", err))
 	}
-	if p, ok := progress[id]; ok && hasCurrentAttempt(resp.Status) {
+	if p, ok := progress[id]; ok {
 		applyTaskProgress(&resp, p)
 	}
 
 	writeJSON(w, http.StatusOK, resp)
-}
-
-// hasCurrentAttempt reports whether a task in status has an attempt whose
-// progress is current. Attempts are opened at lease time, so a pending or ready
-// task (never leased, or requeued) only has a closed earlier attempt, whose
-// progress must not be shown.
-func hasCurrentAttempt(status string) bool {
-	return status != string(store.TaskStatusPending) && status != string(store.TaskStatusReady)
 }
 
 // applyTaskProgress copies a progress snapshot onto a task response.

@@ -192,8 +192,7 @@ type jobListItemResponse struct {
 	jobResponse
 
 	TaskCounts taskCountsResponse `json:"task_counts"`
-	// ProgressPercent is the job's completion, 0-100, or null when it has no
-	// non-canceled tasks.
+	// ProgressPercent is as on [jobDetailResponse].
 	ProgressPercent *float64 `json:"progress_percent"`
 }
 
@@ -473,7 +472,7 @@ func (h *jobHandler) listJobs(w http.ResponseWriter, r *http.Request) {
 				unschedulable = 0
 			}
 			item.TaskCounts = toTaskCountsResponse(counts, unschedulable)
-			running, rErr := h.store.RunningProgressByJob(ctx, j.ID)
+			running, rErr := h.runningProgress(ctx, j.ID, counts)
 			if rErr != nil {
 				running = 0
 			}
@@ -483,6 +482,15 @@ func (h *jobHandler) listJobs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// runningProgress is the sum of the job's running tasks' progress. A job with
+// no running task sums to zero, so the query is skipped.
+func (h *jobHandler) runningProgress(ctx context.Context, jobID string, counts map[store.TaskStatus]int) (float64, error) {
+	if counts[store.TaskStatusRunning] == 0 {
+		return 0, nil
+	}
+	return h.store.RunningProgressByJob(ctx, jobID)
 }
 
 // ── GET /api/v1/jobs/{id} ─────────────────────────────────────────────────────
@@ -524,7 +532,7 @@ func (h *jobHandler) getJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	runningProgress, err := h.store.RunningProgressByJob(ctx, id)
+	runningProgress, err := h.runningProgress(ctx, id, taskCounts)
 	if err != nil {
 		h.logger.ErrorContext(ctx, "jobs: running progress failed", slog.String("id", id), slog.Any("error", err))
 		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve task counts")
