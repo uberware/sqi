@@ -59,3 +59,22 @@ export function formatAge(ts: number, now: number): string {
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
   return new Date(ts).toLocaleTimeString()
 }
+
+const MIN_ELAPSED_FOR_ESTIMATE_MS = 30_000
+
+/**
+ * Estimated time remaining for an attempt, extrapolated linearly from the
+ * elapsed time and percent complete. Undefined until there is enough signal:
+ * no start or progress, progress below 1%, or under 30s elapsed.
+ */
+export function timeLeftMs(
+  startIso: string | undefined,
+  now: number,
+  progress: number | undefined,
+): number | undefined {
+  if (startIso === undefined || progress === undefined || progress < 1) return undefined
+  const elapsed = now - new Date(startIso).getTime()
+  if (!(elapsed >= MIN_ELAPSED_FOR_ESTIMATE_MS)) return undefined
+  if (progress >= 100) return 0
+  return (elapsed * (100 - progress)) / progress
+}

@@ -1,0 +1,55 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+.root {
+  min-width: 7.5rem;
+  margin-top: var(--space-1);
+}
+
+.bar {
+  height: 4px;
+  border-radius: var(--radius-full);
+  background: var(--color-border);
+  overflow: hidden;
+}
+
+.fill {
+  height: 100%;
+  background: var(--color-accent);
+  transition: width var(--transition-slow);
+}
+
+.indeterminate {
+  background: var(--color-accent);
+  opacity: 0.4;
+}
+
+.meta {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.pct {
+  font-variant-numeric: tabular-nums;
+}
+
+.text {
+  min-width: 0;
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.left {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fill {
+    transition: none;
+  }
+}

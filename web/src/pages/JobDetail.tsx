@@ -20,6 +20,7 @@ import { useAuth } from '@/auth/context'
 import { can } from '@/auth/policy'
 import { useWebSocket } from '@/ws/context'
 import { useLiveNow } from '@/hooks/useLiveNow'
+import TaskRunProgress from '@/components/TaskRunProgress'
 import { formatTimespan, formatDuration } from '@/lib/time'
 import { truncateId } from '@/lib/id'
 import { matchesSearch } from '@/utils/filterBySearch'
@@ -431,6 +432,14 @@ function TaskRow({
             <span className={styles.failureReason ?? ''} title={task.failure_reason}>
               {task.failure_reason}
             </span>
+          )}
+          {task.status === 'running' && (
+            <TaskRunProgress
+              progress={task.progress}
+              statusText={task.status_text}
+              startedAt={task.assigned_at}
+              now={now}
+            />
           )}
         </td>
         <td>

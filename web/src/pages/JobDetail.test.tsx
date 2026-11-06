@@ -444,6 +444,34 @@ describe('JobDetail', () => {
   })
 
   describe('task table', () => {
+    it('shows progress and status for a running task', async () => {
+      const running = makeTask({
+        id: 'task-running-1',
+        status: 'running',
+        progress: 43,
+        status_text: 'frame 3',
+        assigned_at: new Date(Date.now() - 120_000).toISOString(),
+      })
+      const done = makeTask({
+        id: 'task-done-0001',
+        name: 'task.1',
+        status: 'succeeded',
+        progress: 100,
+      })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([running, done])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('frame 3'))
+      const bars = screen.getAllByRole('progressbar', { name: 'Task progress' })
+      const rowBar = bars.find((b) => b.getAttribute('aria-valuenow') === '43')
+      expect(rowBar).toBeDefined()
+      expect(rowBar?.closest('tr')).toHaveTextContent('frame 3')
+      const doneRow = screen.getByText('task-don').closest('tr')
+      expect(doneRow?.querySelector('[role="progressbar"]')).toBeNull()
+    })
+
     it('renders tasks within their parent step section', async () => {
       const task = makeTask({ id: 'task-99887766', step_id: 'step-1', name: 'task.0' })
       fetchMock.mockResolvedValueOnce(okJson(makeJob()))
@@ -1212,6 +1240,43 @@ describe('JobDetail', () => {
   // ── WS task-level updates ───────────────────────────────────────────
 
   describe('websocket task-level updates', () => {
+    it('updates a running row from a progress-only task event', async () => {
+      const task = makeTask({
+        id: 'task-ws-progress',
+        status: 'running',
+        job_id: 'job-aabbccdd-eeff',
+        step_id: 'step-1',
+      })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+      fetchMock.mockResolvedValue(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+      await waitFor(() => screen.getAllByLabelText('Status: Running'))
+
+      act(() => {
+        wsInstance(0).simulateOpen()
+        wsInstance(0).simulateMessage({
+          type: 'push',
+          subject: 'jobs/job-aabbccdd-eeff/tasks',
+          payload: {
+            job_id: 'job-aabbccdd-eeff',
+            task_id: 'task-ws-progress',
+            status: 'running',
+            progress: 43,
+            status_text: 'frame 3',
+            updated_at: '2024-01-15T10:10:00Z',
+          },
+          seq: 1,
+        })
+      })
+
+      await waitFor(() => screen.getByText('frame 3'))
+      const row = screen.getByText('frame 3').closest('tr')
+      const bar = row?.querySelector('[role="progressbar"]')
+      expect(bar).toHaveAttribute('aria-valuenow', '43')
+    })
+
     it('updates task status badge in place when a TaskEvent arrives', async () => {
       const task = makeTask({
         id: 'task-ws-update',
