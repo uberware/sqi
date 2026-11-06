@@ -120,16 +120,35 @@ func TestDispatcher_CancelBeatsAFinishingTask(t *testing.T) {
 	if got := d.settle(tk); got != endDone {
 		t.Fatalf("settle = %v, want endDone", got)
 	}
-	if d.Cancel("t1") {
+	if d.Cancel("t1", "") {
 		t.Error("Cancel of a finishing task = true, want false")
 	}
 	tk2 := &simTask{m: &protocol.AssignMsg{TaskID: "t2"}, stop: make(chan struct{})}
 	d.active["t2"] = tk2
-	first, repeat := d.Cancel("t2"), d.Cancel("t2")
+	first, repeat := d.Cancel("t2", ""), d.Cancel("t2", "")
 	if !first || !repeat {
 		t.Error("Cancel, then a repeat Cancel, of a running task should both be true")
 	}
 	if got := d.settle(tk2); got != endCanceled {
+		t.Errorf("settle after Cancel = %v, want endCanceled", got)
+	}
+}
+
+// TestDispatcher_CancelNamingAnotherAttemptIsIgnored: a cancel naming an
+// attempt other than the one the task runs (the server stopping a closed
+// attempt of the same task) leaves the run going; naming the run's own
+// attempt cancels it.
+func TestDispatcher_CancelNamingAnotherAttemptIsIgnored(t *testing.T) {
+	d, _, _ := newInternalDispatcher(TaskPlan{})
+	tk := &simTask{m: &protocol.AssignMsg{TaskID: "t1", AttemptID: "a-new"}, stop: make(chan struct{})}
+	d.active["t1"] = tk
+	if d.Cancel("t1", "a-old") {
+		t.Fatal("Cancel naming another attempt = true, want false")
+	}
+	if !d.Cancel("t1", "a-new") {
+		t.Fatal("Cancel naming the run's attempt = false, want true")
+	}
+	if got := d.settle(tk); got != endCanceled {
 		t.Errorf("settle after Cancel = %v, want endCanceled", got)
 	}
 }

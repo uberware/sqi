@@ -28,8 +28,15 @@ package scheduler
 // slot, and nothing that has to be cleaned up afterwards.
 //
 // NATS publish failures are non-fatal: the scheduler logs a warning and
-// continues.  Workers that miss the cancel signal will eventually be reclaimed
-// by the heartbeat sweep once they go past the WorkerTimeout threshold.
+// continues.
+//
+// A worker receives cancels on a core-NATS subscription it opens per task
+// after the lease, so a cancel that commits between the lease and that
+// subscription reaches no one. The worker then publishes "running" for an
+// attempt the cancel closed, and [Scheduler.handleTaskRunning] answers that
+// stale report with a cancel naming the attempt. That resend rides on the
+// report: a worker whose "running" is dropped, or that is disconnected when the
+// resend goes out, is not told again.
 
 import (
 	"context"
@@ -39,15 +46,8 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/worker/protocol"
 )
-
-// cancelPayload is the JSON body published to task.cancel.<taskID> when the
-// server signals an assigned worker to stop executing a task.
-type cancelPayload struct {
-	TaskID     string    `json:"task_id"`
-	JobID      string    `json:"job_id"`
-	CanceledAt time.Time `json:"canceled_at"`
-}
 
 // CancelJob cancels every non-terminal task of the given job, closes their
 // running attempts and releases their usage claims in one store transaction
@@ -146,36 +146,42 @@ func (s *Scheduler) publishCancelSignals(ctx context.Context, activeTasks []stor
 		if t.AssignedWorkerID == "" {
 			continue
 		}
-		payload, err := json.Marshal(cancelPayload{
-			TaskID:     t.ID,
-			JobID:      t.JobID,
-			CanceledAt: canceledAt,
-		})
-		if err != nil {
-			// json.Marshal of a struct with no interface{} fields never fails in
-			// practice; log and skip rather than aborting remaining signals.
-			s.logger.WarnContext(
-				ctx, "scheduler: marshal cancel payload failed",
-				slog.String("task_id", t.ID),
-				slog.Any("error", err),
-			)
-			continue
-		}
-
-		if err = s.bus.PublishTaskCancel(ctx, t.ID, payload); err != nil {
-			s.logger.WarnContext(
-				ctx, "scheduler: publish cancel signal failed — worker will time out via heartbeat sweep",
-				slog.String("task_id", t.ID),
-				slog.String("worker_id", t.AssignedWorkerID),
-				slog.Any("error", err),
-			)
-			continue
-		}
-
-		s.logger.InfoContext(
-			ctx, "scheduler: cancel signal published to worker",
-			slog.String("task_id", t.ID),
-			slog.String("worker_id", t.AssignedWorkerID),
-		)
+		s.publishCancel(ctx, protocol.TaskCancelMsg{TaskID: t.ID, JobID: t.JobID, CanceledAt: canceledAt}, t.AssignedWorkerID, "canceled")
 	}
+}
+
+// publishCancel publishes msg to task.cancel.<taskID>. A failure is logged,
+// not returned: the cancel has already committed, or the attempt was already
+// closed, in the store. cause says why, for the log.
+func (s *Scheduler) publishCancel(ctx context.Context, msg protocol.TaskCancelMsg, workerID, cause string) {
+	payload, err := json.Marshal(msg)
+	if err != nil {
+		// Marshal fails only for a CanceledAt outside the years 0 to 9999.
+		s.logger.WarnContext(
+			ctx, "scheduler: marshal cancel payload failed",
+			slog.String("task_id", msg.TaskID),
+			slog.Any("error", err),
+		)
+		return
+	}
+
+	if err = s.bus.PublishTaskCancel(ctx, msg.TaskID, payload); err != nil {
+		s.logger.WarnContext(
+			ctx, "scheduler: publish cancel signal failed",
+			slog.String("task_id", msg.TaskID),
+			slog.String("attempt_id", msg.AttemptID),
+			slog.String("worker_id", workerID),
+			slog.String("cause", cause),
+			slog.Any("error", err),
+		)
+		return
+	}
+
+	s.logger.InfoContext(
+		ctx, "scheduler: cancel signal published to worker",
+		slog.String("task_id", msg.TaskID),
+		slog.String("attempt_id", msg.AttemptID),
+		slog.String("worker_id", workerID),
+		slog.String("cause", cause),
+	)
 }

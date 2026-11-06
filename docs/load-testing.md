@@ -850,11 +850,11 @@ are too noisy to gate on timings. Compare uploaded directories with `sqi-load
 compare`. A new run never cancels one in progress: the scheduled run waits
 for a dispatched soak to finish, and the reverse.
 
-The nightly can fail on `caps` or `logs` with every other invariant holding.
-`ci-medium` has cancels, churn and disconnects, which can hit two known server
-defects: a cancel lost just after a lease (see
-[Known server defects](#known-server-defects)), and log chunks lost on a forced
-disconnect, which core NATS delivers at most once. The evidence names the
+The nightly can fail on `logs` with every other invariant holding, and more
+rarely on `caps`. `ci-medium` has cancels, churn and disconnects, and core
+NATS delivers at most once: log chunks published during a forced disconnect
+are lost, and so is a cancel published while its worker is disconnected
+(see [Known server defects](#known-server-defects)). The evidence names the
 tasks and attempts involved.
 
 `workflow_dispatch` takes two inputs: `scenario` (default `ci-medium`) and
@@ -943,21 +943,15 @@ Each comes from a single run on one laptop.
 
 Defects in `sqi-server` that a run can hit.
 
-### A cancel that commits just after a lease is lost
+### A cancel sent during a disconnect is lost
 
-A job cancel that commits between a task's lease and the worker subscribing to
-`task.cancel.<taskID>` is lost. The server closes the attempt, releases the
-usage-pool claim and leases the slot to another task, while the worker keeps
-running the canceled attempt and reports `succeeded`, which the server
-rejects. Concurrent execution then exceeds a usage-pool cap while the
-server's own claim count stays at the limit, and the `caps` invariant fails.
-
-The window is the gap between the lease and the worker's subscription:
-milliseconds on a server that keeps up, seconds on a saturated one. The worker
-receives cancels on a core-NATS subscription, so a cancel published before it
-subscribes never reaches it. Nothing consumes the `SQI_CANCEL` stream, and
-`handleTaskRunning` (`internal/scheduler/taskstatus.go`) discards the closed
-attempt's `running` report without resending the cancel.
+A cancel published while the worker running the attempt is disconnected never
+reaches it, and nothing sends it again: the server resends a cancel only when
+the worker reports a closed attempt `running`, and a worker that reported
+`running` before the cancel committed does not report it again. The same holds
+when that resend is itself lost. The server has already released the
+attempt's usage-pool claim, so concurrent execution can exceed a cap while the
+server's claim count stays at the limit, and `caps` fails.
 
 ### An instant restart can strand an attempt
 

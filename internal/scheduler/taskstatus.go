@@ -235,12 +235,13 @@ func (s *Scheduler) handleTaskRunning(ctx context.Context, attempt store.TaskAtt
 	if !started {
 		// A stale report: its attempt was closed (reaped, reclaimed, canceled)
 		// or superseded by a newer lease. Redelivery cannot make it current, so
-		// it is acked and nothing is emitted.
-		s.logger.InfoContext(
-			ctx, "scheduler: stale running report — discarding",
-			slog.String("task_id", m.TaskID),
-			slog.String("attempt_id", m.AttemptID),
-		)
+		// it is acked and no task event is emitted. The worker is running work
+		// the server will refuse, and may have missed a cancel published before
+		// it subscribed, so it is told to stop. The cancel names the attempt
+		// ([protocol.TaskCancelMsg.AttemptID]).
+		s.publishCancel(ctx, protocol.TaskCancelMsg{
+			TaskID: m.TaskID, AttemptID: attempt.ID, JobID: m.JobID, CanceledAt: time.Now().UTC(),
+		}, attempt.WorkerID, "stale running report")
 		return nil
 	}
 

@@ -545,13 +545,16 @@ func (e *Executor) SetCancelRegistrar(cr CancelRegistrar) {
 // Dispatch and goroutine scheduling), the cancel is noted and takes effect
 // as soon as runTask initializes its context.
 //
-// Returns true if taskID was found in the active-tasks map (regardless of
-// whether cancellation completed), false if the task was not found (already
-// finished or never dispatched).
-func (e *Executor) Cancel(taskID string) bool {
+// A non-empty attemptID limits the cancel to that attempt
+// ([protocol.TaskCancelMsg.AttemptID]); a task running another is left alone.
+//
+// Returns true if a matching run was found in the active-tasks map
+// (regardless of whether cancellation completed), false if none was (already
+// finished, never dispatched, or another attempt).
+func (e *Executor) Cancel(taskID, attemptID string) bool {
 	e.mu.Lock()
 	run, ok := e.activeTasks[taskID]
-	if !ok {
+	if !ok || (attemptID != "" && run.attemptID != attemptID) {
 		e.mu.Unlock()
 		return false
 	}

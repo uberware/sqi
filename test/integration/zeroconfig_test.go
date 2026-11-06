@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -182,12 +183,13 @@ func TestZeroConfigFarm(t *testing.T) {
 			t.Skip("binds the test broker to all interfaces; run `make test-discovery` to include it")
 		}
 		// No nats.url at all: the harness default is blanked, so mDNS is the
-		// only way this worker can find its broker.
+		// only way this worker can find its broker. The worker runs on any
+		// OS; only the task subtest's echo command needs a POSIX one.
 		startRealWorkerNoWait(farm, ts, farmID, queueID, nil, []string{
 			"SQI_WORKER_NATS_URL=",
 			"SQI_WORKER_DISCOVERY_ENABLE_MDNS=true",
 			"SQI_WORKER_DISCOVERY_MDNS_TIMEOUT=15s",
-		}, false)
+		}, true)
 		workerID = findOnlineWorker(t, ts, farmID, 60*time.Second)
 		if workerID == "" {
 			t.Fatal("worker with no nats.url never came online: it did not find the zero-config server over mDNS")
@@ -195,6 +197,11 @@ func TestZeroConfigFarm(t *testing.T) {
 	})
 
 	t.Run("worker runs a script task to succeeded", func(t *testing.T) {
+		// Skipped here, not by the worker helper: the helper would skip farm,
+		// the parent test, which fails a parent that has started subtests.
+		if runtime.GOOS == "windows" {
+			t.Skip("the job's onRun is echo, which a Windows worker cannot run")
+		}
 		if workerID == "" {
 			if multicastRequired() {
 				t.Fatal("SQI_TEST_REQUIRE_MULTICAST is set but the worker did not join over mDNS; " +

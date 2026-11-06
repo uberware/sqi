@@ -1042,7 +1042,7 @@ func TestExecutor_Cancel_canceledStatus(t *testing.T) {
 	// Wait for the "running" status so the process is started before Cancel.
 	waitForStatus(t, nc, 1, 5*time.Second)
 
-	found := exec.Cancel(msg.TaskID)
+	found := exec.Cancel(msg.TaskID, "")
 	if !found {
 		t.Fatal("Cancel returned false; expected the task to be found")
 	}
@@ -1061,7 +1061,7 @@ func TestExecutor_Cancel_canceledStatus(t *testing.T) {
 func TestExecutor_Cancel_taskNotFound(t *testing.T) {
 	exec, _, _ := newTestExecutor(t, nil)
 
-	found := exec.Cancel("nonexistent-task-id")
+	found := exec.Cancel("nonexistent-task-id", "")
 	if found {
 		t.Error("Cancel returned true for an unknown task ID; want false")
 	}
@@ -1105,7 +1105,7 @@ func TestExecutor_Cancel_sigkillEscalation(t *testing.T) {
 	waitForOutputLine(t, capture, "ready", 5*time.Second)
 
 	cancelAt := time.Now()
-	found := exec.Cancel(msg.TaskID)
+	found := exec.Cancel(msg.TaskID, "")
 	if !found {
 		t.Fatal("Cancel returned false; expected the task to be found")
 	}
@@ -1180,7 +1180,7 @@ func TestExecutor_Cancel_sigtermDelivery(t *testing.T) {
 	// subprocess will not miss SIGTERM.
 	waitForOutputLine(t, capture, "ready", 5*time.Second)
 
-	found := exec.Cancel(msg.TaskID)
+	found := exec.Cancel(msg.TaskID, "")
 	if !found {
 		t.Fatal("Cancel returned false; expected the task to be found")
 	}
@@ -1237,7 +1237,7 @@ func TestExecutor_Cancel_terminateImmediate(t *testing.T) {
 	waitForStatus(t, nc, 1, 5*time.Second)
 
 	cancelAt := time.Now()
-	if found := exec.Cancel(msg.TaskID); !found {
+	if found := exec.Cancel(msg.TaskID, ""); !found {
 		t.Fatal("Cancel returned false; expected the task to be found")
 	}
 
@@ -1277,7 +1277,7 @@ func TestExecutor_Cancel_earlyCancel(t *testing.T) {
 	}
 	// Cancel right away — may race with goroutine startup, exercising both
 	// the "cancelFunc set" and "cancelRequested" paths.
-	exec.Cancel(msg.TaskID)
+	exec.Cancel(msg.TaskID, "")
 
 	// Regardless of which path fires, the task must reach a terminal state.
 	waitForStatus(t, nc, 2, 10*time.Second)
@@ -1920,7 +1920,7 @@ func TestExecutor_ActiveAttemptIDs_DispatchAloneHolds(t *testing.T) {
 		t.Fatalf("after a second Hold = %v, want [attempt-sleeper] once", ids)
 	}
 
-	if !exec.Cancel(msg.TaskID) {
+	if !exec.Cancel(msg.TaskID, "") {
 		t.Fatal("Cancel: task not found")
 	}
 	if ids := waitForNoAttempts(exec, 10*time.Second); len(ids) != 0 {

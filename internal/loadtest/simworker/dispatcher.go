@@ -159,13 +159,14 @@ func (d *Dispatcher) Dispatch(_ context.Context, m *protocol.AssignMsg) error {
 }
 
 // Cancel stops taskID's attempt and reports whether one was running and is
-// now being canceled (true again for a repeat cancel). A task already
-// finishing, or abandoned by a shutdown, reports false.
-func (d *Dispatcher) Cancel(taskID string) bool {
+// now being canceled (true again for a repeat cancel). A non-empty attemptID
+// limits it to that attempt. A task already finishing, abandoned by a
+// shutdown, or running another attempt reports false.
+func (d *Dispatcher) Cancel(taskID, attemptID string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	t, ok := d.active[taskID]
-	if !ok {
+	if !ok || (attemptID != "" && t.m.AttemptID != attemptID) {
 		return false
 	}
 	if t.reason == endNone {

@@ -10,7 +10,9 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"testing"
 
@@ -21,6 +23,7 @@ import (
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/store/storetest"
+	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/ws"
 )
 
@@ -29,8 +32,8 @@ import (
 // stubBus records PublishTaskCancel calls and can be configured to return an
 // error.  All Consume*/Subscribe* methods are no-ops.
 type stubBus struct {
-	cancelErr   error
-	cancelCalls []string // taskIDs published
+	cancelErr error
+	cancels   []protocol.TaskCancelMsg // decoded payloads, in publish order
 }
 
 func (*stubBus) ConsumeWorker(_ context.Context, _ jetstream.MessageHandler) (jetstream.ConsumeContext, error) {
@@ -53,8 +56,12 @@ func (*stubBus) SubscribeLease(_ func(string, string, []byte) []byte) (*nats.Sub
 	return nil, nil
 }
 
-func (b *stubBus) PublishTaskCancel(_ context.Context, taskID string, _ []byte) error {
-	b.cancelCalls = append(b.cancelCalls, taskID)
+func (b *stubBus) PublishTaskCancel(_ context.Context, taskID string, data []byte) error {
+	var m protocol.TaskCancelMsg
+	if err := json.Unmarshal(data, &m); err != nil || m.TaskID != taskID {
+		panic(fmt.Sprintf("stubBus: cancel published to task %s carries %q", taskID, data))
+	}
+	b.cancels = append(b.cancels, m)
 	return b.cancelErr
 }
 
@@ -139,8 +146,8 @@ func TestCancelJob_NoActiveTasks(t *testing.T) {
 	if err := s.CancelJob(t.Context(), job.ID); err != nil {
 		t.Fatalf("CancelJob: %v", err)
 	}
-	if len(bus.cancelCalls) != 0 {
-		t.Errorf("expected 0 NATS publishes, got %d", len(bus.cancelCalls))
+	if len(bus.cancels) != 0 {
+		t.Errorf("expected 0 NATS publishes, got %d", len(bus.cancels))
 	}
 }
 
@@ -160,8 +167,8 @@ func TestCancelJob_WithAssignedWorkers(t *testing.T) {
 		t.Fatalf("CancelJob: %v", err)
 	}
 	// Both active tasks had workers → 2 cancel signals.
-	if len(bus.cancelCalls) != 2 {
-		t.Errorf("expected 2 NATS publishes, got %d", len(bus.cancelCalls))
+	if len(bus.cancels) != 2 {
+		t.Errorf("expected 2 NATS publishes, got %d", len(bus.cancels))
 	}
 }
 
@@ -266,7 +273,7 @@ func TestCancelTask_AlreadyTerminal_NoOp(t *testing.T) {
 			if stored.Status != status {
 				t.Errorf("status changed from %q to %q (should be no-op)", status, stored.Status)
 			}
-			if len(bus.cancelCalls) != 0 {
+			if len(bus.cancels) != 0 {
 				t.Error("expected 0 NATS publishes for terminal task")
 			}
 		})
@@ -295,8 +302,8 @@ func TestCancelTask_AssignedTask_CanceledAndSignaled(t *testing.T) {
 	if stored.FailureReason != "canceled by user" {
 		t.Errorf("task failure_reason = %q, want %q", stored.FailureReason, "canceled by user")
 	}
-	if len(bus.cancelCalls) != 1 {
-		t.Errorf("expected 1 NATS cancel signal, got %d", len(bus.cancelCalls))
+	if len(bus.cancels) != 1 {
+		t.Errorf("expected 1 NATS cancel signal, got %d", len(bus.cancels))
 	}
 }
 
@@ -336,8 +343,8 @@ func TestCancelTask_ReadyTask_NoNATSSignal(t *testing.T) {
 	if err := s.CancelTask(t.Context(), tk.ID); err != nil {
 		t.Fatalf("CancelTask: %v", err)
 	}
-	if len(bus.cancelCalls) != 0 {
-		t.Errorf("expected 0 NATS signals for unassigned task, got %d", len(bus.cancelCalls))
+	if len(bus.cancels) != 0 {
+		t.Errorf("expected 0 NATS signals for unassigned task, got %d", len(bus.cancels))
 	}
 	stored, err := st.GetTask(t.Context(), tk.ID)
 	if err != nil {

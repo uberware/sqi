@@ -90,8 +90,8 @@ func TestCancelTask_LosesRaceToCompletion_IsNoOp(t *testing.T) {
 				t.Errorf("status = %q, want %q — a completed task must not be overwritten by a losing cancel",
 					stored.Status, terminal)
 			}
-			if len(bus.cancelCalls) != 0 {
-				t.Errorf("cancel signals = %v, want none for a task that completed first", bus.cancelCalls)
+			if len(bus.cancels) != 0 {
+				t.Errorf("cancel signals = %v, want none for a task that completed first", bus.cancels)
 			}
 		})
 	}
@@ -118,8 +118,8 @@ func TestCancelTask_RealErrorStillPropagates(t *testing.T) {
 	if errors.Is(err, store.ErrInvalidTransition) {
 		t.Errorf("error = %v, want the store failure, not ErrInvalidTransition", err)
 	}
-	if len(bus.cancelCalls) != 0 {
-		t.Errorf("cancel signals = %v, want none when the store failed", bus.cancelCalls)
+	if len(bus.cancels) != 0 {
+		t.Errorf("cancel signals = %v, want none when the store failed", bus.cancels)
 	}
 }
 

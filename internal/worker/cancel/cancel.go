@@ -18,11 +18,15 @@
 //
 // # Durability
 //
-// Core subscriptions miss messages published while the worker is disconnected.
-// This is acceptable because: (a) the SQI_CANCEL JetStream stream retains
-// cancel signals for up to 5 minutes, providing a durability backstop; and
-// (b) the server's heartbeat sweep reclaims stale assignments regardless of
-// whether the cancel signal was delivered.
+// Core subscriptions miss messages published before [Handler.Register] or
+// while the worker is disconnected, and nothing on the worker reads the
+// SQI_CANCEL stream's copy. The server covers the first case once the
+// worker's "running" report arrives: the executor registers before it
+// publishes "running", and the server answers a "running" report for an
+// attempt it has already closed with a cancel naming that attempt
+// ([protocol.TaskCancelMsg.AttemptID]), which this subscription then receives.
+// A run that misses that cancel too (its "running" dropped, or the worker
+// disconnected) runs to the end.
 //
 // # Usage
 //
@@ -49,10 +53,12 @@ import (
 // TaskCanceler is implemented by the executor to cancel a specific in-progress
 // task.  [*executor.Executor] implements this interface.
 type TaskCanceler interface {
-	// Cancel requests cancellation of the task identified by taskID.
-	// Returns true if the task was found and cancellation was initiated,
-	// false if the task is unknown (already finished or never dispatched).
-	Cancel(taskID string) bool
+	// Cancel requests cancellation of the task identified by taskID. A
+	// non-empty attemptID limits it to that attempt: a task running another
+	// attempt is left alone. Returns true if a matching run was found and
+	// cancellation was initiated, false otherwise (already finished, never
+	// dispatched, or another attempt).
+	Cancel(taskID, attemptID string) bool
 }
 
 // natsSubscriber is the minimal subset of [*nats.Conn] used for subscribing.
@@ -172,21 +178,23 @@ func (h *Handler) handleCancel(m *nats.Msg, taskID string) {
 		return
 	}
 
-	found := h.canceler.Cancel(taskID)
+	found := h.canceler.Cancel(taskID, msg.AttemptID)
 	if found {
 		h.logger.InfoContext(
 			bg,
 			"cancel: task cancellation initiated",
 			slog.String("task_id", taskID),
+			slog.String("attempt_id", msg.AttemptID),
 			slog.String("job_id", msg.JobID),
 		)
 	} else {
-		// Task already finished or was never assigned to this worker.
-		// Ack silently — no action needed.
+		// Task already finished, never assigned to this worker, or running
+		// an attempt other than the one named.
 		h.logger.DebugContext(
 			bg,
-			"cancel: task not found (already finished) — ignoring cancel signal",
+			"cancel: no matching run (finished, or another attempt) — ignoring cancel signal",
 			slog.String("task_id", taskID),
+			slog.String("attempt_id", msg.AttemptID),
 			slog.String("job_id", msg.JobID),
 		)
 	}

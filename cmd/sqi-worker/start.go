@@ -371,8 +371,8 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	//
 	// The cancel Handler subscribes to task.cancel.<taskID> for each task the
 	// executor dispatches.  When the server publishes a cancel signal the handler
-	// calls exec.Cancel(taskID), which triggers SIGTERM → SIGKILL escalation in
-	// the task's goroutine.  The handler is wired into the executor via
+	// calls exec.Cancel(taskID, attemptID), which triggers SIGTERM → SIGKILL
+	// escalation in the task's goroutine.  The handler is wired into the executor via
 	// SetCancelRegistrar before the pull loop starts so every dispatched task has
 	// its cancel subscription in place.
 	cancelHandler := cancel.New(nc, exec, logger)

@@ -81,24 +81,33 @@ func connectTestNATS(t *testing.T, url string) *nats.Conn {
 
 // ── Stubs ─────────────────────────────────────────────────────────────────────
 
+// cancelCall is one Cancel call a stubCanceler saw.
+type cancelCall struct{ taskID, attemptID string }
+
 // stubCanceler records every Cancel call and always returns true (found).
 type stubCanceler struct {
-	mu       sync.Mutex
-	canceled []string
+	mu    sync.Mutex
+	calls []cancelCall
 }
 
-func (s *stubCanceler) Cancel(taskID string) bool {
+func (s *stubCanceler) Cancel(taskID, attemptID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.canceled = append(s.canceled, taskID)
+	s.calls = append(s.calls, cancelCall{taskID, attemptID})
 	return true
 }
 
-func (s *stubCanceler) canceledTasks() []string {
+func (s *stubCanceler) cancelCalls() []cancelCall {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]string, len(s.canceled))
-	copy(out, s.canceled)
+	return append([]cancelCall(nil), s.calls...)
+}
+
+func (s *stubCanceler) canceledTasks() []string {
+	var out []string
+	for _, c := range s.cancelCalls() {
+		out = append(out, c.taskID)
+	}
 	return out
 }
 
@@ -107,7 +116,7 @@ type stubCancelerNotFound struct {
 	calls atomic.Int32
 }
 
-func (s *stubCancelerNotFound) Cancel(_ string) bool {
+func (s *stubCancelerNotFound) Cancel(_, _ string) bool {
 	s.calls.Add(1)
 	return false
 }
@@ -120,8 +129,14 @@ func testLogger() *slog.Logger {
 
 func cancelPayload(t *testing.T, taskID, jobID string) []byte {
 	t.Helper()
+	return attemptCancelPayload(t, taskID, "", jobID)
+}
+
+func attemptCancelPayload(t *testing.T, taskID, attemptID, jobID string) []byte {
+	t.Helper()
 	b, err := json.Marshal(protocol.TaskCancelMsg{
 		TaskID:     taskID,
+		AttemptID:  attemptID,
 		JobID:      jobID,
 		CanceledAt: time.Now(),
 	})
@@ -174,6 +189,41 @@ func TestHandler_Register_and_receive(t *testing.T) {
 	tasks := c.canceledTasks()
 	if len(tasks) != 1 || tasks[0] != taskID {
 		t.Errorf("Cancel called with %v; want [%q]", tasks, taskID)
+	}
+}
+
+// TestHandler_passes_attempt_id verifies that a cancel naming an attempt
+// reaches TaskCanceler.Cancel with that attempt, and one naming none with an
+// empty attempt: the canceler, not the handler, decides which run to stop.
+func TestHandler_passes_attempt_id(t *testing.T) {
+	url := startTestNATSServer(t)
+	nc := connectTestNATS(t, url)
+
+	c := &stubCanceler{}
+	h := cancel.New(nc, c, testLogger())
+
+	taskID := "task-att"
+	if err := h.Register(taskID); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	for _, payload := range [][]byte{
+		attemptCancelPayload(t, taskID, "attempt-1", "job-1"),
+		cancelPayload(t, taskID, "job-1"),
+	} {
+		if err := nc.Publish(bus.TaskCancelSubject(taskID), payload); err != nil {
+			t.Fatalf("Publish: %v", err)
+		}
+	}
+	if err := nc.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return len(c.cancelCalls()) == 2
+	})
+	want := []cancelCall{{taskID, "attempt-1"}, {taskID, ""}}
+	if got := c.cancelCalls(); got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("Cancel calls = %+v, want %+v", got, want)
 	}
 }
 
