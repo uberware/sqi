@@ -25,6 +25,7 @@ import (
 	"github.com/uberware/sqi/internal/worker/lease"
 	"github.com/uberware/sqi/internal/worker/logstreamer"
 	"github.com/uberware/sqi/internal/worker/natsclient"
+	"github.com/uberware/sqi/internal/worker/openjd"
 	"github.com/uberware/sqi/internal/worker/registration"
 	"github.com/uberware/sqi/internal/worker/status"
 )
@@ -320,6 +321,7 @@ func (w *Worker) launch(ctx context.Context) (*incarnation, error) {
 	d.instanceID = inc.instanceID
 	d.logger = w.logger
 	d.cancels = cancel.New(nc, d, w.logger)
+	d.SetProgress(openjd.New(logs, nc, id, w.logger))
 	inc.disp = d
 
 	interval := g.Heartbeat.Duration

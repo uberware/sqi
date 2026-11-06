@@ -55,6 +55,10 @@ func TestValidate_RejectsUnsatisfiable(t *testing.T) {
 			"jobs[1].total", "negative",
 		},
 		{
+			"negative progress_every", TargetManaged, func(s *Scenario) { s.Jobs[0].Task.ProgressEvery = Duration{-time.Second} },
+			"jobs[0].task.progress_every", "negative",
+		},
+		{
 			"fail_rate above one", TargetManaged, func(s *Scenario) { s.Jobs[0].Task.FailRate = 1.5 },
 			"jobs[0].task.fail_rate", "[0, 1]",
 		},

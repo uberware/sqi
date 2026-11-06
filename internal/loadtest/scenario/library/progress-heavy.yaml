@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: progress-heavy
+description: progress - 200 single-core workers running 120 s tasks that write openjd_progress every second, offered at 90% of capacity (about 180 running); snapshot write rate and lease latency, 30 min
+duration: 30m
+warmup: 3m
+
+farm:
+  queues: [{name: render}]
+
+workers:
+  - name: sim
+    count: 200
+    ramp: 200/s
+    cpu: 1
+    os: linux
+
+jobs:
+  - name: progressing
+    # 200 cores / 120 s = 1.67 tasks/s of capacity; 0.15 jobs/s x 10 tasks = 1.5
+    # tasks/s, about 180 tasks running, so the queue drains at the end.
+    rate: 0.15/s
+    queue: render
+    steps: 1
+    tasks_per_step: 10
+    task:
+      duration: 120s
+      progress_every: 1s

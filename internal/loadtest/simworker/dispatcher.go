@@ -11,6 +11,7 @@ package simworker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"math/rand/v2"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/uberware/sqi/internal/worker/cancel"
 	"github.com/uberware/sqi/internal/worker/logstreamer"
+	"github.com/uberware/sqi/internal/worker/openjd"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/worker/status"
 )
@@ -81,6 +83,11 @@ type Dispatcher struct {
 	ledger     *Ledger
 	logger     *slog.Logger // the worker sets its own; discard otherwise
 
+	// progress, when set, sits between a progress-writing task's lines and logs,
+	// as the real worker's interceptor does, so its throttle decides which
+	// openjd_progress lines become snapshots. Set it before the first Dispatch.
+	progress *openjd.Interceptor
+
 	// rngMu guards rng, which a Worker shares with every dispatcher it builds.
 	// A per-dispatcher mutex suffices because only Dispatch samples, and a
 	// worker builds its next dispatcher only after the previous one's lease
@@ -122,6 +129,11 @@ func NewDispatcher(
 		active:   map[string]*simTask{},
 	}
 }
+
+// SetProgress routes the lines of tasks whose plan sets ProgressEvery through
+// ic, which must wrap this dispatcher's log publisher. Call it before the first
+// Dispatch.
+func (d *Dispatcher) SetProgress(ic *openjd.Interceptor) { d.progress = ic }
 
 // Hold reports attemptID as held from now until its terminal status has been
 // published. The lease loop calls it for a whole batch before dispatching any.
@@ -214,6 +226,10 @@ func (d *Dispatcher) run(t *simTask) {
 		}
 		defer d.cancels.Deregister(m.TaskID)
 	}
+	if d.progress != nil && t.plan.ProgressEvery > 0 {
+		d.progress.RegisterTask(m.AttemptID, m.TaskID, m.JobID, "", func() {})
+		defer d.progress.Deregister(m.AttemptID)
+	}
 	d.st.Running(context.Background(), m, "", nil, time.Now())
 	d.record(m, KindRunning, "", 0, time.Time{})
 	if timeout := timeoutOf(m); timeout > 0 {
@@ -222,6 +238,10 @@ func (d *Dispatcher) run(t *simTask) {
 	}
 
 	lines := d.emit(t)
+	if d.progress != nil && t.plan.ProgressEvery > 0 {
+		// No snapshot may follow the terminal status.
+		d.progress.FinishProgress(m.AttemptID)
+	}
 	d.finish(t, d.settle(t), lines)
 }
 
@@ -244,13 +264,14 @@ func (d *Dispatcher) expire(t *simTask) {
 	}
 }
 
-// emit writes the plan's lines evenly over its duration and returns how many
-// it wrote. It returns when the duration is over (a hang keeps waiting) or the
+// emit writes the plan's lines evenly over its duration, plus an
+// openjd_progress line every ProgressEvery, and returns how many log lines it
+// wrote. It returns when the duration is over (a hang keeps waiting) or the
 // task is stopped.
 func (d *Dispatcher) emit(t *simTask) int {
 	p := t.plan
 	start := time.Now()
-	emitted := 0
+	emitted, progressSent := 0, 0
 	timer := time.NewTimer(0)
 	timer.Stop()
 	defer timer.Stop()
@@ -258,21 +279,20 @@ func (d *Dispatcher) emit(t *simTask) int {
 		elapsed := time.Since(start)
 		for emitted < linesDue(p, elapsed) {
 			emitted++
-			d.logs.HandleLine(context.Background(), t.m.TaskID, t.m.AttemptID, "", "stdout", LogLine(t.m.TaskID, emitted, p.LineBytes))
+			d.writeLine(t, LogLine(t.m.TaskID, emitted, p.LineBytes))
+		}
+		for progressSent < progressDue(p, elapsed) {
+			d.writeLine(t, progressLine(p, time.Duration(progressSent)*p.ProgressEvery))
+			progressSent++
+		}
+		next, ok := nextWake(p, emitted, progressSent, elapsed)
+		if !ok && p.Outcome != OutcomeHang {
+			return emitted
 		}
 		var wait <-chan time.Time
-		switch {
-		case emitted < p.LogLines:
-			// The tick never carries the task past its duration, where the
-			// last line is due.
-			next := lineTime(p, emitted+1)
-			timer.Reset(min(max(next-elapsed, minLineTick), p.Duration-elapsed))
+		if ok {
+			timer.Reset(next)
 			wait = timer.C
-		case elapsed < p.Duration:
-			timer.Reset(p.Duration - elapsed)
-			wait = timer.C
-		case p.Outcome != OutcomeHang:
-			return emitted
 		}
 		// A nil wait (a hang with nothing left to do) blocks until stopped.
 		select {
@@ -281,6 +301,59 @@ func (d *Dispatcher) emit(t *simTask) int {
 			return emitted
 		}
 	}
+}
+
+// writeLine sends one stdout line of t, through the progress interceptor when
+// t's plan writes progress.
+func (d *Dispatcher) writeLine(t *simTask, line string) {
+	if d.progress != nil && t.plan.ProgressEvery > 0 {
+		d.progress.HandleLine(context.Background(), t.m.TaskID, t.m.AttemptID, "", "stdout", line)
+		return
+	}
+	d.logs.HandleLine(context.Background(), t.m.TaskID, t.m.AttemptID, "", "stdout", line)
+}
+
+// progressDue is how many progress lines of p are due after elapsed: one at
+// the start, one every ProgressEvery, the last at the duration.
+func progressDue(p TaskPlan, elapsed time.Duration) int {
+	if p.ProgressEvery <= 0 || p.Duration <= 0 {
+		return 0
+	}
+	return int(min(elapsed, p.Duration)/p.ProgressEvery) + 1
+}
+
+// progressLine is the directive for a task that is at elapsed of its plan.
+func progressLine(p TaskPlan, elapsed time.Duration) string {
+	return fmt.Sprintf("openjd_progress: %.1f", min(100, 100*float64(elapsed)/float64(p.Duration)))
+}
+
+// nextWake is how long until the plan next has something to do: the next log
+// line, the next progress line, or the end of the duration. ok is false when
+// the plan has run out.
+func nextWake(p TaskPlan, emitted, progressSent int, elapsed time.Duration) (time.Duration, bool) {
+	var (
+		wake time.Duration
+		ok   bool
+	)
+	consider := func(w time.Duration) {
+		if !ok || w < wake {
+			wake, ok = w, true
+		}
+	}
+	if emitted < p.LogLines {
+		// The tick never carries the task past its duration, where the last
+		// line is due.
+		consider(min(max(lineTime(p, emitted+1)-elapsed, minLineTick), p.Duration-elapsed))
+	}
+	if elapsed < p.Duration {
+		consider(p.Duration - elapsed)
+	}
+	if p.ProgressEvery > 0 {
+		if next := time.Duration(progressSent) * p.ProgressEvery; next <= p.Duration {
+			consider(next - elapsed)
+		}
+	}
+	return max(wake, 0), ok
 }
 
 // lineTime is when line n (from 1) of p is due: n evenly spaced lines end at

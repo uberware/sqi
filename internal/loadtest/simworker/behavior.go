@@ -35,6 +35,9 @@ type TaskPlan struct {
 	Outcome   string
 	LogLines  int
 	LineBytes int
+	// ProgressEvery, when positive, makes the task write an openjd_progress
+	// line this often, carrying elapsed/Duration as a percentage.
+	ProgressEvery time.Duration
 }
 
 // Behavior decides the plan for each assignment. The dispatcher calls Plan
@@ -80,6 +83,8 @@ func (b *scenarioBehavior) Plan(m *protocol.AssignMsg, r *rand.Rand) TaskPlan {
 		LogLines:  int(math.Floor(spec.LogLines.Sample(r))),
 		LineBytes: spec.LogLineBytes,
 		Outcome:   OutcomeSucceeded,
+
+		ProgressEvery: spec.ProgressEvery.Duration,
 	}
 	hang, fail := r.Float64(), r.Float64()
 	switch {
