@@ -79,7 +79,13 @@ import (
 // routing does: a worker publishing on the shorter subjects reaches no
 // consumer at all, so this bump is not merely advisory.  As with "2", upgrade
 // the server first.
-const ProtocolVersion = "3"
+//
+// "4" adds [TaskCancelMsg.AttemptID].  The field is omitempty, but it narrows
+// a cancel to one attempt, and a worker that does not know it reads the cancel
+// as task-wide: a "3" worker running the task's newer attempt would stop it
+// on a cancel meant for a stale one.  The bump fences such workers out at
+// registration.  As with "2", upgrade the server first.
+const ProtocolVersion = "4"
 
 // ── Message type constants ────────────────────────────────────────────────────
 
@@ -798,12 +804,19 @@ type LogChunkMsg struct {
 // matching in-progress task, triggering SIGTERM → SIGKILL escalation.
 //
 // Note: this message has no Version/Type envelope — the NATS subject
-// (task.cancel.<taskID>) provides sufficient routing.  The struct matches
-// the scheduler's internal cancelPayload wire format.
+// (task.cancel.<taskID>) provides sufficient routing.
 type TaskCancelMsg struct {
 	// TaskID is the task to cancel, redundant with the NATS subject but
 	// included for log attribution.
 	TaskID string `json:"task_id"`
+
+	// AttemptID, when set, limits the cancel to that attempt: a worker
+	// running another attempt of the task ignores it. The server sets it when
+	// it stops an attempt it has already closed (a stale "running" report),
+	// because the task's newer attempt listens on the same subject. Empty
+	// cancels whichever attempt of the task the worker is running, which is
+	// what a job or task cancel wants.
+	AttemptID string `json:"attempt_id,omitempty"`
 
 	// JobID is the job the task belongs to, for log attribution.
 	JobID string `json:"job_id"`

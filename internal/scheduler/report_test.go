@@ -22,7 +22,7 @@ import (
 func runningReport(t *testing.T, task store.Task, attempt store.TaskAttempt) *fakeJSMsg {
 	t.Helper()
 	return &fakeJSMsg{subject: statusTestSubject, data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
-		Version: protocol.ProtocolVersion, TaskID: task.ID, AttemptID: attempt.ID,
+		Version: protocol.ProtocolVersion, TaskID: task.ID, AttemptID: attempt.ID, JobID: task.JobID,
 		Status: "running", SessionID: "sess-old", At: time.Now().UTC(),
 	})}
 }
@@ -36,15 +36,58 @@ func releaseToNewWorker(t *testing.T, st store.Store, s *Scheduler, task store.T
 	return storetest.Lease(t, st, store.LeaseRequest{TaskID: task.ID, WorkerID: "w-new"})
 }
 
+// assertCancelsAttempt fails t unless b saw exactly one cancel, naming
+// task's attempt stale.
+func assertCancelsAttempt(t *testing.T, b *stubBus, task store.Task, stale store.TaskAttempt) {
+	t.Helper()
+	if len(b.cancels) != 1 {
+		t.Fatalf("cancels published = %+v, want one for attempt %s", b.cancels, stale.ID)
+	}
+	if got := b.cancels[0]; got.TaskID != task.ID || got.AttemptID != stale.ID || got.JobID != task.JobID {
+		t.Fatalf("cancel = %+v, want task %s attempt %s job %s", got, task.ID, stale.ID, task.JobID)
+	}
+}
+
+// TestStaleRunningReportResendsCancel pins that a "running" report from an
+// attempt a job cancel has already closed sends that attempt's worker a cancel
+// naming it. A worker subscribes to its task's cancel subject before it
+// publishes running, so this reaches a worker that missed the first cancel
+// because it committed between the lease and the subscription.
+func TestStaleRunningReportResendsCancel(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			_, task, stale := seedStaleAssignment(t, st, statusTestWorkerID, nil)
+			b := &stubBus{}
+			s := newTestScheduler(st, b)
+			s.ctx = t.Context()
+			if err := s.CancelJob(t.Context(), task.JobID); err != nil {
+				t.Fatalf("CancelJob: %v", err)
+			}
+			b.cancels = nil
+
+			msg := runningReport(t, task, stale)
+			s.handleTaskStatusMessage(msg)
+
+			if !msg.acked || msg.nacked {
+				t.Fatalf("stale running report must be acked (acked=%v nacked=%v)", msg.acked, msg.nacked)
+			}
+			assertCancelsAttempt(t, b, task, stale)
+		})
+	}
+}
+
 // TestSupersededRunningReportIsIgnored pins that a superseded attempt's
 // "running" report does not move the new lease's task to running, and emits
-// no task event.
+// no task event. It does cancel the superseded attempt, by name, so the new
+// lease listening on the same subject keeps running.
 func TestSupersededRunningReportIsIgnored(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			_, task, stale := seedStaleAssignment(t, st, statusTestWorkerID, nil)
 			notifier := &recordingNotifier{}
 			s := newStatusTestSchedulerWithNotifier(st, notifier)
+			b := &stubBus{}
+			s.bus = b
 			s.ctx = t.Context()
 			fresh := releaseToNewWorker(t, st, s, task)
 			notifier.tasks = nil
@@ -64,6 +107,7 @@ func TestSupersededRunningReportIsIgnored(t *testing.T) {
 			if len(notifier.tasks) != 0 {
 				t.Fatalf("task events = %+v, want none for a stale report", notifier.tasks)
 			}
+			assertCancelsAttempt(t, b, task, stale)
 		})
 	}
 }

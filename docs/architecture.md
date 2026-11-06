@@ -778,6 +778,23 @@ reports a job that completed or failed first. After a job cancel every step is
 terminal, so `RetryJob` on a canceled job works: the revived tasks sit under a
 step that `RetryTasks` resets and `ResolveDependencies` releases.
 
+**Resending a missed cancel.** After the store write, the
+scheduler publishes `task.cancel.<task_id>` for each task that was assigned or
+running. A worker receives it on a core-NATS subscription that it opens per task
+after the lease, so a cancel that commits between the lease and that
+subscription reaches no one, and nothing on the worker reads the `SQI_CANCEL`
+stream's copy. The worker opens the subscription before it publishes `running`,
+on the same connection. When `StartTaskAttempt` refuses a `running` report
+because its attempt is already closed (a cancel, a reap, an offline or
+unreported-attempt reclaim) or a newer lease superseded it, the scheduler
+publishes a cancel that names the attempt (`attempt_id`), and the worker stops
+that attempt. The task's newer attempt listens on the same subject, so a worker
+running another attempt of the task ignores a cancel that names one. The resend
+rides on the `running` report, so it is not immediate: a cancel that commits
+during session setup or stage-in reaches the worker only once those finish. It
+is also sent once. A worker whose `running` report is dropped, or that is
+disconnected when the resend goes out, runs the attempt to the end.
+
 Two arrows deserve note. `assigned` → `succeeded`/`failed` is permitted even
 though it appears to skip `running`: the worker publishes `running` first, but
 that publish is best-effort and gives up after `MaxRetries`, so it can be lost
@@ -1855,7 +1872,7 @@ last, so a client never reaches a leader that has not finished promoting.
 | `work.lease.<worker_id>.<queue>` | Core NATS request/reply | worker → server (request); server → worker (reply) | Worker requests a batch of tasks; server replies with assignments or empty on timeout |
 | `task.status.<worker_id>.<job_id>` | JetStream (`SQI_TASK`, MaxAge 24 h) | worker → server | Terminal and intermediate status updates |
 | `task.logs.<worker_id>.<task_id>` | JetStream (`SQI_LOGS`, MaxAge 96 h) | worker → server | Log chunk delivery |
-| `task.cancel.<task_id>` | JetStream (`SQI_CANCEL`, MaxAge 5 min) | server → worker | Cancellation signal; the worker holding the task interrupts the process |
+| `task.cancel.<task_id>` | JetStream (`SQI_CANCEL`, MaxAge 5 min) | server → worker | Cancellation signal; the worker holding the task interrupts the process. Workers receive it on a per-task core subscription and nothing reads the stream's copy. An `attempt_id` limits it to that attempt (sent in answer to a `running` report for a closed attempt) |
 | `worker.register.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Registration at startup and on reconnect; carries the worker process's `instance_id` (a changed one reclaims the previous process's tasks) (the broker's timestamp for it orders registrations: one stamped earlier than the recorded one is discarded) |
 | `worker.heartbeat.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Liveness heartbeat |
 | `worker.deregister.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Graceful departure; marks the worker offline without waiting for heartbeat timeout (a disabled worker stays disabled) and reclaims its tasks. Ignored when its `instance_id` names a process a later registration replaced |

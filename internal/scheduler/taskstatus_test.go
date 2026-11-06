@@ -54,8 +54,8 @@ func newStatusTestSchedulerWithNotifier(st store.Store, notifier ws.Notifier) *S
 	return New(
 		cfg,
 		st,
-		nil, // bus — not called by processTaskStatus
-		nil, // metrics — not used (retry/park branches are disabled by MaxAttempts=1 above)
+		&stubBus{}, // a stale running report publishes a cancel
+		nil,        // metrics — not used (retry/park branches are disabled by MaxAttempts=1 above)
 		slog.New(slog.DiscardHandler),
 		notifier,
 		nil, // diagBuf — diagnostics disabled
@@ -319,7 +319,8 @@ func TestHandleTaskStatusMessage_UnknownAttemptID(t *testing.T) {
 
 func TestProcessTaskStatus_Running(t *testing.T) {
 	st := newCheckedFake(t)
-	s := newStatusTestScheduler(st)
+	b := &stubBus{}
+	s := newTestScheduler(st, b)
 	s.ctx = t.Context()
 
 	_, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusAssigned)
@@ -354,6 +355,9 @@ func TestProcessTaskStatus_Running(t *testing.T) {
 	}
 	if updatedAttempt.SessionID != sessionID {
 		t.Errorf("attempt.SessionID = %q, want %q", updatedAttempt.SessionID, sessionID)
+	}
+	if got := b.cancels; len(got) != 0 {
+		t.Errorf("cancels published = %v, want none for the live attempt's report", got)
 	}
 }
 

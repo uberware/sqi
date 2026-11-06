@@ -267,10 +267,10 @@ func TestDispatcher_HangThenCancel(t *testing.T) {
 		t.Fatal("hanging attempt not reported as held")
 	}
 
-	if d.Cancel("unknown") {
+	if d.Cancel("unknown", "") {
 		t.Error("Cancel(unknown) = true, want false")
 	}
-	if !d.Cancel("t1") {
+	if !d.Cancel("t1", "") {
 		t.Fatal("Cancel(t1) = false, want true")
 	}
 	waitFor(t, 5*time.Second, "canceled ledger event", func() bool { return ledgerHas(l, "t1", simworker.KindCanceled) })
@@ -296,7 +296,7 @@ func TestDispatcher_HangThenCancel(t *testing.T) {
 			t.Errorf("canceled event At %v, publish at %v; want the event stamped first", e.At, publishedAt)
 		}
 	}
-	if d.Cancel("t1") {
+	if d.Cancel("t1", "") {
 		t.Error("Cancel after the task ended = true, want false")
 	}
 }
@@ -382,7 +382,7 @@ func TestDispatcher_Timeout(t *testing.T) {
 			if tt.cancelAfter > 0 {
 				waitFor(t, 5*time.Second, "running", func() bool { return ledgerHas(l, "t1", simworker.KindRunning) })
 				time.Sleep(tt.cancelAfter)
-				if !d.Cancel("t1") {
+				if !d.Cancel("t1", "") {
 					t.Fatal("Cancel = false, want true")
 				}
 			}
@@ -438,7 +438,7 @@ func timeoutRacingCancel(t *testing.T) {
 	}
 	waitFor(t, 5*time.Second, "running", func() bool { return ledgerHas(l, "t1", simworker.KindRunning) })
 	time.Sleep(time.Second - 2*time.Millisecond)
-	d.Cancel("t1")
+	d.Cancel("t1", "")
 	waitFor(t, 5*time.Second, "release", func() bool { return len(d.ActiveAttemptIDs()) == 0 })
 	terminals := 0
 	for _, s := range conn.statuses(t) {

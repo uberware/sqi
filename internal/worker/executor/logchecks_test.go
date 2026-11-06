@@ -132,7 +132,7 @@ func TestExecutor_LogChecks_DoNotOverrideCancel(t *testing.T) {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	waitForOutputLine(t, capture, "ERROR boom", 10*time.Second)
-	if !exec.Cancel(msg.TaskID) {
+	if !exec.Cancel(msg.TaskID, "") {
 		t.Fatal("Cancel returned false")
 	}
 	waitForStatus(t, nc, 2, 10*time.Second)
