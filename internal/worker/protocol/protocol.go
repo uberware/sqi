@@ -717,7 +717,8 @@ type TaskStatusMsg struct {
 	JobID string `json:"job_id"`
 
 	// Status is the new task state.  Valid values:
-	//   "running"   — task is executing; at most one running message per attempt.
+	//   "running"   — task is executing; sent when the attempt starts and again as
+	//                 a throttled progress/status snapshot (LastProgress, Message).
 	//   "succeeded" — task exited successfully.
 	//   "failed"    — task exited with a non-zero code or the worker reported a fatal error.
 	//   "canceled"  — task was interrupted by a cancel signal.

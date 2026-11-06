@@ -74,6 +74,14 @@ Declaring an extension name not present in the registry is a `422` at
 `TASK_CHUNKING` in `extensions` is likewise rejected — the extension gate and the
 feature it gates are checked together.
 
+## Runtime stdout messages
+
+`openjd_progress` takes any finite number from 0 to 100 (the specification's
+sample uses `50.0`). The worker stores it as an integer percent rounded down.
+`openjd_status` and `openjd_fail` are honored on stdout only; the same lines on
+stderr are treated as ordinary output. Progress and status changes are published
+as throttled snapshots, at most one per 2 s per attempt.
+
 ## What `sqi` deliberately does not implement
 
 Standalone `environment-2023-09` templates are out of scope by design. The

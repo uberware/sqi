@@ -312,21 +312,82 @@ func newTestExecutorLimited(
 	t *testing.T, capture *captureOutput, lim fmtres.ExprLimits,
 ) (*executor.Executor, *stubNATS, string) {
 	t.Helper()
+	var oh executor.OutputHandler
+	if capture != nil {
+		oh = capture
+	}
+	return newTestExecutorHandler(t, oh, lim)
+}
+
+func newTestExecutorHandler(
+	t *testing.T, oh executor.OutputHandler, lim fmtres.ExprLimits,
+) (*executor.Executor, *stubNATS, string) {
+	t.Helper()
 	tmpDir := t.TempDir()
 	nc := &stubNATS{}
 	m := metrics.New()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	mgr := session.NewManager(filepath.Join(tmpDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, lim, logger)
 	cfg := executor.Config{
-		KillGracePeriod: 500 * time.Millisecond, // short for fast tests
-	}
-	var oh executor.OutputHandler
-	if capture != nil {
-		oh = capture
+		KillGracePeriod: 500 * time.Millisecond,
 	}
 	statusPub := status.New(nc, status.Config{WorkerID: "test-worker"}, logger)
 	exec := executor.New(statusPub, mgr, m, oh, cfg, logger)
 	return exec, nc, tmpDir
+}
+
+// finishRecorder wraps a captureOutput and records FinishProgress calls.
+type finishRecorder struct {
+	*captureOutput
+
+	onFinish func(attemptID string)
+}
+
+func (f *finishRecorder) FinishProgress(attemptID string) *int {
+	f.onFinish(attemptID)
+	v := 77
+	return &v
+}
+
+// TestRun_FinishesProgressBeforeTerminalStatus verifies the executor stops the
+// interceptor's pending progress send before publishing the terminal status,
+// and carries the returned progress on that terminal message.
+func TestRun_FinishesProgressBeforeTerminalStatus(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess test uses Unix-style exec")
+	}
+	var mu sync.Mutex
+	var events []string
+	rec := &finishRecorder{captureOutput: &captureOutput{}}
+	rec.onFinish = func(id string) {
+		mu.Lock()
+		events = append(events, "finish:"+id)
+		mu.Unlock()
+	}
+	exec, nc, _ := newTestExecutorHandler(t, rec, fmtres.ExprLimits{})
+	nc.onStatus = func(m protocol.TaskStatusMsg) {
+		if m.Status == "succeeded" {
+			mu.Lock()
+			events = append(events, "terminal")
+			mu.Unlock()
+		}
+	}
+
+	msg := makeAssign("exit", map[string]string{"SQI_TEST_EXIT_CODE": "0"})
+	if err := exec.Dispatch(context.Background(), msg); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	waitForStatus(t, nc, 2, 10*time.Second)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 2 || events[0] != "finish:"+msg.AttemptID || events[1] != "terminal" {
+		t.Fatalf("events = %v, want [finish:%s terminal]", events, msg.AttemptID)
+	}
+	last := nc.lastStatus()
+	if last.LastProgress == nil || *last.LastProgress != 77 {
+		t.Errorf("terminal LastProgress = %v, want 77", last.LastProgress)
+	}
 }
 
 // makeAssign creates a minimal AssignMsg that runs the test binary with the
