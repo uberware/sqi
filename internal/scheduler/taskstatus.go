@@ -227,7 +227,19 @@ func (s *Scheduler) processTaskStatus(ctx context.Context, subjectWorkerID strin
 // handleTaskRunning applies a "running" report through
 // [store.TaskStore.StartTaskAttempt], which moves the task and records the
 // session ID only while the report's attempt is still the live one.
+//
+// A report carrying LastProgress or Message is a progress snapshot and goes
+// through [Scheduler.handleRunningSnapshot] first.
 func (s *Scheduler) handleTaskRunning(ctx context.Context, attempt store.TaskAttempt, m protocol.TaskStatusMsg) error {
+	var snap *store.AttemptProgress
+	if m.LastProgress != nil || m.Message != "" {
+		p := snapshotProgress(attempt, m)
+		snap = &p
+		done, err := s.handleRunningSnapshot(ctx, attempt, m, p)
+		if err != nil || done {
+			return err
+		}
+	}
 	started, err := s.store.StartTaskAttempt(ctx, attempt.ID, m.TaskID, m.SessionID, time.Now().UTC())
 	if err != nil {
 		return err
@@ -255,14 +267,19 @@ func (s *Scheduler) handleTaskRunning(ctx context.Context, attempt store.TaskAtt
 	// Notify WebSocket hub. GetTask is a cheap primary-key lookup; if it fails
 	// we skip the notification rather than aborting the status update.
 	if task, err := s.store.GetTask(ctx, m.TaskID); err == nil {
-		s.notifier.NotifyTask(ws.TaskEvent{
+		ev := ws.TaskEvent{
 			JobID:     task.JobID,
 			TaskID:    task.ID,
 			Name:      task.Name,
 			Status:    string(store.TaskStatusRunning),
 			WorkerID:  attempt.WorkerID,
 			UpdatedAt: time.Now().UTC(),
-		})
+		}
+		if snap != nil {
+			ev.Progress, ev.StatusText = snap.Progress, snap.StatusText
+			s.recordSnapshotAfterStart(ctx, *snap)
+		}
+		s.notifier.NotifyTask(ev)
 
 		// Promote the enclosing job to running on its first running task. This
 		// stamps the job's StartedAt in the store's guarded promotion; without it
@@ -270,6 +287,68 @@ func (s *Scheduler) handleTaskRunning(ctx context.Context, attempt store.TaskAtt
 		s.maybePromoteJobRunning(ctx, task.JobID)
 	}
 	return nil
+}
+
+// snapshotProgress builds the store record for a snapshot report, stamping it
+// now when the worker sent no time.
+func snapshotProgress(attempt store.TaskAttempt, m protocol.TaskStatusMsg) store.AttemptProgress {
+	at := m.At
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	return store.AttemptProgress{
+		AttemptID: attempt.ID, TaskID: m.TaskID, Progress: m.LastProgress, StatusText: m.Message, At: at,
+	}
+}
+
+// handleRunningSnapshot records a progress snapshot. It reports done when the
+// message is fully handled; it is not done only for a snapshot of a task still
+// assigned, which the caller starts and then records.
+func (s *Scheduler) handleRunningSnapshot(
+	ctx context.Context, attempt store.TaskAttempt, m protocol.TaskStatusMsg, p store.AttemptProgress,
+) (done bool, err error) {
+	outcome, err := s.store.RecordAttemptProgress(ctx, p)
+	if errors.Is(err, store.ErrNotFound) {
+		s.logger.WarnContext(
+			ctx, "scheduler: progress snapshot for unknown task — discarding",
+			slog.String("task_id", m.TaskID), slog.String("attempt_id", attempt.ID),
+		)
+		return true, nil
+	}
+	if err != nil {
+		return true, err
+	}
+	switch outcome {
+	case store.ProgressRecorded:
+		s.notifier.NotifyTask(ws.TaskEvent{
+			JobID:      m.JobID,
+			TaskID:     m.TaskID,
+			Status:     string(store.TaskStatusRunning),
+			WorkerID:   attempt.WorkerID,
+			Progress:   p.Progress,
+			StatusText: p.StatusText,
+			UpdatedAt:  time.Now().UTC(),
+		})
+		return true, nil
+	case store.ProgressNotLive:
+		s.publishCancel(ctx, protocol.TaskCancelMsg{
+			TaskID: m.TaskID, AttemptID: attempt.ID, JobID: m.JobID, CanceledAt: time.Now().UTC(),
+		}, attempt.WorkerID, "stale running report")
+		return true, nil
+	case store.ProgressTaskAssigned:
+		return false, nil
+	default: // ProgressOutOfOrder
+		return true, nil
+	}
+}
+
+// recordSnapshotAfterStart records the snapshot that arrived before the task
+// was reported running, now that the task is. Best-effort: the event still
+// carries the snapshot, and the next one replaces it.
+func (s *Scheduler) recordSnapshotAfterStart(ctx context.Context, p store.AttemptProgress) {
+	_, err := s.store.RecordAttemptProgress(ctx, p)
+	s.warnUnlessStopped(ctx, err, "scheduler: record progress snapshot after start failed",
+		slog.String("task_id", p.TaskID))
 }
 
 // maybePromoteJobRunning moves a pending job to running on its first running

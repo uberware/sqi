@@ -75,13 +75,15 @@ const clientSendBuf = 64
 //     status. List subscribers use TaskID to apply task-count deltas to the
 //     parent job row instead of treating it as a job-status change.
 type JobSummaryPush struct {
-	JobID     string    `json:"job_id"`
-	TaskID    string    `json:"task_id,omitempty"`
-	Name      string    `json:"name,omitempty"`
-	Owner     string    `json:"owner,omitempty"`
-	QueueID   string    `json:"queue_id,omitempty"`
-	Status    string    `json:"status"`
-	UpdatedAt time.Time `json:"updated_at"`
+	JobID      string    `json:"job_id"`
+	TaskID     string    `json:"task_id,omitempty"`
+	Name       string    `json:"name,omitempty"`
+	Owner      string    `json:"owner,omitempty"`
+	QueueID    string    `json:"queue_id,omitempty"`
+	Status     string    `json:"status"`
+	Progress   *int      `json:"progress,omitempty"`
+	StatusText string    `json:"status_text,omitempty"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // TaskUpdatePush is the TypePush payload for "jobs/{id}/tasks" subscriptions.
@@ -92,6 +94,8 @@ type TaskUpdatePush struct {
 	Status              string    `json:"status"`
 	WorkerID            string    `json:"worker_id,omitempty"`
 	UnschedulableReason string    `json:"unschedulable_reason,omitempty"`
+	Progress            *int      `json:"progress,omitempty"`
+	StatusText          string    `json:"status_text,omitempty"`
 	UpdatedAt           time.Time `json:"updated_at"`
 }
 
@@ -439,10 +443,12 @@ func (h *Hub) NotifyTask(e TaskEvent) {
 	// task transition even with nobody connected.
 	if h.ownerScoping || h.hasSubscribers(SubjectJobs) {
 		env, err := buildEnvelope(SubjectJobs, JobSummaryPush{
-			JobID:     e.JobID,
-			TaskID:    e.TaskID,
-			Status:    e.Status,
-			UpdatedAt: now,
+			JobID:      e.JobID,
+			TaskID:     e.TaskID,
+			Status:     e.Status,
+			Progress:   e.Progress,
+			StatusText: e.StatusText,
+			UpdatedAt:  now,
 		})
 		if err == nil {
 			env.ownerScoped = true
@@ -463,6 +469,8 @@ func (h *Hub) NotifyTask(e TaskEvent) {
 			Status:              e.Status,
 			WorkerID:            e.WorkerID,
 			UnschedulableReason: e.UnschedulableReason,
+			Progress:            e.Progress,
+			StatusText:          e.StatusText,
 			UpdatedAt:           now,
 		}); err == nil {
 			h.fanout(taskSubject, env)
