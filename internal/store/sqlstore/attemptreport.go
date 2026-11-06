@@ -18,7 +18,7 @@ const (
 	// column means the attempt does not exist or belongs to another task. Binds:
 	// attempt id, task id.
 	sqlSelectTaskAndAttemptLive = `
-SELECT t.status,
+SELECT t.status, t.job_id,
        a.status = 'running'
    AND a.attempt_number = (SELECT MAX(attempt_number) FROM task_attempts WHERE task_id = a.task_id)
 FROM   tasks t
@@ -34,18 +34,19 @@ UPDATE task_attempts SET session_id = ? WHERE id = ? AND status = 'running'`
 // liveAttemptTx reports whether a worker report from attemptID may act on
 // taskID: the attempt is still running and is the task's latest attempt, and
 // the task is in flight (assigned or running). It also returns the task's
-// current status. sql.ErrNoRows on the task maps to store.ErrNotFound.
-func liveAttemptTx(ctx context.Context, tx *dbTx, attemptID, taskID string) (bool, store.TaskStatus, error) {
+// current status and owning job. sql.ErrNoRows on the task maps to
+// store.ErrNotFound.
+func liveAttemptTx(ctx context.Context, tx *dbTx, attemptID, taskID string) (live bool, cur store.TaskStatus, jobID string, err error) {
 	var current string
-	var live sql.NullBool
-	if err := tx.QueryRowContext(ctx, sqlSelectTaskAndAttemptLive, attemptID, taskID).Scan(&current, &live); err != nil {
-		return false, "", fmt.Errorf("store: attempt %s of task %s: %w", attemptID, taskID, mapErr(err))
+	var isLive sql.NullBool
+	if err := tx.QueryRowContext(ctx, sqlSelectTaskAndAttemptLive, attemptID, taskID).Scan(&current, &jobID, &isLive); err != nil {
+		return false, "", "", fmt.Errorf("store: attempt %s of task %s: %w", attemptID, taskID, mapErr(err))
 	}
-	cur := store.TaskStatus(current)
+	cur = store.TaskStatus(current)
 	if cur != store.TaskStatusAssigned && cur != store.TaskStatusRunning {
-		return false, cur, nil
+		return false, cur, jobID, nil
 	}
-	return live.Valid && live.Bool, cur, nil
+	return isLive.Valid && isLive.Bool, cur, jobID, nil
 }
 
 // lockTaskJobTx takes the task's job-row anchor inside tx.
@@ -63,7 +64,7 @@ func (s *Store) StartTaskAttempt(ctx context.Context, attemptID, taskID, session
 		if err := lockTaskJobTx(ctx, tx, taskID); err != nil {
 			return false, txRollback, err
 		}
-		live, current, err := liveAttemptTx(ctx, tx, attemptID, taskID)
+		live, current, _, err := liveAttemptTx(ctx, tx, attemptID, taskID)
 		if err != nil {
 			return false, txRollback, err
 		}
@@ -106,9 +107,11 @@ WHERE  id = ? AND status = 'running' AND (progress_at IS NULL OR progress_at < ?
 // No job-row anchor is taken: the liveness read and the guarded update touch
 // only the task and attempt rows, and a snapshot that races a close is
 // harmless because the update re-checks status = 'running'.
-func (s *Store) RecordAttemptProgress(ctx context.Context, p store.AttemptProgress) (store.ProgressOutcome, error) {
-	return inTxValue(ctx, s, "record attempt progress", func(tx *dbTx) (store.ProgressOutcome, txOutcome, error) {
-		live, current, err := liveAttemptTx(ctx, tx, p.AttemptID, p.TaskID)
+func (s *Store) RecordAttemptProgress(ctx context.Context, p store.AttemptProgress) (store.ProgressOutcome, string, error) {
+	var jobID string
+	outcome, err := inTxValue(ctx, s, "record attempt progress", func(tx *dbTx) (store.ProgressOutcome, txOutcome, error) {
+		live, current, job, err := liveAttemptTx(ctx, tx, p.AttemptID, p.TaskID)
+		jobID = job
 		if err != nil {
 			return store.ProgressNotLive, txRollback, err
 		}
@@ -136,6 +139,10 @@ func (s *Store) RecordAttemptProgress(ctx context.Context, p store.AttemptProgre
 		}
 		return store.ProgressRecorded, txCommit, nil
 	})
+	if err != nil {
+		return outcome, "", err
+	}
+	return outcome, jobID, nil
 }
 
 // sqlReclaimOneTask returns one in-flight task to ready. Binds: updated_at, id.
@@ -156,7 +163,7 @@ func (s *Store) ReclaimTaskAttempt(ctx context.Context, attemptID, taskID string
 		if err := lockTaskJobTx(ctx, tx, taskID); err != nil {
 			return false, txRollback, err
 		}
-		live, _, err := liveAttemptTx(ctx, tx, attemptID, taskID)
+		live, _, _, err := liveAttemptTx(ctx, tx, attemptID, taskID)
 		if err != nil {
 			return false, txRollback, err
 		}

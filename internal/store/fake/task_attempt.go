@@ -185,7 +185,10 @@ func (s *Store) RunningProgressByJobs(_ context.Context, jobIDs []string) (map[s
 		if !ok {
 			continue
 		}
-		sums[t.JobID] += 0 // a running task without a snapshot still counts the job as present
+		// A running task without a snapshot still marks the job present.
+		if _, ok := sums[t.JobID]; !ok {
+			sums[t.JobID] = 0
+		}
 		if a.Progress != nil {
 			sums[t.JobID] += int64(*a.Progress)
 		}

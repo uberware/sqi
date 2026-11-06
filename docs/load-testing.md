@@ -1002,6 +1002,10 @@ cores or less.
   would be 4.3 s. Every figure is under the 10 minutes of outage the backlog
   is sized for, so the farm catches up faster than the outage lasted. These are
   estimates from the mean CPU cost, not a measured outage and recovery.
+  The PostgreSQL figure is a lower bound: it divides server-process CPU, which
+  leaves out PostgreSQL's own time, instead of measuring per-message wall
+  latency. The terminal-ingest p50 above shows that latency per message is
+  higher.
 
 ---
 

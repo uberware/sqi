@@ -555,11 +555,12 @@ func (h *jobHandler) getJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Running progress is an enrichment: a failure degrades to zero rather
+	// than failing the detail, as the list does.
 	runningProgress, err := h.runningProgress(ctx, id, taskCounts)
 	if err != nil {
-		h.logger.ErrorContext(ctx, "jobs: running progress failed", slog.String("id", id), slog.Any("error", err))
-		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve task counts")
-		return
+		h.logger.WarnContext(ctx, "jobs: running progress failed", slog.String("id", id), slog.Any("error", err))
+		runningProgress = 0
 	}
 
 	stepResps := make([]stepResponse, len(steps))

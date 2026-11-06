@@ -243,7 +243,7 @@ func TestParity_LatestTaskAttempt(t *testing.T) {
 
 func recordProgress(t *testing.T, st store.Store, a store.TaskAttempt, progress int, text string, at time.Time) {
 	t.Helper()
-	out, err := st.RecordAttemptProgress(t.Context(), store.AttemptProgress{
+	out, _, err := st.RecordAttemptProgress(t.Context(), store.AttemptProgress{
 		AttemptID: a.ID, TaskID: a.TaskID, Progress: &progress, StatusText: text, At: at,
 	})
 	if err != nil || out != store.ProgressRecorded {

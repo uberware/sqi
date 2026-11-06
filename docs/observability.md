@@ -54,13 +54,23 @@ The snapshot is exposed as:
 - **Jobs** (list items and job detail): `progress_percent`, a number from 0 to
   100. It is `(succeeded + running progress) / (total - canceled) * 100`, where
   running progress is the sum of each running task's `progress` as a fraction of
-  one (a running task that reports none counts as zero). It is always present
-  and is `null` when the job has no non-canceled tasks.
+  one (a running task that reports none counts as zero). It is present on
+  job list items and on job detail, and is `null` when the job has no
+  non-canceled tasks or its task counts could not be read.
 - **WebSocket**: task events on the `jobs` and `jobs/{id}/tasks` subjects carry
   `progress` and `status_text` when the event is a progress snapshot.
 
 A succeeded task keeps its last progress; a retry starts a new attempt with no
 progress.
+
+Status text is cleaned before it is stored: control characters are removed
+(tabs and line breaks become spaces) and the text is cut to 1024 bytes, both on
+the worker and again on the server.
+
+**Rolling upgrades:** upgrade servers before workers. An old server treats each
+snapshot from a new worker as a repeat `running` report, which is correct but
+costs an anchored write about every 2 s per running task. A new server with an
+old worker records one unthrottled snapshot per `openjd_status` line.
 
 ### Diagnostic logs
 

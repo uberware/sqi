@@ -1848,6 +1848,7 @@ type progressCallStore struct {
 	batchedIDs  []string
 	singleCalls int
 	batchErr    error
+	singleErr   error
 }
 
 func (s *progressCallStore) RunningProgressByJobs(ctx context.Context, ids []string) (map[string]float64, error) {
@@ -1861,6 +1862,9 @@ func (s *progressCallStore) RunningProgressByJobs(ctx context.Context, ids []str
 
 func (s *progressCallStore) RunningProgressByJob(ctx context.Context, id string) (float64, error) {
 	s.singleCalls++
+	if s.singleErr != nil {
+		return 0, s.singleErr
+	}
 	return s.Store.RunningProgressByJob(ctx, id)
 }
 
@@ -1940,5 +1944,30 @@ func TestListJobs_ProgressBatchErrorDegradesToZero(t *testing.T) {
 	// The running task contributes nothing, leaving the succeeded share of 1/2.
 	if got := listProgressPercents(t, st)[j.ID]; got != "50" {
 		t.Fatalf("progress_percent = %s, want 50", got)
+	}
+}
+
+func TestGetJob_ProgressErrorDegradesToZero(t *testing.T) {
+	base := fake.New()
+	st := &progressCallStore{Store: base, singleErr: errors.New("read pool unavailable")}
+	j, tasks := seedJobTasks(t, base, store.JobStatusRunning,
+		store.Task{Name: "a", Status: store.TaskStatusSucceeded},
+		store.Task{Name: "b", Status: store.TaskStatusRunning})
+	recordProgress(t, base, tasks[1].ID, 50, "", time.Now().UTC())
+
+	rr := httptest.NewRecorder()
+	newJobRouter(st, &fakeScheduler{}).ServeHTTP(rr, newUnscopedJobsReq(t, "/api/v1/jobs/"+j.ID))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d, want 200: %s", rr.Code, rr.Body)
+	}
+	var resp struct {
+		ProgressPercent *float64 `json:"progress_percent"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	// The running task contributes nothing, leaving the succeeded share of 1/2.
+	if resp.ProgressPercent == nil || *resp.ProgressPercent != 50 {
+		t.Fatalf("progress_percent = %v, want 50", resp.ProgressPercent)
 	}
 }

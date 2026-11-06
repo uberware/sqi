@@ -353,7 +353,7 @@ func (i *Interceptor) handleProgress(ctx context.Context, attemptID, line string
 //
 // Format: "openjd_status: <text>".
 func (i *Interceptor) handleStatus(ctx context.Context, attemptID, line string) {
-	text := strings.TrimSpace(strings.TrimPrefix(line, prefixStatus))
+	text := protocol.SanitizeStatusText(strings.TrimPrefix(line, prefixStatus))
 
 	i.mu.Lock()
 	st, ok := i.attempts[attemptID]

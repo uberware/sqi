@@ -43,7 +43,7 @@ func BenchmarkRecordAttemptProgress(b *testing.B) {
 	for i := range b.N {
 		a := attempts[i%len(attempts)]
 		progress = (progress + 1) % 100
-		out, err := st.RecordAttemptProgress(ctx, store.AttemptProgress{
+		out, _, err := st.RecordAttemptProgress(ctx, store.AttemptProgress{
 			AttemptID: a.ID, TaskID: a.TaskID, Progress: &progress, StatusText: "frame",
 			At: base.Add(time.Duration(i+1) * time.Millisecond),
 		})

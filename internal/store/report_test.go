@@ -71,13 +71,20 @@ func TestRecordAttemptProgress(t *testing.T) {
 			a := g.Attempts[live.ID]
 			t0 := now
 			forty2, fifty := 42, 50
+			var gotJob string
 			record := func(attemptID, taskID string, p *int, text string, at time.Time) (store.ProgressOutcome, error) {
-				return st.RecordAttemptProgress(ctx, store.AttemptProgress{AttemptID: attemptID, TaskID: taskID, Progress: p, StatusText: text, At: at})
+				out, job, err := st.RecordAttemptProgress(ctx, store.AttemptProgress{AttemptID: attemptID, TaskID: taskID, Progress: p, StatusText: text, At: at})
+				gotJob = job
+				return out, err
 			}
 			want := func(label string, got, wantOutcome store.ProgressOutcome, err error) {
 				t.Helper()
 				if err != nil || got != wantOutcome {
 					t.Fatalf("%s = (%v, %v), want (%v, nil)", label, got, err, wantOutcome)
+				}
+				// Whatever the outcome, the job is the task's own.
+				if gotJob != live.JobID {
+					t.Fatalf("%s: job ID = %q, want %q", label, gotJob, live.JobID)
 				}
 			}
 
@@ -133,8 +140,8 @@ func TestRecordAttemptProgress(t *testing.T) {
 			out, err = record(closed.ID, reclaimed.ID, &forty2, "closed", t0)
 			want("closed", out, store.ProgressNotLive, err)
 
-			if _, err := record(a.ID, "no-such-task", &forty2, "", t0); !errors.Is(err, store.ErrNotFound) {
-				t.Fatalf("unknown task: err = %v, want ErrNotFound", err)
+			if _, err := record(a.ID, "no-such-task", &forty2, "", t0); !errors.Is(err, store.ErrNotFound) || gotJob != "" {
+				t.Fatalf("unknown task: err = %v, job = %q, want ErrNotFound and no job", err, gotJob)
 			}
 		})
 	}

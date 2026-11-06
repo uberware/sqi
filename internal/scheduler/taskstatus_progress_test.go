@@ -5,6 +5,7 @@ package scheduler
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,9 +36,9 @@ func (c *countingStore) GetTask(ctx context.Context, id string) (store.Task, err
 
 func (c *countingStore) RecordAttemptProgress(
 	ctx context.Context, p store.AttemptProgress,
-) (store.ProgressOutcome, error) {
+) (store.ProgressOutcome, string, error) {
 	if c.recordErr != nil {
-		return store.ProgressNotLive, c.recordErr
+		return store.ProgressNotLive, "", c.recordErr
 	}
 	return c.Store.RecordAttemptProgress(ctx, p)
 }
@@ -210,5 +211,102 @@ func TestProcessTaskStatus_RunningSnapshot_Fenced(t *testing.T) {
 
 	if msg.acked || msg.nacked {
 		t.Errorf("acked=%v nacked=%v, want neither", msg.acked, msg.nacked)
+	}
+}
+
+// snapshotMsgFor is snapshotMsg with the message's job ID overridden.
+func snapshotMsgFor(t *testing.T, jobID string, task store.Task, attempt store.TaskAttempt, pct int, text string, at time.Time) *fakeJSMsg {
+	t.Helper()
+	m := snapshotMsg(t, task, attempt, pct, text, at)
+	m.data = taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+		Version:      protocol.ProtocolVersion,
+		JobID:        jobID,
+		TaskID:       task.ID,
+		AttemptID:    attempt.ID,
+		Status:       "running",
+		LastProgress: &pct,
+		Message:      text,
+		At:           at,
+	})
+	return m
+}
+
+// TestProcessTaskStatus_RunningSnapshot_ForgedJobID pins that the event is
+// routed by the task's own job, never by the job ID the worker put in the
+// message.
+func TestProcessTaskStatus_RunningSnapshot_ForgedJobID(t *testing.T) {
+	const forged = "someone-elses-job"
+	for _, status := range []store.TaskStatus{store.TaskStatusRunning, store.TaskStatusAssigned} {
+		t.Run(string(status), func(t *testing.T) {
+			st := newCheckedFake(t)
+			n := &recordingNotifier{}
+			s := newTestScheduler(st, &stubBus{})
+			s.notifier = n
+			s.ctx = t.Context()
+			job, _, task, attempt := seedStatusFixture(t, st, status)
+
+			msg := snapshotMsgFor(t, forged, task, attempt, 30, "frame 2", time.Now().UTC())
+			s.handleTaskStatusMessage(msg)
+
+			if !msg.acked {
+				t.Fatal("expected ack")
+			}
+			if len(n.tasks) != 1 {
+				t.Fatalf("events = %d, want 1", len(n.tasks))
+			}
+			for _, e := range n.tasks {
+				if e.JobID != job.ID {
+					t.Errorf("event routed to job %q, want %q", e.JobID, job.ID)
+				}
+			}
+		})
+	}
+}
+
+// TestProcessTaskStatus_RunningSnapshot_ForgedJobID_StaleCancel pins that the
+// cancel sent for a stale snapshot names the task's own job too.
+func TestProcessTaskStatus_RunningSnapshot_ForgedJobID_StaleCancel(t *testing.T) {
+	st := newCheckedFake(t)
+	b := &stubBus{}
+	s := newTestScheduler(st, b)
+	s.notifier = &recordingNotifier{}
+	s.ctx = t.Context()
+	job, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusRunning)
+	if ok, err := st.ReclaimTaskAttempt(t.Context(), attempt.ID, task.ID, time.Now().UTC()); err != nil || !ok {
+		t.Fatalf("ReclaimTaskAttempt = %v, %v", ok, err)
+	}
+
+	s.handleTaskStatusMessage(snapshotMsgFor(t, "someone-elses-job", task, attempt, 50, "late", time.Now().UTC()))
+
+	if len(b.cancels) != 1 || b.cancels[0].JobID != job.ID {
+		t.Errorf("cancels = %+v, want one for job %s", b.cancels, job.ID)
+	}
+}
+
+// TestProcessTaskStatus_RunningSnapshot_SanitizesText pins that a snapshot
+// with a NUL byte and an oversized text is recorded clean, and acked.
+func TestProcessTaskStatus_RunningSnapshot_SanitizesText(t *testing.T) {
+	st := newCheckedFake(t)
+	n := &recordingNotifier{}
+	s := newTestScheduler(st, &stubBus{})
+	s.notifier = n
+	s.ctx = t.Context()
+	_, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusRunning)
+
+	msg := snapshotMsg(t, task, attempt, 10, "a\x00b "+strings.Repeat("y", 5000), time.Now().UTC())
+	s.handleTaskStatusMessage(msg)
+
+	if !msg.acked {
+		t.Fatal("expected ack")
+	}
+	a, err := st.GetTaskAttempt(t.Context(), attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(a.StatusText, "\x00") || len(a.StatusText) != protocol.MaxStatusTextBytes || !strings.HasPrefix(a.StatusText, "ab yyy") {
+		t.Errorf("stored status text: len %d, %q...", len(a.StatusText), a.StatusText[:min(len(a.StatusText), 8)])
+	}
+	if len(n.tasks) != 1 || n.tasks[0].StatusText != a.StatusText {
+		t.Errorf("event text does not match the stored text: %+v", n.tasks)
 	}
 }

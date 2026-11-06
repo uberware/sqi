@@ -802,7 +802,7 @@ func recordProgress(t *testing.T, st store.Store, taskID string, pct int, text s
 	if err != nil {
 		t.Fatalf("LatestTaskAttempt: %v", err)
 	}
-	out, err := st.RecordAttemptProgress(t.Context(), store.AttemptProgress{
+	out, _, err := st.RecordAttemptProgress(t.Context(), store.AttemptProgress{
 		AttemptID: a.ID, TaskID: taskID, Progress: &pct, StatusText: text, At: at,
 	})
 	if err != nil || out != store.ProgressRecorded {

@@ -290,14 +290,15 @@ func (s *Scheduler) handleTaskRunning(ctx context.Context, attempt store.TaskAtt
 }
 
 // snapshotProgress builds the store record for a snapshot report, stamping it
-// now when the worker sent no time.
+// now when the worker sent no time. The status text is task-controlled, so it
+// is sanitized here whatever the worker did.
 func snapshotProgress(attempt store.TaskAttempt, m protocol.TaskStatusMsg) store.AttemptProgress {
 	at := m.At
 	if at.IsZero() {
 		at = time.Now().UTC()
 	}
 	return store.AttemptProgress{
-		AttemptID: attempt.ID, TaskID: m.TaskID, Progress: m.LastProgress, StatusText: m.Message, At: at,
+		AttemptID: attempt.ID, TaskID: m.TaskID, Progress: m.LastProgress, StatusText: protocol.SanitizeStatusText(m.Message), At: at,
 	}
 }
 
@@ -307,7 +308,7 @@ func snapshotProgress(attempt store.TaskAttempt, m protocol.TaskStatusMsg) store
 func (s *Scheduler) handleRunningSnapshot(
 	ctx context.Context, attempt store.TaskAttempt, m protocol.TaskStatusMsg, p store.AttemptProgress,
 ) (done bool, err error) {
-	outcome, err := s.store.RecordAttemptProgress(ctx, p)
+	outcome, jobID, err := s.store.RecordAttemptProgress(ctx, p)
 	if errors.Is(err, store.ErrNotFound) {
 		s.logger.WarnContext(
 			ctx, "scheduler: progress snapshot for unknown task — discarding",
@@ -321,7 +322,7 @@ func (s *Scheduler) handleRunningSnapshot(
 	switch outcome {
 	case store.ProgressRecorded:
 		s.notifier.NotifyTask(ws.TaskEvent{
-			JobID:      m.JobID,
+			JobID:      jobID,
 			TaskID:     m.TaskID,
 			Status:     string(store.TaskStatusRunning),
 			WorkerID:   attempt.WorkerID,
@@ -332,7 +333,7 @@ func (s *Scheduler) handleRunningSnapshot(
 		return true, nil
 	case store.ProgressNotLive:
 		s.publishCancel(ctx, protocol.TaskCancelMsg{
-			TaskID: m.TaskID, AttemptID: attempt.ID, JobID: m.JobID, CanceledAt: time.Now().UTC(),
+			TaskID: m.TaskID, AttemptID: attempt.ID, JobID: jobID, CanceledAt: time.Now().UTC(),
 		}, attempt.WorkerID, "stale running report")
 		return true, nil
 	case store.ProgressTaskAssigned:
@@ -346,7 +347,7 @@ func (s *Scheduler) handleRunningSnapshot(
 // was reported running, now that the task is. Best-effort: the event still
 // carries the snapshot, and the next one replaces it.
 func (s *Scheduler) recordSnapshotAfterStart(ctx context.Context, p store.AttemptProgress) {
-	_, err := s.store.RecordAttemptProgress(ctx, p)
+	_, _, err := s.store.RecordAttemptProgress(ctx, p)
 	s.warnUnlessStopped(ctx, err, "scheduler: record progress snapshot after start failed",
 		slog.String("task_id", p.TaskID))
 }

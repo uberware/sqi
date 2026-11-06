@@ -268,8 +268,10 @@ type TaskStore interface {
 	// assigned is [ProgressTaskAssigned]; a snapshot not strictly newer than the
 	// stored one is [ProgressOutOfOrder]. None of those write. An unknown task
 	// is [ErrNotFound]. No job-row anchor is taken: the write is one guarded
-	// statement on the attempt row.
-	RecordAttemptProgress(ctx context.Context, p AttemptProgress) (ProgressOutcome, error)
+	// statement on the attempt row. jobID is the job that owns the task, read
+	// from the task row, so a caller routes by it rather than by anything the
+	// reporting worker asserted; it is empty only with an error.
+	RecordAttemptProgress(ctx context.Context, p AttemptProgress) (outcome ProgressOutcome, jobID string, err error)
 
 	// ReclaimTaskAttempt hands one task back as the offline reclaim does: it
 	// returns the task to ready with no worker, closes attemptID as failed with

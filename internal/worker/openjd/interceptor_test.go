@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -219,6 +220,28 @@ func TestStatusDirectivePublishesNATS(t *testing.T) {
 	}
 	if status.SessionID != "sess-1" {
 		t.Errorf("SessionID = %q, want %q", status.SessionID, "sess-1")
+	}
+}
+
+// TestStatusDirectiveSanitizesText verifies that a task cannot publish a NUL
+// byte or an unbounded status text.
+func TestStatusDirectiveSanitizesText(t *testing.T) {
+	i, _, nc, ctx, _ := setup(t)
+
+	line := "openjd_status: bad\x00te\x01xt " + strings.Repeat("x", 5000)
+	i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", "stdout", line)
+
+	msgs := nc.snapshot()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 NATS message, got %d", len(msgs))
+	}
+	got := decodeStatus(t, msgs[0].data).Message
+	if strings.ContainsAny(got, "\x00\x01") {
+		t.Errorf("Message %q still holds control characters", got)
+	}
+	if len(got) != protocol.MaxStatusTextBytes || !strings.HasPrefix(got, "badtext xxx") {
+		t.Errorf("Message len = %d, prefix %q; want %d bytes starting %q",
+			len(got), got[:min(len(got), 11)], protocol.MaxStatusTextBytes, "badtext xxx")
 	}
 }
 

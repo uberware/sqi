@@ -840,7 +840,7 @@ var fenceMutators = map[string]fenceMutator{
 		a := g.Attempts[task.ID]
 		one := 1
 		return func(ctx context.Context) error {
-			out, err := st.RecordAttemptProgress(ctx, store.AttemptProgress{AttemptID: a.ID, TaskID: task.ID, Progress: &one, At: time.Now().UTC()})
+			out, _, err := st.RecordAttemptProgress(ctx, store.AttemptProgress{AttemptID: a.ID, TaskID: task.ID, Progress: &one, At: time.Now().UTC()})
 			if err == nil && out != store.ProgressRecorded {
 				return fmt.Errorf("RecordAttemptProgress outcome = %v, want recorded", out)
 			}
