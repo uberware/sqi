@@ -5,7 +5,6 @@ package sqlstore
 import (
 	"context"
 	"database/sql"
-	"time"
 
 	"github.com/uberware/sqi/internal/store"
 )
@@ -58,12 +57,11 @@ JOIN   tasks t ON t.id = a.task_id
 WHERE  a.status = 'running'
   AND  t.status IN ('assigned', 'running')
   AND  a.attempt_number = (SELECT MAX(m.attempt_number) FROM task_attempts m WHERE m.task_id = a.task_id)
-  AND  a.created_at < ?
 ORDER  BY a.created_at, a.id`
 
 // ListOpenAttempts implements [store.TaskAttemptStore].
-func (s *Store) ListOpenAttempts(ctx context.Context, createdBefore time.Time) ([]store.OpenAttempt, error) {
-	rows, err := s.r.QueryContext(ctx, sqlListOpenAttempts, TimeText(createdBefore))
+func (s *Store) ListOpenAttempts(ctx context.Context) ([]store.OpenAttempt, error) {
+	rows, err := s.r.QueryContext(ctx, sqlListOpenAttempts)
 	if err != nil {
 		return nil, mapErr(err)
 	}

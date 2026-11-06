@@ -724,11 +724,11 @@ func (s *sweepSpy) ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Ti
 	return s.Store.ReclaimStaleAssignedTasks(ctx, cutoff)
 }
 
-func (s *sweepSpy) ListOpenAttempts(ctx context.Context, createdBefore time.Time) ([]store.OpenAttempt, error) {
+func (s *sweepSpy) ListOpenAttempts(ctx context.Context) ([]store.OpenAttempt, error) {
 	if err := s.enter("ListOpenAttempts"); err != nil {
 		return nil, err
 	}
-	return s.Store.ListOpenAttempts(ctx, createdBefore)
+	return s.Store.ListOpenAttempts(ctx)
 }
 
 func (s *sweepSpy) DemoteStalledJobs(ctx context.Context, now time.Time) ([]string, error) {

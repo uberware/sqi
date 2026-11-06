@@ -94,14 +94,8 @@ func WorkerPermissions(workerID string) *natsserver.Permissions {
 				// without this.
 				InboxPrefix(workerID) + ".>",
 
-				// ACCEPTED GAP. Workers subscribe per-task at assignment time
-				// (internal/worker/cancel/cancel.go), so a static permission
-				// cannot be narrower than the whole subtree: any enrolled
-				// worker can observe any task's cancel signals. Narrowing
-				// this needs a permission reload per assignment, or a NATS
-				// auth callout. Low severity — a cancel message for a task
-				// the worker does not hold is inert.
-				"task.cancel.>",
+				// This worker's own cancel signals, and no other worker's.
+				"task.cancel." + workerID,
 			},
 		},
 	}

@@ -106,14 +106,15 @@ func streamDefs(replicas int) []jetstream.StreamConfig {
 			Replicas:  replicas,
 		},
 		{
-			// SQI_CANCEL — task.cancel.<taskID>
+			// SQI_CANCEL — task.cancel.<workerID>
 			//
-			// The scheduler publishes one message per canceled task. The worker
-			// holding the task receives it on a core subscription to
-			// task.cancel.<taskID> and interrupts its running process; no
-			// consumer reads the stream. A cancel published before the worker
-			// subscribes is sent again when the worker reports the closed
-			// attempt running (internal/scheduler/cancellation.go).
+			// The scheduler publishes one message per canceled run, addressed
+			// to the worker holding it. That worker receives it on the core
+			// subscription to task.cancel.<workerID> it opens before asking
+			// for work, and interrupts the run; no consumer reads the stream.
+			// A worker disconnected when a cancel goes out misses it, and is
+			// sent it again on every heartbeat sweep while its heartbeats
+			// still list the attempt (internal/scheduler/attemptreconcile.go).
 			//
 			// MaxAge of 5 min bounds what the stream keeps.
 			Name:        StreamCancel,

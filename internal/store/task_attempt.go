@@ -71,10 +71,9 @@ type TaskAttemptStore interface {
 	// AttemptNumber ascending.
 	ListTaskAttempts(ctx context.Context, taskID string) ([]TaskAttempt, error)
 
-	// ListOpenAttempts returns every open attempt (see [OpenAttempt]) created
-	// strictly before createdBefore, ordered by CreatedAt then AttemptID. It
-	// only reads; callers that close an attempt (the restore fence,
-	// reconciliation) go through ReclaimTaskAttempt, which re-checks openness
-	// under the job's anchor.
-	ListOpenAttempts(ctx context.Context, createdBefore time.Time) ([]OpenAttempt, error)
+	// ListOpenAttempts returns every open attempt (see [OpenAttempt]), ordered
+	// by CreatedAt then AttemptID. It only reads; callers that close an attempt
+	// (the restore fence, reconciliation) go through ReclaimTaskAttempt, which
+	// re-checks openness under the job's anchor.
+	ListOpenAttempts(ctx context.Context) ([]OpenAttempt, error)
 }

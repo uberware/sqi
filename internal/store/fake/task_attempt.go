@@ -6,7 +6,6 @@ import (
 	"context"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/uberware/sqi/internal/store"
 )
@@ -94,14 +93,14 @@ func (s *Store) ListTaskAttempts(_ context.Context, taskID string) ([]store.Task
 }
 
 // ListOpenAttempts implements [store.TaskAttemptStore].
-func (s *Store) ListOpenAttempts(_ context.Context, createdBefore time.Time) ([]store.OpenAttempt, error) {
+func (s *Store) ListOpenAttempts(_ context.Context) ([]store.OpenAttempt, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	var out []store.OpenAttempt
 	for _, a := range s.taskAttempts {
 		t, ok := s.tasks[a.TaskID]
-		if !ok || !s.liveAttemptLocked(a.ID, t) || !a.CreatedAt.Before(createdBefore) {
+		if !ok || !s.liveAttemptLocked(a.ID, t) {
 			continue
 		}
 		out = append(out, store.OpenAttempt{AttemptID: a.ID, TaskID: a.TaskID, WorkerID: a.WorkerID, CreatedAt: a.CreatedAt})

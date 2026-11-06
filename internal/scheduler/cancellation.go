@@ -13,9 +13,10 @@ package scheduler
 //     releases those attempts' usage claims in ONE transaction (invariant I3),
 //     and returns the tasks that were assigned or running together with the
 //     worker each held.
-//  2. A task.cancel.<taskID> NATS signal is published to each of those workers
-//     ([bus.Client.PublishTaskCancel]) so the worker can interrupt the running
-//     process without waiting for the next heartbeat timeout.
+//  2. A cancel signal is published to each of those workers, on its
+//     task.cancel.<workerID> subject ([bus.Client.PublishTaskCancel]), so the
+//     worker can interrupt the running process without waiting for the next
+//     heartbeat timeout.
 //
 //  3. CancelTask then drives step and job completion
 //     ([Scheduler.checkStepCompletion]), as a terminal worker report does,
@@ -30,13 +31,14 @@ package scheduler
 // NATS publish failures are non-fatal: the scheduler logs a warning and
 // continues.
 //
-// A worker receives cancels on a core-NATS subscription it opens per task
-// after the lease, so a cancel that commits between the lease and that
-// subscription reaches no one. The worker then publishes "running" for an
-// attempt the cancel closed, and [Scheduler.handleTaskRunning] answers that
-// stale report with a cancel naming the attempt. That resend rides on the
-// report: a worker whose "running" is dropped, or that is disconnected when the
-// resend goes out, is not told again.
+// A worker receives cancels on one core-NATS subscription it opens before it
+// asks for work, so a cancel committed after a lease reaches the worker that
+// took it. Core NATS keeps nothing for an absent subscriber, so a worker
+// disconnected when a cancel goes out misses it. Two repairs cover that: a
+// worker that publishes "running" for an attempt the store has closed is
+// answered with a cancel naming the attempt ([Scheduler.handleTaskRunning]),
+// and one whose heartbeats still list such an attempt is sent that cancel on
+// every sweep while they do ([Scheduler.cancelClosedAttempts]).
 
 import (
 	"context"
@@ -51,8 +53,8 @@ import (
 
 // CancelJob cancels every non-terminal task of the given job, closes their
 // running attempts and releases their usage claims in one store transaction
-// (invariant I3), then publishes a task.cancel.<taskID> signal to each worker
-// that was actively executing one of the tasks.
+// (invariant I3), then publishes a cancel signal to each worker that was
+// actively executing one of the tasks.
 //
 // The durable "canceled by user" reason is stamped in the same transaction,
 // only on tasks with no reason yet, so a more specific cause already recorded
@@ -87,7 +89,7 @@ func (s *Scheduler) CancelJob(ctx context.Context, jobID string) error {
 
 // CancelTask cancels a single task, closes its running attempt and releases
 // its usage claims in one store transaction (invariant I3), then publishes a
-// task.cancel.<taskID> signal to the worker that held the task at that moment.
+// cancel signal to the worker that held the task at that moment.
 //
 // If the task is already in a terminal state (succeeded, failed, canceled),
 // CancelTask returns nil without modifying any state. That holds whether the
@@ -137,8 +139,8 @@ func (s *Scheduler) CancelTask(ctx context.Context, taskID string) error {
 	return nil
 }
 
-// publishCancelSignals publishes a task.cancel.<taskID> NATS message for each
-// task in activeTasks that has an assigned worker.  NATS publish failures are
+// publishCancelSignals publishes a cancel naming each task in activeTasks
+// that has an assigned worker, to that worker.  NATS publish failures are
 // non-fatal: a warning is logged and iteration continues so all other workers
 // still receive their signals.
 func (s *Scheduler) publishCancelSignals(ctx context.Context, activeTasks []store.Task, canceledAt time.Time) {
@@ -150,9 +152,9 @@ func (s *Scheduler) publishCancelSignals(ctx context.Context, activeTasks []stor
 	}
 }
 
-// publishCancel publishes msg to task.cancel.<taskID>. A failure is logged,
-// not returned: the cancel has already committed, or the attempt was already
-// closed, in the store. cause says why, for the log.
+// publishCancel publishes msg to workerID's task.cancel.<workerID>. A failure
+// is logged, not returned: the cancel has already committed, or the attempt
+// was already closed, in the store. cause says why, for the log.
 func (s *Scheduler) publishCancel(ctx context.Context, msg protocol.TaskCancelMsg, workerID, cause string) {
 	payload, err := json.Marshal(msg)
 	if err != nil {
@@ -165,7 +167,7 @@ func (s *Scheduler) publishCancel(ctx context.Context, msg protocol.TaskCancelMs
 		return
 	}
 
-	if err = s.bus.PublishTaskCancel(ctx, msg.TaskID, payload); err != nil {
+	if err = s.bus.PublishTaskCancel(ctx, workerID, payload); err != nil {
 		s.logger.WarnContext(
 			ctx, "scheduler: publish cancel signal failed",
 			slog.String("task_id", msg.TaskID),

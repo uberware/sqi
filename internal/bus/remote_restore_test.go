@@ -49,7 +49,7 @@ func farmState(t *testing.T, r *bus.Remote) {
 		func() error { return client.PublishTaskStatus(ctx, "w1", "j1", []byte("status")) },
 		func() error { return client.PublishTaskLog(ctx, "w1", "t1", []byte("log")) },
 		func() error { return client.PublishWorkerHeartbeat(ctx, "w1", []byte("heartbeat")) },
-		func() error { return client.PublishTaskCancel(ctx, "t1", []byte("cancel")) },
+		func() error { return client.PublishTaskCancel(ctx, "w1", []byte("cancel")) },
 	}
 	for _, publish := range publishes {
 		if err := publish(); err != nil {

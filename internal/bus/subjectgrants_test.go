@@ -108,3 +108,23 @@ func TestSubjectHelpers_MatchWorkerPermissions(t *testing.T) {
 		})
 	}
 }
+
+// TestSubjectHelpers_MatchWorkerSubscribeGrant binds [TaskCancelSubject] to the
+// broker's per-worker subscribe grant, as the test above does for publishing.
+// A drift here raises no error: a denied subscription is reported to the
+// client asynchronously, so cancel.Subscribe succeeds, and a worker under
+// broker auth would receive no cancels at all.
+func TestSubjectHelpers_MatchWorkerSubscribeGrant(t *testing.T) {
+	const me = "worker-a"
+	const other = "worker-b"
+
+	perms := brokerauth.WorkerPermissions(me)
+	if !permAllows(perms.Subscribe, TaskCancelSubject(me)) {
+		t.Errorf("subject %q is not granted for subscribe by WorkerPermissions(%q); allow list: %v",
+			TaskCancelSubject(me), me, perms.Subscribe.Allow)
+	}
+	if permAllows(perms.Subscribe, TaskCancelSubject(other)) {
+		t.Errorf("subject %q is granted for subscribe by WorkerPermissions(%q) — a worker can read another worker's cancels",
+			TaskCancelSubject(other), me)
+	}
+}

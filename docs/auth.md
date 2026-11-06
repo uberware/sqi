@@ -317,10 +317,12 @@ enrollment, and cover only that worker's own subtree:
   `worker.register.<id>`, `worker.heartbeat.<id>`, `worker.deregister.<id>`,
   `worker.diag.<id>`, `work.lease.<id>.*`.
 - **Subscribe:** `_INBOX_<id>.>` — this worker's own reply inboxes — and
-  `task.cancel.>`.
+  `task.cancel.<id>`, where the server sends every cancel for this worker's
+  runs.
 
-Everything else is denied. A worker cannot subscribe to `task.status.>` or
-`task.logs.>`, so it cannot observe another worker's status or log traffic.
+Everything else is denied. A worker cannot subscribe to `task.status.>`,
+`task.logs.>` or another worker's `task.cancel.<id>`, so it cannot observe
+another worker's status, log or cancel traffic.
 
 The reply-inbox prefix is **per worker**, not nats.go's process-global
 `_INBOX`. That matters because a work lease is core-NATS request/reply: the
@@ -358,21 +360,6 @@ a cluster it does not run.
 
 With authentication off there is no callout: the broker maps every anonymous
 connection into sqi's account with no permission limits, in both modes.
-
-### An accepted authorization gap: `task.cancel.>`
-
-This is the **only** subject a worker's credential can reach outside its own
-subtree. Workers subscribe to `task.cancel.<taskID>` per-task, at the moment a task is
-assigned, not for the lifetime of the connection. A worker's permissions are
-fixed when its connection is authorized, while its assignments change with
-every lease, so its subscribe permission cannot be narrower than the whole
-`task.cancel.>` subtree — there is no way to grant "only the cancel subjects
-for tasks I currently hold" without re-authorizing the connection on every
-assignment. The practical effect:
-**any enrolled worker can observe the cancel signal for any task**, not only
-its own. This is accepted as low severity — a cancel message for a task the
-worker does not hold is inert, it triggers no action — but it is a
-deliberate gap, not an oversight.
 
 ## Model
 

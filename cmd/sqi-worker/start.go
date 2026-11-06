@@ -264,56 +264,11 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 		return fmt.Errorf("worker registration: %w", err)
 	}
 
-	// ── Isolation provider + session root ────────────────────────
-	//
-	// Provider built once at boot: POSIX credential switching via
-	// setuid/setgid, or the Windows LogonUserW-based provider (see
-	// internal/worker/isolation's package doc for its current verification
-	// status). isolation.required makes the worker refuse to start at all
-	// when it cannot actually isolate, rather than silently accepting
-	// isolated queues it cannot honor.
-	//
-	// sessionRoot is deliberately separate from cfg.Worker.DataDir (which
-	// holds only the persistent worker-id file) — see effectiveSessionRoot's
-	// own doc. When this worker can actually assume another identity,
-	// resolveIsolation refuses to start rather than silently chmod'ing an
-	// ancestor that lacks the traversal bit isolated tasks need.
-	isolationProvider, sessionRoot, sessionRootMode, stagingIsolationCapable, err := resolveIsolation(cfg, logger)
+	// ── Isolation provider, session root and session manager ──────
+	sessionMgr, sessionRoot, stagingIsolationCapable, err := newSessionManager(cfg, logger)
 	if err != nil {
 		return err
 	}
-
-	// ── Session manager ─────────────────────────────────────────
-	//
-	// The session Manager creates isolated working directories and manages
-	// environment setup/teardown for each task execution.
-	//
-	// keepFailedSessions retains working directories for failed sessions so
-	// operators can inspect partial outputs (SQI_WORKER_KEEP_FAILED_SESSIONS).
-	// isolationProvider resolves run-as-user credentials for assignments that
-	// carry Isolation; cfg.Isolation.EnvPassthrough governs the additional
-	// daemon environment variables an isolated session may inherit.
-	// sessionRootMode (see effectiveSessionRoot) is 0711 when sessionRoot was
-	// resolved to a location that must be traversable by another identity, or
-	// 0750 for the non-root fallback under DataDir.
-	// cfg.Expr is this host's operator-configured phase-3 expression budget.
-	// It reaches every phase-3 evaluation
-	// through the AssignmentBudget the Manager builds per session — this call
-	// is the only wiring point, so an omission here would silently meter the
-	// whole worker against the built-in defaults.
-	// The command table: worker.commands plus any default a detector found.
-	// Like cfg.Expr above, the option below is the only wiring point, so leaving
-	// it out would silently ignore the configuration.
-	cmdPlan, err := detectCommandPlan(cfg, capabilities.OSCheckEnv(), hostLookPath)
-	if err != nil {
-		return err
-	}
-	sessionMgr := session.NewManager(
-		sessionRoot, cfg.Worker.KeepFailedSessions, isolationProvider, cfg.Isolation,
-		exprLimitsFromConfig(cfg.Expr), logger,
-		session.WithSessionRootMode(sessionRootMode),
-		cmdPlan.option(logger),
-	)
 
 	// ── Log chunk publisher ────────────────────────────────────
 	//
@@ -369,14 +324,15 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 
 	// ── Task cancel subscriber ─────────────────────────────────
 	//
-	// The cancel Handler subscribes to task.cancel.<taskID> for each task the
-	// executor dispatches.  When the server publishes a cancel signal the handler
-	// calls exec.Cancel(taskID, attemptID), which triggers SIGTERM → SIGKILL
-	// escalation in the task's goroutine.  The handler is wired into the executor via
-	// SetCancelRegistrar before the pull loop starts so every dispatched task has
-	// its cancel subscription in place.
-	cancelHandler := cancel.New(nc, exec, logger)
-	exec.SetCancelRegistrar(cancelHandler)
+	// The server sends every cancel for this worker's runs to
+	// task.cancel.<workerID>; the subscription hands each to exec.Cancel,
+	// which triggers SIGTERM → SIGKILL escalation in the run's goroutine.
+	// Subscribe returns once the server has the subscription, and it is made
+	// before the lease loop starts, so a cancel for any lease this worker
+	// takes finds it in place.
+	if _, err := cancel.Subscribe(nc, workerID, exec, logger); err != nil {
+		return err
+	}
 
 	// ── Heartbeat ───────────────────────────────────────────────
 	//
@@ -470,6 +426,61 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	defer shutdownCancel()
 	obsServer.Shutdown(shutdownCtx)
 	return nil
+}
+
+// newSessionManager resolves the isolation provider and session root and
+// builds the session manager on them. It also returns the session root, for
+// the start-up log, and whether this worker can isolate, for the executor's
+// staging.
+func newSessionManager(cfg workerconfig.WorkerConfig, logger *slog.Logger) (mgr *session.Manager, sessionRoot string, isolationCapable bool, err error) {
+	// ── Isolation provider + session root ────────────────────────
+	//
+	// Provider built once at boot: POSIX credential switching via
+	// setuid/setgid, or the Windows LogonUserW-based provider (see
+	// internal/worker/isolation's package doc). isolation.required makes the
+	// worker refuse to start when it cannot isolate, rather than accept
+	// isolated queues it cannot honor.
+	//
+	// sessionRoot is separate from cfg.Worker.DataDir, which holds only the
+	// persistent worker-id file (see effectiveSessionRoot). When this worker
+	// can assume another identity, resolveIsolation refuses to start rather
+	// than chmod an ancestor that lacks the traversal bit isolated tasks need.
+	isolationProvider, sessionRoot, sessionRootMode, isolationCapable, err := resolveIsolation(cfg, logger)
+	if err != nil {
+		return nil, "", false, err
+	}
+
+	// ── Session manager ─────────────────────────────────────────
+	//
+	// The session Manager creates isolated working directories and manages
+	// environment setup/teardown for each task execution.
+	//
+	// keepFailedSessions retains working directories for failed sessions so
+	// operators can inspect partial outputs (SQI_WORKER_KEEP_FAILED_SESSIONS).
+	// isolationProvider resolves run-as-user credentials for assignments that
+	// carry Isolation; cfg.Isolation.EnvPassthrough governs the additional
+	// daemon environment variables an isolated session may inherit.
+	// sessionRootMode (see effectiveSessionRoot) is 0711 when sessionRoot was
+	// resolved to a location that must be traversable by another identity, or
+	// 0750 for the non-root fallback under DataDir.
+	// cfg.Expr is this host's operator-configured phase-3 expression budget.
+	// It reaches every phase-3 evaluation through the AssignmentBudget the
+	// Manager builds per session. This call is the only wiring point: without
+	// it the whole worker is metered against the built-in defaults.
+	// The command table: worker.commands plus any default a detector found.
+	// Like cfg.Expr, the option below is the only wiring point: without it the
+	// configuration is ignored.
+	cmdPlan, err := detectCommandPlan(cfg, capabilities.OSCheckEnv(), hostLookPath)
+	if err != nil {
+		return nil, "", false, err
+	}
+	mgr = session.NewManager(
+		sessionRoot, cfg.Worker.KeepFailedSessions, isolationProvider, cfg.Isolation,
+		exprLimitsFromConfig(cfg.Expr), logger,
+		session.WithSessionRootMode(sessionRootMode),
+		cmdPlan.option(logger),
+	)
+	return mgr, sessionRoot, isolationCapable, nil
 }
 
 // shutdownKillGrace is the executor's kill window during a worker shutdown: a

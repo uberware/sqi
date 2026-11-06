@@ -85,7 +85,13 @@ import (
 // as task-wide: a "3" worker running the task's newer attempt would stop it
 // on a cancel meant for a stale one.  The bump fences such workers out at
 // registration.  As with "2", upgrade the server first.
-const ProtocolVersion = "4"
+//
+// "5" sends cancels to the holding worker's task.cancel.<workerID>, which the
+// worker subscribes to once before asking for work.  No message body changes,
+// but a "4" worker subscribes only to per-task task.cancel.<taskID> subjects,
+// which the server does not publish to, so it would never be told to stop a
+// run.  As with "2", upgrade the server first.
+const ProtocolVersion = "5"
 
 // ── Message type constants ────────────────────────────────────────────────────
 
@@ -102,9 +108,10 @@ const (
 	TypeTaskStatus = "task_status" // worker → server
 	TypeLogChunk   = "log_chunk"   // worker → server
 	// TypeTaskCancel is defined here for protocol documentation and symmetry
-	// with the other message-type constants.  TaskCancelMsg does not embed a
-	// Version/Type envelope — the NATS subject (task.cancel.<taskID>) provides
-	// routing — so this constant is not referenced by worker receive code.
+	// with the other message-type constants.  TaskCancelMsg has no
+	// Version/Type envelope (the subject task.cancel.<workerID> and the
+	// message's task and attempt IDs route it), so worker receive code does
+	// not reference this constant.
 	TypeTaskCancel = "task_cancel" // server → worker
 )
 
@@ -376,7 +383,8 @@ type HeartbeatMsg struct {
 	// ActiveAttemptIDs lists every attempt this worker process holds, from the
 	// moment its lease reply is decoded until its task goroutine exits (after
 	// the terminal status is published). The server reclaims an attempt a
-	// live worker has stopped reporting (scheduler.reconcile_grace).
+	// live worker has stopped reporting (scheduler.reconcile_grace), and sends
+	// a cancel naming one the worker still reports after the store closed it.
 	ActiveAttemptIDs []string `json:"active_attempt_ids,omitempty"`
 
 	// UptimeSeconds is the number of seconds the worker process has been
@@ -797,25 +805,26 @@ type LogChunkMsg struct {
 
 // ── TaskCancelMsg ─────────────────────────────────────────────────────────────
 
-// TaskCancelMsg is the JSON payload the server publishes to
-// task.cancel.<taskID> when a running task must be interrupted.
+// TaskCancelMsg is the JSON payload the server publishes to the holding
+// worker's task.cancel.<workerID> when a running task must be interrupted.
 //
-// The worker's cancel handler reads this message and calls Cancel on the
-// matching in-progress task, triggering SIGTERM → SIGKILL escalation.
+// The worker's cancel subscription reads this message and calls Cancel on the
+// matching in-progress run, triggering SIGTERM → SIGKILL escalation.
 //
-// Note: this message has no Version/Type envelope — the NATS subject
-// (task.cancel.<taskID>) provides sufficient routing.
+// The message has no Version/Type envelope: the NATS subject names the worker
+// and the message names the run.
 type TaskCancelMsg struct {
-	// TaskID is the task to cancel, redundant with the NATS subject but
-	// included for log attribution.
+	// TaskID is the task to cancel. It is empty when the server stops an
+	// attempt its store has no record of (a database restored from before
+	// the lease): AttemptID alone then names the run.
 	TaskID string `json:"task_id"`
 
-	// AttemptID, when set, limits the cancel to that attempt: a worker
-	// running another attempt of the task ignores it. The server sets it when
-	// it stops an attempt it has already closed (a stale "running" report),
-	// because the task's newer attempt listens on the same subject. Empty
-	// cancels whichever attempt of the task the worker is running, which is
-	// what a job or task cancel wants.
+	// AttemptID, when set, limits the cancel to that attempt: a run of another
+	// attempt of the task is left alone. The server sets it when it stops an
+	// attempt it has already closed (a stale "running" report, or a heartbeat
+	// still listing the attempt), because the worker may also be running the
+	// task's newer attempt. Empty cancels every attempt of the task the worker
+	// is running, which is what a job or task cancel wants.
 	AttemptID string `json:"attempt_id,omitempty"`
 
 	// JobID is the job the task belongs to, for log attribution.

@@ -34,7 +34,7 @@ func TestParity_ListOpenAttempts(t *testing.T) {
 			old := storetest.FailAndRequeue(t, st, at(tasks[3], 3), base)
 			fresh := storetest.Running(t, st, at(tasks[3], 4))
 
-			got, err := st.ListOpenAttempts(t.Context(), time.Now().UTC().Add(time.Hour))
+			got, err := st.ListOpenAttempts(t.Context())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -48,11 +48,6 @@ func TestParity_ListOpenAttempts(t *testing.T) {
 			want := []string{assigned.ID, running.ID, fresh.ID}
 			if !slices.Equal(ids, want) {
 				t.Fatalf("open = %v, want %v (in created_at order; not %s, %s)", ids, want, done.ID, old.ID)
-			}
-
-			none, err := st.ListOpenAttempts(t.Context(), assigned.CreatedAt)
-			if err != nil || len(none) != 0 {
-				t.Fatalf("cutoff at the oldest = %v, %v; want none (strictly before)", none, err)
 			}
 		})
 	}

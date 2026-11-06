@@ -85,7 +85,7 @@ func newTestDispatcher(t *testing.T, plan simworker.TaskPlan) (*simworker.Dispat
 	logs := logstreamer.New(conn, testWorkerID, logstreamer.DefaultConfig(), logger)
 	l := simworker.NewLedger()
 	b := simworker.BehaviorFunc(func(*protocol.AssignMsg, *rand.Rand) simworker.TaskPlan { return plan })
-	d := simworker.NewDispatcher(testWorkerID, st, logs, nil, b, l, rand.New(rand.NewPCG(1, 2)))
+	d := simworker.NewDispatcher(testWorkerID, st, logs, b, l, rand.New(rand.NewPCG(1, 2)))
 	return d, conn, l
 }
 

@@ -982,7 +982,7 @@ func leaveOneMessageInEachStream(t *testing.T, js jetstream.JetStream) {
 		bus.StreamTask:   bus.SubjectTaskStatusPrefix + ".stale-worker.stale-job",
 		bus.StreamLogs:   bus.SubjectTaskLogsPrefix + ".stale-worker.stale-task",
 		bus.StreamWorker: bus.SubjectWorkerHeartbeatPrefix + ".stale-worker",
-		bus.StreamCancel: bus.SubjectTaskCancelPrefix + ".stale-task",
+		bus.StreamCancel: bus.SubjectTaskCancelPrefix + ".stale-worker",
 	}
 	for stream, subject := range subjects {
 		if _, err := js.Publish(ctx, subject, []byte(`{}`)); err != nil {
