@@ -29,6 +29,38 @@ through a `logstreamer` and publishes them in chunks to the JetStream subject
 fans it out over WebSocket so the task log page updates live. Because JetStream
 retains messages, you can reload the log page and still see all output.
 
+### Task progress
+
+A task reports progress by printing directives on **stdout**:
+
+```sh
+echo "openjd_progress: 42.5"
+echo "openjd_status: rendering frame 3"
+```
+
+`openjd_progress` takes any finite number from 0 to 100, including a float; the
+worker stores it as an integer percent rounded down. `openjd_status` sets a
+free-text status. Both are honored on stdout only. The worker publishes changes
+as snapshots throttled to at most one per 2 s per attempt, and the server keeps
+only the latest snapshot of each attempt.
+
+The snapshot is exposed as:
+
+- **Tasks** (`GET /api/v1/jobs/{id}/tasks`, `GET /api/v1/tasks/{id}`) and
+  **attempts** (`GET /api/v1/tasks/{id}/attempts`): `progress` (integer
+  percent), `status_text` and `progress_at` (RFC 3339). A task shows its latest
+  attempt's snapshot; all three are omitted until one is reported.
+- **Jobs** (list items and job detail): `progress_percent`, a number from 0 to
+  100. It is `(succeeded + running progress) / (total - canceled) * 100`, where
+  running progress is the sum of each running task's `progress` as a fraction of
+  one (a running task that reports none counts as zero). It is always present
+  and is `null` when the job has no non-canceled tasks.
+- **WebSocket**: task events on the `jobs` and `jobs/{id}/tasks` subjects carry
+  `progress` and `status_text` when the event is a progress snapshot.
+
+A succeeded task keeps its last progress; a retry starts a new attempt with no
+progress.
+
 ### Diagnostic logs
 
 Both binaries write their own operational output (scheduler decisions, worker

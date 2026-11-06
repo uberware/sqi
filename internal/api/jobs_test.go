@@ -1753,3 +1753,88 @@ func TestGetJob_EffectiveRetry(t *testing.T) {
 		}
 	})
 }
+
+// ── progress_percent ──────────────────────────────────────────────────────────
+
+func TestProgressPercent(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+	tests := []struct {
+		name    string
+		counts  map[store.TaskStatus]int
+		running float64
+		want    *float64
+	}{
+		{"half done", map[store.TaskStatus]int{store.TaskStatusSucceeded: 5, store.TaskStatusFailed: 5}, 0, f(50)},
+		{"running share", map[store.TaskStatus]int{store.TaskStatusSucceeded: 1, store.TaskStatusRunning: 1}, 0.5, f(75)},
+		{"all canceled", map[store.TaskStatus]int{store.TaskStatusCanceled: 3}, 0, nil},
+		{"empty", map[store.TaskStatus]int{}, 0, nil},
+		{"canceled excluded", map[store.TaskStatus]int{store.TaskStatusSucceeded: 2, store.TaskStatusCanceled: 2}, 0, f(100)},
+		{"clamped", map[store.TaskStatus]int{store.TaskStatusSucceeded: 1, store.TaskStatusRunning: 1}, 5, f(100)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := progressPercent(tt.counts, tt.running)
+			if (got == nil) != (tt.want == nil) || (got != nil && *got != *tt.want) {
+				t.Fatalf("progressPercent = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// progressJobs seeds a job with one succeeded and one running task at 50%, and
+// one holding only a canceled task.
+func progressJobs(t *testing.T, st *fake.Store) (running, canceled store.Job) {
+	t.Helper()
+	running, tasks := seedJobTasks(t, st, store.JobStatusRunning,
+		store.Task{Name: "a", Status: store.TaskStatusSucceeded},
+		store.Task{Name: "b", Status: store.TaskStatusRunning})
+	recordProgress(t, st, tasks[1].ID, 50, "", time.Now().UTC())
+	canceled, _ = seedJobTasks(t, st, store.JobStatusCanceled,
+		store.Task{Name: "c", Status: store.TaskStatusCanceled})
+	return running, canceled
+}
+
+func TestListJobs_ProgressPercent(t *testing.T) {
+	st := fake.New()
+	r := newJobRouter(st, &fakeScheduler{})
+	running, canceled := progressJobs(t, st)
+
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, newUnscopedJobsReq(t, "/api/v1/jobs"))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body)
+	}
+	var resp struct {
+		Items []map[string]json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, it := range resp.Items {
+		var id string
+		_ = json.Unmarshal(it["id"], &id) //nolint:errcheck // test decode
+		raw, ok := it["progress_percent"]
+		if !ok {
+			t.Fatalf("job %s lacks progress_percent", id)
+		}
+		got[id] = string(raw)
+	}
+	if got[running.ID] != "75" || got[canceled.ID] != "null" {
+		t.Fatalf("progress_percent = %v", got)
+	}
+}
+
+func TestGetJob_ProgressPercent(t *testing.T) {
+	st := fake.New()
+	r := newJobRouter(st, &fakeScheduler{})
+	running, canceled := progressJobs(t, st)
+
+	for id, want := range map[string]string{running.ID: `"progress_percent":75`, canceled.ID: `"progress_percent":null`} {
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, newReq(t, http.MethodGet, "/api/v1/jobs/"+id, nil))
+		if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), want) {
+			t.Fatalf("job %s: status %d, want %s in %s", id, rr.Code, want, rr.Body)
+		}
+	}
+}

@@ -157,6 +157,9 @@ type jobDetailResponse struct {
 
 	Steps      []stepResponse     `json:"steps"`
 	TaskCounts taskCountsResponse `json:"task_counts"`
+	// ProgressPercent is the job's completion, 0-100, or null when it has no
+	// non-canceled tasks.
+	ProgressPercent *float64 `json:"progress_percent"`
 	// FailureSummary aggregates the job's failed tasks by failure reason. Nil
 	// when the job has no failed tasks with a recorded reason.
 	FailureSummary *failureSummaryResponse `json:"failure_summary,omitempty"`
@@ -189,6 +192,9 @@ type jobListItemResponse struct {
 	jobResponse
 
 	TaskCounts taskCountsResponse `json:"task_counts"`
+	// ProgressPercent is the job's completion, 0-100, or null when it has no
+	// non-canceled tasks.
+	ProgressPercent *float64 `json:"progress_percent"`
 }
 
 // jobListResponse is the paginated result returned by GET /api/v1/jobs.
@@ -467,6 +473,11 @@ func (h *jobHandler) listJobs(w http.ResponseWriter, r *http.Request) {
 				unschedulable = 0
 			}
 			item.TaskCounts = toTaskCountsResponse(counts, unschedulable)
+			running, rErr := h.store.RunningProgressByJob(ctx, j.ID)
+			if rErr != nil {
+				running = 0
+			}
+			item.ProgressPercent = progressPercent(counts, running)
 		}
 		resp.Items[i] = item
 	}
@@ -513,6 +524,13 @@ func (h *jobHandler) getJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	runningProgress, err := h.store.RunningProgressByJob(ctx, id)
+	if err != nil {
+		h.logger.ErrorContext(ctx, "jobs: running progress failed", slog.String("id", id), slog.Any("error", err))
+		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve task counts")
+		return
+	}
+
 	stepResps := make([]stepResponse, len(steps))
 	for i, s := range steps {
 		stepResps[i] = toStepResponse(s)
@@ -528,6 +546,8 @@ func (h *jobHandler) getJob(w http.ResponseWriter, r *http.Request) {
 		jobResponse: jr,
 		Steps:       stepResps,
 		TaskCounts:  toTaskCountsResponse(taskCounts, unschedulableCount),
+
+		ProgressPercent: progressPercent(taskCounts, runningProgress),
 	}
 
 	// Resolved retry policy (job -> queue -> farm -> server default). Best
@@ -1004,6 +1024,23 @@ func toTaskCountsResponse(counts map[store.TaskStatus]int, unschedulable int) ta
 		}
 	}
 	return tc
+}
+
+// progressPercent is the job's completion as a percent: succeeded tasks plus
+// the running tasks' progress (a fraction of one task each), over every task
+// that has not been canceled. It is nil when no such task exists.
+func progressPercent(counts map[store.TaskStatus]int, running float64) *float64 {
+	total := 0
+	for _, n := range counts {
+		total += n
+	}
+	denom := total - counts[store.TaskStatusCanceled]
+	if denom <= 0 {
+		return nil
+	}
+	pct := (float64(counts[store.TaskStatusSucceeded]) + running) / float64(denom) * 100
+	pct = max(0, min(100, pct))
+	return &pct
 }
 
 // ── Format detection ──────────────────────────────────────────────────────────

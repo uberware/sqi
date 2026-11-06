@@ -283,6 +283,16 @@ components:
           description: >-
             Aggregate task counts by status. Present on job list items and job
             detail; omitted from the create-job response.
+        progress_percent:
+          type: number
+          nullable: true
+          minimum: 0
+          maximum: 100
+          description: >-
+            Job completion: (succeeded tasks + the running tasks' progress)
+            over all non-canceled tasks, as a percent. Null when the job has
+            no non-canceled tasks. Present on job list items and job detail;
+            omitted from the create-job response.
         failed_attempts:
           type: integer
           description: Cumulative count of genuine task failures for this job.
@@ -382,6 +392,14 @@ components:
                 $ref: "#/components/schemas/Step"
             task_counts:
               $ref: "#/components/schemas/TaskCounts"
+            progress_percent:
+              type: number
+              nullable: true
+              minimum: 0
+              maximum: 100
+              description: >-
+                Job completion percent; null when the job has no non-canceled
+                tasks.
             failure_summary:
               $ref: "#/components/schemas/FailureSummary"
               description: >-
@@ -554,6 +572,20 @@ components:
             Set and in the future while a ready task is backing off after a
             failed attempt; the task will not be assigned to a worker until
             this time passes.
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: >-
+            Latest progress percent of the task's latest attempt. Omitted until
+            it reports one.
+        status_text:
+          type: string
+          description: Latest status text the task reported. Omitted when empty.
+        progress_at:
+          type: string
+          format: date-time
+          description: When the latest progress snapshot was reported.
 
     TaskList:
       type: object
@@ -651,6 +683,20 @@ components:
           format: date-time
           nullable: true
           description: Null while the attempt is running.
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: >-
+            Latest progress percent the attempt reported. Omitted until it
+            reports one.
+        status_text:
+          type: string
+          description: Latest status text the attempt reported. Omitted when empty.
+        progress_at:
+          type: string
+          format: date-time
+          description: When the latest progress snapshot was reported.
 
     TaskAttemptsResponse:
       type: object
