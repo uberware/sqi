@@ -948,6 +948,7 @@ jobs:
           expected=(
             TestHA_ExactlyOneLeaderUnderContention
             TestHA_CrashFailover
+            TestHA_ProgressSurvivesFailover
             TestHA_PauseFailover
             TestHA_NoDoubleAssignment
             TestHA_GracefulHandover

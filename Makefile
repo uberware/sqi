@@ -463,7 +463,7 @@ test-nats-cluster: ## Run the external-broker tests against a real 3-node NATS c
 # scripts/test-ha.sh. Runs on NATS_IMAGE (the current image by default).
 #
 # Exits 0 when Docker is unavailable, and every test skips without the rig, so
-# a local run has passed only when it prints nine `--- PASS: TestHA_` lines.
+# a local run has passed only when it prints ten `--- PASS: TestHA_` lines.
 .PHONY: test-ha
 test-ha: ## Run the high-availability tests: real servers on PostgreSQL and a 3-node NATS cluster in Docker
 	NATS_IMAGE='$(NATS_IMAGE)' TEST_FLAGS='$(TEST_FLAGS)' bash scripts/test-ha.sh
