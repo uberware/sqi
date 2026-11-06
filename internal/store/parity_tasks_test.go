@@ -353,3 +353,68 @@ func TestParity_RunningProgressByJob(t *testing.T) {
 		})
 	}
 }
+
+func TestParity_RunningProgressByJobs(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			at := time.Now().UTC()
+
+			// g: two snapshots, one running task with none, one succeeded at 100.
+			g := seedStepA(t, st, graphOpts{jobStatus: store.JobStatusRunning},
+				store.TaskStatusRunning, store.TaskStatusRunning, store.TaskStatusRunning, store.TaskStatusRunning)
+			ts := g.Tasks["a"]
+			recordProgress(t, st, g.Attempts[ts[0].ID], 40, "", at)
+			recordProgress(t, st, g.Attempts[ts[1].ID], 25, "", at)
+			recordProgress(t, st, g.Attempts[ts[3].ID], 100, "", at)
+			if res, err := st.CompleteTaskAttempt(ctx, store.AttemptCompletion{
+				AttemptID: g.Attempts[ts[3].ID].ID, TaskID: ts[3].ID, TaskStatus: store.TaskStatusSucceeded,
+				AttemptStatus: store.AttemptStatusSucceeded, EndedAt: time.Now().UTC(),
+			}); err != nil || !res.Applied {
+				t.Fatalf("CompleteTaskAttempt = (%+v, %v)", res, err)
+			}
+			// h: a single running task.
+			h := seedStepA(t, st, graphOpts{jobStatus: store.JobStatusRunning}, store.TaskStatusRunning)
+			recordProgress(t, st, h.Attempts[h.Tasks["a"][0].ID], 90, "", at)
+			// idle: nothing running.
+			idle := seedStepA(t, st, graphOpts{jobStatus: store.JobStatusRunning}, store.TaskStatusReady)
+			// outside: not asked for, must not leak.
+			outside := seedStepA(t, st, graphOpts{jobStatus: store.JobStatusRunning}, store.TaskStatusRunning)
+			recordProgress(t, st, outside.Attempts[outside.Tasks["a"][0].ID], 77, "", at)
+
+			unknown := uuid.NewString()
+			ids := []string{g.Job.ID, h.Job.ID, idle.Job.ID, unknown}
+			got, err := st.RunningProgressByJobs(ctx, ids)
+			if err != nil {
+				t.Fatalf("RunningProgressByJobs: %v", err)
+			}
+			if len(got) != 2 {
+				t.Fatalf("got %v, want exactly the two jobs with running tasks", got)
+			}
+			if _, ok := got[idle.Job.ID]; ok {
+				t.Fatalf("job without running tasks present: %v", got)
+			}
+			if _, ok := got[unknown]; ok {
+				t.Fatalf("unknown job present: %v", got)
+			}
+			if _, ok := got[outside.Job.ID]; ok {
+				t.Fatalf("unrequested job leaked: %v", got)
+			}
+			if math.Abs(got[g.Job.ID]-0.65) > 1e-9 || math.Abs(got[h.Job.ID]-0.9) > 1e-9 {
+				t.Fatalf("got %v, want g=0.65 h=0.9", got)
+			}
+			for _, id := range ids {
+				single, err := st.RunningProgressByJob(ctx, id)
+				if err != nil || single != got[id] {
+					t.Fatalf("job %s: single = (%v, %v), batch = %v", id, single, err, got[id])
+				}
+			}
+
+			for _, in := range [][]string{nil, {}} {
+				if m, err := st.RunningProgressByJobs(ctx, in); err != nil || m == nil || len(m) != 0 {
+					t.Fatalf("empty input = (%v, %v), want empty non-nil map", m, err)
+				}
+			}
+		})
+	}
+}

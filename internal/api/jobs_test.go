@@ -14,6 +14,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1836,5 +1837,108 @@ func TestGetJob_ProgressPercent(t *testing.T) {
 		if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), want) {
 			t.Fatalf("job %s: status %d, want %s in %s", id, rr.Code, want, rr.Body)
 		}
+	}
+}
+
+// progressCallStore counts progress lookups and can fail the batched one.
+type progressCallStore struct {
+	store.Store
+
+	batchCalls  int
+	batchedIDs  []string
+	singleCalls int
+	batchErr    error
+}
+
+func (s *progressCallStore) RunningProgressByJobs(ctx context.Context, ids []string) (map[string]float64, error) {
+	s.batchCalls++
+	s.batchedIDs = append(s.batchedIDs, ids...)
+	if s.batchErr != nil {
+		return nil, s.batchErr
+	}
+	return s.Store.RunningProgressByJobs(ctx, ids)
+}
+
+func (s *progressCallStore) RunningProgressByJob(ctx context.Context, id string) (float64, error) {
+	s.singleCalls++
+	return s.Store.RunningProgressByJob(ctx, id)
+}
+
+func listProgressPercents(t *testing.T, st store.Store) map[string]string {
+	t.Helper()
+	rr := httptest.NewRecorder()
+	newJobRouter(st, &fakeScheduler{}).ServeHTTP(rr, newUnscopedJobsReq(t, "/api/v1/jobs"))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body)
+	}
+	var resp struct {
+		Items []map[string]json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, it := range resp.Items {
+		var id string
+		_ = json.Unmarshal(it["id"], &id) //nolint:errcheck // test decode
+		got[id] = string(it["progress_percent"])
+	}
+	return got
+}
+
+func TestListJobs_ProgressBatchedAcrossPage(t *testing.T) {
+	base := fake.New()
+	st := &progressCallStore{Store: base}
+	// Each job: one succeeded task and one running task at the given percent.
+	want := map[string]string{}
+	var runningIDs []string
+	for _, pct := range []int{20, 50, 80} {
+		j, tasks := seedJobTasks(t, base, store.JobStatusRunning,
+			store.Task{Name: "a", Status: store.TaskStatusSucceeded},
+			store.Task{Name: "b", Status: store.TaskStatusRunning})
+		recordProgress(t, base, tasks[1].ID, pct, "", time.Now().UTC())
+		want[j.ID] = strconv.FormatFloat(50+float64(pct)/2, 'f', -1, 64)
+		runningIDs = append(runningIDs, j.ID)
+	}
+	idle, _ := seedJobTasks(t, base, store.JobStatusRunning,
+		store.Task{Name: "c", Status: store.TaskStatusSucceeded},
+		store.Task{Name: "d", Status: store.TaskStatusReady})
+	want[idle.ID] = "50"
+
+	got := listProgressPercents(t, st)
+	for id, w := range want {
+		if got[id] != w {
+			t.Errorf("job %s progress_percent = %s, want %s", id, got[id], w)
+		}
+	}
+	if st.batchCalls != 1 || st.singleCalls != 0 {
+		t.Fatalf("batch calls = %d, single calls = %d; want 1 and 0", st.batchCalls, st.singleCalls)
+	}
+	if len(st.batchedIDs) != len(runningIDs) {
+		t.Fatalf("batched %v, want only the %d jobs with running tasks", st.batchedIDs, len(runningIDs))
+	}
+}
+
+func TestListJobs_NoRunningTasksSkipsProgressLookup(t *testing.T) {
+	base := fake.New()
+	st := &progressCallStore{Store: base}
+	seedJobTasks(t, base, store.JobStatusCompleted, store.Task{Name: "a", Status: store.TaskStatusSucceeded})
+	listProgressPercents(t, st)
+	if st.batchCalls != 0 || st.singleCalls != 0 {
+		t.Fatalf("progress lookups = %d batch, %d single; want none", st.batchCalls, st.singleCalls)
+	}
+}
+
+func TestListJobs_ProgressBatchErrorDegradesToZero(t *testing.T) {
+	base := fake.New()
+	st := &progressCallStore{Store: base, batchErr: errors.New("read pool unavailable")}
+	j, tasks := seedJobTasks(t, base, store.JobStatusRunning,
+		store.Task{Name: "a", Status: store.TaskStatusSucceeded},
+		store.Task{Name: "b", Status: store.TaskStatusRunning})
+	recordProgress(t, base, tasks[1].ID, 50, "", time.Now().UTC())
+
+	// The running task contributes nothing, leaving the succeeded share of 1/2.
+	if got := listProgressPercents(t, st)[j.ID]; got != "50" {
+		t.Fatalf("progress_percent = %s, want 50", got)
 	}
 }

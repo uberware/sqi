@@ -128,4 +128,9 @@ type TaskAttemptStore interface {
 	// their latest attempt's progress as a fraction of one (a task with no
 	// reported progress counts as zero). An unknown job returns 0.
 	RunningProgressByJob(ctx context.Context, jobID string) (float64, error)
+
+	// RunningProgressByJobs is RunningProgressByJob for many jobs in one
+	// statement. A job with no running tasks, or an unknown one, is absent from
+	// the map (read it as zero). No jobs returns an empty map without querying.
+	RunningProgressByJobs(ctx context.Context, jobIDs []string) (map[string]float64, error)
 }

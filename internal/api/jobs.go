@@ -457,26 +457,34 @@ func (h *jobHandler) listJobs(w http.ResponseWriter, r *http.Request) {
 		Limit:  page.Limit,
 		Offset: page.Offset,
 	}
+	// Per-job count queries, mirroring resolveQueueNames' per-row enrichment
+	// (the pre-existing CountTasksByJob pattern). A count failure degrades to
+	// zero counts rather than failing the list.
+	counts := make([]map[store.TaskStatus]int, len(page.Items))
+	var runningJobs []string
+	for i, j := range page.Items {
+		c, err := h.store.CountTasksByJob(ctx, j.ID)
+		if err != nil {
+			continue
+		}
+		counts[i] = c
+		if c[store.TaskStatusRunning] > 0 {
+			runningJobs = append(runningJobs, j.ID)
+		}
+	}
+	running := h.runningProgressBatch(ctx, runningJobs)
+
 	for i, j := range page.Items {
 		r := toJobResponse(j)
 		r.QueueName = queueNames[j.QueueID]
 		item := jobListItemResponse{jobResponse: r}
-		// Per-job count queries, mirroring resolveQueueNames' per-row
-		// enrichment. This is N additional queries per list call (one pair
-		// per job, matching the pre-existing CountTasksByJob pattern rather
-		// than introducing a new N+1). A count failure degrades to zero
-		// counts rather than failing the list.
-		if counts, err := h.store.CountTasksByJob(ctx, j.ID); err == nil {
+		if counts[i] != nil {
 			unschedulable, uErr := h.store.CountUnschedulableTasksByJob(ctx, j.ID)
 			if uErr != nil {
 				unschedulable = 0
 			}
-			item.TaskCounts = toTaskCountsResponse(counts, unschedulable)
-			running, rErr := h.runningProgress(ctx, j.ID, counts)
-			if rErr != nil {
-				running = 0
-			}
-			item.ProgressPercent = progressPercent(counts, running)
+			item.TaskCounts = toTaskCountsResponse(counts[i], unschedulable)
+			item.ProgressPercent = progressPercent(counts[i], running[j.ID])
 		}
 		resp.Items[i] = item
 	}
@@ -484,7 +492,22 @@ func (h *jobHandler) listJobs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// runningProgress is the sum of the job's running tasks' progress. A job with
+// runningProgressBatch sums each listed job's running tasks' progress in one query.
+// A failure degrades every job to zero running progress (absent from the map)
+// rather than failing the list. No jobs skips the query.
+func (h *jobHandler) runningProgressBatch(ctx context.Context, jobIDs []string) map[string]float64 {
+	if len(jobIDs) == 0 {
+		return nil
+	}
+	m, err := h.store.RunningProgressByJobs(ctx, jobIDs)
+	if err != nil {
+		h.logger.WarnContext(ctx, "jobs: running progress failed", slog.Any("error", err))
+		return nil
+	}
+	return m
+}
+
+// runningProgress is the sum of one job's running tasks' progress. A job with
 // no running task sums to zero, so the query is skipped.
 func (h *jobHandler) runningProgress(ctx context.Context, jobID string, counts map[store.TaskStatus]int) (float64, error) {
 	if counts[store.TaskStatusRunning] == 0 {

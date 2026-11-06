@@ -197,3 +197,41 @@ func (s *Store) RunningProgressByJob(ctx context.Context, jobID string) (float64
 	}
 	return float64(sum) / 100.0, nil
 }
+
+// sqlRunningProgressByJobs is sqlRunningProgressByJob grouped over a list of
+// jobs; the IN list is completed with one placeholder per job.
+const sqlRunningProgressByJobs = `
+SELECT t.job_id, COALESCE(SUM(COALESCE(a.progress, 0)), 0)
+FROM   tasks t
+JOIN   task_attempts a ON a.task_id = t.id
+WHERE  t.status = 'running'
+  AND  a.attempt_number = (SELECT MAX(m.attempt_number) FROM task_attempts m WHERE m.task_id = t.id)
+  AND  t.job_id IN (`
+
+// RunningProgressByJobs implements [store.TaskAttemptStore]. Sums stay integer
+// per job and are divided once, as in RunningProgressByJob.
+func (s *Store) RunningProgressByJobs(ctx context.Context, jobIDs []string) (map[string]float64, error) {
+	out := make(map[string]float64, len(jobIDs))
+	if len(jobIDs) == 0 {
+		return out, nil
+	}
+	args := make([]any, len(jobIDs))
+	for i, id := range jobIDs {
+		args[i] = id
+	}
+	// qmarks holds only "?" marks; every id is bound.
+	rows, err := s.r.QueryContext(ctx, sqlRunningProgressByJobs+qmarks(len(jobIDs))+`) GROUP BY t.job_id`, args...)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var sum int64
+		if err := rows.Scan(&id, &sum); err != nil {
+			return nil, mapErr(err)
+		}
+		out[id] = float64(sum) / 100.0
+	}
+	return out, mapErr(rows.Err())
+}

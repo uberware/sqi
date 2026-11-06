@@ -161,3 +161,37 @@ func (s *Store) RunningProgressByJob(_ context.Context, jobID string) (float64, 
 	}
 	return float64(sum) / 100.0, nil
 }
+
+// RunningProgressByJobs implements [store.TaskAttemptStore].
+func (s *Store) RunningProgressByJobs(_ context.Context, jobIDs []string) (map[string]float64, error) {
+	out := make(map[string]float64, len(jobIDs))
+	if len(jobIDs) == 0 {
+		return out, nil
+	}
+	want := make(map[string]struct{}, len(jobIDs))
+	for _, id := range jobIDs {
+		want[id] = struct{}{}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	sums := map[string]int64{}
+	for _, t := range s.tasks {
+		if _, ok := want[t.JobID]; !ok || t.Status != store.TaskStatusRunning {
+			continue
+		}
+		a, ok := s.latestAttemptLocked(t.ID)
+		if !ok {
+			continue
+		}
+		sums[t.JobID] += 0 // a running task without a snapshot still counts the job as present
+		if a.Progress != nil {
+			sums[t.JobID] += int64(*a.Progress)
+		}
+	}
+	for id, sum := range sums {
+		out[id] = float64(sum) / 100.0
+	}
+	return out, nil
+}
