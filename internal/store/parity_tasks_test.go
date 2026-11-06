@@ -5,6 +5,7 @@ package store_test
 import (
 	"errors"
 	"maps"
+	"math"
 	"testing"
 	"time"
 
@@ -235,6 +236,108 @@ func TestParity_LatestTaskAttempt(t *testing.T) {
 			// Another task's attempts do not leak in.
 			if _, err := st.LatestTaskAttempt(ctx, g.Tasks["a"][1].ID); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("sibling task: err = %v, want ErrNotFound", err)
+			}
+		})
+	}
+}
+
+func recordProgress(t *testing.T, st store.Store, a store.TaskAttempt, progress int, text string, at time.Time) {
+	t.Helper()
+	out, err := st.RecordAttemptProgress(t.Context(), store.AttemptProgress{
+		AttemptID: a.ID, TaskID: a.TaskID, Progress: &progress, StatusText: text, At: at,
+	})
+	if err != nil || out != store.ProgressRecorded {
+		t.Fatalf("RecordAttemptProgress(%s) = (%v, %v), want recorded", a.TaskID, out, err)
+	}
+}
+
+func TestParity_LatestAttemptProgress(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			t0 := time.Now().UTC().Truncate(time.Microsecond)
+			t1 := t0.Add(time.Second)
+			g := seedStepA(t, st, graphOpts{jobStatus: store.JobStatusRunning},
+				store.TaskStatusRunning, store.TaskStatusRunning, store.TaskStatusRunning, store.TaskStatusReady)
+			a, b, c, d := g.Tasks["a"][0], g.Tasks["a"][1], g.Tasks["a"][2], g.Tasks["a"][3]
+
+			recordProgress(t, st, g.Attempts[a.ID], 42, "frame 3", t0)
+
+			recordProgress(t, st, g.Attempts[c.ID], 100, "done", t1)
+			res, err := st.CompleteTaskAttempt(ctx, store.AttemptCompletion{
+				AttemptID: g.Attempts[c.ID].ID, TaskID: c.ID, TaskStatus: store.TaskStatusSucceeded,
+				AttemptStatus: store.AttemptStatusSucceeded, EndedAt: time.Now().UTC(),
+			})
+			if err != nil || !res.Applied {
+				t.Fatalf("CompleteTaskAttempt = (%+v, %v), want applied", res, err)
+			}
+
+			// D: a snapshot on an attempt that is then superseded by a new one.
+			first := storetest.Running(t, st, leaseReq(d))
+			recordProgress(t, st, first, 77, "old", t0)
+			now := time.Now().UTC()
+			if _, _, ok, err := st.RecordTaskFailure(ctx, first.ID, d.ID, nil, "", "boom", now); err != nil || !ok {
+				t.Fatalf("RecordTaskFailure = (%v, %v)", ok, err)
+			}
+			if ok, err := st.RequeueTaskForRetry(ctx, d.ID, first.ID, now.Add(-time.Minute), now); err != nil || !ok {
+				t.Fatalf("RequeueTaskForRetry = (%v, %v)", ok, err)
+			}
+			storetest.Lease(t, st, leaseReq(d))
+
+			unknown := uuid.NewString()
+			got, err := st.LatestAttemptProgress(ctx, []string{a.ID, b.ID, c.ID, d.ID, unknown})
+			if err != nil {
+				t.Fatalf("LatestAttemptProgress: %v", err)
+			}
+			if len(got) != 2 {
+				t.Fatalf("got %d entries %+v, want exactly A and C", len(got), got)
+			}
+			check := func(label, id string, pct int, text string, at time.Time) {
+				t.Helper()
+				p, ok := got[id]
+				if !ok || p.Progress == nil || *p.Progress != pct || p.StatusText != text || p.ProgressAt == nil || !p.ProgressAt.Equal(at) {
+					t.Fatalf("%s = %+v (present %v), want %d %q %v", label, p, ok, pct, text, at)
+				}
+			}
+			check("A", a.ID, 42, "frame 3", t0)
+			check("C", c.ID, 100, "done", t1)
+
+			for _, in := range [][]string{nil, {}} {
+				if m, err := st.LatestAttemptProgress(ctx, in); err != nil || m == nil || len(m) != 0 {
+					t.Fatalf("empty input = (%v, %v), want empty non-nil map", m, err)
+				}
+			}
+		})
+	}
+}
+
+func TestParity_RunningProgressByJob(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			at := time.Now().UTC()
+			g := seedStepA(t, st, graphOpts{jobStatus: store.JobStatusRunning},
+				store.TaskStatusRunning, store.TaskStatusRunning, store.TaskStatusRunning, store.TaskStatusRunning)
+			ts := g.Tasks["a"]
+			recordProgress(t, st, g.Attempts[ts[0].ID], 40, "", at)
+			recordProgress(t, st, g.Attempts[ts[1].ID], 25, "", at)
+			// ts[2] reports nothing and counts as 0.
+			recordProgress(t, st, g.Attempts[ts[3].ID], 100, "", at)
+			if res, err := st.CompleteTaskAttempt(ctx, store.AttemptCompletion{
+				AttemptID: g.Attempts[ts[3].ID].ID, TaskID: ts[3].ID, TaskStatus: store.TaskStatusSucceeded,
+				AttemptStatus: store.AttemptStatusSucceeded, EndedAt: time.Now().UTC(),
+			}); err != nil || !res.Applied {
+				t.Fatalf("CompleteTaskAttempt = (%+v, %v)", res, err)
+			}
+			other := seedStepA(t, st, graphOpts{jobStatus: store.JobStatusRunning}, store.TaskStatusRunning)
+			recordProgress(t, st, other.Attempts[other.Tasks["a"][0].ID], 90, "", at)
+
+			got, err := st.RunningProgressByJob(ctx, g.Job.ID)
+			if err != nil || math.Abs(got-0.65) > 1e-9 {
+				t.Fatalf("RunningProgressByJob = (%v, %v), want 0.65", got, err)
+			}
+			if got, err := st.RunningProgressByJob(ctx, uuid.NewString()); err != nil || got != 0 {
+				t.Fatalf("unknown job = (%v, %v), want 0", got, err)
 			}
 		})
 	}

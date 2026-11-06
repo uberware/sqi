@@ -114,3 +114,45 @@ func (s *Store) ListOpenAttempts(_ context.Context, createdBefore time.Time) ([]
 	})
 	return out, nil
 }
+
+// LatestAttemptProgress implements [store.TaskAttemptStore].
+func (s *Store) LatestAttemptProgress(_ context.Context, taskIDs []string) (map[string]store.TaskProgress, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	out := make(map[string]store.TaskProgress, len(taskIDs))
+	for _, id := range taskIDs {
+		a, ok := s.latestAttemptLocked(id)
+		if !ok || (a.ProgressAt == nil && a.StatusText == "") {
+			continue
+		}
+		p := store.TaskProgress{StatusText: a.StatusText}
+		if a.Progress != nil {
+			v := *a.Progress
+			p.Progress = &v
+		}
+		if a.ProgressAt != nil {
+			at := *a.ProgressAt
+			p.ProgressAt = &at
+		}
+		out[id] = p
+	}
+	return out, nil
+}
+
+// RunningProgressByJob implements [store.TaskAttemptStore].
+func (s *Store) RunningProgressByJob(_ context.Context, jobID string) (float64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var sum int64
+	for _, t := range s.tasks {
+		if t.JobID != jobID || t.Status != store.TaskStatusRunning {
+			continue
+		}
+		if a, ok := s.latestAttemptLocked(t.ID); ok && a.Progress != nil {
+			sum += int64(*a.Progress)
+		}
+	}
+	return float64(sum) / 100.0, nil
+}

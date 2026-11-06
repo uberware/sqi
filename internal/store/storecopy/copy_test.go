@@ -284,11 +284,11 @@ func TestStoreCopy_RefusesATargetAtAnotherVersion(t *testing.T) {
 	})
 	t.Run("behind", func(t *testing.T) {
 		dst := storetest.PostgresDSN(t)
-		execPG(t, dst, `DELETE FROM goose_db_version WHERE version_id = 41`)
+		execPG(t, dst, `DELETE FROM goose_db_version WHERE version_id = 42`)
 		_, err := storecopy.Copy(t.Context(), storecopy.Options{SQLitePath: src, PostgresDSN: dst})
 		if err == nil || !strings.Contains(err.Error(), "use an empty database") ||
 			!strings.Contains(err.Error(), "drop and recreate") {
-			t.Fatalf("Copy into a schema-40 target = %v, want a refusal saying what to do", err)
+			t.Fatalf("Copy into a schema-41 target = %v, want a refusal saying what to do", err)
 		}
 	})
 }

@@ -192,6 +192,7 @@ var concatAllowed = []string{
 	`s.d.CIEqual("username")`, // store.go prepareAll: Dialect method, literal column
 	`s.d.CIEqual("name")`,     // store.go prepareAll (products): Dialect method, literal column
 	"qmarks(len(deps))",       // finalize.go: scan.go qmarks, only "?" and ","
+	"qmarks(len(taskIDs))",    // task_attempt.go LatestAttemptProgress: scan.go qmarks output, only ? marks and ","
 	"placeholders",            // job.go expiredJobsQuery, task.go RetryTasks and reclaimStaleBatch, attemptclose.go closeTasksAttemptsTx: scan.go qmarks output, only ? marks and ","
 	"string(placeholders)",    // task.go ListTasks: a byte slice that only receives ',' and '?'
 	"inSuffix",                // task.go RetryTasks: "" or a literal around a "?" list

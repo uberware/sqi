@@ -142,3 +142,64 @@ func (s *Store) ListTaskAttempts(ctx context.Context, taskID string) ([]store.Ta
 	}
 	return attempts, rows.Err()
 }
+
+// sqlLatestAttemptProgress selects the snapshot of each listed task's latest
+// attempt; the IN list is completed with one placeholder per task.
+const sqlLatestAttemptProgress = `
+SELECT a.task_id, a.progress, a.status_text, a.progress_at
+FROM   task_attempts a
+WHERE  a.attempt_number = (SELECT MAX(m.attempt_number) FROM task_attempts m WHERE m.task_id = a.task_id)
+  AND  (a.progress_at IS NOT NULL OR a.status_text != '')
+  AND  a.task_id IN (`
+
+// LatestAttemptProgress implements [store.TaskAttemptStore].
+func (s *Store) LatestAttemptProgress(ctx context.Context, taskIDs []string) (map[string]store.TaskProgress, error) {
+	out := make(map[string]store.TaskProgress, len(taskIDs))
+	if len(taskIDs) == 0 {
+		return out, nil
+	}
+	args := make([]any, len(taskIDs))
+	for i, id := range taskIDs {
+		args[i] = id
+	}
+	// qmarks holds only "?" marks; every id is bound.
+	rows, err := s.r.QueryContext(ctx, sqlLatestAttemptProgress+qmarks(len(taskIDs))+`)`, args...)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var progress sql.NullInt64
+		var progressAt sql.NullString
+		var p store.TaskProgress
+		if err := rows.Scan(&id, &progress, &p.StatusText, &progressAt); err != nil {
+			return nil, mapErr(err)
+		}
+		if progress.Valid {
+			v := int(progress.Int64)
+			p.Progress = &v
+		}
+		p.ProgressAt = nullTextToTime(progressAt)
+		out[id] = p
+	}
+	return out, mapErr(rows.Err())
+}
+
+const sqlRunningProgressByJob = `
+SELECT COALESCE(SUM(COALESCE(a.progress, 0)), 0)
+FROM   tasks t
+JOIN   task_attempts a ON a.task_id = t.id
+WHERE  t.job_id = ? AND t.status = 'running'
+  AND  a.attempt_number = (SELECT MAX(m.attempt_number) FROM task_attempts m WHERE m.task_id = t.id)`
+
+// RunningProgressByJob implements [store.TaskAttemptStore]. The percents are
+// summed as integers and divided once, so the result does not depend on the
+// backend's numeric type.
+func (s *Store) RunningProgressByJob(ctx context.Context, jobID string) (float64, error) {
+	var sum int64
+	if err := s.r.QueryRowContext(ctx, sqlRunningProgressByJob, jobID).Scan(&sum); err != nil {
+		return 0, mapErr(err)
+	}
+	return float64(sum) / 100.0, nil
+}

@@ -7,7 +7,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -218,28 +217,32 @@ func migrateTo(t *testing.T, dsn string, v int64) {
 	}
 }
 
-// workerBrokerColumns are the columns migration 00041 adds to workers, which
-// every store statement over workers names. Open prepares those statements, so
-// a database one migration behind can only be opened by a store if the
-// columns are already there: behindByOne gives a test that state, without
-// migration 00041's other changes.
-var workerBrokerColumns = []string{"registration_broker_at", "heartbeat_broker_at"}
+// attemptProgressColumns are the task_attempts columns migration 00042 adds,
+// which every store statement over attempts names. Open prepares those
+// statements, so a database one migration behind can only be opened by a store
+// if the columns are already there: behindByOne gives a test that state,
+// without migration 00042's other changes.
+var attemptProgressColumns = []string{"progress BIGINT", "status_text TEXT NOT NULL DEFAULT ''", "progress_at ts"}
 
-// behindByOne brings an empty database to version 40, with workerBrokerColumns
-// added by hand so that a store can be opened over it.
+// behindByOne brings an empty database to version 41, with
+// attemptProgressColumns added by hand so that a store can be opened over it.
 func behindByOne(t *testing.T, dsn string) {
 	t.Helper()
-	migrateTo(t, dsn, 40)
-	alterWorkerBrokerColumns(t, dsn, "ADD COLUMN %s ts")
+	migrateTo(t, dsn, 41)
+	alterAttemptProgressColumns(t, dsn, true)
 }
 
-// alterWorkerBrokerColumns applies the ALTER TABLE workers action format to
-// each of workerBrokerColumns.
-func alterWorkerBrokerColumns(t *testing.T, dsn, format string) {
+// alterAttemptProgressColumns adds attemptProgressColumns to task_attempts, or
+// drops them.
+func alterAttemptProgressColumns(t *testing.T, dsn string, add bool) {
 	t.Helper()
 	db := openRaw(t, dsn)
-	for _, col := range workerBrokerColumns {
-		if _, err := db.ExecContext(t.Context(), `ALTER TABLE workers `+fmt.Sprintf(format, col)); err != nil {
+	for _, col := range attemptProgressColumns {
+		action := `DROP COLUMN ` + strings.Fields(col)[0]
+		if add {
+			action = `ADD COLUMN ` + col
+		}
+		if _, err := db.ExecContext(t.Context(), `ALTER TABLE task_attempts `+action); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -264,7 +267,7 @@ func TestHALock_PendingMigrationWithOtherServerRefused(t *testing.T) {
 			t.Errorf("error %q lacks %q", err, want)
 		}
 	}
-	if v, err := postgres.SchemaVersionDSN(t.Context(), dsn); err != nil || v != 40 {
+	if v, err := postgres.SchemaVersionDSN(t.Context(), dsn); err != nil || v != 41 {
 		t.Fatalf("schema moved to %d (%v); the refused server must not migrate", v, err)
 	}
 
@@ -273,10 +276,10 @@ func TestHALock_PendingMigrationWithOtherServerRefused(t *testing.T) {
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
-	alterWorkerBrokerColumns(t, dsn, "DROP COLUMN %s")
+	alterAttemptProgressColumns(t, dsn, false)
 	openStore(t, dsn, haServerOpts())
-	if v, err := postgres.SchemaVersionDSN(t.Context(), dsn); err != nil || v != 41 {
-		t.Fatalf("SchemaVersion = %d, %v; want 41", v, err)
+	if v, err := postgres.SchemaVersionDSN(t.Context(), dsn); err != nil || v != 42 {
+		t.Fatalf("SchemaVersion = %d, %v; want 42", v, err)
 	}
 }
 

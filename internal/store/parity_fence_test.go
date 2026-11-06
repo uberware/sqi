@@ -503,9 +503,10 @@ var fenceReadOnly = []string{
 	"GetUserByExternalID", "GetUserByUsername", "GetWorker", "GetWorkerJoinTokenByHash",
 	"ListAPIKeysForUser", "ListActiveWorkerCredentials", "ListBlockedJobs", "ListComputeLocations",
 	"ListDependents", "ListFarms", "ListJobDependencyIDs", "ListJobIDsWithPendingSteps", "ListJobs",
-	"ListOpenAttempts", "ListProducts", "ListQueues", "ListReadyTasks", "ListStaleWorkers", "ListSteps",
+	"LatestAttemptProgress", "ListOpenAttempts", "ListProducts", "ListQueues", "ListReadyTasks", "ListStaleWorkers", "ListSteps",
 	"ListStorageLocations", "ListStuckSteps", "ListTaskAttempts", "ListTaskLogs", "ListTasks",
 	"ListUsagePoolUtilization", "ListUsagePools", "ListUsers", "ListWorkers",
+	"RunningProgressByJob",
 }
 
 // fenceMutator builds, with a plain context, the rows one store write needs,

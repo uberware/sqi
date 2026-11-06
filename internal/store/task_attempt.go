@@ -86,6 +86,13 @@ type OpenAttempt struct {
 	CreatedAt time.Time
 }
 
+// TaskProgress is the latest progress snapshot of a task's latest attempt.
+type TaskProgress struct {
+	Progress   *int
+	StatusText string
+	ProgressAt *time.Time
+}
+
 // TaskAttemptStore is the persistence interface for [TaskAttempt] records.
 type TaskAttemptStore interface {
 	// GetTaskAttempt returns the attempt with the given ID, or [ErrNotFound].
@@ -108,4 +115,16 @@ type TaskAttemptStore interface {
 	// reconciliation) go through ReclaimTaskAttempt, which re-checks openness
 	// under the job's anchor.
 	ListOpenAttempts(ctx context.Context, createdBefore time.Time) ([]OpenAttempt, error)
+
+	// LatestAttemptProgress returns, for each given task, the progress snapshot
+	// of its latest attempt, whatever that attempt's status. A task with no
+	// attempt, or whose latest attempt has no snapshot (no ProgressAt and no
+	// status text), is absent from the map. No tasks returns an empty map
+	// without querying.
+	LatestAttemptProgress(ctx context.Context, taskIDs []string) (map[string]TaskProgress, error)
+
+	// RunningProgressByJob returns the sum, over the job's running tasks, of
+	// their latest attempt's progress as a fraction of one (a task with no
+	// reported progress counts as zero). An unknown job returns 0.
+	RunningProgressByJob(ctx context.Context, jobID string) (float64, error)
 }
