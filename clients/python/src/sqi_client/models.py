@@ -224,6 +224,13 @@ def _opt_int(value: Any) -> int | None:
     return value if isinstance(value, int) else None
 
 
+def _opt_float(value: Any) -> float | None:
+    # bool is a subclass of int in Python; never let True/False masquerade as 1.0/0.0.
+    if isinstance(value, bool):
+        return None
+    return float(value) if isinstance(value, (int, float)) else None
+
+
 def _as_bool(value: Any) -> bool:
     return value if isinstance(value, bool) else False
 
@@ -516,6 +523,9 @@ class Job:
     """IDs of upstream jobs this job waits for (whole-job cross-job
     dependencies). Populated only by :meth:`~sqi_client.client.SqiClient.get_job`
     (the ``JobDetail`` response); empty on a list-level job."""
+    progress_percent: float | None = None
+    """Overall completion of the job, 0-100. ``None`` when the server reports
+    no progress (``null``) or predates this field."""
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Job:
@@ -567,6 +577,7 @@ class Job:
                 else None
             ),
             depends_on=_str_list(data.get("depends_on")),
+            progress_percent=_opt_float(data.get("progress_percent")),
         )
 
 
@@ -590,6 +601,13 @@ class Task:
     failure_reason: str | None = None
     """Human-readable reason the task's most recent attempt failed. ``None``
     when the task has not failed or the server predates this field."""
+    progress: int | None = None
+    """Completion of the running attempt, 0-100. ``None`` when the task has
+    reported no progress or the server predates this field."""
+    status_text: str | None = None
+    """Free-form status line the task last reported. ``None`` when absent."""
+    progress_at: datetime | None = None
+    """When the task last reported progress. ``None`` when absent."""
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Task:
@@ -611,6 +629,9 @@ class Task:
             assigned_worker_id=_opt_str(data.get("assigned_worker_id")),
             assigned_at=_opt_datetime(data.get("assigned_at")),
             failure_reason=_opt_str(data.get("failure_reason")),
+            progress=_opt_int(data.get("progress")),
+            status_text=_opt_str(data.get("status_text")),
+            progress_at=_opt_datetime(data.get("progress_at")),
         )
 
 
@@ -706,6 +727,12 @@ class TaskAttempt:
     exit_code: int | None = None
     message: str | None = None
     ended_at: datetime | None = None
+    progress: int | None = None
+    """Completion the attempt last reported, 0-100. ``None`` when absent."""
+    status_text: str | None = None
+    """Free-form status line the attempt last reported. ``None`` when absent."""
+    progress_at: datetime | None = None
+    """When the attempt last reported progress. ``None`` when absent."""
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> TaskAttempt:
@@ -723,6 +750,9 @@ class TaskAttempt:
             exit_code=_opt_int(data.get("exit_code")),
             message=_opt_str(data.get("message")),
             ended_at=_opt_datetime(data.get("ended_at")),
+            progress=_opt_int(data.get("progress")),
+            status_text=_opt_str(data.get("status_text")),
+            progress_at=_opt_datetime(data.get("progress_at")),
         )
 
 
