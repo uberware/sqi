@@ -15,6 +15,7 @@ package config
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -737,7 +738,9 @@ func LoadWithSources(configFile string, flags FlagOverrides) (WorkerConfig, Sour
 	}
 
 	// ── Environment variable layer ─────────────────────────────────────────
-	applyEnv(&cfg)
+	if err := applyEnv(&cfg); err != nil {
+		return WorkerConfig{}, Sources{}, err
+	}
 
 	// ── CLI flag layer ─────────────────────────────────────────────────────
 	if flags.LogLevel != "" {
@@ -800,68 +803,46 @@ func unmarshalConfig(data []byte, cfg *WorkerConfig) error {
 	return yaml.Unmarshal(data, cfg)
 }
 
-// parseBoolEnv parses a boolean environment variable value. Returns false for
-// any value that is not a valid bool string; invalid env values are silently
-// ignored in favor of the lower-precedence default or config-file value.
-func parseBoolEnv(s string) bool {
-	b, err := strconv.ParseBool(s)
-	if err != nil {
-		return false
+// applyEnv overlays SQI_WORKER_* environment variables onto cfg. An unset or
+// empty variable is a no-op. A number, duration or boolean that does not parse
+// is an error naming the variable, never a silent fallback: a malformed
+// SQI_WORKER_ISOLATION_REQUIRED would otherwise turn isolation off. Every
+// malformed variable is reported together via [errors.Join]. Split into
+// per-section helpers to keep cyclomatic complexity manageable.
+func applyEnv(cfg *WorkerConfig) error {
+	var errs []error
+	collect := func(err error) {
+		if err != nil {
+			errs = append(errs, err)
+		}
 	}
-	return b
-}
-
-// applyEnv overlays SQI_WORKER_* environment variables onto cfg.
-// Split into per-section helpers to keep cyclomatic complexity manageable.
-func applyEnv(cfg *WorkerConfig) {
-	applyNATSEnv(&cfg.NATS)
-	applyWorkerEnv(&cfg.Worker)
-	applyLogEnv(&cfg.Log)
-	applyMetricsEnv(&cfg.Metrics)
-	applyDiscoveryEnv(&cfg.Discovery)
-	applyLogStreamerEnv(&cfg.LogStreamer)
-	applyDiagnosticsEnv(&cfg.Diagnostics)
-	applyStagingEnv(&cfg.Staging)
+	applyNATSEnv(&cfg.NATS, collect)
+	applyWorkerEnv(&cfg.Worker, collect)
+	applyLogEnv(&cfg.Log, collect)
+	applyMetricsEnv(&cfg.Metrics, collect)
+	applyDiscoveryEnv(&cfg.Discovery, collect)
+	applyLogStreamerEnv(&cfg.LogStreamer, collect)
+	collect(setBoolEnv(&cfg.Diagnostics.Enabled, "SQI_DIAGNOSTICS_ENABLED"))
+	collect(setBoolEnv(&cfg.Staging.Defaults, "SQI_STAGING_DEFAULTS"))
 	applyCapabilitiesEnv(&cfg.Capabilities)
-	applyIsolationEnv(&cfg.Isolation)
-	applyExprEnv(&cfg.Expr)
+	applyIsolationEnv(&cfg.Isolation, collect)
+	applyExprEnv(&cfg.Expr, collect)
+	return errors.Join(errs...)
 }
 
-// applyExprEnv overlays the SQI_WORKER_EXPR_* variables onto c.
-//
-// A malformed value is IGNORED rather than rejected, matching every other
-// numeric env var in this file (applyNATSEnv, applyLogStreamerEnv): the lower
-// layer's value survives, and [Validate] still has the final say on whatever
-// value results. That is deliberately unlike internal/config's server-side
-// loader, which errors on a malformed SQI_OPENJD_EXPR_* value -- this file has
-// no error channel to report one through.
-func applyExprEnv(c *ExprConfig) {
-	setInt64Env("SQI_WORKER_EXPR_OPERATION_LIMIT", &c.OperationLimit)
-	setInt64Env("SQI_WORKER_EXPR_MEMORY_LIMIT", &c.MemoryLimit)
-	setInt64Env("SQI_WORKER_EXPR_ASSIGNMENT_POSITIONS", &c.AssignmentPositions)
-	setInt64Env("SQI_WORKER_EXPR_ASSIGNMENT_RETAINED_BYTES", &c.AssignmentRetainedBytes)
-	setInt64Env("SQI_WORKER_EXPR_LET_RETAINED_BYTES", &c.LetRetainedBytes)
+// applyExprEnv overlays the SQI_WORKER_EXPR_* variables onto c. [Validate]
+// still judges the range of whatever value results.
+func applyExprEnv(c *ExprConfig, collect func(error)) {
+	collect(setInt64Env(&c.OperationLimit, "SQI_WORKER_EXPR_OPERATION_LIMIT"))
+	collect(setInt64Env(&c.MemoryLimit, "SQI_WORKER_EXPR_MEMORY_LIMIT"))
+	collect(setInt64Env(&c.AssignmentPositions, "SQI_WORKER_EXPR_ASSIGNMENT_POSITIONS"))
+	collect(setInt64Env(&c.AssignmentRetainedBytes, "SQI_WORKER_EXPR_ASSIGNMENT_RETAINED_BYTES"))
+	collect(setInt64Env(&c.LetRetainedBytes, "SQI_WORKER_EXPR_LET_RETAINED_BYTES"))
 }
 
-// setInt64Env overwrites *dst with the parsed value of environment variable
-// name, when it is set and parses as a base-10 int64.
-func setInt64Env(name string, dst *int64) {
-	v := os.Getenv(name)
-	if v == "" {
-		return
-	}
-	if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-		*dst = n
-	}
-}
-
-func applyIsolationEnv(c *IsolationConfig) {
-	if v := os.Getenv("SQI_WORKER_ISOLATION_REQUIRED"); v != "" {
-		c.Required = parseBoolEnv(v)
-	}
-	if v := os.Getenv("SQI_WORKER_ISOLATION_PROVIDER"); v != "" {
-		c.Provider = v
-	}
+func applyIsolationEnv(c *IsolationConfig, collect func(error)) {
+	collect(setBoolEnv(&c.Required, "SQI_WORKER_ISOLATION_REQUIRED"))
+	setStringEnv(&c.Provider, "SQI_WORKER_ISOLATION_PROVIDER")
 	if v := os.Getenv("SQI_WORKER_ISOLATION_ENV_PASSTHROUGH"); v != "" {
 		c.EnvPassthrough = splitTags(v)
 	}
@@ -873,115 +854,44 @@ func applyCapabilitiesEnv(c *capabilities.CapabilitiesConfig) {
 	}
 }
 
-func applyDiagnosticsEnv(c *DiagnosticsConfig) {
-	if v := os.Getenv("SQI_DIAGNOSTICS_ENABLED"); v != "" {
-		c.Enabled = parseBoolEnv(v)
-	}
-}
-
-func applyStagingEnv(c *StagingConfig) {
-	if v := os.Getenv("SQI_STAGING_DEFAULTS"); v != "" {
-		c.Defaults = parseBoolEnv(v)
-	}
-}
-
 // applyNATSTLSEnv overlays the NATS TLS environment variables onto c. Split
 // out of [applyNATSEnv] to keep its cyclomatic complexity under the lint
-// threshold.
-func applyNATSTLSEnv(c *NATSConfig) {
-	if v := os.Getenv("SQI_WORKER_NATS_TLS_ENABLED"); v != "" {
-		c.TLSEnabled = v
-	}
-	if v := os.Getenv("SQI_WORKER_NATS_TLS_CERT_FILE"); v != "" {
-		c.TLSCertFile = v
-	}
-	if v := os.Getenv("SQI_WORKER_NATS_TLS_KEY_FILE"); v != "" {
-		c.TLSKeyFile = v
-	}
-	if v := os.Getenv("SQI_WORKER_NATS_TLS_CA_FILE"); v != "" {
-		c.TLSCAFile = v
-	}
-	if v := os.Getenv("SQI_WORKER_NATS_INSECURE_SKIP_VERIFY"); v != "" {
-		c.InsecureSkipVerify = parseBoolEnv(v)
-	}
-	if v := os.Getenv("SQI_WORKER_NATS_SERVER_TLS_CA_FILE"); v != "" {
-		c.ServerTLSCAFile = v
-	}
-	if v := os.Getenv("SQI_WORKER_NATS_SERVER_TLS_INSECURE_SKIP_VERIFY"); v != "" {
-		c.ServerTLSInsecureSkipVerify = parseBoolEnv(v)
-	}
+// threshold. SQI_WORKER_NATS_TLS_ENABLED is three-valued and stays a string
+// here; [Validate] rejects a value that is not a TLS mode.
+func applyNATSTLSEnv(c *NATSConfig, collect func(error)) {
+	setStringEnv(&c.TLSEnabled, "SQI_WORKER_NATS_TLS_ENABLED")
+	setStringEnv(&c.TLSCertFile, "SQI_WORKER_NATS_TLS_CERT_FILE")
+	setStringEnv(&c.TLSKeyFile, "SQI_WORKER_NATS_TLS_KEY_FILE")
+	setStringEnv(&c.TLSCAFile, "SQI_WORKER_NATS_TLS_CA_FILE")
+	collect(setBoolEnv(&c.InsecureSkipVerify, "SQI_WORKER_NATS_INSECURE_SKIP_VERIFY"))
+	setStringEnv(&c.ServerTLSCAFile, "SQI_WORKER_NATS_SERVER_TLS_CA_FILE")
+	collect(setBoolEnv(&c.ServerTLSInsecureSkipVerify, "SQI_WORKER_NATS_SERVER_TLS_INSECURE_SKIP_VERIFY"))
 }
 
-func applyNATSEnv(c *NATSConfig) {
-	if v := os.Getenv("SQI_WORKER_NATS_URL"); v != "" {
-		c.URL = v
-	}
-	applyNATSTLSEnv(c)
-	if v := os.Getenv("SQI_WORKER_NATS_MAX_RECONNECT_ATTEMPTS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			c.MaxReconnectAttempts = n
-		}
-	}
-	if v := os.Getenv("SQI_WORKER_NATS_RECONNECT_WAIT"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			c.ReconnectWait = d
-		}
-	}
-	if v := os.Getenv("SQI_WORKER_NATS_CREDENTIAL_FILE"); v != "" {
-		c.CredentialFile = v
-	}
-	if v := os.Getenv("SQI_WORKER_NATS_JOIN_TOKEN"); v != "" {
-		c.JoinToken = v
-	}
-	if v := os.Getenv("SQI_WORKER_NATS_JOIN_TOKEN_FILE"); v != "" {
-		c.JoinTokenFile = v
-	}
-	if v := os.Getenv("SQI_WORKER_NATS_SERVER_URL"); v != "" {
-		c.ServerURL = v
-	}
+func applyNATSEnv(c *NATSConfig, collect func(error)) {
+	setStringEnv(&c.URL, "SQI_WORKER_NATS_URL")
+	applyNATSTLSEnv(c, collect)
+	collect(setIntEnv(&c.MaxReconnectAttempts, "SQI_WORKER_NATS_MAX_RECONNECT_ATTEMPTS"))
+	collect(setDurationEnv(&c.ReconnectWait, "SQI_WORKER_NATS_RECONNECT_WAIT"))
+	setStringEnv(&c.CredentialFile, "SQI_WORKER_NATS_CREDENTIAL_FILE")
+	setStringEnv(&c.JoinToken, "SQI_WORKER_NATS_JOIN_TOKEN")
+	setStringEnv(&c.JoinTokenFile, "SQI_WORKER_NATS_JOIN_TOKEN_FILE")
+	setStringEnv(&c.ServerURL, "SQI_WORKER_NATS_SERVER_URL")
 }
 
-func applyWorkerEnv(c *WorkerSettings) {
-	if v := os.Getenv("SQI_WORKER_NAME"); v != "" {
-		c.Name = v
-	}
-	if v := os.Getenv("SQI_WORKER_FARM_ID"); v != "" {
-		c.FarmID = v
-	}
-	if v := os.Getenv("SQI_WORKER_DATA_DIR"); v != "" {
-		c.DataDir = v
-	}
-	if v := os.Getenv("SQI_WORKER_SESSION_DIR"); v != "" {
-		c.SessionDir = v
-	}
-	if v := os.Getenv("SQI_WORKER_COMPUTE_LOCATION"); v != "" {
-		c.ComputeLocation = v
-	}
+func applyWorkerEnv(c *WorkerSettings, collect func(error)) {
+	setStringEnv(&c.Name, "SQI_WORKER_NAME")
+	setStringEnv(&c.FarmID, "SQI_WORKER_FARM_ID")
+	setStringEnv(&c.DataDir, "SQI_WORKER_DATA_DIR")
+	setStringEnv(&c.SessionDir, "SQI_WORKER_SESSION_DIR")
+	setStringEnv(&c.ComputeLocation, "SQI_WORKER_COMPUTE_LOCATION")
 	if v := os.Getenv("SQI_WORKER_CAPABILITY_TAGS"); v != "" {
 		c.CapabilityTags = splitTags(v)
 	}
-	if v := os.Getenv("SQI_WORKER_HEARTBEAT_INTERVAL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			c.HeartbeatInterval = d
-		}
-	}
-	if v := os.Getenv("SQI_WORKER_SHUTDOWN_GRACE_PERIOD"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			c.ShutdownGracePeriod = d
-		}
-	}
-	if v := os.Getenv("SQI_WORKER_ALLOW_ROOT"); v != "" {
-		c.AllowRoot = parseBoolEnv(v)
-	}
-	if v := os.Getenv("SQI_WORKER_KEEP_FAILED_SESSIONS"); v != "" {
-		c.KeepFailedSessions = parseBoolEnv(v)
-	}
-	applyWorkerPullEnv(c)
-}
-
-// applyWorkerPullEnv overlays pull-loop env vars onto c. Split from
-// applyWorkerEnv to keep each function under the cyclomatic-complexity limit.
-func applyWorkerPullEnv(c *WorkerSettings) {
+	collect(setDurationEnv(&c.HeartbeatInterval, "SQI_WORKER_HEARTBEAT_INTERVAL"))
+	collect(setDurationEnv(&c.ShutdownGracePeriod, "SQI_WORKER_SHUTDOWN_GRACE_PERIOD"))
+	collect(setBoolEnv(&c.AllowRoot, "SQI_WORKER_ALLOW_ROOT"))
+	collect(setBoolEnv(&c.KeepFailedSessions, "SQI_WORKER_KEEP_FAILED_SESSIONS"))
 	if v := os.Getenv("SQI_WORKER_QUEUE_IDS"); v != "" {
 		// Deliberately NOT splitTags: splitTags silently drops empty entries
 		// (right for CapabilityTags/EnvPassthrough, which have no invalid
@@ -992,85 +902,107 @@ func applyWorkerPullEnv(c *WorkerSettings) {
 		// and rejected on the other.
 		c.QueueIDs = splitCSV(v)
 	}
-	if v := os.Getenv("SQI_WORKER_PULL_IDLE_BACKOFF"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			c.PullIdleBackoff = d
-		}
-	}
-	if v := os.Getenv("SQI_WORKER_PULL_NACK_DELAY"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			c.PullNackDelay = d
-		}
+	collect(setDurationEnv(&c.PullIdleBackoff, "SQI_WORKER_PULL_IDLE_BACKOFF"))
+	collect(setDurationEnv(&c.PullNackDelay, "SQI_WORKER_PULL_NACK_DELAY"))
+}
+
+func applyLogEnv(c *LogConfig, collect func(error)) {
+	setStringEnv(&c.Level, "SQI_WORKER_LOG_LEVEL")
+	setStringEnv(&c.Format, "SQI_WORKER_LOG_FORMAT")
+	setStringEnv(&c.File, "SQI_WORKER_LOG_FILE")
+	collect(setIntEnv(&c.MaxSizeMB, "SQI_WORKER_LOG_MAX_SIZE_MB"))
+	collect(setIntEnv(&c.MaxBackups, "SQI_WORKER_LOG_MAX_BACKUPS"))
+}
+
+func applyMetricsEnv(c *MetricsConfig, collect func(error)) {
+	setStringEnv(&c.Addr, "SQI_WORKER_METRICS_ADDR")
+	collect(setBoolEnv(&c.TLS.Enabled, "SQI_WORKER_METRICS_TLS_ENABLED"))
+	setStringEnv(&c.TLS.CertFile, "SQI_WORKER_METRICS_TLS_CERT_FILE")
+	setStringEnv(&c.TLS.KeyFile, "SQI_WORKER_METRICS_TLS_KEY_FILE")
+	collect(setBoolEnv(&c.EnablePprof, "SQI_WORKER_METRICS_ENABLE_PPROF"))
+}
+
+func applyDiscoveryEnv(c *DiscoveryConfig, collect func(error)) {
+	collect(setBoolEnv(&c.EnableMDNS, "SQI_WORKER_DISCOVERY_ENABLE_MDNS"))
+	collect(setDurationEnv(&c.MDNSTimeout, "SQI_WORKER_DISCOVERY_MDNS_TIMEOUT"))
+}
+
+func applyLogStreamerEnv(c *LogStreamerConfig, collect func(error)) {
+	collect(setIntEnv(&c.MaxLinesPerChunk, "SQI_WORKER_LOG_STREAMER_MAX_LINES_PER_CHUNK"))
+	collect(setIntEnv(&c.MaxBytesPerChunk, "SQI_WORKER_LOG_STREAMER_MAX_BYTES_PER_CHUNK"))
+	collect(setDurationEnv(&c.FlushInterval, "SQI_WORKER_LOG_STREAMER_FLUSH_INTERVAL"))
+}
+
+func setStringEnv(dst *string, key string) {
+	if v := os.Getenv(key); v != "" {
+		*dst = v
 	}
 }
 
-func applyLogEnv(c *LogConfig) {
-	if v := os.Getenv("SQI_WORKER_LOG_LEVEL"); v != "" {
-		c.Level = v
+// setIntEnv sets dst from an integer-valued env var. Surrounding whitespace
+// is trimmed; a value that does not parse is an error naming key and value.
+// The setters' wording matches internal/config's server-side ones, so both
+// binaries report a bad variable the same way.
+func setIntEnv(dst *int, key string) error {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return nil
 	}
-	if v := os.Getenv("SQI_WORKER_LOG_FORMAT"); v != "" {
-		c.Format = v
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fmt.Errorf("%s: invalid integer %q", key, v)
 	}
-	if v := os.Getenv("SQI_WORKER_LOG_FILE"); v != "" {
-		c.File = v
-	}
-	if v := os.Getenv("SQI_WORKER_LOG_MAX_SIZE_MB"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			c.MaxSizeMB = n
-		}
-	}
-	if v := os.Getenv("SQI_WORKER_LOG_MAX_BACKUPS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			c.MaxBackups = n
-		}
-	}
+	*dst = n
+	return nil
 }
 
-func applyMetricsEnv(c *MetricsConfig) {
-	if v := os.Getenv("SQI_WORKER_METRICS_ADDR"); v != "" {
-		c.Addr = v
+// setInt64Env is [setIntEnv] for an int64-valued setting.
+func setInt64Env(dst *int64, key string) error {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return nil
 	}
-	if v := os.Getenv("SQI_WORKER_METRICS_TLS_ENABLED"); v != "" {
-		c.TLS.Enabled = parseBoolEnv(v)
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return fmt.Errorf("%s: invalid integer %q", key, v)
 	}
-	if v := os.Getenv("SQI_WORKER_METRICS_TLS_CERT_FILE"); v != "" {
-		c.TLS.CertFile = v
-	}
-	if v := os.Getenv("SQI_WORKER_METRICS_TLS_KEY_FILE"); v != "" {
-		c.TLS.KeyFile = v
-	}
-	if v := os.Getenv("SQI_WORKER_METRICS_ENABLE_PPROF"); v != "" {
-		c.EnablePprof = parseBoolEnv(v)
-	}
+	*dst = n
+	return nil
 }
 
-func applyDiscoveryEnv(c *DiscoveryConfig) {
-	if v := os.Getenv("SQI_WORKER_DISCOVERY_ENABLE_MDNS"); v != "" {
-		c.EnableMDNS = parseBoolEnv(v)
+// setDurationEnv sets dst from a Go duration env var (e.g. "30s", "5m").
+// Trimming and error semantics match [setIntEnv].
+func setDurationEnv(dst *time.Duration, key string) error {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return nil
 	}
-	if v := os.Getenv("SQI_WORKER_DISCOVERY_MDNS_TIMEOUT"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			c.MDNSTimeout = d
-		}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return fmt.Errorf("%s: invalid duration %q (want e.g. 30s, 5m, 1h)", key, v)
 	}
+	*dst = d
+	return nil
 }
 
-func applyLogStreamerEnv(c *LogStreamerConfig) {
-	if v := os.Getenv("SQI_WORKER_LOG_STREAMER_MAX_LINES_PER_CHUNK"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			c.MaxLinesPerChunk = n
-		}
+// setBoolEnv sets dst from a boolean env var. Accepted tokens
+// (case-insensitive) are 1/true/yes/on and 0/false/no/off, the same as the
+// server's and as [normalizeTLSMode]'s. Trimming and error semantics match
+// [setIntEnv].
+func setBoolEnv(dst *bool, key string) error {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return nil
 	}
-	if v := os.Getenv("SQI_WORKER_LOG_STREAMER_MAX_BYTES_PER_CHUNK"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			c.MaxBytesPerChunk = n
-		}
+	switch strings.ToLower(v) {
+	case "1", "true", "yes", "on":
+		*dst = true
+	case "0", "false", "no", "off":
+		*dst = false
+	default:
+		return fmt.Errorf("%s: invalid boolean %q (want 1/true/yes/on or 0/false/no/off)", key, v)
 	}
-	if v := os.Getenv("SQI_WORKER_LOG_STREAMER_FLUSH_INTERVAL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			c.FlushInterval = d
-		}
-	}
+	return nil
 }
 
 // splitTags splits a comma-separated tag list, trimming whitespace and
