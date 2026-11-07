@@ -9,9 +9,9 @@ import (
 
 // TestLoad_ConfigFileRejectsUnknownKeys pins that the worker decodes its config
 // file strictly, YAML or JSON, down into custom detectors. A dropped key fails
-// open: isolation: {requird: true} used to run with isolation off, and a
-// misspelled env matches made the check match on presence alone. The decoder's
-// own rules are pinned in internal/yamlstrict.
+// open: isolation: {requird: true} would run with isolation off, and a
+// misspelled env matches would make the check match on presence alone. The
+// decoder's own rules are pinned in internal/yamlstrict.
 func TestLoad_ConfigFileRejectsUnknownKeys(t *testing.T) {
 	const detector = "capabilities:\n  detect:\n    - tag: hou\n      checks:\n        - env: {name: HFS, matchs: x}\n"
 	tests := []struct {

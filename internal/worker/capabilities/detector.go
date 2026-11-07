@@ -27,11 +27,8 @@ func (e *EnvCheck) UnmarshalYAML(node *yaml.Node) error {
 		e.Name = node.Value
 		return nil
 	}
-	if err := yamlstrict.KnownKeys(node, "capabilities.EnvCheck", "name", "matches"); err != nil {
-		return err
-	}
 	type raw EnvCheck
-	return node.Decode((*raw)(e))
+	return yamlstrict.DecodeNode(node, (*raw)(e))
 }
 
 // Check is a single declarative probe. Exactly one of Exe/PathGlob/Env/Registry

@@ -16,7 +16,13 @@ var builtinFS embed.FS
 
 // BuiltinDetectors parses and validates the embedded built-in detectors.
 func BuiltinDetectors() ([]Detector, error) {
-	entries, err := fs.ReadDir(builtinFS, "builtins")
+	return detectorsFrom(builtinFS)
+}
+
+// detectorsFrom parses and validates each detector file in fsys's builtins
+// directory, strictly: a misspelled key in a built-in is an error.
+func detectorsFrom(fsys fs.FS) ([]Detector, error) {
+	entries, err := fs.ReadDir(fsys, "builtins")
 	if err != nil {
 		return nil, err
 	}
@@ -25,7 +31,7 @@ func BuiltinDetectors() ([]Detector, error) {
 		if e.Name()[0] == '.' || !strings.HasSuffix(e.Name(), ".yaml") {
 			continue
 		}
-		data, err := builtinFS.ReadFile("builtins/" + e.Name())
+		data, err := fs.ReadFile(fsys, "builtins/"+e.Name())
 		if err != nil {
 			return nil, err
 		}

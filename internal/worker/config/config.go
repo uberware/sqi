@@ -917,7 +917,7 @@ func applyLogStreamerEnv(c *LogStreamerConfig, collect func(error)) {
 }
 
 // splitCSV splits a comma-separated list, trimming whitespace around each
-// entry but KEEPING empty entries, unlike [envvar.StringSlice]. Used for fields whose
+// entry and keeping empty entries, unlike [envvar.StringSlice]. Used for fields whose
 // entries have their own validity check (queue IDs), so that a blank entry
 // surfaces as a validation error naming its position instead of being
 // silently discarded.

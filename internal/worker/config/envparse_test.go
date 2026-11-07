@@ -37,9 +37,9 @@ func TestLoad_MalformedTypedEnvReportsEveryVariable(t *testing.T) {
 }
 
 // TestLoad_BlankListEnvKeepsFileList pins that a list variable holding only
-// separators and blanks is a no-op, as on the server: it used to replace the
-// config file's list with an empty one, so SQI_WORKER_ISOLATION_ENV_PASSTHROUGH=","
-// silently dropped every passthrough variable the file named.
+// separators and blanks is a no-op, as on the server, so
+// SQI_WORKER_ISOLATION_ENV_PASSTHROUGH="," cannot drop the passthrough
+// variables the config file names.
 func TestLoad_BlankListEnvKeepsFileList(t *testing.T) {
 	path := writeTempYAML(t, "worker:\n  capability_tags: [gpu]\nisolation:\n  env_passthrough: [LANG]\n")
 	t.Setenv("SQI_WORKER_NATS_URL", "nats://localhost:4222")

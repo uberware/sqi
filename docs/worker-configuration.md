@@ -12,7 +12,9 @@ layers overriding earlier ones:
    [registering the service by hand](worker-deployment.md#registering-the-service-by-hand)).
    A key the worker does not know, such as a misspelled one, fails startup
    with an error naming its line and dotted path (e.g.
-   `line 2: unknown key isolation.requird`), the same as the server.
+   `line 2: unknown key isolation.requird`), the same as the server. So does a
+   key in a custom detector, and a second YAML document after a `---` line,
+   which would otherwise go unread.
 3. **Environment variables**, prefixed `SQI_WORKER_`, e.g.
    `SQI_WORKER_NATS_URL`. Two have no `WORKER` infix: `diagnostics.enabled`
    uses `SQI_DIAGNOSTICS_ENABLED` and `staging.defaults` uses
