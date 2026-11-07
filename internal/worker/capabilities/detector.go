@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/uberware/sqi/internal/yamlstrict"
 )
 
 // EnvCheck matches an environment variable by presence and optional value regex.
@@ -24,6 +26,9 @@ func (e *EnvCheck) UnmarshalYAML(node *yaml.Node) error {
 	if node.Kind == yaml.ScalarNode {
 		e.Name = node.Value
 		return nil
+	}
+	if err := yamlstrict.KnownKeys(node, "capabilities.EnvCheck", "name", "matches"); err != nil {
+		return err
 	}
 	type raw EnvCheck
 	return node.Decode((*raw)(e))

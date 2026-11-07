@@ -31,6 +31,21 @@ func String(dst *string, key string) {
 	}
 }
 
+// StringSlice sets dst from a comma-separated variable, trimming spaces and
+// dropping empty entries. A variable holding only commas and blanks is a no-op
+// like an unset one, so it cannot wipe a list the config file set.
+func StringSlice(dst *[]string, key string) {
+	var out []string
+	for part := range strings.SplitSeq(os.Getenv(key), ",") {
+		if s := strings.TrimSpace(part); s != "" {
+			out = append(out, s)
+		}
+	}
+	if len(out) > 0 {
+		*dst = out
+	}
+}
+
 // Int sets dst from an integer-valued variable.
 func Int(dst *int, key string) error {
 	return set(dst, key, "integer", "", strconv.Atoi)

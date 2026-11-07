@@ -8,7 +8,7 @@ import (
 	"io/fs"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	"github.com/uberware/sqi/internal/yamlstrict"
 )
 
 //go:embed builtins/*.yaml
@@ -30,7 +30,7 @@ func BuiltinDetectors() ([]Detector, error) {
 			return nil, err
 		}
 		var d Detector
-		if err := yaml.Unmarshal(data, &d); err != nil {
+		if err := yamlstrict.Decode(data, &d); err != nil {
 			return nil, fmt.Errorf("builtin %s: %w", e.Name(), err)
 		}
 		if err := d.Validate(); err != nil {
