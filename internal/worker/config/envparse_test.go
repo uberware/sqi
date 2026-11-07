@@ -3,6 +3,7 @@
 package config
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -32,5 +33,26 @@ func TestLoad_MalformedTypedEnvReportsEveryVariable(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not contain %q", err, want)
 		}
+	}
+}
+
+// TestLoad_BlankListEnvKeepsFileList pins that a list variable holding only
+// separators and blanks is a no-op, as on the server, so
+// SQI_WORKER_ISOLATION_ENV_PASSTHROUGH="," cannot drop the passthrough
+// variables the config file names.
+func TestLoad_BlankListEnvKeepsFileList(t *testing.T) {
+	path := writeTempYAML(t, "worker:\n  capability_tags: [gpu]\nisolation:\n  env_passthrough: [LANG]\n")
+	t.Setenv("SQI_WORKER_NATS_URL", "nats://localhost:4222")
+	t.Setenv("SQI_WORKER_CAPABILITY_TAGS", " , ")
+	t.Setenv("SQI_WORKER_ISOLATION_ENV_PASSTHROUGH", ",")
+	cfg, err := Load(path, FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Worker.CapabilityTags; !slices.Equal(got, []string{"gpu"}) {
+		t.Errorf("CapabilityTags = %q, want the file's [gpu]", got)
+	}
+	if got := cfg.Isolation.EnvPassthrough; !slices.Equal(got, []string{"LANG"}) {
+		t.Errorf("EnvPassthrough = %q, want the file's [LANG]", got)
 	}
 }

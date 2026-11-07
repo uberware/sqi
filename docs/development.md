@@ -762,7 +762,8 @@ sqi/
 │   ├── version/           Build metadata (version, commit, date, Go version)
 │   ├── winsvc/            Runs sqi-server and sqi-worker as Windows services
 │   ├── worker/            sqi-worker binary internals (executor, lease, heartbeat, capabilities, …); only worker/protocol is shared with the server
-│   └── ws/                WebSocket hub, subscription management, scheduler-driven fanout
+│   ├── ws/                WebSocket hub, subscription management, scheduler-driven fanout
+│   └── yamlstrict/        Strict config-file decoding (unknown keys named by dotted path), shared by server and worker
 ├── pkg/                   Public Go API (currently empty; see pkg/doc.go)
 ├── api/                   Reserved for non-Go API contract artifacts (currently empty; the OpenAPI spec is internal/api/openapi.yaml)
 ├── clients/               Python packages: clients/python (sqi-sdk), clients/submitter (sqi-submitter)

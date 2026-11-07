@@ -13,7 +13,9 @@ layers overriding earlier ones:
    error, unlike the search). A Windows service does not search: it refuses
    to start without `--config` (see
    [Windows service](operations.md#windows-service)). A key the server does
-   not know, such as a misspelled one, is an error that names its line.
+   not know, such as a misspelled one, is an error that names its line, and
+   so is a second YAML document after a `---` line, which would otherwise go
+   unread.
 3. **Environment variables** — prefixed `SQI_`, e.g. `SQI_HTTP_ADDR`.
 4. **CLI flags** — highest priority. `--config`, `--log-level` and
    `--log-format` are available on every subcommand; the remaining flags
