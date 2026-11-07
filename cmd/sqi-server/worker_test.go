@@ -423,8 +423,8 @@ func TestWorkerCmd_MissingDatabaseIsErrorNotCreation(t *testing.T) {
 	if runErr == nil {
 		t.Fatal("expected an error for a missing database, got nil")
 	}
-	if !strings.Contains(runErr.Error(), dbPath) {
-		t.Errorf("error should name the resolved path %q; got: %v", dbPath, runErr)
+	if want := resolvedDB(t, dbPath); !strings.Contains(runErr.Error(), want) {
+		t.Errorf("error should name the resolved path %q; got: %v", want, runErr)
 	}
 	if !strings.Contains(runErr.Error(), "migrate up") {
 		t.Errorf("error should point at \"migrate up\" as the remediation; got: %v", runErr)

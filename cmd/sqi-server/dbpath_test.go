@@ -479,7 +479,8 @@ func TestResolveStoreTarget_ResolvesASymlinkedDatabase(t *testing.T) {
 }
 
 // resolvedDB is the path a command is handed for the database name, which
-// does not exist yet: absolute, its directory's symlinks resolved.
+// does not exist yet: absolute, its directory's symlinks resolved and, on
+// Windows, its 8.3 short names expanded.
 func resolvedDB(t *testing.T, name string) string {
 	t.Helper()
 	abs, err := filepath.Abs(name)

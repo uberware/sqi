@@ -642,8 +642,8 @@ func TestBackupCmd_ErrorPaths(t *testing.T) {
 		if runErr == nil {
 			t.Fatal("expected an error for a missing source database, got nil")
 		}
-		if !strings.Contains(runErr.Error(), dbPath) {
-			t.Errorf("error should name the resolved path %q; got: %v", dbPath, runErr)
+		if want := resolvedDB(t, dbPath); !strings.Contains(runErr.Error(), want) {
+			t.Errorf("error should name the resolved path %q; got: %v", want, runErr)
 		}
 		if _, statErr := os.Stat(outPath); statErr == nil {
 			t.Error("backup should not have produced an output file when the source database is missing")
