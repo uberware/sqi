@@ -5,13 +5,13 @@
 package isolation
 
 import (
-	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/uberware/sqi/internal/fsutil/fsutiltest"
 )
 
 // currentUsername resolves the bare account name of the process this test is
@@ -222,9 +222,7 @@ func TestChownRecursive_SecuresSiblingsAfterAReparsePoint(t *testing.T) {
 	// early loop break (see ChownRecursive's own doc) abandons every sibling
 	// sorting AFTER the reparse point, so the reparse point must come first.
 	reparse := filepath.Join(root, "aaa_reparse")
-	if out, err := exec.CommandContext(context.Background(), "cmd", "/c", "mklink", "/j", reparse, target).CombinedOutput(); err != nil {
-		t.Fatalf("mklink /j %q %q: %v: %s", reparse, target, err, out)
-	}
+	fsutiltest.Junction(t, reparse, target)
 	after := filepath.Join(root, "zzz_after")
 	if err := os.WriteFile(after, []byte("ordinary"), 0o600); err != nil {
 		t.Fatalf("write %q: %v", after, err)
