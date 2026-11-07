@@ -14,6 +14,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -790,4 +791,181 @@ func TestCancelTask(t *testing.T) {
 			t.Fatalf("expected 404, got %d", rr.Code)
 		}
 	})
+}
+
+// ── progress ──────────────────────────────────────────────────────────────────
+
+// recordProgress records a progress snapshot on the task's latest attempt.
+func recordProgress(t *testing.T, st store.Store, taskID string, pct int, text string, at time.Time) {
+	t.Helper()
+	a, err := st.LatestTaskAttempt(t.Context(), taskID)
+	if err != nil {
+		t.Fatalf("LatestTaskAttempt: %v", err)
+	}
+	out, _, err := st.RecordAttemptProgress(t.Context(), store.AttemptProgress{
+		AttemptID: a.ID, TaskID: taskID, Progress: &pct, StatusText: text, At: at,
+	})
+	if err != nil || out != store.ProgressRecorded {
+		t.Fatalf("RecordAttemptProgress = (%v, %v)", out, err)
+	}
+}
+
+func TestListJobTasks_IncludesProgress(t *testing.T) {
+	st := fake.New()
+	r := newTaskRouter(st)
+	job, tasks := seedJobTasks(t, st, store.JobStatusRunning,
+		store.Task{Name: "a", Status: store.TaskStatusRunning},
+		store.Task{Name: "b", Status: store.TaskStatusReady})
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	recordProgress(t, st, tasks[0].ID, 42, "frame 3", t0)
+
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, newReq(t, http.MethodGet, "/api/v1/jobs/"+job.ID+"/tasks?sort_by=name&sort_dir=asc", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body)
+	}
+	var resp struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil || len(resp.Items) != 2 {
+		t.Fatalf("decode: %v items=%d", err, len(resp.Items))
+	}
+	first, second := resp.Items[0], resp.Items[1]
+	if first["progress"] != float64(42) || first["status_text"] != "frame 3" {
+		t.Fatalf("first = %v", first)
+	}
+	atStr := fmt.Sprint(first["progress_at"])
+	at, err := time.Parse(time.RFC3339Nano, atStr)
+	if err != nil || !at.Equal(t0) {
+		t.Fatalf("progress_at = %v (%v), want %v", first["progress_at"], err, t0)
+	}
+	for _, k := range []string{"progress", "status_text", "progress_at"} {
+		if _, ok := second[k]; ok {
+			t.Errorf("ready task has key %q: %v", k, second)
+		}
+	}
+}
+
+func TestGetTask_IncludesProgress(t *testing.T) {
+	st := fake.New()
+	r := newTaskRouter(st)
+	_, tk, _ := seedTaskWith(t, st, seedTaskSpec{status: store.TaskStatusRunning})
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	recordProgress(t, st, tk.ID, 42, "frame 3", t0)
+
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, newReq(t, http.MethodGet, "/api/v1/tasks/"+tk.ID, nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["progress"] != float64(42) || got["status_text"] != "frame 3" || got["progress_at"] == nil {
+		t.Fatalf("got %v", got)
+	}
+}
+
+// failWithProgress records progress on a leased task's attempt, fails the
+// attempt, and (when requeue is set) returns the task to ready.
+func failWithProgress(t *testing.T, st *fake.Store, task store.Task, a store.TaskAttempt, requeue bool) {
+	t.Helper()
+	now := time.Now().UTC()
+	recordProgress(t, st, task.ID, 77, "frame 40", now)
+	if !requeue {
+		if _, err := st.CompleteTaskAttempt(t.Context(), store.AttemptCompletion{
+			AttemptID: a.ID, TaskID: task.ID, TaskStatus: store.TaskStatusFailed,
+			AttemptStatus: store.AttemptStatusFailed, Message: "boom", EndedAt: now,
+		}); err != nil {
+			t.Fatalf("CompleteTaskAttempt: %v", err)
+		}
+		return
+	}
+	if _, _, _, err := st.RecordTaskFailure(t.Context(), a.ID, task.ID, nil, "", "boom", now); err != nil {
+		t.Fatalf("RecordTaskFailure: %v", err)
+	}
+	if ok, err := st.RequeueTaskForRetry(t.Context(), task.ID, a.ID, now.Add(-time.Minute), now); err != nil || !ok {
+		t.Fatalf("RequeueTaskForRetry = (%v, %v)", ok, err)
+	}
+}
+
+func TestTaskProgress_NotShownForRequeuedTask(t *testing.T) {
+	st := fake.New()
+	r := newTaskRouter(st)
+	job, tk, a := seedTaskWith(t, st, seedTaskSpec{status: store.TaskStatusRunning})
+	failWithProgress(t, st, tk, a, true)
+
+	for _, path := range []string{"/api/v1/tasks/" + tk.ID, "/api/v1/jobs/" + job.ID + "/tasks"} {
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, newReq(t, http.MethodGet, path, nil))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s: status %d: %s", path, rr.Code, rr.Body)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if items, ok := got["items"].([]any); ok {
+			first, isMap := items[0].(map[string]any)
+			if !isMap {
+				t.Fatalf("%s: item is %T", path, items[0])
+			}
+			got = first
+		}
+		if got["status"] != "ready" {
+			t.Fatalf("%s: status = %v, want ready", path, got["status"])
+		}
+		for _, k := range []string{"progress", "status_text", "progress_at"} {
+			if _, ok := got[k]; ok {
+				t.Errorf("%s: requeued task has key %q: %v", path, k, got)
+			}
+		}
+	}
+}
+
+func TestTaskProgress_KeptForFailedTask(t *testing.T) {
+	st := fake.New()
+	r := newTaskRouter(st)
+	job, tk, a := seedTaskWith(t, st, seedTaskSpec{status: store.TaskStatusRunning})
+	failWithProgress(t, st, tk, a, false)
+
+	for _, path := range []string{"/api/v1/tasks/" + tk.ID, "/api/v1/jobs/" + job.ID + "/tasks"} {
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, newReq(t, http.MethodGet, path, nil))
+		var got map[string]any
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if items, ok := got["items"].([]any); ok {
+			first, isMap := items[0].(map[string]any)
+			if !isMap {
+				t.Fatalf("%s: item is %T", path, items[0])
+			}
+			got = first
+		}
+		if got["status"] != "failed" || got["progress"] != float64(77) || got["status_text"] != "frame 40" {
+			t.Errorf("%s: got %v", path, got)
+		}
+	}
+}
+
+func TestGetTaskAttempts_IncludesProgress(t *testing.T) {
+	st := fake.New()
+	r := newTaskRouter(st)
+	_, tk, _ := seedTaskWith(t, st, seedTaskSpec{status: store.TaskStatusRunning})
+	recordProgress(t, st, tk.ID, 42, "frame 3", time.Now().UTC())
+
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, newReq(t, http.MethodGet, "/api/v1/tasks/"+tk.ID+"/attempts", nil))
+	var resp struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil || len(resp.Items) != 1 {
+		t.Fatalf("decode: %v body=%s", err, rr.Body)
+	}
+	it := resp.Items[0]
+	if it["progress"] != float64(42) || it["status_text"] != "frame 3" || it["progress_at"] == nil {
+		t.Fatalf("attempt = %v", it)
+	}
 }

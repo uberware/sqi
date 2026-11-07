@@ -64,7 +64,7 @@ type jobGraph struct {
 	Attempts map[string]store.TaskAttempt // by task ID, for each task seedGraph leased
 }
 
-func seedGraph(t *testing.T, st store.Store, opts graphOpts, specs ...stepSpec) jobGraph {
+func seedGraph(t testing.TB, st store.Store, opts graphOpts, specs ...stepSpec) jobGraph {
 	t.Helper()
 	now := time.Now().UTC()
 	g := jobGraph{Steps: map[string]store.Step{}, Tasks: map[string][]store.Task{}}
@@ -89,7 +89,7 @@ func seedGraph(t *testing.T, st store.Store, opts graphOpts, specs ...stepSpec) 
 // seedScope creates the graph's farm and queue uncapped and unpaused (caps and
 // the pause are applied after the in-flight tasks are leased), or reuses the
 // shared graph's.
-func seedScope(t *testing.T, st store.Store, g *jobGraph, opts graphOpts) {
+func seedScope(t testing.TB, st store.Store, g *jobGraph, opts graphOpts) {
 	t.Helper()
 	if opts.share != nil {
 		g.Farm, g.Queue = opts.share.Farm, opts.share.Queue
@@ -131,7 +131,7 @@ func graphSubmission(g jobGraph, opts graphOpts, specs []stepSpec) store.JobSubm
 
 // applyCapsAndPause applies opts' caps and pauses after the leases, the state an
 // operator lowering a cap or pausing a queue or job produces.
-func applyCapsAndPause(t *testing.T, st store.Store, g *jobGraph, opts graphOpts, now time.Time) {
+func applyCapsAndPause(t testing.TB, st store.Store, g *jobGraph, opts graphOpts, now time.Time) {
 	t.Helper()
 	ctx := t.Context()
 	var err error

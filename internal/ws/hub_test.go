@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -913,5 +914,41 @@ func TestHub_Subscribe_ReplaysEventsPredatingSubscription(t *testing.T) {
 		}
 	default:
 		t.Fatal("event buffered before the late client subscribed was not replayed")
+	}
+}
+
+func TestNotifyTask_CarriesProgress(t *testing.T) {
+	const jobID = "job-abc"
+	taskSubject := fmt.Sprintf(SubjectJobTasksFmt, jobID)
+	pct := 42
+
+	h := newTestHub()
+	jobsCh := h.Register("c-jobs", Scope{All: true})
+	taskCh := h.Register("c-tasks", Scope{All: true})
+	for _, sub := range []struct{ id, subject string }{{"c-jobs", SubjectJobs}, {"c-tasks", taskSubject}} {
+		if err := h.Subscribe(sub.id, sub.subject, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.NotifyTask(TaskEvent{JobID: jobID, TaskID: "t1", Status: "running", Progress: &pct, StatusText: "frame 3"})
+	for name, ch := range map[string]<-chan Envelope{"jobs": jobsCh, "tasks": taskCh} {
+		env, ok := drainOrTimeout(ch, 200*time.Millisecond)
+		if !ok {
+			t.Fatalf("%s subscriber got nothing", name)
+		}
+		if !strings.Contains(string(env.Payload), `"progress":42,"status_text":"frame 3"`) {
+			t.Errorf("%s payload = %s, want progress and status_text", name, env.Payload)
+		}
+	}
+
+	h.NotifyTask(TaskEvent{JobID: jobID, TaskID: "t1", Status: "running"})
+	for name, ch := range map[string]<-chan Envelope{"jobs": jobsCh, "tasks": taskCh} {
+		env, ok := drainOrTimeout(ch, 200*time.Millisecond)
+		if !ok {
+			t.Fatalf("%s subscriber got nothing", name)
+		}
+		if strings.Contains(string(env.Payload), "progress") || strings.Contains(string(env.Payload), "status_text") {
+			t.Errorf("%s payload = %s, want neither key", name, env.Payload)
+		}
 	}
 }

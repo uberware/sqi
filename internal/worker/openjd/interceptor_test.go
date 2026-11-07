@@ -7,8 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/worker/openjd"
@@ -152,6 +155,12 @@ func TestProgressInvalidValueIgnored(t *testing.T) {
 		"openjd_progress: -1",
 		"openjd_progress: 101",
 		"openjd_progress: ",
+		"openjd_progress: NaN",
+		"openjd_progress: Inf",
+		"openjd_progress: -Inf",
+		"openjd_progress: 100.5",
+		"openjd_progress: -0.5",
+		"openjd_progress: 1e3",
 	} {
 		t.Run(line, func(t *testing.T) {
 			downstream := &mockDownstream{}
@@ -214,18 +223,235 @@ func TestStatusDirectivePublishesNATS(t *testing.T) {
 	}
 }
 
-// TestStatusDirectiveMultiple verifies that multiple openjd_status lines each
-// publish a separate intermediate status update.
-func TestStatusDirectiveMultiple(t *testing.T) {
+// TestStatusDirectiveSanitizesText verifies that a task cannot publish a NUL
+// byte or an unbounded status text.
+func TestStatusDirectiveSanitizesText(t *testing.T) {
 	i, _, nc, ctx, _ := setup(t)
-	const attemptID = "attempt-1"
 
-	i.HandleLine(ctx, "task-1", attemptID, "sess-1", "stdout", "openjd_status: step 1")
-	i.HandleLine(ctx, "task-1", attemptID, "sess-1", "stdout", "openjd_status: step 2")
+	line := "openjd_status: bad\x00te\x01xt " + strings.Repeat("x", 5000)
+	i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", "stdout", line)
 
-	if got := len(nc.snapshot()); got != 2 {
-		t.Errorf("expected 2 NATS messages, got %d", got)
+	msgs := nc.snapshot()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 NATS message, got %d", len(msgs))
 	}
+	got := decodeStatus(t, msgs[0].data).Message
+	if strings.ContainsAny(got, "\x00\x01") {
+		t.Errorf("Message %q still holds control characters", got)
+	}
+	if len(got) != protocol.MaxStatusTextBytes || !strings.HasPrefix(got, "badtext xxx") {
+		t.Errorf("Message len = %d, prefix %q; want %d bytes starting %q",
+			len(got), got[:min(len(got), 11)], protocol.MaxStatusTextBytes, "badtext xxx")
+	}
+}
+
+// TestStatusDirectiveMultiple verifies that status updates are throttled: two
+// different status lines back to back publish one message at once and the
+// second after the throttle window.
+func TestStatusDirectiveMultiple(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		i, _, nc, ctx, _ := setup(t)
+		const attemptID = "attempt-1"
+
+		i.HandleLine(ctx, "task-1", attemptID, "sess-1", "stdout", "openjd_status: step 1")
+		i.HandleLine(ctx, "task-1", attemptID, "sess-1", "stdout", "openjd_status: step 2")
+		synctest.Wait()
+		if got := len(nc.snapshot()); got != 1 {
+			t.Fatalf("expected 1 NATS message at once, got %d", got)
+		}
+
+		time.Sleep(openjd.DefaultProgressInterval + 100*time.Millisecond)
+		synctest.Wait()
+		msgs := nc.snapshot()
+		if len(msgs) != 2 {
+			t.Fatalf("expected 2 NATS messages after the window, got %d", len(msgs))
+		}
+		if m := decodeStatus(t, msgs[1].data).Message; m != "step 2" {
+			t.Errorf("second Message = %q, want %q", m, "step 2")
+		}
+	})
+}
+
+// ── snapshot and throttle tests ───────────────────────────────────────────────
+
+func TestProgressParsesFloats(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want int
+	}{
+		{"0.0", 0}, {"50.0", 50}, {"43.5", 43}, {"99.99", 99}, {"100", 100}, {" 7 ", 7},
+	} {
+		t.Run(tc.in, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				i, _, _, ctx, _ := setup(t)
+				i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", "stdout", "openjd_progress: "+tc.in)
+				p := i.LastProgress("attempt-1")
+				if p == nil || *p != tc.want {
+					t.Errorf("LastProgress = %v, want %d", p, tc.want)
+				}
+			})
+		})
+	}
+}
+
+func TestSnapshot_ProgressOnlyLineSends(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		i, _, nc, ctx, _ := setup(t)
+		i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", "stdout", "openjd_progress: 42")
+		synctest.Wait()
+
+		msgs := nc.snapshot()
+		if len(msgs) != 1 {
+			t.Fatalf("got %d messages, want 1", len(msgs))
+		}
+		if want := bus.TaskStatusSubject("test-worker", "job-1"); msgs[0].subject != want {
+			t.Errorf("subject = %q, want %q", msgs[0].subject, want)
+		}
+		m := decodeStatus(t, msgs[0].data)
+		if m.Status != "running" || m.Message != "" || m.LastProgress == nil || *m.LastProgress != 42 {
+			t.Errorf("message = %+v, want running, no Message, LastProgress 42", m)
+		}
+	})
+}
+
+func TestSnapshot_StatusKeptAcrossProgress(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		i, _, nc, ctx, _ := setup(t)
+		i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", "stdout", "openjd_status: frame 1")
+		time.Sleep(2 * time.Second)
+		i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", "stdout", "openjd_progress: 10")
+		time.Sleep(2 * time.Second)
+		synctest.Wait()
+
+		msgs := nc.snapshot()
+		if len(msgs) != 2 {
+			t.Fatalf("got %d messages, want 2", len(msgs))
+		}
+		m := decodeStatus(t, msgs[1].data)
+		if m.Message != "frame 1" || m.LastProgress == nil || *m.LastProgress != 10 {
+			t.Errorf("second message = %+v, want Message frame 1, LastProgress 10", m)
+		}
+	})
+}
+
+func TestThrottle_LeadingAndTrailing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		i, _, nc, ctx, _ := setup(t)
+		send := func(v int) {
+			i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", "stdout", fmt.Sprintf("openjd_progress: %d", v))
+		}
+		send(1)
+		if got := len(nc.snapshot()); got != 1 {
+			t.Fatalf("leading: got %d messages, want 1", got)
+		}
+		time.Sleep(500 * time.Millisecond)
+		send(2)
+		time.Sleep(500 * time.Millisecond)
+		send(3)
+		if got := len(nc.snapshot()); got != 1 {
+			t.Fatalf("within window: got %d messages, want 1", got)
+		}
+		time.Sleep(1100 * time.Millisecond)
+		synctest.Wait()
+		msgs := nc.snapshot()
+		if len(msgs) != 2 {
+			t.Fatalf("after window: got %d messages, want 2", len(msgs))
+		}
+		if m := decodeStatus(t, msgs[1].data); m.LastProgress == nil || *m.LastProgress != 3 {
+			t.Errorf("trailing LastProgress = %v, want 3", m.LastProgress)
+		}
+		time.Sleep(5 * time.Second)
+		synctest.Wait()
+		if got := len(nc.snapshot()); got != 2 {
+			t.Errorf("got %d messages after quiet period, want 2", got)
+		}
+	})
+}
+
+func TestThrottle_UnchangedValuesDoNotSend(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		i, _, nc, ctx, _ := setup(t)
+		line := func(l string) { i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", "stdout", l) }
+		line("openjd_progress: 5")
+		line("openjd_status: x")
+		time.Sleep(3 * time.Second)
+		line("openjd_progress: 5")
+		line("openjd_status: x")
+		time.Sleep(3 * time.Second)
+		synctest.Wait()
+		if got := len(nc.snapshot()); got != 2 {
+			t.Errorf("got %d messages, want 2", got)
+		}
+	})
+}
+
+func TestFinishProgress_StopsTrailingSend(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		i, _, nc, ctx, _ := setup(t)
+		line := func(l string) { i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", "stdout", l) }
+		line("openjd_progress: 1")
+		line("openjd_progress: 2")
+		p := i.FinishProgress("attempt-1")
+		if p == nil || *p != 2 {
+			t.Fatalf("FinishProgress = %v, want &2", p)
+		}
+		time.Sleep(5 * time.Second)
+		synctest.Wait()
+		line("openjd_progress: 3")
+		time.Sleep(5 * time.Second)
+		synctest.Wait()
+		if got := len(nc.snapshot()); got != 1 {
+			t.Errorf("got %d messages, want 1", got)
+		}
+	})
+}
+
+func TestDeregister_StopsTrailingSend(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		i, _, nc, ctx, _ := setup(t)
+		line := func(l string) { i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", "stdout", l) }
+		line("openjd_progress: 1")
+		line("openjd_progress: 2")
+		i.Deregister("attempt-1")
+		time.Sleep(5 * time.Second)
+		synctest.Wait()
+		line("openjd_progress: 3")
+		time.Sleep(5 * time.Second)
+		synctest.Wait()
+		if got := len(nc.snapshot()); got != 1 {
+			t.Errorf("got %d messages, want 1", got)
+		}
+	})
+}
+
+// TestStdoutMessagesSample feeds the directive lines of the OpenJD
+// stdout-messages sample job template.
+func TestStdoutMessagesSample(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		i, _, nc, ctx, _ := setup(t)
+		for _, l := range []string{
+			"openjd_progress: 0.0",
+			"openjd_status: Loading the things",
+			"openjd_progress: 50.0",
+			"openjd_status: Processing the things",
+			"openjd_progress: 100",
+		} {
+			i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", "stdout", l)
+			time.Sleep(3 * time.Second)
+		}
+		synctest.Wait()
+		if p := i.LastProgress("attempt-1"); p == nil || *p != 100 {
+			t.Errorf("LastProgress = %v, want 100", p)
+		}
+		msgs := nc.snapshot()
+		if len(msgs) == 0 {
+			t.Fatal("no messages published")
+		}
+		m := decodeStatus(t, msgs[len(msgs)-1].data)
+		if m.Message != "Processing the things" || m.LastProgress == nil || *m.LastProgress != 100 {
+			t.Errorf("last message = %+v, want Processing the things at 100", m)
+		}
+	})
 }
 
 // ── openjd_fail tests ─────────────────────────────────────────────────────────

@@ -11,10 +11,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/uberware/sqi/internal/loadtest/simworker"
 	"github.com/uberware/sqi/internal/worker/logstreamer"
+	"github.com/uberware/sqi/internal/worker/openjd"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/worker/status"
 )
@@ -452,4 +454,51 @@ func timeoutRacingCancel(t *testing.T) {
 	if ends := countKind(l, "t1", simworker.KindTerminal) + countKind(l, "t1", simworker.KindCanceled); ends != 1 {
 		t.Fatalf("%d end events, want exactly 1", ends)
 	}
+}
+
+func TestDispatcher_ProgressEverySendsSnapshots(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		d, conn, l := newTestDispatcher(t, simworker.TaskPlan{
+			Duration: 10 * time.Second, Outcome: simworker.OutcomeSucceeded,
+			ProgressEvery: time.Second,
+		})
+		logger := slog.New(slog.DiscardHandler)
+		logs := logstreamer.New(conn, testWorkerID, logstreamer.DefaultConfig(), logger)
+		d.SetProgress(openjd.New(logs, conn, testWorkerID, logger))
+
+		if err := d.Dispatch(t.Context(), assignment("t1", "a1")); err != nil {
+			t.Fatalf("Dispatch: %v", err)
+		}
+		time.Sleep(15 * time.Second)
+		synctest.Wait()
+		if !ledgerHas(l, "t1", simworker.KindTerminal) {
+			t.Fatal("task did not finish")
+		}
+
+		var withProgress []protocol.TaskStatusMsg
+		terminal := -1
+		all := conn.statuses(t)
+		for i, s := range all {
+			switch {
+			case s.Status == "succeeded":
+				terminal = i
+			case s.Status == "running" && s.LastProgress != nil:
+				withProgress = append(withProgress, s)
+			}
+		}
+		if n := len(withProgress); n < 5 || n > 7 {
+			t.Errorf("%d progress snapshots, want 5 to 7", n)
+		}
+		if n := len(withProgress); n > 0 && *withProgress[n-1].LastProgress < 90 {
+			t.Errorf("last progress %d, want at least 90", *withProgress[n-1].LastProgress)
+		}
+		if terminal < 0 {
+			t.Fatal("no terminal status")
+		}
+		for _, s := range all[terminal+1:] {
+			if s.Status == "running" {
+				t.Error("a running snapshot followed the terminal status")
+			}
+		}
+	})
 }

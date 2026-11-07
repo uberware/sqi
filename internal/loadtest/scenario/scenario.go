@@ -119,6 +119,10 @@ type TaskSpec struct {
 	HangRate     float64 `yaml:"hang_rate"` // runs until canceled or timed out
 	LogLines     Dist    `yaml:"log_lines"`
 	LogLineBytes int     `yaml:"log_line_bytes"`
+	// ProgressEvery is how often a running task writes an openjd_progress
+	// line; the worker's own throttle decides how many become snapshots.
+	// 0 writes none.
+	ProgressEvery Duration `yaml:"progress_every"`
 }
 
 // ClientsSpec is the read-side load: browsers and scripts watching the farm.

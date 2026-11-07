@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, it, expect } from 'vitest'
-import { formatAge, formatDuration, formatTimespan, formatUptime } from './time'
+import { formatAge, formatDuration, formatTimespan, formatUptime, timeLeftMs } from './time'
 
 describe('formatDuration', () => {
   it('returns — for negative durations', () => {
@@ -76,5 +76,28 @@ describe('formatAge', () => {
   it('falls back to a clock time after an hour', () => {
     const ts = now - 2 * 3_600_000
     expect(formatAge(ts, now)).toBe(new Date(ts).toLocaleTimeString())
+  })
+})
+
+describe('timeLeftMs', () => {
+  const now = Date.parse('2024-01-15T10:10:00Z')
+  const startAgo = (ms: number): string => new Date(now - ms).toISOString()
+
+  it('is undefined at progress 0', () => {
+    expect(timeLeftMs(startAgo(60_000), now, 0)).toBeUndefined()
+  })
+  it('is undefined before 30s have elapsed', () => {
+    expect(timeLeftMs(startAgo(29_000), now, 1)).toBeUndefined()
+  })
+  it('extrapolates from elapsed time', () => {
+    expect(timeLeftMs(startAgo(60_000), now, 50)).toBe(60_000)
+    expect(timeLeftMs(startAgo(100_000), now, 25)).toBe(300_000)
+  })
+  it('is 0 at progress 100', () => {
+    expect(timeLeftMs(startAgo(60_000), now, 100)).toBe(0)
+  })
+  it('is undefined without a start or progress', () => {
+    expect(timeLeftMs(undefined, now, 50)).toBeUndefined()
+    expect(timeLeftMs(startAgo(60_000), now, undefined)).toBeUndefined()
   })
 })

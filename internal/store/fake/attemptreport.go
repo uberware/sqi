@@ -43,6 +43,33 @@ func (s *Store) StartTaskAttempt(ctx context.Context, attemptID, taskID, session
 	return true, nil
 }
 
+// RecordAttemptProgress implements [store.TaskStore]; outcomes match SQLite's.
+func (s *Store) RecordAttemptProgress(ctx context.Context, p store.AttemptProgress) (store.ProgressOutcome, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.ProgressNotLive, "", err
+	}
+	t, ok := s.tasks[p.TaskID]
+	if !ok {
+		return store.ProgressNotLive, "", store.ErrNotFound
+	}
+	if !s.liveAttemptLocked(p.AttemptID, t) {
+		return store.ProgressNotLive, t.JobID, nil
+	}
+	if t.Status == store.TaskStatusAssigned {
+		return store.ProgressTaskAssigned, t.JobID, nil
+	}
+	a := s.taskAttempts[p.AttemptID]
+	at := p.At.UTC()
+	if a.ProgressAt != nil && !a.ProgressAt.Before(at) {
+		return store.ProgressOutOfOrder, t.JobID, nil
+	}
+	a.Progress, a.StatusText, a.ProgressAt = ptrCopy(p.Progress), p.StatusText, &at
+	s.taskAttempts[p.AttemptID] = a
+	return store.ProgressRecorded, t.JobID, nil
+}
+
 // ReclaimTaskAttempt implements [store.TaskStore]; outcomes match SQLite's.
 func (s *Store) ReclaimTaskAttempt(ctx context.Context, attemptID, taskID string, now time.Time) (bool, error) {
 	s.mu.Lock()

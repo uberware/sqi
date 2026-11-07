@@ -61,6 +61,92 @@ func TestStartTaskAttempt(t *testing.T) {
 	}
 }
 
+func TestRecordAttemptProgress(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx, now := t.Context(), time.Now().UTC().Truncate(time.Microsecond)
+			g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning},
+				stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusAssigned, store.TaskStatusReady, store.TaskStatusReady}})
+			live, superseded, reclaimed := g.Tasks["a"][0], g.Tasks["a"][1], g.Tasks["a"][2]
+			a := g.Attempts[live.ID]
+			t0 := now
+			forty2, fifty := 42, 50
+			var gotJob string
+			record := func(attemptID, taskID string, p *int, text string, at time.Time) (store.ProgressOutcome, error) {
+				out, job, err := st.RecordAttemptProgress(ctx, store.AttemptProgress{AttemptID: attemptID, TaskID: taskID, Progress: p, StatusText: text, At: at})
+				gotJob = job
+				return out, err
+			}
+			want := func(label string, got, wantOutcome store.ProgressOutcome, err error) {
+				t.Helper()
+				if err != nil || got != wantOutcome {
+					t.Fatalf("%s = (%v, %v), want (%v, nil)", label, got, err, wantOutcome)
+				}
+				// Whatever the outcome, the job is the task's own.
+				if gotJob != live.JobID {
+					t.Fatalf("%s: job ID = %q, want %q", label, gotJob, live.JobID)
+				}
+			}
+
+			// Still assigned: nothing is written.
+			out, err := record(a.ID, live.ID, &forty2, "early", t0)
+			want("assigned", out, store.ProgressTaskAssigned, err)
+			if got := mustAttempt(t, st, a.ID); got.Progress != nil || got.StatusText != "" || got.ProgressAt != nil {
+				t.Fatalf("assigned attempt written: %+v", got)
+			}
+
+			if ok, err := st.StartTaskAttempt(ctx, a.ID, live.ID, "", now); err != nil || !ok {
+				t.Fatalf("StartTaskAttempt = (%v, %v)", ok, err)
+			}
+			out, err = record(a.ID, live.ID, &forty2, "frame 3", t0)
+			want("first", out, store.ProgressRecorded, err)
+			got := mustAttempt(t, st, a.ID)
+			if got.Progress == nil || *got.Progress != 42 || got.StatusText != "frame 3" || got.ProgressAt == nil || !got.ProgressAt.Equal(t0) {
+				t.Fatalf("attempt after first record = %+v", got)
+			}
+
+			for _, at := range []time.Time{t0, t0.Add(-time.Second)} {
+				out, err = record(a.ID, live.ID, &fifty, "stale", at)
+				want("out of order", out, store.ProgressOutOfOrder, err)
+			}
+			got = mustAttempt(t, st, a.ID)
+			if got.Progress == nil || *got.Progress != 42 || got.StatusText != "frame 3" || !got.ProgressAt.Equal(t0) {
+				t.Fatalf("out-of-order write changed the attempt: %+v", got)
+			}
+
+			out, err = record(a.ID, live.ID, &fifty, "", t0.Add(time.Second))
+			want("overwrite", out, store.ProgressRecorded, err)
+			got = mustAttempt(t, st, a.ID)
+			if got.Progress == nil || *got.Progress != 50 || got.StatusText != "" {
+				t.Fatalf("attempt after overwrite = %+v", got)
+			}
+			out, err = record(a.ID, live.ID, nil, "text only", t0.Add(2*time.Second))
+			want("nil progress", out, store.ProgressRecorded, err)
+			if got = mustAttempt(t, st, a.ID); got.Progress != nil || got.StatusText != "text only" {
+				t.Fatalf("attempt after nil progress = %+v", got)
+			}
+
+			// A superseded attempt.
+			old := storetest.FailAndRequeue(t, st, leaseReq(superseded), now.Add(-time.Minute))
+			next := storetest.Lease(t, st, store.LeaseRequest{TaskID: superseded.ID, WorkerID: fixtureWorkerID})
+			out, err = record(old.ID, superseded.ID, &forty2, "old", t0)
+			want("superseded", out, store.ProgressNotLive, err)
+			if got := mustAttempt(t, st, next.ID); got.Progress != nil || got.StatusText != "" || got.ProgressAt != nil {
+				t.Fatalf("new attempt after a requeue = %+v, want no progress", got)
+			}
+
+			// The latest attempt, closed, task back to ready.
+			closed := storetest.FailAndRequeue(t, st, leaseReq(reclaimed), now.Add(-time.Minute))
+			out, err = record(closed.ID, reclaimed.ID, &forty2, "closed", t0)
+			want("closed", out, store.ProgressNotLive, err)
+
+			if _, err := record(a.ID, "no-such-task", &forty2, "", t0); !errors.Is(err, store.ErrNotFound) || gotJob != "" {
+				t.Fatalf("unknown task: err = %v, job = %q, want ErrNotFound and no job", err, gotJob)
+			}
+		})
+	}
+}
+
 // TestCompleteTaskAttempt_RefusesATaskOutOfFlight pins that a late terminal
 // report from the latest attempt, after the task left flight with no new lease
 // (canceled then retried), does not move it.

@@ -503,9 +503,11 @@ var fenceReadOnly = []string{
 	"GetUserByExternalID", "GetUserByUsername", "GetWorker", "GetWorkerJoinTokenByHash",
 	"ListAPIKeysForUser", "ListActiveWorkerCredentials", "ListBlockedJobs", "ListComputeLocations",
 	"ListDependents", "ListFarms", "ListJobDependencyIDs", "ListJobIDsWithPendingSteps", "ListJobs",
-	"ListOpenAttempts", "ListProducts", "ListQueues", "ListReadyTasks", "ListStaleWorkers", "ListSteps",
+	"LatestAttemptProgress", "ListOpenAttempts", "ListProducts", "ListQueues", "ListReadyTasks", "ListStaleWorkers", "ListSteps",
 	"ListStorageLocations", "ListStuckSteps", "ListTaskAttempts", "ListTaskLogs", "ListTasks",
 	"ListUsagePoolUtilization", "ListUsagePools", "ListUsers", "ListWorkers",
+	"RunningProgressByJob",
+	"RunningProgressByJobs",
 }
 
 // fenceMutator builds, with a plain context, the rows one store write needs,
@@ -828,6 +830,19 @@ var fenceMutators = map[string]fenceMutator{
 			ok, err := st.ReclaimTaskAttempt(ctx, g.Attempts[task.ID].ID, task.ID, time.Now().UTC())
 			if err == nil && !ok {
 				return errors.New("ReclaimTaskAttempt reclaimed nothing")
+			}
+			return err
+		}
+	},
+	"RecordAttemptProgress": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := fenceLiveJob(t, st, store.TaskStatusRunning)
+		task := g.Tasks["a"][0]
+		a := g.Attempts[task.ID]
+		one := 1
+		return func(ctx context.Context) error {
+			out, _, err := st.RecordAttemptProgress(ctx, store.AttemptProgress{AttemptID: a.ID, TaskID: task.ID, Progress: &one, At: time.Now().UTC()})
+			if err == nil && out != store.ProgressRecorded {
+				return fmt.Errorf("RecordAttemptProgress outcome = %v, want recorded", out)
 			}
 			return err
 		}

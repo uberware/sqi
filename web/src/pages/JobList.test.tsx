@@ -213,6 +213,28 @@ describe('JobList', () => {
       expect(badges.length).toBeGreaterThan(0)
     })
 
+    it('passes progress_percent to the bar', async () => {
+      const job = makeJob({
+        progress_percent: 75,
+        task_counts: {
+          total: 2,
+          pending: 0,
+          ready: 0,
+          assigned: 0,
+          running: 1,
+          succeeded: 1,
+          failed: 0,
+          canceled: 0,
+        },
+      })
+      fetchMock.mockResolvedValueOnce(okJson(makeListResponse([job])))
+
+      render(<JobList />, { wrapper: Wrapper })
+
+      const bar = await screen.findByRole('progressbar', { name: /task progress/i })
+      expect(bar).toHaveAttribute('aria-valuenow', '75')
+    })
+
     it('renders task progress fraction', async () => {
       const job = makeJob({
         task_counts: {
@@ -566,6 +588,41 @@ describe('JobList', () => {
       await waitFor(() =>
         expect(screen.getAllByLabelText('Status: Completed').length).toBeGreaterThan(0),
       )
+    })
+
+    it('keeps refreshing the list while progress events stream', async () => {
+      const job = makeJob({ id: 'job-stream', status: 'running', name: 'Stream Job' })
+      fetchMock.mockImplementation(() => Promise.resolve(okJson(makeListResponse([job]))))
+
+      render(<JobList />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByText('Stream Job'))
+      act(() => wsInstance(0).simulateOpen())
+      const before = fetchMock.mock.calls.length
+
+      for (let i = 0; i < 6; i++) {
+        act(() => {
+          wsInstance(0).simulateMessage({
+            type: 'push',
+            subject: 'jobs',
+            payload: {
+              job_id: 'job-stream',
+              task_id: 'task-stream',
+              status: 'running',
+              progress: i * 10,
+              updated_at: '2024-01-01T10:10:00Z',
+            },
+            seq: i + 1,
+          })
+        })
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(2_000)
+        })
+      }
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100)
+      })
+
+      expect(fetchMock.mock.calls.length - before).toBeGreaterThanOrEqual(2)
     })
 
     it('ignores JobEvents for jobs not in the current list', async () => {

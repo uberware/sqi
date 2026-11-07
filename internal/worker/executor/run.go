@@ -219,9 +219,10 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	openjdFailReason, openjdFailed := e.takeFailReason(msg.AttemptID)
 
 	// ── Snapshot last-known progress ────────────────────────────────
-	// Must be called before deferred Deregister removes the attempt state from
-	// the openjd interceptor.
-	lp := e.lastProgress(msg.AttemptID)
+	// Stops any pending progress snapshot so none can follow the terminal
+	// status, and must run before deferred Deregister removes the attempt
+	// state from the openjd interceptor.
+	lp := e.finishProgress(msg.AttemptID)
 
 	// The checker's verdict only matters to a task the cases below would
 	// otherwise mark succeeded; it sits after the exit-code case for that reason.

@@ -51,6 +51,8 @@ export interface ListResponse<T> {
 
 /** Wire shape returned by GET /api/v1/jobs and POST /api/v1/jobs. */
 export interface Job {
+  /** Aggregate completion across the job's tasks, 0-100; null when the job has no non-canceled tasks. */
+  progress_percent?: number | null
   id: string
   farm_id: string
   queue_id: string
@@ -160,6 +162,12 @@ export interface Task {
   retry_after?: string
   /** Human-readable reason the task's most recent attempt failed; set only for failed tasks. */
   failure_reason?: string
+  /** Self-reported completion, 0-100; absent until the task reports progress. */
+  progress?: number
+  /** Free-text status line the task reported alongside its progress. */
+  status_text?: string
+  /** When the task last reported progress. */
+  progress_at?: string
 }
 
 /** Wire shape returned by POST /api/v1/tasks/{id}/retry. */
@@ -218,6 +226,12 @@ export interface TaskAttempt {
   started_at: string
   /** Absent while the attempt is running. */
   ended_at?: string
+  /** Last self-reported completion for this attempt, 0-100. */
+  progress?: number
+  /** Last free-text status line the attempt reported. */
+  status_text?: string
+  /** When the attempt last reported progress. */
+  progress_at?: string
 }
 
 /** Wire shape returned by GET /api/v1/tasks/{id}/attempts (oldest first). */

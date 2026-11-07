@@ -14,6 +14,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1752,4 +1753,221 @@ func TestGetJob_EffectiveRetry(t *testing.T) {
 			t.Errorf("effective_retry = %+v, want %+v", *resp.EffectiveRetry, want)
 		}
 	})
+}
+
+// ── progress_percent ──────────────────────────────────────────────────────────
+
+func TestProgressPercent(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+	tests := []struct {
+		name    string
+		counts  map[store.TaskStatus]int
+		running float64
+		want    *float64
+	}{
+		{"half done", map[store.TaskStatus]int{store.TaskStatusSucceeded: 5, store.TaskStatusFailed: 5}, 0, f(50)},
+		{"running share", map[store.TaskStatus]int{store.TaskStatusSucceeded: 1, store.TaskStatusRunning: 1}, 0.5, f(75)},
+		{"all canceled", map[store.TaskStatus]int{store.TaskStatusCanceled: 3}, 0, nil},
+		{"empty", map[store.TaskStatus]int{}, 0, nil},
+		{"canceled excluded", map[store.TaskStatus]int{store.TaskStatusSucceeded: 2, store.TaskStatusCanceled: 2}, 0, f(100)},
+		{"clamped", map[store.TaskStatus]int{store.TaskStatusSucceeded: 1, store.TaskStatusRunning: 1}, 5, f(100)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := progressPercent(tt.counts, tt.running)
+			if (got == nil) != (tt.want == nil) || (got != nil && *got != *tt.want) {
+				t.Fatalf("progressPercent = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// progressJobs seeds a job with one succeeded and one running task at 50%, and
+// one holding only a canceled task.
+func progressJobs(t *testing.T, st *fake.Store) (running, canceled store.Job) {
+	t.Helper()
+	running, tasks := seedJobTasks(t, st, store.JobStatusRunning,
+		store.Task{Name: "a", Status: store.TaskStatusSucceeded},
+		store.Task{Name: "b", Status: store.TaskStatusRunning})
+	recordProgress(t, st, tasks[1].ID, 50, "", time.Now().UTC())
+	canceled, _ = seedJobTasks(t, st, store.JobStatusCanceled,
+		store.Task{Name: "c", Status: store.TaskStatusCanceled})
+	return running, canceled
+}
+
+func TestListJobs_ProgressPercent(t *testing.T) {
+	st := fake.New()
+	r := newJobRouter(st, &fakeScheduler{})
+	running, canceled := progressJobs(t, st)
+
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, newUnscopedJobsReq(t, "/api/v1/jobs"))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body)
+	}
+	var resp struct {
+		Items []map[string]json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, it := range resp.Items {
+		var id string
+		_ = json.Unmarshal(it["id"], &id) //nolint:errcheck // test decode
+		raw, ok := it["progress_percent"]
+		if !ok {
+			t.Fatalf("job %s lacks progress_percent", id)
+		}
+		got[id] = string(raw)
+	}
+	if got[running.ID] != "75" || got[canceled.ID] != "null" {
+		t.Fatalf("progress_percent = %v", got)
+	}
+}
+
+func TestGetJob_ProgressPercent(t *testing.T) {
+	st := fake.New()
+	r := newJobRouter(st, &fakeScheduler{})
+	running, canceled := progressJobs(t, st)
+
+	for id, want := range map[string]string{running.ID: `"progress_percent":75`, canceled.ID: `"progress_percent":null`} {
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, newReq(t, http.MethodGet, "/api/v1/jobs/"+id, nil))
+		if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), want) {
+			t.Fatalf("job %s: status %d, want %s in %s", id, rr.Code, want, rr.Body)
+		}
+	}
+}
+
+// progressCallStore counts progress lookups and can fail the batched one.
+type progressCallStore struct {
+	store.Store
+
+	batchCalls  int
+	batchedIDs  []string
+	singleCalls int
+	batchErr    error
+	singleErr   error
+}
+
+func (s *progressCallStore) RunningProgressByJobs(ctx context.Context, ids []string) (map[string]float64, error) {
+	s.batchCalls++
+	s.batchedIDs = append(s.batchedIDs, ids...)
+	if s.batchErr != nil {
+		return nil, s.batchErr
+	}
+	return s.Store.RunningProgressByJobs(ctx, ids)
+}
+
+func (s *progressCallStore) RunningProgressByJob(ctx context.Context, id string) (float64, error) {
+	s.singleCalls++
+	if s.singleErr != nil {
+		return 0, s.singleErr
+	}
+	return s.Store.RunningProgressByJob(ctx, id)
+}
+
+func listProgressPercents(t *testing.T, st store.Store) map[string]string {
+	t.Helper()
+	rr := httptest.NewRecorder()
+	newJobRouter(st, &fakeScheduler{}).ServeHTTP(rr, newUnscopedJobsReq(t, "/api/v1/jobs"))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body)
+	}
+	var resp struct {
+		Items []map[string]json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, it := range resp.Items {
+		var id string
+		_ = json.Unmarshal(it["id"], &id) //nolint:errcheck // test decode
+		got[id] = string(it["progress_percent"])
+	}
+	return got
+}
+
+func TestListJobs_ProgressBatchedAcrossPage(t *testing.T) {
+	base := fake.New()
+	st := &progressCallStore{Store: base}
+	// Each job: one succeeded task and one running task at the given percent.
+	want := map[string]string{}
+	var runningIDs []string
+	for _, pct := range []int{20, 50, 80} {
+		j, tasks := seedJobTasks(t, base, store.JobStatusRunning,
+			store.Task{Name: "a", Status: store.TaskStatusSucceeded},
+			store.Task{Name: "b", Status: store.TaskStatusRunning})
+		recordProgress(t, base, tasks[1].ID, pct, "", time.Now().UTC())
+		want[j.ID] = strconv.FormatFloat(50+float64(pct)/2, 'f', -1, 64)
+		runningIDs = append(runningIDs, j.ID)
+	}
+	idle, _ := seedJobTasks(t, base, store.JobStatusRunning,
+		store.Task{Name: "c", Status: store.TaskStatusSucceeded},
+		store.Task{Name: "d", Status: store.TaskStatusReady})
+	want[idle.ID] = "50"
+
+	got := listProgressPercents(t, st)
+	for id, w := range want {
+		if got[id] != w {
+			t.Errorf("job %s progress_percent = %s, want %s", id, got[id], w)
+		}
+	}
+	if st.batchCalls != 1 || st.singleCalls != 0 {
+		t.Fatalf("batch calls = %d, single calls = %d; want 1 and 0", st.batchCalls, st.singleCalls)
+	}
+	if len(st.batchedIDs) != len(runningIDs) {
+		t.Fatalf("batched %v, want only the %d jobs with running tasks", st.batchedIDs, len(runningIDs))
+	}
+}
+
+func TestListJobs_NoRunningTasksSkipsProgressLookup(t *testing.T) {
+	base := fake.New()
+	st := &progressCallStore{Store: base}
+	seedJobTasks(t, base, store.JobStatusCompleted, store.Task{Name: "a", Status: store.TaskStatusSucceeded})
+	listProgressPercents(t, st)
+	if st.batchCalls != 0 || st.singleCalls != 0 {
+		t.Fatalf("progress lookups = %d batch, %d single; want none", st.batchCalls, st.singleCalls)
+	}
+}
+
+func TestListJobs_ProgressBatchErrorDegradesToZero(t *testing.T) {
+	base := fake.New()
+	st := &progressCallStore{Store: base, batchErr: errors.New("read pool unavailable")}
+	j, tasks := seedJobTasks(t, base, store.JobStatusRunning,
+		store.Task{Name: "a", Status: store.TaskStatusSucceeded},
+		store.Task{Name: "b", Status: store.TaskStatusRunning})
+	recordProgress(t, base, tasks[1].ID, 50, "", time.Now().UTC())
+
+	// The running task contributes nothing, leaving the succeeded share of 1/2.
+	if got := listProgressPercents(t, st)[j.ID]; got != "50" {
+		t.Fatalf("progress_percent = %s, want 50", got)
+	}
+}
+
+func TestGetJob_ProgressErrorDegradesToZero(t *testing.T) {
+	base := fake.New()
+	st := &progressCallStore{Store: base, singleErr: errors.New("read pool unavailable")}
+	j, tasks := seedJobTasks(t, base, store.JobStatusRunning,
+		store.Task{Name: "a", Status: store.TaskStatusSucceeded},
+		store.Task{Name: "b", Status: store.TaskStatusRunning})
+	recordProgress(t, base, tasks[1].ID, 50, "", time.Now().UTC())
+
+	rr := httptest.NewRecorder()
+	newJobRouter(st, &fakeScheduler{}).ServeHTTP(rr, newUnscopedJobsReq(t, "/api/v1/jobs/"+j.ID))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d, want 200: %s", rr.Code, rr.Body)
+	}
+	var resp struct {
+		ProgressPercent *float64 `json:"progress_percent"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	// The running task contributes nothing, leaving the succeeded share of 1/2.
+	if resp.ProgressPercent == nil || *resp.ProgressPercent != 50 {
+		t.Fatalf("progress_percent = %v, want 50", resp.ProgressPercent)
+	}
 }

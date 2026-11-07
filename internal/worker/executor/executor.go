@@ -482,6 +482,19 @@ func (e *Executor) lastProgress(attemptID string) *int {
 	return nil
 }
 
+// finishProgress stops the output handler's pending progress snapshot for
+// attemptID, if it supports that, and returns the last progress seen.  Falls
+// back to [Executor.lastProgress] for handlers without FinishProgress.
+func (e *Executor) finishProgress(attemptID string) *int {
+	type progressFinisher interface {
+		FinishProgress(string) *int
+	}
+	if pf, ok := e.outputHandler.(progressFinisher); ok {
+		return pf.FinishProgress(attemptID)
+	}
+	return e.lastProgress(attemptID)
+}
+
 // Cancel requests cancellation of the task identified by taskID.
 //
 // If the task is actively executing its per-task context is canceled,

@@ -7,7 +7,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -218,30 +217,48 @@ func migrateTo(t *testing.T, dsn string, v int64) {
 	}
 }
 
-// workerBrokerColumns are the columns migration 00041 adds to workers, which
-// every store statement over workers names. Open prepares those statements, so
-// a database one migration behind can only be opened by a store if the
-// columns are already there: behindByOne gives a test that state, without
-// migration 00041's other changes.
-var workerBrokerColumns = []string{"registration_broker_at", "heartbeat_broker_at"}
-
-// behindByOne brings an empty database to version 40, with workerBrokerColumns
-// added by hand so that a store can be opened over it.
-func behindByOne(t *testing.T, dsn string) {
+// latestVersion is the highest PostgreSQL migration the binary embeds.
+func latestVersion(t *testing.T) int64 {
 	t.Helper()
-	migrateTo(t, dsn, 40)
-	alterWorkerBrokerColumns(t, dsn, "ADD COLUMN %s ts")
+	v, err := migrations.MaxVersion("postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
 }
 
-// alterWorkerBrokerColumns applies the ALTER TABLE workers action format to
-// each of workerBrokerColumns.
-func alterWorkerBrokerColumns(t *testing.T, dsn, format string) {
+// behindByOne brings an empty database to a state one migration behind: the
+// schema of the latest version, recorded as the version before it. Open
+// prepares statements over every column the latest migration adds, so a store
+// can only open a database that already has them; a schema at the
+// previous version would not, and deriving the difference from the latest
+// migration itself keeps this from naming any of it. rewindSchema turns the
+// state into a real previous-version one when a test needs a migration to run.
+func behindByOne(t *testing.T, dsn string) {
+	t.Helper()
+	migrateTo(t, dsn, latestVersion(t))
+	if _, err := openRaw(t, dsn).ExecContext(t.Context(),
+		`DELETE FROM goose_db_version WHERE version_id = $1`, latestVersion(t)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// rewindSchema runs the latest migration's Down over a database behindByOne
+// left, so that its schema is the previous version's as well as its record,
+// and the latest migration is pending for real.
+func rewindSchema(t *testing.T, dsn string) {
 	t.Helper()
 	db := openRaw(t, dsn)
-	for _, col := range workerBrokerColumns {
-		if _, err := db.ExecContext(t.Context(), `ALTER TABLE workers `+fmt.Sprintf(format, col)); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := db.ExecContext(t.Context(),
+		`INSERT INTO goose_db_version (version_id, is_applied) VALUES ($1, true)`, latestVersion(t)); err != nil {
+		t.Fatal(err)
+	}
+	p, err := migrations.NewProvider(db, "postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.DownTo(t.Context(), latestVersion(t)-1); err != nil {
+		t.Fatalf("DownTo(%d): %v", latestVersion(t)-1, err)
 	}
 }
 
@@ -264,7 +281,7 @@ func TestHALock_PendingMigrationWithOtherServerRefused(t *testing.T) {
 			t.Errorf("error %q lacks %q", err, want)
 		}
 	}
-	if v, err := postgres.SchemaVersionDSN(t.Context(), dsn); err != nil || v != 40 {
+	if v, err := postgres.SchemaVersionDSN(t.Context(), dsn); err != nil || v != latestVersion(t)-1 {
 		t.Fatalf("schema moved to %d (%v); the refused server must not migrate", v, err)
 	}
 
@@ -273,10 +290,10 @@ func TestHALock_PendingMigrationWithOtherServerRefused(t *testing.T) {
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
-	alterWorkerBrokerColumns(t, dsn, "DROP COLUMN %s")
+	rewindSchema(t, dsn)
 	openStore(t, dsn, haServerOpts())
-	if v, err := postgres.SchemaVersionDSN(t.Context(), dsn); err != nil || v != 41 {
-		t.Fatalf("SchemaVersion = %d, %v; want 41", v, err)
+	if v, err := postgres.SchemaVersionDSN(t.Context(), dsn); err != nil || v != latestVersion(t) {
+		t.Fatalf("SchemaVersion = %d, %v; want %d", v, err, latestVersion(t))
 	}
 }
 

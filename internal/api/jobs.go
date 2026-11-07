@@ -157,6 +157,9 @@ type jobDetailResponse struct {
 
 	Steps      []stepResponse     `json:"steps"`
 	TaskCounts taskCountsResponse `json:"task_counts"`
+	// ProgressPercent is the job's completion, 0-100, or null when it has no
+	// non-canceled tasks.
+	ProgressPercent *float64 `json:"progress_percent"`
 	// FailureSummary aggregates the job's failed tasks by failure reason. Nil
 	// when the job has no failed tasks with a recorded reason.
 	FailureSummary *failureSummaryResponse `json:"failure_summary,omitempty"`
@@ -189,6 +192,8 @@ type jobListItemResponse struct {
 	jobResponse
 
 	TaskCounts taskCountsResponse `json:"task_counts"`
+	// ProgressPercent is as on [jobDetailResponse].
+	ProgressPercent *float64 `json:"progress_percent"`
 }
 
 // jobListResponse is the paginated result returned by GET /api/v1/jobs.
@@ -452,26 +457,62 @@ func (h *jobHandler) listJobs(w http.ResponseWriter, r *http.Request) {
 		Limit:  page.Limit,
 		Offset: page.Offset,
 	}
+	// Per-job count queries, one per row as in resolveQueueNames. A count
+	// failure degrades to zero counts rather than failing the list.
+	counts := make([]map[store.TaskStatus]int, len(page.Items))
+	var runningJobs []string
+	for i, j := range page.Items {
+		c, err := h.store.CountTasksByJob(ctx, j.ID)
+		if err != nil {
+			continue
+		}
+		counts[i] = c
+		if c[store.TaskStatusRunning] > 0 {
+			runningJobs = append(runningJobs, j.ID)
+		}
+	}
+	running := h.runningProgressBatch(ctx, runningJobs)
+
 	for i, j := range page.Items {
 		r := toJobResponse(j)
 		r.QueueName = queueNames[j.QueueID]
 		item := jobListItemResponse{jobResponse: r}
-		// Per-job count queries, mirroring resolveQueueNames' per-row
-		// enrichment. This is N additional queries per list call (one pair
-		// per job, matching the pre-existing CountTasksByJob pattern rather
-		// than introducing a new N+1). A count failure degrades to zero
-		// counts rather than failing the list.
-		if counts, err := h.store.CountTasksByJob(ctx, j.ID); err == nil {
+		if counts[i] != nil {
 			unschedulable, uErr := h.store.CountUnschedulableTasksByJob(ctx, j.ID)
 			if uErr != nil {
 				unschedulable = 0
 			}
-			item.TaskCounts = toTaskCountsResponse(counts, unschedulable)
+			item.TaskCounts = toTaskCountsResponse(counts[i], unschedulable)
+			item.ProgressPercent = progressPercent(counts[i], running[j.ID])
 		}
 		resp.Items[i] = item
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// runningProgressBatch sums each listed job's running tasks' progress in one query.
+// A failure degrades every job to zero running progress (absent from the map)
+// rather than failing the list. No jobs skips the query.
+func (h *jobHandler) runningProgressBatch(ctx context.Context, jobIDs []string) map[string]float64 {
+	if len(jobIDs) == 0 {
+		return nil
+	}
+	m, err := h.store.RunningProgressByJobs(ctx, jobIDs)
+	if err != nil {
+		h.logger.WarnContext(ctx, "jobs: running progress failed", slog.Any("error", err))
+		return nil
+	}
+	return m
+}
+
+// runningProgress is the sum of one job's running tasks' progress. A job with
+// no running task sums to zero, so the query is skipped.
+func (h *jobHandler) runningProgress(ctx context.Context, jobID string, counts map[store.TaskStatus]int) (float64, error) {
+	if counts[store.TaskStatusRunning] == 0 {
+		return 0, nil
+	}
+	return h.store.RunningProgressByJob(ctx, jobID)
 }
 
 // ── GET /api/v1/jobs/{id} ─────────────────────────────────────────────────────
@@ -513,6 +554,14 @@ func (h *jobHandler) getJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Running progress is an enrichment: a failure degrades to zero rather
+	// than failing the detail, as the list does.
+	runningProgress, err := h.runningProgress(ctx, id, taskCounts)
+	if err != nil {
+		h.logger.WarnContext(ctx, "jobs: running progress failed", slog.String("id", id), slog.Any("error", err))
+		runningProgress = 0
+	}
+
 	stepResps := make([]stepResponse, len(steps))
 	for i, s := range steps {
 		stepResps[i] = toStepResponse(s)
@@ -528,6 +577,8 @@ func (h *jobHandler) getJob(w http.ResponseWriter, r *http.Request) {
 		jobResponse: jr,
 		Steps:       stepResps,
 		TaskCounts:  toTaskCountsResponse(taskCounts, unschedulableCount),
+
+		ProgressPercent: progressPercent(taskCounts, runningProgress),
 	}
 
 	// Resolved retry policy (job -> queue -> farm -> server default). Best
@@ -1004,6 +1055,23 @@ func toTaskCountsResponse(counts map[store.TaskStatus]int, unschedulable int) ta
 		}
 	}
 	return tc
+}
+
+// progressPercent is the job's completion as a percent: succeeded tasks plus
+// the running tasks' progress (a fraction of one task each), over every task
+// that has not been canceled. It is nil when no such task exists.
+func progressPercent(counts map[store.TaskStatus]int, running float64) *float64 {
+	total := 0
+	for _, n := range counts {
+		total += n
+	}
+	denom := total - counts[store.TaskStatusCanceled]
+	if denom <= 0 {
+		return nil
+	}
+	pct := (float64(counts[store.TaskStatusSucceeded]) + running) / float64(denom) * 100
+	pct = max(0, min(100, pct))
+	return &pct
 }
 
 // ── Format detection ──────────────────────────────────────────────────────────

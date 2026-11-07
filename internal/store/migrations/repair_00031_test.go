@@ -113,30 +113,69 @@ func openSeedable(t *testing.T) (path string, s *sqlite.Store, poolID string) {
 	return path, s, pool.ID
 }
 
+// columnSet is a set of "table.column" names.
+type columnSet map[string]bool
+
+// columnsAt returns every column of every application table in a fresh
+// database migrated up to version. A comparison that rewinds and re-applies
+// migrations uses it to restrict itself to what the rewound schema has, so
+// that a table or column a later migration adds never needs listing by hand.
+func columnsAt(t *testing.T, version int64) columnSet {
+	t.Helper()
+	db := openRaw(t, t.TempDir()+"/columns.db")
+	if err := goose.UpTo(db, ".", version); err != nil {
+		t.Fatalf("UpTo(%d): %v", version, err)
+	}
+	return schemaColumns(t, db)
+}
+
+// schemaColumns returns every column of every application table in db.
+func schemaColumns(t *testing.T, db *sql.DB) columnSet {
+	t.Helper()
+	set := columnSet{}
+	for _, c := range queryStrings(t, db, `SELECT m.name || '.' || p.name
+		FROM sqlite_master m JOIN pragma_table_info(m.name) p
+		WHERE m.type = 'table' AND m.name NOT LIKE 'goose%' AND m.name NOT LIKE 'sqlite_%'`) {
+		set[c] = true
+	}
+	return set
+}
+
 // dumpTables renders every application table deterministically, for a
 // byte-for-byte before/after comparison. goose's own bookkeeping table is
-// excluded because rewinding and re-applying a version rewrites it by design,
-// and so are the tables a later migration creates already holding their seed
-// row, which a rewound database lacks and so would differ by design.
-func dumpTables(t *testing.T, db *sql.DB) string {
+// excluded because rewinding and re-applying a version rewrites it by design.
+// Only the columns in keep are rendered: a table or column a later migration
+// adds is missing from a rewound database until it is re-applied, and a table
+// it seeds holds a row the rewound one lacks, so both would differ by design.
+func dumpTables(t *testing.T, db *sql.DB, keep columnSet) string {
 	t.Helper()
 	tables := queryStrings(t, db,
 		`SELECT name FROM sqlite_master
 		 WHERE type = 'table' AND name NOT LIKE 'goose%' AND name NOT LIKE 'sqlite_%'
-		   AND name NOT IN ('server_lease', 'server_epoch')
 		 ORDER BY name`)
 	var b strings.Builder
 	for _, tbl := range tables {
-		b.WriteString(dumpTable(t, db, tbl))
+		b.WriteString(dumpTable(t, db, tbl, keep))
 	}
 	return b.String()
 }
 
-// dumpTable renders every row of one table in rowid order.
-func dumpTable(t *testing.T, db *sql.DB, table string) string {
+// dumpTable renders every row of one table in rowid order, restricted to the
+// columns in keep, or nothing when none of its columns is.
+func dumpTable(t *testing.T, db *sql.DB, table string, keep columnSet) string {
 	t.Helper()
 	// The table name comes from sqlite_master, never from input.
-	rows, err := db.QueryContext(t.Context(), `SELECT * FROM "`+table+`" ORDER BY rowid`)
+	var kept []string
+	for _, c := range queryStrings(t, db, `SELECT name FROM pragma_table_info('`+table+`') ORDER BY cid`) {
+		if keep[table+"."+c] {
+			kept = append(kept, `"`+c+`"`)
+		}
+	}
+	if len(kept) == 0 {
+		return ""
+	}
+	colList := strings.Join(kept, ", ")
+	rows, err := db.QueryContext(t.Context(), `SELECT `+colList+` FROM "`+table+`" ORDER BY rowid`)
 	if err != nil {
 		t.Fatalf("dump %s: %v", table, err)
 	}
@@ -339,14 +378,15 @@ func TestMigration00031_HealthyDatabaseUnchanged(t *testing.T) {
 	}
 
 	db := rewindTo(t, path, 30)
-	before := dumpTables(t, db)
+	keep := columnsAt(t, 30)
+	before := dumpTables(t, db, keep)
 	if before == "" {
 		t.Fatal("dumpTables returned nothing; the comparison would be vacuous")
 	}
 	if err := goose.Up(db, "."); err != nil {
 		t.Fatalf("goose.Up: %v", err)
 	}
-	if after := dumpTables(t, db); after != before {
+	if after := dumpTables(t, db, keep); after != before {
 		t.Fatalf("00031 changed a healthy database:\n--- before\n%s--- after\n%s", before, after)
 	}
 }

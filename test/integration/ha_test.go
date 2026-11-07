@@ -1380,6 +1380,52 @@ func TestHA_CrashFailover(t *testing.T) {
 	g.assertReclaimedNeverRan(jobID)
 }
 
+// haProgressJob is one task that reports its progress once a second for 60s.
+const haProgressJob = `specificationVersion: jobtemplate-2023-09
+name: ha-progress
+steps:
+  - name: work
+    script:
+      actions:
+        onRun:
+          command: /bin/sh
+          args:
+            - "-c"
+            - "n=1; while [ $n -le 60 ]; do echo \"openjd_progress: $n\"; n=$((n+1)); sleep 1; done"
+`
+
+// TestHA_ProgressSurvivesFailover kills the leader with SIGKILL while a task
+// reports progress. The new leader serves the progress the old one recorded,
+// and records what the worker reports afterwards.
+func TestHA_ProgressSurvivesFailover(t *testing.T) {
+	rig := requireHARig(t)
+	g := newHAGroup(t, rig, 2)
+	leader := g.startGroup()
+	farmID, queueID := g.farm()
+
+	jobID := submitJobCustomYAML(t, g.api, farmID, queueID, haProgressJob)
+	taskID := firstTaskID(t, g.api, jobID)
+	before := waitProgress(t, g.api, taskID, 90*time.Second, func(r progressTaskResp) bool {
+		return r.Progress != nil && *r.Progress >= 5
+	})
+
+	killed := time.Now()
+	g.kill(leader)
+	next, epoch := g.waitLeader(haFailoverBound, leader)
+	t.Logf("task at %d; %s killed; %s leads at epoch %d after %s", *before.Progress, leader.name, next.name, epoch,
+		time.Since(killed).Round(100*time.Millisecond))
+
+	direct := &testServer{HTTPAddr: next.httpAddr, Store: g.api.Store}
+	after := getProgressTask(t, direct, taskID)
+	if after.Progress == nil || *after.Progress < *before.Progress {
+		t.Fatalf("progress from the new leader: got %d, want at least %d\n%s", deref(after.Progress), *before.Progress, g.allLogs())
+	}
+	waitProgress(t, direct, taskID, 30*time.Second, func(r progressTaskResp) bool {
+		return r.Progress != nil && *r.Progress > *after.Progress
+	})
+	g.waitJob(jobID, 3*time.Minute)
+}
+
 // haSnapshot is what the rows a leader writes look like: per table, the row
 // count and the latest change. Only the leader writes these.
 func (g *haGroup) haSnapshot() string {

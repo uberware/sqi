@@ -22,7 +22,7 @@
 #
 # Exits 0 with "docker unavailable" when there is no Docker, as the other
 # container targets do. The tests skip without this script's environment, so
-# check for the nine `--- PASS: TestHA_` lines (CI does).
+# check for the ten `--- PASS: TestHA_` lines (CI does).
 #
 # The PostgreSQL container keeps its data in the container (no tmpfs), so it
 # survives the stop and start TestHA_PostgresRestart puts it through, and it is

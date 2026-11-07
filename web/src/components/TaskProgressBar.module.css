@@ -12,15 +12,31 @@
 }
 
 .progressBar {
+  display: flex;
   height: 4px;
   border-radius: var(--radius-full);
   background: var(--color-border);
   overflow: hidden;
 }
 
-.progressFill {
+.segment {
   height: 100%;
-  border-radius: var(--radius-full);
-  background: var(--color-accent);
+  flex: none;
   transition: width var(--transition-slow);
+}
+
+.succeeded {
+  background: var(--color-success);
+}
+
+.failed {
+  background: var(--color-error);
+}
+
+.canceled {
+  background: var(--color-status-canceled-text);
+}
+
+.running {
+  background: var(--color-accent);
 }

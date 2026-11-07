@@ -20,10 +20,12 @@ import { useAuth } from '@/auth/context'
 import { can } from '@/auth/policy'
 import { useWebSocket } from '@/ws/context'
 import { useLiveNow } from '@/hooks/useLiveNow'
+import TaskRunProgress from '@/components/TaskRunProgress'
 import { formatTimespan, formatDuration } from '@/lib/time'
 import { truncateId } from '@/lib/id'
 import { matchesSearch } from '@/utils/filterBySearch'
 import { isJobEvent, isTaskEvent, JOB_REMOVED_STATUS } from '@/ws/events'
+import { patchTaskFromEvent, isProgressOnly } from '@/ws/taskPatch'
 import type {
   JobDetail as JobDetailType,
   EffectiveRetryPolicy,
@@ -181,7 +183,7 @@ function MetadataCard({ job }: { job: JobDetailType }) {
         <div className={styles.metaField}>
           <dt>Progress</dt>
           <dd>
-            <TaskProgressBar counts={job.task_counts} />
+            <TaskProgressBar counts={job.task_counts} progressPercent={job.progress_percent} />
           </dd>
         </div>
         <div className={styles.metaField}>
@@ -430,6 +432,14 @@ function TaskRow({
             <span className={styles.failureReason ?? ''} title={task.failure_reason}>
               {task.failure_reason}
             </span>
+          )}
+          {task.status === 'running' && (
+            <TaskRunProgress
+              progress={task.progress}
+              statusText={task.status_text}
+              startedAt={task.assigned_at}
+              now={now}
+            />
           )}
         </td>
         <td>
@@ -755,8 +765,10 @@ export default function JobDetail() {
   )
 
   const scheduleDetailInvalidate = useCallback(() => {
-    if (invalidateTimerRef.current) clearTimeout(invalidateTimerRef.current)
+    // Never reset a pending timer: a steady event stream would starve it.
+    if (invalidateTimerRef.current) return
     invalidateTimerRef.current = setTimeout(() => {
+      invalidateTimerRef.current = null
       void queryClient.invalidateQueries({ queryKey: queryKeys.jobs.detail(jobId) })
       // Use a 3-element prefix — queryKeys.tasks.list(jobId) appends an
       // undefined 4th element that partialDeepEqual treats as a mismatch
@@ -769,36 +781,32 @@ export default function JobDetail() {
   useWebSocket(`jobs/${jobId}/tasks`, (payload) => {
     if (!isTaskEvent(payload)) return
 
-    // Patch the task status in the tasks query cache immediately.
-    queryClient.setQueriesData<ListResponse<Task>>({ queryKey: queryKeys.tasks.all }, (old) => {
-      if (!old) return old
-      const idx = old.items.findIndex((t) => t.id === payload.task_id)
-      if (idx === -1) return old
-      const prev = old.items[idx]
-      if (!prev) return old
-      const newItems = [...old.items]
-      const patched: Task = {
-        ...prev,
-        status: payload.status,
-        updated_at: payload.updated_at,
-        ...(payload.worker_id ? { assigned_worker_id: payload.worker_id } : {}),
-      }
-      // The field is omitted from the wire payload (never sent as an explicit
-      // '') to mean "clear" — so an absent unschedulable_reason drops the key.
-      if (payload.unschedulable_reason !== undefined) {
-        patched.unschedulable_reason = payload.unschedulable_reason
-      } else {
-        delete patched.unschedulable_reason
-      }
-      newItems[idx] = patched
-      return { ...old, items: newItems }
-    })
+    // Patch the task in the cached task lists immediately. Restricted to the
+    // per-job list keys: ['tasks'] alone also matches single-task entries
+    // (queryKeys.tasks.detail), which hold a bare Task with no `items`.
+    let prevTask: Task | undefined
+    queryClient.setQueriesData<ListResponse<Task>>(
+      { queryKey: ['tasks', 'list', jobId] },
+      (old) => {
+        if (!old) return old
+        const idx = old.items.findIndex((t) => t.id === payload.task_id)
+        if (idx === -1) return old
+        const prev = old.items[idx]
+        if (!prev) return old
+        prevTask ??= prev
+        const newItems = [...old.items]
+        newItems[idx] = patchTaskFromEvent(prev, payload)
+        return { ...old, items: newItems }
+      },
+    )
 
-    // Invalidate this task's attempt-history query so an expanded row refetches
-    // immediately (e.g. a new attempt lands after a retry) rather than waiting
-    // for the debounced detail sync below. No-op if the row is collapsed — the
-    // query is inactive and only refetches once re-enabled.
-    void queryClient.invalidateQueries({ queryKey: queryKeys.tasks.attempts(payload.task_id) })
+    // Refetch this task's attempt history when its status changes (e.g. a new
+    // attempt lands after a retry). Progress-only events skip it: they arrive
+    // every few seconds and the attempt list does not change. No-op if the row
+    // is collapsed — the query is inactive.
+    if (!isProgressOnly(prevTask, payload)) {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tasks.attempts(payload.task_id) })
+    }
 
     // Schedule a background sync to refresh step statuses and job aggregate status.
     scheduleDetailInvalidate()

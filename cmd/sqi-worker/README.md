@@ -21,7 +21,9 @@ executing them as bare-metal OS processes.
 - **Streams** task stdout and stderr back to `sqi-server` in real time so the
   web UI log viewer feels live.
 - **Interprets** OpenJD progress directives (`openjd_progress`,
-  `openjd_status`, `openjd_fail`) from process output.
+  `openjd_status`, `openjd_fail`) from process output. Progress accepts
+  integer or float values from 0 to 100; progress and status snapshots are
+  throttled to one per 2 s.
 - **Reports** task status transitions (`running` → `succeeded` / `failed` /
   `canceled`) and publishes a heartbeat every 15 s so the server can detect
   stale workers.

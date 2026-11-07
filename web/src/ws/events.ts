@@ -31,6 +31,10 @@ export interface WsTaskEvent {
   worker_id?: string
   /** Present while the task cannot currently be scheduled; omitted (not empty) when cleared. */
   unschedulable_reason?: string
+  /** Self-reported completion, 0-100; omitted when the task has not reported any. */
+  progress?: number
+  /** Free-text status line accompanying `progress`; omitted when empty. */
+  status_text?: string
   updated_at: string
 }
 

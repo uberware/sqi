@@ -5,9 +5,13 @@
 // An [Interceptor] wraps a downstream output handler and inspects each process
 // stdout line for recognized OpenJD directive prefixes:
 //
-// - openjd_progress: <0-100> — updates the task's in-memory progress percentage
-// - openjd_status: <text> — publishes a live "running" status update via NATS
+// - openjd_progress: <0-100> — updates the task's progress percentage (any
+// finite number, stored as an integer percent rounded down)
+// - openjd_status: <text> — updates the task's status text
 // - openjd_fail: <text> — cancels the per-task context and stores a failure reason
+//
+// Changes to progress or status are published as a "running" snapshot via NATS,
+// throttled to one per [DefaultProgressInterval] with a trailing send.
 //
 // All other lines — including unrecognized openjd_* prefixes and all stderr
 // lines — are forwarded to the downstream handler unmodified.
@@ -27,6 +31,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -51,6 +56,10 @@ type outputHandler interface {
 type natsPublisher interface {
 	Publish(subj string, data []byte) error
 }
+
+// DefaultProgressInterval is the minimum spacing between published
+// progress/status snapshots for one attempt.
+const DefaultProgressInterval = 2 * time.Second
 
 // ── Directive constants ───────────────────────────────────────────────────────
 
@@ -78,6 +87,12 @@ type attemptState struct {
 	progress   *int   // nil until the first valid openjd_progress line
 	failReason string // set on the first openjd_fail line
 	failed     bool   // true once openjd_fail fires; prevents duplicate handling
+	statusText string // latest openjd_status text
+
+	lastSent time.Time   // when the last snapshot was published
+	pending  bool        // a change is waiting for the trailing send
+	timer    *time.Timer // trailing-send timer, armed while pending
+	finished bool        // no further snapshots may be sent
 }
 
 // ── Interceptor ───────────────────────────────────────────────────────────────
@@ -95,6 +110,7 @@ type Interceptor struct {
 	nc         natsPublisher
 	workerID   string
 	logger     *slog.Logger
+	interval   time.Duration
 
 	mu       sync.Mutex
 	attempts map[string]*attemptState // keyed by attemptID
@@ -105,14 +121,29 @@ type Interceptor struct {
 // downstream receives all non-directive stdout lines and all stderr lines.
 // nc is used to publish openjd_status messages to the task.status NATS subject.
 // workerID is embedded in every status message published by the interceptor.
-func New(downstream outputHandler, nc natsPublisher, workerID string, logger *slog.Logger) *Interceptor {
-	return &Interceptor{
+func New(
+	downstream outputHandler, nc natsPublisher, workerID string, logger *slog.Logger, opts ...Option,
+) *Interceptor {
+	i := &Interceptor{
 		downstream: downstream,
 		nc:         nc,
 		workerID:   workerID,
 		logger:     logger,
+		interval:   DefaultProgressInterval,
 		attempts:   make(map[string]*attemptState),
 	}
+	for _, o := range opts {
+		o(i)
+	}
+	return i
+}
+
+// Option configures an [Interceptor].
+type Option func(*Interceptor)
+
+// WithProgressInterval sets the minimum spacing between published snapshots.
+func WithProgressInterval(d time.Duration) Option {
+	return func(i *Interceptor) { i.interval = d }
 }
 
 // ── executor.TaskLifecycleHook ────────────────────────────────────────────────
@@ -135,11 +166,42 @@ func (i *Interceptor) RegisterTask(attemptID, taskID, jobID, sessionID string, c
 	}
 }
 
-// Deregister removes the per-task state for attemptID.  Safe to call multiple times.
+// Deregister removes the per-task state for attemptID and cancels any pending
+// snapshot send.  Safe to call multiple times.
 func (i *Interceptor) Deregister(attemptID string) {
 	i.mu.Lock()
-	defer i.mu.Unlock()
+	st := i.attempts[attemptID]
 	delete(i.attempts, attemptID)
+	i.mu.Unlock()
+	if st != nil {
+		st.finish()
+	}
+}
+
+// finish stops the trailing send and refuses all later sends.
+func (st *attemptState) finish() {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.finished = true
+	st.pending = false
+	if st.timer != nil {
+		st.timer.Stop()
+	}
+}
+
+// FinishProgress stops attemptID's pending trailing send, refuses all later
+// sends for it, and returns the last progress, as [Interceptor.LastProgress]
+// does.  The executor calls it before publishing the terminal status so a late
+// snapshot cannot follow it.
+func (i *Interceptor) FinishProgress(attemptID string) *int {
+	i.mu.Lock()
+	st := i.attempts[attemptID]
+	i.mu.Unlock()
+	if st == nil {
+		return nil
+	}
+	st.finish()
+	return i.LastProgress(attemptID)
 }
 
 // TakeFailReason returns the failure reason stored by the first openjd_fail
@@ -237,17 +299,26 @@ func (i *Interceptor) HandleLine(ctx context.Context, taskID, attemptID, session
 
 // ── directive handlers ────────────────────────────────────────────────────────
 
-// handleProgress parses an openjd_progress directive and updates the task's
-// in-memory progress percentage.
+// parseProgress parses an openjd_progress value: any finite number from 0 to
+// 100, returned as an integer percent rounded down.
+func parseProgress(text string) (int, bool) {
+	v, err := strconv.ParseFloat(strings.TrimSpace(text), 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v > 100 {
+		return 0, false
+	}
+	return int(math.Floor(v)), true
+}
+
+// handleProgress parses an openjd_progress directive and records it.
 //
-// Format: "openjd_progress: <integer 0–100>"
+// Format: "openjd_progress: <number 0–100>"
 //
-// Lines with the recognized prefix but an invalid value (non-integer or outside
-// 0–100) are logged as warnings and not forwarded.
+// Lines with the recognized prefix but an invalid value are logged as warnings
+// and not forwarded.
 func (i *Interceptor) handleProgress(ctx context.Context, attemptID, line string) {
 	text := strings.TrimSpace(strings.TrimPrefix(line, prefixProgress))
-	val, err := strconv.Atoi(text)
-	if err != nil || val < 0 || val > 100 {
+	val, ok := parseProgress(text)
+	if !ok {
 		i.logger.WarnContext(
 			ctx, "openjd: invalid progress value — ignoring",
 			slog.String("attempt_id", attemptID),
@@ -257,13 +328,14 @@ func (i *Interceptor) handleProgress(ctx context.Context, attemptID, line string
 	}
 
 	i.mu.Lock()
-	st, ok := i.attempts[attemptID]
+	st, found := i.attempts[attemptID]
 	i.mu.Unlock()
-	if !ok {
+	if !found {
 		return
 	}
 
 	st.mu.Lock()
+	changed := st.progress == nil || *st.progress != val
 	st.progress = &val
 	st.mu.Unlock()
 
@@ -272,18 +344,16 @@ func (i *Interceptor) handleProgress(ctx context.Context, attemptID, line string
 		slog.String("attempt_id", attemptID),
 		slog.Int("progress", val),
 	)
+	if changed {
+		i.noteChange(ctx, attemptID, st)
+	}
 }
 
-// handleStatus parses an openjd_status directive and publishes an intermediate
-// "running" status update to the task.status NATS subject.
-//
-// The published message includes worker_id and the current
-// last_progress value so the UI can display both the live status text and the
-// progress bar simultaneously.
+// handleStatus parses an openjd_status directive and records it.
 //
 // Format: "openjd_status: <text>".
 func (i *Interceptor) handleStatus(ctx context.Context, attemptID, line string) {
-	text := strings.TrimSpace(strings.TrimPrefix(line, prefixStatus))
+	text := protocol.SanitizeStatusText(strings.TrimPrefix(line, prefixStatus))
 
 	i.mu.Lock()
 	st, ok := i.attempts[attemptID]
@@ -292,17 +362,74 @@ func (i *Interceptor) handleStatus(ctx context.Context, attemptID, line string) 
 		return
 	}
 
-	// Snapshot progress under the per-attempt lock so we don't race with
-	// handleProgress on the same attempt.
 	st.mu.Lock()
+	changed := st.statusText != text
+	st.statusText = text
+	st.mu.Unlock()
+
+	i.logger.DebugContext(
+		ctx, "openjd: status update",
+		slog.String("attempt_id", attemptID),
+		slog.String("text", text),
+	)
+	if changed {
+		i.noteChange(ctx, attemptID, st)
+	}
+}
+
+// noteChange publishes a snapshot now when the throttle window has elapsed,
+// otherwise arms a single trailing send for the end of the window.
+func (i *Interceptor) noteChange(ctx context.Context, attemptID string, st *attemptState) {
+	st.mu.Lock()
+	if st.finished {
+		st.mu.Unlock()
+		return
+	}
+	now := time.Now()
+	if elapsed := now.Sub(st.lastSent); st.lastSent.IsZero() || elapsed >= i.interval {
+		i.sendLockedThenPublish(ctx, attemptID, st, now)
+		return
+	}
+	st.pending = true
+	if st.timer == nil {
+		st.timer = time.AfterFunc(st.lastSent.Add(i.interval).Sub(now), func() {
+			i.sendTrailing(attemptID, st)
+		})
+	} else {
+		st.timer.Reset(st.lastSent.Add(i.interval).Sub(now))
+	}
+	st.mu.Unlock()
+}
+
+// sendTrailing publishes the pending snapshot, if one is still wanted.
+func (i *Interceptor) sendTrailing(attemptID string, st *attemptState) {
+	st.mu.Lock()
+	if !st.pending || st.finished {
+		st.mu.Unlock()
+		return
+	}
+	i.sendLockedThenPublish(context.Background(), attemptID, st, time.Now())
+}
+
+// sendLockedThenPublish records a send at now, then publishes the snapshot. It
+// is called with st.mu held and returns with it released: the publish itself
+// runs outside the lock.
+func (i *Interceptor) sendLockedThenPublish(ctx context.Context, attemptID string, st *attemptState, now time.Time) {
+	st.lastSent = now
+	st.pending = false
+	msg := i.snapshotLocked(attemptID, st, now)
+	st.mu.Unlock()
+	i.publish(ctx, attemptID, msg)
+}
+
+// snapshotLocked builds the snapshot message; st.mu must be held.
+func (i *Interceptor) snapshotLocked(attemptID string, st *attemptState, now time.Time) protocol.TaskStatusMsg {
 	var lastProgress *int
 	if st.progress != nil {
 		v := *st.progress
 		lastProgress = &v
 	}
-	st.mu.Unlock()
-
-	msg := protocol.TaskStatusMsg{
+	return protocol.TaskStatusMsg{
 		Version:      protocol.ProtocolVersion,
 		Type:         protocol.TypeTaskStatus,
 		TaskID:       st.taskID,
@@ -312,9 +439,15 @@ func (i *Interceptor) handleStatus(ctx context.Context, attemptID, line string) 
 		SessionID:    st.sessionID,
 		WorkerID:     i.workerID,
 		LastProgress: lastProgress,
-		At:           time.Now(),
-		Message:      text,
+		At:           now,
+		Message:      st.statusText,
 	}
+}
+
+// publish sends a snapshot.  Snapshots are best-effort live UI updates, not
+// terminal state transitions, so a failure is logged and dropped rather than
+// retried (unlike the status.Publisher path).
+func (i *Interceptor) publish(ctx context.Context, attemptID string, msg protocol.TaskStatusMsg) {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		i.logger.WarnContext(
@@ -324,22 +457,13 @@ func (i *Interceptor) handleStatus(ctx context.Context, attemptID, line string) 
 		)
 		return
 	}
-	// Intermediate openjd_status publishes are best-effort: they are live UI
-	// updates, not terminal state transitions, so a single transient failure is
-	// logged and dropped rather than retried (unlike the status.Publisher path).
-	if err := i.nc.Publish(bus.TaskStatusSubject(i.workerID, st.jobID), data); err != nil {
+	if err := i.nc.Publish(bus.TaskStatusSubject(i.workerID, msg.JobID), data); err != nil {
 		i.logger.WarnContext(
 			ctx, "openjd: publish status update failed",
 			slog.String("attempt_id", attemptID),
 			slog.Any("error", err),
 		)
 	}
-
-	i.logger.DebugContext(
-		ctx, "openjd: status update",
-		slog.String("attempt_id", attemptID),
-		slog.String("text", text),
-	)
 }
 
 // handleFail parses an openjd_fail directive, stores the failure reason, and

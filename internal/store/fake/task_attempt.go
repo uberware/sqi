@@ -113,3 +113,87 @@ func (s *Store) ListOpenAttempts(_ context.Context) ([]store.OpenAttempt, error)
 	})
 	return out, nil
 }
+
+// LatestAttemptProgress implements [store.TaskAttemptStore].
+func (s *Store) LatestAttemptProgress(_ context.Context, taskIDs []string) (map[string]store.TaskProgress, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	out := make(map[string]store.TaskProgress, len(taskIDs))
+	for _, id := range taskIDs {
+		t, ok := s.tasks[id]
+		if !ok || t.Status == store.TaskStatusPending || t.Status == store.TaskStatusReady {
+			continue
+		}
+		a, ok := s.latestAttemptLocked(id)
+		if !ok || (a.ProgressAt == nil && a.StatusText == "") {
+			continue
+		}
+		out[id] = store.TaskProgress{Progress: ptrCopy(a.Progress), StatusText: a.StatusText, ProgressAt: ptrCopy(a.ProgressAt)}
+	}
+	return out, nil
+}
+
+// ptrCopy returns a pointer to a copy of *p, nil when p is nil, so a returned
+// snapshot does not alias the stored row.
+func ptrCopy[T any](p *T) *T {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}
+
+// RunningProgressByJob implements [store.TaskAttemptStore].
+func (s *Store) RunningProgressByJob(_ context.Context, jobID string) (float64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var sum int64
+	for _, t := range s.tasks {
+		if t.JobID != jobID || t.Status != store.TaskStatusRunning {
+			continue
+		}
+		if a, ok := s.latestAttemptLocked(t.ID); ok && a.Progress != nil {
+			sum += int64(*a.Progress)
+		}
+	}
+	return float64(sum) / 100.0, nil
+}
+
+// RunningProgressByJobs implements [store.TaskAttemptStore].
+func (s *Store) RunningProgressByJobs(_ context.Context, jobIDs []string) (map[string]float64, error) {
+	out := make(map[string]float64, len(jobIDs))
+	if len(jobIDs) == 0 {
+		return out, nil
+	}
+	want := make(map[string]struct{}, len(jobIDs))
+	for _, id := range jobIDs {
+		want[id] = struct{}{}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	sums := map[string]int64{}
+	for _, t := range s.tasks {
+		if _, ok := want[t.JobID]; !ok || t.Status != store.TaskStatusRunning {
+			continue
+		}
+		a, ok := s.latestAttemptLocked(t.ID)
+		if !ok {
+			continue
+		}
+		// A running task without a snapshot still marks the job present.
+		if _, ok := sums[t.JobID]; !ok {
+			sums[t.JobID] = 0
+		}
+		if a.Progress != nil {
+			sums[t.JobID] += int64(*a.Progress)
+		}
+	}
+	for id, sum := range sums {
+		out[id] = float64(sum) / 100.0
+	}
+	return out, nil
+}

@@ -422,6 +422,7 @@ split that way (a large prime, say), naming the divisor to aim for.
 | `hang_rate` | `0` | Probability (0 to 1) that a task runs until canceled or timed out. A scenario with `hang_rate > 0` gives the task an `onRun` timeout of max(60 s, 3 x the duration's upper value), and a hung task ends `failed` at the timeout like a real one. The lognormal tail beyond 3 x p95 can time out a non-hung task. |
 | `log_lines` | constant `0` | Lines per task. A distribution; a plain count. |
 | `log_line_bytes` | `120` | Bytes per line. |
+| `progress_every` | `0` (off) | How often a running task writes an `openjd_progress` line, carrying its elapsed fraction of `duration` as a percentage. The lines go through the real worker interceptor, so its 2 s throttle decides how many become progress snapshots on the wire. Must not be negative. |
 
 ### `clients`
 
@@ -523,6 +524,7 @@ PostgreSQL. Sizes are starting points.
 | `steps-deep` | dependencies | 500 workers; 1,000 jobs of 20-step chains of 5 tasks, 30% of them depending on an earlier job (`job_deps: 0.3`). | 45m |
 | `queues-many` | queues and pools | 200 queues with caps of 0, 10, 25, 50 and 100, 50 usage pools of 20 to 400, 500 workers, ten classes at 0.5 job/s each. Policy-gate cost. | 30m |
 | `logs-heavy` | logs | 500 single-core workers; 1 job/s of 10 tasks, each 60 s long writing 8,000 lines of 128 bytes (about 1 MB per task); 10 WebSocket clients on `own-task-logs`. `SQI_LOGS` growth and eviction. | 1h |
+| `progress-heavy` | task progress | 200 single-core workers; 0.15 jobs/s of 10 tasks (1.5 tasks/s against the 1.67 tasks/s the workers run, so about 180 are running), each 120 s long writing `openjd_progress` every second, which the worker throttles to about one snapshot per 2 s. Progress snapshot write rate and its cost to the server. Measurements: [Task progress snapshots](#task-progress-snapshots). | 30m |
 | `ui-heavy` | UI | 500 workers; 3 jobs/s of 2 x 20 tasks; 1,000 WebSocket clients and 100 REST pollers on all four endpoints. Fan-out, drops and read latency. | 30m |
 | `expr-mix` | submission CPU | 300 workers; `EXPR` templates (2 steps x 100 tasks at 2/s, 4 steps x 500 tasks at 0.2/s) beside plain ones (1/s). | 30m |
 | `ci-medium` | mixed | 300 workers (8 cores); `shot-render` at 0.12/s (2 steps x 20 tasks, 2 cores, usage pool `arnold` limit 100) and `comp` at 0.07/s (10 tasks), about 5.5 tasks/s offered; churn, 20 WebSocket clients, 5 pollers, a 10% cancel at 5 min and a retry at 10 min. Sized to stay valid on a 4-vCPU CI runner. Run nightly (`load-nightly`). | 15m |
@@ -936,6 +938,69 @@ Each comes from a single run on one laptop.
 - **The generator is cheap at small scale.** Smoke (20 simulated workers)
   costs the harness about 0.1 to 0.3 cores. Its cost at 10,000 workers per
   generator is unmeasured.
+
+### Task progress snapshots
+
+`progress-heavy` measures what a running task's progress snapshots cost the
+server. Each simulated task writes `openjd_progress` every second through the
+real `internal/worker/openjd` interceptor, whose throttle sends at most one
+snapshot per 2 s per attempt, so a farm with about 180 tasks running sends
+about 85 snapshots/s. The server records each with `RecordAttemptProgress`.
+
+The scenario is 30 minutes with a 3 minute warmup. Each run below used
+`--duration 8m --set warmup=1m` instead (8 minutes of submissions, 1 minute of
+warmup, then a drain of 2 minutes). The first minute includes the fleet filling
+with work, and growth over time is not covered. "Without" is the same scenario
+with `--set jobs[0].task.progress_every=0s`. Each figure is a single run, with
+the server on SQLite and on PostgreSQL 18.6 (Docker, same machine).
+
+Host: Apple M2 Max, 12 CPUs, macOS (Darwin 25.6.0), native arm64 binaries.
+Every run was valid, with 6 of 6 invariants held and the generator at 0.07
+cores or less.
+
+| Store | Progress | Tasks/s | `first_lease` p50 / p99 | `terminal_ingest` p50 / p99 | Server CPU, mean over the window | Server RSS peak |
+|---|---|---|---|---|---|---|
+| SQLite | with | 1.29 | 25.8 ms / 42.1 ms | 72 ms / 181 ms | 0.218 cores | 128 MiB |
+| SQLite | without | 1.29 | 26.0 ms / 38.1 ms | 43 ms / 144 ms | 0.150 cores | 124 MiB |
+| PostgreSQL | with | 1.30 | 110.9 ms / 137.9 ms | 263 ms / 627 ms | 0.261 cores | 102 MiB |
+| PostgreSQL | without | 1.31 | 113.0 ms / 167.9 ms | 101 ms / 343 ms | 0.141 cores | 91 MiB |
+
+- **Snapshot write rate:** about 85 snapshots/s, derived. The harness has no
+  counter for snapshots (`SQI_TASK` is a work-queue stream, so its message
+  count is always about 0), so this is the mean of 173 running
+  tasks (200 workers less the mean idle count over the window) times the
+  interceptor's one-per-2 s throttle (the dispatcher test sees 5 to 7
+  snapshots in 10 s of 1 s progress writes).
+- **Lease latency:** `first_lease` is the only dispatch-latency histogram (a
+  lease request's own reply time is idle wait and is not reported). It has one
+  sample per job, 72 or 73 per run, so its p99 is close to its maximum and a
+  single run's ratio is noisy. p99 with progress is 1.10 times the p99 without
+  on SQLite and 0.82 times on PostgreSQL. The p50s differ by under 2%.
+- **Server CPU:** progress adds 0.068 cores on SQLite and 0.120 cores on
+  PostgreSQL (`server.cpu_cores` excludes the PostgreSQL process). Divided by
+  85 snapshots/s, that is about 0.8 ms (SQLite) and 1.4 ms (PostgreSQL) of
+  server CPU per snapshot, which includes everything the snapshot touches,
+  not only the store write.
+- **Store write alone:** `BenchmarkRecordAttemptProgress` (SQLite, 500 running
+  attempts, 10,000 iterations, one snapshot per iteration round-robin) takes
+  72,433 ns/op. The write is under 10% of the per-snapshot CPU above.
+- **Terminal ingest slows:** the median time to store a terminal status rose
+  from 43 to 72 ms on SQLite and from 101 to 263 ms on PostgreSQL, and the p99
+  from 144 to 181 ms and from 343 to 627 ms. Terminal statuses and snapshots
+  share the `SQI_TASK` consumer, so terminal statuses queue behind snapshots.
+  `js.pending` stayed at 0 throughout. A last-value-per-attempt subject for
+  snapshots would stop them queueing ahead of terminal statuses.
+- **Estimated drain of a 10 minute outage backlog:** 200 running tasks times
+  300 snapshots each (one per 2 s for 10 minutes) is 60,000 snapshots. At the
+  CPU cost per snapshot above, assuming one at a time, the drain is about
+  47 s on SQLite and 84 s on PostgreSQL. At the benchmark's 72 microseconds it
+  would be 4.3 s. Every figure is under the 10 minutes of outage the backlog
+  is sized for, so the farm catches up faster than the outage lasted. These are
+  estimates from the mean CPU cost, not a measured outage and recovery.
+  The PostgreSQL figure is a lower bound: it divides server-process CPU, which
+  leaves out PostgreSQL's own time, instead of measuring per-message wall
+  latency. The terminal-ingest p50 above shows that latency per message is
+  higher.
 
 ---
 

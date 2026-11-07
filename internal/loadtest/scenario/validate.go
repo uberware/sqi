@@ -211,6 +211,9 @@ func (v *validator) jobTask(path string, t *TaskSpec) {
 	if t.LogLineBytes < 1 {
 		v.failf(path+".log_line_bytes", "must be at least 1")
 	}
+	if t.ProgressEvery.Duration < 0 {
+		v.failf(path+".progress_every", "must not be negative")
+	}
 	if t.Duration.Kind != "" && t.Duration.Unit != "s" {
 		v.failf(path+".duration", "must be a duration like 20s, not a plain number")
 	}

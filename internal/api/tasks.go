@@ -75,6 +75,11 @@ type taskResponse struct {
 	// state as a retry backoff; a worker will not be assigned the task until
 	// this time passes.
 	RetryAfter *time.Time `json:"retry_after,omitempty"`
+	// Progress, StatusText and ProgressAt are the latest progress snapshot of
+	// the task's latest attempt; omitted until the task reports one.
+	Progress   *int       `json:"progress,omitempty"`
+	StatusText string     `json:"status_text,omitempty"`
+	ProgressAt *time.Time `json:"progress_at,omitempty"`
 }
 
 // taskListResponse is the paginated result returned by GET /api/v1/jobs/{id}/tasks.
@@ -114,6 +119,9 @@ type taskAttemptResponse struct {
 	Message       string     `json:"message,omitempty"`
 	StartedAt     time.Time  `json:"started_at"`
 	EndedAt       *time.Time `json:"ended_at,omitempty"`
+	Progress      *int       `json:"progress,omitempty"`
+	StatusText    string     `json:"status_text,omitempty"`
+	ProgressAt    *time.Time `json:"progress_at,omitempty"`
 }
 
 // taskAttemptsResponse is the list returned by GET /api/v1/tasks/{id}/attempts.
@@ -187,8 +195,19 @@ func (h *taskHandler) listJobTasks(w http.ResponseWriter, r *http.Request) {
 		Limit:  page.Limit,
 		Offset: page.Offset,
 	}
+	ids := make([]string, len(page.Items))
 	for i, t := range page.Items {
+		ids[i] = t.ID
 		resp.Items[i] = toTaskResponse(t)
+	}
+	progress, err := h.store.LatestAttemptProgress(ctx, ids)
+	if err != nil {
+		h.logger.WarnContext(ctx, "tasks: latest progress failed", slog.String("job_id", jobID), slog.Any("error", err))
+	}
+	for i := range resp.Items {
+		if p, ok := progress[resp.Items[i].ID]; ok {
+			applyTaskProgress(&resp.Items[i], p)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -212,7 +231,21 @@ func (h *taskHandler) getTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, toTaskResponse(task))
+	resp := toTaskResponse(task)
+	progress, err := h.store.LatestAttemptProgress(ctx, []string{id})
+	if err != nil {
+		h.logger.WarnContext(ctx, "tasks: latest progress failed", slog.String("id", id), slog.Any("error", err))
+	}
+	if p, ok := progress[id]; ok {
+		applyTaskProgress(&resp, p)
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// applyTaskProgress copies a progress snapshot onto a task response.
+func applyTaskProgress(r *taskResponse, p store.TaskProgress) {
+	r.Progress, r.StatusText, r.ProgressAt = p.Progress, p.StatusText, p.ProgressAt
 }
 
 // ── GET /api/v1/tasks/{id}/logs ───────────────────────────────────────────────
@@ -524,6 +557,9 @@ func toTaskAttemptResponse(a store.TaskAttempt) taskAttemptResponse {
 		Message:       a.Message,
 		StartedAt:     a.StartedAt,
 		EndedAt:       a.EndedAt,
+		Progress:      a.Progress,
+		StatusText:    a.StatusText,
+		ProgressAt:    a.ProgressAt,
 	}
 }
 

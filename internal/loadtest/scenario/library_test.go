@@ -11,7 +11,7 @@ import (
 )
 
 var builtinNames = []string{
-	"ci-medium", "expr-mix", "jobs-flood", "logs-heavy", "mixed-medium", "queues-many",
+	"ci-medium", "expr-mix", "jobs-flood", "logs-heavy", "mixed-medium", "progress-heavy", "queues-many",
 	"smoke", "soak-steady", "steps-deep", "tasks-wide", "ui-heavy", "workers-churn", "workers-ramp",
 }
 
@@ -175,6 +175,19 @@ func TestBuiltin_Sizes(t *testing.T) {
 			perMin := j.Task.LogLines.Value * float64(j.Task.LogLineBytes) * 60 / j.Task.Duration.Value
 			if perMin < 0.9e6 || perMin > 1.1e6 {
 				t.Errorf("each worker streams %.0f B/min, want about 1 MB", perMin)
+			}
+		}},
+		{"progress-heavy", func(t *testing.T, s *Scenario) {
+			if got := workers(s); got != 200 {
+				t.Errorf("workers = %d, want 200", got)
+			}
+			j := s.Jobs[0]
+			if j.Task.ProgressEvery.Duration != time.Second || j.Task.Duration.Kind != DistConstant || j.Task.Duration.Value != 120 {
+				t.Errorf("task = %+v, want 120 s tasks writing progress every 1 s", j.Task)
+			}
+			capacity := 200 / j.Task.Duration.Value
+			if offered := j.Rate.PerSecond * float64(j.TasksPerStep*j.Steps); offered > capacity {
+				t.Errorf("offers %.2f tasks/s, more than the %.2f tasks/s the workers run, so the queue never drains", offered, capacity)
 			}
 		}},
 		{"ui-heavy", func(t *testing.T, s *Scenario) {

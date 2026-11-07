@@ -393,6 +393,51 @@ def test_task_failure_reason_absent_defaults_to_none() -> None:
     assert Task.from_dict(load("task")).failure_reason is None
 
 
+def test_task_progress_parsed() -> None:
+    raw = dict(load("task"), progress=43, status_text="frame 3", progress_at="2026-11-06T10:00:00Z")
+    task = Task.from_dict(raw)
+    assert task.progress == 43
+    assert task.status_text == "frame 3"
+    assert task.progress_at == datetime(2026, 11, 6, 10, 0, 0, tzinfo=timezone.utc)
+
+
+def test_task_progress_absent_defaults_to_none() -> None:
+    task = Task.from_dict(load("task"))
+    assert task.progress is None
+    assert task.status_text is None
+    assert task.progress_at is None
+
+
+def test_task_attempt_progress_parsed() -> None:
+    raw = dict(
+        load("task_attempt"),
+        progress=80,
+        status_text="encoding",
+        progress_at="2026-11-06T10:00:00Z",
+    )
+    a = TaskAttempt.from_dict(raw)
+    assert a.progress == 80
+    assert a.status_text == "encoding"
+    assert a.progress_at == datetime(2026, 11, 6, 10, 0, 0, tzinfo=timezone.utc)
+    absent = TaskAttempt.from_dict(load("task_attempt"))
+    assert absent.progress is None
+    assert absent.status_text is None
+    assert absent.progress_at is None
+
+
+def test_job_progress_percent_parsed() -> None:
+    assert Job.from_dict(dict(load("job"), progress_percent=75.5)).progress_percent == 75.5
+    whole = Job.from_dict(dict(load("job"), progress_percent=50)).progress_percent
+    assert whole == 50.0
+    assert isinstance(whole, float)
+
+
+def test_job_progress_percent_null_and_bool_become_none() -> None:
+    assert Job.from_dict(dict(load("job"), progress_percent=None)).progress_percent is None
+    assert Job.from_dict(dict(load("job"), progress_percent=True)).progress_percent is None
+    assert Job.from_dict(load("job")).progress_percent is None
+
+
 # ── Worker, GPUInfo, CurrentTask ────────────────────────────────────
 
 

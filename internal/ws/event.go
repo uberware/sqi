@@ -15,7 +15,11 @@ type TaskEvent struct {
 	Status              string // store.TaskStatus value
 	WorkerID            string // empty when unassigned
 	UnschedulableReason string // empty when schedulable
-	UpdatedAt           time.Time
+	// Progress is the percent complete of a progress snapshot, nil when the
+	// event carries none; StatusText is the snapshot's text, empty when none.
+	Progress   *int
+	StatusText string
+	UpdatedAt  time.Time
 }
 
 // WorkerStatusRemoved is a synthetic WorkerEvent.Status value (not a persisted
