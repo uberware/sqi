@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/uberware/sqi/internal/envvar"
 )
 
 // FlagOverrides carries values from CLI flags that take highest precedence
@@ -843,7 +845,7 @@ func setIfNotNilBool(dst, src *bool) {
 
 // fileDuration is a Go duration in the config file ("30s", "5m", "1h"). A value
 // that does not parse ("5 sec", a bare "30") fails the load, naming its line,
-// as the environment layer's [setDuration] does; it never falls back to the
+// as the environment layer's [envvar.Duration] does; it never falls back to the
 // default.
 type fileDuration time.Duration
 
@@ -870,9 +872,9 @@ func setIfNotNilDuration(dst *time.Duration, src *fileDuration) {
 
 // ── Environment variable layer ────────────────────────────────────────────────
 
-// applyEnv overlays SQI_* environment variables onto cfg. Typed helpers
-// (setBool/setInt/setDuration) return an error when a non-empty value cannot be
-// parsed so a malformed security-relevant value — e.g. SQI_AUTH_ENABLED=enabled
+// applyEnv overlays SQI_* environment variables onto cfg. The typed [envvar]
+// setters return an error when a non-empty value cannot be parsed so a
+// malformed security-relevant value — e.g. SQI_AUTH_ENABLED=enabled
 // — fails loud at load time instead of silently reverting to the default (a
 // fail-open). Every violation is collected and returned together via
 // [errors.Join]; an unset or empty var stays a no-op.
@@ -884,65 +886,65 @@ func applyEnv(cfg *Config) error {
 		}
 	}
 
-	setString(&cfg.HTTP.Addr, "SQI_HTTP_ADDR")
-	collect(setBool(&cfg.HTTP.EnablePprof, "SQI_HTTP_ENABLE_PPROF"))
-	collect(setBool(&cfg.HTTP.RateLimit.Enabled, "SQI_HTTP_RATE_LIMIT_ENABLED"))
-	collect(setBool(&cfg.HTTP.TLS.Enabled, "SQI_HTTP_TLS_ENABLED"))
-	setString(&cfg.HTTP.TLS.CertFile, "SQI_HTTP_TLS_CERT_FILE")
-	setString(&cfg.HTTP.TLS.KeyFile, "SQI_HTTP_TLS_KEY_FILE")
+	envvar.String(&cfg.HTTP.Addr, "SQI_HTTP_ADDR")
+	collect(envvar.Bool(&cfg.HTTP.EnablePprof, "SQI_HTTP_ENABLE_PPROF"))
+	collect(envvar.Bool(&cfg.HTTP.RateLimit.Enabled, "SQI_HTTP_RATE_LIMIT_ENABLED"))
+	collect(envvar.Bool(&cfg.HTTP.TLS.Enabled, "SQI_HTTP_TLS_ENABLED"))
+	envvar.String(&cfg.HTTP.TLS.CertFile, "SQI_HTTP_TLS_CERT_FILE")
+	envvar.String(&cfg.HTTP.TLS.KeyFile, "SQI_HTTP_TLS_KEY_FILE")
 	setStringSlice(&cfg.HTTP.CORSOrigins, "SQI_HTTP_CORS_ORIGINS")
 
 	collect(rejectRemovedNATSEnv())
 	applyNATSEnv(cfg, collect)
 
-	setString(&cfg.Store.Driver, "SQI_STORE_DRIVER")
-	setString(&cfg.Store.SQLitePath, "SQI_STORE_SQLITE_PATH")
-	collect(setDuration(&cfg.Store.CheckpointInterval, "SQI_STORE_CHECKPOINT_INTERVAL"))
-	setString(&cfg.Store.Postgres.DSN, "SQI_STORE_POSTGRES_DSN")
-	collect(setInt(&cfg.Store.Postgres.MaxConns, "SQI_STORE_POSTGRES_MAX_CONNS"))
+	envvar.String(&cfg.Store.Driver, "SQI_STORE_DRIVER")
+	envvar.String(&cfg.Store.SQLitePath, "SQI_STORE_SQLITE_PATH")
+	collect(envvar.Duration(&cfg.Store.CheckpointInterval, "SQI_STORE_CHECKPOINT_INTERVAL"))
+	envvar.String(&cfg.Store.Postgres.DSN, "SQI_STORE_POSTGRES_DSN")
+	collect(envvar.Int(&cfg.Store.Postgres.MaxConns, "SQI_STORE_POSTGRES_MAX_CONNS"))
 
-	setString(&cfg.Log.Level, "SQI_LOG_LEVEL")
-	setString(&cfg.Log.Format, "SQI_LOG_FORMAT")
-	setString(&cfg.Log.File, "SQI_LOG_FILE")
-	collect(setInt(&cfg.Log.MaxSizeMB, "SQI_LOG_MAX_SIZE_MB"))
-	collect(setInt(&cfg.Log.MaxBackups, "SQI_LOG_MAX_BACKUPS"))
+	envvar.String(&cfg.Log.Level, "SQI_LOG_LEVEL")
+	envvar.String(&cfg.Log.Format, "SQI_LOG_FORMAT")
+	envvar.String(&cfg.Log.File, "SQI_LOG_FILE")
+	collect(envvar.Int(&cfg.Log.MaxSizeMB, "SQI_LOG_MAX_SIZE_MB"))
+	collect(envvar.Int(&cfg.Log.MaxBackups, "SQI_LOG_MAX_BACKUPS"))
 
-	collect(setDuration(&cfg.Scheduler.HeartbeatTimeout, "SQI_SCHEDULER_HEARTBEAT_TIMEOUT"))
-	collect(setDuration(&cfg.Scheduler.TickInterval, "SQI_SCHEDULER_TICK_INTERVAL"))
-	collect(setInt(&cfg.Scheduler.MaxTasksPerWorker, "SQI_SCHEDULER_MAX_TASKS_PER_WORKER"))
-	collect(setDuration(&cfg.Scheduler.OfflineWorkerRetention, "SQI_SCHEDULER_OFFLINE_WORKER_RETENTION"))
-	collect(setDuration(&cfg.Scheduler.JobRetention, "SQI_SCHEDULER_JOB_RETENTION"))
-	collect(setBool(&cfg.Scheduler.JobRetentionIncludeFailed, "SQI_SCHEDULER_JOB_RETENTION_INCLUDE_FAILED"))
-	collect(setDuration(&cfg.Scheduler.UnschedulableGrace, "SQI_SCHEDULER_UNSCHEDULABLE_GRACE"))
-	collect(setDuration(&cfg.Scheduler.ReconcileGrace, "SQI_SCHEDULER_RECONCILE_GRACE"))
-	collect(setInt(&cfg.Scheduler.DefaultMaxAttempts, "SQI_SCHEDULER_DEFAULT_MAX_ATTEMPTS"))
-	collect(setDuration(&cfg.Scheduler.RetryDelay, "SQI_SCHEDULER_RETRY_DELAY"))
-	collect(setInt(&cfg.Scheduler.DefaultFailureLimit, "SQI_SCHEDULER_DEFAULT_FAILURE_LIMIT"))
+	collect(envvar.Duration(&cfg.Scheduler.HeartbeatTimeout, "SQI_SCHEDULER_HEARTBEAT_TIMEOUT"))
+	collect(envvar.Duration(&cfg.Scheduler.TickInterval, "SQI_SCHEDULER_TICK_INTERVAL"))
+	collect(envvar.Int(&cfg.Scheduler.MaxTasksPerWorker, "SQI_SCHEDULER_MAX_TASKS_PER_WORKER"))
+	collect(envvar.Duration(&cfg.Scheduler.OfflineWorkerRetention, "SQI_SCHEDULER_OFFLINE_WORKER_RETENTION"))
+	collect(envvar.Duration(&cfg.Scheduler.JobRetention, "SQI_SCHEDULER_JOB_RETENTION"))
+	collect(envvar.Bool(&cfg.Scheduler.JobRetentionIncludeFailed, "SQI_SCHEDULER_JOB_RETENTION_INCLUDE_FAILED"))
+	collect(envvar.Duration(&cfg.Scheduler.UnschedulableGrace, "SQI_SCHEDULER_UNSCHEDULABLE_GRACE"))
+	collect(envvar.Duration(&cfg.Scheduler.ReconcileGrace, "SQI_SCHEDULER_RECONCILE_GRACE"))
+	collect(envvar.Int(&cfg.Scheduler.DefaultMaxAttempts, "SQI_SCHEDULER_DEFAULT_MAX_ATTEMPTS"))
+	collect(envvar.Duration(&cfg.Scheduler.RetryDelay, "SQI_SCHEDULER_RETRY_DELAY"))
+	collect(envvar.Int(&cfg.Scheduler.DefaultFailureLimit, "SQI_SCHEDULER_DEFAULT_FAILURE_LIMIT"))
 
-	collect(setBool(&cfg.Discovery.Enabled, "SQI_DISCOVERY_ENABLED"))
-	setString(&cfg.Discovery.InstanceName, "SQI_DISCOVERY_INSTANCE_NAME")
-	collect(setBool(&cfg.HA.Enabled, "SQI_HA_ENABLED"))
-	collect(setDuration(&cfg.HA.LeaseTTL, "SQI_HA_LEASE_TTL"))
-	setString(&cfg.HA.InstanceName, "SQI_HA_INSTANCE_NAME")
+	collect(envvar.Bool(&cfg.Discovery.Enabled, "SQI_DISCOVERY_ENABLED"))
+	envvar.String(&cfg.Discovery.InstanceName, "SQI_DISCOVERY_INSTANCE_NAME")
+	collect(envvar.Bool(&cfg.HA.Enabled, "SQI_HA_ENABLED"))
+	collect(envvar.Duration(&cfg.HA.LeaseTTL, "SQI_HA_LEASE_TTL"))
+	envvar.String(&cfg.HA.InstanceName, "SQI_HA_INSTANCE_NAME")
 
-	collect(setBool(&cfg.OpenJD.EnforceLimits, "SQI_OPENJD_ENFORCE_LIMITS"))
-	collect(setInt64(&cfg.OpenJD.ExprOperationLimit, "SQI_OPENJD_EXPR_OPERATION_LIMIT"))
-	collect(setInt64(&cfg.OpenJD.ExprMemoryLimit, "SQI_OPENJD_EXPR_MEMORY_LIMIT"))
-	collect(setInt64(&cfg.OpenJD.ExprTemplatePositions, "SQI_OPENJD_EXPR_TEMPLATE_POSITIONS"))
-	collect(setInt64(&cfg.OpenJD.ExprTemplateRetainedBytes, "SQI_OPENJD_EXPR_TEMPLATE_RETAINED_BYTES"))
-	collect(setDuration(&cfg.OpenJD.ExprSubmissionDeadline, "SQI_OPENJD_EXPR_SUBMISSION_DEADLINE"))
+	collect(envvar.Bool(&cfg.OpenJD.EnforceLimits, "SQI_OPENJD_ENFORCE_LIMITS"))
+	collect(envvar.Int64(&cfg.OpenJD.ExprOperationLimit, "SQI_OPENJD_EXPR_OPERATION_LIMIT"))
+	collect(envvar.Int64(&cfg.OpenJD.ExprMemoryLimit, "SQI_OPENJD_EXPR_MEMORY_LIMIT"))
+	collect(envvar.Int64(&cfg.OpenJD.ExprTemplatePositions, "SQI_OPENJD_EXPR_TEMPLATE_POSITIONS"))
+	collect(envvar.Int64(&cfg.OpenJD.ExprTemplateRetainedBytes, "SQI_OPENJD_EXPR_TEMPLATE_RETAINED_BYTES"))
+	collect(envvar.Duration(&cfg.OpenJD.ExprSubmissionDeadline, "SQI_OPENJD_EXPR_SUBMISSION_DEADLINE"))
 
-	collect(setInt(&cfg.Diagnostics.BufferSize, "SQI_DIAGNOSTICS_BUFFER_SIZE"))
+	collect(envvar.Int(&cfg.Diagnostics.BufferSize, "SQI_DIAGNOSTICS_BUFFER_SIZE"))
 
-	setString(&cfg.PresetLibrary.URL, "SQI_PRESET_LIBRARY_URL")
+	envvar.String(&cfg.PresetLibrary.URL, "SQI_PRESET_LIBRARY_URL")
 
-	collect(setBool(&cfg.Auth.Enabled, "SQI_AUTH_ENABLED"))
-	collect(setBool(&cfg.Auth.ValidateJobOwner, "SQI_AUTH_VALIDATE_JOB_OWNER"))
-	collect(setDuration(&cfg.Auth.Session.TTL, "SQI_AUTH_SESSION_TTL"))
-	setString(&cfg.Auth.Session.CookieName, "SQI_AUTH_SESSION_COOKIE_NAME")
-	setString(&cfg.Auth.Session.CookieSecure, "SQI_AUTH_SESSION_COOKIE_SECURE")
-	setString(&cfg.Auth.Bootstrap.Username, "SQI_AUTH_BOOTSTRAP_USERNAME")
-	setString(&cfg.Auth.Bootstrap.Password, "SQI_AUTH_BOOTSTRAP_PASSWORD")
+	collect(envvar.Bool(&cfg.Auth.Enabled, "SQI_AUTH_ENABLED"))
+	collect(envvar.Bool(&cfg.Auth.ValidateJobOwner, "SQI_AUTH_VALIDATE_JOB_OWNER"))
+	collect(envvar.Duration(&cfg.Auth.Session.TTL, "SQI_AUTH_SESSION_TTL"))
+	envvar.String(&cfg.Auth.Session.CookieName, "SQI_AUTH_SESSION_COOKIE_NAME")
+	envvar.String(&cfg.Auth.Session.CookieSecure, "SQI_AUTH_SESSION_COOKIE_SECURE")
+	envvar.String(&cfg.Auth.Bootstrap.Username, "SQI_AUTH_BOOTSTRAP_USERNAME")
+	envvar.String(&cfg.Auth.Bootstrap.Password, "SQI_AUTH_BOOTSTRAP_PASSWORD")
 	collect(applyLDAPEnv(&cfg.Auth.LDAP))
 	collect(applyOIDCEnv(&cfg.Auth.OIDC))
 
@@ -959,23 +961,23 @@ func applyLDAPEnv(cfg *LDAPConfig) error {
 			errs = append(errs, err)
 		}
 	}
-	collect(setBool(&cfg.Enabled, "SQI_AUTH_LDAP_ENABLED"))
-	setString(&cfg.URL, "SQI_AUTH_LDAP_URL")
-	collect(setBool(&cfg.StartTLS, "SQI_AUTH_LDAP_START_TLS"))
-	collect(setBool(&cfg.TLSSkipVerify, "SQI_AUTH_LDAP_TLS_SKIP_VERIFY"))
-	setString(&cfg.CAFile, "SQI_AUTH_LDAP_CA_FILE")
-	collect(setDuration(&cfg.Timeout, "SQI_AUTH_LDAP_TIMEOUT"))
-	setString(&cfg.BindDN, "SQI_AUTH_LDAP_BIND_DN")
-	setString(&cfg.BindPassword, "SQI_AUTH_LDAP_BIND_PASSWORD")
-	setString(&cfg.BaseDN, "SQI_AUTH_LDAP_BASE_DN")
-	setString(&cfg.UserFilter, "SQI_AUTH_LDAP_USER_FILTER")
-	collect(setBool(&cfg.NestedGroups, "SQI_AUTH_LDAP_NESTED_GROUPS"))
-	setString(&cfg.UserDNTemplate, "SQI_AUTH_LDAP_USER_DN_TEMPLATE")
-	setString(&cfg.UsernameAttr, "SQI_AUTH_LDAP_USERNAME_ATTR")
-	setString(&cfg.DisplayNameAttr, "SQI_AUTH_LDAP_DISPLAY_NAME_ATTR")
-	setString(&cfg.UniqueIDAttr, "SQI_AUTH_LDAP_UNIQUE_ID_ATTR")
-	setString(&cfg.RoleSource, "SQI_AUTH_LDAP_ROLE_SOURCE")
-	setString(&cfg.DefaultRole, "SQI_AUTH_LDAP_DEFAULT_ROLE")
+	collect(envvar.Bool(&cfg.Enabled, "SQI_AUTH_LDAP_ENABLED"))
+	envvar.String(&cfg.URL, "SQI_AUTH_LDAP_URL")
+	collect(envvar.Bool(&cfg.StartTLS, "SQI_AUTH_LDAP_START_TLS"))
+	collect(envvar.Bool(&cfg.TLSSkipVerify, "SQI_AUTH_LDAP_TLS_SKIP_VERIFY"))
+	envvar.String(&cfg.CAFile, "SQI_AUTH_LDAP_CA_FILE")
+	collect(envvar.Duration(&cfg.Timeout, "SQI_AUTH_LDAP_TIMEOUT"))
+	envvar.String(&cfg.BindDN, "SQI_AUTH_LDAP_BIND_DN")
+	envvar.String(&cfg.BindPassword, "SQI_AUTH_LDAP_BIND_PASSWORD")
+	envvar.String(&cfg.BaseDN, "SQI_AUTH_LDAP_BASE_DN")
+	envvar.String(&cfg.UserFilter, "SQI_AUTH_LDAP_USER_FILTER")
+	collect(envvar.Bool(&cfg.NestedGroups, "SQI_AUTH_LDAP_NESTED_GROUPS"))
+	envvar.String(&cfg.UserDNTemplate, "SQI_AUTH_LDAP_USER_DN_TEMPLATE")
+	envvar.String(&cfg.UsernameAttr, "SQI_AUTH_LDAP_USERNAME_ATTR")
+	envvar.String(&cfg.DisplayNameAttr, "SQI_AUTH_LDAP_DISPLAY_NAME_ATTR")
+	envvar.String(&cfg.UniqueIDAttr, "SQI_AUTH_LDAP_UNIQUE_ID_ATTR")
+	envvar.String(&cfg.RoleSource, "SQI_AUTH_LDAP_ROLE_SOURCE")
+	envvar.String(&cfg.DefaultRole, "SQI_AUTH_LDAP_DEFAULT_ROLE")
 	return errors.Join(errs...)
 }
 
@@ -988,64 +990,58 @@ func applyLDAPEnv(cfg *LDAPConfig) error {
 // other field is a string or a string list — so the error is returned directly
 // rather than collected.
 func applyOIDCEnv(cfg *OIDCConfig) error {
-	setString(&cfg.Issuer, "SQI_AUTH_OIDC_ISSUER")
-	setString(&cfg.ClientID, "SQI_AUTH_OIDC_CLIENT_ID")
-	setString(&cfg.ClientSecret, "SQI_AUTH_OIDC_CLIENT_SECRET")
-	setString(&cfg.RedirectURL, "SQI_AUTH_OIDC_REDIRECT_URL")
+	envvar.String(&cfg.Issuer, "SQI_AUTH_OIDC_ISSUER")
+	envvar.String(&cfg.ClientID, "SQI_AUTH_OIDC_CLIENT_ID")
+	envvar.String(&cfg.ClientSecret, "SQI_AUTH_OIDC_CLIENT_SECRET")
+	envvar.String(&cfg.RedirectURL, "SQI_AUTH_OIDC_REDIRECT_URL")
 	setStringSlice(&cfg.Scopes, "SQI_AUTH_OIDC_SCOPES")
-	setString(&cfg.UsernameClaim, "SQI_AUTH_OIDC_USERNAME_CLAIM")
-	setString(&cfg.DisplayNameClaim, "SQI_AUTH_OIDC_DISPLAY_NAME_CLAIM")
-	setString(&cfg.GroupsClaim, "SQI_AUTH_OIDC_GROUPS_CLAIM")
-	setString(&cfg.RoleSource, "SQI_AUTH_OIDC_ROLE_SOURCE")
-	setString(&cfg.DefaultRole, "SQI_AUTH_OIDC_DEFAULT_ROLE")
-	setString(&cfg.ReauthMode, "SQI_AUTH_OIDC_REAUTH_MODE")
-	setString(&cfg.LogoutMode, "SQI_AUTH_OIDC_LOGOUT_MODE")
-	setString(&cfg.PostLogoutRedirectURL, "SQI_AUTH_OIDC_POST_LOGOUT_REDIRECT_URL")
-	setString(&cfg.ButtonLabel, "SQI_AUTH_OIDC_BUTTON_LABEL")
-	return setBool(&cfg.Enabled, "SQI_AUTH_OIDC_ENABLED")
-}
-
-func setString(dst *string, key string) {
-	if v := os.Getenv(key); v != "" {
-		*dst = v
-	}
+	envvar.String(&cfg.UsernameClaim, "SQI_AUTH_OIDC_USERNAME_CLAIM")
+	envvar.String(&cfg.DisplayNameClaim, "SQI_AUTH_OIDC_DISPLAY_NAME_CLAIM")
+	envvar.String(&cfg.GroupsClaim, "SQI_AUTH_OIDC_GROUPS_CLAIM")
+	envvar.String(&cfg.RoleSource, "SQI_AUTH_OIDC_ROLE_SOURCE")
+	envvar.String(&cfg.DefaultRole, "SQI_AUTH_OIDC_DEFAULT_ROLE")
+	envvar.String(&cfg.ReauthMode, "SQI_AUTH_OIDC_REAUTH_MODE")
+	envvar.String(&cfg.LogoutMode, "SQI_AUTH_OIDC_LOGOUT_MODE")
+	envvar.String(&cfg.PostLogoutRedirectURL, "SQI_AUTH_OIDC_POST_LOGOUT_REDIRECT_URL")
+	envvar.String(&cfg.ButtonLabel, "SQI_AUTH_OIDC_BUTTON_LABEL")
+	return envvar.Bool(&cfg.Enabled, "SQI_AUTH_OIDC_ENABLED")
 }
 
 // applyNATSEnv overlays the SQI_NATS_* variables onto cfg.
 func applyNATSEnv(cfg *Config, collect func(error)) {
 	n := &cfg.NATS
-	setString(&n.Mode, "SQI_NATS_MODE")
-	collect(setBool(&n.Auth.Enabled, "SQI_NATS_AUTH_ENABLED"))
-	collect(setDuration(&n.Auth.UserTTL, "SQI_NATS_AUTH_USER_TTL"))
-	collect(setDuration(&n.Auth.JoinTokenTTL, "SQI_NATS_AUTH_JOIN_TOKEN_TTL"))
-	collect(setBool(&n.Auth.JoinTokenSingleUse, "SQI_NATS_AUTH_JOIN_TOKEN_SINGLE_USE"))
-	collect(setBool(&n.Auth.EnrollmentEndpointEnabled, "SQI_NATS_AUTH_ENROLLMENT_ENDPOINT_ENABLED"))
+	envvar.String(&n.Mode, "SQI_NATS_MODE")
+	collect(envvar.Bool(&n.Auth.Enabled, "SQI_NATS_AUTH_ENABLED"))
+	collect(envvar.Duration(&n.Auth.UserTTL, "SQI_NATS_AUTH_USER_TTL"))
+	collect(envvar.Duration(&n.Auth.JoinTokenTTL, "SQI_NATS_AUTH_JOIN_TOKEN_TTL"))
+	collect(envvar.Bool(&n.Auth.JoinTokenSingleUse, "SQI_NATS_AUTH_JOIN_TOKEN_SINGLE_USE"))
+	collect(envvar.Bool(&n.Auth.EnrollmentEndpointEnabled, "SQI_NATS_AUTH_ENROLLMENT_ENDPOINT_ENABLED"))
 
 	em := &n.Embedded
-	setString(&em.Addr, "SQI_NATS_EMBEDDED_ADDR")
-	setString(&em.AdvertiseURL, "SQI_NATS_EMBEDDED_ADVERTISE_URL")
-	setString(&em.DataDir, "SQI_NATS_EMBEDDED_DATA_DIR")
-	collect(setInt(&em.MaxStoreMB, "SQI_NATS_EMBEDDED_MAX_STORE_MB"))
-	collect(setBool(&em.TLS.Enabled, "SQI_NATS_EMBEDDED_TLS_ENABLED"))
-	setString(&em.TLS.CertFile, "SQI_NATS_EMBEDDED_TLS_CERT_FILE")
-	setString(&em.TLS.KeyFile, "SQI_NATS_EMBEDDED_TLS_KEY_FILE")
-	setString(&em.TLS.ClientCAFile, "SQI_NATS_EMBEDDED_TLS_CLIENT_CA_FILE")
+	envvar.String(&em.Addr, "SQI_NATS_EMBEDDED_ADDR")
+	envvar.String(&em.AdvertiseURL, "SQI_NATS_EMBEDDED_ADVERTISE_URL")
+	envvar.String(&em.DataDir, "SQI_NATS_EMBEDDED_DATA_DIR")
+	collect(envvar.Int(&em.MaxStoreMB, "SQI_NATS_EMBEDDED_MAX_STORE_MB"))
+	collect(envvar.Bool(&em.TLS.Enabled, "SQI_NATS_EMBEDDED_TLS_ENABLED"))
+	envvar.String(&em.TLS.CertFile, "SQI_NATS_EMBEDDED_TLS_CERT_FILE")
+	envvar.String(&em.TLS.KeyFile, "SQI_NATS_EMBEDDED_TLS_KEY_FILE")
+	envvar.String(&em.TLS.ClientCAFile, "SQI_NATS_EMBEDDED_TLS_CLIENT_CA_FILE")
 
 	ex := &n.External
 	setStringSlice(&ex.URLs, "SQI_NATS_EXTERNAL_URLS")
 	setStringSlice(&ex.AdvertiseURLs, "SQI_NATS_EXTERNAL_ADVERTISE_URLS")
-	setString(&ex.Account, "SQI_NATS_EXTERNAL_ACCOUNT")
-	setString(&ex.NkeySeedFile, "SQI_NATS_EXTERNAL_NKEY_SEED_FILE")
-	setString(&ex.CredsFile, "SQI_NATS_EXTERNAL_CREDS_FILE")
-	collect(setInt(&ex.StreamReplicas, "SQI_NATS_EXTERNAL_STREAM_REPLICAS"))
-	collect(setDuration(&ex.ConnectTimeout, "SQI_NATS_EXTERNAL_CONNECT_TIMEOUT"))
-	setString(&ex.TLS.CAFile, "SQI_NATS_EXTERNAL_TLS_CA_FILE")
-	setString(&ex.TLS.CertFile, "SQI_NATS_EXTERNAL_TLS_CERT_FILE")
-	setString(&ex.TLS.KeyFile, "SQI_NATS_EXTERNAL_TLS_KEY_FILE")
-	setString(&ex.TLS.ServerName, "SQI_NATS_EXTERNAL_TLS_SERVER_NAME")
-	setString(&ex.Callout.NkeySeedFile, "SQI_NATS_EXTERNAL_CALLOUT_NKEY_SEED_FILE")
-	setString(&ex.Callout.IssuerSeedFile, "SQI_NATS_EXTERNAL_CALLOUT_ISSUER_SEED_FILE")
-	setString(&ex.Callout.SystemCredsFile, "SQI_NATS_EXTERNAL_CALLOUT_SYSTEM_CREDS_FILE")
+	envvar.String(&ex.Account, "SQI_NATS_EXTERNAL_ACCOUNT")
+	envvar.String(&ex.NkeySeedFile, "SQI_NATS_EXTERNAL_NKEY_SEED_FILE")
+	envvar.String(&ex.CredsFile, "SQI_NATS_EXTERNAL_CREDS_FILE")
+	collect(envvar.Int(&ex.StreamReplicas, "SQI_NATS_EXTERNAL_STREAM_REPLICAS"))
+	collect(envvar.Duration(&ex.ConnectTimeout, "SQI_NATS_EXTERNAL_CONNECT_TIMEOUT"))
+	envvar.String(&ex.TLS.CAFile, "SQI_NATS_EXTERNAL_TLS_CA_FILE")
+	envvar.String(&ex.TLS.CertFile, "SQI_NATS_EXTERNAL_TLS_CERT_FILE")
+	envvar.String(&ex.TLS.KeyFile, "SQI_NATS_EXTERNAL_TLS_KEY_FILE")
+	envvar.String(&ex.TLS.ServerName, "SQI_NATS_EXTERNAL_TLS_SERVER_NAME")
+	envvar.String(&ex.Callout.NkeySeedFile, "SQI_NATS_EXTERNAL_CALLOUT_NKEY_SEED_FILE")
+	envvar.String(&ex.Callout.IssuerSeedFile, "SQI_NATS_EXTERNAL_CALLOUT_ISSUER_SEED_FILE")
+	envvar.String(&ex.Callout.SystemCredsFile, "SQI_NATS_EXTERNAL_CALLOUT_SYSTEM_CREDS_FILE")
 }
 
 // removedNATSKeys are the nats.* keys that moved under nats.embedded.
@@ -1130,74 +1126,6 @@ func setStringSlice(dst *[]string, key string) {
 	if len(out) > 0 {
 		*dst = out
 	}
-}
-
-// setInt sets dst from an integer-valued env var. Surrounding whitespace is
-// trimmed; an unset or (post-trim) empty var is a no-op that leaves the lower
-// config layer intact. A non-empty value that does not parse is a hard error
-// naming the key and the offending value.
-func setInt(dst *int, key string) error {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return nil
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		return fmt.Errorf("%s: invalid integer %q", key, v)
-	}
-	*dst = n
-	return nil
-}
-
-// setInt64 is [setInt] for an int64-valued setting. Separate rather than
-// generic because the two are used through pointers to different types and the
-// error message must still name the key and the offending value identically.
-func setInt64(dst *int64, key string) error {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return nil
-	}
-	n, err := strconv.ParseInt(v, 10, 64)
-	if err != nil {
-		return fmt.Errorf("%s: invalid integer %q", key, v)
-	}
-	*dst = n
-	return nil
-}
-
-// setDuration sets dst from a Go duration env var (e.g. "30s", "5m", "1h").
-// Trimming and error semantics match [setInt].
-func setDuration(dst *time.Duration, key string) error {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return nil
-	}
-	d, err := time.ParseDuration(v)
-	if err != nil {
-		return fmt.Errorf("%s: invalid duration %q (want e.g. 30s, 5m, 1h)", key, v)
-	}
-	*dst = d
-	return nil
-}
-
-// setBool sets dst from a boolean env var. Accepted tokens (case-insensitive)
-// are 1/true/yes/on and 0/false/no/off. Trimming and error semantics match
-// [setInt] — critically, a malformed security-relevant flag such as
-// SQI_AUTH_ENABLED=enabled errors here rather than silently leaving auth off.
-func setBool(dst *bool, key string) error {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return nil
-	}
-	switch strings.ToLower(v) {
-	case "1", "true", "yes", "on":
-		*dst = true
-	case "0", "false", "no", "off":
-		*dst = false
-	default:
-		return fmt.Errorf("%s: invalid boolean %q (want 1/true/yes/on or 0/false/no/off)", key, v)
-	}
-	return nil
 }
 
 // ── CLI flag layer ────────────────────────────────────────────────────────────

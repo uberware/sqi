@@ -13,9 +13,11 @@ layers overriding earlier ones:
 3. **Environment variables**, prefixed `SQI_WORKER_`, e.g.
    `SQI_WORKER_NATS_URL`. Two have no `WORKER` infix: `diagnostics.enabled`
    uses `SQI_DIAGNOSTICS_ENABLED` and `staging.defaults` uses
-   `SQI_STAGING_DEFAULTS`. A numeric or duration variable that does not parse
-   is ignored, leaving the value from the lower layers; a boolean variable
-   that does not parse is read as `false`.
+   `SQI_STAGING_DEFAULTS`. A numeric, duration or boolean variable that does
+   not parse fails startup with an error naming the variable, and every such
+   variable is reported at once. Booleans accept `1`/`true`/`yes`/`on` and
+   `0`/`false`/`no`/`off` in any case, the same as the server. An unset or
+   empty variable leaves the value from the lower layers.
 4. **CLI flags**, highest priority. `--config`/`-c`, `--log-level` and
    `--log-format` are root flags available on every subcommand; `--dry-run` and
    `--nats-insecure-skip-verify` belong to `start` only.

@@ -156,22 +156,6 @@ func TestLoad_ExprLimitsFromEnv(t *testing.T) {
 	}
 }
 
-// TestLoad_ExprMalformedEnvKeepsLowerLayer pins the documented behavior of a
-// non-numeric value: it is ignored, exactly as every other numeric env var in
-// this package handles one, and Validate still judges whatever value results.
-func TestLoad_ExprMalformedEnvKeepsLowerLayer(t *testing.T) {
-	t.Setenv("SQI_WORKER_NATS_URL", "nats://localhost:4222")
-	t.Setenv("SQI_WORKER_EXPR_OPERATION_LIMIT", "not-a-number")
-	cfg, err := Load("", FlagOverrides{})
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.Expr.OperationLimit != DefaultWorkerExprOperationLimit {
-		t.Errorf("a malformed env value must leave the default in place, got %d",
-			cfg.Expr.OperationLimit)
-	}
-}
-
 // TestValidate_ExprLimits walks six boundary rows per knob. The floor and the
 // ceiling must be ACCEPTED and one step outside each REJECTED, or an
 // off-by-one in the comparison goes unnoticed.
