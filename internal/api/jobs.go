@@ -457,9 +457,8 @@ func (h *jobHandler) listJobs(w http.ResponseWriter, r *http.Request) {
 		Limit:  page.Limit,
 		Offset: page.Offset,
 	}
-	// Per-job count queries, mirroring resolveQueueNames' per-row enrichment
-	// (the pre-existing CountTasksByJob pattern). A count failure degrades to
-	// zero counts rather than failing the list.
+	// Per-job count queries, one per row as in resolveQueueNames. A count
+	// failure degrades to zero counts rather than failing the list.
 	counts := make([]map[store.TaskStatus]int, len(page.Items))
 	var runningJobs []string
 	for i, j := range page.Items {

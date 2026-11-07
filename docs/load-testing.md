@@ -947,17 +947,15 @@ real `internal/worker/openjd` interceptor, whose throttle sends at most one
 snapshot per 2 s per attempt, so a farm with about 180 tasks running sends
 about 85 snapshots/s. The server records each with `RecordAttemptProgress`.
 
-**These runs are shortened.** The scenario is 30 minutes with a 3 minute
-warmup. Each run below used `--duration 8m --set warmup=1m` instead (8 minutes
-of submissions, 1 minute of warmup, then the drain of 2 minutes). The first
-minute includes the fleet filling with work. They are not 30 minute runs, and
-no growth over time was measured. "Without" is the same scenario with
-`--set jobs[0].task.progress_every=0s`. The runs were single runs, taken
-sequentially on 2026-11-06, with the server on SQLite and on PostgreSQL 18.6
-(Docker, same machine).
+The scenario is 30 minutes with a 3 minute warmup. Each run below used
+`--duration 8m --set warmup=1m` instead (8 minutes of submissions, 1 minute of
+warmup, then a drain of 2 minutes). The first minute includes the fleet filling
+with work, and growth over time is not covered. "Without" is the same scenario
+with `--set jobs[0].task.progress_every=0s`. Each figure is a single run, with
+the server on SQLite and on PostgreSQL 18.6 (Docker, same machine).
 
 Host: Apple M2 Max, 12 CPUs, macOS (Darwin 25.6.0), native arm64 binaries.
-Every run was VALID, with 6 of 6 invariants held and the generator at 0.07
+Every run was valid, with 6 of 6 invariants held and the generator at 0.07
 cores or less.
 
 | Store | Progress | Tasks/s | `first_lease` p50 / p99 | `terminal_ingest` p50 / p99 | Server CPU, mean over the window | Server RSS peak |
@@ -967,9 +965,9 @@ cores or less.
 | PostgreSQL | with | 1.30 | 110.9 ms / 137.9 ms | 263 ms / 627 ms | 0.261 cores | 102 MiB |
 | PostgreSQL | without | 1.31 | 113.0 ms / 167.9 ms | 101 ms / 343 ms | 0.141 cores | 91 MiB |
 
-- **Snapshot write rate:** about 85 snapshots/s, derived, not counted. The
-  harness has no counter for snapshots (`SQI_TASK` is a work-queue stream, so
-  its message count is always about 0), so this is the mean of 173 running
+- **Snapshot write rate:** about 85 snapshots/s, derived. The harness has no
+  counter for snapshots (`SQI_TASK` is a work-queue stream, so its message
+  count is always about 0), so this is the mean of 173 running
   tasks (200 workers less the mean idle count over the window) times the
   interceptor's one-per-2 s throttle (the dispatcher test sees 5 to 7
   snapshots in 10 s of 1 s progress writes).
@@ -985,16 +983,13 @@ cores or less.
   not only the store write.
 - **Store write alone:** `BenchmarkRecordAttemptProgress` (SQLite, 500 running
   attempts, 10,000 iterations, one snapshot per iteration round-robin) takes
-  **72,433 ns/op**. The write is under 10% of the per-snapshot CPU above.
+  72,433 ns/op. The write is under 10% of the per-snapshot CPU above.
 - **Terminal ingest slows:** the median time to store a terminal status rose
   from 43 to 72 ms on SQLite and from 101 to 263 ms on PostgreSQL, and the p99
   from 144 to 181 ms and from 343 to 627 ms. Terminal statuses and snapshots
   share the `SQI_TASK` consumer, so terminal statuses queue behind snapshots.
-  `js.pending` stayed at 0 throughout. This change does not address the
-  increase: the gate metrics (`first_lease` p99 and the backlog drain estimate
-  below) passed. If it becomes a problem, the remedy is a last-value-per-attempt
-  subject for snapshots (a maintainer decision), so snapshots stop queueing
-  ahead of terminal statuses.
+  `js.pending` stayed at 0 throughout. A last-value-per-attempt subject for
+  snapshots would stop them queueing ahead of terminal statuses.
 - **Estimated drain of a 10 minute outage backlog:** 200 running tasks times
   300 snapshots each (one per 2 s for 10 minutes) is 60,000 snapshots. At the
   CPU cost per snapshot above, assuming one at a time, the drain is about

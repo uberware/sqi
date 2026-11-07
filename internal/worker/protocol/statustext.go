@@ -18,7 +18,8 @@ const MaxStatusTextBytes = 1024
 // rejected by PostgreSQL text columns, which would fail every snapshot of the
 // attempt), tabs and line breaks become spaces, surrounding space is trimmed,
 // and the result is cut to [MaxStatusTextBytes] on a rune boundary. The worker
-// and the server both apply it so the server never relies on the worker.
+// and the server both apply it, so the server does not depend on the worker
+// having done so.
 func SanitizeStatusText(s string) string {
 	var b strings.Builder
 	b.Grow(min(len(s), MaxStatusTextBytes))

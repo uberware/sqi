@@ -230,7 +230,7 @@ func latestVersion(t *testing.T) int64 {
 // behindByOne brings an empty database to a state one migration behind: the
 // schema of the latest version, recorded as the version before it. Open
 // prepares statements over every column the latest migration adds, so a store
-// can only open a database that already has them; a schema genuinely at the
+// can only open a database that already has them; a schema at the
 // previous version would not, and deriving the difference from the latest
 // migration itself keeps this from naming any of it. rewindSchema turns the
 // state into a real previous-version one when a test needs a migration to run.

@@ -31,7 +31,7 @@ retains messages, you can reload the log page and still see all output.
 
 ### Task progress
 
-A task reports progress by printing directives on **stdout**:
+A task reports progress by printing directives on stdout:
 
 ```sh
 echo "openjd_progress: 42.5"
