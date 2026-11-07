@@ -114,8 +114,8 @@ func TestAcquireLock_SymlinkedDatabaseSharesTheLock(t *testing.T) {
 	assertSharedLock(t, target, link)
 }
 
-// A lock file named through a linked directory is already the same file; this
-// guards that resolving the database path keeps it so.
+// A lock file named through a linked directory is the same file as the one
+// named through the real directory.
 func TestAcquireLock_SymlinkedDirectorySharesTheLock(t *testing.T) {
 	targetDir := t.TempDir()
 	linkDir := filepath.Join(t.TempDir(), "linkdir")

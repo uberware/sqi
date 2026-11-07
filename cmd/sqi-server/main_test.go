@@ -1054,7 +1054,7 @@ func TestRestoreCmd_SQLiteThroughASymlink(t *testing.T) {
 		t.Fatalf("restore: %v", runErr)
 	}
 	if fi, err := os.Lstat(link); err != nil || fi.Mode()&fs.ModeSymlink == 0 {
-		t.Errorf("the link is no longer a symlink (%v, %v)", fi, err)
+		t.Errorf("restore replaced the symlink itself (%v, %v)", fi, err)
 	}
 	previous, err := filepath.Glob(db + ".pre-restore-*")
 	if err != nil {

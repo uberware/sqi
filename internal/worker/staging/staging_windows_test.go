@@ -21,13 +21,11 @@ import (
 )
 
 // These tests plant directory junctions (fsutiltest.Junction). A junction
-// (IO_REPARSE_TAG_MOUNT_POINT) is the whole reason this file exists: unlike an
-// NTFS symlink, creating one requires NO privilege at all — not
-// SeCreateSymbolicLinkPrivilege, not Developer Mode. It is therefore the
-// primitive an ordinary run-as-user task actually has, and the one a
-// path-based guard misses, because os.Lstat reports a junction as
-// fs.ModeIrregular rather than fs.ModeSymlink and filepath.EvalSymlinks does
-// not resolve it.
+// (IO_REPARSE_TAG_MOUNT_POINT) needs no privilege to create, where an NTFS
+// symlink needs SeCreateSymbolicLinkPrivilege or Developer Mode, so it is the
+// link an ordinary run-as-user task can make. A path-based guard misses it:
+// os.Lstat reports a junction as fs.ModeIrregular rather than fs.ModeSymlink,
+// and filepath.EvalSymlinks does not resolve it.
 
 // There is deliberately NO Windows test asserting that the copy layer itself
 // refuses a reparse-point source, and a reader must not assume one exists.

@@ -1029,7 +1029,7 @@ Windows) on `<sqlite_path>.lock` before it opens the database, and releases it
 in `Close`. `sqlite.LockPath` names the lock after the database file itself,
 symlinks resolved (a dangling link is followed to the file SQLite would create
 through it), so two names for one database cannot give two servers a lock
-each; a hard link still can. The server (`openStore`) and the CLI (`target`,
+each, though a hard link can. The server (`openStore`) and the CLI (`target`,
 `store copy`) also resolve the configured path once with `sqlite.ResolvePath`,
 so every consumer works on that one file: restore moves aside and replaces
 the file itself rather than a link to it, and SQLite on Windows, which names
