@@ -3,11 +3,17 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/uberware/sqi/internal/fsutil/fsutiltest"
+	"github.com/uberware/sqi/internal/store/backend"
 	"github.com/uberware/sqi/internal/store/storetest"
 )
 
@@ -77,5 +83,33 @@ func TestServer_ReadyzNamesTheStoreDriver(t *testing.T) {
 				t.Errorf("/readyz reports a %q check on the %s driver (checks: %v)", tc.wantNot, tc.name, body.Checks)
 			}
 		})
+	}
+}
+
+// TestServer_OpenStoreResolvesTheSQLitePath verifies the server opens the
+// database file a symlinked path names, so a backup or restore given either
+// name works on the same file (SQLite on Windows names the -shm after the name
+// it is given, so two names would not see each other).
+func TestServer_OpenStoreResolvesTheSQLitePath(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "sqi.db")
+	link := filepath.Join(t.TempDir(), "link.db")
+	fsutiltest.SymlinkOrSkip(t, link, target)
+	cfg := DefaultConfig()
+	cfg.SQLitePath = link
+	s := New(cfg, slog.New(slog.DiscardHandler), nil)
+	var got string
+	s.openBackend = func(_ context.Context, o backend.Options) (backend.Backend, error) {
+		got = o.SQLitePath
+		return nil, errors.New("stop after the options are captured")
+	}
+	if err := s.openStore(t.Context()); err == nil {
+		t.Fatal("openStore succeeded with a failing backend")
+	}
+	dir, err := filepath.EvalSymlinks(filepath.Dir(target))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(dir, "sqi.db"); got != want {
+		t.Errorf("opened %q, want %q", got, want)
 	}
 }

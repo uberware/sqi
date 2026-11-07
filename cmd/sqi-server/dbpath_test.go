@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/uberware/sqi/internal/fsutil/fsutiltest"
 	"github.com/uberware/sqi/internal/store/migrations"
 )
 
@@ -316,6 +317,12 @@ func TestResolveStoreTarget(t *testing.T) {
 	if got, err := resolveStoreTarget(cmd, "", ""); !errors.Is(err, errEmptySQLitePath) {
 		t.Fatalf("--db \"\" = %+v, %v; want errEmptySQLitePath", got, err)
 	}
+	if err := cmd.Flags().Set("db", "file:sqi.db"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := resolveStoreTarget(cmd, "file:sqi.db", ""); !errors.Is(err, errSQLitePathIsURI) {
+		t.Fatalf("--db file:sqi.db = %+v, %v; want errSQLitePathIsURI", got, err)
+	}
 	cmd.Flags().Lookup("db").Changed = false
 
 	t.Setenv("SQI_STORE_DRIVER", "postgres")
@@ -342,7 +349,7 @@ func TestResolveStoreTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err = resolveStoreTarget(cmd, "other.db", "")
-	if err != nil || got.Driver != "sqlite" || got.SQLitePath != "other.db" {
+	if err != nil || got.Driver != "sqlite" || got.SQLitePath != resolvedDB(t, "other.db") {
 		t.Fatalf("--db wins over a postgres config = %+v, %v", got, err)
 	}
 	if err := cmd.Flags().Set("dsn", "postgres://flag@db/sqi"); err != nil {
@@ -404,7 +411,7 @@ func TestResolveStoreTarget_UnloadableConfigWithoutExplicitConfig(t *testing.T) 
 				}
 				return
 			}
-			if err != nil || got.Driver != "sqlite" || got.SQLitePath != "sqi.db" {
+			if err != nil || got.Driver != "sqlite" || got.SQLitePath != resolvedDB(t, "sqi.db") {
 				t.Fatalf("resolveStoreTarget = %+v, %v; want the lenient SQLite default", got, err)
 			}
 		})
@@ -437,4 +444,51 @@ func TestResolveStoreTarget_ExplicitConfigMustLoadWithDSN(t *testing.T) {
 	if err != nil || got.Driver != "postgres" || got.DSN != "postgres://flag@db/sqi" {
 		t.Fatalf("-c good.yaml --dsn = %+v, %v", got, err)
 	}
+}
+
+// Every command is handed the database file a symlinked --db names, so a
+// backup or restore given the link works on the same file as the server.
+func TestResolveStoreTarget_ResolvesASymlinkedDatabase(t *testing.T) {
+	unsetStoreSQLitePathEnv(t)
+	withConfigFile(t, writeEmptyServerConfigFile(t))
+	t.Setenv("SQI_STORE_DRIVER", "")
+	target := filepath.Join(t.TempDir(), "sqi.db")
+	if err := os.WriteFile(target, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "link.db")
+	fsutiltest.SymlinkOrSkip(t, link, target)
+
+	cmd := &cobra.Command{}
+	cmd.Flags().String("db", "sqi.db", "")
+	cmd.Flags().String("dsn", "", "")
+	if err := cmd.Flags().Set("db", link); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveStoreTarget(cmd, link, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SQLitePath != want {
+		t.Errorf("--db %s resolved to %q, want %q", link, got.SQLitePath, want)
+	}
+}
+
+// resolvedDB is the path a command is handed for the database name, which
+// does not exist yet: absolute, its directory's symlinks resolved.
+func resolvedDB(t *testing.T, name string) string {
+	t.Helper()
+	abs, err := filepath.Abs(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := filepath.EvalSymlinks(filepath.Dir(abs))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(dir, filepath.Base(abs))
 }

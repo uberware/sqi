@@ -1026,9 +1026,18 @@ The PostgreSQL schema is SQLite's, with these differences:
 **One server per database.** On SQLite the server takes an exclusive,
 non-blocking OS lock (`internal/fslock`: `flock` on POSIX, `LockFileEx` on
 Windows) on `<sqlite_path>.lock` before it opens the database, and releases it
-in `Close`. The file is created owner-only and never deleted; the OS drops the
+in `Close`. `sqlite.LockPath` names the lock after the database file itself,
+symlinks resolved (a dangling link is followed to the file SQLite would create
+through it), so two names for one database cannot give two servers a lock
+each; a hard link still can. The server (`openStore`) and the CLI (`target`,
+`store copy`) also resolve the configured path once with `sqlite.ResolvePath`,
+so every consumer works on that one file: restore moves aside and replaces
+the file itself rather than a link to it, and SQLite on Windows, which names
+the `-wal` and `-shm` after the name it is given, sees one set of them. A
+`file:` URI is refused as a database path (`config.SQLitePathIsURI`), because
+backup, restore and store copy read the path as a file. The file is created owner-only and never deleted; the OS drops the
 lock when the process exits, so a crash leaves nothing stale. A second holder
-fails with `another sqi-server is using <path> (lock file <path>.lock is held);
+fails with `another sqi-server is using <path> (lock file <resolved path>.lock is held);
 stop it first`. On a network filesystem the lock is only as good as that
 filesystem's lock emulation.
 

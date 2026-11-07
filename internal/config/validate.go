@@ -227,12 +227,25 @@ func validatePostgresStore(cfg PostgresStoreConfig) []ValidationError {
 	return errs
 }
 
+// SQLitePathIsURI reports whether path is a SQLite "file:" URI. A SQLite path
+// is a file path: backup, restore, store copy and the server's lock file all
+// read it as one, so a URI is refused wherever the path is given.
+func SQLitePathIsURI(path string) bool {
+	return len(path) >= 5 && strings.EqualFold(path[:5], "file:")
+}
+
 func validateSQLiteStore(cfg StoreConfig) []ValidationError {
 	var errs []ValidationError
 	if cfg.SQLitePath == "" {
 		errs = append(errs, ValidationError{
 			Field:   "store.sqlite_path",
 			Message: "must not be empty; set SQI_STORE_SQLITE_PATH or store.sqlite_path in the config file",
+		})
+	}
+	if SQLitePathIsURI(cfg.SQLitePath) {
+		errs = append(errs, ValidationError{
+			Field:   "store.sqlite_path",
+			Message: fmt.Sprintf("must be a file path, not a file: URI, got %q", cfg.SQLitePath),
 		})
 	}
 	if cfg.CheckpointInterval <= 0 {

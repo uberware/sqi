@@ -44,6 +44,7 @@ import (
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/backend"
+	"github.com/uberware/sqi/internal/store/sqlite"
 	"github.com/uberware/sqi/internal/tlsutil"
 	"github.com/uberware/sqi/internal/version"
 	"github.com/uberware/sqi/internal/ws"
@@ -622,6 +623,16 @@ func (s *Server) openStore(ctx context.Context) error {
 		PostgresDSN: s.cfg.PostgresDSN, MaxConns: s.cfg.PostgresMaxConns,
 		AutoMigrate: true, ServerLock: true, Logger: s.logger,
 	}
+	driver := backend.Name(s.cfg.StoreDriver)
+	if driver == backend.DriverSQLite {
+		// Open the file the path names, as the CLI commands resolve it, so a
+		// backup or restore given another name for it works on this file.
+		p, err := sqlite.ResolvePath(o.SQLitePath)
+		if err != nil {
+			return fmt.Errorf("open store: %w", err)
+		}
+		o.SQLitePath = p
+	}
 	if s.ha != nil {
 		// Share the lock with the group's other servers, and bound sessions
 		// by the lease.
@@ -636,11 +647,10 @@ func (s *Server) openStore(ctx context.Context) error {
 		return fmt.Errorf("open store: %w", err)
 	}
 	s.store = st
-	driver := backend.Name(s.cfg.StoreDriver)
 	if driver == backend.DriverPostgres {
 		s.logger.InfoContext(ctx, "store: postgres open", slog.String("dsn", pgdsn.Redact(s.cfg.PostgresDSN)))
 	} else {
-		s.logger.InfoContext(ctx, "store: sqlite open", slog.String("path", s.cfg.SQLitePath))
+		s.logger.InfoContext(ctx, "store: sqlite open", slog.String("path", o.SQLitePath))
 	}
 
 	// Register the store as a readiness dependency under its driver's name, so
