@@ -739,6 +739,7 @@ sqi/
 │   ├── config/            Typed config struct, layered loader
 │   ├── diag/              In-memory diagnostic-log ring buffer
 │   ├── discovery/         mDNS _sqi._tcp responder
+│   ├── envvar/            Typed environment-variable setters shared by server and worker
 │   ├── fslock/            Exclusive OS file lock (the SQLite single-server lock)
 │   ├── fsutil/            Small shared filesystem helpers
 │   ├── health/            /healthz and /readyz handlers
