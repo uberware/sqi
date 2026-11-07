@@ -3,21 +3,18 @@
 package config
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/uberware/sqi/internal/envvar"
+	"github.com/uberware/sqi/internal/yamlstrict"
 )
 
 // FlagOverrides carries values from CLI flags that take highest precedence
@@ -391,7 +388,7 @@ func loadFileConfig(explicit string) (*fileConfig, error) {
 	// A key the loader does not know is an error, not a skipped line: a
 	// misspelled key would otherwise leave the server on the default.
 	var fc fileConfig
-	if err := decodeStrict(data, &fc); err != nil {
+	if err := yamlstrict.Decode(data, &fc); err != nil {
 		return nil, fmt.Errorf("parse config file %q: %w", path, err)
 	}
 
@@ -892,7 +889,7 @@ func applyEnv(cfg *Config) error {
 	collect(envvar.Bool(&cfg.HTTP.TLS.Enabled, "SQI_HTTP_TLS_ENABLED"))
 	envvar.String(&cfg.HTTP.TLS.CertFile, "SQI_HTTP_TLS_CERT_FILE")
 	envvar.String(&cfg.HTTP.TLS.KeyFile, "SQI_HTTP_TLS_KEY_FILE")
-	setStringSlice(&cfg.HTTP.CORSOrigins, "SQI_HTTP_CORS_ORIGINS")
+	envvar.StringSlice(&cfg.HTTP.CORSOrigins, "SQI_HTTP_CORS_ORIGINS")
 
 	collect(rejectRemovedNATSEnv())
 	applyNATSEnv(cfg, collect)
@@ -994,7 +991,7 @@ func applyOIDCEnv(cfg *OIDCConfig) error {
 	envvar.String(&cfg.ClientID, "SQI_AUTH_OIDC_CLIENT_ID")
 	envvar.String(&cfg.ClientSecret, "SQI_AUTH_OIDC_CLIENT_SECRET")
 	envvar.String(&cfg.RedirectURL, "SQI_AUTH_OIDC_REDIRECT_URL")
-	setStringSlice(&cfg.Scopes, "SQI_AUTH_OIDC_SCOPES")
+	envvar.StringSlice(&cfg.Scopes, "SQI_AUTH_OIDC_SCOPES")
 	envvar.String(&cfg.UsernameClaim, "SQI_AUTH_OIDC_USERNAME_CLAIM")
 	envvar.String(&cfg.DisplayNameClaim, "SQI_AUTH_OIDC_DISPLAY_NAME_CLAIM")
 	envvar.String(&cfg.GroupsClaim, "SQI_AUTH_OIDC_GROUPS_CLAIM")
@@ -1028,8 +1025,8 @@ func applyNATSEnv(cfg *Config, collect func(error)) {
 	envvar.String(&em.TLS.ClientCAFile, "SQI_NATS_EMBEDDED_TLS_CLIENT_CA_FILE")
 
 	ex := &n.External
-	setStringSlice(&ex.URLs, "SQI_NATS_EXTERNAL_URLS")
-	setStringSlice(&ex.AdvertiseURLs, "SQI_NATS_EXTERNAL_ADVERTISE_URLS")
+	envvar.StringSlice(&ex.URLs, "SQI_NATS_EXTERNAL_URLS")
+	envvar.StringSlice(&ex.AdvertiseURLs, "SQI_NATS_EXTERNAL_ADVERTISE_URLS")
 	envvar.String(&ex.Account, "SQI_NATS_EXTERNAL_ACCOUNT")
 	envvar.String(&ex.NkeySeedFile, "SQI_NATS_EXTERNAL_NKEY_SEED_FILE")
 	envvar.String(&ex.CredsFile, "SQI_NATS_EXTERNAL_CREDS_FILE")
@@ -1051,7 +1048,7 @@ var removedNATSKeys = []string{"addr", "data_dir", "max_store_mb", "tls"}
 // moved under nats.embedded. The strict decode would reject them as unknown
 // keys too, but without naming where they went.
 func rejectRemovedNATSKeys(path string, data []byte) error {
-	root := yamlRoot(data)
+	root := yamlstrict.Root(data)
 	if root == nil || root.Kind != yaml.MappingNode {
 		return nil
 	}
@@ -1072,17 +1069,6 @@ func rejectRemovedNATSKeys(path string, data []byte) error {
 		}
 	}
 	return errors.Join(errs...)
-}
-
-// yamlRoot returns the top-level node of data, or nil when data does not
-// parse or is empty. A syntax error is left to the typed parse that runs
-// after the caller.
-func yamlRoot(data []byte) *yaml.Node {
-	var doc yaml.Node
-	if yaml.Unmarshal(data, &doc) == nil && len(doc.Content) > 0 {
-		return doc.Content[0]
-	}
-	return nil
 }
 
 // rejectRemovedNATSEnv fails when an SQI_NATS_* variable that moved under
@@ -1107,25 +1093,6 @@ func isRemovedNATSEnv(name string) bool {
 		return true
 	}
 	return strings.HasPrefix(name, "SQI_NATS_TLS_")
-}
-
-// setStringSlice sets dst from a comma-separated env var, trimming spaces and
-// dropping empty entries. An unset or empty var leaves dst untouched so a
-// lower config layer survives.
-func setStringSlice(dst *[]string, key string) {
-	v := os.Getenv(key)
-	if v == "" {
-		return
-	}
-	var out []string
-	for part := range strings.SplitSeq(v, ",") {
-		if s := strings.TrimSpace(part); s != "" {
-			out = append(out, s)
-		}
-	}
-	if len(out) > 0 {
-		*dst = out
-	}
 }
 
 // ── CLI flag layer ────────────────────────────────────────────────────────────
@@ -1164,74 +1131,5 @@ func CheckFileKeys(data []byte) error {
 		return err
 	}
 	var fc fileConfig
-	return decodeStrict(data, &fc)
-}
-
-// decodeStrict decodes data into fc and fails on a key the file shape does not
-// have. yaml reports such a key by line and bare name only, so a failure is
-// rewritten to name the key's dotted path.
-func decodeStrict(data []byte, fc *fileConfig) error {
-	dec := yaml.NewDecoder(bytes.NewReader(data))
-	dec.KnownFields(true)
-	err := dec.Decode(fc)
-	if err == nil || errors.Is(err, io.EOF) { // io.EOF: an empty file
-		return nil
-	}
-	var typeErr *yaml.TypeError
-	if !errors.As(err, &typeErr) {
-		return err
-	}
-	root := yamlRoot(data)
-	msgs := make([]string, len(typeErr.Errors))
-	for i, m := range typeErr.Errors {
-		msgs[i] = nameKey(root, m)
-	}
-	return errors.New(strings.Join(msgs, "; "))
-}
-
-// yamlKeyErr matches the two shapes of yaml.v3 decode error that point at a
-// key: "line N: field NAME not found in type T" (unknown key) and
-// "line N: cannot unmarshal ..." (wrong shape).
-var yamlKeyErr = regexp.MustCompile(`^line (\d+): (?:field (\S+) not found in type .*|(.*))$`)
-
-// nameKey rewrites one yaml decode error to say which key it is about.
-func nameKey(root *yaml.Node, msg string) string {
-	m := yamlKeyErr.FindStringSubmatch(msg)
-	if m == nil {
-		return msg
-	}
-	line, err := strconv.Atoi(m[1])
-	if err != nil {
-		return msg
-	}
-	path, ok := keyPathAtLine(root, line, m[2], nil)
-	switch {
-	case !ok:
-		return msg
-	case m[2] != "":
-		return fmt.Sprintf("line %d: unknown key %s", line, path)
-	default:
-		return fmt.Sprintf("line %d: %s: %s", line, path, m[3])
-	}
-}
-
-// keyPathAtLine returns the dotted path of the deepest key in n that sits on
-// line. With name set only a key of that name counts (an unknown key); with it
-// empty a key whose value starts on that line counts too (a value of the wrong
-// shape).
-func keyPathAtLine(n *yaml.Node, line int, name string, prefix []string) (string, bool) {
-	if n == nil || n.Kind != yaml.MappingNode {
-		return "", false
-	}
-	for i := 0; i+1 < len(n.Content); i += 2 {
-		k, v := n.Content[i], n.Content[i+1]
-		path := append(slices.Clone(prefix), k.Value)
-		if p, ok := keyPathAtLine(v, line, name, path); ok {
-			return p, true
-		}
-		if name != "" && k.Value == name && k.Line == line || name == "" && (k.Line == line || v.Line == line) {
-			return strings.Join(path, "."), true
-		}
-	}
-	return "", false
+	return yamlstrict.Decode(data, &fc)
 }

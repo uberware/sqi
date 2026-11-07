@@ -3,6 +3,7 @@
 package envvar_test
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -104,6 +105,31 @@ func TestBool_Tokens(t *testing.T) {
 			}
 			if got != tc.want {
 				t.Errorf("Bool(%q) = %v, want %v", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestStringSlice pins that entries are trimmed and blanks dropped, and that a
+// variable holding nothing but separators and blanks keeps the lower layer.
+func TestStringSlice(t *testing.T) {
+	tests := []struct {
+		value string
+		want  []string
+	}{
+		{"", []string{"lower"}},
+		{",", []string{"lower"}},
+		{" , ,", []string{"lower"}},
+		{"a", []string{"a"}},
+		{" a , ,b ", []string{"a", "b"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.value, func(t *testing.T) {
+			t.Setenv(key, tc.value)
+			got := []string{"lower"}
+			envvar.StringSlice(&got, key)
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("StringSlice(%q) = %q, want %q", tc.value, got, tc.want)
 			}
 		})
 	}

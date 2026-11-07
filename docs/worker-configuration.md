@@ -10,6 +10,11 @@ layers overriding earlier ones:
    with a `.json` extension after the `.yaml` one. A Windows service does not
    search: it refuses to start without `--config` (see
    [registering the service by hand](worker-deployment.md#registering-the-service-by-hand)).
+   A key the worker does not know, such as a misspelled one, fails startup
+   with an error naming its line and dotted path (e.g.
+   `line 2: unknown key isolation.requird`), the same as the server. So does a
+   key in a custom detector, and a second YAML document after a `---` line,
+   which would otherwise go unread.
 3. **Environment variables**, prefixed `SQI_WORKER_`, e.g.
    `SQI_WORKER_NATS_URL`. Two have no `WORKER` infix: `diagnostics.enabled`
    uses `SQI_DIAGNOSTICS_ENABLED` and `staging.defaults` uses
@@ -17,7 +22,8 @@ layers overriding earlier ones:
    not parse fails startup with an error naming the variable, and every such
    variable is reported at once. Booleans accept `1`/`true`/`yes`/`on` and
    `0`/`false`/`no`/`off` in any case, the same as the server. An unset or
-   empty variable leaves the value from the lower layers.
+   empty variable leaves the value from the lower layers, and so does a
+   comma-separated list variable holding only commas and blanks.
 4. **CLI flags**, highest priority. `--config`/`-c`, `--log-level` and
    `--log-format` are root flags available on every subcommand; `--dry-run` and
    `--nats-insecure-skip-verify` belong to `start` only.

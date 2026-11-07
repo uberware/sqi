@@ -404,7 +404,8 @@ func runFusionScript(t *testing.T, lua string, task presettest.TaskSnapshot, mod
 	if err != nil {
 		t.Fatalf("runner recorded nothing: %v\nstderr:\n%s", err, errOut.String())
 	}
-	return canonicalJSON(t, data), out.String()
+	// A Windows Lua writes stdout in text mode, so each line ends "\r\n".
+	return canonicalJSON(t, data), strings.ReplaceAll(out.String(), "\r\n", "\n")
 }
 
 // TestPresetFusion_ScriptDrivesFusion runs the shipped render.lua, as resolved

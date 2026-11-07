@@ -23,14 +23,13 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/uberware/sqi/internal/brokerauth"
 	"github.com/uberware/sqi/internal/envvar"
 	sqilog "github.com/uberware/sqi/internal/log"
 	"github.com/uberware/sqi/internal/worker/capabilities"
 	"github.com/uberware/sqi/internal/worker/commands"
 	"github.com/uberware/sqi/internal/worker/protocol"
+	"github.com/uberware/sqi/internal/yamlstrict"
 )
 
 // WorkerConfig is the complete runtime configuration for sqi-worker.
@@ -736,7 +735,9 @@ func LoadWithSources(configFile string, flags FlagOverrides) (WorkerConfig, Sour
 		if err != nil {
 			return WorkerConfig{}, Sources{}, fmt.Errorf("read config file %s: %w", path, err)
 		}
-		if err := unmarshalConfig(data, &cfg); err != nil {
+		// A key the worker does not know fails the load naming its dotted path:
+		// a misspelled isolation.required dropped silently would leave isolation off.
+		if err := yamlstrict.Decode(data, &cfg); err != nil {
 			return WorkerConfig{}, Sources{}, fmt.Errorf("parse config file %s: %w", path, err)
 		}
 	}
@@ -801,12 +802,6 @@ func resolveConfigFile(explicit string) (string, error) {
 	return "", nil // no file found; defaults + env only
 }
 
-// unmarshalConfig decodes YAML/JSON data into cfg.
-// gopkg.in/yaml.v3 handles both YAML and JSON transparently.
-func unmarshalConfig(data []byte, cfg *WorkerConfig) error {
-	return yaml.Unmarshal(data, cfg)
-}
-
 // applyEnv overlays SQI_WORKER_* environment variables onto cfg. An unset or
 // empty variable is a no-op. A number, duration or boolean that does not parse
 // is an error naming the variable, never a silent fallback: a malformed
@@ -847,15 +842,13 @@ func applyExprEnv(c *ExprConfig, collect func(error)) {
 func applyIsolationEnv(c *IsolationConfig, collect func(error)) {
 	collect(envvar.Bool(&c.Required, "SQI_WORKER_ISOLATION_REQUIRED"))
 	envvar.String(&c.Provider, "SQI_WORKER_ISOLATION_PROVIDER")
-	if v := os.Getenv("SQI_WORKER_ISOLATION_ENV_PASSTHROUGH"); v != "" {
-		c.EnvPassthrough = splitTags(v)
-	}
+	envvar.StringSlice(&c.EnvPassthrough, "SQI_WORKER_ISOLATION_ENV_PASSTHROUGH")
 }
 
 func applyCapabilitiesEnv(c *capabilities.CapabilitiesConfig) {
-	if v := os.Getenv("SQI_WORKER_CAPABILITIES_DISABLE"); v != "" {
-		c.Disable = append(c.Disable, splitTags(v)...)
-	}
+	var disable []string
+	envvar.StringSlice(&disable, "SQI_WORKER_CAPABILITIES_DISABLE")
+	c.Disable = append(c.Disable, disable...)
 }
 
 func applyNATSEnv(c *NATSConfig, collect func(error)) {
@@ -883,21 +876,13 @@ func applyWorkerEnv(c *WorkerSettings, collect func(error)) {
 	envvar.String(&c.DataDir, "SQI_WORKER_DATA_DIR")
 	envvar.String(&c.SessionDir, "SQI_WORKER_SESSION_DIR")
 	envvar.String(&c.ComputeLocation, "SQI_WORKER_COMPUTE_LOCATION")
-	if v := os.Getenv("SQI_WORKER_CAPABILITY_TAGS"); v != "" {
-		c.CapabilityTags = splitTags(v)
-	}
+	envvar.StringSlice(&c.CapabilityTags, "SQI_WORKER_CAPABILITY_TAGS")
 	collect(envvar.Duration(&c.HeartbeatInterval, "SQI_WORKER_HEARTBEAT_INTERVAL"))
 	collect(envvar.Duration(&c.ShutdownGracePeriod, "SQI_WORKER_SHUTDOWN_GRACE_PERIOD"))
 	collect(envvar.Bool(&c.AllowRoot, "SQI_WORKER_ALLOW_ROOT"))
 	collect(envvar.Bool(&c.KeepFailedSessions, "SQI_WORKER_KEEP_FAILED_SESSIONS"))
 	if v := os.Getenv("SQI_WORKER_QUEUE_IDS"); v != "" {
-		// Deliberately NOT splitTags: splitTags silently drops empty entries
-		// (right for CapabilityTags/EnvPassthrough, which have no invalid
-		// shape), but a queue ID has one — see [Validate]'s validateQueueIDs.
-		// Splitting without filtering here means a blank entry from the env
-		// var is caught and reported the same way a blank entry in a YAML
-		// queue_ids list is, instead of being silently dropped on one path
-		// and rejected on the other.
+		// splitCSV, not envvar.StringSlice: a blank queue ID must reach Validate.
 		c.QueueIDs = splitCSV(v)
 	}
 	collect(envvar.Duration(&c.PullIdleBackoff, "SQI_WORKER_PULL_IDLE_BACKOFF"))
@@ -931,22 +916,8 @@ func applyLogStreamerEnv(c *LogStreamerConfig, collect func(error)) {
 	collect(envvar.Duration(&c.FlushInterval, "SQI_WORKER_LOG_STREAMER_FLUSH_INTERVAL"))
 }
 
-// splitTags splits a comma-separated tag list, trimming whitespace and
-// dropping empty entries. Used for fields with no invalid shape of their
-// own, where a stray comma should just be ignored.
-func splitTags(s string) []string {
-	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if t := strings.TrimSpace(p); t != "" {
-			out = append(out, t)
-		}
-	}
-	return out
-}
-
 // splitCSV splits a comma-separated list, trimming whitespace around each
-// entry but KEEPING empty entries — unlike splitTags. Used for fields whose
+// entry and keeping empty entries, unlike [envvar.StringSlice]. Used for fields whose
 // entries have their own validity check (queue IDs), so that a blank entry
 // surfaces as a validation error naming its position instead of being
 // silently discarded.
