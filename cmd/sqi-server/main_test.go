@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,6 +22,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/uberware/sqi/internal/fsutil/fsutiltest"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/postgres"
 	"github.com/uberware/sqi/internal/store/sqlite"
@@ -640,8 +642,8 @@ func TestBackupCmd_ErrorPaths(t *testing.T) {
 		if runErr == nil {
 			t.Fatal("expected an error for a missing source database, got nil")
 		}
-		if !strings.Contains(runErr.Error(), dbPath) {
-			t.Errorf("error should name the resolved path %q; got: %v", dbPath, runErr)
+		if want := resolvedDB(t, dbPath); !strings.Contains(runErr.Error(), want) {
+			t.Errorf("error should name the resolved path %q; got: %v", want, runErr)
 		}
 		if _, statErr := os.Stat(outPath); statErr == nil {
 			t.Error("backup should not have produced an output file when the source database is missing")
@@ -965,9 +967,14 @@ func TestCLI_RefusesANewerSchema(t *testing.T) {
 
 // restoreFixture makes a migrated SQLite at dir/sqi.db holding one running
 // task, a backup of it at dir/backup.db, and a NATS directory at dir/nats.
+// dir has its symlinks resolved (macOS's temporary directory is under one),
+// because restore reports the database file it resolved.
 func restoreFixture(t *testing.T) (db, backup, natsDir string) {
 	t.Helper()
-	dir := t.TempDir()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	db = filepath.Join(dir, "sqi.db")
 	st, err := sqlite.Open(t.Context(), db, sqlite.DefaultOptions())
 	if err != nil {
@@ -1030,6 +1037,35 @@ func TestRestoreCmd_SQLite(t *testing.T) {
 			t.Fatalf("restore with a backup and --in-place = %v, want a usage error", err)
 		}
 	})
+}
+
+// TestRestoreCmd_SQLiteThroughASymlink restores through a symlink to the
+// database: the database itself is moved aside and replaced, and the link is
+// left pointing at it.
+func TestRestoreCmd_SQLiteThroughASymlink(t *testing.T) {
+	db, backup, natsDir := restoreFixture(t)
+	link := filepath.Join(t.TempDir(), "link.db")
+	fsutiltest.SymlinkOrSkip(t, link, db)
+
+	prepareRoot([]string{"restore", backup, "--db", link, "--nats-data-dir", natsDir})
+	var runErr error
+	captureStdout(t, func() { runErr = Execute() })
+	if runErr != nil {
+		t.Fatalf("restore: %v", runErr)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&fs.ModeSymlink == 0 {
+		t.Errorf("restore replaced the symlink itself (%v, %v)", fi, err)
+	}
+	previous, err := filepath.Glob(db + ".pre-restore-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(previous) != 1 {
+		t.Fatalf("previous databases beside %s = %v, want one", db, previous)
+	}
+	if fi, err := os.Lstat(previous[0]); err != nil || !fi.Mode().IsRegular() {
+		t.Errorf("the previous database %s is not a regular file (%v, %v)", previous[0], fi, err)
+	}
 }
 
 // TestRestoreCmd_UnloadableConfig verifies that, unlike the other CLI
@@ -1164,6 +1200,17 @@ func TestStoreCopyCmd_RequiresATarget(t *testing.T) {
 	prepareRoot([]string{"store", "copy", "--from", db, "--to", ""})
 	if err := Execute(); err == nil || !strings.Contains(err.Error(), "--to is empty") {
 		t.Fatalf("store copy --to \"\" = %v, want a refusal", err)
+	}
+}
+
+// TestStoreCopyCmd_RefusesAFileURISource verifies --from takes a file path,
+// as every other SQLite path does.
+func TestStoreCopyCmd_RefusesAFileURISource(t *testing.T) {
+	isolateConfigDiscovery(t)
+	unsetStoreSQLitePathEnv(t)
+	prepareRoot([]string{"store", "copy", "--from", "file:" + storeCopyFixture(t), "--to", "postgres://127.0.0.1:1/none"})
+	if err := Execute(); !errors.Is(err, errSQLitePathIsURI) {
+		t.Fatalf("store copy --from file:... = %v, want errSQLitePathIsURI", err)
 	}
 }
 

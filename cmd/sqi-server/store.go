@@ -71,7 +71,10 @@ func runStoreCopy(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("could not load configuration: %w; store copy will not guess the databases from built-in "+
 			"defaults: fix the configuration, or pass both --from and --to", c.loadErr)
 	}
-	from := c.dbPath(storeCopyFlags.From, flagChanged(cmd, "from"))
+	from, err := resolveSQLitePath(c.dbPath(storeCopyFlags.From, flagChanged(cmd, "from")))
+	if err != nil {
+		return err
+	}
 	to := storeCopyFlags.To
 	if !explicitTo {
 		to = c.cfg.Store.Postgres.DSN

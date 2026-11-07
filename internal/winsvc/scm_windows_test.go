@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,6 +18,8 @@ import (
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
+
+	"github.com/uberware/sqi/internal/fsutil/fsutiltest"
 )
 
 // These tests cover only what runs unelevated against no real service: the
@@ -375,7 +376,7 @@ func TestEnsureLogDir_RefusesJunction(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := filepath.Join(root, "logs")
-	mklinkJunction(t, link, target)
+	fsutiltest.Junction(t, link, target)
 	before := daclBytes(t, target)
 	_, account := currentAccount(t)
 
@@ -406,7 +407,7 @@ func junctionParent(t *testing.T, withLogs bool) (dir, targetLogs string) {
 		}
 	}
 	parent := filepath.Join(root, "sqi")
-	mklinkJunction(t, parent, target)
+	fsutiltest.Junction(t, parent, target)
 	return filepath.Join(parent, "logs"), targetLogs
 }
 
@@ -471,7 +472,7 @@ func TestEnsureLogDir_LocalSystemRefusesJunction(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := filepath.Join(root, "logs")
-	mklinkJunction(t, link, target)
+	fsutiltest.Junction(t, link, target)
 	before := daclBytes(t, target)
 
 	if err := EnsureLogDir(link, ""); !errors.Is(err, errReparsePoint) {
@@ -505,16 +506,6 @@ func TestEnsureLogDir_RefusesExistingFile(t *testing.T) {
 	_, account := currentAccount(t)
 	if err := EnsureLogDir(path, account); err == nil {
 		t.Error("EnsureLogDir accepted a regular file as the log directory")
-	}
-}
-
-// mklinkJunction creates link as a directory junction to target. Unlike a
-// symbolic link, a junction needs no privilege (as in
-// internal/worker/isolation's workdir_windows_test.go).
-func mklinkJunction(t *testing.T, link, target string) {
-	t.Helper()
-	if out, err := exec.CommandContext(t.Context(), "cmd", "/c", "mklink", "/j", link, target).CombinedOutput(); err != nil {
-		t.Fatalf("mklink /j %q %q: %v: %s", link, target, err, out)
 	}
 }
 

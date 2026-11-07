@@ -38,6 +38,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
+	"github.com/uberware/sqi/internal/fsutil/fsutiltest"
 	"github.com/uberware/sqi/internal/worker/envutil"
 	"github.com/uberware/sqi/internal/worker/isolation"
 	"github.com/uberware/sqi/internal/worker/protocol"
@@ -528,9 +529,7 @@ func TestIsolationWindows_ChownRecursiveDoesNotFollowJunction(t *testing.T) {
 		t.Fatalf("write outside file: %v", err)
 	}
 	link := filepath.Join(root, "escape")
-	if out, err := exec.CommandContext(context.Background(), "cmd", "/c", "mklink", "/J", link, outside).CombinedOutput(); err != nil {
-		t.Fatalf("mklink /J: %v: %s", err, out)
-	}
+	fsutiltest.Junction(t, link, outside)
 
 	credA := resolveHarnessCredential(t, userA)
 	defer credA.Close()
