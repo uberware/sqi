@@ -323,6 +323,12 @@ func TestValidate_FieldErrors(t *testing.T) {
 			wantField: "store.sqlite_path",
 		},
 		{
+			// Backup, restore and store copy read the value as a file path.
+			name:      "file uri sqlite path",
+			mutate:    func(c *config.Config) { c.Store.SQLitePath = "FILE:/var/lib/sqi/sqi.db" },
+			wantField: "store.sqlite_path",
+		},
+		{
 			name:      "bad log level",
 			mutate:    func(c *config.Config) { c.Log.Level = "verbose" },
 			wantField: "log.level",

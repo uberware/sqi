@@ -867,18 +867,23 @@ store.driver is postgres`).
 | **Default** | `"sqi.db"` |
 | **Env var** | `SQI_STORE_SQLITE_PATH` |
 
-Path to the SQLite database file. Created at startup if it does not exist.
+Path to the SQLite database file, as a file path (a `file:` URI is refused).
+Created at startup if it does not exist. A symlink in the path is resolved:
+the server and every command (`backup`, `restore`, `store copy`, `migrate`)
+work on the file it names, so `restore` through a symlink replaces the
+database and leaves the link in place.
 Schema migrations run automatically at startup. For production, use an absolute
 path on a local SSD. Ignored when `store.driver` is `postgres`, except as the
 default source of [`sqi-server store copy`](operations.md#moving-to-postgresql).
 
 The server also creates `<sqlite_path>.lock` beside the database (for example
-`sqi.db.lock`) and holds an operating-system lock on it while it runs, so a
-second server on the same file is refused; `migrate up`, `restore` and
-`store copy` take it too. Leave the file in place. The guard is the lock held
-on it, which the operating system releases when the server exits or crashes,
-so a leftover file is never stale. On a network filesystem the lock is only as
-reliable as that filesystem's locking.
+`sqi.db.lock`; with symlinks resolved, so the lock file sits beside the real
+database file whichever name you give it) and holds an operating-system lock
+on it while it runs, so a second server on the same file is refused;
+`migrate up`, `restore` and `store copy` take it too. Leave the file in place.
+The guard is the lock held on it, which the operating system releases when
+the server exits or crashes, so a leftover file is never stale. On a network
+filesystem the lock is only as reliable as that filesystem's locking.
 See [One server per database](operations.md#one-server-per-database).
 
 ```yaml

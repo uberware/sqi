@@ -1105,12 +1105,16 @@ stops every server for one that changes it (see
 ### SQLite: the lock file
 
 The server takes an exclusive operating-system lock (`flock` on Linux and
-macOS, `LockFileEx` on Windows) on `<store.sqlite_path>.lock`, for example
-`sqi.db.lock`, created owner-only beside the database. A second server, or one
-of the commands above, fails at once:
+macOS, `LockFileEx` on Windows) on `<database>.lock`, for example
+`/var/lib/sqi/sqi.db.lock`, created owner-only beside the database. The path
+is the database file's own, with symlinks resolved, so every symlinked name
+for one database locks the same file. A hard link is the exception: the
+filesystem cannot tell it from the original, so it gets a lock file of its
+own. A second server, or one of the commands above, fails at once, naming the
+database file it resolved:
 
 ```
-startup failed: open store: another sqi-server is using sqi.db (lock file sqi.db.lock is held); stop it first: fslock: lock is held
+startup failed: open store: another sqi-server is using /var/lib/sqi/sqi.db (lock file /var/lib/sqi/sqi.db.lock is held); stop it first: fslock: lock is held
 ```
 
 The lock, not the file, is the guard. The operating system drops it when the

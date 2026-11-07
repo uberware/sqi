@@ -13,6 +13,8 @@ import (
 	"testing"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/uberware/sqi/internal/fsutil/fsutiltest"
 )
 
 // TestCreateLogDir_MissingDirGetsProtectedDACL pins that a service creating
@@ -60,7 +62,7 @@ func TestCreateLogDir_RefusesExistingJunction(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := filepath.Join(root, "logs")
-	mklinkJunction(t, link, target)
+	fsutiltest.Junction(t, link, target)
 	before := daclBytes(t, target)
 	if err := createLogDir(link); !errors.Is(err, errReparsePoint) {
 		t.Errorf("createLogDir(<junction>) = %v, want errReparsePoint", err)

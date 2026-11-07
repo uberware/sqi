@@ -96,7 +96,11 @@ func TestStoreCopy_RefusesAMissingSource(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "no SQLite database at") {
 		t.Fatalf("Copy from a missing source = %v, want a refusal naming it", err)
 	}
-	for _, p := range []string{src, sqlite.LockPath(src), src + "-wal"} {
+	lockPath, err := sqlite.LockPath(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{src, lockPath, src + "-wal"} {
 		if _, err := os.Stat(p); err == nil {
 			t.Errorf("the refusal created %s", p)
 		}

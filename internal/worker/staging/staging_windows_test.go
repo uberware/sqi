@@ -9,7 +9,6 @@ import (
 	"errors"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -17,25 +16,16 @@ import (
 
 	"golang.org/x/sys/windows"
 
+	"github.com/uberware/sqi/internal/fsutil/fsutiltest"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
-// mklinkJunction creates a directory junction at link pointing at target.
-//
-// A junction (IO_REPARSE_TAG_MOUNT_POINT) is the whole reason this file
-// exists: unlike an NTFS symlink, creating one requires NO privilege at all —
-// not SeCreateSymbolicLinkPrivilege, not Developer Mode. It is therefore the
-// primitive an ordinary run-as-user task actually has, and the one a
-// path-based guard misses, because os.Lstat reports a
-// junction as fs.ModeIrregular rather than fs.ModeSymlink and
-// filepath.EvalSymlinks does not resolve it.
-func mklinkJunction(t *testing.T, link, target string) {
-	t.Helper()
-	out, err := exec.CommandContext(context.Background(), "cmd", "/c", "mklink", "/J", link, target).CombinedOutput()
-	if err != nil {
-		t.Fatalf("mklink /J %q %q: %v: %s", link, target, err, out)
-	}
-}
+// These tests plant directory junctions (fsutiltest.Junction). A junction
+// (IO_REPARSE_TAG_MOUNT_POINT) needs no privilege to create, where an NTFS
+// symlink needs SeCreateSymbolicLinkPrivilege or Developer Mode, so it is the
+// link an ordinary run-as-user task can make. A path-based guard misses it:
+// os.Lstat reports a junction as fs.ModeIrregular rather than fs.ModeSymlink,
+// and filepath.EvalSymlinks does not resolve it.
 
 // There is deliberately NO Windows test asserting that the copy layer itself
 // refuses a reparse-point source, and a reader must not assume one exists.
@@ -94,7 +84,7 @@ func TestStageOut_RefusesJunctionedScratchSubdir(t *testing.T) {
 	if err := os.RemoveAll(stagedDir); err != nil {
 		t.Fatal(err)
 	}
-	mklinkJunction(t, stagedDir, secretDir)
+	fsutiltest.Junction(t, stagedDir, secretDir)
 	if _, err := os.Stat(filepath.Join(stagedDir, "render.exr")); err != nil {
 		t.Fatalf("junction is not live, so this test would prove nothing: %v", err)
 	}
@@ -147,7 +137,7 @@ func TestStageOut_RefusesJunctionAtFinalComponent(t *testing.T) {
 
 	// The task's declared output path is itself a junction at a directory it
 	// must not be able to hand the daemon.
-	mklinkJunction(t, filepath.Join(stagedDir, "render.exr"), secretDir)
+	fsutiltest.Junction(t, filepath.Join(stagedDir, "render.exr"), secretDir)
 
 	root, err := os.OpenRoot(scratch)
 	if err != nil {

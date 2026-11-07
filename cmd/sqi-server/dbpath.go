@@ -182,8 +182,9 @@ func resolveStoreTarget(cmd *cobra.Command, dbFlag, dsnFlag string) (storeTarget
 }
 
 // target is [resolveStoreTarget] on an already-loaded configuration, for a
-// command that reads other settings from it too. It refuses an empty SQLite
-// path.
+// command that reads other settings from it too. A SQLite path goes through
+// [resolveSQLitePath], which refuses an empty one or a file: URI and resolves
+// its symlinks.
 func (c cliConfig) target(cmd *cobra.Command, dbFlag, dsnFlag string) (storeTarget, error) {
 	if flagChanged(cmd, "dsn") {
 		if dsnFlag == "" {
@@ -197,15 +198,37 @@ func (c cliConfig) target(cmd *cobra.Command, dbFlag, dsnFlag string) (storeTarg
 			return tgt, err
 		}
 	}
-	path := c.dbPath(dbFlag, flagChanged(cmd, "db"))
-	if path == "" {
-		return storeTarget{}, errEmptySQLitePath
+	path, err := resolveSQLitePath(c.dbPath(dbFlag, flagChanged(cmd, "db")))
+	if err != nil {
+		return storeTarget{}, err
 	}
 	return storeTarget{Driver: backend.DriverSQLite, SQLitePath: path}, nil
 }
 
-// errEmptySQLitePath is returned when the resolved SQLite path is empty.
-var errEmptySQLitePath = errors.New("database path is empty; use --db, set store.sqlite_path, or set SQI_STORE_SQLITE_PATH")
+var (
+	// errEmptySQLitePath is returned when the resolved SQLite path is empty.
+	errEmptySQLitePath = errors.New("database path is empty; use --db, set store.sqlite_path, or set SQI_STORE_SQLITE_PATH")
+	// errSQLitePathIsURI is returned when the resolved SQLite path is a file: URI.
+	errSQLitePathIsURI = errors.New("database path is a file: URI; give a plain file path")
+)
+
+// resolveSQLitePath refuses a SQLite path no command can use (an empty one,
+// or a file: URI, [config.SQLitePathIsURI]) and returns the database file it
+// names, symlinks resolved ([sqlite.ResolvePath]), so every command works on
+// the file the server does.
+func resolveSQLitePath(path string) (string, error) {
+	if path == "" {
+		return "", errEmptySQLitePath
+	}
+	if config.SQLitePathIsURI(path) {
+		return "", fmt.Errorf("%w: %s", errSQLitePathIsURI, path)
+	}
+	resolved, err := sqlite.ResolvePath(path)
+	if err != nil {
+		return "", fmt.Errorf("database path %s: %w", path, err)
+	}
+	return resolved, nil
+}
 
 // options returns the [backend.Options] naming tgt's store.
 func (tgt storeTarget) options() backend.Options {
