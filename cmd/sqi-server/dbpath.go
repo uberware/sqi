@@ -182,8 +182,9 @@ func resolveStoreTarget(cmd *cobra.Command, dbFlag, dsnFlag string) (storeTarget
 }
 
 // target is [resolveStoreTarget] on an already-loaded configuration, for a
-// command that reads other settings from it too. It refuses an empty SQLite
-// path.
+// command that reads other settings from it too. A SQLite path goes through
+// [resolveSQLitePath], which refuses an empty one or a file: URI and resolves
+// its symlinks.
 func (c cliConfig) target(cmd *cobra.Command, dbFlag, dsnFlag string) (storeTarget, error) {
 	if flagChanged(cmd, "dsn") {
 		if dsnFlag == "" {

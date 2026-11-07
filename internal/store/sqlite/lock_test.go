@@ -4,6 +4,7 @@ package sqlite_test
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -145,5 +146,43 @@ func TestResolvePath_KeepsAnInMemoryDatabase(t *testing.T) {
 		if got, err := sqlite.ResolvePath(name); err != nil || got != name {
 			t.Errorf("ResolvePath(%q) = %q, %v; want it unchanged", name, got, err)
 		}
+	}
+}
+
+// A relative link target is read from the link's real directory, as the OS
+// reads it: reached through a linked directory, "../sqi.db" is beside that
+// real directory, not beside the link's name.
+func TestAcquireLock_DanglingRelativeLinkResolvesFromItsRealDirectory(t *testing.T) {
+	root := t.TempDir()
+	realDir := filepath.Join(root, "b", "c", "real")
+	if err := os.MkdirAll(realDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "a"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fsutiltest.SymlinkOrSkip(t, filepath.Join(root, "a", "linkdir"), realDir)
+	fsutiltest.SymlinkOrSkip(t, filepath.Join(realDir, "db.lnk"), filepath.Join("..", "sqi.db"))
+	assertSharedLock(t, filepath.Join(root, "a", "linkdir", "db.lnk"), filepath.Join(root, "b", "c", "sqi.db"))
+}
+
+// A chain of links to a database not created yet is followed to its end.
+func TestAcquireLock_ChainOfDanglingLinksSharesTheTargetsLock(t *testing.T) {
+	dir := t.TempDir()
+	fsutiltest.SymlinkOrSkip(t, filepath.Join(dir, "first.db"), "second.db")
+	fsutiltest.SymlinkOrSkip(t, filepath.Join(dir, "second.db"), "sqi.db")
+	assertSharedLock(t, filepath.Join(dir, "first.db"), filepath.Join(dir, "second.db"), filepath.Join(dir, "sqi.db"))
+}
+
+// A chain of dangling links longer than the OS would follow is refused, not
+// followed forever.
+func TestLockPath_RefusesAnOverlongChainOfDanglingLinks(t *testing.T) {
+	dir := t.TempDir()
+	const links = 41
+	for i := range links {
+		fsutiltest.SymlinkOrSkip(t, filepath.Join(dir, fmt.Sprintf("l%d", i)), fmt.Sprintf("l%d", i+1))
+	}
+	if got, err := sqlite.LockPath(filepath.Join(dir, "l0")); err == nil {
+		t.Fatalf("LockPath of a %d-link chain = %q, want an error", links, got)
 	}
 }

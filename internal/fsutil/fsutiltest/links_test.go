@@ -49,3 +49,31 @@ func TestSymlinkOrSkip(t *testing.T) {
 		t.Fatalf("read through %s = %q, %v; want the target's file", link, got, err)
 	}
 }
+
+// recordTB records whether a helper failed or skipped the test, without
+// stopping the test running it.
+type recordTB struct {
+	testing.TB
+
+	failed, skipped bool
+}
+
+func (r *recordTB) Fatalf(string, ...any) { r.failed = true }
+func (r *recordTB) Skipf(string, ...any)  { r.skipped = true }
+
+// Off Windows a symlink is never refused for want of privilege, so a failure
+// is a broken fixture, which must fail the test rather than skip it.
+func TestSymlinkOrSkip_FailsOnABrokenFixtureOffWindows(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows skips when the symlink privilege is missing")
+	}
+	taken := filepath.Join(t.TempDir(), "taken")
+	if err := os.WriteFile(taken, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec := &recordTB{TB: t}
+	fsutiltest.SymlinkOrSkip(rec, taken, "anything")
+	if !rec.failed || rec.skipped {
+		t.Errorf("SymlinkOrSkip onto an existing file: failed=%v skipped=%v, want a failure", rec.failed, rec.skipped)
+	}
+}

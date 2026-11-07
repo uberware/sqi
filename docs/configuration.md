@@ -878,12 +878,12 @@ default source of [`sqi-server store copy`](operations.md#moving-to-postgresql).
 
 The server also creates `<sqlite_path>.lock` beside the database (for example
 `sqi.db.lock`; with symlinks resolved, so the lock file sits beside the real
-database file whichever name you give it) and holds an operating-system lock on it while it runs, so a
-second server on the same file is refused; `migrate up`, `restore` and
-`store copy` take it too. Leave the file in place. The guard is the lock held
-on it, which the operating system releases when the server exits or crashes,
-so a leftover file is never stale. On a network filesystem the lock is only as
-reliable as that filesystem's locking.
+database file whichever name you give it) and holds an operating-system lock
+on it while it runs, so a second server on the same file is refused;
+`migrate up`, `restore` and `store copy` take it too. Leave the file in place.
+The guard is the lock held on it, which the operating system releases when
+the server exits or crashes, so a leftover file is never stale. On a network
+filesystem the lock is only as reliable as that filesystem's locking.
 See [One server per database](operations.md#one-server-per-database).
 
 ```yaml

@@ -23,18 +23,23 @@ func Junction(t testing.TB, link, target string) {
 	}
 }
 
-// SymlinkOrSkip makes link a symbolic link to target, skipping the test where
-// the OS refuses (Windows without Developer Mode or the symlink privilege).
+// SymlinkOrSkip makes link a symbolic link to target. Windows refuses one
+// without Developer Mode or the symlink privilege, so there it skips the test;
+// anywhere else a failure is a broken fixture and fails it.
 func SymlinkOrSkip(t testing.TB, link, target string) {
 	t.Helper()
-	if err := os.Symlink(target, link); err != nil {
+	err := os.Symlink(target, link)
+	switch {
+	case err == nil:
+	case runtime.GOOS == "windows":
 		t.Skipf("cannot create a symlink here: %v", err)
+	default:
+		t.Fatalf("symlink %s -> %s: %v", link, target, err)
 	}
 }
 
 // DirLink makes link point at the directory target: a symbolic link, or on
-// Windows, where that needs a privilege, a junction. It skips the test only
-// where neither can be made.
+// Windows, where that needs a privilege, a junction.
 func DirLink(t testing.TB, link, target string) {
 	t.Helper()
 	err := os.Symlink(target, link)
@@ -43,6 +48,6 @@ func DirLink(t testing.TB, link, target string) {
 	case runtime.GOOS == "windows":
 		Junction(t, link, target)
 	default:
-		t.Skipf("cannot create a symlink here: %v", err)
+		t.Fatalf("symlink %s -> %s: %v", link, target, err)
 	}
 }

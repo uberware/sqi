@@ -45,7 +45,8 @@ func DSN(path string) (string, error) {
 	return FileURI(path, false)
 }
 
-// isURI reports whether path is already a "file:" URI.
+// isURI reports whether path is already a "file:" URI. config.SQLitePathIsURI
+// is the same test, refusing a URI as a configured database path.
 func isURI(path string) bool {
 	return len(path) >= 5 && strings.EqualFold(path[:5], "file:")
 }

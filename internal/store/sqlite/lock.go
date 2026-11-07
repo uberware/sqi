@@ -77,23 +77,45 @@ func ResolvePath(path string) (string, error) {
 		if err != nil {
 			return resolveDir(p)
 		}
-		if !filepath.IsAbs(target) {
-			target = filepath.Join(filepath.Dir(p), target)
+		// The OS reads a relative target from the link's real directory, so
+		// "../x" through a linked directory is not where the name suggests.
+		dir, err := realDir(filepath.Dir(p))
+		if err != nil {
+			return "", err
 		}
-		p = target
+		p = joinLinkTarget(dir, target)
 	}
 	return "", fmt.Errorf("more than %d links", maxLinks)
 }
 
-// resolveDir resolves the directory of p, which does not exist yet. A missing
-// directory leaves p as it is, for the caller's own open to report.
+// resolveDir resolves the directory of p, which does not exist yet.
 func resolveDir(p string) (string, error) {
-	dir, err := filepath.EvalSymlinks(filepath.Dir(p))
-	if errors.Is(err, fs.ErrNotExist) {
-		return p, nil
-	}
+	dir, err := realDir(filepath.Dir(p))
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(dir, filepath.Base(p)), nil
+}
+
+// realDir is dir with its symlinks resolved. A missing directory is left as it
+// is, for the caller's own open to report.
+func realDir(dir string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return dir, nil
+	}
+	return resolved, err
+}
+
+// joinLinkTarget is the path a link in dir pointing at target leads to. A
+// Windows target rooted without a volume (`\x`) is on dir's volume.
+func joinLinkTarget(dir, target string) string {
+	switch {
+	case filepath.IsAbs(target):
+		return target
+	case target != "" && os.IsPathSeparator(target[0]) && filepath.VolumeName(target) == "":
+		return filepath.VolumeName(dir) + target
+	default:
+		return filepath.Join(dir, target)
+	}
 }

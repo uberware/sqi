@@ -229,7 +229,9 @@ func validatePostgresStore(cfg PostgresStoreConfig) []ValidationError {
 
 // SQLitePathIsURI reports whether path is a SQLite "file:" URI. A SQLite path
 // is a file path: backup, restore, store copy and the server's lock file all
-// read it as one, so a URI is refused wherever the path is given.
+// read it as one, so a URI is refused wherever the path is given. It matches
+// internal/store/sqlite's isURI, which config cannot import without pulling in
+// the SQLite driver.
 func SQLitePathIsURI(path string) bool {
 	return len(path) >= 5 && strings.EqualFold(path[:5], "file:")
 }

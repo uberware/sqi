@@ -1035,9 +1035,10 @@ so every consumer works on that one file: restore moves aside and replaces
 the file itself rather than a link to it, and SQLite on Windows, which names
 the `-wal` and `-shm` after the name it is given, sees one set of them. A
 `file:` URI is refused as a database path (`config.SQLitePathIsURI`), because
-backup, restore and store copy read the path as a file. The file is created owner-only and never deleted; the OS drops the
-lock when the process exits, so a crash leaves nothing stale. A second holder
-fails with `another sqi-server is using <path> (lock file <resolved path>.lock is held);
+backup, restore and store copy read the path as a file. The lock file is
+created owner-only and never deleted; the OS drops the lock when the process
+exits, so a crash leaves nothing stale. A second holder fails with `another
+sqi-server is using <resolved path> (lock file <resolved path>.lock is held);
 stop it first`. On a network filesystem the lock is only as good as that
 filesystem's lock emulation.
 
