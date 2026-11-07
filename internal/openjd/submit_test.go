@@ -1249,3 +1249,39 @@ func TestSubmit_RecordsDeclaredExtensions(t *testing.T) {
 		})
 	}
 }
+
+func TestSubmit_RecordsEstimateAndProduct(t *testing.T) {
+	st := fake.New()
+	sub := openjd.NewSubmitter(st)
+	farmID, queueID := seedSubmitPrereqs(t, st)
+
+	tmpl := `specificationVersion: jobtemplate-2023-09
+name: Est
+steps:
+  - name: Run
+    script:
+      actions:
+        onRun:
+          command: echo
+          args: ["hi"]`
+	est := 3600
+	res, err := sub.Submit(t.Context(), tmpl, store.TemplateFormatYAML, openjd.SubmitOptions{
+		FarmID: farmID, QueueID: queueID,
+		EstimatedSeconds: &est, ProductName: "script", ProductVersion: "1.2.0",
+	})
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	stored, err := st.GetJob(t.Context(), res.Job.ID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	for label, j := range map[string]store.Job{"returned": res.Job, "stored": stored} {
+		if j.EstimatedSeconds == nil || *j.EstimatedSeconds != 3600 {
+			t.Errorf("%s EstimatedSeconds = %v, want 3600", label, j.EstimatedSeconds)
+		}
+		if j.ProductName != "script" || j.ProductVersion != "1.2.0" {
+			t.Errorf("%s product = %q %q", label, j.ProductName, j.ProductVersion)
+		}
+	}
+}

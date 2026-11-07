@@ -666,3 +666,52 @@ func TestProducts_SubmitRejectsInvalidRetryOverrides(t *testing.T) {
 		t.Errorf("body %q missing bound message", rec.Body.String())
 	}
 }
+
+func TestProducts_SubmitRecordsProductAndEstimate(t *testing.T) {
+	srv := newProductTestServer(t)
+	farmID, queueID := seedProductSubmitPrereqs(t, srv)
+	catalog, err := product.NewCatalog(srv.st).GetByName(t.Context(), "script")
+	if err != nil {
+		t.Fatalf("GetByName: %v", err)
+	}
+
+	body := jsonBody(t, map[string]any{
+		"farm_id": farmID, "queue_id": queueID,
+		"parameters":        map[string]string{"Command": "echo hi"},
+		"estimated_seconds": 900,
+	})
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, newReq(t, http.MethodPost, "/api/v1/products/script/jobs", bytes.NewReader(body.Bytes())))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body)
+	}
+	var job jobResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &job); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if job.ProductName != "script" || job.ProductVersion != catalog.Version {
+		t.Errorf("product = %q %q, want script %q", job.ProductName, job.ProductVersion, catalog.Version)
+	}
+	if job.EstimatedSeconds == nil || *job.EstimatedSeconds != 900 {
+		t.Errorf("estimated_seconds = %v, want 900", job.EstimatedSeconds)
+	}
+	stored, err := srv.st.GetJob(t.Context(), job.ID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if stored.ProductName != "script" || stored.ProductVersion != catalog.Version ||
+		stored.EstimatedSeconds == nil || *stored.EstimatedSeconds != 900 {
+		t.Errorf("stored job disagrees: %+v", stored)
+	}
+
+	bad := jsonBody(t, map[string]any{
+		"farm_id": farmID, "queue_id": queueID,
+		"parameters":        map[string]string{"Command": "echo hi"},
+		"estimated_seconds": 0,
+	})
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, newReq(t, http.MethodPost, "/api/v1/products/script/jobs", bytes.NewReader(bad.Bytes())))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "estimated_seconds") {
+		t.Fatalf("zero: code = %d body=%s", rec.Code, rec.Body)
+	}
+}

@@ -164,3 +164,46 @@ func TestMigration00042_DownRemovesTheProgressColumns(t *testing.T) {
 		t.Fatalf("after Up again: %d of 3 columns", n)
 	}
 }
+
+func TestMigration00043_DownRemovesTheEstimateColumns(t *testing.T) {
+	db, err := sql.Open("sqlite", t.TempDir()+"/test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	p, err := migrations.NewProvider(db, "sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Up(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	const names = `('estimated_seconds', 'product_name', 'product_version')`
+	count := func(extra string) int {
+		t.Helper()
+		var n int
+		q := `SELECT count(*) FROM pragma_table_info('jobs') WHERE name IN ` + names + extra
+		if err := db.QueryRowContext(t.Context(), q).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n := count(""); n != 3 {
+		t.Fatalf("after Up: %d of 3 columns", n)
+	}
+	if n := count(" AND \"notnull\" = 0 AND dflt_value IS NULL"); n != 3 {
+		t.Fatalf("after Up: %d of 3 columns nullable without default", n)
+	}
+	if _, err := p.DownTo(t.Context(), 42); err != nil {
+		t.Fatalf("DownTo(42): %v", err)
+	}
+	if n := count(""); n != 0 {
+		t.Fatalf("after Down: %d columns remain", n)
+	}
+	if _, err := p.Up(t.Context()); err != nil {
+		t.Fatalf("Up again: %v", err)
+	}
+	if n := count(""); n != 3 {
+		t.Fatalf("after Up again: %d of 3 columns", n)
+	}
+}

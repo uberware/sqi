@@ -347,6 +347,58 @@ describe('JobDetail', () => {
     })
   })
 
+  describe('remaining time and estimate', () => {
+    const base = { remaining_seconds: 600, as_of: '2024-01-15T10:05:00Z' } as const
+
+    it.each([
+      ['measured', "from this job's finished tasks"],
+      ['progress', "from running tasks' progress"],
+      ['estimate', 'from the estimate'],
+    ] as const)('shows remaining time and where it comes from (%s)', async (basis, note) => {
+      fetchMock.mockResolvedValueOnce(okJson(makeJob({ ...base, remaining_basis: basis })))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await screen.findByText(note)
+      expect(screen.getByText('Remaining')).toBeInTheDocument()
+      expect(screen.getByText('10m 0s')).toBeInTheDocument()
+    })
+
+    it('edits the estimate when the user can write jobs', async () => {
+      fetchMock.mockResolvedValueOnce(okJson(makeJob({ estimated_seconds: 3600 })))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      expect(await screen.findByText('1h 0m')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /edit estimate/i })).toBeInTheDocument()
+    })
+
+    it('shows the estimate read-only without jobs.write', async () => {
+      setPrincipal(READONLY_PRINCIPAL)
+      fetchMock.mockResolvedValueOnce(okJson(makeJob({ estimated_seconds: 3600 })))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      expect(await screen.findByText('1h 0m')).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /edit estimate/i })).not.toBeInTheDocument()
+    })
+
+    it('does not offer editing on a finished job', async () => {
+      fetchMock.mockResolvedValueOnce(
+        okJson(makeJob({ status: 'completed', estimated_seconds: 3600 })),
+      )
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      expect(await screen.findByText('1h 0m')).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /edit estimate/i })).not.toBeInTheDocument()
+    })
+  })
+
   describe('step breakdown', () => {
     it('renders each step section with its name', async () => {
       fetchMock.mockResolvedValueOnce(okJson(makeJob()))

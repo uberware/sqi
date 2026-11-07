@@ -385,6 +385,7 @@ type submitProductRequest struct {
 	MaxAttempts       *int              `json:"max_attempts"`
 	RetryDelaySeconds *int              `json:"retry_delay_seconds"`
 	FailureLimit      *int              `json:"failure_limit"`
+	EstimatedSeconds  *int              `json:"estimated_seconds"`
 	DependsOn         []string          `json:"depends_on"`
 }
 
@@ -416,6 +417,11 @@ func (h *productHandler) submitProductJob(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	if problem := validateEstimatedSeconds(req.EstimatedSeconds); problem != "" {
+		writeProblem(w, r, http.StatusBadRequest, problem)
+		return
+	}
+
 	owner, submitter, identityProblem, identityStatus := bindSubmitIdentity(ctx, h.ownerLookup, req.Owner, req.Submitter)
 	if identityStatus != 0 {
 		writeProblem(w, r, identityStatus, identityProblem)
@@ -434,6 +440,9 @@ func (h *productHandler) submitProductJob(w http.ResponseWriter, r *http.Request
 		MaxAttempts:       req.MaxAttempts,
 		RetryDelaySeconds: req.RetryDelaySeconds,
 		FailureLimit:      req.FailureLimit,
+		EstimatedSeconds:  req.EstimatedSeconds,
+		ProductName:       p.Name,
+		ProductVersion:    p.Version,
 		DependsOn:         req.DependsOn,
 		Deadline:          exprDeadlineAt(h.exprDeadline),
 	})

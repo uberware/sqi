@@ -1757,31 +1757,6 @@ func TestGetJob_EffectiveRetry(t *testing.T) {
 
 // ── progress_percent ──────────────────────────────────────────────────────────
 
-func TestProgressPercent(t *testing.T) {
-	f := func(v float64) *float64 { return &v }
-	tests := []struct {
-		name    string
-		counts  map[store.TaskStatus]int
-		running float64
-		want    *float64
-	}{
-		{"half done", map[store.TaskStatus]int{store.TaskStatusSucceeded: 5, store.TaskStatusFailed: 5}, 0, f(50)},
-		{"running share", map[store.TaskStatus]int{store.TaskStatusSucceeded: 1, store.TaskStatusRunning: 1}, 0.5, f(75)},
-		{"all canceled", map[store.TaskStatus]int{store.TaskStatusCanceled: 3}, 0, nil},
-		{"empty", map[store.TaskStatus]int{}, 0, nil},
-		{"canceled excluded", map[store.TaskStatus]int{store.TaskStatusSucceeded: 2, store.TaskStatusCanceled: 2}, 0, f(100)},
-		{"clamped", map[store.TaskStatus]int{store.TaskStatusSucceeded: 1, store.TaskStatusRunning: 1}, 5, f(100)},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := progressPercent(tt.counts, tt.running)
-			if (got == nil) != (tt.want == nil) || (got != nil && *got != *tt.want) {
-				t.Fatalf("progressPercent = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 // progressJobs seeds a job with one succeeded and one running task at 50%, and
 // one holding only a canceled task.
 func progressJobs(t *testing.T, st *fake.Store) (running, canceled store.Job) {
@@ -1969,5 +1944,116 @@ func TestGetJob_ProgressErrorDegradesToZero(t *testing.T) {
 	// The running task contributes nothing, leaving the succeeded share of 1/2.
 	if resp.ProgressPercent == nil || *resp.ProgressPercent != 50 {
 		t.Fatalf("progress_percent = %v, want 50", resp.ProgressPercent)
+	}
+}
+
+func TestSubmitJob_EstimatedSeconds(t *testing.T) {
+	tests := []struct {
+		name     string
+		query    string
+		wantCode int
+		wantBody string
+		wantKey  bool
+	}{
+		{"valid", "&estimated_seconds=3600", http.StatusCreated, `"estimated_seconds":3600`, true},
+		{"absent", "", http.StatusCreated, "", false},
+		{"zero", "&estimated_seconds=0", http.StatusBadRequest, "estimated_seconds", false},
+		{"negative", "&estimated_seconds=-5", http.StatusBadRequest, "estimated_seconds", false},
+		{"non-integer", "&estimated_seconds=abc", http.StatusBadRequest, "estimated_seconds", false},
+		{"overflow", "&estimated_seconds=2147483648", http.StatusBadRequest, "estimated_seconds", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := fake.New()
+			ctx := t.Context()
+			if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "farm-one"}); err != nil {
+				t.Fatalf("create farm: %v", err)
+			}
+			if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "render"}); err != nil {
+				t.Fatalf("create queue: %v", err)
+			}
+			r := newJobRouter(st, &fakeScheduler{})
+			req := newReq(t, http.MethodPost, "/api/v1/jobs?farm_id=farm-1&queue_id=queue-1"+tt.query,
+				strings.NewReader(minimalOpenJDJSON("Est-"+tt.name)))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, req)
+			if rr.Code != tt.wantCode {
+				t.Fatalf("code = %d, want %d — body: %s", rr.Code, tt.wantCode, rr.Body)
+			}
+			if tt.wantBody != "" && !strings.Contains(rr.Body.String(), tt.wantBody) {
+				t.Errorf("body %q does not contain %q", rr.Body.String(), tt.wantBody)
+			}
+			if tt.wantCode == http.StatusCreated {
+				if got := strings.Contains(rr.Body.String(), `"estimated_seconds"`); got != tt.wantKey {
+					t.Errorf("estimated_seconds key present = %v, want %v", got, tt.wantKey)
+				}
+				if strings.Contains(rr.Body.String(), `"product_name"`) {
+					t.Errorf("raw-template job has product_name: %s", rr.Body)
+				}
+			}
+		})
+	}
+}
+
+func TestPatchJob_EstimatedSeconds(t *testing.T) {
+	seedEst := func(t *testing.T, st store.Store, status store.JobStatus, est *int) store.Job {
+		t.Helper()
+		j := seedJob(t, st, status)
+		if est != nil {
+			j.EstimatedSeconds = est
+			if _, err := st.UpdateJob(t.Context(), j); err != nil {
+				t.Fatalf("UpdateJob: %v", err)
+			}
+		}
+		return j
+	}
+	one := 3600
+	tests := []struct {
+		name     string
+		status   store.JobStatus
+		initial  *int
+		body     string
+		wantCode int
+		wantKey  bool
+		wantVal  int
+	}{
+		{"set", store.JobStatusPending, nil, `{"estimated_seconds":7200}`, 200, true, 7200},
+		{"null clears", store.JobStatusPending, &one, `{"estimated_seconds":null}`, 200, false, 0},
+		{"omitted leaves", store.JobStatusPending, &one, `{"priority":60}`, 200, true, 3600},
+		{"zero rejected", store.JobStatusPending, nil, `{"estimated_seconds":0}`, 400, false, 0},
+		{"string rejected", store.JobStatusPending, nil, `{"estimated_seconds":"1h"}`, 400, false, 0},
+		{"completed", store.JobStatusCompleted, nil, `{"estimated_seconds":7200}`, 409, false, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := fake.New()
+			r := newJobRouter(st, &fakeScheduler{})
+			j := seedEst(t, st, tt.status, tt.initial)
+			req := newReq(t, http.MethodPatch, "/api/v1/jobs/"+j.ID, strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, req)
+			if rr.Code != tt.wantCode {
+				t.Fatalf("code = %d, want %d — body: %s", rr.Code, tt.wantCode, rr.Body)
+			}
+			if tt.wantCode != http.StatusOK {
+				return
+			}
+			if got := strings.Contains(rr.Body.String(), `"estimated_seconds"`); got != tt.wantKey {
+				t.Errorf("key present = %v, want %v: %s", got, tt.wantKey, rr.Body)
+			}
+			stored, err := st.GetJob(t.Context(), j.ID)
+			if err != nil {
+				t.Fatalf("GetJob: %v", err)
+			}
+			if tt.wantKey {
+				if stored.EstimatedSeconds == nil || *stored.EstimatedSeconds != tt.wantVal {
+					t.Errorf("stored = %v, want %d", stored.EstimatedSeconds, tt.wantVal)
+				}
+			} else if stored.EstimatedSeconds != nil {
+				t.Errorf("stored = %d, want nil", *stored.EstimatedSeconds)
+			}
+		})
 	}
 }

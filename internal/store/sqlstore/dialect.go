@@ -42,6 +42,9 @@ type Dialect interface {
 	// as integer microseconds since the Unix epoch. It reads the clock at
 	// each evaluation, not once per transaction.
 	ClockMicros() string
+	// EpochSeconds returns a SQL expression for the stored timestamp expr as
+	// float seconds since the Unix epoch.
+	EpochSeconds(expr string) string
 }
 
 // ErrClass is what a driver error means to the store.

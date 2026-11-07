@@ -108,11 +108,19 @@ type Job struct {
 	FailureLimit      *int
 	// ParkReason is empty for a manual pause; set when the failure-limit sweep
 	// auto-parks the job (e.g. "failure limit reached (25)").
-	ParkReason  string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	StartedAt   *time.Time
-	CompletedAt *time.Time
+	ParkReason string
+	// EstimatedSeconds is the submitter's estimate of the job's total task run
+	// time, nil when none was given. UpdateJob writes it.
+	EstimatedSeconds *int
+	// ProductName and ProductVersion name the product the job was submitted
+	// from, empty for a raw-template job. Submission writes them; UpdateJob
+	// leaves them as stored.
+	ProductName    string
+	ProductVersion string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	StartedAt      *time.Time
+	CompletedAt    *time.Time
 }
 
 // DeclaresExtension reports whether the job's template declares the OpenJD
@@ -227,7 +235,8 @@ type JobStore interface {
 	// UpdateJob replaces the mutable user-settable fields of an existing job
 	// (farm_id, queue_id, name, owner, submitter, priority, project,
 	// raw_template, template_format, max_attempts, retry_delay_seconds,
-	// failure_limit) and updates UpdatedAt.
+	// failure_limit, estimated_seconds) and updates UpdatedAt. product_name and
+	// product_version are fixed at submission and left as stored.
 	//
 	// status, started_at, completed_at, failed_attempts, and park_reason are
 	// lifecycle columns and are intentionally excluded — use [CancelJobStatus],

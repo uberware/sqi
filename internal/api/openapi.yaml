@@ -293,6 +293,36 @@ components:
             over all non-canceled tasks, as a percent. Null when the job has
             no non-canceled tasks. Present on job list items and job detail;
             omitted from the create-job response.
+        remaining_seconds:
+          type: integer
+          format: int64
+          nullable: true
+          description: >-
+            Estimated seconds of task run time left, as of `as_of`. A finished
+            job (completed, failed or canceled) has 0 (basis `finished`). A
+            running job whose only unfinished tasks are running, each reporting
+            progress after 30 s of running, is extrapolated from that progress
+            (`progress`). A job in which every step with unfinished tasks has a
+            succeeded task uses that step's mean measured run time per
+            unfinished task, less elapsed time for running ones (or, for a running
+            task with progress of at least 1 and 30 s elapsed, its linear
+            projection instead) (`measured`). A
+            job with `estimated_seconds` uses the estimate scaled by the
+            remaining fraction of progress (`estimate`; 0 when the job has no
+            non-canceled tasks). Otherwise null. Null too when the timing read
+            failed or the job is missing from it. Present, possibly null, on job
+            list items and job detail; omitted from the create-job response.
+        remaining_basis:
+          type: string
+          enum: [finished, progress, measured, estimate]
+          description: >-
+            What `remaining_seconds` was derived from. Omitted when it is null.
+        as_of:
+          type: string
+          format: date-time
+          description: >-
+            Server time the remaining-time figures were computed. Present on
+            job list items and job detail.
         failed_attempts:
           type: integer
           description: Cumulative count of genuine task failures for this job.
@@ -319,6 +349,24 @@ components:
           description: >-
             Per-job override for the number of task failures that auto-parks
             the job. Null means inherit (queue -> farm -> server default).
+        estimated_seconds:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+          description: >-
+            The submitter's estimate of the job's total task run time in
+            seconds, summed over tasks (not wall-clock). Omitted when none
+            was given.
+        product_name:
+          type: string
+          description: >-
+            Name of the catalog product the job was submitted from. Omitted
+            for a raw-template submission.
+        product_version:
+          type: string
+          description: >-
+            Version of that product at submission time. Omitted for a
+            raw-template submission.
 
     Step:
       type: object
@@ -504,6 +552,14 @@ components:
             Update the per-job failure-limit retry-policy override. Omitted or
             null leaves the current value unchanged — a job-level override
             cannot be cleared back to "inherit" via this endpoint.
+        estimated_seconds:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+          nullable: true
+          description: >
+            Set the job's estimated total task run time in seconds. Null
+            clears the estimate; omitting the key leaves it unchanged.
 
     # ── Tasks ─────────────────────────────────────────────────────────────────
     Task:
@@ -1364,6 +1420,31 @@ components:
             OS group for the task process. Null means the target user's
             primary group. Gated and omit/preserve-semantics are the same as
             run_as_user — see that field's description.
+        unfinished_jobs:
+          type: integer
+          description: >-
+            Number of the queue's jobs that are not finished. Present with the
+            four fields below on queue list items and GET /queues/{id}; all
+            five are omitted when the timing read failed, and from create and
+            update responses.
+        work_remaining_seconds:
+          type: integer
+          format: int64
+          description: >-
+            Sum of `remaining_seconds` over the unfinished jobs whose figure is
+            known.
+        jobs_without_estimate:
+          type: integer
+          description: >-
+            Unfinished jobs whose `remaining_seconds` is null and so add
+            nothing to `work_remaining_seconds`.
+        running_tasks:
+          type: integer
+          description: Number of running tasks across the unfinished jobs.
+        as_of:
+          type: string
+          format: date-time
+          description: Server time the queue's figures were computed.
 
     QueueList:
       type: object
@@ -1681,6 +1762,13 @@ components:
           description: >-
             Per-job override for the task-failure count that auto-parks the job.
             Omitted means inherit (queue -> farm -> server default).
+        estimated_seconds:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+          description: >-
+            The job's estimated total task run time in seconds, summed over
+            tasks (not wall-clock). Omitted means no estimate.
         depends_on:
           type: array
           items:
@@ -2271,6 +2359,16 @@ paths:
             the job (0 disables an inherited limit). Omitted means inherit
             (queue -> farm -> server default); a non-integer or out-of-range
             value is rejected with 400.
+        - name: estimated_seconds
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 2147483647
+          description: >-
+            The job's estimated total task run time in seconds, summed over
+            tasks (not wall-clock). Omitted means no estimate; a non-integer
+            or out-of-range value is rejected with 400.
         - name: depends_on
           in: query
           style: form
@@ -2434,10 +2532,12 @@ paths:
           clears `park_reason` and resets `failed_attempts`).
         - Set the per-job retry-policy overrides (`max_attempts`,
           `retry_delay_seconds`, `failure_limit`).
+        - Set or clear `estimated_seconds`.
 
         Only non-null fields in the request body are applied — an explicit
         null is treated as absent, so a retry override cannot be cleared back
-        to "inherit" here. Terminal jobs (completed, failed, canceled) cannot
+        to "inherit" here. The exception is `estimated_seconds`: an explicit
+        null clears the estimate, while omitting the key leaves it unchanged. Terminal jobs (completed, failed, canceled) cannot
         be modified.
       requestBody:
         required: true

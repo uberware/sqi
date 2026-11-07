@@ -27,6 +27,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/uberware/sqi/internal/eta"
 	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/openjd/expr"
 	"github.com/uberware/sqi/internal/scheduler"
@@ -122,6 +123,12 @@ type jobResponse struct {
 	MaxAttempts       *int `json:"max_attempts,omitempty"`
 	RetryDelaySeconds *int `json:"retry_delay_seconds,omitempty"`
 	FailureLimit      *int `json:"failure_limit,omitempty"`
+	// EstimatedSeconds is the submitter's estimate of total task run time (not
+	// wall-clock). ProductName and ProductVersion name the product the job was
+	// submitted from.
+	EstimatedSeconds *int   `json:"estimated_seconds,omitempty"`
+	ProductName      string `json:"product_name,omitempty"`
+	ProductVersion   string `json:"product_version,omitempty"`
 }
 
 // stepResponse is the JSON representation of a step within a job detail response.
@@ -154,6 +161,7 @@ type taskCountsResponse struct {
 // jobDetailResponse is returned by GET /api/v1/jobs/{id}.
 type jobDetailResponse struct {
 	jobResponse
+	remainingResponse
 
 	Steps      []stepResponse     `json:"steps"`
 	TaskCounts taskCountsResponse `json:"task_counts"`
@@ -190,10 +198,60 @@ type failureSummaryResponse struct {
 // per-row detail fetch.
 type jobListItemResponse struct {
 	jobResponse
+	remainingResponse
 
 	TaskCounts taskCountsResponse `json:"task_counts"`
 	// ProgressPercent is as on [jobDetailResponse].
 	ProgressPercent *float64 `json:"progress_percent"`
+}
+
+// remainingResponse is a job's remaining work, as on [eta.Remaining]. The
+// seconds are null, and the basis omitted, when nothing is known or the timing
+// read failed.
+type remainingResponse struct {
+	RemainingSeconds *int64    `json:"remaining_seconds"`
+	RemainingBasis   eta.Basis `json:"remaining_basis,omitempty"`
+	AsOf             time.Time `json:"as_of"`
+}
+
+// remainingFor computes a job's remaining work. A terminal job needs only its
+// status (0, finished); any other job is read from timings, and one absent
+// from them (or a nil map, after a failed read) reports nothing known.
+func remainingFor(timings map[string]store.JobTiming, j store.Job, now time.Time) remainingResponse {
+	out := remainingResponse{AsOf: now}
+	if j.Status.IsTerminal() {
+		zero := int64(0)
+		out.RemainingSeconds, out.RemainingBasis = &zero, eta.BasisFinished
+		return out
+	}
+	if t, ok := timings[j.ID]; ok {
+		r := eta.Job(t, now)
+		out.RemainingSeconds, out.RemainingBasis = r.Seconds, r.Basis
+	}
+	return out
+}
+
+// jobTimings reads the remaining-time inputs of jobIDs in one query. A failure
+// is logged and degrades every job to nothing known.
+func (h *jobHandler) jobTimings(ctx context.Context, jobIDs []string) map[string]store.JobTiming {
+	if len(jobIDs) == 0 {
+		return nil
+	}
+	m, err := h.store.JobTimings(ctx, jobIDs)
+	if err != nil {
+		h.logger.WarnContext(ctx, "jobs: timing read failed", slog.Any("error", err))
+		return nil
+	}
+	return m
+}
+
+// liveJobTimings reads one job's timing inputs, skipping the read for a
+// terminal job, whose figure needs only its status.
+func (h *jobHandler) liveJobTimings(ctx context.Context, j store.Job) map[string]store.JobTiming {
+	if j.Status.IsTerminal() {
+		return nil
+	}
+	return h.jobTimings(ctx, []string{j.ID})
 }
 
 // jobListResponse is the paginated result returned by GET /api/v1/jobs.
@@ -218,6 +276,9 @@ type patchJobRequest struct {
 	MaxAttempts       *int `json:"max_attempts,omitempty"`
 	RetryDelaySeconds *int `json:"retry_delay_seconds,omitempty"`
 	FailureLimit      *int `json:"failure_limit,omitempty"`
+	// EstimatedSeconds sets the run-time estimate; null clears it, omitting the
+	// key leaves it unchanged.
+	EstimatedSeconds optionalInt `json:"estimated_seconds,omitzero"`
 }
 
 // ── Handler constructors ──────────────────────────────────────────────────────
@@ -260,8 +321,9 @@ func newJobHandler(
 // Query parameters: farm_id (required), queue_id (required), owner,
 // submitter, priority (integer ≥ 1; defaults to 50), project, max_attempts,
 // retry_delay_seconds, failure_limit (all optional per-job retry-policy
-// overrides; omitted or unparseable means inherit queue -> farm -> server
-// default).
+// overrides; omitted means inherit queue -> farm -> server default, a
+// malformed or out-of-range value is a 400), estimated_seconds (optional
+// integer 1..2147483647, the job's estimated total task run time).
 // Job-parameter values are supplied as param.<Name>=<value> query parameters
 // (e.g. ?param.FrameStart=1&param.Quality=high).
 func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
@@ -295,6 +357,12 @@ func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	estimatedSeconds, problem := parseEstimatedSecondsQuery(r.URL.Query())
+	if problem != "" {
+		writeProblem(w, r, http.StatusBadRequest, problem)
+		return
+	}
+
 	owner, submitter, identityProblem, identityStatus := bindSubmitIdentity(
 		ctx, h.ownerLookup, r.URL.Query().Get("owner"), r.URL.Query().Get("submitter"),
 	)
@@ -314,6 +382,7 @@ func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
 		MaxAttempts:       maxAttempts,
 		RetryDelaySeconds: retryDelaySeconds,
 		FailureLimit:      failureLimit,
+		EstimatedSeconds:  estimatedSeconds,
 		DependsOn:         r.URL.Query()["depends_on"],
 		Deadline:          exprDeadlineAt(h.exprDeadline),
 	}
@@ -473,17 +542,26 @@ func (h *jobHandler) listJobs(w http.ResponseWriter, r *http.Request) {
 	}
 	running := h.runningProgressBatch(ctx, runningJobs)
 
+	now := time.Now().UTC()
+	ids := make([]string, 0, len(page.Items))
+	for _, j := range page.Items {
+		if !j.Status.IsTerminal() {
+			ids = append(ids, j.ID)
+		}
+	}
+	timings := h.jobTimings(ctx, ids)
+
 	for i, j := range page.Items {
 		r := toJobResponse(j)
 		r.QueueName = queueNames[j.QueueID]
-		item := jobListItemResponse{jobResponse: r}
+		item := jobListItemResponse{jobResponse: r, remainingResponse: remainingFor(timings, j, now)}
 		if counts[i] != nil {
 			unschedulable, uErr := h.store.CountUnschedulableTasksByJob(ctx, j.ID)
 			if uErr != nil {
 				unschedulable = 0
 			}
 			item.TaskCounts = toTaskCountsResponse(counts[i], unschedulable)
-			item.ProgressPercent = progressPercent(counts[i], running[j.ID])
+			item.ProgressPercent = eta.ProgressPercent(counts[i], running[j.ID])
 		}
 		resp.Items[i] = item
 	}
@@ -578,8 +656,10 @@ func (h *jobHandler) getJob(w http.ResponseWriter, r *http.Request) {
 		Steps:       stepResps,
 		TaskCounts:  toTaskCountsResponse(taskCounts, unschedulableCount),
 
-		ProgressPercent: progressPercent(taskCounts, runningProgress),
+		ProgressPercent: eta.ProgressPercent(taskCounts, runningProgress),
 	}
+	now := time.Now().UTC()
+	resp.remainingResponse = remainingFor(h.liveJobTimings(ctx, job), job, now)
 
 	// Resolved retry policy (job -> queue -> farm -> server default). Best
 	// effort like QueueName: omitted if the queue or farm lookup fails.
@@ -708,6 +788,14 @@ func applyRetryOverridePatch(w http.ResponseWriter, r *http.Request, req *patchJ
 	if req.FailureLimit != nil {
 		job.FailureLimit = req.FailureLimit
 	}
+	if !req.EstimatedSeconds.Set {
+		return true
+	}
+	if problem := validateEstimatedSeconds(req.EstimatedSeconds.Value); problem != "" {
+		writeProblem(w, r, http.StatusBadRequest, problem)
+		return false
+	}
+	job.EstimatedSeconds = req.EstimatedSeconds.Value
 	return true
 }
 
@@ -1015,6 +1103,9 @@ func toJobResponse(j store.Job) jobResponse {
 		MaxAttempts:       j.MaxAttempts,
 		RetryDelaySeconds: j.RetryDelaySeconds,
 		FailureLimit:      j.FailureLimit,
+		EstimatedSeconds:  j.EstimatedSeconds,
+		ProductName:       j.ProductName,
+		ProductVersion:    j.ProductVersion,
 	}
 }
 
@@ -1055,23 +1146,6 @@ func toTaskCountsResponse(counts map[store.TaskStatus]int, unschedulable int) ta
 		}
 	}
 	return tc
-}
-
-// progressPercent is the job's completion as a percent: succeeded tasks plus
-// the running tasks' progress (a fraction of one task each), over every task
-// that has not been canceled. It is nil when no such task exists.
-func progressPercent(counts map[store.TaskStatus]int, running float64) *float64 {
-	total := 0
-	for _, n := range counts {
-		total += n
-	}
-	denom := total - counts[store.TaskStatusCanceled]
-	if denom <= 0 {
-		return nil
-	}
-	pct := (float64(counts[store.TaskStatusSucceeded]) + running) / float64(denom) * 100
-	pct = max(0, min(100, pct))
-	return &pct
 }
 
 // ── Format detection ──────────────────────────────────────────────────────────

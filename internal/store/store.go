@@ -65,6 +65,7 @@ type Store interface {
 	WorkerCredentialStore
 	BrokerStateStore
 	LeadershipStore
+	TimingStore
 	io.Closer
 }
 

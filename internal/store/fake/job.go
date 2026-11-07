@@ -59,6 +59,7 @@ func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission
 
 	job := normalizeDeclaredExtensions(sub.Job)
 	job.Parameters = copyMap(job.Parameters)
+	job.EstimatedSeconds = copyIntPtr(job.EstimatedSeconds)
 	job.CreatedAt, job.UpdatedAt = now, now
 	s.jobs[job.ID] = job
 	out.Job = job
@@ -319,6 +320,10 @@ func (s *Store) UpdateJob(ctx context.Context, job store.Job) (store.Job, error)
 	// submission and is not on sqlUpdateJob's SET list.
 	job.DeclaredExtensions = copySlice(existing.DeclaredExtensions)
 	job.ExtensionsRecorded = existing.ExtensionsRecorded
+	// The product is fixed at submission; the estimate is written.
+	job.ProductName = existing.ProductName
+	job.ProductVersion = existing.ProductVersion
+	job.EstimatedSeconds = copyIntPtr(job.EstimatedSeconds)
 	// The failure counter and park reason are written by RecordTaskFailure,
 	// ParkJob and ResumeJob, and are not on sqlUpdateJob's SET list.
 	job.FailedAttempts = existing.FailedAttempts
@@ -656,4 +661,14 @@ func cmpJob(a, b store.Job, field store.JobSortField, dir store.SortDir) int {
 		n = a.CreatedAt.Compare(b.CreatedAt)
 	}
 	return withIDTieBreak(n, dir, a.ID, b.ID)
+}
+
+// copyIntPtr returns a pointer to a copy of *p, so a stored job never aliases
+// the caller's value.
+func copyIntPtr(p *int) *int {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
 }

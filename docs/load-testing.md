@@ -984,6 +984,21 @@ cores or less.
 - **Store write alone:** `BenchmarkRecordAttemptProgress` (SQLite, 500 running
   attempts, 10,000 iterations, one snapshot per iteration round-robin) takes
   72,433 ns/op. The write is under 10% of the per-snapshot CPU above.
+- **Remaining-time inputs read:** `BenchmarkQueueJobTimings` (SQLite, one
+  queue of 200 unfinished jobs of 100 tasks each, 50 of each job succeeded
+  through real attempts and 2 running, 200 iterations, one `QueueJobTimings`
+  call per iteration) takes 56,750,070 ns/op (about 57 ms; runs of the same
+  build gave 54.6 to 57.6 ms). Before migration 00044's
+  `task_attempts_task_num` index it took 64,073,048 ns/op (64 ms). Without
+  `id` in that index, the attempt tie-break costs 68.8 ms. Run directly in
+  `sqlite3`, the same queries take about 30 ms; the rest is driver and scan
+  cost. The per-step count and measured-sum query is most of that time.
+  The cost scales with the number of succeeded tasks in unfinished jobs (about
+  5.7 microseconds per succeeded task in this benchmark: 10,000 succeeded tasks
+  for 57 ms), not with the number of jobs. It is paid once per farm by the web
+  farms-with-queues query (shared with the submit forms) and by every queue
+  list call. No cache or opt-in parameter exists; that is a deliberate ruling
+  pending a maintainer decision.
 - **Terminal ingest slows:** the median time to store a terminal status rose
   from 43 to 72 ms on SQLite and from 101 to 263 ms on PostgreSQL, and the p99
   from 144 to 181 ms and from 343 to 627 ms. Terminal statuses and snapshots

@@ -9,6 +9,7 @@ import FilterToolbar from '@/components/FilterToolbar'
 import Pagination from '@/components/Pagination'
 import StatusBadge from '@/components/StatusBadge'
 import TaskProgressBar from '@/components/TaskProgressBar'
+import RemainingTime from '@/components/RemainingTime'
 import { ChevronDown, ChevronUp, ChevronUpDown, Rotate, Trash, X } from '@/components/icons'
 import ErrorBanner from '@/components/ErrorBanner'
 import BulkBar from '@/components/BulkBar'
@@ -518,6 +519,7 @@ export default function JobList() {
                 />
               </th>
               <th>Progress</th>
+              <th>Remaining</th>
               <th aria-sort={sortAriaValue('created_at', filters.sortField, filters.sortDir)}>
                 <SortableHeader
                   field="created_at"
@@ -534,12 +536,12 @@ export default function JobList() {
           <tbody>
             {isLoading && (
               <tr className={styles.emptyRow}>
-                <td colSpan={11}>Loading…</td>
+                <td colSpan={12}>Loading…</td>
               </tr>
             )}
             {!isLoading && jobs.length === 0 && (
               <tr className={styles.emptyRow}>
-                <td colSpan={11}>No jobs found.</td>
+                <td colSpan={12}>No jobs found.</td>
               </tr>
             )}
             {jobs.map((job) => {
@@ -580,6 +582,14 @@ export default function JobList() {
                   <td>{job.priority}</td>
                   <td>
                     <ProgressCell job={job} />
+                  </td>
+                  <td>
+                    <RemainingTime
+                      seconds={job.remaining_seconds}
+                      running={job.task_counts?.running ?? 0}
+                      anchorMs={dataUpdatedAt}
+                      now={now}
+                    />
                   </td>
                   <td>{formatTime(job.created_at)}</td>
                   <td>{formatTimespan(job.started_at, job.completed_at, now)}</td>

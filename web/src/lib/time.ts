@@ -78,3 +78,72 @@ export function timeLeftMs(
   if (progress >= 100) return 0
   return (elapsed * (100 - progress)) / progress
 }
+
+/**
+ * Seconds of work still left, counted down from the server's figure: each
+ * running task retires one second of work per second since `anchorMs`.
+ * Floors at zero; a `now` before the anchor counts nothing.
+ */
+export function countDownSeconds(
+  remaining: number,
+  running: number,
+  anchorMs: number,
+  now: number,
+): number {
+  return Math.max(0, remaining - (running * Math.max(0, now - anchorMs)) / 1000)
+}
+
+/** Wall-clock finish time (epoch ms) of `remainingSeconds` of work spread over `running` tasks. */
+export function etaMs(remainingSeconds: number, running: number, now: number): number {
+  return now + (remainingSeconds * 1000) / Math.max(1, running)
+}
+
+const pad2 = (n: number): string => String(n).padStart(2, '0')
+
+/**
+ * Local clock time: "HH:MM" on the same local day as `now`, otherwise
+ * "Ddd HH:MM" (e.g. "Tue 02:40").
+ */
+export function formatClock(ms: number, now: number): string {
+  const d = new Date(ms)
+  const n = new Date(now)
+  const hhmm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+  if (
+    d.getFullYear() === n.getFullYear() &&
+    d.getMonth() === n.getMonth() &&
+    d.getDate() === n.getDate()
+  ) {
+    return hhmm
+  }
+  const day = d.toLocaleDateString('en-US', { weekday: 'short' })
+  return `${day} ${hhmm}`
+}
+
+/** Largest estimate the API accepts (int32 seconds). */
+const MAX_DURATION_INPUT_SECONDS = 2147483647
+
+const DURATION_INPUT = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/
+
+/**
+ * Seconds from a typed duration such as "2h", "1h 30m", "90m" or "45s"
+ * (case-insensitive, spaces optional). Undefined for a bare number, a zero
+ * total, or anything else.
+ */
+export function parseDurationInput(text: string): number | undefined {
+  const m = DURATION_INPUT.exec(text.toLowerCase().replace(/\s+/g, ''))
+  if (!m || (m[1] === undefined && m[2] === undefined && m[3] === undefined)) return undefined
+  const total = Number(m[1] ?? 0) * 3600 + Number(m[2] ?? 0) * 60 + Number(m[3] ?? 0)
+  return total > 0 && total <= MAX_DURATION_INPUT_SECONDS ? total : undefined
+}
+
+/** Exact inverse of {@link parseDurationInput}: every non-zero h/m/s component, e.g. "1h 1m 1s". */
+export function formatDurationInput(seconds: number): string {
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  const s = seconds % 60
+  const parts: string[] = []
+  if (h > 0) parts.push(`${h}h`)
+  if (m > 0) parts.push(`${m}m`)
+  if (s > 0) parts.push(`${s}s`)
+  return parts.join(' ')
+}

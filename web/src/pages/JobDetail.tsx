@@ -20,6 +20,8 @@ import { useAuth } from '@/auth/context'
 import { can } from '@/auth/policy'
 import { useWebSocket } from '@/ws/context'
 import { useLiveNow } from '@/hooks/useLiveNow'
+import RemainingTime from '@/components/RemainingTime'
+import EstimateField from '@/components/EstimateField'
 import TaskRunProgress from '@/components/TaskRunProgress'
 import { formatTimespan, formatDuration } from '@/lib/time'
 import { truncateId } from '@/lib/id'
@@ -30,6 +32,7 @@ import type {
   JobDetail as JobDetailType,
   EffectiveRetryPolicy,
   FailureSummary,
+  RemainingBasis,
   Step,
   StepStatus,
   Task,
@@ -170,7 +173,27 @@ function ParametersCell({ params }: { params: Record<string, string> | undefined
 
 // ── MetadataCard ──────────────────────────────────────────────────────────────
 
-function MetadataCard({ job }: { job: JobDetailType }) {
+const REMAINING_NOTE: Record<RemainingBasis, string | undefined> = {
+  finished: undefined,
+  measured: "from this job's finished tasks",
+  progress: "from running tasks' progress",
+  estimate: 'from the estimate',
+}
+
+function MetadataCard({
+  job,
+  canWrite,
+  anchorMs,
+  now,
+}: {
+  job: JobDetailType
+  canWrite: boolean
+  anchorMs: number
+  now: number
+}) {
+  const note = job.remaining_basis === undefined ? undefined : REMAINING_NOTE[job.remaining_basis]
+  const finished =
+    job.status === 'completed' || job.status === 'failed' || job.status === 'canceled'
   return (
     <div className={styles.metaCard}>
       <dl className={styles.metaGrid}>
@@ -195,6 +218,28 @@ function MetadataCard({ job }: { job: JobDetailType }) {
         <div className={styles.metaField}>
           <dt>Priority</dt>
           <dd>{job.priority}</dd>
+        </div>
+        <div className={styles.metaField}>
+          <dt>Estimate</dt>
+          <dd>
+            <EstimateField
+              jobId={job.id}
+              seconds={job.estimated_seconds}
+              editable={canWrite && !finished}
+            />
+          </dd>
+        </div>
+        <div className={styles.metaField}>
+          <dt>Remaining</dt>
+          <dd>
+            <RemainingTime
+              seconds={job.remaining_seconds}
+              running={job.task_counts.running}
+              anchorMs={anchorMs}
+              now={now}
+            />
+            {note !== undefined && <span className={styles.metaNote}> {note}</span>}
+          </dd>
         </div>
         <div className={styles.metaField}>
           <dt>Queue</dt>
@@ -1033,7 +1078,7 @@ export default function JobDetail() {
         <h2 className={styles.jobName}>{job.name}</h2>
       </div>
 
-      <MetadataCard job={job} />
+      <MetadataCard job={job} canWrite={canWrite} anchorMs={jobUpdatedAt} now={now} />
 
       {job.depends_on !== undefined && job.depends_on.length > 0 && (
         <div className={styles.dependsOnSection}>

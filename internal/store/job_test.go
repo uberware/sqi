@@ -150,3 +150,107 @@ func assertDeclaredExtensions(t *testing.T, via string, job store.Job, wantList 
 			via, job.ID, declared, recorded, slices.Contains(wantList, "EXPR"), wantRecorded)
 	}
 }
+
+func seedJobFarm(t *testing.T, st store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "f"}); err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "q"}); err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
+}
+
+func TestJobStore_EstimateAndProductRoundTrip(t *testing.T) {
+	secs := 3600
+	cases := []struct {
+		id      string
+		est     *int
+		product string
+		version string
+	}{
+		{id: "job-with", est: &secs, product: "blender-batch-render", version: "1.2.0"},
+		{id: "job-without"},
+	}
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			seedJobFarm(t, st)
+			check := func(t *testing.T, where string, got store.Job, est *int, product, version string) {
+				t.Helper()
+				if (got.EstimatedSeconds == nil) != (est == nil) || (est != nil && *got.EstimatedSeconds != *est) {
+					t.Errorf("%s: EstimatedSeconds = %v, want %v", where, got.EstimatedSeconds, est)
+				}
+				if got.ProductName != product || got.ProductVersion != version {
+					t.Errorf("%s: product = %q/%q, want %q/%q", where, got.ProductName, got.ProductVersion, product, version)
+				}
+			}
+			for _, tc := range cases {
+				created := storetest.Submit(t, st, store.JobSubmission{Job: store.Job{
+					ID: tc.id, FarmID: "farm-1", QueueID: "queue-1", Name: tc.id,
+					Status: store.JobStatusPending, RawTemplate: "{}",
+					EstimatedSeconds: tc.est, ProductName: tc.product, ProductVersion: tc.version,
+				}}).Job
+				check(t, tc.id+" CreateJobSubmission", created, tc.est, tc.product, tc.version)
+				got, err := st.GetJob(ctx, tc.id)
+				if err != nil {
+					t.Fatalf("GetJob: %v", err)
+				}
+				check(t, tc.id+" GetJob", got, tc.est, tc.product, tc.version)
+			}
+			page, err := st.ListJobs(ctx, store.ListJobsOptions{})
+			if err != nil {
+				t.Fatalf("ListJobs: %v", err)
+			}
+			byID := map[string]store.Job{}
+			for _, j := range page.Items {
+				byID[j.ID] = j
+			}
+			for _, tc := range cases {
+				j, ok := byID[tc.id]
+				if !ok {
+					t.Fatalf("ListJobs missing %s", tc.id)
+				}
+				check(t, tc.id+" ListJobs", j, tc.est, tc.product, tc.version)
+			}
+		})
+	}
+}
+
+func TestJobStore_UpdateJobEstimate(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			seedJobFarm(t, st)
+			first := 3600
+			created := storetest.Submit(t, st, store.JobSubmission{Job: store.Job{
+				ID: "job-1", FarmID: "farm-1", QueueID: "queue-1", Name: "j",
+				Status: store.JobStatusPending, RawTemplate: "{}",
+				EstimatedSeconds: &first, ProductName: "p", ProductVersion: "1.0.0",
+			}}).Job
+			next := 7200
+			created.EstimatedSeconds = &next
+			created.ProductName = "other"
+			created.ProductVersion = "9.9.9"
+			got, err := st.UpdateJob(ctx, created)
+			if err != nil {
+				t.Fatalf("UpdateJob: %v", err)
+			}
+			if got.EstimatedSeconds == nil || *got.EstimatedSeconds != 7200 {
+				t.Errorf("EstimatedSeconds = %v, want 7200", got.EstimatedSeconds)
+			}
+			if got.ProductName != "p" || got.ProductVersion != "1.0.0" {
+				t.Errorf("product = %q/%q, want unchanged p/1.0.0", got.ProductName, got.ProductVersion)
+			}
+			got.EstimatedSeconds = nil
+			got, err = st.UpdateJob(ctx, got)
+			if err != nil {
+				t.Fatalf("UpdateJob nil: %v", err)
+			}
+			if got.EstimatedSeconds != nil {
+				t.Errorf("EstimatedSeconds = %v, want nil", *got.EstimatedSeconds)
+			}
+		})
+	}
+}

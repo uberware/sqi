@@ -280,6 +280,50 @@ describe('JobList', () => {
     })
   })
 
+  describe('remaining time', () => {
+    function remainingCells(): (string | null)[] {
+      const headers = screen.getAllByRole('columnheader')
+      const col = headers.findIndex((h) => h.textContent === 'Remaining')
+      expect(col).toBeGreaterThan(-1)
+      return screen
+        .getAllByRole('row')
+        .slice(1)
+        .map((r) => r.querySelectorAll('td')[col]?.textContent ?? null)
+    }
+
+    it('shows remaining time', async () => {
+      const running = makeJob({
+        id: 'job-run',
+        name: 'Running Job',
+        task_counts: {
+          total: 4,
+          pending: 3,
+          ready: 0,
+          assigned: 0,
+          running: 1,
+          succeeded: 0,
+          failed: 0,
+          canceled: 0,
+        },
+        remaining_seconds: 600,
+        remaining_basis: 'measured',
+        as_of: '2024-01-01T10:05:00Z',
+      })
+      const unknown = makeJob({
+        id: 'job-unk',
+        name: 'Unknown Job',
+        remaining_seconds: null,
+        as_of: '2024-01-01T10:05:00Z',
+      })
+      fetchMock.mockResolvedValueOnce(okJson(makeListResponse([running, unknown])))
+
+      render(<JobList />, { wrapper: Wrapper })
+
+      await screen.findByText('Running Job')
+      expect(remainingCells()).toEqual(['10m 0s', '—'])
+    })
+  })
+
   describe('status filter', () => {
     it('renders all status filter pills', async () => {
       fetchMock.mockResolvedValueOnce(okJson(makeListResponse([])))

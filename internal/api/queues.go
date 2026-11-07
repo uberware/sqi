@@ -13,6 +13,7 @@ package api
 //	DELETE /api/v1/queues/{id} — delete queue
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/uberware/sqi/internal/auth"
 	"github.com/uberware/sqi/internal/auth/policy"
+	"github.com/uberware/sqi/internal/eta"
 	"github.com/uberware/sqi/internal/store"
 )
 
@@ -63,6 +65,52 @@ type queueResponse struct {
 	// user. Setting either requires the isolation.manage permission.
 	RunAsUser  *string `json:"run_as_user,omitempty"`
 	RunAsGroup *string `json:"run_as_group,omitempty"`
+}
+
+// queueTimingResponse is a queue's remaining work, as on [eta.Queue]. It is
+// embedded by pointer in [queueItemResponse]: nil, so all five keys are absent,
+// when the timing read failed.
+type queueTimingResponse struct {
+	UnfinishedJobs       int       `json:"unfinished_jobs"`
+	WorkRemainingSeconds int64     `json:"work_remaining_seconds"`
+	JobsWithoutEstimate  int       `json:"jobs_without_estimate"`
+	RunningTasks         int       `json:"running_tasks"`
+	AsOf                 time.Time `json:"as_of"`
+}
+
+// queueItemResponse is a queue as listed or fetched: the queue plus its
+// remaining work. Create and update return a bare [queueResponse].
+type queueItemResponse struct {
+	queueResponse
+	*queueTimingResponse
+}
+
+// queueTimings reports the remaining work of each given queue from one read of
+// every non-terminal job in them. A queue with no such job gets zeros. A
+// failure is logged and returns nil, so no queue carries timing.
+func (h *queueHandler) queueTimings(ctx context.Context, queueIDs []string) map[string]*queueTimingResponse {
+	if len(queueIDs) == 0 {
+		return nil
+	}
+	jobs, err := h.store.QueueJobTimings(ctx, queueIDs)
+	if err != nil {
+		h.logger.WarnContext(ctx, "queues: timing read failed", slog.Any("error", err))
+		return nil
+	}
+	now := time.Now().UTC()
+	totals := eta.Queues(jobs, now)
+	out := make(map[string]*queueTimingResponse, len(queueIDs))
+	for _, id := range queueIDs {
+		q := totals[id]
+		out[id] = &queueTimingResponse{
+			UnfinishedJobs:       q.UnfinishedJobs,
+			WorkRemainingSeconds: q.WorkRemainingSeconds,
+			JobsWithoutEstimate:  q.JobsWithoutEstimate,
+			RunningTasks:         q.RunningTasks,
+			AsOf:                 now,
+		}
+	}
+	return out
 }
 
 // createQueueRequest is the body accepted by POST /api/v1/queues.
@@ -109,10 +157,10 @@ type updateQueueRequest struct {
 
 // queueListResponse is the paginated result returned by GET /api/v1/queues.
 type queueListResponse struct {
-	Items  []queueResponse `json:"items"`
-	Total  int             `json:"total"`
-	Limit  int             `json:"limit"`
-	Offset int             `json:"offset"`
+	Items  []queueItemResponse `json:"items"`
+	Total  int                 `json:"total"`
+	Limit  int                 `json:"limit"`
+	Offset int                 `json:"offset"`
 }
 
 // requireIsolationManage enforces the field-level gate on a queue's OS
@@ -310,13 +358,18 @@ func (h *queueHandler) listQueues(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := queueListResponse{
-		Items:  make([]queueResponse, len(page.Items)),
+		Items:  make([]queueItemResponse, len(page.Items)),
 		Total:  page.Total,
 		Limit:  page.Limit,
 		Offset: page.Offset,
 	}
+	ids := make([]string, len(page.Items))
 	for i, qu := range page.Items {
-		resp.Items[i] = toQueueResponse(qu)
+		ids[i] = qu.ID
+	}
+	timings := h.queueTimings(ctx, ids)
+	for i, qu := range page.Items {
+		resp.Items[i] = queueItemResponse{queueResponse: toQueueResponse(qu), queueTimingResponse: timings[qu.ID]}
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -339,7 +392,10 @@ func (h *queueHandler) getQueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, toQueueResponse(queue))
+	writeJSON(w, http.StatusOK, queueItemResponse{
+		queueResponse:       toQueueResponse(queue),
+		queueTimingResponse: h.queueTimings(ctx, []string{id})[id],
+	})
 }
 
 // ── PUT /api/v1/queues/{id} ───────────────────────────────────────────────────

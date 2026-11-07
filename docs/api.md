@@ -198,7 +198,9 @@ The body is a raw OpenJD template in YAML or JSON. Required query parameters:
 | `queue_id` | UUID of the target queue |
 
 Optional query parameters: `owner`, `submitter`, `priority` (default 50, higher = sooner),
-`project`. Also the per-job retry-policy overrides `max_attempts` (≥ 1),
+`project`, and `estimated_seconds` (integer 1 to 2147483647: the job's total
+task run time summed over all tasks, not wall-clock; it feeds `remaining_seconds`,
+see [`docs/observability.md`](observability.md#remaining-time-and-eta)). Also the per-job retry-policy overrides `max_attempts` (≥ 1),
 `retry_delay_seconds` (≥ 0), and `failure_limit` (≥ 0; the job-level failure
 ceiling that auto-parks the job, 0 disables an inherited limit) — each omitted
 means inherit the queue → farm → server default, and an out-of-range value is
@@ -282,7 +284,8 @@ curl -s -X POST http://localhost:8080/api/v1/products/python/jobs \
 ```
 
 The `name` field overrides the template's job name; when omitted the template's
-own name is used. `farm_id` and `queue_id` are required. `parameters` is a flat
+own name is used. The optional integer `estimated_seconds` (1 to 2147483647,
+total task run time summed over all tasks, not wall-clock) is accepted here too. `farm_id` and `queue_id` are required. `parameters` is a flat
 string→string map matching the template's `parameterDefinitions`. `depends_on`
 is an optional array of upstream job IDs, same semantics as the raw-submit
 query parameter above. The `/parameters` endpoint returns each parameter's
@@ -327,7 +330,11 @@ Returns the job with its steps and per-status task counts. The response also
 carries `effective_retry` — the resolved retry policy for this job
 (`max_attempts`, `retry_delay_seconds`, `failure_limit`) after the
 server → farm → queue → job cascade — plus `failed_attempts` and, when the job
-has been auto-parked, a `park_reason`.
+has been auto-parked, a `park_reason`. Job list items and job detail also carry
+`remaining_seconds`, `remaining_basis` and `as_of`, and queue responses carry
+`unfinished_jobs`, `work_remaining_seconds`, `jobs_without_estimate`,
+`running_tasks` and `as_of`; see
+[`docs/observability.md`](observability.md#remaining-time-and-eta).
 
 `task_counts.unschedulable` counts `ready` tasks that currently carry a
 non-empty unschedulable reason — a subset of `ready`, not an additional status,
@@ -499,7 +506,9 @@ The same endpoint moves a job between queues (`queue_id`; a queue that does not
 exist is rejected with `400`) and sets the per-job retry-policy overrides
 (`max_attempts`, `retry_delay_seconds`, `failure_limit`); omitting a field (or
 sending `null`) leaves it unchanged — a job-level override cannot be cleared
-back to "inherit" this way. Resuming an auto-parked job (`action: resume`) also
+back to "inherit" this way. `estimated_seconds` (integer 1 to 2147483647, total
+task run time rather than wall-clock) is also settable here, and unlike the
+retry overrides an explicit `null` clears it. Resuming an auto-parked job (`action: resume`) also
 clears `park_reason` and resets `failed_attempts` to zero, re-arming its failure
 limit.
 

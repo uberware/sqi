@@ -446,6 +446,7 @@ class SqiClient:
         retry_delay_seconds: int | None = None,
         failure_limit: int | None = None,
         depends_on: list[str] | None = None,
+        estimated_seconds: int | None = None,
     ) -> Job:
         """Submit a raw OpenJD job template and return the created :class:`Job`.
 
@@ -489,11 +490,17 @@ class SqiClient:
                 same farm; none may already be failed or canceled. When any is
                 not yet completed the created job is returned in the ``blocked``
                 status and starts only once every upstream completes.
+            estimated_seconds: Optional estimate of the job's total task run
+                time in seconds (1 to 2147483647), sent as a query parameter.
+                The server uses it to report ``remaining_seconds`` until it has
+                measured data. Omitted when ``None``.
 
         Returns:
             The created :class:`Job`, parsed from the ``201 Created`` body.
 
         Raises:
+            ValueError: ``estimated_seconds`` is outside 1 to 2147483647
+                (raised before any request is sent).
             ValidationError: The template failed server-side OpenJD validation
                 (HTTP 422); the server's ``detail`` (e.g. ``"step 'Render'
                 references undefined parameter 'Frames'"``) is preserved verbatim
@@ -502,6 +509,7 @@ class SqiClient:
             ValueError: ``template`` is a ``dict`` containing values that cannot
                 be serialized to JSON.
         """
+        _check_estimated_seconds(estimated_seconds)
         body, content_type = _prepare_template(template)
         params: dict[str, Any] = {
             "farm_id": farm_id,
@@ -513,6 +521,7 @@ class SqiClient:
             "retry_delay_seconds": retry_delay_seconds,
             "failure_limit": failure_limit,
             "depends_on": depends_on,
+            "estimated_seconds": estimated_seconds,
         }
         data = self._request_json(
             "POST",
@@ -654,6 +663,22 @@ class SqiClient:
         if priority < _MIN_JOB_PRIORITY:
             raise ValueError(f"priority must be >= {_MIN_JOB_PRIORITY}, got {priority}")
         return self._patch_job(job_id, {"priority": priority})
+
+    def set_job_estimate(self, job_id: str, seconds: int | None) -> Job:
+        """Set or clear a job's run-time estimate and return its updated state.
+
+        Args:
+            job_id: The job to update.
+            seconds: Estimated total task run time in seconds (1 to
+                2147483647), or ``None`` to clear the estimate.
+
+        Raises:
+            ValueError: ``seconds`` is outside 1 to 2147483647 (no request sent).
+            NotFoundError: No job with that ID exists (HTTP 404).
+            ConflictError: The job is terminal and cannot be modified (HTTP 409).
+        """
+        _check_estimated_seconds(seconds)
+        return self._patch_job(job_id, {"estimated_seconds": seconds})
 
     def cancel_job(self, job_id: str) -> None:
         """Cancel a job. Returns ``None`` on success (HTTP 204).
@@ -1583,6 +1608,7 @@ class SqiClient:
         retry_delay_seconds: int | None = None,
         failure_limit: int | None = None,
         depends_on: list[str] | None = None,
+        estimated_seconds: int | None = None,
     ) -> Job:
         """Submit a job from a product and return the created :class:`Job`.
 
@@ -1606,7 +1632,15 @@ class SqiClient:
                 same farm; none may already be failed or canceled. When any is
                 not yet completed the created job is returned in the ``blocked``
                 status and starts only once every upstream completes.
+            estimated_seconds: Optional estimate of the job's total task run
+                time in seconds (1 to 2147483647), sent in the request body.
+                Omitted when ``None``.
+
+        Raises:
+            ValueError: ``estimated_seconds`` is outside 1 to 2147483647
+                (raised before any request is sent).
         """
+        _check_estimated_seconds(estimated_seconds)
         body: dict[str, Any] = {"farm_id": farm_id, "queue_id": queue_id}
         if job_name is not None:
             body["name"] = job_name
@@ -1623,6 +1657,8 @@ class SqiClient:
         _add_retry_policy(body, max_attempts, retry_delay_seconds, failure_limit)
         if depends_on is not None:
             body["depends_on"] = list(depends_on)
+        if estimated_seconds is not None:
+            body["estimated_seconds"] = estimated_seconds
         data = self._request_json("POST", f"/products/{name}/jobs", json=body)
         return Job.from_dict(data)
 
@@ -1834,6 +1870,22 @@ class SqiClient:
 # Minimum job priority the server accepts (OpenAPI `Job.priority` /
 # `PatchJobRequest.priority`, both `minimum: 1`). There is no declared maximum.
 _MIN_JOB_PRIORITY = 1
+_MAX_ESTIMATED_SECONDS = 2_147_483_647
+
+
+def _check_estimated_seconds(seconds: int | None) -> None:
+    """Reject anything but an integer in 1..2147483647 (bools and floats included)."""
+    if seconds is None:
+        return
+    if (
+        isinstance(seconds, bool)
+        or not isinstance(seconds, int)
+        or not 1 <= seconds <= _MAX_ESTIMATED_SECONDS
+    ):
+        raise ValueError(
+            f"estimated_seconds must be between 1 and {_MAX_ESTIMATED_SECONDS}, got {seconds}"
+        )
+
 
 # Minimum usage-pool concurrency the server accepts (OpenAPI `UsagePool` /
 # `CreateUsagePoolRequest.max_concurrent`, `minimum: 1`).

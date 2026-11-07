@@ -123,6 +123,13 @@ type SubmitOptions struct {
 	MaxAttempts       *int
 	RetryDelaySeconds *int
 	FailureLimit      *int
+	// EstimatedSeconds is the submitter's estimate of the job's total task run
+	// time, summed over tasks. Nil means no estimate.
+	EstimatedSeconds *int
+	// ProductName and ProductVersion record the catalog product the job was
+	// submitted from. Empty for a raw-template submission.
+	ProductName    string
+	ProductVersion string
 	// Deadline, when non-zero, is an absolute wall-clock time after which this
 	// submission's expression evaluation stops and [Submitter.Submit] returns
 	// an error wrapping [expr.ErrDeadlineExceeded] -- a wall-clock backstop.
@@ -398,6 +405,9 @@ func (s *Submitter) Submit(
 		MaxAttempts:       opts.MaxAttempts,
 		RetryDelaySeconds: opts.RetryDelaySeconds,
 		FailureLimit:      opts.FailureLimit,
+		EstimatedSeconds:  opts.EstimatedSeconds,
+		ProductName:       opts.ProductName,
+		ProductVersion:    opts.ProductVersion,
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}

@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, within, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router'
 import { ToastProvider } from '@/components/Toast'
+import { WebSocketProvider } from '@/ws/context'
+import { formatClock } from '@/lib/time'
 import QueueList from './QueueList'
-import type { Principal } from '@/api/types'
+import type { Principal, Queue } from '@/api/types'
 
 // ── Auth mock ─────────────────────────────────────────────────────────────────
 // QueueList reads useAuth() to gate mutating controls behind 'infra.manage'.
@@ -44,16 +46,63 @@ function setPrincipal(principal: Principal) {
   })
 }
 
+class MockWebSocket {
+  static instances: MockWebSocket[] = []
+  static readonly CONNECTING = 0
+  static readonly OPEN = 1
+  static readonly CLOSING = 2
+  static readonly CLOSED = 3
+
+  readyState = MockWebSocket.CONNECTING
+  onopen: ((event: Event) => void) | null = null
+  onclose: ((event: CloseEvent) => void) | null = null
+  onerror: ((event: Event) => void) | null = null
+  onmessage: ((event: MessageEvent) => void) | null = null
+
+  url: string
+
+  constructor(url: string) {
+    this.url = url
+    MockWebSocket.instances.push(this)
+  }
+
+  send(): void {}
+
+  close(): void {
+    this.readyState = MockWebSocket.CLOSED
+  }
+
+  simulateOpen(): void {
+    this.readyState = MockWebSocket.OPEN
+    this.onopen?.(new Event('open'))
+  }
+
+  simulateMessage(data: unknown): void {
+    this.onmessage?.(new MessageEvent('message', { data: JSON.stringify(data) }))
+  }
+}
+
+function wsInstance(): MockWebSocket {
+  const ws = MockWebSocket.instances[0]
+  if (!ws) throw new Error('No MockWebSocket')
+  return ws
+}
+
 const fetchMock = vi.fn<typeof fetch>()
 beforeEach(() => {
+  MockWebSocket.instances = []
   fetchMock.mockReset()
   vi.stubGlobal('fetch', fetchMock)
+  vi.stubGlobal('WebSocket', MockWebSocket)
   // Default every test to an operator principal so the gated
   // controls render; the read-only gating test overrides
   // this via setPrincipal(READONLY_PRINCIPAL).
   setPrincipal(OPERATOR_PRINCIPAL)
 })
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => {
+  vi.useRealTimers()
+  vi.restoreAllMocks()
+})
 
 function ok(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -72,7 +121,7 @@ const farm = {
 }
 
 /** A queue fixture used in several tests. */
-const queue = {
+const queue: Queue = {
   id: 'queue-1',
   farm_id: 'farm-1',
   name: 'lighting',
@@ -83,7 +132,7 @@ const queue = {
   updated_at: '2026-01-01T00:00:00Z',
 }
 
-function mockFarmsAndQueues(queues = [queue]) {
+function mockFarmsAndQueues(queues: Queue[] = [queue]) {
   fetchMock.mockResolvedValueOnce(ok([farm]))
   fetchMock.mockResolvedValueOnce(
     ok({ items: queues, total: queues.length, limit: 1000, offset: 0 }),
@@ -95,9 +144,11 @@ function renderPage() {
   return render(
     <QueryClientProvider client={client}>
       <MemoryRouter>
-        <ToastProvider>
-          <QueueList />
-        </ToastProvider>
+        <WebSocketProvider url="ws://test">
+          <ToastProvider>
+            <QueueList />
+          </ToastProvider>
+        </WebSocketProvider>
       </MemoryRouter>
     </QueryClientProvider>,
   )
@@ -226,6 +277,151 @@ describe('QueueList', () => {
       expect(
         await screen.findByRole('button', { name: /delete queue lighting/i }),
       ).toBeInTheDocument()
+    })
+  })
+
+  describe('remaining work', () => {
+    const timed: Partial<Queue> = {
+      unfinished_jobs: 3,
+      work_remaining_seconds: 11520,
+      jobs_without_estimate: 0,
+      running_tasks: 1,
+      as_of: '2026-03-10T10:00:00Z',
+    }
+
+    /** The cells of the row for the fixture queue, in column order. */
+    async function cells(): Promise<HTMLElement[]> {
+      const row = (await screen.findByRole('link', { name: 'lighting' })).closest('tr')
+      if (!row) throw new Error('no row')
+      return within(row).getAllByRole('cell')
+    }
+
+    function freezeClock(): number {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const now = new Date(2026, 2, 10, 10, 0, 0).getTime()
+      vi.setSystemTime(now)
+      return now
+    }
+
+    it('shows unfinished jobs, remaining work and ETA', async () => {
+      const now = freezeClock()
+      mockFarmsAndQueues([{ ...queue, ...timed }])
+      renderPage()
+      const c = await cells()
+      expect(c[5]).toHaveTextContent('3')
+      expect(c[6]).toHaveTextContent('3h 12m')
+      expect(c[7]).toHaveTextContent(formatClock(now + 11_520_000, now))
+    })
+
+    it('notes jobs without an estimate', async () => {
+      mockFarmsAndQueues([{ ...queue, ...timed, jobs_without_estimate: 2 }])
+      renderPage()
+      const c = await cells()
+      expect(c[6]).toHaveTextContent('+2 without an estimate')
+    })
+
+    it('shows no ETA when nothing is known', async () => {
+      mockFarmsAndQueues([
+        {
+          ...queue,
+          ...timed,
+          unfinished_jobs: 2,
+          work_remaining_seconds: 0,
+          jobs_without_estimate: 2,
+          running_tasks: 0,
+        },
+      ])
+      renderPage()
+      const c = await cells()
+      expect(c[6]).toHaveTextContent('—')
+      expect(c[6]).toHaveTextContent('+2 without an estimate')
+      expect(c[7]).toHaveTextContent('—')
+    })
+
+    it('shows paused instead of an ETA', async () => {
+      mockFarmsAndQueues([{ ...queue, ...timed, paused: true }])
+      renderPage()
+      const c = await cells()
+      expect(c[7]).toHaveTextContent('paused')
+    })
+
+    it('shows nothing for a queue without timing', async () => {
+      mockFarmsAndQueues([queue])
+      renderPage()
+      const c = await cells()
+      expect(c[5]).toHaveTextContent('—')
+      expect(c[6]).toHaveTextContent('—')
+      expect(c[7]).toHaveTextContent('—')
+    })
+
+    it('counts down while tasks run', async () => {
+      freezeClock()
+      mockFarmsAndQueues([{ ...queue, ...timed, work_remaining_seconds: 600, running_tasks: 2 }])
+      renderPage()
+      expect((await cells())[6]).toHaveTextContent('10m 0s')
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000)
+      })
+      expect((await cells())[6]).toHaveTextContent('8m 0s')
+    })
+
+    describe('refetch on events', () => {
+      function queueFetches(): number {
+        return fetchMock.mock.calls.filter((c) => String(c[0]).includes('/queues')).length
+      }
+
+      async function setup(): Promise<number> {
+        freezeClock()
+        fetchMock.mockImplementation((input) =>
+          Promise.resolve(
+            String(input).includes('/queues')
+              ? ok({ items: [{ ...queue, ...timed }], total: 1, limit: 1000, offset: 0 })
+              : ok([farm]),
+          ),
+        )
+        renderPage()
+        await cells()
+        act(() => wsInstance().simulateOpen())
+        return queueFetches()
+      }
+
+      const push = (i: number) =>
+        act(() =>
+          wsInstance().simulateMessage({
+            type: 'push',
+            subject: 'jobs',
+            payload: { job_id: 'j', task_id: 't', status: 'running', progress: i },
+            seq: i + 1,
+          }),
+        )
+
+      it('refetches once after a burst of events', async () => {
+        const before = await setup()
+        push(1)
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(1_000)
+        })
+        push(2)
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(4_100)
+        })
+        expect(queueFetches() - before).toBe(1)
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(10_000)
+        })
+        expect(queueFetches() - before).toBe(1)
+      })
+
+      it('keeps refetching while events stream', async () => {
+        const before = await setup()
+        for (let i = 0; i < 6; i++) {
+          push(i)
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(2_000)
+          })
+        }
+        expect(queueFetches() - before).toBeGreaterThanOrEqual(2)
+      })
     })
   })
 })

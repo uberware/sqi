@@ -860,3 +860,59 @@ def test_product_parameter_item_is_none_for_a_scalar(raw: dict[str, Any]) -> Non
     from sqi_client.models import ProductParameter
 
     assert ProductParameter.from_dict({"name": "Frames", "type": "INT", **raw}).item is None
+
+
+def test_job_estimate_and_remaining_fields_parsed() -> None:
+    job = Job.from_dict(
+        dict(
+            load("job"),
+            estimated_seconds=3600,
+            remaining_seconds=1200,
+            remaining_basis="measured",
+            as_of="2026-01-01T00:00:00Z",
+            product_name="blender",
+            product_version="1.2",
+        )
+    )
+    assert job.estimated_seconds == 3600
+    assert job.remaining_seconds == 1200
+    assert job.remaining_basis == "measured"
+    assert job.as_of == datetime(2026, 1, 1, tzinfo=timezone.utc)
+    assert job.product_name == "blender"
+    assert job.product_version == "1.2"
+
+
+def test_job_remaining_defaults_none_and_null() -> None:
+    job = Job.from_dict(load("job"))
+    assert job.estimated_seconds is None
+    assert job.remaining_seconds is None
+    assert job.remaining_basis is None
+    assert job.as_of is None
+    assert job.product_name is None
+    assert job.product_version is None
+    assert Job.from_dict(dict(load("job"), remaining_seconds=None)).remaining_seconds is None
+
+
+def test_queue_timing_totals_parsed_and_default_none() -> None:
+    queue = Queue.from_dict(
+        dict(
+            load("queue"),
+            unfinished_jobs=4,
+            work_remaining_seconds=900,
+            jobs_without_estimate=1,
+            running_tasks=2,
+            as_of="2026-01-01T00:00:00Z",
+        )
+    )
+    assert queue.unfinished_jobs == 4
+    assert queue.work_remaining_seconds == 900
+    assert queue.jobs_without_estimate == 1
+    assert queue.running_tasks == 2
+    assert queue.as_of == datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    bare = Queue.from_dict(load("queue"))
+    assert bare.unfinished_jobs is None
+    assert bare.work_remaining_seconds is None
+    assert bare.jobs_without_estimate is None
+    assert bare.running_tasks is None
+    assert bare.as_of is None

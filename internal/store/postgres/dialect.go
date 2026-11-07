@@ -182,3 +182,9 @@ func (pgDialect) ForShare() string { return " FOR SHARE" }
 func (pgDialect) ClockMicros() string {
 	return "(extract(epoch from clock_timestamp()) * 1000000)::bigint"
 }
+
+// EpochSeconds casts the stored text to timestamptz, which keeps microseconds
+// of its nine fractional digits, and reads its epoch.
+func (pgDialect) EpochSeconds(expr string) string {
+	return "extract(epoch from (" + expr + ")::timestamptz)"
+}

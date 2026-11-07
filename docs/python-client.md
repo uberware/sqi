@@ -159,7 +159,7 @@ are equivalent. `None` filters are omitted from the request entirely.
 
 ## Submitting jobs
 
-`submit_job(template, *, farm_id, queue_id, owner=None, priority=None, project=None, max_attempts=None, retry_delay_seconds=None, failure_limit=None, depends_on=None) -> Job`
+`submit_job(template, *, farm_id, queue_id, owner=None, priority=None, project=None, max_attempts=None, retry_delay_seconds=None, failure_limit=None, depends_on=None, estimated_seconds=None) -> Job`
 
 The template may be a `str` (sent verbatim), a `pathlib.Path` (read from disk),
 or a `dict` (serialized to JSON). The `Content-Type` is chosen automatically —
@@ -172,6 +172,8 @@ wait for; if any is not yet `completed` the returned job's `status` is
 `blocked` instead of `pending`, and it is released automatically once every
 upstream completes (or canceled if one fails, is canceled, or is deleted).
 `submit_product_job` accepts the same `depends_on` keyword.
+
+`estimated_seconds` (1 to 2147483647) is an optional estimate of the job's total task run time; `submit_product_job` accepts it too.
 
 `max_attempts`, `retry_delay_seconds`, and `failure_limit` are optional per-job
 retry-policy overrides; each left `None` inherits the queue → farm → server
@@ -207,6 +209,7 @@ can show it to the artist.
 | `get_job(job_id) -> Job` | Detailed job with `steps` and `task_counts`; 404 → `NotFoundError`. |
 | `pause_job(job_id) -> Job` / `resume_job(job_id) -> Job` | Pause/resume; returns the updated job. |
 | `set_job_priority(job_id, priority) -> Job` | Validates `priority >= 1` client-side before sending. |
+| `set_job_estimate(job_id, seconds) -> Job` | Sets the run-time estimate in seconds (1 to 2147483647); `None` clears it. Validated client-side. |
 | `cancel_job(job_id) -> None` | POST `/jobs/{id}/cancel`; returns `None` on `204`. |
 | `retry_job(job_id) -> RetryJobResult` | POST `/jobs/{id}/retry`; revives all `failed`/`canceled` tasks; returns `RetryJobResult(job_id, retried)`. |
 | `delete_job(job_id) -> None` | DELETE; permanently deletes the job and all data (cancels active tasks first); returns `None` on `204`. |

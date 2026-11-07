@@ -526,6 +526,20 @@ class Job:
     progress_percent: float | None = None
     """Overall completion of the job, 0-100. ``None`` when the server reports
     no progress (``null``) or predates this field."""
+    estimated_seconds: int | None = None
+    """The submitter's estimate of the job's total task run time, in seconds.
+    ``None`` when none was given."""
+    remaining_seconds: int | None = None
+    """Estimated seconds of work left. ``None`` when the server cannot estimate
+    (``null``) or predates this field."""
+    remaining_basis: str | None = None
+    """How ``remaining_seconds`` was derived. ``None`` when unknown or omitted."""
+    as_of: datetime | None = None
+    """When the remaining-time figures were computed. ``None`` when absent."""
+    product_name: str | None = None
+    """Name of the product the job was submitted from, if any."""
+    product_version: str | None = None
+    """Version of the product the job was submitted from, if any."""
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Job:
@@ -578,6 +592,12 @@ class Job:
             ),
             depends_on=_str_list(data.get("depends_on")),
             progress_percent=_opt_float(data.get("progress_percent")),
+            estimated_seconds=_opt_int(data.get("estimated_seconds")),
+            remaining_seconds=_opt_int(data.get("remaining_seconds")),
+            remaining_basis=_opt_str(data.get("remaining_basis")),
+            as_of=_opt_datetime(data.get("as_of")),
+            product_name=_opt_str(data.get("product_name")),
+            product_version=_opt_str(data.get("product_version")),
         )
 
 
@@ -978,6 +998,20 @@ class Queue:
     failure_limit: int | None = None
     """Queue-level override for the number of task failures that auto-parks a
     job. ``None`` means inherit (farm -> server default)."""
+    unfinished_jobs: int | None = None
+    """Number of unfinished jobs in the queue. ``None`` when the server omits
+    the queue totals."""
+    work_remaining_seconds: int | None = None
+    """Estimated seconds of work left across the queue's unfinished jobs.
+    ``None`` when omitted."""
+    jobs_without_estimate: int | None = None
+    """Unfinished jobs that contribute no estimate to
+    ``work_remaining_seconds``. ``None`` when omitted."""
+    running_tasks: int | None = None
+    """Tasks currently running in the queue. ``None`` when omitted."""
+    as_of: datetime | None = None
+    """When the queue totals were computed. ``None`` when the server could not
+    read them."""
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Queue:
@@ -1000,6 +1034,11 @@ class Queue:
             max_attempts=_opt_int(data.get("max_attempts")),
             retry_delay_seconds=_opt_int(data.get("retry_delay_seconds")),
             failure_limit=_opt_int(data.get("failure_limit")),
+            unfinished_jobs=_opt_int(data.get("unfinished_jobs")),
+            work_remaining_seconds=_opt_int(data.get("work_remaining_seconds")),
+            jobs_without_estimate=_opt_int(data.get("jobs_without_estimate")),
+            running_tasks=_opt_int(data.get("running_tasks")),
+            as_of=_opt_datetime(data.get("as_of")),
         )
 
 

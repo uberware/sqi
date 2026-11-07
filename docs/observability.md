@@ -72,6 +72,52 @@ snapshot from a new worker as a repeat `running` report, which is correct but
 costs an anchored write about every 2 s per running task. A new server with an
 old worker records one unthrottled snapshot per `openjd_status` line.
 
+### Remaining time and ETA
+
+A job's remaining work is reported as `remaining_seconds`, with the figure it
+came from in `remaining_basis` and the server time it was computed in `as_of`.
+All three are on job list items and job detail.
+
+**`estimated_seconds`** is the submitter's estimate of the job's total task run
+time. Set it with the `estimated_seconds` query parameter on `POST /api/v1/jobs`,
+with the `estimated_seconds` field when submitting from a product, or later with
+`PATCH /api/v1/jobs/{id}` (`null` clears it). It is the sum of task run time, not
+wall-clock: 100 tasks of 60 s each is `6000` however many workers share them. It
+stops mattering once a multi-task job has a succeeded task in every step that
+still has work left, because the measured run times take over.
+
+`remaining_seconds` follows five rules, tried in order:
+
+1. A finished job (completed, failed or canceled) has `0`, basis `finished`.
+2. A running job whose only unfinished tasks are running, each with progress and
+   at least 30 s elapsed, sums each task's linear projection, basis `progress`.
+3. A job whose every step with unfinished tasks has a succeeded task prices each
+   not-started task at its step's mean measured run time and each running task
+   at that mean less its elapsed time (or its linear projection when it has one),
+   basis `measured`.
+4. A job with `estimated_seconds` scales it by the fraction not yet complete,
+   basis `estimate` (a job with no non-canceled tasks and an estimate reports `0`).
+5. Otherwise `remaining_seconds` is `null` and `remaining_basis` is omitted.
+
+`remaining_seconds` is also `null` if the timing inputs could not be read or the
+job is missing from the timing read; the response is still `200` and the failure is logged at warn.
+
+**Queues** (`GET /api/v1/queues`, `GET /api/v1/queues/{id}`) carry
+`unfinished_jobs`, `work_remaining_seconds` (the sum of the unfinished jobs' known
+figures), `jobs_without_estimate` (unfinished jobs whose figure is `null`),
+`running_tasks` and `as_of`. They are absent together if the read failed, and
+from the create and update responses. A client refreshes the figures between
+reads: displayed remaining = `max(0, work_remaining_seconds − running_tasks ×
+(now − as_of))`, and ETA = `now + displayed remaining / max(1, running_tasks)`.
+A paused queue shows "paused" instead of an ETA. The ETA is exact for one worker
+and rough on a larger farm, since it assumes the running tasks keep draining the
+work in parallel and ignores tasks that cannot run in parallel.
+It also omits the `jobs_without_estimate` jobs, so show that count beside it.
+
+A job submitted from a product also reports `product_name` and `product_version`:
+the catalog product and its version at submission time, omitted for a raw
+template.
+
 ### Diagnostic logs
 
 Both binaries write their own operational output (scheduler decisions, worker

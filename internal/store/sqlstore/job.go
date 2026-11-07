@@ -25,7 +25,7 @@ const jobCols = `
 	id, farm_id, queue_id, name, owner, submitter, priority, status, project,
 	raw_template, template_format, parameters, created_at, updated_at, started_at, completed_at,
 	failed_attempts, max_attempts, retry_delay_seconds, failure_limit, park_reason,
-	declared_extensions`
+	declared_extensions, estimated_seconds, product_name, product_version`
 
 const (
 	sqlInsertJob = `
@@ -33,8 +33,8 @@ INSERT INTO jobs (
 	id, farm_id, queue_id, name, owner, submitter, priority, status, project,
 	raw_template, template_format, parameters, created_at, updated_at, started_at, completed_at,
 	failed_attempts, max_attempts, retry_delay_seconds, failure_limit, park_reason,
-	declared_extensions)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	declared_extensions, estimated_seconds, product_name, product_version)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING ` + jobCols
 
 	sqlGetJob = `SELECT ` + jobCols + ` FROM jobs WHERE id = ?`
@@ -47,7 +47,8 @@ RETURNING ` + jobCols
 	// park_reason are likewise lifecycle-managed (by the scheduler's
 	// failure-limit sweep) and are excluded for the same reason; max_attempts,
 	// retry_delay_seconds, and failure_limit are the user-settable retry-policy
-	// overrides.
+	// overrides, and estimated_seconds is the user-settable run-time estimate.
+	// The product_name and product_version columns are left as stored.
 	//
 	// declared_extensions is likewise excluded: it is derived from the template
 	// at submission and is not user-settable. raw_template is on the SET list,
@@ -60,6 +61,7 @@ UPDATE jobs
 SET farm_id = ?, queue_id = ?, name = ?, owner = ?, submitter = ?, priority = ?,
 	project = ?, raw_template = ?, template_format = ?,
 	max_attempts = ?, retry_delay_seconds = ?, failure_limit = ?,
+	estimated_seconds = ?,
 	updated_at = ?
 WHERE id = ?
 RETURNING ` + jobCols
@@ -231,6 +233,8 @@ func scanJob(row scanner) (store.Job, error) {
 	var startedAt, completedAt sql.NullString
 	var maxAtt, delay, failLim sql.NullInt64
 	var declaredExts string
+	var estSecs sql.NullInt64
+	var productName, productVersion sql.NullString
 
 	if err := row.Scan(
 		&j.ID, &j.FarmID, &j.QueueID, &j.Name, &j.Owner, &j.Submitter,
@@ -238,10 +242,12 @@ func scanJob(row scanner) (store.Job, error) {
 		&j.RawTemplate, &templateFormat, &paramsJSON,
 		&createdAt, &updatedAt, &startedAt, &completedAt,
 		&j.FailedAttempts, &maxAtt, &delay, &failLim, &j.ParkReason,
-		&declaredExts,
+		&declaredExts, &estSecs, &productName, &productVersion,
 	); err != nil {
 		return store.Job{}, err
 	}
+	j.EstimatedSeconds = nullIntPtr(estSecs)
+	j.ProductName, j.ProductVersion = productName.String, productVersion.String
 
 	if err := decodeDeclaredExtensions(declaredExts, &j); err != nil {
 		return store.Job{}, err
@@ -378,7 +384,8 @@ func insertJobTx(ctx context.Context, tx *dbTx, job store.Job, now string) (stor
 		now, now,
 		nullTimeToText(job.StartedAt), nullTimeToText(job.CompletedAt),
 		job.FailedAttempts, nullInt(job.MaxAttempts), nullInt(job.RetryDelaySeconds), nullInt(job.FailureLimit),
-		job.ParkReason, declaredExts)
+		job.ParkReason, declaredExts,
+		nullInt(job.EstimatedSeconds), nullString(job.ProductName), nullString(job.ProductVersion))
 	out, err := scanJob(row)
 	return out, mapErr(err)
 }
@@ -726,7 +733,8 @@ func (s *Store) ListJobs(ctx context.Context, opts store.ListJobsOptions) (store
 // UpdateJob implements [store.JobStore].
 // Only mutable user-settable fields are written (farm_id, queue_id, name,
 // owner, submitter, priority, project, raw_template, template_format,
-// max_attempts, retry_delay_seconds, failure_limit).
+// max_attempts, retry_delay_seconds, failure_limit, estimated_seconds).
+// product_name and product_version are left as stored.
 // status, started_at, completed_at, failed_attempts, and park_reason are
 // never touched here; use CancelJobStatus, FinalizeJob, or the
 // scheduler's failure-limit sweep for those.
@@ -736,7 +744,7 @@ func (s *Store) UpdateJob(ctx context.Context, job store.Job) (store.Job, error)
 		job.FarmID, job.QueueID, job.Name, job.Owner, job.Submitter, job.Priority,
 		job.Project, job.RawTemplate, string(job.TemplateFormat),
 		nullInt(job.MaxAttempts), nullInt(job.RetryDelaySeconds), nullInt(job.FailureLimit),
-		now, job.ID)
+		nullInt(job.EstimatedSeconds), now, job.ID)
 	return out, mapErr(err)
 }
 
