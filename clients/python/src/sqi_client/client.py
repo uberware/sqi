@@ -114,8 +114,8 @@ class _CrudResource(Generic[_T]):
         data = self._client._request_json("POST", self._path, json=body)
         return self._parse(data)
 
-    def get(self, resource_id: str) -> _T:
-        data = self._client._request_json("GET", self._item_path(resource_id))
+    def get(self, resource_id: str, params: Mapping[str, Any] | None = None) -> _T:
+        data = self._client._request_json("GET", self._item_path(resource_id), params=params)
         return self._parse(data)
 
     def update(self, resource_id: str, body: Mapping[str, Any]) -> _T:
@@ -1243,6 +1243,7 @@ class SqiClient:
         sort_dir: str | None = None,
         limit: int = 50,
         offset: int = 0,
+        include_timing: bool = False,
     ) -> Page[Queue]:
         """List queues (paginated), optionally filtered.
 
@@ -1254,6 +1255,10 @@ class SqiClient:
             sort_dir: Sort direction, ``asc`` or ``desc``.
             limit: Page size, 1-1000 (default 50).
             offset: Zero-based offset of the page (default 0).
+            include_timing: Ask the server for each queue's remaining-work
+                fields (``unfinished_jobs``, ``work_remaining_seconds``, ...).
+                They cost a server-side read, so they are absent (``None``)
+                unless requested.
         """
         return self._queues.list_page(
             {
@@ -1263,6 +1268,7 @@ class SqiClient:
                 "sort_dir": sort_dir,
                 "limit": limit,
                 "offset": offset,
+                "include": "timing" if include_timing else None,
             }
         )
 
@@ -1274,8 +1280,12 @@ class SqiClient:
         sort_by: str | None = None,
         sort_dir: str | None = None,
         limit: int = 50,
+        include_timing: bool = False,
     ) -> Iterator[Queue]:
-        """Iterate every queue matching the filters, fetching pages lazily."""
+        """Iterate every queue matching the filters, fetching pages lazily.
+
+        ``include_timing`` is as for :meth:`list_queues`.
+        """
 
         def fetch(page_offset: int, page_limit: int) -> Page[Queue]:
             return self.list_queues(
@@ -1285,13 +1295,17 @@ class SqiClient:
                 sort_dir=sort_dir,
                 limit=page_limit,
                 offset=page_offset,
+                include_timing=include_timing,
             )
 
         return iter_pages(fetch, limit=limit)
 
-    def get_queue(self, queue_id: str) -> Queue:
-        """Fetch one queue by ID. Raises :class:`NotFoundError` if it is missing."""
-        return self._queues.get(queue_id)
+    def get_queue(self, queue_id: str, *, include_timing: bool = False) -> Queue:
+        """Fetch one queue by ID. Raises :class:`NotFoundError` if it is missing.
+
+        ``include_timing`` is as for :meth:`list_queues`.
+        """
+        return self._queues.get(queue_id, {"include": "timing" if include_timing else None})
 
     def update_queue(
         self,

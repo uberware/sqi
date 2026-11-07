@@ -1424,9 +1424,10 @@ components:
           type: integer
           description: >-
             Number of the queue's jobs that are not finished. Present with the
-            four fields below on queue list items and GET /queues/{id}; all
-            five are omitted when the timing read failed, and from create and
-            update responses.
+            four fields below only on queue list items and GET /queues/{id}
+            requested with `include=timing`; all five are omitted otherwise,
+            when the timing read failed, and from create and update
+            responses.
         work_remaining_seconds:
           type: integer
           format: int64
@@ -3484,6 +3485,23 @@ paths:
         - $ref: "#/components/parameters/sortDir"
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/offset"
+        - name: include
+          in: query
+          required: false
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+              enum: [timing]
+          description: >-
+            Optional extras, comma-separated (a repeated parameter is also
+            accepted). `timing` adds the five remaining-work fields
+            (`unfinished_jobs`, `work_remaining_seconds`,
+            `jobs_without_estimate`, `running_tasks`, `as_of`) to each queue;
+            without it they are absent and the server does not compute them.
+            An unknown value is a 400.
       responses:
         "200":
           description: Paginated list of queues.
@@ -3491,6 +3509,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/QueueList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "403":
           $ref: "#/components/responses/Forbidden"
         "500":
@@ -3504,6 +3524,24 @@ paths:
       operationId: getQueue
       summary: Get a queue
       tags: [queues]
+      parameters:
+        - name: include
+          in: query
+          required: false
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+              enum: [timing]
+          description: >-
+            Optional extras, comma-separated (a repeated parameter is also
+            accepted). `timing` adds the five remaining-work fields
+            (`unfinished_jobs`, `work_remaining_seconds`,
+            `jobs_without_estimate`, `running_tasks`, `as_of`) to each queue;
+            without it they are absent and the server does not compute them.
+            An unknown value is a 400.
       responses:
         "200":
           description: Queue.
@@ -3511,6 +3549,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Queue"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":

@@ -93,6 +93,16 @@ export function countDownSeconds(
   return Math.max(0, remaining - (running * Math.max(0, now - anchorMs)) / 1000)
 }
 
+/** {@link countDownSeconds} rounded up, so a countdown never reads below the true figure. */
+export function countDownCeil(
+  remaining: number,
+  running: number,
+  anchorMs: number,
+  now: number,
+): number {
+  return Math.ceil(countDownSeconds(remaining, running, anchorMs, now))
+}
+
 /** Wall-clock finish time (epoch ms) of `remainingSeconds` of work spread over `running` tasks. */
 export function etaMs(remainingSeconds: number, running: number, now: number): number {
   return now + (remainingSeconds * 1000) / Math.max(1, running)

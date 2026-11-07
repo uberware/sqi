@@ -245,13 +245,16 @@ func (h *jobHandler) jobTimings(ctx context.Context, jobIDs []string) map[string
 	return m
 }
 
-// liveJobTimings reads one job's timing inputs, skipping the read for a
-// terminal job, whose figure needs only its status.
-func (h *jobHandler) liveJobTimings(ctx context.Context, j store.Job) map[string]store.JobTiming {
-	if j.Status.IsTerminal() {
-		return nil
+// nonTerminalIDs returns the IDs of the jobs whose remaining time must be
+// read; a terminal job's figure needs only its status.
+func nonTerminalIDs(jobs ...store.Job) []string {
+	ids := make([]string, 0, len(jobs))
+	for _, j := range jobs {
+		if !j.Status.IsTerminal() {
+			ids = append(ids, j.ID)
+		}
 	}
-	return h.jobTimings(ctx, []string{j.ID})
+	return ids
 }
 
 // jobListResponse is the paginated result returned by GET /api/v1/jobs.
@@ -543,13 +546,7 @@ func (h *jobHandler) listJobs(w http.ResponseWriter, r *http.Request) {
 	running := h.runningProgressBatch(ctx, runningJobs)
 
 	now := time.Now().UTC()
-	ids := make([]string, 0, len(page.Items))
-	for _, j := range page.Items {
-		if !j.Status.IsTerminal() {
-			ids = append(ids, j.ID)
-		}
-	}
-	timings := h.jobTimings(ctx, ids)
+	timings := h.jobTimings(ctx, nonTerminalIDs(page.Items...))
 
 	for i, j := range page.Items {
 		r := toJobResponse(j)
@@ -659,7 +656,7 @@ func (h *jobHandler) getJob(w http.ResponseWriter, r *http.Request) {
 		ProgressPercent: eta.ProgressPercent(taskCounts, runningProgress),
 	}
 	now := time.Now().UTC()
-	resp.remainingResponse = remainingFor(h.liveJobTimings(ctx, job), job, now)
+	resp.remainingResponse = remainingFor(h.jobTimings(ctx, nonTerminalIDs(job)), job, now)
 
 	// Resolved retry policy (job -> queue -> farm -> server default). Best
 	// effort like QueueName: omitted if the queue or farm lookup fails.

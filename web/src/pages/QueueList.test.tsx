@@ -162,6 +162,15 @@ describe('QueueList', () => {
     expect(screen.getByText('render')).toBeInTheDocument()
   })
 
+  it('requests the queue timing figures', async () => {
+    mockFarmsAndQueues()
+    renderPage()
+    await screen.findByRole('link', { name: 'lighting' })
+    const urls = fetchMock.mock.calls.map((c) => String(c[0])).filter((u) => u.includes('/queues'))
+    expect(urls).toHaveLength(1)
+    expect(new URL(urls[0] ?? '', 'http://localhost').searchParams.get('include')).toBe('timing')
+  })
+
   it('has a New Queue action linking to /queues/new', async () => {
     fetchMock.mockResolvedValueOnce(ok([]))
     renderPage()

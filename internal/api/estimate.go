@@ -5,6 +5,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/url"
 	"strconv"
@@ -14,13 +15,15 @@ import (
 // value the store's integer column holds.
 const maxEstimatedSeconds = math.MaxInt32
 
-const estimatedSecondsProblem = "estimated_seconds must be an integer from 1 to 2147483647"
+const minEstimatedSeconds = 1
+
+var estimatedSecondsProblem = fmt.Sprintf("estimated_seconds must be an integer from %d to %d", minEstimatedSeconds, maxEstimatedSeconds)
 
 // validateEstimatedSeconds checks a submitter's optional run-time estimate.
 // Nil means "no estimate" and is valid. Returns "" when valid, else the
 // problem detail for a 400 response.
 func validateEstimatedSeconds(v *int) string {
-	if v != nil && (*v < 1 || *v > maxEstimatedSeconds) {
+	if v != nil && (*v < minEstimatedSeconds || *v > maxEstimatedSeconds) {
 		return estimatedSecondsProblem
 	}
 	return ""
@@ -70,7 +73,7 @@ func (o optionalInt) MarshalJSON() ([]byte, error) {
 	return json.Marshal(o.Value)
 }
 
-// The omitzero behavior below is load-bearing: encoding a patchJobRequest in
-// tests must not send an explicit null, which would clear the estimate.
-// IsZero lets `omitzero` drop an unset field when a request is encoded.
+// IsZero makes `omitzero` drop an unset field when a patchJobRequest is
+// re-encoded (for example by tests), so an unset value is never sent as an
+// explicit null, which would clear the estimate.
 func (o optionalInt) IsZero() bool { return !o.Set }

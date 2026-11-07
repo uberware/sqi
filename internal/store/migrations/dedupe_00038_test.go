@@ -193,3 +193,10 @@ func openPG(t *testing.T, dsn string) *sql.DB {
 	}
 	return db
 }
+
+// TestMigration00044_ReplacesTheTaskIDIndexOnPostgreSQL is the PostgreSQL twin
+// of the SQLite test in provider_test.go.
+func TestMigration00044_ReplacesTheTaskIDIndexOnPostgreSQL(t *testing.T) {
+	db := openPG(t, storetest.PostgresDSN(t))
+	checkMigration00044(t, db, "postgres", `SELECT indexname FROM pg_indexes WHERE schemaname = current_schema() AND tablename = 'task_attempts'`)
+}

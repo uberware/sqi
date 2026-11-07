@@ -16,9 +16,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -83,6 +85,27 @@ type queueTimingResponse struct {
 type queueItemResponse struct {
 	queueResponse
 	*queueTimingResponse
+}
+
+// includeTiming is the `include` token that adds the remaining-work fields to
+// a queue read.
+const includeTiming = "timing"
+
+// parseQueueInclude reads the `include` query parameter (comma-separated,
+// repeatable) and reports whether timing was asked for. An unknown token is
+// returned as a problem message.
+func parseQueueInclude(r *http.Request) (timing bool, problem string) {
+	for _, v := range r.URL.Query()["include"] {
+		for tok := range strings.SplitSeq(v, ",") {
+			switch strings.TrimSpace(tok) {
+			case includeTiming:
+				timing = true
+			default:
+				return false, fmt.Sprintf("invalid include %q: allowed values are %q", tok, includeTiming)
+			}
+		}
+	}
+	return timing, ""
 }
 
 // queueTimings reports the remaining work of each given queue from one read of
@@ -327,6 +350,12 @@ func (h *queueHandler) listQueues(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	q := r.URL.Query()
 
+	withTiming, problem := parseQueueInclude(r)
+	if problem != "" {
+		writeProblem(w, r, http.StatusBadRequest, problem)
+		return
+	}
+
 	pg := store.Pagination{
 		Limit:  parseIntQuery(q.Get("limit"), store.DefaultLimit),
 		Offset: parseIntQuery(q.Get("offset"), 0),
@@ -367,7 +396,10 @@ func (h *queueHandler) listQueues(w http.ResponseWriter, r *http.Request) {
 	for i, qu := range page.Items {
 		ids[i] = qu.ID
 	}
-	timings := h.queueTimings(ctx, ids)
+	var timings map[string]*queueTimingResponse
+	if withTiming {
+		timings = h.queueTimings(ctx, ids)
+	}
 	for i, qu := range page.Items {
 		resp.Items[i] = queueItemResponse{queueResponse: toQueueResponse(qu), queueTimingResponse: timings[qu.ID]}
 	}
@@ -381,6 +413,12 @@ func (h *queueHandler) getQueue(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id := chi.URLParam(r, "id")
 
+	withTiming, problem := parseQueueInclude(r)
+	if problem != "" {
+		writeProblem(w, r, http.StatusBadRequest, problem)
+		return
+	}
+
 	queue, err := h.store.GetQueue(ctx, id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -392,10 +430,11 @@ func (h *queueHandler) getQueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, queueItemResponse{
-		queueResponse:       toQueueResponse(queue),
-		queueTimingResponse: h.queueTimings(ctx, []string{id})[id],
-	})
+	item := queueItemResponse{queueResponse: toQueueResponse(queue)}
+	if withTiming {
+		item.queueTimingResponse = h.queueTimings(ctx, []string{id})[id]
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 // ── PUT /api/v1/queues/{id} ───────────────────────────────────────────────────

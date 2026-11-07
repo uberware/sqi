@@ -100,6 +100,7 @@ const h = vi.hoisted(() => {
       jobs: [makeJob()],
       productError: null as unknown,
       paramsError: null as unknown,
+      farmsCalls: [] as unknown[],
     },
   }
 })
@@ -131,33 +132,36 @@ vi.mock('@/api/queries', async (orig) => ({
     error: h.state.paramsError,
   }),
   // The real FarmWithQueues shape is { farm, queues }, not { id, name, queues }.
-  useFarmsWithQueues: () => ({
-    data: [
-      {
-        farm: {
-          id: 'f1',
-          name: 'Farm',
-          max_concurrent_tasks: 10,
-          created_at: '2024-01-01T00:00:00Z',
-          updated_at: '2024-01-01T00:00:00Z',
-        },
-        queues: [
-          {
-            id: 'q1',
-            farm_id: 'f1',
-            name: 'Queue',
-            priority: 50,
-            max_concurrent_tasks: 5,
-            paused: false,
+  useFarmsWithQueues: (...args: unknown[]) => {
+    h.state.farmsCalls.push(args)
+    return {
+      data: [
+        {
+          farm: {
+            id: 'f1',
+            name: 'Farm',
+            max_concurrent_tasks: 10,
             created_at: '2024-01-01T00:00:00Z',
             updated_at: '2024-01-01T00:00:00Z',
           },
-        ],
-      },
-    ],
-    isLoading: false,
-    error: null,
-  }),
+          queues: [
+            {
+              id: 'q1',
+              farm_id: 'f1',
+              name: 'Queue',
+              priority: 50,
+              max_concurrent_tasks: 5,
+              paused: false,
+              created_at: '2024-01-01T00:00:00Z',
+              updated_at: '2024-01-01T00:00:00Z',
+            },
+          ],
+        },
+      ],
+      isLoading: false,
+      error: null,
+    }
+  },
   useListJobs: () => ({
     data: { items: h.state.jobs, total: h.state.jobs.length, limit: 200, offset: 0 },
     isLoading: false,
@@ -173,6 +177,7 @@ vi.mock('@/api/mutations', async (orig) => ({
 beforeEach(() => {
   h.state.productError = null
   h.state.paramsError = null
+  h.state.farmsCalls = []
   submitMock.mockClear()
   navigateMock.mockClear()
   // Default every test to an operator principal (holds jobs.submit_as) so the
@@ -228,6 +233,14 @@ function renderWithAuth(ui: ReactElement, { permissions }: { permissions: Permis
 }
 
 describe('ProductSubmit', () => {
+  it('loads the queue targets without the timing figures', async () => {
+    renderPage()
+    await screen.findByRole('heading', { level: 1, name: 'sUBMIT' })
+    expect(h.state.farmsCalls.length).toBeGreaterThan(0)
+    for (const args of h.state.farmsCalls)
+      expect(JSON.stringify(args)).not.toContain('includeTiming')
+  })
+
   it('titles the page Submit and names the product in the subtitle', async () => {
     renderPage()
     // PageHeader inverts the title's case for the display font.

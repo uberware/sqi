@@ -13,6 +13,7 @@ import {
   fetchListFarms,
   fetchGetFarm,
   fetchListQueues,
+  fetchFarmsWithQueues,
   fetchListUsagePools,
   fetchGetUsagePool,
   fetchListStorageLocations,
@@ -285,6 +286,44 @@ describe('fetchListQueues', () => {
     fetchMock.mockResolvedValueOnce(listResponse([]))
     await fetchListQueues('farm-abc')
     expect(calledUrl()).toBe('/api/v1/queues?farm_id=farm-abc')
+  })
+})
+
+describe('fetchListQueues timing', () => {
+  it('adds include=timing only when asked', async () => {
+    fetchMock.mockResolvedValueOnce(listResponse([]))
+    await fetchListQueues('farm-abc', 1000, { includeTiming: true })
+    expect(calledUrl()).toBe('/api/v1/queues?farm_id=farm-abc&limit=1000&include=timing')
+  })
+
+  it('omits include for includeTiming: false', async () => {
+    fetchMock.mockResolvedValueOnce(listResponse([]))
+    await fetchListQueues('farm-abc', 1000, { includeTiming: false })
+    expect(calledUrl()).toBe('/api/v1/queues?farm_id=farm-abc&limit=1000')
+  })
+})
+
+describe('fetchFarmsWithQueues', () => {
+  const farm = { id: 'farm-abc', name: 'f' }
+  const queueUrls = () =>
+    fetchMock.mock.calls.map((c) => String(c[0])).filter((u) => u.includes('/queues'))
+
+  it('requests no timing by default', async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse([farm]))
+    fetchMock.mockResolvedValueOnce(listResponse([]))
+    await fetchFarmsWithQueues()
+    expect(queueUrls()).toEqual(['/api/v1/queues?farm_id=farm-abc&limit=1000'])
+  })
+
+  it('requests include=timing when asked', async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse([farm]))
+    fetchMock.mockResolvedValueOnce(listResponse([]))
+    await fetchFarmsWithQueues({ includeTiming: true })
+    expect(queueUrls()).toEqual(['/api/v1/queues?farm_id=farm-abc&limit=1000&include=timing'])
+  })
+
+  it('caches the timing variant under its own key', () => {
+    expect(queryKeys.farms.withQueues(true)).not.toEqual(queryKeys.farms.withQueues(false))
   })
 })
 

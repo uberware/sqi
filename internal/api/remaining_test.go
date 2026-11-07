@@ -104,6 +104,28 @@ func assertAsOf(t *testing.T, it map[string]json.RawMessage) {
 	}
 }
 
+// assertFinished checks a terminal job's figure: 0 seconds, basis finished.
+func assertFinished(t *testing.T, it map[string]json.RawMessage) {
+	t.Helper()
+	if got := rawInt(t, it["remaining_seconds"]); got != 0 {
+		t.Errorf("remaining_seconds = %d, want 0", got)
+	}
+	if got := string(it["remaining_basis"]); got != `"finished"` {
+		t.Errorf("remaining_basis = %s", got)
+	}
+}
+
+// assertUnknown checks a job with nothing known: null seconds, no basis.
+func assertUnknown(t *testing.T, it map[string]json.RawMessage) {
+	t.Helper()
+	if got := string(it["remaining_seconds"]); got != "null" {
+		t.Errorf("remaining_seconds = %s, want null", got)
+	}
+	if _, ok := it["remaining_basis"]; ok {
+		t.Errorf("remaining_basis present: %s", it["remaining_basis"])
+	}
+}
+
 func TestListJobs_RemainingSeconds(t *testing.T) {
 	st := fake.New()
 	est, _ := seedJobTasks(t, st, store.JobStatusPending, store.Task{Name: "a", Status: store.TaskStatusReady})
@@ -119,18 +141,8 @@ func TestListJobs_RemainingSeconds(t *testing.T) {
 	if got := string(items[est.ID]["remaining_basis"]); got != `"estimate"` {
 		t.Errorf("estimated job remaining_basis = %s", got)
 	}
-	if got := string(items[unknown.ID]["remaining_seconds"]); got != "null" {
-		t.Errorf("unknown job remaining_seconds = %s, want null", got)
-	}
-	if _, ok := items[unknown.ID]["remaining_basis"]; ok {
-		t.Errorf("unknown job has remaining_basis %s", items[unknown.ID]["remaining_basis"])
-	}
-	if got := rawInt(t, items[done.ID]["remaining_seconds"]); got != 0 {
-		t.Errorf("completed job remaining_seconds = %d, want 0", got)
-	}
-	if got := string(items[done.ID]["remaining_basis"]); got != `"finished"` {
-		t.Errorf("completed job remaining_basis = %s", got)
-	}
+	assertUnknown(t, items[unknown.ID])
+	assertFinished(t, items[done.ID])
 	for id, it := range items {
 		assertAsOf(t, it)
 		if _, ok := it["remaining_seconds"]; !ok {
@@ -162,12 +174,7 @@ func TestListJobs_TerminalOnlyPageSkipsTimingRead(t *testing.T) {
 		t.Fatalf("JobTimings calls = %d, want 0 for a terminal-only page", st.jobCalls)
 	}
 	for _, id := range []string{done.ID, failed.ID} {
-		if got := rawInt(t, items[id]["remaining_seconds"]); got != 0 {
-			t.Errorf("job %s remaining_seconds = %d, want 0", id, got)
-		}
-		if got := string(items[id]["remaining_basis"]); got != `"finished"` {
-			t.Errorf("job %s remaining_basis = %s", id, got)
-		}
+		assertFinished(t, items[id])
 	}
 }
 
@@ -192,12 +199,7 @@ func TestGetJob_TerminalSkipsTimingRead(t *testing.T) {
 	if st.jobCalls != 0 {
 		t.Fatalf("JobTimings calls = %d, want 0", st.jobCalls)
 	}
-	if got := rawInt(t, m["remaining_seconds"]); got != 0 {
-		t.Errorf("remaining_seconds = %d, want 0", got)
-	}
-	if got := string(m["remaining_basis"]); got != `"finished"` {
-		t.Errorf("remaining_basis = %s", got)
-	}
+	assertFinished(t, m)
 }
 
 func TestGetJob_RemainingSeconds_Measured(t *testing.T) {
@@ -229,12 +231,7 @@ func TestGetJob_RemainingSeconds_TimingFailure(t *testing.T) {
 	st := &timingFailStore{Store: base, failJobs: true}
 
 	m := getJSON(t, newJobRouter(st, &fakeScheduler{}), "/api/v1/jobs/"+job.ID)
-	if got := string(m["remaining_seconds"]); got != "null" {
-		t.Errorf("remaining_seconds = %s, want null", got)
-	}
-	if _, ok := m["remaining_basis"]; ok {
-		t.Errorf("remaining_basis present on timing failure")
-	}
+	assertUnknown(t, m)
 }
 
 func TestListJobs_RemainingSeconds_TimingFailure(t *testing.T) {
@@ -303,7 +300,7 @@ func TestListQueues_Timing(t *testing.T) {
 	base := fake.New()
 	a, b, rj := seedQueueTiming(t, base)
 	st := &timingFailStore{Store: base}
-	items := itemsByID(t, getJSON(t, newQueueRouter(st), "/api/v1/queues"))
+	items := itemsByID(t, getJSON(t, newQueueRouter(st), "/api/v1/queues?include=timing"))
 
 	assertQueueA(t, items[a.ID], wantRunningJobFigure(t, base, rj))
 	for _, k := range []string{"unfinished_jobs", "work_remaining_seconds", "jobs_without_estimate", "running_tasks"} {
@@ -323,7 +320,7 @@ func TestListQueues_Timing(t *testing.T) {
 func TestGetQueue_Timing(t *testing.T) {
 	base := fake.New()
 	a, _, rj := seedQueueTiming(t, base)
-	m := getJSON(t, newQueueRouter(base), "/api/v1/queues/"+a.ID)
+	m := getJSON(t, newQueueRouter(base), "/api/v1/queues/"+a.ID+"?include=timing")
 	assertQueueA(t, m, wantRunningJobFigure(t, base, rj))
 }
 
@@ -331,7 +328,7 @@ func TestListQueues_TimingFailure(t *testing.T) {
 	base := fake.New()
 	a, _, _ := seedQueueTiming(t, base)
 	st := &timingFailStore{Store: base, failQueues: true}
-	items := itemsByID(t, getJSON(t, newQueueRouter(st), "/api/v1/queues"))
+	items := itemsByID(t, getJSON(t, newQueueRouter(st), "/api/v1/queues?include=timing"))
 	if _, ok := items[a.ID]; !ok || len(items) != 2 {
 		t.Fatalf("items = %d, want both queues", len(items))
 	}
@@ -348,9 +345,93 @@ func TestGetQueue_TimingFailure(t *testing.T) {
 	base := fake.New()
 	a, _, _ := seedQueueTiming(t, base)
 	st := &timingFailStore{Store: base, failQueues: true}
-	m := getJSON(t, newQueueRouter(st), "/api/v1/queues/"+a.ID)
+	m := getJSON(t, newQueueRouter(st), "/api/v1/queues/"+a.ID+"?include=timing")
 	if _, ok := m["unfinished_jobs"]; ok {
 		t.Error("unfinished_jobs present on timing failure")
+	}
+}
+
+var queueTimingKeys = []string{"unfinished_jobs", "work_remaining_seconds", "jobs_without_estimate", "running_tasks", "as_of"}
+
+func TestListQueues_NoIncludeSkipsTiming(t *testing.T) {
+	base := fake.New()
+	a, _, _ := seedQueueTiming(t, base)
+	st := &timingFailStore{Store: base}
+	items := itemsByID(t, getJSON(t, newQueueRouter(st), "/api/v1/queues"))
+	if _, ok := items[a.ID]; !ok || len(items) != 2 {
+		t.Fatalf("items = %d, want both queues", len(items))
+	}
+	if st.queueCalls != 0 {
+		t.Errorf("QueueJobTimings calls = %d, want 0", st.queueCalls)
+	}
+	for id, it := range items {
+		for _, k := range queueTimingKeys {
+			if _, ok := it[k]; ok {
+				t.Errorf("queue %s has %s without include=timing", id, k)
+			}
+		}
+	}
+}
+
+func TestGetQueue_NoIncludeSkipsTiming(t *testing.T) {
+	base := fake.New()
+	a, _, _ := seedQueueTiming(t, base)
+	st := &timingFailStore{Store: base}
+	m := getJSON(t, newQueueRouter(st), "/api/v1/queues/"+a.ID)
+	if st.queueCalls != 0 {
+		t.Errorf("QueueJobTimings calls = %d, want 0", st.queueCalls)
+	}
+	for _, k := range queueTimingKeys {
+		if _, ok := m[k]; ok {
+			t.Errorf("%s present without include=timing", k)
+		}
+	}
+}
+
+func TestGetQueue_IncludeTimingReadsOnce(t *testing.T) {
+	base := fake.New()
+	a, _, _ := seedQueueTiming(t, base)
+	st := &timingFailStore{Store: base}
+	getJSON(t, newQueueRouter(st), "/api/v1/queues/"+a.ID+"?include=timing")
+	if st.queueCalls != 1 {
+		t.Errorf("QueueJobTimings calls = %d, want 1", st.queueCalls)
+	}
+}
+
+func TestQueues_IncludeTokens(t *testing.T) {
+	base := fake.New()
+	a, _, _ := seedQueueTiming(t, base)
+	st := &timingFailStore{Store: base}
+	h := newQueueRouter(st)
+	// Repeated and comma-separated values both work.
+	for _, target := range []string{
+		"/api/v1/queues?include=timing,timing",
+		"/api/v1/queues?include=timing&include=timing",
+		"/api/v1/queues/" + a.ID + "?include=timing,timing",
+	} {
+		st.queueCalls = 0
+		getJSON(t, h, target)
+		if st.queueCalls != 1 {
+			t.Errorf("%s: QueueJobTimings calls = %d, want 1", target, st.queueCalls)
+		}
+	}
+	for _, target := range []string{
+		"/api/v1/queues?include=bogus",
+		"/api/v1/queues?include=timing,bogus",
+		"/api/v1/queues/" + a.ID + "?include=bogus",
+	} {
+		st.queueCalls = 0
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, newUnscopedJobsReq(t, target))
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", target, rr.Code)
+		}
+		if !strings.Contains(rr.Body.String(), "include") || !strings.Contains(rr.Body.String(), "timing") {
+			t.Errorf("%s: body %q should name include and timing", target, rr.Body)
+		}
+		if st.queueCalls != 0 {
+			t.Errorf("%s: timing read ran on a rejected request", target)
+		}
 	}
 }
 

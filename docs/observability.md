@@ -102,11 +102,15 @@ still has work left, because the measured run times take over.
 `remaining_seconds` is also `null` if the timing inputs could not be read or the
 job is missing from the timing read; the response is still `200` and the failure is logged at warn.
 
-**Queues** (`GET /api/v1/queues`, `GET /api/v1/queues/{id}`) carry
-`unfinished_jobs`, `work_remaining_seconds` (the sum of the unfinished jobs' known
+**Queues** (`GET /api/v1/queues`, `GET /api/v1/queues/{id}`) carry the figures
+below only when requested with `?include=timing` (comma-separated and repeated
+values both work; an unknown value is a `400`). Without it the server does not
+compute them and the keys are absent: the read costs time proportional to the
+succeeded tasks in unfinished jobs, so only callers that show the figures
+should ask. The fields are `unfinished_jobs`, `work_remaining_seconds` (the sum of the unfinished jobs' known
 figures), `jobs_without_estimate` (unfinished jobs whose figure is `null`),
 `running_tasks` and `as_of`. They are absent together if the read failed, and
-from the create and update responses. A client refreshes the figures between
+from the create and update responses, which never carry them. A client refreshes the figures between
 reads: displayed remaining = `max(0, work_remaining_seconds − running_tasks ×
 (now − as_of))`, and ETA = `now + displayed remaining / max(1, running_tasks)`.
 A paused queue shows "paused" instead of an ETA. The ETA is exact for one worker

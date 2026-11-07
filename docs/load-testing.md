@@ -995,10 +995,10 @@ cores or less.
   cost. The per-step count and measured-sum query is most of that time.
   The cost scales with the number of succeeded tasks in unfinished jobs (about
   5.7 microseconds per succeeded task in this benchmark: 10,000 succeeded tasks
-  for 57 ms), not with the number of jobs. It is paid once per farm by the web
-  farms-with-queues query (shared with the submit forms) and by every queue
-  list call. No cache or opt-in parameter exists; that is a deliberate ruling
-  pending a maintainer decision.
+  for 57 ms), not with the number of jobs. The read runs only when a queue
+  list or get call asks for it with `include=timing`: the web Queues page asks
+  once per farm, and the submit forms, the Python SDK by default and the DCC
+  submitters do not, so they do not pay the 57 ms. No cache exists.
 - **Terminal ingest slows:** the median time to store a terminal status rose
   from 43 to 72 ms on SQLite and from 101 to 263 ms on PostgreSQL, and the p99
   from 144 to 181 ms and from 343 to 627 ms. Terminal statuses and snapshots

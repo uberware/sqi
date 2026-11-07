@@ -121,6 +121,9 @@ export const queryKeys = {
   farms: {
     all: ['farms'] as const,
     detail: (id: string) => ['farms', 'detail', id] as const,
+    /** Farms with their queues; the timing variant is cached apart from the plain one. */
+    withQueues: (includeTiming: boolean) =>
+      ['farms', includeTiming ? 'with-queues-timing' : 'with-queues'] as const,
   },
   queues: {
     all: ['queues'] as const,
@@ -262,9 +265,29 @@ export function fetchGetFarm(id: string): Promise<Farm> {
   return apiFetch(`/farms/${encodeURIComponent(id)}`)
 }
 
+/** Optional extras for a queue list read. */
+export type QueueReadOptions = {
+  /**
+   * Ask the server for each queue's remaining-work figures (`include=timing`).
+   * They cost a read proportional to the unfinished jobs, so request them only
+   * where they are shown.
+   */
+  includeTiming?: boolean
+}
+
 /** Fetch a page of queues belonging to a farm from `GET /queues?farm_id=…`. */
-export function fetchListQueues(farmId: string, limit?: number): Promise<ListResponse<Queue>> {
-  return apiFetch(`/queues${buildQS({ farm_id: farmId, limit })}`)
+export function fetchListQueues(
+  farmId: string,
+  limit?: number,
+  options?: QueueReadOptions,
+): Promise<ListResponse<Queue>> {
+  return apiFetch(
+    `/queues${buildQS({
+      farm_id: farmId,
+      limit,
+      include: options?.includeTiming ? 'timing' : undefined,
+    })}`,
+  )
 }
 
 /** Fetch one queue from `GET /queues/{id}`. */
@@ -374,14 +397,14 @@ export type FarmWithQueues = {
  * selector. Queues are requested with a high limit so the selector is never
  * silently truncated.
  */
-export async function fetchFarmsWithQueues(): Promise<FarmWithQueues[]> {
+export async function fetchFarmsWithQueues(options?: QueueReadOptions): Promise<FarmWithQueues[]> {
   const farms = await fetchListFarms()
   // Request a high limit so the selector is never silently truncated — a
   // partial queue list would prevent submitting to queues beyond the server's
   // default page size.
   return Promise.all(
     farms.map((farm) =>
-      fetchListQueues(farm.id, 1000).then((res) => ({ farm, queues: res.items })),
+      fetchListQueues(farm.id, 1000, options).then((res) => ({ farm, queues: res.items })),
     ),
   )
 }
@@ -648,11 +671,16 @@ export function useUserApiKeys(userId: string) {
   })
 }
 
-/** Load all farms along with their queues in a single combined query. */
-export function useFarmsWithQueues() {
+/**
+ * Load all farms along with their queues in a single combined query. Queues
+ * carry their remaining-work figures only with `includeTiming`, which is cached
+ * under its own key.
+ */
+export function useFarmsWithQueues(options?: QueueReadOptions) {
+  const includeTiming = options?.includeTiming ?? false
   return useQuery({
-    queryKey: [...queryKeys.farms.all, 'with-queues'] as const,
-    queryFn: fetchFarmsWithQueues,
+    queryKey: queryKeys.farms.withQueues(includeTiming),
+    queryFn: () => fetchFarmsWithQueues({ includeTiming }),
   })
 }
 

@@ -207,3 +207,68 @@ func TestMigration00043_DownRemovesTheEstimateColumns(t *testing.T) {
 		t.Fatalf("after Up again: %d of 3 columns", n)
 	}
 }
+
+// taskAttemptsIndexes lists the names of the indexes on task_attempts.
+func taskAttemptsIndexes(t *testing.T, db *sql.DB, query string) []string {
+	t.Helper()
+	rows, err := db.QueryContext(t.Context(), query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, n)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return names
+}
+
+// checkMigration00044 drives 00044 up, down and up again, asserting the index
+// set on task_attempts at each point.
+func checkMigration00044(t *testing.T, db *sql.DB, driver, query string) {
+	t.Helper()
+	p, err := migrations.NewProvider(db, driver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Up(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	has := func(name string) bool {
+		return slices.Contains(taskAttemptsIndexes(t, db, query), name)
+	}
+	if has("task_attempts_task_id") || !has("task_attempts_task_num") {
+		t.Fatalf("after Up: indexes %v; want task_num kept, task_id dropped", taskAttemptsIndexes(t, db, query))
+	}
+	if !has("task_attempts_worker_id") || !has("task_attempts_session_id") {
+		t.Fatalf("after Up: indexes %v; want worker_id and session_id kept", taskAttemptsIndexes(t, db, query))
+	}
+	if _, err := p.DownTo(t.Context(), 43); err != nil {
+		t.Fatalf("DownTo(43): %v", err)
+	}
+	if !has("task_attempts_task_id") || has("task_attempts_task_num") {
+		t.Fatalf("after Down: indexes %v; want task_id restored, task_num gone", taskAttemptsIndexes(t, db, query))
+	}
+	if _, err := p.Up(t.Context()); err != nil {
+		t.Fatalf("Up again: %v", err)
+	}
+	if has("task_attempts_task_id") || !has("task_attempts_task_num") {
+		t.Fatalf("after Up again: indexes %v", taskAttemptsIndexes(t, db, query))
+	}
+}
+
+func TestMigration00044_ReplacesTheTaskIDIndexAndDownRestoresIt(t *testing.T) {
+	db, err := sql.Open("sqlite", t.TempDir()+"/test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	checkMigration00044(t, db, "sqlite", `SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'task_attempts'`)
+}

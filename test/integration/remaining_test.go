@@ -8,6 +8,7 @@ package integration
 // from a real worker's progress and finished tasks, through the REST API.
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -93,7 +94,7 @@ func getRemainingJob(t *testing.T, ts *testServer, jobID string) remainingJobRes
 func getRemainingQueue(t *testing.T, ts *testServer, queueID string) remainingQueueResp {
 	t.Helper()
 	var r remainingQueueResp
-	mustDoJSON(t, http.MethodGet, apiURL(ts, "/api/v1/queues/"+queueID), nil, "", http.StatusOK, &r)
+	mustDoJSON(t, http.MethodGet, apiURL(ts, "/api/v1/queues/"+queueID+"?include=timing"), nil, "", http.StatusOK, &r)
 	return r
 }
 
@@ -157,7 +158,6 @@ func TestRemainingTimeEndToEnd(t *testing.T) {
 	job1 := submitEstimated(t, ts, farmID, queueID, remainingGateYAML, 600)
 	job2 := submitEstimated(t, ts, farmID, queueID, remainingQuickYAML, 600, job1)
 	job3 := submitEstimated(t, ts, farmID, queueID, remainingQuickYAML, 600, job1)
-	_, _ = job2, job3
 
 	// Running, no progress yet: each job's whole estimate remains.
 	j, q := waitRemaining(t, ts, job1, queueID, 60*time.Second, "job 1 running", func(_ remainingJobResp, q remainingQueueResp) bool {
@@ -187,11 +187,12 @@ func TestRemainingTimeEndToEnd(t *testing.T) {
 			t.Fatalf("job %s final status: got %q, want completed", id, final)
 		}
 	}
-	if done := getRemainingJob(t, ts, job1); done.RemainingSeconds == nil || *done.RemainingSeconds != 0 || done.RemainingBasis != "finished" {
+	done := getRemainingJob(t, ts, job1)
+	if done.RemainingSeconds == nil || *done.RemainingSeconds != 0 || done.RemainingBasis != "finished" {
 		t.Fatalf("finished job 1: got remaining %v basis %q, want 0 finished", derefI64(done.RemainingSeconds), done.RemainingBasis)
 	}
-	if raw := getRemainingJob(t, ts, job1); raw.ProductName != "" || raw.ProductVersion != "" {
-		t.Errorf("raw-template job records product %q %q, want none", raw.ProductName, raw.ProductVersion)
+	if done.ProductName != "" || done.ProductVersion != "" {
+		t.Errorf("raw-template job records product %q %q, want none", done.ProductName, done.ProductVersion)
 	}
 
 	// Measured rate: no estimate, three tasks of five, ten and fifteen seconds.
@@ -210,6 +211,15 @@ func TestRemainingTimeEndToEnd(t *testing.T) {
 	}
 	if m = getRemainingJob(t, ts, measured); m.RemainingSeconds == nil || *m.RemainingSeconds != 0 || m.RemainingBasis != "finished" {
 		t.Fatalf("finished measured job: got remaining %v basis %q, want 0 finished", derefI64(m.RemainingSeconds), m.RemainingBasis)
+	}
+
+	// The totals are opt-in: a plain queue read carries none of them.
+	var plain map[string]json.RawMessage
+	mustDoJSON(t, http.MethodGet, apiURL(ts, "/api/v1/queues/"+queueID), nil, "", http.StatusOK, &plain)
+	for _, k := range []string{"unfinished_jobs", "work_remaining_seconds", "jobs_without_estimate", "running_tasks", "as_of"} {
+		if _, ok := plain[k]; ok {
+			t.Errorf("plain queue read carries %q without include=timing", k)
+		}
 	}
 
 	// A product submission records its product.

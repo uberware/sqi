@@ -287,6 +287,19 @@ describe('Submit page', () => {
       expect(select).toBeInTheDocument()
     })
 
+    it('does not request queue timing figures', async () => {
+      mockFarmsAndQueues()
+      render(<Submit />, { wrapper: Wrapper })
+      await waitFor(() => {
+        expect(screen.getByRole('option', { name: 'Default' })).toBeInTheDocument()
+      })
+      const urls = fetchMock.mock.calls
+        .map((c) => String(c[0]))
+        .filter((u) => u.includes('/queues'))
+      expect(urls.length).toBeGreaterThan(0)
+      for (const u of urls) expect(u).not.toContain('include')
+    })
+
     it('shows loading state while queues are fetching', () => {
       // Never resolves during this test
       fetchMock.mockReturnValue(new Promise(() => {}))

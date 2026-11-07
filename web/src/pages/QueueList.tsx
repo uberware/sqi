@@ -15,18 +15,13 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '@/auth/context'
 import { can } from '@/auth/policy'
 import { useLiveNow } from '@/hooks/useLiveNow'
-import { countDownSeconds, etaMs, formatClock } from '@/lib/time'
+import { countDownCeil, etaMs, formatClock } from '@/lib/time'
 import { useWebSocket } from '@/ws/context'
 import styles from './entityList.module.css'
 
-/** Queue timing is known when the server reported it (all four fields arrive together). */
+/** Queue timing is known when the server reported it (all five fields arrive together, counting as_of). */
 function hasTiming(q: Queue): boolean {
   return q.work_remaining_seconds !== undefined
-}
-
-/** True when the queue's remaining figure covers no job at all (every unfinished job lacks an estimate). */
-function nothingKnown(q: Queue): boolean {
-  return (q.work_remaining_seconds ?? 0) === 0 && (q.jobs_without_estimate ?? 0) > 0
 }
 
 interface TimingCellsProps {
@@ -45,26 +40,25 @@ function TimingCells({ queue, anchorMs, now }: TimingCellsProps) {
       </>
     )
   }
-  const running = queue.running_tasks ?? 0
-  const known = !nothingKnown(queue)
-  const left = countDownSeconds(queue.work_remaining_seconds ?? 0, running, anchorMs, now)
-  const missing = queue.jobs_without_estimate ?? 0
+  const {
+    running_tasks: running = 0,
+    work_remaining_seconds: work = 0,
+    jobs_without_estimate: missing = 0,
+    unfinished_jobs: unfinished = 0,
+  } = queue
+  // No job in the figure has an estimate: nothing is known, not "zero left".
+  const known = !(work === 0 && missing > 0)
   let eta = '—'
   if (queue.paused) eta = 'paused'
-  else if (known && (queue.unfinished_jobs ?? 0) > 0) {
-    eta = formatClock(etaMs(Math.ceil(left), running, now), now)
+  else if (known && unfinished > 0) {
+    eta = formatClock(etaMs(countDownCeil(work, running, anchorMs, now), running, now), now)
   }
   return (
     <>
-      <td>{queue.unfinished_jobs ?? 0}</td>
+      <td>{unfinished}</td>
       <td>
         {known ? (
-          <RemainingTime
-            seconds={queue.work_remaining_seconds}
-            running={running}
-            anchorMs={anchorMs}
-            now={now}
-          />
+          <RemainingTime seconds={work} running={running} anchorMs={anchorMs} now={now} />
         ) : (
           '—'
         )}
@@ -82,7 +76,15 @@ export default function QueueList() {
   const { principal } = useAuth()
   const canManage = can(principal, 'infra.manage')
 
-  const { data: farmsWithQueues, isLoading, isError, error, dataUpdatedAt } = useFarmsWithQueues()
+  const {
+    data: farmsWithQueues,
+    isLoading,
+    isError,
+    error,
+    dataUpdatedAt,
+  } = useFarmsWithQueues({
+    includeTiming: true,
+  })
   const queryClient = useQueryClient()
   const deleteQueue = useDeleteQueue()
   const { showToast } = useToast()
@@ -106,7 +108,7 @@ export default function QueueList() {
     if (refreshTimerRef.current) return
     refreshTimerRef.current = setTimeout(() => {
       refreshTimerRef.current = null
-      void queryClient.invalidateQueries({ queryKey: [...queryKeys.farms.all, 'with-queues'] })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.farms.withQueues(true) })
     }, REFRESH_DELAY_MS)
   })
 

@@ -22,6 +22,7 @@ import { useWebSocket } from '@/ws/context'
 import { useLiveNow } from '@/hooks/useLiveNow'
 import RemainingTime from '@/components/RemainingTime'
 import EstimateField from '@/components/EstimateField'
+import { TERMINAL_JOB_STATUSES } from '@/lib/jobStatus'
 import TaskRunProgress from '@/components/TaskRunProgress'
 import { formatTimespan, formatDuration } from '@/lib/time'
 import { truncateId } from '@/lib/id'
@@ -192,8 +193,7 @@ function MetadataCard({
   now: number
 }) {
   const note = job.remaining_basis === undefined ? undefined : REMAINING_NOTE[job.remaining_basis]
-  const finished =
-    job.status === 'completed' || job.status === 'failed' || job.status === 'canceled'
+  const finished = TERMINAL_JOB_STATUSES.has(job.status)
   return (
     <div className={styles.metaCard}>
       <dl className={styles.metaGrid}>

@@ -16,11 +16,9 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useListJobs } from '@/api/queries'
+import { TERMINAL_JOB_STATUSES } from '@/lib/jobStatus'
 import { filterBySearch } from '@/utils/filterBySearch'
 import styles from './DependsOnField.module.css'
-
-/** Job statuses that can no longer be depended on meaningfully (already finished). */
-const TERMINAL_JOB_STATUSES: ReadonlySet<string> = new Set(['completed', 'failed', 'canceled'])
 
 /** Candidate upstream jobs are capped so the picker never silently truncates. */
 const CANDIDATE_LIMIT = 200

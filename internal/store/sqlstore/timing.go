@@ -35,10 +35,11 @@ func timingByJobs(jobIDs []string) timingScope {
 
 func timingByQueues(queueIDs []string) timingScope {
 	timingIn := `(` + qmarks(len(queueIDs)) + `)`
+	where := `j.queue_id IN ` + timingIn + ` AND ` + timingNonTerminal
 	return timingScope{
-		jobsWhere:  `j.queue_id IN ` + timingIn + ` AND ` + timingNonTerminal,
+		jobsWhere:  where,
 		tasksJoin:  `JOIN jobs j ON j.id = t.job_id`,
-		tasksWhere: `j.queue_id IN ` + timingIn + ` AND ` + timingNonTerminal,
+		tasksWhere: where,
 		args:       stringArgs(queueIDs),
 	}
 }

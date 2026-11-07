@@ -331,9 +331,9 @@ carries `effective_retry` — the resolved retry policy for this job
 (`max_attempts`, `retry_delay_seconds`, `failure_limit`) after the
 server → farm → queue → job cascade — plus `failed_attempts` and, when the job
 has been auto-parked, a `park_reason`. Job list items and job detail also carry
-`remaining_seconds`, `remaining_basis` and `as_of`, and queue responses carry
+`remaining_seconds`, `remaining_basis` and `as_of`, and queue list and get responses carry
 `unfinished_jobs`, `work_remaining_seconds`, `jobs_without_estimate`,
-`running_tasks` and `as_of`; see
+`running_tasks` and `as_of` only when requested with `?include=timing`; see
 [`docs/observability.md`](observability.md#remaining-time-and-eta).
 
 `task_counts.unschedulable` counts `ready` tasks that currently carry a
