@@ -116,6 +116,11 @@ func TestPresetProgress_Fixtures(t *testing.T) {
 		{"blender-view-layer-render", "blender-5.2.2-cycles.txt", "1-3", blenderWant, "Sample 1/8"},
 		{"blender-view-layer-render", "blender-5.2.2-eevee.txt", "1-3", blenderWant, "Rendering 1 / 8 samples"},
 		{"blender-view-layer-render", "blender-5.2.2-cycles-tiled.txt", "1-3", blenderTiledWant, "Rendered 1/6 Tiles, Sample 1/8"},
+		// Nuke prints "Frame N (i of n)" once per frame, after every Write node
+		// has written it, so the bar moves once per frame however many Writes
+		// the script renders.
+		{"nuke-write-render", "nuke-17.1v2-write.txt", "1-3", []int{33, 66, 100}, "Frame 1 (1 of 3)"},
+		{"nuke-script-render", "nuke-17.1v2-script.txt", "1-3", []int{33, 66, 100}, "Frame 1 (1 of 3)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.preset+"/"+tc.fixture, func(t *testing.T) {

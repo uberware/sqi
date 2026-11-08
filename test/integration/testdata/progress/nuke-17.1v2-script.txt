@@ -1,0 +1,27 @@
+# Captured verbatim from Nuke 17.1v2 Non-commercial on macOS arm64 (stdout and stderr, combined); scratch path replaced by <SCRATCH>.
+# version: Nuke 17.1v2 64 bit arm64 (build: Sep 22 2026; revision: 596552)
+# scene:   Nuke17.1 --nc -t testdata/dcc/nuke_scene.py "<SCRATCH>/test shot" <SCRATCH>/out
+# command: Nuke17.1 --nc -x -F 1-3 "<SCRATCH>/test shot.nknc"   (renders both Write1 and Write2)
+Nuke 17.1v2, 64 bit (arm64), built Sep 22 2026.
+Copyright (c) 2026 The Foundry Visionmongers Ltd.  All Rights Reserved.
+Non-commercial mode active.
+
+Writing <SCRATCH>/out/wr2.0001.png took 0.00 seconds
+
+Writing <SCRATCH>/out/wr1.0001.png took 0.00 seconds
+Frame 1 (1 of 3)
+
+
+Writing <SCRATCH>/out/wr2.0002.png took 0.00 seconds
+
+Writing <SCRATCH>/out/wr1.0002.png took 0.00 seconds
+Frame 2 (2 of 3)
+
+
+Writing <SCRATCH>/out/wr2.0003.png took 0.00 seconds
+
+Writing <SCRATCH>/out/wr1.0003.png took 0.00 seconds
+Frame 3 (3 of 3)
+
+Total render time: 0.01 seconds
+.9

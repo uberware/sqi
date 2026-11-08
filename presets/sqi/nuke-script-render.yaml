@@ -30,6 +30,9 @@ readme: |
   Change the step's `chunks.defaultTaskCount` to trade parallelism against the
   cost of loading the script once per task.
 
+  The task's progress bar moves as Nuke finishes each frame, once every
+  enabled Write node has written it.
+
   ## Requirements
 
   - Workers tagged `attr.worker.tag.nuke = true`
@@ -42,7 +45,7 @@ version: 1.0.0
 template:
   specificationVersion: jobtemplate-2023-09
   name: Nuke Script Render
-  extensions: [TASK_CHUNKING]
+  extensions: [TASK_CHUNKING, SQI_LOG_PROGRESS]
   parameterDefinitions:
     - name: SceneFile
       type: PATH
@@ -66,6 +69,16 @@ template:
             chunks:
               defaultTaskCount: 10
               rangeConstraint: CONTIGUOUS
+      SQI_LOG_PROGRESS:
+        # From Nuke 17.1v2's output (test/integration/testdata/progress):
+        # after the last Write node has written a frame, Nuke prints
+        # "Frame N (i of n)" on a line of its own, once per frame however
+        # many Write nodes render. The "Writing ... took" lines before it
+        # repeat once per Write node and are left alone.
+        progress:
+          - '^Frame (?P<framedone>-?\d+) \(\d+ of \d+\)'
+        status:
+          - '^(?P<status>Frame -?\d+ \(\d+ of \d+\))'
       script:
         actions:
           onRun:

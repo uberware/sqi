@@ -234,6 +234,15 @@ presets:
         no comma-list form, so a NONCONTIGUOUS chunk such as 1-19:2 or 1-3,7,8
         could reach Nuke only through a wrapper script that rewrites it. A
         stepped range therefore costs one task, and one script load, per frame.
+        The SQI_LOG_PROGRESS pattern was confirmed against Nuke 17.1v2
+        (Non-commercial, macOS arm64) output captured from this argv
+        (testdata/progress, checked by TestPresetProgress_Fixtures): Nuke
+        prints "Frame N (i of n)" once a frame is written, so the bar moves as
+        each frame finishes, never within one. Tier 2 shows the task's progress
+        moving 25, 50, 75, 100 through a four-frame chunk under a real 17.1v2
+        worker, with each Write node made to sleep before each frame so a frame
+        outlasts the worker's 2 s progress throttle. Not confirmed: other Nuke
+        versions, a commercial license, or Nuke on Linux or Windows.
     tier2:
       case: TestPresetDCC_Nuke_WriteRender
       requires_app: nuke
@@ -257,7 +266,17 @@ presets:
         (Non-commercial) and shows that, with no -X, every enabled Write node
         renders every requested frame (two Write nodes, frames 1-4, eight
         files). Not shown: a disabled Write node, a stepped range (covered for
-        nuke-write-render), or a commercial license.
+        nuke-write-render), or a commercial license. The SQI_LOG_PROGRESS
+        pattern, shared with nuke-write-render, was confirmed against Nuke
+        17.1v2 output captured from this argv rendering two Write nodes
+        (testdata/progress, checked by TestPresetProgress_Fixtures): Nuke prints
+        a "Writing ... took" line per Write node per frame but "Frame N (i of
+        n)" once per frame, after every node has written it, and the pattern
+        matches only that, so the bar moves once per frame whatever the number
+        of Write nodes. Tier 2 shows the task's progress moving 25, 50, 75, 100
+        through a four-frame chunk of both Write nodes under a real 17.1v2
+        worker. Not confirmed: other Nuke versions, a commercial license, or
+        Nuke on Linux or Windows.
     tier2:
       case: TestPresetDCC_Nuke_ScriptRender
       requires_app: nuke

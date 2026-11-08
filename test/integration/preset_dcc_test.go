@@ -308,7 +308,7 @@ func TestPresetDCC_Blender_BatchRender(t *testing.T) {
 		// Tiled, so the tile pattern is what moves the bar within a frame.
 		slow := blenderProgressScene(t, exe, "640", "64")
 		out := t.TempDir()
-		assertBlenderChunkProgress(t, ts, farmID, queueID, "blender-batch-render", map[string]string{
+		assertChunkProgress(t, ts, farmID, queueID, "blender-batch-render", map[string]string{
 			"SceneFile": slow, "Frames": "1-4", "OutputPath": filepath.ToSlash(filepath.Join(out, "prog_####")),
 		})
 		assertExactFiles(t, out, frameNames("prog_%04d.png", 1, 2, 3, 4))
@@ -352,11 +352,11 @@ func blenderProgressScene(t *testing.T, exe, samples, tileSize string) string {
 	return savedPath(t, out)
 }
 
-// assertBlenderChunkProgress runs preset with four frames per task (the
+// assertChunkProgress runs preset with four frames per task (the
 // multi-frame-chunk case's patch) over a single task and checks that its
 // SQI_LOG_PROGRESS block moved the task's progress through at least two values
 // above 0 while it ran, and that it left status text on the task.
-func assertBlenderChunkProgress(t *testing.T, ts *testServer, farmID, queueID, preset string, params map[string]string) {
+func assertChunkProgress(t *testing.T, ts *testServer, farmID, queueID, preset string, params map[string]string) {
 	t.Helper()
 	tmpl, err := presettest.PresetTemplate(presettest.SourcePresets, preset)
 	if err != nil {
@@ -455,7 +455,7 @@ func TestPresetDCC_Blender_ViewLayerRender(t *testing.T) {
 		requireBlenderProgressVersion(t, exe)
 		slow := blenderProgressScene(t, exe, "640", "0")
 		out := t.TempDir()
-		assertBlenderChunkProgress(t, ts, farmID, queueID, "blender-view-layer-render", map[string]string{
+		assertChunkProgress(t, ts, farmID, queueID, "blender-view-layer-render", map[string]string{
 			"SceneFile": slow, "Frames": "1-4", "OutputPath": filepath.ToSlash(filepath.Join(out, "vlprog_####")),
 			"Scene": "Scene", "ViewLayer": "ViewLayer",
 		})
@@ -508,8 +508,20 @@ func nukeWorker(t *testing.T, ts *testServer, farmID, queueID, exe string) {
 // nukeScene builds the test script and returns its path.
 func nukeScene(t *testing.T, exe, renders string) string {
 	t.Helper()
+	return nukeSceneDelayed(t, exe, renders, "")
+}
+
+// nukeSceneDelayed builds the test script with each Write node sleeping delay
+// seconds before it writes a frame ("" for none), so a frame outlasts the
+// worker's 2 s progress throttle, and returns its path.
+func nukeSceneDelayed(t *testing.T, exe, renders, delay string) string {
+	t.Helper()
 	args := append(nukeArgs(), "-t", dccTestdata(t, "nuke_scene.py"),
 		filepath.Join(t.TempDir(), "test shot"), filepath.ToSlash(renders))
+	if delay != "" {
+		// Nuke would read a bare trailing number as a frame range.
+		args = append(args, "delay="+delay)
+	}
 	return savedPath(t, runDCC(t, exe, args...))
 }
 
@@ -557,6 +569,15 @@ func TestPresetDCC_Nuke_WriteRender(t *testing.T) {
 	want := frameNames("wr2.%04d.png", 1, 4)
 	assertExactFiles(t, renders, want)
 	assertPNGSize(t, renders, want, 320, 180)
+
+	t.Run("progress moves within a chunk", func(t *testing.T) {
+		slowRenders := t.TempDir()
+		slow := nukeSceneDelayed(t, exe, slowRenders, "3")
+		assertChunkProgress(t, ts, farmID, queueID, "nuke-write-render", map[string]string{
+			"SceneFile": slow, "Frames": "1-4", "WriteNode": "Write2",
+		})
+		assertExactFiles(t, slowRenders, frameNames("wr2.%04d.png", seq(1, 4)...))
+	})
 }
 
 // TestPresetDCC_Nuke_ScriptRender runs nuke-script-render under a real Nuke: with
@@ -578,6 +599,17 @@ func TestPresetDCC_Nuke_ScriptRender(t *testing.T) {
 	want := append(frameNames("wr1.%04d.png", seq(1, 4)...), frameNames("wr2.%04d.png", seq(1, 4)...)...)
 	assertExactFiles(t, renders, want)
 	assertPNGSize(t, renders, want, 320, 180)
+
+	// Both Write nodes sleep before each frame, so a frame takes about twice
+	// the delay, and Nuke's "Frame N (i of n)" line still comes once per frame.
+	t.Run("progress moves within a chunk", func(t *testing.T) {
+		slowRenders := t.TempDir()
+		slow := nukeSceneDelayed(t, exe, slowRenders, "2")
+		assertChunkProgress(t, ts, farmID, queueID, "nuke-script-render", map[string]string{
+			"SceneFile": slow, "Frames": "1-4",
+		})
+		assertExactFiles(t, slowRenders, append(frameNames("wr1.%04d.png", seq(1, 4)...), frameNames("wr2.%04d.png", seq(1, 4)...)...))
+	})
 }
 
 // ── Houdini ───────────────────────────────────────────────────────────────────

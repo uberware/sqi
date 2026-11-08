@@ -5,6 +5,9 @@ params:
   SceneFile=/mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
 
 step "Render" — 30 tasks
+  log progress: frameParameter "Frames"
+  log progress: progress "^Frame (?P<framedone>-?\\d+) \\(\\d+ of \\d+\\)"
+  log progress: status "^(?P<status>Frame -?\\d+ \\(\\d+ of \\d+\\))"
 
 task 1/30  name="Render[Frames=1-1]"
   task params:
