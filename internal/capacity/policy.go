@@ -17,7 +17,12 @@
 //     group can run drives nothing.
 //  3. Size. A group's desired size is the members it still needs plus the
 //     machines its assigned demand calls for, limited per evaluation by
-//     max_step_up and the scale-up cooldown, then clamped to [min, max].
+//     max_step_up and the scale-up cooldown, then clamped to [min, max]. Both
+//     limits are measured from the group's current size: its online members
+//     plus the machines its last step-up asked for that have not registered
+//     yet, counted for one boot timeout. That keeps the size steady while a
+//     step-up boots, rather than falling back to the online count and asking
+//     for the same machines again when the cooldown ends.
 //  4. Retire. Online members idle for at least the idle timeout that absorbed
 //     no demand are retire candidates, longest idle first, never taking the
 //     group below its desired size.
@@ -71,8 +76,13 @@ type Snapshot struct {
 	// LastStepUp is when each group, by ID, last stepped up. The caller keeps
 	// the map between evaluations; Evaluate writes a group's entry when it
 	// steps that group up (see [Evaluate]). A nil map records nothing, so no
-	// cooldown ever applies.
+	// cooldown applies and no machine counts as booting.
 	LastStepUp map[string]time.Time
+	// LastDesired is each group's DesiredMachines from the previous
+	// evaluation, by group ID. The caller keeps the map between evaluations;
+	// Evaluate writes every group's entry (see [Evaluate]). A nil map records
+	// nothing, so no machine counts as booting.
+	LastDesired map[string]int
 }
 
 // Status is one group's evaluation.
@@ -94,10 +104,18 @@ type Status struct {
 
 // Evaluate returns one Status per group, in s.Groups order.
 //
-// It writes s.LastStepUp[g.ID] = s.Now when group g's desired size exceeds its
-// online members and g was not inside its scale-up cooldown, and writes nothing
-// else. A step-up forced by min_machines during a cooldown does not restart the
-// cooldown.
+// It writes two entries per group g and nothing else:
+//
+//   - s.LastDesired[g.ID] = the group's DesiredMachines, on every evaluation.
+//   - s.LastStepUp[g.ID] = s.Now, when the desired size exceeds the group's
+//     current size (online members plus booting machines) and g was not inside
+//     its scale-up cooldown. A step-up forced by min_machines during a cooldown
+//     does not restart the cooldown.
+//
+// A machine counts as booting for one boot timeout after the last step-up:
+// current = max(online, LastDesired[g]) while Now − LastStepUp[g] is within
+// g's BootTimeout, otherwise online. A step-up whose machines never register
+// therefore stops counting after the boot timeout.
 func Evaluate(s Snapshot) []Status {
 	items := sortedItems(s.Demand)
 	plans := make([]*groupPlan, len(s.Groups))
@@ -350,29 +368,50 @@ func (p *groupPlan) retirable(now time.Time, absorbed map[string]bool) []Member 
 }
 
 // desired is the group's desired size: the online members it keeps (kept),
-// plus the machines its demand calls for, at most max_step_up of them and none
-// inside the scale-up cooldown, clamped to [min, max]. It records the step-up
+// plus the machines its demand calls for, at most max_step_up more than its
+// current size and no more than its current size inside the scale-up cooldown,
+// clamped to [min, max]. It records the result in s.LastDesired and a step-up
 // in s.LastStepUp.
 func (p *groupPlan) desired(s Snapshot, kept int) int {
 	g := p.g
 	last, stepped := s.LastStepUp[g.ID]
-	// A step-up recorded in the future (the wall clock stepped back) holds
-	// too, but for at most one cooldown, so a large jump cannot hold forever.
-	elapsed := s.Now.Sub(last)
-	cooling := stepped && g.ScaleUpCooldown > 0 && elapsed < g.ScaleUpCooldown && elapsed > -g.ScaleUpCooldown
+	cooling := stepped && within(s.Now.Sub(last), g.ScaleUpCooldown)
+	current := p.current(s)
 
-	add := 0
+	limit := int64(current)
 	if !cooling {
-		need := ceilDiv(p.demand, p.perMachine)
-		add = toInt(min(need, int64(max(g.MaxStepUp, 0))))
+		limit += int64(max(g.MaxStepUp, 0))
 	}
-	desired := min(kept+add, g.MaxMachines)
+	computed := int64(kept) + ceilDiv(p.demand, p.perMachine)
+	desired := toInt(min(computed, limit, int64(g.MaxMachines)))
 	desired = max(desired, g.MinMachines)
 
-	if desired > p.online && !cooling && s.LastStepUp != nil {
+	if desired > current && !cooling && s.LastStepUp != nil {
 		s.LastStepUp[g.ID] = s.Now
 	}
+	if s.LastDesired != nil {
+		s.LastDesired[g.ID] = desired
+	}
 	return desired
+}
+
+// current is the group's size for limiting a step-up: its online members, or
+// the size it last asked for while that request is younger than the boot
+// timeout and its machines may still be booting.
+func (p *groupPlan) current(s Snapshot) int {
+	last, stepped := s.LastStepUp[p.g.ID]
+	if !stepped || !within(s.Now.Sub(last), p.g.BootTimeout) {
+		return p.online
+	}
+	return max(s.LastDesired[p.g.ID], p.online)
+}
+
+// within reports whether elapsed falls inside a window of the given length.
+// A negative elapsed (the wall clock stepped back past the recorded time)
+// counts as inside, but for at most one window, so a large jump cannot hold
+// forever. A zero window holds nothing.
+func within(elapsed, window time.Duration) bool {
+	return window > 0 && elapsed < window && elapsed > -window
 }
 
 // sortedMembers returns members sorted by worker ID.

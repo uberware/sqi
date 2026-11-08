@@ -95,7 +95,7 @@ func snapshot(groups []store.CapacityGroup, members map[string][]Member, others 
 	}
 	return Snapshot{
 		Now: now, Groups: groups, Members: members, Others: others, Demand: demand,
-		CanRun: canRun, LastStepUp: map[string]time.Time{},
+		CanRun: canRun, LastStepUp: map[string]time.Time{}, LastDesired: map[string]int{},
 	}
 }
 
@@ -370,8 +370,10 @@ func TestEvaluate_CooldownHoldsTheSize(t *testing.T) {
 			t.Fatalf("first evaluation desired = %d, want 5", got)
 		}
 		s.Now = now.Add(time.Minute)
-		if got := Evaluate(s)[0].DesiredMachines; got != 2 {
-			t.Errorf("second evaluation desired = %d, want 2", got)
+		// The three machines asked for are still booting, so the size holds
+		// at 5 rather than stepping again.
+		if got := Evaluate(s)[0].DesiredMachines; got != 5 {
+			t.Errorf("second evaluation desired = %d, want 5", got)
 		}
 		if !s.LastStepUp["cloud"].Equal(now) {
 			t.Errorf("LastStepUp moved to %v", s.LastStepUp["cloud"])
@@ -728,4 +730,123 @@ func TestEvaluate_NamedGroupWakesOnlyWhatItHas(t *testing.T) {
 	// rest overflows to cloud.
 	got := Evaluate(snapshot(groups, members, nil, item("a", "q1", 8, 2, ""), item("b", "q1", 8, 2, "")))
 	assertBriefs(t, got, brief{16, 3, nil}, brief{16, 2, nil})
+}
+
+func TestEvaluate_BootingMachinesDoNotFlapTheSignal(t *testing.T) {
+	g := sized("cloud", 1, 8, 0, 50, 5)
+	g.ScaleUpCooldown = 5 * time.Minute
+	g.BootTimeout = 10 * time.Minute
+	s := snapshot([]store.CapacityGroup{g}, nil, nil, item("a", "q1", 1, 1000, ""))
+
+	// Nothing is online throughout; the five asked for at now are booting.
+	for _, step := range []struct {
+		at   time.Duration
+		want int
+	}{
+		{0, 5},
+		{30 * time.Second, 5},
+		{time.Minute, 5},
+		{4*time.Minute + 59*time.Second, 5},
+		// The cooldown is over and the five are still within the boot timeout:
+		// the next step is measured from them, not from the empty online count.
+		{5 * time.Minute, 10},
+		{6 * time.Minute, 10},
+	} {
+		s.Now = now.Add(step.at)
+		st := Evaluate(s)[0]
+		if st.DesiredMachines != step.want || st.OnlineMembers != 0 {
+			t.Fatalf("at +%v: desired %d online %d, want desired %d online 0",
+				step.at, st.DesiredMachines, st.OnlineMembers, step.want)
+		}
+		if s.LastDesired["cloud"] != step.want {
+			t.Fatalf("at +%v: LastDesired = %d, want %d", step.at, s.LastDesired["cloud"], step.want)
+		}
+	}
+	if want := now.Add(5 * time.Minute); !s.LastStepUp["cloud"].Equal(want) {
+		t.Errorf("LastStepUp = %v, want %v (the second step-up)", s.LastStepUp["cloud"], want)
+	}
+
+	// Machines register: online rises into the held size without moving it.
+	s.Members = map[string][]Member{"cloud": {busy(worker("m1", 8), 8), busy(worker("m2", 8), 8)}}
+	s.Now = now.Add(7 * time.Minute)
+	if got := Evaluate(s)[0].DesiredMachines; got != 10 {
+		t.Errorf("after two registered: desired %d, want 10", got)
+	}
+}
+
+func TestEvaluate_PendingExpiresAfterBootTimeout(t *testing.T) {
+	tests := []struct {
+		name        string
+		lastStepUp  time.Duration // before now
+		cooldown    time.Duration
+		lastDesired int
+		want        int
+	}{
+		// Cooldown longer than the boot timeout: the hold lasts only as long
+		// as the machines may still be booting, then falls to online.
+		{"booting, cooling", 9 * time.Minute, 15 * time.Minute, 5, 5},
+		{"boot timeout passed, still cooling", 11 * time.Minute, 15 * time.Minute, 5, 0},
+		{"exactly the boot timeout", 10 * time.Minute, 15 * time.Minute, 5, 0},
+		// No cooldown: the step is measured from the booting machines only
+		// while they may still be booting.
+		{"booting, not cooling", 9 * time.Minute, 0, 20, 25},
+		{"boot timeout passed, not cooling", 11 * time.Minute, 0, 20, 5},
+		{"a clock far behind does not hold", -time.Hour, 0, 20, 5},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := sized("cloud", 1, 8, 0, 50, 5)
+			g.ScaleUpCooldown = tc.cooldown
+			g.BootTimeout = 10 * time.Minute
+			s := snapshot([]store.CapacityGroup{g}, nil, nil, item("a", "q1", 1, 1000, ""))
+			s.LastStepUp["cloud"] = now.Add(-tc.lastStepUp)
+			s.LastDesired["cloud"] = tc.lastDesired
+			if got := Evaluate(s)[0].DesiredMachines; got != tc.want {
+				t.Errorf("desired = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEvaluate_FallingDemandLowersAHeldSize(t *testing.T) {
+	tests := []struct {
+		name     string
+		cooldown time.Duration
+		ready    int
+		want     int
+	}{
+		{"inside the cooldown", 5 * time.Minute, 16, 2},
+		{"outside the cooldown", 0, 16, 2},
+		{"to nothing", 5 * time.Minute, 0, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := sized("cloud", 1, 8, 0, 50, 5)
+			g.ScaleUpCooldown = tc.cooldown
+			g.BootTimeout = 10 * time.Minute
+			s := snapshot([]store.CapacityGroup{g}, nil, nil, item("a", "q1", 1, tc.ready, ""))
+			s.LastStepUp["cloud"] = now.Add(-time.Minute)
+			s.LastDesired["cloud"] = 5
+			if got := Evaluate(s)[0].DesiredMachines; got != tc.want {
+				t.Errorf("desired = %d, want %d", got, tc.want)
+			}
+			if s.LastDesired["cloud"] != tc.want {
+				t.Errorf("LastDesired = %d, want %d", s.LastDesired["cloud"], tc.want)
+			}
+			if !s.LastStepUp["cloud"].Equal(now.Add(-time.Minute)) {
+				t.Errorf("LastStepUp moved to %v on a fall", s.LastStepUp["cloud"])
+			}
+		})
+	}
+}
+
+func TestEvaluate_NilLastDesiredCountsNothingBooting(t *testing.T) {
+	g := sized("cloud", 1, 8, 0, 50, 5)
+	g.ScaleUpCooldown = 5 * time.Minute
+	s := snapshot([]store.CapacityGroup{g}, nil, nil, item("a", "q1", 1, 1000, ""))
+	s.LastDesired = nil
+	s.LastStepUp["cloud"] = now.Add(-time.Minute)
+	if got := Evaluate(s)[0].DesiredMachines; got != 0 {
+		t.Errorf("desired = %d, want 0 (cooling, nothing known to be booting)", got)
+	}
 }
