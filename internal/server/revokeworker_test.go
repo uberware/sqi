@@ -304,7 +304,9 @@ func TestRevokeWorker_CancelledRequestStillGetsALiveBrokerContext(t *testing.T) 
 // TestRevokeRemovedWorker_DropsConnectionOfARevokedCredential pins the
 // scheduler's hook: the deletion of an ephemeral capacity-group member has
 // already revoked its credential, and the connection must be dropped anyway,
-// where Server.RevokeWorker would stop at the store's ErrNotFound. With broker
+// where Server.RevokeWorker would stop at the store's ErrNotFound. The hook
+// writes nothing to the store: an active credential (one enrolled under the
+// same worker ID since the deletion) is left active. With broker
 // authentication off there is nothing to drop and no error.
 func TestRevokeRemovedWorker_DropsConnectionOfARevokedCredential(t *testing.T) {
 	tests := []struct {
@@ -340,8 +342,12 @@ func TestRevokeRemovedWorker_DropsConnectionOfARevokedCredential(t *testing.T) {
 			if stub.calls != tt.wantCalls {
 				t.Errorf("broker.Revoke calls = %d, want %d", stub.calls, tt.wantCalls)
 			}
-			if _, err := storetest.ActiveWorkerCredential(context.Background(), st, ref.WorkerID); !errors.Is(err, store.ErrNotFound) {
-				t.Errorf("credential still active after the hook: %v, want store.ErrNotFound", err)
+			_, err := storetest.ActiveWorkerCredential(context.Background(), st, ref.WorkerID)
+			switch {
+			case tt.revoked && !errors.Is(err, store.ErrNotFound):
+				t.Errorf("active credential after the hook: %v, want store.ErrNotFound", err)
+			case !tt.revoked && err != nil:
+				t.Errorf("active credential after the hook: %v, want it left active", err)
 			}
 		})
 	}

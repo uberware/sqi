@@ -558,17 +558,12 @@ func (s *Server) RevokeWorker(ctx context.Context, workerID string) error {
 }
 
 // revokeRemovedWorker is the scheduler's [scheduler.Config.RevokeWorker]: it
-// revokes the credential of a capacity-group member the scheduler has just
-// deleted and drops its broker connection. The deletion already revoked the
-// credential in the store, so, unlike [Server.RevokeWorker], a worker with no
-// active credential is not an error and the connection is dropped all the
-// same: a retired worker may still be connected when its deregistration is
-// handled.
+// drops the broker connection of a capacity-group member the scheduler has
+// just deleted, since a retired worker may still be connected when its
+// deregistration is handled. The deletion already revoked the credential in
+// the store, in the same transaction, so this writes nothing there: revoking
+// again by worker ID could revoke a credential enrolled under that ID since.
 func (s *Server) revokeRemovedWorker(ctx context.Context, workerID string) error {
-	err := s.store.RevokeWorkerCredential(ctx, workerID, time.Now().UTC())
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		return err
-	}
 	return s.disconnectWorker(ctx, workerID)
 }
 
