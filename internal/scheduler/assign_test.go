@@ -944,3 +944,60 @@ func TestBuildAssignPayload_OmitsIsolationWhenQueueHasNone(t *testing.T) {
 		t.Errorf("Isolation = %+v, want nil for a queue with no run_as_user", msg.Isolation)
 	}
 }
+
+const logProgressTemplate = `
+specificationVersion: jobtemplate-2023-09
+name: T
+extensions: [ TASK_CHUNKING, SQI_LOG_PROGRESS ]
+steps:
+  - name: S
+    SQI_LOG_PROGRESS:
+      progress: ['Frame (?P<frame>[0-9]+)']
+      status: ['(?P<status>.*)']
+    parameterSpace:
+      taskParameterDefinitions:
+        - { name: Frames, type: 'CHUNK[INT]', range: '1-10', chunks: { defaultTaskCount: 2, rangeConstraint: CONTIGUOUS } }
+    script: { actions: { onRun: { command: echo } } }
+`
+
+func TestBuildAssign_LogProgress(t *testing.T) {
+	msg := buildAssignForTemplate(t, logProgressTemplate, nil)
+	lp := msg.LogProgress
+	if lp == nil {
+		t.Fatal("LogProgress = nil")
+	}
+	if lp.FrameParameter != "Frames" {
+		t.Errorf("FrameParameter = %q, want Frames", lp.FrameParameter)
+	}
+	if !slices.Equal(lp.Progress, []string{"Frame (?P<frame>[0-9]+)"}) || !slices.Equal(lp.Status, []string{"(?P<status>.*)"}) {
+		t.Errorf("LogProgress = %+v", lp)
+	}
+}
+
+func TestBuildAssign_NoLogProgressKeepsWireBytes(t *testing.T) {
+	st := newCheckedFake(t)
+	task, worker, job, step, queue := buildFixture(t, `
+specificationVersion: jobtemplate-2023-09
+name: T
+steps:
+  - name: S
+    script: { actions: { onRun: { command: echo } } }
+`, store.TemplateFormatYAML, "S")
+	data, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
+	if err != nil {
+		t.Fatalf("buildAssignPayload: %v", err)
+	}
+	if strings.Contains(string(data), "log_progress") {
+		t.Errorf("payload carries log_progress: %s", data)
+	}
+}
+
+func TestConvertLogProgress(t *testing.T) {
+	if got := convertLogProgress(&openjd.StepTemplate{}); got != nil {
+		t.Errorf("nil block = %+v, want nil", got)
+	}
+	empty := &openjd.StepTemplate{LogProgress: &openjd.LogProgress{}}
+	if got := convertLogProgress(empty); got != nil {
+		t.Errorf("empty block = %+v, want nil", got)
+	}
+}

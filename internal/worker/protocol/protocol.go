@@ -569,6 +569,23 @@ type AssignMsg struct {
 	// unchecked assignment's wire bytes are unchanged and [ProtocolVersion]
 	// does not move.
 	LogChecks *LogChecks `json:"log_checks,omitempty"`
+
+	// LogProgress is the step's SQI_LOG_PROGRESS block, present only when the
+	// step carries one. Additive and omitted when nil, so an assignment without
+	// it keeps its wire bytes and [ProtocolVersion] does not move. It is not
+	// worker-enforced: progress is advisory, so the server leases the task to
+	// any worker and an older worker simply drops the unknown key.
+	LogProgress *LogProgress `json:"log_progress,omitempty"`
+}
+
+// LogProgress is the wire form of a step's SQI_LOG_PROGRESS block: RE2 patterns
+// matched unanchored against each line the step's onRun action writes.
+// FrameParameter is resolved server-side to the step's INT or CHUNK[INT] task
+// parameter, and is empty when no progress pattern measures frames.
+type LogProgress struct {
+	FrameParameter string   `json:"frame_parameter,omitempty"`
+	Progress       []string `json:"progress,omitempty"`
+	Status         []string `json:"status,omitempty"`
 }
 
 // LogChecks is the wire form of a step's SQI_LOG_CHECKS block: RE2 patterns

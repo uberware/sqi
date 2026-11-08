@@ -314,3 +314,72 @@ func TestRender_SessionPathEndsAtABracketOrBrace(t *testing.T) {
 		}
 	}
 }
+
+// TestRender_LogProgress pins how a step's SQI_LOG_PROGRESS block reaches a
+// golden: under the step header after any log check lines, quoted with %q.
+func TestRender_LogProgress(t *testing.T) {
+	task := presettest.TaskSnapshot{Name: "Render", Command: "renderer"}
+	snap := presettest.Snapshot{
+		Preset: "demo",
+		Case:   "default",
+		Steps: []presettest.StepSnapshot{{
+			Name:      "Render",
+			LogChecks: &protocol.LogChecks{FailOn: []string{"ERR"}},
+			LogProgress: &protocol.LogProgress{
+				FrameParameter: "Frames",
+				Progress:       []string{`Frame (?P<frame>\d+)`},
+				Status:         []string{`(?P<status>.*)`},
+			},
+			Tasks: []presettest.TaskSnapshot{task},
+		}},
+	}
+	got := presettest.Render(snap)
+	want := "  log checks: failOn \"ERR\"\n" +
+		"  log progress: frameParameter \"Frames\"\n" +
+		"  log progress: progress \"Frame (?P<frame>\\\\d+)\"\n" +
+		"  log progress: status \"(?P<status>.*)\"\n" +
+		"\ntask 1/1"
+	if !strings.Contains(got, want) {
+		t.Errorf("render missing the log progress block:\nwant substring:\n%s\ngot:\n%s", want, got)
+	}
+
+	snap.Steps[0].LogProgress = nil
+	if got := presettest.Render(snap); strings.Contains(got, "log progress") {
+		t.Errorf("nil block rendered a log progress line:\n%s", got)
+	}
+}
+
+// TestCapture_CarriesLogProgress asserts the snapshot takes the block from the
+// real assignment.
+func TestCapture_CarriesLogProgress(t *testing.T) {
+	const tmpl = `
+specificationVersion: jobtemplate-2023-09
+extensions: [TASK_CHUNKING, SQI_LOG_PROGRESS]
+name: Progress Job
+steps:
+  - name: Render
+    SQI_LOG_PROGRESS:
+      progress: ['Frame (?P<frame>[0-9]+)']
+    parameterSpace:
+      taskParameterDefinitions:
+        - {name: Frames, type: 'CHUNK[INT]', range: '1-10', chunks: {defaultTaskCount: 2, rangeConstraint: CONTIGUOUS}}
+    script:
+      actions:
+        onRun:
+          command: renderer
+`
+	snap, err := presettest.Capture(t.Context(), tmpl, presettest.Options{Format: store.TemplateFormatYAML})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	if len(snap.Steps) != 1 || snap.Steps[0].LogProgress == nil {
+		t.Fatalf("snapshot carries no log progress: %+v", snap.Steps)
+	}
+	lp := snap.Steps[0].LogProgress
+	if lp.FrameParameter != "Frames" || len(lp.Progress) != 1 {
+		t.Errorf("LogProgress = %+v", lp)
+	}
+	if got := presettest.Render(snap); !strings.Contains(got, `  log progress: frameParameter "Frames"`) {
+		t.Errorf("render missing the frameParameter line:\n%s", got)
+	}
+}

@@ -262,3 +262,38 @@ func TestHeartbeatMsg_AttemptFieldsWireKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestAssignMsg_LogProgressRoundTrip(t *testing.T) {
+	if protocol.ProtocolVersion != "5" { // an additive field must not move it
+		t.Errorf("ProtocolVersion = %q, want 5", protocol.ProtocolVersion)
+	}
+	in := protocol.AssignMsg{LogProgress: &protocol.LogProgress{
+		FrameParameter: "Frames",
+		Progress:       []string{"a"},
+		Status:         []string{"b"},
+	}}
+	data, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{`"log_progress"`, `"frame_parameter"`, `"progress"`, `"status"`} {
+		if !strings.Contains(string(data), key) {
+			t.Errorf("wire missing %s: %s", key, data)
+		}
+	}
+	var out protocol.AssignMsg
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatal(err)
+	}
+	lp := out.LogProgress
+	if lp == nil || lp.FrameParameter != "Frames" || !slices.Equal(lp.Progress, []string{"a"}) || !slices.Equal(lp.Status, []string{"b"}) {
+		t.Errorf("round trip = %+v", lp)
+	}
+	data, err = json.Marshal(protocol.AssignMsg{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "log_progress") {
+		t.Errorf("empty message carries log_progress: %s", data)
+	}
+}

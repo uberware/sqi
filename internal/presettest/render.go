@@ -68,6 +68,7 @@ func Render(s Snapshot) string {
 	for _, step := range s.Steps {
 		fmt.Fprintf(&b, "\nstep %q — %s\n", step.Name, plural(len(step.Tasks), "task"))
 		renderLogChecks(&b, step.LogChecks)
+		renderLogProgress(&b, step.LogProgress)
 		for i, task := range step.Tasks {
 			fmt.Fprintf(&b, "\ntask %d/%d  name=%q\n", i+1, len(step.Tasks), normalize(hostPaths, task.Name))
 			if len(task.Params) > 0 {
@@ -108,6 +109,24 @@ func renderLogChecks(b *strings.Builder, lc *protocol.LogChecks) {
 	}
 	for _, p := range lc.RequireLine {
 		fmt.Fprintf(b, "  log checks: requireLine %q\n", p)
+	}
+}
+
+// renderLogProgress writes a step's SQI_LOG_PROGRESS block, one line per
+// pattern, after any log check lines. A step with no block writes nothing.
+// Patterns are quoted with %q and not normalized, as in renderLogChecks.
+func renderLogProgress(b *strings.Builder, lp *protocol.LogProgress) {
+	if lp == nil {
+		return
+	}
+	if lp.FrameParameter != "" {
+		fmt.Fprintf(b, "  log progress: frameParameter %q\n", lp.FrameParameter)
+	}
+	for _, p := range lp.Progress {
+		fmt.Fprintf(b, "  log progress: progress %q\n", p)
+	}
+	for _, p := range lp.Status {
+		fmt.Fprintf(b, "  log progress: status %q\n", p)
 	}
 }
 

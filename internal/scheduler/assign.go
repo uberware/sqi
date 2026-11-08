@@ -138,6 +138,10 @@ func buildAssignPayload(
 	// worker that does not enforce it.
 	msg.LogChecks = convertLogChecks(stepTmpl.LogChecks)
 
+	// ── Log progress (SQI_LOG_PROGRESS) ─────────────────────────────────────
+	// Nil for a step with no block, which keeps the key off the wire.
+	msg.LogProgress = convertLogProgress(stepTmpl)
+
 	// ── Environments (job then step order, per OpenJD spec) ────────────────
 	envs := make([]protocol.AssignEnvironment, 0,
 		len(tmpl.JobEnvironments)+len(stepTmpl.StepEnvironments))
@@ -249,6 +253,21 @@ func convertLogChecks(lc *openjd.LogChecks) *protocol.LogChecks {
 	return &protocol.LogChecks{
 		FailOn:      slices.Clone(lc.FailOn),
 		RequireLine: slices.Clone(lc.RequireLine),
+	}
+}
+
+// convertLogProgress converts a step's [openjd.LogProgress] to its wire form,
+// resolving the frame parameter the step's progress patterns measure against. A
+// nil block, and a block that holds neither list, are returned as nil.
+func convertLogProgress(s *openjd.StepTemplate) *protocol.LogProgress {
+	lp := s.LogProgress
+	if lp == nil || (len(lp.Progress) == 0 && len(lp.Status) == 0) {
+		return nil
+	}
+	return &protocol.LogProgress{
+		FrameParameter: s.LogProgressFrameParameter(),
+		Progress:       slices.Clone(lp.Progress),
+		Status:         slices.Clone(lp.Status),
 	}
 }
 

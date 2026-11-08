@@ -93,6 +93,10 @@ type StepSnapshot struct {
 	// carries it, or nil. It is a step property (every task of a step gets the
 	// same block), so it is read from the first task's assignment.
 	LogChecks *protocol.LogChecks
+
+	// LogProgress is the step's SQI_LOG_PROGRESS block as the real assignment
+	// carries it, or nil. Read from the first task's assignment like LogChecks.
+	LogProgress *protocol.LogProgress
 }
 
 // Snapshot is the whole answer for one preset and one case.
@@ -139,12 +143,13 @@ func Capture(ctx context.Context, rawTemplate string, opts Options) (Snapshot, e
 			if task.StepID != step.ID {
 				continue
 			}
-			ts, checks, terr := captureTask(ctx, st, mgr, result, step, task, queueID)
+			ts, checks, progress, terr := captureTask(ctx, st, mgr, result, step, task, queueID)
 			if terr != nil {
 				return Snapshot{}, terr
 			}
 			if len(ss.Tasks) == 0 {
 				ss.LogChecks = checks
+				ss.LogProgress = progress
 			}
 			ss.Tasks = append(ss.Tasks, ts)
 		}
@@ -257,7 +262,7 @@ func captureTask(
 	step store.Step,
 	task store.Task,
 	queueID string,
-) (TaskSnapshot, *protocol.LogChecks, error) {
+) (TaskSnapshot, *protocol.LogChecks, *protocol.LogProgress, error) {
 	worker := store.Worker{
 		ID:              uuid.NewString(),
 		FarmID:          result.Job.FarmID,
@@ -271,22 +276,22 @@ func captureTask(
 		ctx, task, worker, result.Job, step, queue, uuid.NewString(), st,
 	)
 	if err != nil {
-		return TaskSnapshot{}, nil, fmt.Errorf("presettest: build assignment for task %q: %w", task.Name, err)
+		return TaskSnapshot{}, nil, nil, fmt.Errorf("presettest: build assignment for task %q: %w", task.Name, err)
 	}
 	var msg protocol.AssignMsg
 	if err := json.Unmarshal(payload, &msg); err != nil {
-		return TaskSnapshot{}, nil, fmt.Errorf("presettest: decode assignment: %w", err)
+		return TaskSnapshot{}, nil, nil, fmt.Errorf("presettest: decode assignment: %w", err)
 	}
 
 	sess, err := mgr.Create(ctx, &msg)
 	if err != nil {
-		return TaskSnapshot{}, nil, fmt.Errorf("presettest: create session for task %q: %w", task.Name, err)
+		return TaskSnapshot{}, nil, nil, fmt.Errorf("presettest: create session for task %q: %w", task.Name, err)
 	}
 	defer mgr.Cleanup(ctx, sess, false)
 
 	action, _, files, err := executor.ResolveAssignment(&msg, sess)
 	if err != nil {
-		return TaskSnapshot{}, nil, fmt.Errorf("presettest: resolve task %q: %w", task.Name, err)
+		return TaskSnapshot{}, nil, nil, fmt.Errorf("presettest: resolve task %q: %w", task.Name, err)
 	}
 
 	ts := TaskSnapshot{
@@ -299,7 +304,7 @@ func captureTask(
 		ts.Files = append(ts.Files, FileSnapshot{Name: f.Name, Filename: f.Filename, Data: f.Data})
 	}
 	sort.Slice(ts.Files, func(i, j int) bool { return ts.Files[i].Name < ts.Files[j].Name })
-	return ts, msg.LogChecks, nil
+	return ts, msg.LogChecks, msg.LogProgress, nil
 }
 
 // sortedCopy returns a copy of m. Maps render in sorted key order (see
