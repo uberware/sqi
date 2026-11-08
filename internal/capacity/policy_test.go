@@ -547,7 +547,9 @@ func TestEvaluate_RetireCandidatesLongestIdleFirstNeverBelowDesired(t *testing.T
 		{
 			"demand for new machines keeps the count", 0, 10, five,
 			[]DemandItem{item("h", "q1", 8, 2, "houdini")},
-			brief{8, 4, []string{"b"}},
+			// a and b cannot run it: both are candidates, and the count rises
+			// by the machine being added while one of them stands in for it.
+			brief{8, 5, []string{"b", "a"}},
 		},
 		{
 			"equal idle times break by worker ID", 0, 10,
@@ -589,9 +591,8 @@ func TestEvaluate_RetireCandidatesLongestIdleFirstNeverBelowDesired(t *testing.T
 			s := snapshot([]store.CapacityGroup{g}, map[string][]Member{"cloud": tc.members}, nil, tc.demand...)
 			got := Evaluate(s)
 			assertBriefs(t, got, tc.want)
-			if len(got[0].RetireCandidates) > got[0].OnlineMembers-got[0].DesiredMachines {
-				t.Errorf("%d candidates would take %d online below desired %d",
-					len(got[0].RetireCandidates), got[0].OnlineMembers, got[0].DesiredMachines)
+			if left := got[0].OnlineMembers - len(got[0].RetireCandidates); left < tc.minM {
+				t.Errorf("retiring %v leaves %d online, below min %d", got[0].RetireCandidates, left, tc.minM)
 			}
 		})
 	}
@@ -748,9 +749,9 @@ func TestEvaluate_BootingMachinesDoNotFlapTheSignal(t *testing.T) {
 		{time.Minute, 5},
 		{4*time.Minute + 59*time.Second, 5},
 		// The cooldown is over and the five are still within the boot timeout:
-		// the next step is measured from them, not from the empty online count.
-		{5 * time.Minute, 10},
-		{6 * time.Minute, 10},
+		// they are held, but growth beyond them waits for machines to register.
+		{5 * time.Minute, 5},
+		{6 * time.Minute, 5},
 	} {
 		s.Now = now.Add(step.at)
 		st := Evaluate(s)[0]
@@ -762,15 +763,15 @@ func TestEvaluate_BootingMachinesDoNotFlapTheSignal(t *testing.T) {
 			t.Fatalf("at +%v: LastDesired = %d, want %d", step.at, s.LastDesired["cloud"], step.want)
 		}
 	}
-	if want := now.Add(5 * time.Minute); !s.LastStepUp["cloud"].Equal(want) {
-		t.Errorf("LastStepUp = %v, want %v (the second step-up)", s.LastStepUp["cloud"], want)
+	if !s.LastStepUp["cloud"].Equal(now) {
+		t.Errorf("LastStepUp = %v, want %v (holding is not a step-up)", s.LastStepUp["cloud"], now)
 	}
 
-	// Machines register: online rises into the held size without moving it.
+	// Two machines register: the next step is measured from them.
 	s.Members = map[string][]Member{"cloud": {busy(worker("m1", 8), 8), busy(worker("m2", 8), 8)}}
 	s.Now = now.Add(7 * time.Minute)
-	if got := Evaluate(s)[0].DesiredMachines; got != 10 {
-		t.Errorf("after two registered: desired %d, want 10", got)
+	if got := Evaluate(s)[0].DesiredMachines; got != 2+5 {
+		t.Errorf("after two registered: desired %d, want 7", got)
 	}
 }
 
@@ -789,7 +790,7 @@ func TestEvaluate_PendingExpiresAfterBootTimeout(t *testing.T) {
 		{"exactly the boot timeout", 10 * time.Minute, 15 * time.Minute, 5, 0},
 		// No cooldown: the step is measured from the booting machines only
 		// while they may still be booting.
-		{"booting, not cooling", 9 * time.Minute, 0, 20, 25},
+		{"booting, not cooling", 9 * time.Minute, 0, 20, 20},
 		{"boot timeout passed, not cooling", 11 * time.Minute, 0, 20, 5},
 		{"a clock far behind does not hold", -time.Hour, 0, 20, 5},
 	}
@@ -848,5 +849,113 @@ func TestEvaluate_NilLastDesiredCountsNothingBooting(t *testing.T) {
 	s.LastStepUp["cloud"] = now.Add(-time.Minute)
 	if got := Evaluate(s)[0].DesiredMachines; got != 0 {
 		t.Errorf("desired = %d, want 0 (cooling, nothing known to be booting)", got)
+	}
+}
+
+func TestEvaluate_HugeMaxStepUpDoesNotCollapseDesired(t *testing.T) {
+	busyTwo := map[string][]Member{"cloud": {busy(worker("m1", 8), 8), busy(worker("m2", 8), 8)}}
+	tests := []struct {
+		name        string
+		stepUp      int
+		lastDesired int // with a step-up a minute ago when non-zero
+		want        int
+	}{
+		{"largest max_step_up", math.MaxInt, 0, 50},
+		{"largest max_step_up while booting", math.MaxInt, math.MaxInt, 50},
+		{"largest held size", 5, math.MaxInt, 50},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := sized("cloud", 1, 8, 0, 50, tc.stepUp)
+			s := snapshot([]store.CapacityGroup{g}, busyTwo, nil, item("a", "q1", 1, 1000, ""))
+			if tc.lastDesired != 0 {
+				s.LastStepUp["cloud"] = now.Add(-time.Minute)
+				s.LastDesired["cloud"] = tc.lastDesired
+			}
+			if got := Evaluate(s)[0].DesiredMachines; got != tc.want {
+				t.Errorf("desired = %d, want %d", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("members' cores summed without wrapping", func(t *testing.T) {
+		g := named("onprem", 1, 0, 10, 10)
+		members := map[string][]Member{"onprem": {
+			{Worker: offline(worker("m1", math.MaxInt))}, {Worker: offline(worker("m2", math.MaxInt))},
+		}}
+		st := Evaluate(snapshot([]store.CapacityGroup{g}, members, nil, item("a", "q1", 0, 1, "")))[0]
+		if want := toInt(satAdd(math.MaxInt, math.MaxInt) / 2); st.DemandCores != want || st.DesiredMachines != 1 {
+			t.Errorf("demand %d desired %d, want demand %d desired 1", st.DemandCores, st.DesiredMachines, want)
+		}
+	})
+}
+
+func TestEvaluate_IdleMemberThatCannotRunTheDemandIsReplaced(t *testing.T) {
+	houdini := item("r", "q1", 8, 5, "houdini")
+	tests := []struct {
+		name    string
+		group   store.CapacityGroup
+		members []Member
+		demand  DemandItem
+		want    brief
+	}{
+		{
+			name:  "named: wake the capable sleeper, retire the incapable idler",
+			group: named("onprem", 10, 0, 10, 10),
+			members: []Member{
+				idle(worker("m2", 8), time.Hour),
+				{Worker: offline(worker("m3", 8, "houdini"))},
+			},
+			demand: houdini,
+			want:   brief{8, 2, []string{"m2"}},
+		},
+		{
+			name:  "named: the incapable idler is held by min, the sleeper still wakes",
+			group: named("onprem", 10, 1, 10, 10),
+			members: []Member{
+				idle(worker("m2", 8), time.Hour),
+				{Worker: offline(worker("m3", 8, "houdini"))},
+			},
+			demand: houdini,
+			want:   brief{8, 2, nil},
+		},
+		{
+			name:    "sized: a member registered without the profile's tag",
+			group:   sized("cloud", 1, 8, 0, 10, 10, "houdini"),
+			members: []Member{idle(worker("m1", 8), time.Hour)},
+			demand:  item("r", "q1", 8, 1, "houdini"),
+			want:    brief{8, 2, []string{"m1"}},
+		},
+		{
+			name:  "a member that absorbed demand is never a candidate",
+			group: sized("cloud", 1, 8, 0, 10, 10, "houdini"),
+			members: []Member{
+				idle(worker("m1", 8, "houdini"), time.Hour), idle(worker("m2", 8), time.Hour),
+			},
+			demand: item("r", "q1", 8, 2, "houdini"),
+			want:   brief{8, 3, []string{"m2"}},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := snapshot([]store.CapacityGroup{tc.group}, map[string][]Member{tc.group.ID: tc.members}, nil, tc.demand)
+			for tick := range 3 {
+				s.Now = now.Add(time.Duration(tick) * time.Minute)
+				assertBriefs(t, Evaluate(s), tc.want)
+			}
+		})
+	}
+}
+
+func TestEvaluate_NeverRegisteringGroupStaysAtOneStep(t *testing.T) {
+	g := sized("cloud", 1, 8, 0, 50, 5)
+	g.ScaleUpCooldown = 2 * time.Minute
+	g.BootTimeout = 10 * time.Minute
+	s := snapshot([]store.CapacityGroup{g}, nil, nil, item("a", "q1", 1, 100000, ""))
+	for m := range 61 {
+		s.Now = now.Add(time.Duration(m) * time.Minute)
+		if got := Evaluate(s)[0].DesiredMachines; got != 5 {
+			t.Fatalf("at +%dm with nothing ever online: desired %d, want 5", m, got)
+		}
 	}
 }

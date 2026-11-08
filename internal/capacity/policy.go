@@ -15,17 +15,19 @@
 //     only work it could run, from queues it serves, up to the machines it
 //     could still add. What one group cannot take passes to the next; work no
 //     group can run drives nothing.
-//  3. Size. A group's desired size is the members it still needs plus the
-//     machines its assigned demand calls for, limited per evaluation by
-//     max_step_up and the scale-up cooldown, then clamped to [min, max]. Both
-//     limits are measured from the group's current size: its online members
-//     plus the machines its last step-up asked for that have not registered
-//     yet, counted for one boot timeout. That keeps the size steady while a
-//     step-up boots, rather than falling back to the online count and asking
-//     for the same machines again when the cooldown ends.
-//  4. Retire. Online members idle for at least the idle timeout that absorbed
-//     no demand are retire candidates, longest idle first, never taking the
-//     group below its desired size.
+//  3. Retire. Online members idle for at least the idle timeout that absorbed
+//     none of the demand are retire candidates, longest idle first, as many as
+//     can go without leaving fewer online than min_machines or than the
+//     members kept (busy, idle too briefly, disabled, or absorbing demand).
+//  4. Size. A group's desired size is the members it keeps (at least
+//     min_machines), plus the machines its assigned demand calls for, plus
+//     one retire candidate for each machine being added, which it stands in
+//     for until that machine arrives. Growth is limited per evaluation by
+//     max_step_up and the scale-up cooldown, and the result is clamped to
+//     [min, max]. Machines a step-up asked for that have not registered yet
+//     are held for one boot timeout, so the size does not fall back while they
+//     boot, but new growth is measured from registered members only, so
+//     machines that never register cost at most one step.
 //
 // All demand arithmetic is on task counts per step, never per task, so a step
 // with a million ready tasks costs the same as one with a single task.
@@ -92,30 +94,46 @@ type Status struct {
 	// could run that no idle worker absorbed and no higher-priority group
 	// took. It never exceeds what the group's free machine slots could hold.
 	DemandCores int
-	// DesiredMachines is how many members the group should have online.
+	// DesiredMachines is how many members the group should have online: the
+	// members it keeps (at least min_machines), the machines its demand calls
+	// for, and one retire candidate for each machine being added, standing in
+	// until it arrives.
 	DesiredMachines int
 	// OnlineMembers and OfflineMembers count the group's members by liveness;
 	// a disabled member counts in whichever it is.
 	OnlineMembers, OfflineMembers int
-	// RetireCandidates are worker IDs, longest idle first.
+	// RetireCandidates are worker IDs, longest idle first. Retiring all of
+	// them never leaves fewer online members than min_machines, and never
+	// retires a member that absorbed demand.
 	RetireCandidates []string
 	EvaluatedAt      time.Time
 }
 
 // Evaluate returns one Status per group, in s.Groups order.
 //
+// Sizing compares two numbers. online is the group's online members.
+// current adds the machines asked for but not yet registered: it is
+// max(online, LastDesired[g]) while the last step-up is within g's
+// BootTimeout, and online after that. The desired size may then be:
+//
+//   - outside the scale-up cooldown, at most max(current, online + MaxStepUp):
+//     what was asked for is held, and new growth is paced by machines that
+//     actually registered, so a step-up whose machines never register costs
+//     one step and does not compound;
+//   - inside the cooldown, at most current.
+//
+// Falling demand lowers the desired size below both. min_machines and
+// max_machines apply last. A recorded time up to one window (cooldown or boot
+// timeout) in the future, as after the wall clock steps back, counts as
+// inside that window.
+//
 // It writes two entries per group g and nothing else:
 //
 //   - s.LastDesired[g.ID] = the group's DesiredMachines, on every evaluation.
-//   - s.LastStepUp[g.ID] = s.Now, when the desired size exceeds the group's
-//     current size (online members plus booting machines) and g was not inside
-//     its scale-up cooldown. A step-up forced by min_machines during a cooldown
-//     does not restart the cooldown.
-//
-// A machine counts as booting for one boot timeout after the last step-up:
-// current = max(online, LastDesired[g]) while Now − LastStepUp[g] is within
-// g's BootTimeout, otherwise online. A step-up whose machines never register
-// therefore stops counting after the boot timeout.
+//   - s.LastStepUp[g.ID] = s.Now, when the desired size exceeds current and
+//     g was not inside its scale-up cooldown. Holding machines that are still
+//     booting is not a step-up, and a step-up forced by min_machines during a
+//     cooldown does not restart the cooldown.
 func Evaluate(s Snapshot) []Status {
 	items := sortedItems(s.Demand)
 	plans := make([]*groupPlan, len(s.Groups))
@@ -269,7 +287,7 @@ func newGroupPlan(g store.CapacityGroup, members []Member) *groupPlan {
 	p := &groupPlan{g: g, members: sortedMembers(members)}
 	var cores int64
 	for _, m := range p.members {
-		cores += int64(m.Worker.CPUCount)
+		cores = satAdd(cores, int64(max(m.Worker.CPUCount, 0)))
 		switch {
 		case online(m.Worker):
 			p.online++
@@ -327,23 +345,27 @@ func (p *groupPlan) serves(queueID string) bool {
 	return len(p.g.QueueIDs) == 0 || slices.Contains(p.g.QueueIDs, queueID)
 }
 
-// status sizes the group and picks its retire candidates.
+// status picks the group's retire candidates and sizes it.
 func (p *groupPlan) status(s Snapshot, absorbed map[string]bool) Status {
 	idle := p.retirable(s.Now, absorbed)
-	desired := p.desired(s, p.online-len(idle))
+	kept := p.online - len(idle)
+	floor := max(p.g.MinMachines, kept)
+	// Invariant: retiring every candidate leaves at least max(min, kept)
+	// members online, so never fewer than min_machines, and every candidate
+	// is idle past the idle timeout and absorbed none of this evaluation's
+	// demand; the members that did are among the kept.
+	retiring := idle[:max(p.online-floor, 0)]
 	st := Status{
 		GroupID:         p.g.ID,
 		GroupName:       p.g.Name,
 		DemandCores:     toInt(p.demand),
-		DesiredMachines: desired,
+		DesiredMachines: p.desired(s, floor, len(retiring)),
 		OnlineMembers:   p.online,
 		OfflineMembers:  p.offline,
 		EvaluatedAt:     s.Now,
 	}
-	if n := p.online - desired; n > 0 {
-		for _, m := range idle[:min(n, len(idle))] {
-			st.RetireCandidates = append(st.RetireCandidates, m.Worker.ID)
-		}
+	for _, m := range retiring {
+		st.RetireCandidates = append(st.RetireCandidates, m.Worker.ID)
 	}
 	return st
 }
@@ -367,12 +389,12 @@ func (p *groupPlan) retirable(now time.Time, absorbed map[string]bool) []Member 
 	return out
 }
 
-// desired is the group's desired size: the online members it keeps (kept),
-// plus the machines its demand calls for, at most max_step_up more than its
-// current size and no more than its current size inside the scale-up cooldown,
-// clamped to [min, max]. It records the result in s.LastDesired and a step-up
-// in s.LastStepUp.
-func (p *groupPlan) desired(s Snapshot, kept int) int {
+// desired is the group's desired size (see [Evaluate]): floor, the members it
+// keeps and at least min_machines, plus the machines its demand calls for,
+// plus one of the retiring candidates for each of those machines, standing in
+// until it arrives. It records the result in s.LastDesired and a step-up in
+// s.LastStepUp.
+func (p *groupPlan) desired(s Snapshot, floor, retiring int) int {
 	g := p.g
 	last, stepped := s.LastStepUp[g.ID]
 	cooling := stepped && within(s.Now.Sub(last), g.ScaleUpCooldown)
@@ -380,9 +402,10 @@ func (p *groupPlan) desired(s Snapshot, kept int) int {
 
 	limit := int64(current)
 	if !cooling {
-		limit += int64(max(g.MaxStepUp, 0))
+		limit = max(limit, satAdd(int64(p.online), int64(max(g.MaxStepUp, 0))))
 	}
-	computed := int64(kept) + ceilDiv(p.demand, p.perMachine)
+	need := ceilDiv(p.demand, p.perMachine)
+	computed := satAdd(satAdd(int64(floor), need), min(need, int64(retiring)))
 	desired := toInt(min(computed, limit, int64(g.MaxMachines)))
 	desired = max(desired, g.MinMachines)
 
@@ -428,6 +451,14 @@ func ceilDiv(a, b int64) int64 {
 		q++
 	}
 	return q
+}
+
+// satAdd is a+b for non-negative operands, saturating at math.MaxInt64.
+func satAdd(a, b int64) int64 {
+	if a > math.MaxInt64-b {
+		return math.MaxInt64
+	}
+	return a + b
 }
 
 // satMul is a*b for non-negative operands, saturating at math.MaxInt64.
