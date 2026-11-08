@@ -201,8 +201,11 @@ func (g CapacityGroup) validateScaling() []error {
 	case g.MinMachines > g.MaxMachines:
 		bad("min_machines %d must not exceed max_machines %d", g.MinMachines, g.MaxMachines)
 	}
-	if g.MaxStepUp < 1 {
+	switch {
+	case g.MaxStepUp < 1:
 		bad("max_step_up %d must be at least 1", g.MaxStepUp)
+	case g.MaxStepUp > MaxCapacityGroupMachines:
+		bad("max_step_up %d must be at most %d", g.MaxStepUp, MaxCapacityGroupMachines)
 	}
 	if g.IdleTimeout < MinCapacityGroupTimeout {
 		bad("idle_timeout %s must be at least %s", g.IdleTimeout, MinCapacityGroupTimeout)

@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"errors"
 	"maps"
+	"math"
 	"reflect"
 	"slices"
 	"strings"
@@ -230,6 +231,9 @@ func TestCapacityGroup_Validate(t *testing.T) {
 		{"max 10000", func(g *store.CapacityGroup) { g.MaxMachines = 10000 }, ""},
 		{"max 10001", func(g *store.CapacityGroup) { g.MaxMachines = 10001 }, "max_machines"},
 		{"step up zero", func(g *store.CapacityGroup) { g.MaxStepUp = 0 }, "max_step_up"},
+		{"step up 10000", func(g *store.CapacityGroup) { g.MaxStepUp = 10000 }, ""},
+		{"step up 10001", func(g *store.CapacityGroup) { g.MaxStepUp = 10001 }, "max_step_up"},
+		{"step up huge", func(g *store.CapacityGroup) { g.MaxStepUp = math.MaxInt }, "max_step_up"},
 		{"idle 1m", func(g *store.CapacityGroup) { g.IdleTimeout = time.Minute }, ""},
 		{"idle under 1m", func(g *store.CapacityGroup) { g.IdleTimeout = time.Minute - 1 }, "idle_timeout"},
 		{"boot 1m", func(g *store.CapacityGroup) { g.BootTimeout = time.Minute }, ""},
