@@ -63,11 +63,16 @@ func TestDispatchHasOneGatedPath(t *testing.T) {
 				"cross-binary gate for both of its callers", gate, blocked)
 		}
 	}
-	if blocked := productionCallersOf(t, "workerCompatBlock"); len(blocked) != 2 ||
-		!slices.Contains(blocked, "leaseGatesPass") || !slices.Contains(blocked, "evaluateSchedulability") {
+	// couldRun (couldrun.go) is the third caller: a load-independent capability
+	// check for capacity demand. It hands nothing to a worker, so it is not a
+	// dispatch path, but it must agree with the lease path on what a worker's
+	// binary can run, which is why it reaches the gates through the same function.
+	if blocked := productionCallersOf(t, "workerCompatBlock"); len(blocked) != 3 ||
+		!slices.Contains(blocked, "leaseGatesPass") || !slices.Contains(blocked, "evaluateSchedulability") ||
+		!slices.Contains(blocked, "couldRun") {
 		t.Fatalf("workerCompatBlock is called from %v; want exactly [leaseGatesPass "+
-			"evaluateSchedulability]: the first is the bound, the second is what the "+
-			"operator sees", blocked)
+			"evaluateSchedulability couldRun]: the first is the bound, the second is what the "+
+			"operator sees, the third is the capacity-demand capability check", blocked)
 	}
 
 	// exprCapShortfall is the single implementation of the comparisons. The
@@ -77,11 +82,12 @@ func TestDispatchHasOneGatedPath(t *testing.T) {
 	// worker. warnOnExprCapShortfall is the third caller: it
 	// computes a shortfall for its diagnostic warning only, not as a bound.
 	// All three must go through this accessor.
-	if short := productionCallersOf(t, "workerExprShortfall"); len(short) != 3 ||
+	// couldRun is the fourth caller, passing the result to workerCompatBlock.
+	if short := productionCallersOf(t, "workerExprShortfall"); len(short) != 4 ||
 		!slices.Contains(short, "selectLeaseBatch") || !slices.Contains(short, "evaluateSchedulability") ||
-		!slices.Contains(short, "warnOnExprCapShortfall") {
+		!slices.Contains(short, "warnOnExprCapShortfall") || !slices.Contains(short, "couldRun") {
 		t.Fatalf("workerExprShortfall is called from %v; want exactly [selectLeaseBatch "+
-			"evaluateSchedulability warnOnExprCapShortfall] -- a call site that computes its own "+
+			"evaluateSchedulability warnOnExprCapShortfall couldRun] -- a call site that computes its own "+
 			"comparison instead is a second implementation waiting to drift", short)
 	}
 	if raw := productionCallersOf(t, "exprCapShortfall"); len(raw) != 1 ||
