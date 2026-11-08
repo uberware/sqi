@@ -63,7 +63,8 @@ readme: |
   and checks the image file exists and is not empty. A file already there with
   that name is deleted first, so an old frame cannot pass for a new one. After
   the last frame it prints `SQI_RENDER: OK`; on any error it prints
-  `SQI_RENDER: FAILED:` with the reason and stops.
+  `SQI_RENDER: FAILED:` with the reason and stops. It also prints
+  `openjd_status` and `openjd_progress` per frame.
 
   Building `params.json` is metered against the worker's `EXPR` limits and
   grows with the frames in one task; the maximum of 1000 stays well inside
@@ -363,15 +364,18 @@ template:
                       size["height"] = params["height"]
                   opts = lux.getRenderOptions()
                   opts.setAddToQueue(False)
-                  for frame in params["frames"]:
+                  total = len(params["frames"])
+                  for index, frame in enumerate(params["frames"], 1):
                       path = expand_output(params["pattern"], frame)
                       prepare(path)
+                      emit("openjd_status: rendering frame %d (%d of %d)" % (frame, index, total))
                       lux.setAnimationFrame(frame)
                       done = lux.renderImage(path, opts=opts, format=image_format, **size)
                       if done is False:
                           raise RuntimeError("KeyShot did not render frame %d" % frame)
                       if not os.path.isfile(path) or os.path.getsize(path) == 0:
                           raise RuntimeError("frame %d was rendered but %s was not written" % (frame, path))
+                      emit("openjd_progress: %d" % (index * 100 // total))
 
 
               def main():

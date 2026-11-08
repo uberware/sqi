@@ -1033,7 +1033,14 @@ presets:
         TestPresetKeyShot_OutputFileRules, and render.py runs under a real Python
         with a fake lux in TestPresetKeyShot_ScriptDrivesKeyShot. Tier 3 runs a
         stub as keyshot_headless: it exercises the worker, the embedded files and
-        the log checks, never the script inside KeyShot.
+        the log checks, never the script inside KeyShot. Progress comes from
+        render.py itself, not SQI_LOG_PROGRESS: through its emit helper, to file
+        descriptor 1, it writes openjd_status ("rendering frame F (k of n)")
+        before each frame's renderImage and openjd_progress (frames done / total
+        x 100) after the frame's file check, so a failed frame reports none.
+        TestPresetKeyShot_EmitsProgress checks those lines against the stub lux
+        only; no KeyShot has run them, so what KeyShot does with a write to
+        file descriptor 1 from its script is unconfirmed.
     tier3:
       case: TestPresetTier3/keyshot-render/default
       required_on: [linux, darwin, windows]
@@ -1051,7 +1058,9 @@ presets:
         render, is undocumented. quoting puts both quotes, a backslash and a space
         in Studio and both quotes in Output File's name. Tier 3 runs a stub as
         keyshot_headless: it exercises the worker, the embedded files and the log
-        checks, never the script inside KeyShot.
+        checks, never the script inside KeyShot. Progress is printed by
+        render.py as for keyshot-render, confirmed against the stub lux only,
+        not against any KeyShot.
     tier3:
       case: TestPresetTier3/keyshot-studio-render/default
       required_on: [linux, darwin, windows]
