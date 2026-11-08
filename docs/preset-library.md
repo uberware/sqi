@@ -205,6 +205,27 @@ including the chunking behavior and worker requirements per preset.
 `TestBuiltinDetectors_CoverPresets` fails if a shipped preset requires a
 software tag that no built-in detector emits.
 
+### Presets that report progress
+
+These preset families fill the task's progress bar or status text while it
+runs, either from the application's own output through the
+[`SQI_LOG_PROGRESS`](openjd-extensions/sqi-log-progress.md) extension or from
+`openjd_progress`/`openjd_status` lines their embedded script prints. See
+[Shipped presets](openjd-extensions/sqi-log-progress.md#shipped-presets) for the
+patterns and the application versions each was confirmed against.
+
+- Blender (`blender-batch-render`, `blender-view-layer-render`): per frame and within a frame, with Blender's sample counter as status.
+- Nuke (`nuke-write-render`, `nuke-script-render`): per frame.
+- Houdini ROP (`houdini-rop-render`): per frame.
+- husk (`husk-usd-render`): within the task's frames, with the image name as status.
+- usdrecord (`usdrecord-render`): per frame.
+- oiiotool (`oiiotool-process`): per frame.
+- KeyShot (`keyshot-render`, `keyshot-studio-render`): per frame.
+- Unreal Engine (`unreal-mrq-job-render`, `unreal-mrq-queue-render`, `unreal-mrq-shot-render`): per job for the job and queue presets, status only for the shot preset.
+- Modo (`modo-render`, `modo-pass-group-render`): status only.
+- VRED (`vred-render`, `vred-viewpoint-render`): status only.
+- Fusion (`fusion-saver-render`): status only.
+
 ### Katana
 
 | Preset | Renders | Shape | Gate |
