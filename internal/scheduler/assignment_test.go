@@ -21,6 +21,8 @@ import (
 	"github.com/google/uuid"
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/store"
@@ -219,4 +221,53 @@ func TestRefreshGauges_Smoke(t *testing.T) {
 	s.refreshIdleWorkerGauge(t.Context())
 	s.refreshUsageClaimGauge(t.Context())
 	s.refreshWorkerGauge(t.Context())
+}
+
+// gaugeValue reads the current value of a single gauge.
+func gaugeValue(t *testing.T, g prometheus.Gauge) float64 {
+	t.Helper()
+	var m dto.Metric
+	if err := g.Write(&m); err != nil {
+		t.Fatalf("read gauge: %v", err)
+	}
+	return m.GetGauge().GetValue()
+}
+
+// A queue whose last ready task is leased must read 0, not the last depth it
+// had: the capacity scaling signal reads this gauge, and a series that keeps
+// its old value never falls.
+func TestRefreshQueueDepthGauge_ResetsADrainedQueue(t *testing.T) {
+	ctx := t.Context()
+	st := newCheckedFake(t)
+	f := seedAssignFixture(t, st, nil)
+	now := time.Now()
+
+	second := store.Task{
+		ID: uuid.NewString(), JobID: f.job.ID, StepID: f.step.ID,
+		Name: "Render[2]", Status: store.TaskStatusReady, CreatedAt: now, UpdatedAt: now,
+	}
+	// The fixture holds one ready task; a second job in the same queue makes two.
+	job2 := f.job
+	job2.ID = uuid.NewString()
+	step2 := f.step
+	step2.ID = uuid.NewString()
+	step2.JobID = job2.ID
+	second.JobID, second.StepID = job2.ID, step2.ID
+	storetest.Submit(t, st, store.JobSubmission{Job: job2, Steps: []store.Step{step2}, Tasks: []store.Task{second}})
+
+	s := newMetricsScheduler(st, &recordBus{}, f.farm.ID)
+	gauge := s.metrics.SchedulerQueueDepth.WithLabelValues(f.queue.ID)
+
+	s.refreshQueueDepthGauge(ctx)
+	if got := gaugeValue(t, gauge); got != 2 {
+		t.Fatalf("queue depth with two ready tasks = %v, want 2", got)
+	}
+
+	for _, id := range []string{f.task.ID, second.ID} {
+		storetest.Lease(t, st, store.LeaseRequest{TaskID: id, WorkerID: f.worker.ID})
+	}
+	s.refreshQueueDepthGauge(ctx)
+	if got := gaugeValue(t, gauge); got != 0 {
+		t.Errorf("queue depth after both tasks were leased = %v, want 0", got)
+	}
 }

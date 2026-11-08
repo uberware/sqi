@@ -277,6 +277,13 @@ type Scheduler struct {
 	logger   *slog.Logger
 	notifier ws.Notifier // pushes live events to WebSocket clients
 
+	// queueDepthSeen holds every queue ID [Scheduler.refreshQueueDepthGauge]
+	// has set the SchedulerQueueDepth gauge for. The store reports only queues
+	// that still have ready tasks, so this is how a queue that has drained is
+	// found and reset. Touched only by refreshQueueDepthGauge, which runs on
+	// the heartbeat-sweep goroutine alone, so it needs no lock.
+	queueDepthSeen map[string]struct{}
+
 	// diagBuf is the in-memory diagnostic-log ring buffer fed by the
 	// worker.diag.> core-NATS subscriber. Nil when diagnostics are disabled.
 	diagBuf *diag.Buffer
@@ -1897,6 +1904,9 @@ func (s *Scheduler) refreshWorkerGauge(ctx context.Context) {
 // gauge, and wakes lease waiters on every queue with leasable work — the
 // restart-safe backstop for scheduleRetryWake's in-process backoff timers.
 //
+// A queue the store no longer reports (its last ready task was leased) is set
+// to 0 rather than dropped, so a scraper sees the depth fall.
+//
 // Called on every heartbeat-sweep tick so the gauge stays current.  Errors are
 // logged at WARN level and do not abort the sweep.
 func (s *Scheduler) refreshQueueDepthGauge(ctx context.Context) {
@@ -1907,10 +1917,19 @@ func (s *Scheduler) refreshQueueDepthGauge(ctx context.Context) {
 		}
 		return
 	}
+	if s.queueDepthSeen == nil {
+		s.queueDepthSeen = make(map[string]struct{})
+	}
 	for queueID, n := range counts {
+		s.queueDepthSeen[queueID] = struct{}{}
 		s.metrics.SchedulerQueueDepth.WithLabelValues(queueID).Set(float64(n))
 		if n > 0 {
 			s.WakeQueue(queueID)
+		}
+	}
+	for queueID := range s.queueDepthSeen {
+		if _, ok := counts[queueID]; !ok {
+			s.metrics.SchedulerQueueDepth.WithLabelValues(queueID).Set(0)
 		}
 	}
 }
