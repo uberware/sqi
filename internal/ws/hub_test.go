@@ -169,6 +169,37 @@ func TestHub_NotifyJob_FansToSubscribersOnly(t *testing.T) {
 	}
 }
 
+// TestHub_NotifyJob_CarriesChange pins that an estimate-only event says so on
+// the wire, so a list that patches status from job events can refetch instead
+// of re-applying a status that did not change, and that a status change
+// carries no change key.
+func TestHub_NotifyJob_CarriesChange(t *testing.T) {
+	h := newTestHub()
+	ch := h.Register("c", Scope{All: true})
+	if err := h.Subscribe("c", SubjectJobs, 0); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	for _, tt := range []struct {
+		change, want string
+	}{
+		{JobChangeEstimate, `"change":"estimate"`},
+		{"", ""},
+	} {
+		h.NotifyJob(JobEvent{JobID: "j1", Status: "running", Change: tt.change})
+		env, ok := drainOrTimeout(ch, 200*time.Millisecond)
+		if !ok {
+			t.Fatalf("change %q: no push", tt.change)
+		}
+		got := string(env.Payload)
+		if tt.want != "" && !strings.Contains(got, tt.want) {
+			t.Errorf("payload %s lacks %s", got, tt.want)
+		}
+		if tt.want == "" && strings.Contains(got, `"change"`) {
+			t.Errorf("status-change payload %s carries a change key", got)
+		}
+	}
+}
+
 // TestHub_NotifyJob_FallsBackToOwnerCacheWhenEventOwnerEmpty pins the owner
 // fallback for job events: 7 of the 9 production NotifyJob call sites never
 // populate JobEvent.Owner (only internal/scheduler/retry.go does). Without a

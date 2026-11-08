@@ -2,9 +2,8 @@
 
 `sqi-sdk` is the pure-Python library for driving a `sqi-server` instance from
 scripts and pipeline tooling — the same operations the web UI performs, over the
-REST API (with an optional WebSocket extra for live events). Per the roadmap
-([`../ROADMAP.md`](roadmap.md)) it is the foundation for the Phase 2 DCC
-submitters and for pipeline automation.
+REST API (with an optional WebSocket extra for live events). It is the
+foundation for the DCC submitters and for pipeline automation.
 
 This is the reference document. For the project overview and install, see
 [`clients/python/README.md`](https://github.com/uberware/sqi/blob/main/clients/python/README.md); the authoritative wire
@@ -152,26 +151,28 @@ Status filters accept either the enum or its wire string:
 `sqi.list_jobs(status=JobStatus.RUNNING)` and `sqi.list_jobs(status="running")`
 are equivalent. `None` filters are omitted from the request entirely.
 
-> **Note:** farms, storage locations, compute locations, usage pools, and
+> Farms, storage locations, compute locations, usage pools, and
 > products are returned by the server as bare arrays (no pagination), so their
 > `list_*` methods return a plain `list[T]`. Only queues, jobs, tasks, and
 > workers are paginated.
 
 ## Submitting jobs
 
-`submit_job(template, *, farm_id, queue_id, owner=None, priority=None, project=None, max_attempts=None, retry_delay_seconds=None, failure_limit=None, depends_on=None) -> Job`
+`submit_job(template, *, farm_id, queue_id, owner=None, priority=None, project=None, max_attempts=None, retry_delay_seconds=None, failure_limit=None, depends_on=None, estimated_seconds=None) -> Job`
 
 The template may be a `str` (sent verbatim), a `pathlib.Path` (read from disk),
 or a `dict` (serialized to JSON). The `Content-Type` is chosen automatically —
 `application/json` for dicts and JSON-parseable strings/files, `application/x-yaml`
 otherwise (and always for `.yaml`/`.yml` paths). Serializing a dict needs only
-the standard library; the `yaml` extra is **not** required to submit.
+the standard library; the `yaml` extra is not required to submit.
 
 `depends_on` is an optional list of upstream job IDs (same farm) this job must
 wait for; if any is not yet `completed` the returned job's `status` is
 `blocked` instead of `pending`, and it is released automatically once every
 upstream completes (or canceled if one fails, is canceled, or is deleted).
 `submit_product_job` accepts the same `depends_on` keyword.
+
+`estimated_seconds` (1 to 2147483647) is an optional estimate of the job's total task run time; `submit_product_job` accepts it too.
 
 `max_attempts`, `retry_delay_seconds`, and `failure_limit` are optional per-job
 retry-policy overrides; each left `None` inherits the queue → farm → server
@@ -202,11 +203,12 @@ can show it to the artist.
 
 | Method | Description |
 |---|---|
-| `list_jobs(*, status, farm_id, queue_id, owner, project, sort_by, sort_dir, limit, offset) -> Page[Job]` | One page of jobs. |
+| `list_jobs(*, status, farm_id, queue_id, owner, project, sort_by, sort_dir, limit, offset, include_timing=False) -> Page[Job]` | One page of jobs. `include_timing=True` adds each job's `remaining_seconds`, `remaining_basis` and `as_of`; otherwise they are `None`. |
 | `iter_jobs(...) -> Iterator[Job]` | Same filters, auto-paged. |
 | `get_job(job_id) -> Job` | Detailed job with `steps` and `task_counts`; 404 → `NotFoundError`. |
 | `pause_job(job_id) -> Job` / `resume_job(job_id) -> Job` | Pause/resume; returns the updated job. |
 | `set_job_priority(job_id, priority) -> Job` | Validates `priority >= 1` client-side before sending. |
+| `set_job_estimate(job_id, seconds) -> Job` | Sets the run-time estimate in seconds (1 to 2147483647); `None` clears it. Validated client-side. |
 | `cancel_job(job_id) -> None` | POST `/jobs/{id}/cancel`; returns `None` on `204`. |
 | `retry_job(job_id) -> RetryJobResult` | POST `/jobs/{id}/retry`; revives all `failed`/`canceled` tasks; returns `RetryJobResult(job_id, retried)`. |
 | `delete_job(job_id) -> None` | DELETE; permanently deletes the job and all data (cancels active tasks first); returns `None` on `204`. |
@@ -291,7 +293,7 @@ reset, so pass every field you want to keep.
 | Family | Create | List | Get / Update / Delete |
 |---|---|---|---|
 | Farms | `create_farm(*, name, description=None, max_concurrent_tasks=0, max_attempts=None, retry_delay_seconds=None, failure_limit=None)` | `list_farms() -> list[Farm]`, `iter_farms()` | `get_farm`, `update_farm`, `delete_farm` |
-| Queues | `create_queue(*, farm_id, name, description=None, priority=0, max_concurrent_tasks=0, paused=False, max_attempts=None, retry_delay_seconds=None, failure_limit=None)` | `list_queues(*, farm_id, paused, sort_by, sort_dir, limit, offset) -> Page[Queue]`, `iter_queues(...)` | `get_queue`, `update_queue`, `delete_queue` |
+| Queues | `create_queue(*, farm_id, name, description=None, priority=0, max_concurrent_tasks=0, paused=False, max_attempts=None, retry_delay_seconds=None, failure_limit=None)` | `list_queues(*, farm_id, paused, sort_by, sort_dir, limit, offset, include_timing=False) -> Page[Queue]`, `iter_queues(...)` | `get_queue(queue_id, *, include_timing=False)`, `update_queue`, `delete_queue` |
 | Storage locations | `create_storage_location(*, name, description=None, roots=None)` | `list_storage_locations() -> list[StorageLocation]`, `iter_storage_locations()` | `get_storage_location`, `update_storage_location`, `delete_storage_location` |
 | Compute locations | `create_compute_location(*, name, description=None)` | `list_compute_locations() -> list[ComputeLocation]`, `iter_compute_locations()` | `get_compute_location`, `update_compute_location`, `delete_compute_location` |
 | Usage pools | `create_usage_pool(*, name, max_concurrent, server_hint=None)` | `list_usage_pools() -> list[UsagePool]`, `iter_usage_pools()` | `get_usage_pool`, `update_usage_pool`, `delete_usage_pool` |
@@ -385,7 +387,7 @@ zero-valued on the yielded `LogChunk`; `seq_num` and the content fields are set.
 `wait_for_job(job_id, poll_interval=2.0, timeout=None) -> Job` polls `get_job`
 until the job reaches a terminal status (`completed`, `failed`, `canceled`),
 returning the final `Job`. It raises `SqiTimeoutError` if `timeout` elapses
-first. Note that `paused` is **not** terminal — pass a `timeout` if a job might
+first. `paused` is not terminal — pass a `timeout` if a job might
 be paused indefinitely.
 
 `submit_and_wait(template, *, farm_id, queue_id, owner=None, priority=None, project=None, max_attempts=None, retry_delay_seconds=None, failure_limit=None, depends_on=None, poll_interval=2.0, timeout=None) -> Job`

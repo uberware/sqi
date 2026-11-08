@@ -13,8 +13,17 @@ export interface WsJobEvent {
   owner?: string
   queue_id?: string
   status: JobStatus | typeof JOB_REMOVED_STATUS
+  /**
+   * Set when the event is not a status change. `estimate`: only the job's
+   * estimate moved, and `status` is merely the status the server read, which
+   * may already be stale; refetch the job instead of applying it.
+   */
+  change?: typeof JOB_CHANGE_ESTIMATE
   updated_at: string
 }
+
+/** {@link WsJobEvent.change} of an event sent because a job's estimate moved. */
+export const JOB_CHANGE_ESTIMATE = 'estimate'
 
 /**
  * Payload received when a task changes status. Delivered on the

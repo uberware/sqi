@@ -210,6 +210,15 @@ func applyCompletionTx(ctx context.Context, tx *dbTx, c store.AttemptCompletion,
 			return store.CompletionResult{}, fmt.Errorf("store: stamp failure reason on task %s: %w", c.TaskID, mapErr(err))
 		}
 	}
+	// A succeeded task's run time is stored once, here, from the attempt this
+	// report just closed (the latest, checked above). Nothing moves a task out
+	// of succeeded or gives it a newer attempt afterwards, so the stored value
+	// stays the one the remaining-time read would derive from the attempts.
+	if c.TaskStatus == store.TaskStatusSucceeded {
+		if err := refreshTaskRunMs(ctx, tx, c.TaskID); err != nil {
+			return store.CompletionResult{}, err
+		}
+	}
 	return store.CompletionResult{Applied: true}, nil
 }
 

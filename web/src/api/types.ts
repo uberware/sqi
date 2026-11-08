@@ -81,7 +81,27 @@ export interface Job {
   failure_limit?: number
   /** IDs of upstream jobs this job is waiting on; present (non-empty) on job detail, omitted on list. */
   depends_on?: string[]
+  /** Submitter- or preset-supplied estimate of total task run time summed over all tasks, in seconds (not wall-clock). */
+  estimated_seconds?: number
+  /** Name of the product the job was submitted from, when it came from one. */
+  product_name?: string
+  /** Version of that product. */
+  product_version?: string
+  /** Seconds of work left; null when unknown. Present on job list items and job detail; absent from create and update responses. */
+  remaining_seconds?: number | null
+  /** Where `remaining_seconds` comes from; omitted when unknown. */
+  remaining_basis?: RemainingBasis
+  /** Server time (RFC 3339) the remaining figure was computed; the client counts down from here. */
+  as_of?: string
+  /**
+   * Client-only: local time (epoch ms) this row arrived from the server. The remaining-time
+   * countdown anchors here so patching a cached row (WebSocket events) cannot restart it.
+   */
+  received_at?: number
 }
+
+/** How a job's remaining time was derived. */
+export type RemainingBasis = 'finished' | 'progress' | 'measured' | 'estimate'
 
 /**
  * Per-status task count summary. Optional on {@link Job} (list endpoints may
@@ -349,6 +369,16 @@ export interface Queue {
   retry_delay_seconds?: number
   /** Queue-level override for the number of task failures that auto-parks a job; absent means inherit. */
   failure_limit?: number
+  /** Number of jobs in the queue that are not yet finished. */
+  unfinished_jobs?: number
+  /** Total seconds of work left across the queue's unfinished jobs with a known figure. */
+  work_remaining_seconds?: number
+  /** Unfinished jobs that contribute nothing to `work_remaining_seconds` for want of an estimate. */
+  jobs_without_estimate?: number
+  /** Tasks currently running in the queue. */
+  running_tasks?: number
+  /** Server time (RFC 3339) these figures were computed. */
+  as_of?: string
 }
 
 // ── Storage location ──────────────────────────────────────────────────────────

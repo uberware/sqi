@@ -212,6 +212,82 @@ def test_list_queues_returns_page_with_filters(make_client: ClientFactory) -> No
 
 
 @respx.mock
+def test_list_jobs_timing_is_opt_in(make_client: ClientFactory) -> None:
+    route = respx.get(f"{_API}/jobs").mock(
+        return_value=httpx.Response(
+            200,
+            json={"items": [_load("job")], "total": 1, "limit": 50, "offset": 0},
+        )
+    )
+    client = make_client()
+
+    client.list_jobs()
+    assert "include" not in route.calls.last.request.url.params
+
+    client.list_jobs(include_timing=True)
+    assert route.calls.last.request.url.params["include"] == "timing"
+
+
+@respx.mock
+def test_iter_jobs_forwards_include_timing(make_client: ClientFactory) -> None:
+    route = respx.get(f"{_API}/jobs").mock(
+        return_value=httpx.Response(
+            200,
+            json={"items": [_load("job")], "total": 1, "limit": 50, "offset": 0},
+        )
+    )
+    client = make_client()
+
+    list(client.iter_jobs(include_timing=True))
+    assert route.calls.last.request.url.params["include"] == "timing"
+
+
+@respx.mock
+def test_list_queues_timing_is_opt_in(make_client: ClientFactory) -> None:
+    route = respx.get(f"{_API}/queues").mock(
+        return_value=httpx.Response(
+            200,
+            json={"items": [_load("queue")], "total": 1, "limit": 50, "offset": 0},
+        )
+    )
+    client = make_client()
+
+    client.list_queues()
+    assert "include" not in route.calls.last.request.url.params
+
+    client.list_queues(include_timing=True)
+    assert route.calls.last.request.url.params["include"] == "timing"
+
+
+@respx.mock
+def test_get_queue_timing_is_opt_in(make_client: ClientFactory) -> None:
+    route = respx.get(f"{_API}/queues/q-1").mock(
+        return_value=httpx.Response(200, json=_load("queue"))
+    )
+    client = make_client()
+
+    client.get_queue("q-1")
+    assert "include" not in route.calls.last.request.url.params
+
+    client.get_queue("q-1", include_timing=True)
+    assert route.calls.last.request.url.params["include"] == "timing"
+
+
+@respx.mock
+def test_iter_queues_forwards_include_timing(make_client: ClientFactory) -> None:
+    route = respx.get(f"{_API}/queues").mock(
+        return_value=httpx.Response(
+            200,
+            json={"items": [_load("queue")], "total": 1, "limit": 50, "offset": 0},
+        )
+    )
+    client = make_client()
+
+    list(client.iter_queues(include_timing=True))
+    assert route.calls.last.request.url.params["include"] == "timing"
+
+
+@respx.mock
 def test_iter_queues_walks_pages(make_client: ClientFactory) -> None:
     rows = ["a", "b", "c"]
 

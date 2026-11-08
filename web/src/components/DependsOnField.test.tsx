@@ -65,6 +65,14 @@ describe('DependsOnField', () => {
     )
   })
 
+  it('does not ask for remaining-time figures it does not show', () => {
+    h.jobs = []
+    render(<DependsOnField farmId="farm-1" value={[]} onChange={vi.fn()} />)
+
+    const params: unknown = useListJobsMock.mock.calls[0]?.[0]
+    expect(params).not.toHaveProperty('include_timing')
+  })
+
   it('lists non-terminal jobs as candidates and excludes terminal ones', () => {
     h.jobs = [
       makeJob({ id: 'job-a', name: 'Upstream A', status: 'running' }),

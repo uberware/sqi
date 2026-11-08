@@ -115,6 +115,18 @@ export function fetchResumeJob(id: string): Promise<Job> {
   })
 }
 
+/**
+ * Set or clear a job's run-time estimate via `PATCH /jobs/{id}` with
+ * `{ estimated_seconds }`; `null` clears it.
+ */
+export function fetchSetJobEstimate(id: string, seconds: number | null): Promise<Job> {
+  return apiFetch<Job>(`/jobs/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ estimated_seconds: seconds }),
+  })
+}
+
 /** Retry a failed or canceled task via `POST /tasks/{id}/retry`. */
 export function fetchRetryTask(id: string): Promise<RetryResponse> {
   return apiFetch<RetryResponse>(`/tasks/${encodeURIComponent(id)}/retry`, {
@@ -212,6 +224,19 @@ export function useResumeJob() {
     mutationFn: (id: string) => fetchResumeJob(id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.jobs.all })
+    },
+  })
+}
+
+/** Set or clear a job's estimate. Invalidates all job queries and the queue timing figures on success. */
+export function useSetJobEstimate() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, seconds }: { id: string; seconds: number | null }) =>
+      fetchSetJobEstimate(id, seconds),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.jobs.all })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.farms.withQueues(true) })
     },
   })
 }

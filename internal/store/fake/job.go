@@ -20,9 +20,9 @@ import (
 // scheduler branches on all three: NOT RECORDED falls back to scanning the raw
 // template, RECORDED-EMPTY does not, and RECORDED-NON-EMPTY answers outright.
 // SQLite stores ” for the first and '[]' for the second and reads a recorded
-// row back as a non-nil slice; without this, the fake would hand back a nil
-// slice where SQLite hands back an empty one, and a nil-vs-empty assumption
-// could pass every fake-backed test and fail in production.
+// row back as a non-nil slice. Without this, the fake would hand back a nil
+// slice where SQLite hands back an empty one, so a nil-vs-empty assumption
+// could pass every fake-backed test and fail against a real database.
 func normalizeDeclaredExtensions(job store.Job) store.Job {
 	if !job.ExtensionsRecorded {
 		job.DeclaredExtensions = nil
@@ -59,6 +59,7 @@ func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission
 
 	job := normalizeDeclaredExtensions(sub.Job)
 	job.Parameters = copyMap(job.Parameters)
+	job.EstimatedSeconds = copyIntPtr(job.EstimatedSeconds)
 	job.CreatedAt, job.UpdatedAt = now, now
 	s.jobs[job.ID] = job
 	out.Job = job
@@ -76,8 +77,8 @@ func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission
 
 	// Each step and task is stamped with its own, strictly later time,
 	// mirroring the SQLite implementation (rowClock in sqlstore/job.go), where
-	// tasks within a step sharing one created_at would silently disable the
-	// ready-task ordering tiebreaker and destabilize ListTasks paging. A coarse
+	// tasks within a step sharing one created_at would disable the
+	// ready-task ordering tiebreaker and make ListTasks paging unstable. A coarse
 	// wall clock returns the same instant for consecutive rows, so a row the
 	// clock has not moved past is stamped a nanosecond after the one before
 	// (stampLocked, which the store's other Create methods share).
@@ -107,14 +108,13 @@ func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission
 // (see checkUpstreamsLocked), the steps_job_name_unique UNIQUE (job_id, name)
 // constraint, and the steps and tasks primary keys, each checked both within
 // the submission and against what is already stored. Without the primary-key
-// checks the fake does not merely accept a duplicate ID, it loses the
-// row (the map assignment overwrites) and still reports success, so a Submit
-// regression that reused an ID would be green through every fake-backed test
-// and ErrConflict only in production.
+// checks the fake would accept a duplicate ID, overwrite the row (the map
+// assignment) and report success, so a Submit regression that reused an ID
+// would pass every fake-backed test and return ErrConflict only against a
+// real database.
 //
-// It does NOT mirror SQLite's foreign keys: a submission naming a nonexistent
-// farm, queue or step is accepted here. That gap is deliberately left open
-// rather than closed only on this one path. (job_dependencies.depends_on_job_id
+// It does not mirror SQLite's foreign keys: a submission naming a nonexistent
+// farm, queue or step is accepted here. (job_dependencies.depends_on_job_id
 // carries no FK either, so an edge to a nonexistent upstream is not refused by
 // the schema: it is refused by the explicit upstream check, on both backends.)
 //
@@ -308,8 +308,8 @@ func (s *Store) UpdateJob(ctx context.Context, job store.Job) (store.Job, error)
 		return store.Job{}, store.ErrNotFound
 	}
 
-	// Preserve lifecycle fields — these are owned by the status operations
-	// (FinalizeJob, CancelJobStatus, ...), not by UpdateJob.
+	// Lifecycle fields are owned by the status operations (FinalizeJob,
+	// CancelJobStatus, ...), not by UpdateJob.
 	job.Status = existing.Status
 	job.StartedAt = existing.StartedAt
 	job.CompletedAt = existing.CompletedAt
@@ -319,6 +319,10 @@ func (s *Store) UpdateJob(ctx context.Context, job store.Job) (store.Job, error)
 	// submission and is not on sqlUpdateJob's SET list.
 	job.DeclaredExtensions = copySlice(existing.DeclaredExtensions)
 	job.ExtensionsRecorded = existing.ExtensionsRecorded
+	// The product is fixed at submission; the estimate is written.
+	job.ProductName = existing.ProductName
+	job.ProductVersion = existing.ProductVersion
+	job.EstimatedSeconds = copyIntPtr(job.EstimatedSeconds)
 	// The failure counter and park reason are written by RecordTaskFailure,
 	// ParkJob and ResumeJob, and are not on sqlUpdateJob's SET list.
 	job.FailedAttempts = existing.FailedAttempts
@@ -403,10 +407,10 @@ func (s *Store) CancelJobStatus(ctx context.Context, id string) error {
 //
 // A candidate still referenced as an upstream (depends_on_job_id) by a
 // non-terminal dependent is skipped: purging it would leave the dependent's
-// reconciler reading a GetJob ErrNotFound for an upstream that actually
-// succeeded, which it treats as "missing" and wrongly cancels the dependent.
-// Manual DeleteJob intentionally keeps the cancel-dependents behavior — this
-// guard only applies to the automatic retention sweep.
+// reconciler reading a GetJob ErrNotFound for an upstream that
+// succeeded, which it treats as "missing" and cancels the dependent.
+// Manual DeleteJob keeps the cancel-dependents behavior; this guard applies
+// only to the automatic retention sweep.
 //
 // Each candidate is re-checked against the full eligibility predicate
 // immediately before it is deleted, and skipped (not deleted, not reported)
@@ -547,7 +551,7 @@ func (s *Store) deleteJobLocked(id string) {
 		}
 	}
 	// Outgoing job_dependencies edges only; incoming edges (other jobs
-	// depending on id) are deliberately left for the reconciler.
+	// depending on id) are left for the reconciler.
 	delete(s.jobDependencies, id)
 	delete(s.jobs, id)
 }
@@ -608,8 +612,7 @@ func (s *Store) ResumeJob(ctx context.Context, jobID string, now time.Time) erro
 
 // jobMatchesSearch reports whether every whitespace-separated term in query
 // matches (case-insensitive substring) one of j's name, id, owner, or project
-// fields. Uses the shared matcher so it stays in lockstep with the SQLite
-// LIKE search.
+// fields. It uses the shared matcher, which the SQLite LIKE search also follows.
 func jobMatchesSearch(j store.Job, query string) bool {
 	return store.MatchesSearch(query, j.Name, j.ID, j.Owner, j.Project)
 }
@@ -656,4 +659,14 @@ func cmpJob(a, b store.Job, field store.JobSortField, dir store.SortDir) int {
 		n = a.CreatedAt.Compare(b.CreatedAt)
 	}
 	return withIDTieBreak(n, dir, a.ID, b.ID)
+}
+
+// copyIntPtr returns a pointer to a copy of *p, so a stored job never aliases
+// the caller's value.
+func copyIntPtr(p *int) *int {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
 }

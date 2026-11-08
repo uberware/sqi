@@ -73,6 +73,12 @@
   margin-bottom: var(--space-1);
 }
 
+.metaNote {
+  display: block;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
 .metaField dd {
   font-size: var(--font-size-base);
   color: var(--color-text-primary);

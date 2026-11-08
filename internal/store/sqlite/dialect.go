@@ -70,3 +70,10 @@ func (sqliteDialect) ForShare() string { return "" }
 func (sqliteDialect) ClockMicros() string {
 	return "CAST((julianday('now') - 2440587.5) * 86400000000 AS INTEGER)"
 }
+
+// EpochSeconds is the Julian day number of expr rebased to the Unix epoch and
+// scaled to seconds. julianday reads the stored text, fractional digits and
+// trailing Z included.
+func (sqliteDialect) EpochSeconds(expr string) string {
+	return "((julianday(" + expr + ") - 2440587.5) * 86400.0)"
+}

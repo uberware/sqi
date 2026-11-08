@@ -3,13 +3,13 @@
 """Typed models for the sqi client.
 
 This module holds the pagination primitives (:class:`Page`, :func:`iter_pages`)
-plus the resource dataclasses — :class:`Job`, :class:`Task`, :class:`Worker`,
+plus the resource dataclasses (:class:`Job`, :class:`Task`, :class:`Worker`,
 :class:`Farm`, :class:`Queue`, :class:`StorageLocation`, :class:`UsagePool`,
-and the log types — that mirror the server's OpenAPI component schemas
+and the log types) that mirror the server's OpenAPI component schemas
 field-for-field.
 
 Every model exposes a ``from_dict`` classmethod that parses a decoded JSON
-response object. Parsing is deliberately *tolerant* for forward compatibility
+response object. Parsing is tolerant for forward compatibility
 with newer servers: RFC 3339 timestamps become timezone-aware
 :class:`~datetime.datetime` values, nested objects are constructed recursively,
 unknown JSON fields are ignored rather than raising, and unknown status enum
@@ -114,13 +114,11 @@ def iter_pages(
         yield from page.items
         count = len(page.items)
         # The server may clamp the requested page size (sqi-server caps limit
-        # at 1000), so a page is only "short" relative to the size the server
-        # actually applied — judging by the requested limit would silently
-        # truncate a clamped result set after its first page.
+        # at 1000), so a page is "short" only relative to the size the server
+        # applied, not the requested limit.
         applied_limit = page.limit if 0 < page.limit < limit else limit
         # Stop on an empty page, once the absolute position reaches the server's
-        # reported total, or on a short page — all of which mark the end of the
-        # result set. Using absolute position rather than a running count keeps
+        # reported total, or on a short page. The absolute position keeps
         # termination correct when `offset > 0`.
         if count == 0 or current + count >= page.total or count < applied_limit:
             return
@@ -449,7 +447,7 @@ class EffectiveRetryPolicy:
     The values after job -> queue -> farm -> server-default inheritance; always
     concrete ints when the object is present. A ``failure_limit`` of ``0`` means
     auto-park is off. Populated only on the ``JobDetail`` response (see
-    :class:`Job`); ``None`` on a list-level job or an older server.
+    :class:`Job`); ``None`` on a list-level job or when the server omits it.
     """
 
     max_attempts: int
@@ -518,14 +516,29 @@ class Job:
     """The resolved retry policy in force for this job after job -> queue ->
     farm -> server-default inheritance. Populated only by
     :meth:`~sqi_client.client.SqiClient.get_job` (the ``JobDetail`` response);
-    ``None`` on a list-level job or when the server predates this field."""
+    ``None`` on a list-level job or when the server omits it."""
     depends_on: list[str] = field(default_factory=list)
     """IDs of upstream jobs this job waits for (whole-job cross-job
     dependencies). Populated only by :meth:`~sqi_client.client.SqiClient.get_job`
     (the ``JobDetail`` response); empty on a list-level job."""
     progress_percent: float | None = None
     """Overall completion of the job, 0-100. ``None`` when the server reports
-    no progress (``null``) or predates this field."""
+    no progress (``null``) or omits the field."""
+    estimated_seconds: int | None = None
+    """The submitter's estimate of the job's total task run time, in seconds.
+    ``None`` when none was given."""
+    remaining_seconds: int | None = None
+    """Estimated seconds of work left. ``None`` when the server cannot estimate
+    (``null``) or omits the field, as a job list does unless asked with
+    ``include_timing=True``."""
+    remaining_basis: str | None = None
+    """How ``remaining_seconds`` was derived. ``None`` when unknown or omitted."""
+    as_of: datetime | None = None
+    """When the remaining-time figures were computed. ``None`` when absent."""
+    product_name: str | None = None
+    """Name of the product the job was submitted from, if any."""
+    product_version: str | None = None
+    """Version of the product the job was submitted from, if any."""
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Job:
@@ -578,6 +591,12 @@ class Job:
             ),
             depends_on=_str_list(data.get("depends_on")),
             progress_percent=_opt_float(data.get("progress_percent")),
+            estimated_seconds=_opt_int(data.get("estimated_seconds")),
+            remaining_seconds=_opt_int(data.get("remaining_seconds")),
+            remaining_basis=_opt_str(data.get("remaining_basis")),
+            as_of=_opt_datetime(data.get("as_of")),
+            product_name=_opt_str(data.get("product_name")),
+            product_version=_opt_str(data.get("product_version")),
         )
 
 
@@ -600,10 +619,10 @@ class Task:
     assigned_at: datetime | None = None
     failure_reason: str | None = None
     """Human-readable reason the task's most recent attempt failed. ``None``
-    when the task has not failed or the server predates this field."""
+    when the task has not failed or the server omits the field."""
     progress: int | None = None
     """Completion of the running attempt, 0-100. ``None`` when the task has
-    reported no progress or the server predates this field."""
+    reported no progress or the server omits the field."""
     status_text: str | None = None
     """Free-form status line the task last reported. ``None`` when absent."""
     progress_at: datetime | None = None
@@ -978,6 +997,20 @@ class Queue:
     failure_limit: int | None = None
     """Queue-level override for the number of task failures that auto-parks a
     job. ``None`` means inherit (farm -> server default)."""
+    unfinished_jobs: int | None = None
+    """Number of unfinished jobs in the queue. ``None`` when the server omits
+    the queue totals."""
+    work_remaining_seconds: int | None = None
+    """Estimated seconds of work left across the queue's unfinished jobs.
+    ``None`` when omitted."""
+    jobs_without_estimate: int | None = None
+    """Unfinished jobs that contribute no estimate to
+    ``work_remaining_seconds``. ``None`` when omitted."""
+    running_tasks: int | None = None
+    """Tasks currently running in the queue. ``None`` when omitted."""
+    as_of: datetime | None = None
+    """When the queue totals were computed. ``None`` when they were not
+    requested (``include_timing``) or the server could not read them."""
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Queue:
@@ -1000,6 +1033,11 @@ class Queue:
             max_attempts=_opt_int(data.get("max_attempts")),
             retry_delay_seconds=_opt_int(data.get("retry_delay_seconds")),
             failure_limit=_opt_int(data.get("failure_limit")),
+            unfinished_jobs=_opt_int(data.get("unfinished_jobs")),
+            work_remaining_seconds=_opt_int(data.get("work_remaining_seconds")),
+            jobs_without_estimate=_opt_int(data.get("jobs_without_estimate")),
+            running_tasks=_opt_int(data.get("running_tasks")),
+            as_of=_opt_datetime(data.get("as_of")),
         )
 
 
@@ -1214,7 +1252,7 @@ class Principal:
     """The authenticated identity behind the current credential.
 
     Returned by :meth:`~sqi_client.client.SqiClient.me`. Gate behaviour on
-    ``permissions`` rather than ``roles``: the server derives permissions from
+    ``permissions`` rather than ``roles``; the server derives permissions from
     its policy matrix, so an externally-mapped role from LDAP or OIDC needs no
     client-side change.
     """
@@ -1400,7 +1438,7 @@ class Product:
     tooltip. It is also the field product search matches on."""
     readme: str = ""
     """Long-form Markdown documentation (max 8000 characters), rendered on the
-    product's detail page in the web UI. It is NOT searched."""
+    product's detail page in the web UI. It is not searched."""
     category: str = ""
     version: str = ""
     source: str = ""

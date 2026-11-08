@@ -26,31 +26,21 @@ type productHandler struct {
 	ownerLookup ownerLookup
 	// exprDeadline is the wall-clock allowance for one submission's expression
 	// evaluation (config openjd.expr_submission_deadline); zero disables it.
-	//
-	// This route submits an operator-installed template rather than a
-	// client-supplied one, so the 4 MiB arbitrary-template exposure POST
-	// /api/v1/jobs carries is not the same here — but the parameters are the
-	// client's, and phase 2 re-evaluates every expression with them bound. The
-	// backstop therefore applies to both routes, on the same terms.
+	// This route submits an operator-installed template, but the parameters
+	// are the client's and submission re-evaluates every expression with them
+	// bound, so the deadline applies here as on POST /api/v1/jobs.
 	exprDeadline time.Duration
 	// exprLimits is the operator's configured EXPR budget
 	// (config openjd.expr_*), applied when this handler validates a
-	// client-supplied product template on POST/PUT /api/v1/products.
+	// client-supplied product template on POST/PUT /api/v1/products. The job
+	// routes take theirs from the Submitter; this route has none. The zero
+	// value means the defaults.
 	//
-	// The job routes get theirs from the Submitter built at boot; this route
-	// does not go through a Submitter at all, so without this field it would
-	// validate on openjd.DefaultExprLimits() whatever the operator had
-	// configured. The zero value means "the defaults".
-	//
-	// Do not set [openjd.ExprLimits.Deadline] on this field. It is built once by
-	// productHandlerFor and reused for every request, so a deadline stored here
-	// would be a single absolute instant that refuses everything once it
-	// passed — the same hazard [openjd.SubmitterOptions] carries, and the reason
-	// exprDeadline above is a duration. It is inert today only because
-	// [openjd.ValidateWithBudget] overwrites the field from
-	// ValidateOptions.Deadline, which is a property of that call site rather
-	// than a guarantee. templateValidateOptions computes the instant per
-	// request.
+	// Do not set [openjd.ExprLimits.Deadline] here. The handler is built once
+	// and reused, so a stored deadline would be a single absolute instant that
+	// refuses every request once it passed. [openjd.ValidateWithBudget]
+	// overwrites the field from ValidateOptions.Deadline, which
+	// templateValidateOptions computes per request.
 	exprLimits openjd.ExprLimits
 }
 
@@ -58,7 +48,7 @@ type productHandler struct {
 // submitter, scheduler, and store. validateOwner controls whether a submit-as
 // owner override is checked against known users (config.AuthConfig.ValidateJobOwner).
 // exprDeadline is the wall-clock allowance for one submission's expression
-// evaluation; zero disables the backstop. exprLimits is the operator's EXPR
+// evaluation; zero disables the deadline. exprLimits is the operator's EXPR
 // budget for the client-supplied templates this route's create/update handlers
 // validate; the zero value means the defaults.
 func newProductHandler(
@@ -81,26 +71,21 @@ func newProductHandler(
 
 // productHandlerFor builds the product handler from cfg and deps.
 //
-// Extracted from [NewRouter] so the Config -> handler mapping is reachable from
-// a test. NewRouter returns a chi.Mux and nothing else, so a cfg field dropped
-// from that call site is invisible to every test in this package — and two of
-// the fields it passes, ExprSubmissionDeadline and ExprLimits, control bounds
-// whose absence only shows on an EXPR template expensive enough to reach them.
-// Same reasoning as internal/server's routerConfig.
+// It is separate from [NewRouter] so a test can check the Config -> handler
+// mapping; NewRouter returns only a chi.Mux, which hides a cfg field dropped
+// at that call site. The same applies to internal/server's routerConfig.
 func productHandlerFor(cfg Config, deps Deps, logger *slog.Logger) *productHandler {
 	return newProductHandler(deps.Products, deps.Submitter, deps.Scheduler, deps.Store, logger,
 		cfg.ValidateJobOwner, cfg.ExprSubmissionDeadline, cfg.ExprLimits)
 }
 
-// templateValidateOptions bounds ONE validation of a client-supplied product
-// template: the operator's EXPR budget, plus this request's share of wall-clock
-// time.
+// templateValidateOptions bounds one validation of a client-supplied product
+// template: the operator's EXPR budget, plus this request's wall-clock
+// deadline.
 //
-// POST /api/v1/products and PUT /api/v1/products/{name} are the third route
-// that accepts an arbitrary template body, alongside the two job-submission
-// routes — and with auth off (the default) they are anonymous. Without the
-// deadline this route would be the one place a template could be walked with no
-// bound on elapsed time at all.
+// POST /api/v1/products and PUT /api/v1/products/{name} accept an arbitrary
+// template body, like the job-submission routes, and are anonymous when auth is
+// off.
 func (h *productHandler) templateValidateOptions() product.ValidateOptions {
 	return product.ValidateOptions{
 		EnforceLimits: true,
@@ -111,12 +96,10 @@ func (h *productHandler) templateValidateOptions() product.ValidateOptions {
 
 // writeTemplateProblem reports a [product.ValidateTemplate] failure.
 //
-// The wall-clock backstop is a 503 and everything else is a 400, on the same
-// terms as the submission routes' 503-vs-422 split: a deadline means this
-// server gave up, and the same body would validate on an idle machine, so
-// reporting it as a malformed template would make acceptance depend on machine
-// load. The status differs from the submission routes' 422 only because this
-// endpoint has always answered 400 for a bad template.
+// The wall-clock deadline is a 503 and everything else is a 400: a deadline
+// means the server gave up, and the same body would validate on an idle
+// machine. The submission routes answer 422 for an invalid template; this
+// endpoint answers 400.
 func (h *productHandler) writeTemplateProblem(w http.ResponseWriter, r *http.Request, err error) {
 	if writeExprDeadlineProblem(w, r, h.logger, err,
 		"products: template validation exceeded its expression deadline",
@@ -173,8 +156,7 @@ type pathFileFilterResponse struct {
 }
 
 // itemConstraintResponse mirrors [openjd.ItemConstraint] for the wire. Item
-// recurses exactly once: RFC 0007 caps list nesting at list[list[T]], so a
-// third level cannot describe anything.
+// recurses once: RFC 0007 caps list nesting at list[list[T]].
 type itemConstraintResponse struct {
 	AllowedValues []string                `json:"allowed_values"`
 	MinValue      *string                 `json:"min_value"`
@@ -220,8 +202,7 @@ type productParameterResponse struct {
 	FileFilterDefault *pathFileFilterResponse         `json:"file_filter_default"`
 	// Item carries a LIST[*] parameter's per-element constraints (RFC 0007's
 	// nested item: block). Nil for a scalar parameter. The web form validates
-	// each element against these, so omitting them would leave half the
-	// constraint model unenforceable client-side.
+	// each element against these.
 	Item *itemConstraintResponse `json:"item"`
 }
 
@@ -385,6 +366,7 @@ type submitProductRequest struct {
 	MaxAttempts       *int              `json:"max_attempts"`
 	RetryDelaySeconds *int              `json:"retry_delay_seconds"`
 	FailureLimit      *int              `json:"failure_limit"`
+	EstimatedSeconds  *int              `json:"estimated_seconds"`
 	DependsOn         []string          `json:"depends_on"`
 }
 
@@ -404,7 +386,7 @@ func (h *productHandler) submitProductJob(w http.ResponseWriter, r *http.Request
 
 	var req submitProductRequest
 	if decErr := json.NewDecoder(r.Body).Decode(&req); decErr != nil {
-		writeProblem(w, r, http.StatusBadRequest, "invalid JSON body")
+		writeProblem(w, r, http.StatusBadRequest, bodyDecodeProblem(decErr))
 		return
 	}
 	if req.FarmID == "" || req.QueueID == "" {
@@ -412,6 +394,11 @@ func (h *productHandler) submitProductJob(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if problem := validateRetryOverrides(req.MaxAttempts, req.RetryDelaySeconds, req.FailureLimit); problem != "" {
+		writeProblem(w, r, http.StatusBadRequest, problem)
+		return
+	}
+
+	if problem := validateEstimatedSeconds(req.EstimatedSeconds); problem != "" {
 		writeProblem(w, r, http.StatusBadRequest, problem)
 		return
 	}
@@ -434,13 +421,15 @@ func (h *productHandler) submitProductJob(w http.ResponseWriter, r *http.Request
 		MaxAttempts:       req.MaxAttempts,
 		RetryDelaySeconds: req.RetryDelaySeconds,
 		FailureLimit:      req.FailureLimit,
+		EstimatedSeconds:  req.EstimatedSeconds,
+		ProductName:       p.Name,
+		ProductVersion:    p.Version,
 		DependsOn:         req.DependsOn,
 		Deadline:          exprDeadlineAt(h.exprDeadline),
 	})
 	if err != nil {
-		// The wall-clock backstop first, as a 503 — see
-		// writeExprDeadlineProblem for why this outcome must not be reported as
-		// an invalid template.
+		// The wall-clock deadline is checked first and answers 503; see
+		// writeExprDeadlineProblem.
 		if writeExprDeadlineProblem(w, r, h.logger, err,
 			"products: submit exceeded its expression deadline",
 			exprDeadlineProblemDetail, h.exprDeadline) {
@@ -506,8 +495,8 @@ func (h *productHandler) decodeProductBody(w http.ResponseWriter, r *http.Reques
 	return p, true
 }
 
-// validateProductBody enforces the metadata length caps (checked first, since
-// it is cheap) and then the OpenJD template itself (the expensive check) on a
+// validateProductBody enforces the metadata length caps (checked first as the
+// cheaper check) and then the OpenJD template on a
 // product built from a decoded request body. It writes the problem response
 // and returns false on either failure.
 func (h *productHandler) validateProductBody(

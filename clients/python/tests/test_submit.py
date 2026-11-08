@@ -361,3 +361,48 @@ def test_submit_is_not_retried(make_client: ClientFactory) -> None:
         client.submit_job(_DICT_TEMPLATE, farm_id="farm-1", queue_id="queue-1")
 
     assert route.call_count == 1
+
+
+# ── estimated_seconds ───────────────────────────────────────────────
+
+
+@respx.mock
+def test_submit_sends_estimated_seconds_query(make_client: ClientFactory) -> None:
+    route = respx.post(_JOBS_URL).mock(return_value=_created())
+    client = make_client()
+
+    client.submit_job(_DICT_TEMPLATE, farm_id="f", queue_id="q", estimated_seconds=3600)
+
+    assert route.calls.last.request.url.params["estimated_seconds"] == "3600"
+
+
+@respx.mock
+def test_submit_omits_estimated_seconds_when_none(make_client: ClientFactory) -> None:
+    route = respx.post(_JOBS_URL).mock(return_value=_created())
+    client = make_client()
+
+    client.submit_job(_DICT_TEMPLATE, farm_id="f", queue_id="q")
+
+    assert "estimated_seconds" not in route.calls.last.request.url.params
+
+
+@respx.mock
+def test_submit_rejects_out_of_range_estimate(make_client: ClientFactory) -> None:
+    route = respx.post(_JOBS_URL).mock(return_value=_created())
+    client = make_client()
+
+    for bad in (0, -1, 2147483648):
+        with pytest.raises(ValueError, match="estimated_seconds"):
+            client.submit_job(_DICT_TEMPLATE, farm_id="f", queue_id="q", estimated_seconds=bad)
+    assert not route.called
+
+
+@respx.mock
+@pytest.mark.parametrize("bad", [True, 1.5, 3600.0])
+def test_submit_rejects_non_integer_estimate(make_client: ClientFactory, bad: Any) -> None:
+    route = respx.post(_JOBS_URL).mock(return_value=_created())
+    client = make_client()
+
+    with pytest.raises(ValueError, match="estimated_seconds"):
+        client.submit_job(_DICT_TEMPLATE, farm_id="f", queue_id="q", estimated_seconds=bad)
+    assert not route.called

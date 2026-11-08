@@ -20,16 +20,20 @@ import { useAuth } from '@/auth/context'
 import { can } from '@/auth/policy'
 import { useWebSocket } from '@/ws/context'
 import { useLiveNow } from '@/hooks/useLiveNow'
+import RemainingTime from '@/components/RemainingTime'
+import EstimateField from '@/components/EstimateField'
+import { TERMINAL_JOB_STATUSES } from '@/lib/jobStatus'
 import TaskRunProgress from '@/components/TaskRunProgress'
 import { formatTimespan, formatDuration } from '@/lib/time'
 import { truncateId } from '@/lib/id'
 import { matchesSearch } from '@/utils/filterBySearch'
-import { isJobEvent, isTaskEvent, JOB_REMOVED_STATUS } from '@/ws/events'
+import { isJobEvent, isTaskEvent, JOB_CHANGE_ESTIMATE, JOB_REMOVED_STATUS } from '@/ws/events'
 import { patchTaskFromEvent, isProgressOnly } from '@/ws/taskPatch'
 import type {
   JobDetail as JobDetailType,
   EffectiveRetryPolicy,
   FailureSummary,
+  RemainingBasis,
   Step,
   StepStatus,
   Task,
@@ -87,7 +91,7 @@ function effectiveRetryText(policy: EffectiveRetryPolicy): string {
 }
 
 /**
- * "attempt N" label for a task that has genuinely failed at least once,
+ * "attempt N" label for a task that has failed at least once,
  * where N is the attempt currently in play (failed_attempts + 1).
  * Undefined when the task has never failed.
  */
@@ -170,7 +174,26 @@ function ParametersCell({ params }: { params: Record<string, string> | undefined
 
 // ── MetadataCard ──────────────────────────────────────────────────────────────
 
-function MetadataCard({ job }: { job: JobDetailType }) {
+const REMAINING_NOTE: Record<RemainingBasis, string | undefined> = {
+  finished: undefined,
+  measured: "from this job's finished tasks",
+  progress: "from running tasks' progress",
+  estimate: 'from the estimate',
+}
+
+function MetadataCard({
+  job,
+  canWrite,
+  anchorMs,
+  now,
+}: {
+  job: JobDetailType
+  canWrite: boolean
+  anchorMs: number
+  now: number
+}) {
+  const note = job.remaining_basis === undefined ? undefined : REMAINING_NOTE[job.remaining_basis]
+  const finished = TERMINAL_JOB_STATUSES.has(job.status)
   return (
     <div className={styles.metaCard}>
       <dl className={styles.metaGrid}>
@@ -195,6 +218,28 @@ function MetadataCard({ job }: { job: JobDetailType }) {
         <div className={styles.metaField}>
           <dt>Priority</dt>
           <dd>{job.priority}</dd>
+        </div>
+        <div className={styles.metaField}>
+          <dt>Estimate</dt>
+          <dd>
+            <EstimateField
+              jobId={job.id}
+              seconds={job.estimated_seconds}
+              editable={canWrite && !finished}
+            />
+          </dd>
+        </div>
+        <div className={styles.metaField}>
+          <dt>Remaining</dt>
+          <dd>
+            <RemainingTime
+              seconds={job.remaining_seconds}
+              running={job.task_counts.running}
+              anchorMs={anchorMs}
+              now={now}
+            />
+            {note !== undefined && <span className={styles.metaNote}> {note}</span>}
+          </dd>
         </div>
         <div className={styles.metaField}>
           <dt>Queue</dt>
@@ -819,6 +864,11 @@ export default function JobDetail() {
     // 'removed' means the job was hard-deleted; skip the optimistic patch and
     // let the query invalidation (triggered by the delete mutation) handle it.
     if (payload.status === JOB_REMOVED_STATUS) return
+    if (payload.change === JOB_CHANGE_ESTIMATE) {
+      // Only the estimate moved; its status may be stale, so refetch instead.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.jobs.detail(jobId) })
+      return
+    }
 
     const { status, updated_at } = payload
     queryClient.setQueriesData<JobDetailType>(
@@ -1033,7 +1083,12 @@ export default function JobDetail() {
         <h2 className={styles.jobName}>{job.name}</h2>
       </div>
 
-      <MetadataCard job={job} />
+      <MetadataCard
+        job={job}
+        canWrite={canWrite}
+        anchorMs={job.received_at ?? jobUpdatedAt}
+        now={now}
+      />
 
       {job.depends_on !== undefined && job.depends_on.length > 0 && (
         <div className={styles.dependsOnSection}>

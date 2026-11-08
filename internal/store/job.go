@@ -79,21 +79,19 @@ type Job struct {
 	// DeclaredExtensions holds the OpenJD extension names the template declared
 	// (its top-level `extensions:` list), as internal/openjd decoded and
 	// validated them at submission. Meaningless unless ExtensionsRecorded is
-	// true — a nil slice with the flag false says NOTHING about the template.
+	// true; a nil slice with the flag false says nothing about the template.
 	DeclaredExtensions []string
 	// ExtensionsRecorded reports whether DeclaredExtensions is an answer at
 	// all. It is false for every job row written before migration 00027 added
 	// the column, and true for everything submission writes since.
 	//
-	// THE FLAG IS SEPARATE FROM THE SLICE ON PURPOSE. Three states have to be
-	// distinguishable by the scheduler — not recorded, recorded-empty,
-	// recorded-non-empty — and "not recorded" is NOT "declares nothing": for
-	// the first it must fall back to scanning the raw template, and for the
-	// second it must not. Leaning on nil-versus-empty to carry that difference
-	// puts the whole distinction on a property Go erases at every len() check,
-	// every append and every clone; a *[]string carries it but makes every read
-	// site dereference. A bool is checked explicitly or the compiler does not
-	// care, which is the property wanted here.
+	// The flag is separate from the slice because the scheduler must tell
+	// three states apart: not recorded, recorded-empty and recorded-non-empty.
+	// "Not recorded" does not mean "declares nothing": for the first the
+	// scheduler falls back to scanning the raw template, and for the second it
+	// does not. Nil-versus-empty cannot carry that difference, since Go
+	// erases it at every len() check, append and clone, and a *[]string makes
+	// every read site dereference.
 	ExtensionsRecorded bool
 	// DependsOn holds the IDs of the upstream jobs this job waits on (whole-job
 	// cross-job dependencies). Populated by GetJob; ListJobs leaves it nil to
@@ -108,20 +106,27 @@ type Job struct {
 	FailureLimit      *int
 	// ParkReason is empty for a manual pause; set when the failure-limit sweep
 	// auto-parks the job (e.g. "failure limit reached (25)").
-	ParkReason  string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	StartedAt   *time.Time
-	CompletedAt *time.Time
+	ParkReason string
+	// EstimatedSeconds is the submitter's estimate of the job's total task run
+	// time, nil when none was given. UpdateJob writes it.
+	EstimatedSeconds *int
+	// ProductName and ProductVersion name the product the job was submitted
+	// from, empty for a raw-template job. Submission writes them; UpdateJob
+	// leaves them as stored.
+	ProductName    string
+	ProductVersion string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	StartedAt      *time.Time
+	CompletedAt    *time.Time
 }
 
 // DeclaresExtension reports whether the job's template declares the OpenJD
 // extension name, and — in recorded — whether that answer is known at all.
 //
-// A caller MUST branch on recorded before believing declared: recorded == false
-// means the row predates migration 00027 and carries no extension list, for
-// which declared is always false and means nothing. Reading it as "declares
-// nothing" is the mistake the two-value return exists to make hard.
+// A caller must branch on recorded before believing declared: recorded == false
+// means the row predates migration 00027 and carries no extension list, and
+// declared is then always false and means nothing, not "declares nothing".
 //
 // The comparison is exact, not case-folded: extension names are validated
 // against internal/openjd's registry at submission, so a stored name is one of
@@ -172,15 +177,14 @@ type JobSubmission struct {
 // JobStore is the persistence interface for [Job] records.
 type JobStore interface {
 	// CreateJobSubmission atomically creates a job, its dependency edges, its
-	// steps and its tasks. On ANY error nothing is written.
+	// steps and its tasks. On any error nothing is written.
 	//
-	// Creating those rows through separate calls has two failure modes with no
-	// cure at the call site: a failed submission strands a pending job that no
+	// Creating those rows through separate calls would have two failure modes
+	// the caller cannot cure: a failed submission strands a pending job that no
 	// sweep reaps, and a submission whose write fails after some steps were
-	// persisted produces a job whose missing steps make checkJobCompletion —
-	// which derives job status from the steps that exist — report it
-	// completed. Both are properties of partial creation, which one
-	// transaction rules out.
+	// persisted produces a job whose missing steps make checkJobCompletion,
+	// which derives job status from the steps that exist, report it
+	// completed. One transaction rules out both.
 	//
 	// The returned JobSubmission carries the rows as stored. Read the edges
 	// back from its DependsOn field, not from its Job.DependsOn: the returned
@@ -195,9 +199,9 @@ type JobStore interface {
 	// upstream, in ID order, if one has: UpstreamID is its ID and Status its
 	// status (failed or canceled), empty when it was deleted. A backend must
 	// fill both, because the submitter words its 422 from them. The
-	// submitter's own pre-read ran before the transaction, so an upstream can
-	// change in between. The other direction,
-	// an upstream completing in that window, is not refused: the job is
+	// submitter's own pre-read runs before the transaction, so an upstream can
+	// change in between. An upstream completing in that window is not
+	// refused: the job is
 	// created blocked and sweepBlockedJobs releases it on its next tick.
 	CreateJobSubmission(ctx context.Context, sub JobSubmission) (JobSubmission, error)
 
@@ -227,10 +231,11 @@ type JobStore interface {
 	// UpdateJob replaces the mutable user-settable fields of an existing job
 	// (farm_id, queue_id, name, owner, submitter, priority, project,
 	// raw_template, template_format, max_attempts, retry_delay_seconds,
-	// failure_limit) and updates UpdatedAt.
+	// failure_limit, estimated_seconds) and updates UpdatedAt. product_name and
+	// product_version are fixed at submission and left as stored.
 	//
 	// status, started_at, completed_at, failed_attempts, and park_reason are
-	// lifecycle columns and are intentionally excluded — use [CancelJobStatus],
+	// lifecycle columns and are excluded; use [CancelJobStatus],
 	// [FinalizeJob], or the scheduler's failure-limit sweep for those. The
 	// returned Job reflects the current DB state of all columns.
 	//
@@ -298,7 +303,7 @@ type JobStore interface {
 	// task_logs, task_attempts, tasks, steps, the job's own job_dependencies
 	// rows (its outgoing edges), then the jobs row. Incoming edges — rows where
 	// the deleted job is the depends_on_job_id of some other job — are
-	// deliberately left intact for the reconciler to observe as "upstream
+	// left intact for the reconciler to observe as "upstream
 	// deleted". Returns [ErrNotFound] when the job does not exist. The
 	// audit_log is left intact (it references entities by id, not by foreign
 	// key).
@@ -341,7 +346,7 @@ type JobStore interface {
 	// inverse of [ParkJob] and of a manual pause. An auto-parked job
 	// (non-empty ParkReason) additionally has its ParkReason cleared and its
 	// FailedAttempts reset to zero, re-arming the failure limit; without the
-	// reset the very next genuine failure would immediately re-park the job.
+	// reset the next genuine failure would re-park the job immediately.
 	// A manually paused job (empty ParkReason) keeps its FailedAttempts.
 	// A job that is no longer paused is a legitimate no-op: ResumeJob returns
 	// nil without modifying it. Returns [ErrNotFound] if the job does not

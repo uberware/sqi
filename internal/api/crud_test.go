@@ -291,7 +291,9 @@ func TestQueueCRUD(t *testing.T) {
 		if rr.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d", rr.Code)
 		}
-		var resp queueListResponse
+		var resp struct {
+			Total int `json:"total"`
+		}
 		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
 			t.Fatalf("decode: %v", err)
 		}

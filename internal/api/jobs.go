@@ -27,6 +27,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/uberware/sqi/internal/eta"
 	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/openjd/expr"
 	"github.com/uberware/sqi/internal/scheduler"
@@ -49,16 +50,11 @@ type jobCanceler interface {
 }
 
 // JobSubmitter is the subset of [openjd.Submitter] the submission handlers
-// use. Keeping it an interface — the same reason [jobCanceler] is one, and the
-// same reason [Deps.Store] is store.Store rather than *sqlite.Store — lets the
-// handlers' error mapping be tested without driving the whole OpenJD pipeline.
-// The real deadline path is covered end to end in submitdeadline_test.go; the
-// stub is the cheap way to pin the status mapping alone.
-//
-// It is exported, and [Deps.Submitter] is typed as it rather than as
-// *openjd.Submitter, so that a test can drive a router built by [NewRouter]
-// with a recording stub and observe the Config → handler hop that carries
-// the submission deadline.
+// use. It is an interface so tests can stub the OpenJD pipeline to check the
+// handlers' error mapping. It is exported because [Deps.Submitter] has this
+// type rather than *openjd.Submitter, which lets a test drive a router built
+// by [NewRouter] with a recording stub and observe the submission deadline
+// passed from Config to the handler.
 type JobSubmitter interface {
 	Submit(
 		ctx context.Context, rawTemplate string, format store.TemplateFormat, opts openjd.SubmitOptions,
@@ -81,13 +77,10 @@ type jobHandler struct {
 	// ownerLookup validates a submit-as owner override against known users.
 	// Nil disables validation (auth.validate_job_owner = false).
 	ownerLookup ownerLookup
-	// exprDeadline is how long the OpenJD expression checker may work on ONE
-	// submission before this server gives up on it
-	// (config openjd.expr_submission_deadline). Zero disables the backstop.
-	//
-	// Stored as a DURATION and turned into an absolute instant per request by
-	// [exprDeadlineAt]; see that function for why the conversion cannot be
-	// hoisted anywhere that runs once.
+	// exprDeadline is how long the OpenJD expression checker may work on one
+	// submission before the server gives up on it
+	// (config openjd.expr_submission_deadline). Zero disables the deadline.
+	// It is converted to an absolute instant per request by [exprDeadlineAt].
 	exprDeadline time.Duration
 }
 
@@ -122,6 +115,12 @@ type jobResponse struct {
 	MaxAttempts       *int `json:"max_attempts,omitempty"`
 	RetryDelaySeconds *int `json:"retry_delay_seconds,omitempty"`
 	FailureLimit      *int `json:"failure_limit,omitempty"`
+	// EstimatedSeconds is the submitter's estimate of total task run time (not
+	// wall-clock). ProductName and ProductVersion name the product the job was
+	// submitted from.
+	EstimatedSeconds *int   `json:"estimated_seconds,omitempty"`
+	ProductName      string `json:"product_name,omitempty"`
+	ProductVersion   string `json:"product_version,omitempty"`
 }
 
 // stepResponse is the JSON representation of a step within a job detail response.
@@ -154,6 +153,7 @@ type taskCountsResponse struct {
 // jobDetailResponse is returned by GET /api/v1/jobs/{id}.
 type jobDetailResponse struct {
 	jobResponse
+	remainingResponse
 
 	Steps      []stepResponse     `json:"steps"`
 	TaskCounts taskCountsResponse `json:"task_counts"`
@@ -187,13 +187,67 @@ type failureSummaryResponse struct {
 
 // jobListItemResponse is a single entry in the job list. It carries the base
 // job fields plus the aggregate task counts used to render progress without a
-// per-row detail fetch.
+// per-row detail fetch. The remaining-work fields are present only when the
+// request asked for them with include=timing; nil omits all three keys.
 type jobListItemResponse struct {
 	jobResponse
+	*remainingResponse
 
 	TaskCounts taskCountsResponse `json:"task_counts"`
 	// ProgressPercent is as on [jobDetailResponse].
 	ProgressPercent *float64 `json:"progress_percent"`
+}
+
+// remainingResponse is a job's remaining work, as on [eta.Remaining]. The
+// seconds are null, and the basis omitted, when nothing is known or the timing
+// read failed.
+type remainingResponse struct {
+	RemainingSeconds *int64    `json:"remaining_seconds"`
+	RemainingBasis   eta.Basis `json:"remaining_basis,omitempty"`
+	AsOf             time.Time `json:"as_of"`
+}
+
+// remainingFor computes a job's remaining work. A terminal job needs only its
+// status (0, finished); any other job is read from timings, and one absent
+// from them (or a nil map, after a failed read) reports nothing known.
+func remainingFor(timings map[string]store.JobTiming, j store.Job, now time.Time) remainingResponse {
+	out := remainingResponse{AsOf: now}
+	if j.Status.IsTerminal() {
+		zero := int64(0)
+		out.RemainingSeconds, out.RemainingBasis = &zero, eta.BasisFinished
+		return out
+	}
+	if t, ok := timings[j.ID]; ok {
+		r := eta.Job(t, now)
+		out.RemainingSeconds, out.RemainingBasis = r.Seconds, r.Basis
+	}
+	return out
+}
+
+// jobTimings reads the remaining-time inputs of jobIDs in one query. A failure
+// is logged and degrades every job to nothing known.
+func (h *jobHandler) jobTimings(ctx context.Context, jobIDs []string) map[string]store.JobTiming {
+	if len(jobIDs) == 0 {
+		return nil
+	}
+	m, err := h.store.JobTimings(ctx, jobIDs)
+	if err != nil {
+		h.logger.WarnContext(ctx, "jobs: timing read failed", slog.Any("error", err))
+		return nil
+	}
+	return m
+}
+
+// nonTerminalIDs returns the IDs of the jobs whose remaining time must be
+// read; a terminal job's figure needs only its status.
+func nonTerminalIDs(jobs ...store.Job) []string {
+	ids := make([]string, 0, len(jobs))
+	for _, j := range jobs {
+		if !j.Status.IsTerminal() {
+			ids = append(ids, j.ID)
+		}
+	}
+	return ids
 }
 
 // jobListResponse is the paginated result returned by GET /api/v1/jobs.
@@ -218,6 +272,9 @@ type patchJobRequest struct {
 	MaxAttempts       *int `json:"max_attempts,omitempty"`
 	RetryDelaySeconds *int `json:"retry_delay_seconds,omitempty"`
 	FailureLimit      *int `json:"failure_limit,omitempty"`
+	// EstimatedSeconds sets the run-time estimate; null clears it, omitting the
+	// key leaves it unchanged.
+	EstimatedSeconds optionalInt `json:"estimated_seconds,omitzero"`
 }
 
 // ── Handler constructors ──────────────────────────────────────────────────────
@@ -260,8 +317,9 @@ func newJobHandler(
 // Query parameters: farm_id (required), queue_id (required), owner,
 // submitter, priority (integer ≥ 1; defaults to 50), project, max_attempts,
 // retry_delay_seconds, failure_limit (all optional per-job retry-policy
-// overrides; omitted or unparseable means inherit queue -> farm -> server
-// default).
+// overrides; omitted means inherit queue -> farm -> server default, a
+// malformed or out-of-range value is a 400), estimated_seconds (optional
+// integer 1..2147483647, the job's estimated total task run time).
 // Job-parameter values are supplied as param.<Name>=<value> query parameters
 // (e.g. ?param.FrameStart=1&param.Quality=high).
 func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
@@ -295,6 +353,12 @@ func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	estimatedSeconds, problem := parseEstimatedSecondsQuery(r.URL.Query())
+	if problem != "" {
+		writeProblem(w, r, http.StatusBadRequest, problem)
+		return
+	}
+
 	owner, submitter, identityProblem, identityStatus := bindSubmitIdentity(
 		ctx, h.ownerLookup, r.URL.Query().Get("owner"), r.URL.Query().Get("submitter"),
 	)
@@ -314,25 +378,22 @@ func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
 		MaxAttempts:       maxAttempts,
 		RetryDelaySeconds: retryDelaySeconds,
 		FailureLimit:      failureLimit,
+		EstimatedSeconds:  estimatedSeconds,
 		DependsOn:         r.URL.Query()["depends_on"],
 		Deadline:          exprDeadlineAt(h.exprDeadline),
 	}
 
 	result, err := h.submitter.Submit(ctx, string(body), storeFormat, opts)
 	if err != nil {
-		// The wall-clock backstop FIRST, and as a 503. It is checked ahead of
-		// the validation branch because the two claims are different: 422 says
-		// the template is wrong and retrying is pointless, while this says the
-		// server gave up on a template that might be perfectly valid — the
-		// same body would validate on an idle host. Reporting a load-dependent
-		// outcome as the submitter's fault would make acceptance depend on
-		// machine load, which no client can reason about or retry sensibly.
+		// The wall-clock deadline is checked before the validation branch and
+		// answers 503: 422 says the template is wrong, while a deadline means
+		// the server gave up on a template that may be valid.
 		if writeExprDeadlineProblem(w, r, h.logger, err,
 			"jobs: submit exceeded its expression deadline", exprDeadlineProblemDetail, h.exprDeadline,
 			slog.String("farm_id", farmID), slog.String("queue_id", queueID)) {
 			return
 		}
-		// Distinguish parse/validation errors (client fault) from storage errors.
+		// Parse and validation errors are the client's; the rest are storage errors.
 		if isSubmitValidationError(err) {
 			writeProblem(w, r, http.StatusUnprocessableEntity, err.Error())
 			return
@@ -394,9 +455,18 @@ func refetchDependsOn(
 //   - sort_dir  — asc | desc  (default: asc)
 //   - limit     — page size, 1–1000  (default: 50)
 //   - offset    — zero-based item offset  (default: 0)
+//   - include   — "timing" adds each job's remaining_seconds, remaining_basis
+//     and as_of. The read costs time proportional to the page's unfinished
+//     jobs' succeeded tasks, so callers that do not show the figures omit it.
 func (h *jobHandler) listJobs(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	q := r.URL.Query()
+
+	withTiming, problem := parseInclude(r)
+	if problem != "" {
+		writeProblem(w, r, http.StatusBadRequest, problem)
+		return
+	}
 
 	pg := store.Pagination{
 		Limit:  parseIntQuery(q.Get("limit"), store.DefaultLimit),
@@ -418,19 +488,18 @@ func (h *jobHandler) listJobs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Owner scoping: a principal without jobs.read.all may only see its own
-	// jobs. The forced value OVERRIDES any client-supplied ?owner= rather than
-	// merging with it — a scoped caller aiming the filter at another user gets
-	// its own jobs, not an error and not the other user's.
+	// jobs. The forced value overrides any client-supplied ?owner= rather than
+	// merging with it: a scoped caller aiming the filter at another user gets
+	// its own jobs.
 	owner, scoped := scopeFilter(ctx)
 	if scoped {
 		opts.Owner = owner
 	}
 
 	// A scoped request with an empty owner means scopeFilter failed closed
-	// (no principal in the context at all — see jobscope.go). opts.Owner == ""
-	// is store.ListJobsOptions' zero value for "unfiltered", so passing it
-	// through to ListJobs would return every job in the system instead of
-	// none. Short-circuit to an empty page rather than querying.
+	// (no principal in the context; see jobscope.go). An empty opts.Owner means
+	// "unfiltered" to the store, so such a request returns an empty page
+	// without querying.
 	var page store.Page[store.Job]
 	if scoped && owner == "" {
 		page = store.Page[store.Job]{
@@ -473,17 +542,27 @@ func (h *jobHandler) listJobs(w http.ResponseWriter, r *http.Request) {
 	}
 	running := h.runningProgressBatch(ctx, runningJobs)
 
+	now := time.Now().UTC()
+	var timings map[string]store.JobTiming
+	if withTiming {
+		timings = h.jobTimings(ctx, nonTerminalIDs(page.Items...))
+	}
+
 	for i, j := range page.Items {
 		r := toJobResponse(j)
 		r.QueueName = queueNames[j.QueueID]
 		item := jobListItemResponse{jobResponse: r}
+		if withTiming {
+			rem := remainingFor(timings, j, now)
+			item.remainingResponse = &rem
+		}
 		if counts[i] != nil {
 			unschedulable, uErr := h.store.CountUnschedulableTasksByJob(ctx, j.ID)
 			if uErr != nil {
 				unschedulable = 0
 			}
 			item.TaskCounts = toTaskCountsResponse(counts[i], unschedulable)
-			item.ProgressPercent = progressPercent(counts[i], running[j.ID])
+			item.ProgressPercent = eta.ProgressPercent(counts[i], running[j.ID])
 		}
 		resp.Items[i] = item
 	}
@@ -554,8 +633,8 @@ func (h *jobHandler) getJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Running progress is an enrichment: a failure degrades to zero rather
-	// than failing the detail, as the list does.
+	// A running-progress failure degrades to zero rather than failing the
+	// detail, as in the list.
 	runningProgress, err := h.runningProgress(ctx, id, taskCounts)
 	if err != nil {
 		h.logger.WarnContext(ctx, "jobs: running progress failed", slog.String("id", id), slog.Any("error", err))
@@ -578,8 +657,10 @@ func (h *jobHandler) getJob(w http.ResponseWriter, r *http.Request) {
 		Steps:       stepResps,
 		TaskCounts:  toTaskCountsResponse(taskCounts, unschedulableCount),
 
-		ProgressPercent: progressPercent(taskCounts, runningProgress),
+		ProgressPercent: eta.ProgressPercent(taskCounts, runningProgress),
 	}
+	now := time.Now().UTC()
+	resp.remainingResponse = remainingFor(h.jobTimings(ctx, nonTerminalIDs(job)), job, now)
 
 	// Resolved retry policy (job -> queue -> farm -> server default). Best
 	// effort like QueueName: omitted if the queue or farm lookup fails.
@@ -592,8 +673,8 @@ func (h *jobHandler) getJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Only worth a query when the job has failed tasks — this endpoint is
-	// refetched on every WS-driven invalidation and most jobs have none.
+	// Queried only when the job has failed tasks; this endpoint is refetched
+	// on every WebSocket-driven invalidation and most jobs have none.
 	if taskCounts[store.TaskStatusFailed] > 0 {
 		if summary, err := h.store.FailureReasonSummary(ctx, id); err == nil && summary.FailedCount > 0 {
 			resp.FailureSummary = &failureSummaryResponse{
@@ -611,7 +692,9 @@ func (h *jobHandler) getJob(w http.ResponseWriter, r *http.Request) {
 
 // ── PATCH /api/v1/jobs/{id} ───────────────────────────────────────────────────
 
-// patchJob supports priority changes, queue moves, and pause/resume.
+// patchJob supports priority changes, queue moves, estimate and retry-override
+// edits, and pause/resume. A change to the estimate is announced over the
+// job notifier.
 // The request body is a JSON object; only present fields are applied.
 func (h *jobHandler) patchJob(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -619,7 +702,7 @@ func (h *jobHandler) patchJob(w http.ResponseWriter, r *http.Request) {
 
 	var req patchJobRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeProblem(w, r, http.StatusBadRequest, "invalid JSON body")
+		writeProblem(w, r, http.StatusBadRequest, bodyDecodeProblem(err))
 		return
 	}
 
@@ -633,6 +716,8 @@ func (h *jobHandler) patchJob(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusConflict, "job is in a terminal state and cannot be modified")
 		return
 	}
+
+	prevEstimate := cloneIntPtr(job.EstimatedSeconds)
 
 	if req.Priority != nil && *req.Priority > 0 {
 		job.Priority = *req.Priority
@@ -667,7 +752,47 @@ func (h *jobHandler) patchJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if !equalIntPtr(prevEstimate, updated.EstimatedSeconds) {
+		h.notifyEstimateChanged(updated)
+	}
+
 	writeJSON(w, http.StatusOK, toJobResponse(updated))
+}
+
+// notifyEstimateChanged tells other sessions a job's estimate moved, so the
+// remaining-time figures they show are refetched. It is marked
+// [ws.JobChangeEstimate] because its status is only the job's status when the
+// PATCH read it: the scheduler may finish the job before the event goes out,
+// and a subscriber applying that status would move a finished job back. The
+// event carries no estimate itself.
+func (h *jobHandler) notifyEstimateChanged(job store.Job) {
+	if h.notifier == nil {
+		return
+	}
+	h.notifier.NotifyJob(ws.JobEvent{
+		JobID:     job.ID,
+		Name:      job.Name,
+		Owner:     job.Owner,
+		QueueID:   job.QueueID,
+		Status:    string(job.Status),
+		UpdatedAt: time.Now().UTC(),
+		Change:    ws.JobChangeEstimate,
+	})
+}
+
+func cloneIntPtr(p *int) *int {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}
+
+func equalIntPtr(a, b *int) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // validateQueueMove checks that queueID exists and writes an error response if
@@ -708,6 +833,14 @@ func applyRetryOverridePatch(w http.ResponseWriter, r *http.Request, req *patchJ
 	if req.FailureLimit != nil {
 		job.FailureLimit = req.FailureLimit
 	}
+	if !req.EstimatedSeconds.Set {
+		return true
+	}
+	if problem := validateEstimatedSeconds(req.EstimatedSeconds.Value); problem != "" {
+		writeProblem(w, r, http.StatusBadRequest, problem)
+		return false
+	}
+	job.EstimatedSeconds = req.EstimatedSeconds.Value
 	return true
 }
 
@@ -765,7 +898,7 @@ func (h *jobHandler) applyStatusChange(
 	switch {
 	case errors.Is(err, store.ErrConflict):
 		// The job left pending/running between the handler's read and the
-		// guarded write (invariant I1).
+		// guarded write.
 		writeProblem(w, r, http.StatusConflict, "job cannot be paused in its current state")
 		return job, err
 	case errors.Is(err, store.ErrNotFound):
@@ -841,11 +974,10 @@ func (h *jobHandler) cancelJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// CancelJobStatus is now a confirmation: the job row was canceled above, so
-	// it returns nil for that job. Its conditional UPDATE (WHERE status NOT IN
-	// terminal states) still reports a job that a concurrent scheduler
-	// transition completed or failed between the GetJob check above and the
-	// cancel, which the cancel left as it was.
+	// CancelJobStatus confirms the cancel: its conditional UPDATE (WHERE status
+	// NOT IN terminal states) reports a conflict for a job that a concurrent
+	// scheduler transition completed or failed between the GetJob check above
+	// and the cancel.
 	if err = h.store.CancelJobStatus(ctx, id); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			// Job reached a terminal state (completed/failed) concurrently.
@@ -948,13 +1080,11 @@ func (h *jobHandler) deleteJob(w http.ResponseWriter, r *http.Request) {
 		h.notifier.NotifyJob(ws.JobEvent{
 			JobID: job.ID,
 			Name:  job.Name,
-			// Owner must be set explicitly here: the row is already gone by
-			// this point, so the hub's ownerCache fallback (GetJob on a
-			// deleted row) cannot resolve it and would drop this envelope for
-			// every owner-scoped subscriber, including the owner whose own
-			// job this was. This is the only NotifyJob call site where that's
-			// true — every other caller (internal/scheduler) fires while the
-			// row still exists.
+			// Owner must be set here: the row is already gone, so the hub's
+			// ownerCache fallback (GetJob on a deleted row) cannot resolve it
+			// and would drop this event for every owner-scoped subscriber,
+			// including the job's owner. Other NotifyJob callers
+			// (internal/scheduler) fire while the row still exists.
 			Owner:     job.Owner,
 			QueueID:   job.QueueID,
 			Status:    ws.JobStatusRemoved,
@@ -1015,6 +1145,9 @@ func toJobResponse(j store.Job) jobResponse {
 		MaxAttempts:       j.MaxAttempts,
 		RetryDelaySeconds: j.RetryDelaySeconds,
 		FailureLimit:      j.FailureLimit,
+		EstimatedSeconds:  j.EstimatedSeconds,
+		ProductName:       j.ProductName,
+		ProductVersion:    j.ProductVersion,
 	}
 }
 
@@ -1055,23 +1188,6 @@ func toTaskCountsResponse(counts map[store.TaskStatus]int, unschedulable int) ta
 		}
 	}
 	return tc
-}
-
-// progressPercent is the job's completion as a percent: succeeded tasks plus
-// the running tasks' progress (a fraction of one task each), over every task
-// that has not been canceled. It is nil when no such task exists.
-func progressPercent(counts map[store.TaskStatus]int, running float64) *float64 {
-	total := 0
-	for _, n := range counts {
-		total += n
-	}
-	denom := total - counts[store.TaskStatusCanceled]
-	if denom <= 0 {
-		return nil
-	}
-	pct := (float64(counts[store.TaskStatusSucceeded]) + running) / float64(denom) * 100
-	pct = max(0, min(100, pct))
-	return &pct
 }
 
 // ── Format detection ──────────────────────────────────────────────────────────
@@ -1142,21 +1258,17 @@ func parseIntQuery(s string, fallback int) int {
 
 // isSubmitValidationError returns true for errors originating from the OpenJD
 // parser, validator, or storage-location checker, signaling that a 422 rather
-// than a 500 is appropriate.  It uses [errors.As] against the sentinel
-// [openjd.SubmitValidationError] type so the check is robust to message
-// refactors, wrapped errors, and new error paths.
+// than a 500 is appropriate. It matches [openjd.SubmitValidationError] with
+// [errors.As], so wrapped errors match.
 func isSubmitValidationError(err error) bool {
 	var ve *openjd.SubmitValidationError
 	return errors.As(err, &ve)
 }
 
 // isSubmitDeadlineError reports whether err is the submission pipeline's
-// wall-clock backstop (openjd.expr_submission_deadline) tripping rather than
-// any verdict about the template.
-//
-// Matched on the exported sentinel, never by reading a message: a budget
-// breach and a deadline travel the same return path, and the sentinel lets
-// the two be told apart without string matching. The pipeline never wraps a deadline in a
+// wall-clock deadline (openjd.expr_submission_deadline) tripping rather than
+// any verdict about the template. It matches the exported sentinel, not a
+// message. The pipeline never wraps a deadline in a
 // [openjd.SubmitValidationError], so this and [isSubmitValidationError] cannot
 // both be true.
 func isSubmitDeadlineError(err error) bool {
@@ -1164,24 +1276,21 @@ func isSubmitDeadlineError(err error) bool {
 }
 
 // exprDeadlineProblemDetail is the 503 body every route that walks a
-// client-supplied OpenJD template returns when the wall-clock backstop trips.
-// It names the configuration key deliberately: nothing about the submitted body
-// is wrong, so the only actions available are retrying or asking the operator
-// to widen the budget. (The preset route sends its own wording because what the
-// caller asked this server to load is a preset definition, not a template.)
+// client-supplied OpenJD template returns when the wall-clock deadline trips.
+// It names the configuration key: nothing about the submitted body is wrong, so
+// the caller can retry or ask the operator to widen the budget. The preset
+// route sends its own wording because it loads a preset definition, not a
+// template.
 const exprDeadlineProblemDetail = "template validation exceeded its time budget on this server; retry, " +
 	"or ask the operator about openjd.expr_submission_deadline"
 
 // exprDeadlineAt returns the absolute wall-clock instant one request's
 // expression evaluation must stop at, given the configured duration (config
-// openjd.expr_submission_deadline). A non-positive duration means no backstop
+// openjd.expr_submission_deadline). A non-positive duration means no deadline
 // is configured and yields the zero time.
 //
-// Called once per request, on purpose. The configured value is a duration; what
-// the pipeline needs is an instant. Computing that instant anywhere that runs
-// once — at server boot, on the shared Submitter — would give every request the
-// same deadline, so every submission arriving after it would fail forever while
-// every one before it got a shrinking allowance.
+// It must be called once per request: computed at boot or on the shared
+// Submitter, one instant would be shared by every request.
 func exprDeadlineAt(d time.Duration) time.Time {
 	if d <= 0 {
 		return time.Time{}
@@ -1190,30 +1299,21 @@ func exprDeadlineAt(d time.Duration) time.Time {
 }
 
 // writeExprDeadlineProblem reports err as a 503 when it is the submission
-// pipeline's wall-clock backstop tripping, and reports whether it did. A false
+// pipeline's wall-clock deadline tripping, and reports whether it did. A false
 // return means err is something else entirely and the caller's own mapping
 // applies unchanged.
 //
-// It is one function because the 503-vs-4xx split is a single contract shared by
-// every route that walks a client-supplied template. Callers keep their own
-// guard ordering: the deadline must be tested before any validation branch,
-// since a breach and a verdict travel the same return path.
+// Every route that walks a client-supplied template shares this 503 contract.
+// Callers must test the deadline before any validation branch, since a deadline
+// and a verdict travel the same return path.
 //
-// It is a 503, never a 4xx. A 4xx says the body is wrong and retrying is pointless,
-// while this says the server gave up on a body that might be perfectly valid —
-// the same bytes would validate on an idle host. Reporting a load-dependent
-// outcome as the caller's fault would make acceptance depend on machine load,
-// which no client can reason about or retry sensibly.
+// The response is a 503, never a 4xx: the body may be valid, and the same bytes
+// would validate on an idle host.
 //
-// It logs at warn, not error. Nothing is broken: the server met a bound it was
-// configured to meet, on a request the client is explicitly told to retry.
-// Error is also the wrong level for a client-provokable, load-dependent event
-// on an anonymous path — every occurrence takes a slot in the bounded diagnostics ring buffer
-// (internal/diag), so a run of deadlines would evict the genuine server errors
-// an operator opened that buffer to find. The scheduler's protocol-version gate
-// logs repeating heartbeat mismatches at debug for exactly this reason; see
-// discardOnVersionMismatch. The neighboring validation branches log nothing at
-// all, on the same reasoning taken one step further.
+// It logs at warn, not error: the event is client-provokable and load-dependent,
+// and each error-level record takes a slot in the bounded diagnostics ring
+// buffer (internal/diag), where a run of deadlines would evict genuine server
+// errors.
 //
 // logMsg names the route, detail is the client-facing body (see
 // [exprDeadlineProblemDetail]), and extra carries any route-specific log

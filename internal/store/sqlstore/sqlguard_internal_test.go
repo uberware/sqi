@@ -212,6 +212,14 @@ var concatAllowed = []string{
 	// fence.go checkFence: Dialect.ForShare, a constant clause per dialect
 	// (" FOR SHARE" on PostgreSQL, "" on SQLite).
 	"s.d.ForShare()",
+
+	// timing.go timingByJobs, timingByQueues: "(" + qmarks(len(ids)) + ")",
+	// only ? marks, commas and parentheses.
+	"timingIn",
+	// timing.go readTiming*, timing*Query: timingScope fields, built only by
+	// timingByJobs and timingByQueues from literals and timingIn.
+	"sc.jobsWhere",
+	"sc.stepsIn",
 }
 
 // sqlKeyword marks a string literal as SQL.

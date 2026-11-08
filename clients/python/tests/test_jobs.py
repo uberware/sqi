@@ -255,6 +255,35 @@ def test_set_job_priority_rejects_below_minimum(make_client: ClientFactory) -> N
     assert not route.called
 
 
+# ── set_job_estimate ────────────────────────────────────────────────
+
+
+@respx.mock
+def test_set_job_estimate_sends_seconds_and_null(make_client: ClientFactory) -> None:
+    route = respx.patch(f"{_JOBS_URL}/j1").mock(
+        return_value=httpx.Response(200, json=_job("j1", estimated_seconds=3600))
+    )
+    client = make_client()
+
+    job = client.set_job_estimate("j1", 3600)
+    assert json.loads(route.calls.last.request.content) == {"estimated_seconds": 3600}
+    assert job.estimated_seconds == 3600
+
+    client.set_job_estimate("j1", None)
+    assert json.loads(route.calls.last.request.content) == {"estimated_seconds": None}
+
+
+@respx.mock
+def test_set_job_estimate_rejects_out_of_range(make_client: ClientFactory) -> None:
+    route = respx.patch(f"{_JOBS_URL}/j1").mock(return_value=httpx.Response(200, json=_job("j1")))
+    client = make_client()
+
+    for bad in (0, -5, 2147483648):
+        with pytest.raises(ValueError, match="estimated_seconds"):
+            client.set_job_estimate("j1", bad)
+    assert not route.called
+
+
 # ── cancel_job ──────────────────────────────────────────────────────
 
 
@@ -360,3 +389,14 @@ def test_retry_job_not_found_raises(make_client: ClientFactory) -> None:
 
     with pytest.raises(NotFoundError):
         client.retry_job("missing")
+
+
+@respx.mock
+@pytest.mark.parametrize("bad", [True, 1.5, 3600.0])
+def test_set_job_estimate_rejects_non_integers(make_client: ClientFactory, bad: Any) -> None:
+    route = respx.patch(f"{_JOBS_URL}/j1").mock(return_value=httpx.Response(200, json=_job("j1")))
+    client = make_client()
+
+    with pytest.raises(ValueError, match="estimated_seconds"):
+        client.set_job_estimate("j1", bad)
+    assert not route.called

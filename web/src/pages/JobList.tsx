@@ -9,6 +9,7 @@ import FilterToolbar from '@/components/FilterToolbar'
 import Pagination from '@/components/Pagination'
 import StatusBadge from '@/components/StatusBadge'
 import TaskProgressBar from '@/components/TaskProgressBar'
+import RemainingTime from '@/components/RemainingTime'
 import { ChevronDown, ChevronUp, ChevronUpDown, Rotate, Trash, X } from '@/components/icons'
 import ErrorBanner from '@/components/ErrorBanner'
 import BulkBar from '@/components/BulkBar'
@@ -19,9 +20,9 @@ import { useCancelJob, useDeleteJob, useRetryJob } from '@/api/mutations'
 import { useListFilters } from '@/hooks/useListFilters'
 import type { SortDirection } from '@/hooks/useListFilters'
 import { useLiveNow } from '@/hooks/useLiveNow'
-import { formatTimespan } from '@/lib/time'
+import { countDownSeconds, formatTimespan } from '@/lib/time'
 import { useWebSocket } from '@/ws/context'
-import { isJobEvent, isTaskEvent, JOB_REMOVED_STATUS } from '@/ws/events'
+import { isJobEvent, isTaskEvent, JOB_CHANGE_ESTIMATE, JOB_REMOVED_STATUS } from '@/ws/events'
 import { useAuth } from '@/auth/context'
 import { can } from '@/auth/policy'
 import type { Job, JobStatus, TaskCounts, TaskStatus, ListResponse } from '@/api/types'
@@ -147,6 +148,38 @@ function applyTaskStatusDelta(
   return c
 }
 
+/**
+ * Applies a task-status delta to a list row. When the delta changes how many
+ * tasks are running, the remaining-time countdown is rebased first: what it
+ * has counted down so far, at the old rate, becomes the row's figure anchored
+ * at `nowMs`, so the new rate applies from now on rather than to time already
+ * counted.
+ */
+function applyTaskDelta(
+  job: Job,
+  counts: TaskCounts,
+  prevStatus: TaskStatus,
+  newStatus: TaskStatus,
+  nowMs: number,
+): Job {
+  const next = applyTaskStatusDelta(counts, prevStatus, newStatus)
+  const rem = job.remaining_seconds
+  if (
+    rem === null ||
+    rem === undefined ||
+    job.received_at === undefined ||
+    next.running === counts.running
+  ) {
+    return { ...job, task_counts: next }
+  }
+  return {
+    ...job,
+    task_counts: next,
+    remaining_seconds: countDownSeconds(rem, counts.running, job.received_at, nowMs),
+    received_at: nowMs,
+  }
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function JobList() {
@@ -167,6 +200,7 @@ export default function JobList() {
     sort_dir: filters.sortDir,
     limit: filters.pageSize,
     offset: (filters.page - 1) * filters.pageSize,
+    include_timing: true,
   }
 
   const { data, isLoading, isError, error, dataUpdatedAt } = useListJobs(queryParams)
@@ -232,6 +266,12 @@ export default function JobList() {
         })
         return
       }
+      if (payload.change === JOB_CHANGE_ESTIMATE) {
+        // Only the estimate moved; the status it carries may be stale, so
+        // refetch the lists (which also recomputes remaining time).
+        void queryClient.invalidateQueries({ queryKey: ['jobs', 'list'] })
+        return
+      }
       // Patch this job's status immediately in every cached list page.
       const { status, updated_at } = payload
       queryClient.setQueriesData<ListResponse<Job>>({ queryKey: ['jobs', 'list'] }, (old) => {
@@ -257,10 +297,13 @@ export default function JobList() {
           const job = old.items[idx]
           if (!job?.task_counts) return old
           const newItems = [...old.items]
-          newItems[idx] = {
-            ...job,
-            task_counts: applyTaskStatusDelta(job.task_counts, prevStatus, payload.status),
-          }
+          newItems[idx] = applyTaskDelta(
+            job,
+            job.task_counts,
+            prevStatus,
+            payload.status,
+            Date.now(),
+          )
           return { ...old, items: newItems }
         })
       }
@@ -518,6 +561,7 @@ export default function JobList() {
                 />
               </th>
               <th>Progress</th>
+              <th>Remaining</th>
               <th aria-sort={sortAriaValue('created_at', filters.sortField, filters.sortDir)}>
                 <SortableHeader
                   field="created_at"
@@ -534,12 +578,12 @@ export default function JobList() {
           <tbody>
             {isLoading && (
               <tr className={styles.emptyRow}>
-                <td colSpan={11}>Loading…</td>
+                <td colSpan={12}>Loading…</td>
               </tr>
             )}
             {!isLoading && jobs.length === 0 && (
               <tr className={styles.emptyRow}>
-                <td colSpan={11}>No jobs found.</td>
+                <td colSpan={12}>No jobs found.</td>
               </tr>
             )}
             {jobs.map((job) => {
@@ -580,6 +624,14 @@ export default function JobList() {
                   <td>{job.priority}</td>
                   <td>
                     <ProgressCell job={job} />
+                  </td>
+                  <td>
+                    <RemainingTime
+                      seconds={job.remaining_seconds}
+                      running={job.task_counts?.running ?? 0}
+                      anchorMs={job.received_at ?? dataUpdatedAt}
+                      now={now}
+                    />
                   </td>
                   <td>{formatTime(job.created_at)}</td>
                   <td>{formatTimespan(job.started_at, job.completed_at, now)}</td>

@@ -280,6 +280,157 @@ describe('JobList', () => {
     })
   })
 
+  describe('remaining time', () => {
+    function remainingCells(): (string | null)[] {
+      const headers = screen.getAllByRole('columnheader')
+      const col = headers.findIndex((h) => h.textContent === 'Remaining')
+      expect(col).toBeGreaterThan(-1)
+      return screen
+        .getAllByRole('row')
+        .slice(1)
+        .map((r) => r.querySelectorAll('td')[col]?.textContent ?? null)
+    }
+
+    it('shows remaining time', async () => {
+      const running = makeJob({
+        id: 'job-run',
+        name: 'Running Job',
+        task_counts: {
+          total: 4,
+          pending: 3,
+          ready: 0,
+          assigned: 0,
+          running: 1,
+          succeeded: 0,
+          failed: 0,
+          canceled: 0,
+        },
+        remaining_seconds: 600,
+        remaining_basis: 'measured',
+        as_of: '2024-01-01T10:05:00Z',
+      })
+      const unknown = makeJob({
+        id: 'job-unk',
+        name: 'Unknown Job',
+        remaining_seconds: null,
+        as_of: '2024-01-01T10:05:00Z',
+      })
+      fetchMock.mockResolvedValueOnce(okJson(makeListResponse([running, unknown])))
+
+      render(<JobList />, { wrapper: Wrapper })
+
+      await screen.findByText('Running Job')
+      expect(remainingCells()).toEqual(['10m 0s', '—'])
+    })
+
+    it('asks the server for the remaining-time figures', async () => {
+      fetchMock.mockResolvedValueOnce(okJson(makeListResponse([makeJob({ name: 'Any Job' })])))
+
+      render(<JobList />, { wrapper: Wrapper })
+
+      await screen.findByText('Any Job')
+      const url = String(fetchMock.mock.calls[0]?.[0])
+      expect(new URL(url, 'http://localhost').searchParams.get('include')).toBe('timing')
+    })
+
+    it('keeps counting down across a jobs event', async () => {
+      const running = makeJob({
+        id: 'job-run',
+        name: 'Running Job',
+        status: 'running',
+        task_counts: {
+          total: 4,
+          pending: 3,
+          ready: 0,
+          assigned: 0,
+          running: 1,
+          succeeded: 0,
+          failed: 0,
+          canceled: 0,
+        },
+        remaining_seconds: 600,
+        remaining_basis: 'measured',
+        as_of: '2024-01-01T10:05:00Z',
+      })
+      fetchMock.mockResolvedValue(okJson(makeListResponse([running])))
+
+      render(<JobList />, { wrapper: Wrapper })
+      await screen.findByText('Running Job')
+      act(() => wsInstance(0).simulateOpen())
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3_000)
+      })
+      act(() => {
+        wsInstance(0).simulateMessage({
+          type: 'push',
+          subject: 'jobs',
+          payload: { job_id: 'job-run', status: 'running', updated_at: '2024-01-01T10:10:00Z' },
+          seq: 1,
+        })
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000)
+      })
+
+      // Four seconds have passed since the figure arrived; the event must not reset that.
+      expect(remainingCells()[0]).toMatch(/^9m 5[4-7]s$/)
+    })
+
+    it('does not re-price elapsed time when another task starts running', async () => {
+      const running = makeJob({
+        id: 'job-run',
+        name: 'Running Job',
+        status: 'running',
+        task_counts: {
+          total: 4,
+          pending: 0,
+          ready: 3,
+          assigned: 0,
+          running: 1,
+          succeeded: 0,
+          failed: 0,
+          canceled: 0,
+        },
+        remaining_seconds: 600,
+        remaining_basis: 'measured',
+        as_of: '2024-01-01T10:05:00Z',
+      })
+      fetchMock.mockResolvedValue(okJson(makeListResponse([running])))
+
+      render(<JobList />, { wrapper: Wrapper })
+      await screen.findByText('Running Job')
+      act(() => wsInstance(0).simulateOpen())
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000)
+      })
+      expect(remainingCells()[0]).toMatch(/^9m [01]s$/)
+
+      // A second task starts: its rate applies from now on, not to the minute
+      // already counted at one task per second.
+      const taskEvent = (status: string, seq: number) => ({
+        type: 'push',
+        subject: 'jobs',
+        payload: {
+          job_id: 'job-run',
+          task_id: 'task-2',
+          status,
+          updated_at: '2024-01-01T10:06:00Z',
+        },
+        seq,
+      })
+      act(() => {
+        wsInstance(0).simulateMessage(taskEvent('ready', 1))
+        wsInstance(0).simulateMessage(taskEvent('running', 2))
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000)
+      })
+
+      expect(remainingCells()[0]).toMatch(/^8m 5[7-9]s$/)
+    })
+  })
+
   describe('status filter', () => {
     it('renders all status filter pills', async () => {
       fetchMock.mockResolvedValueOnce(okJson(makeListResponse([])))
@@ -588,6 +739,34 @@ describe('JobList', () => {
       await waitFor(() =>
         expect(screen.getAllByLabelText('Status: Completed').length).toBeGreaterThan(0),
       )
+    })
+
+    it('refetches on an estimate event instead of applying its status', async () => {
+      const done = makeJob({ id: 'job-est', status: 'completed', name: 'Est Job' })
+      fetchMock.mockImplementation(() => Promise.resolve(okJson(makeListResponse([done]))))
+
+      render(<JobList />, { wrapper: Wrapper })
+      await waitFor(() => screen.getAllByLabelText('Status: Completed'))
+      act(() => wsInstance(0).simulateOpen())
+      const before = fetchMock.mock.calls.length
+
+      act(() => {
+        wsInstance(0).simulateMessage({
+          type: 'push',
+          subject: 'jobs',
+          payload: {
+            job_id: 'job-est',
+            status: 'running',
+            change: 'estimate',
+            updated_at: '2024-01-01T10:10:00Z',
+          },
+          seq: 1,
+        })
+      })
+
+      await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(before))
+      expect(screen.getAllByLabelText('Status: Completed').length).toBeGreaterThan(0)
+      expect(screen.queryByLabelText('Status: Running')).not.toBeInTheDocument()
     })
 
     it('keeps refreshing the list while progress events stream', async () => {

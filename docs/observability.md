@@ -72,6 +72,59 @@ snapshot from a new worker as a repeat `running` report, which is correct but
 costs an anchored write about every 2 s per running task. A new server with an
 old worker records one unthrottled snapshot per `openjd_status` line.
 
+### Remaining time and ETA
+
+A job's remaining work is reported as `remaining_seconds`, with the figure it
+came from in `remaining_basis` and the server time it was computed in `as_of`.
+All three are on job detail, and on job list items (`GET /api/v1/jobs`) only when
+requested with `?include=timing`, the same opt-in the queue figures below use.
+
+**`estimated_seconds`** is the submitter's estimate of the job's total task run
+time. Set it with the `estimated_seconds` query parameter on `POST /api/v1/jobs`,
+with the `estimated_seconds` field when submitting from a product, or later with
+`PATCH /api/v1/jobs/{id}` (`null` clears it). It is the sum of task run time, not
+wall-clock: 100 tasks of 60 s each is `6000` however many workers share them. It
+stops mattering once a multi-task job has a measured succeeded task in every
+step that still has work left, because the measured run times take over.
+
+`remaining_seconds` follows five rules, tried in order:
+
+1. A finished job (completed, failed or canceled) has `0`, basis `finished`.
+2. A running job whose only unfinished tasks are running, each with progress and
+   at least 30 s elapsed, sums each task's linear projection, basis `progress`.
+3. A job whose every step with unfinished tasks has a succeeded task with a
+   measured run time prices each not-started task at its step's mean measured
+   run time and each running task at that mean less its elapsed time (or its
+   linear projection when it has one), basis `measured`. A succeeded task is
+   measured only when its latest attempt recorded an end no earlier than its
+   start, so a step whose only succeeded tasks lack one falls through to rule 4.
+4. A job with `estimated_seconds` scales it by the fraction not yet complete,
+   basis `estimate` (a job with no non-canceled tasks and an estimate reports `0`).
+5. Otherwise `remaining_seconds` is `null` and `remaining_basis` is omitted.
+
+`remaining_seconds` is also `null` if the timing inputs could not be read or the
+job is missing from the timing read; the response is still `200` and the failure is logged at warn.
+
+**Queues** (`GET /api/v1/queues`, `GET /api/v1/queues/{id}`) carry the figures
+below only when requested with `?include=timing` (comma-separated and repeated
+values both work; an unknown value is a `400`). Without it the server does not
+compute them and the keys are absent: the read costs time proportional to the
+succeeded tasks in unfinished jobs, so only callers that show the figures
+should ask. The fields are `unfinished_jobs`, `work_remaining_seconds` (the sum of the unfinished jobs' known
+figures), `jobs_without_estimate` (unfinished jobs whose figure is `null`),
+`running_tasks` and `as_of`. They are absent together if the read failed, and
+from the create and update responses, which never carry them. A client refreshes the figures between
+reads: displayed remaining = `max(0, work_remaining_seconds − running_tasks ×
+(now − as_of))`, and ETA = `now + displayed remaining / max(1, running_tasks)`.
+A paused queue shows "paused" instead of an ETA. The ETA is exact for one worker
+and rough on a larger farm, since it assumes the running tasks keep draining the
+work in parallel and ignores tasks that cannot run in parallel.
+It also omits the `jobs_without_estimate` jobs, so show that count beside it.
+
+A job submitted from a product also reports `product_name` and `product_version`:
+the catalog product and its version at submission time, omitted for a raw
+template.
+
 ### Diagnostic logs
 
 Both binaries write their own operational output (scheduler decisions, worker
@@ -82,8 +135,8 @@ file instead. A Windows service has no stderr, so it always writes a file — by
 default `C:\ProgramData\sqi\logs\<service-name>.log` (see
 [Log destination](#log-destination)). When diagnostics are enabled (the
 default), the logs are also forwarded to the server's in-memory ring buffer and
-surfaced in the web UI — so operators do not need to shell into a host just to
-see why a worker is misbehaving.
+surfaced in the web UI — so operators can see why a worker is misbehaving
+without shelling into the host.
 
 **Transport detail:** each worker runs a fan-out sink that publishes every log
 record as a JSON `DiagLogMsg` to the core-NATS subject
@@ -177,31 +230,31 @@ and the task's reason string together: a `queue affinity` or
 `compute location mismatch` reason usually points at a worker configuration
 mismatch rather than a capacity shortfall.
 
-**The `worker EXPR limits are tighter…` reason is a configuration mismatch,
-not a capacity one.** The scheduler withholds EXPR work from any worker whose
+The `worker EXPR limits are tighter…` reason is a configuration mismatch,
+not a capacity one. The scheduler withholds EXPR work from any worker whose
 advertised `expr.*` caps undercut the limits this server accepts templates
 under, and it names both numbers and both config keys. Before chasing it:
 
-- **On a job submitted since the upgrade, the answer is exact.** The gate reads
-  the extension list recorded on the job row at submission, so a job flagged
-  with this reason declares `EXPR`. The fix is to raise the workers'
+- **For a job with a recorded extension list, the answer is exact.** The gate
+  reads the extension list recorded on the job row at submission, so a job
+  flagged with this reason declares `EXPR`. The fix is to raise the workers'
   `expr.*` keys, or lower the server's `openjd.expr_*` keys. See
   [Server → EXPR expression limits](configuration.md#4-every-worker-must-be-at-least-as-generous-as-this-server).
-- **On a job that predates the upgrade, you may still see it on a job that uses
-  no expressions.** Rows written before the `jobs.declared_extensions` column
+- **For a job with no recorded list, you may see it on a job that uses no
+  expressions.** Rows written before the `jobs.declared_extensions` column
   existed carry no list, and for those alone the gate falls back to scanning
   the raw template for the bytes `EXPR` *and* `extensions`. A base-spec
   template that declares some other extension and mentions the string
   incidentally — a comment, or an environment variable such as
   `HOUDINI_EXPR_CACHE` — is withheld from every short worker and flagged with
-  this reason. It resolves on its own as those jobs age out; the fix meanwhile
-  is the same either way.
+  this reason. It resolves as those jobs age out; the fix is the same either
+  way.
 - **With the sweep disabled (`scheduler.unschedulable_grace` ≤ `0`) this
-  reason is never written at all.** A withheld task sits `ready` with
-  nothing on it, and the one-off `WARN` the server logs when the short worker
-  registers — which may well predate the job — becomes the only signal. Look
-  for it under [Admin → Server log](#admin--server-log) (component `server`),
-  **not** in that worker's diagnostics panel: the record is the scheduler's,
+  reason is never written.** A withheld task sits `ready` with nothing on it,
+  and the one-off `WARN` the server logs when the short worker registers, which
+  may predate the job, is the only signal. Look for it under
+  [Admin → Server log](#admin--server-log) (component `server`), not in that
+  worker's diagnostics panel: the record is the scheduler's,
   so it never travels on `worker.diag.<id>`.
 
 ### Why did my task fail?
@@ -259,7 +312,7 @@ retry, exhaustion, and auto-park interact.
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `sqi_scheduler_task_retries_total` | counter | `queue` | Total tasks re-queued to `ready` by automatic retry after a worker-reported failure. Does **not** include lost/reclaimed work (worker offline, stale-`assigned` reaper) — those never go through the retry decision. |
+| `sqi_scheduler_task_retries_total` | counter | `queue` | Total tasks re-queued to `ready` by automatic retry after a worker-reported failure. Does not include lost/reclaimed work (worker offline, stale-`assigned` reaper) — those never go through the retry decision. |
 | `sqi_scheduler_jobs_autoparked_total` | counter | `queue` | Total jobs auto-parked (`status=paused`) because their cumulative genuine task failures reached the job's resolved `failure_limit`. Does not include jobs paused manually via the API. |
 
 Both counters increment inside `internal/scheduler/failure.go`'s
@@ -357,12 +410,12 @@ no size to configure there).
 In this mode, operational logs are available only out-of-band (journald, Docker,
 log files — see [Out-of-band wiring](#out-of-band-wiring)).
 
-> **Buffer lifetime:** the ring buffer is **in-memory only** and is lost on
+> **Buffer lifetime:** the ring buffer is in-memory only and is lost on
 > server restart. If you need durable operational logs beyond `buffer_size`
 > records per component, ship them out-of-band as well.
 >
 > **Component ceiling:** the buffer also caps the number of distinct component
-> rings it retains — **512** by default (`internal/diag`'s
+> rings it retains — 512 by default (`internal/diag`'s
 > `defaultMaxComponents`, not currently an operator setting). When the ceiling
 > is exceeded the component whose most-recent record is oldest is evicted
 > wholesale (LRU by latest activity); the `server` component is never evicted.
@@ -827,7 +880,7 @@ reference, including `log.file`, `log.max_size_mb` and `log.max_backups`
 
 Diagnostic log lines carry operational metadata: file paths, command names,
 error strings, and correlation keys such as `task_id` and `worker_id`. They
-do **not** carry secret values: the worker executor logs attribute keys but
+do not carry secret values: the worker executor logs attribute keys but
 not environment variable values, and secret injection in OpenJD tasks keeps
 secrets out of the task's structured log output.
 

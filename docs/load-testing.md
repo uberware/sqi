@@ -984,6 +984,31 @@ cores or less.
 - **Store write alone:** `BenchmarkRecordAttemptProgress` (SQLite, 500 running
   attempts, 10,000 iterations, one snapshot per iteration round-robin) takes
   72,433 ns/op. The write is under 10% of the per-snapshot CPU above.
+- **Remaining-time inputs read:** `BenchmarkQueueJobTimings` (SQLite, one
+  queue of 200 unfinished jobs of 100 tasks each, 50 of each job succeeded
+  through real attempts and 2 running, 200 iterations, one `QueueJobTimings`
+  call per iteration) takes 8,815,144 to 8,987,214 ns/op (about 9 ms). It was
+  about 57 ms when the read found every succeeded task's latest attempt on each
+  call; since migration `00045` a task's run time is stored on the task row
+  (`tasks.run_ms`) when it succeeds, and the per-step counts and measured sums
+  come from the `tasks(step_id, status, run_ms)` index alone, so the cost is
+  one index entry per task in the queue's unfinished jobs, with no attempt
+  lookups. The queue read still runs only when a queue list or get call asks
+  for it with `include=timing`: the web Queues page asks once per farm, and
+  the submit forms, the Python SDK by default and the DCC submitters do not.
+  No cache exists.
+- **Remaining-time inputs read, one large job:** `BenchmarkJobTimingsLargeJob`
+  (SQLite, one unfinished job of 100,000 tasks, 50,000 succeeded through real
+  attempts and 2 running, 200 iterations, one `JobTimings` call per iteration)
+  takes 21,940,955 to 22,888,588 ns/op (about 22 ms), down from about 0.49 s
+  before `00045`. That is about 0.22 microseconds per task, succeeded or not.
+  `GET /api/v1/jobs/{id}` always runs this read for an unfinished job, and the
+  web job page refetches at most every 5 s while tasks change, so each open
+  view of a job this size spends under 0.5% of one read connection.
+  `GET /api/v1/jobs` runs it for the page's unfinished jobs only with
+  `include=timing`: the web Jobs page asks, and the submit forms' dependency
+  picker, the dashboard counts, the Python SDK by default and the DCC
+  submitters do not.
 - **Terminal ingest slows:** the median time to store a terminal status rose
   from 43 to 72 ms on SQLite and from 101 to 263 ms on PostgreSQL, and the p99
   from 144 to 181 ms and from 343 to 627 ms. Terminal statuses and snapshots

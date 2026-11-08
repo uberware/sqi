@@ -60,6 +60,16 @@ var (
 	PurgeExpiredJobTx  = purgeExpiredJobTx
 )
 
+// TimingQueries returns the remaining-time read's per-step and running-task
+// statements, scoped to jobs (byQueues false) or to queues, with their args.
+func TimingQueries(byQueues bool, ids []string) (steps, running string, args []any) {
+	sc := timingByJobs(ids)
+	if byQueues {
+		sc = timingByQueues(ids)
+	}
+	return timingStepsQuery(sc), timingRunningQuery(sc), sc.args
+}
+
 // WriteDB and ReadDB return the store's write and read pools.
 func (s *Store) WriteDB() *sql.DB { return s.w.db }
 func (s *Store) ReadDB() *sql.DB  { return s.r.db }

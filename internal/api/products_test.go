@@ -133,7 +133,7 @@ func TestProducts_CreateThenGet(t *testing.T) {
 
 // TestProducts_NamespacedNameRoundTrip checks that a product whose name has a
 // '/' namespace (e.g. an installed preset "testing/render-simulator") is
-// retrievable when the browser URL-encodes the slash as %2F. Regression test:
+// retrievable when the browser URL-encodes the slash as %2F.
 // chi does not decode path params, so the handler must unescape the name.
 func TestProducts_NamespacedNameRoundTrip(t *testing.T) {
 	srv := newProductRouter(fake.New())
@@ -664,5 +664,66 @@ func TestProducts_SubmitRejectsInvalidRetryOverrides(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "max_attempts must be >= 1") {
 		t.Errorf("body %q missing bound message", rec.Body.String())
+	}
+}
+
+func TestProducts_SubmitRecordsProductAndEstimate(t *testing.T) {
+	srv := newProductTestServer(t)
+	farmID, queueID := seedProductSubmitPrereqs(t, srv)
+	catalog, err := product.NewCatalog(srv.st).GetByName(t.Context(), "script")
+	if err != nil {
+		t.Fatalf("GetByName: %v", err)
+	}
+
+	body := jsonBody(t, map[string]any{
+		"farm_id": farmID, "queue_id": queueID,
+		"parameters":        map[string]string{"Command": "echo hi"},
+		"estimated_seconds": 900,
+	})
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, newReq(t, http.MethodPost, "/api/v1/products/script/jobs", bytes.NewReader(body.Bytes())))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body)
+	}
+	var job jobResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &job); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if job.ProductName != "script" || job.ProductVersion != catalog.Version {
+		t.Errorf("product = %q %q, want script %q", job.ProductName, job.ProductVersion, catalog.Version)
+	}
+	if job.EstimatedSeconds == nil || *job.EstimatedSeconds != 900 {
+		t.Errorf("estimated_seconds = %v, want 900", job.EstimatedSeconds)
+	}
+	stored, err := srv.st.GetJob(t.Context(), job.ID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if stored.ProductName != "script" || stored.ProductVersion != catalog.Version ||
+		stored.EstimatedSeconds == nil || *stored.EstimatedSeconds != 900 {
+		t.Errorf("stored job disagrees: %+v", stored)
+	}
+
+	bad := jsonBody(t, map[string]any{
+		"farm_id": farmID, "queue_id": queueID,
+		"parameters":        map[string]string{"Command": "echo hi"},
+		"estimated_seconds": 0,
+	})
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, newReq(t, http.MethodPost, "/api/v1/products/script/jobs", bytes.NewReader(bad.Bytes())))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "estimated_seconds") {
+		t.Fatalf("zero: code = %d body=%s", rec.Code, rec.Body)
+	}
+
+	// A value that is not an integer at all names the field too, rather than
+	// reporting an unreadable body.
+	for _, raw := range []string{`1.5`, `"1h"`, `1e10`, `true`} {
+		body := `{"farm_id":"` + farmID + `","queue_id":"` + queueID +
+			`","parameters":{"Command":"echo hi"},"estimated_seconds":` + raw + `}`
+		rec = httptest.NewRecorder()
+		srv.ServeHTTP(rec, newReq(t, http.MethodPost, "/api/v1/products/script/jobs", strings.NewReader(body)))
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "estimated_seconds must be an integer") {
+			t.Errorf("%s: code = %d body=%s", raw, rec.Code, rec.Body)
+		}
 	}
 }

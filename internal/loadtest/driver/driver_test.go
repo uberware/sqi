@@ -486,6 +486,21 @@ type fakeConn struct {
 	// breakAfter makes Next fail once the script is used up, as a connection
 	// that drops would.
 	breakAfter bool
+	// firstSub is closed by the first Subscribe. A real connection delivers no
+	// push before the client subscribes, so Next waits for it; without the
+	// wait the client's reader, which starts before it subscribes, could take
+	// the whole script first and make the first subscribe look like a resume.
+	firstSub     chan struct{}
+	firstSubDone bool
+}
+
+// firstSubscribed returns the channel the first Subscribe closes. Caller
+// holds f.mu.
+func (f *fakeConn) firstSubscribed() chan struct{} {
+	if f.firstSub == nil {
+		f.firstSub = make(chan struct{})
+	}
+	return f.firstSub
 }
 
 func (f *fakeConn) Subscribe(_ context.Context, subject string, since uint64) error {
@@ -496,10 +511,22 @@ func (f *fakeConn) Subscribe(_ context.Context, subject string, since uint64) er
 		f.since = map[string]uint64{}
 	}
 	f.since[subject] = since
+	if !f.firstSubDone {
+		f.firstSubDone = true
+		close(f.firstSubscribed())
+	}
 	return nil
 }
 
 func (f *fakeConn) Next(ctx context.Context) (ws.Envelope, error) {
+	f.mu.Lock()
+	ready := f.firstSubscribed()
+	f.mu.Unlock()
+	select {
+	case <-ready:
+	case <-ctx.Done():
+		return ws.Envelope{}, ctx.Err()
+	}
 	f.mu.Lock()
 	if len(f.script) > 0 {
 		env := f.script[0]
