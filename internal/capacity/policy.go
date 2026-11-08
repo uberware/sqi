@@ -124,10 +124,13 @@ type Mismatch struct {
 
 // Evaluate returns one Status per group, in s.Groups order.
 //
-// An actuator reads a Status as two independent instructions:
+// DesiredMachines is a total target: the machines the group should have,
+// counting those already present. An incremental actuator reads a Status as
+// two independent instructions:
 //
-//   - Grow: add (launch or wake) DesiredMachines − OnlineMembers machines when
-//     that is positive.
+//   - Grow: add (launch or wake) DesiredMachines − OnlineMembers machines,
+//     less the machines it has already launched that have not registered
+//     yet, when that is positive.
 //   - Shrink: retire the RetireCandidates, by name.
 //
 // It never subtracts the candidates as well: they are already counted in

@@ -346,8 +346,8 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	// begins, and the worker must keep heartbeating through the drain that
 	// follows. A drain can outlast the server's heartbeat timeout, and a silent
 	// worker is declared offline and has the tasks it is still running
-	// reclaimed. shutdownSequence stops the heartbeat once the drain is over;
-	// the defer covers every earlier return.
+	// reclaimed. shutdownSequence cancels hbCtx once the drain is over (it
+	// does not wait for Run to return); the defer covers every earlier return.
 	hbCtx, hbStop := context.WithCancel(context.Background())
 	defer hbStop()
 	go hbPublisher.Run(hbCtx)
@@ -462,7 +462,8 @@ type drainer interface {
 	DrainAndShutdown(gracePeriod time.Duration) (completed, killed int)
 }
 
-// heartbeatStopper stops the heartbeat publisher.
+// heartbeatStopper stops the heartbeat publisher: it cancels the publisher's
+// context and returns without waiting for the publisher to exit.
 type heartbeatStopper interface {
 	Stop()
 }
@@ -528,8 +529,10 @@ func startPreemptionWatch(
 //     status information before NATS drains. The heartbeat keeps running
 //     throughout: a drain may outlast the server's heartbeat timeout, and a
 //     worker that goes quiet is declared offline and loses its running tasks.
-//  2. Stop the heartbeat, so a beat cannot follow the departure message and
-//     mark the worker online again.
+//  2. Stop the heartbeat, so no further beat is started after the departure
+//     message. Stop only cancels the publisher's context and does not wait
+//     for its Run to return, so a beat already being published can still
+//     land after the deregister.
 //  3. Deregister, so the server marks the worker offline immediately rather
 //     than waiting for the heartbeat-timeout sweep. kind is "" for a restart
 //     and [protocol.DeregisterPreempted] when the machine is being reclaimed.

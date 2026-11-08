@@ -322,10 +322,11 @@ func (p *Publisher) runWatchdog(ctx context.Context) {
 					)
 				} else {
 					// Callback did not fire or its Register call failed — fill in.
-					// Skip re-registration if ctx is already done (worker is
-					// shutting down and will call Deregister instead).
+					// Skip re-registration if ctx is already done: the publisher
+					// runs on its own context, which the shutdown sequence
+					// cancels after the drain, just before it deregisters, so a
+					// registration now would contradict the departure.
 					if ctx.Err() != nil {
-						// Worker is shutting down; Deregister will run instead.
 						p.logger.DebugContext(
 							ctx, "heartbeat watchdog: reconnect detected but worker shutting down — skipping re-registration",
 							slog.String("worker_id", p.workerID),
