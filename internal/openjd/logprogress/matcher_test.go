@@ -114,6 +114,17 @@ func TestMatcher_FirstPatternWins(t *testing.T) {
 	runSteps(t, m, []step{{"a=10 20", 10}})
 }
 
+// TestMatcher_InvalidValueFallsThrough pins that the first pattern to yield a
+// valid value wins, not the first to match: a match whose value is out of
+// range leaves the line to the later patterns.
+func TestMatcher_InvalidValueFallsThrough(t *testing.T) {
+	m := mustCompile(t, []string{
+		`(?P<percent>\d+)%`,
+		`(?P<done>\d+)/(?P<total>\d+)`,
+	}, nil, "")
+	runSteps(t, m, []step{{"150% 3/4", 75}, {"150%", -1}})
+}
+
 func TestMatcher_Status(t *testing.T) {
 	m := mustCompile(t, nil, []string{`Saving (?P<status>.+)`, `^Loading`}, "")
 	if u := m.Observe("Saving file x"); !u.HasStatus || u.Status != "file x" {

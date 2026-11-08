@@ -38,8 +38,8 @@ sibling of `script`:
         SQI_LOG_PROGRESS:
           frameParameter: Frame
           progress:
-            - '^Fra:(?P<frame>-?\d+) '
-            - 'Sample (?P<framedone>\d+)/(?P<frametotal>\d+)'
+            - '\| Rendering frame (?P<frame>-?\d+)'
+            - '\| Sample (?P<framedone>\d+)/(?P<frametotal>\d+)'
           status:
             - '\| (?P<status>[^|]+)$'
         script:
@@ -144,13 +144,17 @@ before the process starts.
 process that the interceptor forwards to the task log: not the `openjd_*`
 directive lines it consumes, and never an `openjd_redacted_env:` directive line,
 which carries its secret in the clear. Lines are matched **after redaction**
-(`ScrubRedacted`), so status text never shows a redacted value. A line longer
-than 64 KiB arrives in pieces, and each piece is matched on its own.
+(`ScrubRedacted`), so status text is drawn from the same scrubbed text the task
+log shows. A line longer than 64 KiB arrives in pieces, and each piece is
+matched on its own.
 
 **Snapshots.** A match updates the attempt's progress and status, the same
 values the directives set, and a change is published as a `running` snapshot
 under the same throttle: at most one every **2 seconds**, with a trailing send
-for the last change. A match that changes nothing sends nothing.
+for the last change. A match that changes nothing sends nothing. When the
+process exits, after its output has been read, a change still waiting for its
+trailing send is published at once, ahead of the terminal status, so the last
+progress and status a task printed still reach the server.
 
 **Precedence.** Per field, an explicit directive wins. Once the attempt has
 printed a valid `openjd_progress` line, the progress patterns no longer set
@@ -198,7 +202,7 @@ ships.
 | `modo-render`, `modo-pass-group-render` | no block: the embedded `render.py` prints one `openjd_status: rendering frames S–E` before the blocking render command and no `openjd_progress` | the stub `modo` only; no Modo has run it |
 | `vred-render`, `vred-viewpoint-render` | no block: the embedded `render.py` prints one `openjd_status: rendering frames S–E` before the blocking `startRenderToFile` and no `openjd_progress` | the stub VRED only; no VRED has run it |
 | `fusion-saver-render` | no block: the embedded `render.lua` prints one `openjd_status: rendering frames S–E` before the blocking `Render` and no `openjd_progress` | the stub Fusion only, under a stock Lua; no Fusion has run it |
-| `unreal-mrq-job-render`, `unreal-mrq-queue-render` | no block: the embedded script prints `openjd_status: finished job NAME` and `openjd_progress` (jobs done / jobs x 100) as each job's `on_individual_job_work_finished_delegate` fires; a failed job reports none. Progress within a job (`MoviePipelineLibrary.get_completion_percentage`) is unconfirmed: no Unreal was available | the stub `unreal` module only; no Unreal has run it |
+| `unreal-mrq-job-render`, `unreal-mrq-queue-render` | no block: the embedded script prints `openjd_status: finished job NAME` and `openjd_progress` (jobs done / enabled jobs x 100) as each job's `on_individual_job_work_finished_delegate` fires; a failed job reports none. Progress within a job (`MoviePipelineLibrary.get_completion_percentage`) is unconfirmed: no Unreal was available | the stub `unreal` module only; no Unreal has run it |
 | `unreal-mrq-shot-render` | no block: the embedded script prints one `openjd_status: rendering SHOT` when the task's render starts and no `openjd_progress` | the stub `unreal` module only; no Unreal has run it |
 | `husk-usd-render` | `percent` (`ALF_PROGRESS N%`, which `-V 2a`'s `a` turns on: the percent through the whole run, which is the task's chunk, moving within each frame); status is the image name and count from `>>> Render <image> (i of n)` | husk in Houdini 21.0.631 Apprentice on macOS, Karma CPU; not Karma XPU or another delegate, and not Houdini 22 |
 | `usdrecord-render` | `frame` (`Recording time code: F.000000`, printed before each frame); the same line as status. usdrecord has no verbosity option and prints nothing after the last frame, so the bar reaches the last frame's start, not 100 | Houdini 21.0.631's usdrecord under hython on macOS, Storm and Karma CPU; not Houdini 22 |

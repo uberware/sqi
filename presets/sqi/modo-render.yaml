@@ -60,9 +60,9 @@ readme: |
 
   The script turns on console logging, opens the scene, sets the render item's
   first and last frame to the task's chunk and its step to 1, and runs
-  `render.animation`, after an `openjd_status` naming the frames. It then prints `SQI_RENDER: OK` and quits Modo with
-  `app.quit`. On any error it prints `SQI_RENDER: FAILED:` with the reason and
-  quits.
+  `render.animation`, after an `openjd_status` naming the frames. It then
+  prints `SQI_RENDER: OK` and quits Modo with `app.quit`. On any error it
+  prints `SQI_RENDER: FAILED:` with the reason and quits.
 
   Building `params.json` is metered against the worker's `EXPR` limits and
   grows with the frames in one task; the maximum of 1000 stays well inside the

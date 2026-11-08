@@ -214,17 +214,17 @@ runs, either from the application's own output through the
 [Shipped presets](openjd-extensions/sqi-log-progress.md#shipped-presets) for the
 patterns and the application versions each was confirmed against.
 
-- Blender (`blender-batch-render`, `blender-view-layer-render`): per frame and within a frame, with Blender's sample counter as status.
+- Blender (`blender-batch-render`, `blender-view-layer-render`): per frame and within a frame, with Blender's sample counter as status; the patterns need Blender 5.2 or later.
 - Nuke (`nuke-write-render`, `nuke-script-render`): per frame.
 - Houdini ROP (`houdini-rop-render`): per frame.
 - husk (`husk-usd-render`): within the task's frames, with the image name as status.
 - usdrecord (`usdrecord-render`): per frame.
 - oiiotool (`oiiotool-process`): per frame.
-- KeyShot (`keyshot-render`, `keyshot-studio-render`): per frame.
-- Unreal Engine (`unreal-mrq-job-render`, `unreal-mrq-queue-render`, `unreal-mrq-shot-render`): per job for the job and queue presets, status only for the shot preset.
-- Modo (`modo-render`, `modo-pass-group-render`): status only.
-- VRED (`vred-render`, `vred-viewpoint-render`): status only.
-- Fusion (`fusion-saver-render`): status only.
+- KeyShot (`keyshot-render`, `keyshot-studio-render`): per frame; confirmed against a stub only.
+- Unreal Engine (`unreal-mrq-job-render`, `unreal-mrq-queue-render`, `unreal-mrq-shot-render`): per job for the job and queue presets, status only for the shot preset; confirmed against a stub only.
+- Modo (`modo-render`, `modo-pass-group-render`): status only; confirmed against a stub only.
+- VRED (`vred-render`, `vred-viewpoint-render`): status only; confirmed against a stub only.
+- Fusion (`fusion-saver-render`): status only; confirmed against a stub only.
 
 ### Katana
 

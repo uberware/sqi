@@ -290,7 +290,8 @@ task 1/1  name="Render"
                 select_shot(jobs, params)
                 emit("openjd_status: rendering " + params["shot"])
             else:
-                STATE["total"] = len(jobs)
+                # A disabled job is never rendered, so it is not counted.
+                STATE["total"] = sum(1 for j in jobs if getattr(j, "enabled", True))
             apply_output(jobs, params["output_directory"])
             executor = unreal.MoviePipelinePIEExecutor()
             STATE["executor"] = executor

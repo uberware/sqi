@@ -448,8 +448,10 @@ func TestPresetUnreal_SessionFolderThatBreaksExecCmdsIsRefused(t *testing.T) {
 // names) of the level sequence saved there, or to null for an asset that does
 // not exist; any other path loads as an asset with no jobs and no shots. A
 // queue's job written "name@/Game/Path" keeps the config asset at that path as
-// its preset origin, as a job saved from the Movie Render Queue window does.
-// name_format is every job's output file name format.
+// its preset origin, as a job saved from the Movie Render Queue window does,
+// and one written "!name" is saved disabled: the queue never renders it, so a
+// "job" event naming it is not delivered. name_format is every job's output
+// file name format.
 const unrealRunner = `import json, os, sys, types
 
 locate, events, fail, script, record, elsewhere, bootstrap, assets, name_format = sys.argv[1:10]
@@ -555,8 +557,9 @@ class Config(object):
 
 
 class Job(object):
-    def __init__(self, name="", origin=None):
+    def __init__(self, name="", origin=None, enabled=True):
         object.__setattr__(self, "job_name", name)
+        object.__setattr__(self, "enabled", enabled)
         object.__setattr__(self, "config", Config(self))
         object.__setattr__(self, "shot_info", [Shot("left over")])
         object.__setattr__(self, "origin", origin)
@@ -598,8 +601,9 @@ class Queue(object):
         raising("copy_from")
         self.jobs = []
         for spec in asset.jobs:
-            name, _, origin = spec.partition("@")
-            self.jobs.append(Job(name, Asset(origin, []) if origin else None))
+            enabled = not spec.startswith("!")
+            name, _, origin = spec.lstrip("!").partition("@")
+            self.jobs.append(Job(name, Asset(origin, []) if origin else None, enabled))
 
     def allocate_new_job(self, cls):
         note("allocate_new_job", cls.__name__)
@@ -688,6 +692,8 @@ for event in [e for e in events.split(";") if e]:
     note("event", event)
     kind, _, rest = event.partition(":")
     flag, _, text = rest.partition(":")
+    if kind == "job" and any(j.job_name == text and not j.enabled for j in QUEUE.jobs):
+        continue
     for executor in executors:
         if kind == "job":
             for fn in executor.on_individual_job_work_finished_delegate.callables:
@@ -1244,6 +1250,23 @@ func TestPresetUnreal_EmitsJobProgress(t *testing.T) {
 		}
 		_, stdout, _ := runUnrealScript(t, python, snap.Steps[0].Tasks[0], "import", "job:1:SEQ_Hero;finished:1", "", "", "")
 		want := "openjd_status: finished job SEQ_Hero\nopenjd_progress: 100\nSQI_RENDER: OK\n"
+		if stdout != want {
+			t.Errorf("stdout:\n%s\nwant:\n%s", stdout, want)
+		}
+	})
+	t.Run("a disabled job is not counted", func(t *testing.T) {
+		snap, err := capturePreset(t, unrealQueue, map[string]string{
+			"SceneFile": `C:\Projects\HeroFilm\HeroFilm.uproject`, "QueueAsset": queueA,
+		})
+		if err != nil {
+			t.Fatalf("Capture: %v", err)
+		}
+		oneDisabled := `{"` + queueA + `": ["Hero A", "!Hero B", "Hero C"]}`
+		_, stdout, _ := runUnrealScript(t, python, snap.Steps[0].Tasks[0], "import", events, "", oneDisabled, "")
+		want := "" +
+			"openjd_status: finished job Hero A\nopenjd_progress: 50\n" +
+			"openjd_status: finished job Hero C\nopenjd_progress: 100\n" +
+			"SQI_RENDER: OK\n"
 		if stdout != want {
 			t.Errorf("stdout:\n%s\nwant:\n%s", stdout, want)
 		}

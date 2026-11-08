@@ -53,9 +53,10 @@ readme: |
   never falls back to rendering the whole comp. Otherwise it puts every other
   Saver in pass-through (`TOOLB_PassThrough`), takes the chosen one out of
   pass-through, and calls `Render` for the task's frames, waiting for it to
-  finish, after an `openjd_status` naming the frames. The comp is never saved, so the file on disk keeps its Savers as
-  they were. The script then prints `SQI_RENDER: OK`, or `SQI_RENDER: FAILED:`
-  with the reason, and quits the Render Node with `fusion:Quit()`.
+  finish, after an `openjd_status` naming the frames. The comp is never
+  saved, so the file on disk keeps its Savers as they were. The script then
+  prints `SQI_RENDER: OK`, or `SQI_RENDER: FAILED:` with the reason, and
+  quits the Render Node with `fusion:Quit()`.
 
   Building `params.json` is metered against the worker's `EXPR` limits. It
   carries only the chunk's first and last frame, and the largest chunk a job

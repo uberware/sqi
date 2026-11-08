@@ -496,8 +496,9 @@ func (e *Executor) lastProgress(attemptID string) *int {
 	return nil
 }
 
-// finishProgress stops the output handler's pending progress snapshot for
-// attemptID, if it supports that, and returns the last progress seen.  Falls
+// finishProgress flushes the output handler's pending progress snapshot for
+// attemptID and stops later ones, if it supports that, and returns the last
+// progress seen.  Falls
 // back to [Executor.lastProgress] for handlers without FinishProgress.
 func (e *Executor) finishProgress(attemptID string) *int {
 	type progressFinisher interface {

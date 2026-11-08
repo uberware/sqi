@@ -226,10 +226,12 @@ func (st *attemptState) finish() {
 	}
 }
 
-// FinishProgress stops attemptID's pending trailing send, refuses all later
-// sends for it, and returns the last progress, as [Interceptor.LastProgress]
-// does.  The executor calls it before publishing the terminal status so a late
-// snapshot cannot follow it.
+// FinishProgress refuses all later sends for attemptID and returns the last
+// progress, as [Interceptor.LastProgress] does. A change still waiting for its
+// trailing send is published before it returns, so the final progress and
+// status reach the server. The executor calls it before publishing the
+// terminal status, so that snapshot precedes the terminal message and no late
+// snapshot can follow it.
 func (i *Interceptor) FinishProgress(attemptID string) *int {
 	i.mu.Lock()
 	st := i.attempts[attemptID]
@@ -237,7 +239,21 @@ func (i *Interceptor) FinishProgress(attemptID string) *int {
 	if st == nil {
 		return nil
 	}
-	st.finish()
+	st.mu.Lock()
+	flush := st.pending && !st.finished
+	var msg protocol.TaskStatusMsg
+	if flush {
+		msg = i.snapshotLocked(attemptID, st, time.Now())
+	}
+	st.finished = true
+	st.pending = false
+	if st.timer != nil {
+		st.timer.Stop()
+	}
+	st.mu.Unlock()
+	if flush {
+		i.publish(context.Background(), attemptID, msg)
+	}
 	return i.LastProgress(attemptID)
 }
 

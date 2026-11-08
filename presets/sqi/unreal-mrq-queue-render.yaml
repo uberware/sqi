@@ -49,7 +49,7 @@ readme: |
   `SQI_RENDER: OK` if every job succeeded, or `SQI_RENDER: FAILED:` with the
   reason, and then calls `quit_editor()`. A fatal render error ends the task
   the same way, as Epic's own render-farm plug-in does. As each job finishes it
-  prints `openjd_status` and `openjd_progress` (jobs done / jobs).
+  prints `openjd_status` and `openjd_progress` (jobs done / enabled jobs).
 
   The preset uses `-execcmds` rather than `-ExecutePythonScript`, because a
   render the editor runs in the background must outlive the script that
@@ -456,7 +456,8 @@ template:
                           select_shot(jobs, params)
                           emit("openjd_status: rendering " + params["shot"])
                       else:
-                          STATE["total"] = len(jobs)
+                          # A disabled job is never rendered, so it is not counted.
+                          STATE["total"] = sum(1 for j in jobs if getattr(j, "enabled", True))
                       apply_output(jobs, params["output_directory"])
                       executor = unreal.MoviePipelinePIEExecutor()
                       STATE["executor"] = executor

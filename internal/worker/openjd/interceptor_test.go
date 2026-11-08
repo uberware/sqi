@@ -401,6 +401,64 @@ func TestFinishProgress_StopsTrailingSend(t *testing.T) {
 		line("openjd_progress: 3")
 		time.Sleep(5 * time.Second)
 		synctest.Wait()
+		if got := len(nc.snapshot()); got != 2 {
+			t.Errorf("got %d messages, want 2 (leading send and the flush)", got)
+		}
+	})
+}
+
+// TestFinishProgress_FlushesPendingChange verifies that a change still waiting
+// for its trailing send is published, once and with the final values, before
+// FinishProgress returns.
+func TestFinishProgress_FlushesPendingChange(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		i, _, nc, ctx, _ := setup(t)
+		line := func(l string) { i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", "stdout", l) }
+		line("openjd_progress: 40")
+		time.Sleep(500 * time.Millisecond)
+		line("openjd_status: last frame")
+		line("openjd_progress: 100")
+		if got := len(nc.snapshot()); got != 1 {
+			t.Fatalf("before finish: got %d messages, want 1", got)
+		}
+
+		p := i.FinishProgress("attempt-1")
+		if p == nil || *p != 100 {
+			t.Fatalf("FinishProgress = %v, want &100", p)
+		}
+		msgs := nc.snapshot()
+		if len(msgs) != 2 {
+			t.Fatalf("after finish: got %d messages, want 2", len(msgs))
+		}
+		if want := bus.TaskStatusSubject("test-worker", "job-1"); msgs[1].subject != want {
+			t.Errorf("flush subject = %q, want %q", msgs[1].subject, want)
+		}
+		m := decodeStatus(t, msgs[1].data)
+		if m.Status != "running" || m.Message != "last frame" || m.LastProgress == nil || *m.LastProgress != 100 {
+			t.Errorf("flush = %+v, want running, Message last frame, LastProgress 100", m)
+		}
+
+		i.FinishProgress("attempt-1")
+		time.Sleep(5 * time.Second)
+		synctest.Wait()
+		if got := len(nc.snapshot()); got != 2 {
+			t.Errorf("after quiet period: got %d messages, want 2", got)
+		}
+	})
+}
+
+// TestFinishProgress_NothingPendingDoesNotPublish verifies that FinishProgress
+// sends nothing when every change has already been published.
+func TestFinishProgress_NothingPendingDoesNotPublish(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		i, _, nc, ctx, _ := setup(t)
+		i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", "stdout", "openjd_progress: 7")
+		time.Sleep(3 * time.Second)
+		synctest.Wait()
+		if p := i.FinishProgress("attempt-1"); p == nil || *p != 7 {
+			t.Fatalf("FinishProgress = %v, want &7", p)
+		}
+		synctest.Wait()
 		if got := len(nc.snapshot()); got != 1 {
 			t.Errorf("got %d messages, want 1", got)
 		}

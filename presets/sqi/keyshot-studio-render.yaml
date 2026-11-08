@@ -67,8 +67,7 @@ readme: |
   not empty. A file already there with that name is deleted first, so an old
   frame cannot pass for a new one. After the last frame it prints
   `SQI_RENDER: OK`; on any error it prints `SQI_RENDER: FAILED:` with the
-  reason and stops. It also prints
-  `openjd_status` and `openjd_progress` per frame.
+  reason and stops. It also reports progress per frame.
 
   Building `params.json` is metered against the worker's `EXPR` limits and
   grows with the frames in one task; the maximum of 1000 stays well inside
@@ -120,7 +119,7 @@ readme: |
     calls follow KeyShot's headless manual and its headless scripting
     reference (2024), which documents `keyshot_headless`, `-script`,
     `-progress` and `-floating_feature`, and `lux.renderImage`,
-    `setAnimationFrame`, `getRenderOptions`, `RenderOptions.setAddToQueue`.
+    `setAnimationFrame`, `getRenderOptions` and `RenderOptions.setAddToQueue`.
   - Whether `setActiveStudio` is honoured for a headless render of every
     scene, and what it does with a name the scene lacks (it may raise, or
     render the saved studio without an error).
@@ -142,7 +141,8 @@ readme: |
     KeyShot's manual does not say), and whether a script error alone changes
     its exit status.
   - Whether text written to file descriptor 1 reaches the worker on macOS.
-    If it does not, every task fails for want of `SQI_RENDER: OK`.
+    If it does not, every task fails for want of `SQI_RENDER: OK`, never the
+    other way round.
   - Whether the macOS bundle ships a `keyshot_headless` (a third-party
     source says so; KeyShot's manual does not), and whether one on `PATH`
     accepts the `-headless` the worker puts first.

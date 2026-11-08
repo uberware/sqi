@@ -1781,6 +1781,9 @@ jobs:
             # Skips without a working Python 3. Runs the Houdini preset's
             # driver against every chunk spelling sqi emits.
             TestHoudiniROPRender_DriverRendersEachRange
+            # Skips without a working Python 3. The same driver's
+            # openjd_progress and openjd_status lines under the stub hou.
+            TestPresetHoudiniDriver_EmitsProgress
             # Skips without a working Python 3. Runs the hython-script
             # launcher under a stub hou: argv order, SQI_FRAME* variables, hip
             # load, first setFrame, and exception/exit-code propagation.
@@ -1807,6 +1810,7 @@ jobs:
             TestPresetKeyShot_ScriptDrivesKeyShot
             TestPresetKeyShot_ScriptDrivesKeyShot/a_chunk_at_the_scene_size/file
             TestPresetKeyShot_ScriptDrivesKeyShot/renderImage_returns_False_at_the_second_frame/cwd
+            TestPresetKeyShot_EmitsProgress
             # The Modo host-script presets: the same checks, plus the -cmd:
             # argument's shape. ScriptDrivesModo skips without a working
             # Python 3, so two leaves are named too.
@@ -2139,6 +2143,8 @@ jobs:
           for name in \
             TestPresetDCC_Blender_BatchRender \
             TestPresetDCC_Blender_ViewLayerRender \
+            TestPresetDCC_Blender_BatchRender/progress_moves_within_a_chunk \
+            TestPresetDCC_Blender_ViewLayerRender/progress_moves_within_a_chunk \
           ; do
             grep -q -- "--- PASS: ${name} " /tmp/blender-presets.log \
               || { echo "::error::${name} did not run to a PASS"; exit 1; }
@@ -2261,6 +2267,7 @@ jobs:
                       "TestPresetKeyShot_ScriptDrivesKeyShot " \
                       "TestPresetKeyShot_ScriptDrivesKeyShot/a_chunk_at_the_scene_size/file " \
                       "TestPresetKeyShot_ScriptDrivesKeyShot/renderImage_returns_False_at_the_second_frame/cwd " \
+                      "TestPresetKeyShot_EmitsProgress " \
                       "TestPresetModo_ParamsCostAtMaxChunk " \
                       "TestPresetModo_ParamsJSONRoundTrips " \
                       "TestPresetModo_ShareOneScript " \
