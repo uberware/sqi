@@ -353,7 +353,16 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 		reg,
 		logger,
 	)
-	go hbPublisher.Run(ctx)
+
+	// The Publisher runs on its own context, not ctx: ctx is canceled the moment shutdown
+	// begins, and the worker must keep heartbeating through the drain that
+	// follows. A drain can outlast the server's heartbeat timeout, and a silent
+	// worker is declared offline and has the tasks it is still running
+	// reclaimed. shutdownSequence stops the heartbeat once the drain is over;
+	// the defer covers every earlier return.
+	hbCtx, hbStop := context.WithCancel(context.Background())
+	defer hbStop()
+	go hbPublisher.Run(hbCtx)
 
 	// ── Work-lease loop ─────────────────────────────────────────
 	//
@@ -397,15 +406,10 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 		slog.Duration("grace_period", cfg.Worker.ShutdownGracePeriod),
 	)
 
-	// ── Drain in-flight tasks with grace period ──────────────────
-	//
-	// Stop accepting new assignments immediately (the pull loop already stopped
-	// when ctx was canceled). Allow in-flight tasks to run to
-	// completion for up to ShutdownGracePeriod; force-kill any that remain
-	// after the deadline. DrainAndShutdown blocks until all task
-	// goroutines have published their terminal statuses, guaranteeing the
-	// server receives complete status information before NATS drains.
-	completed, killed := exec.DrainAndShutdown(cfg.Worker.ShutdownGracePeriod)
+	// ── Drain, stop heartbeating, deregister ─────────────────────────
+	completed, killed := shutdownSequence(
+		exec, stopFunc(hbStop), reg, cfg.Worker.ShutdownGracePeriod,
+	)
 
 	// ── Log shutdown outcome ─────────────────────────────────────────
 	logger.InfoContext(
@@ -414,18 +418,52 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 		slog.Int("tasks_force_terminated", killed),
 	)
 
-	// ── Deregistration ──────────────────────────────────────────────
-	//
-	// Publish a departure message before draining the NATS connection so the
-	// server marks this worker offline immediately rather than waiting for the
-	// heartbeat-timeout sweep. Drain (deferred above) flushes remaining
-	// publishes after this returns.
-	reg.Deregister("graceful shutdown")
-
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.Worker.ShutdownGracePeriod)
 	defer shutdownCancel()
 	obsServer.Shutdown(shutdownCtx)
 	return nil
+}
+
+// drainer is the part of *executor.Executor the shutdown sequence uses.
+type drainer interface {
+	DrainAndShutdown(gracePeriod time.Duration) (completed, killed int)
+}
+
+// heartbeatStopper stops the heartbeat publisher.
+type heartbeatStopper interface {
+	Stop()
+}
+
+// stopFunc adapts a context.CancelFunc to heartbeatStopper.
+type stopFunc func()
+
+// Stop calls the function.
+func (f stopFunc) Stop() { f() }
+
+// deregisterer is the part of *registration.Registrar the shutdown sequence uses.
+type deregisterer interface {
+	Deregister(reason string)
+}
+
+// shutdownSequence runs the worker's shutdown in its required order and
+// returns the drain's outcome.
+//
+//  1. Drain: stop accepting assignments (the lease loop stopped when the
+//     worker's context was canceled), let in-flight tasks run for up to grace,
+//     force-kill any left after that. DrainAndShutdown blocks until every task
+//     goroutine has published its terminal status, so the server has complete
+//     status information before NATS drains. The heartbeat keeps running
+//     throughout: a drain may outlast the server's heartbeat timeout, and a
+//     worker that goes quiet is declared offline and loses its running tasks.
+//  2. Stop the heartbeat, so a beat cannot follow the departure message and
+//     mark the worker online again.
+//  3. Deregister, so the server marks the worker offline immediately rather
+//     than waiting for the heartbeat-timeout sweep.
+func shutdownSequence(exec drainer, hb heartbeatStopper, reg deregisterer, grace time.Duration) (completed, killed int) {
+	completed, killed = exec.DrainAndShutdown(grace)
+	hb.Stop()
+	reg.Deregister("graceful shutdown")
+	return completed, killed
 }
 
 // newSessionManager resolves the isolation provider and session root and

@@ -178,7 +178,10 @@ func startRealWorkerCore(t *testing.T, ts *testServer, farmID, queueID string, e
 //
 // A test asserting a worker must NEVER register needs this: for it, "never
 // came online" is the expected outcome rather than a fatal error.
-func startRealWorkerNoWait(t *testing.T, ts *testServer, farmID, queueID string, extraArgs, extraEnv []string, allowWindows bool) {
+//
+// It returns the started process so a test can signal it; the cleanup below
+// still stops and reaps it, and owns cmd.Wait, so callers must not call Wait.
+func startRealWorkerNoWait(t *testing.T, ts *testServer, farmID, queueID string, extraArgs, extraEnv []string, allowWindows bool) *exec.Cmd {
 	t.Helper()
 
 	if runtime.GOOS == "windows" && !allowWindows {
@@ -244,6 +247,7 @@ func startRealWorkerNoWait(t *testing.T, ts *testServer, farmID, queueID string,
 			<-done                 // join the Wait goroutine; never call Wait again
 		}
 	})
+	return cmd
 }
 
 // pollForOnlineWorker polls GET /api/v1/workers until any worker in farmID
