@@ -20,11 +20,15 @@ type WorkerCredential struct {
 	EnrolledAt time.Time
 	LastSeenAt *time.Time // nil = never seen since enrollment
 	RevokedAt  *time.Time // nil = active
+	// CapacityGroupID is the capacity group the credential enrolled into with a
+	// group join token, or "" for an ordinary credential. Like WorkerID it is
+	// not a foreign key: the credential outlives a deleted group.
+	CapacityGroupID string
 }
 
-// WorkerJoinToken is a single-use, time-limited token an operator issues so a
-// worker can enroll and receive a [WorkerCredential]. Only TokenHash is
-// stored; the raw token is shown to the operator exactly once, at creation.
+// WorkerJoinToken is a time-limited token an operator issues so a worker can
+// enroll and receive a [WorkerCredential]. Only TokenHash is stored; the raw
+// token is shown to the operator exactly once, at creation.
 type WorkerJoinToken struct {
 	ID        string
 	TokenHash string // SHA-256 of the raw token; Go-side only
@@ -34,6 +38,13 @@ type WorkerJoinToken struct {
 	UsedAt    *time.Time // nil = not yet redeemed
 	CreatedBy string
 	CreatedAt time.Time
+	// CapacityGroupID binds the token to a capacity group: every worker that
+	// enrolls with it joins that group, and the token can be redeemed any
+	// number of times. "" is an ordinary token. A token goes with its group.
+	CapacityGroupID string
+	// RevokedAt is when an operator revoked the token; nil = not revoked. A
+	// revoked token enrolls nobody.
+	RevokedAt *time.Time
 }
 
 // WorkerCredentialStore is the persistence interface for [WorkerCredential]
@@ -68,10 +79,18 @@ type WorkerCredentialStore interface {
 	// MarkWorkerJoinTokenUsed sets UsedAt. Returns [ErrNotFound] if id is
 	// unknown.
 	MarkWorkerJoinTokenUsed(ctx context.Context, id string, at time.Time) error
+	// ListCapacityGroupTokens returns every join token bound to the group,
+	// revoked and expired ones included, newest first. An unknown group has
+	// none.
+	ListCapacityGroupTokens(ctx context.Context, groupID string) ([]WorkerJoinToken, error)
+	// RevokeWorkerJoinToken marks the token revoked at the given time.
+	// Returns [ErrNotFound] if id is unknown; revoking a revoked token is not
+	// an error and keeps the first revocation time.
+	RevokeWorkerJoinToken(ctx context.Context, id string, at time.Time) error
 	// RedeemWorkerJoinToken atomically claims the single-use join token
 	// identified by hash AND creates cred, in one transaction. It succeeds
-	// only for a token that exists, has not been redeemed, and has not
-	// expired at now; every other case — including a token another request
+	// only for a token that exists, has not been redeemed or revoked, and has
+	// not expired at now; every other case — including a token another request
 	// claimed a moment earlier — returns [ErrNotFound], and cred is not
 	// created. Returns [ErrConflict] if cred cannot be created (a worker ID
 	// already bound to an active credential, or a public key already

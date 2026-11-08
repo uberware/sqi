@@ -857,3 +857,153 @@ func TestWorkerEnroll_InvalidWorkerID_BadRequest(t *testing.T) {
 		})
 	}
 }
+
+// ── capacity-group join tokens ───────────────────────────────────────────────
+
+// seedGroupToken creates a capacity group and a join token bound to it.
+func seedGroupToken(t *testing.T, st store.Store, mutate func(*store.WorkerJoinToken)) (raw string, group store.CapacityGroup, tok store.WorkerJoinToken) {
+	t.Helper()
+	farm, err := st.CreateFarm(t.Context(), store.Farm{ID: uuid.NewString(), Name: "farm-" + uuid.NewString()})
+	if err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	group, err = st.CreateCapacityGroup(t.Context(), store.CapacityGroup{
+		ID: uuid.NewString(), FarmID: farm.ID, Name: "group-" + uuid.NewString(),
+		Kind: store.CapacityGroupNamed, Provider: store.CapacityProviderExternal,
+		Enabled: true, MaxMachines: 10, MaxStepUp: 1,
+		IdleTimeout: time.Hour, BootTimeout: time.Hour, RetireAction: store.CapacityRetireSleep,
+	})
+	if err != nil {
+		t.Fatalf("CreateCapacityGroup: %v", err)
+	}
+	raw, tok = seedJoinToken(t, st, func(tok *store.WorkerJoinToken) {
+		tok.CapacityGroupID = group.ID
+		if mutate != nil {
+			mutate(tok)
+		}
+	})
+	return raw, group, tok
+}
+
+func postEnroll(t *testing.T, r http.Handler, raw, workerID string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := newReq(t, http.MethodPost, "/workers/enroll", jsonBody(t, workerEnrollRequest{
+		JoinToken: raw, WorkerID: workerID, PublicKey: genPublicKey(t),
+	}))
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	return rr
+}
+
+func TestEnroll_GroupTokenIsReusableAndTagsCredential(t *testing.T) {
+	for _, singleUse := range []bool{true, false} {
+		t.Run(fmt.Sprintf("singleUse=%v", singleUse), func(t *testing.T) {
+			st := fake.New()
+			r := newWorkerEnrollRouter(st, singleUse, time.Hour)
+			raw, group, _ := seedGroupToken(t, st, nil)
+
+			for _, id := range []string{"w1", "w2"} {
+				if rr := postEnroll(t, r, raw, id); rr.Code != http.StatusCreated {
+					t.Fatalf("enroll %s: status = %d, want 201 — body: %s", id, rr.Code, rr.Body)
+				}
+				cred, err := storetest.ActiveWorkerCredential(t.Context(), st, id)
+				if err != nil {
+					t.Fatalf("ActiveWorkerCredential %s: %v", id, err)
+				}
+				if cred.CapacityGroupID != group.ID {
+					t.Errorf("credential %s group = %q, want %q", id, cred.CapacityGroupID, group.ID)
+				}
+			}
+		})
+	}
+}
+
+func TestEnroll_UngroupedTokenCredentialHasNoGroup(t *testing.T) {
+	st := fake.New()
+	r := newWorkerEnrollRouter(st, true, time.Hour)
+	raw, _ := seedJoinToken(t, st, nil)
+	if rr := postEnroll(t, r, raw, "w1"); rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 — body: %s", rr.Code, rr.Body)
+	}
+	cred, err := storetest.ActiveWorkerCredential(t.Context(), st, "w1")
+	if err != nil || cred.CapacityGroupID != "" {
+		t.Fatalf("credential = (%+v, %v), want no group", cred, err)
+	}
+}
+
+func TestEnroll_RevokedGroupTokenRefused(t *testing.T) {
+	for _, singleUse := range []bool{true, false} {
+		t.Run(fmt.Sprintf("singleUse=%v", singleUse), func(t *testing.T) {
+			st := fake.New()
+			r := newWorkerEnrollRouter(st, singleUse, time.Hour)
+			raw, _, tok := seedGroupToken(t, st, nil)
+
+			if rr := postEnroll(t, r, raw, "w1"); rr.Code != http.StatusCreated {
+				t.Fatalf("enroll before revoke: status = %d, want 201 — body: %s", rr.Code, rr.Body)
+			}
+			if err := st.RevokeWorkerJoinToken(t.Context(), tok.ID, time.Now().UTC()); err != nil {
+				t.Fatalf("RevokeWorkerJoinToken: %v", err)
+			}
+			rr := postEnroll(t, r, raw, "w2")
+			if rr.Code != http.StatusUnauthorized {
+				t.Fatalf("enroll after revoke: status = %d, want 401 — body: %s", rr.Code, rr.Body)
+			}
+			if _, err := storetest.ActiveWorkerCredential(t.Context(), st, "w2"); !errors.Is(err, store.ErrNotFound) {
+				t.Errorf("a credential exists for the refused enrollment: err = %v", err)
+			}
+
+			// The refusal is the one an expired token gets.
+			expRaw, _, _ := seedGroupToken(t, st, func(tok *store.WorkerJoinToken) {
+				tok.ExpiresAt = time.Now().UTC().Add(-time.Minute)
+			})
+			exp := postEnroll(t, r, expRaw, "w3")
+			if exp.Code != rr.Code || exp.Body.String() != rr.Body.String() {
+				t.Errorf("expired = %d %s, revoked = %d %s: want identical", exp.Code, exp.Body, rr.Code, rr.Body)
+			}
+		})
+	}
+}
+
+func TestEnroll_RevokedUngroupedTokenRefused(t *testing.T) {
+	for _, singleUse := range []bool{true, false} {
+		t.Run(fmt.Sprintf("singleUse=%v", singleUse), func(t *testing.T) {
+			st := fake.New()
+			r := newWorkerEnrollRouter(st, singleUse, time.Hour)
+			revokedAt := time.Now().UTC().Add(-time.Minute)
+			raw, _ := seedJoinToken(t, st, func(tok *store.WorkerJoinToken) { tok.RevokedAt = &revokedAt })
+			if rr := postEnroll(t, r, raw, "w1"); rr.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401 — body: %s", rr.Code, rr.Body)
+			}
+		})
+	}
+}
+
+func TestEnroll_GroupTokenConflictKeepsToken(t *testing.T) {
+	st := fake.New()
+	r := newWorkerEnrollRouter(st, true, time.Hour)
+	raw, _, _ := seedGroupToken(t, st, nil)
+	if rr := postEnroll(t, r, raw, "w1"); rr.Code != http.StatusCreated {
+		t.Fatalf("first enroll: status = %d — body: %s", rr.Code, rr.Body)
+	}
+	if rr := postEnroll(t, r, raw, "w1"); rr.Code != http.StatusConflict {
+		t.Fatalf("same worker again: status = %d, want 409 — body: %s", rr.Code, rr.Body)
+	}
+	if rr := postEnroll(t, r, raw, "w2"); rr.Code != http.StatusCreated {
+		t.Fatalf("another worker: status = %d, want 201 — body: %s", rr.Code, rr.Body)
+	}
+}
+
+// A group token's hash stays Go-side: nothing the enrollment or minting
+// handlers return carries it.
+func TestEnroll_ResponsesNeverCarryTokenHash(t *testing.T) {
+	st := fake.New()
+	r := newWorkerEnrollRouter(st, true, time.Hour)
+	raw, _, tok := seedGroupToken(t, st, nil)
+	rr := postEnroll(t, r, raw, "w1")
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d — body: %s", rr.Code, rr.Body)
+	}
+	if strings.Contains(rr.Body.String(), tok.TokenHash) {
+		t.Error("enroll response carries the token hash")
+	}
+}

@@ -201,12 +201,7 @@ func (h *workerEnrollHandler) enroll(w http.ResponseWriter, r *http.Request) {
 		EnrolledAt: now,
 	}
 
-	var created store.WorkerCredential
-	if h.singleUse {
-		created, err = h.redeemSingleUse(ctx, jointoken.Hash(req.JoinToken), now, cred)
-	} else {
-		created, err = h.redeemReusable(ctx, jointoken.Hash(req.JoinToken), now, cred)
-	}
+	created, err := h.redeem(ctx, jointoken.Hash(req.JoinToken), now, cred)
 	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeProblem(w, r, http.StatusConflict,
@@ -220,6 +215,29 @@ func (h *workerEnrollHandler) enroll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, toWorkerCredentialResponse(created))
+}
+
+// redeem authorizes the enrollment against the join token hashed to hash and
+// creates cred. A token bound to a capacity group is always reusable, whatever
+// the single-use setting says: it is how a pool of machines joins one group
+// with one token. Every other token follows the setting.
+//
+// The token is looked up first only to learn which kind it is; the single-use
+// path still claims it atomically in the store, so two requests presenting one
+// single-use token cannot both succeed.
+func (h *workerEnrollHandler) redeem(ctx context.Context, hash string, now time.Time, cred store.WorkerCredential) (store.WorkerCredential, error) {
+	token, err := h.store.GetWorkerJoinTokenByHash(ctx, hash)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			h.logger.ErrorContext(ctx, "workerenroll: join token lookup failed", slog.Any("error", err))
+		}
+		return store.WorkerCredential{}, err
+	}
+	if token.CapacityGroupID == "" && h.singleUse {
+		return h.redeemSingleUse(ctx, hash, now, cred)
+	}
+	cred.CapacityGroupID = token.CapacityGroupID
+	return h.redeemReusable(ctx, token, now, cred)
 }
 
 // redeemSingleUse claims the join token hashed to hash and creates cred, in
@@ -246,23 +264,20 @@ func (h *workerEnrollHandler) redeemSingleUse(ctx context.Context, hash string, 
 	return created, err
 }
 
-// redeemReusable authorizes this enrollment against a non-single-use join
-// token and then creates cred as a separate call. With single-use disabled
-// the token stays redeemable by design — UsedAt is only a "last redeemed"
-// marker, not a claim — so there is nothing that needs the two writes to be
-// one transaction: a failure creating the credential leaves the token
+// redeemReusable authorizes this enrollment against a reusable join token
+// (single-use disabled, or a capacity-group token) and then creates cred as a
+// separate call. The token stays redeemable by design: UsedAt is only a "last
+// redeemed" marker, not a claim, so there is nothing that needs the two writes
+// to be one transaction. A failure creating the credential leaves the token
 // exactly as redeemable as it already was, which is the correct outcome for
 // a token whose whole point is to be used more than once.
-func (h *workerEnrollHandler) redeemReusable(ctx context.Context, hash string, now time.Time, cred store.WorkerCredential) (store.WorkerCredential, error) {
-	token, err := h.store.GetWorkerJoinTokenByHash(ctx, hash)
-	if err != nil {
-		if !errors.Is(err, store.ErrNotFound) {
-			h.logger.ErrorContext(ctx, "workerenroll: join token lookup failed", slog.Any("error", err))
-		}
-		return store.WorkerCredential{}, err
-	}
+//
+// An expired or revoked token is [store.ErrNotFound], the same as an unknown
+// one. A revoke that lands between the caller's lookup and the credential
+// write does not stop that one enrollment.
+func (h *workerEnrollHandler) redeemReusable(ctx context.Context, token store.WorkerJoinToken, now time.Time, cred store.WorkerCredential) (store.WorkerCredential, error) {
 	// Strictly after, matching RedeemWorkerJoinToken's "expires_at > ?".
-	if !token.ExpiresAt.After(now) {
+	if !token.ExpiresAt.After(now) || token.RevokedAt != nil {
 		return store.WorkerCredential{}, store.ErrNotFound
 	}
 	if err := h.store.MarkWorkerJoinTokenUsed(ctx, token.ID, now); err != nil {

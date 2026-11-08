@@ -11,7 +11,11 @@ import (
 )
 
 const (
-	sqlInsertWorkerCredential = `INSERT INTO worker_credentials (id, worker_id, public_key, name, enrolled_at, last_seen_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id, worker_id, public_key, name, enrolled_at, last_seen_at, revoked_at`
+	workerCredentialCols = `id, worker_id, public_key, name, enrolled_at, last_seen_at, revoked_at, capacity_group_id` //nolint:gosec // G101: column names, not a credential
+
+	workerJoinTokenCols = `id, token_hash, prefix, name, expires_at, used_at, created_by, created_at, capacity_group_id, revoked_at` //nolint:gosec // G101: column names, not a credential
+
+	sqlInsertWorkerCredential = `INSERT INTO worker_credentials (` + workerCredentialCols + `) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING ` + workerCredentialCols
 
 	// gosec G101 flags these consts on the false-positive belief that an
 	// identifier containing "Credential" is a hardcoded credential; the
@@ -20,23 +24,30 @@ const (
 	// these stay single-line rather than the multi-line style used
 	// elsewhere.
 
-	sqlListActiveWorkerCredentials = `SELECT id, worker_id, public_key, name, enrolled_at, last_seen_at, revoked_at FROM worker_credentials WHERE revoked_at IS NULL ORDER BY enrolled_at` //nolint:gosec // G101: SQL text, not a credential
+	sqlListActiveWorkerCredentials = `SELECT ` + workerCredentialCols + ` FROM worker_credentials WHERE revoked_at IS NULL ORDER BY enrolled_at`
 
-	sqlGetActiveWorkerCredentialByPublicKey = `SELECT id, worker_id, public_key, name, enrolled_at, last_seen_at, revoked_at FROM worker_credentials WHERE public_key = ? AND revoked_at IS NULL` //nolint:gosec // G101: SQL text, not a credential
+	sqlGetActiveWorkerCredentialByPublicKey = `SELECT ` + workerCredentialCols + ` FROM worker_credentials WHERE public_key = ? AND revoked_at IS NULL`
 
 	sqlRevokeWorkerCredential = `UPDATE worker_credentials SET revoked_at = ? WHERE worker_id = ? AND revoked_at IS NULL` //nolint:gosec // G101: SQL text, not a credential
 
 	sqlTouchWorkerCredential = `UPDATE worker_credentials SET last_seen_at = ? WHERE worker_id = ? AND revoked_at IS NULL` //nolint:gosec // G101: SQL text, not a credential
 
-	sqlInsertWorkerJoinToken = `INSERT INTO worker_join_tokens (id, token_hash, prefix, name, expires_at, used_at, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, token_hash, prefix, name, expires_at, used_at, created_by, created_at`
+	sqlInsertWorkerJoinToken = `INSERT INTO worker_join_tokens (` + workerJoinTokenCols + `) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING ` + workerJoinTokenCols
 
-	sqlGetWorkerJoinTokenByHash = `SELECT id, token_hash, prefix, name, expires_at, used_at, created_by, created_at FROM worker_join_tokens WHERE token_hash = ?` //nolint:gosec // G101: SQL text, not a credential
+	sqlGetWorkerJoinTokenByHash = `SELECT ` + workerJoinTokenCols + ` FROM worker_join_tokens WHERE token_hash = ?`
+
+	sqlListCapacityGroupTokens = `SELECT ` + workerJoinTokenCols + ` FROM worker_join_tokens WHERE capacity_group_id = ? ORDER BY created_at DESC, id`
+
+	// sqlRevokeWorkerJoinToken keeps the first revocation time, so revoking a
+	// revoked token matches its row and changes nothing.
+	sqlRevokeWorkerJoinToken = `UPDATE worker_join_tokens SET revoked_at = COALESCE(revoked_at, ?) WHERE id = ?`
 
 	sqlMarkWorkerJoinTokenUsed = `UPDATE worker_join_tokens SET used_at = ? WHERE id = ?`
 
 	// sqlConsumeWorkerJoinToken claims a single-use token in ONE statement:
 	// the used_at IS NULL and expires_at > ? predicates are the validity
-	// check, and the SET is the claim. Two concurrent enrollments presenting
+	// check (a revoked token is refused like a used one), and the SET is the
+	// claim. Two concurrent enrollments presenting
 	// the same token therefore cannot both succeed — the second matches no
 	// row and gets store.ErrNotFound, indistinguishable from an unknown
 	// token, which is what the unauthenticated enroll endpoint needs. Used
@@ -45,34 +56,37 @@ const (
 	// own: a token claimed here has to be followed by successfully creating
 	// the credential it authorizes, in the same transaction, or the claim
 	// itself must roll back.
-	sqlConsumeWorkerJoinToken = `UPDATE worker_join_tokens SET used_at = ? WHERE token_hash = ? AND used_at IS NULL AND expires_at > ? RETURNING id, token_hash, prefix, name, expires_at, used_at, created_by, created_at`
+	sqlConsumeWorkerJoinToken = `UPDATE worker_join_tokens SET used_at = ? WHERE token_hash = ? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ? RETURNING ` + workerJoinTokenCols
 )
 
 func scanWorkerCredential(row scanner) (store.WorkerCredential, error) {
 	var c store.WorkerCredential
-	var lastSeenAt, revokedAt sql.NullString
+	var lastSeenAt, revokedAt, capacityGroupID sql.NullString
 	var enrolledAt string
 	if err := row.Scan(&c.ID, &c.WorkerID, &c.PublicKey, &c.Name,
-		&enrolledAt, &lastSeenAt, &revokedAt); err != nil {
+		&enrolledAt, &lastSeenAt, &revokedAt, &capacityGroupID); err != nil {
 		return store.WorkerCredential{}, err
 	}
 	c.EnrolledAt = mustTime(enrolledAt)
 	c.LastSeenAt = nullTextToTime(lastSeenAt)
 	c.RevokedAt = nullTextToTime(revokedAt)
+	c.CapacityGroupID = capacityGroupID.String
 	return c, nil
 }
 
 func scanWorkerJoinToken(row scanner) (store.WorkerJoinToken, error) {
 	var t store.WorkerJoinToken
-	var usedAt sql.NullString
+	var usedAt, capacityGroupID, revokedAt sql.NullString
 	var expiresAt, createdAt string
 	if err := row.Scan(&t.ID, &t.TokenHash, &t.Prefix, &t.Name,
-		&expiresAt, &usedAt, &t.CreatedBy, &createdAt); err != nil {
+		&expiresAt, &usedAt, &t.CreatedBy, &createdAt, &capacityGroupID, &revokedAt); err != nil {
 		return store.WorkerJoinToken{}, err
 	}
 	t.ExpiresAt = mustTime(expiresAt)
 	t.UsedAt = nullTextToTime(usedAt)
 	t.CreatedAt = mustTime(createdAt)
+	t.CapacityGroupID = capacityGroupID.String
+	t.RevokedAt = nullTextToTime(revokedAt)
 	return t, nil
 }
 
@@ -80,7 +94,7 @@ func scanWorkerJoinToken(row scanner) (store.WorkerJoinToken, error) {
 func (s *Store) CreateWorkerCredential(ctx context.Context, c store.WorkerCredential) (store.WorkerCredential, error) {
 	out, err := writeRow(ctx, s, "create worker credential", scanWorkerCredential, s.stmtInsertWorkerCredential,
 		c.ID, c.WorkerID, c.PublicKey, c.Name,
-		TimeText(c.EnrolledAt), nullTimeToText(c.LastSeenAt), nullTimeToText(c.RevokedAt))
+		TimeText(c.EnrolledAt), nullTimeToText(c.LastSeenAt), nullTimeToText(c.RevokedAt), nullString(c.CapacityGroupID))
 	return out, mapErr(err)
 }
 
@@ -131,7 +145,8 @@ func (s *Store) TouchWorkerCredential(ctx context.Context, workerID string, at t
 func (s *Store) CreateWorkerJoinToken(ctx context.Context, t store.WorkerJoinToken) (store.WorkerJoinToken, error) {
 	out, err := writeRow(ctx, s, "create worker join token", scanWorkerJoinToken, s.stmtInsertWorkerJoinToken,
 		t.ID, t.TokenHash, t.Prefix, t.Name,
-		TimeText(t.ExpiresAt), nullTimeToText(t.UsedAt), t.CreatedBy, TimeText(t.CreatedAt))
+		TimeText(t.ExpiresAt), nullTimeToText(t.UsedAt), t.CreatedBy, TimeText(t.CreatedAt),
+		nullString(t.CapacityGroupID), nullTimeToText(t.RevokedAt))
 	return out, mapErr(err)
 }
 
@@ -145,6 +160,33 @@ func (s *Store) GetWorkerJoinTokenByHash(ctx context.Context, hash string) (stor
 // MarkWorkerJoinTokenUsed implements [store.WorkerCredentialStore].
 func (s *Store) MarkWorkerJoinTokenUsed(ctx context.Context, id string, at time.Time) error {
 	res, err := s.execStmt(ctx, "mark worker join token used", s.stmtMarkWorkerJoinTokenUsed, TimeText(at), id)
+	if err != nil {
+		return mapErr(err)
+	}
+	return checkRowsAffected(res)
+}
+
+// ListCapacityGroupTokens implements [store.WorkerCredentialStore].
+func (s *Store) ListCapacityGroupTokens(ctx context.Context, groupID string) ([]store.WorkerJoinToken, error) {
+	rows, err := s.stmtListCapacityGroupTokens.QueryContext(ctx, groupID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []store.WorkerJoinToken
+	for rows.Next() {
+		t, err := scanWorkerJoinToken(rows)
+		if err != nil {
+			return nil, mapErr(err)
+		}
+		out = append(out, t)
+	}
+	return out, mapErr(rows.Err())
+}
+
+// RevokeWorkerJoinToken implements [store.WorkerCredentialStore].
+func (s *Store) RevokeWorkerJoinToken(ctx context.Context, id string, at time.Time) error {
+	res, err := s.execStmt(ctx, "revoke worker join token", s.stmtRevokeWorkerJoinToken, TimeText(at), id)
 	if err != nil {
 		return mapErr(err)
 	}
@@ -178,7 +220,8 @@ func (s *Store) RedeemWorkerJoinToken(ctx context.Context, hash string, now time
 		}
 
 		credRow := tx.QueryRowContext(ctx, sqlInsertWorkerCredential, cred.ID, cred.WorkerID, cred.PublicKey, cred.Name,
-			TimeText(cred.EnrolledAt), nullTimeToText(cred.LastSeenAt), nullTimeToText(cred.RevokedAt))
+			TimeText(cred.EnrolledAt), nullTimeToText(cred.LastSeenAt), nullTimeToText(cred.RevokedAt),
+			nullString(cred.CapacityGroupID))
 		out, err := scanWorkerCredential(credRow)
 		if err != nil {
 			return store.WorkerCredential{}, txRollback, mapErr(err)

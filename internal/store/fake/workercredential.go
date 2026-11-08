@@ -125,6 +125,13 @@ func (s *Store) CreateWorkerJoinToken(ctx context.Context, t store.WorkerJoinTok
 			return store.WorkerJoinToken{}, store.ErrConflict
 		}
 	}
+	// The SQL stores refuse a token for a group that does not exist through the
+	// foreign key.
+	if t.CapacityGroupID != "" {
+		if _, ok := s.capacityGroups[t.CapacityGroupID]; !ok {
+			return store.WorkerJoinToken{}, store.ErrConflict
+		}
+	}
 	s.workerJoinTokens[t.ID] = t
 	return t, nil
 }
@@ -157,6 +164,43 @@ func (s *Store) MarkWorkerJoinTokenUsed(ctx context.Context, id string, at time.
 	return nil
 }
 
+// ListCapacityGroupTokens implements [store.WorkerCredentialStore].
+func (s *Store) ListCapacityGroupTokens(_ context.Context, groupID string) ([]store.WorkerJoinToken, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []store.WorkerJoinToken
+	for _, t := range s.workerJoinTokens {
+		if t.CapacityGroupID == groupID {
+			out = append(out, t)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.After(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
+// RevokeWorkerJoinToken implements [store.WorkerCredentialStore].
+func (s *Store) RevokeWorkerJoinToken(ctx context.Context, id string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return err
+	}
+	t, ok := s.workerJoinTokens[id]
+	if !ok {
+		return store.ErrNotFound
+	}
+	if t.RevokedAt == nil {
+		t.RevokedAt = &at
+		s.workerJoinTokens[id] = t
+	}
+	return nil
+}
+
 // RedeemWorkerJoinToken implements [store.WorkerCredentialStore].
 //
 // Mirrors SQLite's transaction: the token claim and the credential creation
@@ -176,7 +220,7 @@ func (s *Store) RedeemWorkerJoinToken(ctx context.Context, hash string, now time
 	var tokID string
 	found := false
 	for id, t := range s.workerJoinTokens {
-		if t.TokenHash != hash || t.UsedAt != nil {
+		if t.TokenHash != hash || t.UsedAt != nil || t.RevokedAt != nil {
 			continue
 		}
 		// Strictly after, matching SQL's "expires_at > ?": a token whose

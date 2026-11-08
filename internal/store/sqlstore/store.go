@@ -190,6 +190,8 @@ type Store struct {
 	stmtInsertWorkerJoinToken                *dbStmt
 	stmtGetWorkerJoinTokenByHash             *dbStmt
 	stmtMarkWorkerJoinTokenUsed              *dbStmt
+	stmtListCapacityGroupTokens              *dbStmt
+	stmtRevokeWorkerJoinToken                *dbStmt
 
 	// ── broker state ─────────────────────────────────────────────────────
 	stmtGetBrokerIdentity *dbStmt
@@ -683,6 +685,12 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 	if s.stmtMarkWorkerJoinTokenUsed, err = s.prepare(ctx, sqlMarkWorkerJoinTokenUsed); err != nil {
+		return err
+	}
+	if s.stmtListCapacityGroupTokens, err = s.prepare(ctx, sqlListCapacityGroupTokens); err != nil {
+		return err
+	}
+	if s.stmtRevokeWorkerJoinToken, err = s.prepare(ctx, sqlRevokeWorkerJoinToken); err != nil {
 		return err
 	}
 	// ── broker state ─────────────────────────────────────────────────────────

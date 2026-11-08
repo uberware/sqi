@@ -158,5 +158,11 @@ func (s *Store) DeleteCapacityGroup(ctx context.Context, id string) error {
 		}
 	}
 	delete(s.capacityGroups, id)
+	// A group's join tokens go with it (ON DELETE CASCADE in the SQL stores).
+	for tid, t := range s.workerJoinTokens {
+		if t.CapacityGroupID == id {
+			delete(s.workerJoinTokens, tid)
+		}
+	}
 	return nil
 }

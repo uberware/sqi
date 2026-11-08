@@ -154,8 +154,6 @@ DELETE FROM workers
 WHERE id = ? AND ephemeral AND status = 'offline'
   AND NOT ` + sqlWorkerHasWorkInFlight + `
 RETURNING ` + workerCols
-
-	sqlRevokeDeletedWorkerCredential = `UPDATE worker_credentials SET revoked_at = ? WHERE worker_id = ? AND revoked_at IS NULL` //nolint:gosec // G101: SQL text, not a credential
 )
 
 func scanWorker(row scanner) (store.Worker, error) {
@@ -608,7 +606,7 @@ func (s *Store) DeleteEphemeralWorker(ctx context.Context, id string, now time.T
 		if err != nil {
 			return result{}, txRollback, mapErr(err)
 		}
-		if _, err := tx.ExecContext(ctx, sqlRevokeDeletedWorkerCredential, TimeText(now.UTC()), id); err != nil {
+		if _, err := tx.ExecContext(ctx, sqlRevokeWorkerCredential, TimeText(now.UTC()), id); err != nil {
 			return result{}, txRollback, fmt.Errorf("store: revoke credential of worker %s: %w", id, mapErr(err))
 		}
 		return result{worker: w, deleted: true}, txCommit, nil

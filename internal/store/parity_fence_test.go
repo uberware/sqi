@@ -498,6 +498,7 @@ var fenceReadOnly = []string{
 	"CountTasksByJob", "CountUnschedulableTasksByJob", "CountUsers",
 	"GetAPIKeyUserByTokenHash", "GetActiveWorkerCredentialByPublicKey", "GetBrokerIdentity",
 	"GetCapacityGroup", "GetCapacityGroupByName", "ListCapacityGroups", "ListCapacityGroupMembers",
+	"ListCapacityGroupTokens",
 	"GetComputeLocation", "GetComputeLocationByName", "GetFarm", "GetJob", "GetProductByName", "GetQueue",
 	"GetSessionByTokenHash", "GetSessionUserByTokenHash", "GetStep", "GetStorageLocation",
 	"GetStorageLocationByName", "GetTask", "GetTaskAttempt", "GetUsagePool", "GetUser",
@@ -970,6 +971,10 @@ var fenceMutators = map[string]fenceMutator{
 	"RevokeWorkerCredential": func(t *testing.T, st store.Store) func(context.Context) error {
 		c := mustCreateCredential(t, st, mkCredential(uuid.NewString()))
 		return func(ctx context.Context) error { return st.RevokeWorkerCredential(ctx, c.WorkerID, time.Now().UTC()) }
+	},
+	"RevokeWorkerJoinToken": func(t *testing.T, st store.Store) func(context.Context) error {
+		tok := mustCreateJoinToken(t, st)
+		return func(ctx context.Context) error { return st.RevokeWorkerJoinToken(ctx, tok.ID, time.Now().UTC()) }
 	},
 	"SetBrokerIdentity": func(_ *testing.T, st store.Store) func(context.Context) error {
 		return func(ctx context.Context) error { return st.SetBrokerIdentity(ctx, "embedded:SQI", time.Now().UTC()) }
