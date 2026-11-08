@@ -3,9 +3,20 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	workerconfig "github.com/uberware/sqi/internal/worker/config"
+	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
 // shutdownRecorder is the three collaborators of shutdownSequence in one
@@ -17,6 +28,7 @@ type shutdownRecorder struct {
 	started chan struct{} // closed when DrainAndShutdown is entered
 	grace   time.Duration
 	reason  string
+	kind    protocol.DeregisterKind
 }
 
 func newShutdownRecorder() *shutdownRecorder {
@@ -48,9 +60,10 @@ func (r *shutdownRecorder) DrainAndShutdown(grace time.Duration) (completed, kil
 
 func (r *shutdownRecorder) Stop() { r.record("heartbeat-stop") }
 
-func (r *shutdownRecorder) Deregister(reason string) {
+func (r *shutdownRecorder) Deregister(reason string, kind protocol.DeregisterKind) {
 	r.mu.Lock()
 	r.reason = reason
+	r.kind = kind
 	r.mu.Unlock()
 	r.record("deregister")
 }
@@ -67,7 +80,7 @@ func TestShutdownSequence_HeartbeatsUntilDrainEnds(t *testing.T) {
 	type result struct{ completed, killed int }
 	done := make(chan result, 1)
 	go func() {
-		c, k := shutdownSequence(rec, rec, rec, grace)
+		c, k := shutdownSequence(rec, rec, rec, grace, "")
 		done <- result{c, k}
 	}()
 
@@ -108,5 +121,129 @@ func TestShutdownSequence_HeartbeatsUntilDrainEnds(t *testing.T) {
 	}
 	if rec.reason != "graceful shutdown" {
 		t.Errorf("deregister reason = %q, want %q", rec.reason, "graceful shutdown")
+	}
+	if rec.kind != "" {
+		t.Errorf("deregister kind = %q, want empty: a plain shutdown is a restart", rec.kind)
+	}
+}
+
+// TestShutdownSequence_PassesKindToDeregister pins that the departure kind
+// reaches the deregistration, after the drain like any other shutdown.
+func TestShutdownSequence_PassesKindToDeregister(t *testing.T) {
+	rec := newShutdownRecorder()
+	close(rec.release)
+	shutdownSequence(rec, rec, rec, 0, protocol.DeregisterPreempted)
+	if rec.kind != protocol.DeregisterPreempted {
+		t.Errorf("deregister kind = %q, want %q", rec.kind, protocol.DeregisterPreempted)
+	}
+	if rec.grace != 0 {
+		t.Errorf("drain grace = %s, want 0", rec.grace)
+	}
+}
+
+// TestShutdownPlan pins what each shutdown trigger drains with and departs as.
+// Only a provider's preemption notice skips the grace period and tells the
+// server the machine is gone; a signal, a service stop and a lost NATS
+// connection are all restarts.
+func TestShutdownPlan(t *testing.T) {
+	const configured = 45 * time.Second
+	tests := []struct {
+		name      string
+		cause     error
+		wantGrace time.Duration
+		wantKind  protocol.DeregisterKind
+	}{
+		{"preemption notice", errPreempted, 0, protocol.DeregisterPreempted},
+		{"wrapped preemption", fmt.Errorf("watcher: %w", errPreempted), 0, protocol.DeregisterPreempted},
+		{"signal", errors.New("interrupt"), configured, ""},
+		{"service stop", errors.New("service stop"), configured, ""},
+		{"nats loss (no cause)", context.Canceled, configured, ""},
+		{"nil cause", nil, configured, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			grace, kind := shutdownPlan(tt.cause, configured)
+			if grace != tt.wantGrace || kind != tt.wantKind {
+				t.Errorf("shutdownPlan(%v) = (%s, %q), want (%s, %q)", tt.cause, grace, kind, tt.wantGrace, tt.wantKind)
+			}
+		})
+	}
+}
+
+// TestPreemptionCause_FirstTriggerWins pins that shutdown is idempotent
+// across triggers: the cause a worker's context carries is whichever canceled
+// it first, so a signal arriving after a preemption notice does not turn it
+// into a restart, and a notice arriving mid-restart does not turn the restart
+// into a preemption.
+func TestPreemptionCause_FirstTriggerWins(t *testing.T) {
+	signal := errors.New("terminated")
+
+	t.Run("notice then signal", func(t *testing.T) {
+		parent, signalCancel := context.WithCancelCause(context.Background())
+		ctx, cancel := context.WithCancelCause(parent)
+		cancel(errPreempted)
+		signalCancel(signal)
+		if got := context.Cause(ctx); !errors.Is(got, errPreempted) {
+			t.Errorf("cause = %v, want preempted", got)
+		}
+	})
+	t.Run("signal then notice", func(t *testing.T) {
+		parent, signalCancel := context.WithCancelCause(context.Background())
+		ctx, cancel := context.WithCancelCause(parent)
+		signalCancel(signal)
+		cancel(errPreempted)
+		if got := context.Cause(ctx); !errors.Is(got, signal) {
+			t.Errorf("cause = %v, want the signal", got)
+		}
+	})
+}
+
+func discardLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }
+
+// TestStartPreemptionWatch_NoticeCancelsWithCause drives the watcher wiring
+// end to end against a fake metadata server: a notice cancels the worker's
+// context with the preempted cause, which shutdownPlan turns into grace 0.
+func TestStartPreemptionWatch_NoticeCancelsWithCause(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, err := io.WriteString(w, "TRUE"); err != nil {
+			return
+		}
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	cfg := workerconfig.PreemptionConfig{Watch: "gcp", PollInterval: time.Second, Endpoint: srv.URL}
+	if err := startPreemptionWatch(ctx, cfg, discardLogger(), cancel); err != nil {
+		t.Fatalf("startPreemptionWatch: %v", err)
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("a preemption notice did not cancel the worker context")
+	}
+	grace, kind := shutdownPlan(context.Cause(ctx), 30*time.Second)
+	if grace != 0 || kind != protocol.DeregisterPreempted {
+		t.Errorf("plan after a notice = (%s, %q), want (0, preempted)", grace, kind)
+	}
+}
+
+// TestStartPreemptionWatch_NoneReachesNoEndpoint pins that with the default
+// watch: none nothing is created and no metadata endpoint is ever contacted.
+func TestStartPreemptionWatch_NoneReachesNoEndpoint(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits.Add(1) }))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	cfg := workerconfig.Default().Worker.Preemption
+	cfg.Endpoint = srv.URL
+	if err := startPreemptionWatch(ctx, cfg, discardLogger(), cancel); err != nil {
+		t.Fatalf("startPreemptionWatch: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if hits.Load() != 0 || ctx.Err() != nil {
+		t.Errorf("watch none contacted the endpoint %d times (ctx err %v), want no activity", hits.Load(), ctx.Err())
 	}
 }

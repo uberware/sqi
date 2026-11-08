@@ -718,6 +718,87 @@ worker:
 
 ---
 
+### `worker.capacity_group`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` (joins no group) |
+| **Env var** | `SQI_WORKER_CAPACITY_GROUP` |
+
+The capacity group this worker asks to join when it registers. The server
+honors it only with broker authentication off, and only for a sized group in
+the worker's farm; with authentication on, membership comes from the group
+token the worker enrolled with and this value is ignored.
+
+```yaml
+worker:
+  capacity_group: "cloud-spot"
+```
+
+---
+
+### `worker.preemption.watch`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `"none"` |
+| **Env var** | `SQI_WORKER_PREEMPTION_WATCH` |
+
+Watch the cloud provider's instance metadata service for a notice that this
+spot or preemptible machine is about to be reclaimed. One of `none`, `aws`,
+`gcp` or `azure`; any other value fails startup naming the key. With `none`
+nothing is polled and no network request is made.
+
+| Value | Request | A notice is |
+|---|---|---|
+| `aws` | IMDSv2 token `PUT /latest/api/token`, then `GET /latest/meta-data/spot/instance-action` on `169.254.169.254` | status 200 (404 means none) |
+| `gcp` | `GET /computeMetadata/v1/instance/preempted` with `Metadata-Flavor: Google` on `metadata.google.internal` | body `TRUE` |
+| `azure` | `GET /metadata/scheduledevents?api-version=2020-07-01` with `Metadata: true` on `169.254.169.254` | an event with `EventType` `Preempt` |
+
+On a notice the worker cancels its running tasks at once, without waiting out
+[`worker.shutdown_grace_period`](#workershutdown_grace_period). The tasks are
+reported as `worker_shutdown`, which the server reclaims and re-queues rather
+than counting as a failure, and the worker deregisters as `preempted`, so an
+ephemeral capacity-group member is removed. Each request has a 2 s timeout.
+A failed poll never stops the watcher; it is logged at debug, with a warning
+after 10 consecutive failures.
+
+```yaml
+worker:
+  preemption:
+    watch: aws
+```
+
+---
+
+### `worker.preemption.poll_interval`
+
+| | |
+|---|---|
+| **Type** | `duration` |
+| **Default** | `"5s"` |
+| **Env var** | `SQI_WORKER_PREEMPTION_POLL_INTERVAL` |
+
+How often the metadata service is polled. Must be between `1s` and `60s`;
+providers give from 30 s (Azure) to 2 minutes (AWS) of warning.
+
+---
+
+### `worker.preemption.endpoint`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` (the provider's well-known address) |
+| **Env var** | `SQI_WORKER_PREEMPTION_ENDPOINT` |
+
+Replaces the metadata base URL, for a proxy or a test. Ignored with
+`watch: none`.
+
+---
+
 ### `worker.queue_ids`
 
 | | |
@@ -1779,6 +1860,10 @@ log_streamer:
 | `worker.shutdown_grace_period` | duration | `30s` | `SQI_WORKER_SHUTDOWN_GRACE_PERIOD` | — |
 | `worker.allow_root` | bool | `false` | `SQI_WORKER_ALLOW_ROOT` | — |
 | `worker.keep_failed_sessions` | bool | `false` | `SQI_WORKER_KEEP_FAILED_SESSIONS` | — |
+| `worker.capacity_group` | string | `""` | `SQI_WORKER_CAPACITY_GROUP` | — |
+| `worker.preemption.watch` | string | `none` | `SQI_WORKER_PREEMPTION_WATCH` | — |
+| `worker.preemption.poll_interval` | duration | `5s` | `SQI_WORKER_PREEMPTION_POLL_INTERVAL` | — |
+| `worker.preemption.endpoint` | string | `""` | `SQI_WORKER_PREEMPTION_ENDPOINT` | — |
 | `worker.queue_ids` | []string | `[]` | `SQI_WORKER_QUEUE_IDS` | — |
 | `worker.pull_idle_backoff` | duration | `2s` | `SQI_WORKER_PULL_IDLE_BACKOFF` | — (deprecated, no effect) |
 | `worker.pull_nack_delay` | duration | `5s` | `SQI_WORKER_PULL_NACK_DELAY` | — (deprecated, no effect) |

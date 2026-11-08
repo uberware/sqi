@@ -229,6 +229,43 @@ type StagingConfig struct {
 	Defaults bool `yaml:"defaults"`
 }
 
+// Preemption watch vendors, the values of worker.preemption.watch.
+const (
+	PreemptionWatchNone  = "none"
+	PreemptionWatchAWS   = "aws"
+	PreemptionWatchGCP   = "gcp"
+	PreemptionWatchAzure = "azure"
+)
+
+// Bounds of worker.preemption.poll_interval.
+const (
+	MinPreemptionPollInterval = time.Second
+	MaxPreemptionPollInterval = time.Minute
+)
+
+// PreemptionConfig controls the watcher that polls the provider's instance
+// metadata service for a notice that this machine is about to be reclaimed.
+// When one arrives the worker cancels its running tasks at once, hands them
+// back to the server as a reclaim (not a failure) and deregisters as preempted.
+type PreemptionConfig struct {
+	// Watch selects the provider whose metadata service is polled: "none" (the
+	// default, in which case nothing is polled and no network request is made),
+	// "aws", "gcp" or "azure".
+	// Env: SQI_WORKER_PREEMPTION_WATCH
+	Watch string `yaml:"watch"`
+
+	// PollInterval is how often the metadata service is polled, 1s to 60s.
+	// Providers give from 30 seconds (Azure) to 2 minutes (AWS) of warning, so
+	// the default of 5s leaves almost all of it to hand work back.
+	// Env: SQI_WORKER_PREEMPTION_POLL_INTERVAL
+	PollInterval time.Duration `yaml:"poll_interval"`
+
+	// Endpoint, when set, replaces the provider's metadata base URL, for a
+	// proxy or a test. Empty uses the provider's well-known address.
+	// Env: SQI_WORKER_PREEMPTION_ENDPOINT
+	Endpoint string `yaml:"endpoint"`
+}
+
 // DiagnosticsConfig controls the diagnostic-log sink that ships the worker's
 // own slog output to sqi-server over core NATS (worker.diag.<workerID>), where
 // it is surfaced in the web UI.
@@ -498,6 +535,18 @@ type WorkerSettings struct {
 	// Env: SQI_WORKER_KEEP_FAILED_SESSIONS
 	KeepFailedSessions bool `yaml:"keep_failed_sessions"`
 
+	// CapacityGroup names the capacity group this worker asks to join when it
+	// registers. Empty (the default) joins none. The server honors it only with
+	// broker authentication off, and only for a sized group in the worker's
+	// farm; with authentication on, membership comes from the group token the
+	// worker enrolled with and this value is ignored.
+	// Env: SQI_WORKER_CAPACITY_GROUP
+	CapacityGroup string `yaml:"capacity_group"`
+
+	// Preemption configures watching the cloud provider's metadata service for
+	// a spot or preemptible reclaim notice. Off by default.
+	Preemption PreemptionConfig `yaml:"preemption"`
+
 	// QueueIDs restricts this worker to serving the listed queue IDs. An empty
 	// list means the worker accepts assignments from all queues via a wildcard
 	// JetStream consumer.  Set this when running a heterogeneous farm where
@@ -638,6 +687,10 @@ func Default() WorkerConfig {
 			ShutdownGracePeriod: 30 * time.Second,
 			PullIdleBackoff:     2 * time.Second,
 			PullNackDelay:       5 * time.Second,
+			Preemption: PreemptionConfig{
+				Watch:        PreemptionWatchNone,
+				PollInterval: 5 * time.Second,
+			},
 		},
 		Log: LogConfig{
 			Level:      "info",
@@ -756,6 +809,17 @@ func LoadWithSources(configFile string, flags FlagOverrides) (WorkerConfig, Sour
 	}
 	if flags.NATSInsecureSkipVerify {
 		cfg.NATS.InsecureSkipVerify = true
+	}
+
+	// A watcher that cannot be built must not wait for [Validate] to say so:
+	// an unrecognized vendor or an out-of-range interval fails here, naming
+	// the key, so no caller of Load can run with a misspelled watch silently off.
+	if errs := validatePreemption(cfg.Worker.Preemption); len(errs) > 0 {
+		joined := make([]error, len(errs))
+		for i, e := range errs {
+			joined[i] = e
+		}
+		return WorkerConfig{}, Sources{}, errors.Join(joined...)
 	}
 
 	var src Sources
@@ -881,6 +945,10 @@ func applyWorkerEnv(c *WorkerSettings, collect func(error)) {
 	collect(envvar.Duration(&c.ShutdownGracePeriod, "SQI_WORKER_SHUTDOWN_GRACE_PERIOD"))
 	collect(envvar.Bool(&c.AllowRoot, "SQI_WORKER_ALLOW_ROOT"))
 	collect(envvar.Bool(&c.KeepFailedSessions, "SQI_WORKER_KEEP_FAILED_SESSIONS"))
+	envvar.String(&c.CapacityGroup, "SQI_WORKER_CAPACITY_GROUP")
+	envvar.String(&c.Preemption.Watch, "SQI_WORKER_PREEMPTION_WATCH")
+	collect(envvar.Duration(&c.Preemption.PollInterval, "SQI_WORKER_PREEMPTION_POLL_INTERVAL"))
+	envvar.String(&c.Preemption.Endpoint, "SQI_WORKER_PREEMPTION_ENDPOINT")
 	if v := os.Getenv("SQI_WORKER_QUEUE_IDS"); v != "" {
 		// splitCSV, not envvar.StringSlice: a blank queue ID must reach Validate.
 		c.QueueIDs = splitCSV(v)
@@ -1011,12 +1079,35 @@ func Validate(cfg WorkerConfig) []ValidationError {
 	}
 
 	errs = append(errs, validateIsolation(cfg)...)
+	errs = append(errs, validatePreemption(cfg.Worker.Preemption)...)
 	errs = append(errs, validateExpr(cfg.Expr)...)
 	errs = append(errs, validateQueueIDs(cfg.Worker.QueueIDs)...)
 	errs = append(errs, validateCommands(cfg.Worker.Commands)...)
 	errs = append(errs, validateNATSTLSMode(cfg.NATS)...)
 	errs = append(errs, validateMetricsTLS(cfg.Metrics)...)
 
+	return errs
+}
+
+// validatePreemption validates worker.preemption: the vendor is one of the
+// known ones, and the poll interval is in range whenever a watcher will run.
+func validatePreemption(p PreemptionConfig) []ValidationError {
+	var errs []ValidationError
+	switch p.Watch {
+	case PreemptionWatchNone, PreemptionWatchAWS, PreemptionWatchGCP, PreemptionWatchAzure:
+	default:
+		errs = append(errs, ValidationError{
+			Field:   "worker.preemption.watch",
+			Message: fmt.Sprintf("unrecognized value %q; must be none, aws, gcp, or azure", p.Watch),
+		})
+	}
+	if p.PollInterval < MinPreemptionPollInterval || p.PollInterval > MaxPreemptionPollInterval {
+		errs = append(errs, ValidationError{
+			Field: "worker.preemption.poll_interval",
+			Message: fmt.Sprintf("%s is out of range; must be between %s and %s",
+				p.PollInterval, MinPreemptionPollInterval, MaxPreemptionPollInterval),
+		})
+	}
 	return errs
 }
 

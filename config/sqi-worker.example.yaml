@@ -242,6 +242,31 @@ worker:
   # Type: bool   Env: SQI_WORKER_KEEP_FAILED_SESSIONS
   keep_failed_sessions: false
 
+  # Name of the capacity group this worker asks to join when it registers.
+  # Empty (the default) joins none. The server honors it only with broker
+  # authentication off, and only for a sized group in the worker's farm; with
+  # authentication on, membership comes from the group token the worker
+  # enrolled with and this value is ignored.
+  # Type: string   Env: SQI_WORKER_CAPACITY_GROUP
+  capacity_group: ""
+
+  # Watch the cloud provider's instance metadata service for a spot or
+  # preemptible reclaim notice. On a notice the worker cancels its running tasks
+  # at once, hands them back to the server as a reclaim (not a failure) and
+  # deregisters as preempted. With watch "none" (the default) no metadata
+  # endpoint is ever contacted.
+  preemption:
+    # Provider to watch: none | aws | gcp | azure.
+    # Type: string   Env: SQI_WORKER_PREEMPTION_WATCH
+    watch: "none"
+    # How often to poll the metadata service. Range 1s to 60s.
+    # Type: duration   Env: SQI_WORKER_PREEMPTION_POLL_INTERVAL
+    poll_interval: "5s"
+    # Replace the provider's metadata base URL (a proxy, or a test). Empty uses
+    # http://169.254.169.254 (aws, azure) or http://metadata.google.internal (gcp).
+    # Type: string   Env: SQI_WORKER_PREEMPTION_ENDPOINT
+    endpoint: ""
+
   # Restrict this worker to serving specific queue IDs. The worker keeps one
   # outstanding lease request per listed queue (work.lease.<workerID>.<queueID>). When
   # empty (the default) it issues a single lease request on the reserved

@@ -35,6 +35,8 @@ import (
 	"github.com/uberware/sqi/internal/worker/natsclient"
 	"github.com/uberware/sqi/internal/worker/obs"
 	"github.com/uberware/sqi/internal/worker/openjd"
+	"github.com/uberware/sqi/internal/worker/preempt"
+	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/worker/registration"
 	"github.com/uberware/sqi/internal/worker/session"
 	"github.com/uberware/sqi/internal/worker/status"
@@ -137,8 +139,11 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	// ── Shutdown context ──────────────────────────────────────────────────────
 	//
 	// The extra cancel lets watchNATSClosure start a shutdown on permanent NATS
-	// loss.
-	ctx, stop := context.WithCancel(ctx)
+	// loss, and the preemption watcher start one with the cause errPreempted.
+	// Whichever trigger cancels first sets the cause (a signal that already
+	// canceled the parent keeps its own), so a later trigger changes nothing.
+	ctx, cancelCause := context.WithCancelCause(ctx)
+	stop := func() { cancelCause(nil) }
 	defer stop()
 
 	// ── Server discovery ───────────────────────────────────────
@@ -242,26 +247,9 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	// Build the registrar with the merged capability set. Register() is called
 	// once at boot; SetupReconnectHook() ensures the registration is re-sent
 	// on any subsequent NATS reconnect so the server always has a live record.
-	// The SAME exprLimitsFromConfig call the session manager is built with
-	// (below): what this worker advertises has to be what it enforces.
-	reg, err := registration.New(nc, workerID, cfg.Worker, exprLimitsFromConfig(cfg.Expr), caps, logger)
+	reg, err := registerWorker(ctx, nc, workerID, cfg, caps, logger)
 	if err != nil {
-		return fmt.Errorf("build registrar: %w", err)
-	}
-
-	// Wire re-registration into the NATS reconnect callback. The handler
-	// logs the reconnect and re-registers in one step.
-	reg.SetupReconnectHook(ctx)
-
-	// Publish the initial registration. This blocks until the server's
-	// SQI_WORKER stream acks the message, so a worker booting alongside its
-	// server waits out the stream provisioning rather than losing its
-	// registration to it.
-	//
-	// A boot-time registration failure is fatal: the server cannot assign
-	// tasks to a worker it has no record of.
-	if err := reg.Register(ctx); err != nil {
-		return fmt.Errorf("worker registration: %w", err)
+		return err
 	}
 
 	// ── Isolation provider, session root and session manager ──────
@@ -377,6 +365,15 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	)
 	go leaseLoop.Run(ctx)
 
+	// ── Preemption watcher ──────────────────────────────────────
+	//
+	// Off unless worker.preemption.watch names a provider. A notice cancels ctx
+	// with errPreempted, which starts the same shutdown as a signal (below) but
+	// with no grace period.
+	if err := startPreemptionWatch(ctx, cfg.Worker.Preemption, logger, cancelCause); err != nil {
+		return err
+	}
+
 	logger.InfoContext(
 		ctx, "sqi-worker starting",
 		slog.String("worker_id", workerID),
@@ -398,18 +395,17 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	// in a console run ("interrupt", "terminated"), the SCM request for a
 	// Windows service ("service stop"). NATS-driven shutdowns (permanent
 	// connection loss) cancel with no cause, so they log "context canceled".
-	sigName := context.Cause(ctx).Error()
+	cause := context.Cause(ctx)
+	grace, kind := shutdownPlan(cause, cfg.Worker.ShutdownGracePeriod)
 	logger.InfoContext(
 		context.Background(), "sqi-worker shutdown triggered",
-		slog.String("trigger", sigName),
+		slog.String("trigger", cause.Error()),
 		slog.Int("active_tasks", exec.ActiveTaskCount()),
-		slog.Duration("grace_period", cfg.Worker.ShutdownGracePeriod),
+		slog.Duration("grace_period", grace),
 	)
 
 	// ── Drain, stop heartbeating, deregister ─────────────────────────
-	completed, killed := shutdownSequence(
-		exec, stopFunc(hbStop), reg, cfg.Worker.ShutdownGracePeriod,
-	)
+	completed, killed := shutdownSequence(exec, stopFunc(hbStop), reg, grace, kind)
 
 	// ── Log shutdown outcome ─────────────────────────────────────────
 	logger.InfoContext(
@@ -422,6 +418,43 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	defer shutdownCancel()
 	obsServer.Shutdown(shutdownCtx)
 	return nil
+}
+
+// registerWorker builds the registrar, wires re-registration into NATS
+// reconnects and publishes the initial registration. Extracted from
+// [runWorker] to keep that function's cyclomatic complexity within the
+// project limit.
+func registerWorker(
+	ctx context.Context,
+	nc *nats.Conn,
+	workerID string,
+	cfg workerconfig.WorkerConfig,
+	caps capabilities.Capabilities,
+	logger *slog.Logger,
+) (*registration.Registrar, error) {
+	// The SAME exprLimitsFromConfig call the session manager is built with
+	// (see newSessionManager): what this worker advertises has to be what it
+	// enforces.
+	reg, err := registration.New(nc, workerID, cfg.Worker, exprLimitsFromConfig(cfg.Expr), caps, logger)
+	if err != nil {
+		return nil, fmt.Errorf("build registrar: %w", err)
+	}
+
+	// Wire re-registration into the NATS reconnect callback. The handler
+	// logs the reconnect and re-registers in one step.
+	reg.SetupReconnectHook(ctx)
+
+	// Publish the initial registration. This blocks until the server's
+	// SQI_WORKER stream acks the message, so a worker booting alongside its
+	// server waits out the stream provisioning rather than losing its
+	// registration to it.
+	//
+	// A boot-time registration failure is fatal: the server cannot assign
+	// tasks to a worker it has no record of.
+	if err := reg.Register(ctx); err != nil {
+		return nil, fmt.Errorf("worker registration: %w", err)
+	}
+	return reg, nil
 }
 
 // drainer is the part of *executor.Executor the shutdown sequence uses.
@@ -442,7 +475,47 @@ func (f stopFunc) Stop() { f() }
 
 // deregisterer is the part of *registration.Registrar the shutdown sequence uses.
 type deregisterer interface {
-	Deregister(reason string)
+	Deregister(reason string, kind protocol.DeregisterKind)
+}
+
+// errPreempted is the cause the worker's context is canceled with when the
+// provider announces the machine is being reclaimed. Every other trigger
+// (a signal, a service stop, a lost NATS connection) carries a different cause.
+var errPreempted = errors.New("preempted")
+
+// shutdownPlan returns how long the drain waits for running tasks and the kind
+// the worker departs with, for the cause that canceled its context. A
+// preemption notice allows no wait: the machine is going, so tasks are
+// canceled at once (reported as worker_shutdown, which the server reclaims
+// rather than failing) and the worker leaves as preempted. Every other
+// trigger is a restart, with the configured grace and no kind.
+func shutdownPlan(cause error, configured time.Duration) (grace time.Duration, kind protocol.DeregisterKind) {
+	if errors.Is(cause, errPreempted) {
+		return 0, protocol.DeregisterPreempted
+	}
+	return configured, ""
+}
+
+// startPreemptionWatch starts the metadata-service watcher in the background
+// when cfg names a provider, and cancels the worker's context with
+// errPreempted on a notice. With watch "none" it does nothing and contacts no
+// endpoint.
+func startPreemptionWatch(
+	ctx context.Context, cfg workerconfig.PreemptionConfig, logger *slog.Logger, stopWith context.CancelCauseFunc,
+) error {
+	if cfg.Watch == "" || cfg.Watch == workerconfig.PreemptionWatchNone {
+		return nil
+	}
+	w, err := preempt.New(cfg.Watch, cfg.Endpoint, cfg.PollInterval, nil, logger)
+	if err != nil {
+		return fmt.Errorf("preemption watcher: %w", err)
+	}
+	logger.InfoContext(ctx, "sqi-worker watching for preemption",
+		slog.String("vendor", cfg.Watch),
+		slog.String("endpoint", w.Base()),
+		slog.Duration("poll_interval", cfg.PollInterval))
+	go w.Run(ctx, func() { stopWith(errPreempted) })
+	return nil
 }
 
 // shutdownSequence runs the worker's shutdown in its required order and
@@ -458,11 +531,14 @@ type deregisterer interface {
 //  2. Stop the heartbeat, so a beat cannot follow the departure message and
 //     mark the worker online again.
 //  3. Deregister, so the server marks the worker offline immediately rather
-//     than waiting for the heartbeat-timeout sweep.
-func shutdownSequence(exec drainer, hb heartbeatStopper, reg deregisterer, grace time.Duration) (completed, killed int) {
+//     than waiting for the heartbeat-timeout sweep. kind is "" for a restart
+//     and [protocol.DeregisterPreempted] when the machine is being reclaimed.
+func shutdownSequence(
+	exec drainer, hb heartbeatStopper, reg deregisterer, grace time.Duration, kind protocol.DeregisterKind,
+) (completed, killed int) {
 	completed, killed = exec.DrainAndShutdown(grace)
 	hb.Stop()
-	reg.Deregister("graceful shutdown")
+	reg.Deregister("graceful shutdown", kind)
 	return completed, killed
 }
 

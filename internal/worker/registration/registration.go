@@ -198,6 +198,7 @@ func (r *Registrar) Register(ctx context.Context) error {
 		WorkerID:        r.workerID,
 		InstanceID:      r.instanceID,
 		FarmID:          r.cfg.FarmID,
+		CapacityGroup:   r.cfg.CapacityGroup,
 		QueueID:         queueID,
 		Name:            r.cfg.Name,
 		Hostname:        hostname,
@@ -315,11 +316,15 @@ func (r *Registrar) publishRegister(ctx context.Context, data []byte) error {
 // shutdown so the server marks this worker offline immediately rather than
 // waiting for the heartbeat timeout sweep.
 //
+// kind says whether the worker may come back: "" for a restart, after which
+// it returns with the same identity, or [protocol.DeregisterPreempted] when
+// its machine is being reclaimed.
+//
 // Deregister is best-effort: failures are logged as warnings since the server
 // will detect the absence via heartbeat timeout regardless. The caller is
 // responsible for flushing any buffered publishes before closing the NATS
 // connection (typically via natsclient.Drain deferred in start.go).
-func (r *Registrar) Deregister(reason string) {
+func (r *Registrar) Deregister(reason string, kind protocol.DeregisterKind) {
 	ctx := context.Background()
 
 	msg := protocol.DeregisterMsg{
@@ -328,6 +333,7 @@ func (r *Registrar) Deregister(reason string) {
 		WorkerID:   r.workerID,
 		InstanceID: r.instanceID,
 		Reason:     reason,
+		Kind:       kind,
 	}
 
 	data, err := json.Marshal(msg)
@@ -346,7 +352,8 @@ func (r *Registrar) Deregister(reason string) {
 
 	r.logger.InfoContext(ctx, "registration: worker deregistered",
 		slog.String("worker_id", r.workerID),
-		slog.String("reason", reason))
+		slog.String("reason", reason),
+		slog.String("kind", string(kind)))
 }
 
 // SetupReconnectHook installs a NATS reconnect handler that re-publishes the
