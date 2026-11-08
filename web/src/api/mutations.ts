@@ -6,6 +6,10 @@ import { queryKeys } from './queries'
 import { evictAllExceptAuthMe } from './queryEviction'
 import type {
   ApiKeyCreated,
+  CapacityGroup,
+  CapacityGroupKind,
+  CapacityGroupTokenCreated,
+  MachineProfile,
   ChangePasswordInput,
   ComputeLocation,
   Farm,
@@ -23,6 +27,7 @@ import type {
   SubmitJobInput,
   SubmitProductJobInput,
   User,
+  Worker,
   WorkerActionResponse,
   Product,
   TemplateFormat,
@@ -487,6 +492,172 @@ export function useDeleteUsagePool() {
     mutationFn: (id: string) => fetchDeleteUsagePool(id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.usagePools.all })
+    },
+  })
+}
+
+// ── Capacity group ────────────────────────────────────────────────────────────
+
+/**
+ * The body of `POST` and `PUT /capacity-groups`. The server refuses unknown
+ * fields, so response-only fields (`id`, `status`, timestamps) are not part of
+ * it. `PUT` replaces every setting, so an edit sends all of them.
+ */
+export interface CapacityGroupInput {
+  /** Required on create; omitted on update (the farm cannot change). */
+  farm_id?: string
+  name: string
+  kind: CapacityGroupKind
+  provider: string
+  enabled: boolean
+  queue_ids: string[]
+  min_machines: number
+  max_machines: number
+  priority: number
+  max_step_up: number
+  scale_up_cooldown_seconds: number
+  idle_timeout_seconds: number
+  boot_timeout_seconds: number
+  retire_action: 'sleep' | 'shutdown'
+  machine_profile: MachineProfile
+}
+
+export function fetchCreateCapacityGroup(input: CapacityGroupInput): Promise<CapacityGroup> {
+  return apiFetch<CapacityGroup>('/capacity-groups', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export function fetchUpdateCapacityGroup(
+  id: string,
+  input: CapacityGroupInput,
+): Promise<CapacityGroup> {
+  return apiFetch<CapacityGroup>(`/capacity-groups/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export async function fetchDeleteCapacityGroup(id: string): Promise<void> {
+  await apiFetch(`/capacity-groups/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+export function fetchAddCapacityGroupMember(id: string, workerId: string): Promise<Worker> {
+  return apiFetch<Worker>(
+    `/capacity-groups/${encodeURIComponent(id)}/members/${encodeURIComponent(workerId)}`,
+    { method: 'PUT' },
+  )
+}
+
+export async function fetchRemoveCapacityGroupMember(id: string, workerId: string): Promise<void> {
+  await apiFetch(
+    `/capacity-groups/${encodeURIComponent(id)}/members/${encodeURIComponent(workerId)}`,
+    { method: 'DELETE' },
+  )
+}
+
+/** The optional body of `POST /capacity-groups/{id}/tokens`; `expires_in` is a Go duration. */
+export interface CapacityGroupTokenInput {
+  name?: string
+  expires_in?: string
+}
+
+export function fetchCreateCapacityGroupToken(
+  id: string,
+  input: CapacityGroupTokenInput,
+): Promise<CapacityGroupTokenCreated> {
+  return apiFetch<CapacityGroupTokenCreated>(`/capacity-groups/${encodeURIComponent(id)}/tokens`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export async function fetchRevokeCapacityGroupToken(id: string, tokenId: string): Promise<void> {
+  await apiFetch(
+    `/capacity-groups/${encodeURIComponent(id)}/tokens/${encodeURIComponent(tokenId)}`,
+    { method: 'DELETE' },
+  )
+}
+
+export function useCreateCapacityGroup() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: fetchCreateCapacityGroup,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.capacityGroups.all })
+    },
+  })
+}
+
+export function useUpdateCapacityGroup() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: CapacityGroupInput }) =>
+      fetchUpdateCapacityGroup(id, input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.capacityGroups.all })
+    },
+  })
+}
+
+export function useDeleteCapacityGroup() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => fetchDeleteCapacityGroup(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.capacityGroups.all })
+    },
+  })
+}
+
+export function useAddCapacityGroupMember(groupId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (workerId: string) => fetchAddCapacityGroupMember(groupId, workerId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.capacityGroups.all })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workers.all })
+    },
+  })
+}
+
+export function useRemoveCapacityGroupMember(groupId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (workerId: string) => fetchRemoveCapacityGroupMember(groupId, workerId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.capacityGroups.all })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workers.all })
+    },
+  })
+}
+
+/**
+ * Mint a group join token. The result carries the raw token, so the mutation
+ * has `gcTime: 0`: react-query drops its result as soon as no component
+ * observes it, instead of holding the secret for the default five minutes.
+ */
+export function useCreateCapacityGroupToken(groupId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: CapacityGroupTokenInput) => fetchCreateCapacityGroupToken(groupId, input),
+    gcTime: 0,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.capacityGroups.tokens(groupId) })
+    },
+  })
+}
+
+export function useRevokeCapacityGroupToken(groupId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (tokenId: string) => fetchRevokeCapacityGroupToken(groupId, tokenId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.capacityGroups.tokens(groupId) })
     },
   })
 }

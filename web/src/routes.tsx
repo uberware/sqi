@@ -14,6 +14,9 @@ import QueueList from '@/pages/QueueList'
 import QueueForm from '@/pages/QueueForm'
 import UsagePoolList from '@/pages/UsagePoolList'
 import UsagePoolForm from '@/pages/UsagePoolForm'
+import CapacityGroupList from '@/pages/CapacityGroupList'
+import CapacityGroupForm from '@/pages/CapacityGroupForm'
+import CapacityGroupDetail from '@/pages/CapacityGroupDetail'
 import StorageLocationList from '@/pages/StorageLocationList'
 import StorageLocationForm from '@/pages/StorageLocationForm'
 import ComputeLocationList from '@/pages/ComputeLocationList'
@@ -95,6 +98,38 @@ export default function AppRoutes() {
         element={
           <RequireRole permission="infra.manage">
             <UsagePoolForm mode="edit" />
+          </RequireRole>
+        }
+      />
+      <Route
+        path="/capacity-groups"
+        element={
+          <RequireRole permission="infra.read">
+            <CapacityGroupList />
+          </RequireRole>
+        }
+      />
+      <Route
+        path="/capacity-groups/new"
+        element={
+          <RequireRole permission="infra.manage">
+            <CapacityGroupForm mode="create" />
+          </RequireRole>
+        }
+      />
+      <Route
+        path="/capacity-groups/:id"
+        element={
+          <RequireRole permission="infra.read">
+            <CapacityGroupDetail />
+          </RequireRole>
+        }
+      />
+      <Route
+        path="/capacity-groups/:id/edit"
+        element={
+          <RequireRole permission="infra.manage">
+            <CapacityGroupForm mode="edit" />
           </RequireRole>
         }
       />

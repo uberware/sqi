@@ -1,0 +1,96 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+/* The shared entity-form scaffold plus the pieces a capacity group adds. */
+
+.page {
+  composes: page from './entityForm.module.css';
+}
+
+.form {
+  composes: form from './entityForm.module.css';
+}
+
+.field {
+  composes: field from './entityForm.module.css';
+}
+
+.label {
+  composes: label from './entityForm.module.css';
+}
+
+.input {
+  composes: input from './entityForm.module.css';
+}
+
+.textarea {
+  composes: textarea from './entityForm.module.css';
+}
+
+.select {
+  composes: select from './entityForm.module.css';
+}
+
+.hint {
+  composes: hint from './entityForm.module.css';
+  margin: 0;
+}
+
+.footer {
+  composes: footer from './entityForm.module.css';
+}
+
+.submitBtn {
+  composes: submitBtn from './entityForm.module.css';
+}
+
+.cancelBtn {
+  composes: cancelBtn from './entityForm.module.css';
+}
+
+.fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.legend {
+  padding: 0 var(--space-2);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+}
+
+.checkRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-base);
+}
+
+.error {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-error);
+}
+
+.formError {
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-error-muted);
+  border: 1px solid var(--color-error);
+  border-radius: var(--radius-md);
+  color: var(--color-error);
+  font-size: var(--font-size-sm);
+}
+
+.formError p {
+  margin: 0;
+}
+
+.field input[aria-invalid='true'],
+.field select[aria-invalid='true'],
+.field textarea[aria-invalid='true'] {
+  border-color: var(--color-error);
+}

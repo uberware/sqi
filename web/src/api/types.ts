@@ -422,6 +422,84 @@ export interface UsagePool {
   updated_at: string
 }
 
+// ── Capacity group ────────────────────────────────────────────────────────────
+
+/** `named` groups hold specific machines added by name; `sized` groups hold interchangeable ones. */
+export type CapacityGroupKind = 'named' | 'sized'
+
+/** What one machine of a capacity group offers; a field left out is not declared. */
+export interface MachineProfile {
+  cpu_count?: number
+  ram_mb?: number
+  gpu_count?: number
+  gpu_memory_mb?: number
+  os?: string
+  arch?: string
+  compute_location?: string
+  tags?: Record<string, string>
+  extensions?: string[]
+  /** The EXPR caps the machine's worker enforces. Not edited in the UI; kept on a save. */
+  expr_limits?: Record<string, number>
+}
+
+/** The scheduler's last evaluation of a capacity group. */
+export interface CapacityGroupStatus {
+  demand_cores: number
+  /** The TOTAL machine count the group should have, retire candidates included. */
+  desired_machines: number
+  online_members: number
+  offline_members: number
+  /** Worker IDs idle past the group's idle timeout, longest idle first. */
+  retire_candidates: string[]
+  mismatches: Array<{ worker_id: string; reason: string }>
+  evaluated_at: string
+}
+
+/** Wire shape returned by capacity group endpoints. */
+export interface CapacityGroup {
+  id: string
+  farm_id: string
+  name: string
+  kind: CapacityGroupKind
+  provider: string
+  enabled: boolean
+  queue_ids: string[]
+  min_machines: number
+  max_machines: number
+  priority: number
+  max_step_up: number
+  scale_up_cooldown_seconds: number
+  idle_timeout_seconds: number
+  boot_timeout_seconds: number
+  retire_action: 'sleep' | 'shutdown'
+  machine_profile: MachineProfile
+  created_at: string
+  updated_at: string
+  /** Null until the scheduler has evaluated the group, while it is disabled, and on a standby server. */
+  status: CapacityGroupStatus | null
+}
+
+/** A group join token as listed; it carries no secret. */
+export interface CapacityGroupToken {
+  id: string
+  name: string
+  prefix: string
+  expires_at: string
+  revoked_at: string | null
+  created_by: string
+  created_at: string
+}
+
+/** The create-only shape carrying the raw token, returned exactly once. */
+export interface CapacityGroupTokenCreated {
+  id: string
+  token: string
+  prefix: string
+  name: string
+  expires_at: string
+  created_at: string
+}
+
 // ── Path translation ──────────────────────────────────────────────────────────
 
 /** Delivery mechanism kind for the SQI_PATH_TRANSLATION extension. */

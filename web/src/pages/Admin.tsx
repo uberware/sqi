@@ -55,6 +55,13 @@ const ADMIN_LINKS: AdminLink[] = [
     permission: 'infra.manage',
   },
   {
+    id: 'capacity-groups',
+    label: 'Capacity Groups',
+    description: 'Machines sqi follows demand with',
+    to: '/capacity-groups',
+    permission: 'infra.read',
+  },
+  {
     id: 'storage',
     label: 'Storage',
     description: 'Named storage locations and roots',
