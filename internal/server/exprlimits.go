@@ -67,6 +67,18 @@ func schedulerConfig(cfg Config, client *bus.Client) scheduler.Config {
 	return sched
 }
 
+// schedulerConfigFor is [schedulerConfig] for this server, with the
+// scheduler's RevokeWorker hook wired to the server's broker unless the
+// caller's Scheduler section already set one, so a capacity-group member the
+// scheduler removes also loses its broker connection.
+func (s *Server) schedulerConfigFor(client *bus.Client) scheduler.Config {
+	sched := schedulerConfig(s.cfg, client)
+	if sched.RevokeWorker == nil {
+		sched.RevokeWorker = s.revokeRemovedWorker
+	}
+	return sched
+}
+
 // busReconnectGrace is how long after the server's bus connection returns the
 // liveness sweeps keep standing down. A live worker lost the same broker, so
 // it redials on its own backoff, which is independent of the server's: the

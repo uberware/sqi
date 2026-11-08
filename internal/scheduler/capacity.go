@@ -3,14 +3,18 @@
 package scheduler
 
 // capacity.go is the capacity sweep step. Once per heartbeat-sweep tick, and
-// so on the leader only, it reads what internal/capacity's policy needs,
-// evaluates every enabled capacity group, and publishes the result as each
-// group's status (read by the API) and as the sqi_capacity_* gauges (read by
-// external autoscalers). It only reads the store.
+// so on the leader only, it removes the ephemeral members of every group that
+// vanished (see [Scheduler.removeVanishedEphemerals]), then reads what
+// internal/capacity's policy needs, evaluates every enabled capacity group, and
+// publishes the result as each group's status (read by the API) and as the
+// sqi_capacity_* gauges (read by external autoscalers). Removing a vanished
+// member is its only write.
 //
-// With no enabled group it reads the group list and nothing else: no demand
-// query, no log line and no series, so a farm that has not turned capacity
-// groups on behaves exactly as before.
+// With no group at all it reads the group list and nothing else: no member or
+// demand query, no log line and no series, so a farm that has not set up
+// capacity groups behaves exactly as before. With only disabled groups it also
+// reads their members, whose vanished ephemeral machines still need removing,
+// but evaluates and exports nothing.
 
 import (
 	"context"
@@ -97,25 +101,127 @@ func (s *Scheduler) sweepCapacityAt(ctx context.Context, now time.Time) {
 		}
 		return
 	}
-	groups := s.enabledCapacityGroups(all)
+	farmGroups := s.farmCapacityGroups(all)
+	if len(farmGroups) == 0 {
+		s.clearCapacity()
+		return
+	}
+	members, err := s.listCapacityMembers(ctx, farmGroups)
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			s.logger.WarnContext(ctx, "scheduler: capacity sweep: read failed; keeping the last evaluation",
+				slog.Any("error", err))
+		}
+		return
+	}
+	if s.removeVanishedEphemerals(ctx, now, farmGroups, members) {
+		return // fenced
+	}
+	groups := enabledCapacityGroups(farmGroups)
 	if len(groups) == 0 {
 		s.clearCapacity()
 		return
 	}
-	s.evaluateCapacity(ctx, now, groups)
+	s.evaluateCapacity(ctx, now, groups, members)
 }
 
-// enabledCapacityGroups keeps the enabled groups of the scheduler's farm (of
-// every farm when it manages all), in the store's order: priority descending,
-// then name.
-func (s *Scheduler) enabledCapacityGroups(all []store.CapacityGroup) []store.CapacityGroup {
+// farmCapacityGroups keeps the groups of the scheduler's farm (of every farm
+// when it manages all), enabled or not, in the store's order: priority
+// descending, then name.
+func (s *Scheduler) farmCapacityGroups(all []store.CapacityGroup) []store.CapacityGroup {
 	var out []store.CapacityGroup
 	for _, g := range all {
-		if g.Enabled && (s.cfg.FarmID == "" || g.FarmID == s.cfg.FarmID) {
+		if s.cfg.FarmID == "" || g.FarmID == s.cfg.FarmID {
 			out = append(out, g)
 		}
 	}
 	return out
+}
+
+// enabledCapacityGroups keeps the enabled groups of groups, in order.
+func enabledCapacityGroups(groups []store.CapacityGroup) []store.CapacityGroup {
+	var out []store.CapacityGroup
+	for _, g := range groups {
+		if g.Enabled {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
+// listCapacityMembers reads each group's members, online and offline, by
+// group ID.
+func (s *Scheduler) listCapacityMembers(ctx context.Context, groups []store.CapacityGroup) (map[string][]store.Worker, error) {
+	out := make(map[string][]store.Worker, len(groups))
+	for _, g := range groups {
+		workers, err := s.store.ListCapacityGroupMembers(ctx, g.ID)
+		if err != nil {
+			return nil, fmt.Errorf("list members of capacity group %s: %w", g.Name, err)
+		}
+		out[g.ID] = workers
+	}
+	return out, nil
+}
+
+// removeVanishedEphemerals deletes every ephemeral member of groups that has
+// been offline for longer than its group's BootTimeout, judged by its last
+// heartbeat, revokes its credential and drops it from members. That is a cloud
+// machine that went away without deregistering (terminated, or preempted with
+// no notice): the 24 h retention sweep would delete its row but revoke
+// nothing. It returns true when a write was fenced, and the sweep stops.
+//
+// A member that came back is online and is kept, as is one the operator
+// disabled (the disable flag is the maintenance hold, which the retention
+// sweep honors too). Nothing is removed while the liveness sweeps are
+// deferred ([Scheduler.livenessDeferred]): during a broker outage no machine
+// can come back, so its time offline proves nothing.
+func (s *Scheduler) removeVanishedEphemerals(
+	ctx context.Context, now time.Time, groups []store.CapacityGroup, members map[string][]store.Worker,
+) bool {
+	if deferred, _ := s.livenessDeferred(now); deferred {
+		return false
+	}
+	removed := 0
+	for _, g := range groups {
+		kept := make([]store.Worker, 0, len(members[g.ID]))
+		for _, w := range members[g.ID] {
+			if !vanishedEphemeral(w, g, now) {
+				kept = append(kept, w)
+				continue
+			}
+			gone, deleted, err := s.store.DeleteEphemeralWorker(ctx, w.ID, now)
+			if s.stopIfFenced(ctx, err) {
+				return true
+			}
+			if err != nil || !deleted {
+				// A failed write is retried next tick; a refused one means the
+				// member came back or holds work since it was read.
+				s.warnUnlessStopped(ctx, err, "scheduler: capacity sweep: remove vanished ephemeral worker failed",
+					slog.String("group", g.Name), slog.String("worker_id", w.ID))
+				kept = append(kept, w)
+				continue
+			}
+			s.logger.InfoContext(ctx, "scheduler: capacity sweep removed an ephemeral worker that vanished, and revoked its credential",
+				slog.String("group", g.Name), slog.String("worker_id", w.ID),
+				slog.Time("last_heartbeat_at", *w.LastHeartbeatAt), slog.Duration("boot_timeout", g.BootTimeout))
+			s.announceRemovedWorker(gone)
+			s.revokeRemovedWorker(ctx, w.ID)
+			removed++
+		}
+		members[g.ID] = kept
+	}
+	if removed > 0 {
+		s.refreshWorkerGauge(ctx)
+	}
+	return false
+}
+
+// vanishedEphemeral reports whether w, a member of g, is an ephemeral member
+// offline for longer than g's BootTimeout at now. A member with no recorded
+// heartbeat is never judged vanished.
+func vanishedEphemeral(w store.Worker, g store.CapacityGroup, now time.Time) bool {
+	return w.Ephemeral && !w.Disabled && w.Status == store.WorkerStatusOffline &&
+		w.LastHeartbeatAt != nil && now.Sub(*w.LastHeartbeatAt) > g.BootTimeout
 }
 
 // clearCapacity forgets every status, series and remembered time. It touches
@@ -131,10 +237,12 @@ func (s *Scheduler) clearCapacity() {
 	cs.mu.Unlock()
 }
 
-// evaluateCapacity evaluates groups and publishes the result. A failed read
-// keeps the last evaluation.
-func (s *Scheduler) evaluateCapacity(ctx context.Context, now time.Time, groups []store.CapacityGroup) {
-	in, err := s.capacityInputs(ctx, now, groups)
+// evaluateCapacity evaluates groups, whose members workers holds by group ID,
+// and publishes the result. A failed read keeps the last evaluation.
+func (s *Scheduler) evaluateCapacity(
+	ctx context.Context, now time.Time, groups []store.CapacityGroup, workers map[string][]store.Worker,
+) {
+	in, err := s.capacityInputs(ctx, now, groups, workers)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			s.logger.WarnContext(ctx, "scheduler: capacity sweep: read failed; keeping the last evaluation",
@@ -187,18 +295,18 @@ type capacityInputs struct {
 	idleSince map[string]time.Time
 }
 
-// capacityInputs reads the members of groups, the other online workers, what
-// every worker holds and the ready work.
-func (s *Scheduler) capacityInputs(ctx context.Context, now time.Time, groups []store.CapacityGroup) (capacityInputs, error) {
+// capacityInputs reads the other online workers, what every worker holds and
+// the ready work, and builds the members of groups from workers.
+func (s *Scheduler) capacityInputs(
+	ctx context.Context, now time.Time, groups []store.CapacityGroup, workers map[string][]store.Worker,
+) (capacityInputs, error) {
 	// Every farm, as the lease path's CommittedCores sums a worker's tasks.
 	commitments, err := s.store.ListWorkerCommitments(ctx, "")
 	if err != nil {
 		return capacityInputs{}, fmt.Errorf("list worker commitments: %w", err)
 	}
 	in := capacityInputs{idleSince: map[string]time.Time{}}
-	if in.members, err = s.capacityMembers(ctx, now, groups, commitments, in.idleSince); err != nil {
-		return capacityInputs{}, err
-	}
+	in.members = s.capacityMembers(now, groups, workers, commitments, in.idleSince)
 	if in.others, err = s.capacityOthers(ctx, in.members, commitments); err != nil {
 		return capacityInputs{}, err
 	}
@@ -208,20 +316,17 @@ func (s *Scheduler) capacityInputs(ctx context.Context, now time.Time, groups []
 	return in, nil
 }
 
-// capacityMembers reads each group's members, online and offline, and records
-// in idle when each online member holding nothing was first seen so.
+// capacityMembers builds each group's members, online and offline, from
+// workers (by group ID), and records in idle when each online member holding
+// nothing was first seen so.
 func (s *Scheduler) capacityMembers(
-	ctx context.Context, now time.Time, groups []store.CapacityGroup,
+	now time.Time, groups []store.CapacityGroup, workers map[string][]store.Worker,
 	commitments map[string]store.WorkerCommitment, idle map[string]time.Time,
-) (map[string][]capacity.Member, error) {
+) map[string][]capacity.Member {
 	out := make(map[string][]capacity.Member, len(groups))
 	for _, g := range groups {
-		workers, err := s.store.ListCapacityGroupMembers(ctx, g.ID)
-		if err != nil {
-			return nil, fmt.Errorf("list members of capacity group %s: %w", g.Name, err)
-		}
-		members := make([]capacity.Member, 0, len(workers))
-		for _, w := range workers {
+		members := make([]capacity.Member, 0, len(workers[g.ID]))
+		for _, w := range workers[g.ID] {
 			m := capacity.Member{Worker: w}
 			if c, busy := commitments[w.ID]; busy {
 				m.CommittedCores = committedCores(c, w)
@@ -237,7 +342,7 @@ func (s *Scheduler) capacityMembers(
 		}
 		out[g.ID] = members
 	}
-	return out, nil
+	return out
 }
 
 // capacityOthers reads the online, enabled workers of the scheduler's farm

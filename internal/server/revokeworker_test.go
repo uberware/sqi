@@ -301,6 +301,52 @@ func TestRevokeWorker_CancelledRequestStillGetsALiveBrokerContext(t *testing.T) 
 	}
 }
 
+// TestRevokeRemovedWorker_DropsConnectionOfARevokedCredential pins the
+// scheduler's hook: the deletion of an ephemeral capacity-group member has
+// already revoked its credential, and the connection must be dropped anyway,
+// where Server.RevokeWorker would stop at the store's ErrNotFound. With broker
+// authentication off there is nothing to drop and no error.
+func TestRevokeRemovedWorker_DropsConnectionOfARevokedCredential(t *testing.T) {
+	tests := []struct {
+		name      string
+		auth      bool
+		revoked   bool
+		wantCalls int
+	}{
+		{"credential already revoked", true, true, 1},
+		{"credential still active", true, false, 1},
+		{"auth off, credential already revoked", false, true, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := fake.New()
+			ref, _ := enrolledCredential(t, st, "worker-a")
+			if tt.revoked {
+				if err := st.RevokeWorkerCredential(context.Background(), ref.WorkerID, time.Now().UTC()); err != nil {
+					t.Fatalf("seed RevokeWorkerCredential: %v", err)
+				}
+			}
+			stub := &revokeStubBroker{}
+			s := &Server{cfg: brokerAuthConfig(tt.auth), store: st, broker: stub, logger: testLogger()}
+
+			// Through the wiring the scheduler is built with.
+			revoke := s.schedulerConfigFor(nil).RevokeWorker
+			if revoke == nil {
+				t.Fatal("scheduler config has no RevokeWorker hook")
+			}
+			if err := revoke(context.Background(), ref.WorkerID); err != nil {
+				t.Fatalf("RevokeWorker hook: %v", err)
+			}
+			if stub.calls != tt.wantCalls {
+				t.Errorf("broker.Revoke calls = %d, want %d", stub.calls, tt.wantCalls)
+			}
+			if _, err := storetest.ActiveWorkerCredential(context.Background(), st, ref.WorkerID); !errors.Is(err, store.ErrNotFound) {
+				t.Errorf("credential still active after the hook: %v, want store.ErrNotFound", err)
+			}
+		})
+	}
+}
+
 // TestRevokeWorker_BrokerBudgetExtendsTheBound pins that a broker needing
 // longer than revokeBrokerTimeout, an external cluster with a long auth
 // timeout, gets its own budget: a shorter bound would cut its final pass

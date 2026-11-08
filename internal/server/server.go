@@ -554,6 +554,28 @@ func (s *Server) RevokeWorker(ctx context.Context, workerID string) error {
 	if err := s.store.RevokeWorkerCredential(ctx, workerID, time.Now().UTC()); err != nil {
 		return err
 	}
+	return s.disconnectWorker(ctx, workerID)
+}
+
+// revokeRemovedWorker is the scheduler's [scheduler.Config.RevokeWorker]: it
+// revokes the credential of a capacity-group member the scheduler has just
+// deleted and drops its broker connection. The deletion already revoked the
+// credential in the store, so, unlike [Server.RevokeWorker], a worker with no
+// active credential is not an error and the connection is dropped all the
+// same: a retired worker may still be connected when its deregistration is
+// handled.
+func (s *Server) revokeRemovedWorker(ctx context.Context, workerID string) error {
+	err := s.store.RevokeWorkerCredential(ctx, workerID, time.Now().UTC())
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	return s.disconnectWorker(ctx, workerID)
+}
+
+// disconnectWorker drops workerID's broker connections when broker
+// authentication is enabled, after its credential has been revoked in the
+// store. See [Server.RevokeWorker] for the context and time bound it uses.
+func (s *Server) disconnectWorker(ctx context.Context, workerID string) error {
 	if !s.cfg.NATS.Auth.Enabled {
 		return nil
 	}
@@ -730,7 +752,7 @@ func (s *Server) start(ctx context.Context) error {
 	// consumer), and heartbeat timeout sweep.
 	// The hub is passed as the notifier so live events are
 	// pushed to subscribed WebSocket clients after each state change.
-	s.sched = scheduler.New(schedulerConfig(s.cfg, busClient), s.store, s.busClient, s.metrics, s.logger, s.wsHub, s.diagBuf)
+	s.sched = scheduler.New(s.schedulerConfigFor(busClient), s.store, s.busClient, s.metrics, s.logger, s.wsHub, s.diagBuf)
 	// The scheduler runs on its own child context so a failed start can stop
 	// it (see abortStart) without racing Run's own setup of Scheduler.Stop.
 	schedCtx, cancelSched := context.WithCancel(ctx)

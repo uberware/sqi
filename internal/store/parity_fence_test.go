@@ -1042,7 +1042,10 @@ var fenceMutators = map[string]fenceMutator{
 	},
 	"TouchWorkerCredential": func(t *testing.T, st store.Store) func(context.Context) error {
 		c := mustCreateCredential(t, st, mkCredential(uuid.NewString()))
-		return func(ctx context.Context) error { return st.TouchWorkerCredential(ctx, c.WorkerID, time.Now().UTC()) }
+		return func(ctx context.Context) error {
+			_, err := st.TouchWorkerCredential(ctx, c.WorkerID, time.Now().UTC())
+			return err
+		}
 	},
 	"UpdateComputeLocation": func(t *testing.T, st store.Store) func(context.Context) error {
 		loc := mustCreateComputeLocation(t, st, uuid.NewString())

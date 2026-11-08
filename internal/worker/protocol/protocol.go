@@ -235,6 +235,16 @@ type RegisterMsg struct {
 	// reason ExprLimits above gives: an older server ignores it, and an older
 	// worker omits it and so is read as enforcing nothing.
 	Extensions []string `json:"extensions,omitempty"`
+
+	// CapacityGroup names the capacity group this worker asks to join (its
+	// worker.capacity_group configuration). The server honors it only with
+	// broker authentication off, and only for a sized group in the worker's
+	// farm; with authentication on, membership comes from the group token the
+	// worker enrolled with and this field is ignored.
+	//
+	// A REGISTRATION-payload field, not a [ProtocolVersion] change: an older
+	// server ignores it, and an older worker omits it and joins nothing.
+	CapacityGroup string `json:"capacity_group,omitempty"`
 }
 
 // ExtensionLogChecks is the name of the sqi-defined step-level log-check
@@ -305,6 +315,19 @@ type GPUInfo struct {
 
 // ── DeregisterMsg ─────────────────────────────────────────────────────────────
 
+// DeregisterKind says whether a departing worker may come back. The empty
+// kind means it may: a service restart or upgrade, after which the worker
+// returns with the same identity.
+type DeregisterKind string
+
+const (
+	// DeregisterRetired is a machine leaving for good because it was retired.
+	DeregisterRetired DeregisterKind = "retired"
+	// DeregisterPreempted is a machine leaving for good because its provider
+	// reclaimed it (a spot or preemptible instance).
+	DeregisterPreempted DeregisterKind = "preempted"
+)
+
 // DeregisterMsg is the JSON payload workers publish to worker.deregister.<worker> on
 // graceful shutdown. The server marks the worker offline immediately upon
 // receipt, rather than waiting for the heartbeat timeout sweep.
@@ -332,6 +355,13 @@ type DeregisterMsg struct {
 	// Reason is an optional human-readable explanation for the departure
 	// (e.g. "graceful shutdown", "maintenance").
 	Reason string `json:"reason,omitempty"`
+
+	// Kind says whether the worker may come back. With [DeregisterRetired] or
+	// [DeregisterPreempted] the server deletes an ephemeral capacity-group
+	// member's worker row and revokes its credential; any other value, the
+	// empty one included, keeps both. Optional and omitted when empty, so it
+	// is not a [ProtocolVersion] change: an older server ignores it.
+	Kind DeregisterKind `json:"kind,omitempty"`
 }
 
 // ── HeartbeatMsg ─────────────────────────────────────────────────────────────

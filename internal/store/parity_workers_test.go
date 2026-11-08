@@ -540,18 +540,26 @@ func TestParity_TouchWorkerCredential(t *testing.T) {
 			if err := st.RevokeWorkerCredential(ctx, "w1", time.Now().UTC()); err != nil {
 				t.Fatalf("RevokeWorkerCredential: %v", err)
 			}
-			if err := st.TouchWorkerCredential(ctx, "w1", seen); !errors.Is(err, store.ErrNotFound) {
+			if _, err := st.TouchWorkerCredential(ctx, "w1", seen); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("only a revoked credential: err = %v, want ErrNotFound", err)
 			}
-			active := mustCreateCredential(t, st, mkCredential("w1"))
-			if err := st.TouchWorkerCredential(ctx, "w1", seen); err != nil {
+			cred := mkCredential("w1")
+			cred.CapacityGroupID = "group-1"
+			active := mustCreateCredential(t, st, cred)
+			touched, err := st.TouchWorkerCredential(ctx, "w1", seen)
+			if err != nil {
 				t.Fatalf("TouchWorkerCredential: %v", err)
+			}
+			// The touch returns the active credential as stored, its group included.
+			if touched.ID != active.ID || touched.CapacityGroupID != "group-1" || touched.RevokedAt != nil ||
+				touched.LastSeenAt == nil || !touched.LastSeenAt.Equal(seen) {
+				t.Fatalf("touched = %+v, want %s in group-1 last seen %v", touched, active.ID, seen)
 			}
 			got, err := storetest.ActiveWorkerCredential(ctx, st, "w1")
 			if err != nil || got.ID != active.ID || got.LastSeenAt == nil || !got.LastSeenAt.Equal(seen) {
 				t.Fatalf("active credential = (%+v, %v), want %s last seen %v", got, err, active.ID, seen)
 			}
-			if err := st.TouchWorkerCredential(ctx, "ghost", seen); !errors.Is(err, store.ErrNotFound) {
+			if _, err := st.TouchWorkerCredential(ctx, "ghost", seen); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("unknown worker: err = %v, want ErrNotFound", err)
 			}
 		})

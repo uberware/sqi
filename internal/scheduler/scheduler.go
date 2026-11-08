@@ -238,12 +238,24 @@ type Config struct {
 	ExprLimits openjd.ExprLimits
 
 	// NATSAuthEnabled mirrors config.NATSAuthConfig.Enabled (server.Config's
-	// NATSAuthEnabled). It gates one thing here: whether worker registration
-	// touches the worker's broker-credential LastSeenAt. With broker
-	// authentication off there are no credential rows at all, and the
-	// default no-config path must do no extra store work — see
+	// NATSAuthEnabled). It gates two things here: whether worker registration
+	// touches the worker's broker-credential LastSeenAt, and where a worker's
+	// capacity-group membership comes from (its credential when on, its
+	// worker.capacity_group setting when off; see capacitymembership.go).
+	// With broker authentication off there are no credential rows at all,
+	// and the default no-config path must do no extra store work — see
 	// handleWorkerRegister.
 	NATSAuthEnabled bool
+
+	// RevokeWorker revokes a removed ephemeral capacity-group member's broker
+	// credential and drops its broker connection. The scheduler calls it after
+	// [store.WorkerStore.DeleteEphemeralWorker] has deleted the worker, which
+	// already revoked the credential in the store, so an implementation must
+	// treat a credential that is already revoked as success and still drop the
+	// connection. It runs on a goroutine of its own, because dropping a broker
+	// connection takes seconds. Nil means the store's revocation alone
+	// applies. Not a tuning knob; the server wires it.
+	RevokeWorker func(ctx context.Context, workerID string) error
 
 	// OnFenced is called once, with the error, the first time a store write
 	// made under the context [Scheduler.Run] was given fails with
@@ -323,6 +335,12 @@ type Scheduler struct {
 	// this process -- bounded, not pruned, and gone on restart.
 	exprCapWarned sync.Map // workerID -> string
 
+	// capWarned de-duplicates capacity-group membership warnings, which a
+	// worker would otherwise repeat on every reconnect: capWarnKey -> the
+	// detail last logged. See [Scheduler.warnCapacityOnce]. Bounded like
+	// exprCapWarned: a few entries per worker that ever drew one.
+	capWarned sync.Map // capWarnKey -> string
+
 	// instanceRefusals counts, per worker process, the lease requests refused
 	// in a row because that process's registration has not landed, so one
 	// that never lands is reported at Warn (see
@@ -353,6 +371,13 @@ type Scheduler struct {
 
 	// wg tracks all internal goroutines so [Run] can wait for clean exit.
 	wg sync.WaitGroup
+
+	// revokeWG tracks the [Config.RevokeWorker] calls running in the
+	// background (see [Scheduler.revokeRemovedWorker]). Nothing in production
+	// waits on it: a call is bounded by the server's own broker timeout, and
+	// waiting from Run could race a handler still adding to it. Tests wait on
+	// it before reading what the calls did.
+	revokeWG sync.WaitGroup
 
 	// ctx is the lifecycle context for the scheduler; set during [Run] and used
 	// by NATS message-handler callbacks that cannot receive a context parameter.
@@ -1015,6 +1040,10 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 	}
 	w.RegistrationBrokerAt = s.brokerAt(ctx, msg, "worker.register", m.WorkerID)
 
+	// Touches the broker credential when authentication is on, and reads
+	// what capacity-group membership needs (capacitymembership.go).
+	rc := s.beforeRegistration(ctx, m, now)
+
 	stored, reclaimed, err := s.store.RegisterWorker(ctx, w)
 	if errors.Is(err, store.ErrStaleRegistration) {
 		// A registration the broker stamped before the one already recorded: a
@@ -1051,16 +1080,7 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 	}
 
 	s.ensureComputeLocation(ctx, m.ComputeLocation)
-
-	// Registration is "last seen" — connect and reconnect both go through
-	// here, and it is low-frequency, unlike heartbeat. Only touched when
-	// broker authentication is enabled: with it off there are no credential
-	// rows at all, and the default no-config path must do no extra store
-	// work.
-	if s.cfg.NATSAuthEnabled {
-		s.touchWorkerCredential(ctx, m.WorkerID, now)
-	}
-
+	s.afterRegistration(ctx, m, stored, rc, now)
 	s.warnOnExprCapShortfall(ctx, w)
 
 	s.logger.InfoContext(
@@ -1179,22 +1199,27 @@ func (s *Scheduler) ensureComputeLocation(ctx context.Context, name string) {
 }
 
 // touchWorkerCredential sets LastSeenAt on workerID's active broker
-// credential to at. Best-effort, exactly like ensureComputeLocation: a
-// credential bookkeeping write must never stop a worker coming online.
-// [store.ErrNotFound] — no active credential for this worker — is not
-// unusual enough to warrant more than a debug log: it is the normal shape
-// for a worker that enrolled with broker auth off and was seen once auth
-// was later turned on, or any other legitimate mismatch between "workers
-// that exist" and "workers with a credential". Any other error is logged at
-// warn, matching ensureComputeLocation's posture toward its own store
-// writes.
-func (s *Scheduler) touchWorkerCredential(ctx context.Context, workerID string, at time.Time) {
-	err := s.store.TouchWorkerCredential(ctx, workerID, at)
+// credential to at and returns the credential, with false when there is none
+// or the write failed. Registration is "last seen": connect and reconnect both
+// go through it, and it is low-frequency, unlike heartbeat. It is called only
+// with broker authentication enabled: with it off there are no credential rows
+// at all, and the default no-config path must do no extra store work.
+//
+// Best-effort, exactly like ensureComputeLocation: a credential bookkeeping
+// write must never stop a worker coming online. [store.ErrNotFound] — no
+// active credential for this worker — is not unusual enough to warrant more
+// than a debug log: it is the normal shape for a worker that enrolled with
+// broker auth off and was seen once auth was later turned on, or any other
+// legitimate mismatch between "workers that exist" and "workers with a
+// credential". Any other error is logged at warn, matching
+// ensureComputeLocation's posture toward its own store writes.
+func (s *Scheduler) touchWorkerCredential(ctx context.Context, workerID string, at time.Time) (store.WorkerCredential, bool) {
+	cred, err := s.store.TouchWorkerCredential(ctx, workerID, at)
 	switch {
 	case err == nil:
-		return
+		return cred, true
 	case s.stopIfFenced(ctx, err):
-		return // recorded: the registration is not acknowledged
+		// recorded: the registration is not acknowledged
 	case errors.Is(err, store.ErrNotFound):
 		s.logger.DebugContext(ctx, "scheduler: no active broker credential to touch on registration",
 			slog.String("worker_id", workerID))
@@ -1202,6 +1227,7 @@ func (s *Scheduler) touchWorkerCredential(ctx context.Context, workerID string, 
 		s.logger.WarnContext(ctx, "scheduler: touch worker credential last-seen failed",
 			slog.String("worker_id", workerID), slog.Any("error", err))
 	}
+	return store.WorkerCredential{}, false
 }
 
 // handleWorkerDeregister processes a worker.deregister message published by a
@@ -1213,16 +1239,19 @@ func (s *Scheduler) touchWorkerCredential(ctx context.Context, workerID string, 
 // store left the row in. A deregister from a process the worker's latest
 // registration has replaced (its instance ID differs from the stored one) is
 // acked and ignored: applying it would take the new process offline and
-// reclaim the tasks it is running.
+// reclaim the tasks it is running. A deregister whose kind is retired or
+// preempted then deletes an ephemeral capacity-group member and revokes its
+// credential ([Scheduler.removeDepartedEphemeral]).
 //
 // subjectWorkerID is the worker the message's subject attributes it to.
 func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Msg, subjectWorkerID string) {
-	// DeregisterMsg mirrors protocol.DeregisterMsg; we decode only the
-	// fields the server needs without importing the worker protocol package.
+	// The fields of protocol.DeregisterMsg the server needs; the version is
+	// not gated (see the protocol package).
 	var m struct {
-		WorkerID   string `json:"worker_id"`
-		InstanceID string `json:"instance_id,omitempty"`
-		Reason     string `json:"reason,omitempty"`
+		WorkerID   string                  `json:"worker_id"`
+		InstanceID string                  `json:"instance_id,omitempty"`
+		Reason     string                  `json:"reason,omitempty"`
+		Kind       protocol.DeregisterKind `json:"kind,omitempty"`
 	}
 	if err := json.Unmarshal(msg.Data(), &m); err != nil {
 		// The subject is the only identity left once the body will not decode.
@@ -1284,6 +1313,7 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 		ctx, "scheduler: worker deregistered",
 		slog.String("worker_id", m.WorkerID),
 		slog.String("reason", m.Reason),
+		slog.String("kind", string(m.Kind)),
 	)
 
 	// A gracefully-deregistered worker is now offline with nothing in flight,
@@ -1292,6 +1322,14 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 	// store call above instead of being stranded in 'assigned'/'running'; report
 	// them.
 	s.reclaimOfflineWorkerTasks(ctx, m.WorkerID, "", reclaimOffline, reclaimed)
+
+	// An ephemeral capacity-group member that left for good is deleted now,
+	// with its credential (capacitymembership.go).
+	if s.removeDepartedEphemeral(ctx, m.WorkerID, m.Kind) {
+		s.refreshWorkerGauge(ctx)
+		s.ackMsg(ctx, msg)
+		return
+	}
 
 	status := store.WorkerStatusOffline
 	if w, err := s.store.GetWorker(ctx, m.WorkerID); err == nil {

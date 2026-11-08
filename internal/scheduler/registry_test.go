@@ -146,7 +146,7 @@ type touchRecordingStore struct {
 	touched []string
 }
 
-func (s *touchRecordingStore) TouchWorkerCredential(ctx context.Context, workerID string, at time.Time) error {
+func (s *touchRecordingStore) TouchWorkerCredential(ctx context.Context, workerID string, at time.Time) (store.WorkerCredential, error) {
 	s.touched = append(s.touched, workerID)
 	return s.Store.TouchWorkerCredential(ctx, workerID, at)
 }

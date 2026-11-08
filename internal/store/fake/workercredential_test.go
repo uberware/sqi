@@ -154,7 +154,7 @@ func TestWorkerCredential_Touch(t *testing.T) {
 	}
 
 	seenAt := enrolledAt.Add(time.Hour)
-	if err := s.TouchWorkerCredential(ctx, "w1", seenAt); err != nil {
+	if _, err := s.TouchWorkerCredential(ctx, "w1", seenAt); err != nil {
 		t.Fatalf("TouchWorkerCredential: %v", err)
 	}
 
@@ -172,7 +172,7 @@ func TestWorkerCredential_Touch(t *testing.T) {
 func TestWorkerCredential_TouchNotFound(t *testing.T) {
 	s := fake.New()
 	defer s.Close()
-	err := s.TouchWorkerCredential(context.Background(), "nope", time.Now().UTC())
+	_, err := s.TouchWorkerCredential(context.Background(), "nope", time.Now().UTC())
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -196,7 +196,7 @@ func TestWorkerCredential_TouchOnlyMatchesActiveRow(t *testing.T) {
 		t.Fatalf("RevokeWorkerCredential: %v", err)
 	}
 
-	err := s.TouchWorkerCredential(ctx, "w1", now.Add(time.Hour))
+	_, err := s.TouchWorkerCredential(ctx, "w1", now.Add(time.Hour))
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("expected ErrNotFound for a worker with only a revoked credential, got %v", err)
 	}

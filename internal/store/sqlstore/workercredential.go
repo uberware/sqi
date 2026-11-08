@@ -30,7 +30,7 @@ const (
 
 	sqlRevokeWorkerCredential = `UPDATE worker_credentials SET revoked_at = ? WHERE worker_id = ? AND revoked_at IS NULL` //nolint:gosec // G101: SQL text, not a credential
 
-	sqlTouchWorkerCredential = `UPDATE worker_credentials SET last_seen_at = ? WHERE worker_id = ? AND revoked_at IS NULL` //nolint:gosec // G101: SQL text, not a credential
+	sqlTouchWorkerCredential = `UPDATE worker_credentials SET last_seen_at = ? WHERE worker_id = ? AND revoked_at IS NULL RETURNING ` + workerCredentialCols
 
 	sqlInsertWorkerJoinToken = `INSERT INTO worker_join_tokens (` + workerJoinTokenCols + `) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING ` + workerJoinTokenCols
 
@@ -132,13 +132,13 @@ func (s *Store) RevokeWorkerCredential(ctx context.Context, workerID string, at 
 	return checkRowsAffected(res)
 }
 
-// TouchWorkerCredential implements [store.WorkerCredentialStore].
-func (s *Store) TouchWorkerCredential(ctx context.Context, workerID string, at time.Time) error {
-	res, err := s.execStmt(ctx, "touch worker credential", s.stmtTouchWorkerCredential, TimeText(at), workerID)
-	if err != nil {
-		return mapErr(err)
-	}
-	return checkRowsAffected(res)
+// TouchWorkerCredential implements [store.WorkerCredentialStore]. The partial
+// unique index on active credentials leaves at most one row to update, so the
+// RETURNING row is the worker's active credential; none is [store.ErrNotFound].
+func (s *Store) TouchWorkerCredential(ctx context.Context, workerID string, at time.Time) (store.WorkerCredential, error) {
+	out, err := writeRow(ctx, s, "touch worker credential", scanWorkerCredential, s.stmtTouchWorkerCredential,
+		TimeText(at), workerID)
+	return out, mapErr(err)
 }
 
 // CreateWorkerJoinToken implements [store.WorkerCredentialStore].

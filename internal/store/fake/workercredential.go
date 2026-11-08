@@ -89,11 +89,11 @@ func (s *Store) RevokeWorkerCredential(ctx context.Context, workerID string, at 
 }
 
 // TouchWorkerCredential implements [store.WorkerCredentialStore].
-func (s *Store) TouchWorkerCredential(ctx context.Context, workerID string, at time.Time) error {
+func (s *Store) TouchWorkerCredential(ctx context.Context, workerID string, at time.Time) (store.WorkerCredential, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.fenceLocked(ctx); err != nil {
-		return err
+		return store.WorkerCredential{}, err
 	}
 	// Scan the whole map rather than stopping at the first match, for the
 	// same reason RevokeWorkerCredential does: a worker can have both a
@@ -105,9 +105,9 @@ func (s *Store) TouchWorkerCredential(ctx context.Context, workerID string, at t
 		}
 		c.LastSeenAt = &at
 		s.workerCredentials[id] = c
-		return nil
+		return c, nil
 	}
-	return store.ErrNotFound
+	return store.WorkerCredential{}, store.ErrNotFound
 }
 
 // CreateWorkerJoinToken implements [store.WorkerCredentialStore].

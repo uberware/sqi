@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -217,17 +218,20 @@ func (s *spyStore) ListUsagePools(ctx context.Context) ([]store.UsagePool, error
 	return s.Store.ListUsagePools(ctx)
 }
 
-// With no enabled capacity group the sweep makes one query and changes
-// nothing: no demand query, no log line, no series (anti-goal 7).
+// With no capacity group the sweep makes one query and changes nothing: no
+// demand query, no log line, no series (anti-goal 7). With only a disabled
+// group it also reads that group's members, whose vanished ephemeral machines
+// it must still remove, and nothing else.
 func TestCapacitySweep_NoGroupsDoesNothing(t *testing.T) {
 	tests := []struct {
 		name  string
 		setup func(t *testing.T, st *fake.Store)
+		want  map[string]int
 	}{
-		{"no groups", func(*testing.T, *fake.Store) {}},
+		{"no groups", func(*testing.T, *fake.Store) {}, map[string]int{"ListCapacityGroups": 2}},
 		{"only a disabled group", func(t *testing.T, st *fake.Store) {
 			createGroup(t, st, sizedGroup("off", func(g *store.CapacityGroup) { g.Enabled = false }))
-		}},
+		}, map[string]int{"ListCapacityGroups": 2, "ListCapacityGroupMembers": 2}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -248,12 +252,11 @@ func TestCapacitySweep_NoGroupsDoesNothing(t *testing.T) {
 			s.sweepCapacity(t.Context())
 			s.sweepCapacity(t.Context())
 
-			want := map[string]int{"ListCapacityGroups": 2}
 			spy.mu.Lock()
-			got := spy.calls
+			got := maps.Clone(spy.calls)
 			spy.mu.Unlock()
-			if len(got) != len(want) || got["ListCapacityGroups"] != 2 {
-				t.Errorf("store calls = %v, want %v", got, want)
+			if !maps.Equal(got, tc.want) {
+				t.Errorf("store calls = %v, want %v", got, tc.want)
 			}
 			if n := len(capacitySeries(t, s.metrics)); n != 0 {
 				t.Errorf("sqi_capacity_* series = %d, want 0: %v", n, capacitySeries(t, s.metrics))

@@ -65,11 +65,13 @@ type WorkerCredentialStore interface {
 	// RevokeWorkerCredential soft-revokes the credential for workerID.
 	// Returns [ErrNotFound] if no such worker has a credential.
 	RevokeWorkerCredential(ctx context.Context, workerID string, at time.Time) error
-	// TouchWorkerCredential sets LastSeenAt on workerID's ACTIVE credential.
-	// Returns [ErrNotFound] if the worker has no active credential. Callers
-	// that treat "seen" as best-effort bookkeeping (registration, not a
-	// security decision) should not fail on that error.
-	TouchWorkerCredential(ctx context.Context, workerID string, at time.Time) error
+	// TouchWorkerCredential sets LastSeenAt on workerID's ACTIVE credential and
+	// returns that credential as stored after the write. Returns [ErrNotFound]
+	// if the worker has no active credential. Callers that treat "seen" as
+	// best-effort bookkeeping should not fail on that error. Registration also
+	// reads the returned credential's CapacityGroupID, so it learns a worker's
+	// enrolled group without a second query.
+	TouchWorkerCredential(ctx context.Context, workerID string, at time.Time) (WorkerCredential, error)
 	// CreateWorkerJoinToken inserts a new join token. Returns [ErrConflict]
 	// on a token-hash or id collision.
 	CreateWorkerJoinToken(ctx context.Context, t WorkerJoinToken) (WorkerJoinToken, error)
