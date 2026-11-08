@@ -507,13 +507,14 @@ func (s *Store) OfflineWorker(ctx context.Context, id, instanceID string, now ti
 // Against LeaseTask, the worker anchor orders the two: LeaseTask holds the
 // worker row FOR SHARE until it commits. A lease in flight is waited for, and
 // its task is in the in-flight set read after the lock and is reclaimed. A
-// later lease waits for this commit and then proceeds, because LeaseTask
-// refuses only a disabled worker, not an offline one: the sweep can take a
-// live worker offline and nothing brings it back online (see "Known gaps" in
+// later lease waits for this commit. One that requires the worker online
+// (the scheduler read it online before this transition) is then Lost. One
+// that does not proceeds, because without that requirement LeaseTask refuses
+// only a disabled worker, not an offline one: the sweep can take a live worker
+// offline and nothing brings it back online (see "Known gaps" in
 // docs/architecture.md). Such a task is served if the worker is alive and
-// recovered by the stale-assignment reaper if not. The anchor guarantees only
-// that this transition reclaims every task assigned to the worker when it
-// commits.
+// recovered by the stale-assignment reaper if not. The anchor guarantees that
+// this transition reclaims every task assigned to the worker when it commits.
 //
 // The in-flight job IDs are read UNLOCKED, after the worker row is held and
 // before any task row is touched, and the job rows are locked sorted before the

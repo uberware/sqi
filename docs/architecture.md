@@ -1575,7 +1575,13 @@ The store does not close these yet.
   parked while its worker was online, and is woken after the worker went
   offline (a graceful deregister or the heartbeat sweep), is answered empty
   rather than leased a task, so a departed process's last request does not take
-  a task into a dead inbox for the stale-assignment reaper to recover. A live worker that hits this is refused once, and its
+  a task into a dead inbox for the stale-assignment reaper to recover. The same
+  holds when the worker goes offline, or its row is deleted, after the request
+  read it online but before the lease commits: the scheduler sets
+  `RequireOnline` on a lease for a worker it read online, and `LeaseTask`
+  refuses it under the worker anchor. A preempted worker produces exactly that
+  order, since its own shutdown reports wake its parked request just before its
+  deregister lands. A live worker that hits this is refused once, and its
   next request is served.
 - **A `LeaseTask` that commits is not always delivered.** If building the
   assignment payload fails after `LeaseTask` committed (a deterministic error:

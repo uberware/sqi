@@ -21,7 +21,7 @@ import (
 //   - a task failing ListReadyTasks' eligibility predicate (isReadyInFarm) is
 //     Lost;
 //   - a disabled worker is Lost; an offline worker, or one with no row, is
-//     not refused;
+//     Lost only when the request sets RequireOnline;
 //   - the queue cap is checked before the farm cap;
 //   - pools are checked in pool-ID order, whatever order the request lists
 //     them in, so the same full pool is reported;
@@ -40,8 +40,10 @@ func (s *Store) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.Le
 		return store.LeaseResult{Outcome: store.LeaseLost}, nil
 	}
 	// The worker re-check (see the SQL store's sqlLeaseTaskGuarded): a
-	// disabled worker is refused; an offline or unknown one is not.
-	if w, ok := s.workers[req.WorkerID]; ok && w.Disabled {
+	// disabled worker is refused; an offline or unknown one only when the
+	// request requires the worker online (sqlLeaseTaskGuardedOnline).
+	w, known := s.workers[req.WorkerID]
+	if (known && w.Disabled) || (req.RequireOnline && (!known || w.Status != store.WorkerStatusOnline)) {
 		return store.LeaseResult{Outcome: store.LeaseLost}, nil
 	}
 	if full := s.leaseCapsFullLocked(s.jobs[t.JobID]); full != "" {

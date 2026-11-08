@@ -479,12 +479,22 @@ func (s *Scheduler) tryLeaseTask(
 	// attempt and its claims (invariants I3 and I5). Every outcome other than
 	// Leased writes nothing, so there is nothing to revert and the task simply
 	// stays ready (or is no longer ours) for the next lease request.
+	//
+	// A worker read online must still be online, and still exist, when the
+	// lease commits. A deregister or a deletion can land between that read and
+	// this write: a preempted worker's own shutdown reports return its tasks
+	// to ready and wake its parked request just before its deregister arrives,
+	// and the task would otherwise be assigned to a worker that has left. A
+	// worker read offline is still served (see "Known gaps" in
+	// docs/architecture.md), so a live worker the sweep wrongly took offline is
+	// refused at most once.
 	res, err := s.store.LeaseTask(ctx, store.LeaseRequest{
-		TaskID:    task.ID,
-		WorkerID:  worker.ID,
-		AttemptID: uuid.NewString(),
-		Now:       time.Now().UTC(),
-		Claims:    buildUsageClaims(gd.step, gd.pools),
+		TaskID:        task.ID,
+		WorkerID:      worker.ID,
+		AttemptID:     uuid.NewString(),
+		Now:           time.Now().UTC(),
+		Claims:        buildUsageClaims(gd.step, gd.pools),
+		RequireOnline: worker.Status == store.WorkerStatusOnline,
 	})
 	if err != nil {
 		return nil, 0, false, fmt.Errorf("lease: lease task %s: %w", task.ID, err)

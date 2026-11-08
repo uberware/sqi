@@ -1186,3 +1186,100 @@ func TestParkedLeaseOfAWorkerTakenOfflineMeanwhileGetsNoWork(t *testing.T) {
 		t.Fatalf("task = %q, want ready (not leased to the offline worker)", task.Status)
 	}
 }
+
+// TestParkedLeaseOfAWorkerTakenOfflineWhileLeasingGetsNoWork closes the window
+// the test above leaves: a request woken while its worker is still online
+// reads it online, and the worker then goes offline (a deregister) or is
+// deleted (an ephemeral member removed) before the lease commits. That is the
+// order a preempted worker produces: its own shutdown reports return its tasks
+// to ready, waking its parked request, just before its deregister lands. The
+// lease must not commit, or the task waits in a dead inbox for the
+// stale-assignment reaper and a deleted worker's row is not even there.
+func TestParkedLeaseOfAWorkerTakenOfflineWhileLeasingGetsNoWork(t *testing.T) {
+	for _, gone := range []bool{false, true} {
+		for name, st := range raceBackends(t) {
+			label := "offline/" + name
+			if gone {
+				label = "deleted/" + name
+			}
+			t.Run(label, func(t *testing.T) {
+				wrapped := &racingLeaseStore{Store: st}
+				s := newMetricsScheduler(wrapped, &recordBus{}, "f1")
+				s.ctx = t.Context()
+				s.leaseHoldTimeout = 30 * time.Second
+				one := 1
+				w, ids := seedLeaseFixture(t, st, []*int{&one})
+
+				// The worker takes the one ready task, so its next request parks.
+				if got, _ := leaseAs(t, s, w.ID, ""); len(got) != 1 {
+					t.Fatalf("first lease = %v, want the one task", got)
+				}
+				// The deregister lands after the woken request has read the worker
+				// online and chosen a task, just before its lease commits.
+				wrapped.hook = &once{fn: func() {
+					if _, offlined, err := st.OfflineWorker(context.Background(), w.ID, "", time.Now().UTC()); err != nil || !offlined {
+						t.Errorf("OfflineWorker = (%v, %v), want (true, nil)", offlined, err)
+					}
+					if gone {
+						if err := st.DeleteWorkerIfRemovable(context.Background(), w.ID); err != nil {
+							t.Errorf("DeleteWorkerIfRemovable: %v", err)
+						}
+					}
+				}}
+				req, err := json.Marshal(leaseRequest{WorkerID: w.ID})
+				if err != nil {
+					t.Fatalf("marshal lease request: %v", err)
+				}
+				done := make(chan []byte, 1)
+				go func() { done <- s.handleLeaseRequest(w.ID, "q1", req) }()
+				deadline := time.Now().Add(5 * time.Second)
+				for {
+					s.waiters.mu.Lock()
+					parked := len(s.waiters.waiters["q1"])
+					s.waiters.mu.Unlock()
+					if parked > 0 {
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatal("the second lease request never parked")
+					}
+					time.Sleep(time.Millisecond)
+				}
+
+				// A new task becomes ready and wakes the parked request.
+				held := mustTaskOf(t, st, ids[0])
+				heldJob, heldStep := mustJob(t, st, held.JobID), mustStep(t, st, held.StepID)
+				heldJob.ID, heldStep.ID = uuid.NewString(), uuid.NewString()
+				heldStep.JobID = heldJob.ID
+				fresh := store.Task{
+					ID: uuid.NewString(), JobID: heldJob.ID, StepID: heldStep.ID,
+					Name: "t", Status: store.TaskStatusReady, Parameters: map[string]string{},
+					RequiredCores: &one,
+				}
+				storetest.Submit(t, st, store.JobSubmission{Job: heldJob, Steps: []store.Step{heldStep}, Tasks: []store.Task{fresh}})
+				s.waiters.notifyAll()
+
+				select {
+				case raw := <-done:
+					var rep leaseReply
+					if err := json.Unmarshal(raw, &rep); err != nil {
+						t.Fatalf("unmarshal lease reply: %v", err)
+					}
+					if len(rep.Assignments) != 0 {
+						t.Fatalf("lease committed for a worker taken offline meanwhile: %s, want no assignments", raw)
+					}
+				case <-time.After(10 * time.Second):
+					t.Fatal("the parked lease request never returned")
+				}
+				for _, id := range []string{ids[0], fresh.ID} {
+					if task := mustTaskOf(t, st, id); task.Status != store.TaskStatusReady || task.AssignedWorkerID != "" {
+						t.Errorf("task %s = %q on %q, want ready and unassigned", id, task.Status, task.AssignedWorkerID)
+					}
+				}
+				if attempts, err := st.ListTaskAttempts(t.Context(), fresh.ID); err != nil || len(attempts) != 0 {
+					t.Errorf("attempts of the new task = (%+v, %v), want none", attempts, err)
+				}
+			})
+		}
+	}
+}

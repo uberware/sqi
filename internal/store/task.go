@@ -223,6 +223,13 @@ type LeaseRequest struct {
 	// and PoolName are used; MaxConcurrent is ignored, because the pool's cap
 	// is read in the lease's own transaction.
 	Claims []UsagePoolClaim
+	// RequireOnline refuses the lease, as [LeaseLost], unless the worker's row
+	// exists and is online when the lease commits. A caller sets it when it
+	// chose to lease because it read the worker online, so a worker taken
+	// offline (a deregister, the heartbeat sweep) or deleted between that read
+	// and this write is not handed a task it will never receive. Left false,
+	// an offline worker and one with no row are not refused.
+	RequireOnline bool
 }
 
 // LeaseResult is what [TaskStore.LeaseTask] did.
