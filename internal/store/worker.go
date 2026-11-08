@@ -169,7 +169,15 @@ type Worker struct {
 	// Disabled is true while an operator has the worker disabled. It is
 	// independent of Status: a disabled worker still goes online and offline,
 	// and stays disabled through both.
-	Disabled        bool
+	Disabled bool
+	// CapacityGroupID is the capacity group the worker belongs to, or empty
+	// for none. Only [WorkerStore.SetWorkerCapacityGroup] and
+	// [WorkerStore.DeleteEphemeralWorker] write it; a registration never does.
+	CapacityGroupID string
+	// Ephemeral marks a member the server created for a group and removes
+	// when it retires; it is meaningful only with a CapacityGroupID. A member
+	// that is not ephemeral is a named machine and outlives its time offline.
+	Ephemeral       bool
 	LastHeartbeatAt *time.Time
 	RegisteredAt    time.Time
 	UpdatedAt       time.Time
@@ -229,8 +237,9 @@ type WorkerStore interface {
 	// RegisterWorker inserts or replaces the worker record for the given ID.
 	// Called by the server when a worker sends its registration message. If the
 	// worker ID already exists its record is updated in full, except that an
-	// empty InstanceID keeps the stored one and Disabled is never written: a
-	// disabled worker stays disabled, and a new one is enabled. When the stored
+	// empty InstanceID keeps the stored one and Disabled, CapacityGroupID and
+	// Ephemeral are never written: a disabled worker stays disabled, a new one
+	// is enabled, and a worker keeps its group membership. When the stored
 	// InstanceID is non-empty and differs from a non-empty incoming one, the
 	// previous worker process is gone: in the same transaction its assigned and
 	// running tasks are reclaimed exactly as [WorkerStore.OfflineWorker]
@@ -261,6 +270,26 @@ type WorkerStore interface {
 	// the worker's liveness. Setting the value the flag already holds is not an
 	// error. Returns [ErrNotFound] if the worker does not exist.
 	SetWorkerDisabled(ctx context.Context, id string, disabled bool) (Worker, error)
+
+	// SetWorkerCapacityGroup makes the worker a member of the capacity group
+	// groupID, marked ephemeral or not, updates UpdatedAt and returns the
+	// stored worker. An empty groupID clears the membership and Ephemeral
+	// (ephemeral is then ignored). Setting the group the worker is already in
+	// is not an error and rewrites Ephemeral. Returns [ErrNotFound] for an
+	// unknown worker or group, and [ErrConflict] when the worker is already in
+	// a different group: the caller clears the old membership first.
+	SetWorkerCapacityGroup(ctx context.Context, workerID, groupID string, ephemeral bool) (Worker, error)
+
+	// ListCapacityGroupMembers returns the workers that belong to the group,
+	// ordered by hostname then ID. An unknown group has no members.
+	ListCapacityGroupMembers(ctx context.Context, groupID string) ([]Worker, error)
+
+	// DeleteEphemeralWorker deletes the worker only while it is ephemeral,
+	// offline and holds no assigned or running task, and revokes its active
+	// credential at now in the same transaction. It returns the deleted row and
+	// true. Otherwise (including an unknown worker) it writes nothing and
+	// returns (Worker{}, false, nil).
+	DeleteEphemeralWorker(ctx context.Context, id string, now time.Time) (Worker, bool, error)
 
 	// UpdateWorkerHeartbeat records at as the given worker's LastHeartbeatAt,
 	// the time the liveness sweep judges against the server's clock. The
@@ -351,8 +380,10 @@ type WorkerStore interface {
 	// DeleteOfflineWorkersBefore hard-deletes every enabled worker in
 	// [WorkerStatusOffline] whose LastHeartbeatAt is strictly before cutoff,
 	// and returns the deleted records. Online workers and disabled ones are
-	// never touched: a disabled worker stays until an operator removes it.
-	// Used by the scheduler's offline-retention sweep to bound the growth of
+	// never touched: a disabled worker stays until an operator removes it. A
+	// member of a capacity group that is not ephemeral (a named machine) is
+	// kept too; ephemeral members and workers in no group are deleted as any
+	// other. Used by the scheduler's offline-retention sweep to bound the growth of
 	// the worker table.
 	DeleteOfflineWorkersBefore(ctx context.Context, cutoff time.Time) ([]Worker, error)
 }
@@ -364,6 +395,8 @@ type ListWorkersOptions struct {
 	FarmID          string
 	QueueID         string
 	ComputeLocation string
+	// CapacityGroupID keeps only the members of that capacity group.
+	CapacityGroupID string
 	// Status filters by [Worker.EffectiveStatus]: disabled matches every
 	// disabled worker, online and offline match only enabled ones. Empty = all.
 	Status WorkerStatus

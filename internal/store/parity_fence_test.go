@@ -497,7 +497,7 @@ var fenceReadOnly = []string{
 	"CountActiveTasksInFarm", "CountActiveTasksInQueue", "CountIdleWorkers", "CountReadyTasksByQueue",
 	"CountTasksByJob", "CountUnschedulableTasksByJob", "CountUsers",
 	"GetAPIKeyUserByTokenHash", "GetActiveWorkerCredentialByPublicKey", "GetBrokerIdentity",
-	"GetCapacityGroup", "GetCapacityGroupByName", "ListCapacityGroups",
+	"GetCapacityGroup", "GetCapacityGroupByName", "ListCapacityGroups", "ListCapacityGroupMembers",
 	"GetComputeLocation", "GetComputeLocationByName", "GetFarm", "GetJob", "GetProductByName", "GetQueue",
 	"GetSessionByTokenHash", "GetSessionUserByTokenHash", "GetStep", "GetStorageLocation",
 	"GetStorageLocationByName", "GetTask", "GetTaskAttempt", "GetUsagePool", "GetUser",
@@ -701,6 +701,21 @@ var fenceMutators = map[string]fenceMutator{
 	"DeleteJob": func(t *testing.T, st store.Store) func(context.Context) error {
 		g := fenceLiveJob(t, st, store.TaskStatusReady)
 		return func(ctx context.Context) error { return st.DeleteJob(ctx, g.Job.ID) }
+	},
+	"DeleteEphemeralWorker": func(t *testing.T, st store.Store) func(context.Context) error {
+		farm := fenceFarm(t, st)
+		g := mustCreateCapacityGroup(t, st, mkCapacityGroup(farm.ID, uuid.NewString()))
+		w := fenceWorker(t, st, store.WorkerStatusOffline, time.Now().Add(-time.Hour))
+		if _, err := st.SetWorkerCapacityGroup(t.Context(), w.ID, g.ID, true); err != nil {
+			t.Fatalf("SetWorkerCapacityGroup: %v", err)
+		}
+		return func(ctx context.Context) error {
+			_, deleted, err := st.DeleteEphemeralWorker(ctx, w.ID, time.Now().UTC())
+			if err == nil && !deleted {
+				return errors.New("DeleteEphemeralWorker deleted nothing")
+			}
+			return err
+		}
 	},
 	"DeleteOfflineWorkersBefore": func(t *testing.T, st store.Store) func(context.Context) error {
 		fenceWorker(t, st, store.WorkerStatusOffline, time.Now().Add(-time.Hour))
@@ -983,6 +998,14 @@ var fenceMutators = map[string]fenceMutator{
 	"SetUserPasswordAndEvictSessions": func(t *testing.T, st store.Store) func(context.Context) error {
 		u := fenceUser(t, st, "viewer")
 		return func(ctx context.Context) error { return st.SetUserPasswordAndEvictSessions(ctx, u.ID, "$argon2id$new") }
+	},
+	"SetWorkerCapacityGroup": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := mustCreateCapacityGroup(t, st, mkCapacityGroup(fenceFarm(t, st).ID, uuid.NewString()))
+		w := fenceWorker(t, st, store.WorkerStatusOnline, time.Now())
+		return func(ctx context.Context) error {
+			_, err := st.SetWorkerCapacityGroup(ctx, w.ID, g.ID, false)
+			return err
+		}
 	},
 	"SetWorkerDisabled": func(t *testing.T, st store.Store) func(context.Context) error {
 		w := fenceWorker(t, st, store.WorkerStatusOnline, time.Now())

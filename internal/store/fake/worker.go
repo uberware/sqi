@@ -13,9 +13,9 @@ import (
 
 // RegisterWorker implements [store.WorkerStore]: it inserts or replaces the
 // worker record for the given ID, except that an empty InstanceID keeps the
-// stored one and Disabled is never taken from the registration: a new worker is
-// enabled and an existing one keeps its flag, as SQLite's upsert leaves the
-// column alone, and a nil RegistrationBrokerAt keeps the stored one. A
+// stored one and Disabled, CapacityGroupID and Ephemeral are never taken from
+// the registration: a new worker is enabled and in no group, and an existing
+// one keeps them, as the SQL upsert leaves those columns alone, and a nil RegistrationBrokerAt keeps the stored one. A
 // registration stamped earlier than the stored one ([store.StaleRegistration]) is
 // refused with [store.ErrStaleRegistration], returning the stored worker.
 // A non-empty stored InstanceID that differs from a non-empty
@@ -36,6 +36,8 @@ func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.
 	}
 	worker = cloneWorker(worker)
 	worker.Disabled = existing.Disabled                   // false for a new worker
+	worker.CapacityGroupID = existing.CapacityGroupID     // empty for a new worker
+	worker.Ephemeral = existing.Ephemeral                 // false for a new worker
 	worker.HeartbeatBrokerAt = existing.HeartbeatBrokerAt // nil for a new worker
 	var reclaimed []store.Task
 	if isUpdate {
@@ -110,6 +112,80 @@ func (s *Store) SetWorkerDisabled(ctx context.Context, id string, disabled bool)
 	s.workers[id] = worker
 	worker = cloneWorker(worker)
 	return worker, nil
+}
+
+// SetWorkerCapacityGroup implements [store.WorkerStore].
+func (s *Store) SetWorkerCapacityGroup(ctx context.Context, workerID, groupID string, ephemeral bool) (store.Worker, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.Worker{}, err
+	}
+
+	worker, ok := s.workers[workerID]
+	if !ok {
+		return store.Worker{}, store.ErrNotFound
+	}
+	if groupID != "" {
+		if _, ok := s.capacityGroups[groupID]; !ok {
+			return store.Worker{}, store.ErrNotFound
+		}
+		if worker.CapacityGroupID != "" && worker.CapacityGroupID != groupID {
+			return store.Worker{}, store.ErrConflict
+		}
+	}
+
+	worker.CapacityGroupID = groupID
+	worker.Ephemeral = ephemeral && groupID != ""
+	worker.UpdatedAt = time.Now().UTC()
+	s.workers[workerID] = worker
+	return cloneWorker(worker), nil
+}
+
+// ListCapacityGroupMembers implements [store.WorkerStore]: the group's workers
+// by hostname, then ID.
+func (s *Store) ListCapacityGroupMembers(_ context.Context, groupID string) ([]store.Worker, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var members []store.Worker
+	for _, w := range s.workers {
+		if w.CapacityGroupID == groupID {
+			members = append(members, cloneWorker(w))
+		}
+	}
+	slices.SortFunc(members, func(a, b store.Worker) int {
+		if c := cmp.Compare(a.Hostname, b.Hostname); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.ID, b.ID)
+	})
+	return members, nil
+}
+
+// DeleteEphemeralWorker implements [store.WorkerStore]: the worker goes only
+// while it is ephemeral, offline and holds no assigned or running task, and its
+// active credential is revoked at now with it.
+func (s *Store) DeleteEphemeralWorker(ctx context.Context, id string, now time.Time) (store.Worker, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.fenceLocked(ctx); err != nil {
+		return store.Worker{}, false, err
+	}
+
+	w, ok := s.workers[id]
+	if !ok || !w.Ephemeral || w.Status != store.WorkerStatusOffline || s.hasWorkInFlightLocked(id) {
+		return store.Worker{}, false, nil
+	}
+	delete(s.workers, id)
+	for credID, c := range s.workerCredentials {
+		if c.WorkerID == id && c.RevokedAt == nil {
+			at := now
+			c.RevokedAt = &at
+			s.workerCredentials[credID] = c
+		}
+	}
+	return cloneWorker(w), true, nil
 }
 
 // UpdateWorkerHeartbeat records the most recent heartbeat time for the given
@@ -234,7 +310,8 @@ func (s *Store) hasWorkInFlightLocked(workerID string) bool {
 
 // DeleteOfflineWorkersBefore hard-deletes every enabled offline worker last
 // seen before cutoff and returns the removed records. Online workers, disabled
-// ones and workers that have never sent a heartbeat are left untouched.
+// ones, workers that have never sent a heartbeat and members of a capacity group
+// that are not ephemeral are left untouched.
 func (s *Store) DeleteOfflineWorkersBefore(ctx context.Context, cutoff time.Time) ([]store.Worker, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -245,6 +322,9 @@ func (s *Store) DeleteOfflineWorkersBefore(ctx context.Context, cutoff time.Time
 	var removed []store.Worker
 	for id, w := range s.workers {
 		if w.Status != store.WorkerStatusOffline || w.Disabled {
+			continue
+		}
+		if w.CapacityGroupID != "" && !w.Ephemeral {
 			continue
 		}
 		if !heartbeatBefore(w, cutoff) {
@@ -268,6 +348,9 @@ func filterWorker(w store.Worker, opts store.ListWorkersOptions) bool {
 		return false
 	}
 	if opts.ComputeLocation != "" && w.ComputeLocation != opts.ComputeLocation {
+		return false
+	}
+	if opts.CapacityGroupID != "" && w.CapacityGroupID != opts.CapacityGroupID {
 		return false
 	}
 	if opts.Status != "" && w.EffectiveStatus() != opts.Status {

@@ -151,7 +151,12 @@ func (s *Store) DeleteCapacityGroup(ctx context.Context, id string) error {
 		return store.ErrNotFound
 	}
 	// A worker that belongs to the group makes the SQL stores refuse with
-	// [store.ErrConflict]; workers carry no group yet, so nothing can.
+	// [store.ErrConflict] through the foreign key.
+	for _, w := range s.workers {
+		if w.CapacityGroupID == id {
+			return store.ErrConflict
+		}
+	}
 	delete(s.capacityGroups, id)
 	return nil
 }

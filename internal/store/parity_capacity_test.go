@@ -5,6 +5,7 @@ package store_test
 import (
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 func mkCapacityGroup(farmID, name string) store.CapacityGroup {
@@ -250,6 +252,295 @@ func TestCapacityGroup_Validate(t *testing.T) {
 				t.Fatalf("Validate = nil, want an error naming %q", tc.want)
 			case tc.want != "" && !strings.Contains(err.Error(), tc.want):
 				t.Fatalf("Validate = %v, want it to name %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// capacityWorker registers a worker in farmID with the given liveness and
+// heartbeat time.
+func capacityWorker(t *testing.T, st store.Store, farmID, id, hostname string, status store.WorkerStatus, beat time.Time) store.Worker {
+	t.Helper()
+	beat = beat.UTC()
+	w, _, err := st.RegisterWorker(t.Context(), store.Worker{
+		ID: id, FarmID: farmID, Hostname: hostname, Status: status, LastHeartbeatAt: &beat,
+	})
+	if err != nil {
+		t.Fatalf("RegisterWorker %s: %v", id, err)
+	}
+	return w
+}
+
+func TestParity_SetWorkerCapacityGroup(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			farm := mustCreateFarm(t, st, "main")
+			a := mustCreateCapacityGroup(t, st, mkCapacityGroup(farm.ID, "alpha"))
+			b := mustCreateCapacityGroup(t, st, mkCapacityGroup(farm.ID, "beta"))
+			w := capacityWorker(t, st, farm.ID, "w-1", "node", store.WorkerStatusOnline, time.Now())
+			if w.CapacityGroupID != "" || w.Ephemeral {
+				t.Fatalf("new worker = group %q ephemeral %v, want none", w.CapacityGroupID, w.Ephemeral)
+			}
+
+			got, err := st.SetWorkerCapacityGroup(ctx, w.ID, a.ID, true)
+			if err != nil || got.CapacityGroupID != a.ID || !got.Ephemeral {
+				t.Fatalf("set = (%+v, %v), want group %s ephemeral", got, err, a.ID)
+			}
+			if stored := mustWorker(t, st, w.ID); stored.CapacityGroupID != a.ID || !stored.Ephemeral {
+				t.Fatalf("stored = group %q ephemeral %v, want %s ephemeral", stored.CapacityGroupID, stored.Ephemeral, a.ID)
+			}
+
+			// Setting the same group again is not an error and may change ephemeral.
+			got, err = st.SetWorkerCapacityGroup(ctx, w.ID, a.ID, false)
+			if err != nil || got.CapacityGroupID != a.ID || got.Ephemeral {
+				t.Fatalf("re-set = (%+v, %v), want group %s, not ephemeral", got, err, a.ID)
+			}
+
+			// A different group conflicts and changes nothing.
+			if _, err := st.SetWorkerCapacityGroup(ctx, w.ID, b.ID, true); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("different group: err = %v, want ErrConflict", err)
+			}
+			if stored := mustWorker(t, st, w.ID); stored.CapacityGroupID != a.ID || stored.Ephemeral {
+				t.Fatalf("after the conflict = group %q ephemeral %v, want %s, not ephemeral", stored.CapacityGroupID, stored.Ephemeral, a.ID)
+			}
+
+			// Unknown worker and unknown group are not found.
+			if _, err := st.SetWorkerCapacityGroup(ctx, "ghost", a.ID, false); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("unknown worker: err = %v, want ErrNotFound", err)
+			}
+			if _, err := st.SetWorkerCapacityGroup(ctx, w.ID, uuid.NewString(), false); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("unknown group: err = %v, want ErrNotFound", err)
+			}
+
+			// An empty group clears the membership and ephemeral, and then another group may be set.
+			if _, err := st.SetWorkerCapacityGroup(ctx, w.ID, a.ID, true); err != nil {
+				t.Fatalf("set ephemeral: %v", err)
+			}
+			got, err = st.SetWorkerCapacityGroup(ctx, w.ID, "", true)
+			if err != nil || got.CapacityGroupID != "" || got.Ephemeral {
+				t.Fatalf("clear = (%+v, %v), want no group and not ephemeral", got, err)
+			}
+			if _, err := st.SetWorkerCapacityGroup(ctx, "ghost", "", false); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("clear unknown worker: err = %v, want ErrNotFound", err)
+			}
+			got, err = st.SetWorkerCapacityGroup(ctx, w.ID, b.ID, false)
+			if err != nil || got.CapacityGroupID != b.ID {
+				t.Fatalf("set after clear = (%+v, %v), want group %s", got, err, b.ID)
+			}
+		})
+	}
+}
+
+func TestParity_ListCapacityGroupMembers(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			farm := mustCreateFarm(t, st, "main")
+			a := mustCreateCapacityGroup(t, st, mkCapacityGroup(farm.ID, "alpha"))
+			b := mustCreateCapacityGroup(t, st, mkCapacityGroup(farm.ID, "beta"))
+			now := time.Now()
+			for _, m := range []struct{ id, host, group string }{
+				{"w-1", "zulu", a.ID}, {"w-2", "alpha", a.ID}, {"w-3", "mike", b.ID}, {"w-4", "kilo", ""},
+			} {
+				capacityWorker(t, st, farm.ID, m.id, m.host, store.WorkerStatusOnline, now)
+				if m.group != "" {
+					if _, err := st.SetWorkerCapacityGroup(ctx, m.id, m.group, false); err != nil {
+						t.Fatalf("SetWorkerCapacityGroup %s: %v", m.id, err)
+					}
+				}
+			}
+
+			members, err := st.ListCapacityGroupMembers(ctx, a.ID)
+			if err != nil {
+				t.Fatalf("ListCapacityGroupMembers: %v", err)
+			}
+			ids := project(members, func(w store.Worker) string { return w.ID })
+			if strings.Join(ids, ",") != "w-2,w-1" {
+				t.Fatalf("members of alpha = %v, want w-2, w-1 (by hostname)", ids)
+			}
+			if none, err := st.ListCapacityGroupMembers(ctx, uuid.NewString()); err != nil || len(none) != 0 {
+				t.Fatalf("members of an unknown group = (%v, %v), want none", none, err)
+			}
+
+			page, err := st.ListWorkers(ctx, store.ListWorkersOptions{CapacityGroupID: b.ID, Pagination: store.Pagination{Limit: 10}})
+			if err != nil || page.Total != 1 || page.Items[0].ID != "w-3" {
+				t.Fatalf("ListWorkers by group = (%+v, %v), want only w-3", page, err)
+			}
+		})
+	}
+}
+
+func TestParity_RegisterWorkerKeepsMembership(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			farm := mustCreateFarm(t, st, "main")
+			g := mustCreateCapacityGroup(t, st, mkCapacityGroup(farm.ID, "alpha"))
+			beat := time.Now().UTC()
+			reg := func(instance string) store.Worker {
+				w, _, err := st.RegisterWorker(ctx, store.Worker{
+					ID: "w-1", FarmID: farm.ID, Hostname: "node", Status: store.WorkerStatusOnline,
+					LastHeartbeatAt: &beat, InstanceID: instance,
+				})
+				if err != nil {
+					t.Fatalf("RegisterWorker %s: %v", instance, err)
+				}
+				return w
+			}
+			reg("A")
+			if _, err := st.SetWorkerCapacityGroup(ctx, "w-1", g.ID, true); err != nil {
+				t.Fatalf("SetWorkerCapacityGroup: %v", err)
+			}
+
+			// A registration never carries the membership, and never clears it.
+			got := reg("B")
+			if got.CapacityGroupID != g.ID || !got.Ephemeral {
+				t.Fatalf("after re-registration = group %q ephemeral %v, want %s ephemeral", got.CapacityGroupID, got.Ephemeral, g.ID)
+			}
+			if stored := mustWorker(t, st, "w-1"); stored.CapacityGroupID != g.ID || !stored.Ephemeral || stored.InstanceID != "B" {
+				t.Fatalf("stored = group %q ephemeral %v instance %q, want %s ephemeral B", stored.CapacityGroupID, stored.Ephemeral, stored.InstanceID, g.ID)
+			}
+		})
+	}
+}
+
+func TestParity_DeleteEphemeralWorker(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			now := time.Now().UTC()
+			g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning},
+				stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusRunning}})
+			group := mustCreateCapacityGroup(t, st, mkCapacityGroup(g.Farm.ID, "alpha"))
+
+			// expectKept asserts a refused delete changed nothing.
+			expectKept := func(id, why string) {
+				t.Helper()
+				w, deleted, err := st.DeleteEphemeralWorker(ctx, id, now)
+				if err != nil || deleted || w.ID != "" {
+					t.Fatalf("%s: DeleteEphemeralWorker = (%+v, %v, %v), want (zero, false, nil)", why, w, deleted, err)
+				}
+				if _, err := st.GetWorker(ctx, id); err != nil {
+					t.Fatalf("%s: GetWorker: %v, want the worker kept", why, err)
+				}
+			}
+
+			// Online.
+			capacityWorker(t, st, g.Farm.ID, "w-online", "a", store.WorkerStatusOnline, now)
+			mustCreateCredential(t, st, mkCredential("w-online"))
+			if _, err := st.SetWorkerCapacityGroup(ctx, "w-online", group.ID, true); err != nil {
+				t.Fatalf("SetWorkerCapacityGroup: %v", err)
+			}
+			expectKept("w-online", "online")
+			if _, err := storetest.ActiveWorkerCredential(ctx, st, "w-online"); err != nil {
+				t.Fatalf("credential of the kept worker: %v, want it untouched", err)
+			}
+
+			// Offline but not ephemeral, and offline but in no group.
+			capacityWorker(t, st, g.Farm.ID, "w-named", "b", store.WorkerStatusOffline, now)
+			if _, err := st.SetWorkerCapacityGroup(ctx, "w-named", group.ID, false); err != nil {
+				t.Fatalf("SetWorkerCapacityGroup: %v", err)
+			}
+			expectKept("w-named", "not ephemeral")
+			capacityWorker(t, st, g.Farm.ID, "w-loose", "c", store.WorkerStatusOffline, now)
+			expectKept("w-loose", "no group")
+
+			// Unknown.
+			if w, deleted, err := st.DeleteEphemeralWorker(ctx, "ghost", now); err != nil || deleted || w.ID != "" {
+				t.Fatalf("unknown worker: (%+v, %v, %v), want (zero, false, nil)", w, deleted, err)
+			}
+
+			// Ephemeral and offline, but holding a leased task (the fixture's w1).
+			capacityWorker(t, st, g.Farm.ID, fixtureWorkerID, "d", store.WorkerStatusOffline, now)
+			if _, err := st.SetWorkerCapacityGroup(ctx, fixtureWorkerID, group.ID, true); err != nil {
+				t.Fatalf("SetWorkerCapacityGroup: %v", err)
+			}
+			expectKept(fixtureWorkerID, "holds a running task")
+
+			// Ephemeral, offline and idle: deleted, with its credential revoked.
+			capacityWorker(t, st, g.Farm.ID, "w-gone", "e", store.WorkerStatusOffline, now)
+			mustCreateCredential(t, st, mkCredential("w-gone"))
+			if _, err := st.SetWorkerCapacityGroup(ctx, "w-gone", group.ID, true); err != nil {
+				t.Fatalf("SetWorkerCapacityGroup: %v", err)
+			}
+			w, deleted, err := st.DeleteEphemeralWorker(ctx, "w-gone", now)
+			if err != nil || !deleted || w.ID != "w-gone" || w.CapacityGroupID != group.ID || !w.Ephemeral {
+				t.Fatalf("DeleteEphemeralWorker = (%+v, %v, %v), want the deleted ephemeral member", w, deleted, err)
+			}
+			if _, err := st.GetWorker(ctx, "w-gone"); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("GetWorker after delete: err = %v, want ErrNotFound", err)
+			}
+			if _, err := storetest.ActiveWorkerCredential(ctx, st, "w-gone"); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("credential after delete: err = %v, want ErrNotFound (revoked)", err)
+			}
+
+			// An ephemeral worker with no credential is still deleted.
+			capacityWorker(t, st, g.Farm.ID, "w-nocred", "f", store.WorkerStatusOffline, now)
+			if _, err := st.SetWorkerCapacityGroup(ctx, "w-nocred", group.ID, true); err != nil {
+				t.Fatalf("SetWorkerCapacityGroup: %v", err)
+			}
+			if _, deleted, err := st.DeleteEphemeralWorker(ctx, "w-nocred", now); err != nil || !deleted {
+				t.Fatalf("no credential: deleted = %v, err = %v, want true, nil", deleted, err)
+			}
+		})
+	}
+}
+
+func TestParity_DeleteCapacityGroupWithMemberConflicts(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			farm := mustCreateFarm(t, st, "main")
+			g := mustCreateCapacityGroup(t, st, mkCapacityGroup(farm.ID, "alpha"))
+			capacityWorker(t, st, farm.ID, "w-1", "node", store.WorkerStatusOnline, time.Now())
+			if _, err := st.SetWorkerCapacityGroup(ctx, "w-1", g.ID, false); err != nil {
+				t.Fatalf("SetWorkerCapacityGroup: %v", err)
+			}
+			if err := st.DeleteCapacityGroup(ctx, g.ID); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("delete with a member: err = %v, want ErrConflict", err)
+			}
+			if _, err := st.GetCapacityGroup(ctx, g.ID); err != nil {
+				t.Fatalf("GetCapacityGroup: %v, want the group kept", err)
+			}
+			// Once the member leaves, the group can go.
+			if _, err := st.SetWorkerCapacityGroup(ctx, "w-1", "", false); err != nil {
+				t.Fatalf("clear: %v", err)
+			}
+			if err := st.DeleteCapacityGroup(ctx, g.ID); err != nil {
+				t.Fatalf("delete after the member left: %v", err)
+			}
+		})
+	}
+}
+
+func TestParity_RetentionKeepsNonEphemeralGroupMembers(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			farm := mustCreateFarm(t, st, "main")
+			group := mustCreateCapacityGroup(t, st, mkCapacityGroup(farm.ID, "alpha"))
+			old := time.Now().Add(-time.Hour)
+			capacityWorker(t, st, farm.ID, "w-named", "a", store.WorkerStatusOffline, old)
+			capacityWorker(t, st, farm.ID, "w-eph", "b", store.WorkerStatusOffline, old)
+			capacityWorker(t, st, farm.ID, "w-loose", "c", store.WorkerStatusOffline, old)
+			for id, ephemeral := range map[string]bool{"w-named": false, "w-eph": true} {
+				if _, err := st.SetWorkerCapacityGroup(ctx, id, group.ID, ephemeral); err != nil {
+					t.Fatalf("SetWorkerCapacityGroup %s: %v", id, err)
+				}
+			}
+
+			removed, err := st.DeleteOfflineWorkersBefore(ctx, time.Now())
+			if err != nil {
+				t.Fatalf("DeleteOfflineWorkersBefore: %v", err)
+			}
+			got := project(removed, func(w store.Worker) string { return w.ID })
+			slices.Sort(got)
+			if want := []string{"w-eph", "w-loose"}; !slices.Equal(got, want) {
+				t.Fatalf("removed = %v, want %v", got, want)
+			}
+			if _, err := st.GetWorker(ctx, "w-named"); err != nil {
+				t.Fatalf("GetWorker w-named: %v, want the non-ephemeral member kept", err)
 			}
 		})
 	}
