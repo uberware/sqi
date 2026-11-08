@@ -684,6 +684,21 @@ func TestPresetDCC_Houdini_ROPRender(t *testing.T) {
 			}
 		})
 	}
+
+	// The driver's PostFrame callback prints openjd_progress as each frame
+	// finishes. The scene above writes a frame in milliseconds, so this one
+	// sleeps before each frame, past the worker's 2 s progress throttle, and a
+	// listed chunk shows the bar moving across both of its render calls.
+	t.Run("progress moves within a chunk", func(t *testing.T) {
+		slowDir := t.TempDir()
+		slowOut := filepath.ToSlash(filepath.Join(slowDir, "geo"))
+		slow := savedPath(t, runDCC(t, hython, dccTestdata(t, "houdini_scene.py"),
+			filepath.Join(slowDir, "slow shot"), slowOut, "2.5"))
+		assertChunkProgress(t, ts, farmID, queueID, "houdini-rop-render", map[string]string{
+			"SceneFile": slow, "Frames": "1-2,7-8", "RopPath": "/out/geo1",
+		})
+		assertExactFiles(t, slowOut, frameNames("box.%04d.bgeo.sc", 1, 2, 7, 8))
+	})
 }
 
 // TestPresetDCC_Houdini_HythonScript runs hython-script under a real hython. The

@@ -193,6 +193,7 @@ ships.
 | `blender-view-layer-render` | the same block as `blender-batch-render` | Blender 5.2.2 (Cycles whole-frame and tiled, EEVEE); not Blender 4.x |
 | `nuke-write-render` | `framedone` (`Frame N (i of n)`, printed once a frame is written); the same line as status | Nuke 17.1v2 Non-commercial on macOS; no other version or license |
 | `nuke-script-render` | the same block as `nuke-write-render`; Nuke prints a `Writing ... took` line per Write node but `Frame N (i of n)` once per frame, after every node has written it, so the bar moves once per frame, not per node | Nuke 17.1v2 Non-commercial on macOS, rendering two Write nodes; no other version or license |
+| `houdini-rop-render` | no block: the embedded hython driver prints `openjd_progress` and `openjd_status: rendered frame F (k of n)` itself, from one render-event callback on each `PostFrame` event | Houdini 21.0.631 Apprentice on macOS, Geometry ROP; not a render ROP (Mantra, Karma, OpenGL) |
 
 ## Compatibility
 `SQI_LOG_PROGRESS` is an sqi extension. Other OpenJD runtimes reject the

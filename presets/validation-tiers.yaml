@@ -204,7 +204,25 @@ presets:
         multi-chunk (1-24, three tasks) ranges write exactly their frames, each
         file read back to the right frame. Not shown: a render ROP (Mantra,
         Karma, an OpenGL ROP), a scene using the ROP's own frame range, the
-        Apprentice resolution limit, or any Houdini but 22.0.466.
+        Apprentice resolution limit, or any Houdini but 22.0.466. Progress
+        comes from the driver itself, not SQI_LOG_PROGRESS: one render-event
+        callback, registered before the first rop.render call and removed after
+        the last, writes openjd_progress (frames done / total x 100) and
+        openjd_status ("rendered frame F (k of n)") to file descriptor 1 on each
+        PostFrame event, leaving the render calls unchanged.
+        TestPresetHoudiniDriver_EmitsProgress checks those lines against the
+        stub hou, which fires PreFrame then PostFrame for every frame of every
+        faked render. Houdini 21.0.631 (Apprentice, macOS arm64) was seen to
+        fire PreFrame and PostFrame once per frame for a Geometry ROP, within
+        each rop.render call, and Tier 2 shows the task's progress moving
+        through 25, 50 and 75 on a listed four-frame chunk (1,2,7,8, two render
+        calls) under a real 21.0.631 worker, with the ROP's pre-frame script
+        sleeping so a frame outlasts the worker's 2 s progress throttle. The
+        100 written after the last frame is not seen, because the process
+        exits inside the throttle window and the terminal status does not
+        record progress. Not confirmed: PostFrame on a render ROP (Mantra,
+        Karma, an OpenGL ROP), or the progress path under any Houdini but
+        21.0.631.
     tier2:
       case: TestPresetDCC_Houdini_ROPRender
       requires_app: houdini
