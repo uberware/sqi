@@ -277,7 +277,10 @@ type WorkerStore interface {
 	// (ephemeral is then ignored). Setting the group the worker is already in
 	// is not an error and rewrites Ephemeral. Returns [ErrNotFound] for an
 	// unknown worker or group, and [ErrConflict] when the worker is already in
-	// a different group: the caller clears the old membership first.
+	// a different group (the caller clears the old membership first) or when
+	// the group was deleted while the write ran: the group is not locked, so a
+	// concurrent delete surfaces as the membership's reference failing rather
+	// than as ErrNotFound.
 	SetWorkerCapacityGroup(ctx context.Context, workerID, groupID string, ephemeral bool) (Worker, error)
 
 	// ListCapacityGroupMembers returns the workers that belong to the group,
@@ -290,6 +293,14 @@ type WorkerStore interface {
 	// true. Otherwise (including an unknown worker) it writes nothing and
 	// returns (Worker{}, false, nil).
 	DeleteEphemeralWorker(ctx context.Context, id string, now time.Time) (Worker, bool, error)
+
+	// DeleteVanishedEphemeralWorker is [WorkerStore.DeleteEphemeralWorker] for
+	// a member that went away without saying so: it also requires the worker
+	// not disabled and its LastHeartbeatAt recorded and before cutoff, all
+	// judged in the delete itself, so a member that heartbeated, came back or
+	// was put on hold since the caller read it is kept. A worker with no
+	// recorded heartbeat is never deleted.
+	DeleteVanishedEphemeralWorker(ctx context.Context, id string, cutoff, now time.Time) (Worker, bool, error)
 
 	// UpdateWorkerHeartbeat records at as the given worker's LastHeartbeatAt,
 	// the time the liveness sweep judges against the server's clock. The

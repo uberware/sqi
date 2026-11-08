@@ -154,6 +154,16 @@ DELETE FROM workers
 WHERE id = ? AND ephemeral AND status = 'offline'
   AND NOT ` + sqlWorkerHasWorkInFlight + `
 RETURNING ` + workerCols
+
+	// sqlDeleteVanishedEphemeralWorker adds the capacity sweep's conditions to
+	// sqlDeleteEphemeralWorker's: not disabled, and last seen before the
+	// cutoff. NULL last_heartbeat_at never matches (NULL < ? is NULL).
+	sqlDeleteVanishedEphemeralWorker = `
+DELETE FROM workers
+WHERE id = ? AND ephemeral AND status = 'offline'
+  AND NOT disabled AND last_heartbeat_at < ?
+  AND NOT ` + sqlWorkerHasWorkInFlight + `
+RETURNING ` + workerCols
 )
 
 func scanWorker(row scanner) (store.Worker, error) {
@@ -589,15 +599,31 @@ func (s *Store) ListCapacityGroupMembers(ctx context.Context, groupID string) ([
 // condition. The credential is revoked in the same transaction, only when the
 // worker was deleted.
 func (s *Store) DeleteEphemeralWorker(ctx context.Context, id string, now time.Time) (store.Worker, bool, error) {
+	return s.deleteEphemeralWorker(ctx, "delete ephemeral worker", id, now, sqlDeleteEphemeralWorker, id)
+}
+
+// DeleteVanishedEphemeralWorker implements [store.WorkerStore], as
+// [Store.DeleteEphemeralWorker] does.
+func (s *Store) DeleteVanishedEphemeralWorker(ctx context.Context, id string, cutoff, now time.Time) (store.Worker, bool, error) {
+	return s.deleteEphemeralWorker(ctx, "delete vanished ephemeral worker", id, now,
+		sqlDeleteVanishedEphemeralWorker, id, TimeText(cutoff.UTC()))
+}
+
+// deleteEphemeralWorker runs query, a DELETE of worker id returning its row,
+// under the worker's anchor and revokes the worker's credential at now when it
+// deleted the row.
+func (s *Store) deleteEphemeralWorker(
+	ctx context.Context, op, id string, now time.Time, query string, args ...any,
+) (store.Worker, bool, error) {
 	type result struct {
 		worker  store.Worker
 		deleted bool
 	}
-	r, err := inTxValue(ctx, s, "delete ephemeral worker", func(tx *dbTx) (result, txOutcome, error) {
+	r, err := inTxValue(ctx, s, op, func(tx *dbTx) (result, txOutcome, error) {
 		if err := tx.lockAnchors(ctx, workerAnchor(id)); err != nil {
 			return result{}, txRollback, err
 		}
-		w, err := scanWorker(tx.QueryRowContext(ctx, sqlDeleteEphemeralWorker, id))
+		w, err := scanWorker(tx.QueryRowContext(ctx, query, args...))
 		if errors.Is(err, sql.ErrNoRows) {
 			// Nothing matched. Committing runs the fence check, so a deposed
 			// leader still gets ErrFenced here.

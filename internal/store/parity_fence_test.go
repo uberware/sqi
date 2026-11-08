@@ -719,6 +719,22 @@ var fenceMutators = map[string]fenceMutator{
 			return err
 		}
 	},
+	"DeleteVanishedEphemeralWorker": func(t *testing.T, st store.Store) func(context.Context) error {
+		farm := fenceFarm(t, st)
+		g := mustCreateCapacityGroup(t, st, mkCapacityGroup(farm.ID, uuid.NewString()))
+		w := fenceWorker(t, st, store.WorkerStatusOffline, time.Now().Add(-time.Hour))
+		if _, err := st.SetWorkerCapacityGroup(t.Context(), w.ID, g.ID, true); err != nil {
+			t.Fatalf("SetWorkerCapacityGroup: %v", err)
+		}
+		return func(ctx context.Context) error {
+			now := time.Now().UTC()
+			_, deleted, err := st.DeleteVanishedEphemeralWorker(ctx, w.ID, now.Add(-time.Minute), now)
+			if err == nil && !deleted {
+				return errors.New("DeleteVanishedEphemeralWorker deleted nothing")
+			}
+			return err
+		}
+	},
 	"DeleteOfflineWorkersBefore": func(t *testing.T, st store.Store) func(context.Context) error {
 		fenceWorker(t, st, store.WorkerStatusOffline, time.Now().Add(-time.Hour))
 		return func(ctx context.Context) error {

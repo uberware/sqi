@@ -167,6 +167,24 @@ func (s *Store) ListCapacityGroupMembers(_ context.Context, groupID string) ([]s
 // while it is ephemeral, offline and holds no assigned or running task, and its
 // active credential is revoked at now with it.
 func (s *Store) DeleteEphemeralWorker(ctx context.Context, id string, now time.Time) (store.Worker, bool, error) {
+	return s.deleteEphemeralWorker(ctx, id, now, func(store.Worker) bool { return true })
+}
+
+// DeleteVanishedEphemeralWorker implements [store.WorkerStore]: as
+// DeleteEphemeralWorker, for a worker that is also not disabled and was last
+// seen before cutoff.
+func (s *Store) DeleteVanishedEphemeralWorker(ctx context.Context, id string, cutoff, now time.Time) (store.Worker, bool, error) {
+	return s.deleteEphemeralWorker(ctx, id, now, func(w store.Worker) bool {
+		return !w.Disabled && w.LastHeartbeatAt != nil && w.LastHeartbeatAt.Before(cutoff)
+	})
+}
+
+// deleteEphemeralWorker deletes worker id when it is ephemeral, offline, holds
+// no work in flight and satisfies also, and revokes its active credential at
+// now with it.
+func (s *Store) deleteEphemeralWorker(
+	ctx context.Context, id string, now time.Time, also func(store.Worker) bool,
+) (store.Worker, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.fenceLocked(ctx); err != nil {
@@ -174,7 +192,7 @@ func (s *Store) DeleteEphemeralWorker(ctx context.Context, id string, now time.T
 	}
 
 	w, ok := s.workers[id]
-	if !ok || !w.Ephemeral || w.Status != store.WorkerStatusOffline || s.hasWorkInFlightLocked(id) {
+	if !ok || !w.Ephemeral || w.Status != store.WorkerStatusOffline || !also(w) || s.hasWorkInFlightLocked(id) {
 		return store.Worker{}, false, nil
 	}
 	delete(s.workers, id)

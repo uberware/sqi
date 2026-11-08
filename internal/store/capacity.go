@@ -157,8 +157,8 @@ func (g CapacityGroup) ProfileWorker() Worker {
 
 var capacityGroupNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`)
 
-// Validate reports every rule the group breaks, joined, or nil. The API and
-// the stores share it.
+// Validate reports every rule the group breaks, joined, or nil. The API calls
+// it before writing a group; the stores do not.
 func (g CapacityGroup) Validate() error {
 	var errs []error
 	bad := func(format string, args ...any) { errs = append(errs, fmt.Errorf(format, args...)) }

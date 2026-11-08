@@ -493,6 +493,75 @@ func TestParity_DeleteEphemeralWorker(t *testing.T) {
 	}
 }
 
+// TestParity_DeleteVanishedEphemeralWorker pins the capacity sweep's delete:
+// on top of DeleteEphemeralWorker's rule it keeps a member heartbeating since
+// the cutoff, a disabled member and one never seen, all judged in the delete.
+func TestParity_DeleteVanishedEphemeralWorker(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			now := time.Now().UTC()
+			cutoff := now.Add(-10 * time.Minute)
+			old := now.Add(-time.Hour)
+			farm := mustCreateFarm(t, st, "main")
+			group := mustCreateCapacityGroup(t, st, mkCapacityGroup(farm.ID, "alpha"))
+			member := func(id string, beat *time.Time, ephemeral bool) {
+				t.Helper()
+				if _, _, err := st.RegisterWorker(ctx, store.Worker{
+					ID: id, FarmID: farm.ID, Hostname: id, Status: store.WorkerStatusOffline, LastHeartbeatAt: beat,
+				}); err != nil {
+					t.Fatalf("RegisterWorker %s: %v", id, err)
+				}
+				mustCreateCredential(t, st, mkCredential(id))
+				if _, err := st.SetWorkerCapacityGroup(ctx, id, group.ID, ephemeral); err != nil {
+					t.Fatalf("SetWorkerCapacityGroup %s: %v", id, err)
+				}
+			}
+			expectKept := func(id, why string) {
+				t.Helper()
+				w, deleted, err := st.DeleteVanishedEphemeralWorker(ctx, id, cutoff, now)
+				if err != nil || deleted || w.ID != "" {
+					t.Fatalf("%s: DeleteVanishedEphemeralWorker = (%+v, %v, %v), want (zero, false, nil)", why, w, deleted, err)
+				}
+				if _, err := st.GetWorker(ctx, id); err != nil {
+					t.Fatalf("%s: GetWorker: %v, want the worker kept", why, err)
+				}
+				if _, err := storetest.ActiveWorkerCredential(ctx, st, id); err != nil {
+					t.Fatalf("%s: credential: %v, want it untouched", why, err)
+				}
+			}
+
+			fresh := cutoff.Add(time.Minute)
+			member("w-fresh", &fresh, true)
+			expectKept("w-fresh", "heartbeat newer than the cutoff")
+
+			member("w-held", &old, true)
+			if _, err := st.SetWorkerDisabled(ctx, "w-held", true); err != nil {
+				t.Fatalf("SetWorkerDisabled: %v", err)
+			}
+			expectKept("w-held", "disabled")
+
+			member("w-never", nil, true)
+			expectKept("w-never", "no recorded heartbeat")
+
+			member("w-named", &old, false)
+			expectKept("w-named", "not ephemeral")
+
+			member("w-gone", &old, true)
+			w, deleted, err := st.DeleteVanishedEphemeralWorker(ctx, "w-gone", cutoff, now)
+			if err != nil || !deleted || w.ID != "w-gone" || w.CapacityGroupID != group.ID || !w.Ephemeral {
+				t.Fatalf("DeleteVanishedEphemeralWorker = (%+v, %v, %v), want the deleted ephemeral member", w, deleted, err)
+			}
+			if _, err := st.GetWorker(ctx, "w-gone"); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("GetWorker after delete: err = %v, want ErrNotFound", err)
+			}
+			if _, err := storetest.ActiveWorkerCredential(ctx, st, "w-gone"); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("credential after delete: err = %v, want ErrNotFound (revoked)", err)
+			}
+		})
+	}
+}
+
 func TestParity_DeleteCapacityGroupWithMemberConflicts(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {

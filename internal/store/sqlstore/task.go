@@ -175,9 +175,11 @@ GROUP BY j.id, t.step_id, j.queue_id, COALESCE(t.required_cores, 0)`
 	// sqlWorkerCommitments is sqlCommittedCores for every worker of a farm at
 	// once: the declared cores summed and the undeclared tasks counted, so the
 	// caller prices the undeclared ones at each worker's machine size. The
-	// assigned_worker_id test is implied by the status test but lets the
-	// planner use the partial index on assigned_worker_id instead of scanning
-	// every task. Binds: farm ID twice ('' = all farms).
+	// assigned_worker_id test is implied by the status test and does not
+	// narrow the scan: a finished task keeps its assigned_worker_id. On
+	// SQLite, with no ANALYZE statistics, the planner reads the tasks through
+	// the tasks_status index (status = ?), so the cost is in the number of
+	// assigned and running tasks. Binds: farm ID twice ('' = all farms).
 	sqlWorkerCommitments = `
 SELECT t.assigned_worker_id,
        COALESCE(SUM(t.required_cores), 0),
