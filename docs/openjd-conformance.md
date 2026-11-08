@@ -59,6 +59,7 @@ top-level `extensions: [...]` array. `sqi` validates that array unconditionally
 | `SQI_PATH_TRANSLATION` | vendor | Per-product path-delivery checklist (`swap_in_place`/`translation_file`/`command_flags`/`environment`/`stage_locally`). See [`docs/openjd-extensions/path-translation.md`](openjd-extensions/path-translation.md). |
 | `SQI_CHUNK_BOUNDS` | vendor | Exposes a `CHUNK[INT]` chunk's first/last integer as `Task.Param.<name>.Start`/`.End`. See [`docs/openjd-extensions/sqi-chunk-bounds.md`](openjd-extensions/sqi-chunk-bounds.md). |
 | `SQI_LOG_CHECKS` | vendor | A step-level block that fails a task on a log pattern (`failOn`) or a missing success line (`requireLine`); enforced by the worker, and jobs declaring it are only given to workers that advertise support. See [`docs/openjd-extensions/sqi-log-checks.md`](openjd-extensions/sqi-log-checks.md). |
+| `SQI_LOG_PROGRESS` | vendor | A step-level block of patterns that turn the step's `onRun` output lines into task progress and status text; applied by the worker but not worker-enforced, so jobs declaring it are not gated on worker support. See [`docs/openjd-extensions/sqi-log-progress.md`](openjd-extensions/sqi-log-progress.md). |
 
 Every **vendor** extension (`Origin: OriginVendor` — one `sqi` defines itself,
 as opposed to one specified upstream by OpenJD) name must carry the `SQI_`

@@ -47,6 +47,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/uberware/sqi/internal/openjd/logprogress"
 	"github.com/uberware/sqi/internal/worker/cancel"
 	"github.com/uberware/sqi/internal/worker/metrics"
 	"github.com/uberware/sqi/internal/worker/protocol"
@@ -113,6 +114,19 @@ type TaskLifecycleHook interface {
 	// directive for attemptID and true if one is present.  Returns ("", false)
 	// if no openjd_fail was seen.
 	TakeFailReason(attemptID string) (string, bool)
+}
+
+// ProgressPatternHook is an optional interface that an [OutputHandler] may
+// implement to turn a step's SQI_LOG_PROGRESS patterns into progress and status
+// updates.
+//
+// When an assignment carries LogProgress, the executor compiles it after
+// [TaskLifecycleHook.RegisterTask] and before the process starts, and hands the
+// matcher over with SetLogProgress. The OpenJD interceptor
+// (internal/worker/openjd) implements it.
+type ProgressPatternHook interface {
+	// SetLogProgress installs m as attemptID's matcher.
+	SetLogProgress(attemptID string, m *logprogress.Matcher)
 }
 
 // DiscardOutput is an [OutputHandler] that silently drops every line.

@@ -75,7 +75,8 @@ type Extension struct {
 //   - SQI_LOG_CHECKS: a step-level failOn/requireLine block, parsed in
 //     logchecks.go and enforced by the worker's executor.
 //   - SQI_LOG_PROGRESS: a step-level progress/status block, parsed and validated
-//     in logprogress.go.
+//     in logprogress.go and applied by the worker's OpenJD interceptor; not
+//     worker-enforced.
 //   - EXPR: the OpenJD expression language; implemented across internal/openjd
 //     (scope model, checker, resolver), internal/openjd/expr and
 //     internal/worker/fmtres. See that entry's own comment.

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/uberware/sqi/internal/openjd/logprogress"
 	"github.com/uberware/sqi/internal/worker/envutil"
 	"github.com/uberware/sqi/internal/worker/fmtres"
 	"github.com/uberware/sqi/internal/worker/isolation"
@@ -109,6 +110,10 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 		hook.RegisterTask(msg.AttemptID, msg.TaskID, msg.JobID, sess.ID, taskCancel)
 		defer hook.Deregister(msg.AttemptID)
 	}
+
+	// Hand the step's SQI_LOG_PROGRESS matcher to the interceptor, if both are
+	// present. Never fails the task.
+	e.installLogProgress(ctx, msg)
 
 	// ── Store cancel function ───────────────────────────────────────
 	// applyCancelFunc stores taskCancel and fires it immediately if Cancel() was
@@ -345,6 +350,34 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 		// Successful completion: copy outputs back before publishing terminal status.
 		e.completeSucceeded(ctx, msg, sess.ID, scratchDir, result, lp, &failed)
 	}
+}
+
+// installLogProgress compiles msg.LogProgress against the task's frames and
+// installs it on the output handler, when the assignment carries a block and the
+// handler is a [ProgressPatternHook]. Progress is advisory, so a compile failure
+// (impossible for a validated template, short of a missing frame parameter)
+// disables it for this attempt with a warning and the task runs on.
+func (e *Executor) installLogProgress(ctx context.Context, msg *protocol.AssignMsg) {
+	if msg.LogProgress == nil {
+		return
+	}
+	hook, ok := e.outputHandler.(ProgressPatternHook)
+	if !ok {
+		return
+	}
+	lp := msg.LogProgress
+	m, err := logprogress.Compile(lp.Progress, lp.Status, msg.Parameters[lp.FrameParameter])
+	if err != nil {
+		e.logger.WarnContext(
+			ctx, "executor: SQI_LOG_PROGRESS disabled for this attempt",
+			slog.String("task_id", msg.TaskID),
+			slog.String("attempt_id", msg.AttemptID),
+			slog.String("frame_parameter", lp.FrameParameter),
+			slog.Any("error", err),
+		)
+		return
+	}
+	hook.SetLogProgress(msg.AttemptID, m)
 }
 
 // completeSucceeded stages a successful task's outputs out and publishes its
