@@ -387,6 +387,10 @@ type Scheduler struct {
 	// fence records a fenced store write; see fence.go.
 	fence fenceState
 
+	// capState is what the capacity sweep keeps between ticks; see
+	// capacity.go.
+	capState capacityState
+
 	// diagMu guards diagStarted, which is set once the worker.diag
 	// subscription is running, by [Scheduler.StartDiag] or by Run.
 	diagMu      sync.Mutex
@@ -1407,7 +1411,8 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 // On the same tick it reaps tasks stranded in 'assigned' on still-live workers,
 // reclaims attempts a live worker has stopped reporting ([reconcileAttempts]),
 // demotes stalled jobs, flags/clears ready tasks no online worker can satisfy
-// ([sweepUnschedulable]), re-evaluates cross-job dependencies for any job
+// ([sweepUnschedulable]), evaluates the enabled capacity groups
+// ([Scheduler.sweepCapacity]), re-evaluates cross-job dependencies for any job
 // stuck blocked ([sweepBlockedJobs] — the backstop for [Scheduler.ReconcileDependents]),
 // and refreshes the queue-depth, idle-worker, and usage-claim Prometheus gauges.
 func (s *Scheduler) runHeartbeatSweep(ctx context.Context) {
@@ -1438,6 +1443,7 @@ func (s *Scheduler) sweepOnce(ctx context.Context) {
 		func(ctx context.Context) { s.reconcileAttempts(ctx, time.Now().UTC()) },
 		s.demoteStalledJobs,
 		s.sweepUnschedulable,
+		s.sweepCapacity,
 		s.sweepBlockedJobsOnce,
 		// Refresh instrumentation gauges on the same tick so Prometheus
 		// reflects current farm state without a dedicated metrics loop.

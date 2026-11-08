@@ -106,7 +106,20 @@ type Status struct {
 	// them never leaves fewer online members than min_machines, and never
 	// retires a member that absorbed demand.
 	RetireCandidates []string
-	EvaluatedAt      time.Time
+	// Mismatches are a sized group's online members whose registration falls
+	// short of the group's profile, by worker ID. Evaluate leaves it empty;
+	// the caller, which can see each member's registration, fills it. A
+	// mismatched member is still a member.
+	Mismatches  []Mismatch
+	EvaluatedAt time.Time
+}
+
+// Mismatch is a member whose registration does not match its sized group's
+// declared profile.
+type Mismatch struct {
+	WorkerID string
+	// Reason names every way the member falls short, joined by "; ".
+	Reason string
 }
 
 // Evaluate returns one Status per group, in s.Groups order.

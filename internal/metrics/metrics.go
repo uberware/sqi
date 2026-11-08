@@ -123,6 +123,23 @@ type Metrics struct {
 	// partitioned by queue name. Incremented by the scheduler's failure fork.
 	JobsAutoParkedTotal *prometheus.CounterVec
 
+	// ── Capacity groups ───────────────────────────────────────────────────────
+	// Set by the scheduler's capacity sweep, one series per enabled group,
+	// labeled by group name. With no enabled group none of them has a series.
+
+	// CapacityDemandCores is the cores of ready work assigned to each group:
+	// work one of its machines could run that no idle worker and no
+	// higher-priority group took.
+	CapacityDemandCores *prometheus.GaugeVec
+
+	// CapacityDesiredMachines is the total number of machines each group
+	// should have, counting the machines it already has.
+	CapacityDesiredMachines *prometheus.GaugeVec
+
+	// CapacityMembers counts each group's members by liveness (state online
+	// or offline).
+	CapacityMembers *prometheus.GaugeVec
+
 	// ── High availability ─────────────────────────────────────────────────────
 	// Created by New but exposed only once [Metrics.RegisterHA] is called, so a
 	// server outside a group serves no sqi_server_ha_* series.
@@ -313,6 +330,36 @@ func New() *Metrics {
 			[]string{"queue"},
 		),
 
+		CapacityDemandCores: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: "sqi",
+				Subsystem: "capacity",
+				Name:      "demand_cores",
+				Help:      "Cores of ready work assigned to the capacity group: work one of its machines could run that no idle worker and no higher-priority group took.",
+			},
+			[]string{"group"},
+		),
+
+		CapacityDesiredMachines: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: "sqi",
+				Subsystem: "capacity",
+				Name:      "desired_machines",
+				Help:      "Total machines the capacity group should have, counting the machines it already has (not the number to add).",
+			},
+			[]string{"group"},
+		),
+
+		CapacityMembers: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: "sqi",
+				Subsystem: "capacity",
+				Name:      "members",
+				Help:      "Members of the capacity group, partitioned by state (online, offline).",
+			},
+			[]string{"group", "state"},
+		),
+
 		HALeader: prometheus.NewGauge(
 			prometheus.GaugeOpts{
 				Namespace: "sqi",
@@ -367,6 +414,9 @@ func New() *Metrics {
 		m.UsageActiveClaims,
 		m.TaskRetriesTotal,
 		m.JobsAutoParkedTotal,
+		m.CapacityDemandCores,
+		m.CapacityDesiredMachines,
+		m.CapacityMembers,
 	)
 
 	// Both causes are exported from the start, at 0, so a rate over them is
