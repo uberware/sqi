@@ -3,6 +3,7 @@
 package capacity
 
 import (
+	"fmt"
 	"math"
 	"slices"
 	"testing"
@@ -545,11 +546,12 @@ func TestEvaluate_RetireCandidatesLongestIdleFirstNeverBelowDesired(t *testing.T
 			brief{0, 3, []string{"b", "a"}},
 		},
 		{
-			"demand for new machines keeps the count", 0, 10, five,
+			"demand for new machines grows the group past every candidate", 0, 10, five,
 			[]DemandItem{item("h", "q1", 8, 2, "houdini")},
-			// a and b cannot run it: both are candidates, and the count rises
-			// by the machine being added while one of them stands in for it.
-			brief{8, 5, []string{"b", "a"}},
+			// c absorbs one task; the other needs a new machine. a and b cannot
+			// run it, so both are candidates, and they stay counted as present
+			// until retired: desired is online + 1.
+			brief{8, 6, []string{"b", "a"}},
 		},
 		{
 			"equal idle times break by worker ID", 0, 10,
@@ -957,5 +959,99 @@ func TestEvaluate_NeverRegisteringGroupStaysAtOneStep(t *testing.T) {
 		if got := Evaluate(s)[0].DesiredMachines; got != 5 {
 			t.Fatalf("at +%dm with nothing ever online: desired %d, want 5", m, got)
 		}
+	}
+}
+
+func TestEvaluate_TwoIncapableIdleMembersDoNotBlockGrowth(t *testing.T) {
+	houdini := item("r", "q1", 8, 5, "houdini")
+	incapable := []Member{idle(worker("m1", 8), time.Hour), idle(worker("m2", 8), time.Hour)}
+	tests := []struct {
+		name    string
+		group   store.CapacityGroup
+		members []Member
+		demand  DemandItem
+		want    brief
+	}{
+		{
+			name:    "named: wake the capable sleeper past two incapable idlers",
+			group:   named("onprem", 10, 0, 10, 10),
+			members: append(slices.Clone(incapable), Member{Worker: offline(worker("m3", 8, "houdini"))}),
+			demand:  houdini,
+			want:    brief{8, 2 + 1, []string{"m1", "m2"}},
+		},
+		{
+			name:    "sized: launch one past two members registered without the tag",
+			group:   sized("cloud", 1, 8, 0, 10, 10, "houdini"),
+			members: incapable,
+			demand:  item("r", "q1", 8, 1, "houdini"),
+			want:    brief{8, 2 + 1, []string{"m1", "m2"}},
+		},
+		{
+			name:    "min holds one incapable idler, growth still happens",
+			group:   sized("cloud", 1, 8, 1, 10, 10, "houdini"),
+			members: incapable,
+			demand:  item("r", "q1", 8, 1, "houdini"),
+			want:    brief{8, 2 + 1, []string{"m1"}},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := snapshot([]store.CapacityGroup{tc.group}, map[string][]Member{tc.group.ID: tc.members}, nil, tc.demand)
+			st := Evaluate(s)
+			assertBriefs(t, st, tc.want)
+			if st[0].DesiredMachines <= st[0].OnlineMembers {
+				t.Errorf("desired %d does not exceed online %d: nothing would be launched",
+					st[0].DesiredMachines, st[0].OnlineMembers)
+			}
+		})
+	}
+}
+
+func TestEvaluate_ColdStartDoesNotOvershootMin(t *testing.T) {
+	sixAsleep := make([]Member, 6)
+	for i := range sixAsleep {
+		sixAsleep[i] = Member{Worker: offline(worker(fmt.Sprintf("n%d", i), 8))}
+	}
+	tests := []struct {
+		name    string
+		group   store.CapacityGroup
+		members []Member
+		demand  DemandItem
+		want    brief
+	}{
+		{"sized: min covers the one machine needed", sized("cloud", 1, 8, 2, 10, 10), nil, item("r", "q1", 8, 1, ""), brief{8, 2, nil}},
+		{"named: min and demand are the same machines", named("onprem", 10, 3, 10, 10), sixAsleep, item("r", "q1", 8, 3, ""), brief{24, 3, nil}},
+		{"demand beyond min", sized("cloud", 1, 8, 2, 10, 10), nil, item("r", "q1", 8, 3, ""), brief{24, 3, nil}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := snapshot([]store.CapacityGroup{tc.group}, map[string][]Member{tc.group.ID: tc.members}, nil, tc.demand)
+			assertBriefs(t, Evaluate(s), tc.want)
+		})
+	}
+}
+
+func TestEvaluate_BrokenImageGrowthIsBoundedByMax(t *testing.T) {
+	// Every machine the group adds registers without the profile's tag, so it
+	// idles and the demand that called for it stays. The group keeps growing,
+	// but only as machines register, by at most max_step_up a step, and never
+	// past max_machines.
+	g := sized("cloud", 1, 8, 0, 20, 5, "houdini")
+	s := snapshot([]store.CapacityGroup{g}, nil, nil, item("r", "q1", 8, 1, "houdini"))
+	var members []Member
+	for m := range 120 {
+		s.Now = now.Add(time.Duration(m) * time.Minute)
+		s.Members = map[string][]Member{"cloud": members}
+		st := Evaluate(s)[0]
+		if st.DesiredMachines > 20 || st.DesiredMachines > st.OnlineMembers+5 {
+			t.Fatalf("at +%dm: desired %d with %d online, max 20 and step 5", m, st.DesiredMachines, st.OnlineMembers)
+		}
+		for len(members) < st.DesiredMachines {
+			since := s.Now
+			members = append(members, Member{Worker: worker(fmt.Sprintf("m%03d", len(members)), 8), IdleSince: &since})
+		}
+	}
+	if len(members) != 20 {
+		t.Errorf("%d machines arrived, want the group to stop at max 20", len(members))
 	}
 }

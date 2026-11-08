@@ -19,15 +19,14 @@
 //     none of the demand are retire candidates, longest idle first, as many as
 //     can go without leaving fewer online than min_machines or than the
 //     members kept (busy, idle too briefly, disabled, or absorbing demand).
-//  4. Size. A group's desired size is the members it keeps (at least
-//     min_machines), plus the machines its assigned demand calls for, plus
-//     one retire candidate for each machine being added, which it stands in
-//     for until that machine arrives. Growth is limited per evaluation by
-//     max_step_up and the scale-up cooldown, and the result is clamped to
-//     [min, max]. Machines a step-up asked for that have not registered yet
-//     are held for one boot timeout, so the size does not fall back while they
-//     boot, but new growth is measured from registered members only, so
-//     machines that never register cost at most one step.
+//  4. Size. The desired size counts the machines present: with demand to
+//     add machines for, the online members (retire candidates included) plus
+//     those machines; with none, the members kept. Growth is limited per
+//     evaluation by max_step_up and the scale-up cooldown, and the result is
+//     clamped to [min, max]. Machines a step-up asked for that have not
+//     registered yet are held for one boot timeout, so the size does not fall
+//     back while they boot, but new growth is measured from registered members
+//     only, so machines that never register cost at most one step.
 //
 // All demand arithmetic is on task counts per step, never per task, so a step
 // with a million ready tasks costs the same as one with a single task.
@@ -94,10 +93,11 @@ type Status struct {
 	// could run that no idle worker absorbed and no higher-priority group
 	// took. It never exceeds what the group's free machine slots could hold.
 	DemandCores int
-	// DesiredMachines is how many members the group should have online: the
-	// members it keeps (at least min_machines), the machines its demand calls
-	// for, and one retire candidate for each machine being added, standing in
-	// until it arrives.
+	// DesiredMachines is the total the group should have, counting the
+	// machines present. While its demand calls for machines it is the online
+	// members, retire candidates included, plus those machines; otherwise it
+	// is the members it keeps. Either way at least min_machines, at most
+	// max_machines. See [Evaluate] for how an actuator reads it.
 	DesiredMachines int
 	// OnlineMembers and OfflineMembers count the group's members by liveness;
 	// a disabled member counts in whichever it is.
@@ -111,7 +111,33 @@ type Status struct {
 
 // Evaluate returns one Status per group, in s.Groups order.
 //
-// Sizing compares two numbers. online is the group's online members.
+// An actuator reads a Status as two independent instructions:
+//
+//   - Grow: add (launch or wake) DesiredMachines − OnlineMembers machines when
+//     that is positive.
+//   - Shrink: retire the RetireCandidates, by name.
+//
+// It never subtracts the candidates as well: they are already counted in
+// DesiredMachines while the group grows (they are present until retired), and
+// already excluded from it while the group shrinks (DesiredMachines is then
+// the members kept, so retiring the candidates brings the group to it). A
+// count-driven autoscaler that cannot retire by name sets its capacity to
+// DesiredMachines and may then remove the wrong machine when shrinking.
+//
+// Machines that arrive unable to run the demand that called for them (an
+// image missing what the profile promises) stay idle, so the demand stays and
+// the group keeps growing. That growth is bounded by max_machines and paced by
+// registration (below), and the sweep reports such members as profile
+// mismatches; backing off is left to the providers that act on the signal.
+//
+// Before any limit, the desired size is online + need when the group's
+// demand calls for need > 0 more machines (need = DemandCores over one
+// machine's cores, rounded up), and kept, the online members that are not
+// retire candidates, when it calls for none. min_machines then raises it, so
+// on a cold start the machines min asks for and the machines demand asks for
+// are the same machines.
+//
+// The limits compare two numbers. online is the group's online members.
 // current adds the machines asked for but not yet registered: it is
 // max(online, LastDesired[g]) while the last step-up is within g's
 // BootTimeout, and online after that. The desired size may then be:
@@ -349,17 +375,16 @@ func (p *groupPlan) serves(queueID string) bool {
 func (p *groupPlan) status(s Snapshot, absorbed map[string]bool) Status {
 	idle := p.retirable(s.Now, absorbed)
 	kept := p.online - len(idle)
-	floor := max(p.g.MinMachines, kept)
 	// Invariant: retiring every candidate leaves at least max(min, kept)
 	// members online, so never fewer than min_machines, and every candidate
 	// is idle past the idle timeout and absorbed none of this evaluation's
 	// demand; the members that did are among the kept.
-	retiring := idle[:max(p.online-floor, 0)]
+	retiring := idle[:max(p.online-max(p.g.MinMachines, kept), 0)]
 	st := Status{
 		GroupID:         p.g.ID,
 		GroupName:       p.g.Name,
 		DemandCores:     toInt(p.demand),
-		DesiredMachines: p.desired(s, floor, len(retiring)),
+		DesiredMachines: p.desired(s, kept),
 		OnlineMembers:   p.online,
 		OfflineMembers:  p.offline,
 		EvaluatedAt:     s.Now,
@@ -389,12 +414,11 @@ func (p *groupPlan) retirable(now time.Time, absorbed map[string]bool) []Member 
 	return out
 }
 
-// desired is the group's desired size (see [Evaluate]): floor, the members it
-// keeps and at least min_machines, plus the machines its demand calls for,
-// plus one of the retiring candidates for each of those machines, standing in
-// until it arrives. It records the result in s.LastDesired and a step-up in
-// s.LastStepUp.
-func (p *groupPlan) desired(s Snapshot, floor, retiring int) int {
+// desired is the group's desired size (see [Evaluate]): the online members
+// plus the machines its demand calls for, or the members it keeps when it
+// calls for none, limited and clamped. It records the result in s.LastDesired
+// and a step-up in s.LastStepUp.
+func (p *groupPlan) desired(s Snapshot, kept int) int {
 	g := p.g
 	last, stepped := s.LastStepUp[g.ID]
 	cooling := stepped && within(s.Now.Sub(last), g.ScaleUpCooldown)
@@ -404,8 +428,11 @@ func (p *groupPlan) desired(s Snapshot, floor, retiring int) int {
 	if !cooling {
 		limit = max(limit, satAdd(int64(p.online), int64(max(g.MaxStepUp, 0))))
 	}
-	need := ceilDiv(p.demand, p.perMachine)
-	computed := satAdd(satAdd(int64(floor), need), min(need, int64(retiring)))
+	computed := int64(kept)
+	if need := ceilDiv(p.demand, p.perMachine); need > 0 {
+		// Retire candidates are present until retired, so growth counts them.
+		computed = satAdd(int64(p.online), need)
+	}
 	desired := toInt(min(computed, limit, int64(g.MaxMachines)))
 	desired = max(desired, g.MinMachines)
 
