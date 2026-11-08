@@ -121,6 +121,18 @@ func TestPresetProgress_Fixtures(t *testing.T) {
 		// the script renders.
 		{"nuke-write-render", "nuke-17.1v2-write.txt", "1-3", []int{33, 66, 100}, "Frame 1 (1 of 3)"},
 		{"nuke-script-render", "nuke-17.1v2-script.txt", "1-3", []int{33, 66, 100}, "Frame 1 (1 of 3)"},
+		// husk's -V a prints ALF_PROGRESS as the percent through its whole run,
+		// which is the task's chunk, moving within each frame.
+		{"husk-usd-render", "husk-21.0.631-one-frame.txt", "1", []int{0, 79, 100}, "husk.0001.png (1 of 1)"},
+		{"husk-usd-render", "husk-21.0.631-three-frames.txt", "1-3", []int{0, 26, 33, 66, 100}, "husk.0001.png (1 of 3)"},
+		// usdrecord names each time code before it records it, and prints
+		// nothing once the last one is written.
+		{"usdrecord-render", "usdrecord-21.0.631-storm.txt", "1-3", []int{0, 33, 66}, "Recording time code: 1"},
+		{"usdrecord-render", "usdrecord-21.0.631-karma-cpu.txt", "1-3", []int{0, 33, 66}, "Recording time code: 3"},
+		// oiiotool prints nothing by default; the preset's --echo after -o
+		// prints the frame once it is written.
+		{"oiiotool-process", "oiiotool-3.1.15.0-echo.txt", "1-3", []int{33, 66, 100}, "Wrote frame 1"},
+		{"oiiotool-process", "oiiotool-2.5.18.0-echo.txt", "1-3", []int{33, 66, 100}, "Wrote frame 1"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.preset+"/"+tc.fixture, func(t *testing.T) {

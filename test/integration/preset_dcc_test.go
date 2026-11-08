@@ -358,11 +358,18 @@ func blenderProgressScene(t *testing.T, exe, samples, tileSize string) string {
 // above 0 while it ran, and that it left status text on the task.
 func assertChunkProgress(t *testing.T, ts *testServer, farmID, queueID, preset string, params map[string]string) {
 	t.Helper()
+	assertStepChunkProgress(t, ts, farmID, queueID, preset, "Render", params)
+}
+
+// assertStepChunkProgress is assertChunkProgress for a preset whose step is
+// not named "Render".
+func assertStepChunkProgress(t *testing.T, ts *testServer, farmID, queueID, preset, step string, params map[string]string) {
+	t.Helper()
 	tmpl, err := presettest.PresetTemplate(presettest.SourcePresets, preset)
 	if err != nil {
 		t.Fatalf("PresetTemplate: %v", err)
 	}
-	tmpl, err = presettest.ApplyChunkPatch(tmpl, presettest.ChunkPatch{Step: "Render", ChunksDefaultTaskCount: 4})
+	tmpl, err = presettest.ApplyChunkPatch(tmpl, presettest.ChunkPatch{Step: step, ChunksDefaultTaskCount: 4})
 	if err != nil {
 		t.Fatalf("ApplyChunkPatch: %v", err)
 	}
@@ -856,6 +863,18 @@ func TestPresetDCC_Houdini_USDRecord(t *testing.T) {
 		assertExactFiles(t, out, names)
 		assertPNGSize(t, out, names, 16, 0)
 	})
+
+	// usdrecord prints "Recording time code" before each frame. Karma CPU at
+	// this width takes a few seconds a frame on an M2 Max, past the worker's
+	// 2 s progress throttle, so the bar is seen at more than one frame.
+	t.Run("progress moves within a chunk", func(t *testing.T) {
+		out := filepath.Join(dir, "progress")
+		assertChunkProgress(t, ts, farmID, queueID, "usdrecord-render", map[string]string{
+			"SceneFile": stage, "OutputFile": filepath.Join(out, "prog.####.png"),
+			"Frames": "1-4", "Renderer": "Karma CPU", "ImageWidth": "2560",
+		})
+		assertExactFiles(t, out, frameNames("prog.%04d.png", seq(1, 4)...))
+	})
 }
 
 // huskLayer is a USD layer over testdata/dcc/stage.usda that adds the render
@@ -973,6 +992,27 @@ func TestPresetDCC_Houdini_HuskRender(t *testing.T) {
 			assertPNGSize(t, out, want, 64, 36)
 		})
 	}
+
+	// husk's ALF_PROGRESS lines move within each frame. The test layer renders
+	// in milliseconds, so this one path-traces many more samples at a larger
+	// size, about two seconds a frame on an M2 Max, past the worker's 2 s
+	// progress throttle.
+	t.Run("progress moves within a chunk", func(t *testing.T) {
+		out := filepath.Join(dir, "renders", "progress")
+		path := filepath.Join(dir, "progress.usda")
+		slow := strings.Replace(huskLayer, "int2 resolution = (64, 36)",
+			"int2 resolution = (640, 360)\n        int karma:global:convergence_mode = 0\n        int karma:global:pathtracedsamples = 8192", 1)
+		product := filepath.ToSlash(filepath.Join(out, "progress")) + ".$F4.png"
+		if err := os.WriteFile(path, fmt.Appendf(nil, slow, product), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		assertChunkProgress(t, ts, farmID, queueID, "husk-usd-render", map[string]string{
+			"SceneFile": path, "Frames": "1-4",
+		})
+		want := frameNames("progress.%04d.png", seq(1, 4)...)
+		assertExactFiles(t, out, want)
+		assertPNGSize(t, out, want, 640, 360)
+	})
 
 	t.Run("missing stage fails", func(t *testing.T) {
 		report := runDCCJobExpectingFailure(t, ts, farmID, queueID, "husk-usd-render", map[string]string{

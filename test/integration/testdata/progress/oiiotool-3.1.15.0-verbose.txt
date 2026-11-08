@@ -1,0 +1,11 @@
+# Captured verbatim from oiiotool 3.1.15.0 (Homebrew, macOS arm64), stdout and stderr combined; scratch path replaced by <SCRATCH>.
+# version: oiiotool --version prints 3.1.15.0
+# input:   oiiotool --frames 1-3 --pattern constant:color=1,0,0 8x8 3 -o "<SCRATCH>/in dir/in.@@@@.png"
+# command: oiiotool -v --frames 1-3 "<SCRATCH>/in dir/in.@@@@.png" -o <SCRATCH>/outv/conv.@@@@.jpg
+# Kept as evidence: -v names each file read and written, not the frame, so a frame is only in the user's own file name. Not used.
+Reading <SCRATCH>/in dir/in.0001.png
+Writing <SCRATCH>/outv/conv.0001.jpg
+Reading <SCRATCH>/in dir/in.0002.png
+Writing <SCRATCH>/outv/conv.0002.jpg
+Reading <SCRATCH>/in dir/in.0003.png
+Writing <SCRATCH>/outv/conv.0003.jpg

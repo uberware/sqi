@@ -1,0 +1,99 @@
+# Captured verbatim from husk in Houdini 21.0.631 Apprentice on macOS arm64 (stdout and stderr, combined); scratch path replaced by <SCRATCH>.
+# version: husk version 21.0.631
+# scene:   the TestPresetDCC_Houdini_HuskRender layer (huskLayer, 64x36, one PNG product <SCRATCH>/test shot/renders/husk.$F4.png) over testdata/dcc/stage.usda
+# command: husk --frame 1 --frame-count 3 --make-output-path --no-mplay -V 2a "<SCRATCH>/test shot/husk.usda"
+# The preset's argv with its chunk patched to three frames. ALF_PROGRESS is the percent through the whole run, not the frame.
+[19:51:13] husk version 21.0.631
+[19:51:15] Loading <SCRATCH>/test shot/husk.usda
+[19:51:16] Using stage default settings: /Render/settings
+[19:51:16] Running prerender procedurals script: /Applications/Houdini/Houdini21.0.631/Frameworks/Houdini.framework/Versions/21.0/Resources/houdini/python3.11libs/husd/runprocedurals.py --mode prerender --validategeo
+[19:51:16] Running preframe procedurals script: /Applications/Houdini/Houdini21.0.631/Frameworks/Houdini.framework/Versions/21.0/Resources/houdini/python3.11libs/husd/runprocedurals.py --mode preframe --validategeo
+[19:51:16] Start Wall Clock Time: 0:00:02.83
+ALF_PROGRESS 0%
+[19:51:16] >>> Render <SCRATCH>/test shot/renders/husk.0001.png (1 of 3) - 64x36 <SCRATCH>/test shot/husk.usda frame: 1
+[19:51:16] Host: mac (Apple M2 Max)
+[19:51:16]   Load Wall Clock Time: 0:00:03.05
+[19:51:16] Update Wall Clock Time: 0:00:00.31
+[19:51:16] Light Tree: 0 lights
+[19:51:16] Uniform List: 1 lights
+ALF_PROGRESS 26%
+[19:51:16] Render complete
+ALF_PROGRESS 33%
+[19:51:17] Ray Counts:
+[19:51:17]          Camera Rays:       7,890
+[19:51:17]             Indirect:       1,900
+[19:51:17]       Light Geometry:       1,319
+[19:51:17]            Occlusion:           0
+[19:51:17]                Probe:           0
+[19:51:17]                Total:      11,109
+[19:51:17] Shader Calls:
+[19:51:17]         Displacement:           0
+[19:51:17]             Emission:           0
+[19:51:17]                Light:       1,319
+[19:51:17]              Opacity:         950
+[19:51:17]              Surface:         950
+[19:51:17]               Volume:           0
+[19:51:17] Total Wall Clock Time: 0:00:03.33
+[19:51:17]        Total CPU Time: 0:00:03.83
+[19:51:17]  System CPU Time Only: 0:00:00.20
+[19:51:17]  Current Memory Usage: 468.60 GiB
+[19:51:17]     Peak Memory Usage: 468.60 GiB
+[19:51:17] Saved Image: <SCRATCH>/test shot/renders/husk.0001.png
+[19:51:17] Running postframe procedurals script: /Applications/Houdini/Houdini21.0.631/Frameworks/Houdini.framework/Versions/21.0/Resources/houdini/python3.11libs/husd/runprocedurals.py --mode postframe --validategeo
+[19:51:17] Running preframe procedurals script: /Applications/Houdini/Houdini21.0.631/Frameworks/Houdini.framework/Versions/21.0/Resources/houdini/python3.11libs/husd/runprocedurals.py --mode preframe --validategeo
+ALF_PROGRESS 33%
+[19:51:17] >>> Render <SCRATCH>/test shot/renders/husk.0002.png (2 of 3) - 64x36 <SCRATCH>/test shot/husk.usda frame: 2
+[19:51:17] Host: mac (Apple M2 Max)
+[19:51:17] Update Wall Clock Time: 0:00:00.67
+[19:51:17] Render complete
+ALF_PROGRESS 66%
+[19:51:17] Ray Counts:
+[19:51:17]          Camera Rays:       7,684
+[19:51:17]             Indirect:       1,630
+[19:51:17]       Light Geometry:       1,233
+[19:51:17]            Occlusion:           0
+[19:51:17]                Probe:           0
+[19:51:17]                Total:      10,547
+[19:51:17] Shader Calls:
+[19:51:17]         Displacement:           0
+[19:51:17]             Emission:           0
+[19:51:17]                Light:       2,552
+[19:51:17]              Opacity:       1,765
+[19:51:17]              Surface:       1,765
+[19:51:17]               Volume:           0
+[19:51:17] Total Wall Clock Time: 0:00:03.58
+[19:51:17]        Total CPU Time: 0:00:03.98
+[19:51:17]  System CPU Time Only: 0:00:00.22
+[19:51:17]  Current Memory Usage: 468.62 GiB
+[19:51:17]     Peak Memory Usage: 468.62 GiB
+[19:51:17] Saved Image: <SCRATCH>/test shot/renders/husk.0002.png
+[19:51:17] Running postframe procedurals script: /Applications/Houdini/Houdini21.0.631/Frameworks/Houdini.framework/Versions/21.0/Resources/houdini/python3.11libs/husd/runprocedurals.py --mode postframe --validategeo
+[19:51:17] Running preframe procedurals script: /Applications/Houdini/Houdini21.0.631/Frameworks/Houdini.framework/Versions/21.0/Resources/houdini/python3.11libs/husd/runprocedurals.py --mode preframe --validategeo
+ALF_PROGRESS 66%
+[19:51:17] >>> Render <SCRATCH>/test shot/renders/husk.0003.png (3 of 3) - 64x36 <SCRATCH>/test shot/husk.usda frame: 3
+[19:51:17] Host: mac (Apple M2 Max)
+[19:51:17] Update Wall Clock Time: 0:00:00.79
+[19:51:17] Render complete
+ALF_PROGRESS 100%
+[19:51:17] Ray Counts:
+[19:51:17]          Camera Rays:       7,938
+[19:51:17]             Indirect:       1,718
+[19:51:17]       Light Geometry:       1,383
+[19:51:17]            Occlusion:           0
+[19:51:17]                Probe:           0
+[19:51:17]                Total:      11,039
+[19:51:17] Shader Calls:
+[19:51:17]         Displacement:           0
+[19:51:17]             Emission:           0
+[19:51:17]                Light:       3,935
+[19:51:17]              Opacity:       2,624
+[19:51:17]              Surface:       2,624
+[19:51:17]               Volume:           0
+[19:51:17] Total Wall Clock Time: 0:00:03.70
+[19:51:17]        Total CPU Time: 0:00:04.01
+[19:51:17]  System CPU Time Only: 0:00:00.23
+[19:51:17]  Current Memory Usage: 468.62 GiB
+[19:51:17]     Peak Memory Usage: 468.62 GiB
+[19:51:17] Saved Image: <SCRATCH>/test shot/renders/husk.0003.png
+[19:51:17] Running postframe procedurals script: /Applications/Houdini/Houdini21.0.631/Frameworks/Houdini.framework/Versions/21.0/Resources/houdini/python3.11libs/husd/runprocedurals.py --mode postframe --validategeo
+[19:51:17] Running postrender procedurals script: /Applications/Houdini/Houdini21.0.631/Frameworks/Houdini.framework/Versions/21.0/Resources/houdini/python3.11libs/husd/runprocedurals.py --mode postrender --validategeo

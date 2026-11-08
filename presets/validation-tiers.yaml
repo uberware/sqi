@@ -372,7 +372,19 @@ presets:
         size parameter. Not shown: a stage with no render product (husk then
         writes every frame to karma.exr in the task's working folder), Karma
         XPU on a GPU, any other Hydra delegate, Houdini on Linux or macOS, any
-        Houdini but 22.0.466, and a commercial or Indie license.
+        Houdini but 22.0.466, and a commercial or Indie license. Progress comes
+        from SQI_LOG_PROGRESS on husk's own output: the "a" in -V 2a prints
+        ALF_PROGRESS N%, the percent through the whole run (the task's chunk),
+        several times within each frame; with -V 2 and no "a" husk 21.0.631
+        printed no such line, and with no -V nothing at all. The status pattern
+        takes the image name and count from ">>> Render <image> (i of n) -
+        WxH". TestPresetProgress_Fixtures checks both against husk 21.0.631
+        captures (Apprentice, macOS arm64; one frame, and the chunk patched to
+        three frames), and Tier 2 shows a task's progress moving through
+        several values within a four-frame chunk under a real 21.0.631 worker,
+        on a layer path-tracing 8192 samples at 640x360 so a frame outlasts the
+        worker's 2 s progress throttle. Not confirmed: ALF_PROGRESS from Karma
+        XPU or another delegate, or under any Houdini but 21.0.631.
     tier2:
       case: TestPresetDCC_Houdini_HuskRender
       requires_app: houdini
@@ -448,6 +460,17 @@ presets:
         macOS, any Houdini but 22.0.466, a worker with no GPU rendering with
         Storm, the other renderers (Karma XPU, Houdini VK,
         GL), a plain OpenUSD usdrecord, or the sub-frame ###.### pattern.
+        Progress comes from SQI_LOG_PROGRESS on usdrecord's own output, which
+        has no verbosity option: it prints "Recording time code: F.000000"
+        before it records each frame (a frame pattern), flushed line by line
+        over a pipe, and nothing after the last, so the bar reaches the last
+        frame's start and the task's end does the rest.
+        TestPresetProgress_Fixtures checks it against Houdini 21.0.631
+        captures (Storm and Karma CPU, macOS arm64), and Tier 2 shows a task's
+        progress moving through 25, 50 and 75 on a four-frame chunk under a
+        real 21.0.631 worker, rendering with Karma CPU at 2560 wide so a frame
+        outlasts the worker's 2 s progress throttle. Not confirmed: the line
+        under any Houdini but 21.0.631.
     tier2:
       case: TestPresetDCC_Houdini_USDRecord
       requires_app: houdini
@@ -486,7 +509,22 @@ presets:
         against a real OCIO config, compositing a second input sequence, any
         OIIO other than 2.5.18 and the Ubuntu package version CI installs, and
         macOS. Negative frames work with hoiiotool 2.5.18 (--frames -2--1 with
-        @@@@ writes -002 and -001), but no test pins them.
+        @@@@ writes -002 and -001), but no test pins them. oiiotool prints
+        nothing by default, and -v prints "Reading <file>" and "Writing
+        <file>", which name the frame only inside the user's own file name, so
+        the preset ends its argv with --echo "Wrote frame {FRAME_NUMBER}"
+        (help: "Echo message to console"), which oiiotool runs after -o for
+        each frame, evaluating {FRAME_NUMBER}; SQI_LOG_PROGRESS reads it as
+        framedone and as status. TestPresetProgress_Fixtures checks it against
+        captures from oiiotool 3.1.15.0 (Homebrew, macOS arm64) and Houdini
+        21.0.631's hoiiotool (OIIO 2.5.18.0), and Tier 2 shows a task's
+        progress moving through 25, 50, 75 and 100 on a four-frame chunk under
+        a real worker with oiiotool 3.1.15.0, a --blur 81x81 over 1024x1024
+        frames making a frame outlast the worker's 2 s throttle; the convert
+        and operations cases still write exactly their files with the echo
+        added. An --evaloff among the operations leaves {FRAME_NUMBER}
+        unexpanded and the bar still. Not confirmed: the echo under Ubuntu's
+        openimageio-tools, which CI's Tier 2 run would exercise.
     tier2:
       case: TestPresetOIIOTool_ProcessesASequence
       required_on: [linux]

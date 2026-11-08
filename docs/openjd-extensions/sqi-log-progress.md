@@ -194,6 +194,9 @@ ships.
 | `nuke-write-render` | `framedone` (`Frame N (i of n)`, printed once a frame is written); the same line as status | Nuke 17.1v2 Non-commercial on macOS; no other version or license |
 | `nuke-script-render` | the same block as `nuke-write-render`; Nuke prints a `Writing ... took` line per Write node but `Frame N (i of n)` once per frame, after every node has written it, so the bar moves once per frame, not per node | Nuke 17.1v2 Non-commercial on macOS, rendering two Write nodes; no other version or license |
 | `houdini-rop-render` | no block: the embedded hython driver prints `openjd_progress` and `openjd_status: rendered frame F (k of n)` itself, from one render-event callback on each `PostFrame` event | Houdini 21.0.631 Apprentice on macOS, Geometry ROP; not a render ROP (Mantra, Karma, OpenGL) |
+| `husk-usd-render` | `percent` (`ALF_PROGRESS N%`, which `-V 2a`'s `a` turns on: the percent through the whole run, which is the task's chunk, moving within each frame); status is the image name and count from `>>> Render <image> (i of n)` | husk in Houdini 21.0.631 Apprentice on macOS, Karma CPU; not Karma XPU or another delegate, and not Houdini 22 |
+| `usdrecord-render` | `frame` (`Recording time code: F.000000`, printed before each frame); the same line as status. usdrecord has no verbosity option and prints nothing after the last frame, so the bar reaches the last frame's start, not 100 | Houdini 21.0.631's usdrecord under hython on macOS, Storm and Karma CPU; not Houdini 22 |
+| `oiiotool-process` | `framedone` (`Wrote frame N`); the same line as status. oiiotool prints nothing by default and `-v` names files, not frames, so the preset adds `--echo "Wrote frame {FRAME_NUMBER}"` after `-o`, which only prints | oiiotool 3.1.15.0 (Homebrew, macOS) and Houdini 21.0.631's hoiiotool (OIIO 2.5.18.0); not Ubuntu's openimageio-tools |
 
 ## Compatibility
 `SQI_LOG_PROGRESS` is an sqi extension. Other OpenJD runtimes reject the

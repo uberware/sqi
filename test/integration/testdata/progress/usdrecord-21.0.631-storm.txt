@@ -1,0 +1,10 @@
+# Captured verbatim from usdrecord in Houdini 21.0.631 Apprentice on macOS arm64, run under hython by the preset's launcher.py (stdout and stderr, combined); scratch path replaced by <SCRATCH>.
+# version: Houdini 21.0.631 usdrecord, USD (0, 25, 5) (pxr.Usd.GetVersion() under hython)
+# scene:   testdata/dcc/stage.usda copied to "<SCRATCH>/test shot/stage.usda"
+# command: hython launcher.py --imageWidth 64 --frames=1:3 "<SCRATCH>/test shot/stage.usda" "<SCRATCH>/test shot/out/review/preview.####.png"
+# usdrecord has no verbosity option; it prints "Recording time code" before it records each frame, flushed line by line over a pipe.
+Camera: 
+Renderer plugin: HdStormRendererPlugin
+Recording time code: 1.000000
+Recording time code: 2.000000
+Recording time code: 3.000000

@@ -55,6 +55,8 @@ readme: |
   so no frame the range leaves out is rendered. A larger chunk loads the stage
   fewer times, at the cost of less parallelism.
 
+  The task's progress bar moves as `usdrecord` starts each frame of the chunk.
+
   ## How it runs
 
   Houdini's own `usdrecord` command on Windows cannot start when Houdini is
@@ -74,7 +76,7 @@ version: 1.0.0
 template:
   specificationVersion: jobtemplate-2023-09
   name: USD Record Render
-  extensions: [TASK_CHUNKING, EXPR]
+  extensions: [TASK_CHUNKING, EXPR, SQI_LOG_PROGRESS]
   parameterDefinitions:
     - name: SceneFile
       type: PATH
@@ -137,6 +139,14 @@ template:
             chunks:
               defaultTaskCount: "{{Param.FramesPerTask}}"
               rangeConstraint: CONTIGUOUS
+      SQI_LOG_PROGRESS:
+        # From Houdini 21.0.631's usdrecord (test/integration/testdata/progress):
+        # it prints "Recording time code: F.000000" before it records each
+        # frame, and nothing after the last one.
+        progress:
+          - '^Recording time code: (?P<frame>-?\d+)\.0+$'
+        status:
+          - '^(?P<status>Recording time code: -?\d+)\.0+$'
       script:
         let:
           - pad = Param.OutputFile.name.count('#')

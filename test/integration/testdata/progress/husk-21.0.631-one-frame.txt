@@ -1,0 +1,43 @@
+# Captured verbatim from husk in Houdini 21.0.631 Apprentice on macOS arm64 (stdout and stderr, combined); scratch path replaced by <SCRATCH>.
+# version: husk version 21.0.631
+# scene:   the TestPresetDCC_Houdini_HuskRender layer (huskLayer, 64x36, one PNG product <SCRATCH>/test shot/renders/husk.$F4.png) over testdata/dcc/stage.usda
+# command: husk --frame 1 --frame-count 1 --make-output-path --no-mplay -V 2a "<SCRATCH>/test shot/husk.usda"
+# The preset's own argv for a one-frame task, -V 2a included. Without -V husk printed nothing at all, and with -V 2 (no "a") no ALF_PROGRESS line.
+[19:51:09] husk version 21.0.631
+[19:51:10] Loading <SCRATCH>/test shot/husk.usda
+[19:51:11] Using stage default settings: /Render/settings
+[19:51:11] Running prerender procedurals script: /Applications/Houdini/Houdini21.0.631/Frameworks/Houdini.framework/Versions/21.0/Resources/houdini/python3.11libs/husd/runprocedurals.py --mode prerender --validategeo
+[19:51:12] Running preframe procedurals script: /Applications/Houdini/Houdini21.0.631/Frameworks/Houdini.framework/Versions/21.0/Resources/houdini/python3.11libs/husd/runprocedurals.py --mode preframe --validategeo
+[19:51:12] Start Wall Clock Time: 0:00:02.84
+ALF_PROGRESS 0%
+[19:51:12] >>> Render <SCRATCH>/test shot/renders/husk.0001.png (1 of 1) - 64x36 <SCRATCH>/test shot/husk.usda frame: 1
+[19:51:12] Host: mac (Apple M2 Max)
+[19:51:12]   Load Wall Clock Time: 0:00:03.06
+[19:51:12] Update Wall Clock Time: 0:00:00.31
+[19:51:12] Light Tree: 0 lights
+[19:51:12] Uniform List: 1 lights
+ALF_PROGRESS 79%
+[19:51:12] Render complete
+ALF_PROGRESS 100%
+[19:51:12] Ray Counts:
+[19:51:12]          Camera Rays:       7,890
+[19:51:12]             Indirect:       1,900
+[19:51:12]       Light Geometry:       1,319
+[19:51:12]            Occlusion:           0
+[19:51:12]                Probe:           0
+[19:51:12]                Total:      11,109
+[19:51:12] Shader Calls:
+[19:51:12]         Displacement:           0
+[19:51:12]             Emission:           0
+[19:51:12]                Light:       1,319
+[19:51:12]              Opacity:         950
+[19:51:12]              Surface:         950
+[19:51:12]               Volume:           0
+[19:51:12] Total Wall Clock Time: 0:00:03.35
+[19:51:12]        Total CPU Time: 0:00:03.84
+[19:51:12]  System CPU Time Only: 0:00:00.21
+[19:51:12]  Current Memory Usage: 468.60 GiB
+[19:51:12]     Peak Memory Usage: 468.60 GiB
+[19:51:12] Saved Image: <SCRATCH>/test shot/renders/husk.0001.png
+[19:51:12] Running postframe procedurals script: /Applications/Houdini/Houdini21.0.631/Frameworks/Houdini.framework/Versions/21.0/Resources/houdini/python3.11libs/husd/runprocedurals.py --mode postframe --validategeo
+[19:51:12] Running postrender procedurals script: /Applications/Houdini/Houdini21.0.631/Frameworks/Houdini.framework/Versions/21.0/Resources/houdini/python3.11libs/husd/runprocedurals.py --mode postrender --validategeo

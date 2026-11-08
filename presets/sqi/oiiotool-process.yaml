@@ -75,6 +75,14 @@ readme: |
   as `1-100:2` runs one task per frame, so no frame the range leaves out is
   processed.
 
+  ## Progress
+
+  `oiiotool` prints nothing while it works, so the task also runs
+  `--echo "Wrote frame {FRAME_NUMBER}"` after its `-o`, which prints a line as
+  each frame is written and moves the task's progress bar frame by frame. An
+  `--evaloff` among the operations stops `oiiotool` expanding the frame number,
+  and the bar then moves only as tasks finish.
+
   ## Requirements
 
   - Workers tagged `attr.worker.tag.oiiotool = true`
@@ -86,7 +94,7 @@ version: 1.0.0
 template:
   specificationVersion: jobtemplate-2023-09
   name: OIIO Tool Process
-  extensions: [TASK_CHUNKING, EXPR]
+  extensions: [TASK_CHUNKING, EXPR, SQI_LOG_PROGRESS]
   parameterDefinitions:
     - name: InputFile
       type: PATH
@@ -144,6 +152,15 @@ template:
             chunks:
               defaultTaskCount: "{{Param.FramesPerTask}}"
               rangeConstraint: CONTIGUOUS
+      SQI_LOG_PROGRESS:
+        # From oiiotool 3.1.15.0's output (test/integration/testdata/progress):
+        # it prints nothing by default, and -v names the files it reads and
+        # writes but not the frame. --echo, which only prints, runs after -o
+        # for every frame, and oiiotool evaluates {FRAME_NUMBER} in it.
+        progress:
+          - '^Wrote frame (?P<framedone>-?\d+)$'
+        status:
+          - '^(?P<status>Wrote frame -?\d+)$'
       script:
         let:
           # oiiotool 2.5.18 reads each # as four digits, so the file name's #
@@ -165,3 +182,5 @@ template:
               - "{{ Param.Operations }}"
               - "-o"
               - "{{ output }}"
+              - "--echo"
+              - "Wrote frame {FRAME_NUMBER}"
