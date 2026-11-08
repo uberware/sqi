@@ -107,8 +107,8 @@ to its default.
 | `priority` | `0` | higher is preferred when groups compete for the same work |
 | `max_step_up` | `1` | 1 to 10000; the most machines one evaluation may add |
 | `scale_up_cooldown_seconds` | `60` | 0 up to one year; the shortest time between step-ups |
-| `idle_timeout_seconds` | `600` | at least 60; how long a member must sit idle before it is a retire candidate |
-| `boot_timeout_seconds` | `600` | at least 60; how long a machine that was asked for has to register, and how long a vanished cloud machine is kept ([below](#worker-shutdown-and-drain)) |
+| `idle_timeout_seconds` | `600` | 60 up to one year; how long a member must sit idle before it is a retire candidate |
+| `boot_timeout_seconds` | `600` | 60 up to one year; how long a machine that was asked for has to register, and how long a vanished cloud machine is kept ([below](#worker-shutdown-and-drain)). Keep it shorter than `scheduler.offline_worker_retention`. |
 | `retire_action` | `sleep` | `sleep` or `shutdown`. Stored for the acting providers; it has no effect on the signal. |
 | `machine_profile` | `{}` | a sized group must declare `cpu_count` of at least 1 |
 
@@ -141,9 +141,10 @@ run it, ignoring everything that varies with load:
 
 Work that no group could run drives nothing. A job needing Houdini does not
 grow a group whose profile has no Houdini tag, and a step that needs more cores
-than one machine has is not counted. A `sized` profile has no operating system
-**version** field, so a step requiring `attr.worker.os.version` never counts
-toward a group.
+than one machine has is not counted. A sized group's profile has no operating
+system **version** field, so a step requiring `attr.worker.os.version` never
+counts toward a sized group. A named group is judged from each member's own
+registration, which does carry its version.
 
 Work is then taken off the demand before any group sees it:
 
@@ -200,9 +201,10 @@ while they boot. After the timeout they are no longer held, and the group may
 ask for one further step, measured from the machines that did register.
 
 Not available yet: a degraded state with backoff for a broken image (so that the
-group stops asking at all, instead of one step per boot timeout). Until then,
-the guards above limit the cost, and a mismatch report (next section) is how you
-notice.
+group stops asking at all, instead of one step per boot timeout). It is planned
+for the second part of capacity groups (H8b), with the acting providers. Until
+then, the guards above limit the cost, and a mismatch report (next section) is
+how you notice.
 
 ### Profile mismatches
 
@@ -239,8 +241,15 @@ the leader first sees it idle. The same loss applies to machines still booting
 
 `GET /api/v1/capacity-groups/{id}` returns the group with its last evaluation
 in `status`; the list endpoint does the same for every group. `status` is null
-until the first evaluation, while the group is disabled, and on a server that is
-not the leader.
+until the first evaluation and while the group is disabled.
+
+Under [high availability](operations.md#running-more-than-one-server-high-availability)
+only the leader evaluates groups and answers these routes. A standby answers
+`503` on every REST route except the probes and `/metrics`, and its `/metrics`
+carries no `sqi_capacity_*` series. Point an autoscaler at the leader (through a
+load balancer that health-checks `/leaderz`), or scrape every server and ignore
+the ones without the series. After a failover the new leader's `status` is null
+until its first evaluation.
 
 ```json
 {
@@ -270,8 +279,9 @@ blind server. Reading the status needs `infra.read` when `auth.enabled` is on.
 ### Metrics
 
 `GET /metrics` on `sqi-server` carries three gauges per enabled group. The label
-`group` is the group **name**. Like the other scheduler gauges they are
-meaningful on the leader only, and `/metrics` is never gated by authentication.
+`group` is the group **name**. Only the leader exports them (a standby has no
+`sqi_capacity_*` series; see [above](#the-status)), and `/metrics` is never gated
+by authentication.
 
 | Metric | Labels | Meaning |
 |---|---|---|
@@ -338,6 +348,11 @@ generates its key, enrols, and joins the group.
   answered `409` with `group tokens need nats.auth.enabled; workers on an
   auth-off farm join with worker.capacity_group`. A named group answers `409`
   too, since its members are added by name.
+- **With REST `auth.enabled: false` and `nats.auth.enabled: true`, no machine can
+  join a sized group in this release.** The mint route is not mounted,
+  `sqi-server worker token issue` mints only ordinary join tokens (never a group
+  token), and `worker.capacity_group` is ignored because broker authentication
+  is on. Turn REST authentication on to use sized groups on such a farm.
 
 ### Sized groups with broker authentication off
 
@@ -362,7 +377,16 @@ worker joins only through its group token.
 
 When a worker's request to join is refused (no such group, another farm, a
 named group), the registration still succeeds and the server logs a warning
-saying why.
+saying why. The same applies with broker authentication on to a group token
+whose group has since been changed to named: its machines no longer join it.
+
+**Removing an ephemeral member does not keep it out.**
+`DELETE /capacity-groups/{id}/members/{workerID}` clears the membership, but the
+worker joins again at its next registration, which a restart or a NATS
+reconnect triggers: through its credential's group with broker authentication
+on, or through `worker.capacity_group` with it off. To make a removal stick,
+revoke the worker's credential (`DELETE /workers/{id}/credential`), or with
+broker authentication off, remove the setting from the worker.
 
 ### Build images without a worker ID
 
@@ -395,7 +419,14 @@ termination hook usually stops the service, an instance scaled in that way is
 marked offline, and the capacity sweep then does the rest: an ephemeral member
 **offline longer than its group's `boot_timeout_seconds`** (judged by its last
 heartbeat) is deleted and its credential revoked, well before the 24 hour
-offline-worker retention sweep, which revokes nothing.
+offline-worker retention sweep, which revokes nothing. A member with no recorded
+heartbeat is never judged vanished.
+
+`boot_timeout_seconds` can be set as high as a year, but
+[`scheduler.offline_worker_retention`](configuration.md#scheduleroffline_worker_retention)
+(24 hours by default) deletes an offline, enabled ephemeral member's row
+**without revoking its credential**. Keep `boot_timeout_seconds` shorter than the
+retention, or revoke such a worker's credential yourself.
 
 Some rules that never bend:
 
@@ -404,8 +435,10 @@ Some rules that never bend:
 - A member that is not ephemeral (every member of a named group) is never
   deleted by a deregister or by the capacity sweep, and
   `scheduler.offline_worker_retention` skips members of a named group as well.
-- Nothing is removed while the server is deferring liveness decisions after a
-  broker outage, because during an outage no machine can come back.
+- The capacity sweep removes nothing while the server is deferring liveness
+  decisions after a broker outage, because during an outage no machine can come
+  back. A `retired` or `preempted` deregister still deletes its member then: it
+  is the machine's own report that it is gone.
 - A row is deleted only when the worker is offline and holds no assigned or
   running task.
 
@@ -414,8 +447,10 @@ Some rules that never bend:
 On SIGINT, SIGTERM or a service stop, a worker stops leasing and gives its
 running tasks up to [`worker.shutdown_grace_period`](worker-configuration.md#workershutdown_grace_period)
 to finish (default 30 s). Tasks still running at the end get SIGTERM, then
-SIGKILL a third of the grace period later, and are reported as failed. So the
-longest a drain can take is the grace period plus a third of it.
+SIGKILL a third of the grace period later, and are reported as
+`worker_shutdown`, which the server treats as a reclaim: the task returns to
+`ready` and runs again from the start, with no retry consumed and no failure
+counted. So the longest a drain can take is the grace period plus a third of it.
 
 **Set `shutdown_grace_period` to your longest render**, and set the autoscaler's
 termination hook timeout (below) to at least `grace + grace / 3` plus a margin
@@ -464,11 +499,10 @@ Keep in mind:
   and Azure). A grace period over 90 seconds gives a kill window over 30
   seconds, longer than a GCP or Azure notice, so workers on preemptible
   instances need a shorter grace period than workers on on-demand instances.
-- The metadata addresses are plain HTTP. If your environment uses an HTTP proxy
-  (`HTTP_PROXY`), make sure the metadata addresses `169.254.169.254` and
-  `metadata.google.internal` are in `NO_PROXY`; a proxied request will not
-  reach the link-local service and the watcher will report the service as
-  unreachable.
+- The metadata service is link-local, so the watcher sends its requests
+  directly and never through a proxy named by `HTTP_PROXY` or `HTTPS_PROXY`. To
+  reach it some other way, set
+  [`worker.preemption.endpoint`](worker-configuration.md#workerpreemptionendpoint).
 - A failed poll never stops the watcher. It logs at debug, and warns after 10
   consecutive failures (about 50 seconds at the default interval) that a
   notice would be missed.
@@ -516,22 +550,28 @@ cancel machines that are still starting. Protect booting instances from scale-in
 
 Documentation-derived: not run against a real cloud.
 
-1. **Publish the metric.** CloudWatch cannot scrape `/metrics`. Run a small
-   publisher (a Lambda on a schedule, or a cron job on any host that reaches the
-   server) that reads `sqi_capacity_desired_machines{group="cloud-spot"}` from
-   `/metrics` and calls `aws cloudwatch put-metric-data` with namespace `Sqi`,
-   metric `DesiredMachines`. Publish the group's in-service instance count
-   alongside it, or use the ASG's own `GroupInServiceInstances`.
-2. **Scale out with target tracking on a ratio.** Target tracking moves capacity
-   in proportion to metric over target. Because `desired_machines` already
-   counts the machines you have, a metric that is the ratio
-   `DesiredMachines / GroupInServiceInstances` with a target of `1` makes the
-   group's capacity follow `desired_machines` (a metric-math expression in the
-   policy's customized metric specification). Set `DisableScaleIn: true` on the
-   policy so that scale-in stays under your control. A simpler alternative that
-   needs no metric math is the same publisher calling
-   `aws autoscaling set-desired-capacity` with the value, and setting the ASG's
-   `MaxSize` to the group's `max_machines`.
+1. **Publish the metric.** sqi does not publish to CloudWatch. Either run a
+   small publisher (a Lambda on a schedule, or a cron job on any host that
+   reaches the leader) that reads
+   `sqi_capacity_desired_machines{group="cloud-spot"}` from `/metrics` and calls
+   `aws cloudwatch put-metric-data` with namespace `Sqi`, metric
+   `DesiredMachines`, or have the CloudWatch agent's Prometheus metrics
+   collection scrape `/metrics`.
+2. **Scale out.** The simplest way, and the one that works from zero machines,
+   is the same publisher calling `aws autoscaling set-desired-capacity` with the
+   value, with the ASG's `MaxSize` set to the group's `max_machines`. Target
+   tracking on the ratio `DesiredMachines / GroupInServiceInstances` with a
+   target of `1` (a metric-math expression in the policy's customized metric
+   specification) also makes capacity follow `desired_machines`, because target
+   tracking moves capacity in proportion to metric over target and
+   `desired_machines` already counts the machines you have. **It does not work
+   for a group that can scale to zero** (`min_machines: 0`, as in the example
+   above): with no instance in service the ratio has no value and the policy
+   cannot scale out. Use `set-desired-capacity`, or step scaling on
+   `DesiredMachines`, for such a group. `GroupInServiceInstances` is published
+   only when the ASG's group metrics collection is enabled
+   (`aws autoscaling enable-metrics-collection`). Set `DisableScaleIn: true` on
+   a target tracking policy so that scale-in stays under your control.
 3. **Protect instances.** Create the ASG with `NewInstancesProtectedFromScaleIn`
    so no instance is picked by the ASG's own scale-in. To retire a candidate
    from `retire_candidates`, your script clears the protection of that one
@@ -649,6 +689,11 @@ be chosen and will drain (up to the grace period) before it exits.
 - **No degraded state.** A group whose image never registers is bounded by
   `max_machines`, `max_step_up` and the cooldown but is not backed off; the
   mismatch list and your cloud's own failed-launch metrics are how you notice.
+  A degraded state with backoff is planned for the second part (H8b).
+- **Sized groups need REST authentication when broker authentication is on**
+  ([above](#sized-groups-with-broker-authentication-on)).
+- **A removed ephemeral member rejoins** at its next registration unless its
+  credential is revoked ([above](#sized-groups-with-broker-authentication-off)).
 - **No retirement check.** `retire_candidates` is advisory
   ([above](#wiring-an-autoscaler)).
 - **No instance IDs.** A worker does not report its cloud instance ID, so mapping

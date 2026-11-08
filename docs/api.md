@@ -761,7 +761,7 @@ few more routes. See [Capacity groups](capacity.md) for what the figures mean.
 ```
 GET    /api/v1/capacity-groups                          # every group, with its last evaluation as "status"
 POST   /api/v1/capacity-groups                          # create
-GET    /api/v1/capacity-groups/{id}                     # one group; "status" is null until evaluated, while disabled, and on a standby
+GET    /api/v1/capacity-groups/{id}                     # one group; "status" is null until evaluated and while disabled
 PUT    /api/v1/capacity-groups/{id}                     # replace the settings
 DELETE /api/v1/capacity-groups/{id}                     # 409 while any worker is a member
 GET    /api/v1/capacity-groups/{id}/members             # the group's workers, as GET /workers returns them
@@ -777,7 +777,10 @@ Durations are in seconds (`scale_up_cooldown_seconds`, `idle_timeout_seconds`,
 `provider: external` is accepted. A group's `status` carries `demand_cores`,
 `desired_machines` (the **total** the group should have, retire candidates
 included), `online_members`, `offline_members`, `retire_candidates`,
-`mismatches` and `evaluated_at`.
+`mismatches` and `evaluated_at`. Under high availability only the leader
+evaluates groups: a standby answers `503` on these routes, as on every route
+other than the probes and `/metrics`, and exports no `sqi_capacity_*` series, so
+an autoscaler reads the leader.
 
 ```sh
 # What does the farm want from group "cloud-spot"?

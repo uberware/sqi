@@ -666,7 +666,9 @@ worker:
 Maximum time the worker waits for in-flight tasks to finish after SIGINT,
 SIGTERM or a Windows service stop. Tasks still running at the end of this
 window receive SIGTERM, then SIGKILL a third of this period later, and are
-reported as `failed`. On workers you restart while they are busy, set it to
+reported as `worker_shutdown`, which the server treats as a reclaim: the task
+returns to `ready` and runs again from the start, with no retry consumed and no
+failure counted. On workers you restart while they are busy, set it to
 your longest expected task duration. The worker keeps heartbeating throughout
 the drain, so a long grace period does not cost it its tasks. On machines an
 autoscaler terminates, set the autoscaler's termination hook to at least the
@@ -733,7 +735,9 @@ worker:
 The capacity group this worker asks to join when it registers. The server
 honors it only with broker authentication off, and only for a sized group in
 the worker's farm; with authentication on, membership comes from the group
-token the worker enrolled with and this value is ignored.
+token the worker enrolled with and this value is ignored. While the value is
+set, removing the worker from its group through the API lasts only until its
+next registration, when it joins again.
 See [Capacity groups](capacity.md#joining-a-group), which also explains why an
 image must be built without a worker ID in `worker.data_dir`.
 
@@ -767,9 +771,10 @@ On a notice the worker cancels its running tasks at once, without waiting out
 [`worker.shutdown_grace_period`](#workershutdown_grace_period). The tasks are
 reported as `worker_shutdown`, which the server reclaims and re-queues rather
 than counting as a failure, and the worker deregisters as `preempted`, so an
-ephemeral capacity-group member is removed. Each request has a 2 s timeout.
-A failed poll never stops the watcher; it is logged at debug, with a warning
-after 10 consecutive failures.
+ephemeral capacity-group member is removed. Each request has a 2 s timeout and
+goes to the metadata service directly, never through a proxy named by
+`HTTP_PROXY` or `HTTPS_PROXY`. A failed poll never stops the watcher; it is
+logged at debug, with a warning after 10 consecutive failures.
 
 ```yaml
 worker:
@@ -800,8 +805,9 @@ providers give from 30 s (Azure) to 2 minutes (AWS) of warning.
 | **Default** | `""` (the provider's well-known address) |
 | **Env var** | `SQI_WORKER_PREEMPTION_ENDPOINT` |
 
-Replaces the metadata base URL, for a proxy or a test. Ignored with
-`watch: none`.
+Replaces the metadata base URL, for a proxy or a test. This is the only way to
+send the polls through a proxy: the environment's `HTTP_PROXY` is not used.
+Ignored with `watch: none`.
 
 ---
 

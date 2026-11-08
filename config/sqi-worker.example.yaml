@@ -223,7 +223,8 @@ worker:
 
   # Maximum time the worker waits for in-flight tasks to finish after receiving
   # SIGINT or SIGTERM before force-killing them. Tasks that do not complete
-  # within this window receive SIGTERM then SIGKILL and are reported as failed.
+  # within this window receive SIGTERM then SIGKILL and are reported as
+  # worker_shutdown: the server returns them to ready, with no retry consumed.
   # Must be > 0.
   # Type: duration   Env: SQI_WORKER_SHUTDOWN_GRACE_PERIOD
   shutdown_grace_period: "30s"
