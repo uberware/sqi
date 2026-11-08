@@ -5,6 +5,7 @@ package openjd
 import (
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -76,6 +77,25 @@ func TestRegistry_LogChecksVendor(t *testing.T) {
 	}
 	if ext.DocPath != "docs/openjd-extensions/sqi-log-checks.md" {
 		t.Errorf("DocPath = %q", ext.DocPath)
+	}
+}
+
+func TestRegistry_LogProgressVendor(t *testing.T) {
+	ext, ok := LookupExtension("SQI_LOG_PROGRESS")
+	if !ok {
+		t.Fatal("SQI_LOG_PROGRESS not registered")
+	}
+	if ext.Origin != OriginVendor || ext.Status != StatusSupported {
+		t.Errorf("Origin = %q, Status = %q, want vendor and supported", ext.Origin, ext.Status)
+	}
+	if !ext.StepBlock || ext.WorkerEnforced {
+		t.Errorf("StepBlock = %v, WorkerEnforced = %v, want true and false", ext.StepBlock, ext.WorkerEnforced)
+	}
+	if ext.DocPath != "docs/openjd-extensions/sqi-log-progress.md" {
+		t.Errorf("DocPath = %q", ext.DocPath)
+	}
+	if slices.Contains(WorkerEnforcedExtensions(), "SQI_LOG_PROGRESS") {
+		t.Error("SQI_LOG_PROGRESS must not be in WorkerEnforcedExtensions()")
 	}
 }
 
@@ -163,7 +183,7 @@ func TestValidateExtensions_RegisteredButNotSupported(t *testing.T) {
 // check runs on the one path every extension flows through.
 func TestValidateExtensions_SupportedStillPass(t *testing.T) {
 	for _, name := range []string{
-		"TASK_CHUNKING", "REDACTED_ENV_VARS", "SQI_PATH_TRANSLATION", "SQI_CHUNK_BOUNDS", "EXPR", "SQI_LOG_CHECKS",
+		"TASK_CHUNKING", "REDACTED_ENV_VARS", "SQI_PATH_TRANSLATION", "SQI_CHUNK_BOUNDS", "EXPR", "SQI_LOG_CHECKS", "SQI_LOG_PROGRESS",
 	} {
 		t.Run(name, func(t *testing.T) {
 			tmpl := &JobTemplate{

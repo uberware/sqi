@@ -624,6 +624,7 @@ func ValidateWithBudget(t *JobTemplate, opts ValidateOptions) (ValidationErrors,
 	errs = append(errs, validateExtensions(t)...)
 	errs = append(errs, validatePathTranslation(t)...)
 	errs = append(errs, validateLogChecks(t)...)
+	errs = append(errs, validateLogProgress(t)...)
 	errs = append(errs, validateChunkBounds(t)...)
 	errs = append(errs, validateLetExtension(t)...)
 	errs = append(errs, validateLetElementCounts(t)...)

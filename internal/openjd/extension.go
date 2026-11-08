@@ -74,6 +74,8 @@ type Extension struct {
 //     submit.go.
 //   - SQI_LOG_CHECKS: a step-level failOn/requireLine block, parsed in
 //     logchecks.go and enforced by the worker's executor.
+//   - SQI_LOG_PROGRESS: a step-level progress/status block, parsed and validated
+//     in logprogress.go.
 //   - EXPR: the OpenJD expression language; implemented across internal/openjd
 //     (scope model, checker, resolver), internal/openjd/expr and
 //     internal/worker/fmtres. See that entry's own comment.
@@ -117,6 +119,14 @@ var registry = map[string]Extension{
 		StepBlock:      true,
 		WorkerEnforced: true,
 	},
+	ExtensionLogProgress: {
+		Name:      ExtensionLogProgress,
+		Origin:    OriginVendor,
+		Status:    StatusSupported,
+		Summary:   "Step-level log progress: report task progress and status text from log lines.",
+		DocPath:   "docs/openjd-extensions/sqi-log-progress.md",
+		StepBlock: true,
+	},
 	// EXPR is the OpenJD expression language extension. It may only be
 	// StatusSupported as a whole: the extension permits no partial
 	// implementation, and section 1.2.2 makes the BOOL, RANGE_EXPR and
@@ -146,6 +156,10 @@ const ExtensionEXPR = "EXPR"
 // ExtensionLogChecks is the registry name of the sqi-defined step-level
 // log-check extension.
 const ExtensionLogChecks = "SQI_LOG_CHECKS"
+
+// ExtensionLogProgress is the registry name of the sqi-defined step-level
+// log-progress extension.
+const ExtensionLogProgress = "SQI_LOG_PROGRESS"
 
 // WorkerEnforcedExtensions returns the sorted names of the registered
 // extensions the worker enforces at run time. Workers advertise the subset they

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -313,8 +314,8 @@ func validateLogChecksBlock(lc *LogChecks, ptr string, budget *int) ValidationEr
 			Message: "requires at least one of failOn or requireLine to hold a pattern",
 		})
 	}
-	errs = append(errs, validateLogCheckPatterns(lc.FailOn, ptr+"/failOn", budget)...)
-	errs = append(errs, validateLogCheckPatterns(lc.RequireLine, ptr+"/requireLine", budget)...)
+	errs = append(errs, validateLogCheckPatterns(lc.FailOn, ptr+"/failOn", ExtensionLogChecks, budget)...)
+	errs = append(errs, validateLogCheckPatterns(lc.RequireLine, ptr+"/requireLine", ExtensionLogChecks, budget)...)
 	return errs
 }
 
@@ -329,8 +330,18 @@ func validateLogChecksBlock(lc *LogChecks, ptr string, budget *int) ValidationEr
 // the budget is spent, the error is reported once and no further pattern is
 // built, so validation costs at most the budget however long the template.
 // A negative budget means it has been spent and reported.
-func validateLogCheckPatterns(patterns []string, ptr string, budget *int) ValidationErrors {
+func validateLogCheckPatterns(patterns []string, ptr, ext string, budget *int) ValidationErrors {
+	errs, _ := validateLogCheckPatternsCompiled(patterns, ptr, ext, budget)
+	return errs
+}
+
+// validateLogCheckPatternsCompiled is [validateLogCheckPatterns] that also
+// returns each pattern's compiled form, index-aligned with patterns. An entry is
+// nil when the pattern was rejected or, once the budget is spent, not built.
+// ext names the extension in the budget message.
+func validateLogCheckPatternsCompiled(patterns []string, ptr, ext string, budget *int) (ValidationErrors, []*regexp.Regexp) {
 	var errs ValidationErrors
+	compiled := make([]*regexp.Regexp, len(patterns))
 	if len(patterns) > maxLogCheckPatterns {
 		errs = append(errs, ValidationError{
 			Pointer: ptr,
@@ -348,44 +359,46 @@ func validateLogCheckPatterns(patterns []string, ptr string, budget *int) Valida
 				Message: fmt.Sprintf("pattern is %d bytes; at most %d bytes are allowed", len(p), maxLogCheckPatternBytes),
 			})
 		default:
-			if e, ok := compileLogCheckPattern(p, pp, budget); !ok {
+			re, e, ok := compileLogCheckPattern(p, pp, ext, budget)
+			if !ok {
 				errs = append(errs, e)
 			}
+			compiled[i] = re
 		}
 	}
-	return errs
+	return errs, compiled
 }
 
 // compileLogCheckPattern checks one pattern against RE2 syntax and the size
 // bound, charging budget (see validateLogCheckPatterns) for a pattern it
 // builds. It returns the error to report, and false, when there is one.
-func compileLogCheckPattern(p, ptr string, budget *int) (ValidationError, bool) {
+func compileLogCheckPattern(p, ptr, ext string, budget *int) (*regexp.Regexp, ValidationError, bool) {
 	if *budget < 0 {
-		return ValidationError{}, true
+		return nil, ValidationError{}, true
 	}
 	n, err := logpattern.Estimate(p)
 	if err != nil {
-		return ValidationError{Pointer: ptr, Message: "invalid regular expression: " + err.Error()}, false
+		return nil, ValidationError{Pointer: ptr, Message: "invalid regular expression: " + err.Error()}, false
 	}
 	// A pattern over logpattern.EstimateCeiling is refused unbuilt, so only
 	// the rest are charged.
 	if n <= logpattern.EstimateCeiling {
 		if n > *budget {
 			*budget = -1
-			return ValidationError{
+			return nil, ValidationError{
 				Pointer: ptr,
-				Message: fmt.Sprintf("pattern takes the template's SQI_LOG_CHECKS patterns over %d compiled instructions in total, the most allowed; later patterns are not checked", maxLogCheckTemplateInsts),
+				Message: fmt.Sprintf("pattern takes the template's %s patterns over %d compiled instructions in total, the most allowed; later patterns are not checked", ext, maxLogCheckTemplateInsts),
 			}, false
 		}
 		*budget -= n
 	}
 	var tooLarge *logpattern.TooLargeError
-	_, err = logpattern.Compile(p)
+	re, err := logpattern.Compile(p)
 	switch {
 	case errors.As(err, &tooLarge):
-		return ValidationError{Pointer: ptr, Message: "pattern " + tooLarge.Error()}, false
+		return nil, ValidationError{Pointer: ptr, Message: "pattern " + tooLarge.Error()}, false
 	case err != nil:
-		return ValidationError{Pointer: ptr, Message: "invalid regular expression: " + err.Error()}, false
+		return nil, ValidationError{Pointer: ptr, Message: "invalid regular expression: " + err.Error()}, false
 	}
-	return ValidationError{}, true
+	return re, ValidationError{}, true
 }

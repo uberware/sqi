@@ -722,6 +722,9 @@ func decodeStepTemplate(raw map[string]any, exprDeclared bool) (StepTemplate, er
 	if v, ok := raw[ExtensionLogChecks]; ok {
 		s.LogChecks = decodeLogChecks(v)
 	}
+	if v, ok := raw[ExtensionLogProgress]; ok {
+		s.LogProgress = decodeLogProgress(v)
+	}
 
 	return s, nil
 }

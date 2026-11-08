@@ -384,6 +384,9 @@ type StepTemplate struct {
 	// LogChecks is the step's parsed SQI_LOG_CHECKS block, or nil when the step
 	// has none.
 	LogChecks *LogChecks
+	// LogProgress is the step's parsed SQI_LOG_PROGRESS block, or nil when the
+	// step has none.
+	LogProgress *LogProgress
 	// UnknownFields is every key the step carried that the step template schema
 	// does not define, sorted. The decoder drops them, which would silently lose
 	// a misspelled setting or disable a check the author asked for; validation
