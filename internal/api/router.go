@@ -258,6 +258,11 @@ type Deps struct {
 	// package depends only on the [WorkerRevoker] interface, never on
 	// internal/bus or internal/server.
 	WorkerRevoker WorkerRevoker
+
+	// CapacityStatus supplies each capacity group's last evaluation for the
+	// /api/v1/capacity-groups endpoints. Nil-tolerant: with none, every
+	// group's status is null. Production supplies the scheduler.
+	CapacityStatus CapacityStatusReader
 }
 
 // resolveCORSOrigins returns the CORS allow-list to configure, dropping the
@@ -485,6 +490,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	storageLocs := newStorageLocationHandler(deps.Store, logger)
 	computeLocs := newComputeLocationHandler(deps.Store, logger)
 	usagePools := newUsagePoolHandler(deps.Store, logger)
+	capacityGroups := newCapacityGroupHandler(deps.Store, deps.CapacityStatus, deps.NATSAuthEnabled, logger)
 	products := productHandlerFor(cfg, deps, logger)
 	presets := newPresetHandler(deps.PresetLib, deps.Products, deps.Store, logger,
 		cfg.ExprLimits, cfg.ExprSubmissionDeadline)
@@ -757,6 +763,9 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 				g.Put("/usage-pools/{id}", usagePools.updateUsagePool)
 				g.Delete("/usage-pools/{id}", usagePools.deleteUsagePool)
 			})
+
+			// infra.read / infra.manage (capacity groups)
+			capacityGroups.mount(rest, az, cfg.AuthEnabled)
 
 			// products.read / products.manage
 			rest.Group(func(g chi.Router) {

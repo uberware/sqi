@@ -14,6 +14,7 @@ import (
 	"github.com/uberware/sqi/internal/config"
 	"github.com/uberware/sqi/internal/health"
 	"github.com/uberware/sqi/internal/metrics"
+	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/store/fake"
 )
 
@@ -148,5 +149,24 @@ func TestAPIDeps_CarriesSessionAndBrokerSettings(t *testing.T) {
 	if !deps.NATSAuthEnabled || !deps.NATSAuthEnrollmentEndpointEnabled || deps.JoinTokenTTL != 9*time.Minute || !deps.JoinTokenSingleUse {
 		t.Errorf("broker-auth settings = (%v, %v, %s, %v), want all set", deps.NATSAuthEnabled,
 			deps.NATSAuthEnrollmentEndpointEnabled, deps.JoinTokenTTL, deps.JoinTokenSingleUse)
+	}
+}
+
+// TestAPIDeps_CapacityStatusIsTheScheduler: the capacity-group endpoints read
+// their status from the scheduler, and a server without one leaves the source
+// a true nil interface rather than a typed-nil that would panic.
+func TestAPIDeps_CapacityStatusIsTheScheduler(t *testing.T) {
+	s := &Server{store: fake.New()}
+	if deps := s.apiDeps(); deps.CapacityStatus != nil {
+		t.Errorf("CapacityStatus = %v with no scheduler, want a nil interface", deps.CapacityStatus)
+	}
+
+	s.sched = &scheduler.Scheduler{}
+	deps := s.apiDeps()
+	if deps.CapacityStatus == nil {
+		t.Fatal("CapacityStatus is nil with a scheduler")
+	}
+	if _, ok := deps.CapacityStatus.CapacityStatus("g1"); ok {
+		t.Error("a scheduler that has not evaluated reported a status")
 	}
 }

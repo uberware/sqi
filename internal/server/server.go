@@ -831,6 +831,14 @@ func (s *Server) apiDeps() api.Deps {
 		CookieSecure:  s.cfg.AuthCookieSecure,
 	}
 	natsAuthDeps(s.cfg, &deps)
+	// The scheduler is the capacity-group status source. Assign it only when it
+	// exists: a typed-nil *Scheduler in the interface would read as present and
+	// panic on the first call. A standby builds its router with the scheduler it
+	// will run on promotion (no new one is made then), so one wiring serves
+	// start and failover.
+	if s.sched != nil {
+		deps.CapacityStatus = s.sched
+	}
 	// Only expose the diagnostics reader when diagnostics are enabled. Leaving
 	// DiagReader as a nil interface (rather than a typed-nil *diag.Buffer) makes
 	// the endpoint return 503 instead of panicking on Query.

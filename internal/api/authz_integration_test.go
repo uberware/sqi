@@ -181,6 +181,9 @@ var expectedRoutes = []routeExpectation{
 	{method: http.MethodGet, pattern: "/api/v1/compute-locations/{id}", perm: policy.InfraRead},
 	{method: http.MethodGet, pattern: "/api/v1/usage-pools", perm: policy.InfraRead},
 	{method: http.MethodGet, pattern: "/api/v1/usage-pools/{id}", perm: policy.InfraRead},
+	{method: http.MethodGet, pattern: "/api/v1/capacity-groups", perm: policy.InfraRead},
+	{method: http.MethodGet, pattern: "/api/v1/capacity-groups/{id}", perm: policy.InfraRead},
+	{method: http.MethodGet, pattern: "/api/v1/capacity-groups/{id}/members", perm: policy.InfraRead},
 	{method: http.MethodPost, pattern: "/api/v1/farms", perm: policy.InfraManage},
 	{method: http.MethodPut, pattern: "/api/v1/farms/{id}", perm: policy.InfraManage},
 	{method: http.MethodDelete, pattern: "/api/v1/farms/{id}", perm: policy.InfraManage},
@@ -196,6 +199,14 @@ var expectedRoutes = []routeExpectation{
 	{method: http.MethodPost, pattern: "/api/v1/usage-pools", perm: policy.InfraManage},
 	{method: http.MethodPut, pattern: "/api/v1/usage-pools/{id}", perm: policy.InfraManage},
 	{method: http.MethodDelete, pattern: "/api/v1/usage-pools/{id}", perm: policy.InfraManage},
+	{method: http.MethodPost, pattern: "/api/v1/capacity-groups", perm: policy.InfraManage},
+	{method: http.MethodPut, pattern: "/api/v1/capacity-groups/{id}", perm: policy.InfraManage},
+	{method: http.MethodDelete, pattern: "/api/v1/capacity-groups/{id}", perm: policy.InfraManage},
+	{method: http.MethodPut, pattern: "/api/v1/capacity-groups/{id}/members/{workerID}", perm: policy.InfraManage},
+	{method: http.MethodDelete, pattern: "/api/v1/capacity-groups/{id}/members/{workerID}", perm: policy.InfraManage},
+	{method: http.MethodGet, pattern: "/api/v1/capacity-groups/{id}/tokens", perm: policy.InfraManage},
+	{method: http.MethodPost, pattern: "/api/v1/capacity-groups/{id}/tokens", perm: policy.InfraManage},
+	{method: http.MethodDelete, pattern: "/api/v1/capacity-groups/{id}/tokens/{tokenID}", perm: policy.InfraManage},
 
 	// products.read / products.manage (products, presets)
 	{method: http.MethodGet, pattern: "/api/v1/products", perm: policy.ProductsRead},
@@ -278,7 +289,7 @@ func liveRoutes(t *testing.T, r chi.Router) map[routeKey]bool {
 // gate under test only cares about the permission group a route belongs to,
 // never the resolved resource, so any placeholder is representative.
 func placeholderPath(pattern string) string {
-	return strings.NewReplacer("{id}", "zzz", "{name}", "zzz").Replace(pattern)
+	return strings.NewReplacer("{id}", "zzz", "{name}", "zzz", "{workerID}", "zzz", "{tokenID}", "zzz").Replace(pattern)
 }
 
 // requestBodyFor returns a plausible JSON body for method, matching the

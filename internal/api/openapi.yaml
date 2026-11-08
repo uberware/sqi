@@ -92,6 +92,11 @@ tags:
     description: Product catalog (built-ins + custom, CRUD)
   - name: usage-pools
     description: Usage-pool configuration (CRUD)
+  - name: capacity-groups
+    description: >-
+      Capacity groups: sets of machines the server follows demand with,
+      their members and join tokens, and the scaling signal (`infra.read` /
+      `infra.manage`)
   - name: auth
     description: Local account login, logout, and current-principal lookup
   - name: users
@@ -159,6 +164,22 @@ components:
       schema:
         type: string
       description: Resource UUID
+
+    workerID:
+      name: workerID
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Worker ID
+
+    tokenID:
+      name: tokenID
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Join token ID
 
     limit:
       name: limit
@@ -1905,6 +1926,298 @@ components:
         max_concurrent:
           type: integer
           minimum: 1
+
+    # ── Capacity groups ───────────────────────────────────────────────────────
+    MachineProfile:
+      type: object
+      description: >-
+        What one machine of a group offers; a field left out is not declared.
+        A sized group must declare `cpu_count`.
+      properties:
+        cpu_count:
+          type: integer
+          minimum: 0
+        ram_mb:
+          type: integer
+          minimum: 0
+        gpu_count:
+          type: integer
+          minimum: 0
+        gpu_memory_mb:
+          type: integer
+          minimum: 0
+        os:
+          type: string
+        arch:
+          type: string
+        compute_location:
+          type: string
+        tags:
+          type: object
+          additionalProperties:
+            type: string
+        extensions:
+          type: array
+          items:
+            type: string
+        expr_limits:
+          type: object
+          description: The EXPR caps the machine's worker enforces; a limit left out is not declared.
+          properties:
+            operation_limit:
+              type: integer
+              format: int64
+            memory_limit:
+              type: integer
+              format: int64
+            assignment_positions:
+              type: integer
+              format: int64
+            assignment_retained_bytes:
+              type: integer
+              format: int64
+            let_retained_bytes:
+              type: integer
+              format: int64
+
+    CapacityGroupInput:
+      type: object
+      required: [name, kind, max_machines]
+      description: >-
+        The body of `POST` and `PUT /capacity-groups`. `farm_id` is required on
+        create and cannot change afterwards. Unknown fields are refused.
+      properties:
+        farm_id:
+          type: string
+        name:
+          type: string
+          description: 1-63 characters, letters, digits, `.`, `_` or `-`, starting with a letter or digit.
+        kind:
+          type: string
+          enum: [named, sized]
+          description: >-
+            `named` is specific, already-provisioned machines added by name;
+            `sized` is interchangeable machines that join by group token (or
+            `worker.capacity_group`) and match `machine_profile`.
+        provider:
+          type: string
+          default: external
+          description: >-
+            Only `external` is accepted in this release; `wake_on_lan` and
+            `script:<name>` are refused with 400.
+        enabled:
+          type: boolean
+          default: true
+        queue_ids:
+          type: array
+          maxItems: 1000
+          items:
+            type: string
+          description: >-
+            The queues, all in the group's farm, whose demand the group
+            serves. Empty means every queue in the farm.
+        min_machines:
+          type: integer
+          minimum: 0
+          default: 0
+        max_machines:
+          type: integer
+          minimum: 1
+          maximum: 10000
+        priority:
+          type: integer
+          default: 0
+          description: Higher is preferred when groups compete for the same demand.
+        max_step_up:
+          type: integer
+          minimum: 1
+          maximum: 10000
+          default: 1
+          description: The most machines one scale-up decision may add.
+        scale_up_cooldown_seconds:
+          type: integer
+          minimum: 0
+          maximum: 31536000
+          default: 60
+        idle_timeout_seconds:
+          type: integer
+          minimum: 60
+          maximum: 31536000
+          default: 600
+          description: How long a machine sits idle before it is a retire candidate.
+        boot_timeout_seconds:
+          type: integer
+          minimum: 60
+          maximum: 31536000
+          default: 600
+          description: How long a started machine has to register.
+        retire_action:
+          type: string
+          enum: [sleep, shutdown]
+          default: sleep
+        machine_profile:
+          $ref: "#/components/schemas/MachineProfile"
+
+    CapacityGroupStatus:
+      type: object
+      required:
+        [demand_cores, desired_machines, online_members, offline_members, retire_candidates, mismatches, evaluated_at]
+      description: The scheduler's last evaluation of a group.
+      properties:
+        demand_cores:
+          type: integer
+          description: >-
+            Cores of ready work the group could run that no idle worker
+            absorbed and no higher-priority group took.
+        desired_machines:
+          type: integer
+          description: >-
+            The TOTAL number of machines the group should have, counting the
+            machines present, retire candidates included. It is a target to
+            set capacity to, not an amount to add: an actuator that launches
+            machines launches `desired_machines - online_members` (less any
+            machines it already started that have not registered), and
+            retires the `retire_candidates` by name without subtracting them
+            again.
+        online_members:
+          type: integer
+        offline_members:
+          type: integer
+        retire_candidates:
+          type: array
+          items:
+            type: string
+          description: Worker IDs idle past the group's idle timeout, longest idle first.
+        mismatches:
+          type: array
+          items:
+            type: object
+            required: [worker_id, reason]
+            properties:
+              worker_id:
+                type: string
+              reason:
+                type: string
+                description: Every way the member's registration falls short of the profile, joined by "; ".
+          description: A sized group's online members that fall short of its machine profile.
+        evaluated_at:
+          type: string
+          format: date-time
+
+    CapacityGroup:
+      type: object
+      required:
+        [id, farm_id, name, kind, provider, enabled, queue_ids, min_machines, max_machines, priority, max_step_up,
+         scale_up_cooldown_seconds, idle_timeout_seconds, boot_timeout_seconds, retire_action, machine_profile,
+         created_at, updated_at, status]
+      properties:
+        id:
+          type: string
+        farm_id:
+          type: string
+        name:
+          type: string
+        kind:
+          type: string
+          enum: [named, sized]
+        provider:
+          type: string
+        enabled:
+          type: boolean
+        queue_ids:
+          type: array
+          items:
+            type: string
+        min_machines:
+          type: integer
+        max_machines:
+          type: integer
+        priority:
+          type: integer
+        max_step_up:
+          type: integer
+        scale_up_cooldown_seconds:
+          type: integer
+        idle_timeout_seconds:
+          type: integer
+        boot_timeout_seconds:
+          type: integer
+        retire_action:
+          type: string
+          enum: [sleep, shutdown]
+        machine_profile:
+          $ref: "#/components/schemas/MachineProfile"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        status:
+          nullable: true
+          description: >-
+            The group's last evaluation. Null until the scheduler has
+            evaluated it, while it is disabled, and on a server that is not
+            the leader.
+          allOf: [{ $ref: "#/components/schemas/CapacityGroupStatus" }]
+
+    CapacityGroupToken:
+      type: object
+      required: [id, name, prefix, expires_at, revoked_at, created_by, created_at]
+      description: A group join token as listed. It carries no secret.
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        prefix:
+          type: string
+          description: Leading characters of the raw token, for identification. Never enough to reconstruct it.
+        expires_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    CapacityGroupTokenRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Optional human-readable label.
+        expires_in:
+          type: string
+          example: 720h
+          description: Go duration string. Defaults to `720h`; at most `2160h`.
+
+    CapacityGroupTokenCreated:
+      type: object
+      required: [id, token, prefix, name, expires_at, created_at]
+      properties:
+        id:
+          type: string
+        token:
+          type: string
+          description: >-
+            The raw join token. Shown once, at creation, and never returned
+            again. Pass it as `join_token` to `POST /workers/enroll`.
+        prefix:
+          type: string
+        name:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
 
     # ── Auth ──────────────────────────────────────────────────────────────────
     LoginRequest:
@@ -4259,6 +4572,309 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ── Capacity groups ────────────────────────────────────────────────────────
+
+  /capacity-groups:
+    get:
+      operationId: listCapacityGroups
+      summary: List capacity groups
+      tags: [capacity-groups]
+      description: Requires `infra.read`. Each group carries its last `status`, or null when it has none.
+      responses:
+        "200":
+          description: Array of capacity groups, priority descending then name.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CapacityGroup"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    post:
+      operationId: createCapacityGroup
+      summary: Create a capacity group
+      tags: [capacity-groups]
+      description: |
+        Requires `infra.manage`. Only the `external` provider is available in
+        this release: `wake_on_lan` and `script:<name>` are refused with 400
+        `provider "<name>" is not available yet`. Unknown request fields are
+        refused with 400.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CapacityGroupInput"
+      responses:
+        "201":
+          description: Capacity group created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapacityGroup"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /capacity-groups/{id}:
+    parameters:
+      - $ref: "#/components/parameters/id"
+
+    get:
+      operationId: getCapacityGroup
+      summary: Get a capacity group
+      tags: [capacity-groups]
+      description: Requires `infra.read`.
+      responses:
+        "200":
+          description: Capacity group, with its last `status` or null.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapacityGroup"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    put:
+      operationId: updateCapacityGroup
+      summary: Replace a capacity group's settings
+      tags: [capacity-groups]
+      description: |
+        Requires `infra.manage`. Replaces every setting; an omitted optional
+        field takes its default. The farm cannot change. Changing `kind`
+        while the group has members is a 409. The provider rule of
+        `POST /capacity-groups` applies.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CapacityGroupInput"
+      responses:
+        "200":
+          description: Updated capacity group.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapacityGroup"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    delete:
+      operationId: deleteCapacityGroup
+      summary: Delete a capacity group
+      tags: [capacity-groups]
+      description: |
+        Requires `infra.manage`. Refused with 409 while any worker belongs to
+        the group. The group's join tokens go with it.
+      responses:
+        "204":
+          description: Capacity group deleted.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /capacity-groups/{id}/members:
+    parameters:
+      - $ref: "#/components/parameters/id"
+
+    get:
+      operationId: listCapacityGroupMembers
+      summary: List a capacity group's members
+      tags: [capacity-groups]
+      description: Requires `infra.read`. Online and offline members, ordered by hostname.
+      responses:
+        "200":
+          description: The member workers, in the shape `GET /workers` returns.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Worker"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /capacity-groups/{id}/members/{workerID}:
+    parameters:
+      - $ref: "#/components/parameters/id"
+      - $ref: "#/components/parameters/workerID"
+
+    put:
+      operationId: addCapacityGroupMember
+      summary: Add a worker to a named capacity group
+      tags: [capacity-groups]
+      description: |
+        Requires `infra.manage`. Only a `named` group takes members by name;
+        a `sized` group refuses with 409, because its members join by
+        enrolling with a group token or by setting `worker.capacity_group`.
+        The member is not ephemeral. A worker belongs to at most one group:
+        409 when it is already in another (remove it from that one first),
+        when it is in a different farm than the group, or when the group
+        changed or was removed concurrently.
+      responses:
+        "200":
+          description: The worker, now a member.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Worker"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    delete:
+      operationId: removeCapacityGroupMember
+      summary: Remove a worker from a capacity group
+      tags: [capacity-groups]
+      description: |
+        Requires `infra.manage`. Clears the worker's membership; the worker
+        itself is kept. 404 when the worker does not exist or is not a member
+        of this group.
+      responses:
+        "204":
+          description: Membership cleared.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /capacity-groups/{id}/tokens:
+    parameters:
+      - $ref: "#/components/parameters/id"
+
+    get:
+      operationId: listCapacityGroupTokens
+      summary: List a capacity group's join tokens
+      tags: [capacity-groups]
+      description: |
+        Requires `infra.manage`. Revoked and expired tokens are included.
+        A token's secret is never returned here: only its display prefix.
+      responses:
+        "200":
+          description: The group's join tokens, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CapacityGroupToken"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    post:
+      operationId: createCapacityGroupToken
+      summary: Mint a join token for a sized capacity group
+      tags: [capacity-groups]
+      description: |
+        Requires `infra.manage`. Mints a reusable join token bound to the
+        group: every worker that enrolls with it (`POST /workers/enroll`)
+        joins the group as an ephemeral member, however many do. The raw
+        token is returned exactly once, in this response; only its hash is
+        stored.
+
+        The body is optional. `expires_in` is a Go duration string; it
+        defaults to `720h` (30 days) and may not exceed `2160h` (90 days).
+        Group tokens are always reusable, whatever
+        `nats.auth.join_token_single_use` says.
+
+        409 for a `named` group (its members are added by name), and when the
+        broker does not authenticate workers (`nats.auth.enabled` off): the
+        message is `group tokens need nats.auth.enabled; workers on an
+        auth-off farm join with worker.capacity_group`. Like
+        `POST /workers/join-tokens`, this route is mounted only when
+        `auth.enabled`.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CapacityGroupTokenRequest"
+      responses:
+        "201":
+          description: Join token created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapacityGroupTokenCreated"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /capacity-groups/{id}/tokens/{tokenID}:
+    parameters:
+      - $ref: "#/components/parameters/id"
+      - $ref: "#/components/parameters/tokenID"
+
+    delete:
+      operationId: revokeCapacityGroupToken
+      summary: Revoke a capacity group's join token
+      tags: [capacity-groups]
+      description: |
+        Requires `infra.manage`. The token enrolls no further workers.
+        **Revoking a group token does not revoke credentials already issued
+        from it:** workers that enrolled with it keep their broker
+        credentials and stay members. Revoke those with
+        `DELETE /workers/{id}/credential`. Revoking a revoked token is not an
+        error. 404 when the token is not one of this group's.
+      responses:
+        "204":
+          description: Token revoked.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
