@@ -348,3 +348,55 @@ func TestNew_DefaultBases(t *testing.T) {
 		}
 	}
 }
+
+// TestNew_DefaultClientIgnoresProxy checks that the default client never sends
+// a metadata poll through a proxy named in the environment, and that an
+// injected client is used as given.
+func TestNew_DefaultClientIgnoresProxy(t *testing.T) {
+	closed := httptest.NewServer(http.NotFoundHandler())
+	proxyURL := closed.URL
+	closed.Close()
+	for _, k := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"} {
+		t.Setenv(k, proxyURL)
+	}
+	for _, k := range []string{"NO_PROXY", "no_proxy"} {
+		t.Setenv(k, "")
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reply(w, "TRUE")
+	}))
+	defer srv.Close()
+
+	w, err := preempt.New("gcp", srv.URL, testInterval, nil, debugLogger(io.Discard))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	tr, ok := w.Client().Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("default client transport = %T, want *http.Transport", w.Client().Transport)
+	}
+	if tr.Proxy != nil {
+		t.Error("default client transport has a Proxy function, want none")
+	}
+	if tr == http.DefaultTransport {
+		t.Error("default client shares http.DefaultTransport, want a copy")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var calls atomic.Int32
+	w.Run(ctx, func() { calls.Add(1) })
+	if calls.Load() != 1 {
+		t.Fatalf("onNotice calls = %d, want 1 with HTTP_PROXY pointing at a closed port", calls.Load())
+	}
+
+	injected := srv.Client()
+	w, err = preempt.New("gcp", srv.URL, testInterval, injected, debugLogger(io.Discard))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if w.Client() != injected {
+		t.Error("an injected client was replaced")
+	}
+}

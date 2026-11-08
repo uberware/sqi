@@ -69,13 +69,15 @@ type Watcher struct {
 
 // New builds a Watcher for vendor (aws, gcp or azure), polling every interval.
 // endpoint, when not empty, replaces the vendor's default metadata base URL
-// (for a proxy, or a test). client may be nil for the default client.
+// (for a proxy, or a test). client may be nil for the default client, which
+// never uses an HTTP proxy: the metadata service is link-local, and a proxy
+// named by HTTP_PROXY would answer for a different machine or not at all.
 func New(vendor, endpoint string, interval time.Duration, client *http.Client, logger *slog.Logger) (*Watcher, error) {
 	if interval <= 0 {
 		return nil, fmt.Errorf("preempt: poll interval must be positive, got %s", interval)
 	}
 	if client == nil {
-		client = &http.Client{}
+		client = defaultClient()
 	}
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
@@ -96,6 +98,18 @@ func New(vendor, endpoint string, interval time.Duration, client *http.Client, l
 		w.base = strings.TrimRight(endpoint, "/")
 	}
 	return w, nil
+}
+
+// defaultClient returns a client over a copy of http.DefaultTransport with
+// proxying turned off.
+func defaultClient() *http.Client {
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return &http.Client{Transport: &http.Transport{}}
+	}
+	t := base.Clone()
+	t.Proxy = nil
+	return &http.Client{Transport: t}
 }
 
 // Base returns the metadata base URL the watcher polls.
