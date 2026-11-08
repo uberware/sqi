@@ -107,6 +107,26 @@ type FailureSummary struct {
 	DistinctReasons int
 }
 
+// StepDemand is the leasable ready work of one step at one core reservation,
+// as [TaskStore.ListReadyStepDemand] reports it.
+type StepDemand struct {
+	JobID, StepID, QueueID string
+	// RequiredCores is the tasks' declared reservation; 0 means undeclared,
+	// which costs a whole machine (as the scheduler's fullMachineCost).
+	RequiredCores int
+	// Ready is the number of leasable ready tasks with this RequiredCores.
+	Ready int
+}
+
+// WorkerCommitment is the CPU a worker holds across its assigned and running
+// tasks, as [TaskStore.ListWorkerCommitments] reports it: the declared
+// reservations summed, and the tasks that declared none, each of which costs
+// the whole machine.
+type WorkerCommitment struct {
+	DeclaredCores   int
+	UndeclaredTasks int
+}
+
 // TaskSortField is a column by which [TaskStore.ListTasks] results can be ordered.
 type TaskSortField string
 
@@ -344,6 +364,14 @@ type TaskStore interface {
 	// still backing off, or under an auto-parked job).
 	CountReadyTasksByQueue(ctx context.Context, farmID string, now time.Time) (map[string]int, error)
 
+	// ListReadyStepDemand groups the farm's LEASABLE ready tasks by step and
+	// declared core reservation, under exactly [CountReadyTasksByQueue]'s
+	// eligibility (backoff elapsed, queue unpaused, job neither paused nor
+	// terminal), so summing Ready per QueueID reproduces that count. An empty
+	// farmID matches every farm. The rows are in no particular order. The
+	// grouping runs in the database; no task row is loaded.
+	ListReadyStepDemand(ctx context.Context, farmID string, now time.Time) ([]StepDemand, error)
+
 	// CancelJobExecution cancels a job's work in one transaction (invariant I3),
 	// in this statement order:
 	//  1. move every non-terminal task of the job (pending, ready, assigned or
@@ -438,6 +466,14 @@ type TaskStore interface {
 	// fullMachineCost). Callers pass the worker's CPUCount as fullMachineCost so
 	// an undeclared task (required_cores NULL) counts as the whole machine.
 	CommittedCores(ctx context.Context, workerID string, fullMachineCost int) (int, error)
+
+	// ListWorkerCommitments is [CommittedCores] for every worker at once: per
+	// worker holding any assigned or running task of the farm ("" = every
+	// farm), the sum of those tasks' RequiredCores and the count of tasks with
+	// none. For each worker, DeclaredCores + UndeclaredTasks*fullMachineCost
+	// equals CommittedCores(ctx, id, fullMachineCost). A worker holding
+	// nothing has no entry.
+	ListWorkerCommitments(ctx context.Context, farmID string) (map[string]WorkerCommitment, error)
 
 	// LeaseTask leases one ready task to a worker in a single transaction
 	// (invariants I3 and I5):

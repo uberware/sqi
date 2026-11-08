@@ -487,6 +487,71 @@ func (s *Store) CommittedCores(_ context.Context, workerID string, fullMachineCo
 	return total, nil
 }
 
+// ListReadyStepDemand implements [store.TaskStore], with the eligibility
+// predicate of CountReadyTasksByQueue (see isReadyInFarm).
+func (s *Store) ListReadyStepDemand(_ context.Context, farmID string, now time.Time) ([]store.StepDemand, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	queuePaused := make(map[string]bool)
+	for _, q := range s.queues {
+		if farmID == "" || q.FarmID == farmID {
+			queuePaused[q.ID] = q.Paused
+		}
+	}
+
+	type key struct {
+		stepID string
+		cores  int
+	}
+	groups := make(map[key]*store.StepDemand)
+	for _, t := range s.tasks {
+		if !isReadyInFarm(t, farmID, now, s.jobs, queuePaused) {
+			continue
+		}
+		k := key{stepID: t.StepID}
+		if t.RequiredCores != nil {
+			k.cores = *t.RequiredCores
+		}
+		d := groups[k]
+		if d == nil {
+			job := s.jobs[t.JobID]
+			d = &store.StepDemand{JobID: job.ID, StepID: t.StepID, QueueID: job.QueueID, RequiredCores: k.cores}
+			groups[k] = d
+		}
+		d.Ready++
+	}
+	out := make([]store.StepDemand, 0, len(groups))
+	for _, d := range groups {
+		out = append(out, *d)
+	}
+	return out, nil
+}
+
+// ListWorkerCommitments implements [store.TaskStore].
+func (s *Store) ListWorkerCommitments(_ context.Context, farmID string) (map[string]store.WorkerCommitment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	out := make(map[string]store.WorkerCommitment)
+	for _, t := range s.tasks {
+		if t.AssignedWorkerID == "" || (t.Status != store.TaskStatusAssigned && t.Status != store.TaskStatusRunning) {
+			continue
+		}
+		if farmID != "" && s.jobs[t.JobID].FarmID != farmID {
+			continue
+		}
+		c := out[t.AssignedWorkerID]
+		if t.RequiredCores != nil {
+			c.DeclaredCores += *t.RequiredCores
+		} else {
+			c.UndeclaredTasks++
+		}
+		out[t.AssignedWorkerID] = c
+	}
+	return out, nil
+}
+
 // RecordTaskFailure implements [store.TaskStore]. Under the store lock it
 // closes the attempt as failed and increments the task's and job's
 // FailedAttempts counters ONLY when the attempt is still running (the first

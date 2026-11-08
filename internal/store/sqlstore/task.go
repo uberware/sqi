@@ -89,7 +89,8 @@ LIMIT ?`
 	// leased, over the aliases t (tasks), j (jobs) and q (queues): the task is
 	// ready and its backoff has elapsed (its one bind parameter is now), its
 	// queue is unpaused, and its job is neither paused nor terminal.
-	// sqlListReadyTasks, sqlCountReadyTasksByQueue and sqlLeaseTaskGuarded
+	// sqlListReadyTasks, sqlLeasableReadyScope (so sqlCountReadyTasksByQueue and
+	// sqlReadyStepDemand) and sqlLeaseTaskGuarded
 	// (lease.go) all embed it, so the lease's guard cannot drift from the list
 	// the scheduler chose the task from.
 	sqlLeasableTask = `t.status  = 'ready'
@@ -149,12 +150,44 @@ WHERE  j.farm_id = ?
 	// heartbeat-sweep queue wake. farmID = '' means "all farms".
 	sqlCountReadyTasksByQueue = `
 SELECT j.queue_id, COUNT(*)
-FROM   tasks  t
+` + sqlLeasableReadyScope + `
+GROUP BY j.queue_id`
+
+	// sqlLeasableReadyScope is the FROM and WHERE of every grouped read of a
+	// farm's leasable ready tasks: sqlCountReadyTasksByQueue and
+	// sqlReadyStepDemand share it, so the two cannot disagree about which
+	// tasks count. Binds: farm ID twice ('' = all farms), then now.
+	sqlLeasableReadyScope = `FROM   tasks  t
 JOIN   jobs   j ON t.job_id   = j.id
 JOIN   queues q ON j.queue_id = q.id
 WHERE  (? = '' OR j.farm_id = ?)
-  AND  ` + sqlLeasableTask + `
-GROUP BY j.queue_id`
+  AND  ` + sqlLeasableTask
+
+	// sqlReadyStepDemand groups the leasable ready tasks by step and declared
+	// core reservation (0 = undeclared; the scheduler never stores a
+	// reservation below 1). Grouped in the database, so a farm of millions of
+	// ready tasks yields one row per (step, reservation).
+	sqlReadyStepDemand = `
+SELECT j.id, t.step_id, j.queue_id, COALESCE(t.required_cores, 0), COUNT(*)
+` + sqlLeasableReadyScope + `
+GROUP BY j.id, t.step_id, j.queue_id, COALESCE(t.required_cores, 0)`
+
+	// sqlWorkerCommitments is sqlCommittedCores for every worker of a farm at
+	// once: the declared cores summed and the undeclared tasks counted, so the
+	// caller prices the undeclared ones at each worker's machine size. The
+	// assigned_worker_id test is implied by the status test but lets the
+	// planner use the partial index on assigned_worker_id instead of scanning
+	// every task. Binds: farm ID twice ('' = all farms).
+	sqlWorkerCommitments = `
+SELECT t.assigned_worker_id,
+       COALESCE(SUM(t.required_cores), 0),
+       SUM(CASE WHEN t.required_cores IS NULL THEN 1 ELSE 0 END)
+FROM   tasks t
+JOIN   jobs  j ON t.job_id = j.id
+WHERE  t.assigned_worker_id IS NOT NULL
+  AND  t.status IN ('assigned', 'running')
+  AND  (? = '' OR j.farm_id = ?)
+GROUP BY t.assigned_worker_id`
 
 	// Counts tasks for a given job grouped by status.
 	// Used by the REST layer to include aggregate task counts in job detail responses.
@@ -627,6 +660,45 @@ func (s *Store) CountReadyTasksByQueue(ctx context.Context, farmID string, now t
 		counts[queueID] = n
 	}
 	return counts, rows.Err()
+}
+
+// ListReadyStepDemand implements [store.TaskStore].
+func (s *Store) ListReadyStepDemand(ctx context.Context, farmID string, now time.Time) ([]store.StepDemand, error) {
+	rows, err := s.r.QueryContext(ctx, sqlReadyStepDemand, farmID, farmID, TimeText(now.UTC()))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+
+	var out []store.StepDemand
+	for rows.Next() {
+		var d store.StepDemand
+		if err := rows.Scan(&d.JobID, &d.StepID, &d.QueueID, &d.RequiredCores, &d.Ready); err != nil {
+			return nil, mapErr(err)
+		}
+		out = append(out, d)
+	}
+	return out, mapErr(rows.Err())
+}
+
+// ListWorkerCommitments implements [store.TaskStore].
+func (s *Store) ListWorkerCommitments(ctx context.Context, farmID string) (map[string]store.WorkerCommitment, error) {
+	rows, err := s.r.QueryContext(ctx, sqlWorkerCommitments, farmID, farmID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]store.WorkerCommitment)
+	for rows.Next() {
+		var workerID string
+		var c store.WorkerCommitment
+		if err := rows.Scan(&workerID, &c.DeclaredCores, &c.UndeclaredTasks); err != nil {
+			return nil, mapErr(err)
+		}
+		out[workerID] = c
+	}
+	return out, mapErr(rows.Err())
 }
 
 // RetryTasks implements [store.TaskStore].

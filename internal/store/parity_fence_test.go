@@ -494,6 +494,7 @@ var fenceReadOnly = []string{
 	"UpsertServerMember", "ListServerMembers", "DeleteServerMembersUnseenFor",
 	"Close",
 	"ActiveClaimCount", "CommittedCores", "FailureReasonSummary", "LatestTaskAttempt",
+	"ListReadyStepDemand", "ListWorkerCommitments",
 	"CountActiveTasksInFarm", "CountActiveTasksInQueue", "CountIdleWorkers", "CountReadyTasksByQueue",
 	"CountTasksByJob", "CountUnschedulableTasksByJob", "CountUsers",
 	"GetAPIKeyUserByTokenHash", "GetActiveWorkerCredentialByPublicKey", "GetBrokerIdentity",

@@ -3,7 +3,9 @@
 package store_test
 
 import (
+	"cmp"
 	"errors"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -742,6 +744,169 @@ func TestParity_DeleteCapacityGroupRemovesItsTokens(t *testing.T) {
 			}
 			if _, err := st.GetWorkerJoinTokenByHash(ctx, plain.TokenHash); err != nil {
 				t.Fatalf("ungrouped token: %v", err)
+			}
+		})
+	}
+}
+
+func TestParity_ListReadyStepDemand(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			now := time.Now().UTC()
+			g := seedGraph(t, st, graphOpts{})
+			q2 := mustCreateQueue(t, st, store.Queue{FarmID: g.Farm.ID, Name: "second"})
+			two, four := 2, 4
+			stepA, stepB, stepC, stepD := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
+			ids := map[string]string{}
+			for _, k := range []string{"backoffElapsed", "backingOff", "leased"} {
+				ids[k] = uuid.NewString()
+			}
+
+			seed := jobIn(g).Step(stepA, store.StepStatusReady).Step(stepB, store.StepStatusReady)
+			seed.Task(uuid.NewString(), stepA, store.TaskStatusReady)
+			seed.Task(uuid.NewString(), stepA, store.TaskStatusReady)
+			seed.TaskRow(store.Task{ID: uuid.NewString(), StepID: stepA, Status: store.TaskStatusReady, RequiredCores: &two})
+			seed.TaskRow(store.Task{ID: uuid.NewString(), StepID: stepB, Status: store.TaskStatusReady, RequiredCores: &four})
+			seed.TaskRow(store.Task{ID: uuid.NewString(), StepID: stepB, Status: store.TaskStatusPending, RequiredCores: &four})
+			seed.TaskRow(store.Task{ID: ids["backoffElapsed"], StepID: stepB, Status: store.TaskStatusReady, RequiredCores: &four})
+			seed.TaskRow(store.Task{ID: ids["backingOff"], StepID: stepB, Status: store.TaskStatusReady, RequiredCores: &two})
+			seed.TaskRow(store.Task{ID: ids["leased"], StepID: stepB, Status: store.TaskStatusReady})
+			job := seed.Submit(t, st).Job
+
+			// A second queue of the same farm.
+			j2 := storetest.NewJob(uuid.NewString(), g.Farm.ID, q2.ID).Step(stepD, store.StepStatusReady)
+			j2.TaskRow(store.Task{ID: uuid.NewString(), StepID: stepD, Status: store.TaskStatusReady, RequiredCores: &two})
+			j2.Submit(t, st)
+
+			// A paused job's ready task is not demand.
+			paused := jobIn(g).Step(stepC, store.StepStatusReady)
+			paused.TaskRow(store.Task{ID: uuid.NewString(), StepID: stepC, Status: store.TaskStatusReady, RequiredCores: &two})
+			pj := paused.Submit(t, st).Job
+			if err := st.PauseJob(ctx, pj.ID, now); err != nil {
+				t.Fatalf("PauseJob: %v", err)
+			}
+
+			storetest.FailAndRequeue(t, st, store.LeaseRequest{TaskID: ids["backoffElapsed"], WorkerID: fixtureWorkerID, AttemptID: uuid.NewString(), Now: now}, now.Add(-time.Minute))
+			storetest.FailAndRequeue(t, st, store.LeaseRequest{TaskID: ids["backingOff"], WorkerID: fixtureWorkerID, AttemptID: uuid.NewString(), Now: now}, now.Add(time.Hour))
+			storetest.Lease(t, st, store.LeaseRequest{TaskID: ids["leased"], WorkerID: fixtureWorkerID})
+
+			// Another farm is invisible to this farm's read.
+			other := seedStepA(t, st, graphOpts{}, store.TaskStatusReady)
+
+			want := []store.StepDemand{
+				{JobID: job.ID, StepID: stepA, QueueID: g.Queue.ID, RequiredCores: 0, Ready: 2},
+				{JobID: job.ID, StepID: stepA, QueueID: g.Queue.ID, RequiredCores: 2, Ready: 1},
+				{JobID: job.ID, StepID: stepB, QueueID: g.Queue.ID, RequiredCores: 4, Ready: 2},
+				{JobID: j2.Sub.Job.ID, StepID: stepD, QueueID: q2.ID, RequiredCores: 2, Ready: 1},
+			}
+			sortDemand := func(rows []store.StepDemand) {
+				slices.SortFunc(rows, func(a, b store.StepDemand) int {
+					return cmp.Or(strings.Compare(a.StepID, b.StepID), cmp.Compare(a.RequiredCores, b.RequiredCores))
+				})
+			}
+			sortDemand(want)
+
+			got, err := st.ListReadyStepDemand(ctx, g.Farm.ID, now)
+			if err != nil {
+				t.Fatalf("ListReadyStepDemand: %v", err)
+			}
+			sortDemand(got)
+			if !slices.Equal(got, want) {
+				t.Fatalf("ListReadyStepDemand =\n%+v\nwant\n%+v", got, want)
+			}
+
+			// The per-queue sum is CountReadyTasksByQueue: one predicate.
+			perQueue := map[string]int{}
+			for _, d := range got {
+				perQueue[d.QueueID] += d.Ready
+			}
+			counted, err := st.CountReadyTasksByQueue(ctx, g.Farm.ID, now)
+			if err != nil {
+				t.Fatalf("CountReadyTasksByQueue: %v", err)
+			}
+			if !maps.Equal(perQueue, counted) {
+				t.Fatalf("per-queue demand sum = %v, CountReadyTasksByQueue = %v", perQueue, counted)
+			}
+
+			if got, err := st.ListReadyStepDemand(ctx, other.Farm.ID, now); err != nil || len(got) != 1 || got[0].Ready != 1 || got[0].RequiredCores != 0 {
+				t.Fatalf("other farm = (%+v, %v), want its one undeclared ready task", got, err)
+			}
+			all, err := st.ListReadyStepDemand(ctx, "", now)
+			if err != nil || len(all) != len(want)+1 {
+				t.Fatalf("all farms = (%+v, %v), want %d rows", all, err, len(want)+1)
+			}
+			if got, err := st.ListReadyStepDemand(ctx, uuid.NewString(), now); err != nil || len(got) != 0 {
+				t.Fatalf("unknown farm = (%+v, %v), want none", got, err)
+			}
+		})
+	}
+}
+
+func TestParity_ListWorkerCommitments(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			g := seedGraph(t, st, graphOpts{})
+			two, one, four := 2, 1, 4
+			seed := jobIn(g).Step("s-"+uuid.NewString(), store.StepStatusReady)
+			step := seed.Sub.Steps[0].ID
+			ids := map[string]string{}
+			for _, k := range []string{"assigned2", "runningNil", "otherWorker1", "otherWorkerNil", "done4", "ready4"} {
+				ids[k] = uuid.NewString()
+			}
+			seed.TaskRow(store.Task{ID: ids["assigned2"], StepID: step, Status: store.TaskStatusReady, RequiredCores: &two})
+			seed.TaskRow(store.Task{ID: ids["runningNil"], StepID: step, Status: store.TaskStatusReady})
+			seed.TaskRow(store.Task{ID: ids["otherWorker1"], StepID: step, Status: store.TaskStatusReady, RequiredCores: &one})
+			seed.TaskRow(store.Task{ID: ids["otherWorkerNil"], StepID: step, Status: store.TaskStatusReady})
+			seed.TaskRow(store.Task{ID: ids["done4"], StepID: step, Status: store.TaskStatusReady, RequiredCores: &four})
+			seed.TaskRow(store.Task{ID: ids["ready4"], StepID: step, Status: store.TaskStatusReady, RequiredCores: &four})
+			seed.Submit(t, st)
+
+			storetest.Lease(t, st, store.LeaseRequest{TaskID: ids["assigned2"], WorkerID: fixtureWorkerID})
+			storetest.Running(t, st, store.LeaseRequest{TaskID: ids["runningNil"], WorkerID: fixtureWorkerID})
+			storetest.Lease(t, st, store.LeaseRequest{TaskID: ids["otherWorker1"], WorkerID: "w2"})
+			storetest.Lease(t, st, store.LeaseRequest{TaskID: ids["otherWorkerNil"], WorkerID: "w2"})
+			done := storetest.Running(t, st, store.LeaseRequest{TaskID: ids["done4"], WorkerID: fixtureWorkerID})
+			storetest.Complete(t, st, done, store.TaskStatusSucceeded)
+
+			// A worker holding work in another farm is not this farm's.
+			other := seedGraph(t, st, graphOpts{}, stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusReady}})
+			storetest.Lease(t, st, store.LeaseRequest{TaskID: other.Tasks["a"][0].ID, WorkerID: "w3"})
+
+			got, err := st.ListWorkerCommitments(ctx, g.Farm.ID)
+			if err != nil {
+				t.Fatalf("ListWorkerCommitments: %v", err)
+			}
+			want := map[string]store.WorkerCommitment{
+				fixtureWorkerID: {DeclaredCores: 2, UndeclaredTasks: 1},
+				"w2":            {DeclaredCores: 1, UndeclaredTasks: 1},
+			}
+			if !maps.Equal(got, want) {
+				t.Fatalf("ListWorkerCommitments = %v, want %v (no entry for an idle worker or another farm's)", got, want)
+			}
+
+			// For every worker, the batch form agrees with CommittedCores.
+			for _, machine := range []int{1, 8, 64} {
+				for _, id := range []string{fixtureWorkerID, "w2", "idle"} {
+					c := got[id]
+					single, err := st.CommittedCores(ctx, id, machine)
+					if err != nil {
+						t.Fatalf("CommittedCores(%s): %v", id, err)
+					}
+					if sum := c.DeclaredCores + c.UndeclaredTasks*machine; sum != single {
+						t.Fatalf("worker %s at %d cores: declared %d + undeclared %d x machine = %d, CommittedCores = %d",
+							id, machine, c.DeclaredCores, c.UndeclaredTasks, sum, single)
+					}
+				}
+			}
+
+			all, err := st.ListWorkerCommitments(ctx, "")
+			if err != nil || len(all) != 3 {
+				t.Fatalf("all farms = (%v, %v), want 3 workers", all, err)
+			}
+			if got, err := st.ListWorkerCommitments(ctx, uuid.NewString()); err != nil || len(got) != 0 {
+				t.Fatalf("unknown farm = (%v, %v), want none", got, err)
 			}
 		})
 	}
