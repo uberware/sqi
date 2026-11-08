@@ -8,10 +8,13 @@ package registration_test
 // its helpers (startTestNATS, freePort, connectNATS, minimalCfg, discardLogger).
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,7 +23,9 @@ import (
 
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/worker/capabilities"
+	"github.com/uberware/sqi/internal/worker/fmtres"
 	"github.com/uberware/sqi/internal/worker/protocol"
+	"github.com/uberware/sqi/internal/worker/registration"
 )
 
 // ── helpers ─────────────────────────────────────────────────────────────────
@@ -396,6 +401,7 @@ func TestRegister_AdvertisesWorkerEnforcedExtensions(t *testing.T) {
 
 // TestDeregister_SendsKind asserts the departure kind rides in the message:
 // "" (a plain restart) is omitted, so an older server sees what it always saw.
+// The log line names the kind only when there is one.
 func TestDeregister_SendsKind(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -417,8 +423,19 @@ func TestDeregister_SendsKind(t *testing.T) {
 			if err := nc.Flush(); err != nil {
 				t.Fatalf("Flush: %v", err)
 			}
-			reg := newRegistrar(t, nc, "worker-kind", minimalCfg(), capabilities.Capabilities{})
+			var logs bytes.Buffer
+			reg, err := registration.New(nc, "worker-kind", minimalCfg(), fmtres.ExprLimits{},
+				capabilities.Capabilities{}, slog.New(slog.NewTextHandler(&logs, nil)))
+			if err != nil {
+				t.Fatalf("registration.New: %v", err)
+			}
 			reg.Deregister("spot reclaimed", tt.kind)
+			if hasKind := strings.Contains(logs.String(), "kind="); hasKind != (tt.wantWire != "") {
+				t.Errorf("log names a kind = %v, want %v:\n%s", hasKind, tt.wantWire != "", logs.String())
+			}
+			if !strings.Contains(logs.String(), "worker deregistered") {
+				t.Errorf("no deregistered log line:\n%s", logs.String())
+			}
 
 			msg, err := sub.NextMsg(2 * time.Second)
 			if err != nil {

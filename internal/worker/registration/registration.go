@@ -350,10 +350,11 @@ func (r *Registrar) Deregister(reason string, kind protocol.DeregisterKind) {
 		return
 	}
 
-	r.logger.InfoContext(ctx, "registration: worker deregistered",
-		slog.String("worker_id", r.workerID),
-		slog.String("reason", reason),
-		slog.String("kind", string(kind)))
+	attrs := []any{slog.String("worker_id", r.workerID), slog.String("reason", reason)}
+	if kind != "" {
+		attrs = append(attrs, slog.String("kind", string(kind)))
+	}
+	r.logger.InfoContext(ctx, "registration: worker deregistered", attrs...)
 }
 
 // SetupReconnectHook installs a NATS reconnect handler that re-publishes the
