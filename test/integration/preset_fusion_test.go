@@ -519,11 +519,30 @@ func TestPresetFusion_EmitsStatus(t *testing.T) {
 		t.Fatalf("Capture: %v", err)
 	}
 	_, stdout := runFusionScript(t, lua, snap.Steps[0].Tasks[0], "ok")
-	want := "openjd_status: rendering frames 3–7\nSQI_RENDER: OK\n"
-	if stdout != want {
-		t.Errorf("stdout:\n%s\nwant:\n%s", stdout, want)
+	assertFusionStatusLines(t, stdout, "openjd_status: rendering frames 3\u20137")
+}
+
+// assertFusionStatusLines checks stdout by line, tolerating the duplicates the
+// script's say helper makes (it writes to standard output and to print, which
+// share standard output under a stock Lua): the status line appears, comes
+// before the first success line, and no line is a progress line.
+func assertFusionStatusLines(t *testing.T, stdout, status string) {
+	t.Helper()
+	statusAt, okAt := -1, -1
+	for i, line := range strings.Split(stdout, "\n") {
+		switch {
+		case line == status && statusAt < 0:
+			statusAt = i
+		case line == "SQI_RENDER: OK" && okAt < 0:
+			okAt = i
+		case strings.HasPrefix(line, "openjd_progress"):
+			t.Errorf("stdout has a progress line %q:\n%s", line, stdout)
+		}
 	}
-	if strings.Contains(stdout, "openjd_progress") {
-		t.Errorf("stdout has a progress line:\n%s", stdout)
+	if statusAt < 0 {
+		t.Errorf("stdout lacks the line %q:\n%s", status, stdout)
+	}
+	if okAt < 0 || statusAt > okAt {
+		t.Errorf("the status line (line %d) must come before the success line (line %d):\n%s", statusAt, okAt, stdout)
 	}
 }

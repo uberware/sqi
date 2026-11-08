@@ -1796,6 +1796,7 @@ jobs:
             TestPresetVRED_ScriptDrivesVRED
             TestPresetVRED_ScriptDrivesVRED/output_file_with_quotes_and_spaces/globals
             TestPresetVRED_ScriptDrivesVRED/render_fails/modules
+            TestPresetVRED_EmitsStatus
             # The KeyShot host-script presets: the same four checks, plus the
             # Output File rules refused at submission. ScriptDrivesKeyShot
             # skips without a working Python 3, so two leaves are named too.
@@ -1816,6 +1817,7 @@ jobs:
             TestPresetModo_ScriptDrivesModo
             TestPresetModo_ScriptDrivesModo/whole_scene_chunk/args_modo
             TestPresetModo_ScriptDrivesModo/scene_open_fails/file_commands
+            TestPresetModo_EmitsStatus
             # The Unreal host-script presets. They are Windows-only, so their
             # Tier 3 and outcome cases skip here and run in
             # preset-harness-windows; these tests need no Unreal and no OS
@@ -1833,6 +1835,7 @@ jobs:
             TestPresetUnreal_ScriptDrivesUnreal/job_renders_and_quits/import
             TestPresetUnreal_ScriptDrivesUnreal/a_fatal_error_ends_the_render_once/cwd
             TestPresetUnreal_ScriptDrivesUnreal/shot-missing/import
+            TestPresetUnreal_EmitsJobProgress
             # The Fusion Saver host-script preset: the same checks as Modo's,
             # with the embedded render.lua under a real Lua 5.1 and Fusion
             # faked. SQI_REQUIRE_LUA=1 makes ScriptDrivesFusion fail rather
@@ -1847,6 +1850,7 @@ jobs:
             TestPresetFusion_ScriptDrivesFusion/saver-missing
             TestPresetFusion_ScriptDrivesFusion/not-a-saver
             TestPresetFusion_ScriptDrivesFusion/render-fails
+            TestPresetFusion_EmitsStatus
             # Outcome cases (expect_status in a preset-cases fixture). The
             # parent passes when every case skips, so leaves that run on linux
             # are named: the `script` built-in with the stub told to exit 3,
@@ -2249,6 +2253,7 @@ jobs:
                       "TestPresetVRED_ScriptDrivesVRED " \
                       "TestPresetVRED_ScriptDrivesVRED/output_file_with_quotes_and_spaces/globals " \
                       "TestPresetVRED_ScriptDrivesVRED/render_fails/modules " \
+                      "TestPresetVRED_EmitsStatus " \
                       "TestPresetKeyShot_ParamsCostAtMaxChunk " \
                       "TestPresetKeyShot_ParamsJSONRoundTrips " \
                       "TestPresetKeyShot_ShareOneScript " \
@@ -2263,6 +2268,7 @@ jobs:
                       "TestPresetModo_ScriptDrivesModo " \
                       "TestPresetModo_ScriptDrivesModo/whole_scene_chunk/args_modo " \
                       "TestPresetModo_ScriptDrivesModo/scene_open_fails/file_commands " \
+                      "TestPresetModo_EmitsStatus " \
                       "TestPresetUnreal_ParamsCostIsFixed " \
                       "TestPresetUnreal_ParamsJSONRoundTrips " \
                       "TestPresetUnreal_OneTaskPerShot " \
@@ -2274,6 +2280,7 @@ jobs:
                       "TestPresetUnreal_ScriptDrivesUnreal/job_renders_and_quits/import " \
                       "TestPresetUnreal_ScriptDrivesUnreal/a_fatal_error_ends_the_render_once/cwd " \
                       "TestPresetUnreal_ScriptDrivesUnreal/shot-missing/import " \
+                      "TestPresetUnreal_EmitsJobProgress " \
                       "TestPresetFusion_ParamsCostAtMaxChunk " \
                       "TestPresetFusion_ParamsJSONRoundTrips " \
                       "TestPresetFusion_CommandNamesTheScript " \
