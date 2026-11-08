@@ -497,6 +497,7 @@ var fenceReadOnly = []string{
 	"CountActiveTasksInFarm", "CountActiveTasksInQueue", "CountIdleWorkers", "CountReadyTasksByQueue",
 	"CountTasksByJob", "CountUnschedulableTasksByJob", "CountUsers",
 	"GetAPIKeyUserByTokenHash", "GetActiveWorkerCredentialByPublicKey", "GetBrokerIdentity",
+	"GetCapacityGroup", "GetCapacityGroupByName", "ListCapacityGroups",
 	"GetComputeLocation", "GetComputeLocationByName", "GetFarm", "GetJob", "GetProductByName", "GetQueue",
 	"GetSessionByTokenHash", "GetSessionUserByTokenHash", "GetStep", "GetStorageLocation",
 	"GetStorageLocationByName", "GetTask", "GetTaskAttempt", "GetUsagePool", "GetUser",
@@ -575,6 +576,13 @@ var fenceMutators = map[string]fenceMutator{
 		k := mkAPIKey(u.ID, "hash-"+uuid.NewString())
 		return func(ctx context.Context) error {
 			_, err := st.CreateAPIKey(ctx, k)
+			return err
+		}
+	},
+	"CreateCapacityGroup": func(t *testing.T, st store.Store) func(context.Context) error {
+		farm := fenceFarm(t, st)
+		return func(ctx context.Context) error {
+			_, err := st.CreateCapacityGroup(ctx, mkCapacityGroup(farm.ID, uuid.NewString()))
 			return err
 		}
 	},
@@ -680,6 +688,11 @@ var fenceMutators = map[string]fenceMutator{
 			_, err := st.DeleteExpiredSessions(ctx, time.Now())
 			return err
 		}
+	},
+	"DeleteCapacityGroup": func(t *testing.T, st store.Store) func(context.Context) error {
+		farm := fenceFarm(t, st)
+		g := mustCreateCapacityGroup(t, st, mkCapacityGroup(farm.ID, uuid.NewString()))
+		return func(ctx context.Context) error { return st.DeleteCapacityGroup(ctx, g.ID) }
 	},
 	"DeleteFarm": func(t *testing.T, st store.Store) func(context.Context) error {
 		farm := fenceFarm(t, st)
@@ -1048,6 +1061,15 @@ var fenceMutators = map[string]fenceMutator{
 		loc.Description = "fenced"
 		return func(ctx context.Context) error {
 			_, err := st.UpdateStorageLocation(ctx, loc)
+			return err
+		}
+	},
+	"UpdateCapacityGroup": func(t *testing.T, st store.Store) func(context.Context) error {
+		farm := fenceFarm(t, st)
+		g := mustCreateCapacityGroup(t, st, mkCapacityGroup(farm.ID, uuid.NewString()))
+		g.MaxMachines = 7
+		return func(ctx context.Context) error {
+			_, err := st.UpdateCapacityGroup(ctx, g)
 			return err
 		}
 	},

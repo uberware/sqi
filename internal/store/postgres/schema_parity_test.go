@@ -19,7 +19,10 @@ import (
 )
 
 // boolColumns are the SQLite INTEGER columns PostgreSQL holds as BOOLEAN.
-var boolColumns = map[string]bool{"queues.paused": true, "users.disabled": true, "workers.disabled": true}
+var boolColumns = map[string]bool{
+	"queues.paused": true, "users.disabled": true, "workers.disabled": true,
+	"capacity_groups.enabled": true, "workers.ephemeral": true,
+}
 
 type column struct {
 	Name, Type string

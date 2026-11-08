@@ -98,6 +98,12 @@ func TestClassifySQLite_ConstraintCodes(t *testing.T) {
 	_, unique := s.db.ExecContext(ctx, insFarm, "f2", "farm-one")
 	_, fk := s.db.ExecContext(ctx,
 		`INSERT INTO queues (id, farm_id, name, created_at, updated_at) VALUES ('q1', 'no-such-farm', 'q', '', '')`)
+	// A farm a capacity group names is refused by ON DELETE RESTRICT, which
+	// SQLite reports with a different extended code than a plain foreign key.
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO capacity_groups (id, farm_id, name, created_at, updated_at) VALUES ('g1', 'f1', 'g', '', '')`); err != nil {
+		t.Fatalf("seed capacity group: %v", err)
+	}
+	_, restrict := s.db.ExecContext(ctx, `DELETE FROM farms WHERE id = 'f1'`)
 	_, syntax := s.db.ExecContext(ctx, `INSERT INTO`)
 
 	for name, c := range map[string]struct {
@@ -107,6 +113,7 @@ func TestClassifySQLite_ConstraintCodes(t *testing.T) {
 		"primary key": {pk, sqlstore.ErrClassConflict},
 		"unique":      {unique, sqlstore.ErrClassConflict},
 		"foreign key": {fk, sqlstore.ErrClassConflict},
+		"restrict":    {restrict, sqlstore.ErrClassConflict},
 		"syntax":      {syntax, sqlstore.ErrClassOther},
 		"no rows":     {sql.ErrNoRows, sqlstore.ErrClassNotFound},
 	} {

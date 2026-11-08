@@ -122,6 +122,11 @@ func (s *Store) DeleteFarm(ctx context.Context, id string) error {
 			return store.ErrConflict
 		}
 	}
+	for _, g := range s.capacityGroups {
+		if g.FarmID == id {
+			return store.ErrConflict
+		}
+	}
 	for _, w := range s.workers {
 		if w.FarmID == id {
 			return store.ErrConflict

@@ -105,6 +105,14 @@ type Store struct {
 	stmtUpdatePool    *dbStmt
 	stmtDeletePool    *dbStmt
 
+	// ── capacity_groups ──────────────────────────────────────────────────
+	stmtInsertCapacityGroup    *dbStmt
+	stmtGetCapacityGroup       *dbStmt
+	stmtGetCapacityGroupByName *dbStmt
+	stmtListCapacityGroups     *dbStmt
+	stmtUpdateCapacityGroup    *dbStmt
+	stmtDeleteCapacityGroup    *dbStmt
+
 	// ── usage_claims ─────────────────────────────────────────────────────
 	stmtActiveClaimCount *dbStmt
 
@@ -473,6 +481,23 @@ func (s *Store) prepareAll(ctx context.Context) error {
 	}
 	if s.stmtDeletePool, err = s.prepare(ctx, sqlDeletePool); err != nil {
 		return err
+	}
+
+	// ── capacity_groups ───────────────────────────────────────────────────
+	for _, p := range []struct {
+		dst **dbStmt
+		sql string
+	}{
+		{&s.stmtInsertCapacityGroup, sqlInsertCapacityGroup},
+		{&s.stmtGetCapacityGroup, sqlGetCapacityGroup},
+		{&s.stmtGetCapacityGroupByName, sqlGetCapacityGroupByName},
+		{&s.stmtListCapacityGroups, sqlListCapacityGroups},
+		{&s.stmtUpdateCapacityGroup, sqlUpdateCapacityGroup},
+		{&s.stmtDeleteCapacityGroup, sqlDeleteCapacityGroup},
+	} {
+		if *p.dst, err = s.prepare(ctx, p.sql); err != nil {
+			return err
+		}
 	}
 
 	// ── usage_claims ──────────────────────────────────────────────────────

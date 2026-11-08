@@ -56,7 +56,7 @@ func (pgDialect) Classify(err error) sqlstore.ErrClass {
 	}
 	if pe, ok := errors.AsType[*pgconn.PgError](err); ok {
 		switch pe.Code {
-		case "23505", "23503":
+		case "23505", "23503", "23001": // unique, foreign key, and an ON DELETE RESTRICT foreign key
 			return sqlstore.ErrClassConflict
 		case "40001", "40P01":
 			return sqlstore.ErrClassRetry

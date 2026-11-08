@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	msqlite "modernc.org/sqlite"
@@ -31,6 +32,11 @@ func (sqliteDialect) Classify(err error) sqlstore.ErrClass {
 	if se, ok := errors.AsType[*msqlite.Error](err); ok {
 		switch se.Code() {
 		case sqlite3.SQLITE_CONSTRAINT_UNIQUE, sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY, sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY:
+			return sqlstore.ErrClassConflict
+		}
+		// An ON DELETE RESTRICT foreign key reports as a trigger constraint
+		// rather than a foreign-key one; the message tells them apart.
+		if se.Code() == sqlite3.SQLITE_CONSTRAINT_TRIGGER && strings.Contains(se.Error(), "FOREIGN KEY constraint failed") {
 			return sqlstore.ErrClassConflict
 		}
 	}
