@@ -12,6 +12,7 @@ import (
 	"maps"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -65,7 +66,7 @@ func newMembershipFixture(t *testing.T, auth bool) membershipFixture {
 // settle waits for the scheduler's background revocations, after which the
 // log buffer and the recorder may be read.
 func (f membershipFixture) settle() {
-	f.s.revokeWG.Wait()
+	f.s.revokes.Wait()
 }
 
 // register drives a registration of id through the handler and requires it
@@ -328,6 +329,34 @@ func TestRegister_CredentialGroupJoinsWhenAuthOn(t *testing.T) {
 	}
 }
 
+// A group token stays valid after its group is changed to named, but a worker
+// enrolled with it must not join the named group as an ephemeral, and so
+// deletable, member. It registers as before, with one warning.
+func TestRegister_CredentialGroupNowNamedRefused(t *testing.T) {
+	f := newMembershipFixture(t, true)
+	g := createGroup(t, f.st, sizedGroup("cloud", nil))
+	f.credential(t, "w1", g.ID)
+	g.Kind, g.Profile = store.CapacityGroupNamed, store.MachineProfile{}
+	if _, err := f.st.UpdateCapacityGroup(t.Context(), g); err != nil {
+		t.Fatalf("UpdateCapacityGroup: %v", err)
+	}
+
+	f.register(t, "w1", "inst-1", "")
+	f.register(t, "w1", "inst-1", "")
+
+	w := f.worker(t, "w1")
+	if w.CapacityGroupID != "" || w.Ephemeral {
+		t.Fatalf("w1 = group %q ephemeral %v, want no membership", w.CapacityGroupID, w.Ephemeral)
+	}
+	if w.Status != store.WorkerStatusOnline {
+		t.Errorf("w1 status = %q, want online: a refused group must not refuse the worker", w.Status)
+	}
+	f.settle()
+	if n := warnCount(f.logs.String(), "worker_id=w1", "not sized", "source=\"group token\""); n != 1 {
+		t.Errorf("warnings refusing the named group = %d, want 1:\n%s", n, f.logs.String())
+	}
+}
+
 // With broker authentication off, only a sized group of the worker's own farm
 // may be joined by name. Anything else registers the worker as before, with
 // no membership and one warning per worker.
@@ -438,6 +467,20 @@ func TestDeregister_PlainEphemeralKept(t *testing.T) {
 			}
 			if got := f.rev.calls(); len(got) != 0 {
 				t.Errorf("RevokeWorker calls = %v, want none", got)
+			}
+			// The kind is logged only when the worker sent one.
+			seen := 0
+			for line := range strings.Lines(f.logs.String()) {
+				if !strings.Contains(line, "worker deregistered") {
+					continue
+				}
+				seen++
+				if hasKind := strings.Contains(line, "kind="); hasKind != (kind != "") {
+					t.Errorf("deregistered line names a kind = %v, want %v:\n%s", hasKind, kind != "", line)
+				}
+			}
+			if seen != 1 {
+				t.Errorf("worker deregistered lines = %d, want 1:\n%s", seen, f.logs.String())
 			}
 
 			// It comes back with the same identity and is still a member.
@@ -606,6 +649,51 @@ func TestRegister_ClonedEphemeralIDWarns(t *testing.T) {
 
 			if n := warnCount(f.logs.String(), "worker_id=w1", "worker ID"); n != tc.want {
 				t.Errorf("cloned-ID warnings = %d, want %d:\n%s", n, tc.want, f.logs.String())
+			}
+		})
+	}
+}
+
+// backgroundCalls waits for the calls running when it is closed, up to its
+// bound, and refuses calls started after it was closed.
+func TestBackgroundCalls_Close(t *testing.T) {
+	tests := []struct {
+		name     string
+		block    time.Duration
+		timeout  time.Duration
+		wantDone bool
+	}{
+		{"finishes within the bound", 20 * time.Millisecond, 5 * time.Second, true},
+		{"outlives the bound", time.Hour, 20 * time.Millisecond, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var b backgroundCalls
+			release := make(chan struct{})
+			defer close(release)
+			var finished atomic.Bool
+			if !b.Go(func() {
+				select {
+				case <-time.After(tc.block):
+					finished.Store(true)
+				case <-release:
+				}
+			}) {
+				t.Fatal("Go before Close refused the call")
+			}
+			if got := b.Close(tc.timeout); got != tc.wantDone {
+				t.Errorf("Close = %v, want %v", got, tc.wantDone)
+			}
+			if tc.wantDone && !finished.Load() {
+				t.Error("Close returned before the running call finished")
+			}
+			var ran atomic.Bool
+			if b.Go(func() { ran.Store(true) }) {
+				t.Error("Go after Close accepted a call")
+			}
+			time.Sleep(10 * time.Millisecond)
+			if ran.Load() {
+				t.Error("a call started after Close ran")
 			}
 		})
 	}

@@ -172,9 +172,10 @@ func (s *Scheduler) listCapacityMembers(ctx context.Context, groups []store.Capa
 //
 // A member that came back is online and is kept, as is one the operator
 // disabled (the disable flag is the maintenance hold, which the retention
-// sweep honors too). Nothing is removed while the liveness sweeps are
-// deferred ([Scheduler.livenessDeferred]): during a broker outage no machine
-// can come back, so its time offline proves nothing.
+// sweep honors too). The store re-checks all of that, and the heartbeat
+// cutoff, in the delete itself. Nothing is removed while the liveness sweeps
+// are deferred ([Scheduler.livenessDeferred]): during a broker outage no
+// machine can come back, so its time offline proves nothing.
 func (s *Scheduler) removeVanishedEphemerals(
 	ctx context.Context, now time.Time, groups []store.CapacityGroup, members map[string][]store.Worker,
 ) bool {
@@ -189,13 +190,14 @@ func (s *Scheduler) removeVanishedEphemerals(
 				kept = append(kept, w)
 				continue
 			}
-			gone, deleted, err := s.store.DeleteEphemeralWorker(ctx, w.ID, now)
+			gone, deleted, err := s.store.DeleteVanishedEphemeralWorker(ctx, w.ID, now.Add(-g.BootTimeout), now)
 			if s.stopIfFenced(ctx, err) {
 				return true
 			}
 			if err != nil || !deleted {
 				// A failed write is retried next tick; a refused one means the
-				// member came back or holds work since it was read.
+				// member came back, heartbeated, was disabled or took work
+				// since it was read.
 				s.warnUnlessStopped(ctx, err, "scheduler: capacity sweep: remove vanished ephemeral worker failed",
 					slog.String("group", g.Name), slog.String("worker_id", w.ID))
 				kept = append(kept, w)

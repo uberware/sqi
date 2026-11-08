@@ -247,14 +247,14 @@ type Config struct {
 	// handleWorkerRegister.
 	NATSAuthEnabled bool
 
-	// RevokeWorker revokes a removed ephemeral capacity-group member's broker
-	// credential and drops its broker connection. The scheduler calls it after
-	// [store.WorkerStore.DeleteEphemeralWorker] has deleted the worker, which
-	// already revoked the credential in the store, so an implementation must
-	// treat a credential that is already revoked as success and still drop the
-	// connection. It runs on a goroutine of its own, because dropping a broker
-	// connection takes seconds. Nil means the store's revocation alone
-	// applies. Not a tuning knob; the server wires it.
+	// RevokeWorker drops a removed ephemeral capacity-group member's broker
+	// connection. The scheduler calls it after the store has deleted the
+	// worker, which revoked its credential in the same transaction, so an
+	// implementation must not revoke again by worker ID: that could revoke a
+	// credential enrolled under the same ID since. It runs on a goroutine of
+	// its own, because dropping a broker connection takes seconds. Nil means
+	// the store's revocation alone applies. Not a tuning knob; the server
+	// wires it.
 	RevokeWorker func(ctx context.Context, workerID string) error
 
 	// OnFenced is called once, with the error, the first time a store write
@@ -372,12 +372,10 @@ type Scheduler struct {
 	// wg tracks all internal goroutines so [Run] can wait for clean exit.
 	wg sync.WaitGroup
 
-	// revokeWG tracks the [Config.RevokeWorker] calls running in the
-	// background (see [Scheduler.revokeRemovedWorker]). Nothing in production
-	// waits on it: a call is bounded by the server's own broker timeout, and
-	// waiting from Run could race a handler still adding to it. Tests wait on
-	// it before reading what the calls did.
-	revokeWG sync.WaitGroup
+	// revokes runs the [Config.RevokeWorker] calls in the background (see
+	// [Scheduler.revokeRemovedWorker]). Run closes it at shutdown and waits,
+	// for at most [revokeDrainTimeout], for the calls still running.
+	revokes backgroundCalls
 
 	// ctx is the lifecycle context for the scheduler; set during [Run] and used
 	// by NATS message-handler callbacks that cannot receive a context parameter.
@@ -634,6 +632,13 @@ func (s *Scheduler) Run(ctx context.Context) error {
 
 	// Stop any backoff-wake timers still pending so they don't outlive Run.
 	s.stopRetryWakeTimers()
+
+	// Let broker revocations of removed workers finish, briefly, so none
+	// outlives the broker the server closes next.
+	if !s.revokes.Close(revokeDrainTimeout) {
+		s.logger.WarnContext(ctx, "scheduler: a removed worker's broker revocation was still running at shutdown",
+			slog.Duration("waited", revokeDrainTimeout))
+	}
 
 	s.logger.InfoContext(ctx, "scheduler: stopped")
 	return nil
@@ -1309,12 +1314,11 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 		return
 	}
 
-	s.logger.InfoContext(
-		ctx, "scheduler: worker deregistered",
-		slog.String("worker_id", m.WorkerID),
-		slog.String("reason", m.Reason),
-		slog.String("kind", string(m.Kind)),
-	)
+	attrs := []any{slog.String("worker_id", m.WorkerID), slog.String("reason", m.Reason)}
+	if m.Kind != "" {
+		attrs = append(attrs, slog.String("kind", string(m.Kind)))
+	}
+	s.logger.InfoContext(ctx, "scheduler: worker deregistered", attrs...)
 
 	// A gracefully-deregistered worker is now offline with nothing in flight,
 	// so the heartbeat sweep (which only inspects online workers) will not look
@@ -1324,8 +1328,13 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 	s.reclaimOfflineWorkerTasks(ctx, m.WorkerID, "", reclaimOffline, reclaimed)
 
 	// An ephemeral capacity-group member that left for good is deleted now,
-	// with its credential (capacitymembership.go).
-	if s.removeDepartedEphemeral(ctx, m.WorkerID, m.Kind) {
+	// with its credential (capacitymembership.go). A fenced delete leaves the
+	// message unacknowledged, for the new leader.
+	removed, fenced := s.removeDepartedEphemeral(ctx, m.WorkerID, m.Kind)
+	if fenced {
+		return
+	}
+	if removed {
 		s.refreshWorkerGauge(ctx)
 		s.ackMsg(ctx, msg)
 		return

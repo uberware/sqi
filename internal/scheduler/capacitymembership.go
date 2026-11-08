@@ -27,6 +27,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -116,8 +117,10 @@ func (s *Scheduler) afterRegistration(
 // joinCapacityGroup makes w an ephemeral member of g, which the caller looked
 // up by ref (an ID for a credential's group, a name for a configured one) with
 // lookupErr as the result. byConfig is true for a group the worker named in its
-// own configuration, which must be sized; a credential's group was chosen by
-// the operator who issued the token. Either must be in the worker's farm.
+// own configuration, and false for its credential's group. Either way the
+// group must be sized and in the worker's farm: a group token stays valid
+// after its group is changed to named, and a worker joining a named group as
+// an ephemeral member would make itself deletable.
 func (s *Scheduler) joinCapacityGroup(
 	ctx context.Context, w store.Worker, g store.CapacityGroup, lookupErr error, ref string, byConfig bool,
 ) {
@@ -141,8 +144,9 @@ func (s *Scheduler) joinCapacityGroup(
 	case g.FarmID != w.FarmID:
 		refuse("the group belongs to farm " + g.FarmID + ", the worker to farm " + w.FarmID)
 		return
-	case byConfig && g.Kind != store.CapacityGroupSized:
-		refuse("only a sized group can be joined by name; add the worker to a named group through the API")
+	case g.Kind != store.CapacityGroupSized:
+		refuse("the group is not sized, and only a sized group takes ephemeral members; " +
+			"add the worker to a named group through the API")
 		return
 	}
 
@@ -209,28 +213,34 @@ func (s *Scheduler) warnOnClonedWorkerID(ctx context.Context, m protocol.Registe
 // it is an ephemeral capacity-group member, revoking its credential, and
 // reports whether it did. Any other kind, the empty one included, keeps the
 // worker: it may come back. A worker that is not ephemeral is never deleted
-// here, whatever the kind.
-func (s *Scheduler) removeDepartedEphemeral(ctx context.Context, workerID string, kind protocol.DeregisterKind) bool {
+// here, whatever the kind. fenced is true when the delete was fenced: the
+// caller must stop and leave the message for the new leader.
+func (s *Scheduler) removeDepartedEphemeral(
+	ctx context.Context, workerID string, kind protocol.DeregisterKind,
+) (removed, fenced bool) {
 	if kind != protocol.DeregisterRetired && kind != protocol.DeregisterPreempted {
-		return false
+		return false, false
 	}
 	w, deleted, err := s.store.DeleteEphemeralWorker(ctx, workerID, time.Now().UTC())
+	if s.stopIfFenced(ctx, err) {
+		return false, true
+	}
 	if err != nil {
 		s.warnUnlessStopped(ctx, err, "scheduler: remove departed ephemeral worker failed",
 			slog.String("worker_id", workerID), slog.String("kind", string(kind)))
-		return false
+		return false, false
 	}
 	if !deleted {
 		s.logger.DebugContext(ctx, "scheduler: departed worker is not an ephemeral capacity-group member; kept",
 			slog.String("worker_id", workerID), slog.String("kind", string(kind)))
-		return false
+		return false, false
 	}
 	s.logger.InfoContext(ctx, "scheduler: ephemeral worker left for good; removed it and revoked its credential",
 		slog.String("worker_id", workerID), slog.String("capacity_group_id", w.CapacityGroupID),
 		slog.String("kind", string(kind)))
 	s.announceRemovedWorker(w)
 	s.revokeRemovedWorker(ctx, workerID)
-	return true
+	return true, false
 }
 
 // announceRemovedWorker fans out the removal of w, as the retention sweep
@@ -246,19 +256,22 @@ func (s *Scheduler) announceRemovedWorker(w store.Worker) {
 }
 
 // revokeRemovedWorker calls [Config.RevokeWorker] for a worker
-// [store.WorkerStore.DeleteEphemeralWorker] has just deleted, on a goroutine of
-// its own: the store already revoked the credential, and dropping the broker
-// connection takes seconds, which must not hold up the worker consumer or the
-// sweep. The call keeps ctx's values (the leader epoch) but not its
-// cancellation, so a scheduler stopping does not cut it short; the server
-// bounds it. A credential already revoked is not an error.
+// [store.WorkerStore.DeleteEphemeralWorker] or
+// [store.WorkerStore.DeleteVanishedEphemeralWorker] has just deleted, on a
+// goroutine of its own: the store already revoked the credential, and dropping
+// the broker connection takes seconds, which must not hold up the worker
+// consumer or the sweep. The call keeps ctx's values (the leader epoch) but
+// not its cancellation, so a scheduler stopping does not cut it short; the
+// server bounds it, and [Scheduler.Run] waits for it, briefly, before it
+// returns. Once Run has begun that wait, a removal drops no connection: the
+// server is shutting down, and the store's revocation already applies.
 func (s *Scheduler) revokeRemovedWorker(ctx context.Context, workerID string) {
 	revoke := s.cfg.RevokeWorker
 	if revoke == nil {
 		return
 	}
 	ctx = context.WithoutCancel(ctx)
-	s.revokeWG.Go(func() {
+	s.revokes.Go(func() {
 		err := revoke(ctx, workerID)
 		if errors.Is(err, store.ErrNotFound) {
 			return
@@ -266,4 +279,58 @@ func (s *Scheduler) revokeRemovedWorker(ctx context.Context, workerID string) {
 		s.warnUnlessStopped(ctx, err, "scheduler: revoke removed worker's broker access failed",
 			slog.String("worker_id", workerID))
 	})
+}
+
+// revokeDrainTimeout bounds how long [Scheduler.Run] waits, at shutdown, for
+// [Config.RevokeWorker] calls still running. A broker revocation takes a few
+// seconds; one that takes longer is left to finish, or not, on its own.
+const revokeDrainTimeout = 5 * time.Second
+
+// backgroundCalls runs calls on goroutines of their own until it is closed,
+// and can then wait for those still running. Unlike a bare sync.WaitGroup, a
+// call started while the owner is waiting is refused instead of racing the
+// wait.
+type backgroundCalls struct {
+	mu     sync.Mutex
+	closed bool
+	wg     sync.WaitGroup
+}
+
+// Go runs f on a goroutine of its own and reports true, or reports false and
+// runs nothing once Close has been called.
+func (b *backgroundCalls) Go(f func()) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return false
+	}
+	b.wg.Go(f)
+	return true
+}
+
+// Close refuses every later call and waits up to timeout for those still
+// running. It reports whether they all finished in time.
+func (b *backgroundCalls) Close(timeout time.Duration) bool {
+	b.mu.Lock()
+	b.closed = true
+	b.mu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		b.wg.Wait()
+		close(done)
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+// Wait waits for the calls running now, with no bound. Tests use it before
+// reading what the calls did; it must not run alongside a call to Go.
+func (b *backgroundCalls) Wait() {
+	b.wg.Wait()
 }
