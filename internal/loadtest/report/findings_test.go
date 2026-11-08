@@ -254,7 +254,7 @@ func TestFindings(t *testing.T) {
 		{
 			name: "queue depth that never drains is not a finding", rule: "any",
 			build: func() *Record {
-				// The server keeps a drained queue's last non-zero depth.
+				// No rule reads a queue's depth.
 				r := baseRecord()
 				r.Series = []measure.Series{values("sched.queue_depth{default}", "tasks", time.Minute, 5, 900, 900, 900, 900, 900)}
 				return r

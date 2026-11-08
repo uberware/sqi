@@ -185,21 +185,12 @@ func summaryResources(b *strings.Builder, r *Record) {
 	}
 	slices.SortStableFunc(rows, func(x, y *measure.Series) int { return strings.Compare(x.Name, y.Name) })
 	b.WriteString("| Series | Peak | End |\n|---|---:|---:|\n")
-	sticky := false
 	for _, s := range rows {
 		peak, _ := seriesPeak(s)
 		end := fmtValue(s.Unit, s.Points[len(s.Points)-1].V)
-		if strings.HasPrefix(s.Name, "sched.queue_depth{") {
-			// The server keeps a drained queue's last non-zero depth, so the
-			// end value of a queue says nothing about whether it drained.
-			end, sticky = "-", true
-		}
 		fmt.Fprintf(b, "| %s | %s | %s |\n", s.Name, fmtValue(s.Unit, peak), end)
 	}
 	b.WriteString("\n")
-	if sticky {
-		b.WriteString("A queue's end depth is not shown: the server keeps a drained queue's last non-zero value.\n\n")
-	}
 }
 
 func summaryGrowth(b *strings.Builder, r *Record) {

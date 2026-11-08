@@ -38,13 +38,11 @@ Histograms cover the whole run, warmup included.
 | Series | Peak | End |
 |---|---:|---:|
 | disk.sqlite_wal_bytes | 5.9 KiB | 5.9 KiB |
-| sched.queue_depth{default} | 500 | - |
+| sched.queue_depth{default} | 500 | 0 |
 | server.cpu_cores | 2.10 | 2.10 |
 | server.gc_pause_p99_s | 3.5ms | 2ms |
 | server.goroutines | 1000 | 1000 |
 | server.rss_bytes | 244.0 MiB | 244.0 MiB |
-
-A queue's end depth is not shown: the server keeps a drained queue's last non-zero value.
 
 ## Growth
 
