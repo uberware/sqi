@@ -326,6 +326,54 @@ func TestPGRace_LeaseRefusesAWorkerDisabledBeforeItsLock(t *testing.T) {
 	}
 }
 
+// TestPGRace_LeaseRequiringOnlineRefusesAWorkerGoneBeforeItsLock: a lease that
+// requires its worker online (the scheduler read it online) is refused when
+// the worker is taken offline, or taken offline and deleted, after the
+// lease's scope read but before it locks the worker row. The online check is
+// part of the guarded task write, which runs under that lock.
+func TestPGRace_LeaseRequiringOnlineRefusesAWorkerGoneBeforeItsLock(t *testing.T) {
+	tests := []struct {
+		name string
+		gone func(ctx context.Context, st store.Store) error
+	}{
+		{"offline", func(ctx context.Context, st store.Store) error {
+			_, _, err := st.OfflineWorker(ctx, "w1", "", time.Now().UTC())
+			return err
+		}},
+		{"offline and deleted", func(ctx context.Context, st store.Store) error {
+			if _, _, err := st.OfflineWorker(ctx, "w1", "", time.Now().UTC()); err != nil {
+				return err
+			}
+			return st.DeleteWorkerIfRemovable(ctx, "w1")
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			st, p := pgRace(t)
+			w := seedWorld(t, st, 1, "w1")
+			p.atAnchor("workers", "w1") // after the scope read, before the worker lock
+			req := leaseReq(w.Tasks[0], "w1")
+			req.RequireOnline = true
+			var lease store.LeaseResult
+			lerr, gerr, _ := interleave(t, p,
+				func() (err error) { lease, err = st.LeaseTask(t.Context(), req); return },
+				func() error { return tc.gone(t.Context(), st) })
+			if got, want := p.matched(), "anchor workers/w1"; got != want {
+				t.Fatalf("paused at %q, want %q", got, want)
+			}
+			if lerr != nil || gerr != nil {
+				t.Fatalf("lease err %v, %s err %v", lerr, tc.name, gerr)
+			}
+			if lease.Outcome != store.LeaseLost {
+				t.Fatalf("lease outcome = %s, want lost: a worker gone before the lock was leased to", lease.Outcome)
+			}
+			if got := mustTask(t, st, w.Tasks[0]); got.Status != store.TaskStatusReady {
+				t.Fatalf("task status = %s, want ready (the refused lease writes nothing)", got.Status)
+			}
+		})
+	}
+}
+
 // TestPGRace_G8_NoDemotionUnderALease: the stall sweep must not demote a
 // running job while a lease of one of its tasks is in flight.
 func TestPGRace_G8_NoDemotionUnderALease(t *testing.T) {
