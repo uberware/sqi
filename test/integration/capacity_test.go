@@ -19,10 +19,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -253,12 +255,23 @@ func findOtherOnlineWorker(t *testing.T, ts *testServer, farmID, exclude string,
 }
 
 // preemptionDiagnostics describes a preemption that did not settle: the
-// member's row, every attempt of each task not back in ready, and the
-// server's INFO-and-above log, so the order of the reclaim, the deregister and
-// any lease after it can be read.
-func preemptionDiagnostics(t *testing.T, ts *testServer, db store.Store, workerID string, tasks []capacityTask) string {
+// member's row, every attempt of each task not back in ready, the server's
+// INFO-and-above log, so the order of the reclaim, the deregister and any
+// lease after it can be read, and the stacks of the server's goroutines. A
+// member process still running is sent SIGQUIT, which makes the Go runtime
+// print its goroutines to the test's stderr, so a worker stuck in its
+// shutdown shows where.
+func preemptionDiagnostics(
+	t *testing.T, ts *testServer, db store.Store, member *exec.Cmd, workerID string, tasks []capacityTask,
+) string {
 	t.Helper()
 	var b strings.Builder
+	// The process may have exited and not been reaped yet (the cleanup owns
+	// Wait), which a signal cannot tell from a running one.
+	if err := member.Process.Signal(syscall.Signal(3)); err == nil {
+		fmt.Fprintf(&b, "\n--- sent SIGQUIT to worker process %d: if it was still running, its stacks are on stderr",
+			member.Process.Pid)
+	}
 	if w, err := db.GetWorker(t.Context(), workerID); err != nil {
 		fmt.Fprintf(&b, "\n--- worker %s: %v", workerID, err)
 	} else {
@@ -278,6 +291,7 @@ func preemptionDiagnostics(t *testing.T, ts *testServer, db store.Store, workerI
 		fmt.Fprintf(&b, "\n--- server log (offsets from %s) ---\n%s",
 			ts.Logs.start.UTC().Format(time.RFC3339Nano), ts.Logs.trailText())
 	}
+	fmt.Fprintf(&b, "\n--- server goroutines ---\n%s", sqiGoroutines())
 	return b.String()
 }
 
@@ -363,7 +377,7 @@ func TestCapacityGroup_SignalAndEphemeralLifecycle(t *testing.T) {
 
 	// ── A cloud worker joins as an ephemeral member ──────────────────────────
 	imds := newFakeIMDS(t)
-	startRealWorkerNoWait(t, ts, farmID, queueID, nil, []string{
+	member := startRealWorkerNoWait(t, ts, farmID, queueID, nil, []string{
 		"SQI_WORKER_CAPACITY_GROUP=cloud",
 		"SQI_WORKER_CAPABILITY_TAGS=special=yes",
 		"SQI_WORKER_PREEMPTION_WATCH=aws",
@@ -427,7 +441,7 @@ func TestCapacityGroup_SignalAndEphemeralLifecycle(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("10s after the preemption notice: every task ready = %v (tasks: %+v), worker %s gone = %v%s",
-				allReady, tasks, memberID, gone, preemptionDiagnostics(t, ts, db, memberID, tasks))
+				allReady, tasks, memberID, gone, preemptionDiagnostics(t, ts, db, member, memberID, tasks))
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
