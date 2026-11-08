@@ -1220,16 +1220,17 @@ func TestPresetUnreal_EmitsJobProgress(t *testing.T) {
 	const queueA = "/Game/Cinematics/MRQ_HeroQueue"
 	threeJobs := `{"` + queueA + `": ["Hero A", "Hero B", "Hero C"]}`
 	events := "job:1:Hero A;job:1:Hero B;job:1:Hero C;finished:1"
+	queueSnap, err := capturePreset(t, unrealQueue, map[string]string{
+		"SceneFile": `C:\Projects\HeroFilm\HeroFilm.uproject`, "QueueAsset": queueA,
+	})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	queueTask := queueSnap.Steps[0].Tasks[0]
 
 	t.Run("queue", func(t *testing.T) {
-		snap, err := capturePreset(t, unrealQueue, map[string]string{
-			"SceneFile": `C:\Projects\HeroFilm\HeroFilm.uproject`, "QueueAsset": queueA,
-		})
-		if err != nil {
-			t.Fatalf("Capture: %v", err)
-		}
 		for _, run := range unrealRuns {
-			_, stdout, _ := runUnrealScript(t, python, snap.Steps[0].Tasks[0], run, events, "", threeJobs, "")
+			_, stdout, _ := runUnrealScript(t, python, queueTask, run, events, "", threeJobs, "")
 			want := "" +
 				"openjd_status: finished job Hero A\nopenjd_progress: 33\n" +
 				"openjd_status: finished job Hero B\nopenjd_progress: 66\n" +
@@ -1255,14 +1256,8 @@ func TestPresetUnreal_EmitsJobProgress(t *testing.T) {
 		}
 	})
 	t.Run("a disabled job is not counted", func(t *testing.T) {
-		snap, err := capturePreset(t, unrealQueue, map[string]string{
-			"SceneFile": `C:\Projects\HeroFilm\HeroFilm.uproject`, "QueueAsset": queueA,
-		})
-		if err != nil {
-			t.Fatalf("Capture: %v", err)
-		}
 		oneDisabled := `{"` + queueA + `": ["Hero A", "!Hero B", "Hero C"]}`
-		_, stdout, _ := runUnrealScript(t, python, snap.Steps[0].Tasks[0], "import", events, "", oneDisabled, "")
+		_, stdout, _ := runUnrealScript(t, python, queueTask, "import", events, "", oneDisabled, "")
 		want := "" +
 			"openjd_status: finished job Hero A\nopenjd_progress: 50\n" +
 			"openjd_status: finished job Hero C\nopenjd_progress: 100\n" +
@@ -1272,13 +1267,7 @@ func TestPresetUnreal_EmitsJobProgress(t *testing.T) {
 		}
 	})
 	t.Run("a failed job reports no progress", func(t *testing.T) {
-		snap, err := capturePreset(t, unrealQueue, map[string]string{
-			"SceneFile": `C:\Projects\HeroFilm\HeroFilm.uproject`, "QueueAsset": queueA,
-		})
-		if err != nil {
-			t.Fatalf("Capture: %v", err)
-		}
-		_, stdout, _ := runUnrealScript(t, python, snap.Steps[0].Tasks[0], "import", "job:1:Hero A;job:0:Hero B;finished:1", "", threeJobs, "")
+		_, stdout, _ := runUnrealScript(t, python, queueTask, "import", "job:1:Hero A;job:0:Hero B;finished:1", "", threeJobs, "")
 		if !strings.HasPrefix(stdout, "openjd_status: finished job Hero A\nopenjd_progress: 33\n") ||
 			strings.Contains(stdout, "finished job Hero B") || strings.Contains(stdout, "openjd_progress: 66") ||
 			strings.Contains(stdout, "SQI_RENDER: OK") {

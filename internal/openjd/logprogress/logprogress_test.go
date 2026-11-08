@@ -72,6 +72,39 @@ func TestCheckStatus(t *testing.T) {
 	}
 }
 
+// TestClassify_DuplicateGroupName pins that a pattern naming one group twice is
+// rejected: only one of the two submatches could ever be read, so a branch of
+// the pattern would silently never report.
+func TestClassify_DuplicateGroupName(t *testing.T) {
+	_, err := ClassifyProgress(regexp.MustCompile(`a (?P<percent>\d+)%|b (?P<percent>\d+)%`))
+	if err == nil || !strings.Contains(err.Error(), `"percent"`) || !strings.Contains(err.Error(), "more than once") {
+		t.Errorf("ClassifyProgress duplicate: err = %v", err)
+	}
+	err = CheckStatus(regexp.MustCompile(`a (?P<status>x)|b (?P<status>y)`))
+	if err == nil || !strings.Contains(err.Error(), "more than once") {
+		t.Errorf("CheckStatus duplicate: err = %v", err)
+	}
+}
+
+// TestClassifyNames pins that classifying from a parse's capture names, with no
+// program built, agrees with classifying the compiled pattern.
+func TestClassifyNames(t *testing.T) {
+	for _, p := range []string{
+		`percent=(?P<percent>\d+)`,
+		`(?P<framedone>\d+)/(?P<frametotal>\d+)`,
+		`(\d+) (?P<frame>\d+)`,
+		`(?P<pct>\d+)`,
+		`(?P<percent>1)|(?P<percent>2)`,
+	} {
+		re := regexp.MustCompile(p)
+		want, wantErr := ClassifyProgress(re)
+		got, gotErr := ClassifyNames(re.SubexpNames())
+		if got != want || (gotErr == nil) != (wantErr == nil) {
+			t.Errorf("%q: ClassifyNames = %v, %v; ClassifyProgress = %v, %v", p, got, gotErr, want, wantErr)
+		}
+	}
+}
+
 func TestForm_Predicates(t *testing.T) {
 	tests := []struct {
 		f      Form

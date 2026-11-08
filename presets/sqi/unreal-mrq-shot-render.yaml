@@ -128,12 +128,12 @@ readme: |
   ## What has been tested
 
   The preset has rendered a two-shot sequence and a sequence with no shot
-  track with Unreal Engine 5.8 on a Windows worker. That run showed that
-  `update_job_shot_list_from_sequence` lists each shot by its section name
-  (`no shot` without a shot track), that each task renders only its own shot,
-  that a shot the sequence lacks fails the task with the names it has, and
-  that a config without `{shot_name}` gives the warning above and renders.
-  It also showed everything Unreal Movie Render Queue Job Render's readme
+  track with Unreal Engine 5.8 on a Windows worker. In that run
+  `update_job_shot_list_from_sequence` listed each shot by its section name
+  (`no shot` without a shot track), each task rendered only its own shot,
+  a shot the sequence lacked failed the task with the names it had, and
+  a config without `{shot_name}` gave the warning above and rendered.
+  It also covered everything Unreal Movie Render Queue Job Render's readme
   lists as tested.
 
   ## What has not been verified
@@ -479,7 +479,7 @@ template:
                       elif STATE["total"]:
                           # The share of the queue's jobs done; a job that
                           # failed reports none. A shot task has no total: it
-                          # renders one job and said which shot at the start.
+                          # renders one job and reports which shot at the start.
                           STATE["finished"] += 1
                           emit("openjd_status: finished job " + name)
                           emit("openjd_progress: %d" % min(100, STATE["finished"] * 100 // STATE["total"]))

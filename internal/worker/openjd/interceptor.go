@@ -219,6 +219,11 @@ func (i *Interceptor) Deregister(attemptID string) {
 func (st *attemptState) finish() {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	st.finishLocked()
+}
+
+// finishLocked is [attemptState.finish] with st.mu already held.
+func (st *attemptState) finishLocked() {
 	st.finished = true
 	st.pending = false
 	if st.timer != nil {
@@ -245,11 +250,7 @@ func (i *Interceptor) FinishProgress(attemptID string) *int {
 	if flush {
 		msg = i.snapshotLocked(attemptID, st, time.Now())
 	}
-	st.finished = true
-	st.pending = false
-	if st.timer != nil {
-		st.timer.Stop()
-	}
+	st.finishLocked()
 	st.mu.Unlock()
 	if flush {
 		i.publish(context.Background(), attemptID, msg)
@@ -273,7 +274,7 @@ func (i *Interceptor) TakeFailReason(attemptID string) (string, bool) {
 	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	// Use the failed flag — not an empty failReason — to distinguish
+	// The failed flag, not an empty failReason, distinguishes
 	// "openjd_fail not seen" from "openjd_fail seen with no text".
 	if !st.failed {
 		return "", false

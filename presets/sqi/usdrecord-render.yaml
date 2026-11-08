@@ -140,9 +140,9 @@ template:
               defaultTaskCount: "{{Param.FramesPerTask}}"
               rangeConstraint: CONTIGUOUS
       SQI_LOG_PROGRESS:
-        # From Houdini 21.0.631's usdrecord (test/integration/testdata/progress):
-        # it prints "Recording time code: F.000000" before it records each
-        # frame, and nothing after the last one.
+        # Houdini 21.0.631's usdrecord prints "Recording time code: F.000000"
+        # before it records each frame, and nothing after the last one (sample
+        # output: test/integration/testdata/progress).
         progress:
           - '^Recording time code: (?P<frame>-?\d+)\.0+$'
         status:

@@ -104,11 +104,12 @@ uses frames.
 
 ### Status text
 A status pattern may name one group, `status`. The status text is that group,
-or the whole line when the pattern has no group. An empty capture sets nothing,
-and the next status pattern is tried. The text is cut to **200 bytes**, never
-inside a UTF-8 character, and then cleaned as `openjd_status` text is: control
-characters are dropped, tabs and line breaks become spaces, and surrounding
-space is trimmed.
+or the whole line when the pattern has no group. It is first cleaned as
+`openjd_status` text is: control characters are dropped, tabs and line breaks
+become spaces, and surrounding space is trimmed. Text that is empty after
+cleaning sets nothing, and the next status pattern is tried. The rest is cut to
+**200 bytes**, never inside a UTF-8 character, so space and control characters
+the cleaning drops do not use up the limit.
 
 ## Validation
 Structural, enforced at submission (`internal/openjd/logprogress.go`,
@@ -127,7 +128,8 @@ Structural, enforced at submission (`internal/openjd/logprogress.go`,
   `SQI_LOG_CHECKS`'s, so a step carrying both full blocks is valid.
 - A progress pattern with any other set of named groups is an error that lists
   the accepted sets. A status pattern naming any group other than `status` is
-  an error.
+  an error. A pattern that uses one group name twice (`a (?P<percent>\d+)|b
+  (?P<percent>\d+)`) is an error, since only one of the two could be read.
 - A within-frame pattern in a block with no `frame` or `framedone` pattern is an
   error.
 - `frameParameter` is checked as described [above](#frameparameter).
@@ -159,13 +161,13 @@ progress and status a task printed still reach the server.
 **Precedence.** Per field, an explicit directive wins. Once the attempt has
 printed a valid `openjd_progress` line, the progress patterns no longer set
 progress; once it has printed an `openjd_status` line, the status patterns no
-longer set status. A script that knows better than the patterns is believed. The
+longer set status. A script's own directives take priority over the patterns. The
 flags last for the attempt; a retry starts afresh.
 
 **With `SQI_LOG_CHECKS`.** The two blocks act independently on the same line: a
 line can set progress and fail the task.
 
-**A compile failure never fails the task.** A pattern that does not compile on
+A compile failure never fails the task. A pattern that does not compile on
 the worker, or frames that cannot be read (both impossible for a validated
 template with a well-formed assignment), disable progress for that attempt with
 one warning in the worker's diagnostic log (`executor: SQI_LOG_PROGRESS
@@ -177,7 +179,7 @@ and is **not** worker-enforced, so the scheduler does not gate on it. Progress
 is advisory: a worker that does not know `AssignMsg.LogProgress` (an additive
 `omitempty` field) drops the key and runs the task correctly, with a bar that
 moves only as tasks finish. Gating would make a preset's jobs wait for a worker
-upgrade for the sake of a progress bar. `ProtocolVersion` is not bumped.
+upgrade for the sake of a progress bar. The field does not change `ProtocolVersion`.
 
 ### Applications that redraw one line
 The worker splits output on newlines. An application that redraws its progress
@@ -209,9 +211,9 @@ ships.
 | `oiiotool-process` | `framedone` (`Wrote frame N`); the same line as status. oiiotool prints nothing by default and `-v` names files, not frames, so the preset adds `--echo "Wrote frame {FRAME_NUMBER}"` after `-o`, which only prints | oiiotool 3.1.15.0 (Homebrew, macOS) and Houdini 21.0.631's hoiiotool (OIIO 2.5.18.0); not Ubuntu's openimageio-tools |
 
 ### Candidates, not shipped
-These presets have no progress or status yet: the application is not available
-to confirm its output, and a pattern is only shipped after it has been
-confirmed against the real application.
+These presets carry no progress or status patterns: the application's output
+has not been confirmed, and a pattern ships only once it has been confirmed
+against the real application.
 
 | Preset | Status |
 |---|---|

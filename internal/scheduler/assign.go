@@ -415,7 +415,7 @@ func buildPathMap(locs []store.StorageLocation, computeLocation string) []protoc
 			}
 		}
 
-		// Only emit a rule when translation is actually needed.
+		// Only emit a rule when translation is needed.
 		if destRoot == defaultRoot {
 			continue
 		}

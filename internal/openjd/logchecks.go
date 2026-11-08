@@ -15,21 +15,18 @@ import (
 	"github.com/uberware/sqi/internal/openjd/logpattern"
 )
 
-// Limits on an SQI_LOG_CHECKS block. They bound what a worker compiles and runs
-// against every output line of a task, so they are fixed rather than configured.
+// Limits on an SQI_LOG_CHECKS block, beyond the per-list ones in
+// [logpattern.MaxPatterns] and [logpattern.MaxPatternBytes]. They bound what a
+// worker compiles and runs against every output line of a task, so they are
+// fixed rather than configured.
 const (
-	// maxLogCheckPatterns is the most patterns one list (failOn or requireLine)
-	// may hold.
-	maxLogCheckPatterns = 32
-	// maxLogCheckPatternBytes is the longest a single pattern may be.
-	maxLogCheckPatternBytes = 1024
 	// maxLogCheckTemplateInsts bounds the programs all of a template's patterns
 	// compile to, together. Validation builds each pattern's program to measure
 	// it, so without a template-wide bound the cost of a submission grows with
 	// its number of steps. It is one step's worst case (two full lists of
 	// patterns at the size limit), so any step that is valid on its own is valid
 	// in any template.
-	maxLogCheckTemplateInsts = 2 * maxLogCheckPatterns * logpattern.MaxProgramInsts
+	maxLogCheckTemplateInsts = 2 * logpattern.MaxPatterns * logpattern.MaxProgramInsts
 )
 
 // LogChecks is the parsed SQI_LOG_CHECKS block of one step.
@@ -74,9 +71,9 @@ func decodeLogChecks(v any) *LogChecks {
 	for _, k := range slices.Sorted(maps.Keys(m)) {
 		switch k {
 		case "failOn":
-			lc.FailOn = decodeLogCheckList(lc, m[k], "/failOn")
+			lc.FailOn = decodePatternList(&lc.problems, m[k], "/failOn")
 		case "requireLine":
-			lc.RequireLine = decodeLogCheckList(lc, m[k], "/requireLine")
+			lc.RequireLine = decodePatternList(&lc.problems, m[k], "/requireLine")
 		default:
 			lc.problems = append(lc.problems, logCheckProblem{message: fmt.Sprintf("unknown field %q", k)})
 		}
@@ -84,22 +81,23 @@ func decodeLogChecks(v any) *LogChecks {
 	return lc
 }
 
-// decodeLogCheckList reads one pattern list, recording a problem for a value
-// that is not a list of strings. A null list is an empty one.
-func decodeLogCheckList(lc *LogChecks, v any, suffix string) []string {
+// decodePatternList reads one pattern list of a step block (SQI_LOG_CHECKS,
+// SQI_LOG_PROGRESS), appending to problems for a value that is not a list of
+// strings. A null list is an empty one.
+func decodePatternList(problems *[]logCheckProblem, v any, suffix string) []string {
 	if v == nil {
 		return nil
 	}
 	items, ok := toAnySlice(v)
 	if !ok {
-		lc.problems = append(lc.problems, logCheckProblem{suffix: suffix, message: "must be a list of strings"})
+		*problems = append(*problems, logCheckProblem{suffix: suffix, message: "must be a list of strings"})
 		return nil
 	}
 	out := make([]string, 0, len(items))
 	for i, item := range items {
 		s, ok := item.(string)
 		if !ok {
-			lc.problems = append(lc.problems, logCheckProblem{
+			*problems = append(*problems, logCheckProblem{
 				suffix:  fmt.Sprintf("%s/%d", suffix, i),
 				message: "must be a string",
 			})
@@ -342,10 +340,10 @@ func validateLogCheckPatterns(patterns []string, ptr, ext string, budget *int) V
 func validateLogCheckPatternsCompiled(patterns []string, ptr, ext string, budget *int) (ValidationErrors, []*regexp.Regexp) {
 	var errs ValidationErrors
 	compiled := make([]*regexp.Regexp, len(patterns))
-	if len(patterns) > maxLogCheckPatterns {
+	if len(patterns) > logpattern.MaxPatterns {
 		errs = append(errs, ValidationError{
 			Pointer: ptr,
-			Message: fmt.Sprintf("holds %d patterns; at most %d are allowed", len(patterns), maxLogCheckPatterns),
+			Message: fmt.Sprintf("holds %d patterns; at most %d are allowed", len(patterns), logpattern.MaxPatterns),
 		})
 	}
 	for i, p := range patterns {
@@ -353,10 +351,10 @@ func validateLogCheckPatternsCompiled(patterns []string, ptr, ext string, budget
 		switch {
 		case p == "":
 			errs = append(errs, ValidationError{Pointer: pp, Message: "pattern must not be empty"})
-		case len(p) > maxLogCheckPatternBytes:
+		case len(p) > logpattern.MaxPatternBytes:
 			errs = append(errs, ValidationError{
 				Pointer: pp,
-				Message: fmt.Sprintf("pattern is %d bytes; at most %d bytes are allowed", len(p), maxLogCheckPatternBytes),
+				Message: fmt.Sprintf("pattern is %d bytes; at most %d bytes are allowed", len(p), logpattern.MaxPatternBytes),
 			})
 		default:
 			re, e, ok := compileLogCheckPattern(p, pp, ext, budget)

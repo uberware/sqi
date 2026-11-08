@@ -2239,9 +2239,7 @@ jobs:
       #
       # TestFFmpegPreset_BashSegmentTranscodeJoins runs here but is not
       # listed, and the registry's tier2 required_on omits windows for it: it
-      # skips when the worker process cannot find bash.exe on PATH, and no
-      # run on this image has shown it passing. Add it here and in the
-      # registry once one does.
+      # skips when the worker process cannot find bash.exe on PATH.
       - name: Assert every tier actually ran
         shell: bash
         run: |
@@ -2433,9 +2431,9 @@ jobs:
   # gate run on every supported version from the 3.9 floor up.
   python-test:
     name: Python client tests (${{ matrix.python-version }})
-    # Pinned: ubuntu-latest moved to 26.04 on 2026-10-19, and setup-python has no
-    # Python 3.9 for it, so the 3.9 floor could not be tested there. Move to
-    # ubuntu-latest again once 3.9 is available on it, or when 3.9 is dropped.
+    # Pinned: ubuntu-latest is 26.04, and setup-python has no Python 3.9 for it,
+    # so the 3.9 floor cannot be tested there. Use ubuntu-latest again when 3.9
+    # is available on it or when 3.9 is dropped.
     runs-on: ubuntu-24.04
     needs: changes
     if: ${{ needs.changes.outputs.python == 'true' || github.event_name == 'workflow_dispatch' }}

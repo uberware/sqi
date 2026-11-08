@@ -106,6 +106,18 @@ func TestLogProgress_Validate(t *testing.T) {
 			wantMessage: "status",
 		},
 		{
+			name: "progress group named twice", extensions: lpDeclared,
+			stepExtra:   lpBlock("{progress: ['a (?P<percent>[0-9]+)|b (?P<percent>[0-9]+)']}"),
+			wantPointer: "/steps/0/SQI_LOG_PROGRESS/progress/0",
+			wantMessage: "more than once",
+		},
+		{
+			name: "status group named twice", extensions: lpDeclared,
+			stepExtra:   lpBlock("{status: ['a (?P<status>x)|b (?P<status>y)']}"),
+			wantPointer: "/steps/0/SQI_LOG_PROGRESS/status/0",
+			wantMessage: "more than once",
+		},
+		{
 			name: "within-frame pattern alone", extensions: lpDeclared,
 			stepExtra:   lpBlock("{progress: ['(?P<framepercent>1)']}") + "\n" + lpSpace,
 			wantPointer: "/steps/0/SQI_LOG_PROGRESS/progress/0",
@@ -277,6 +289,7 @@ func TestLogProgressFrameParameter(t *testing.T) {
 			lpSpaceOf("{name: A, type: INT, range: '1-3'}", "{name: B, type: INT, range: '1-3'}"), "B",
 		},
 		{"no frame pattern", "{progress: ['(?P<percent>1)']}", lpSpace, ""},
+		{"frame pattern after a percent one", "{progress: ['(?P<percent>1)', '(?P<framedone>1)']}", lpSpace, "Frame"},
 		{"no block", "", lpSpace, ""},
 	}
 	for _, tc := range tests {

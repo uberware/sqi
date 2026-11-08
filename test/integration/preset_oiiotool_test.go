@@ -6,8 +6,8 @@ package integration
 // a real sqi-server and a real sqi-worker against a real oiiotool, then asserts
 // on the files it writes.
 //
-// The argv goldens show that the preset hands oiiotool `@` runs, and Tier 3
-// shows the worker delivers them. Only a real oiiotool shows that a run of `@`
+// The argv goldens show that the preset hands oiiotool `@` runs, and the worker-run
+// cross-check shows the worker delivers them. Only a real oiiotool shows that a run of `@`
 // in a pattern is read as that many digits, that --frames takes the chunk's
 // first and last frame, and that the operations list reaches it as separate
 // arguments.

@@ -3,8 +3,8 @@
 OpenJD templates may declare feature extensions via a top-level `extensions: [NAME]`
 list. Extension names are uppercase identifiers matching `[A-Z_0-9]{3,128}`. sqi
 validates every declared extension against a registry (`internal/openjd/extension.go`)
-and **rejects any it does not implement** — silently accepting an unknown extension
-would mis-run the template.
+and rejects any it does not implement, because silently accepting an unknown
+extension would mis-run the template.
 
 ## Registry
 
@@ -16,7 +16,7 @@ entry. `Origin` is:
 
 ## Vendor namespacing & promotion path
 
-sqi-defined (vendor) extensions **must** carry an `SQI_` prefix (e.g.
+sqi-defined (vendor) extensions must carry an `SQI_` prefix (e.g.
 `SQI_PATH_TRANSLATION`). This guarantees a vendor name can never collide with a
 future official OpenJD name. The rule is enforced by a registry invariant test
 (`TestRegistryVendorNamespacing`).

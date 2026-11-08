@@ -20,8 +20,8 @@ readme: |
     `1-100:2` for every second frame.
   - **Output Path** - the output path passed to Blender as `-o`. Blender treats
     it as a prefix and appends the frame number and extension. The flag is
-    always passed, so an empty value reaches Blender as an empty path rather
-    than being omitted; set it explicitly.
+    always passed, so an empty value reaches Blender as an empty path; set it
+    explicitly.
 
   ## How work is divided
 
@@ -77,13 +77,13 @@ template:
               defaultTaskCount: 1
               rangeConstraint: CONTIGUOUS
       SQI_LOG_PROGRESS:
-        # From Blender 5.2.2's output (test/integration/testdata/progress):
-        # every line carries a timestamp and a channel before the "|", so
-        # nothing is anchored at the start. Cycles counts "Sample N/M" after
-        # a "Mem:" field; EEVEE prints "Rendering N / M samples" with none.
-        # A tiled Cycles frame prints "Rendered N/M Tiles, Sample ..." with a
-        # per-tile sample count, so the tiles measure it; the sample pattern
-        # needs the "| " before "Sample" and leaves those lines alone.
+        # Every Blender log line carries a timestamp and a channel before the
+        # "|", so no pattern is anchored at the start. Cycles prints
+        # "Sample N/M" after a "Mem:" field; EEVEE prints "Rendering N / M
+        # samples" with none. A tiled Cycles frame prints "Rendered N/M Tiles,
+        # Sample ..." with a per-tile sample count, so the tile pattern
+        # measures it; the sample pattern needs the "| " before "Sample" and
+        # does not match those lines.
         progress:
           - '\| Rendering frame (?P<frame>-?\d+)'
           - '\| Rendered (?P<framedone>\d+)/(?P<frametotal>\d+) Tiles'

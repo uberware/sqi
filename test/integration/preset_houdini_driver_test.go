@@ -127,7 +127,7 @@ func houdiniDriver(t *testing.T) func(t *testing.T, frames string) houdiniDriver
 }
 
 // TestHoudiniROPRender_DriverRendersEachRange pins what the embedded driver
-// asks hou to render for a task's chunk. sqi spells a NONCONTIGUOUS chunk as a
+// asks hou to render for a task's chunk. sqi spells a non-contiguous chunk as a
 // compact <IntRangeExpr> (internal/openjd/expand.go, formatNoncontiguousChunk):
 // a run of three or more frames at one step is a lo-hi or lo-hi:step range,
 // rendered in one call, while a shorter run is listed frame by frame, so the

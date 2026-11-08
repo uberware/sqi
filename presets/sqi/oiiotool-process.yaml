@@ -153,10 +153,10 @@ template:
               defaultTaskCount: "{{Param.FramesPerTask}}"
               rangeConstraint: CONTIGUOUS
       SQI_LOG_PROGRESS:
-        # From oiiotool 3.1.15.0's output (test/integration/testdata/progress):
-        # it prints nothing by default, and -v names the files it reads and
-        # writes but not the frame. --echo, which only prints, runs after -o
-        # for every frame, and oiiotool evaluates {FRAME_NUMBER} in it.
+        # oiiotool 3.1.15.0 prints nothing by default, and -v names the files it
+        # reads and writes but not the frame. --echo only prints, runs after -o
+        # for every frame, and oiiotool evaluates {FRAME_NUMBER} in it (sample
+        # output: test/integration/testdata/progress).
         progress:
           - '^Wrote frame (?P<framedone>-?\d+)$'
         status:

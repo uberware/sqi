@@ -106,7 +106,7 @@ readme: |
     not a file name, which is why the code only executes the script file.
   - Whether text written to file descriptor 1 reaches the worker on Windows,
     where VRED is a windowed program, is unknown. If it does not, every task
-    fails for want of `SQI_RENDER: OK`, never the other way round.
+    fails for want of `SQI_RENDER: OK`.
   - Autodesk's reference marks `startRenderToFile` as available in VRED
     Professional only; AWS's samples call it under VRED Core.
   - What `crashVred(1)` exits with is undocumented; the failure line, not the

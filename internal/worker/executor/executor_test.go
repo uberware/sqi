@@ -239,17 +239,26 @@ func (s *stubNATS) Publish(subj string, data []byte) error {
 	return nil
 }
 
-// statuses returns the sequence of TaskStatusMsg.Status values published to
-// the stub NATS, in order.
-func (s *stubNATS) statuses() []string {
+// statusMsgs returns every TaskStatusMsg published to the stub NATS, in order.
+func (s *stubNATS) statusMsgs() []protocol.TaskStatusMsg {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var out []string
+	var out []protocol.TaskStatusMsg
 	for _, m := range s.msgs {
 		var msg protocol.TaskStatusMsg
 		if err := json.Unmarshal(m.data, &msg); err == nil && msg.Type == protocol.TypeTaskStatus {
-			out = append(out, msg.Status)
+			out = append(out, msg)
 		}
+	}
+	return out
+}
+
+// statuses returns the sequence of TaskStatusMsg.Status values published to
+// the stub NATS, in order.
+func (s *stubNATS) statuses() []string {
+	var out []string
+	for _, msg := range s.statusMsgs() {
+		out = append(out, msg.Status)
 	}
 	return out
 }
@@ -257,15 +266,11 @@ func (s *stubNATS) statuses() []string {
 // lastStatus returns the most recently published TaskStatusMsg, or panics if
 // none have been published.
 func (s *stubNATS) lastStatus() protocol.TaskStatusMsg {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, v := range slices.Backward(s.msgs) {
-		var msg protocol.TaskStatusMsg
-		if err := json.Unmarshal(v.data, &msg); err == nil && msg.Type == protocol.TypeTaskStatus {
-			return msg
-		}
+	msgs := s.statusMsgs()
+	if len(msgs) == 0 {
+		panic("lastStatus: no status message published")
 	}
-	panic("lastStatus: no status message published")
+	return msgs[len(msgs)-1]
 }
 
 // captureOutput is a line-capturing OutputHandler for test assertions.
@@ -300,9 +305,8 @@ func newTestExecutor(t *testing.T, capture *captureOutput) (*executor.Executor, 
 }
 
 // newTestExecutorWithExprLimits is newTestExecutor with this host's phase-3
-// expression limits configured. Callers that
-// do not care about them keep using newTestExecutor, which passes the zero
-// value (the built-in defaults).
+// expression limits configured. newTestExecutor passes the zero value (the
+// built-in defaults).
 func newTestExecutorWithExprLimits(t *testing.T, lim fmtres.ExprLimits) (*executor.Executor, *stubNATS, string) {
 	t.Helper()
 	return newTestExecutorLimited(t, nil, lim)
@@ -1273,12 +1277,12 @@ func TestExecutor_Cancel_sigtermDelivery(t *testing.T) {
 
 // TestExecutor_Cancel_terminateImmediate verifies the OpenJD TERMINATE default
 // (no cancelation method specified): the process is SIGKILLed immediately on
-// cancel, with NO SIGTERM sent and NO grace period waited.
+// cancel, with no SIGTERM sent and no grace period waited.
 //
-// The subprocess ignores SIGTERM and sleeps 60 s, so under the previous graceful
-// default it would survive until the KillGracePeriod (500 ms) elapsed and a
-// SIGKILL escalated.  Under the TERMINATE default it is SIGKILLed at once, so the
-// process must exit well inside the grace window — proving no SIGTERM/grace wait.
+// The subprocess ignores SIGTERM and sleeps 60 s. Under a graceful default it
+// would survive until the KillGracePeriod (500 ms) elapsed and a SIGKILL
+// escalated. Under the TERMINATE default it is SIGKILLed at once, so the
+// process must exit well inside the grace window.
 // The terminal status is "canceled".
 func TestExecutor_Cancel_terminateImmediate(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -1605,8 +1609,8 @@ func newCredentialFailureSessionRoot(t *testing.T) string {
 
 // TestExecutor_Dispatch_credentialResolutionFailure verifies that a
 // run-as-user credential the isolation provider cannot resolve — isolation's
-// headline pre-execution error path — now surfaces as a terminal task
-// failure carrying the original error text.
+// main pre-execution error path — surfaces as a terminal task failure
+// carrying the original error text.
 func TestExecutor_Dispatch_credentialResolutionFailure(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("run-as-user isolation and its POSIX ancestor-traversability rules are Unix-specific")
@@ -1713,10 +1717,10 @@ func TestExecutor_Dispatch_publishFailureDoesNotWedge(t *testing.T) {
 	}
 }
 
-// ── Staging scratch-dir cleanup regression test ───────────────────────────────
+// ── Staging scratch-dir cleanup test ───────────────────────────────
 
-// TestExecutor_Dispatch_stageScratchCleanedOnPipelineFailure is a regression
-// test for the scratch-directory leak: when StageIn succeeds but a subsequent
+// TestExecutor_Dispatch_stageScratchCleanedOnPipelineFailure checks that the
+// scratch directory is removed: when StageIn succeeds but a subsequent
 // step in buildEffectiveLookup fails (here: a PathMap rule with a non-empty
 // SourcePath but empty DestinationPath causes pathmap.NewLookup to return an
 // error), the scratch directory must still be removed by the caller's deferred
@@ -1734,7 +1738,7 @@ func TestExecutor_Dispatch_stageScratchCleanedOnPipelineFailure(t *testing.T) {
 	cfg := executor.Config{
 		KillGracePeriod: 500 * time.Millisecond,
 		// Staging configured so the stager.Configured() check passes and
-		// StageIn creates the scratch dir. The sync command is never actually
+		// StageIn creates the scratch dir. The sync command is never
 		// invoked because there are no Staging entries to copy.
 		StagingScratchDir:  scratchBase,
 		StagingSyncCommand: "echo {src} {dest}",

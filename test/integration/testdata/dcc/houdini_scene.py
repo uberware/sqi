@@ -2,7 +2,7 @@
 # Builds the hip file TestPresetDCC_Houdini_* render. Run by the test as:
 #   hython houdini_scene.py STEM OUTPUT_DIR [DELAY]
 # A box translated by $FF, and a Geometry ROP /out/geo1 writing
-# OUTPUT_DIR/box.$F4.bgeo.sc, so frame N's file holds a box centerd at x=N. A
+# OUTPUT_DIR/box.$F4.bgeo.sc, so frame N's file holds a box centered at x=N. A
 # Geometry ROP needs no GPU and works under Apprentice, which saves .hipnc.
 # With DELAY, the ROP's pre-frame script sleeps DELAY seconds before each
 # frame, so a frame outlasts the worker's 2 s progress throttle.

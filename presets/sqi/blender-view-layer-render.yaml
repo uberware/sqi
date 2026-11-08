@@ -21,10 +21,10 @@ readme: |
     `1-100:2` for every second frame.
   - **Output Path** - the output path passed to Blender as `-o`. Blender treats
     it as a prefix and appends the frame number and extension. The flag is
-    always passed, even with an empty value, so set it.
+    always passed, even with an empty value, so set it explicitly.
   - **Scene** - the name of the scene to render, passed as `-S`. If the file
     has no scene of that name, the task fails without rendering anything
-    (Blender itself would only warn and render the file's active scene).
+    (Blender alone would only warn and render the file's active scene).
   - **View Layer** - the name of the view layer to render. Names are
     case-sensitive and may contain spaces and quotes.
 
@@ -42,8 +42,9 @@ readme: |
 
   Neither the view layer's name nor the scene's is written into that Python
   expression. Both are passed as separate arguments after `--`, which Blender
-  ignores, and the expression reads them back from `sys.argv`. A name containing a quote or a
-  backslash therefore cannot break the expression or run as code.
+  ignores, and the expression reads them back from `sys.argv`. A name
+  containing a quote or a backslash therefore cannot break the expression or
+  run as code.
 
   ## How work is divided
 
@@ -105,13 +106,13 @@ template:
               defaultTaskCount: 1
               rangeConstraint: CONTIGUOUS
       SQI_LOG_PROGRESS:
-        # From Blender 5.2.2's output (test/integration/testdata/progress):
-        # every line carries a timestamp and a channel before the "|", so
-        # nothing is anchored at the start. Cycles counts "Sample N/M" after
-        # a "Mem:" field; EEVEE prints "Rendering N / M samples" with none.
-        # A tiled Cycles frame prints "Rendered N/M Tiles, Sample ..." with a
-        # per-tile sample count, so the tiles measure it; the sample pattern
-        # needs the "| " before "Sample" and leaves those lines alone.
+        # Every Blender log line carries a timestamp and a channel before the
+        # "|", so no pattern is anchored at the start. Cycles prints
+        # "Sample N/M" after a "Mem:" field; EEVEE prints "Rendering N / M
+        # samples" with none. A tiled Cycles frame prints "Rendered N/M Tiles,
+        # Sample ..." with a per-tile sample count, so the tile pattern
+        # measures it; the sample pattern needs the "| " before "Sample" and
+        # does not match those lines.
         progress:
           - '\| Rendering frame (?P<frame>-?\d+)'
           - '\| Rendered (?P<framedone>\d+)/(?P<frametotal>\d+) Tiles'

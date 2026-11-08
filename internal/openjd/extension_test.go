@@ -147,9 +147,8 @@ func TestRegistryVendorNamespacing(t *testing.T) {
 // what lets the conformance harness reach the real validation path for a
 // partially-implemented extension without production accepting it.
 //
-// The registry has no StatusInProgress entry, but the gate is live production
-// machinery, so the test registers a temporary in-progress entry of its own.
-// That keeps the branch covered for the next partially-implemented extension.
+// The registry has no StatusInProgress entry, so the test registers a
+// temporary one to cover the gate's in-progress branch.
 func TestValidateExtensions_RegisteredButNotSupported(t *testing.T) {
 	const name = "TEST_IN_PROGRESS"
 	registry[name] = Extension{
@@ -179,8 +178,8 @@ func TestValidateExtensions_RegisteredButNotSupported(t *testing.T) {
 	}
 }
 
-// TestValidateExtensions_SupportedStillPass guards the blast radius: the status
-// check runs on the one path every extension flows through.
+// TestValidateExtensions_SupportedStillPass checks that supported extensions
+// still pass the status check, which every extension flows through.
 func TestValidateExtensions_SupportedStillPass(t *testing.T) {
 	for _, name := range []string{
 		"TASK_CHUNKING", "REDACTED_ENV_VARS", "SQI_PATH_TRANSLATION", "SQI_CHUNK_BOUNDS", "EXPR", "SQI_LOG_CHECKS", "SQI_LOG_PROGRESS",
@@ -198,9 +197,9 @@ func TestValidateExtensions_SupportedStillPass(t *testing.T) {
 	}
 }
 
-// TestRegistry_EverySupportedStatusIsTheConstant stops a typo'd status string
-// silently disabling a shipped extension. Every shipped entry is
-// StatusSupported.
+// TestRegistry_EverySupportedStatusIsTheConstant checks that every shipped
+// entry is StatusSupported, so a mistyped status string cannot disable an
+// extension.
 func TestRegistry_EverySupportedStatusIsTheConstant(t *testing.T) {
 	for name, ext := range registry {
 		if ext.Status != StatusSupported {

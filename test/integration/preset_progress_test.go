@@ -9,11 +9,11 @@ package integration
 // stored verbatim apart from the scratch path, which is replaced by <SCRATCH>.
 // Leading "#" lines record the command and the application's version line and
 // are not fed to the matcher. A pattern is only as good as the output it was
-// written against: these rows are what keeps a pattern that matches nothing (a
-// version that changed its line format, or a pattern written from the manual)
-// from shipping.
+// written against: these rows catch a pattern that matches nothing, such as
+// one written from a manual or left behind when a version changed its line
+// format.
 //
-// NOT tagged `integration`, like preset_ffmpeg_test.go, so the CI `test` job
+// Not tagged `integration`, like preset_ffmpeg_test.go, so the CI `test` job
 // runs it. It needs no application: the fixtures stand in for it.
 
 import (
@@ -28,22 +28,19 @@ import (
 
 	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/openjd/logprogress"
-	"github.com/uberware/sqi/internal/product"
+	"github.com/uberware/sqi/internal/presettest"
+	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
 // presetLogProgress returns the SQI_LOG_PROGRESS block of the shipped preset's
 // only step that declares one, read from the preset file itself.
 func presetLogProgress(t *testing.T, preset string) *openjd.LogProgress {
 	t.Helper()
-	data, err := os.ReadFile(presetPath(t, preset))
+	raw, err := presettest.PresetTemplate(presettest.SourcePresets, preset)
 	if err != nil {
-		t.Fatalf("read preset %s: %v", preset, err)
+		t.Fatalf("PresetTemplate(%s): %v", preset, err)
 	}
-	p, err := product.ParseDefinition(data, product.ValidateOptions{EnforceLimits: true})
-	if err != nil {
-		t.Fatalf("ParseDefinition(%s): %v", preset, err)
-	}
-	tmpl, err := openjd.Parse([]byte(p.Template), openjd.FormatYAML)
+	tmpl, err := openjd.Parse([]byte(raw), openjd.FormatYAML)
 	if err != nil {
 		t.Fatalf("openjd.Parse(%s): %v", preset, err)
 	}
@@ -137,7 +134,7 @@ func TestPresetProgress_Fixtures(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.preset+"/"+tc.fixture, func(t *testing.T) {
 			lp := presetLogProgress(t, tc.preset)
-			m, err := logprogress.Compile(lp.Progress, lp.Status, tc.frames)
+			m, err := logprogress.Compile(lp.Progress, lp.Status, tc.frames, protocol.SanitizeStatusText)
 			if err != nil {
 				t.Fatalf("logprogress.Compile: %v", err)
 			}

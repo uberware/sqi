@@ -75,7 +75,7 @@ readme: |
   This preset declares the `SQI_LOG_CHECKS` extension. A task fails unless
   KeyShot's output contains `SQI_RENDER: OK`, and fails when a line contains
   `SQI_RENDER: FAILED:`. KeyShot documents no exit codes, so its exit status
-  is not relied on. The script writes its two lines straight to the process's
+  is not relied on. The script writes its lines straight to the process's
   standard output (file descriptor 1), which KeyShot documents
   `keyshot_headless` as supporting on Windows.
 
@@ -135,8 +135,7 @@ readme: |
     KeyShot's manual does not say), and whether a script error alone changes
     its exit status.
   - Whether text written to file descriptor 1 reaches the worker on macOS.
-    If it does not, every task fails for want of `SQI_RENDER: OK`, never the
-    other way round.
+    If it does not, every task fails for want of `SQI_RENDER: OK`.
   - Whether the macOS bundle ships a `keyshot_headless` (a third-party
     source says so; KeyShot's manual does not), and whether one on `PATH`
     accepts the `-headless` the worker puts first.

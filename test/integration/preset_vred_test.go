@@ -374,8 +374,8 @@ func TestPresetVRED_ScriptDrivesVRED(t *testing.T) {
 	}
 }
 
-// TestPresetTier3_FoldsAScriptPathQuotedInsideAnArgument pins the Tier 3
-// cross-check's handling of a host-script argument: the session directory
+// TestPresetTier3_FoldsAScriptPathQuotedInsideAnArgument pins how the worker-run
+// cross-check handles a host-script argument: the session directory
 // inside a quoted script path differs between the computed and the observed
 // run, so it must fold to the same placeholder in both POSIX and Windows
 // spellings, while an unrelated quoted path is left alone.

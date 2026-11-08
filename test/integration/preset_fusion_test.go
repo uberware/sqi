@@ -154,8 +154,8 @@ func TestPresetFusion_CommandNamesTheScript(t *testing.T) {
 	}
 }
 
-// TestPresetTier3_FoldsALuaLongBracketScriptPath pins the Tier 3 cross-check's
-// handling of the Fusion preset's -execute argument: the session directory
+// TestPresetTier3_FoldsALuaLongBracketScriptPath pins how the worker-run
+// cross-check handles the Fusion preset's -execute argument: the session directory
 // inside the long-bracketed script path differs between the computed and the
 // observed run, so it must fold to one placeholder in both POSIX and Windows
 // spellings, while an unrelated path is left alone.

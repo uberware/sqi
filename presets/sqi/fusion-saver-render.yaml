@@ -108,8 +108,7 @@ readme: |
     to load a comp), and whether the Render Node exits on its own afterwards
     and with what status.
   - Whether text written to `io.stdout` reaches the worker. If neither it nor
-    the console copy arrives, every task fails for want of `SQI_RENDER: OK`,
-    never the other way round.
+    the console copy arrives, every task fails for want of `SQI_RENDER: OK`.
   - Whether `fusion:Quit()` ends the Render Node, and whether it asks to save
     the comp the script changed. The checks are applied only when the process
     exits, so a Render Node that stays open would hang the task, not fail it

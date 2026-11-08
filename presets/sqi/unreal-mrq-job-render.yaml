@@ -104,7 +104,7 @@ readme: |
   ## What has been tested
 
   The preset has rendered with Unreal Engine 5.8 on a Windows worker, from a
-  project whose path holds a space. That run showed that:
+  project whose path holds a space. In that run:
 
   - the editor keeps running after the `-execcmds` script returns, until the
     render finishes, and exits after `quit_editor()`;
@@ -445,7 +445,7 @@ template:
                       elif STATE["total"]:
                           # The share of the queue's jobs done; a job that
                           # failed reports none. A shot task has no total: it
-                          # renders one job and said which shot at the start.
+                          # renders one job and reports which shot at the start.
                           STATE["finished"] += 1
                           emit("openjd_status: finished job " + name)
                           emit("openjd_progress: %d" % min(100, STATE["finished"] * 100 // STATE["total"]))

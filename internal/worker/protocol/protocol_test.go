@@ -39,7 +39,7 @@ func TestAssignMsg_PathDeliveriesRoundTrip(t *testing.T) {
 }
 
 // TestAssignMsg_EXPRFieldsRoundTrip asserts that a message carrying all
-// EXPR-phase-3 additions (the EXPR flag, the two distinct ordered step-level
+// EXPR phase-3 fields (the EXPR flag, the two distinct ordered step-level
 // let blocks, an environment's let block, the two parameter-type maps, and
 // the job's/step's own declared names) survives json.Marshal ->
 // json.Unmarshal with declaration order preserved and the step-template and
@@ -91,10 +91,9 @@ func TestAssignMsg_EXPRFieldsRoundTrip(t *testing.T) {
 		t.Errorf("StepScriptLet = %v, want %v", out.StepScriptLet, wantStepScriptLet)
 	}
 
-	// The two step-level blocks must remain distinct, not concatenated —
-	// Template Schemas §3.6 forbids the script's block from shadowing the
-	// template's, which only means something if they are still
-	// distinguishable after the round trip.
+	// The two step-level blocks must remain distinct: Template Schemas §3.6
+	// forbids the script's block from shadowing the template's, which requires
+	// them to be distinguishable after the round trip.
 	if slices.Equal(out.StepTemplateLet, out.StepScriptLet) {
 		t.Error("StepTemplateLet and StepScriptLet must be distinct blocks, got identical content")
 	}
@@ -131,9 +130,8 @@ func TestAssignMsg_EXPRFieldsRoundTrip(t *testing.T) {
 
 // TestAssignMsg_EXPRFieldsOmittedForBaseSpec asserts that a base-spec
 // assignment — one that sets none of the nine EXPR-phase-3 fields —
-// produces no trace of them on the wire. The fields are omitempty
-// specifically so that a base-spec assignment's wire bytes do not grow; this
-// test asserts that property rather than assuming it.
+// produces no trace of them on the wire. The fields are omitempty so that a
+// base-spec assignment's wire bytes do not carry them.
 func TestAssignMsg_EXPRFieldsOmittedForBaseSpec(t *testing.T) {
 	in := protocol.AssignMsg{
 		Version:  protocol.ProtocolVersion,
@@ -204,7 +202,7 @@ func TestAssignMsg_EXPRFieldsOmittedForBaseSpec(t *testing.T) {
 // TestMessageWorkerShutdown_WireValue pins the wire value itself: the worker
 // sends it and the server matches it, and tests on both sides compare against
 // the constant, so a rename would pass them all while breaking a worker and a
-// server built from different revisions.
+// server of different versions.
 func TestMessageWorkerShutdown_WireValue(t *testing.T) {
 	if protocol.MessageWorkerShutdown != "worker_shutdown" {
 		t.Fatalf("MessageWorkerShutdown = %q, want %q", protocol.MessageWorkerShutdown, "worker_shutdown")
@@ -213,8 +211,7 @@ func TestMessageWorkerShutdown_WireValue(t *testing.T) {
 
 // TestRegisterMsg_InstanceIDWireKey pins the instance ID's wire key and that it
 // is omitted when empty, so a registration from a worker that sets none
-// carries no instance_id key (the field is additive, with no ProtocolVersion
-// bump).
+// carries no instance_id key (the field does not affect ProtocolVersion).
 func TestRegisterMsg_InstanceIDWireKey(t *testing.T) {
 	data, err := json.Marshal(protocol.RegisterMsg{WorkerID: "w1", InstanceID: "inst-1"})
 	if err != nil {
@@ -233,8 +230,8 @@ func TestRegisterMsg_InstanceIDWireKey(t *testing.T) {
 }
 
 // TestHeartbeatMsg_AttemptFieldsWireKeys pins the wire keys of the held-attempt
-// fields and that a heartbeat from a worker that predates them carries neither
-// (both are omitempty, so ProtocolVersion needs no bump).
+// fields and that a heartbeat that sets neither carries neither (both are
+// omitempty, so they do not affect ProtocolVersion).
 func TestHeartbeatMsg_AttemptFieldsWireKeys(t *testing.T) {
 	data, err := json.Marshal(protocol.HeartbeatMsg{AttemptsReported: true, ActiveAttemptIDs: []string{"a1", "a2"}})
 	if err != nil {
@@ -264,7 +261,7 @@ func TestHeartbeatMsg_AttemptFieldsWireKeys(t *testing.T) {
 }
 
 func TestAssignMsg_LogProgressRoundTrip(t *testing.T) {
-	if protocol.ProtocolVersion != "5" { // an additive field must not move it
+	if protocol.ProtocolVersion != "5" { // adding an omitempty field does not change it
 		t.Errorf("ProtocolVersion = %q, want 5", protocol.ProtocolVersion)
 	}
 	in := protocol.AssignMsg{LogProgress: &protocol.LogProgress{

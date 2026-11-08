@@ -353,10 +353,10 @@ func TestBuildAssignPayload_EXPRFields(t *testing.T) {
 	}
 }
 
-// TestBuildAssignPayload_BaseSpecWireBytesUnchanged proves, rather than
-// assumes, that a base-spec template (no extensions: [EXPR]) produces an
-// assignment with none of the nine new EXPR-phase-3 fields anywhere on the
-// wire — the requirement that motivates marking every one of them omitempty.
+// TestBuildAssignPayload_BaseSpecWireBytesUnchanged verifies that a
+// base-spec template (no extensions: [EXPR]) produces an assignment with none
+// of the nine EXPR phase-3 fields on the wire, which is why each of them is
+// marked omitempty.
 func TestBuildAssignPayload_BaseSpecWireBytesUnchanged(t *testing.T) {
 	st := newCheckedFake(t)
 	task, worker, job, step, queue := buildFixture(t, minimalJobJSON, store.TemplateFormatJSON, "Render")
@@ -480,7 +480,7 @@ const templateWithJobParam = `{
 
 // TestBuildAssignPayload_JobParametersFromPersistedValues verifies that when
 // job.Parameters is non-empty (persisted at submit), the assignment carries
-// those values — not just the template defaults.
+// those values rather than the template defaults.
 func TestBuildAssignPayload_JobParametersFromPersistedValues(t *testing.T) {
 	st := newCheckedFake(t)
 	task, worker, job, step, queue := buildFixture(t, templateWithJobParam, store.TemplateFormatJSON, "Render")
@@ -771,7 +771,7 @@ steps:
 // parsing entirely). This test goes through buildAssignPayload end to end —
 // template parse, EXPR field population, loc:// resolution, and staging
 // manifest construction — with a real Windows compute-location root, so a
-// regression in any of those three wiring points fails it.
+// break in any of those three wiring points fails it.
 func TestBuildAssignPayload_ListPathParamLocURIsStagedThroughFullSeam(t *testing.T) {
 	tmpl := `
 specificationVersion: jobtemplate-2023-09

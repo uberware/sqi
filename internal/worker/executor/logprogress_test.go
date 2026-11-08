@@ -5,7 +5,6 @@ package executor_test
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -64,7 +63,7 @@ func runWithInterceptor(t *testing.T, msg *protocol.AssignMsg) ([]protocol.TaskS
 	}
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		msgs := decodeAll(t, nc)
+		msgs := nc.statusMsgs()
 		if n := len(msgs); n > 0 && msgs[n-1].Status != "running" {
 			return msgs, logs.String()
 		}
@@ -73,20 +72,6 @@ func runWithInterceptor(t *testing.T, msg *protocol.AssignMsg) ([]protocol.TaskS
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-}
-
-func decodeAll(t *testing.T, nc *stubNATS) []protocol.TaskStatusMsg {
-	t.Helper()
-	nc.mu.Lock()
-	defer nc.mu.Unlock()
-	var out []protocol.TaskStatusMsg
-	for _, m := range nc.msgs {
-		var msg protocol.TaskStatusMsg
-		if err := json.Unmarshal(m.data, &msg); err == nil && msg.Type == protocol.TypeTaskStatus {
-			out = append(out, msg)
-		}
-	}
-	return out
 }
 
 func progressAssign(output string, lp *protocol.LogProgress) *protocol.AssignMsg {
@@ -121,6 +106,24 @@ func TestExecutor_LogProgressSetsProgressAndStatus(t *testing.T) {
 	if !sawStatus {
 		t.Errorf("no running snapshot carried status %q: %+v", "compositing", msgs)
 	}
+}
+
+// TestExecutor_LogProgressStatusIgnoresLeadingSpace pins that the worker cleans
+// a status capture before cutting it, so leading space does not use up the
+// 200-byte limit and leave nothing.
+func TestExecutor_LogProgressStatusIgnoresLeadingSpace(t *testing.T) {
+	skipOnWindows(t)
+	msg := progressAssign("phase:"+strings.Repeat(" ", 250)+"compositing", &protocol.LogProgress{
+		Status: []string{`^phase:(?P<status>.+)$`},
+	})
+
+	msgs, _ := runWithInterceptor(t, msg)
+	for _, m := range msgs {
+		if m.Status == "running" && m.Message == "compositing" {
+			return
+		}
+	}
+	t.Errorf("no running snapshot carried status %q: %+v", "compositing", msgs)
 }
 
 func TestExecutor_LogProgressSeesScrubbedLine(t *testing.T) {

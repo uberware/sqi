@@ -266,7 +266,7 @@ task 1/2  name="Render[Shot=sh010]"
             elif STATE["total"]:
                 # The share of the queue's jobs done; a job that
                 # failed reports none. A shot task has no total: it
-                # renders one job and said which shot at the start.
+                # renders one job and reports which shot at the start.
                 STATE["finished"] += 1
                 emit("openjd_status: finished job " + name)
                 emit("openjd_progress: %d" % min(100, STATE["finished"] * 100 // STATE["total"]))
@@ -562,7 +562,7 @@ task 2/2  name="Render[Shot=sh020]"
             elif STATE["total"]:
                 # The share of the queue's jobs done; a job that
                 # failed reports none. A shot task has no total: it
-                # renders one job and said which shot at the start.
+                # renders one job and reports which shot at the start.
                 STATE["finished"] += 1
                 emit("openjd_status: finished job " + name)
                 emit("openjd_progress: %d" % min(100, STATE["finished"] * 100 // STATE["total"]))

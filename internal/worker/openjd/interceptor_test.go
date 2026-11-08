@@ -808,7 +808,7 @@ func TestConcurrentHandleLine(t *testing.T) {
 // mustMatcher compiles a logprogress matcher or fails the test.
 func mustMatcher(t *testing.T, progress, status []string, frames string) *logprogress.Matcher {
 	t.Helper()
-	m, err := logprogress.Compile(progress, status, frames)
+	m, err := logprogress.Compile(progress, status, frames, protocol.SanitizeStatusText)
 	if err != nil {
 		t.Fatalf("logprogress.Compile: %v", err)
 	}
@@ -1032,7 +1032,7 @@ func TestInterceptor_NoMatcherNoChange(t *testing.T) {
 				t.Errorf("%s: LastProgress = %v, want %v", name, gotP, baseP)
 			}
 		}
-		// Part A: only the directive set progress, and no line set status.
+		// Only the directive set progress, and no line set status.
 		if baseP == nil || *baseP != 20 {
 			t.Errorf("LastProgress = %v, want 20", baseP)
 		}

@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"maps"
 	"regexp"
+	"regexp/syntax"
 	"slices"
 	"strings"
 
-	"github.com/uberware/sqi/internal/openjd/logpattern"
 	"github.com/uberware/sqi/internal/openjd/logprogress"
 )
 
@@ -61,9 +61,9 @@ func decodeLogProgress(v any) *LogProgress {
 			}
 			lp.FrameParameter = s
 		case "progress":
-			lp.Progress = decodeProgressList(lp, m[k], "/progress")
+			lp.Progress = decodePatternList(&lp.problems, m[k], "/progress")
 		case "status":
-			lp.Status = decodeProgressList(lp, m[k], "/status")
+			lp.Status = decodePatternList(&lp.problems, m[k], "/status")
 		default:
 			lp.problems = append(lp.problems, logCheckProblem{message: fmt.Sprintf("unknown field %q", k)})
 		}
@@ -71,50 +71,74 @@ func decodeLogProgress(v any) *LogProgress {
 	return lp
 }
 
-// decodeProgressList reads one pattern list, recording a problem for a value
-// that is not a list of strings. A null list is an empty one.
-func decodeProgressList(lp *LogProgress, v any, suffix string) []string {
-	if v == nil {
-		return nil
-	}
-	items, ok := toAnySlice(v)
-	if !ok {
-		lp.problems = append(lp.problems, logCheckProblem{suffix: suffix, message: "must be a list of strings"})
-		return nil
-	}
-	out := make([]string, 0, len(items))
-	for i, item := range items {
-		s, ok := item.(string)
-		if !ok {
-			lp.problems = append(lp.problems, logCheckProblem{
-				suffix:  fmt.Sprintf("%s/%d", suffix, i),
-				message: "must be a string",
-			})
-			continue
-		}
-		out = append(out, s)
-	}
-	return out
-}
-
 // isFrameTaskParam reports whether a task parameter can carry frame numbers.
 func isFrameTaskParam(d TaskParamDefinition) bool {
 	return d.Type == TaskParamTypeInt || d.Type == TaskParamTypeChunkInt
 }
 
-// frameTaskParams returns the names of the step's INT and CHUNK[INT] task
-// parameters, in declaration order.
-func (s *StepTemplate) frameTaskParams() []string {
+// taskParamDefs returns the step's task parameter definitions.
+func (s *StepTemplate) taskParamDefs() []TaskParamDefinition {
 	if s.ParameterSpace == nil {
 		return nil
 	}
+	return s.ParameterSpace.TaskParameterDefinitions
+}
+
+// frameTaskParams returns the names of the step's INT and CHUNK[INT] task
+// parameters, in declaration order.
+func (s *StepTemplate) frameTaskParams() []string {
 	var out []string
-	for _, d := range s.ParameterSpace.TaskParameterDefinitions {
+	for _, d := range s.taskParamDefs() {
 		if isFrameTaskParam(d) {
 			out = append(out, d.Name)
 		}
 	}
 	return out
+}
+
+// resolveFrameParameter applies the frame-parameter rule to the step's block:
+// the named frameParameter, which must be an INT or CHUNK[INT] task parameter
+// of the step, or, when omitted, the step's only such parameter. When the rule
+// cannot be met it returns the error to report, at ptr (the block's pointer).
+func (s *StepTemplate) resolveFrameParameter(ptr string) (string, *ValidationError) {
+	if name := s.LogProgress.FrameParameter; name != "" {
+		for _, d := range s.taskParamDefs() {
+			if d.Name != name {
+				continue
+			}
+			if isFrameTaskParam(d) {
+				return name, nil
+			}
+			return "", &ValidationError{
+				Pointer: ptr + "/frameParameter",
+				Message: fmt.Sprintf("task parameter %q is %s; frameParameter must name an INT or CHUNK[INT] task parameter", d.Name, d.Type),
+			}
+		}
+		return "", &ValidationError{
+			Pointer: ptr + "/frameParameter",
+			Message: fmt.Sprintf("names no task parameter of this step: %q", name),
+		}
+	}
+	switch c := s.frameTaskParams(); len(c) {
+	case 1:
+		return c[0], nil
+	case 0:
+		return "", &ValidationError{
+			Pointer: ptr,
+			Message: "a frame progress pattern needs an INT or CHUNK[INT] task parameter to measure against, and this step has none",
+		}
+	default:
+		return "", &ValidationError{
+			Pointer: ptr,
+			Message: fmt.Sprintf("the step has several INT or CHUNK[INT] task parameters (%s); set frameParameter to name the frame parameter", strings.Join(c, ", ")),
+		}
+	}
+}
+
+// usesFrames reports whether any of forms is measured against the task's
+// frames. A zero entry (an unclassified pattern) does not count.
+func usesFrames(forms []logprogress.Form) bool {
+	return slices.ContainsFunc(forms, func(f logprogress.Form) bool { return f != 0 && f.UsesFrames() })
 }
 
 // LogProgressFrameParameter returns the task parameter the step's
@@ -128,29 +152,23 @@ func (s *StepTemplate) LogProgressFrameParameter() string {
 	if lp == nil {
 		return ""
 	}
-	usesFrames := false
-	for _, p := range lp.Progress {
-		re, err := logpattern.Compile(p)
+	// Only the group names are needed, so each pattern is parsed but no program
+	// is built: this runs on every task assignment.
+	forms := make([]logprogress.Form, len(lp.Progress))
+	for i, p := range lp.Progress {
+		re, err := syntax.Parse(p, syntax.Perl)
 		if err != nil {
 			continue
 		}
-		if form, err := logprogress.ClassifyProgress(re); err == nil && form.UsesFrames() {
-			usesFrames = true
-			break
+		if f, err := logprogress.ClassifyNames(re.CapNames()); err == nil {
+			forms[i] = f
 		}
 	}
-	if !usesFrames {
+	if !usesFrames(forms) {
 		return ""
 	}
-	candidates := s.frameTaskParams()
-	if lp.FrameParameter != "" {
-		if slices.Contains(candidates, lp.FrameParameter) {
-			return lp.FrameParameter
-		}
-		return ""
-	}
-	if len(candidates) == 1 {
-		return candidates[0]
+	if name, verr := s.resolveFrameParameter(""); verr == nil {
+		return name
 	}
 	return ""
 }
@@ -210,8 +228,14 @@ func validateLogProgressBlock(s *StepTemplate, ptr string, budget *int) Validati
 			errs = append(errs, ValidationError{Pointer: fmt.Sprintf("%s/status/%d", ptr, i), Message: err.Error()})
 		}
 	}
-	errs = append(errs, validateProgressForms(progRes, ptr)...)
-	errs = append(errs, validateFrameParameter(s, progRes, ptr)...)
+	forms, formErrs := validateProgressForms(progRes, ptr)
+	errs = append(errs, formErrs...)
+	// A named frameParameter is checked whether or not a pattern uses frames.
+	if s.LogProgress.FrameParameter != "" || usesFrames(forms) {
+		if _, e := s.resolveFrameParameter(ptr); e != nil {
+			errs = append(errs, *e)
+		}
+	}
 	return errs
 }
 
@@ -233,9 +257,10 @@ func classifyProgressPatterns(res []*regexp.Regexp, ptr string) (forms []logprog
 	return forms, errs
 }
 
-// validateProgressForms reports invalid group sets, and a within-frame pattern
-// in a block with no pattern that names the frame it belongs to.
-func validateProgressForms(res []*regexp.Regexp, ptr string) ValidationErrors {
+// validateProgressForms classifies each compiled progress pattern (see
+// classifyProgressPatterns) and reports invalid group sets, and a within-frame
+// pattern in a block with no pattern that names the frame it belongs to.
+func validateProgressForms(res []*regexp.Regexp, ptr string) ([]logprogress.Form, ValidationErrors) {
 	forms, errs := classifyProgressPatterns(res, ptr)
 	namesFrame := false
 	for _, f := range forms {
@@ -244,7 +269,7 @@ func validateProgressForms(res []*regexp.Regexp, ptr string) ValidationErrors {
 		}
 	}
 	if namesFrame {
-		return errs
+		return forms, errs
 	}
 	for i, f := range forms {
 		if f != 0 && f.WithinFrame() {
@@ -254,65 +279,5 @@ func validateProgressForms(res []*regexp.Regexp, ptr string) ValidationErrors {
 			})
 		}
 	}
-	return errs
-}
-
-// validateFrameParameter checks that the frame forms in use can be measured
-// against exactly one INT or CHUNK[INT] task parameter of the step, and that a
-// named frameParameter is such a parameter.
-func validateFrameParameter(s *StepTemplate, res []*regexp.Regexp, ptr string) ValidationErrors {
-	lp := s.LogProgress
-	if lp.FrameParameter != "" {
-		for _, d := range paramDefs(s) {
-			if d.Name != lp.FrameParameter {
-				continue
-			}
-			if isFrameTaskParam(d) {
-				return nil
-			}
-			return ValidationErrors{{
-				Pointer: ptr + "/frameParameter",
-				Message: fmt.Sprintf("task parameter %q is %s; frameParameter must name an INT or CHUNK[INT] task parameter", d.Name, d.Type),
-			}}
-		}
-		return ValidationErrors{{
-			Pointer: ptr + "/frameParameter",
-			Message: fmt.Sprintf("names no task parameter of this step: %q", lp.FrameParameter),
-		}}
-	}
-	usesFrames := false
-	for _, re := range res {
-		if re == nil {
-			continue
-		}
-		if f, err := logprogress.ClassifyProgress(re); err == nil && f.UsesFrames() {
-			usesFrames = true
-			break
-		}
-	}
-	if !usesFrames {
-		return nil
-	}
-	switch c := s.frameTaskParams(); len(c) {
-	case 1:
-		return nil
-	case 0:
-		return ValidationErrors{{
-			Pointer: ptr,
-			Message: "a frame progress pattern needs an INT or CHUNK[INT] task parameter to measure against, and this step has none",
-		}}
-	default:
-		return ValidationErrors{{
-			Pointer: ptr,
-			Message: fmt.Sprintf("the step has several INT or CHUNK[INT] task parameters (%s); set frameParameter to name the frame parameter", strings.Join(c, ", ")),
-		}}
-	}
-}
-
-// paramDefs returns the step's task parameter definitions.
-func paramDefs(s *StepTemplate) []TaskParamDefinition {
-	if s.ParameterSpace == nil {
-		return nil
-	}
-	return s.ParameterSpace.TaskParameterDefinitions
+	return forms, errs
 }

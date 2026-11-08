@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Which validation tier each shipped preset and built-in product has actually
+# Which validation tier each shipped preset and built-in product has
 # reached. See docs/preset-library.md for what each tier proves.
 #
 # Every claim here is checked. internal/presettest and
@@ -188,7 +188,7 @@ presets:
         argv derived from SideFX's documented hython command-line convention for
         driving a ROP via an embedded Python driver script. The golden shows
         both the chunk the driver receives and the driver's parser, so the two
-        can be read against each other. The chunks are NONCONTIGUOUS, which sqi
+        can be read against each other. The chunks are non-contiguous, which sqi
         spells as a compact frame range: the default case's 1-24 becomes 1-8,
         9-16 and 17-24, and the stepped-range case's thirty frames become three
         tasks such as 1-19:2. The driver renders each lo-hi:step part in one
@@ -213,15 +213,14 @@ presets:
         PostFrame event, leaving the render calls unchanged.
         TestPresetHoudiniDriver_EmitsProgress checks those lines against the
         stub hou, which fires PreFrame then PostFrame for every frame of every
-        faked render. Houdini 21.0.631 (Apprentice, macOS arm64) was seen to
-        fire PreFrame and PostFrame once per frame for a Geometry ROP, within
+        faked render. Houdini 21.0.631 (Apprentice, macOS arm64) fires
+        PreFrame and PostFrame once per frame for a Geometry ROP, within
         each rop.render call, and Tier 2 shows the task's progress taking at
         least two values above 0 on a listed four-frame chunk (1,2,7,8, two
         render calls) under a real 21.0.631 worker, with the ROP's pre-frame
         script sleeping so a frame outlasts the worker's 2 s progress throttle.
-        A manual run on macOS logged 25, 50, 75 and 100: the 100 printed just
-        before the process exits is published when the task ends, ahead of
-        its terminal status. Not confirmed: PostFrame on a render ROP (Mantra,
+        The 100 printed just before the process exits is published when the
+        task ends, ahead of its terminal status. Not confirmed: PostFrame on a render ROP (Mantra,
         Karma, an OpenGL ROP), or the progress path under any Houdini but
         21.0.631.
     tier2:
@@ -240,7 +239,7 @@ presets:
         argv derived from Foundry's documented nuke -x batch-render flags
         (-X <write node> -F <frame list>). The stepped-range golden shows a
         stepped Frames range expanding to one single-frame task per requested
-        frame (-F 1-1, -F 3-3, ...), because a CONTIGUOUS chunk never spans a
+        frame (-F 1-1, -F 3-3, ...), because a contiguous chunk never spans a
         gap, so -F never receives OpenJD's colon step syntax (1-19:2) where
         Foundry documents x (1-19x2). Tier 2 runs it against a real Nuke 17.1v2
         (Non-commercial, so the test passes --nc) and shows that Nuke reads
@@ -248,9 +247,9 @@ presets:
         node: a 1-4:3 range wrote exactly wr2.0001.png and wr2.0004.png. Not
         shown by that run: a commercial license, a colon or x step, or Nuke on
         Linux or macOS (the progress path below was run on macOS). The chunks
-        are CONTIGUOUS because Foundry's Command Line Operations page documents
+        are contiguous because Foundry's Command Line Operations page documents
         -F only as one frame, a-b or a-bxN (repeating -F for more ranges), with
-        no comma-list form, so a NONCONTIGUOUS chunk such as 1-19:2 or 1-3,7,8
+        no comma-list form, so a non-contiguous chunk such as 1-19:2 or 1-3,7,8
         could reach Nuke only through a wrapper script that rewrites it. A
         stepped range therefore costs one task, and one script load, per frame.
         The SQI_LOG_PROGRESS pattern was confirmed against Nuke 17.1v2
@@ -259,7 +258,7 @@ presets:
         prints "Frame N (i of n)" once a frame is written, so the bar moves as
         each frame finishes, never within one. Tier 2 shows the task's progress
         taking at least two values above 0 through a four-frame chunk under a
-        real 17.1v2 worker (a manual run logged 25, 50, 75, 100), with each
+        real 17.1v2 worker, with each
         Write node made to sleep before each frame so a frame outlasts the
         worker's 2 s progress throttle. Not confirmed for progress: other Nuke
         versions, a commercial license, or Nuke on Linux or Windows.
@@ -279,7 +278,7 @@ presets:
         argv derived from Foundry's documented nuke -x batch-render flags
         (-F <frame list>, rendering every enabled Write node), so which Write
         nodes are enabled, and so what this variant renders, is invisible in
-        argv. Its chunks are CONTIGUOUS for nuke-write-render's reason, and its
+        argv. Its chunks are contiguous for nuke-write-render's reason, and its
         stepped-range golden shows the same single-frame expansion (-F 1-1,
         -F 3-3, ...): no step separator reaches -F, and a stepped range costs
         one task per frame. Tier 2 runs it against a real Nuke 17.1v2
@@ -295,7 +294,7 @@ presets:
         matches only that, so the bar moves once per frame whatever the number
         of Write nodes. Tier 2 shows the task's progress taking at least two
         values above 0 through a four-frame chunk of both Write nodes under a
-        real 17.1v2 worker (a manual run logged 25, 50, 75, 100). Not confirmed
+        real 17.1v2 worker. Not confirmed
         for progress: other Nuke versions, a commercial license, or Nuke on
         Linux or Windows.
     tier2:
@@ -473,7 +472,7 @@ presets:
         TestPresetProgress_Fixtures checks it against Houdini 21.0.631
         captures (Storm and Karma CPU, macOS arm64), and Tier 2 shows a task's
         progress taking at least two values above 0 on a four-frame chunk under
-        a real 21.0.631 worker (a manual run logged 25, 50 and 75), rendering
+        a real 21.0.631 worker, rendering
         with Karma CPU at 2560 wide so a frame outlasts the worker's 2 s
         progress throttle. Not confirmed: the line
         under any Houdini but 21.0.631.
@@ -525,11 +524,9 @@ presets:
         captures from oiiotool 3.1.15.0 (Homebrew, macOS arm64) and Houdini
         21.0.631's hoiiotool (OIIO 2.5.18.0), and Tier 2 shows a task's
         progress taking at least two values above 0 on a four-frame chunk under
-        a real worker with oiiotool 3.1.15.0 (a manual run logged 25, 50, 75
-        and 100), a --blur 81x81 over 1024x1024 frames making a frame outlast
+        a real worker with oiiotool 3.1.15.0, a --blur 81x81 over 1024x1024 frames making a frame outlast
         the worker's 2 s throttle; the convert
-        and operations cases still write exactly their files with the echo
-        added. An --evaloff among the operations leaves {FRAME_NUMBER}
+        and operations cases write exactly their files with the echo. An --evaloff among the operations leaves {FRAME_NUMBER}
         unexpanded and the bar still. Not confirmed: the echo under Ubuntu's
         openimageio-tools, which CI's Tier 2 run would exercise.
     tier2:
@@ -864,7 +861,7 @@ presets:
 
   # fusion-saver-render is a host-script preset: FusionRenderNode runs an
   # embedded render.lua through -execute, and the per-task values travel in an
-  # EXPR-built params.json. CONTIGUOUS chunks, no SQI_CHUNK_BOUNDS (an error
+  # EXPR-built params.json. Contiguous chunks, no SQI_CHUNK_BOUNDS (an error
   # under EXPR). No os.family gate, so Tier 3 runs on every OS.
   - name: fusion-saver-render
     source: presets/sqi
@@ -1019,7 +1016,7 @@ presets:
 
   # KeyShot is the second host-script preset family: keyshot_headless runs an
   # embedded render.py with -script, which loops over the task's frames, and the
-  # per-task values travel in an EXPR-built params.json. NONCONTIGUOUS chunks,
+  # per-task values travel in an EXPR-built params.json. Non-contiguous chunks,
   # no SQI_CHUNK_BOUNDS. No os.family gate (Windows and macOS are the KeyShot
   # desktop builds, but the worker tag is the gate), so Tier 3 runs on every OS;
   # on macOS the real worker puts -headless before the argv and the harness
@@ -1092,7 +1089,7 @@ presets:
   # Modo is the third host-script preset family. modo_cl reads commands from
   # stdin, which the worker leaves as the null device, so the preset runs an
   # embedded render.py through the documented -cmd: startup command and the
-  # per-task values travel in an EXPR-built params.json. CONTIGUOUS chunks,
+  # per-task values travel in an EXPR-built params.json. Contiguous chunks,
   # no SQI_CHUNK_BOUNDS (an error under EXPR). No os.family gate (Modo ran on
   # Windows, macOS and Linux; the worker tag is the gate), so Tier 3 runs on
   # every OS.
@@ -1381,7 +1378,7 @@ presets:
     tier2:
       case: TestFFmpegPreset_BashSegmentTranscodeJoins
       # Not required on windows: the test skips when the worker process cannot
-      # resolve bash.exe on PATH, and the Windows CI runner has not been seen
+      # resolve bash.exe on PATH, and the Windows CI runner is not known
       # to provide one. ci.yml's preset-harness-windows job states when to add
       # windows here.
       required_on: [linux, darwin]

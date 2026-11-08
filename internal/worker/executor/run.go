@@ -367,7 +367,7 @@ func (e *Executor) installLogProgress(ctx context.Context, msg *protocol.AssignM
 		return
 	}
 	lp := msg.LogProgress
-	m, err := logprogress.Compile(lp.Progress, lp.Status, msg.Parameters[lp.FrameParameter])
+	m, err := logprogress.Compile(lp.Progress, lp.Status, msg.Parameters[lp.FrameParameter], protocol.SanitizeStatusText)
 	if err != nil {
 		e.logger.WarnContext(
 			ctx, "executor: SQI_LOG_PROGRESS disabled for this attempt",
@@ -974,7 +974,7 @@ func (e *Executor) killAndWait(
 
 	// Wait for the process to exit gracefully or escalate to SIGKILL.
 	// Use time.NewTimer (not time.After) so the timer is stopped and GC'd
-	// promptly when the process exits before the grace period elapses (B5).
+	// promptly when the process exits before the grace period elapses.
 	graceTimer := time.NewTimer(gracePeriod)
 	defer graceTimer.Stop()
 	select {

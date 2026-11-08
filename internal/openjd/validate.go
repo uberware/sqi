@@ -67,7 +67,7 @@ func validateExtensions(t *JobTemplate) ValidationErrors {
 	// unsupported ones. Format check runs first.
 	declared := make(map[string]struct{}, len(t.Extensions))
 	for i, name := range t.Extensions {
-		// Check format FIRST: extension names must match [A-Z_0-9]{3,128}
+		// Check the format first: extension names must match [A-Z_0-9]{3,128}
 		if !extensionNameRE.MatchString(name) {
 			errs = append(errs, ValidationError{
 				Pointer: fmt.Sprintf("/extensions/%d", i),
@@ -76,7 +76,7 @@ func validateExtensions(t *JobTemplate) ValidationErrors {
 			continue // Skip unsupported-set check and declared-set addition for malformed names
 		}
 
-		// Two-part gate: the name must be registered AND the entry must be
+		// Two-part gate: the name must be registered and the entry must be
 		// supported. A registered-but-unsupported extension gets its own
 		// message — reusing "unsupported extension" here would say the name is
 		// unknown, which is false and sends a reader to the wrong place.
@@ -90,7 +90,7 @@ func validateExtensions(t *JobTemplate) ValidationErrors {
 		case entry.Status != StatusSupported:
 			errs = append(errs, ValidationError{
 				Pointer: fmt.Sprintf("/extensions/%d", i),
-				Message: fmt.Sprintf("extension %q is registered but not yet supported (status %q)",
+				Message: fmt.Sprintf("extension %q is registered but not supported (status %q)",
 					name, entry.Status),
 			})
 		}
@@ -223,7 +223,7 @@ func validatePathTranslation(t *JobTemplate) ValidationErrors {
 
 // validateChunkBounds enforces the SQI_CHUNK_BOUNDS extension's constraints when
 // it is declared: TASK_CHUNKING must also be declared, and every CHUNK[INT] task
-// parameter must be CONTIGUOUS (rangeConstraint is required, so this only rejects
+// parameter must be contiguous (rangeConstraint is required, so this only rejects
 // the literal NONCONTIGUOUS value), because .Start/.End are undefined across the
 // gaps of a NONCONTIGUOUS chunk. Declaring it alongside EXPR is also an error:
 // under EXPR a CHUNK[INT] is a range_expr, so .Start/.End never resolve and the
@@ -282,12 +282,8 @@ type letPosition struct {
 // step template, step script, step environment script, job environment
 // script -- and calls fn once per position, present or not.
 //
-// Shared by [validateLetExtension] and [validateLetElementCounts] (both of
-// which apply at these same four positions) so the two rules cannot drift
-// apart the first time a fifth position appears. A closure was chosen over a
-// second pair of accumulator slices because each rule's logic is a few lines
-// and independent of the other's; threading two ValidationErrors slices
-// through one walk would couple them for no benefit.
+// Shared by [validateLetExtension] and [validateLetElementCounts], which apply
+// at these same four positions, so the two rules cannot drift apart.
 func walkLetPositions(t *JobTemplate, fn func(letPosition)) {
 	for i, s := range t.Steps {
 		fn(letPosition{s.LetSet, s.Let, fmt.Sprintf("/steps/%d/let", i)})
@@ -310,11 +306,10 @@ func walkLetPositions(t *JobTemplate, fn func(letPosition)) {
 // validateLetExtension rejects a let: block on a template that does not declare
 // the EXPR extension. Template Schemas 3.6 defines <LetBindings> as "Available
 // when using the EXPR extension", and without this check a let: block is
-// silently ignored -- the template is accepted and its bindings never evaluated,
-// which is strictly worse than refusing it (see docs/openjd-conformance.md on
-// why rejecting an unimplemented opt-in extension is the correct failure mode).
+// silently ignored: the template is accepted and its bindings are never
+// evaluated.
 //
-// This is the ONE let rule that must fire on the base-spec path.
+// This is the only let rule that fires on the base-spec path.
 // checkTemplateExpressions returns at its first line when EXPR is absent, so
 // every other let rule lives in exprcheck.go and this one cannot.
 //
@@ -338,48 +333,39 @@ func validateLetExtension(t *JobTemplate) ValidationErrors {
 // maxLetBindings caps the number of bindings in a single let: block.
 // Template Schemas 3.6: "Maximum number of items: 50".
 //
-// Two places read it, and they do different jobs:
-// [validateLetElementCounts] REPORTS an over-count as a validation error, and
-// checkLetBindings (exprcheck.go) ENFORCES it by refusing to evaluate past the
-// cap. Reporting is not guarding -- ValidateWithOptions does not short-circuit
-// on the report -- so both are required.
+// Two places read it: [validateLetElementCounts] reports an over-count as a
+// validation error, and checkLetBindings (exprcheck.go) enforces it by
+// refusing to evaluate past the cap. ValidateWithOptions does not
+// short-circuit on the report, so both are required.
 const maxLetBindings = 50
 
 // validateLetElementCounts enforces Template Schemas 3.6's element-count
 // bounds on every let: block, regardless of whether EXPR is declared: "If
 // defined, then there must be at least one element in this list" and
-// "Maximum number of items: 50." These read like quantitative caps, but they
-// are structural -- a let: block with 0 or 51 bindings is malformed, not
-// merely large or small, so (like [validateLetExtension]) this runs
-// unconditionally and is NOT gated by EnforceLimits (see
-// docs/openjd-conformance.md on why a structural check must not vanish under
-// EnforceLimits: false).
+// "Maximum number of items: 50." They are structural -- a let: block with 0
+// or 51 bindings is malformed -- so, like [validateLetExtension], this runs
+// unconditionally and is not gated by EnforceLimits (see
+// docs/openjd-conformance.md).
 //
-// The empty-list rule is expressible only because LetSet distinguishes a
-// declared-but-empty list ("let: []") from an omitted key -- len(Let) == 0 is
-// true for both, so this reuses [requireNonEmptyIfSet], the same
-// set/omitted-vs-empty helper every other optional-list-with-a-minimum field
-// in this file uses.
+// The empty-list rule works because LetSet distinguishes a declared-but-empty
+// list ("let: []") from an omitted key: len(Let) == 0 is true for both. This
+// reuses [requireNonEmptyIfSet], the helper every other optional list with a
+// minimum uses.
 //
-// A base-spec "let: []" therefore produces TWO errors at the same pointer --
+// A base-spec "let: []" produces two errors at the same pointer --
 // [validateLetExtension]'s `"let" requires the EXPR extension` and this
-// function's `must contain at least one binding when provided` -- and that is
-// intended, not a missing short-circuit: both statements are independently
-// true, and a template that fixed only the one it was shown would come back
-// still invalid for the other.
+// function's `must contain at least one binding when provided`. Both are
+// independently true.
 //
-// DELIBERATE ASYMMETRY, do not harmonize: the structurally identical
-// [maxJobParameterDefinitions] cap runs inside [validateLimits], behind
-// opts.EnforceLimits, while this one runs unconditionally. The specification
-// itself does not draw that line -- sections 3.6 and 2 both list the min- and
-// max-item bounds together under "Constraints" -- so the difference is sqi's,
-// and it is deliberate. [maxLetBindings] is not only reported here, it is
-// ENFORCED by checkLetBindings (exprcheck.go), which stops evaluating a block
-// at the cap; that is the only bound on a construct whose per-binding cost
-// ACCUMULATES in a symbol table no per-evaluation budget measures. Moving this
-// check behind EnforceLimits would leave an operator who disables limits with
-// the over-count neither reported nor -- were the guard ever re-derived from
-// this check rather than from the constant -- bounded.
+// The structurally identical [maxJobParameterDefinitions] cap runs inside
+// [validateLimits], behind opts.EnforceLimits, while this check runs
+// unconditionally. The specification does not draw that line (sections 3.6
+// and 2 list the min- and max-item bounds together under "Constraints").
+// [maxLetBindings] is also enforced by checkLetBindings (exprcheck.go), which
+// stops evaluating a block at the cap; that is the only bound on a construct
+// whose per-binding cost accumulates in a symbol table no per-evaluation
+// budget measures. This check stays outside EnforceLimits so an over-count is
+// still reported when limits are disabled.
 func validateLetElementCounts(t *JobTemplate) ValidationErrors {
 	var errs ValidationErrors
 	walkLetPositions(t, func(p letPosition) {
@@ -420,28 +406,26 @@ type ValidateOptions struct {
 	// EnforceLimits gates quantitative limit checks: maximum name lengths,
 	// element counts, etc.
 	//
-	// When false those checks are skipped — useful in operator environments
-	// that predate strict limit enforcement and cannot yet update all templates.
+	// When false those checks are skipped, for operator environments whose
+	// existing templates exceed the limits.
 	//
-	// NOTE: the quantitative limit checks live in [validateLimits] (and the
-	// helpers it calls). Every limit check MUST be guarded by opts.EnforceLimits
-	// and belong to validateLimits — do not scatter gated checks elsewhere.
-	// Structural correctness checks belong in the always-run path instead:
-	// [validateHostRequirements] is the host-requirement half, deliberately
-	// separate from [validateHostRequirementLimits]. Reserved-capability value
-	// checks ([validateReservedAmounts], [validateReservedAttributes]) are
-	// value-domain correctness, not a size or count cap, so they run from
-	// [validateHostRequirements] unconditionally too.
+	// The quantitative limit checks live in [validateLimits] (and the
+	// helpers it calls). Every limit check must be guarded by opts.EnforceLimits
+	// and belong to validateLimits. Structural correctness checks belong in the
+	// always-run path instead: [validateHostRequirements] is the
+	// host-requirement half, separate from [validateHostRequirementLimits].
+	// Reserved-capability value checks ([validateReservedAmounts],
+	// [validateReservedAttributes]) are value-domain correctness, not a size or
+	// count cap, so they run from [validateHostRequirements] unconditionally too.
 	// Resource-exhaustion guards (e.g. the [maxRangeValues] cap in
 	// parseIntRangeExpr, the [maxTasksPerStep] cap in ExpandParameterSpace,
 	// and [parameterSpaceOverCaps] gating the expression walk in this
-	// function) are NOT limit checks: they always apply, regardless of this
-	// flag. [parameterSpaceOverCaps] is the one most likely to confuse,
-	// because it REUSES maxTaskParameterDefinitions and maxTaskParamValues --
-	// the same two constants [validateParameterSpaceLimits] checks under this
-	// very flag -- for a different question (should the walk run) than the
-	// gated check asks (should the template be rejected for its size); see
-	// both functions' doc comments.
+	// function) are not limit checks: they always apply, regardless of this
+	// flag. [parameterSpaceOverCaps] reuses maxTaskParameterDefinitions and
+	// maxTaskParamValues, the same two constants [validateParameterSpaceLimits]
+	// checks under this flag, for a different question (should the walk run)
+	// than the gated check asks (should the template be rejected for its
+	// size); see both functions' doc comments.
 	EnforceLimits bool
 
 	// ExprLimits is the operator-configured bound on what this template's EXPR
@@ -451,25 +435,25 @@ type ValidateOptions struct {
 	// conformance harness) gets the default limits by omitting it.
 	//
 	// It reaches every consumption point through the walk's own
-	// [templateBudget]; see [ExprLimits] for what each of the four bounds and
-	// for which of them an operator may move how far.
+	// [templateBudget]; see [ExprLimits] for the four bounds and how far an
+	// operator may move each.
 	ExprLimits ExprLimits
 
 	// Deadline, when non-zero, is an absolute wall-clock time after which the
 	// expression walk stops and [ValidateWithBudget] returns a non-nil error
 	// wrapping [expr.ErrDeadlineExceeded].
 	//
-	// It is a BACKSTOP, not a budget. The deterministic limits in ExprLimits
-	// decide whether a template is VALID; this decides only whether this
+	// It is a backstop, not a budget. The deterministic limits in ExprLimits
+	// decide whether a template is valid; this decides only whether this
 	// server keeps working on it, and the same template would validate on an
 	// idle machine. That is why it cannot be reported as a ValidationError,
 	// and why reading it needs [ValidateWithBudget]: [ValidateWithOptions]
 	// discards the channel it arrives on, so setting this field there stops
 	// the walk without telling the caller why.
 	//
-	// Zero -- the default, and what every caller but the submission path uses
-	// -- means no deadline and costs nothing: the meter short-circuits before
-	// reading any clock.
+	// Zero, the default for every caller but the submission path, means no
+	// deadline and costs nothing: the meter short-circuits before reading any
+	// clock.
 	Deadline time.Time
 }
 
@@ -499,19 +483,18 @@ func Validate(t *JobTemplate) ValidationErrors {
 }
 
 // ValidateWithOptions is like [Validate] but accepts a [ValidateOptions] value
-// so callers can control optional validation behavior — currently whether
+// so callers can control optional validation behavior, such as whether
 // quantitative limit checks are enforced.
 //
-// Existing callers should continue to use [Validate]; this entry point is for
-// the submission pipeline where the operator may disable limit enforcement via
-// config.
+// [Validate] is the entry point for callers that need no options; this one is
+// for the submission pipeline where the operator may disable limit enforcement
+// via config.
 //
-// It is [ValidateWithBudget] with the deadline channel discarded, and that is
-// safe by construction: without [ValidateOptions.Deadline] set, that error is
-// always nil. Every caller that does not set a deadline — which is every caller
-// but the submission path — keeps its exact previous behavior. A caller that
-// DOES set one gets a walk that stops but no way to learn that it did, so use
-// ValidateWithBudget instead.
+// It is [ValidateWithBudget] with the deadline channel discarded. Without
+// [ValidateOptions.Deadline] set, that error is always nil, so every caller
+// that does not set a deadline is unaffected. A caller that sets one gets a
+// walk that stops but no way to learn that it did; use ValidateWithBudget
+// instead.
 func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors {
 	errs, _ := ValidateWithBudget(t, opts) //nolint:errcheck // nil unless opts.Deadline is set
 	return errs
@@ -519,23 +502,23 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 
 // ValidateWithBudget is [ValidateWithOptions] plus a wall-clock backstop.
 //
-// It returns the same ValidationErrors, plus an error that is non-nil ONLY when
+// It returns the same ValidationErrors, plus an error that is non-nil only when
 // opts.Deadline passed mid-walk, in which case it wraps
-// [expr.ErrDeadlineExceeded]. That second channel exists because the two
-// outcomes mean different things to a caller: ValidationErrors say the template
-// is INVALID and become a 422, while a deadline says this server gave up and
-// becomes a 5xx. A deadline is non-deterministic — the same body would validate
-// on an idle machine — so reporting it as a validation error would make
-// acceptance depend on machine load.
+// [expr.ErrDeadlineExceeded]. The two outcomes mean different things to a
+// caller: ValidationErrors say the template is invalid and become a 422, while
+// a deadline says this server gave up and becomes a 5xx. A deadline is
+// non-deterministic (the same body would validate on an idle machine), so
+// reporting it as a validation error would make acceptance depend on machine
+// load.
 //
-// When the error is non-nil the ValidationErrors are INCOMPLETE by definition:
-// the walk stopped early, so a position that would have failed may not have
-// been reached. Callers must not present them as a verdict.
+// When the error is non-nil the ValidationErrors are incomplete: the walk
+// stopped early, so a position that would have failed may not have been
+// reached. Callers must not present them as a verdict.
 //
-// Everything after the expression walk still runs when the deadline passed. The
-// remaining checks are deterministic, expression-free and bounded by template
-// size, so finishing them costs no meaningful time and leaves the caller a more
-// complete (though still incomplete) picture if it wants to log one.
+// Everything after the expression walk still runs when the deadline passed.
+// The remaining checks are deterministic, expression-free and bounded by
+// template size, so they cost little and leave the caller a more complete
+// picture if it wants to log one.
 func ValidateWithBudget(t *JobTemplate, opts ValidateOptions) (ValidationErrors, error) {
 	var errs ValidationErrors
 
@@ -620,7 +603,7 @@ func ValidateWithBudget(t *JobTemplate, opts ValidateOptions) (ValidationErrors,
 
 	// ── extensions (unconditional) ────────────────────────────────────────
 	// Run unconditionally: silently accepting an unsupported extension would
-	// mis-run the template.  NOT gated by opts.EnforceLimits.
+	// mis-run the template.  Not gated by opts.EnforceLimits.
 	errs = append(errs, validateExtensions(t)...)
 	errs = append(errs, validatePathTranslation(t)...)
 	errs = append(errs, validateLogChecks(t)...)
@@ -631,8 +614,8 @@ func ValidateWithBudget(t *JobTemplate, opts ValidateOptions) (ValidationErrors,
 	// checkTemplateExpressions is phase 1: params is nil, so every symbol is
 	// an unresolved placeholder rather than a submitted value (submit.go's
 	// checkExpressionsAtSubmit is the phase-2 caller with concrete
-	// parameters). It no-ops for a template that does not declare EXPR -- see
-	// its own doc comment.
+	// parameters). It does nothing for a template that does not declare EXPR;
+	// see its own doc comment.
 	//
 	// Gated on the template's own declaration (exprDeclared): an EXPR
 	// template's expressions decide the verdict, so the walk has to run. What
@@ -640,79 +623,60 @@ func ValidateWithBudget(t *JobTemplate, opts ValidateOptions) (ValidationErrors,
 	// bytes) and the wall-clock submission deadline, both carried by
 	// walkBudget below.
 	//
-	// ALSO gated on parameterSpaceOverCaps(t): maxTaskParameterDefinitions
-	// (16) and maxTaskParamValues (1024) -- the two COUNT caps
-	// validateParameterSpaceLimits (below) also checks -- are what make the
-	// worst-case per-step construction MAXIMAL rather than unbounded.
-	// Measured directly: one step at exactly those two caps costs ~97s of
-	// CPU in this walk alone, and without this check nothing but the 4 MiB
-	// request body bounds it -- the checker is the MORE expensive of the two
-	// walks (validateLimits/validateParameterSpaceLimits runs the resolver's
-	// identical positions too, at submit). parameterSpaceOverCaps
-	// deliberately reimplements only those two O(n) count checks rather than
-	// calling validateParameterSpaceLimits wholesale -- see its own doc
-	// comment for why the omitted overlap check would make this guard
-	// quadratic.
+	// Also gated on parameterSpaceOverCaps(t): maxTaskParameterDefinitions
+	// (16) and maxTaskParamValues (1024), the two count caps
+	// validateParameterSpaceLimits (below) also checks, bound the worst-case
+	// per-step construction. One step at exactly those two caps is the most
+	// expensive construction this walk permits, and without this check only the
+	// 4 MiB request body bounds it. parameterSpaceOverCaps reimplements only
+	// those two O(n) count checks rather than calling
+	// validateParameterSpaceLimits, whose overlap check would make the guard
+	// quadratic; see its doc comment.
 	//
-	// This check is BOUNDED-COST (O(n) arithmetic, not the walk it guards)
-	// and applies to phase 1 ONLY, regardless of opts.EnforceLimits, even
-	// though the parameter-space-limit ValidationErrors themselves stay
-	// gated (below). It does not primarily exist to protect an
-	// EnforceLimits: false caller from phase 1's cost --
-	// production's DEFAULT is EnforceLimits: true (config.DefaultConfig,
-	// wired at server.go), and every production ValidateWithOptions caller
-	// passes true. Gating this guard on opts.EnforceLimits anyway would still
-	// be wrong: it would make a cheap, always-safe-to-run cost check silently
-	// vanish for the one caller where EnforceLimits IS false by design
-	// (Submit's phase-1 call -- SubmitterOptions.EnforceLimits defaults
-	// false, see submit.go) for zero benefit, a bug class
-	// docs/openjd-conformance.md describes. The cap
-	// verdict here is a COST signal (is this walk worth running), not a
-	// POLICY signal (should this template be rejected for its size) -- those
-	// are different questions, so this reuses opts.EnforceLimits' caps
-	// without adopting its gate, the same split [maxRangeValues] (range.go)
-	// and [maxTasksPerStep] (expand.go) already draw for other always-on
-	// resource-exhaustion guards.
+	// The check is O(n) arithmetic, not the walk it guards, and applies to
+	// phase 1 regardless of opts.EnforceLimits, even though the
+	// parameter-space-limit ValidationErrors themselves stay gated (below).
+	// Gating it on opts.EnforceLimits would make a cheap cost check vanish for
+	// Submit's phase-1 call, where SubmitterOptions.EnforceLimits defaults to
+	// false (see submit.go). The verdict here is a
+	// cost signal (is this walk worth running), not a policy signal (should this
+	// template be rejected for its size), so it reuses opts.EnforceLimits' caps
+	// without adopting its gate, the same split [maxRangeValues] (range.go) and
+	// [maxTasksPerStep] (expand.go) draw for other always-on resource-exhaustion
+	// guards.
 	//
-	// This guard does NOT bound phase 2. checkExpressionsAtSubmit (submit.go)
-	// calls checkTemplateExpressions UNCONDITIONALLY -- no cap gate -- so an
-	// over-cap step skipped here is walked again there, in full, with
-	// concrete parameters, before any task is expanded: no task is ever
-	// created from an unexamined expression. Phase 2's cost is bounded by its
-	// own template-wide budget and the submission deadline. What this guard
-	// removes is phase 1's share of the cost -- free (request-anonymous,
-	// pre-parameter-binding) for a caller that only validates, and otherwise
-	// redundant for a caller that goes on to submit, since phase 2 re-walks
-	// the same positions anyway.
+	// This guard does not bound phase 2. checkExpressionsAtSubmit (submit.go)
+	// calls checkTemplateExpressions with no cap gate, so an over-cap step
+	// skipped here is walked again there, in full, with concrete parameters,
+	// before any task is expanded: no task is created from an unexamined
+	// expression. Phase 2's cost is bounded by its own template-wide budget and
+	// the submission deadline. What this guard removes is phase 1's share of the
+	// cost: for a caller that only validates, the request is anonymous and runs
+	// before parameter binding; for a caller that goes on to submit, phase 2
+	// re-walks the same positions anyway.
 	//
-	// exprDeclared comes FIRST: the template's own extensions: key has to be
-	// consulted before parameterSpaceOverCaps, or the guard runs on templates
-	// whose walk is a no-op. parameterSpaceOverCaps is not free -- it walks
-	// every step's task-parameter definitions and counts every INT
-	// sub-range, measured at 15 ms on a 200,000-sub-range parameter and ~40 ms
-	// at the body cap. Spending that to decide whether to skip a walk that
-	// would do nothing anyway would make a template without extensions: [EXPR]
-	// pay for EXPR support it does not use.
-	// checkTemplateExpressions checks the extension again on its own; this is
-	// not a duplicate of that check but a short-circuit in front of the guard,
-	// and Go's && guarantees it as one.
+	// exprDeclared comes first: the template's own extensions: key is consulted
+	// before parameterSpaceOverCaps so the guard does not run on templates whose
+	// walk is a no-op. parameterSpaceOverCaps walks every step's task-parameter
+	// definitions and counts every INT sub-range, which a template without
+	// extensions: [EXPR] should not pay for. checkTemplateExpressions checks the
+	// extension again on its own; this is a short-circuit in front of the guard,
+	// and Go's && guarantees the order.
 	//
-	// walkBudget is hoisted out of the branch below because it is what carries
-	// a deadline breach back out: checkTemplateExpressions reports one through
-	// the budget (templateBudget.recordDeadline) rather than as a
-	// ValidationError, so this function has to hold the pointer to read it.
+	// walkBudget is declared outside the branch below because it carries a
+	// deadline breach back out: checkTemplateExpressions reports one through the
+	// budget (templateBudget.recordDeadline) rather than as a ValidationError,
+	// so this function holds the pointer to read it.
 	var walkBudget *templateBudget
 	if exprDeclared && !parameterSpaceOverCaps(t) {
-		// A budget is passed EXPLICITLY (rather than letting
-		// checkTemplateExpressions allocate its own) for one reason: the
-		// budget is what carries opts.ExprLimits to every metered position.
-		// With no argument the walk would run at the defaults, ignoring the
-		// operator's configuration. When opts.ExprLimits is the zero value
-		// this behaves exactly like the no-argument call.
+		// A budget is passed explicitly, rather than letting
+		// checkTemplateExpressions allocate its own, because the budget carries
+		// opts.ExprLimits to every metered position. With no argument the walk would
+		// run at the defaults, ignoring the operator's configuration. When
+		// opts.ExprLimits is the zero value this behaves like the no-argument call.
 		//
 		// opts.Deadline rides in on the same ExprLimits the four configured
-		// numbers do -- see that field's comment for why a per-request value
-		// travels with operator configuration.
+		// numbers do; see that field's comment.
 		lim := opts.ExprLimits
 		lim.Deadline = opts.Deadline
 		walkBudget = newTemplateBudget(lim)
@@ -720,7 +684,7 @@ func ValidateWithBudget(t *JobTemplate, opts ValidateOptions) (ValidationErrors,
 	}
 
 	// ── quantitative limits (gated) ───────────────────────────────────────
-	// Every check below MUST stay behind opts.EnforceLimits.
+	// Every check below must stay behind opts.EnforceLimits.
 	if opts.EnforceLimits {
 		errs = append(errs, validateLimits(t)...)
 	}
@@ -730,15 +694,14 @@ func ValidateWithBudget(t *JobTemplate, opts ValidateOptions) (ValidationErrors,
 
 // ─── reserved-name tables ─────────────────────────────────────────────────────
 
-// NOTE: there is deliberately no reservedAmountMinimums map here. sqi once
-// enforced the spec's per-capability "Minimum Value" table (vcpu >= 1, and so
-// on) as a floor on a requirement's own min/max. That was a misreading: the
-// table gives the default used when min is OMITTED ("If not provided, then the
-// default is 0 unless the specific host capability defines a minimum"), not a
-// lower bound on an explicitly supplied value. The schema types min as
-// <nonnegativefloat> and max as <positivefloat>, so "amount.worker.vcpu min: 0"
-// is valid — see the conformance fixture 3.3.1--amount-min-zero-valid.yaml.
-// Those bounds are enforced by [validateAmountBounds].
+// There is no per-capability minimum table here. The spec's "Minimum Value"
+// table (vcpu >= 1, and so on) gives the default used when min is omitted
+// ("If not provided, then the default is 0 unless the specific host capability
+// defines a minimum"), not a lower bound on an explicitly supplied value. The
+// schema types min as <nonnegativefloat> and max as <positivefloat>, so
+// "amount.worker.vcpu min: 0" is valid; see the conformance fixture
+// 3.3.1--amount-min-zero-valid.yaml. Those bounds are enforced by
+// [validateAmountBounds].
 
 // reservedCapabilityScopes are the identifiers the spec reserves as the first
 // segment after a capability namespace ("amount."/"attr."). §3.3.1.1: "This
@@ -764,18 +727,17 @@ var specDefinedCapabilities = map[string]bool{
 }
 
 // sqiReservedScopeNames are capability names sqi defines under the reserved
-// "worker" scope. These are a KNOWN DIVERGENCE from strict conformance: the
-// spec reserves that scope for its own future use, and a vendor is meant to
-// namespace its capabilities behind a vendor prefix instead
-// ("sqi:attr.worker.tag.nuke", which [validateCapabilityPrefix] accepts).
+// "worker" scope. They diverge from strict conformance: the spec reserves that
+// scope for its own future use, and a vendor is meant to namespace its
+// capabilities behind a vendor prefix instead ("sqi:attr.worker.tag.nuke",
+// which [validateCapabilityPrefix] accepts).
 //
-// They are permitted because they predate this check and sqi depends on them:
-// attr.worker.tag.* backs worker capability tags (every shipped DCC preset
-// gates on one), amount.worker.usagepool.* backs usage pools, and
-// attr.worker.computelocation backs compute locations. Enforcing the spec
-// strictly here would invalidate sqi's own presets. Migrating them behind a
-// vendor prefix is the conformant fix and a breaking change; it is not made
-// here. Prefixes end in "." to match a family; bare entries match exactly.
+// They are permitted because sqi depends on them: attr.worker.tag.* backs worker
+// capability tags (every shipped DCC preset gates on one),
+// amount.worker.usagepool.* backs usage pools, and attr.worker.computelocation
+// backs compute locations. Enforcing the spec strictly here would invalidate
+// sqi's own presets. Prefixes end in "." to match a family; bare entries match
+// exactly.
 var sqiReservedScopeNames = []string{
 	"amount.worker.usagepool.",
 	"attr.worker.tag.",
@@ -848,7 +810,7 @@ func validateReservedScope(name, wantPrefix, ptr string) ValidationErrors {
 // set of allowed string values. Every entry in anyOf and allOf for a matching
 // attribute must be present in the corresponding set.
 //
-// Attribute names AND values are both matched CASE-INSENSITIVELY, per OpenJD
+// Attribute names and values are both matched case-insensitively, per OpenJD
 // jobtemplate-2023-09 (capability names: "comparisons ... must be
 // case-insensitive"; attribute values: "This comparison is case-insensitive").
 // The allowed-value sets are stored as lowercase tokens; values are lowercased
@@ -865,92 +827,69 @@ var reservedAttributeAllowed = map[string]map[string]bool{
 // ─── quantitative limits ──────────────────────────────────────────────────────
 
 // Quantitative limits from the OpenJD jobtemplate-2023-09 specification
-// (base spec, no extensions), PLUS [maxSteps], the one constant in this
-// block sqi defines itself rather than transcribes — see its own doc
+// (base spec, no extensions), plus [maxSteps], the one constant in this
+// block sqi defines itself rather than transcribes; see its own doc
 // comment. All of these are enforced only when [ValidateOptions.EnforceLimits]
 // is true.
 const (
 	// maxSteps caps the number of steps (<StepTemplate> entries) a job
 	// template may declare.
 	//
-	// UNLIKE every other constant in this block, this is NOT a spec
-	// transcription: OpenJD jobtemplate-2023-09's "Constraints" table lists a
-	// minimum/maximum item count for every other bounded list field this
-	// package caps (parameterDefinitions, taskParameterDefinitions,
-	// hostRequirements amounts/attributes, let bindings, fileFilters, ...)
-	// but states none for <JobTemplate>.steps (§1.1, item 8). The nearest
-	// field that DOES carry element-count bullets is item 6,
-	// parameterDefinitions; item 7, jobEnvironments, sits between them and
-	// carries only uniqueness constraints. Checked directly against
-	// third_party/openjd-specifications/wiki/2023-09-Template-Schemas.md.
-	// RFC 0004 later raises parameterDefinitions' own cap to 200 and says
-	// nothing about steps either. So this number is a sqi product decision,
-	// and per this repo's convention (see [ValidateOptions.EnforceLimits]
-	// doc comment on why an undefended cap gets raised by the first user who
-	// hits it) it has to be defensible on its own:
+	// Unlike every other constant in this block, this is not a transcription
+	// of the specification: OpenJD jobtemplate-2023-09's "Constraints" table
+	// lists a minimum/maximum item count for every other bounded list field
+	// this package caps (parameterDefinitions, taskParameterDefinitions,
+	// hostRequirements amounts/attributes, let bindings, fileFilters, ...) but
+	// states none for <JobTemplate>.steps (§1.1, item 8). RFC 0004 raises
+	// parameterDefinitions' own cap to 200 and says nothing about steps
+	// either. The number is a sqi product decision:
 	//
-	//   - A render/compositing job's steps are pipeline PHASES (render,
+	//   - A render/compositing job's steps are pipeline phases (render,
 	//     denoise, a handful of composite passes, review, deliver, cleanup),
-	//     not one step per unit of work — per-item parallelism is what the
-	//     parameter space exists for (up to maxTaskParameterDefinitions x
+	//     not one step per unit of work; per-item parallelism is what the
+	//     parameter space is for (up to maxTaskParameterDefinitions x
 	//     maxTaskParamValues combinations, up to maxTasksPerStep tasks per
-	//     step). A pipeline of dozens of distinct phases is already unusual.
-	//   - Swept across presets/, test/, third_party's conformance fixtures
-	//     and samples, and clients/, the largest step count in
-	//     this repo is 12, in the vendored OpenJD sample
+	//     step). A pipeline of dozens of distinct phases is unusual.
+	//   - The largest step count among this repository's presets, tests,
+	//     conformance fixtures and samples is 12, in the vendored OpenJD sample
 	//     third_party/openjd-specifications/samples/v2023-09/job_templates/
 	//     task-parameter-definition-showcase.yaml.
-	//   - 100 sits well over an order of magnitude above both of those: it
-	//     will not be the first thing a legitimate template hits, while
-	//     still being an actual, enforceable bound rather than none at all —
-	//     the same "deliberately generous; tune it if legitimate jobs need
-	//     more" stance [maxTasksPerStep] (expand.go) states explicitly for
-	//     the analogous per-step task-count cap.
+	//   - 100 is well over an order of magnitude above that, so it is unlikely
+	//     to be the first limit a legitimate template hits, while still being an
+	//     enforceable bound. Like [maxTasksPerStep] (expand.go), it is generous;
+	//     raise it if legitimate jobs need more.
 	//
-	// WHAT THIS DOES NOT BOUND: [ValidateWithOptions] runs
-	// checkTemplateExpressions (the EXPR expression walk) BEFORE
+	// What this does not bound: [ValidateWithOptions] runs
+	// checkTemplateExpressions (the EXPR expression walk) before
 	// validateLimits, so by the time this check runs, phase 1's walk over
-	// every step's positions has already completed in full — this cap
-	// cannot and does not reduce phase 1's own cost.
-	// (parameterSpaceOverCaps is the pre-walk guard that bounds phase 1; it
-	// does not consider step count.)
+	// every step's positions has completed. This cap does not reduce phase 1's
+	// cost; parameterSpaceOverCaps is the pre-walk guard that bounds phase 1,
+	// and it does not consider step count.
 	//
-	// WHAT THIS DOES BOUND: prepareTemplate (submit.go) returns on the FIRST
+	// What this does bound: prepareTemplate (submit.go) returns on the first
 	// validation error, before phase 2 (checkExpressionsAtSubmit, re-walking
 	// every position with concrete parameters), before parameter-space
-	// resolution, and before any per-task DB insert. So an over-cap template
-	// is rejected here without ever reaching phase 2's walk, the resolver,
-	// or task creation — that is the real, verified saving.
+	// resolution, and before any per-task database insert. An over-cap
+	// template is rejected here without reaching any of those.
 	//
 	// Gated by EnforceLimits, like the other bare structural-count caps in
 	// this block (maxJobParameterDefinitions, maxTaskParameterDefinitions,
-	// maxTaskParamValues): this is a POLICY cap, not a CATASTROPHE bound —
-	// the distinction this repo already draws for [maxTasksPerStep] and
-	// [maxRangeValues], which stay always-on. Those two are set at limits no
-	// legitimate template goes anywhere near (10M range values, 1M tasks in
-	// one step) specifically so EnforceLimits: false — an explicit operator
-	// declaration that legacy templates violating POLICY may still run —
-	// never has to trade "accept my old template" against "don't let the
-	// server fall over": bounded units still multiply, which is exactly why
-	// maxTasksPerStep's own doc comment cites "two 1024-value parameters
-	// joined by a Cartesian product already yield ~1M tasks" as its
-	// rationale. maxSteps is a different kind of number: 100 is tuned 8x
-	// above this repo's own largest known template, a range a real legacy
-	// pipeline could plausibly still reach, so promoting it to always-on
-	// would risk breaking the exact templates EnforceLimits: false exists to
-	// keep working.
+	// maxTaskParamValues): it is a policy cap, not a catastrophe bound.
+	// [maxTasksPerStep] and [maxRangeValues] are catastrophe bounds and stay
+	// always-on; they are set at limits no legitimate template approaches (10M
+	// range values, 1M tasks in one step), so EnforceLimits: false, which lets
+	// legacy templates that violate policy still run, never has to trade
+	// accepting an old template against keeping the server up. maxSteps is set
+	// within range of a real legacy pipeline, so making it always-on could break
+	// the templates EnforceLimits: false exists to keep working.
 	//
-	// THIS CAP DOES NOT BOUND A JOB'S TOTAL TASK COUNT. maxSteps x
-	// maxTasksPerStep = 100 x 1,000,000 = 10^8 task rows from one
-	// submission at the PRODUCTION DEFAULT (EnforceLimits: true), with no
-	// operator opt-out required; with EnforceLimits: false the step count
-	// is unbounded too, so the product has no ceiling at all. That is a
-	// catastrophe-class exposure, not a policy one, so its bound has to be
-	// always-on rather than gated here beside maxSteps: [maxTasksPerJob]
-	// (expand.go), an always-on, deliberately generous bound on TOTAL tasks
-	// per job, analogous to maxTasksPerStep but summed across steps and
-	// charged during expansion, where the resolved per-step counts are
-	// known.
+	// This cap does not bound a job's total task count. maxSteps x
+	// maxTasksPerStep = 100 x 1,000,000 = 10^8 task rows from one submission at
+	// the default (EnforceLimits: true), and with EnforceLimits: false the step
+	// count is unbounded too. That is a catastrophe-class exposure, so its bound
+	// is always-on: [maxTasksPerJob] (expand.go), a generous bound on total
+	// tasks per job, summed across steps and charged during expansion, where the
+	// resolved per-step counts are known.
 	maxSteps = 100
 
 	// maxJobParameterDefinitions caps parameterDefinitions. The spec range is
@@ -1076,43 +1015,36 @@ func validateEnvNameLimits(envs []Environment, base string) ValidationErrors {
 	return errs
 }
 
-// parameterSpaceOverCaps reports whether ANY step in t has a parameter space
-// that exceeds maxTaskParameterDefinitions or maxTaskParamValues -- the two
-// COUNT caps that bound [checkTemplateExpressions]'s walk cost.
+// parameterSpaceOverCaps reports whether any step in t has a parameter space
+// that exceeds maxTaskParameterDefinitions or maxTaskParamValues, the two
+// count caps that bound [checkTemplateExpressions]'s walk cost.
 //
-// DELIBERATELY NARROWER than [validateParameterSpaceLimits]: this function
-// must stay O(n) because [ValidateWithOptions] runs it on every
-// EXPR-declaring template regardless of opts.EnforceLimits (see the call
-// site), so an expensive check here would defeat its own purpose by
-// importing cost onto the path it exists to protect.
+// It is narrower than [validateParameterSpaceLimits] and must stay O(n):
+// [ValidateWithOptions] runs it on every EXPR-declaring template regardless of
+// opts.EnforceLimits (see the call site), so an expensive check here would add
+// cost to the path it exists to protect.
 // [validateParameterSpaceLimits] also runs [intRangeHasOverlap], an O(n^2)
 // pairwise scan over an INT range's sub-ranges (range.go) with no early exit
-// once a count cap has already fired. Reusing it wholesale here, measured: on
-// 8,000 non-overlapping INT sub-ranges it roughly DOUBLES this guard's own
-// cost under EnforceLimits: true (84ms -> 148ms), and on 32,000 sub-ranges
-// (a 186 KB body) takes an EnforceLimits: false caller from ~0 to ~1.97s --
-// turning a guard meant to bound cost into a new source of unbounded cost on
-// the one flag-value where nothing else runs here. taskParamValueCount's own INT/CHUNK[INT] branch (intRangeExprCount)
-// is a SEPARATE, genuinely O(n) computation -- it sums each sub-range's
-// arithmetic count, it never compares sub-ranges pairwise -- so calling it
-// here is safe and is what this function does instead.
+// once a count cap has already fired. Reusing it here would make this guard
+// itself a source of unbounded cost when EnforceLimits is false.
+// taskParamValueCount's INT/CHUNK[INT] branch (intRangeExprCount) is O(n): it
+// sums each sub-range's arithmetic count and never compares sub-ranges
+// pairwise, so this function uses it instead.
 //
-// A consequence, intentional: an overlap-only violation (e.g. "1-5,3-8",
-// which has no count problem at all) is NOT detected here and does not
-// silence the walk. Overlap makes the parameter space's RESULT
-// questionable, not the walk more EXPENSIVE -- this function answers "is
-// this walk worth its cost", not "is this parameter space otherwise
-// invalid" -- and [validateParameterSpaceLimits] (below, under
+// An overlap-only violation (e.g. "1-5,3-8", which has no count problem) is
+// not detected here and does not silence the walk. Overlap makes the
+// parameter space's result questionable, not the walk more expensive; this
+// function answers "is this walk worth its cost", not "is this parameter
+// space otherwise invalid", and [validateParameterSpaceLimits] (below, under
 // opts.EnforceLimits) still reports the overlap.
 //
-// This is deliberately independent of opts.EnforceLimits for the same
-// reason the package's other always-on resource-exhaustion guards are
-// ([maxRangeValues], [maxTasksPerStep]): see the call site in
-// [ValidateWithOptions] for the full reasoning. It intentionally re-derives
-// its own verdict from the same two constants [validateParameterSpaceLimits]
-// checks (see the call inside [validateLimits]) rather than sharing state
-// with it, so this function has no effect on which ValidationErrors are
-// reported -- only on whether the walk runs.
+// It is independent of opts.EnforceLimits for the same reason the package's
+// other always-on resource-exhaustion guards are ([maxRangeValues],
+// [maxTasksPerStep]): see the call site in [ValidateWithOptions]. It
+// re-derives its own verdict from the same two constants
+// [validateParameterSpaceLimits] checks (see the call inside [validateLimits])
+// rather than sharing state with it, so it has no effect on which
+// ValidationErrors are reported, only on whether the walk runs.
 func parameterSpaceOverCaps(t *JobTemplate) bool {
 	for _, s := range t.Steps {
 		if s.ParameterSpace == nil {
@@ -1190,8 +1122,8 @@ func taskParamValueCount(tp TaskParamDefinition) (count int, counted bool) {
 // hostRequirements: combined count, capability name lengths, and attribute
 // anyOf/allOf element counts. Structural correctness (presence, capability
 // name well-formedness and prefix, and attribute anyOf/allOf presence) and
-// reserved-capability value checks (reserved amount minimums, reserved
-// attribute allowed values) live in [validateHostRequirements] instead and
+// reserved-capability value checks (amount bounds, reserved attribute
+// allowed values) live in [validateHostRequirements] instead and
 // always run — see the invariant documented on [ValidateOptions].
 func validateHostRequirementLimits(hr HostRequirements, base string) ValidationErrors {
 	var errs ValidationErrors
@@ -1247,9 +1179,9 @@ func validateHostRequirementLimits(hr HostRequirements, base string) ValidationE
 // requirements: that the block declares something, that capability names are
 // non-empty and correctly prefixed, that each attribute constrains something,
 // and — for reserved capability names — that the value asked for is within
-// the spec-mandated domain (reserved amount minimums, reserved attribute
+// the spec-mandated domain (amount bounds, reserved attribute
 // allowed values). These are correctness checks, not size caps: a template
-// asking for vcpu: 0 is malformed, not oversized. So they always run -- see
+// with an amount max of 0 is malformed, not oversized. So they always run -- see
 // the invariant documented on [ValidateOptions]. The gated size caps
 // (combined count, name length, anyOf/allOf element counts) live in
 // [validateHostRequirementLimits] instead.
@@ -1271,7 +1203,7 @@ func validateHostRequirements(hr HostRequirements, base string, exprDeclared boo
 	}
 
 	// Capability names are case-insensitive (spec §3.3.1.1/§3.3.2.1), so two
-	// entries differing only in case name the SAME capability. Declaring both
+	// entries differing only in case name the same capability. Declaring both
 	// is a contradiction the scheduler cannot resolve.
 	seenAmounts := make(map[string]struct{}, len(hr.Amounts))
 	for i, a := range hr.Amounts {
@@ -1351,11 +1283,11 @@ func validateHostRequirements(hr HostRequirements, base string, exprDeclared boo
 // cyclomatic complexity within bounds.
 //
 // Without it a reference like {{Session.WorkingDirectory}} here would be
-// accepted and resolve to nothing at run time. The caller skips this entirely when the template declares EXPR;
-// checkTemplateExpressions covers the same position with the real evaluator
-// instead. Called unconditionally regardless of whether a value looks like a
-// bare number: validateFormatString is a no-op on a literal with no "{{"
-// reference.
+// accepted and resolve to nothing at run time. The caller skips this entirely
+// when the template declares EXPR; checkTemplateExpressions covers the same
+// position with the real evaluator instead. Called regardless of whether a
+// value looks like a bare number: validateFormatString does nothing on a
+// literal with no "{{" reference.
 func validateHostRequirementFormatStrings(hr HostRequirements, base string) ValidationErrors {
 	var errs ValidationErrors
 	for i, a := range hr.Amounts {
@@ -1379,16 +1311,15 @@ func validateHostRequirementFormatStrings(hr HostRequirements, base string) Vali
 	return errs
 }
 
-// validateReservedAmounts checks that any amount with a reserved capability
-// name (matched case-insensitively) has its Min and Max values (when present)
-// >= the spec-mandated minimum. Amounts with non-reserved names are unconstrained.
+// validateAmountBounds checks each amount requirement's Min and Max: at least
+// one must be present, Min must be non-negative, Max must be positive, and Min
+// must not exceed Max.
 //
 // Min/Max values that contain an unresolved format-string reference ("{{") are
 // skipped: the numeric value cannot be determined before job-parameter binding.
-// Nothing upstream of this check rejects a non-numeric Min/Max: the decoder
-// (decodeAmountBound) accepts any scalar (string, number, or boolean) without
-// requiring it to parse as a number, so a non-numeric bound is reported here,
-// by [checkReservedBound], not silently skipped.
+// The decoder (decodeAmountBound) accepts any scalar (string, number, or
+// boolean) without requiring it to parse as a number, so a non-numeric bound is
+// reported by [parseAmountBound], not skipped.
 func validateAmountBounds(amounts []AmountRequirement, base string) ValidationErrors {
 	var errs ValidationErrors
 	for i, a := range amounts {
@@ -1429,11 +1360,11 @@ func validateAmountBounds(amounts []AmountRequirement, base string) ValidationEr
 	return errs
 }
 
-// checkReservedBound validates that a *string capability bound (Min or Max)
-// is >= the reserved minimum. Nil bounds and bounds containing format-string
-// references ("{{") are skipped. A bound that fails to parse as a number, or
-// that parses to a non-finite value (NaN, ±Inf), is reported as a validation
-// error rather than skipped.
+// parseAmountBound parses a *string capability bound (Min or Max) as a finite
+// number. Nil bounds and bounds containing format-string references ("{{") are
+// skipped. A bound that fails to parse as a number, or that parses to a
+// non-finite value (NaN, ±Inf), is reported as a validation error rather than
+// skipped.
 func parseAmountBound(val *string, ptr string) (value float64, ok bool, errs ValidationErrors) {
 	if val == nil || strings.Contains(*val, "{{") {
 		return 0, false, nil
@@ -1459,7 +1390,7 @@ func parseAmountBound(val *string, ptr string) (value float64, ok bool, errs Val
 // allowed set defined by the OpenJD spec. Attributes with non-reserved names
 // are unconstrained.
 //
-// Attribute VALUES are compared CASE-INSENSITIVELY, per OpenJD
+// Attribute values are compared case-insensitively, per OpenJD
 // jobtemplate-2023-09 ("This comparison is case-insensitive") and matching the
 // matcher's EqualFold value comparison. The allowed-set keys are lowercase, so
 // each value is lowercased before lookup.
@@ -1521,7 +1452,7 @@ func sortedMapKeys(m map[string]bool) string {
 // with the namespace.
 //
 // Reserved-value checks ([validateReservedAmounts], [validateReservedAttributes])
-// deliberately key on the FULL name, so a vendor-prefixed capability is not
+// key on the full name, so a vendor-prefixed capability is not
 // treated as reserved: "mycompany:amount.worker.vcpu" names the vendor's own
 // capability, not the spec's. The spec does not settle this, and no conformance
 // fixture covers it.
@@ -1651,13 +1582,14 @@ func validatePathFileFilterLimits(f PathFileFilter, ptr string) ValidationErrors
 // ─── userInterface validation ─────────────────────────────────────────────────
 
 // controlsByType is the OpenJD base-spec userInterface control vocabulary,
-// scoped per parameter type as the spec defines it. The spec does NOT share one
+// scoped per parameter type as the spec defines it. The spec does not share one
 // vocabulary across types: LINE_EDIT is valid on STRING and invalid on PATH,
 // which needs a CHOOSE_* dialog instead. Read-only after initialization.
 //
 // The EXPR extension's own types and its *_LIST control variants are included
-// (RFC 0007). Their presence here is not a gate: validateEXPRParamType rejects an EXPR type on a template that does not
-// declare the extension before any control is looked at.
+// (RFC 0007). Their presence here is not a gate: validateEXPRParamType rejects
+// an EXPR type on a template that does not declare the extension before any
+// control is looked at.
 var controlsByType = map[JobParamType]map[ControlType]struct{}{
 	JobParamTypeString: {
 		ControlLineEdit:      {},
@@ -1753,7 +1685,7 @@ func validateUserInterfaceControl(ui *ParameterUserInterface, p JobParameter, ct
 		// A BOOL parameter is the one case where CHECK_BOX carries no
 		// allowedValues: the base spec's CHECK_BOX means "a STRING restricted
 		// to a true/false pair", and needs the pair to know which is which,
-		// but RFC 0007's BOOL is already two-valued and FORBIDS allowedValues
+		// but RFC 0007's BOOL is already two-valued and forbids allowedValues
 		// outright. Requiring the pair here would make the two rules
 		// contradict each other and reject 2.9--bool-param.yaml.
 		if p.Type != JobParamTypeBool {
@@ -1784,7 +1716,7 @@ func validateUserInterfaceControl(ui *ParameterUserInterface, p JobParameter, ct
 //   - default must be one of allowedValues when that list is given
 //   - default and every allowedValues entry must satisfy minLength/maxLength
 //     (STRING, PATH) or minValue/maxValue (INT, FLOAT)
-//   - an INT value must actually be an integer, and an INT/FLOAT value a number
+//   - an INT value must be an integer, and an INT/FLOAT value a number
 func validateParamValueConstraints(p JobParameter, ptr string) ValidationErrors {
 	var errs ValidationErrors
 
@@ -1903,7 +1835,7 @@ const (
 // validateFormatString checks one format string: that its interpolation
 // expressions parse, and that every reference is in scope where it appears.
 //
-// The legal reference PREFIXES for scope are derived from the shared Scope
+// The legal reference prefixes for scope are derived from the shared Scope
 // declaration (scope.go) rather than hand-maintained here (spec §7.3.1).
 // Matching is exact-case because value references are case-sensitive —
 // "param.X" is not "Param.X".
@@ -1957,22 +1889,19 @@ func requireNonEmptyIfSet(set bool, n int, ptr, noun string) ValidationErrors {
 	}}
 }
 
-// checkControlChars is the one Unicode Cc scan this package performs, in both
-// of the two variants it needs: the STRICT one (allowLineBreaks false), which
-// rejects every control character, and the RELAXED one (allowLineBreaks true),
-// which permits LF, CR and TAB and rejects the rest.
+// checkControlChars is the one Unicode Cc scan this package performs, in the
+// two variants it needs: the strict one (allowLineBreaks false), which rejects
+// every control character, and the relaxed one (allowLineBreaks true), which
+// permits LF, CR and TAB and rejects the rest.
 //
-// The two variants also carry the two DIFFERENT messages, which is half the
-// reason they are one function. Before this was extracted the relaxed scan
-// existed twice, character for character, under
-// [validateArgStringChars] and [validateDescriptionText] -- so the EXPR
-// specification's amendment to <ArgString> was encoded in two places, and a
-// reader who found one of the two identical messages in a test could not tell
-// which scan had produced it.
+// The two variants carry different messages, which is why they share one
+// function: [validateArgStringChars] and [validateDescriptionText] both use the
+// relaxed scan, so the EXPR specification's amendment to <ArgString> is encoded
+// in one place.
 //
 // The Cc category covers both C0 (U+0000-U+001F, U+007F) and C1
 // (U+0080-U+009F), so either variant catches the whole range the spec excludes.
-// Only the FIRST offending rune is reported: one control character in a value
+// Only the first offending rune is reported: one control character in a value
 // is a rejection, not a list.
 func checkControlChars(v, ptr string, allowLineBreaks bool) ValidationErrors {
 	for _, r := range v {
@@ -2000,7 +1929,7 @@ func checkControlChars(v, ptr string, allowLineBreaks bool) ValidationErrors {
 }
 
 // validateNoControlChars rejects Unicode Cc control characters in a name-like
-// string -- the STRICT variant of [checkControlChars], with no line-break
+// string -- the strict variant of [checkControlChars], with no line-break
 // exemption. A control character in a name corrupts logs, terminal output, and
 // any UI rendering it.
 func validateNoControlChars(v, ptr string) ValidationErrors {
@@ -2009,20 +1938,20 @@ func validateNoControlChars(v, ptr string) ValidationErrors {
 
 // validateArgStringChars checks an <ArgString> under the EXPR extension.
 //
-// The EXPR specification amends the ArgString TYPE: "The ArgString type is
+// The EXPR specification amends the ArgString type: "The ArgString type is
 // amended to allow CR (U+000D), LF (U+000A), and TAB (U+0009) characters to
 // support multi-line expressions in YAML literal block scalars"
 // (wiki/2026-02-Expression-Language.md, "When EXPR is enabled", item 3).
 //
-// That is a whole-value amendment, not a carve-out for the inside of a {{ }}.
+// The amendment applies to the whole value, not just the inside of a {{ }}.
 // Splitting the argument with fmtstring.Segments and exempting only the
 // expression bodies would be wrong: the conformance fixtures this relaxation
 // exists for (expr1.1--arithmetic-expr and its nine siblings) are multi-line
-// PYTHON SCRIPTS with single-line {{ }} expressions embedded, so every newline
+// Python scripts with single-line {{ }} expressions embedded, so every newline
 // in them is in literal text.
 //
-// Every OTHER Cc character stays rejected, and <CommandString> -- a separate
-// type in the same schema (Template Schemas §5.1 and §5.2) -- is NOT amended,
+// Every other Cc character stays rejected, and <CommandString>, a separate
+// type in the same schema (Template Schemas §5.1 and §5.2), is not amended,
 // so a command keeps the base-spec rule even under EXPR.
 //
 // The scan itself is [checkControlChars]' relaxed variant, shared with
@@ -2033,7 +1962,7 @@ func validateArgStringChars(v, ptr string) ValidationErrors {
 }
 
 // validateDescriptionText checks a <Description> (spec §7.2): at most 2048
-// characters, and no Cc control characters EXCEPT newline, carriage return, and
+// characters, and no Cc control characters except newline, carriage return, and
 // horizontal tab, which a description is explicitly allowed to contain. The
 // character half is [checkControlChars]' relaxed variant, shared with
 // [validateArgStringChars]; the length cap is this function's own.
@@ -2075,8 +2004,7 @@ func validateSingleStepDelta(p JobParameter, ui *ParameterUserInterface, ptr str
 	// SPIN_BOX_LIST is the list counterpart of SPIN_BOX and carries the same
 	// stepper semantics per element, so RFC 0007 gives it singleStepDelta too
 	// (2.13--list-int-param.yaml and 2.14--list-float-param.yaml both declare
-	// it). Accepting only the scalar control here is what held both fixtures
-	// back after the list TYPES already validated.
+	// it).
 	if ui.Control != ControlSpinBox && ui.Control != ControlSpinBoxList {
 		return ValidationErrors{{
 			Pointer: ptr,
@@ -2193,7 +2121,7 @@ func validateLengthConstraintSanity(p JobParameter, ptr string) ValidationErrors
 //   - None of them may be combined with allowedValues — each is documented
 //     "Cannot be used when allowedValues is provided"; DROPDOWN_LIST is the
 //     control for a fixed value set.
-//   - The control must agree with objectType. The spec derives the DEFAULT
+//   - The control must agree with objectType. The spec derives the default
 //     control from objectType (FILE picks a CHOOSE_*_FILE variant, otherwise
 //     CHOOSE_DIRECTORY), and the conformance suite requires rejecting an
 //     explicit control that contradicts it — a file dialog cannot pick a
@@ -2539,7 +2467,7 @@ func validateFileFilters(p JobParameter, ptr string) ValidationErrors {
 	if len(p.FileFilters) == 0 && p.FileFilterDefault == nil {
 		return nil
 	}
-	// Point at whichever field was actually declared, so a
+	// Point at whichever field was declared, so a
 	// fileFilterDefault-only parameter doesn't get an error pointing at
 	// the sibling fileFilters field it never set.
 	field := "fileFilterDefault"
@@ -2621,7 +2549,7 @@ func validateAction(a Action, ptr string, scope Scope, files map[string]struct{}
 	}
 	// A command or argument carrying a tab or line break cannot survive the
 	// round trip to an OS process argv intact. The EXPR extension relaxes that
-	// for multi-line EXPRESSIONS -- an expression body is evaluated away before
+	// for multi-line expressions -- an expression body is evaluated away before
 	// argv is built -- but not for the literal text around them, which is why
 	// the EXPR arm splits the string rather than skipping the check.
 	// The command keeps the base-spec rule unconditionally: EXPR amends
@@ -2817,7 +2745,7 @@ func validateEnvironments(envs []Environment, base string, scope Scope, exprDecl
 // ptr is the JSON-pointer base for the embeddedFiles array itself, e.g.
 // "/steps/0/script/embeddedFiles" or "/jobEnvironments/0/script/embeddedFiles".
 //
-// This check is structural correctness — it runs unconditionally, NOT gated
+// This check is structural correctness — it runs unconditionally, not gated
 // behind EnforceLimits.
 func validateEmbeddedFiles(files []EmbeddedFile, set bool, ptr string) ValidationErrors {
 	var errs ValidationErrors
@@ -3080,7 +3008,7 @@ func validateTaskParam(tp TaskParamDefinition, base string, seen map[string]stru
 // Skipped when exprDeclared: checkTemplateExpressions covers this position
 // with the real evaluator instead.
 //
-// RangeExpr (the whole-field alternative form) is checked too, but NOT here:
+// RangeExpr (the whole-field alternative form) is checked too, but not here:
 // [validateTaskParamRangeAndChunks], this function's caller, covers it on the
 // base-spec path, and [checkParameterSpaceExpressions] (exprcheck.go) covers
 // it on the EXPR path. The EXPR side targets section 1.3.12's real per-type
@@ -3141,7 +3069,7 @@ func validateTaskParamRangeAndChunks(tp TaskParamDefinition, base string, exprDe
 
 	errs = append(errs, validateRangeListValues(tp, base, exprDeclared)...)
 
-	// RangeExpr (the whole-field alternative to RangeList) is ALSO a
+	// RangeExpr (the whole-field alternative to RangeList) is also a
 	// format-string position: without this check a base-spec template with
 	// range: "{{Session.WorkingDirectory}}" would validate with zero errors
 	// and resolve to nothing at run time, the same hole RangeList's own check

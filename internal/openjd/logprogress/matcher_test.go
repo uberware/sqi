@@ -11,7 +11,7 @@ import (
 
 func mustCompile(t *testing.T, progress, status []string, frames string) *Matcher {
 	t.Helper()
-	m, err := Compile(progress, status, frames)
+	m, err := Compile(progress, status, frames, nil)
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
@@ -150,6 +150,37 @@ func TestMatcher_Status(t *testing.T) {
 	}
 }
 
+// TestMatcher_StatusCleanedBeforeCut pins the order clean, then test for
+// empty, then cut: leading space the cleaner drops must not use up the
+// MaxStatusBytes limit.
+func TestMatcher_StatusCleanedBeforeCut(t *testing.T) {
+	m, err := Compile(nil, []string{`^(?P<status>.*)$`}, "", strings.TrimSpace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := m.Observe(strings.Repeat(" ", 250) + "hello")
+	if !u.HasStatus || u.Status != "hello" {
+		t.Errorf("Observe = %+v, want status %q", u, "hello")
+	}
+	long := strings.Repeat("x", 250)
+	if u := m.Observe("  " + long); len(u.Status) != MaxStatusBytes {
+		t.Errorf("cleaned text not cut to %d bytes: %d", MaxStatusBytes, len(u.Status))
+	}
+}
+
+// TestMatcher_StatusEmptyAfterCleanFallsThrough pins that a capture the cleaner
+// empties sets nothing and the next status pattern is tried, as an invalid
+// progress value falls through to the next progress pattern.
+func TestMatcher_StatusEmptyAfterCleanFallsThrough(t *testing.T) {
+	m, err := Compile(nil, []string{`^A(?P<status>\s*)$`, `^(A.*)$`}, "", strings.TrimSpace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u := m.Observe("A   "); !u.HasStatus || u.Status != "A" {
+		t.Errorf("Observe = %+v, want the second pattern's status %q", u, "A")
+	}
+}
+
 func TestMatcher_ProgressAndStatusIndependent(t *testing.T) {
 	m := mustCompile(t, []string{`(?P<percent>\d+)%`}, []string{`^(?P<status>\d+% .*)$`}, "")
 	u := m.Observe("50% rendering")
@@ -183,12 +214,12 @@ func TestCompile_Errors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := Compile(tt.progress, tt.status, tt.frames); err == nil {
+			if _, err := Compile(tt.progress, tt.status, tt.frames, nil); err == nil {
 				t.Fatal("expected error")
 			}
 		})
 	}
-	if _, err := Compile(pct, nil, "x"); err != nil {
+	if _, err := Compile(pct, nil, "x", nil); err != nil {
 		t.Errorf("frames must be ignored without frame forms: %v", err)
 	}
 }

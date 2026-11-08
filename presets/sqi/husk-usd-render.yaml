@@ -92,8 +92,7 @@ template:
               defaultTaskCount: 1
               rangeConstraint: CONTIGUOUS
       SQI_LOG_PROGRESS:
-        # From husk 21.0.631's output (test/integration/testdata/progress):
-        # the "a" in -V 2a turns on ALF_PROGRESS lines, the percent through
+        # The "a" in -V 2a turns on ALF_PROGRESS lines, the percent through
         # the whole run, which is the task's chunk. Each frame starts with a
         # ">>> Render <image> (i of n) - WxH" line.
         progress:

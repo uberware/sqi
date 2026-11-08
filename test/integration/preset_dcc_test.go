@@ -3,14 +3,13 @@
 package integration
 
 // preset_dcc_test.go — executes the Blender, Nuke and Houdini reference
-// presets through a real sqi-server and a real sqi-worker against the REAL
+// presets through a real sqi-server and a real sqi-worker against the real
 // applications, then asserts on the files they render.
 //
-// Why this file exists. The argv goldens (Tier 1) prove a preset still expands
-// to the command line someone reviewed, and the recording stub (Tier 3) proves
-// sqi delivers that command line. Neither can show that the vendor application
-// accepts it. These cases do, and each fixed a question the registry's caveats
-// had to leave open: whether Blender pads the "####" in -o and appends its own
+// The argv goldens (Tier 1) prove a preset expands to the command line that was
+// reviewed, and the recording stub (Tier 3) proves sqi delivers that command
+// line. Neither can show that the vendor application accepts it. These cases
+// do: whether Blender pads the "####" in -o and appends its own
 // extension, whether Nuke reads "-F 1-1" as the single frame 1, whether a view
 // layer name containing quotes survives to Blender, and whether the hython
 // driver renders exactly the frames of a stepped or listed range.
@@ -18,11 +17,11 @@ package integration
 // Each case builds its own scene with the application (testdata/dcc/*.py), so no
 // binary fixture lives in the repository.
 //
-// NOT tagged `integration`, like preset_ffmpeg_test.go, so the CI `test` job
+// Not tagged `integration`, like preset_ffmpeg_test.go, so the CI `test` job
 // compiles, lints and runs it.
 //
-// They skip when the application is absent, which means A LOCAL PASS PROVES
-// NOTHING ON ITS OWN. The registry (presets/validation-tiers.yaml) records each
+// They skip when the application is absent, which means a local pass proves
+// nothing on its own. The registry (presets/validation-tiers.yaml) records each
 // case with requires_app, and SQI_TEST_REQUIRE_APPS=blender,nuke,houdini (what
 // `make test-dcc` sets) turns a skip into a failure. Look for the
 // "--- PASS: TestPresetDCC" lines.
@@ -167,8 +166,8 @@ func runPresetJobWithin(t *testing.T, ts *testServer, farmID, queueID, preset, w
 	return jobID, report
 }
 
-// jobTaskCount returns how many tasks a job fanned out into.
-func jobTaskCount(t *testing.T, ts *testServer, jobID string) int {
+// jobTaskIDs returns the IDs of the tasks a job fanned out into.
+func jobTaskIDs(t *testing.T, ts *testServer, jobID string) []string {
 	t.Helper()
 	var resp struct {
 		Items []struct {
@@ -177,7 +176,17 @@ func jobTaskCount(t *testing.T, ts *testServer, jobID string) int {
 	}
 	mustDoJSON(t, http.MethodGet, "http://"+ts.HTTPAddr+"/api/v1/jobs/"+jobID+"/tasks",
 		nil, "", http.StatusOK, &resp)
-	return len(resp.Items)
+	ids := make([]string, len(resp.Items))
+	for i, it := range resp.Items {
+		ids[i] = it.ID
+	}
+	return ids
+}
+
+// jobTaskCount returns how many tasks a job fanned out into.
+func jobTaskCount(t *testing.T, ts *testServer, jobID string) int {
+	t.Helper()
+	return len(jobTaskIDs(t, ts, jobID))
 }
 
 // assertTaskCount fails unless the job fanned out into want tasks.
@@ -374,16 +383,11 @@ func assertStepChunkProgress(t *testing.T, ts *testServer, farmID, queueID, pres
 		t.Fatalf("ApplyChunkPatch: %v", err)
 	}
 	job := submitPresetJob(t, ts, farmID, queueID, tmpl, params)
-	var tasks struct {
-		Items []struct {
-			ID string `json:"id"`
-		} `json:"items"`
+	ids := jobTaskIDs(t, ts, job)
+	if len(ids) != 1 {
+		t.Fatalf("job ran %d tasks, want 1", len(ids))
 	}
-	mustDoJSON(t, http.MethodGet, apiURL(ts, "/api/v1/jobs/"+job+"/tasks"), nil, "", http.StatusOK, &tasks)
-	if len(tasks.Items) != 1 {
-		t.Fatalf("job ran %d tasks, want 1", len(tasks.Items))
-	}
-	taskID := tasks.Items[0].ID
+	taskID := ids[0]
 	seen := watchTaskProgress(t, ts, taskID, dccJobTimeout)
 	if got := pollJobStatus(t, ts, job, []string{"completed", "failed", "canceled"}, dccJobTimeout); got != "completed" {
 		t.Fatalf("job status = %q, want completed%s", got, reportFailedTasks(t, ts, job))
@@ -555,7 +559,7 @@ func assertPNGSize(t *testing.T, dir string, names []string, w, h int) {
 
 // TestPresetDCC_Nuke_WriteRender runs nuke-write-render under a real Nuke. A
 // stepped range expands to one single-frame task per requested frame ("-F 1-1",
-// "-F 4-4") because a CONTIGUOUS chunk never spans a gap; this is the case that
+// "-F 4-4") because a contiguous chunk never spans a gap; this is the case that
 // shows Nuke reads "-F 1-1" as the single frame 1, and that -X renders only the
 // named Write node.
 func TestPresetDCC_Nuke_WriteRender(t *testing.T) {
@@ -644,7 +648,7 @@ func hythonOutputs(t *testing.T, hython, dir string, names []string) map[string]
 }
 
 // TestPresetDCC_Houdini_ROPRender runs houdini-rop-render under a real hython.
-// The embedded driver turns a NONCONTIGUOUS chunk into one rop.render() call per
+// The embedded driver turns a non-contiguous chunk into one rop.render() call per
 // run of frames, so the files on disk are the proof that a stepped range
 // ("1-12:2") and a listed one ("1-3,7,8") render exactly their frames, and that
 // a range longer than a chunk fans out and still covers every frame. Each file
@@ -865,8 +869,8 @@ func TestPresetDCC_Houdini_USDRecord(t *testing.T) {
 	})
 
 	// usdrecord prints "Recording time code" before each frame. Karma CPU at
-	// this width takes a few seconds a frame on an M2 Max, past the worker's
-	// 2 s progress throttle, so the bar is seen at more than one frame.
+	// this width takes a few seconds a frame, past the worker's 2 s progress
+	// throttle, so the bar is seen at more than one frame.
 	t.Run("progress moves within a chunk", func(t *testing.T) {
 		out := filepath.Join(dir, "progress")
 		assertChunkProgress(t, ts, farmID, queueID, "usdrecord-render", map[string]string{
@@ -995,8 +999,8 @@ func TestPresetDCC_Houdini_HuskRender(t *testing.T) {
 
 	// husk's ALF_PROGRESS lines move within each frame. The test layer renders
 	// in milliseconds, so this one path-traces many more samples at a larger
-	// size, about two seconds a frame on an M2 Max, past the worker's 2 s
-	// progress throttle.
+	// size, about two seconds a frame, past the worker's 2 s progress
+	// throttle.
 	t.Run("progress moves within a chunk", func(t *testing.T) {
 		out := filepath.Join(dir, "renders", "progress")
 		path := filepath.Join(dir, "progress.usda")

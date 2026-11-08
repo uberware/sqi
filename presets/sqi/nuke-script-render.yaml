@@ -70,11 +70,11 @@ template:
               defaultTaskCount: 10
               rangeConstraint: CONTIGUOUS
       SQI_LOG_PROGRESS:
-        # From Nuke 17.1v2's output (test/integration/testdata/progress):
-        # after the last Write node has written a frame, Nuke prints
-        # "Frame N (i of n)" on a line of its own, once per frame however
-        # many Write nodes render. The "Writing ... took" lines before it
-        # repeat once per Write node and are left alone.
+        # Nuke 17.1v2 prints "Frame N (i of n)" on a line of its own once the
+        # last Write node has written a frame, once per frame however many
+        # Write nodes render (sample output: test/integration/testdata/progress).
+        # The "Writing ... took" lines before it repeat once per Write node
+        # and do not match.
         progress:
           - '^Frame (?P<framedone>-?\d+) \(\d+ of \d+\)'
         status:
