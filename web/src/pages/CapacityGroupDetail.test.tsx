@@ -313,6 +313,53 @@ describe('join tokens (sized groups)', () => {
     expect(screen.queryByLabelText(/new join token/i)).not.toBeInTheDocument()
   })
 
+  it('drops the raw token when navigating straight to another group', async () => {
+    stubApi({
+      ...SIZED,
+      'POST /capacity-groups/cg-1/tokens': {
+        status: 201,
+        body: {
+          id: 't-9',
+          token: 'sqg_RAWSECRETVALUE',
+          prefix: 'sqg_RAWS',
+          name: '',
+          expires_at: '2026-12-07T00:00:00Z',
+          created_at: '2026-11-07T00:00:00Z',
+        },
+      },
+      'GET /capacity-groups/cg-2': { body: group({ id: 'cg-2', name: 'other-spot' }) },
+      'GET /capacity-groups/cg-2/members': { body: [] },
+      'GET /capacity-groups/cg-2/tokens': { body: [] },
+    })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    // Start on cg-2 so it is cached: going back to it then renders at once,
+    // without a loading state that would unmount the token section anyway.
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={['/capacity-groups/cg-2']}>
+          <ToastProvider>
+            <Link to="/capacity-groups/cg-1">go to cloud-spot</Link>
+            <Link to="/capacity-groups/cg-2">go to other-spot</Link>
+            <Routes>
+              <Route path="/capacity-groups/:id" element={<CapacityGroupDetail />} />
+            </Routes>
+          </ToastProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    await screen.findByRole('heading', { name: /other-spot/i })
+    fireEvent.click(screen.getByRole('link', { name: /go to cloud-spot/i }))
+    await screen.findByRole('heading', { name: /cloud-spot/i })
+    fireEvent.click(await screen.findByRole('button', { name: /create token/i }))
+    await screen.findByLabelText(/new join token/i)
+
+    fireEvent.click(screen.getByRole('link', { name: /go to other-spot/i }))
+    await screen.findByRole('heading', { name: /other-spot/i })
+    await screen.findByRole('button', { name: /create token/i })
+    expect(screen.queryByLabelText(/new join token/i)).not.toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('sqg_RAWSECRETVALUE')
+  })
+
   it('omits an empty name from the request', async () => {
     const fetchMock = stubApi({
       ...SIZED,

@@ -28,6 +28,13 @@ describe('CopyButton', () => {
     expect(screen.queryByText('job-abc123def456')).not.toBeInTheDocument()
   })
 
+  it('keeps the value out of its tooltip, which may be a secret', () => {
+    render(<CopyButton value="sqg_RAWSECRETVALUE" display="token" />)
+    const button = screen.getByRole('button', { name: /copy token/i })
+    expect(button).toHaveAttribute('title', 'Click to copy')
+    expect(button.outerHTML).not.toContain('sqg_RAWSECRETVALUE')
+  })
+
   it('does not throw when clipboard write rejects', () => {
     const writeText = vi.fn().mockRejectedValue(new Error('insecure'))
     Object.defineProperty(navigator, 'clipboard', {

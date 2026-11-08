@@ -53,7 +53,7 @@ export default function CopyButton({ value, display, className }: CopyButtonProp
         .filter(Boolean)
         .join(' ')}
       onClick={handleCopy}
-      title={copied ? 'Copied!' : `Click to copy: ${value}`}
+      title={copied ? 'Copied!' : 'Click to copy'}
       aria-label={copied ? 'Copied!' : `Copy ${label}`}
     >
       <span className={styles.text}>{label}</span>

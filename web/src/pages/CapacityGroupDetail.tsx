@@ -432,7 +432,8 @@ function TokensSection({ group }: { group: CapacityGroup }) {
       <p className={styles.help}>
         A worker enrolls with a token to join this group. Revoking a token does not revoke
         credentials already issued from it: workers that enrolled keep their credentials and stay
-        members until you remove them.
+        members. Removing such a member does not keep it out either: it rejoins at its next
+        registration unless you also revoke its credential.
       </p>
 
       {created !== null && <NewTokenCallout created={created} onDone={dismiss} />}
@@ -607,7 +608,7 @@ export default function CapacityGroupDetail() {
       <div className={styles.body}>
         <StatusPanel group={group} />
         <MembersSection group={group} canManage={canManage} />
-        {group.kind === 'sized' && canManage && <TokensSection group={group} />}
+        {group.kind === 'sized' && canManage && <TokensSection key={group.id} group={group} />}
         <SettingsPanel group={group} />
       </div>
     </div>
