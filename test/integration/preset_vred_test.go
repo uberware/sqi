@@ -397,3 +397,36 @@ func TestPresetTier3_FoldsAScriptPathQuotedInsideAnArgument(t *testing.T) {
 		}
 	}
 }
+
+// TestPresetVRED_EmitsStatus pins the one directive render.py writes to file
+// descriptor 1: a status line naming the chunk's first and last frame, before
+// the render call. There is no progress line, as startRenderToFile blocks and
+// reports nothing between its start and end. Only the stub VRED has been run;
+// no VRED has.
+func TestPresetVRED_EmitsStatus(t *testing.T) {
+	python := findPython3(t)
+	if python == "" {
+		t.Skip("no working Python 3 on PATH (tried python3, python)")
+	}
+	for _, preset := range vredPresets {
+		params := map[string]string{"SceneFile": "/mnt/show/cars/hero.vpb", "Frames": "3-6", "FramesPerTask": "4"}
+		if preset == "vred-viewpoint-render" {
+			params["View"] = "Front"
+		}
+		snap, err := capturePreset(t, preset, params)
+		if err != nil {
+			t.Fatalf("%s: Capture: %v", preset, err)
+		}
+		task := snap.Steps[0].Tasks[0]
+		t.Run(preset, func(t *testing.T) {
+			_, stdout := runVREDScript(t, python, task, "modules", "", "")
+			want := "openjd_status: rendering frames 3–6\nSQI_RENDER: OK\n"
+			if stdout != want {
+				t.Errorf("stdout:\n%s\nwant:\n%s", stdout, want)
+			}
+			if strings.Contains(stdout, "openjd_progress") {
+				t.Errorf("stdout has a progress line:\n%s", stdout)
+			}
+		})
+	}
+}

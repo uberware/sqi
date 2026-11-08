@@ -63,7 +63,8 @@ readme: |
 
   The script turns on console logging, opens the scene, sets the render item's
   first and last frame to the task's chunk and its step to 1, and runs
-  `render.animation` for the pass group. It then prints `SQI_RENDER: OK` and
+  `render.animation` for the pass group, after an `openjd_status` naming the
+  frames. It then prints `SQI_RENDER: OK` and
   quits Modo with `app.quit`. On any error it prints `SQI_RENDER: FAILED:` with
   the reason and quits.
 
@@ -288,6 +289,9 @@ template:
                   # Keyword arguments, so no job value becomes command text.
                   lx.command("scene.open", filename=params["scene"], type="normal")
                   set_range(params["start"], params["stop"])
+                  # One status for the whole chunk: the render command blocks and
+                  # reports nothing between its start and end.
+                  emit(u"openjd_status: rendering frames %d\u2013%d" % (params["start"], params["stop"]))
                   # The group name is a job value, so it goes in as a keyword
                   # argument; the whole-scene form has none, so its command text
                   # is a literal. Whether the two forms are equivalent in Modo

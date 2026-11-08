@@ -504,3 +504,26 @@ func TestPresetFusion_ScriptDrivesFusion(t *testing.T) {
 		})
 	}
 }
+
+// TestPresetFusion_EmitsStatus pins the one directive render.lua writes to
+// standard output: a status line naming the task's first and last frame, before
+// the Render call. There is no progress line, as Render with Wait blocks and
+// reports nothing between its start and end. Only the stub Fusion has been run;
+// no Fusion has.
+func TestPresetFusion_EmitsStatus(t *testing.T) {
+	lua := findLua(t)
+	snap, err := capturePreset(t, fusionSaverPreset, map[string]string{
+		"SceneFile": "/mnt/show/shot0010.comp", "Frames": "3-7", "Saver": "MainOut", "FramesPerTask": "10",
+	})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	_, stdout := runFusionScript(t, lua, snap.Steps[0].Tasks[0], "ok")
+	want := "openjd_status: rendering frames 3–7\nSQI_RENDER: OK\n"
+	if stdout != want {
+		t.Errorf("stdout:\n%s\nwant:\n%s", stdout, want)
+	}
+	if strings.Contains(stdout, "openjd_progress") {
+		t.Errorf("stdout has a progress line:\n%s", stdout)
+	}
+}

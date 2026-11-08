@@ -1199,3 +1199,85 @@ func unrealCallArg(calls, name string) string {
 	}
 	return ""
 }
+
+// TestPresetUnreal_EmitsJobProgress pins the directives the script writes to
+// file descriptor 1 as the movie pipeline reports back. The job and queue
+// presets print a status naming each finished job and the share of the queue's
+// jobs done, all before the success line; the shot preset, which renders one
+// job per task, prints one status naming its shot when it starts. Only the stub
+// editor has been run; no Unreal has.
+func TestPresetUnreal_EmitsJobProgress(t *testing.T) {
+	python := findPython3(t)
+	if python == "" {
+		t.Skip("no working Python 3 on PATH (tried python3, python)")
+	}
+	const queueA = "/Game/Cinematics/MRQ_HeroQueue"
+	threeJobs := `{"` + queueA + `": ["Hero A", "Hero B", "Hero C"]}`
+	events := "job:1:Hero A;job:1:Hero B;job:1:Hero C;finished:1"
+
+	t.Run("queue", func(t *testing.T) {
+		snap, err := capturePreset(t, unrealQueue, map[string]string{
+			"SceneFile": `C:\Projects\HeroFilm\HeroFilm.uproject`, "QueueAsset": queueA,
+		})
+		if err != nil {
+			t.Fatalf("Capture: %v", err)
+		}
+		for _, run := range unrealRuns {
+			_, stdout, _ := runUnrealScript(t, python, snap.Steps[0].Tasks[0], run, events, "", threeJobs, "")
+			want := "" +
+				"openjd_status: finished job Hero A\nopenjd_progress: 33\n" +
+				"openjd_status: finished job Hero B\nopenjd_progress: 66\n" +
+				"openjd_status: finished job Hero C\nopenjd_progress: 100\n" +
+				"SQI_RENDER: OK\n"
+			if stdout != want {
+				t.Errorf("%s: stdout:\n%s\nwant:\n%s", run, stdout, want)
+			}
+		}
+	})
+	t.Run("job", func(t *testing.T) {
+		snap, err := capturePreset(t, unrealJob, map[string]string{
+			"SceneFile": `C:\Projects\HeroFilm\HeroFilm.uproject`, "LevelSequence": "/Game/Cinematics/Hero/SEQ_Hero",
+			"Map": "/Game/Maps/Hero", "MovieRenderConfig": "/Game/Cinematics/MRQ_Final",
+		})
+		if err != nil {
+			t.Fatalf("Capture: %v", err)
+		}
+		_, stdout, _ := runUnrealScript(t, python, snap.Steps[0].Tasks[0], "import", "job:1:SEQ_Hero;finished:1", "", "", "")
+		want := "openjd_status: finished job SEQ_Hero\nopenjd_progress: 100\nSQI_RENDER: OK\n"
+		if stdout != want {
+			t.Errorf("stdout:\n%s\nwant:\n%s", stdout, want)
+		}
+	})
+	t.Run("a failed job reports no progress", func(t *testing.T) {
+		snap, err := capturePreset(t, unrealQueue, map[string]string{
+			"SceneFile": `C:\Projects\HeroFilm\HeroFilm.uproject`, "QueueAsset": queueA,
+		})
+		if err != nil {
+			t.Fatalf("Capture: %v", err)
+		}
+		_, stdout, _ := runUnrealScript(t, python, snap.Steps[0].Tasks[0], "import", "job:1:Hero A;job:0:Hero B;finished:1", "", threeJobs, "")
+		if !strings.HasPrefix(stdout, "openjd_status: finished job Hero A\nopenjd_progress: 33\n") ||
+			strings.Contains(stdout, "finished job Hero B") || strings.Contains(stdout, "openjd_progress: 66") ||
+			strings.Contains(stdout, "SQI_RENDER: OK") {
+			t.Errorf("stdout:\n%s", stdout)
+		}
+	})
+	t.Run("shot", func(t *testing.T) {
+		params := map[string]string{
+			"SceneFile": `C:\Projects\HeroFilm\HeroFilm.uproject`, "LevelSequence": "/Game/Cinematics/Hero/SEQ_Hero",
+			"Map": "/Game/Maps/Hero", "MovieRenderConfig": "/Game/Cinematics/MRQ_Final",
+			"Shots": unrealShots(t, "sh010"),
+		}
+		snap, err := capturePreset(t, unrealShot, params)
+		if err != nil {
+			t.Fatalf("Capture: %v", err)
+		}
+		seqObject := unrealObjectPath("/Game/Cinematics/Hero/SEQ_Hero")
+		assets := string(mustMarshal(t, map[string]json.RawMessage{seqObject: json.RawMessage(unrealShots(t, "sh010", "sh020"))}))
+		_, stdout, _ := runUnrealScript(t, python, snap.Steps[0].Tasks[0], "import", "job:1:SEQ_Hero;finished:1", "", assets, unrealShotNameFormat)
+		want := "openjd_status: rendering sh010\nSQI_RENDER: OK\n"
+		if stdout != want {
+			t.Errorf("stdout:\n%s\nwant:\n%s", stdout, want)
+		}
+	})
+}

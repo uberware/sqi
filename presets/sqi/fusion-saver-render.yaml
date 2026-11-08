@@ -53,7 +53,7 @@ readme: |
   never falls back to rendering the whole comp. Otherwise it puts every other
   Saver in pass-through (`TOOLB_PassThrough`), takes the chosen one out of
   pass-through, and calls `Render` for the task's frames, waiting for it to
-  finish. The comp is never saved, so the file on disk keeps its Savers as
+  finish, after an `openjd_status` naming the frames. The comp is never saved, so the file on disk keeps its Savers as
   they were. The script then prints `SQI_RENDER: OK`, or `SQI_RENDER: FAILED:`
   with the reason, and quits the Render Node with `fusion:Quit()`.
 
@@ -458,6 +458,9 @@ template:
                   -- Set on the found tool, not from the list: a Saver the list
                   -- misses (inside a group) must not stay in pass-through.
                   tool:SetAttrs({ TOOLB_PassThrough = false })
+                  -- One status for the whole task: Render with Wait blocks and
+                  -- reports nothing between its start and end.
+                  say("openjd_status: rendering frames " .. p.start .. "\226\128\147" .. p["end"])
                   local ok = comp:Render({ Start = p.start, End = p["end"], Wait = true })
                   if not ok then
                       error("Fusion reported that the render did not succeed (Render returned " .. tostring(ok) .. ")", 0)

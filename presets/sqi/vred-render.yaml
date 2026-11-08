@@ -46,7 +46,8 @@ readme: |
 
   The script turns on animation rendering, clears the clip range, sets the
   task's first and last frame and a frame step of 1, sets the render filename
-  when one is given, and calls `startRenderToFile`. It then prints
+  when one is given, and calls `startRenderToFile` after an `openjd_status`
+  naming the frames. It then prints
   `SQI_RENDER: OK` and quits VRED with `terminateVred`. On any error it prints
   `SQI_RENDER: FAILED:` with the reason and quits with `crashVred(1)`.
 
@@ -237,6 +238,9 @@ template:
                       vred(rs, "setRenderView")(params["view"])
                   if params["output"]:
                       vred(rs, "setRenderFilename")(params["output"])
+                  # One status for the whole chunk: startRenderToFile blocks and
+                  # reports nothing between its start and end.
+                  emit("openjd_status: rendering frames %d\u2013%d" % (params["start"], params["stop"]))
                   vred(rs, "startRenderToFile")(True)
 
 

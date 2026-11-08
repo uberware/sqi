@@ -892,6 +892,13 @@ presets:
         FusionRenderNode: it exercises the worker, the embedded files and the
         log checks, never the script inside Fusion. Rendering needs a Fusion
         Studio licence; the detector's install paths are unverified.
+        Progress: through its say helper, to standard output (and Fusion's
+        console), render.lua writes openjd_status ("rendering frames S–E")
+        before the Render call and no openjd_progress, as Render with Wait
+        reports nothing between its start and end. TestPresetFusion_EmitsStatus
+        checks those lines against the stub Fusion only; no Fusion has run them,
+        so what Fusion does with a write to standard output from its script is
+        unconfirmed.
     tier3:
       case: TestPresetTier3/fusion-saver-render/default
       required_on: [linux, darwin, windows]
@@ -970,6 +977,12 @@ presets:
         timeout). The Linux install roots are unverified. Tier 3 runs a stub as
         VREDCore: it exercises the worker, the embedded files and the log
         checks, never the script inside VRED.
+        Progress: through its emit helper, to file descriptor 1, render.py
+        writes openjd_status ("rendering frames S–E") before startRenderToFile
+        and no openjd_progress, as that call blocks and reports nothing between
+        its start and end. TestPresetVRED_EmitsStatus checks those lines against
+        the stub VRED only; no VRED has run them, so what VRED does with a write
+        to file descriptor 1 from its script is unconfirmed.
     tier3:
       case: TestPresetTier3/vred-render/default
       required_on: [linux, darwin, windows]
@@ -989,6 +1002,10 @@ presets:
         Output File's name. Tier 3 runs a stub as VREDCore:
         it exercises the worker, the embedded files and the log checks, never
         the script inside VRED.
+        Progress: render.py prints the same openjd_status as vred-render and no
+        openjd_progress. TestPresetVRED_EmitsStatus checks those lines against
+        the stub VRED only; no VRED has run them, so what VRED does with a write
+        to file descriptor 1 from its script is unconfirmed.
     tier3:
       case: TestPresetTier3/vred-viewpoint-render/default
       required_on: [linux, darwin, windows]
@@ -1106,6 +1123,12 @@ presets:
         the log checks, never the script inside Modo. The detector paths follow
         Foundry's 17.1 and 13.2 documentation and are unconfirmed on a machine;
         Linux has no fixed path (put modo_cl on PATH).
+        Progress: through its emit helper, to file descriptor 1, render.py
+        writes openjd_status ("rendering frames S–E") before render.animation
+        and no openjd_progress, as that command blocks and reports nothing
+        between its start and end. TestPresetModo_EmitsStatus checks those lines
+        against the stub modo only; no Modo has run them, so what Modo does with
+        a write to file descriptor 1 from its script is unconfirmed.
     tier3:
       case: TestPresetTier3/modo-render/default
       required_on: [linux, darwin, windows]
@@ -1128,6 +1151,10 @@ presets:
         quotes, a backslash and a space in PassGroup and both quotes in the
         scene's file name. Tier 3 runs a stub as modo_cl: it exercises the worker,
         the embedded files and the log checks, never the script inside Modo.
+        Progress: render.py prints the same openjd_status as modo-render and no
+        openjd_progress. TestPresetModo_EmitsStatus checks those lines against
+        the stub modo only; no Modo has run them, so what Modo does with a write
+        to file descriptor 1 from its script is unconfirmed.
     tier3:
       case: TestPresetTier3/modo-pass-group-render/default
       required_on: [linux, darwin, windows]
@@ -1191,6 +1218,16 @@ presets:
         HKLM\SOFTWARE\EpicGames\Unreal Engine\<5.x> as InstalledDirectory, as
         AWS's adaptor reads it, which a detector check cannot read), and a
         cold shader cache.
+        Progress: through its emit helper, to file descriptor 1, the script
+        writes openjd_status ("finished job NAME") and openjd_progress (jobs
+        done / jobs x 100) as each job's
+        on_individual_job_work_finished_delegate fires, all before SQI_RENDER:
+        OK; a job that failed reports none. Within-job progress
+        (MoviePipelineLibrary.get_completion_percentage) is not used: no Unreal
+        was available to confirm it. TestPresetUnreal_EmitsJobProgress checks
+        those lines against the stub unreal module only; no Unreal has run them,
+        so what Unreal does with a write to file descriptor 1 from its script is
+        unconfirmed.
     tier2:
       case: TestPresetDCC_Unreal_MRQRender
       requires_app: unreal
@@ -1220,6 +1257,11 @@ presets:
         frames, and that the Output Directory replaces the job's own. Not
         shown: a queue of several jobs, a disabled job, and a blank Output
         Directory.
+        Progress: the script prints openjd_status and openjd_progress per
+        finished job as unreal-mrq-job-render does.
+        TestPresetUnreal_EmitsJobProgress checks those lines against the stub
+        unreal module only; no Unreal has run them, so what Unreal does with a
+        write to file descriptor 1 from its script is unconfirmed.
     tier2:
       case: TestPresetDCC_Unreal_MRQRender
       requires_app: unreal
@@ -1259,6 +1301,12 @@ presets:
         without a shot track, an entry with no outer name, several camera cuts
         sharing one name (all of them render), the missing-{shot_name}
         warning, and Movie Render Graph configs.
+        Progress: through its emit helper, to file descriptor 1, the script
+        writes one openjd_status ("rendering SHOT") when the task's render
+        starts and no openjd_progress. TestPresetUnreal_EmitsJobProgress checks
+        those lines against the stub unreal module only; no Unreal has run them,
+        so what Unreal does with a write to file descriptor 1 from its script is
+        unconfirmed.
     tier2:
       case: TestPresetDCC_Unreal_MRQRender
       requires_app: unreal

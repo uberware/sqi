@@ -46,7 +46,7 @@ task 1/1  name="Render"
     # What the delegates need once main() has returned: the executor
     # (Unreal holds it while it renders; this keeps a reference too),
     # the failures reported so far, and whether a verdict was given.
-    STATE = dict(executor=None, failures=[], done=False)
+    STATE = dict(executor=None, failures=[], done=False, total=0, finished=0)
     
     
     def emit(line, fd=1):
@@ -254,10 +254,17 @@ task 1/1  name="Render"
     
     def on_job_finished(output):
         try:
+            job = getattr(output, "job", None)
+            name = str(getattr(job, "job_name", "") or "?")
             if not getattr(output, "success", True):
-                job = getattr(output, "job", None)
-                name = str(getattr(job, "job_name", "") or "?")
                 STATE["failures"].append("job " + name + " did not succeed")
+            elif STATE["total"]:
+                # The share of the queue's jobs done; a job that
+                # failed reports none. A shot task has no total: it
+                # renders one job and said which shot at the start.
+                STATE["finished"] += 1
+                emit("openjd_status: finished job " + name)
+                emit("openjd_progress: %d" % min(100, STATE["finished"] * 100 // STATE["total"]))
         except Exception as e:
             crash(e)
     
@@ -279,6 +286,9 @@ task 1/1  name="Render"
             jobs = build_queue(subsystem, params)
             if "shot" in params:
                 select_shot(jobs, params)
+                emit("openjd_status: rendering " + params["shot"])
+            else:
+                STATE["total"] = len(jobs)
             apply_output(jobs, params["output_directory"])
             executor = unreal.MoviePipelinePIEExecutor()
             STATE["executor"] = executor

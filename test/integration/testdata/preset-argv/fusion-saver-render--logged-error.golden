@@ -293,6 +293,9 @@ task 1/1  name="Render[Frame=1-1]"
         -- Set on the found tool, not from the list: a Saver the list
         -- misses (inside a group) must not stay in pass-through.
         tool:SetAttrs({ TOOLB_PassThrough = false })
+        -- One status for the whole task: Render with Wait blocks and
+        -- reports nothing between its start and end.
+        say("openjd_status: rendering frames " .. p.start .. "\226\128\147" .. p["end"])
         local ok = comp:Render({ Start = p.start, End = p["end"], Wait = true })
         if not ok then
             error("Fusion reported that the render did not succeed (Render returned " .. tostring(ok) .. ")", 0)

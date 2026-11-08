@@ -195,9 +195,31 @@ ships.
 | `nuke-script-render` | the same block as `nuke-write-render`; Nuke prints a `Writing ... took` line per Write node but `Frame N (i of n)` once per frame, after every node has written it, so the bar moves once per frame, not per node | Nuke 17.1v2 Non-commercial on macOS, rendering two Write nodes; no other version or license |
 | `houdini-rop-render` | no block: the embedded hython driver prints `openjd_progress` and `openjd_status: rendered frame F (k of n)` itself, from one render-event callback on each `PostFrame` event | Houdini 21.0.631 Apprentice on macOS, Geometry ROP; not a render ROP (Mantra, Karma, OpenGL) |
 | `keyshot-render`, `keyshot-studio-render` | no block: the embedded `render.py` prints `openjd_status: rendering frame F (k of n)` before each frame and `openjd_progress` (frames done / total x 100) after the frame's image is checked | the stub `lux` only; no KeyShot has run it |
+| `modo-render`, `modo-pass-group-render` | no block: the embedded `render.py` prints one `openjd_status: rendering frames S–E` before the blocking render command and no `openjd_progress` | the stub `modo` only; no Modo has run it |
+| `vred-render`, `vred-viewpoint-render` | no block: the embedded `render.py` prints one `openjd_status: rendering frames S–E` before the blocking `startRenderToFile` and no `openjd_progress` | the stub VRED only; no VRED has run it |
+| `fusion-saver-render` | no block: the embedded `render.lua` prints one `openjd_status: rendering frames S–E` before the blocking `Render` and no `openjd_progress` | the stub Fusion only, under a stock Lua; no Fusion has run it |
+| `unreal-mrq-job-render`, `unreal-mrq-queue-render` | no block: the embedded script prints `openjd_status: finished job NAME` and `openjd_progress` (jobs done / jobs x 100) as each job's `on_individual_job_work_finished_delegate` fires; a failed job reports none. Progress within a job (`MoviePipelineLibrary.get_completion_percentage`) is unconfirmed: no Unreal was available | the stub `unreal` module only; no Unreal has run it |
+| `unreal-mrq-shot-render` | no block: the embedded script prints one `openjd_status: rendering SHOT` when the task's render starts and no `openjd_progress` | the stub `unreal` module only; no Unreal has run it |
 | `husk-usd-render` | `percent` (`ALF_PROGRESS N%`, which `-V 2a`'s `a` turns on: the percent through the whole run, which is the task's chunk, moving within each frame); status is the image name and count from `>>> Render <image> (i of n)` | husk in Houdini 21.0.631 Apprentice on macOS, Karma CPU; not Karma XPU or another delegate, and not Houdini 22 |
 | `usdrecord-render` | `frame` (`Recording time code: F.000000`, printed before each frame); the same line as status. usdrecord has no verbosity option and prints nothing after the last frame, so the bar reaches the last frame's start, not 100 | Houdini 21.0.631's usdrecord under hython on macOS, Storm and Karma CPU; not Houdini 22 |
 | `oiiotool-process` | `framedone` (`Wrote frame N`); the same line as status. oiiotool prints nothing by default and `-v` names files, not frames, so the preset adds `--echo "Wrote frame {FRAME_NUMBER}"` after `-o`, which only prints | oiiotool 3.1.15.0 (Homebrew, macOS) and Houdini 21.0.631's hoiiotool (OIIO 2.5.18.0); not Ubuntu's openimageio-tools |
+
+### Candidates, not shipped
+These presets have no progress or status yet: the application is not available
+to confirm its output, and a pattern is only shipped after it has been
+confirmed against the real application.
+
+| Preset | Status |
+|---|---|
+| `maya-layer-render`, `maya-scene-render` | application not available to confirm output |
+| `arnold-kick-render`, `arnold-kick-tile-render` | application not available to confirm output |
+| `after-effects-render`, `after-effects-queue-render` | application not available to confirm output |
+| `vray-standalone-render`, `redshift-standalone-render`, `katana-render` | application not available to confirm output |
+| `cinema4d-render`, `cinema4d-take-render`, `3dsmax-render` | application not available to confirm output |
+| `mistika-boutique-render`, `mistika-vr-render`, `mistika-workflows-render` | application not available to confirm output |
+| `silhouette-render`, `silhouette-render-all` | application not available to confirm output |
+| `mantra-render` | not in Houdini 21; application not available to confirm output |
+| `prman-render`, `3delight-render` | application not available to confirm output |
 
 ## Compatibility
 `SQI_LOG_PROGRESS` is an sqi extension. Other OpenJD runtimes reject the
