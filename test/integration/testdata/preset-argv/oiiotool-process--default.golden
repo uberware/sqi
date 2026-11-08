@@ -8,6 +8,9 @@ params:
   OutputFile=/mnt/show/seq010/shot0010/review/out.####.jpg
 
 step "Process" — 2 tasks
+  log progress: frameParameter "Frame"
+  log progress: progress "^Wrote frame (?P<framedone>-?\\d+)$"
+  log progress: status "^(?P<status>Wrote frame -?\\d+)$"
 
 task 1/2  name="Process[Frame=1-10]"
   task params:
@@ -19,6 +22,8 @@ task 1/2  name="Process[Frame=1-10]"
     [2]  /mnt/show/seq010/shot0010/comp/in.@@@@.exr
     [3]  -o
     [4]  /mnt/show/seq010/shot0010/review/out.@@@@.jpg
+    [5]  --echo
+    [6]  Wrote frame {FRAME_NUMBER}
 
 task 2/2  name="Process[Frame=11-20]"
   task params:
@@ -30,3 +35,5 @@ task 2/2  name="Process[Frame=11-20]"
     [2]  /mnt/show/seq010/shot0010/comp/in.@@@@.exr
     [3]  -o
     [4]  /mnt/show/seq010/shot0010/review/out.@@@@.jpg
+    [5]  --echo
+    [6]  Wrote frame {FRAME_NUMBER}

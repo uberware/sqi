@@ -37,6 +37,11 @@ readme: |
   stage with no render product writes every frame to `karma.exr` in the
   task's working folder, which sqi deletes when the task ends.
 
+  ## Progress
+
+  The task's progress bar follows the percentage `husk` prints as it renders,
+  so it moves within a frame as well as from one frame to the next.
+
   ## Requirements
 
   - Workers tagged `attr.worker.tag.husk = true`
@@ -50,7 +55,7 @@ version: 1.0.0
 template:
   specificationVersion: jobtemplate-2023-09
   name: Husk USD Render
-  extensions: [TASK_CHUNKING, EXPR]
+  extensions: [TASK_CHUNKING, EXPR, SQI_LOG_PROGRESS]
   parameterDefinitions:
     - name: SceneFile
       type: PATH
@@ -86,6 +91,14 @@ template:
             chunks:
               defaultTaskCount: 1
               rangeConstraint: CONTIGUOUS
+      SQI_LOG_PROGRESS:
+        # The "a" in -V 2a turns on ALF_PROGRESS lines, the percent through
+        # the whole run, which is the task's chunk. Each frame starts with a
+        # ">>> Render <image> (i of n) - WxH" line.
+        progress:
+          - '^ALF_PROGRESS (?P<percent>\d+)%'
+        status:
+          - '>>> Render (?:.*[/\\])?(?P<status>[^/\\]+ \(\d+ of \d+\)) - \d+x\d+ '
       script:
         actions:
           onRun:

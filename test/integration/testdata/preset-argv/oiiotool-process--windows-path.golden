@@ -8,6 +8,9 @@ params:
   OutputFile=C:\review\shot0010\out.####.png
 
 step "Process" — 1 task
+  log progress: frameParameter "Frame"
+  log progress: progress "^Wrote frame (?P<framedone>-?\\d+)$"
+  log progress: status "^(?P<status>Wrote frame -?\\d+)$"
 
 task 1/1  name="Process[Frame=1-1]"
   task params:
@@ -19,3 +22,5 @@ task 1/1  name="Process[Frame=1-1]"
     [2]  C:\comp\shot0010\in.@@@@.exr
     [3]  -o
     [4]  C:\review\shot0010\out.@@@@.png
+    [5]  --echo
+    [6]  Wrote frame {FRAME_NUMBER}

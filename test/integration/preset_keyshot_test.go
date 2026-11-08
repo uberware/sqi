@@ -552,3 +552,51 @@ func TestPresetKeyShot_ScriptDrivesKeyShot(t *testing.T) {
 		}
 	}
 }
+
+// TestPresetKeyShot_EmitsProgress pins the directives render.py writes to
+// file descriptor 1 as it works through a chunk: a status line naming the frame
+// before each renderImage and the share of the chunk done after each. A frame
+// whose render fails reports no progress, and the success line still comes last.
+// Only the stub lux has been run; no KeyShot has.
+func TestPresetKeyShot_EmitsProgress(t *testing.T) {
+	python := findPython3(t)
+	if python == "" {
+		t.Skip("no working Python 3 on PATH (tried python3, python)")
+	}
+	for _, preset := range []string{"keyshot-render", "keyshot-studio-render"} {
+		params := keyshotBaseParams(preset)
+		params["Frames"] = "3-6"
+		snap, err := capturePreset(t, preset, params)
+		if err != nil {
+			t.Fatalf("%s: Capture: %v", preset, err)
+		}
+		task := snap.Steps[0].Tasks[0]
+		t.Run(preset+"/all frames", func(t *testing.T) {
+			pattern := filepath.Join(t.TempDir(), "beauty.####.png")
+			_, stdout := runKeyShotScript(t, python, task, pattern, keyshotRun{mode: "file"})
+			want := "" +
+				"openjd_status: rendering frame 3 (1 of 4)\nopenjd_progress: 25\n" +
+				"openjd_status: rendering frame 4 (2 of 4)\nopenjd_progress: 50\n" +
+				"openjd_status: rendering frame 5 (3 of 4)\nopenjd_progress: 75\n" +
+				"openjd_status: rendering frame 6 (4 of 4)\nopenjd_progress: 100\n" +
+				"SQI_RENDER: OK\n"
+			if stdout != want {
+				t.Errorf("stdout:\n%s\nwant:\n%s", stdout, want)
+			}
+		})
+		t.Run(preset+"/failed frame reports none", func(t *testing.T) {
+			pattern := filepath.Join(t.TempDir(), "beauty.####.png")
+			_, stdout := runKeyShotScript(t, python, task, pattern, keyshotRun{mode: "file", fail: "false@5"})
+			for _, want := range []string{"openjd_progress: 25\n", "openjd_progress: 50\n", "openjd_status: rendering frame 5 (3 of 4)\n"} {
+				if !strings.Contains(stdout, want) {
+					t.Errorf("stdout lacks %q:\n%s", want, stdout)
+				}
+			}
+			for _, bad := range []string{"openjd_progress: 75", "openjd_progress: 100", "frame 6", "SQI_RENDER: OK"} {
+				if strings.Contains(stdout, bad) {
+					t.Errorf("stdout has %q after the failed frame:\n%s", bad, stdout)
+				}
+			}
+		})
+	}
+}

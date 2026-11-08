@@ -353,10 +353,10 @@ func TestBuildAssignPayload_EXPRFields(t *testing.T) {
 	}
 }
 
-// TestBuildAssignPayload_BaseSpecWireBytesUnchanged proves, rather than
-// assumes, that a base-spec template (no extensions: [EXPR]) produces an
-// assignment with none of the nine new EXPR-phase-3 fields anywhere on the
-// wire — the requirement that motivates marking every one of them omitempty.
+// TestBuildAssignPayload_BaseSpecWireBytesUnchanged verifies that a
+// base-spec template (no extensions: [EXPR]) produces an assignment with none
+// of the nine EXPR phase-3 fields on the wire, which is why each of them is
+// marked omitempty.
 func TestBuildAssignPayload_BaseSpecWireBytesUnchanged(t *testing.T) {
 	st := newCheckedFake(t)
 	task, worker, job, step, queue := buildFixture(t, minimalJobJSON, store.TemplateFormatJSON, "Render")
@@ -480,7 +480,7 @@ const templateWithJobParam = `{
 
 // TestBuildAssignPayload_JobParametersFromPersistedValues verifies that when
 // job.Parameters is non-empty (persisted at submit), the assignment carries
-// those values — not just the template defaults.
+// those values rather than the template defaults.
 func TestBuildAssignPayload_JobParametersFromPersistedValues(t *testing.T) {
 	st := newCheckedFake(t)
 	task, worker, job, step, queue := buildFixture(t, templateWithJobParam, store.TemplateFormatJSON, "Render")
@@ -771,7 +771,7 @@ steps:
 // parsing entirely). This test goes through buildAssignPayload end to end —
 // template parse, EXPR field population, loc:// resolution, and staging
 // manifest construction — with a real Windows compute-location root, so a
-// regression in any of those three wiring points fails it.
+// break in any of those three wiring points fails it.
 func TestBuildAssignPayload_ListPathParamLocURIsStagedThroughFullSeam(t *testing.T) {
 	tmpl := `
 specificationVersion: jobtemplate-2023-09
@@ -942,5 +942,62 @@ func TestBuildAssignPayload_OmitsIsolationWhenQueueHasNone(t *testing.T) {
 	}
 	if msg.Isolation != nil {
 		t.Errorf("Isolation = %+v, want nil for a queue with no run_as_user", msg.Isolation)
+	}
+}
+
+const logProgressTemplate = `
+specificationVersion: jobtemplate-2023-09
+name: T
+extensions: [ TASK_CHUNKING, SQI_LOG_PROGRESS ]
+steps:
+  - name: S
+    SQI_LOG_PROGRESS:
+      progress: ['Frame (?P<frame>[0-9]+)']
+      status: ['(?P<status>.*)']
+    parameterSpace:
+      taskParameterDefinitions:
+        - { name: Frames, type: 'CHUNK[INT]', range: '1-10', chunks: { defaultTaskCount: 2, rangeConstraint: CONTIGUOUS } }
+    script: { actions: { onRun: { command: echo } } }
+`
+
+func TestBuildAssign_LogProgress(t *testing.T) {
+	msg := buildAssignForTemplate(t, logProgressTemplate, nil)
+	lp := msg.LogProgress
+	if lp == nil {
+		t.Fatal("LogProgress = nil")
+	}
+	if lp.FrameParameter != "Frames" {
+		t.Errorf("FrameParameter = %q, want Frames", lp.FrameParameter)
+	}
+	if !slices.Equal(lp.Progress, []string{"Frame (?P<frame>[0-9]+)"}) || !slices.Equal(lp.Status, []string{"(?P<status>.*)"}) {
+		t.Errorf("LogProgress = %+v", lp)
+	}
+}
+
+func TestBuildAssign_NoLogProgressKeepsWireBytes(t *testing.T) {
+	st := newCheckedFake(t)
+	task, worker, job, step, queue := buildFixture(t, `
+specificationVersion: jobtemplate-2023-09
+name: T
+steps:
+  - name: S
+    script: { actions: { onRun: { command: echo } } }
+`, store.TemplateFormatYAML, "S")
+	data, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
+	if err != nil {
+		t.Fatalf("buildAssignPayload: %v", err)
+	}
+	if strings.Contains(string(data), "log_progress") {
+		t.Errorf("payload carries log_progress: %s", data)
+	}
+}
+
+func TestConvertLogProgress(t *testing.T) {
+	if got := convertLogProgress(&openjd.StepTemplate{}); got != nil {
+		t.Errorf("nil block = %+v, want nil", got)
+	}
+	empty := &openjd.StepTemplate{LogProgress: &openjd.LogProgress{}}
+	if got := convertLogProgress(empty); got != nil {
+		t.Errorf("empty block = %+v, want nil", got)
 	}
 }

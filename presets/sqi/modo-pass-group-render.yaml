@@ -63,7 +63,8 @@ readme: |
 
   The script turns on console logging, opens the scene, sets the render item's
   first and last frame to the task's chunk and its step to 1, and runs
-  `render.animation` for the pass group. It then prints `SQI_RENDER: OK` and
+  `render.animation` for the pass group, after an `openjd_status` naming the
+  frames. It then prints `SQI_RENDER: OK` and
   quits Modo with `app.quit`. On any error it prints `SQI_RENDER: FAILED:` with
   the reason and quits.
 
@@ -76,7 +77,7 @@ readme: |
   This preset declares the `SQI_LOG_CHECKS` extension. A task fails unless
   Modo's output contains `SQI_RENDER: OK`, and fails when a line contains
   `SQI_RENDER: FAILED:`, `failed with` or `Unknown command:`. Modo documents
-  no exit status, so it is not relied on. The script writes its two lines
+  no exit status, so it is not relied on. The script writes its lines
   straight to the process's standard output (file descriptor 1). `failed with`
   is broad: it matches any line of Modo's output that contains it, for example
   one reporting that a texture or a plug-in failed to load, so such a line
@@ -133,8 +134,7 @@ readme: |
     scripts this follows write `render.animation {*} group:<name>` as command
     text. A wrong name fails every task.
   - Whether text written to file descriptor 1 reaches the worker on every OS.
-    If it does not, every task fails for want of `SQI_RENDER: OK`, never the
-    other way round.
+    If it does not, every task fails for want of `SQI_RENDER: OK`.
   - The install folders the detector looks for follow Foundry's documentation
     for 17.1 and 13.2; none is confirmed on an installed copy.
 category: Rendering
@@ -288,6 +288,9 @@ template:
                   # Keyword arguments, so no job value becomes command text.
                   lx.command("scene.open", filename=params["scene"], type="normal")
                   set_range(params["start"], params["stop"])
+                  # One status for the whole chunk: the render command blocks and
+                  # reports nothing between its start and end.
+                  emit(u"openjd_status: rendering frames %d\u2013%d" % (params["start"], params["stop"]))
                   # The group name is a job value, so it goes in as a keyword
                   # argument; the whole-scene form has none, so its command text
                   # is a literal. Whether the two forms are equivalent in Modo

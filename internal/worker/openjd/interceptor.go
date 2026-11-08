@@ -16,6 +16,16 @@
 // All other lines — including unrecognized openjd_* prefixes and all stderr
 // lines — are forwarded to the downstream handler unmodified.
 //
+// # SQI_LOG_PROGRESS
+//
+// When the executor installs a [logprogress.Matcher] for an attempt with
+// [Interceptor.SetLogProgress], every forwarded line, stdout and stderr, is also
+// fed to it, except an openjd_redacted_env directive line. A match updates the
+// same snapshot the directives do, under the same throttle. Per field, a
+// directive wins: once the attempt has printed a valid openjd_progress line the
+// patterns no longer set progress, and once it has printed an openjd_status line
+// they no longer set status.
+//
 // # Integration with executor.Executor
 //
 // [Interceptor] implements [executor.TaskLifecycleHook], which the executor
@@ -38,6 +48,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/bus"
+	"github.com/uberware/sqi/internal/openjd/logprogress"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
@@ -93,6 +104,14 @@ type attemptState struct {
 	pending  bool        // a change is waiting for the trailing send
 	timer    *time.Timer // trailing-send timer, armed while pending
 	finished bool        // no further snapshots may be sent
+
+	// matcher is the attempt's SQI_LOG_PROGRESS matcher, nil when the step
+	// declares none. directiveProgress and directiveStatus record that the
+	// attempt printed an openjd_progress or openjd_status line, after which the
+	// matcher no longer sets that field.
+	matcher           *logprogress.Matcher
+	directiveProgress bool
+	directiveStatus   bool
 }
 
 // ── Interceptor ───────────────────────────────────────────────────────────────
@@ -166,6 +185,24 @@ func (i *Interceptor) RegisterTask(attemptID, taskID, jobID, sessionID string, c
 	}
 }
 
+// SetLogProgress installs m as attemptID's SQI_LOG_PROGRESS matcher. It must be
+// called after [Interceptor.RegisterTask] and before the attempt's process
+// starts. A nil m, or an attemptID that is not registered, is a no-op.
+func (i *Interceptor) SetLogProgress(attemptID string, m *logprogress.Matcher) {
+	if m == nil {
+		return
+	}
+	i.mu.Lock()
+	st := i.attempts[attemptID]
+	i.mu.Unlock()
+	if st == nil {
+		return
+	}
+	st.mu.Lock()
+	st.matcher = m
+	st.mu.Unlock()
+}
+
 // Deregister removes the per-task state for attemptID and cancels any pending
 // snapshot send.  Safe to call multiple times.
 func (i *Interceptor) Deregister(attemptID string) {
@@ -182,6 +219,11 @@ func (i *Interceptor) Deregister(attemptID string) {
 func (st *attemptState) finish() {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	st.finishLocked()
+}
+
+// finishLocked is [attemptState.finish] with st.mu already held.
+func (st *attemptState) finishLocked() {
 	st.finished = true
 	st.pending = false
 	if st.timer != nil {
@@ -189,10 +231,12 @@ func (st *attemptState) finish() {
 	}
 }
 
-// FinishProgress stops attemptID's pending trailing send, refuses all later
-// sends for it, and returns the last progress, as [Interceptor.LastProgress]
-// does.  The executor calls it before publishing the terminal status so a late
-// snapshot cannot follow it.
+// FinishProgress refuses all later sends for attemptID and returns the last
+// progress, as [Interceptor.LastProgress] does. A change still waiting for its
+// trailing send is published before it returns, so the final progress and
+// status reach the server. The executor calls it before publishing the
+// terminal status, so that snapshot precedes the terminal message and no late
+// snapshot can follow it.
 func (i *Interceptor) FinishProgress(attemptID string) *int {
 	i.mu.Lock()
 	st := i.attempts[attemptID]
@@ -200,7 +244,17 @@ func (i *Interceptor) FinishProgress(attemptID string) *int {
 	if st == nil {
 		return nil
 	}
-	st.finish()
+	st.mu.Lock()
+	flush := st.pending && !st.finished
+	var msg protocol.TaskStatusMsg
+	if flush {
+		msg = i.snapshotLocked(attemptID, st, time.Now())
+	}
+	st.finishLocked()
+	st.mu.Unlock()
+	if flush {
+		i.publish(context.Background(), attemptID, msg)
+	}
 	return i.LastProgress(attemptID)
 }
 
@@ -220,7 +274,7 @@ func (i *Interceptor) TakeFailReason(attemptID string) (string, bool) {
 	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	// Use the failed flag — not an empty failReason — to distinguish
+	// The failed flag, not an empty failReason, distinguishes
 	// "openjd_fail not seen" from "openjd_fail seen with no text".
 	if !st.failed {
 		return "", false
@@ -271,15 +325,17 @@ func (i *Interceptor) FlushLogs(ctx context.Context, taskID, attemptID string) e
 // HandleLine intercepts recognized OpenJD directive lines from stdout and
 // forwards everything else to the downstream handler unmodified.
 //
-// Stderr lines are always forwarded without inspection because tasks are
-// expected to emit directives only to stdout.  Recognized directive lines
-// (openjd_progress, openjd_status, openjd_fail) are consumed without
+// Stderr lines are always forwarded without directive inspection because
+// tasks are expected to emit directives only to stdout.  Recognized directive
+// lines (openjd_progress, openjd_status, openjd_fail) are consumed without
 // forwarding; all other lines — including unrecognized openjd_* prefixes —
-// are passed through.
+// are passed through, and then fed to the attempt's SQI_LOG_PROGRESS matcher,
+// if any.
 func (i *Interceptor) HandleLine(ctx context.Context, taskID, attemptID, sessionID, stream, line string) {
 	// stderr is never intercepted; forward immediately.
 	if stream == "stderr" {
 		i.downstream.HandleLine(ctx, taskID, attemptID, sessionID, stream, line)
+		i.matchProgress(ctx, attemptID, line)
 		return
 	}
 
@@ -294,7 +350,58 @@ func (i *Interceptor) HandleLine(ctx context.Context, taskID, attemptID, session
 	default:
 		// Unrecognized openjd_* prefixes and normal lines pass through.
 		i.downstream.HandleLine(ctx, taskID, attemptID, sessionID, stream, line)
+		i.matchProgress(ctx, attemptID, line)
 	}
+}
+
+// matchProgress feeds a forwarded line to attemptID's SQI_LOG_PROGRESS matcher
+// and applies what it reports, except a field a directive has already set.
+// An openjd_redacted_env directive line carries its secret in the clear, so it
+// is never matched.
+func (i *Interceptor) matchProgress(ctx context.Context, attemptID, line string) {
+	i.mu.Lock()
+	st := i.attempts[attemptID]
+	i.mu.Unlock()
+	if st == nil {
+		return
+	}
+	st.mu.Lock()
+	m := st.matcher
+	st.mu.Unlock()
+	if m == nil || IsRedactedEnvDirective(line) {
+		return
+	}
+	u := m.Observe(line)
+	if !u.HasProgress && !u.HasStatus {
+		return
+	}
+	var text string
+	if u.HasStatus {
+		text = protocol.SanitizeStatusText(u.Status)
+	}
+
+	if st.applyPattern(u, text) {
+		i.noteChange(ctx, attemptID, st)
+	}
+}
+
+// applyPattern records a matcher update, with status already sanitized as
+// text, skipping a field a directive has set. It reports whether anything
+// changed.
+func (st *attemptState) applyPattern(u logprogress.Update, text string) bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	changed := false
+	if u.HasProgress && !st.directiveProgress && (st.progress == nil || *st.progress != u.Progress) {
+		v := u.Progress
+		st.progress = &v
+		changed = true
+	}
+	if u.HasStatus && text != "" && !st.directiveStatus && st.statusText != text {
+		st.statusText = text
+		changed = true
+	}
+	return changed
 }
 
 // ── directive handlers ────────────────────────────────────────────────────────
@@ -337,6 +444,7 @@ func (i *Interceptor) handleProgress(ctx context.Context, attemptID, line string
 	st.mu.Lock()
 	changed := st.progress == nil || *st.progress != val
 	st.progress = &val
+	st.directiveProgress = true
 	st.mu.Unlock()
 
 	i.logger.DebugContext(
@@ -365,6 +473,7 @@ func (i *Interceptor) handleStatus(ctx context.Context, attemptID, line string) 
 	st.mu.Lock()
 	changed := st.statusText != text
 	st.statusText = text
+	st.directiveStatus = true
 	st.mu.Unlock()
 
 	i.logger.DebugContext(

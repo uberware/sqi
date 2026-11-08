@@ -66,6 +66,13 @@ readme: |
   sees the loaded session. `__name__` is `"__main__"` and `sys.argv[0]` is the
   script's own path. An exception, or a non-zero `SystemExit`, fails the task.
 
+  ## Reporting progress
+
+  The script reports its task's progress by printing `openjd_progress: <0–100>`
+  and `openjd_status: <text>` at the start of a line. If Houdini's `sys.stdout`
+  does not reach the worker, write the line to file descriptor 1 instead, for
+  example `os.write(1, b"openjd_progress: 50\n")`.
+
   ## Requirements
 
   - Workers tagged `attr.worker.tag.houdini = true`

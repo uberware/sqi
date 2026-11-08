@@ -26,9 +26,9 @@
 // # Output handling
 //
 // The [OutputHandler] interface abstracts what happens with each line of
-// process output. The log-chunk publisher and OpenJD progress
-// line parser will implement this interface; until then the
-// [LogOutput] implementation forwards lines to the structured logger.
+// process output. The log-chunk publisher and the OpenJD progress
+// line parser implement this interface; [LogOutput] forwards lines to the
+// structured logger.
 //
 // # Root-user check
 //
@@ -47,6 +47,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/uberware/sqi/internal/openjd/logprogress"
 	"github.com/uberware/sqi/internal/worker/cancel"
 	"github.com/uberware/sqi/internal/worker/metrics"
 	"github.com/uberware/sqi/internal/worker/protocol"
@@ -113,6 +114,19 @@ type TaskLifecycleHook interface {
 	// directive for attemptID and true if one is present.  Returns ("", false)
 	// if no openjd_fail was seen.
 	TakeFailReason(attemptID string) (string, bool)
+}
+
+// ProgressPatternHook is an optional interface that an [OutputHandler] may
+// implement to turn a step's SQI_LOG_PROGRESS patterns into progress and status
+// updates.
+//
+// When an assignment carries LogProgress, the executor compiles it after
+// [TaskLifecycleHook.RegisterTask] and before the process starts, and hands the
+// matcher over with SetLogProgress. The OpenJD interceptor
+// (internal/worker/openjd) implements it.
+type ProgressPatternHook interface {
+	// SetLogProgress installs m as attemptID's matcher.
+	SetLogProgress(attemptID string, m *logprogress.Matcher)
 }
 
 // DiscardOutput is an [OutputHandler] that silently drops every line.
@@ -247,11 +261,11 @@ type Executor struct {
 	// flight. Protected by mu.
 	held map[string]struct{}
 
-	// execCtx / execCancel control the lifetime of all task goroutines (tasks
-	// 86–87).  Task goroutines derive their taskCtx from execCtx rather than
-	// from the worker's signal context, so they survive a SIGINT/SIGTERM and
-	// are only killed when DrainAndShutdown explicitly cancels execCtx after
-	// the shutdown grace period expires.
+	// execCtx / execCancel control the lifetime of all task goroutines.
+	// Task goroutines derive their taskCtx from execCtx rather than from the
+	// worker's signal context, so they survive a SIGINT/SIGTERM and are only
+	// killed when DrainAndShutdown cancels execCtx after the shutdown grace
+	// period expires.
 	execCtx    context.Context
 	execCancel context.CancelFunc
 
@@ -482,9 +496,10 @@ func (e *Executor) lastProgress(attemptID string) *int {
 	return nil
 }
 
-// finishProgress stops the output handler's pending progress snapshot for
-// attemptID, if it supports that, and returns the last progress seen.  Falls
-// back to [Executor.lastProgress] for handlers without FinishProgress.
+// finishProgress flushes the output handler's pending progress snapshot for
+// attemptID and stops later ones, if it supports that, and returns the last
+// progress seen.  Falls back
+// to [Executor.lastProgress] for handlers without FinishProgress.
 func (e *Executor) finishProgress(attemptID string) *int {
 	type progressFinisher interface {
 		FinishProgress(string) *int
@@ -538,8 +553,7 @@ func (e *Executor) Cancel(taskID, attemptID string) bool {
 	return found
 }
 
-// DrainAndShutdown implements the worker graceful-shutdown sequence (tasks
-// 86–87).
+// DrainAndShutdown implements the worker graceful-shutdown sequence.
 //
 // It first waits up to gracePeriod for all in-flight tasks to complete
 // naturally.  If tasks are still running when the grace period expires, it

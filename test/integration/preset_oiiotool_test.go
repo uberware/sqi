@@ -6,8 +6,8 @@ package integration
 // a real sqi-server and a real sqi-worker against a real oiiotool, then asserts
 // on the files it writes.
 //
-// The argv goldens show that the preset hands oiiotool `@` runs, and Tier 3
-// shows the worker delivers them. Only a real oiiotool shows that a run of `@`
+// The argv goldens show that the preset hands oiiotool `@` runs, and the worker-run
+// cross-check shows the worker delivers them. Only a real oiiotool shows that a run of `@`
 // in a pattern is read as that many digits, that --frames takes the chunk's
 // first and last frame, and that the operations list reaches it as separate
 // arguments.
@@ -90,5 +90,28 @@ func TestPresetOIIOTool_ProcessesASequence(t *testing.T) {
 		names := []string{"small.002.png", "small.003.png"}
 		assertExactFiles(t, out, names)
 		assertPNGSize(t, out, names, 4, 4)
+	})
+
+	// The preset's --echo prints "Wrote frame N" once each frame is written.
+	// A wide blur over a larger image takes a few seconds a frame, past the
+	// worker's 2 s progress throttle, so the bar is seen at more than one
+	// frame.
+	t.Run("progress moves within a chunk", func(t *testing.T) {
+		big := filepath.Join(t.TempDir(), "big")
+		if err := os.MkdirAll(big, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		if out, err := exec.CommandContext(ctx, exe, "--frames", "1-4", "--pattern", "constant:color=1,0,0", "1024x1024", "3",
+			"-o", filepath.Join(big, "big.@@@@.png")).CombinedOutput(); err != nil {
+			t.Fatalf("generating the input sequence: %v\n%s", err, out)
+		}
+		out := mkOut(t, "blurred")
+		assertStepChunkProgress(t, ts, farmID, queueID, "oiiotool-process", "Process", map[string]string{
+			"InputFile": filepath.Join(big, "big.####.png"), "OutputFile": filepath.Join(out, "blur.####.png"),
+			"Frames": "1-4", "Operations": `["--blur", "81x81"]`,
+		})
+		assertExactFiles(t, out, frameNames("blur.%04d.png", seq(1, 4)...))
 	})
 }

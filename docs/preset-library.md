@@ -7,8 +7,8 @@ hand-authored custom product (`name`, `title`, `description`, `category`, `versi
 and an inline OpenJD `template:`), which can be fetched and installed on the farm
 without writing any YAML.
 
-> **Installed presets run commands on your farm. Only configure a preset library
-> you trust.**
+> Installed presets run commands on your farm. Only configure a preset library
+> you trust.
 
 ---
 
@@ -68,7 +68,7 @@ for the full reference. The short version:
 |---|---|---|
 | `preset_library.url` | `https://uberware.github.io/sqi-presets/index.json` | `SQI_PRESET_LIBRARY_URL` |
 
-Set `preset_library.url` to an empty string `""` to **disable** the feature. When
+Set `preset_library.url` to an empty string `""` to disable the feature. When
 disabled, the Browse page shows a "not configured" empty state and all preset REST
 endpoints return 503.
 
@@ -205,6 +205,27 @@ including the chunking behavior and worker requirements per preset.
 `TestBuiltinDetectors_CoverPresets` fails if a shipped preset requires a
 software tag that no built-in detector emits.
 
+### Presets that report progress
+
+These preset families fill the task's progress bar or status text while it
+runs, either from the application's own output through the
+[`SQI_LOG_PROGRESS`](openjd-extensions/sqi-log-progress.md) extension or from
+`openjd_progress`/`openjd_status` lines their embedded script prints. See
+[Shipped presets](openjd-extensions/sqi-log-progress.md#shipped-presets) for the
+patterns and the application versions each was confirmed against.
+
+- Blender (`blender-batch-render`, `blender-view-layer-render`): per frame and within a frame, with Blender's sample counter as status; the patterns need Blender 5.2 or later.
+- Nuke (`nuke-write-render`, `nuke-script-render`): per frame.
+- Houdini ROP (`houdini-rop-render`): per frame.
+- husk (`husk-usd-render`): within the task's frames, with the image name as status.
+- usdrecord (`usdrecord-render`): per frame.
+- oiiotool (`oiiotool-process`): per frame.
+- KeyShot (`keyshot-render`, `keyshot-studio-render`): per frame; confirmed against a stub only.
+- Unreal Engine (`unreal-mrq-job-render`, `unreal-mrq-queue-render`, `unreal-mrq-shot-render`): per job for the job and queue presets, status only for the shot preset; confirmed against a stub only.
+- Modo (`modo-render`, `modo-pass-group-render`): status only; confirmed against a stub only.
+- VRED (`vred-render`, `vred-viewpoint-render`): status only; confirmed against a stub only.
+- Fusion (`fusion-saver-render`): status only; confirmed against a stub only.
+
 ### Katana
 
 | Preset | Renders | Shape | Gate |
@@ -300,8 +321,8 @@ not the `project.sfx` file inside it. `-range` is in session numbering and
 `-start`, which renumbers output files, is never passed; a stepped `Frames` range
 splits into one task per frame.
 
-**Neither preset declares [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md), and a failed
-render that exits 0 is reported as a success.** No line `sfxcmd` prints on
+Neither preset declares [`SQI_LOG_CHECKS`](openjd-extensions/sqi-log-checks.md), and a failed
+render that exits 0 is reported as a success. No line `sfxcmd` prints on
 success or failure is documented, a Linux report has it exiting 0 with no frames
 written, and its exit codes are undocumented. Check
 the output folder, not only the job status. The `silhouette` detector supplies
@@ -318,7 +339,7 @@ floating licence needs the render portion `genarts_LICENSE`, in lower case.
 | `vred-render` | a `.vpb` scene's saved view with VRED Core | `FramesPerTask` frames per task, default 10, at most 1000 | `vred` |
 | `vred-viewpoint-render` | one named viewpoint or camera (`View`) of a `.vpb` scene | `FramesPerTask` frames per task, default 10, at most 1000 | `vred` |
 
-Both are **host-script** presets: each task runs `VREDCore <scene>
+Both are host-script presets: each task runs `VREDCore <scene>
 -insecure_python -fast_start -hide_gui -postpython <code>`, where `<code>` is a
 constant Python expression that only executes the preset's embedded `render.py`
 (its path written with `EXPR`'s `repr_py`). Autodesk's command-line reference
@@ -339,13 +360,13 @@ markers: a task fails unless the output contains `SQI_RENDER: OK`, and fails on
 a line containing `SQI_RENDER: FAILED:` or `No valid license found`. VRED can
 exit 0 without rendering (after a licence failure, for one), so its exit
 status is not relied on. The script writes both markers straight to file
-descriptor 1; **whether that reaches the worker from VRED, a windowed program
-on Windows, is unverified**, and if it does not, every task fails rather than
+descriptor 1; whether that reaches the worker from VRED, a windowed program
+on Windows, is unverified, and if it does not, every task fails rather than
 passing silently. The checks give their verdict only when VRED exits, and
 whether it exits after `terminateVred()` under `-hide_gui` is undocumented; the
 presets set no timeout, so their readmes recommend adding one to the step's
-`onRun` action. **Whether `startRenderToFile` returns only once every frame is
-written is unverified**: the script prints `SQI_RENDER: OK` when it returns and
+`onRun` action. Whether `startRenderToFile` returns only once every frame is
+written is unverified: the script prints `SQI_RENDER: OK` when it returns and
 does not check the files, so an early return would succeed with frames
 missing. Autodesk marks `startRenderToFile` as VRED Professional only,
 although AWS's VRED samples call it under VRED Core. `-insecure_python` turns
@@ -385,8 +406,8 @@ output contains `SQI_RENDER: OK`, and fails on a line containing `SQI_RENDER: FA
 exit codes, so its exit status is not relied on. The checks give their verdict only once KeyShot exits, and
 whether it exits when the script ends is undocumented, so the readmes recommend a step timeout. The markers go
 straight to file descriptor 1 (KeyShot documents `keyshot_headless` as supporting stdout on Windows; macOS is
-unverified). **Headless scripting is a KeyShot Pro feature (9.3 and newer, "experimental" per KeyShot), a
-trial watermarks its renders, and KeyShot has no Linux desktop product.** Frame numbering is unverified: the
+unverified). Headless scripting is a KeyShot Pro feature (9.3 and newer, "experimental" per KeyShot), a
+trial watermarks its renders, and KeyShot has no Linux desktop product. Frame numbering is unverified: the
 reference does not say whether animation frames start at 0 or 1, so `Frames` is passed through unchanged
 (KeyShot's own quick-start loop starts at 1). On macOS the detected `keyshot_headless` command is the app's
 `keyshot` program with `-headless` put first, the form KeyShot documents there. No KeyShot has executed
@@ -399,12 +420,12 @@ either preset; the detector's install folders are inferred.
 | `modo-render` | a `.lxo` scene through its render outputs, in the current pass state | `FramesPerTask` frames per task, default 1, at most 1000 | `modo` |
 | `modo-pass-group-render` | one named pass group (`PassGroup`) of a `.lxo` scene | as `modo-render` | `modo` |
 
-**Read this first: Modo is discontinued, and the way these presets start it is untested.** `modo_cl` reads
+Modo is discontinued, and the way these presets start it is untested. `modo_cl` reads
 its commands from standard input, and the worker leaves a task's standard input as the null device, which is at
 end-of-file from the first read. The presets therefore hand Modo its work with the documented `-cmd:` startup switch,
 and whether `modo_cl` runs that command to the end before it notices the end-of-file, or quits first, has not been
 tried. If it quits first, every task fails, safely: no `SQI_RENDER: OK` line is ever printed. Try one single-frame
-job before a longer one. Modo's last release was 17.1 (November 2024); downloads now need a Foundry support ticket,
+job before a longer one. Modo's last release was 17.1 (November 2024); downloads need a Foundry support ticket,
 and the end-of-life license is an RLM `uncounted hostid=ANY` key that Modo finds through `foundry_LICENSE`.
 
 Host-script presets like VRED's. Each task runs `modo_cl -dboff:crashreport -cmd:@{<script>} {<params>}`: one
@@ -561,13 +582,13 @@ PowerShell-joined segmented variant adds an OS gate:
     use the Bash or PowerShell variant, whose cost does not grow with the slice
     count. It leaves its slice files beside the output for you to remove.
 
-Install and use them exactly like the DCC reference presets above (Browse →
+Install and use them like the DCC reference presets above (Browse →
 Install as a product).
 
 ## Standalone renderer reference presets
 
 The official library also ships eight `Rendering`-category presets that render
-an **exported scene description** with a standalone renderer. The application
+an exported scene description with a standalone renderer. The application
 that produced the scene is not loaded on the farm. These presets have no
 in-application submitter; submit them from the web UI or the API. Each gates on
 a capability tag that a built-in detector sets on any worker with the renderer
@@ -603,7 +624,7 @@ the DCC presets do, with one frame per task by default.
 **Tile rendering.** `arnold-kick-tile-render` splits each frame into a grid of
 1 to 16 tiles on each axis and renders each tile as its own task. A dependent
 Assemble step then joins each frame's tiles into one image. Assembly starts
-only after **every** tile of **every** frame has finished. The tile list is
+only after every tile of every frame has finished. The tile list is
 built at submission, and its cost grows with the grid. A 16 × 16 grid fits the
 default EXPR limits. A server with `openjd.expr_memory_limit` at its minimum of
 4,096 bytes accepts at most a 7 × 7 grid.
@@ -755,11 +776,11 @@ tier to stand in for. The tiers are:
   the resulting command line is compared byte for byte against a reviewed
   golden file.
 
-  **What a passing Tier-1 test proves:** the preset expands to exactly the
+  What a passing Tier-1 test proves: the preset expands to exactly the
   command line that was reviewed, and any change to expansion, resolution or
   the preset's template shows up as a golden diff.
 
-  **What it does not prove:** that the vendor's application accepts that
+  What it does not prove: that the vendor's application accepts that
   command line. No Maya, Nuke, Houdini, Blender, Cinema 4D, 3ds Max, After
   Effects, Mistika or standalone renderer installation runs at Tier 1, so the
   argv is only as correct as the documentation it was derived from. For the
@@ -822,8 +843,8 @@ tier to stand in for. The tiers are:
   when `SQI_TEST_REQUIRE_APPS` lists the application. CI sets it for Blender,
   which is free and needs no license, in the `blender-presets` job. The others
   need an install or license CI does not have, so they run through
-  `make test-dcc` on a machine that has them. **A run that does not
-  require an application proves nothing about it:** look for the
+  `make test-dcc` on a machine that has them. A run that does not
+  require an application proves nothing about it; look for the
   `--- PASS: TestPresetDCC_` lines.
 
 - **Tier 3: real pipeline, no vendor license.** A real `sqi-server` and
@@ -834,10 +855,10 @@ tier to stand in for. The tiers are:
   handling) without a vendor license, and cross-checks the arguments the stub
   observed against the Tier-1 golden for the same case in both directions, so
   a resolution that collapsed every task onto one argv would fail. Environment
-  delivery is **not** covered: the stub records only the command, its
+  delivery is not covered: the stub records only the command, its
   arguments, its working directory and its stdin.
 
-**The registry is verified.** `TestZZPresetTierRegistrySatisfied` in
+The registry is verified. `TestZZPresetTierRegistrySatisfied` in
 `test/integration/preset_tiers_test.go` checks every claim in
 `presets/validation-tiers.yaml` against what the suite ran. A Tier-1 claim
 needs a fixture case and a golden that exist. A Tier-2 or Tier-3 claim needs a

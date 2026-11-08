@@ -80,6 +80,9 @@ task 1/3  name="Render[Frame=1-9]"
             vred(rs, "setRenderView")(params["view"])
         if params["output"]:
             vred(rs, "setRenderFilename")(params["output"])
+        # One status for the whole chunk: startRenderToFile blocks and
+        # reports nothing between its start and end.
+        emit("openjd_status: rendering frames %d\u2013%d" % (params["start"], params["stop"]))
         vred(rs, "startRenderToFile")(True)
     
     
@@ -182,6 +185,9 @@ task 2/3  name="Render[Frame=10-17]"
             vred(rs, "setRenderView")(params["view"])
         if params["output"]:
             vred(rs, "setRenderFilename")(params["output"])
+        # One status for the whole chunk: startRenderToFile blocks and
+        # reports nothing between its start and end.
+        emit("openjd_status: rendering frames %d\u2013%d" % (params["start"], params["stop"]))
         vred(rs, "startRenderToFile")(True)
     
     
@@ -284,6 +290,9 @@ task 3/3  name="Render[Frame=18-25]"
             vred(rs, "setRenderView")(params["view"])
         if params["output"]:
             vred(rs, "setRenderFilename")(params["output"])
+        # One status for the whole chunk: startRenderToFile blocks and
+        # reports nothing between its start and end.
+        emit("openjd_status: rendering frames %d\u2013%d" % (params["start"], params["stop"]))
         vred(rs, "startRenderToFile")(True)
     
     

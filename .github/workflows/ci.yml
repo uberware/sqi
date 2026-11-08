@@ -1781,6 +1781,9 @@ jobs:
             # Skips without a working Python 3. Runs the Houdini preset's
             # driver against every chunk spelling sqi emits.
             TestHoudiniROPRender_DriverRendersEachRange
+            # Skips without a working Python 3. The same driver's
+            # openjd_progress and openjd_status lines under the stub hou.
+            TestPresetHoudiniDriver_EmitsProgress
             # Skips without a working Python 3. Runs the hython-script
             # launcher under a stub hou: argv order, SQI_FRAME* variables, hip
             # load, first setFrame, and exception/exit-code propagation.
@@ -1796,6 +1799,7 @@ jobs:
             TestPresetVRED_ScriptDrivesVRED
             TestPresetVRED_ScriptDrivesVRED/output_file_with_quotes_and_spaces/globals
             TestPresetVRED_ScriptDrivesVRED/render_fails/modules
+            TestPresetVRED_EmitsStatus
             # The KeyShot host-script presets: the same four checks, plus the
             # Output File rules refused at submission. ScriptDrivesKeyShot
             # skips without a working Python 3, so two leaves are named too.
@@ -1806,6 +1810,7 @@ jobs:
             TestPresetKeyShot_ScriptDrivesKeyShot
             TestPresetKeyShot_ScriptDrivesKeyShot/a_chunk_at_the_scene_size/file
             TestPresetKeyShot_ScriptDrivesKeyShot/renderImage_returns_False_at_the_second_frame/cwd
+            TestPresetKeyShot_EmitsProgress
             # The Modo host-script presets: the same checks, plus the -cmd:
             # argument's shape. ScriptDrivesModo skips without a working
             # Python 3, so two leaves are named too.
@@ -1816,6 +1821,7 @@ jobs:
             TestPresetModo_ScriptDrivesModo
             TestPresetModo_ScriptDrivesModo/whole_scene_chunk/args_modo
             TestPresetModo_ScriptDrivesModo/scene_open_fails/file_commands
+            TestPresetModo_EmitsStatus
             # The Unreal host-script presets. They are Windows-only, so their
             # Tier 3 and outcome cases skip here and run in
             # preset-harness-windows; these tests need no Unreal and no OS
@@ -1833,6 +1839,7 @@ jobs:
             TestPresetUnreal_ScriptDrivesUnreal/job_renders_and_quits/import
             TestPresetUnreal_ScriptDrivesUnreal/a_fatal_error_ends_the_render_once/cwd
             TestPresetUnreal_ScriptDrivesUnreal/shot-missing/import
+            TestPresetUnreal_EmitsJobProgress
             # The Fusion Saver host-script preset: the same checks as Modo's,
             # with the embedded render.lua under a real Lua 5.1 and Fusion
             # faked. SQI_REQUIRE_LUA=1 makes ScriptDrivesFusion fail rather
@@ -1847,6 +1854,7 @@ jobs:
             TestPresetFusion_ScriptDrivesFusion/saver-missing
             TestPresetFusion_ScriptDrivesFusion/not-a-saver
             TestPresetFusion_ScriptDrivesFusion/render-fails
+            TestPresetFusion_EmitsStatus
             # Outcome cases (expect_status in a preset-cases fixture). The
             # parent passes when every case skips, so leaves that run on linux
             # are named: the `script` built-in with the stub told to exit 3,
@@ -2135,6 +2143,8 @@ jobs:
           for name in \
             TestPresetDCC_Blender_BatchRender \
             TestPresetDCC_Blender_ViewLayerRender \
+            TestPresetDCC_Blender_BatchRender/progress_moves_within_a_chunk \
+            TestPresetDCC_Blender_ViewLayerRender/progress_moves_within_a_chunk \
           ; do
             grep -q -- "--- PASS: ${name} " /tmp/blender-presets.log \
               || { echo "::error::${name} did not run to a PASS"; exit 1; }
@@ -2229,9 +2239,7 @@ jobs:
       #
       # TestFFmpegPreset_BashSegmentTranscodeJoins runs here but is not
       # listed, and the registry's tier2 required_on omits windows for it: it
-      # skips when the worker process cannot find bash.exe on PATH, and no
-      # run on this image has shown it passing. Add it here and in the
-      # registry once one does.
+      # skips when the worker process cannot find bash.exe on PATH.
       - name: Assert every tier actually ran
         shell: bash
         run: |
@@ -2249,6 +2257,7 @@ jobs:
                       "TestPresetVRED_ScriptDrivesVRED " \
                       "TestPresetVRED_ScriptDrivesVRED/output_file_with_quotes_and_spaces/globals " \
                       "TestPresetVRED_ScriptDrivesVRED/render_fails/modules " \
+                      "TestPresetVRED_EmitsStatus " \
                       "TestPresetKeyShot_ParamsCostAtMaxChunk " \
                       "TestPresetKeyShot_ParamsJSONRoundTrips " \
                       "TestPresetKeyShot_ShareOneScript " \
@@ -2256,6 +2265,7 @@ jobs:
                       "TestPresetKeyShot_ScriptDrivesKeyShot " \
                       "TestPresetKeyShot_ScriptDrivesKeyShot/a_chunk_at_the_scene_size/file " \
                       "TestPresetKeyShot_ScriptDrivesKeyShot/renderImage_returns_False_at_the_second_frame/cwd " \
+                      "TestPresetKeyShot_EmitsProgress " \
                       "TestPresetModo_ParamsCostAtMaxChunk " \
                       "TestPresetModo_ParamsJSONRoundTrips " \
                       "TestPresetModo_ShareOneScript " \
@@ -2263,6 +2273,7 @@ jobs:
                       "TestPresetModo_ScriptDrivesModo " \
                       "TestPresetModo_ScriptDrivesModo/whole_scene_chunk/args_modo " \
                       "TestPresetModo_ScriptDrivesModo/scene_open_fails/file_commands " \
+                      "TestPresetModo_EmitsStatus " \
                       "TestPresetUnreal_ParamsCostIsFixed " \
                       "TestPresetUnreal_ParamsJSONRoundTrips " \
                       "TestPresetUnreal_OneTaskPerShot " \
@@ -2274,6 +2285,7 @@ jobs:
                       "TestPresetUnreal_ScriptDrivesUnreal/job_renders_and_quits/import " \
                       "TestPresetUnreal_ScriptDrivesUnreal/a_fatal_error_ends_the_render_once/cwd " \
                       "TestPresetUnreal_ScriptDrivesUnreal/shot-missing/import " \
+                      "TestPresetUnreal_EmitsJobProgress " \
                       "TestPresetFusion_ParamsCostAtMaxChunk " \
                       "TestPresetFusion_ParamsJSONRoundTrips " \
                       "TestPresetFusion_CommandNamesTheScript " \
@@ -2419,9 +2431,9 @@ jobs:
   # gate run on every supported version from the 3.9 floor up.
   python-test:
     name: Python client tests (${{ matrix.python-version }})
-    # Pinned: ubuntu-latest moved to 26.04 on 2026-10-19, and setup-python has no
-    # Python 3.9 for it, so the 3.9 floor could not be tested there. Move to
-    # ubuntu-latest again once 3.9 is available on it, or when 3.9 is dropped.
+    # Pinned: ubuntu-latest is 26.04, and setup-python has no Python 3.9 for it,
+    # so the 3.9 floor cannot be tested there. Use ubuntu-latest again when 3.9
+    # is available on it or when 3.9 is dropped.
     runs-on: ubuntu-24.04
     needs: changes
     if: ${{ needs.changes.outputs.python == 'true' || github.event_name == 'workflow_dispatch' }}

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Which validation tier each shipped preset and built-in product has actually
+# Which validation tier each shipped preset and built-in product has
 # reached. See docs/preset-library.md for what each tier proves.
 #
 # Every claim here is checked. internal/presettest and
@@ -32,7 +32,15 @@ presets:
         number, and that a stepped range renders exactly its frames. Not
         shown: Blender 4.x (the argv is derived from its documentation), a
         supplied path that already carries an extension, or any output format
-        but multilayer EXR.
+        but multilayer EXR. The SQI_LOG_PROGRESS patterns were confirmed
+        against Blender 5.2.2 output captured with Cycles (whole-frame and
+        tiled) and EEVEE (testdata/progress, checked by
+        TestPresetProgress_Fixtures), and Tier 2 shows the task's progress
+        moving through a four-frame chunk under a real 5.2.2 worker. They were
+        not confirmed against Blender 4.x, whose lines carry no timestamp and
+        use another layout ("Fra:1 Mem:9.24M ..." with no "Rendering frame N"
+        line); a 4.0.1 render matches none of them, so the bar moves only as
+        tasks finish, and the Tier-2 progress subtest skips below 5.2.
     tier2:
       case: TestPresetDCC_Blender_BatchRender
       requires_app: blender
@@ -63,7 +71,15 @@ presets:
         a non-zero status before -a renders, naming the missing layer and
         leaving no output; and that a name containing quotes arrives intact.
         Not shown: what -S does when the scene does not exist, Blender 4.x, and
-        the #### caveats of blender-batch-render beyond padding.
+        the #### caveats of blender-batch-render beyond padding. The
+        SQI_LOG_PROGRESS patterns, shared with blender-batch-render, were
+        confirmed against Blender 5.2.2 output captured with Cycles
+        (whole-frame and tiled) and EEVEE (testdata/progress, checked by
+        TestPresetProgress_Fixtures), and Tier 2 shows the task's progress
+        moving through a four-frame chunk of an untiled Cycles render under a
+        real 5.2.2 worker. They were not confirmed against Blender 4.x, whose
+        lines carry no timestamp and use another layout, so there the bar
+        moves only as tasks finish.
     tier2:
       case: TestPresetDCC_Blender_ViewLayerRender
       requires_app: blender
@@ -172,7 +188,7 @@ presets:
         argv derived from SideFX's documented hython command-line convention for
         driving a ROP via an embedded Python driver script. The golden shows
         both the chunk the driver receives and the driver's parser, so the two
-        can be read against each other. The chunks are NONCONTIGUOUS, which sqi
+        can be read against each other. The chunks are non-contiguous, which sqi
         spells as a compact frame range: the default case's 1-24 becomes 1-8,
         9-16 and 17-24, and the stepped-range case's thirty frames become three
         tasks such as 1-19:2. The driver renders each lo-hi:step part in one
@@ -186,9 +202,27 @@ presets:
         frame_range, that hython hands the driver its arguments in the order the
         driver reads them, and that stepped (1-12:2), listed (1-3,7,8) and
         multi-chunk (1-24, three tasks) ranges write exactly their frames, each
-        file read back to the right frame. Not shown: a render ROP (Mantra,
-        Karma, an OpenGL ROP), a scene using the ROP's own frame range, the
-        Apprentice resolution limit, or any Houdini but 22.0.466.
+        file read back to the right frame. Not shown by those runs: a render
+        ROP (Mantra, Karma, an OpenGL ROP), a scene using the ROP's own frame
+        range, the Apprentice resolution limit, or any Houdini but 22.0.466 (the
+        progress path below was run under 21.0.631). Progress
+        comes from the driver itself, not SQI_LOG_PROGRESS: one render-event
+        callback, registered before the first rop.render call and removed after
+        the last, writes openjd_progress (frames done / total x 100) and
+        openjd_status ("rendered frame F (k of n)") to file descriptor 1 on each
+        PostFrame event, leaving the render calls unchanged.
+        TestPresetHoudiniDriver_EmitsProgress checks those lines against the
+        stub hou, which fires PreFrame then PostFrame for every frame of every
+        faked render. Houdini 21.0.631 (Apprentice, macOS arm64) fires
+        PreFrame and PostFrame once per frame for a Geometry ROP, within
+        each rop.render call, and Tier 2 shows the task's progress taking at
+        least two values above 0 on a listed four-frame chunk (1,2,7,8, two
+        render calls) under a real 21.0.631 worker, with the ROP's pre-frame
+        script sleeping so a frame outlasts the worker's 2 s progress throttle.
+        The 100 printed just before the process exits is published when the
+        task ends, ahead of its terminal status. Not confirmed: PostFrame on a render ROP (Mantra,
+        Karma, an OpenGL ROP), or the progress path under any Houdini but
+        21.0.631.
     tier2:
       case: TestPresetDCC_Houdini_ROPRender
       requires_app: houdini
@@ -205,19 +239,29 @@ presets:
         argv derived from Foundry's documented nuke -x batch-render flags
         (-X <write node> -F <frame list>). The stepped-range golden shows a
         stepped Frames range expanding to one single-frame task per requested
-        frame (-F 1-1, -F 3-3, ...), because a CONTIGUOUS chunk never spans a
+        frame (-F 1-1, -F 3-3, ...), because a contiguous chunk never spans a
         gap, so -F never receives OpenJD's colon step syntax (1-19:2) where
         Foundry documents x (1-19x2). Tier 2 runs it against a real Nuke 17.1v2
         (Non-commercial, so the test passes --nc) and shows that Nuke reads
         -F 1-1 as the single frame 1, and that -X renders only the named Write
         node: a 1-4:3 range wrote exactly wr2.0001.png and wr2.0004.png. Not
-        shown: a commercial license, a colon or x step, or Nuke on Linux or
-        macOS. The chunks
-        are CONTIGUOUS because Foundry's Command Line Operations page documents
+        shown by that run: a commercial license, a colon or x step, or Nuke on
+        Linux or macOS (the progress path below was run on macOS). The chunks
+        are contiguous because Foundry's Command Line Operations page documents
         -F only as one frame, a-b or a-bxN (repeating -F for more ranges), with
-        no comma-list form, so a NONCONTIGUOUS chunk such as 1-19:2 or 1-3,7,8
+        no comma-list form, so a non-contiguous chunk such as 1-19:2 or 1-3,7,8
         could reach Nuke only through a wrapper script that rewrites it. A
         stepped range therefore costs one task, and one script load, per frame.
+        The SQI_LOG_PROGRESS pattern was confirmed against Nuke 17.1v2
+        (Non-commercial, macOS arm64) output captured from this argv
+        (testdata/progress, checked by TestPresetProgress_Fixtures): Nuke
+        prints "Frame N (i of n)" once a frame is written, so the bar moves as
+        each frame finishes, never within one. Tier 2 shows the task's progress
+        taking at least two values above 0 through a four-frame chunk under a
+        real 17.1v2 worker, with each
+        Write node made to sleep before each frame so a frame outlasts the
+        worker's 2 s progress throttle. Not confirmed for progress: other Nuke
+        versions, a commercial license, or Nuke on Linux or Windows.
     tier2:
       case: TestPresetDCC_Nuke_WriteRender
       requires_app: nuke
@@ -234,14 +278,25 @@ presets:
         argv derived from Foundry's documented nuke -x batch-render flags
         (-F <frame list>, rendering every enabled Write node), so which Write
         nodes are enabled, and so what this variant renders, is invisible in
-        argv. Its chunks are CONTIGUOUS for nuke-write-render's reason, and its
+        argv. Its chunks are contiguous for nuke-write-render's reason, and its
         stepped-range golden shows the same single-frame expansion (-F 1-1,
         -F 3-3, ...): no step separator reaches -F, and a stepped range costs
         one task per frame. Tier 2 runs it against a real Nuke 17.1v2
         (Non-commercial) and shows that, with no -X, every enabled Write node
         renders every requested frame (two Write nodes, frames 1-4, eight
         files). Not shown: a disabled Write node, a stepped range (covered for
-        nuke-write-render), or a commercial license.
+        nuke-write-render), or a commercial license. The SQI_LOG_PROGRESS
+        pattern, shared with nuke-write-render, was confirmed against Nuke
+        17.1v2 output captured from this argv rendering two Write nodes
+        (testdata/progress, checked by TestPresetProgress_Fixtures): Nuke prints
+        a "Writing ... took" line per Write node per frame but "Frame N (i of
+        n)" once per frame, after every node has written it, and the pattern
+        matches only that, so the bar moves once per frame whatever the number
+        of Write nodes. Tier 2 shows the task's progress taking at least two
+        values above 0 through a four-frame chunk of both Write nodes under a
+        real 17.1v2 worker. Not confirmed
+        for progress: other Nuke versions, a commercial license, or Nuke on
+        Linux or Windows.
     tier2:
       case: TestPresetDCC_Nuke_ScriptRender
       requires_app: nuke
@@ -316,10 +371,23 @@ presets:
         with its space, reaches husk as one argument; that -2--1 writes
         frames -002 and -001; and that a stage husk cannot load fails the job.
         A multi-frame chunk is not shown at Tier 2: the preset has no chunk
-        size parameter. Not shown: a stage with no render product (husk then
-        writes every frame to karma.exr in the task's working folder), Karma
-        XPU on a GPU, any other Hydra delegate, Houdini on Linux or macOS, any
-        Houdini but 22.0.466, and a commercial or Indie license.
+        size parameter. Not shown by those runs: a stage with no render product
+        (husk then writes every frame to karma.exr in the task's working
+        folder), Karma XPU on a GPU, any other Hydra delegate, Houdini on Linux
+        or macOS, any Houdini but 22.0.466, and a commercial or Indie license
+        (the progress path below was run under 21.0.631 on macOS). Progress
+        comes from SQI_LOG_PROGRESS on husk's own output: the "a" in -V 2a prints
+        ALF_PROGRESS N%, the percent through the whole run (the task's chunk),
+        several times within each frame; with -V 2 and no "a" husk 21.0.631
+        printed no such line, and with no -V nothing at all. The status pattern
+        takes the image name and count from ">>> Render <image> (i of n) -
+        WxH". TestPresetProgress_Fixtures checks both against husk 21.0.631
+        captures (Apprentice, macOS arm64; one frame, and the chunk patched to
+        three frames), and Tier 2 shows a task's progress moving through
+        several values within a four-frame chunk under a real 21.0.631 worker,
+        on a layer path-tracing 8192 samples at 640x360 so a frame outlasts the
+        worker's 2 s progress throttle. Not confirmed: ALF_PROGRESS from Karma
+        XPU or another delegate, or under any Houdini but 21.0.631.
     tier2:
       case: TestPresetDCC_Houdini_HuskRender
       requires_app: houdini
@@ -391,10 +459,23 @@ presets:
         sign takes one place of the padding). A pattern with no # or two runs,
         a # in a folder (usdrecord checks the whole path for placeholders, so
         it would exit 2), or a { or } anywhere (usdrecord formats the path with
-        str.format) is rejected at submission. Not shown: Houdini on Linux or
-        macOS, any Houdini but 22.0.466, a worker with no GPU rendering with
+        str.format) is rejected at submission. Not shown by those runs (the
+        progress path below was run under 21.0.631 on macOS): Houdini on Linux
+        or macOS, any Houdini but 22.0.466, a worker with no GPU rendering with
         Storm, the other renderers (Karma XPU, Houdini VK,
         GL), a plain OpenUSD usdrecord, or the sub-frame ###.### pattern.
+        Progress comes from SQI_LOG_PROGRESS on usdrecord's own output, which
+        has no verbosity option: it prints "Recording time code: F.000000"
+        before it records each frame (a frame pattern), flushed line by line
+        over a pipe, and nothing after the last, so the bar reaches the last
+        frame's start and the task's end does the rest.
+        TestPresetProgress_Fixtures checks it against Houdini 21.0.631
+        captures (Storm and Karma CPU, macOS arm64), and Tier 2 shows a task's
+        progress taking at least two values above 0 on a four-frame chunk under
+        a real 21.0.631 worker, rendering
+        with Karma CPU at 2560 wide so a frame outlasts the worker's 2 s
+        progress throttle. Not confirmed: the line
+        under any Houdini but 21.0.631.
     tier2:
       case: TestPresetDCC_Houdini_USDRecord
       requires_app: houdini
@@ -433,7 +514,21 @@ presets:
         against a real OCIO config, compositing a second input sequence, any
         OIIO other than 2.5.18 and the Ubuntu package version CI installs, and
         macOS. Negative frames work with hoiiotool 2.5.18 (--frames -2--1 with
-        @@@@ writes -002 and -001), but no test pins them.
+        @@@@ writes -002 and -001), but no test pins them. oiiotool prints
+        nothing by default, and -v prints "Reading <file>" and "Writing
+        <file>", which name the frame only inside the user's own file name, so
+        the preset ends its argv with --echo "Wrote frame {FRAME_NUMBER}"
+        (help: "Echo message to console"), which oiiotool runs after -o for
+        each frame, evaluating {FRAME_NUMBER}; SQI_LOG_PROGRESS reads it as
+        framedone and as status. TestPresetProgress_Fixtures checks it against
+        captures from oiiotool 3.1.15.0 (Homebrew, macOS arm64) and Houdini
+        21.0.631's hoiiotool (OIIO 2.5.18.0), and Tier 2 shows a task's
+        progress taking at least two values above 0 on a four-frame chunk under
+        a real worker with oiiotool 3.1.15.0, a --blur 81x81 over 1024x1024 frames making a frame outlast
+        the worker's 2 s throttle; the convert
+        and operations cases write exactly their files with the echo. An --evaloff among the operations leaves {FRAME_NUMBER}
+        unexpanded and the bar still. Not confirmed: the echo under Ubuntu's
+        openimageio-tools, which CI's Tier 2 run would exercise.
     tier2:
       case: TestPresetOIIOTool_ProcessesASequence
       required_on: [linux]
@@ -766,7 +861,7 @@ presets:
 
   # fusion-saver-render is a host-script preset: FusionRenderNode runs an
   # embedded render.lua through -execute, and the per-task values travel in an
-  # EXPR-built params.json. CONTIGUOUS chunks, no SQI_CHUNK_BOUNDS (an error
+  # EXPR-built params.json. Contiguous chunks, no SQI_CHUNK_BOUNDS (an error
   # under EXPR). No os.family gate, so Tier 3 runs on every OS.
   - name: fusion-saver-render
     source: presets/sqi
@@ -801,6 +896,13 @@ presets:
         FusionRenderNode: it exercises the worker, the embedded files and the
         log checks, never the script inside Fusion. Rendering needs a Fusion
         Studio licence; the detector's install paths are unverified.
+        Progress: through its say helper, to standard output (and Fusion's
+        console), render.lua writes openjd_status ("rendering frames S–E")
+        before the Render call and no openjd_progress, as Render with Wait
+        reports nothing between its start and end. TestPresetFusion_EmitsStatus
+        checks those lines against the stub Fusion only; no Fusion has run them,
+        so what Fusion does with a write to standard output from its script is
+        unconfirmed.
     tier3:
       case: TestPresetTier3/fusion-saver-render/default
       required_on: [linux, darwin, windows]
@@ -879,6 +981,12 @@ presets:
         timeout). The Linux install roots are unverified. Tier 3 runs a stub as
         VREDCore: it exercises the worker, the embedded files and the log
         checks, never the script inside VRED.
+        Progress: through its emit helper, to file descriptor 1, render.py
+        writes openjd_status ("rendering frames S–E") before startRenderToFile
+        and no openjd_progress, as that call blocks and reports nothing between
+        its start and end. TestPresetVRED_EmitsStatus checks those lines against
+        the stub VRED only; no VRED has run them, so what VRED does with a write
+        to file descriptor 1 from its script is unconfirmed.
     tier3:
       case: TestPresetTier3/vred-render/default
       required_on: [linux, darwin, windows]
@@ -898,13 +1006,17 @@ presets:
         Output File's name. Tier 3 runs a stub as VREDCore:
         it exercises the worker, the embedded files and the log checks, never
         the script inside VRED.
+        Progress: render.py prints the same openjd_status as vred-render and no
+        openjd_progress. TestPresetVRED_EmitsStatus checks those lines against
+        the stub VRED only; no VRED has run them, so what VRED does with a write
+        to file descriptor 1 from its script is unconfirmed.
     tier3:
       case: TestPresetTier3/vred-viewpoint-render/default
       required_on: [linux, darwin, windows]
 
   # KeyShot is the second host-script preset family: keyshot_headless runs an
   # embedded render.py with -script, which loops over the task's frames, and the
-  # per-task values travel in an EXPR-built params.json. NONCONTIGUOUS chunks,
+  # per-task values travel in an EXPR-built params.json. Non-contiguous chunks,
   # no SQI_CHUNK_BOUNDS. No os.family gate (Windows and macOS are the KeyShot
   # desktop builds, but the worker tag is the gate), so Tier 3 runs on every OS;
   # on macOS the real worker puts -headless before the argv and the harness
@@ -942,7 +1054,14 @@ presets:
         TestPresetKeyShot_OutputFileRules, and render.py runs under a real Python
         with a fake lux in TestPresetKeyShot_ScriptDrivesKeyShot. Tier 3 runs a
         stub as keyshot_headless: it exercises the worker, the embedded files and
-        the log checks, never the script inside KeyShot.
+        the log checks, never the script inside KeyShot. Progress comes from
+        render.py itself, not SQI_LOG_PROGRESS: through its emit helper, to file
+        descriptor 1, it writes openjd_status ("rendering frame F (k of n)")
+        before each frame's renderImage and openjd_progress (frames done / total
+        x 100) after the frame's file check, so a failed frame reports none.
+        TestPresetKeyShot_EmitsProgress checks those lines against the stub lux
+        only; no KeyShot has run them, so what KeyShot does with a write to
+        file descriptor 1 from its script is unconfirmed.
     tier3:
       case: TestPresetTier3/keyshot-render/default
       required_on: [linux, darwin, windows]
@@ -960,7 +1079,9 @@ presets:
         render, is undocumented. quoting puts both quotes, a backslash and a space
         in Studio and both quotes in Output File's name. Tier 3 runs a stub as
         keyshot_headless: it exercises the worker, the embedded files and the log
-        checks, never the script inside KeyShot.
+        checks, never the script inside KeyShot. Progress is printed by
+        render.py as for keyshot-render, confirmed against the stub lux only,
+        not against any KeyShot.
     tier3:
       case: TestPresetTier3/keyshot-studio-render/default
       required_on: [linux, darwin, windows]
@@ -968,7 +1089,7 @@ presets:
   # Modo is the third host-script preset family. modo_cl reads commands from
   # stdin, which the worker leaves as the null device, so the preset runs an
   # embedded render.py through the documented -cmd: startup command and the
-  # per-task values travel in an EXPR-built params.json. CONTIGUOUS chunks,
+  # per-task values travel in an EXPR-built params.json. Contiguous chunks,
   # no SQI_CHUNK_BOUNDS (an error under EXPR). No os.family gate (Modo ran on
   # Windows, macOS and Linux; the worker tag is the gate), so Tier 3 runs on
   # every OS.
@@ -1006,6 +1127,12 @@ presets:
         the log checks, never the script inside Modo. The detector paths follow
         Foundry's 17.1 and 13.2 documentation and are unconfirmed on a machine;
         Linux has no fixed path (put modo_cl on PATH).
+        Progress: through its emit helper, to file descriptor 1, render.py
+        writes openjd_status ("rendering frames S–E") before render.animation
+        and no openjd_progress, as that command blocks and reports nothing
+        between its start and end. TestPresetModo_EmitsStatus checks those lines
+        against the stub modo only; no Modo has run them, so what Modo does with
+        a write to file descriptor 1 from its script is unconfirmed.
     tier3:
       case: TestPresetTier3/modo-render/default
       required_on: [linux, darwin, windows]
@@ -1028,6 +1155,10 @@ presets:
         quotes, a backslash and a space in PassGroup and both quotes in the
         scene's file name. Tier 3 runs a stub as modo_cl: it exercises the worker,
         the embedded files and the log checks, never the script inside Modo.
+        Progress: render.py prints the same openjd_status as modo-render and no
+        openjd_progress. TestPresetModo_EmitsStatus checks those lines against
+        the stub modo only; no Modo has run them, so what Modo does with a write
+        to file descriptor 1 from its script is unconfirmed.
     tier3:
       case: TestPresetTier3/modo-pass-group-render/default
       required_on: [linux, darwin, windows]
@@ -1091,6 +1222,16 @@ presets:
         HKLM\SOFTWARE\EpicGames\Unreal Engine\<5.x> as InstalledDirectory, as
         AWS's adaptor reads it, which a detector check cannot read), and a
         cold shader cache.
+        Progress: through its emit helper, to file descriptor 1, the script
+        writes openjd_status ("finished job NAME") and openjd_progress (jobs
+        done / jobs x 100) as each job's
+        on_individual_job_work_finished_delegate fires, all before SQI_RENDER:
+        OK; a job that failed reports none. Within-job progress
+        (MoviePipelineLibrary.get_completion_percentage) is not used: no Unreal
+        was available to confirm it. TestPresetUnreal_EmitsJobProgress checks
+        those lines against the stub unreal module only; no Unreal has run them,
+        so what Unreal does with a write to file descriptor 1 from its script is
+        unconfirmed.
     tier2:
       case: TestPresetDCC_Unreal_MRQRender
       requires_app: unreal
@@ -1120,6 +1261,12 @@ presets:
         frames, and that the Output Directory replaces the job's own. Not
         shown: a queue of several jobs, a disabled job, and a blank Output
         Directory.
+        Progress: the script prints openjd_status and openjd_progress per
+        finished job as unreal-mrq-job-render does, counting only enabled jobs.
+        TestPresetUnreal_EmitsJobProgress checks those lines, a disabled job
+        included, against the stub unreal module only; no Unreal has run them,
+        so what Unreal does with a write to file descriptor 1 from its script
+        is unconfirmed.
     tier2:
       case: TestPresetDCC_Unreal_MRQRender
       requires_app: unreal
@@ -1159,6 +1306,12 @@ presets:
         without a shot track, an entry with no outer name, several camera cuts
         sharing one name (all of them render), the missing-{shot_name}
         warning, and Movie Render Graph configs.
+        Progress: through its emit helper, to file descriptor 1, the script
+        writes one openjd_status ("rendering SHOT") when the task's render
+        starts and no openjd_progress. TestPresetUnreal_EmitsJobProgress checks
+        those lines against the stub unreal module only; no Unreal has run them,
+        so what Unreal does with a write to file descriptor 1 from its script is
+        unconfirmed.
     tier2:
       case: TestPresetDCC_Unreal_MRQRender
       requires_app: unreal
@@ -1225,7 +1378,7 @@ presets:
     tier2:
       case: TestFFmpegPreset_BashSegmentTranscodeJoins
       # Not required on windows: the test skips when the worker process cannot
-      # resolve bash.exe on PATH, and the Windows CI runner has not been seen
+      # resolve bash.exe on PATH, and the Windows CI runner is not known
       # to provide one. ci.yml's preset-harness-windows job states when to add
       # windows here.
       required_on: [linux, darwin]

@@ -1,0 +1,5 @@
+# Captured verbatim from oiiotool 3.1.15.0 (Homebrew, macOS arm64), stdout and stderr combined; scratch path replaced by <SCRATCH>.
+# version: oiiotool --version prints 3.1.15.0
+# input:   oiiotool --frames 1-3 --pattern constant:color=1,0,0 8x8 3 -o "<SCRATCH>/in dir/in.@@@@.png"
+# command: oiiotool --frames 1-3 "<SCRATCH>/in dir/in.@@@@.png" -o <SCRATCH>/outd/conv.@@@@.jpg
+# The preset's argv before SQI_LOG_PROGRESS. Kept as evidence: oiiotool printed nothing at all, so this file holds no output lines.
