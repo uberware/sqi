@@ -10,7 +10,7 @@ This document covers installing, running, upgrading, and maintaining
 ### Pre-built binaries
 
 Download the latest release archive from the GitHub Releases page. One archive
-per platform contains **both** `sqi-server` and `sqi-worker`. Archives are named
+per platform contains both `sqi-server` and `sqi-worker`. Archives are named
 `sqi_<OS>_<arch>` — for example `sqi_Linux_x86_64.tar.gz`,
 `sqi_Linux_arm64.tar.gz`, `sqi_Darwin_arm64.tar.gz`,
 `sqi_Windows_x86_64.zip`.
@@ -166,7 +166,7 @@ sudo journalctl -u sqi-server -f
 ### Windows service
 
 `sqi-server` runs as a native Windows service: the Service Control Manager
-(SCM) starts it, and a service **Stop** — or a reboot — runs the
+(SCM) starts it, and a service Stop, or a reboot, runs the
 [graceful shutdown](#graceful-shutdown) sequence. Its `service` command group is
 the same as `sqi-worker`'s, and
 [worker deployment](worker-deployment.md#windows--windows-service) is the
@@ -182,12 +182,12 @@ The command a service runs is different too: the server's is `serve`, not
 `sqi-server.exe serve --config C:\ProgramData\sqi\sqi-server.yaml` (stop the
 service first, or the two fight over the same ports and database).
 
-**Prepare `C:\ProgramData\sqi` first**, exactly as in
+Prepare `C:\ProgramData\sqi` first, exactly as in
 [step 2 of the worker guide](worker-deployment.md#2-create-the-directory-administrators-only):
 created by you, as administrator, administrators-only, with the owner checked.
 The server's configuration, database and JetStream data end up there, and a user
 who created it first can edit the configuration a LocalSystem service runs with,
-and read or replace its database. Then, from an **elevated** PowerShell (every
+and read or replace its database. Then, from an elevated PowerShell (every
 `service` subcommand needs one, `status` included):
 
 ```powershell
@@ -229,7 +229,7 @@ create — see
   60 s);
 - is given 45 s to shut down when Windows reboots: the server's own 30 s
   shutdown bound (`server.ShutdownTimeout`, not configurable) plus 15 s;
-- runs **in the configuration file's directory**, so the default relative
+- runs in the configuration file's directory, so the default relative
   `store.sqlite_path` (`sqi.db`) and `nats.embedded.data_dir` (`data\nats`) live beside the
   config — `C:\ProgramData\sqi` by default. Set absolute paths, for example on a
   data volume, if you would rather keep them elsewhere. A `--user` account
@@ -256,12 +256,12 @@ directory could not be used, in `sqi-server.trace.log` beside the configuration
 file (the fallback is described under
 [Logs](worker-deployment.md#logs) in the worker guide). Both are best effort.
 
-> **`migrate`, `backup`, `restore`, `store copy` and `worker` run from a
-> console use the *shell's* working directory, not the service's.** With the
+> `migrate`, `backup`, `restore`, `store copy` and `worker`, run from a
+> console, use the shell's working directory, not the service's. With the
 > default relative `store.sqlite_path` and `nats.embedded.data_dir`,
 > `sqi-server migrate up --config C:\ProgramData\sqi\sqi-server.yaml` looks for
-> `sqi.db` in the directory the shell is in — an elevated PowerShell usually starts in
-> `C:\Windows\System32` — and would *create* a new, empty database there, while
+> `sqi.db` in the directory the shell is in (an elevated PowerShell usually starts in
+> `C:\Windows\System32`) and would create a new, empty database there, while
 > `backup` and `worker` would report `no database at …`. `restore` would put the
 > backup in `C:\Windows\System32` and leave the server's own database and NATS
 > directory untouched. Either set absolute paths in the configuration file, or
@@ -272,7 +272,7 @@ a host shares the one `C:\ProgramData\sqi\logs` directory by default. Any servic
 installed with `--user` — a worker on the same host, say — is always granted
 access to that directory, whatever its own `log.file` is. If the server shares a
 host with one, give the server a `log.file` outside that directory, in one only
-it and administrators can read **and** write (for example
+it and administrators can read and write (for example
 `log.file: "C:\\ProgramData\\sqi\\sqi-server.log"`), restart the server
 (`service stop`, then `service start`: while it runs it holds
 `logs\sqi-server.log` open, and Windows will not let the file be moved or
@@ -356,13 +356,12 @@ sudo install -m 0755 ./sqi-server /usr/local/bin/sqi-server
 sudo systemctl start sqi-server
 ```
 
-**Check the configuration with the new binary first (step 0).** The server
+Check the configuration with the new binary first (step 0). The server
 refuses to start on a malformed duration in the config file, such as
-`job_retention: 7d` (durations have no `d` unit: write `168h`); v0.3.0 and
-earlier ignored such a value and used the default. Step 0 finds it while the
-old server still runs, instead of in step 4, mid-upgrade.
+`job_retention: 7d` (durations have no `d` unit: write `168h`). Step 0 finds it
+while the old server still runs, instead of in step 4.
 
-**Name the database with `--db` in step 2.** The backup is taken by the binary
+Name the database with `--db` in step 2. The backup is taken by the binary
 you are upgrading from, and the `backup` of v0.3.0 and earlier reads only
 `--db`: it accepts `--config` but ignores it, and otherwise uses
 `$SQI_SQLITE_PATH` (which `sudo` drops) or `sqi.db` in the current directory.
@@ -371,7 +370,7 @@ and fails (`open source database: ... no such table: farms`); in a directory
 that holds some other sqi database, it backs that one up without complaint. So
 check the result: the backup should be close to the live file's size (`VACUUM
 INTO` compacts it, so it can be smaller), and any sqi database, even one with
-no jobs, is several hundred kilobytes (385 KB for an empty farm at schema 39).
+no jobs, is several hundred kilobytes.
 The new binary's `sqi-server migrate status --db <backup>` checks it without
 changing it: on SQLite, `migrate status` only reads the database. Do not run
 the *old* binary's `migrate status` on it: in v0.3.0 and earlier it opens the
@@ -430,14 +429,14 @@ startup failed: open store: sqlite: database schema is version 39, newer than th
 
 The first number is the database's schema version, the second the newest
 migration this binary carries (on PostgreSQL the prefix is `postgres:`).
-Nothing was changed: the binary stopped before touching the data. `migrate
+The binary stops before touching the data. `migrate
 up`, `restore` (given a backup newer than the binary), `store copy` and the
 `worker` credential commands refuse the same database with the same message.
 `backup` does not: it never opens the store, so it can back up a database
 newer than itself.
 
 To go back to the older release, restore the backup taken before the upgrade,
-with the **older** binary. Do not start a server until the last step:
+with the older binary. Do not start a server until the last step:
 
 ```sh
 sudo systemctl stop sqi-server
@@ -579,7 +578,7 @@ sqi-server backup \
 
 - **`pg_dump` must be on `PATH`** where the command runs, at least the
   server's major version; an older one is refused with both versions named. It
-  should be the **same** major version as the server: a newer `pg_dump` writes
+  should be the same major version as the server: a newer `pg_dump` writes
   settings into the archive (`SET transaction_timeout`, for one) that an older
   server rejects when the archive is restored into it. The `sqi-server`
   container image does not include `pg_dump`, so run the backup from a host
@@ -660,7 +659,7 @@ resume from it. In order, it:
    empty, and the archive is loaded with `pg_restore --no-owner --no-acl
    --single-transaction --exit-on-error`, so a failed load leaves it empty;
 4. applies any newer migrations, as `serve` would;
-5. **fences**: every attempt the restored database still records as open
+5. fences: every attempt the restored database still records as open
    (its task assigned or running) is closed as failed (`worker shut down`) and
    its task goes back to `ready`, without using a retry or counting toward the
    job's failure limit;
@@ -738,7 +737,7 @@ nothing; and by the restore round trip in `make smoke`.
 
 ### Restoring PostgreSQL
 
-`restore` loads the archive only into an **empty** database (no tables at all
+`restore` loads the archive only into an empty database (no tables at all
 in its search path, sqi's or anyone's). sqi never drops a database: that needs
 privileges it may not have, and it is your decision. Keep the current database
 under another name, or drop it, then create an empty one owned by the role in
@@ -977,7 +976,7 @@ Remove-Item -Recurse C:\ProgramData\sqi\data\nats.pre-restore-*
   failure moving a sidecar (including a `.pre-restore-` name that already
   exists for it) comes after the database itself has moved. A database and its
   `-wal`/`-shm` files are one database only together, so to go back, rename
-  **all** the moved files back (no restored `sqi.db` is in place yet in that
+  all the moved files back (no restored `sqi.db` is in place yet in that
   case; if one is, remove it first). If only the final rename failed, the
   checked copy of the backup is still at `<store.sqlite_path>.restore-tmp`.
 - **After the backup was in place but before the fence finished**: the
@@ -1094,8 +1093,8 @@ availability or without:
 
 The commands in the right-hand column work while a server runs.
 
-A consequence for upgrades and supervisors of a single server: **no
-overlapping restarts.** Stop the old server before starting the new one. A
+For upgrades and supervisors of a single server, this means no
+overlapping restarts. Stop the old server before starting the new one. A
 supervisor that starts the replacement first (a rolling update with surge)
 sees it refused until the old one exits. `systemctl restart` stops first and
 is fine. A high-availability group rolls a release that keeps the schema, and
@@ -1119,7 +1118,7 @@ startup failed: open store: another sqi-server is using /var/lib/sqi/sqi.db (loc
 
 The lock, not the file, is the guard. The operating system drops it when the
 process exits however it exits, so a crashed server leaves nothing stale, and
-the file stays on disk. **Never delete it**: that frees nothing, and a
+the file stays on disk. Do not delete it: that frees nothing, and a
 process opening it at that moment would lock a file the next one cannot see. To
 find the holder on Linux, `sudo fuser -v /var/lib/sqi/sqi.db.lock`.
 
@@ -1152,7 +1151,7 @@ WHERE  l.locktype = 'advisory' AND l.granted
   AND  l.database = (SELECT oid FROM pg_database WHERE datname = 'sqi');
 ```
 
-**The lock goes with its connection.** If the connection holding it drops
+The lock goes with its connection. If the connection holding it drops
 (a network failure, the PostgreSQL server restarting, an administrator
 terminating the backend), the server logs `store: lost the PostgreSQL server
 lock's connection; another sqi-server could now start on this database` at
@@ -1270,8 +1269,7 @@ external PostgreSQL server instead. Everything else — the API, the scheduler,
 workers, NATS — is the same on both. How the two stores differ inside is
 described under [Two backends](architecture.md#two-backends).
 
-**PostgreSQL 16 or later is required.** CI runs the PostgreSQL-backed test
-packages and the integration suite against 16 and 18.
+PostgreSQL 16 or later is required. Versions 16 and 18 are the ones tested.
 
 ### Docker Compose
 
@@ -1287,9 +1285,9 @@ docker compose -f deploy/docker-compose.postgres.yml up -d --build
 The password is required. It sets the database role's password and reaches
 the server as `PGPASSWORD`, so the DSN in the file carries none. The server
 creates the schema on first start. `--build` builds the images from your
-checkout, since PostgreSQL support is not yet in a published release (the
-latest is `v0.3.0`); once a release includes it, pin that tag in the file and
-drop `--build`. The file's header has the commands to back the database up
+checkout, because no published release includes PostgreSQL support (the
+latest is `v0.3.0`); a release that includes it can be pinned by tag in the
+file instead. The file's header has the commands to back the database up
 from inside its container and to restore it with `sqi-server restore` (see
 [Restoring in Docker Compose](#restoring-in-docker-compose)). The rest of this
 section covers an external PostgreSQL server you run yourself.
@@ -1383,7 +1381,7 @@ transaction, with each table verified by row count and digest before it
 commits. It runs with the server stopped, and it never writes to the SQLite
 file, which stays as it was.
 
-**PostgreSQL → SQLite is not supported.** Once the farm has run on
+PostgreSQL → SQLite is not supported. Once the farm has run on
 PostgreSQL, the way back to an earlier state is `backup` and `restore` on
 PostgreSQL.
 
@@ -1514,15 +1512,15 @@ Everything is checked before a row moves, and each refusal names its fix:
 During the copy, a value PostgreSQL will not take (text that is not valid
 UTF-8 or holds a NUL byte, a timestamp not in the stored form, a row whose
 foreign key points at a missing row) aborts it, naming the table, the row's
-primary key and, where it can, the column. **A failure commits no sqi rows.**
+primary key and, where it can, the column. A failure commits no sqi rows.
 A schema the command migrated into an empty database stays, still empty, so
 `store copy` can be run again once the cause is fixed; a migration that itself
 failed partway needs the database dropped and created again.
 
-**How long it takes.** As a sizing guide, on a 12-vCPU host with PostgreSQL
-on tmpfs: about 5 s for 100,000 tasks (a 25 MB SQLite file) and 47 s for
-1,000,000 tasks (245 MB), all of it one PostgreSQL transaction. The server
-stays stopped for that long.
+**How long it takes.** The time grows with the row count: allow about 5 s
+for 100,000 tasks (a 25 MB SQLite file) and about a minute for 1,000,000
+tasks (245 MB) on fast storage, all of it one PostgreSQL transaction. The
+server stays stopped for that long.
 
 ---
 
@@ -1538,7 +1536,7 @@ enrollment, revocation and the workers' credentials are the same in both
 modes. How the two topologies differ is described under
 [Broker topologies](architecture.md#broker-topologies).
 
-**sqi needs a dedicated account on the cluster.** `sqi-server`'s data
+sqi needs a dedicated account on the cluster. `sqi-server`'s data
 connection may publish and subscribe to every subject in its account, which is
 safe only because nothing else lives there. Do not share the account with
 another application.
@@ -2087,15 +2085,14 @@ store directly (the SQLite file, or the PostgreSQL database with `--dsn` or
 they work whether or not `sqi-server` is running — and, independently,
 whether or not the user-facing `auth.enabled` is on.
 
-> **These commands choose their store the same way `backup` and `migrate`
-> do** (see [`store.driver`](configuration.md#storedriver): `--dsn` or
+> These commands choose their store the same way `backup` and `migrate`
+> do (see [`store.driver`](configuration.md#storedriver): `--dsn` or
 > `store.driver: postgres` selects PostgreSQL). For SQLite the path is an
 > explicit `--db`, then `store.sqlite_path` (the root
 > `-c/--config` file and `SQI_STORE_SQLITE_PATH`), then the legacy
 > `SQI_SQLITE_PATH` environment variable, then `sqi.db`. Unlike `migrate`,
 > they never create or migrate the database: pointing one at a path with no
-> database there is a clear error naming the resolved path, not a silently
-> created empty one. Run `sqi-server migrate up` against the target database
+> database there is an error naming the resolved path. Run `sqi-server migrate up` against the target database
 > first if it does not exist yet.
 
 ### Issue a join token
@@ -2159,7 +2156,7 @@ worked examples for wiring sqi logs to journald, Docker, Loki, and ELK.
 
 ### Output format
 
-By default `sqi-server` writes structured JSON logs to **stderr**:
+By default `sqi-server` writes structured JSON logs to stderr:
 
 ```json
 {"time":"2026-01-15T10:00:00.000Z","level":"INFO","msg":"server started","addr":"0.0.0.0:8080"}
@@ -2291,9 +2288,9 @@ described in [Writing to a file](#writing-to-a-file).
 | `sqi_server_ha_promotions_total` | counter | — | Promotions of this server to leader. HA only |
 | `sqi_server_ha_demotions_total` | counter | `reason` | Losses of leadership by this server, by [reason](#demotion-exit-code-75). HA only |
 
-> **Five of these are registered but not yet populated**, so they emit no
-> samples at all — a Prometheus `*Vec` with no children produces no series, and
-> an alert written against one will sit silent rather than fire:
+> Five of these are registered but never populated, so they emit no samples
+> at all (a Prometheus `*Vec` with no children produces no series), and an
+> alert written against one stays silent:
 > `sqi_scheduler_tasks_total`, `sqi_scheduler_assignment_duration_seconds`,
 > `sqi_nats_published_total`, `sqi_nats_consumed_total`, and
 > `sqi_db_query_duration_seconds`. (The worker exports its own
@@ -2366,14 +2363,14 @@ groups:
    PostgreSQL's advisory lock).
 8. Exit with code 0.
 
-The server imposes its own **30 s** internal drain deadline
-(`server.ShutdownTimeout`, a compile-time constant — not a config key); past
+The server has its own 30 s internal drain deadline
+(`server.ShutdownTimeout`, a compile-time constant, not a config key); past
 that it logs `graceful shutdown timed out after 30s` and exits. The example
-unit's `TimeoutStopSec=60s` is deliberate headroom over that 30 s so systemd
-never SIGKILLs mid-drain; raising it further has no effect on how long the
-server actually waits.
+unit's `TimeoutStopSec=60s` is headroom over that 30 s so systemd does not
+SIGKILL mid-drain; raising it further has no effect on how long the server
+waits.
 
-As a Windows service, a service **Stop** or a shutdown (PreShutdown) request
+As a Windows service, a service Stop or a shutdown (PreShutdown) request
 starts the same sequence. The service is registered with a 45 s PreShutdown
 timeout: the 30 s deadline plus 15 s.
 

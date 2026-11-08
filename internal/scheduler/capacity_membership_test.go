@@ -202,9 +202,9 @@ func (s *membershipSpy) ListActiveWorkerCredentials(ctx context.Context) ([]stor
 	return s.Store.ListActiveWorkerCredentials(ctx)
 }
 
-// A worker in no group registers as before: with broker authentication off it
-// costs no membership call at all, and with it on only the last-seen touch it
-// always made, whose result carries the credential's group.
+// A worker in no group costs no membership call with broker authentication
+// off, and with it on only the last-seen touch every registration makes, whose
+// result carries the credential's group.
 func TestRegister_NoGroupMakesNoMembershipCalls(t *testing.T) {
 	tests := []struct {
 		name string
@@ -331,7 +331,7 @@ func TestRegister_CredentialGroupJoinsWhenAuthOn(t *testing.T) {
 
 // A group token stays valid after its group is changed to named, but a worker
 // enrolled with it must not join the named group as an ephemeral, and so
-// deletable, member. It registers as before, with one warning.
+// deletable, member. It registers with no membership and one warning.
 func TestRegister_CredentialGroupNowNamedRefused(t *testing.T) {
 	f := newMembershipFixture(t, true)
 	g := createGroup(t, f.st, sizedGroup("cloud", nil))
@@ -358,8 +358,8 @@ func TestRegister_CredentialGroupNowNamedRefused(t *testing.T) {
 }
 
 // With broker authentication off, only a sized group of the worker's own farm
-// may be joined by name. Anything else registers the worker as before, with
-// no membership and one warning per worker.
+// may be joined by name. Anything else registers the worker with no
+// membership and one warning per worker.
 func TestRegister_ConfigNamedGroupRefused(t *testing.T) {
 	tests := []struct {
 		name  string

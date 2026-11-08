@@ -4,9 +4,9 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import CopyButton from './CopyButton'
 
-// Note: userEvent.setup() installs its own navigator.clipboard stub, overriding
-// any mock we define. We use fireEvent.click() for clipboard tests so that the
-// component calls our mock directly rather than user-event's internal clipboard.
+// userEvent.setup() installs its own navigator.clipboard stub, overriding any
+// mock defined here. The clipboard tests use fireEvent.click() so that the
+// component calls the mock directly rather than user-event's clipboard.
 
 describe('CopyButton', () => {
   it('writes the value to the clipboard on click', async () => {
@@ -45,7 +45,7 @@ describe('CopyButton', () => {
     render(<CopyButton value="x" />)
     fireEvent.click(screen.getByRole('button'))
     expect(writeText).toHaveBeenCalled()
-    // No "Copied!" state because the promise rejected.
+    // The promise rejected, so there is no "Copied!" state.
     expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
   })
 })

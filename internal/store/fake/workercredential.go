@@ -21,10 +21,10 @@ func (s *Store) CreateWorkerCredential(ctx context.Context, c store.WorkerCreden
 		return store.WorkerCredential{}, store.ErrConflict
 	}
 	for _, ex := range s.workerCredentials {
-		// Mirror SQLite's constraints: public_key is UNIQUE across every row,
-		// active or revoked, but worker_id is only unique among ACTIVE rows
-		// (worker_credentials_active, a partial index) — a revoked row must
-		// never block the same worker ID from enrolling again with a new key.
+		// Mirror SQLite's constraints: public_key is unique across every row,
+		// active or revoked, but worker_id is only unique among active rows
+		// (worker_credentials_active, a partial index), so a revoked row does not
+		// block the same worker ID from enrolling again with a new key.
 		if ex.PublicKey == c.PublicKey {
 			return store.WorkerCredential{}, store.ErrConflict
 		}
@@ -69,14 +69,11 @@ func (s *Store) RevokeWorkerCredential(ctx context.Context, workerID string, at 
 	if err := s.fenceLocked(ctx); err != nil {
 		return err
 	}
-	// Scan the WHOLE map before giving up. Go's map iteration order is
-	// randomized, and after a key rotation a worker can legitimately have
-	// both a revoked row and an active one for the same worker_id — mirror
-	// SQLite's "UPDATE ... WHERE worker_id = ? AND revoked_at IS NULL",
-	// which matches by predicate regardless of row count, rather than
-	// stopping at the first row this map happens to yield. Returning
-	// ErrNotFound on hitting a revoked row before the active one would make
-	// a legitimate revoke fail non-deterministically.
+	// Scan the whole map before giving up. Map iteration order is random, and
+	// after a key rotation a worker can have both a revoked row and an active
+	// one for the same worker_id. This mirrors SQLite's "UPDATE ... WHERE
+	// worker_id = ? AND revoked_at IS NULL", which matches by predicate rather
+	// than stopping at the first row the map yields.
 	for id, c := range s.workerCredentials {
 		if c.WorkerID != workerID || c.RevokedAt != nil {
 			continue
@@ -98,7 +95,7 @@ func (s *Store) TouchWorkerCredential(ctx context.Context, workerID string, at t
 	// Scan the whole map rather than stopping at the first match, for the
 	// same reason RevokeWorkerCredential does: a worker can have both a
 	// revoked row and an active one after a key rotation, and map iteration
-	// order is randomized.
+	// order is random.
 	for id, c := range s.workerCredentials {
 		if c.WorkerID != workerID || c.RevokedAt != nil {
 			continue
@@ -183,15 +180,15 @@ func (s *Store) ListCapacityGroupTokens(_ context.Context, groupID string) ([]st
 	return out, nil
 }
 
-// RevokeWorkerJoinToken implements [store.WorkerCredentialStore].
-func (s *Store) RevokeWorkerJoinToken(ctx context.Context, id string, at time.Time) error {
+// RevokeCapacityGroupToken implements [store.WorkerCredentialStore].
+func (s *Store) RevokeCapacityGroupToken(ctx context.Context, groupID, id string, at time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.fenceLocked(ctx); err != nil {
 		return err
 	}
 	t, ok := s.workerJoinTokens[id]
-	if !ok {
+	if !ok || t.CapacityGroupID != groupID {
 		return store.ErrNotFound
 	}
 	if t.RevokedAt == nil {
@@ -204,12 +201,12 @@ func (s *Store) RevokeWorkerJoinToken(ctx context.Context, id string, at time.Ti
 // RedeemWorkerJoinToken implements [store.WorkerCredentialStore].
 //
 // Mirrors SQLite's transaction: the token claim and the credential creation
-// happen under ONE hold of the mutex, so a caller never observes the token
+// happen under one hold of the mutex, so a caller never observes the token
 // consumed without the credential existing, or the reverse. An unknown,
-// expired or already-claimed token is store.ErrNotFound with cred left
-// uncreated; a cred that collides with an existing worker_id or public_key
-// is store.ErrConflict with the token left unclaimed — mirroring SQLite's
-// rollback, since nothing here is written until both checks pass.
+// expired, revoked or already-claimed token is store.ErrNotFound with cred
+// left uncreated; a cred that collides with an existing worker_id or
+// public_key is store.ErrConflict with the token left unclaimed, as in
+// SQLite's rollback: nothing is written until both checks pass.
 func (s *Store) RedeemWorkerJoinToken(ctx context.Context, hash string, now time.Time, cred store.WorkerCredential) (store.WorkerCredential, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -32,8 +32,9 @@ const (
 	// CapacityProviderExternal leaves starting and stopping to something
 	// outside sqi.
 	CapacityProviderExternal CapacityProvider = "external"
-	// CapacityProviderWakeOnLAN ("wake_on_lan") and "script:<name>" are
-	// reserved for later providers.
+	// CapacityProviderWakeOnLAN ("wake_on_lan") and "script:<name>" pass
+	// [CapacityGroup.Validate], but no provider implements them and the API
+	// accepts only [CapacityProviderExternal].
 	CapacityProviderWakeOnLAN CapacityProvider = "wake_on_lan"
 )
 
@@ -103,7 +104,7 @@ type CapacityGroup struct {
 // CapacityGroupStore is the persistence interface for [CapacityGroup] records.
 type CapacityGroupStore interface {
 	// CreateCapacityGroup inserts a new group. Returns [ErrConflict] if the
-	// name is taken.
+	// name is taken or the farm does not exist.
 	CreateCapacityGroup(ctx context.Context, g CapacityGroup) (CapacityGroup, error)
 
 	// GetCapacityGroup returns the group with the given ID, or [ErrNotFound].

@@ -36,7 +36,6 @@ func TestClassify(t *testing.T) {
 		{"no rows", sql.ErrNoRows, sqlstore.ErrClassNotFound},
 		{"unique", pg("23505"), sqlstore.ErrClassConflict},
 		{"foreign key", pg("23503"), sqlstore.ErrClassConflict},
-		{"restrict", pg("23001"), sqlstore.ErrClassConflict},
 		{"serialization", pg("40001"), sqlstore.ErrClassRetry},
 		{"deadlock", pg("40P01"), sqlstore.ErrClassRetry},
 		{"check", pg("23514"), sqlstore.ErrClassOther},

@@ -33,8 +33,8 @@
 // # StateSource
 //
 // [StateSource] is the interface through which the Publisher reads live task
-// state. It is satisfied by the executor. Until the executor
-// exists, callers pass a [NoopStateSource] which reports zero active tasks.
+// state. It is satisfied by the executor. A caller with no executor passes a
+// [NoopStateSource], which reports zero active tasks.
 package heartbeat
 
 import (
@@ -57,14 +57,12 @@ type natsConn interface {
 }
 
 // watchdogPollInterval is how often the watchdog goroutine polls the NATS
-// connection status for reconnect transitions. 500 ms gives a worst-case
-// detection lag of 500 ms before the watchdog re-registers — well within
-// any practical heartbeat interval.
+// connection status for reconnect transitions. The worst-case detection lag
+// before the watchdog re-registers is one poll interval.
 const watchdogPollInterval = 500 * time.Millisecond
 
 // StateSource provides the Publisher with live task-execution state.
-// Implemented by the executor package; use [NoopStateSource]
-// until then.
+// Implemented by the executor package.
 type StateSource interface {
 	// ActiveTaskCount returns the number of task processes currently running.
 	ActiveTaskCount() int
@@ -86,7 +84,6 @@ type AttemptSource interface {
 }
 
 // NoopStateSource is a [StateSource] that always reports zero active tasks.
-// Use it before the executor is available.
 type NoopStateSource struct{}
 
 // ActiveTaskCount always returns 0.
@@ -141,8 +138,8 @@ type Publisher struct {
 //   - maxConcurrentTasks: the worker's configured concurrency ceiling,
 //     included in each heartbeat for server-side capacity tracking.
 //   - interval: how often to publish; must be > 0.
-//   - state: provides live task counts and IDs; pass [NoopStateSource] until
-//     the executor is wired in.
+//   - state: provides live task counts and IDs; [NoopStateSource] reports
+//     none.
 //   - registrar: called by the watchdog when a reconnect is detected and the
 //     callback did not already re-register.
 func New(
@@ -168,10 +165,10 @@ func New(
 }
 
 // Run starts the heartbeat ticker and the NATS watchdog goroutine.
-// It blocks until ctx is canceled. Callers should invoke Run in a goroutine.
+// It blocks until ctx is canceled, so callers invoke it in a goroutine.
 //
 // The watchdog and the ticker share the same parent context; canceling ctx
-// stops both cleanly.
+// stops both.
 func (p *Publisher) Run(ctx context.Context) {
 	p.logger.InfoContext(
 		ctx, "heartbeat: publisher started",
@@ -226,7 +223,7 @@ func (p *Publisher) publish(ctx context.Context) {
 
 	data, err := json.Marshal(msg)
 	if err != nil {
-		// Marshal of a static struct should never fail; log at error level.
+		// Marshal of a static struct does not fail in practice.
 		p.logger.ErrorContext(
 			ctx, "heartbeat: marshal failed",
 			slog.String("worker_id", p.workerID),
@@ -332,8 +329,7 @@ func (p *Publisher) runWatchdog(ctx context.Context) {
 							slog.String("worker_id", p.workerID),
 						)
 					} else {
-						// ctx is still live (verified above); use it so the
-						// re-registration inherits cancellation.
+						// The re-registration inherits ctx's cancellation.
 						p.logger.InfoContext(
 							ctx, "heartbeat watchdog: reconnect callback did not re-register — triggering fallback re-registration",
 							slog.String("worker_id", p.workerID),

@@ -31,7 +31,7 @@ interface AdminLink {
   permission: Permission
 }
 
-// Extensible registry — add future admin destinations (settings, licensing, …) here.
+// The Admin hub destinations; add a new one here.
 const ADMIN_LINKS: AdminLink[] = [
   {
     id: 'farms',

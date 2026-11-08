@@ -26,28 +26,27 @@ import (
 // This file tests the cross-binary invariant that operator configuration can
 // break: a worker's EXPR caps must not be tighter than the server's limits.
 //
-// The failure it prevents is measured: when the server allowed 10,000
-// expression positions and the worker allowed 5,000, a job with one
-// 5,000-variable environment was accepted, created and persisted, and then
-// every task in it failed at runtime naming a budget the submitter never saw.
-// internal/openjd's TestTemplateBudget_WorkerCapIsNotTighter relates the two
-// binaries' defaults, but both are operator configuration, so a farm's YAML
-// can violate the relation with that test green.
+// If the server allows 10,000 expression positions and the worker 5,000, a job
+// with one 5,000-variable environment is accepted, created and persisted, and
+// then every task in it fails at runtime naming a budget the submitter never
+// saw. internal/openjd's TestTemplateBudget_WorkerCapIsNotTighter relates the
+// two binaries' defaults, but both are operator configuration, so a farm's YAML
+// can violate the relation while that test passes.
 //
-// The mechanism: the worker advertises its own caps in its registration
-// message, the server persists them on the worker record, and the scheduler
-// refuses to dispatch an EXPR job to a worker whose advertised caps are below
-// the server's configured limits. The refusal is the bound; the
-// UnschedulableReason the sweep writes is what an operator sees.
+// The worker advertises its own caps in its registration message, the server
+// persists them on the worker record, and the scheduler refuses to dispatch an
+// EXPR job to a worker whose advertised caps are below the server's configured
+// limits. The refusal is the bound; the UnschedulableReason the sweep writes is
+// what an operator sees.
 //
-// The tests below fail when the relation is violated through configuration,
-// not only through constants. TestExprCaps_ViolationThroughConfigurationIsCaught
-// is the one that reproduces the incident; the rest fence it in (defaults
-// unaffected, base-spec work unaffected, both call sites covered).
+// The tests fail when the relation is violated through configuration, not only
+// through constants. TestExprCaps_ViolationThroughConfigurationIsCaught covers
+// the violation itself; the rest cover the cases around it (defaults
+// unaffected, base-spec work unaffected, both call sites).
 
-// exprTemplateJSON is a minimal template that DECLARES the EXPR extension, so
-// the dispatch gate treats jobs built from it as capable of phase-3 (worker
-// side) expression evaluation.
+// exprTemplateJSON is a minimal template that declares the EXPR extension, so
+// the dispatch gate treats jobs built from it as needing phase-3 (worker side)
+// expression evaluation.
 const exprTemplateJSON = `{
   "specificationVersion": "jobtemplate-2023-09",
   "extensions": ["EXPR"],
@@ -78,10 +77,10 @@ func seedExprLeaseFixture(
 }
 
 // seedExprLeaseFixtureJob is [seedExprLeaseFixture] for a caller that needs to
-// control more of the job row than its raw template -- specifically whether the
-// declared-extension list was recorded at all, which is the one thing a job
-// written before migration 00027 cannot have. Only ID, FarmID, QueueID, Name
-// and the lifecycle columns are supplied here; everything else comes from seed.
+// control more of the job row than its raw template, such as whether the
+// declared-extension list is recorded at all (a job row from before that column
+// existed has none). Only ID, FarmID, QueueID, Name and the lifecycle columns
+// are supplied here; everything else comes from seed.
 func seedExprLeaseFixtureJob(
 	t *testing.T,
 	st *fake.Store,
@@ -124,7 +123,7 @@ func seedExprLeaseFixtureJob(
 }
 
 // schedulerWithExprLimits returns a scheduler whose server-side expression
-// limits are lim — i.e. the values openjd.expr_* would have produced.
+// limits are lim, the values the openjd.expr_* settings produce.
 func schedulerWithExprLimits(st store.Store, lim openjd.ExprLimits) *Scheduler {
 	s := newMetricsScheduler(st, &recordBus{}, "f1")
 	s.cfg.ExprLimits = lim.Normalized()
@@ -142,18 +141,17 @@ func leaseOnce(t *testing.T, s *Scheduler, w store.Worker) int {
 	return len(batch)
 }
 
-// TestExprCaps_ViolationThroughConfigurationIsCaught pins that the relation is
+// TestExprCaps_ViolationThroughConfigurationIsCaught checks that the relation is
 // guarded by something a configuration can trip, not only a constant.
 //
-// The row that matters is "server raised above the worker's default": the
-// operator sets openjd.expr_template_positions to 50,000 and leaves a worker
-// at the shipped 10,000. Without the gate that farm accepts a template costing
-// 20,000 positions and then fails every task of it on that worker; with it the
-// scheduler refuses to lease the job to that worker at all.
+// The central row is "server raised above the worker's default": the operator
+// sets openjd.expr_template_positions to 50,000 and leaves a worker at the
+// default 10,000. Without the gate that farm accepts a template costing 20,000
+// positions and then fails every task of it on that worker; with it the
+// scheduler does not lease the job to that worker.
 //
-// Every dimension is exercised separately so that removing any one comparison
-// fails exactly one sub-test -- five dimensions sharing one row are one
-// dimension.
+// Each dimension has its own rows, so removing any one comparison fails a
+// sub-test.
 func TestExprCaps_ViolationThroughConfigurationIsCaught(t *testing.T) {
 	dflt := openjd.DefaultExprLimits()
 	workerDefaults := store.WorkerExprLimits{
@@ -239,11 +237,11 @@ func TestExprCaps_ViolationThroughConfigurationIsCaught(t *testing.T) {
 		// legal floor, everything else default. The other four comparisons
 		// pass (memory 20,000,000 >= 10,000,000; operations 1,000,000 >=
 		// 10,000; positions 10,000 >= 10,000; assignment retention 20,000,000
-		// >= 10,000,000) -- so without the fifth comparison this farm
-		// dispatches, and a step with `let: [big = "x" * 5000000]` is accepted
-		// at 5,000,064 live bytes (inside the raised 10 MB per-evaluation
-		// budget, charged against the 10 MB template-wide budget) and then
-		// fails every task of the job on that host at 5,000,064 > 1,000,000.
+		// >= 10,000,000), so without the fifth comparison this farm
+		// dispatches. A step with `let: [big = "x" * 5000000]` is accepted at
+		// 5,000,064 live bytes (inside the raised 10 MB per-evaluation budget,
+		// charged against the 10 MB template-wide budget) and then fails every
+		// task of the job on that host at 5,000,064 > 1,000,000.
 		{
 			name:         "worker let-retention tightened below the server's template budget blocks",
 			serverLimits: withMemory(dflt, openjd.MaxExprSubmissionMemoryBytes),
@@ -253,9 +251,8 @@ func TestExprCaps_ViolationThroughConfigurationIsCaught(t *testing.T) {
 		},
 		// The same shortfall with nothing raised on the server: the floor of
 		// expr.let_retained_bytes is a tenth of the server's default
-		// template-wide retention, so this needs no server misconfiguration at
-		// all -- only a worker tightened to a value its own config layer
-		// accepts.
+		// template-wide retention, so only a worker tightened to a value its own
+		// config layer accepts is needed.
 		{
 			name:         "worker let-retention at its floor blocks even at server defaults",
 			serverLimits: dflt,
@@ -282,24 +279,23 @@ func TestExprCaps_ViolationThroughConfigurationIsCaught(t *testing.T) {
 			leased := leaseOnce(t, s, w)
 			if tc.wantBlock && leased != 0 {
 				t.Fatalf("leased %d assignments to a worker whose EXPR caps are below the "+
-					"server's configured limits; want 0 -- this is the accepted-then-failed-"+
-					"per-task incident", leased)
+					"server's configured limits; want 0", leased)
 			}
 			if !tc.wantBlock && leased != 1 {
-				t.Fatalf("leased %d assignments, want 1: a configuration that SATISFIES the "+
+				t.Fatalf("leased %d assignments, want 1: a configuration that satisfies the "+
 					"relation must not be blocked", leased)
 			}
 			if !tc.wantBlock {
 				return
 			}
 
-			// The bound must also be visible to the operator, on the task, not
-			// only in a log line nobody reads.
+			// The refusal must also be visible to the operator on the task, not
+			// only in a log line.
 			s.reconcileTaskSchedulability(t.Context(), mustTask(t, st, taskID), []store.Worker{w})
 			got := mustTask(t, st, taskID).UnschedulableReason
 			if got == "" {
 				t.Fatal("task carries no UnschedulableReason: a refusal to dispatch that the " +
-					"operator cannot see is a silent stall")
+					"operator cannot see stalls silently")
 			}
 			for _, want := range tc.wantIn {
 				if !strings.Contains(got, want) {
@@ -310,11 +306,10 @@ func TestExprCaps_ViolationThroughConfigurationIsCaught(t *testing.T) {
 	}
 }
 
-// TestExprCaps_BaseSpecWorkIsUnaffected pins that the gate costs a
-// deliberately-tightened worker only EXPR work. Removing the whole host from
-// the farm over a limit that only applies to EXPR templates would be a far
-// worse outage than the one being prevented, and §1 chose per-worker
-// configuration precisely so a small host CAN be sized down.
+// TestExprCaps_BaseSpecWorkIsUnaffected checks that the gate costs a
+// tightened worker only EXPR work. The limits apply only to EXPR templates, so
+// the host keeps running base-spec jobs, and per-worker configuration lets a
+// small host be sized down.
 func TestExprCaps_BaseSpecWorkIsUnaffected(t *testing.T) {
 	st := newCheckedFake(t)
 	w, _ := seedExprLeaseFixture(t, st, minimalRenderJSON, store.WorkerExprLimits{
@@ -331,9 +326,9 @@ func TestExprCaps_BaseSpecWorkIsUnaffected(t *testing.T) {
 	}
 }
 
-// TestExprCaps_HeterogeneousFarmKeepsTheCapableWorker pins the property that
-// made a per-task refusal the right shape: with one tight worker and one
-// capable worker, the EXPR job runs on the capable one and no task is flagged.
+// TestExprCaps_HeterogeneousFarmKeepsTheCapableWorker checks that with one
+// tight worker and one capable worker, the EXPR job runs on the capable one and
+// no task is flagged.
 func TestExprCaps_HeterogeneousFarmKeepsTheCapableWorker(t *testing.T) {
 	st := newCheckedFake(t)
 	tight, taskID := seedExprLeaseFixture(t, st, exprTemplateJSON, store.WorkerExprLimits{
@@ -374,9 +369,9 @@ func TestExprCaps_HeterogeneousFarmKeepsTheCapableWorker(t *testing.T) {
 }
 
 // TestExprCapShortfall_Table exercises the comparison itself at its boundary,
-// independently of the store and the scheduler. Equality must PASS: the
-// relation is worker >= server, so a worker configured to exactly the server's
-// value can run everything the server accepted.
+// independently of the store and the scheduler. Equality passes: the relation
+// is worker >= server, so a worker configured to exactly the server's value can
+// run everything the server accepted.
 func TestExprCapShortfall_Table(t *testing.T) {
 	srv := openjd.ExprLimits{
 		SubmissionOperations:  5_000,
@@ -424,14 +419,13 @@ func TestExprCapShortfall_Table(t *testing.T) {
 	}
 }
 
-// TestExprCaps_UnadvertisedCapsAreTheDefaults pins the decoding
-// convention for a worker that sends no caps at all, and pins it against
-// fmtres rather than against a literal.
+// TestExprCaps_UnadvertisedCapsAreTheDefaults checks the decoding convention
+// for a worker that sends no caps at all, against fmtres rather than a literal.
 //
 // A worker that advertises always sends validated non-zero values (its config
 // layer rejects 0), so silence means an older binary, whose limits were fixed
-// constants; fmtres's TestExprLimits_DefaultsMatchLiteralValues pins that
-// today's defaults still equal them. See legacyWorkerExprCaps.
+// constants; fmtres's TestExprLimits_DefaultsMatchLiteralValues checks that the
+// defaults equal them. See legacyWorkerExprCaps.
 func TestExprCaps_UnadvertisedCapsAreTheDefaults(t *testing.T) {
 	d := fmtres.DefaultExprLimits()
 	got := workerExprCapsOrLegacy(store.WorkerExprLimits{})
@@ -448,14 +442,12 @@ func TestExprCaps_UnadvertisedCapsAreTheDefaults(t *testing.T) {
 }
 
 // TestExprCaps_RelationIsSatisfiableAtEveryLegalServerSetting is the
-// configuration-range half of the invariant, and it keeps the dispatch gate
-// from becoming a trap: for every dimension, the worker's configurable ceiling
-// must be at least the server's, or an operator could choose a legal server
-// value that no legal worker configuration can match -- at which point the
-// gate would refuse every worker in the farm and EXPR work would never run.
+// configuration-range half of the invariant. For every dimension, the worker's
+// configurable ceiling must be at least the server's, or an operator could
+// choose a legal server value that no legal worker configuration can match, and
+// the gate would refuse every worker in the farm so EXPR work would never run.
 //
-// This pins all five dimensions so a later range change cannot break it
-// unnoticed.
+// It covers all five dimensions.
 func TestExprCaps_RelationIsSatisfiableAtEveryLegalServerSetting(t *testing.T) {
 	tests := []struct {
 		dimension          string
@@ -491,10 +483,9 @@ func TestExprCaps_RelationIsSatisfiableAtEveryLegalServerSetting(t *testing.T) {
 			serverKey: "openjd.expr_template_retained_bytes", workKey: "expr.assignment_retained_bytes",
 		},
 		{
-			// The fifth dimension is compared against the SAME server key as
-			// the fourth, so satisfiability is not inherited -- expr's
-			// per-table ceiling is its own number and could be lowered
-			// independently.
+			// The fifth dimension is compared against the same server key as
+			// the fourth, but satisfiability is not inherited: expr's per-table
+			// ceiling is its own number and can be lowered independently.
 			dimension: "let retained bytes",
 			workerMax: fmtres.MaxExprLetRetainedBytes, srvMax: openjd.MaxExprTemplateRetainedBytes,
 			workerDef: fmtres.DefaultExprLimits().LetRetainedBytes,
@@ -518,16 +509,14 @@ func TestExprCaps_RelationIsSatisfiableAtEveryLegalServerSetting(t *testing.T) {
 	}
 }
 
-// TestHandleWorkerRegister_PersistsAdvertisedExprCaps pins the server half of
+// TestHandleWorkerRegister_PersistsAdvertisedExprCaps covers the server half of
 // the registration hop: a worker's advertised EXPR caps must reach the worker
-// record, because that record is what BOTH gate call sites read. Dropped, they
-// read back as zero -- "not advertised" -- and a genuinely tight worker is
-// handed EXPR work it cannot run, which is the incident this whole file exists
-// for.
+// record, because both gate call sites read that record. If they were dropped,
+// they would read back as zero ("not advertised") and a tight worker would be
+// handed EXPR work it cannot run.
 //
-// It also drives the message through handleWorkerMessage rather than calling
-// the handler directly, so the whole decode-and-convert hop is exercised end
-// to end.
+// It drives the message through handleWorkerMessage rather than calling the
+// handler directly, so the whole decode-and-convert hop is exercised.
 func TestHandleWorkerRegister_PersistsAdvertisedExprCaps(t *testing.T) {
 	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "")
@@ -557,12 +546,11 @@ func TestHandleWorkerRegister_PersistsAdvertisedExprCaps(t *testing.T) {
 	}
 }
 
-// TestHandleWorkerRegister_ExprCapWarningIsDeDuplicated pins the registration
-// diagnostic's noise control. SetupReconnectHook
-// re-registers on every NATS reconnect, and on a farm that never submits an
-// EXPR template the warning is true but vacuous, so it must not accumulate one
-// line per reconnect. It must still re-report when the shortfall changes --
-// either side reconfigured is news.
+// TestHandleWorkerRegister_ExprCapWarningIsDeDuplicated covers the registration
+// warning's de-duplication. SetupReconnectHook re-registers on every NATS
+// reconnect, and on a farm that never submits an EXPR template the warning is
+// true but irrelevant, so it must not log one line per reconnect. It must still
+// log again when the shortfall changes, since either side was reconfigured.
 func TestHandleWorkerRegister_ExprCapWarningIsDeDuplicated(t *testing.T) {
 	st := newCheckedFake(t)
 	logs := &countingHandler{}
@@ -593,23 +581,22 @@ func TestHandleWorkerRegister_ExprCapWarningIsDeDuplicated(t *testing.T) {
 	register(10_000) // a reconnect, nothing changed
 	if got := logs.warns; got != 1 {
 		t.Fatalf("an unchanged re-registration logged again (total %d, want 1): a warning per "+
-			"NATS reconnect is noise, not a signal", got)
+			"NATS reconnect is noise", got)
 	}
-	register(20_000) // still short, but by a different amount: news
+	register(20_000) // still short, but by a different amount
 	if got := logs.warns; got != 2 {
-		t.Fatalf("a CHANGED shortfall logged %d warnings in total, want 2", got)
+		t.Fatalf("a changed shortfall logged %d warnings in total, want 2", got)
 	}
-	register(50_000) // fixed
+	register(50_000) // satisfies the relation
 	if got := logs.warns; got != 2 {
-		t.Fatalf("a worker that now satisfies the relation logged a warning (total %d, want 2)", got)
+		t.Fatalf("a worker that satisfies the relation logged a warning (total %d, want 2)", got)
 	}
-	// Regressed to the SAME shortfall it last had. This is the row that pins
-	// the de-duplication being CLEARED on recovery: if the remembered text
-	// survives the recovery, this recurrence is silently suppressed and the
-	// operator is never told the worker went short again.
+	// Short again by the same amount as last time. The remembered text must be
+	// cleared on recovery; if it survives, this recurrence is suppressed and
+	// the operator is never told the worker went short again.
 	register(20_000)
 	if got := logs.warns; got != 3 {
-		t.Fatalf("a recurrence of a previously-seen shortfall, after the worker had recovered, "+
+		t.Fatalf("a recurrence of an earlier shortfall, after the worker had recovered, "+
 			"logged %d warnings in total, want 3", got)
 	}
 }
@@ -640,10 +627,10 @@ func (h *countingHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
 
 func (h *countingHandler) WithGroup(_ string) slog.Handler { return h }
 
-// TestNew_NormalizesExprLimits pins that a partially-populated (or entirely
-// zero) Config.ExprLimits is filled in with the defaults ONCE, at construction.
+// TestNew_NormalizesExprLimits checks that a partially populated (or entirely
+// zero) Config.ExprLimits is filled in with the defaults once, at construction.
 // An unset field left at 0 would make every worker look adequate in that
-// dimension, which is the gate silently failing open.
+// dimension, so the gate would fail open.
 func TestNew_NormalizesExprLimits(t *testing.T) {
 	tests := []struct {
 		name string
@@ -675,21 +662,20 @@ func TestNew_NormalizesExprLimits(t *testing.T) {
 //
 // The handler decodes the shared protocol type and converts the two nested
 // structs with Go conversions, which the compiler checks on field name, type
-// and declaration order. What is not compiler-checked is the field-by-field
-// copy into store.Worker, which is why this test drives the real handler
-// rather than a struct-to-struct decode, and why the field-count guard at the
-// end is needed: a field added to protocol.RegisterMsg that the server should
-// persist is otherwise just unread. A dropped field decodes to the zero value
-// on every registration with no error; for expr_limits that makes every worker
-// read as "not advertised", workerExprCapsOrLegacy substitutes the legacy
-// defaults, and a tight worker is handed EXPR work it cannot run.
+// and declaration order. The field-by-field copy into store.Worker is not
+// compiler-checked, which is why this test drives the real handler rather than
+// a struct-to-struct decode, and why the field-count guard at the end is
+// needed: a field added to protocol.RegisterMsg that the server should persist
+// would otherwise go unread. A dropped field decodes to the zero value on every
+// registration with no error; for expr_limits that makes every worker read as
+// "not advertised", workerExprCapsOrLegacy substitutes the legacy defaults,
+// and a tight worker is handed EXPR work it cannot run.
 //
-// One residual the version gate covers rather than this test: renaming a json
-// tag on the shared type still breaks old workers, which send the old key and
-// decode to zero. That is a cross-version disagreement, and a tag rename is a
-// breaking change [protocol.ProtocolVersion] must be bumped for -- at which
-// point discardOnVersionMismatch refuses the message instead of half-reading
-// it.
+// Renaming a json tag on the shared type is covered by the protocol version
+// rather than by this test: workers on the old tag send the old key and decode
+// to zero. A tag rename is a breaking change that requires bumping
+// [protocol.ProtocolVersion], after which discardOnVersionMismatch refuses the
+// message instead of half-reading it.
 func TestHandleWorkerRegister_EveryWireFieldReachesTheStore(t *testing.T) {
 	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "")
@@ -714,8 +700,8 @@ func TestHandleWorkerRegister_EveryWireFieldReachesTheStore(t *testing.T) {
 		GPUInfo:            protocol.GPUInfo{Vendor: "NVIDIA", Model: "RTX4090", VRAMMb: 24576, Count: 2},
 		MaxConcurrentTasks: 4,
 		Tags:               map[string]string{"env": "prod"},
-		// Five distinct values: five same-typed int64 fields crossing a package
-		// boundary is where a transposition goes unnoticed.
+		// Five distinct values: a transposition of same-typed int64 fields
+		// across a package boundary would otherwise go unnoticed.
 		ExprLimits: protocol.ExprLimits{
 			OperationLimit:          11_111,
 			MemoryLimit:             2_222_222,
@@ -734,9 +720,8 @@ func TestHandleWorkerRegister_EveryWireFieldReachesTheStore(t *testing.T) {
 		t.Fatalf("GetWorker: %v", err)
 	}
 
-	// One row per field the server persists. A field the handler forgets to
-	// copy shows up here as a zero value, which is exactly how it shows up in
-	// production.
+	// One row per field the server persists. A field the handler does not
+	// copy shows up here as a zero value.
 	fields := []struct {
 		name      string
 		got, want any
@@ -778,36 +763,35 @@ func TestHandleWorkerRegister_EveryWireFieldReachesTheStore(t *testing.T) {
 			if f.got != f.want {
 				t.Fatalf("%s = %v on the persisted worker, want %v -- the registration hop "+
 					"from protocol.RegisterMsg to store.Worker is a hand-written field copy; "+
-					"a field it misses is not a compile error, it is a permanent zero.",
+					"a field it misses is not a compile error, it persists as zero.",
 					f.name, f.got, f.want)
 			}
 		})
 	}
 
-	// protocol.RegisterMsg carries four fields the server deliberately does
-	// not persist: Version and Type (the envelope -- read by the version gate
-	// and the subject respectively, not stored), MaxConcurrentTasks, which
-	// is not persisted because the worker enforces its own concurrency
-	// locally, and CapacityGroup, a request to join a group that the handler
-	// acts on rather than copies (capacity_membership_test.go covers it). The
-	// counts below are what make a new protocol field visible
-	// here rather than unread, and they are deliberately separate: the first
-	// catches a field added to the wire and never persisted, the second
-	// catches one added to both and left out of the table above -- which
-	// satisfies the first and would otherwise leave the new field unchecked.
+	// protocol.RegisterMsg carries four fields the server does not persist:
+	// Version and Type (the envelope, read by the version gate and the subject
+	// respectively), MaxConcurrentTasks, because the worker enforces its own
+	// concurrency locally, and CapacityGroup, a request to join a group that the
+	// handler acts on rather than copies (capacity_membership_test.go covers
+	// it). The two counts below make a new protocol field visible here. They are
+	// separate: the first catches a field added to the wire and never
+	// persisted, the second catches one added to both and left out of the
+	// table above, which satisfies the first and would otherwise leave the new
+	// field unchecked.
 	t.Run("field counts", func(t *testing.T) {
 		const unpersisted = 4 // version, type, max_concurrent_tasks, capacity_group
 		sentFields := reflect.TypeFor[protocol.RegisterMsg]().NumField()
 		if want := len(persistedRegisterFields) + unpersisted; sentFields != want {
 			t.Fatalf("protocol.RegisterMsg has %d fields; this test accounts for %d persisted "+
-				"plus %d deliberately unpersisted. A field added to the wire must be "+
-				"persisted and given a row above, or added to this comment with a reason "+
+				"plus %d unpersisted. A field added to the wire must be "+
+				"persisted and given a row above, or added to the comment above with a reason "+
 				"the server does not need it.", sentFields, len(persistedRegisterFields), unpersisted)
 		}
 
 		// One row per persisted field, except that gpu_info and expr_limits
 		// each contribute several rows instead of one (their inner keys are
-		// what actually carry the values).
+		// what carry the values).
 		const nestedExtraRows = 3 + 4 // gpu_info: 4 rows for 1 field; expr_limits: 5 for 1
 		if want := len(persistedRegisterFields) + nestedExtraRows; len(fields) != want {
 			t.Fatalf("the table covers %d fields but %d are persisted (%d rows expected with "+
@@ -819,17 +803,16 @@ func TestHandleWorkerRegister_EveryWireFieldReachesTheStore(t *testing.T) {
 }
 
 // persistedRegisterFields names the protocol.RegisterMsg fields the register
-// handler copies onto a store.Worker. It exists so the count guard above reads
-// as a list rather than a magic number -- adding a field to the wire and
-// persisting it means adding its name here, which is the moment to notice it
-// also needs a row in the table.
+// handler copies onto a store.Worker. The count guard above reads it as a list
+// rather than a magic number: persisting a new wire field means adding its name
+// here, and it also needs a row in the table.
 var persistedRegisterFields = []string{
 	"WorkerID", "InstanceID", "FarmID", "QueueID", "Name", "Hostname", "IPAddress",
 	"ComputeLocation", "OS", "OSVersion", "Arch", "WorkerVersion", "CPUCount", "RAMMb",
 	"GPUInfo", "Tags", "ExprLimits", "Extensions",
 }
 
-// ── small helpers, one per dimension, so a row reads as its own mutation ──
+// ── small helpers, one per dimension ──
 
 func withPositions(l openjd.ExprLimits, n int64) openjd.ExprLimits {
 	l.TemplatePositions = n
@@ -891,10 +874,10 @@ func mustTask(t *testing.T, st *fake.Store, id string) store.Task {
 
 // ── The EXPR byte-scan heuristic and the order of schedulability checks ──
 
-// houdiniEXPRCacheJSON is the documentation's false-positive example: a
-// base-spec template — no extensions key at all — whose environment declares a
-// variable named HOUDINI_EXPR_CACHE. It contains the four bytes EXPR and
-// nothing else about the extension.
+// houdiniEXPRCacheJSON is the documented false-positive example: a base-spec
+// template with no extensions key whose environment declares a variable named
+// HOUDINI_EXPR_CACHE. It contains the four bytes EXPR and nothing else about
+// the extension.
 const houdiniEXPRCacheJSON = `{
   "specificationVersion": "jobtemplate-2023-09",
   "name": "j",
@@ -912,18 +895,18 @@ const houdiniEXPRCacheJSON = `{
   ]
 }`
 
-// TestJobMayUseEXPR_RequiresAnExtensionDeclaration pins that the byte scan
-// requires an extensions key as well as the bytes EXPR. Without it a base-spec
-// template that only mentions EXPR is a false positive, and its consequence is
-// not cosmetic: on a farm whose workers are short (reachable through
-// documented configuration, since "raise the workers first" is guidance and
-// not enforcement) the job's tasks sit `ready` forever with no capable worker,
-// flagged with a reason naming limits the template does not use. The false
-// negative is bounded only by deliberate obfuscation (see jobMayUseEXPR).
+// TestJobMayUseEXPR_RequiresAnExtensionDeclaration checks that the byte scan
+// requires an extensions key as well as the bytes EXPR. Otherwise a base-spec
+// template that only mentions EXPR is a false positive: on a farm whose
+// workers are short (reachable through documented configuration, since "raise
+// the workers first" is guidance and not enforcement) the job's tasks stay
+// `ready` with no capable worker, flagged with a reason naming limits the
+// template does not use. The false negative needs an obfuscated
+// declaration (see jobMayUseEXPR).
 //
-// The check stays a byte scan, and stays conservative in the safe direction: a
-// false positive only withholds work, a false negative dispatches EXPR work to
-// a worker that cannot run it.
+// The check is a byte scan that errs in the safe direction: a false positive
+// only withholds work, while a false negative dispatches EXPR work to a worker
+// that cannot run it.
 func TestJobMayUseEXPR_RequiresAnExtensionDeclaration(t *testing.T) {
 	tests := []struct {
 		name string
@@ -948,7 +931,7 @@ func TestJobMayUseEXPR_RequiresAnExtensionDeclaration(t *testing.T) {
 			want: false,
 		},
 		{
-			// The residual, kept deliberately: this errs toward withholding.
+			// A known residual: the scan errs toward withholding.
 			name: "declares another extension AND mentions EXPR elsewhere",
 			raw:  `{"extensions":["TASK_CHUNKING"],"name":"j","description":"no EXPR here"}`,
 			want: true,
@@ -965,10 +948,10 @@ func TestJobMayUseEXPR_RequiresAnExtensionDeclaration(t *testing.T) {
 }
 
 // TestExprCaps_BaseSpecJobMentioningEXPRIsStillDispatched tests the same
-// requirement at the level that matters: not what the predicate returns, but
-// whether a base-spec job is withheld from a short worker. Matching on the
-// bytes EXPR alone would lease 0 assignments, and with no capable worker in
-// the queue the task would wait `ready` indefinitely.
+// requirement at the dispatch level: whether a base-spec job is withheld from a
+// short worker, not what the predicate returns. Matching on the bytes EXPR
+// alone would lease 0 assignments, and with no capable worker in the queue the
+// task would wait `ready` indefinitely.
 func TestExprCaps_BaseSpecJobMentioningEXPRIsStillDispatched(t *testing.T) {
 	st := newCheckedFake(t)
 	w, taskID := seedExprLeaseFixture(t, st, houdiniEXPRCacheJSON, store.WorkerExprLimits{
@@ -978,12 +961,12 @@ func TestExprCaps_BaseSpecJobMentioningEXPRIsStillDispatched(t *testing.T) {
 		AssignmentRetainedBytes: fmtres.MinExprAssignmentRetainedBytes,
 		LetRetainedBytes:        fmtres.MinExprLetRetainedBytes,
 	})
-	// A server tightened nowhere and raised nowhere: the worker is short in
-	// every dimension purely by its own configuration.
+	// Server limits at their defaults: the worker is short in every dimension
+	// purely by its own configuration.
 	s := schedulerWithExprLimits(st, openjd.DefaultExprLimits())
 
 	if leased := leaseOnce(t, s, w); leased != 1 {
-		t.Fatalf("leased %d assignments for a BASE-SPEC job whose only relation to EXPR is an "+
+		t.Fatalf("leased %d assignments for a base-spec job whose only relation to EXPR is an "+
 			"environment variable named HOUDINI_EXPR_CACHE; want 1", leased)
 	}
 	s.reconcileTaskSchedulability(t.Context(), mustTask(t, st, taskID), []store.Worker{w})
@@ -993,13 +976,13 @@ func TestExprCaps_BaseSpecJobMentioningEXPRIsStillDispatched(t *testing.T) {
 	}
 }
 
-// TestEvaluateSchedulability_GenuineIneligibilityOutranksEXPR pins the order of
-// the two tests in evaluateSchedulability. The worker here is BOTH short on
+// TestEvaluateSchedulability_GenuineIneligibilityOutranksEXPR checks the order
+// of the two tests in evaluateSchedulability. The worker here is both short on
 // EXPR caps and ineligible for an ordinary reason (queue affinity). Reporting
 // the EXPR shortfall would tell the operator to reconfigure two expression
-// limits when the actual problem is that no worker serves the job's queue --
-// and on a farm where every worker is short, the EXPR text would overwrite the
-// real reason for every one of them.
+// limits when the actual problem is that no worker serves the job's queue, and
+// on a farm where every worker is short, the EXPR text would overwrite the real
+// reason for every one of them.
 func TestEvaluateSchedulability_GenuineIneligibilityOutranksEXPR(t *testing.T) {
 	st := newCheckedFake(t)
 	w, taskID := seedExprLeaseFixture(t, st, exprTemplateJSON, store.WorkerExprLimits{
@@ -1026,8 +1009,8 @@ func TestEvaluateSchedulability_GenuineIneligibilityOutranksEXPR(t *testing.T) {
 }
 
 // TestEvaluateSchedulability_EXPRStillReportedForAnOtherwiseEligibleWorker is
-// the other half of that order: reordering must not silence the EXPR reason for
-// the worker the operator actually needs to fix.
+// the other half of that order: the EXPR reason is still reported for a worker
+// that is otherwise eligible, the one the operator needs to fix.
 func TestEvaluateSchedulability_EXPRStillReportedForAnOtherwiseEligibleWorker(t *testing.T) {
 	st := newCheckedFake(t)
 	w, taskID := seedExprLeaseFixture(t, st, exprTemplateJSON, store.WorkerExprLimits{
@@ -1043,25 +1026,23 @@ func TestEvaluateSchedulability_EXPRStillReportedForAnOtherwiseEligibleWorker(t 
 	got := mustTask(t, st, taskID).UnschedulableReason
 	if !strings.Contains(got, "expr.assignment_positions") {
 		t.Fatalf("UnschedulableReason = %q, want the EXPR shortfall: an eligible-but-short "+
-			"worker is exactly what this reason exists to explain", got)
+			"worker is what this reason exists to explain", got)
 	}
 }
 
-// ── The declared-extension column: exact where the byte scan guessed ─────────
+// ── The declared-extension column: exact where the byte scan guesses ─────────
 //
 // The declared extension list is persisted on the job row at submission,
 // where internal/openjd has already parsed and validated it, and the lease
-// path reads that column. These tests check it at the level that matters --
-// whether work is withheld -- and fence in the state the column cannot
-// represent: a row written before it existed, which must still go through the
-// byte scan.
+// path reads that column. These tests check it at the dispatch level (whether
+// work is withheld) and cover the state the column cannot represent: a job row
+// with no recorded list, which still goes through the byte scan.
 
 // taskChunkingWithEXPRCacheJSON is the byte scan's remaining false positive,
 // in the only shape that triggers it: a template that declares some other
-// extension (so the bytes "extensions" are present) and
-// separately mentions the four bytes EXPR in an environment variable name.
-// It declares nothing of the sort, and every phase-3 evaluation it will ever
-// ask a worker for is none.
+// extension (so the bytes "extensions" are present) and separately mentions
+// the four bytes EXPR in an environment variable name. It does not declare
+// EXPR and asks a worker for no phase-3 EXPR evaluation.
 const taskChunkingWithEXPRCacheJSON = `{
   "specificationVersion": "jobtemplate-2023-09",
   "extensions": ["TASK_CHUNKING"],
@@ -1081,8 +1062,8 @@ const taskChunkingWithEXPRCacheJSON = `{
 }`
 
 // minWorkerExprCaps is a worker short in every dimension: the configuration
-// that makes exprCapShortfall non-empty, and therefore the only configuration
-// under which the EXPR/not-EXPR decision has any consequence at all.
+// that makes exprCapShortfall non-empty, and therefore the only one under which
+// the EXPR/not-EXPR decision changes the outcome.
 func minWorkerExprCaps() store.WorkerExprLimits {
 	return store.WorkerExprLimits{
 		OperationLimit:          fmtres.MinExprOperationLimit,
@@ -1093,12 +1074,11 @@ func minWorkerExprCaps() store.WorkerExprLimits {
 	}
 }
 
-// seedSubmittedExprLeaseFixture is seedExprLeaseFixture through the REAL
+// seedSubmittedExprLeaseFixture is seedExprLeaseFixture through the real
 // submission path: openjd.Submitter parses and validates rawTemplate and
-// persists the job, so the declared-extension column holds whatever
-// internal/openjd actually decoded rather than whatever a test literal claims.
-// That is the whole point -- a fixture that sets the field by hand cannot show
-// that submission records it.
+// persists the job, so the declared-extension column holds what
+// internal/openjd decoded rather than what a test literal claims. A fixture
+// that sets the field by hand cannot show that submission records it.
 func seedSubmittedExprLeaseFixture(
 	t *testing.T,
 	st *fake.Store,
@@ -1134,23 +1114,23 @@ func seedSubmittedExprLeaseFixture(
 	return w, res.Tasks[0].ID
 }
 
-// TestExprCaps_SubmittedBaseSpecJobMentioningEXPRIsDispatched pins that the
+// TestExprCaps_SubmittedBaseSpecJobMentioningEXPRIsDispatched checks that the
 // byte scan's remaining false positive does not reach a submitted job. The
 // template declares TASK_CHUNKING and names an environment variable
 // HOUDINI_EXPR_CACHE, so jobMayUseEXPR answers true (the residual its own
-// comment documents). With the declared list persisted at submission, the
-// answer comes from what internal/openjd decoded -- ["TASK_CHUNKING"] -- and
+// comment documents). Because the declared list is persisted at submission,
+// the answer comes from what internal/openjd decoded (["TASK_CHUNKING"]) and
 // the job is dispatched to a worker that is short on EXPR limits it does not
 // use.
 func TestExprCaps_SubmittedBaseSpecJobMentioningEXPRIsDispatched(t *testing.T) {
 	st := newCheckedFake(t)
 	w, taskID := seedSubmittedExprLeaseFixture(t, st, taskChunkingWithEXPRCacheJSON, minWorkerExprCaps())
 
-	// The premise: the byte scan gets this one wrong, so the test below
-	// exercises the declared-extension column and not an easier case.
+	// The byte scan gets this template wrong, so the checks below exercise
+	// the declared-extension column.
 	job := mustJob(t, st, mustTask(t, st, taskID).JobID)
 	if !jobMayUseEXPR(job) {
-		t.Fatal("premise broken: the byte scan no longer matches this template, so this " +
+		t.Fatal("the byte scan does not match this template, so this " +
 			"test would pass without reading the declared-extension column")
 	}
 	if declared, recorded := job.DeclaresExtension(openjd.ExtensionEXPR); !recorded || declared {
@@ -1171,9 +1151,8 @@ func TestExprCaps_SubmittedBaseSpecJobMentioningEXPRIsDispatched(t *testing.T) {
 }
 
 // TestExprCaps_SubmittedEXPRJobIsStillWithheld is the other direction through
-// the same real path: replacing a heuristic that says "maybe" with a column
-// that says "no" must not stop saying "yes" when the template really does
-// declare the extension. This is the accepted-then-failed incident.
+// the same real path: when the template declares the extension, the recorded
+// column says so and the job is withheld from a short worker.
 func TestExprCaps_SubmittedEXPRJobIsStillWithheld(t *testing.T) {
 	st := newCheckedFake(t)
 	w, taskID := seedSubmittedExprLeaseFixture(t, st, exprTemplateJSON, minWorkerExprCaps())
@@ -1194,27 +1173,26 @@ func TestExprCaps_SubmittedEXPRJobIsStillWithheld(t *testing.T) {
 	}
 }
 
-// TestExprCaps_LegacyRowFallsBackToTheByteScan is what protects deployments
-// that upgrade: every job row written before migration 00027 reads as "not
-// recorded", and for those the byte scan is still the only evidence there is.
-// Defaulting the column to '[]' instead of ” would make every one of them
-// look like a job that declares nothing -- an EXPR job already in the queue
-// would lose the gate, with nothing to show it.
+// TestExprCaps_LegacyRowFallsBackToTheByteScan covers job rows with no recorded
+// extension list (written before migration 00027). For those the byte scan is
+// the only evidence. Defaulting the column to '[]' instead of ” would make
+// every such row look like a job that declares nothing, and an EXPR job already
+// in the queue would lose the gate.
 func TestExprCaps_LegacyRowFallsBackToTheByteScan(t *testing.T) {
 	st := newCheckedFake(t)
-	// seedExprLeaseFixture writes the job row directly, recording nothing --
-	// exactly the shape a pre-migration row has after the column is added.
+	// seedExprLeaseFixture writes the job row directly and records no extension
+	// list, the shape of a row written before the column existed.
 	w, taskID := seedExprLeaseFixture(t, st, exprTemplateJSON, minWorkerExprCaps())
 
 	job := mustJob(t, st, mustTask(t, st, taskID).JobID)
 	if _, recorded := job.DeclaresExtension(openjd.ExtensionEXPR); recorded {
-		t.Fatal("premise broken: the fixture recorded a declared-extension list, so this " +
+		t.Fatal("the fixture recorded a declared-extension list, so this " +
 			"test is not exercising the legacy path")
 	}
 
 	s := schedulerWithExprLimits(st, openjd.DefaultExprLimits())
 	if leased := leaseOnce(t, s, w); leased != 0 {
-		t.Fatalf("leased %d assignments of a PRE-MIGRATION EXPR job to a worker short in "+
+		t.Fatalf("leased %d assignments of a pre-migration EXPR job to a worker short in "+
 			"every dimension; want 0 -- a legacy row must still be gated by the byte scan", leased)
 	}
 	s.reconcileTaskSchedulability(t.Context(), mustTask(t, st, taskID), []store.Worker{w})
@@ -1223,15 +1201,15 @@ func TestExprCaps_LegacyRowFallsBackToTheByteScan(t *testing.T) {
 	}
 }
 
-// TestExprCaps_RecordedEmptyIsNotUnrecorded is the distinction the column's ”
-// default exists to make. A job that was recorded and declares NOTHING must
-// skip the byte scan entirely -- so a raw template whose bytes would match is
-// dispatched anyway. If the two states were conflated, this job would be
-// withheld on evidence the row already contradicts.
+// TestExprCaps_RecordedEmptyIsNotUnrecorded covers the distinction the column's
+// ” default makes. A job that was recorded and declares nothing skips the byte
+// scan, so a raw template whose bytes would match is dispatched anyway. If the
+// two states were conflated, this job would be withheld on evidence the row
+// contradicts.
 func TestExprCaps_RecordedEmptyIsNotUnrecorded(t *testing.T) {
 	st := newCheckedFake(t)
 	w, taskID := seedExprLeaseFixtureJob(t, st, store.Job{
-		// Bytes that the scan matches, and a recorded list that says otherwise.
+		// Bytes the scan matches, with a recorded list that says otherwise.
 		RawTemplate:        exprTemplateJSON,
 		DeclaredExtensions: []string{},
 		ExtensionsRecorded: true,
@@ -1239,7 +1217,7 @@ func TestExprCaps_RecordedEmptyIsNotUnrecorded(t *testing.T) {
 
 	s := schedulerWithExprLimits(st, openjd.DefaultExprLimits())
 	if leased := leaseOnce(t, s, w); leased != 1 {
-		t.Fatalf("leased %d assignments for a job RECORDED as declaring no extensions; want 1 "+
+		t.Fatalf("leased %d assignments for a job recorded as declaring no extensions; want 1 "+
 			"-- recorded-empty must not fall back to the byte scan", leased)
 	}
 	s.reconcileTaskSchedulability(t.Context(), mustTask(t, st, taskID), []store.Worker{w})
@@ -1248,11 +1226,10 @@ func TestExprCaps_RecordedEmptyIsNotUnrecorded(t *testing.T) {
 	}
 }
 
-// TestJobUsesEXPR_ThreeStates tabulates the predicate the gate now asks,
-// including the case no byte scan can ever get right: a declaration spelled
-// with an escape (JSON's "\u0045XPR" decodes to EXPR, parses, and is stored
-// verbatim in RawTemplate). Recording the DECODED list at submission is what makes that
-// case exact rather than a documented escape hatch.
+// TestJobUsesEXPR_ThreeStates tabulates the predicate the gate asks, including
+// the case no byte scan can get right: a declaration spelled with an escape
+// (JSON's "\u0045XPR" decodes to EXPR, parses, and is stored verbatim in
+// RawTemplate). Recording the decoded list at submission makes that case exact.
 func TestJobUsesEXPR_ThreeStates(t *testing.T) {
 	tests := []struct {
 		name string

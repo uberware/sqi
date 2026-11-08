@@ -400,8 +400,8 @@ func TestRegister_AdvertisesWorkerEnforcedExtensions(t *testing.T) {
 }
 
 // TestDeregister_SendsKind asserts the departure kind rides in the message:
-// "" (a plain restart) is omitted, so an older server sees what it always saw.
-// The log line names the kind only when there is one.
+// "" (a plain restart) is omitted from the wire. The log line names the kind
+// only when there is one.
 func TestDeregister_SendsKind(t *testing.T) {
 	tests := []struct {
 		name     string

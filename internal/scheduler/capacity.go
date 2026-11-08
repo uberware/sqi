@@ -12,7 +12,7 @@ package scheduler
 //
 // With no group at all it reads the group list and nothing else: no member or
 // demand query, no log line and no series, so a farm that has not set up
-// capacity groups behaves exactly as before. With only disabled groups it also
+// capacity groups is unaffected. With only disabled groups it also
 // reads their members, whose vanished ephemeral machines still need removing,
 // but evaluates and exports nothing.
 
@@ -48,12 +48,13 @@ type capacityState struct {
 	// warned is, per mismatched member, the reason last logged, so each
 	// mismatch is logged once.
 	warned map[string]string
-	// exported are the group names the gauges hold series for.
-	exported map[string]struct{}
 
 	// mu guards statuses, which the API reads concurrently with the sweep.
+	// Only the sweep writes statuses, with sweepMu held, so the sweep may
+	// read them under sweepMu alone.
 	mu sync.Mutex
-	// statuses are the last evaluation's, in group order.
+	// statuses are the last evaluation's, in group order. Their group names
+	// are the ones the gauges hold series for.
 	statuses []capacity.Status
 }
 
@@ -72,10 +73,10 @@ func (s *Scheduler) CapacityStatus(groupID string) (capacity.Status, bool) {
 	return capacity.Status{}, false
 }
 
-// CapacityStatuses returns the last evaluation of every enabled group,
+// capacityStatuses returns the last evaluation of every enabled group,
 // priority descending then name, or nothing before the first sweep. Safe for
 // concurrent use.
-func (s *Scheduler) CapacityStatuses() []capacity.Status {
+func (s *Scheduler) capacityStatuses() []capacity.Status {
 	cs := &s.capState
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
@@ -230,10 +231,10 @@ func vanishedEphemeral(w store.Worker, g store.CapacityGroup, now time.Time) boo
 // no metric unless an earlier sweep exported one.
 func (s *Scheduler) clearCapacity() {
 	cs := &s.capState
-	for name := range cs.exported {
-		s.deleteCapacitySeries(name)
+	for _, st := range cs.statuses {
+		s.deleteCapacitySeries(st.GroupName)
 	}
-	cs.exported, cs.idleSince, cs.lastStepUp, cs.lastDesired, cs.warned = nil, nil, nil, nil, nil
+	cs.idleSince, cs.lastStepUp, cs.lastDesired, cs.warned = nil, nil, nil, nil
 	cs.mu.Lock()
 	cs.statuses = nil
 	cs.mu.Unlock()
@@ -469,20 +470,19 @@ func (s *Scheduler) recordMismatches(
 // the series of groups that are gone or renamed.
 func (s *Scheduler) publishCapacity(statuses []capacity.Status) {
 	cs := &s.capState
-	exported := make(map[string]struct{}, len(statuses))
+	current := make(map[string]struct{}, len(statuses))
 	for _, st := range statuses {
 		s.metrics.CapacityDemandCores.WithLabelValues(st.GroupName).Set(float64(st.DemandCores))
 		s.metrics.CapacityDesiredMachines.WithLabelValues(st.GroupName).Set(float64(st.DesiredMachines))
 		s.metrics.CapacityMembers.WithLabelValues(st.GroupName, "online").Set(float64(st.OnlineMembers))
 		s.metrics.CapacityMembers.WithLabelValues(st.GroupName, "offline").Set(float64(st.OfflineMembers))
-		exported[st.GroupName] = struct{}{}
+		current[st.GroupName] = struct{}{}
 	}
-	for name := range cs.exported {
-		if _, ok := exported[name]; !ok {
-			s.deleteCapacitySeries(name)
+	for _, old := range cs.statuses {
+		if _, ok := current[old.GroupName]; !ok {
+			s.deleteCapacitySeries(old.GroupName)
 		}
 	}
-	cs.exported = exported
 
 	cs.mu.Lock()
 	cs.statuses = statuses
@@ -553,7 +553,7 @@ func platformMismatches(p store.MachineProfile, w store.Worker) []string {
 func tagMismatches(want, have map[string]string) []string {
 	var out []string
 	for _, key := range slices.Sorted(maps.Keys(want)) {
-		got, ok := tagFold(have, key)
+		got, ok := tagValueFold(have, key)
 		switch {
 		case !ok:
 			out = append(out, fmt.Sprintf("tag %s is missing (the profile declares %q)", key, want[key]))
@@ -562,20 +562,6 @@ func tagMismatches(want, have map[string]string) []string {
 		}
 	}
 	return out
-}
-
-// tagFold is the value of the tag whose key matches key, exactly or else
-// case-insensitively, and whether there is one.
-func tagFold(tags map[string]string, key string) (string, bool) {
-	if v, ok := tags[key]; ok {
-		return v, true
-	}
-	for k, v := range tags {
-		if strings.EqualFold(k, key) {
-			return v, true
-		}
-	}
-	return "", false
 }
 
 // exprShortfalls compares each EXPR cap the profile declares with the one the

@@ -2,13 +2,13 @@
 
 // Package config defines the sqi-worker runtime configuration and provides
 // layered loading from built-in defaults, a YAML/JSON file, SQI_WORKER_*
-// environment variables, and CLI flag overrides — in that override order.
+// environment variables, and CLI flag overrides, in that override order.
 //
 // The WorkerConfig struct is the canonical configuration type. Use [Load] to
 // obtain a populated, validated instance. Use [Default] to obtain defaults
 // alone.
 //
-// Note: This package is the authoritative definition of worker configuration.
+// This package is the authoritative definition of worker configuration.
 // Fields added here must be mirrored in the example config file at
 // config/sqi-worker.example.yaml.
 package config
@@ -28,6 +28,7 @@ import (
 	sqilog "github.com/uberware/sqi/internal/log"
 	"github.com/uberware/sqi/internal/worker/capabilities"
 	"github.com/uberware/sqi/internal/worker/commands"
+	"github.com/uberware/sqi/internal/worker/preempt"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/yamlstrict"
 )
@@ -80,27 +81,26 @@ type WorkerConfig struct {
 
 // ExprConfig is the operator-facing form of internal/worker/fmtres's
 // ExprLimits: the five numbers that bound phase-3 (task-execution-time) OpenJD
-// expression evaluation on THIS host.
+// expression evaluation on this host.
 //
-// Each worker reads its own file, which is what lets a heterogeneous farm size
-// these to each host's real memory. The server has its own, separate set
-// (internal/config's openjd.expr_* keys) covering submission-time evaluation;
-// the two are independent, with one relation between them that configuration
-// can break -- see AssignmentPositions.
+// Each worker reads its own file, so a heterogeneous farm can size these to
+// each host's memory. The server has its own, separate set (internal/config's
+// openjd.expr_* keys) covering submission-time evaluation. The scheduler
+// compares the two and withholds EXPR work from a worker whose limits are
+// lower than the server's; see AssignmentPositions.
 //
-// THREE THINGS TO KNOW BEFORE RAISING ANY OF THEM, none of which is obvious
-// from the numbers:
+// Three things to know before raising any of them:
 //
-//  1. NONE OF THESE BOUNDS WALL CLOCK. Specification section 1.3.10 prices 256
-//     bytes at one operation, so an operation's real cost varies by orders of
-//     magnitude. Raising a limit lengthens the worst assignment this host can
-//     be asked to resolve, roughly in proportion; no setting makes a slow
-//     resolution impossible.
-//  2. expr.operation_limit AND expr.assignment_positions MULTIPLY. The
+//  1. None of these bounds wall-clock time. Specification section 1.3.10
+//     prices 256 bytes at one operation, so an operation's real cost varies by
+//     orders of magnitude. Raising a limit lengthens the worst assignment this
+//     host can be asked to resolve, roughly in proportion; no setting makes a
+//     slow resolution impossible.
+//  2. expr.operation_limit and expr.assignment_positions multiply. The
 //     cumulative operation ceiling for one assignment is their product, so
 //     raising both raises it twice over.
-//  3. THE BYTE DIMENSIONS COUNT CUMULATIVE ALLOCATION, NOT PEAK LIVE
-//     RETENTION. A session that never holds more than a few MB at once is
+//  3. The byte dimensions count cumulative allocation, not peak live
+//     retention. A session that never holds more than a few MB at once is
 //     still charged the sum of every environment it enters, so sizing host RAM
 //     against expr.assignment_retained_bytes over-provisions, and sizing that
 //     number against an observed RSS under-bounds it.
@@ -108,13 +108,13 @@ type WorkerConfig struct {
 // An out-of-range value is a startup failure, not a clamp (see [Validate]).
 type ExprConfig struct {
 	// OperationLimit is the specification section 1.3.10 operation budget
-	// for ONE phase-3 expression evaluation.
+	// for one phase-3 expression evaluation.
 	// Default: 1000000   Range: 10000-10000000
 	// Env: SQI_WORKER_EXPR_OPERATION_LIMIT
 	OperationLimit int64 `yaml:"operation_limit"`
 
 	// MemoryLimit is the specification section 1.3.9 live-byte budget for
-	// ONE phase-3 expression evaluation. The per-let-block structural ceiling
+	// one phase-3 expression evaluation. The per-let-block structural ceiling
 	// is 50x this number, which is the figure to size host RAM against.
 	// Default: 20000000   Range: 1000000-200000000
 	// Env: SQI_WORKER_EXPR_MEMORY_LIMIT
@@ -125,11 +125,11 @@ type ExprConfig struct {
 	// resolve, summed across the task's own symbol table and every environment
 	// the session enters.
 	//
-	// MUST NOT BE LOWER THAN THE SERVER'S openjd.expr_template_positions. An
+	// Must not be lower than the server's openjd.expr_template_positions. An
 	// assignment's positions are a subset of its template's, so a lower value
 	// here rejects, on this host and once per task, a job the server already
-	// accepted -- naming a budget the submitter never saw. Nothing checks that
-	// across the two processes today.
+	// accepted, naming a budget the submitter never saw. The scheduler withholds
+	// EXPR work from a worker whose value is lower.
 	// Default: 10000   Range: 2000-100000
 	// Env: SQI_WORKER_EXPR_ASSIGNMENT_POSITIONS
 	AssignmentPositions int64 `yaml:"assignment_positions"`
@@ -142,9 +142,9 @@ type ExprConfig struct {
 	// Env: SQI_WORKER_EXPR_ASSIGNMENT_RETAINED_BYTES
 	AssignmentRetainedBytes int64 `yaml:"assignment_retained_bytes"`
 
-	// LetRetainedBytes is what ONE phase-3 symbol table may hold live.
-	// Note that it measures the WHOLE table, so a job whose own parameters are
-	// large spends budget its let: block never asked for.
+	// LetRetainedBytes is what one phase-3 symbol table may hold live. It
+	// measures the whole table, so a job whose own parameters are large spends
+	// budget its let: block never asked for.
 	// Default: 10000000   Range: 1000000-100000000
 	// Env: SQI_WORKER_EXPR_LET_RETAINED_BYTES
 	LetRetainedBytes int64 `yaml:"let_retained_bytes"`
@@ -152,16 +152,16 @@ type ExprConfig struct {
 
 // The defaults and the range an operator may configure each expr: key to.
 //
-// These are deliberate COPIES of internal/worker/fmtres's own constants: this
-// package is the operator-facing configuration layer and fmtres is the
-// enforcement leaf, and the worker's config package does not import it (the
-// same direction internal/config and internal/openjd keep). cmd/sqi-worker is
-// the one place that sees both, and its TestExprLimitsBounds_MatchFmtres fails
-// if a number here ever drifts from the one it bounds.
+// These are copies of internal/worker/fmtres's own constants: this package is
+// the operator-facing configuration layer and fmtres is the enforcement leaf,
+// and the worker's config package does not import it (the same direction
+// internal/config and internal/openjd keep). cmd/sqi-worker is the one place
+// that sees both, and its TestExprLimitsBounds_MatchFmtres fails if a number
+// here drifts from the one it bounds.
 //
-// Which of the five is a CATASTROPHE bound (a tight ceiling, tied to a
-// measured failure) and which is a POLICY bound (wide but finite), and why, is
-// recorded on fmtres.ExprLimits' own fields.
+// Which of the five is a catastrophe bound (a tight ceiling) and which is a
+// policy bound (wide but finite), and why, is recorded on
+// fmtres.ExprLimits' own fields.
 const (
 	DefaultWorkerExprOperationLimit int64 = 1_000_000
 	MinWorkerExprOperationLimit     int64 = 10_000
@@ -196,19 +196,17 @@ type IsolationConfig struct {
 	// default) is the only supported value.
 	//
 	// "s4u" is refused. An S4U logon needs no password, but the token it
-	// produces carries no NETWORK credentials: any UNC path, mapped drive, or
-	// authenticated license server fails as ANONYMOUS from inside the task.
+	// produces carries no network credentials: any UNC path, mapped drive, or
+	// authenticated license server fails as anonymous from inside the task.
 	// On a render farm, where scene files and outputs live on a share, that
-	// disqualifies it as a general-purpose provider, and no driver exists for
-	// a worker whose jobs touch local scratch exclusively. Adding it later is
-	// additive.
+	// rules it out as a general-purpose provider.
 	// Env: SQI_WORKER_ISOLATION_PROVIDER
 	Provider string `yaml:"provider"`
 
 	// EnvPassthrough lists daemon environment variable NAME patterns inherited
 	// by isolated tasks, in addition to the minimal base. filepath.Match
-	// globs. Render farms depend on inherited licensing variables, so a pure
-	// allowlist with no escape hatch would break real jobs on day one.
+	// globs. Render farms depend on inherited licensing variables, so the
+	// allowlist is extensible.
 	// Env: SQI_WORKER_ISOLATION_ENV_PASSTHROUGH (comma-separated)
 	EnvPassthrough []string `yaml:"env_passthrough"`
 }
@@ -229,13 +227,10 @@ type StagingConfig struct {
 	Defaults bool `yaml:"defaults"`
 }
 
-// Preemption watch vendors, the values of worker.preemption.watch.
-const (
-	PreemptionWatchNone  = "none"
-	PreemptionWatchAWS   = "aws"
-	PreemptionWatchGCP   = "gcp"
-	PreemptionWatchAzure = "azure"
-)
+// PreemptionWatchNone is the worker.preemption.watch value that watches
+// nothing. The vendor values are [preempt.VendorAWS], [preempt.VendorGCP] and
+// [preempt.VendorAzure].
+const PreemptionWatchNone = "none"
 
 // Bounds of worker.preemption.poll_interval.
 const (
@@ -270,7 +265,7 @@ type PreemptionConfig struct {
 // own slog output to sqi-server over core NATS (worker.diag.<workerID>), where
 // it is surfaced in the web UI.
 type DiagnosticsConfig struct {
-	// Enabled turns on diagnostic-log publishing.  When true (the default) the
+	// Enabled turns on diagnostic-log publishing. When true (the default) the
 	// worker's slog records are mirrored to sqi-server in addition to stderr.
 	// Env: SQI_DIAGNOSTICS_ENABLED
 	Enabled bool `yaml:"enabled"`
@@ -280,15 +275,15 @@ type DiagnosticsConfig struct {
 // process stdout/stderr to sqi-server.
 type LogStreamerConfig struct {
 	// MaxLinesPerChunk is the maximum number of output lines batched into a
-	// single NATS message.  A flush is triggered immediately when the buffer
-	// reaches this count.  Increase for verbose processes; decrease for more
+	// single NATS message. A flush is triggered immediately when the buffer
+	// reaches this count. Increase for verbose processes; decrease for more
 	// granular live log updates.
 	// Default: 50
 	// Env: SQI_WORKER_LOG_STREAMER_MAX_LINES_PER_CHUNK
 	MaxLinesPerChunk int `yaml:"max_lines_per_chunk"`
 
 	// MaxBytesPerChunk is the maximum total byte count of line content in a
-	// single NATS message.  A flush is triggered when the accumulated bytes
+	// single NATS message. A flush is triggered when the accumulated bytes
 	// reach this limit after adding a line.
 	// Default: 16384 (16 KB)
 	// Env: SQI_WORKER_LOG_STREAMER_MAX_BYTES_PER_CHUNK
@@ -309,20 +304,21 @@ type NATSConfig struct {
 	// Env: SQI_WORKER_NATS_URL
 	URL string `yaml:"url"`
 
-	// TLSEnabled controls TLS on the broker connection. It is a THREE-VALUED
-	// string, not a bool, mirroring auth.session.cookie_secure on the server:
+	// TLSEnabled controls TLS on the broker connection. It is a three-valued
+	// string rather than a bool, mirroring auth.session.cookie_secure on the
+	// server:
 	//
 	//   - "auto" (default): use TLS when there is a reason to. That means any
 	//     of the TLS fields below being set, or the discovered server
 	//     advertising a TLS-required broker over mDNS.
-	//   - "true":  always use TLS, even with no CA configured (system roots) —
-	//     for a broker presenting a publicly-trusted certificate, which
+	//   - "true":  always use TLS, even with no CA configured (system roots).
+	//     For a broker presenting a publicly-trusted certificate, which
 	//     nothing else would signal.
-	//   - "false": never use TLS, even with a CA configured. An explicit
-	//     override for an operator who knows the broker is plaintext.
+	//   - "false": never use TLS, even with a CA configured. For an operator
+	//     who knows the broker is plaintext.
 	//
-	// A bool cannot express this: the interesting states are "infer" and
-	// "force off", and a bool collapses them onto the same zero value.
+	// A bool cannot express "infer" and "force off" apart: both collapse onto
+	// the same zero value.
 	// Env: SQI_WORKER_NATS_TLS_ENABLED
 	TLSEnabled string `yaml:"tls_enabled"`
 
@@ -362,7 +358,7 @@ type NATSConfig struct {
 
 	// JoinToken is a worker enrollment token. Used exactly once, on first
 	// start, to obtain a credential; ignored once CredentialFile exists.
-	// Prefer JoinTokenFile — a token in a config file is a secret at rest.
+	// Prefer JoinTokenFile: a token in a config file is a secret at rest.
 	// Env: SQI_WORKER_NATS_JOIN_TOKEN
 	JoinToken string `yaml:"join_token"`
 
@@ -375,21 +371,20 @@ type NATSConfig struct {
 	// "http://sqi-server.example:8080". Enrollment runs over REST, not over
 	// NATS: the broker's job is to reject unauthenticated connections, so it
 	// cannot also be the channel a worker gets its first credential over.
-	// Required whenever a join token is configured — it is NOT derived from
-	// mDNS discovery; a worker relying on mDNS with no explicit server_url
-	// fails enrollment with an actionable error naming this field rather
-	// than attempting a request with no host.
+	// Required whenever a join token is configured. It is not derived from
+	// mDNS discovery: a worker relying on mDNS with no explicit server_url
+	// fails enrollment with an error naming this field rather than attempting
+	// a request with no host.
 	// Env: SQI_WORKER_NATS_SERVER_URL
 	ServerURL string `yaml:"server_url"`
 
 	// ServerTLSCAFile is the CA that verifies sqi-server's certificate at
 	// ServerURL, for enrollment over HTTPS. Empty means the system roots;
-	// set means THAT CA only.
+	// set means that CA only.
 	//
-	// Deliberately separate from TLSCAFile above, which is documented as the
-	// NATS broker CA: the two can legitimately differ (a publicly-issued
-	// certificate on the API, a private farm CA on the broker), and reusing
-	// one key for both surfaces reads fine now and misleads later.
+	// Separate from TLSCAFile above, which is the NATS broker CA: the two can
+	// differ (a publicly-issued certificate on the API, a private farm CA on
+	// the broker).
 	// Env: SQI_WORKER_NATS_SERVER_TLS_CA_FILE
 	ServerTLSCAFile string `yaml:"server_tls_ca_file"`
 
@@ -410,11 +405,10 @@ const (
 // normalizeTLSMode maps a configured tls_enabled value onto one of the three
 // modes, or returns ok=false if it is not a value we understand.
 //
-// Every boolean spelling [envvar.ParseBool] accepts is accepted, because
-// SQI_WORKER_NATS_TLS_ENABLED=1 is how people set boolean-looking environment
-// variables, and this key looked like a bool until recently. They are accepted
-// in YAML too, so the file and the environment never disagree about what a
-// value means.
+// Every boolean spelling [envvar.ParseBool] accepts is accepted, so
+// SQI_WORKER_NATS_TLS_ENABLED=1 works as it does for boolean environment
+// variables. They are accepted in YAML too, so the file and the environment
+// agree about what a value means.
 func normalizeTLSMode(v string) (mode string, ok bool) {
 	v = strings.ToLower(strings.TrimSpace(v))
 	if v == "" || v == TLSAuto {
@@ -460,35 +454,34 @@ type WorkerSettings struct {
 
 	// FarmID is the farm this worker belongs to. When set, the worker only
 	// receives tasks belonging to that farm. When empty (the default), the
-	// worker is unaffiliated and accepts tasks from any farm — suitable for
+	// worker is unaffiliated and accepts tasks from any farm, which suits
 	// single-farm or development setups.
 	// Env: SQI_WORKER_FARM_ID
 	FarmID string `yaml:"farm_id"`
 
 	// DataDir is the directory used to persist the worker ID file
-	// (worker.id) — the worker's stable, server-correlated identity. It is
-	// NEVER shared with session working directories (see SessionDir) and is
-	// never widened for run-as-user traversal: it stays private (0700) for
-	// as long as the worker exists.
+	// (worker.id), the worker's stable, server-correlated identity. It is
+	// never shared with session working directories (see SessionDir) and is
+	// never widened for run-as-user traversal: it stays private (0700).
 	// Env: SQI_WORKER_DATA_DIR
 	DataDir string `yaml:"data_dir"`
 
 	// SessionDir is the directory under which session working directories
-	// (<SessionDir>/<sessionID>/) are created. Deliberately separate from
-	// DataDir: session scratch is ephemeral and, when isolation is in use,
-	// must be traversable by whichever run-as-user identity a session
-	// resolves to, while DataDir holds the persistent worker-id and must stay
-	// private. Left empty (the default), the effective value is resolved at
-	// startup (see cmd/sqi-worker's effectiveSessionRoot):
-	//   - running as root: /var/lib/sqi-worker-sessions (a SIBLING of, never
-	//     a descendant of, this package's own data_dir default — see
+	// (<SessionDir>/<sessionID>/) are created. Separate from DataDir: session
+	// scratch is ephemeral and, when isolation is in use, must be traversable
+	// by whichever run-as-user identity a session resolves to, while DataDir
+	// holds the persistent worker-id and must stay private. Left empty (the
+	// default), the effective value is resolved at startup (see
+	// cmd/sqi-worker's effectiveSessionRoot):
+	//   - running as root: /var/lib/sqi-worker-sessions, a sibling of, never
+	//     a descendant of, this package's own data_dir default (see
 	//     cmd/sqi-worker's defaultRootSessionDir doc for why the two must
-	//     never nest; its ancestors, /var and /var/lib, are 0755 on every
-	//     real distribution, so nothing needs to be created or widened
-	//     specifically for this)
-	//   - otherwise: <DataDir>/sessions — real run-as-user isolation cannot
-	//     function without root regardless of directory permissions, so there is nothing to
-	//     protect by moving it.
+	//     not nest). Its ancestors, /var and /var/lib, are 0755 on every
+	//     common distribution, so nothing needs to be created or widened
+	//     for this.
+	//   - otherwise: <DataDir>/sessions. Run-as-user isolation cannot
+	//     function without root regardless of directory permissions, so
+	//     nothing needs to be traversable by another identity.
 	// Env: SQI_WORKER_SESSION_DIR
 	SessionDir string `yaml:"session_dir"`
 
@@ -548,33 +541,33 @@ type WorkerSettings struct {
 	Preemption PreemptionConfig `yaml:"preemption"`
 
 	// QueueIDs restricts this worker to serving the listed queue IDs. An empty
-	// list means the worker accepts assignments from all queues via a wildcard
-	// JetStream consumer.  Set this when running a heterogeneous farm where
-	// some workers specialise in a subset of queues.
+	// list means the worker accepts assignments from all queues (it requests
+	// leases on the wildcard queue token). Set this when running a
+	// heterogeneous farm where some workers specialise in a subset of queues.
 	//
 	// Each entry becomes a NATS subject token in the work-lease subject
 	// work.lease.<workerID>.<queueID>, so it must satisfy the same constraint
 	// as a worker ID (see brokerauth.ValidWorkerIDToken): non-empty, and free
 	// of '.', '*', '>' and whitespace. A queue ID that does not is rejected
-	// by [Validate] rather than silently producing a subject the broker will
-	// never route — with broker auth on, a queue ID containing a dot yields
-	// too many subject tokens for this worker's publish grant and every lease
-	// request for it is denied outright; with broker auth off it fails
-	// bus.ParseWorkerSubject on the server side and gets no reply either way,
-	// so the worker retries forever with nothing in its logs naming the cause.
+	// by [Validate] rather than producing a subject the broker never routes.
+	// With broker auth on, a queue ID containing a dot yields too many subject
+	// tokens for this worker's publish grant and every lease request for it is
+	// denied; with broker auth off it fails bus.ParseWorkerSubject on the
+	// server side and gets no reply. Either way the worker retries forever
+	// with nothing in its logs naming the cause.
 	// Env: SQI_WORKER_QUEUE_IDS (comma-separated)
 	QueueIDs []string `yaml:"queue_ids"`
 
-	// PullIdleBackoff is the wait duration between pull attempts when the
-	// work queue is empty. Prevents tight polling on idle queues.
-	// Resets to zero immediately when a task is received.
+	// PullIdleBackoff is accepted but has no effect: the worker's lease request
+	// is held by the server and re-issued on return, so there is no polling
+	// loop to throttle. A negative value fails validation.
 	// Default: 2s
 	// Env: SQI_WORKER_PULL_IDLE_BACKOFF
 	PullIdleBackoff time.Duration `yaml:"pull_idle_backoff"`
 
-	// PullNackDelay is the redelivery delay applied to an assignment when
-	// pre-execution validation fails. The delay gives other workers
-	// a chance to pick it up before NATS redelivers to this one.
+	// PullNackDelay is accepted but has no effect: the server checks
+	// eligibility before leasing, so the worker runs what it is given. A
+	// negative value fails validation.
 	// Default: 5s
 	// Env: SQI_WORKER_PULL_NACK_DELAY
 	PullNackDelay time.Duration `yaml:"pull_nack_delay"`
@@ -618,8 +611,8 @@ type MetricsConfig struct {
 
 	// TLS terminates TLS on this listener. Off by default, which is right for
 	// the loopback default address; turn it on together with any Addr that is
-	// reachable from elsewhere, since this endpoint carries metrics, health and
-	// — if EnablePprof is set — full runtime profiles.
+	// reachable from elsewhere, since this endpoint carries metrics, health and,
+	// if EnablePprof is set, full runtime profiles.
 	TLS MetricsTLSConfig `yaml:"tls"`
 }
 
@@ -654,7 +647,7 @@ type DiscoveryConfig struct {
 }
 
 // FlagOverrides carries values from CLI flags that take highest precedence
-// during config loading. Only non-empty / non-zero values override the lower
+// during config loading. Only non-empty or non-zero values override the lower
 // layers.
 type FlagOverrides struct {
 	// LogLevel overrides Log.Level when non-empty.
@@ -741,14 +734,14 @@ func defaultDataDir() string {
 // DefaultCredentialFile returns the default nkey seed path under dataDir,
 // used whenever NATS.CredentialFile is left unset in [Load]'s resolution
 // below. Exported so other worker-side entry points that write or look for
-// the seed file — the "sqi-worker keygen" CLI, notably — derive the same
-// path from the data directory rather than each hardcoding it.
+// the seed file, such as the "sqi-worker keygen" CLI, derive the same path
+// from the data directory.
 func DefaultCredentialFile(dataDir string) string {
 	return filepath.Join(dataDir, "worker.nk")
 }
 
 // Load returns the effective WorkerConfig by merging layers in override order:
-// built-in defaults → YAML/JSON file → SQI_WORKER_* env vars → CLI flags.
+// built-in defaults, YAML/JSON file, SQI_WORKER_* env vars, CLI flags.
 //
 // configFile may be empty, in which case Load searches the default paths.
 func Load(configFile string, flags FlagOverrides) (WorkerConfig, error) {
@@ -758,13 +751,12 @@ func Load(configFile string, flags FlagOverrides) (WorkerConfig, error) {
 
 // Sources reports, for a subset of settings, whether the config file or
 // environment layer explicitly decided the value before [Load]'s own
-// default-fill step ran — as opposed to it being left empty for that step to
+// default-fill step ran, as opposed to it being left empty for that step to
 // fill in. Comparing the resolved value against the computed default (e.g.
 // [DefaultCredentialFile]) is not sound: an operator can explicitly
-// configure a value that happens to equal what the default-fill would have
-// produced anyway, in which case value comparison cannot tell "explicitly
-// configured" apart from "left unset". Sources answers from the file/env
-// layers themselves, so it is not fooled by that.
+// configure a value that equals what the default-fill would produce, in
+// which case value comparison cannot tell "explicitly configured" apart from
+// "left unset". Sources answers from the file/env layers themselves.
 type Sources struct {
 	// CredentialFile is true when nats.credential_file was set by the
 	// config file or by SQI_WORKER_NATS_CREDENTIAL_FILE, before [Load]
@@ -811,9 +803,10 @@ func LoadWithSources(configFile string, flags FlagOverrides) (WorkerConfig, Sour
 		cfg.NATS.InsecureSkipVerify = true
 	}
 
-	// A watcher that cannot be built must not wait for [Validate] to say so:
-	// an unrecognized vendor or an out-of-range interval fails here, naming
-	// the key, so no caller of Load can run with a misspelled watch silently off.
+	// A watcher that cannot be built fails here rather than waiting for
+	// [Validate]: an unrecognized vendor or an out-of-range interval is
+	// reported naming the key, so no caller of Load can run with a misspelled
+	// watch silently off.
 	if errs := validatePreemption(cfg.Worker.Preemption); len(errs) > 0 {
 		joined := make([]error, len(errs))
 		for i, e := range errs {
@@ -985,10 +978,10 @@ func applyLogStreamerEnv(c *LogStreamerConfig, collect func(error)) {
 }
 
 // splitCSV splits a comma-separated list, trimming whitespace around each
-// entry and keeping empty entries, unlike [envvar.StringSlice]. Used for fields whose
-// entries have their own validity check (queue IDs), so that a blank entry
-// surfaces as a validation error naming its position instead of being
-// silently discarded.
+// entry and keeping empty entries, unlike [envvar.StringSlice]. It serves
+// fields whose entries have their own validity check (queue IDs), so a blank
+// entry surfaces as a validation error naming its position instead of being
+// discarded.
 func splitCSV(s string) []string {
 	parts := strings.Split(s, ",")
 	out := make([]string, len(parts))
@@ -1094,7 +1087,7 @@ func Validate(cfg WorkerConfig) []ValidationError {
 func validatePreemption(p PreemptionConfig) []ValidationError {
 	var errs []ValidationError
 	switch p.Watch {
-	case PreemptionWatchNone, PreemptionWatchAWS, PreemptionWatchGCP, PreemptionWatchAzure:
+	case PreemptionWatchNone, preempt.VendorAWS, preempt.VendorGCP, preempt.VendorAzure:
 	default:
 		errs = append(errs, ValidationError{
 			Field:   "worker.preemption.watch",
@@ -1154,9 +1147,8 @@ func validateMetricsTLS(cfg MetricsConfig) []ValidationError {
 
 // validateNATSTLSMode rejects a nats.tls_enabled value that is not one of the
 // three modes or one of their accepted synonyms. An unrecognized value would
-// otherwise fall into the "auto" default and silently mean something the
-// operator did not write. ("yes" and "1" ARE recognized — see
-// normalizeTLSMode.)
+// otherwise fall into the "auto" default and mean something the operator did
+// not write. ("yes" and "1" are recognized; see normalizeTLSMode.)
 func validateNATSTLSMode(cfg NATSConfig) []ValidationError {
 	if _, ok := normalizeTLSMode(cfg.TLSEnabled); ok {
 		return nil
@@ -1172,13 +1164,12 @@ func validateNATSTLSMode(cfg NATSConfig) []ValidationError {
 	}
 }
 
-// validateExpr rejects an out-of-range expr: value at STARTUP rather than
+// validateExpr rejects an out-of-range expr: value at startup rather than
 // clamping it. A clamp would leave an operator who typed 100 believing they
 // had tightened the host when they had not.
 //
 // The message names the bound, the observed value, the env var and the YAML
-// key, because a limit rejected with only "out of range" sends the operator
-// looking through three layers to find which one set it.
+// key, so the operator need not search the config layers for the source.
 func validateExpr(cfg ExprConfig) []ValidationError {
 	limits := []struct {
 		key      string
@@ -1230,21 +1221,18 @@ func validateExpr(cfg ExprConfig) []ValidationError {
 
 // validateIsolation validates the Isolation section: the isolation.required /
 // worker.allow_root contradiction, and the env_passthrough glob syntax.
-// Extracted from Validate to keep its cyclomatic complexity within the
-// project limit.
 func validateIsolation(cfg WorkerConfig) []ValidationError {
 	var errs []ValidationError
 
-	// isolation.required demands the worker be ABLE to assume another OS
-	// identity; on POSIX the only mechanism today is setuid/setgid, which
-	// requires the worker to run as root (see isolation.unixProvider.Capable).
-	// worker.allow_root=false makes the worker refuse to even start as root
-	// (executor.CheckRootUser). Configuring both together is a contradiction
-	// an operator would only discover as a confusing root-user startup
-	// refusal that never mentions isolation at all — surface it explicitly
-	// instead. Windows is exempt: it resolves credentials through the
-	// logon_user provider, which does not need the worker process itself to
-	// run as a privileged account.
+	// isolation.required demands that the worker can assume another OS
+	// identity. On POSIX the only mechanism is setuid/setgid, which requires
+	// the worker to run as root (see isolation.unixProvider.Capable).
+	// worker.allow_root=false makes the worker refuse to start as root
+	// (executor.CheckRootUser). Both together are a contradiction that would
+	// otherwise surface as a root-user startup refusal that never mentions
+	// isolation, so it is reported explicitly. Windows is exempt: it resolves
+	// credentials through the logon_user provider, which does not need the
+	// worker process itself to run as a privileged account.
 	if cfg.Isolation.Required && !cfg.Worker.AllowRoot && runtime.GOOS != "windows" {
 		errs = append(errs, ValidationError{
 			Field: "isolation.required",
@@ -1271,13 +1259,12 @@ func validateIsolation(cfg WorkerConfig) []ValidationError {
 // request. A queue ID becomes a token in the work-lease subject
 // work.lease.<workerID>.<queueID> (internal/bus/subjects.go); an entry
 // containing '.' splits it into extra tokens the server-side parser and this
-// worker's own broker-auth publish grant both reject, and the failure mode
-// is silent and total: the worker's lease requests are refused or simply go
-// unanswered, and nothing in its logs says why.
+// worker's own broker-auth publish grant both reject. The worker's lease
+// requests are then refused or go unanswered, and nothing in its logs says
+// why.
 //
 // brokerauth.ValidWorkerIDToken implements exactly this predicate for worker
-// IDs, which share the same constraint for the same reason; it is reused
-// here rather than duplicated.
+// IDs, which share the same constraint.
 func validateQueueIDs(queueIDs []string) []ValidationError {
 	var errs []ValidationError
 	for i, q := range queueIDs {

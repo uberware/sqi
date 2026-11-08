@@ -30,9 +30,8 @@
 //     To mark individual endpoints as deprecated, wrap their handler with
 //     middleware.Deprecated.
 //
-// Note: the structured-logging and metrics middleware are
-// mounted here instead of the now-removed obsServer so every HTTP and
-// WebSocket request continues to be logged and counted.
+// The structured-logging and metrics middleware are mounted on this router, so
+// every HTTP and WebSocket request is logged and counted.
 package api
 
 import (
@@ -71,7 +70,7 @@ type Config struct {
 	CORSOrigins []string
 
 	// EnablePprof registers Go runtime profiling endpoints at /debug/pprof/
-	// when true. Must never be enabled on servers exposed to untrusted networks.
+	// when true. Do not enable it on servers exposed to untrusted networks.
 	EnablePprof bool
 
 	// DisableRateLimit turns off per-IP rate limiting when true.
@@ -97,8 +96,7 @@ type Config struct {
 	// this server gives up and answers 503 (the wall-clock backstop). The
 	// submission handlers turn it into an absolute instant per request.
 	//
-	// The zero value means no backstop, which is what a router built without
-	// it — every test in this package — gets.
+	// The zero value means no backstop.
 	ExprSubmissionDeadline time.Duration
 
 	// ExprLimits mirrors the operator's four openjd.expr_* settings, for the
@@ -110,15 +108,12 @@ type Config struct {
 	//
 	// The zero value means openjd's defaults.
 	//
-	// Do not set [openjd.ExprLimits.Deadline] on this field. It is exported and
-	// embedder-settable, and a Config is built once per server: a deadline
-	// stored here would be one absolute instant that every later request is
-	// measured against, refusing everything once it passed. It is inert today
-	// only because [openjd.ValidateWithBudget] overwrites the field from
-	// ValidateOptions.Deadline at every call site that matters — a property of
-	// those call sites, not a guarantee this type makes. Both handlers that
-	// read this field turn the configured duration (ExprSubmissionDeadline)
-	// into an instant per request instead.
+	// Leave [openjd.ExprLimits.Deadline] unset on this field. A Config is built
+	// once per server, so a deadline stored here would be one absolute instant
+	// that every later request is measured against, and every request would be
+	// refused once it passed. [openjd.ValidateWithBudget] overwrites the field
+	// from ValidateOptions.Deadline, and both handlers that read this field
+	// turn ExprSubmissionDeadline into an instant per request.
 	ExprLimits openjd.ExprLimits
 
 	// HA is set on a server in a high-availability group: GET /leaderz is
@@ -152,13 +147,12 @@ type Deps struct {
 
 	// Scheduler is the running scheduler instance. It is called by
 	// DELETE /api/v1/jobs/{id} to propagate cancellation to workers
-	// and by future task/retry endpoints.
+	// and by the task retry and cancel endpoints.
 	Scheduler *scheduler.Scheduler
 
 	// Hub is the WebSocket fan-out hub used by the /api/v1/ws handler.
 	// May be nil in tests that do not exercise WebSocket push;
-	// the handler degrades gracefully by accepting subscriptions without
-	// delivering any pushes.
+	// the handler then accepts subscriptions without delivering any pushes.
 	Hub *ws.Hub
 
 	// DiagReader exposes the in-memory diagnostic log buffer to
@@ -228,10 +222,10 @@ type Deps struct {
 
 	// NATSAuthEnabled mirrors config.NATSAuthConfig.Enabled: the broker
 	// requires a per-worker nkey credential. POST /api/v1/workers/enroll is
-	// mounted only when this AND NATSAuthEnrollmentEndpointEnabled are both
-	// true — with broker auth off there is no credential for it to issue, and
-	// an operator who wants no self-service enrollment surface at all can
-	// turn EnrollmentEndpointEnabled off independently.
+	// mounted only when this and NATSAuthEnrollmentEndpointEnabled are both
+	// true: with broker auth off there is no credential for it to issue, and
+	// an operator who wants no self-service enrollment surface can turn
+	// EnrollmentEndpointEnabled off independently.
 	NATSAuthEnabled bool
 
 	// NATSAuthEnrollmentEndpointEnabled mirrors
@@ -241,7 +235,7 @@ type Deps struct {
 	// JoinTokenTTL is how long a join token minted by
 	// POST /api/v1/workers/join-tokens remains valid. Mirrors
 	// config.NATSAuthConfig.JoinTokenTTL, which is bounds-checked at config
-	// load — this handler does not re-validate it.
+	// load; this handler does not re-validate it.
 	JoinTokenTTL time.Duration
 
 	// JoinTokenSingleUse consumes a join token on its first successful
@@ -251,11 +245,10 @@ type Deps struct {
 
 	// WorkerRevoker handles DELETE /api/v1/workers/{id}/credential. Required
 	// on any router that mounts REST resource routes — that route is always
-	// registered, regardless of NATSAuthEnabled — so a nil value panics the
-	// first time it is called, the same contract every other required Deps
-	// field carries. Production supplies *server.Server, which revokes in
-	// the store and then disconnects the worker from the broker; this
-	// package depends only on the [WorkerRevoker] interface, never on
+	// registered, regardless of NATSAuthEnabled, so a nil value panics the
+	// first time it is called. Production supplies *server.Server, which
+	// revokes in the store and then disconnects the worker from the broker;
+	// this package depends only on the [WorkerRevoker] interface, never on
 	// internal/bus or internal/server.
 	WorkerRevoker WorkerRevoker
 
@@ -268,22 +261,17 @@ type Deps struct {
 // resolveCORSOrigins returns the CORS allow-list to configure, dropping the
 // wildcard when auth is enabled.
 //
-// AllowCredentials + a wildcard origin is an invalid CORS configuration
+// AllowCredentials with a wildcard origin is an invalid CORS configuration
 // (browsers reject it) and, if honored, would let any origin ride the session
-// cookie. We drop the wildcard rather than silently disabling credentials.
+// cookie. The wildcard is dropped and credentials stay enabled.
 //
-// Two situations reach that same drop, and they are NOT equally noteworthy —
-// which is why they log at different levels:
+// Two situations reach that drop, and they log at different levels:
 //
-//   - No origins configured at all. This is the default and it is correct: the
-//     embedded web UI is same-origin and unaffected. Only a browser client
-//     served from a different origin needs anything set. Informational.
+//   - No origins configured. This is the default: the embedded web UI is
+//     same-origin and unaffected, and only a browser client served from a
+//     different origin needs anything set. Logged at info.
 //   - "*" configured explicitly. The operator asked for something that cannot
-//     work with credentials, so their intent is not being honored. A warning.
-//
-// Reporting the default case as a failure ("dropping the wildcard") told
-// first-time operators that enabling auth had broken something, when the
-// wildcard was one they never asked for.
+//     work with credentials, so it is logged as a warning.
 func resolveCORSOrigins(cfg Config, logger *slog.Logger) []string {
 	origins := cfg.CORSOrigins
 	defaulted := len(origins) == 0
@@ -297,7 +285,7 @@ func resolveCORSOrigins(cfg Config, logger *slog.Logger) []string {
 	if defaulted {
 		logger.InfoContext(
 			context.Background(),
-			"cors: auth is enabled and no CORS origins are configured — serving "+
+			"cors: auth is enabled and no CORS origins are configured; serving "+
 				"same-origin requests only, which is all the built-in web UI needs. "+
 				"A browser client served from another origin must be named via "+
 				"http.cors_origins / SQI_HTTP_CORS_ORIGINS / --http-cors-origins",
@@ -305,7 +293,7 @@ func resolveCORSOrigins(cfg Config, logger *slog.Logger) []string {
 	} else {
 		logger.WarnContext(
 			context.Background(),
-			"cors: auth is enabled but CORS origins include \"*\" — dropping the wildcard, "+
+			"cors: auth is enabled but CORS origins include \"*\"; dropping the wildcard, "+
 				"because a wildcard origin cannot carry credentials and would let any "+
 				"site ride the session cookie. Name the real origins explicitly via "+
 				"http.cors_origins / SQI_HTTP_CORS_ORIGINS / --http-cors-origins",
@@ -358,7 +346,7 @@ func mountObservability(r chi.Router, cfg Config, logger *slog.Logger, m *metric
 	if cfg.EnablePprof {
 		logger.WarnContext(
 			context.Background(),
-			"pprof: profiling endpoints enabled — do not expose to untrusted networks",
+			"pprof: profiling endpoints enabled; do not expose to untrusted networks",
 			slog.String("prefix", "/debug/pprof/"),
 		)
 		r.HandleFunc("/debug/pprof/", httppprof.Index)
@@ -377,8 +365,8 @@ func mountObservability(r chi.Router, cfg Config, logger *slog.Logger, m *metric
 
 // schedulerWaker returns sched as the worker handler's waker, or nil when no
 // scheduler is wired. A typed-nil *scheduler.Scheduler stored in the interface
-// would not itself be nil, so the handler's nil check would pass and the call
-// would panic.
+// is not itself nil, so the handler's nil check would pass and the call would
+// panic.
 func schedulerWaker(sched *scheduler.Scheduler) workerWaker {
 	if sched == nil {
 		return nil
@@ -398,8 +386,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 
 	// ── Middleware stack ──────────────────────────────────────────────────────
 
-	// 1. Recover from panics before any other middleware runs so that CORS
-	//    headers are always present even on 500 responses.
+	// 1. Recover from panics before any other middleware runs.
 	r.Use(chimiddleware.Recoverer)
 
 	corsOpts := cors.Options{
@@ -418,33 +405,31 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 			"X-API-Version",
 		},
 		// Credentials (the session cookie) are only meaningful once auth is
-		// enabled — the browser must be told to send/accept the cookie
-		// cross-origin. AllowedOrigins can never contain "*" here: see the
-		// wildcard guard above.
+		// enabled: the browser must be told to send and accept the cookie
+		// cross-origin. AllowedOrigins never contains "*" here (see
+		// resolveCORSOrigins).
 		AllowCredentials: cfg.AuthEnabled,
 		MaxAge:           300, // seconds to cache preflight response
 	}
 	if cfg.AuthEnabled && len(origins) == 0 {
-		// go-chi/cors treats a nil/empty AllowedOrigins as "allow every
-		// origin" by default (see its New()) — the opposite of what an empty
-		// explicit allow-list means here (no cross-origin browser access
-		// configured). AllowOriginFunc overrides that library default so the
-		// wildcard-drop above actually denies cross-origin access instead of
-		// silently re-enabling it.
+		// go-chi/cors treats a nil or empty AllowedOrigins as "allow every
+		// origin" (see its New()), the opposite of what an empty list means
+		// here: no cross-origin browser access. AllowOriginFunc overrides
+		// that default so the wildcard drop denies cross-origin access.
 		corsOpts.AllowOriginFunc = func(*http.Request, string) bool { return false }
 	}
 
-	// 2. CORS — must run before any handler writes a response so preflight
-	//    OPTIONS requests are handled and headers are injected correctly.
+	// 2. CORS runs before any handler writes a response so preflight
+	//    OPTIONS requests are handled and headers are injected.
 	r.Use(cors.Handler(corsOpts))
 
-	// 3. Request ID — chi generates a UUID v4 and writes it into the request
-	//    header when X-Request-ID is absent. Our RequestLogger (step 5) then
-	//    reads the header, so it always sees a populated ID whether the client
-	//    supplied one or chi generated it. Chi's middleware also stores the ID
-	//    in the context under chimiddleware.RequestIDKey for chi-ecosystem tools;
-	//    our middleware.RequestIDFromContext uses a separate key populated by
-	//    RequestLogger — both return the same value.
+	// 3. Request ID: chi generates a UUID v4 and writes it into the request
+	//    header when X-Request-ID is absent. RequestLogger (step 5) reads the
+	//    header, so it sees a populated ID whether the client supplied one or
+	//    chi generated it. chi also stores the ID in the context under
+	//    chimiddleware.RequestIDKey; middleware.RequestIDFromContext uses a
+	//    separate key populated by RequestLogger, and both return the same
+	//    value.
 	r.Use(chimiddleware.RequestID)
 
 	// 4. Gzip compression for clients that send Accept-Encoding: gzip.
@@ -469,14 +454,14 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	mountObservability(r, cfg, logger, m, hr)
 
 	// ── REST API ────────────────────────────────────────────────
-	// Assigned only when non-nil so the handlers' nil checks stay meaningful:
-	// a typed-nil *ws.Hub stored in an interface is not itself nil.
+	// Assigned only when non-nil: a typed-nil *ws.Hub stored in an interface
+	// is not itself nil, so the handlers' nil checks would pass.
 	var notifier ws.Notifier
 	if deps.Hub != nil {
 		notifier = deps.Hub
 	}
-	// Server-level retry defaults for effective-policy reporting; zero value
-	// when no live scheduler is wired (resolution clamps sanely).
+	// Server-level retry defaults for effective-policy reporting; the zero
+	// value when no scheduler is wired.
 	var retryDefaults scheduler.RetryPolicy
 	if deps.Scheduler != nil {
 		retryDefaults = deps.Scheduler.RetryDefaults()
@@ -510,8 +495,8 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		OIDCStateKey: deps.OIDCStateKey,
 	})
 	if cfg.AuthEnabled {
-		// Pay the argon2id derivation here, not on the first login that misses
-		// a username — see dummyHash.
+		// Derive the argon2id dummy hash here rather than on the first login
+		// that misses a username; see dummyHash.
 		warmDummyHash()
 	}
 	usersH := newUsersHandler(deps.Store, logger, deps.LDAPConfig.RoleSource, deps.OIDCConfig.RoleSource)
@@ -525,13 +510,12 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	})
 
 	r.Route("/api/v1", func(api chi.Router) {
-		// 7. Versioning header — X-API-Version: 1 on every response.
+		// 7. Versioning header: X-API-Version: 1 on every response.
 		api.Use(middleware.APIVersion("1"))
 
-		// 8. Per-IP token-bucket rate limiting (applies to REST + /ws).
-		//    20 req/s sustained, burst of 40. Still per-IP rather than
-		//    per-principal; auth-aware limits remain a possible refinement.
-		//    Disabled via cfg.DisableRateLimit (tests/benchmarks).
+		// 8. Per-IP token-bucket rate limiting (applies to REST and /ws):
+		//    20 req/s sustained, burst of 40. Disabled via
+		//    cfg.DisableRateLimit (tests and benchmarks).
 		if !cfg.DisableRateLimit {
 			api.Use(middleware.RateLimit(middleware.RateLimitConfig{
 				RequestsPerSecond: 20,
@@ -539,70 +523,60 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 			}, logger))
 		}
 
-		// WebSocket upgrade — gated by its own hook (WS token transport quirk),
-		// so it stays outside the middleware.Auth group.
+		// WebSocket upgrade: authenticated by its own handler because of how
+		// the WebSocket carries its token, so it stays outside the
+		// middleware.Auth group.
 		api.Get("/ws", wsH.ServeHTTP)
 
-		// OpenAPI spec — deliberately public: it documents the auth scheme
-		// itself, so requiring auth to read it would be circular.
+		// OpenAPI spec: public, because it documents the auth scheme itself.
 		api.Get("/openapi.yaml", serveOpenAPISpec)
 
-		// Public: login mints the session cookie (no principal required yet,
-		// so it cannot be gated by middleware.Auth).
+		// Public: login mints the session cookie, so no principal exists yet
+		// for middleware.Auth to check.
 		api.Post("/auth/login", authH.login)
 
-		// Also public, and unconditionally mounted: the login page asks this
-		// which login methods exist before the user has any credential, so
-		// gating it on authentication would be circular. It is mounted even
-		// when SSO is off because "no SSO configured" is itself the answer the
-		// page needs; see authproviders.go for what it does and does not
-		// disclose.
+		// Also public, and always mounted: the login page asks which login
+		// methods exist before the user has any credential. It is mounted
+		// even when SSO is off because "no SSO configured" is the answer the
+		// page needs; authproviders.go describes what it discloses.
 		api.Get("/auth/providers", authH.authProviders)
 
-		// Also public, for the same reason, and only mounted when SSO is
-		// configured: an unconfigured deployment should 404 rather than
-		// advertise a route that cannot work. Both are browser navigations
-		// that redirect; see oidclogin.go for why they are GETs that
-		// middleware.CSRF does not (and cannot) cover.
-		// The state key is part of "configured", not an optional extra: the
-		// signed state cookie is the ONLY CSRF defense these public routes
-		// have, and an empty key produces a MAC anyone can compute. Registering
-		// on the provider alone would fail open silently — a working-looking
-		// login that accepts a forged callback.
+		// Also public, and mounted only when SSO is configured: an
+		// unconfigured deployment answers 404. Both are browser navigations
+		// that redirect; oidclogin.go explains why they are GETs that
+		// middleware.CSRF does not cover.
+		// The state key is part of "configured": the signed state cookie is
+		// the only CSRF defense these public routes have, and an empty key
+		// produces a MAC anyone can compute, which would accept a forged
+		// callback.
 		if deps.OIDCProvider != nil && len(deps.OIDCStateKey) > 0 {
 			api.Get("/auth/oidc/login", authH.oidcLogin)
 			api.Get("/auth/oidc/callback", authH.oidcCallback)
 		}
 
-		// Public, unauthenticated by design: the join token carried in the
-		// request body is itself the credential that authorizes an
-		// enrollment, so gating this route on a session or API key would be
-		// circular — a worker enrolling for the first time has neither.
+		// Public: the join token in the request body is the credential that
+		// authorizes an enrollment, and a worker enrolling for the first time
+		// has no session or API key.
 		// Mounted only when broker authentication is on (otherwise there is
 		// no credential for it to issue) and the operator has left the
 		// enrollment endpoint enabled (some sites provision every credential
-		// by hand via "sqi-server worker enroll" and want no self-service
-		// surface at all).
+		// by hand via "sqi-server worker enroll").
 		//
-		// When NOT mounted, a request here does not 404: "/workers/enroll"
-		// has the same two-segment shape as "/workers/{id}" (GET and DELETE
-		// are always registered on that pattern, in the groups below), so
-		// chi routes it there with id="enroll" and answers 405 Method Not
-		// Allowed — the path matches a registered pattern, just not for
-		// POST. openapi.yaml documents 405 for this reason, not 404.
+		// When not mounted, a request here answers 405 rather than 404:
+		// "/workers/enroll" has the same two-segment shape as "/workers/{id}"
+		// (GET and DELETE are always registered on that pattern, in the groups
+		// below), so chi routes it there with id="enroll" and the path matches
+		// a registered pattern, just not for POST. openapi.yaml documents 405.
 		if deps.NATSAuthEnabled && deps.NATSAuthEnrollmentEndpointEnabled {
 			api.Post("/workers/enroll", workerEnroll.enroll)
 		}
 
-		// REST resource routes — gated by the auth middleware.
+		// REST resource routes, gated by the auth middleware.
 		api.Group(func(rest chi.Router) {
-			// CSRF must run before Auth: it only cares about the presence of
-			// the session cookie (ambient credential), not about whether
-			// authentication itself succeeds. Mounted only when auth is
-			// enabled — with no session cookie in play there is nothing to
-			// guard, and mounting it with an empty CookieName would compare
-			// against a cookie that never exists (a no-op in practice, but
-			// pointless overhead on every request).
+			// CSRF runs before Auth: it checks only for the presence of the
+			// session cookie (an ambient credential), whether or not
+			// authentication succeeds. Mounted only when auth is enabled; with
+			// no session cookie in play there is nothing to guard.
 			if cfg.AuthEnabled {
 				rest.Use(middleware.CSRF(middleware.CSRFConfig{
 					CookieName:     deps.CookieName,
@@ -663,7 +637,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 			// jobs.write
 			rest.Group(func(g chi.Router) {
 				g.Use(az.require(policy.JobsWrite))
-				// Creation routes: no prior object; identity is bound in the
+				// Creation routes: no prior object; the owner is bound in the
 				// handler (see submitidentity.go).
 				g.Post("/jobs", jobs.submitJob)
 				g.Post("/products/{name}/jobs", products.submitProductJob)
@@ -690,36 +664,29 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 				g.Delete("/workers/{id}", workers.removeWorker)
 			})
 
-			// workers.enroll — deliberately separate from workers.manage:
-			// minting a join token attaches arbitrary compute that receives
-			// and executes job code, a different privilege in kind from
-			// enabling, disabling, or deleting an existing worker.
+			// workers.enroll is separate from workers.manage: minting a join
+			// token attaches arbitrary compute that receives and executes job
+			// code, a different privilege from enabling, disabling, or
+			// deleting an existing worker.
 			//
-			// Join-token minting is additionally mounted only when
-			// auth.enabled. Every other permission-gated route in this file
-			// stays mounted with auth off, because the anonymous Superuser
-			// principal middleware.Auth installs in that case is granted
-			// everything by design (auth-off behavior must be unchanged from
-			// pre-auth sqi). That equivalence is the wrong default here: with
-			// no RBAC actually enforced, anyone who can reach this server
-			// would be able to mint a credential for arbitrary compute, which
-			// is a materially different blast radius than every other
-			// Superuser-bypassed action.
+			// Join-token minting is mounted only when auth.enabled. Every
+			// other permission-gated route in this file stays mounted with auth
+			// off, because the anonymous Superuser principal that
+			// middleware.Auth installs in that case is granted everything and
+			// auth-off behavior is unchanged from a server without auth. For
+			// this route that would let anyone who can reach the server mint a
+			// credential for arbitrary compute.
 			//
 			// Revoke stays mounted unconditionally, like every other
-			// permission-gated route, and that choice is NOT risk-free: with
-			// auth.enabled false and nats.auth.enabled true — a supported,
-			// documented combination — every caller is the anonymous
-			// Superuser, so an unauthenticated request can disconnect a
-			// worker, and repeated requests can take the whole farm off the
-			// broker one worker at a time. The risk it does not carry is
-			// escalation: revoke only removes access already granted, it
-			// cannot attach compute or obtain a credential. That is an
-			// availability exposure, deliberately accepted here because
-			// carving out this one route would break the rule that auth-off
-			// behavior matches pre-auth sqi, and because every other
-			// destructive worker route (disable, delete) is exposed exactly
-			// the same way in that configuration.
+			// permission-gated route. With auth.enabled false and
+			// nats.auth.enabled true, every caller is the anonymous Superuser,
+			// so an unauthenticated request can disconnect a worker, and
+			// repeated requests can take the whole farm off the broker one
+			// worker at a time. Revoke only removes access already granted; it
+			// cannot attach compute or obtain a credential, so the exposure is
+			// to availability, not escalation. Every other destructive worker
+			// route (disable, delete) is exposed the same way in that
+			// configuration.
 			if cfg.AuthEnabled {
 				rest.Group(func(g chi.Router) {
 					g.Use(az.require(policy.WorkersEnroll))
@@ -764,7 +731,8 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 				g.Delete("/usage-pools/{id}", usagePools.deleteUsagePool)
 			})
 
-			// infra.read / infra.manage (capacity groups)
+			// infra.read / infra.manage (capacity groups); minting a
+			// capacity group token is mounted only when auth.enabled
 			capacityGroups.mount(rest, az, cfg.AuthEnabled)
 
 			// products.read / products.manage
@@ -794,13 +762,12 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	})
 
 	// ── Embedded web UI ────────────────────────────────────────
-	// Mounted as the root catch-all, so it only handles paths the API and
+	// Mounted as the root catch-all, so it handles only paths the API and
 	// observability routes above did not claim. The handler serves embedded
 	// assets and falls back to the SPA shell for client-side routes under /ui/*.
 	if uiHandler, err := ui.NewHandler(logger); err != nil {
-		// A failure here means the embedded asset tree is malformed — a
-		// build-time problem. Degrade gracefully: log and leave the UI
-		// unmounted so the REST API and WebSocket remain fully functional.
+		// A failure here means the embedded asset tree is malformed. Log it
+		// and leave the UI unmounted; the REST API and WebSocket keep working.
 		logger.ErrorContext(
 			context.Background(),
 			"ui: embedded assets unavailable, web UI disabled",

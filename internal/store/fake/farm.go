@@ -97,8 +97,8 @@ func (s *Store) UpdateFarm(ctx context.Context, farm store.Farm) (store.Farm, er
 }
 
 // DeleteFarm removes a farm by ID. Returns [store.ErrNotFound] if it does
-// not exist, and [store.ErrConflict] while a queue, job or worker still names
-// it.
+// not exist, and [store.ErrConflict] while a queue, job, capacity group or
+// worker still names it.
 func (s *Store) DeleteFarm(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -110,8 +110,8 @@ func (s *Store) DeleteFarm(ctx context.Context, id string) error {
 		return store.ErrNotFound
 	}
 
-	// SQLite's foreign keys refuse to delete a farm a queue, job or worker still
-	// names; so does the fake.
+	// The SQL stores' foreign keys refuse to delete a farm a queue, job,
+	// capacity group or worker still names; so does the fake.
 	for _, q := range s.queues {
 		if q.FarmID == id {
 			return store.ErrConflict

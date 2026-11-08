@@ -148,11 +148,10 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 
 	// ── Server discovery ───────────────────────────────────────
 	//
-	// Resolve the NATS URL before dialing. If an explicit URL is configured
-	// it is used as-is (mDNS bypassed). Otherwise mDNS is browsed
-	// for "_sqi._tcp" services on the local network. If mDNS is
-	// disabled and no explicit URL is set, discovery.Resolve returns a
-	// clear error that is surfaced to the operator.
+	// Resolve the NATS URL before dialing. An explicit URL is used as-is and
+	// mDNS is bypassed. Otherwise mDNS is browsed for "_sqi._tcp" services on
+	// the local network. With mDNS disabled and no explicit URL,
+	// discovery.Resolve returns an error that is shown to the operator.
 	found, err := workerdiscovery.Resolve(
 		ctx,
 		cfg.NATS.URL,
@@ -171,9 +170,9 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 
 	// ── Broker credential + NATS connection ──────────────────────
 	//
-	// Connect failure at boot is fatal. closedCh is closed by the
-	// NATS ClosedHandler when the connection permanently closes so we can
-	// detect unexpected disconnects after the initial handshake.
+	// Connect failure at boot is fatal. natsClosed is closed by the NATS
+	// ClosedHandler when the connection permanently closes, which is how an
+	// unexpected disconnect after the initial handshake is detected.
 	nc, natsClosed, err := connectToBroker(ctx, cfg, workerID, logger)
 	if err != nil {
 		return err
@@ -181,12 +180,12 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 
 	// ── Diagnostic-log sink ─────────────────────────────────────
 	//
-	// Now that NATS is connected and the stable worker ID is resolved, rebuild
-	// the logger so the worker's own slog output is mirrored to sqi-server on
-	// worker.diag.<workerID> (in addition to stderr) for display in the web UI.
-	// All components constructed below receive this sink-enabled logger;
-	// NewWithSink also installs it as slog.Default(). The early logger was used
-	// only for startup messages emitted before the NATS connection existed.
+	// Once NATS is connected and the stable worker ID is resolved, the logger is
+	// rebuilt so the worker's own slog output is mirrored to sqi-server on
+	// worker.diag.<workerID> (in addition to the log output) for display in the
+	// web UI. All components constructed below receive this sink-enabled
+	// logger; NewWithSink also installs it as slog.Default(). The early logger
+	// serves only startup messages emitted before the NATS connection exists.
 	logger, err = withDiagnosticSink(cfg, logger, out, nc, workerID)
 	if err != nil {
 		return err
@@ -197,16 +196,15 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	// at which point it force-closes the connection.
 	defer natsclient.Drain(nc, cfg.Worker.ShutdownGracePeriod, logger)
 
-	// Watch for unexpected permanent NATS closure after initial connect.
+	// Watch for permanent NATS closure after the initial connect.
 	//
 	// If NATS exhausts MaxReconnectAttempts and permanently closes while the
-	// worker is running, initiate a graceful worker shutdown so that in-flight
-	// tasks are flushed and the server receives departure messages rather than
-	// waiting for heartbeat timeout.
+	// worker is running, a graceful shutdown starts so that in-flight tasks
+	// are flushed and the server receives departure messages rather than
+	// waiting for the heartbeat timeout.
 	//
-	// When MaxReconnectAttempts is -1 (unlimited) this goroutine exits only
-	// via ctx.Done() (normal shutdown path), since the connection will never
-	// permanently close on its own.
+	// When MaxReconnectAttempts is -1 (unlimited) the connection never closes
+	// on its own, so this goroutine exits only via ctx.Done().
 	go watchNATSClosure(ctx, natsClosed, stop, logger)
 
 	// ── Observability (metrics, health, pprof) ────────────────────────────────
@@ -245,8 +243,8 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	// ── Registration ────────────────────────────────────────────
 	//
 	// Build the registrar with the merged capability set. Register() is called
-	// once at boot; SetupReconnectHook() ensures the registration is re-sent
-	// on any subsequent NATS reconnect so the server always has a live record.
+	// once at boot; SetupReconnectHook() re-sends the registration on every
+	// later NATS reconnect so the server keeps a live record.
 	reg, err := registerWorker(ctx, nc, workerID, cfg, caps, logger)
 	if err != nil {
 		return err
@@ -261,12 +259,11 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	// ── Log chunk publisher ────────────────────────────────────
 	//
 	// The logstreamer Publisher buffers task process output lines and batches
-	// them into LogChunkMsg messages published to NATS JetStream.  It
+	// them into LogChunkMsg messages published to NATS JetStream. It
 	// implements executor.OutputHandler and executor.LogFlusher so the executor
 	// can flush remaining logs before publishing the terminal task status.
 	// SYNC: logstreamer.Config and workerconfig.LogStreamerConfig have matching
-	// fields.  If a field is added to one, it must be added to both and mapped
-	// here.
+	// fields. A field added to one must be added to both and mapped here.
 	logPub := logstreamer.New(nc, workerID, logstreamer.Config{
 		MaxLinesPerChunk: cfg.LogStreamer.MaxLinesPerChunk,
 		MaxBytesPerChunk: cfg.LogStreamer.MaxBytesPerChunk,
@@ -277,22 +274,22 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	//
 	// The OpenJD interceptor wraps the log publisher and intercepts recognized
 	// OpenJD directive lines (openjd_progress, openjd_status, openjd_fail)
-	// before forwarding everything else downstream.  It implements
-	// executor.TaskLifecycleHook (for openjd_fail→cancel integration) and
-	// provides LastProgress() for last_progress injection into status messages.
+	// before forwarding everything else downstream. It implements
+	// executor.TaskLifecycleHook (so openjd_fail cancels the task) and
+	// provides LastProgress() for the last_progress field of status messages.
 	openjdInterceptor := openjd.New(logPub, nc, workerID, logger)
 
 	// ── Task status publisher ───────────────────────────────────
 	//
-	// The status Publisher is responsible for all task state-transition messages
+	// The status Publisher publishes all task state-transition messages
 	// (running, succeeded, failed, canceled) with worker_id and last_progress
-	// fields, and retry-with-backoff on transient NATS publish failures.
+	// fields, and retries with backoff on transient NATS publish failures.
 	statusPub := status.New(nc, status.Config{WorkerID: workerID}, logger)
 
 	// ── Task executor ───────────────────────────────────────────
 	//
 	// The Executor starts OS processes for assigned tasks and reports their
-	// status back to sqi-server via NATS.  It implements lease.Dispatcher (via
+	// status back to sqi-server via NATS. It implements lease.Dispatcher (via
 	// Dispatch) and heartbeat.StateSource.
 	exec := executor.New(
 		statusPub,
@@ -331,7 +328,7 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	//
 	// The Publisher also runs an internal watchdog goroutine that polls NATS
 	// connection status and triggers re-registration when a reconnect is
-	// detected, complementing the reconnect callback installed above.
+	// detected, complementing the reconnect callback installed by the registrar.
 	hbPublisher := heartbeat.New(
 		nc,
 		workerID,
@@ -354,9 +351,9 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 
 	// ── Work-lease loop ─────────────────────────────────────────
 	//
-	// The worker asks the server for work on work.lease.<worker>.<queue> and dispatches
-	// whatever the server leases it. The server gates capacity (CPU-core fit,
-	// policy, usage pools), so the worker simply runs what it is given.
+	// The worker asks the server for work on work.lease.<worker>.<queue> and
+	// dispatches whatever the server leases it. The server gates capacity
+	// (CPU-core fit, policy, usage pools), so the worker runs what it is given.
 	leaseLoop := lease.New(
 		lease.NATSTransport{NC: nc},
 		exec, // *executor.Executor implements lease.Dispatcher
@@ -405,7 +402,7 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	)
 
 	// ── Drain, stop heartbeating, deregister ─────────────────────────
-	completed, killed := shutdownSequence(exec, stopFunc(hbStop), reg, grace, kind)
+	completed, killed := shutdownSequence(exec, hbStop, reg, grace, kind)
 
 	// ── Log shutdown outcome ─────────────────────────────────────────
 	logger.InfoContext(
@@ -421,9 +418,7 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 }
 
 // registerWorker builds the registrar, wires re-registration into NATS
-// reconnects and publishes the initial registration. Extracted from
-// [runWorker] to keep that function's cyclomatic complexity within the
-// project limit.
+// reconnects and publishes the initial registration.
 func registerWorker(
 	ctx context.Context,
 	nc *nats.Conn,
@@ -432,8 +427,8 @@ func registerWorker(
 	caps capabilities.Capabilities,
 	logger *slog.Logger,
 ) (*registration.Registrar, error) {
-	// The SAME exprLimitsFromConfig call the session manager is built with
-	// (see newSessionManager): what this worker advertises has to be what it
+	// This is the same exprLimitsFromConfig call the session manager is built
+	// with (see newSessionManager): what this worker advertises must be what it
 	// enforces.
 	reg, err := registration.New(nc, workerID, cfg.Worker, exprLimitsFromConfig(cfg.Expr), caps, logger)
 	if err != nil {
@@ -461,18 +456,6 @@ func registerWorker(
 type drainer interface {
 	DrainAndShutdown(gracePeriod time.Duration) (completed, killed int)
 }
-
-// heartbeatStopper stops the heartbeat publisher: it cancels the publisher's
-// context and returns without waiting for the publisher to exit.
-type heartbeatStopper interface {
-	Stop()
-}
-
-// stopFunc adapts a context.CancelFunc to heartbeatStopper.
-type stopFunc func()
-
-// Stop calls the function.
-func (f stopFunc) Stop() { f() }
 
 // deregisterer is the part of *registration.Registrar the shutdown sequence uses.
 type deregisterer interface {
@@ -530,17 +513,17 @@ func startPreemptionWatch(
 //     throughout: a drain may outlast the server's heartbeat timeout, and a
 //     worker that goes quiet is declared offline and loses its running tasks.
 //  2. Stop the heartbeat, so no further beat is started after the departure
-//     message. Stop only cancels the publisher's context and does not wait
+//     message. stopHeartbeat only cancels the publisher's context and does not wait
 //     for its Run to return, so a beat already being published can still
 //     land after the deregister.
 //  3. Deregister, so the server marks the worker offline immediately rather
 //     than waiting for the heartbeat-timeout sweep. kind is "" for a restart
 //     and [protocol.DeregisterPreempted] when the machine is being reclaimed.
 func shutdownSequence(
-	exec drainer, hb heartbeatStopper, reg deregisterer, grace time.Duration, kind protocol.DeregisterKind,
+	exec drainer, stopHeartbeat func(), reg deregisterer, grace time.Duration, kind protocol.DeregisterKind,
 ) (completed, killed int) {
 	completed, killed = exec.DrainAndShutdown(grace)
-	hb.Stop()
+	stopHeartbeat()
 	reg.Deregister("graceful shutdown", kind)
 	return completed, killed
 }
@@ -583,7 +566,7 @@ func newSessionManager(cfg workerconfig.WorkerConfig, logger *slog.Logger) (mgr 
 	// cfg.Expr is this host's operator-configured phase-3 expression budget.
 	// It reaches every phase-3 evaluation through the AssignmentBudget the
 	// Manager builds per session. This call is the only wiring point: without
-	// it the whole worker is metered against the built-in defaults.
+	// it the worker is metered against the built-in defaults.
 	// The command table: worker.commands plus any default a detector found.
 	// Like cfg.Expr, the option below is the only wiring point: without it the
 	// configuration is ignored.
@@ -610,8 +593,7 @@ func shutdownKillGrace(grace time.Duration) time.Duration { return grace / 3 }
 // checkRootAndLoadWorkerID performs the two boot-time identity checks that
 // must happen before any network connection: refusing to run as root on
 // Linux/macOS unless allow_root is explicitly set (a no-op on Windows), then
-// loading or creating this worker's stable ID. Extracted from [runWorker] to
-// keep that function's cyclomatic complexity within the project limit.
+// loading or creating this worker's stable ID.
 func checkRootAndLoadWorkerID(cfg workerconfig.WorkerConfig, logger *slog.Logger) (string, error) {
 	if err := executor.CheckRootUser(cfg.Worker.AllowRoot, logger); err != nil {
 		return "", err
@@ -624,17 +606,15 @@ func checkRootAndLoadWorkerID(cfg workerconfig.WorkerConfig, logger *slog.Logger
 }
 
 // connectToBroker loads or obtains this worker's nkey broker credential and
-// dials the broker with it. Extracted from [runWorker] to keep that
-// function's cyclomatic complexity within the project limit.
+// dials the broker with it.
 //
-// A missing credential (enroll.ErrNoCredential) is NOT immediately fatal:
-// this may be a farm that does not require worker authentication at all, in
-// which case the connect attempt below proceeds with no credential exactly
-// as it does today. Only when the broker actually refuses that connection is
-// authentication known to be required, and the operator gets a message
-// naming both remediations (obtain a token, or pre-provision a key) instead
-// of natsclient's generic rejection message, which assumes a credential
-// existed to be rejected in the first place.
+// A missing credential (enroll.ErrNoCredential) is not fatal by itself: the
+// farm may not require worker authentication, in which case the connect
+// attempt proceeds with no credential. Only when the broker refuses that
+// connection is authentication known to be required, and the operator gets a
+// message naming both remediations (obtain a token, or pre-provision a key)
+// instead of natsclient's generic rejection message, which assumes a
+// credential existed to be rejected.
 func connectToBroker(
 	ctx context.Context,
 	cfg workerconfig.WorkerConfig,
@@ -660,7 +640,7 @@ func connectToBroker(
 	nc, natsClosed, err := natsclient.Connect(ctx, cfg.NATS, workerID, seed, publicKey, logger)
 	if err != nil {
 		if noCredential && (errors.Is(err, nats.ErrAuthorization) || errors.Is(err, nats.ErrAuthExpired)) {
-			//nolint:staticcheck // ST1005: wording is deliberately two sentences so the operator sees cause and remediation separately
+			//nolint:staticcheck // ST1005: the message is two sentences so the operator sees cause and remediation separately
 			return nil, nil, fmt.Errorf(
 				"sqi-worker: this server requires worker authentication, but no credential was found at %s and no join token is configured.\n"+
 					"Obtain a token from an operator (`sqi-server worker token issue`) and set worker nats.join_token_file, or pre-provision a key with `sqi-worker keygen`.",
@@ -674,9 +654,8 @@ func connectToBroker(
 }
 
 // loadAndValidateConfig resolves CLI flag overrides, loads the layered
-// configuration, and runs validation — returning a ready-to-use [WorkerConfig]
-// or an error with an actionable message. Extracted from [runWorker] to keep
-// that function's cyclomatic complexity within the project limit.
+// configuration, and runs validation, returning a ready-to-use [WorkerConfig]
+// or an error naming what to fix.
 func loadAndValidateConfig(cmd *cobra.Command) (workerconfig.WorkerConfig, error) {
 	overrides := flagOverrides()
 	if cmd.Flags().Changed("dry-run") {
@@ -790,8 +769,7 @@ func runDryRun(cfg workerconfig.WorkerConfig) error {
 
 // watchNATSClosure blocks until either ctx is canceled (normal shutdown) or the
 // NATS connection permanently closes. On unexpected closure it logs and calls
-// stop to trigger a graceful worker shutdown. Extracted from [runWorker] to keep
-// that function's cyclomatic complexity within the project limit.
+// stop to trigger a graceful worker shutdown.
 func watchNATSClosure(ctx context.Context, natsClosed <-chan struct{}, stop func(), logger *slog.Logger) {
 	select {
 	case <-ctx.Done():
@@ -808,8 +786,7 @@ func watchNATSClosure(ctx context.Context, natsClosed <-chan struct{}, stop func
 // withDiagnosticSink rebuilds logger so the worker's own slog output is mirrored
 // to sqi-server on worker.diag.<workerID> (in addition to out, the log
 // destination the caller opened) when diagnostics are enabled; otherwise it
-// returns logger unchanged. Extracted from [runWorker] to keep that function's
-// cyclomatic complexity within the project limit.
+// returns logger unchanged.
 func withDiagnosticSink(
 	cfg workerconfig.WorkerConfig,
 	logger *slog.Logger,

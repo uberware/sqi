@@ -64,7 +64,7 @@ describe('validateValues', () => {
       maxMachines: '0',
       cpuCount: '',
     })
-    expect(Object.keys(errors).sort()).toEqual(['cpuCount', 'farm', 'maxMachines', 'name'])
+    expect(Object.keys(errors).sort()).toEqual(['cpuCount', 'farmId', 'maxMachines', 'name'])
   })
 
   it('does not ask a named group for a profile', () => {
@@ -80,16 +80,16 @@ describe('validateValues', () => {
 describe('buildInput', () => {
   it('carries farm_id on create and not on edit', () => {
     const v = { ...defaultValues('farm-1'), name: ' x ', cpuCount: '4' }
-    expect(buildInput(v, 'create')).toHaveProperty('farm_id', 'farm-1')
-    expect(buildInput(v, 'edit', group())).not.toHaveProperty('farm_id')
-    expect(buildInput(v, 'create').name).toBe('x')
+    expect(buildInput(v)).toHaveProperty('farm_id', 'farm-1')
+    expect(buildInput(v, group())).not.toHaveProperty('farm_id')
+    expect(buildInput(v).name).toBe('x')
   })
 
   it('round-trips a loaded group, keeping EXPR limits the form does not edit', () => {
     const g = group({
       machine_profile: { cpu_count: 8, tags: { a: 'b' }, expr_limits: { memory_limit: 9 } },
     })
-    const input = buildInput(valuesFromGroup(g), 'edit', g)
+    const input = buildInput(valuesFromGroup(g), g)
     expect(input.machine_profile).toEqual({
       cpu_count: 8,
       tags: { a: 'b' },
@@ -101,10 +101,8 @@ describe('buildInput', () => {
 
   it('hands a named group back the profile it loaded', () => {
     const g = group({ kind: 'named', machine_profile: { cpu_count: 2 } })
-    expect(buildInput(valuesFromGroup(g), 'edit', g).machine_profile).toEqual({ cpu_count: 2 })
-    expect(buildInput({ ...defaultValues('f'), kind: 'named' }, 'create').machine_profile).toEqual(
-      {},
-    )
+    expect(buildInput(valuesFromGroup(g), g).machine_profile).toEqual({ cpu_count: 2 })
+    expect(buildInput({ ...defaultValues('f'), kind: 'named' }).machine_profile).toEqual({})
   })
 })
 
@@ -124,7 +122,7 @@ describe('mapServerErrors', () => {
     )
     expect(Object.keys(fields).sort()).toEqual([
       'cpuCount',
-      'farm',
+      'farmId',
       'idle',
       'minMachines',
       'name',

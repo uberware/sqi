@@ -35,7 +35,7 @@ func TestAuthz_MatrixOverRealRouter(t *testing.T) {
 		{"readonly cannot submit job", "read-only", http.MethodPost, "/api/v1/jobs", map[string]any{}, http.StatusForbidden},
 		{"user can reach jobs read", "user", http.MethodGet, "/api/v1/jobs", nil, http.StatusOK},
 		{"user cannot manage workers", "user", http.MethodPost, "/api/v1/workers/w1/disable", nil, http.StatusForbidden},
-		{"operator can manage workers", "operator", http.MethodPost, "/api/v1/workers/w1/disable", nil, http.StatusNotFound}, // allowed → handler runs → 404 (no such worker)
+		{"operator can manage workers", "operator", http.MethodPost, "/api/v1/workers/w1/disable", nil, http.StatusNotFound}, // allowed, so the handler runs and answers 404 (no such worker)
 		{"operator cannot list users", "operator", http.MethodGet, "/api/v1/users", nil, http.StatusForbidden},
 		{"admin can list users", "admin", http.MethodGet, "/api/v1/users", nil, http.StatusOK},
 		{"readonly cannot read diagnostics", "read-only", http.MethodGet, "/api/v1/diagnostics/logs", nil, http.StatusForbidden},
@@ -57,8 +57,8 @@ func TestAuthz_MatrixOverRealRouter(t *testing.T) {
 }
 
 func TestAuthz_DisabledIsUnchanged(t *testing.T) {
-	// Auth off: anonymous superuser passes every gate. A raw router with a nil
-	// Auth (auth.Anonymous) must let a POST /jobs reach the handler (400/201,
+	// Auth off: the anonymous superuser passes every gate. A router with
+	// auth.Anonymous must let a POST /jobs reach the handler (400 or 201,
 	// never 403).
 	deps := Deps{Store: fake.New(), Auth: auth.Anonymous(), CookieName: "sqi_session"}
 	r := NewRouter(Config{DisableRateLimit: true}, deps, newTestLogger(), metrics.New(), health.NewRegistry())
@@ -74,19 +74,17 @@ func TestAuthz_DisabledIsUnchanged(t *testing.T) {
 
 // ── route sweep ──────────────────────────────────────────────────────────────
 //
-// The tests above pin a handful of hand-picked cases. Nothing short of
-// walking the actual router closes the fail-open gap: a route registered
+// The tests above pin a handful of hand-picked cases. A route registered
 // directly on the `rest` group (instead of inside one of the permission-gated
-// sub-groups in router.go) is reachable by every authenticated role and the
-// hand-picked cases above would never notice. TestAuthz_RouteSweep_* below
-// enumerates every route chi actually serves under /api/v1 and diffs it
-// against expectedRoutes, a hardcoded classification table — in both
-// directions, so both a newly added ungated route and a stale/renamed table
-// entry fail the build.
+// sub-groups in router.go) is reachable by every authenticated role, and only
+// walking the actual router finds it. TestAuthz_RouteSweep_* below enumerates
+// every route chi serves under /api/v1 and diffs it against expectedRoutes, a
+// hardcoded classification table, in both directions: a newly added ungated
+// route and a stale or renamed table entry both fail.
 
 // routeExpectation classifies one registered (method, pattern) route as
 // either requiring a specific policy.Permission or being permission-free
-// (reachable by any authenticated principal — or, for login/openapi.yaml/ws,
+// (reachable by any authenticated principal, or, for login/openapi.yaml/ws,
 // with no principal at all).
 type routeExpectation struct {
 	method  string
@@ -95,22 +93,20 @@ type routeExpectation struct {
 	public  bool
 }
 
-// expectedRoutes is the hardcoded ground truth for every route sqi registers
-// under /api/v1, hand-derived from router.go's route groups. Keep it in sync
-// with router.go: adding a route there means classifying it here too, or
-// TestAuthz_RouteSweep_TableMatchesRouter fails.
+// expectedRoutes classifies every route sqi registers under /api/v1, derived
+// from router.go's route groups. A route added there must be classified here
+// too, or TestAuthz_RouteSweep_TableMatchesRouter fails.
 var expectedRoutes = []routeExpectation{
 	// Unauthenticated (no session required at all).
 	{method: http.MethodPost, pattern: "/api/v1/auth/login", public: true},
-	// Login-page discovery: unauthenticated by necessity, since it is what
-	// tells the login page which login methods exist. Gating it would be
-	// circular. See authproviders.go for what it does and does not disclose.
+	// Login-page discovery: unauthenticated because it tells the login page
+	// which login methods exist. See authproviders.go for what it discloses.
 	{method: http.MethodGet, pattern: "/api/v1/auth/providers", public: true},
 	{method: http.MethodGet, pattern: "/api/v1/openapi.yaml", public: true},
-	// WebSocket upgrade: gated by its own hook (wsH.ServeHTTP), not
-	// az.require — deliberately excluded from the request-driving loop
-	// (it's an upgrade, not a plain HTTP round trip) but still classified
-	// here so it can't silently change class unnoticed.
+	// WebSocket upgrade: authenticated by its own handler (wsH.ServeHTTP), not
+	// az.require. It is excluded from the request-driving loops because it is
+	// an upgrade, not a plain HTTP round trip, but it stays classified here so
+	// a change of class is noticed.
 	{method: http.MethodGet, pattern: "/api/v1/ws", public: true},
 
 	// Permission-free once authenticated (any principal, no role check).
@@ -161,11 +157,10 @@ var expectedRoutes = []routeExpectation{
 	{method: http.MethodPost, pattern: "/api/v1/workers/{id}/enable", perm: policy.WorkersManage},
 	{method: http.MethodDelete, pattern: "/api/v1/workers/{id}", perm: policy.WorkersManage},
 
-	// workers.enroll. POST /api/v1/workers/enroll is NOT listed here: it is
-	// unauthenticated by design (the join token is the credential) and, in
-	// this suite's router, never even mounted — it requires
-	// Deps.NATSAuthEnabled, which authRouterWith does not set. See
-	// workerenroll_test.go for its own coverage.
+	// workers.enroll. POST /api/v1/workers/enroll is not listed here: it is
+	// unauthenticated (the join token is the credential) and this suite's
+	// router does not mount it, because it requires Deps.NATSAuthEnabled,
+	// which authRouterWith does not set. workerenroll_test.go covers it.
 	{method: http.MethodPost, pattern: "/api/v1/workers/join-tokens", perm: policy.WorkersEnroll},
 	{method: http.MethodDelete, pattern: "/api/v1/workers/{id}/credential", perm: policy.WorkersEnroll},
 
@@ -233,16 +228,13 @@ type routeKey struct{ method, pattern string }
 // name), but returns the chi.Router directly so callers can both walk its
 // route table with chi.Walk and serve it themselves.
 //
-// mutate, when non-nil, gets the fully-populated Deps before the router is
-// built, which is how the provider-specific variants (authRouterLDAP,
-// authRouterOIDC) add their two or three fields. Keeping the base literal in
-// one place means a newly required Deps field is added once rather than
-// silently omitted from two of three near-identical copies.
+// mutate, when non-nil, gets the fully populated Deps before the router is
+// built; the provider-specific variants (authRouterLDAP, authRouterOIDC) use
+// it to add their fields.
 //
-// Products is wired to a real catalog (not left nil) so the products/presets
-// routes the sweep drives — GetByName/Delete/etc. all deref the catalog's
-// store field unconditionally — return an ordinary 404/503 for the "zzz"
-// placeholder instead of panicking on a nil receiver.
+// Products is a real catalog because the products and presets routes the
+// sweep drives dereference the catalog's store, and a nil catalog would panic
+// instead of answering an ordinary 404 or 503 for the "zzz" placeholder.
 func authRouterWith(st store.Store, mutate func(*Deps)) chi.Router {
 	deps := Deps{
 		Store:         st,
@@ -266,9 +258,9 @@ func authRouterWith(st store.Store, mutate func(*Deps)) chi.Router {
 // authRouter is authRouterWith and no provider: local accounts only.
 func authRouter(st store.Store) chi.Router { return authRouterWith(st, nil) }
 
-// liveRoutes walks r and returns every (method, pattern) chi actually
-// registered under /api/v1. Routes outside that prefix (health, metrics, the
-// embedded UI catch-all) are out of scope for this authorization sweep.
+// liveRoutes walks r and returns every (method, pattern) chi registered under
+// /api/v1. Routes outside that prefix (health, metrics, the embedded UI
+// catch-all) are out of scope for this authorization sweep.
 func liveRoutes(t *testing.T, r chi.Router) map[routeKey]bool {
 	t.Helper()
 	live := map[routeKey]bool{}
@@ -284,19 +276,17 @@ func liveRoutes(t *testing.T, r chi.Router) map[routeKey]bool {
 	return live
 }
 
-// placeholderPath substitutes a concrete dummy value for every chi path
-// parameter in pattern, e.g. "/api/v1/jobs/{id}" -> "/api/v1/jobs/zzz". The
-// gate under test only cares about the permission group a route belongs to,
-// never the resolved resource, so any placeholder is representative.
+// placeholderPath substitutes a dummy value for every chi path parameter in
+// pattern, e.g. "/api/v1/jobs/{id}" -> "/api/v1/jobs/zzz". The gate under test
+// depends on the route's permission group, not the resolved resource.
 func placeholderPath(pattern string) string {
 	return strings.NewReplacer("{id}", "zzz", "{name}", "zzz", "{workerID}", "zzz", "{tokenID}", "zzz").Replace(pattern)
 }
 
-// requestBodyFor returns a plausible JSON body for method, matching the
-// style of the hand-picked cases in TestAuthz_MatrixOverRealRouter above.
-// Handlers may still reject it (missing fields, unknown resource, ...) — the
-// sweep asserts only on 403-vs-not-403, so any resulting 400/404/422/500 is
-// fine; it proves the gate let the request through to the handler.
+// requestBodyFor returns a JSON body for method. Handlers may still reject it
+// (missing fields, unknown resource, ...); the sweep asserts only 403 versus
+// not 403, so any resulting 400, 404, 422 or 500 shows the gate let the
+// request through to the handler.
 func requestBodyFor(method string) any {
 	switch method {
 	case http.MethodPost, http.MethodPut, http.MethodPatch:
@@ -307,9 +297,9 @@ func requestBodyFor(method string) any {
 }
 
 // TestAuthz_RouteSweep_TableMatchesRouter fails if the live router and
-// expectedRoutes disagree in either direction — a route chi serves with no
-// entry in the table (an unclassified, possibly ungated, new route) or a
-// table entry with no matching live route (stale/renamed).
+// expectedRoutes disagree in either direction: a route chi serves with no
+// entry in the table (an unclassified, possibly ungated route) or a table
+// entry with no matching live route (stale or renamed).
 func TestAuthz_RouteSweep_TableMatchesRouter(t *testing.T) {
 	live := liveRoutes(t, authRouter(fake.New()))
 
@@ -320,25 +310,22 @@ func TestAuthz_RouteSweep_TableMatchesRouter(t *testing.T) {
 
 	for key := range live {
 		if !expected[key] {
-			t.Errorf("router registers %s %s with no entry in expectedRoutes — classify it as permission-gated or public", key.method, key.pattern)
+			t.Errorf("router registers %s %s with no entry in expectedRoutes; classify it as permission-gated or public", key.method, key.pattern)
 		}
 	}
 	for key := range expected {
 		if !live[key] {
-			t.Errorf("expectedRoutes has %s %s but the router no longer registers it — update the table", key.method, key.pattern)
+			t.Errorf("expectedRoutes has %s %s but the router does not register it; update the table", key.method, key.pattern)
 		}
 	}
 }
 
 // assertRouteGate drives one (method, pattern) request as role through srv,
 // logging in fresh for this one request, and asserts the response is 403
-// exactly when policy.Can denies the route's required permission — never
-// asserting on the handler's own status. A fresh login per request (rather
-// than one cookie shared across a role's whole route list) matters because
-// expectedRoutes includes POST /auth/logout itself: driving it with a shared
-// cookie would revoke the session server-side and turn every subsequent
-// route in the list into a spurious 401 instead of the 403 (or non-403) the
-// gate should actually produce.
+// exactly when policy.Can denies the route's required permission. It does not
+// assert on the handler's own status. Each request logs in fresh because
+// expectedRoutes includes POST /auth/logout: with a shared cookie it would
+// revoke the session and turn every later route into a 401.
 func assertRouteGate(t *testing.T, srv *httptest.Server, username, password, role string, e routeExpectation) {
 	t.Helper()
 	cookie := loginCookie(t, srv, username, password)
@@ -354,10 +341,10 @@ func assertRouteGate(t *testing.T, srv *httptest.Server, username, password, rol
 	}
 }
 
-// TestAuthz_RouteSweep_EnforcesPermissionsPerRole drives, for every
-// non-public route in expectedRoutes, a real request per built-in role and
-// confirms the gate matches policy.Can exactly. GET /ws is skipped (WebSocket
-// upgrade, gated by its own hook).
+// TestAuthz_RouteSweep_EnforcesPermissionsPerRole drives, for every route in
+// expectedRoutes, a real request per built-in role and confirms the gate
+// matches policy.Can. GET /ws is skipped (WebSocket upgrade, authenticated by
+// its own handler).
 func TestAuthz_RouteSweep_EnforcesPermissionsPerRole(t *testing.T) {
 	st := fake.New()
 	srv := httptest.NewServer(authRouter(st))
@@ -370,7 +357,7 @@ func TestAuthz_RouteSweep_EnforcesPermissionsPerRole(t *testing.T) {
 
 		for _, e := range expectedRoutes {
 			if e.pattern == "/api/v1/ws" {
-				continue // WebSocket upgrade — not a plain HTTP round trip.
+				continue // WebSocket upgrade, not a plain HTTP round trip.
 			}
 			t.Run(role+" "+e.method+" "+e.pattern, func(t *testing.T) {
 				assertRouteGate(t, srv, username, password, role, e)
@@ -381,8 +368,8 @@ func TestAuthz_RouteSweep_EnforcesPermissionsPerRole(t *testing.T) {
 
 // TestAuthz_RouteSweep_DisabledAuthAllowsAll is the route sweep's auth-off
 // case: with a router built with Auth: auth.Anonymous(), every route in
-// expectedRoutes (bar the WebSocket upgrade) must be reachable with zero
-// 403s — the anonymous superuser principal bypasses every gate.
+// expectedRoutes (except the WebSocket upgrade) must be reachable with no
+// 403, because the anonymous superuser principal bypasses every gate.
 func TestAuthz_RouteSweep_DisabledAuthAllowsAll(t *testing.T) {
 	st := fake.New()
 	r := NewRouter(
@@ -410,26 +397,24 @@ func TestAuthz_RouteSweep_DisabledAuthAllowsAll(t *testing.T) {
 
 // ── ownership sweep ──────────────────────────────────────────────────────────
 //
-// TestAuthz_RouteSweep_EnforcesPermissionsPerRole above proves permission
+// TestAuthz_RouteSweep_EnforcesPermissionsPerRole above checks permission
 // membership only: it drives placeholder ids ("/api/v1/jobs/zzz") with no
-// seeded job and no owner, so it cannot observe per-object ownership — a
-// role that HOLDS the route's permission but is owner-scoped (e.g. `user`)
-// hits a 404 either way, before or after requireJobAccess runs, and the
-// assertion (403-vs-not) is blind to the difference: without this sweep,
-// deleting az.requireJobAccess() from DELETE /jobs/{id} leaves the rest of
-// the internal/api suite green. TestAuthz_OwnershipSweep_EnforcesOwnerScoping
-// below closes that gap by seeding a real job (and task) per owner and
-// asserting a scoped `user` principal gets a non-403 on its own object and
-// a 403 on someone else's, for every one of the 11 job/task object routes
-// requireJobAccess is wired onto in router.go.
+// seeded job and no owner, so it cannot observe per-object ownership. A role
+// that holds the route's permission but is owner-scoped (e.g. `user`) gets a
+// 404 whether or not the job access middleware ran, and the 403-versus-not
+// assertion cannot tell the difference.
+// TestAuthz_OwnershipSweep_EnforcesOwnerScoping below seeds a real job (and
+// task) per owner and asserts a scoped `user` principal gets a non-403 on its
+// own object and a 403 on someone else's, for each of the 11 job and task
+// object routes that router.go wraps in requireJobAccessByJobID or
+// requireJobAccessByTaskID.
 
-// ownershipGatedRoutes is the hardcoded ground truth for every job/task
-// object route that must enforce per-owner access via
-// az.requireJobAccess(), per router.go's jobs.read/jobs.write groups.
-// TestAuthz_OwnershipSweep_TableMatchesRouter diffs it, in both directions,
-// against the object-shaped subset of expectedRoutes — itself already
-// diffed against the live router by TestAuthz_RouteSweep_TableMatchesRouter
-// — so a route rename or a forgotten table update goes loud, not silent.
+// ownershipGatedRoutes lists every job and task object route that must enforce
+// per-owner access through az.requireJobAccessByJobID or
+// az.requireJobAccessByTaskID, per router.go's jobs.read and jobs.write
+// groups. TestAuthz_OwnershipSweep_TableMatchesRouter diffs it, in both
+// directions, against the object-shaped subset of expectedRoutes, which
+// TestAuthz_RouteSweep_TableMatchesRouter diffs against the live router.
 var ownershipGatedRoutes = []routeExpectation{
 	// jobs.read
 	{method: http.MethodGet, pattern: "/api/v1/jobs/{id}", perm: policy.JobsRead},
@@ -446,20 +431,18 @@ var ownershipGatedRoutes = []routeExpectation{
 	{method: http.MethodPost, pattern: "/api/v1/tasks/{id}/cancel", perm: policy.JobsWrite},
 }
 
-// isJobObjectPattern reports whether pattern addresses a specific job or
-// task object — as opposed to a collection route (GET /jobs) or a creation
-// route with no prior object (POST /jobs, POST /products/{name}/jobs) — by
-// checking for an "{id}" segment directly after "/jobs/" or "/tasks/".
+// isJobObjectPattern reports whether pattern addresses a specific job or task
+// object, as opposed to a collection route (GET /jobs) or a creation route
+// with no prior object (POST /jobs, POST /products/{name}/jobs), by checking
+// for an "{id}" segment directly after "/jobs/" or "/tasks/".
 func isJobObjectPattern(pattern string) bool {
 	return strings.Contains(pattern, "/jobs/{id}") || strings.Contains(pattern, "/tasks/{id}")
 }
 
 // TestAuthz_OwnershipSweep_TableMatchesRouter fails if ownershipGatedRoutes
 // and the jobs.read/jobs.write object-shaped subset of expectedRoutes
-// disagree in either direction, and independently confirms every table
-// entry is still live on the real router — the same two-directional-plus-live
-// pattern TestAuthz_RouteSweep_TableMatchesRouter uses for expectedRoutes
-// itself, so this table cannot silently drift from router.go.
+// disagree in either direction, and confirms every table entry is registered
+// on the real router.
 func TestAuthz_OwnershipSweep_TableMatchesRouter(t *testing.T) {
 	derived := map[routeKey]bool{}
 	for _, e := range expectedRoutes {
@@ -487,7 +470,7 @@ func TestAuthz_OwnershipSweep_TableMatchesRouter(t *testing.T) {
 	live := liveRoutes(t, authRouter(fake.New()))
 	for k := range table {
 		if !live[k] {
-			t.Errorf("ownershipGatedRoutes has %s %s but the router no longer registers it", k.method, k.pattern)
+			t.Errorf("ownershipGatedRoutes has %s %s but the router does not register it", k.method, k.pattern)
 		}
 	}
 }
@@ -500,19 +483,16 @@ type ownershipFixture struct {
 }
 
 // ownershipFixtureFor picks a job/task status that lets the route's own
-// eligibility guard answer (404/409/204) before the handler ever reaches
-// h.sched where possible — this test's router (authRouter) leaves
-// Deps.Scheduler nil, same as every other sweep in this file, so a call that
-// actually reaches the scheduler nil-pointer-panics (recovered by chi's
-// Recoverer into a 500). Two routes reach it regardless of status and hit
-// that recovered 500 on their "own" case: POST /api/v1/jobs/{id}/retry
-// (jobs.go retryJob calls h.sched.RetryJob unconditionally once the job is
-// found — no status guard exists) and DELETE /api/v1/jobs/{id} (deleteJob
-// calls h.sched.ReconcileDependents unconditionally after the delete,
-// though the terminal status chosen here does still skip its conditional
-// CancelJob call). Both are tolerated below: a non-403 there still proves
-// the ownership gate let the request through, which is what this sweep
-// checks — it is not asserting the downstream action fully succeeds.
+// eligibility guard answer (404/409/204) before the handler reaches h.sched
+// where possible. authRouter leaves Deps.Scheduler nil, so a call that reaches
+// the scheduler nil-pointer-panics and chi's Recoverer turns it into a 500.
+// Two routes reach it regardless of status and answer that recovered 500 on
+// their own case: POST /api/v1/jobs/{id}/retry (retryJob calls h.sched.RetryJob
+// unconditionally once the job is found) and DELETE /api/v1/jobs/{id}
+// (deleteJob calls h.sched.ReconcileDependents unconditionally after the
+// delete, though the terminal status chosen here skips its conditional
+// CancelJob call). A non-403 there still shows the ownership gate let the
+// request through, which is all this sweep checks.
 func ownershipFixtureFor(method, pattern string) ownershipFixture {
 	f := ownershipFixture{jobStatus: store.JobStatusPending, taskStatus: store.TaskStatusReady}
 	switch {
@@ -529,12 +509,11 @@ func ownershipFixtureFor(method, pattern string) ownershipFixture {
 // ownershipPath substitutes pattern's "{id}" with the task id when pattern
 // addresses a task object and the job id otherwise.
 //
-// This is the TEST's own idea of what each route's {id} means, deliberately
-// derived from the pattern rather than from the router. The router now states
-// that mapping explicitly by mounting requireJobAccessByJobID or
-// requireJobAccessByTaskID per route, so if the two ever disagree — a route
-// wired to the wrong middleware — this sweep fails: the wrong resolver looks
-// up an id of the wrong kind and answers 404 where the table expects 200/403.
+// The mapping is derived from the pattern rather than from the router. The
+// router states it by mounting requireJobAccessByJobID or
+// requireJobAccessByTaskID per route, so a route wired to the wrong middleware
+// fails this sweep: the wrong resolver looks up an id of the wrong kind and
+// answers 404 where the table expects 200 or 403.
 func ownershipPath(pattern, jobID, taskID string) string {
 	id := jobID
 	if strings.Contains(pattern, "/tasks/{id}") {
@@ -543,11 +522,11 @@ func ownershipPath(pattern, jobID, taskID string) string {
 	return strings.Replace(pattern, "{id}", id, 1)
 }
 
-// assertOwnershipGate drives e twice as alice — a scoped `user` principal —
-// once against a fresh object alice owns (must NOT be 403) and once against
-// a fresh object bob owns (MUST be 403). idx makes the seeded IDs unique per
-// table row so cases sharing a pattern (GET/PATCH/DELETE all use
-// "/api/v1/jobs/{id}") don't collide or mutate each other's fixtures.
+// assertOwnershipGate drives e twice as alice, a scoped `user` principal: once
+// against a fresh object alice owns (must not be 403) and once against a fresh
+// object bob owns (must be 403). idx makes the seeded IDs unique per table row
+// so cases sharing a pattern (GET, PATCH and DELETE all use
+// "/api/v1/jobs/{id}") do not collide or mutate each other's fixtures.
 func assertOwnershipGate(t *testing.T, st *fake.Store, srv *httptest.Server, cookie *http.Cookie, idx int, e routeExpectation) {
 	t.Helper()
 	f := ownershipFixtureFor(e.method, e.pattern)
@@ -569,11 +548,10 @@ func assertOwnershipGate(t *testing.T, st *fake.Store, srv *httptest.Server, coo
 	}
 }
 
-// TestAuthz_OwnershipSweep_EnforcesOwnerScoping is the sabotage-proof sweep:
-// for every route in ownershipGatedRoutes, alice (scoped `user`) must reach
-// her own job/task (non-403) and be refused bob's (403). Removing
-// az.requireJobAccess() from any one route in router.go must fail exactly
-// that route's subtest.
+// TestAuthz_OwnershipSweep_EnforcesOwnerScoping checks, for every route in
+// ownershipGatedRoutes, that alice (scoped `user`) reaches her own job or task
+// (non-403) and is refused bob's (403). Removing the job access middleware
+// from one route in router.go fails that route's subtest.
 func TestAuthz_OwnershipSweep_EnforcesOwnerScoping(t *testing.T) {
 	const password = "pw-secret-1"
 	st := fake.New()

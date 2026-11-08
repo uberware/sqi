@@ -88,10 +88,9 @@ func TestHandleWorkerRegister_MalformedJSON_Acked(t *testing.T) {
 
 // TestHandleWorkerRegister_EmptyPayloadWorkerID_Acked drives a payload with no
 // worker_id at all against a real subject. There is no separate "missing
-// worker_id" code path any more: bus.ParseWorkerSubject guarantees the
-// subject's worker token is never empty, so an empty m.WorkerID always fails
-// the subject/payload mismatch check first and is discarded through that
-// branch.
+// worker_id" code path: bus.ParseWorkerSubject guarantees the subject's worker
+// token is never empty, so an empty m.WorkerID always fails the
+// subject/payload mismatch check and is discarded through that branch.
 func TestHandleWorkerRegister_EmptyPayloadWorkerID_Acked(t *testing.T) {
 	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "")
@@ -151,7 +150,7 @@ func (s *touchRecordingStore) TouchWorkerCredential(ctx context.Context, workerI
 	return s.Store.TouchWorkerCredential(ctx, workerID, at)
 }
 
-// TestHandleWorkerRegister_TouchesActiveCredential_WhenAuthEnabled proves
+// TestHandleWorkerRegister_TouchesActiveCredential_WhenAuthEnabled checks
 // that registering a worker with an active broker credential sets
 // LastSeenAt, and only when broker authentication is enabled.
 func TestHandleWorkerRegister_TouchesActiveCredential_WhenAuthEnabled(t *testing.T) {
@@ -193,8 +192,8 @@ func TestHandleWorkerRegister_TouchesActiveCredential_WhenAuthEnabled(t *testing
 }
 
 // TestHandleWorkerRegister_NoTouchCall_WhenAuthDisabled asserts the
-// auth-off default path does no extra store work: no credential rows exist
-// on an auth-off farm, and the touch call must not even be attempted.
+// auth-off path does no extra store work: no credential rows exist on an
+// auth-off farm, and the touch call must not be attempted.
 func TestHandleWorkerRegister_NoTouchCall_WhenAuthDisabled(t *testing.T) {
 	st := &touchRecordingStore{Store: newCheckedFake(t)}
 	s := newMetricsScheduler(st, &recordBus{}, "") // DefaultConfig: NATSAuthEnabled false
@@ -216,7 +215,7 @@ func TestHandleWorkerRegister_NoTouchCall_WhenAuthDisabled(t *testing.T) {
 	}
 }
 
-// TestHandleWorkerRegister_NoActiveCredential_StillAcked proves a missing
+// TestHandleWorkerRegister_NoActiveCredential_StillAcked checks that a missing
 // credential (store.ErrNotFound) never fails registration: the message is
 // still acked and the worker is still registered.
 func TestHandleWorkerRegister_NoActiveCredential_StillAcked(t *testing.T) {
@@ -324,9 +323,9 @@ func TestHandleWorkerHeartbeat_UnknownWorker_Nacked(t *testing.T) {
 
 // TestHandleWorkerHeartbeat_MalformedAndEmptyPayloadID_Acked covers a
 // malformed body and a body with an empty worker_id. The latter has no
-// separate "missing worker_id" code path any more: bus.ParseWorkerSubject
-// guarantees the subject's worker token is never empty, so an empty
-// m.WorkerID always fails the subject/payload mismatch check first.
+// separate "missing worker_id" code path: bus.ParseWorkerSubject guarantees
+// the subject's worker token is never empty, so an empty m.WorkerID always
+// fails the subject/payload mismatch check.
 func TestHandleWorkerHeartbeat_MalformedAndEmptyPayloadID_Acked(t *testing.T) {
 	tests := []struct {
 		name string
@@ -381,10 +380,10 @@ func TestHandleWorkerDeregister_Valid(t *testing.T) {
 	}
 }
 
-// TestHandleWorkerDeregister_IgnoresASupersededProcess pins the
-// stale-deregister race: a deregister from a process the worker's
-// latest registration replaced (a late or redelivered message) is acked and
-// ignored, so the new process stays online and keeps the work it holds.
+// TestHandleWorkerDeregister_IgnoresASupersededProcess covers a stale
+// deregister: one from a process the worker's latest registration replaced (a
+// late or redelivered message) is acked and ignored, so the new process stays
+// online and keeps the work it holds.
 func TestHandleWorkerDeregister_IgnoresASupersededProcess(t *testing.T) {
 	st := newCheckedFake(t)
 	notifier := &workerRecordingNotifier{}
@@ -421,8 +420,8 @@ func TestHandleWorkerDeregister_IgnoresASupersededProcess(t *testing.T) {
 
 // TestHandleWorkerDeregister_ReclaimsInFlightTasks verifies that a graceful
 // deregister returns the worker's assigned/running tasks to the ready queue and
-// closes their attempts. Without this, the heartbeat sweep (which only inspects
-// online workers) would never recover them, stranding the tasks in 'assigned'.
+// closes their attempts. The heartbeat sweep only inspects online workers, so
+// it would never recover them and the tasks would stay 'assigned'.
 func TestHandleWorkerDeregister_ReclaimsInFlightTasks(t *testing.T) {
 	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "")
@@ -486,9 +485,9 @@ func TestHandleWorkerDeregister_UnknownWorker_Acked(t *testing.T) {
 
 // TestHandleWorkerDeregister_MalformedAndEmptyPayloadID_Acked covers a
 // malformed body and a body with an empty worker_id. The latter has no
-// separate "missing worker_id" code path any more: bus.ParseWorkerSubject
-// guarantees the subject's worker token is never empty, so an empty
-// m.WorkerID always fails the subject/payload mismatch check first.
+// separate "missing worker_id" code path: bus.ParseWorkerSubject guarantees
+// the subject's worker token is never empty, so an empty m.WorkerID always
+// fails the subject/payload mismatch check.
 func TestHandleWorkerDeregister_MalformedAndEmptyPayloadID_Acked(t *testing.T) {
 	tests := []struct {
 		name string
@@ -662,9 +661,8 @@ func TestHandleWorkerMessage_UnknownSubject_Acked(t *testing.T) {
 }
 
 func TestHandleWorkerMessage_RegisterID(t *testing.T) {
-	// Sanity check that the subject constants used in routing are distinct and
-	// the register path actually creates a worker via the router (not a direct
-	// handler call).
+	// The register subject routes through handleWorkerMessage and creates the
+	// worker (no direct handler call).
 	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "")
 	id := uuid.NewString()

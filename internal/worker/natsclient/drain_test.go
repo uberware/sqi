@@ -35,10 +35,9 @@ func startDrainTestServer(t *testing.T) string {
 
 // TestDrain_ReturnsOnlyOnceTheConnectionHasClosed pins that Drain blocks until
 // the drain has finished: nats.Conn.Drain only starts one and returns at once.
-// The worker returns from its run, and exits, right after Drain, so a Drain
-// that returned early let the process exit with its last core-NATS publish (the
-// deregister) still in the client's buffer, and the server never heard that
-// the worker had left.
+// The worker returns from its run, and exits, right after Drain, so Drain must
+// not return while its last core-NATS publish (the deregister) is still in the
+// client's buffer, or the server never hears that the worker has left.
 func TestDrain_ReturnsOnlyOnceTheConnectionHasClosed(t *testing.T) {
 	url := startDrainTestServer(t)
 

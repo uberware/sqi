@@ -15,14 +15,14 @@ import (
 // worker record for the given ID, except that an empty InstanceID keeps the
 // stored one and Disabled, CapacityGroupID and Ephemeral are never taken from
 // the registration: a new worker is enabled and in no group, and an existing
-// one keeps them, as the SQL upsert leaves those columns alone, and a nil RegistrationBrokerAt keeps the stored one. A
-// registration stamped earlier than the stored one ([store.StaleRegistration]) is
-// refused with [store.ErrStaleRegistration], returning the stored worker.
-// A non-empty stored InstanceID that differs from a non-empty
-// incoming one is a restarted worker process, whose assigned and running tasks
-// are reclaimed as the offline transitions reclaim them, with
-// [store.FailureReasonWorkerRestarted]; the store lock stands in for SQLite's
-// worker-row and job-row anchors.
+// one keeps them, as the SQL upsert leaves those columns alone. A nil
+// RegistrationBrokerAt keeps the stored one. A registration stamped earlier
+// than the stored one ([store.StaleRegistration]) is refused with
+// [store.ErrStaleRegistration], returning the stored worker. A non-empty stored
+// InstanceID that differs from a non-empty incoming one is a restarted worker
+// process, whose assigned and running tasks are reclaimed as the offline
+// transitions reclaim them, with [store.FailureReasonWorkerRestarted]; the
+// store lock stands in for the SQL stores' worker-row and job-row anchors.
 func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.Worker, []store.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -236,7 +236,7 @@ func (s *Store) UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Ti
 
 // heartbeatBefore reports whether w's last heartbeat is strictly older than
 // cutoff. A worker that has never sent a heartbeat is never older, matching
-// SQLite, where `last_heartbeat_at < ?` is not true for NULL. The fake's
+// the SQL stores, where `last_heartbeat_at < ?` is not true for NULL. The fake's
 // staleness and retention checks all use it.
 func heartbeatBefore(w store.Worker, cutoff time.Time) bool {
 	return w.LastHeartbeatAt != nil && w.LastHeartbeatAt.Before(cutoff)
@@ -294,8 +294,8 @@ func (s *Store) CountIdleWorkers(_ context.Context, farmID string) (int, error) 
 }
 
 // DeleteWorkerIfRemovable implements [store.WorkerStore]. The rule is
-// [store.Worker.Removable], which SQLite restates in its DELETE, plus the
-// in-flight condition a Worker value cannot see.
+// [store.Worker.Removable], which the SQL stores restate in their DELETE, plus
+// the in-flight condition a Worker value cannot see.
 func (s *Store) DeleteWorkerIfRemovable(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -328,8 +328,8 @@ func (s *Store) hasWorkInFlightLocked(workerID string) bool {
 
 // DeleteOfflineWorkersBefore hard-deletes every enabled offline worker last
 // seen before cutoff and returns the removed records. Online workers, disabled
-// ones, workers that have never sent a heartbeat and members of a capacity group
-// that are not ephemeral are left untouched.
+// ones, workers that have never sent a heartbeat and every member of a capacity
+// group are left untouched.
 func (s *Store) DeleteOfflineWorkersBefore(ctx context.Context, cutoff time.Time) ([]store.Worker, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -342,7 +342,7 @@ func (s *Store) DeleteOfflineWorkersBefore(ctx context.Context, cutoff time.Time
 		if w.Status != store.WorkerStatusOffline || w.Disabled {
 			continue
 		}
-		if w.CapacityGroupID != "" && !w.Ephemeral {
+		if w.CapacityGroupID != "" {
 			continue
 		}
 		if !heartbeatBefore(w, cutoff) {
@@ -382,8 +382,8 @@ func filterWorker(w store.Worker, opts store.ListWorkersOptions) bool {
 
 // workerMatchesSearch reports whether every whitespace-separated term in query
 // matches (case-insensitive substring) one of w's name, hostname, id, or
-// compute_location fields. Uses the shared matcher so it stays in lockstep with
-// the SQLite LIKE search.
+// compute_location fields. Uses the shared matcher so it stays in step with
+// the SQL LIKE search.
 func workerMatchesSearch(w store.Worker, query string) bool {
 	return store.MatchesSearch(query, w.Name, w.Hostname, w.ID, w.ComputeLocation)
 }

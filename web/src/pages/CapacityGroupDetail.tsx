@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { useState } from 'react'
+import type { ReactNode } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import PageHeader from '@/components/PageHeader'
 import ErrorBanner from '@/components/ErrorBanner'
@@ -38,6 +39,20 @@ const DEFAULT_TOKEN_TTL = '720h'
 
 const workerName = (w: Worker): string => w.name || w.hostname
 
+/** A grid of label/value pairs. `live` announces changed values to screen readers. */
+function StatGrid({ rows, live }: { rows: Array<[string, ReactNode]>; live?: boolean }) {
+  return (
+    <dl className={styles.statGrid} aria-live={live ? 'polite' : undefined}>
+      {rows.map(([k, v]) => (
+        <div key={k} className={styles.stat}>
+          <dt>{k}</dt>
+          <dd>{v}</dd>
+        </div>
+      ))}
+    </dl>
+  )
+}
+
 // ── Status ────────────────────────────────────────────────────────────────────
 
 function StatusPanel({ group }: { group: CapacityGroup }) {
@@ -55,30 +70,16 @@ function StatusPanel({ group }: { group: CapacityGroup }) {
         </p>
       ) : (
         <>
-          <dl className={styles.statGrid} aria-live="polite">
-            <div className={styles.stat}>
-              <dt>Demand (cores)</dt>
-              <dd>{s.demand_cores}</dd>
-            </div>
-            <div className={styles.stat}>
-              <dt>Desired machines</dt>
-              <dd>{s.desired_machines}</dd>
-            </div>
-            <div className={styles.stat}>
-              <dt>Online members</dt>
-              <dd>{s.online_members}</dd>
-            </div>
-            <div className={styles.stat}>
-              <dt>Offline members</dt>
-              <dd>{s.offline_members}</dd>
-            </div>
-            <div className={styles.stat}>
-              <dt>Evaluated</dt>
-              <dd>
-                <RelativeTime timestamp={s.evaluated_at} />
-              </dd>
-            </div>
-          </dl>
+          <StatGrid
+            live
+            rows={[
+              ['Demand (cores)', s.demand_cores],
+              ['Desired machines', s.desired_machines],
+              ['Online members', s.online_members],
+              ['Offline members', s.offline_members],
+              ['Evaluated', <RelativeTime key="evaluated" timestamp={s.evaluated_at} />],
+            ]}
+          />
           <p className={styles.help}>
             Desired is the total number of machines the group should have, including machines marked
             for retirement. It is a target to set capacity to, not an amount to add.
@@ -171,14 +172,7 @@ function SettingsPanel({ group }: { group: CapacityGroup }) {
       <h2 id="cg-settings" className={styles.sectionTitle}>
         Settings
       </h2>
-      <dl className={styles.statGrid}>
-        {rows.map(([k, v]) => (
-          <div key={k} className={styles.stat}>
-            <dt>{k}</dt>
-            <dd>{v}</dd>
-          </div>
-        ))}
-      </dl>
+      <StatGrid rows={rows} />
     </section>
   )
 }
@@ -188,12 +182,10 @@ function SettingsPanel({ group }: { group: CapacityGroup }) {
 function AddMember({ group, members }: { group: CapacityGroup; members: Worker[] }) {
   const { showToast } = useToast()
   const addMember = useAddCapacityGroupMember(group.id)
-  const { data } = useListWorkers({
-    farm_id: group.farm_id,
-    sort_by: 'hostname',
-    sort_dir: 'asc',
-    limit: 1000,
-  })
+  const { data } = useListWorkers(
+    { farm_id: group.farm_id, sort_by: 'hostname', sort_dir: 'asc', limit: 1000 },
+    { poll: false },
+  )
   const [pick, setPick] = useState('')
   const memberIds = new Set(members.map((m) => m.id))
   const candidates = (data?.items ?? []).filter((w) => !memberIds.has(w.id))
@@ -334,15 +326,20 @@ function MembersSection({ group, canManage }: { group: CapacityGroup; canManage:
 
 // ── Join tokens ───────────────────────────────────────────────────────────────
 
+/** Why group tokens do not apply on this farm. */
+type TokensUnavailable = 'rest-auth-off' | 'broker-auth-off'
+
 /**
  * The server refuses to mint a group token when REST authentication is off
  * (the route is not mounted: 405) or when the broker does not authenticate
- * workers (409 naming worker.capacity_group). Both mean "tokens do not apply
- * on this farm", not "something broke".
+ * workers (409 naming worker.capacity_group). Both mean group tokens do not
+ * apply on this farm. Any other error returns null.
  */
-function tokensNotApplicable(err: unknown): boolean {
-  if (!(err instanceof ApiError)) return false
-  return err.status === 405 || (err.status === 409 && err.detail.includes('worker.capacity_group'))
+function tokensUnavailable(err: unknown): TokensUnavailable | null {
+  if (!(err instanceof ApiError)) return null
+  if (err.status === 405) return 'rest-auth-off'
+  if (err.status === 409 && err.detail.includes('worker.capacity_group')) return 'broker-auth-off'
+  return null
 }
 
 function NewTokenCallout({
@@ -383,10 +380,10 @@ function TokensSection({ group }: { group: CapacityGroup }) {
 
   const [name, setName] = useState('')
   const [expiresIn, setExpiresIn] = useState(DEFAULT_TOKEN_TTL)
-  // The raw token lives only in this component's state: not in the query
-  // cache, not in storage, and gone when the person leaves the page.
+  // The raw token is held only in this component's state, never in the query
+  // cache or storage, so it is gone when the person leaves the page.
   const [created, setCreated] = useState<CapacityGroupTokenCreated | null>(null)
-  const [unavailable, setUnavailable] = useState(false)
+  const [unavailable, setUnavailable] = useState<TokensUnavailable | null>(null)
   const [createError, setCreateError] = useState<string | null>(null)
   const tokens = data ?? []
 
@@ -403,14 +400,15 @@ function TokensSection({ group }: { group: CapacityGroup }) {
       setCreated(result)
       setName('')
     } catch (err) {
-      if (tokensNotApplicable(err)) setUnavailable(true)
+      const reason = tokensUnavailable(err)
+      if (reason !== null) setUnavailable(reason)
       else setCreateError(err instanceof Error ? err.message : 'Failed to create token')
     }
   }
 
   function dismiss() {
     setCreated(null)
-    // Also drop the mutation's own copy of the result.
+    // Drop the mutation's own copy of the result too.
     createToken.reset()
   }
 
@@ -432,19 +430,27 @@ function TokensSection({ group }: { group: CapacityGroup }) {
       <p className={styles.help}>
         A worker enrolls with a token to join this group. Revoking a token does not revoke
         credentials already issued from it: workers that enrolled keep their credentials and stay
-        members. Removing such a member does not keep it out either: it rejoins at its next
-        registration unless you also revoke its credential.
+        members. To retire one, stop it and remove the worker, which also revokes its credential.
       </p>
 
       {created !== null && <NewTokenCallout created={created} onDone={dismiss} />}
 
-      {unavailable ? (
+      {unavailable === 'broker-auth-off' && (
         <p className={styles.note} role="note">
           Join tokens are not available on this server because it does not authenticate workers.
           Workers join this group by setting <code>worker.capacity_group: {group.name}</code> (or{' '}
           <code>SQI_WORKER_CAPACITY_GROUP={group.name}</code>) in their configuration.
         </p>
-      ) : (
+      )}
+      {unavailable === 'rest-auth-off' && (
+        <p className={styles.note} role="note">
+          Join tokens are not available on this server because REST authentication is off. If the
+          broker does not authenticate workers either, workers join this group by setting{' '}
+          <code>worker.capacity_group: {group.name}</code> in their configuration. If it does, no
+          machine can join a sized group until REST authentication is turned on.
+        </p>
+      )}
+      {unavailable === null && (
         <form className={styles.inlineForm} onSubmit={(e) => void create(e)}>
           <label htmlFor="cg-token-name" className={styles.label}>
             Token name (optional)

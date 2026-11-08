@@ -116,7 +116,7 @@ export interface TaskCounts {
   succeeded: number
   failed: number
   canceled: number
-  /** Count of tasks currently blocked from scheduling (subset of `ready`); optional for backward compatibility. */
+  /** Count of tasks currently blocked from scheduling (subset of `ready`). */
   unschedulable?: number
 }
 
@@ -276,8 +276,8 @@ export interface Worker {
   queue_id?: string
   /**
    * Human-readable display label (the worker's worker.name config, default the
-   * hostname). Distinguishes multiple workers on one host. May be empty for
-   * workers registered before this field existed; fall back to {@link hostname}.
+   * hostname). Distinguishes multiple workers on one host. May be empty; fall
+   * back to {@link hostname}.
    */
   name?: string
   hostname: string
@@ -288,8 +288,8 @@ export interface Worker {
   /**
    * CPU architecture as the worker reports it (Go's GOARCH: 'amd64', 'arm64').
    * An OpenJD `attr.worker.cpu.arch` requirement uses the spec's tokens
-   * ('x86_64', 'arm64') instead; the scheduler translates. Absent for workers
-   * that predate the field.
+   * ('x86_64', 'arm64') instead; the scheduler translates. Absent when the
+   * worker does not report it.
    */
   arch?: string
   /** sqi-worker build version the worker self-reports; empty/absent if unknown. */
@@ -445,7 +445,7 @@ export interface MachineProfile {
 /** The scheduler's last evaluation of a capacity group. */
 export interface CapacityGroupStatus {
   demand_cores: number
-  /** The TOTAL machine count the group should have, retire candidates included. */
+  /** The total machine count the group should have, retire candidates included. */
   desired_machines: number
   online_members: number
   offline_members: number
@@ -565,7 +565,7 @@ export type ControlType =
   | 'CHOOSE_INPUT_FILE'
   | 'CHOOSE_OUTPUT_FILE'
   | 'CHOOSE_DIRECTORY'
-  // Added by the EXPR extension (RFC 0007) for the list parameter types.
+  // Defined by the EXPR extension (RFC 0007) for the list parameter types.
   | 'LINE_EDIT_LIST'
   | 'SPIN_BOX_LIST'
   | 'CHECK_BOX_LIST'
@@ -598,8 +598,8 @@ export interface ItemConstraint {
   item: ItemConstraint | null
 }
 
-/** Declared type of a job parameter. The eight beyond the base spec's four are
- * added by the EXPR extension (RFC 0007). */
+/** Declared type of a job parameter. The eight beyond the base spec's four come
+ * from the EXPR extension (RFC 0007). */
 export type ParameterType =
   | 'INT'
   | 'FLOAT'
@@ -689,10 +689,10 @@ export interface UpdateMeInput {
 /**
  * One single-sign-on option advertised by `GET /auth/providers`.
  *
- * `login_url` is a NAVIGATION target, not a fetch target: the whole point of
- * the flow is to leave this page for the identity provider. Fetching it would
- * follow the redirect in the background and land the provider's login HTML in
- * a response body, where nobody can see or interact with it.
+ * `login_url` is a navigation target, not a fetch target: the flow leaves this
+ * page for the identity provider. Fetching it would follow the redirect in the
+ * background and land the provider's login HTML in a response body, where
+ * nobody can see or interact with it.
  */
 export interface SSOProvider {
   id: string

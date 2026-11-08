@@ -15,7 +15,7 @@ import {
   validateValues,
   valuesFromGroup,
 } from '@/lib/capacityGroupForm'
-import type { FieldErrors, FieldKey, FormValues } from '@/lib/capacityGroupForm'
+import type { FieldErrors, FormValues } from '@/lib/capacityGroupForm'
 import styles from './CapacityGroupForm.module.css'
 
 interface Props {
@@ -215,8 +215,8 @@ interface QueuePickerProps {
 function QueuePicker({ farmId, selected, onChange, error }: QueuePickerProps) {
   const { data, isLoading } = useListAllFarmQueues(farmId)
   const queues = data?.items ?? []
-  // A saved queue the list no longer returns stays selected, under its id, so a
-  // save does not drop it without being asked.
+  // A saved queue the list does not return stays selected, shown by its id, so
+  // a save does not drop it.
   const known = new Set(queues.map((q) => q.id))
   const orphans = selected.filter((id) => !known.has(id))
   const entries = [
@@ -248,14 +248,13 @@ function QueuePicker({ farmId, selected, onChange, error }: QueuePickerProps) {
 }
 
 interface InnerProps {
-  mode: 'create' | 'edit'
-  id: string
+  /** The group being edited; absent on create. */
   original?: CapacityGroup
   farms: Farm[]
   defaults: FormValues
 }
 
-function CapacityGroupFormInner({ mode, id, original, farms, defaults }: InnerProps) {
+function CapacityGroupFormInner({ original, farms, defaults }: InnerProps) {
   const navigate = useNavigate()
   const { showToast } = useToast()
   const createGroup = useCreateCapacityGroup()
@@ -268,15 +267,15 @@ function CapacityGroupFormInner({ mode, id, original, farms, defaults }: InnerPr
   const clientErrors = validateValues(values)
   const isPending = createGroup.isPending || updateGroup.isPending
   const canSubmit = Object.keys(clientErrors).length === 0 && !isPending
-  const isEdit = mode === 'edit'
+  const isEdit = original !== undefined
 
   function change(key: keyof FormValues, value: string | boolean | string[]) {
     setValues((v) => ({ ...v, [key]: value }))
-    const field: FieldKey = key === 'farmId' ? 'farm' : (key as FieldKey)
+    if (key === 'enabled') return
     setServerFields((prev) =>
-      prev[field] === undefined
+      prev[key] === undefined
         ? prev
-        : (Object.fromEntries(Object.entries(prev).filter(([k]) => k !== field)) as FieldErrors),
+        : (Object.fromEntries(Object.entries(prev).filter(([k]) => k !== key)) as FieldErrors),
     )
   }
 
@@ -287,15 +286,15 @@ function CapacityGroupFormInner({ mode, id, original, farms, defaults }: InnerPr
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!canSubmit) return
-    const input = buildInput(values, mode, original)
+    const input = buildInput(values, original)
     setServerFields({})
     setServerForm([])
     try {
-      if (mode === 'create') {
+      if (original === undefined) {
         await createGroup.mutateAsync(input)
         showToast(`Capacity group "${input.name}" created`, 'success')
       } else {
-        await updateGroup.mutateAsync({ id, input })
+        await updateGroup.mutateAsync({ id: original.id, input })
         showToast(`Capacity group "${input.name}" saved`, 'success')
       }
       navigate('/capacity-groups')
@@ -312,8 +311,8 @@ function CapacityGroupFormInner({ mode, id, original, farms, defaults }: InnerPr
     ...serverFields,
   }
   const hasServerError = serverForm.length > 0 || Object.keys(serverFields).length > 0
-  // The farm might be missing from the list (it failed to load): keep the
-  // group's own farm selectable so the control still shows where it lives.
+  // If the group's farm is missing from the farm list, keep it as an option so
+  // the control still shows which farm the group belongs to.
   const farmOptions = farms.some((f) => f.id === values.farmId)
     ? farms
     : [...farms, ...(values.farmId !== '' ? [{ id: values.farmId, name: values.farmId }] : [])]
@@ -321,7 +320,7 @@ function CapacityGroupFormInner({ mode, id, original, farms, defaults }: InnerPr
   return (
     <div className={styles.page}>
       <PageHeader
-        title={mode === 'create' ? 'New Capacity Group' : 'Edit Capacity Group'}
+        title={isEdit ? 'Edit Capacity Group' : 'New Capacity Group'}
         subtitle="A capacity group is a set of machines sqi follows demand with"
       />
 
@@ -335,7 +334,7 @@ function CapacityGroupFormInner({ mode, id, original, farms, defaults }: InnerPr
           </div>
         )}
 
-        <Field id="farm" label="Farm" error={fieldErrors.farm}>
+        <Field id="farm" label="Farm" error={fieldErrors.farmId}>
           {(a11y) => (
             <select
               {...a11y}
@@ -518,10 +517,10 @@ function CapacityGroupFormInner({ mode, id, original, farms, defaults }: InnerPr
 
         <div className={styles.footer}>
           <button type="submit" className={styles.submitBtn} disabled={!canSubmit}>
-            {mode === 'create' ? 'Create Capacity Group' : 'Save'}
+            {isEdit ? 'Save' : 'Create Capacity Group'}
           </button>
           <Link
-            to={isEdit ? `/capacity-groups/${id}` : '/capacity-groups'}
+            to={isEdit ? `/capacity-groups/${original.id}` : '/capacity-groups'}
             className={styles.cancelBtn}
           >
             Cancel
@@ -556,8 +555,6 @@ export default function CapacityGroupForm({ mode }: Props) {
     return (
       <CapacityGroupFormInner
         key={id}
-        mode="edit"
-        id={id}
         original={group.data}
         farms={farmsQuery.data ?? []}
         defaults={valuesFromGroup(group.data)}
@@ -573,12 +570,5 @@ export default function CapacityGroupForm({ mode }: Props) {
     )
   }
   const farms = farmsQuery.data ?? []
-  return (
-    <CapacityGroupFormInner
-      mode="create"
-      id=""
-      farms={farms}
-      defaults={defaultValues(farms[0]?.id ?? '')}
-    />
-  )
+  return <CapacityGroupFormInner farms={farms} defaults={defaultValues(farms[0]?.id ?? '')} />
 }

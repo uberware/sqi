@@ -19,8 +19,8 @@ package scheduler
 // vanishes without deregistering is removed by the capacity sweep
 // (capacity.go).
 //
-// A worker in no group registers exactly as before: with authentication off and
-// no group named, none of this makes a store call; with it on, the credential
+// A worker in no group registers as usual: with authentication off and no
+// group named, none of this makes a store call; with it on, the credential
 // comes back from the last-seen touch registration already made.
 
 import (
@@ -243,8 +243,7 @@ func (s *Scheduler) removeDepartedEphemeral(
 	return true, false
 }
 
-// announceRemovedWorker fans out the removal of w, as the retention sweep
-// does.
+// announceRemovedWorker fans out the removal of w to WebSocket clients.
 func (s *Scheduler) announceRemovedWorker(w store.Worker) {
 	s.notifier.NotifyWorker(ws.WorkerEvent{
 		WorkerID: w.ID,

@@ -393,24 +393,29 @@ describe('join tokens (sized groups)', () => {
   })
 
   it.each([
-    ['405 (REST auth off)', 405, 'Method Not Allowed'],
+    ['405 (REST auth off)', 405, 'Method Not Allowed', /REST authentication is off/],
     [
       '409 (broker auth off)',
       409,
       'group tokens need nats.auth.enabled; workers on an auth-off farm join with worker.capacity_group',
+      /does not authenticate workers/,
     ],
-  ])('explains worker.capacity_group when the server answers %s', async (_n, code, detail) => {
-    stubApi({
-      ...SIZED,
-      'POST /capacity-groups/cg-1/tokens': { status: code, body: { detail } },
-    })
-    renderPage()
-    fireEvent.click(await screen.findByRole('button', { name: /create token/i }))
-    const note = await screen.findByRole('note')
-    expect(note).toHaveTextContent('worker.capacity_group')
-    expect(note).toHaveTextContent('cloud-spot')
-    expect(screen.queryByRole('button', { name: /create token/i })).not.toBeInTheDocument()
-  })
+  ])(
+    'explains worker.capacity_group when the server answers %s',
+    async (_n, code, detail, cause) => {
+      stubApi({
+        ...SIZED,
+        'POST /capacity-groups/cg-1/tokens': { status: code, body: { detail } },
+      })
+      renderPage()
+      fireEvent.click(await screen.findByRole('button', { name: /create token/i }))
+      const note = await screen.findByRole('note')
+      expect(note).toHaveTextContent('worker.capacity_group')
+      expect(note).toHaveTextContent('cloud-spot')
+      expect(note).toHaveTextContent(cause)
+      expect(screen.queryByRole('button', { name: /create token/i })).not.toBeInTheDocument()
+    },
+  )
 
   it('shows any other token failure as an error, keeping the button', async () => {
     stubApi({

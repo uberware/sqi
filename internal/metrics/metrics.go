@@ -7,16 +7,11 @@
 // global default registry prevents cross-contamination between test instances
 // and avoids collision with Go runtime metrics.
 //
-// Many of the metric families defined here are stubs whose values are set to
-// zero until the corresponding component lands:
-//
-//   - [Metrics.SchedulerQueueDepth], [Metrics.SchedulerTasksTotal],
-//     [Metrics.SchedulerAssignmentDuration], [Metrics.SchedulerIdleWorkers] —
-//     populated by the scheduler.
-//   - [Metrics.WorkersTotal] — populated by the worker registry.
-//   - [Metrics.NATSPublishedTotal], [Metrics.NATSConsumedTotal] — populated by
-//     the typed NATS client wrapper.
-//   - [Metrics.DBQueryDuration] — populated by the SQLite store.
+// [Metrics.SchedulerTasksTotal], [Metrics.SchedulerAssignmentDuration],
+// [Metrics.NATSPublishedTotal], [Metrics.NATSConsumedTotal] and
+// [Metrics.DBQueryDuration] are registered, but no server code records into
+// them, so they serve no samples. The other families are written by the
+// scheduler and the other components named on their fields.
 package metrics
 
 import (
@@ -56,8 +51,7 @@ type Metrics struct {
 	SchedulerQueueDepth *prometheus.GaugeVec
 
 	// SchedulerTasksTotal counts task completions, labeled by queue name and
-	// terminal status (succeeded, failed, canceled). Incremented by the
-	// scheduler.
+	// terminal status (succeeded, failed, canceled). Nothing records it.
 	SchedulerTasksTotal *prometheus.CounterVec
 
 	// SchedulerTasksReconciled counts attempts reclaimed because their worker
@@ -75,7 +69,7 @@ type Metrics struct {
 	//   - "deferred"  — no eligible worker or policy blocked; task stays ready.
 	//   - "error"     — an unexpected error aborted the attempt.
 	//
-	// Populated by the scheduler assignment loop.
+	// Nothing records it.
 	SchedulerAssignmentDuration *prometheus.HistogramVec
 
 	// SchedulerIdleWorkers is the current count of online workers that have no
@@ -86,24 +80,23 @@ type Metrics struct {
 	// ── Workers ───────────────────────────────────────────────────────────────
 
 	// WorkersTotal is the current number of registered workers, partitioned by
-	// status: online, offline, or disabled. Set by the worker registry.
+	// status: online, offline, or disabled. Set by the scheduler.
 	WorkersTotal *prometheus.GaugeVec
 
 	// ── NATS JetStream ────────────────────────────────────────────────────────
 
 	// NATSPublishedTotal counts messages published to the NATS broker,
-	// labeled by subject. Incremented by the typed bus client.
+	// labeled by subject. Nothing records it.
 	NATSPublishedTotal *prometheus.CounterVec
 
 	// NATSConsumedTotal counts messages consumed from the NATS broker,
-	// labeled by subject. Incremented by the typed bus client.
+	// labeled by subject. Nothing records it.
 	NATSConsumedTotal *prometheus.CounterVec
 
 	// ── SQLite store ──────────────────────────────────────────────────────────
 
 	// DBQueryDuration records SQLite query execution time in seconds, labeled
-	// by operation name (e.g. "job.insert", "task.list"). Observed by the store
-	// implementation.
+	// by operation name (e.g. "job.insert", "task.list"). Nothing records it.
 	DBQueryDuration *prometheus.HistogramVec
 
 	// ── Usage pools ───────────────────────────────────────────────────────────

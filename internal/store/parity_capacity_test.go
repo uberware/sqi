@@ -457,7 +457,7 @@ func TestParity_DeleteEphemeralWorker(t *testing.T) {
 				t.Fatalf("unknown worker: (%+v, %v, %v), want (zero, false, nil)", w, deleted, err)
 			}
 
-			// Ephemeral and offline, but holding a leased task (the fixture's w1).
+			// Ephemeral and offline, but holding a running task (the fixture's worker).
 			capacityWorker(t, st, g.Farm.ID, fixtureWorkerID, "d", store.WorkerStatusOffline, now)
 			if _, err := st.SetWorkerCapacityGroup(ctx, fixtureWorkerID, group.ID, true); err != nil {
 				t.Fatalf("SetWorkerCapacityGroup: %v", err)
@@ -589,7 +589,7 @@ func TestParity_DeleteCapacityGroupWithMemberConflicts(t *testing.T) {
 	}
 }
 
-func TestParity_RetentionKeepsNonEphemeralGroupMembers(t *testing.T) {
+func TestParity_RetentionKeepsGroupMembers(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
 			ctx := t.Context()
@@ -611,11 +611,16 @@ func TestParity_RetentionKeepsNonEphemeralGroupMembers(t *testing.T) {
 			}
 			got := project(removed, func(w store.Worker) string { return w.ID })
 			slices.Sort(got)
-			if want := []string{"w-eph", "w-loose"}; !slices.Equal(got, want) {
+			if want := []string{"w-loose"}; !slices.Equal(got, want) {
 				t.Fatalf("removed = %v, want %v", got, want)
 			}
-			if _, err := st.GetWorker(ctx, "w-named"); err != nil {
-				t.Fatalf("GetWorker w-named: %v, want the non-ephemeral member kept", err)
+			// Neither member is retention's to delete: the named one stays
+			// until an operator removes it, the ephemeral one until the
+			// capacity sweep deletes it and revokes its credential.
+			for _, id := range []string{"w-named", "w-eph"} {
+				if _, err := st.GetWorker(ctx, id); err != nil {
+					t.Fatalf("GetWorker %s: %v, want the member kept", id, err)
+				}
 			}
 		})
 	}
@@ -697,7 +702,7 @@ func TestParity_GroupTokenAndCredentialRoundTripGroupID(t *testing.T) {
 	}
 }
 
-func TestParity_RevokeWorkerJoinToken(t *testing.T) {
+func TestParity_RevokeCapacityGroupToken(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
 			ctx := t.Context()
@@ -709,8 +714,8 @@ func TestParity_RevokeWorkerJoinToken(t *testing.T) {
 				t.Fatalf("CreateWorkerJoinToken: %v", err)
 			}
 
-			if err := st.RevokeWorkerJoinToken(ctx, tok.ID, t1); err != nil {
-				t.Fatalf("RevokeWorkerJoinToken: %v", err)
+			if err := st.RevokeCapacityGroupToken(ctx, g.ID, tok.ID, t1); err != nil {
+				t.Fatalf("RevokeCapacityGroupToken: %v", err)
 			}
 			got, err := st.GetWorkerJoinTokenByHash(ctx, tok.TokenHash)
 			if err != nil || got.RevokedAt == nil || !got.RevokedAt.Equal(t1) {
@@ -718,8 +723,8 @@ func TestParity_RevokeWorkerJoinToken(t *testing.T) {
 			}
 
 			// Revoking again is not an error and keeps the first time.
-			if err := st.RevokeWorkerJoinToken(ctx, tok.ID, t1.Add(time.Hour)); err != nil {
-				t.Fatalf("second RevokeWorkerJoinToken: %v", err)
+			if err := st.RevokeCapacityGroupToken(ctx, g.ID, tok.ID, t1.Add(time.Hour)); err != nil {
+				t.Fatalf("second RevokeCapacityGroupToken: %v", err)
 			}
 			got, err = st.GetWorkerJoinTokenByHash(ctx, tok.TokenHash)
 			if err != nil || got.RevokedAt == nil || !got.RevokedAt.Equal(t1) {
@@ -734,8 +739,17 @@ func TestParity_RevokeWorkerJoinToken(t *testing.T) {
 				t.Fatalf("credential after refused redeem: err = %v, want ErrNotFound", err)
 			}
 
-			if err := st.RevokeWorkerJoinToken(ctx, uuid.NewString(), t1); !errors.Is(err, store.ErrNotFound) {
+			if err := st.RevokeCapacityGroupToken(ctx, g.ID, uuid.NewString(), t1); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("unknown token: err = %v, want ErrNotFound", err)
+			}
+			// Another group's token, and an ungrouped one, are not this group's.
+			other := mustCreateCapacityGroup(t, st, mkCapacityGroup(farm.ID, "beta"))
+			if err := st.RevokeCapacityGroupToken(ctx, other.ID, tok.ID, t1); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("another group's token: err = %v, want ErrNotFound", err)
+			}
+			plain := mustCreateJoinToken(t, st)
+			if err := st.RevokeCapacityGroupToken(ctx, g.ID, plain.ID, t1); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("ungrouped token: err = %v, want ErrNotFound", err)
 			}
 		})
 	}
@@ -766,8 +780,8 @@ func TestParity_ListCapacityGroupTokens(t *testing.T) {
 				t.Fatalf("CreateWorkerJoinToken: %v", err)
 			}
 			mustCreateJoinToken(t, st) // ungrouped: never listed
-			if err := st.RevokeWorkerJoinToken(ctx, middle.ID, t0.Add(time.Hour)); err != nil {
-				t.Fatalf("RevokeWorkerJoinToken: %v", err)
+			if err := st.RevokeCapacityGroupToken(ctx, a.ID, middle.ID, t0.Add(time.Hour)); err != nil {
+				t.Fatalf("RevokeCapacityGroupToken: %v", err)
 			}
 
 			got, err := st.ListCapacityGroupTokens(ctx, a.ID)

@@ -288,8 +288,8 @@ func TestParity_UpdateWorkerHeartbeat_WorkerClockStepBackRecorded(t *testing.T) 
 }
 
 // TestParity_UpdateWorkerHeartbeat_UnstampedRecordedUnconditionally pins that a
-// heartbeat with no broker stamp is recorded whatever its time,
-// and keeps the recorded broker stamp.
+// heartbeat with no broker stamp is recorded whatever its time and keeps the
+// recorded broker stamp.
 func TestParity_UpdateWorkerHeartbeat_UnstampedRecordedUnconditionally(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {

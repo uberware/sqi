@@ -37,8 +37,8 @@ export default function CopyButton({ value, display, className }: CopyButtonProp
           timerRef.current = setTimeout(() => setCopied(false), COPIED_RESET_MS)
         })
         .catch(() => {
-          // Clipboard write can fail in insecure contexts or when the document
-          // is not focused. Silently ignore — user will see no feedback.
+          // The write fails in insecure contexts and when the document is not
+          // focused; the button then shows no feedback.
         })
     },
     [value],

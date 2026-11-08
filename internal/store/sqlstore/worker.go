@@ -27,12 +27,21 @@ const sqlWorkerHasWorkInFlight = `EXISTS (SELECT 1 FROM tasks t
 // status filter and sort: 'disabled' while the flag is set, else the liveness.
 const sqlWorkerEffectiveStatus = `CASE WHEN disabled THEN 'disabled' ELSE status END`
 
+// sqlDeleteEphemeralWorkerWhere deletes the ephemeral worker id while it is
+// offline and holds no task. It binds only the id, so a statement extending
+// it binds its own placeholders after.
+const sqlDeleteEphemeralWorkerWhere = `
+DELETE FROM workers
+WHERE id = ? AND ephemeral AND status = 'offline'
+  AND NOT ` + sqlWorkerHasWorkInFlight
+
 const (
-	// ON CONFLICT preserves registered_at so re-registration does not reset it,
+	// ON CONFLICT preserves registered_at, so re-registration does not reset it,
 	// and an empty instance_id (a worker that sends none) keeps the stored one,
-	// as a NULL registration_broker_at does.
-	// disabled, heartbeat_broker_at, capacity_group_id and ephemeral are not in the column list, so a
-	// new worker is enabled and in no group, and a re-registration never changes them.
+	// as a NULL registration_broker_at does. disabled, heartbeat_broker_at,
+	// capacity_group_id and ephemeral are not in the column list, so a new
+	// worker is enabled and in no group, and a re-registration never changes
+	// them.
 	sqlUpsertWorker = `
 INSERT INTO workers (
 	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
@@ -115,7 +124,7 @@ WHERE  w.status = 'online' AND NOT w.disabled
        )`
 
 	// sqlDeleteWorkerIfRemovable carries the removability rule in its WHERE so
-	// the check and the delete are one statement (I1). It mirrors
+	// the check and the delete are one statement. It mirrors
 	// [store.Worker.Removable], the one Go statement of the rule: SQL cannot
 	// call Go, so the two are kept in step by hand and pinned against each
 	// other by TestDeleteWorkerIfRemovable. The in-flight arm is the one
@@ -126,14 +135,17 @@ DELETE FROM workers
 WHERE id = ? AND status = 'offline'
   AND NOT ` + sqlWorkerHasWorkInFlight
 
-	// Deletes enabled offline workers last seen before the cutoff and returns
-	// the removed rows so the caller can emit notifications. A disabled worker
-	// is kept until an operator removes it. NULL last_heartbeat_at never
-	// matches (NULL < ? is NULL), so a never-seen worker is left alone.
+	// Deletes enabled offline workers in no capacity group last seen before
+	// the cutoff and returns the removed rows so the caller can emit
+	// notifications. A disabled worker is kept until an operator removes it,
+	// and a group member is left to the capacity sweep, which revokes an
+	// ephemeral member's credential as it deletes the row. NULL
+	// last_heartbeat_at never matches (NULL < ? is NULL), so a never-seen
+	// worker is left alone.
 	sqlDeleteOfflineWorkersBefore = `
 DELETE FROM workers
 WHERE status = 'offline' AND NOT disabled AND last_heartbeat_at < ?
-  AND (capacity_group_id IS NULL OR ephemeral)
+  AND capacity_group_id IS NULL
 RETURNING ` + workerCols
 
 	sqlGetCapacityGroupExists = `SELECT 1 FROM capacity_groups WHERE id = ?`
@@ -149,20 +161,14 @@ FROM workers WHERE capacity_group_id = ? ORDER BY hostname, id`
 
 	// sqlDeleteEphemeralWorker carries the whole rule in its WHERE, so the
 	// check and the delete are one statement.
-	sqlDeleteEphemeralWorker = `
-DELETE FROM workers
-WHERE id = ? AND ephemeral AND status = 'offline'
-  AND NOT ` + sqlWorkerHasWorkInFlight + `
+	sqlDeleteEphemeralWorker = sqlDeleteEphemeralWorkerWhere + `
 RETURNING ` + workerCols
 
 	// sqlDeleteVanishedEphemeralWorker adds the capacity sweep's conditions to
 	// sqlDeleteEphemeralWorker's: not disabled, and last seen before the
 	// cutoff. NULL last_heartbeat_at never matches (NULL < ? is NULL).
-	sqlDeleteVanishedEphemeralWorker = `
-DELETE FROM workers
-WHERE id = ? AND ephemeral AND status = 'offline'
+	sqlDeleteVanishedEphemeralWorker = sqlDeleteEphemeralWorkerWhere + `
   AND NOT disabled AND last_heartbeat_at < ?
-  AND NOT ` + sqlWorkerHasWorkInFlight + `
 RETURNING ` + workerCols
 )
 
@@ -224,10 +230,9 @@ func scanWorker(row scanner) (store.Worker, error) {
 // workerJSONCols marshals the worker columns stored as JSON TEXT, in the order
 // they appear in [workerCols].
 //
-// One function, not one copy per write path: every caller that persists a
-// worker needs all of them, so a new JSON column added to only one copy would
-// still compile and would silently drop that column on the paths it was not
-// added to.
+// Every caller that persists a worker needs all of the columns, so they are
+// marshaled in this one function: a JSON column added to only one of several
+// copies would still compile and would be dropped on the other write paths.
 func workerJSONCols(w store.Worker) (gpuJSON, tagsJSON, exprJSON, extJSON string, err error) {
 	if gpuJSON, err = marshalJSON(w.GPUInfo); err != nil {
 		return "", "", "", "", err
@@ -239,7 +244,7 @@ func workerJSONCols(w store.Worker) (gpuJSON, tagsJSON, exprJSON, extJSON string
 		return "", "", "", "", err
 	}
 	// A nil slice marshals as "null"; the column holds a list, '[]' when empty,
-	// matching what its default gives a row that predates it.
+	// as its default does.
 	exts := w.Extensions
 	if exts == nil {
 		exts = []string{}
@@ -440,9 +445,9 @@ func (s *Store) UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Ti
 			return err
 		}
 		// Nothing matched: an unknown worker, or a heartbeat the broker stamped
-		// before the recorded one, which is ignored. Not-found is carried out rather than
-		// returned, so a leadership context's fence check still runs and a
-		// deposed leader gets ErrFenced for it.
+		// before the recorded one, which is ignored. Not-found is carried out
+		// rather than returned, so a leadership context's fence check still
+		// runs and a deposed leader gets ErrFenced for it.
 		var one int
 		switch err := w.QueryRowContext(ctx, sqlWorkerExists, id).Scan(&one); {
 		case errors.Is(err, sql.ErrNoRows):
@@ -494,7 +499,7 @@ func (s *Store) CountIdleWorkers(ctx context.Context, farmID string) (int, error
 
 // DeleteWorkerIfRemovable implements [store.WorkerStore].
 //
-// The zero-rows case is told apart by a read AFTER the delete: a worker that
+// The zero-rows case is told apart by a read after the delete: a worker that
 // exists but did not match is [store.ErrConflict], one that is gone is
 // [store.ErrNotFound]. A concurrent change between the two statements can only
 // move the answer between those two errors, never delete a row the rule refused.

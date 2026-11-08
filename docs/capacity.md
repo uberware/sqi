@@ -8,21 +8,19 @@ sqi can publish how many of them the waiting work justifies.
 This guide is for farm admins and for cloud or devops engineers wiring an
 autoscaler to sqi.
 
-> **What this release does.** Capacity groups are delivered in two parts. The
-> first, described here, is the **signal**: sqi works out, for each group, how
-> much waiting work the group could run, how many machines it should have and
-> which of its machines are safe to give back, and it publishes that as
-> metrics and over REST. **sqi does not start, stop, wake or sleep any machine.**
-> Your own autoscaler (an AWS Auto Scaling group, a GCP managed instance group,
-> an Azure scale set, KEDA, or a script) acts on the signal. The one thing sqi
-> does do on its own is clean up: a cloud machine that left for good is deleted
+> **What capacity groups do.** Capacity groups publish a signal. For each group,
+> sqi works out how much waiting work the group could run, how many machines it
+> should have and which of its machines are safe to give back, and it publishes
+> that as metrics and over REST. sqi does not start, stop, wake or sleep any
+> machine. Your own autoscaler (an AWS Auto Scaling group, a GCP managed instance
+> group, an Azure scale set, KEDA, or a script) acts on the signal. The one thing
+> sqi does on its own is clean up: a cloud machine that left for good is deleted
 > from the worker list and its credential revoked
 > ([below](#worker-shutdown-and-drain)).
 >
-> Acting providers (waking on-premises machines over the LAN and putting them
-> back to sleep, and a generic script provider that runs your commands to grow
-> and shrink a group) are planned as the second part and are not available yet.
-> The API accepts only `provider: external` and refuses the others with 400.
+> The API accepts only `provider: external` and refuses any other provider with
+> 400. There are no providers that wake on-premises machines over the LAN, put
+> them back to sleep, or run your commands to grow and shrink a group.
 
 Nothing here changes a farm that has not defined a capacity group. With no
 group, the scheduler does no capacity work, logs nothing about capacity and
@@ -99,7 +97,7 @@ to its default.
 | `farm_id` | required on create | cannot change afterwards |
 | `name` | required | unique; 1 to 63 characters: letters, digits, `.`, `_`, `-`, starting with a letter or digit. The metrics use it as their label. |
 | `kind` | required | `named` or `sized`; cannot change while the group has members |
-| `provider` | `external` | only `external` is accepted in this release |
+| `provider` | `external` | only `external` is accepted |
 | `enabled` | `true` | a disabled group is not evaluated, exports nothing, and its members count as ordinary workers |
 | `queue_ids` | `[]` (every queue in the farm) | up to 1000 queues, all in the group's farm. Only ready work in these queues drives the group. This is the main lever for keeping a low-priority backlog from launching paid machines. |
 | `min_machines` | `0` | 0 up to `max_machines` |
@@ -108,8 +106,8 @@ to its default.
 | `max_step_up` | `1` | 1 to 10000; the most machines one evaluation may add |
 | `scale_up_cooldown_seconds` | `60` | 0 up to one year; the shortest time between step-ups |
 | `idle_timeout_seconds` | `600` | 60 up to one year; how long a member must sit idle before it is a retire candidate |
-| `boot_timeout_seconds` | `600` | 60 up to one year; how long a machine that was asked for has to register, and how long a vanished cloud machine is kept ([below](#worker-shutdown-and-drain)). Keep it shorter than `scheduler.offline_worker_retention`. |
-| `retire_action` | `sleep` | `sleep` or `shutdown`. Stored for the acting providers; it has no effect on the signal. |
+| `boot_timeout_seconds` | `600` | 60 up to one year; how long a machine that was asked for has to register, and how long a vanished cloud machine is kept ([below](#worker-shutdown-and-drain)). |
+| `retire_action` | `sleep` | `sleep` or `shutdown`. Stored with the group; it has no effect on the signal. |
 | `machine_profile` | `{}` | a sized group must declare `cpu_count` of at least 1 |
 
 The profile may declare `cpu_count`, `ram_mb`, `gpu_count`, `gpu_memory_mb`,
@@ -142,7 +140,7 @@ run it, ignoring everything that varies with load:
 Work that no group could run drives nothing. A job needing Houdini does not
 grow a group whose profile has no Houdini tag, and a step that needs more cores
 than one machine has is not counted. A sized group's profile has no operating
-system **version** field, so a step requiring `attr.worker.os.version` never
+system version field, so a step requiring `attr.worker.os.version` never
 counts toward a sized group. A named group is judged from each member's own
 registration, which does carry its version.
 
@@ -162,7 +160,7 @@ lease path does.
 
 ### The desired size
 
-`desired_machines` is a **total target**. It counts the machines already
+`desired_machines` is a total target. It counts the machines already
 present, including the retire candidates, which are listed separately:
 
 - If the group's demand calls for `need` more machines, the target is
@@ -189,7 +187,7 @@ launch a thousand machines:
 
 - **`max_machines`** is a hard cap.
 - **`max_step_up`** limits how many machines one evaluation adds, and the step is
-  measured from **registered** machines. If an image never registers, the group
+  measured from registered machines. If an image never registers, the group
   does not compound: it costs at most one step.
 - **`scale_up_cooldown_seconds`** is the shortest time between step-ups. Set it
   at least as long as a machine takes to boot, or the group will ask for another
@@ -200,11 +198,9 @@ Machines a step-up asked for that have not registered yet are held in
 while they boot. After the timeout they are no longer held, and the group may
 ask for one further step, measured from the machines that did register.
 
-Not available yet: a degraded state with backoff for a broken image (so that the
-group stops asking at all, instead of one step per boot timeout). It is planned
-for the second part of capacity groups (H8b), with the acting providers. Until
-then, the guards above limit the cost, and a mismatch report (next section) is
-how you notice.
+A group has no degraded state with backoff for a broken image, so it never stops
+asking: it asks for one step per boot timeout. The guards above limit the cost,
+and a mismatch report (next section) is how you notice.
 
 ### Profile mismatches
 
@@ -279,7 +275,7 @@ blind server. Reading the status needs `infra.read` when `auth.enabled` is on.
 ### Metrics
 
 `GET /metrics` on `sqi-server` carries three gauges per enabled group. The label
-`group` is the group **name**. Only the leader exports them (a standby has no
+`group` is the group name. Only the leader exports them (a standby has no
 `sqi_capacity_*` series; see [above](#the-status)), and `/metrics` is never gated
 by authentication.
 
@@ -292,10 +288,9 @@ by authentication.
 A group's series disappear when it is disabled, renamed or deleted. See also
 [Observability](observability.md).
 
-`sqi_scheduler_queue_depth{queue}` (the label is the queue ID) now falls back to
-`0` when a queue drains, instead of keeping its last non-zero value, because a
-scaling signal that never falls would never scale in. Only a queue the scheduler
-has already seen since it started is reset.
+`sqi_scheduler_queue_depth{queue}` (the label is the queue ID) falls back to `0`
+when a queue drains, so a scaling signal built on it falls too. Only a queue the
+scheduler has seen with ready work since it started is reset.
 
 ## Joining a group
 
@@ -316,7 +311,7 @@ the group could add.
 ### Sized groups with broker authentication on
 
 With `auth.enabled` and `nats.auth.enabled` both on, a machine joins a sized
-group by enrolling with the group's **group token**, which makes it an
+group by enrolling with the group's group token, which makes it an
 *ephemeral* member. Mint one:
 
 ```sh
@@ -330,15 +325,15 @@ its join token ([`nats.join_token_file`](worker-configuration.md), preferred, or
 `nats.join_token`) in the image's launch configuration. On first boot the worker
 generates its key, enrols, and joins the group.
 
-- **Group tokens are reusable**: any number of machines may enrol with one,
+- Group tokens are reusable: any number of machines may enrol with one,
   whatever `nats.auth.join_token_single_use` says. They are tied to one sized
   group.
-- **Expiry** defaults to 720 hours (30 days) and may be at most 2160 hours
+- Expiry defaults to 720 hours (30 days) and may be at most 2160 hours
   (90 days). Because a leaked reusable token is useful until it expires, rotate:
   mint the new token, update the launch template, and revoke the old one when no
   template refers to it. Both are valid meanwhile.
-- **Revoking a token** (`DELETE /capacity-groups/{id}/tokens/{tokenID}`) stops
-  new enrolments. It does **not** revoke credentials already issued from it:
+- Revoking a token (`DELETE /capacity-groups/{id}/tokens/{tokenID}`) stops
+  new enrolments. It does not revoke credentials already issued from it:
   revoke those machines with `DELETE /workers/{id}/credential`.
 - `GET /capacity-groups/{id}/tokens` lists a group's tokens (prefix, expiry,
   revocation; never the secret). Minting, listing and revoking need
@@ -348,8 +343,8 @@ generates its key, enrols, and joins the group.
   answered `409` with `group tokens need nats.auth.enabled; workers on an
   auth-off farm join with worker.capacity_group`. A named group answers `409`
   too, since its members are added by name.
-- **With REST `auth.enabled: false` and `nats.auth.enabled: true`, no machine can
-  join a sized group in this release.** The mint route is not mounted,
+- With REST `auth.enabled: false` and `nats.auth.enabled: true`, no machine can
+  join a sized group. The mint route is not mounted,
   `sqi-server worker token issue` mints only ordinary join tokens (never a group
   token), and `worker.capacity_group` is ignored because broker authentication
   is on. Turn REST authentication on to use sized groups on such a farm.
@@ -370,8 +365,8 @@ group must be a sized group in the worker's farm. The worker joins as an
 ephemeral member when it registers. This matches the auth-off trust model: any
 worker that can connect is already trusted.
 
-**With broker authentication on, `worker.capacity_group` alone is ignored, by
-design.** Otherwise any authenticated worker could make itself ephemeral, and so
+With broker authentication on, `worker.capacity_group` alone is ignored:
+otherwise any authenticated worker could make itself ephemeral, and so
 deletable. The server logs a warning naming the key and stays out of it; the
 worker joins only through its group token.
 
@@ -380,19 +375,20 @@ named group), the registration still succeeds and the server logs a warning
 saying why. The same applies with broker authentication on to a group token
 whose group has since been changed to named: its machines no longer join it.
 
-**Removing an ephemeral member does not keep it out.**
-`DELETE /capacity-groups/{id}/members/{workerID}` clears the membership, but the
-worker joins again at its next registration, which a restart or a NATS
-reconnect triggers: through its credential's group with broker authentication
-on, or through `worker.capacity_group` with it off. To make a removal stick,
-revoke the worker's credential (`DELETE /workers/{id}/credential`), or with
-broker authentication off, remove the setting from the worker.
+An ephemeral member cannot be removed from its group. It would join again
+at its next registration, which a restart or a NATS reconnect triggers: through
+its credential's group with broker authentication on, or through
+`worker.capacity_group` with it off. So
+`DELETE /capacity-groups/{id}/members/{workerID}` answers 409 for one. To retire
+the machine, stop the worker and remove it with `DELETE /workers/{id}`, which
+also revokes its credential; with broker authentication off, also remove
+`worker.capacity_group` from its configuration before it starts again.
 
 ### Build images without a worker ID
 
-A worker creates its ID on first start and keeps it in `worker.data_dir`. **An
+A worker creates its ID on first start and keeps it in `worker.data_dir`. An
 image built from a machine that has already run a worker carries that ID, and
-every instance booted from it would share one identity.** Build the image
+every instance booted from it shares one identity. Build the image
 before the worker has ever started, or delete the worker's data directory (and
 its `worker.nk` credential file) before taking the snapshot, so each instance
 creates its own on first boot. Containers should use a data directory that is
@@ -405,36 +401,45 @@ sharing an ID look like.
 ## Worker shutdown and drain
 
 How a worker leaves decides what the server does with it. The worker reports a
-**kind** when it deregisters:
+kind when it deregisters:
 
 | The worker is | Kind | What the server does |
 |---|---|---|
 | restarted or upgraded (SIGTERM, a service stop) | none | marks it offline and keeps the row and credential; it comes back without a token |
-| retired by sqi itself | `retired` | deletes an ephemeral member and revokes its credential. Nothing sends this kind yet: it is for the acting providers, and the server already handles it. |
+| retired by sqi itself | `retired` | deletes an ephemeral member and revokes its credential. Nothing in sqi sends this kind. |
 | reclaimed by the provider (a [preemption notice](#preemption-notices)) | `preempted` | deletes an ephemeral member and revokes its credential |
 | gone with no deregister at all (terminated, power cut, preempted without notice) | n/a | the heartbeat sweep marks it offline and reclaims its tasks |
 
 A plain service stop is a restart, not a retirement. Because an autoscaler's
 termination hook usually stops the service, an instance scaled in that way is
 marked offline, and the capacity sweep then does the rest: an ephemeral member
-**offline longer than its group's `boot_timeout_seconds`** (judged by its last
-heartbeat) is deleted and its credential revoked, well before the 24 hour
-offline-worker retention sweep, which revokes nothing. A member with no recorded
+offline longer than its group's `boot_timeout_seconds` (judged by its last
+heartbeat) is deleted and its credential revoked. A member with no recorded
 heartbeat is never judged vanished.
 
-`boot_timeout_seconds` can be set as high as a year, but
+`boot_timeout_seconds` is also how long an ephemeral member may be out of
+touch. The sweep cannot tell a terminated machine from one that is stopped,
+hibernated or cut off from the server by a network outage (a site-to-cloud VPN
+going down, say). A machine that comes back after its member was deleted has
+a revoked credential, which the broker refuses, and a worker keeps its
+credential file rather than enrolling again with its image's token: it never
+reconnects, and sqi no longer counts it. Replace such a machine, or set
+`boot_timeout_seconds` to cover the longest stop or outage the group must ride
+out. Only an outage of the server's own broker is waited out for you.
+
+The capacity sweep is the only automatic way an ephemeral member is deleted:
 [`scheduler.offline_worker_retention`](configuration.md#scheduleroffline_worker_retention)
-(24 hours by default) deletes an offline, enabled ephemeral member's row
-**without revoking its credential**. Keep `boot_timeout_seconds` shorter than the
-retention, or revoke such a worker's credential yourself.
+skips every capacity-group member, because its deletion revokes nothing. A
+vanished member's row and credential therefore last exactly as long as its
+group's `boot_timeout_seconds`, however that compares with the retention.
 
-Some rules that never bend:
+The sweep follows these rules:
 
-- A **disabled** member is never touched by the sweep: disabling is the
+- A disabled member is never touched by the sweep: disabling is the
   maintenance hold.
 - A member that is not ephemeral (every member of a named group) is never
   deleted by a deregister or by the capacity sweep, and
-  `scheduler.offline_worker_retention` skips members of a named group as well.
+  `scheduler.offline_worker_retention` skips every capacity-group member.
 - The capacity sweep removes nothing while the server is deferring liveness
   decisions after a broker outage, because during an outage no machine can come
   back. A `retired` or `preempted` deregister still deletes its member then: it
@@ -452,20 +457,20 @@ SIGKILL a third of the grace period later, and are reported as
 `ready` and runs again from the start, with no retry consumed and no failure
 counted. So the longest a drain can take is the grace period plus a third of it.
 
-**Set `shutdown_grace_period` to your longest render**, and set the autoscaler's
+Set `shutdown_grace_period` to your longest render, and set the autoscaler's
 termination hook timeout (below) to at least `grace + grace / 3` plus a margin
 for the final status reports and the deregister. If the hook's timeout is
 shorter, the cloud terminates the machine mid-render.
 
-Two fixes ship with capacity groups that long drains depend on:
+Two behaviours let long drains work:
 
-- **Heartbeats continue through a drain.** Previously a worker went silent once
-  it began shutting down, so a drain longer than `scheduler.heartbeat_timeout`
-  (30 s by default) was swept offline and its still-running tasks reclaimed.
-- **A worker waits for its NATS connection to drain on shutdown**, so its final
-  statuses and its deregister are actually delivered. A lease that commits for a
-  worker that went offline (or whose row was deleted) after the scheduler read
-  it online is refused, so a departing worker is not handed new work.
+- Heartbeats continue through a drain, so a drain longer than
+  `scheduler.heartbeat_timeout` (30 s by default) is not swept offline and its
+  running tasks are not reclaimed.
+- A worker waits for its NATS connection to drain on shutdown, so its final
+  statuses and its deregister are delivered. A lease that commits for a worker
+  that went offline (or whose row was deleted) after the scheduler read it
+  online is refused, so a departing worker is not handed new work.
 
 ## Preemption notices
 
@@ -485,7 +490,7 @@ for the exact request each provider receives.) On a notice the worker:
 
 1. stops leasing and cancels its running tasks at once, without waiting out the
    grace period. The tasks are published as `worker_shutdown`, which the server
-   treats as a **reclaim, not a failure**: they return to `ready` and the retry
+   treats as a reclaim, not a failure: they return to `ready` and the retry
    budget is untouched;
 2. deregisters as `preempted`, so the server deletes an ephemeral member and
    revokes its credential, and reschedules the work immediately instead of
@@ -494,8 +499,8 @@ for the exact request each provider receives.) On a notice the worker:
 Keep in mind:
 
 - The executor still sends the tasks SIGTERM, then SIGKILL after its kill
-  window, which is a third of `shutdown_grace_period`. Keep that third **well
-  under the provider's notice** (about 2 minutes on AWS, about 30 seconds on GCP
+  window, which is a third of `shutdown_grace_period`. Keep that third well
+  under the provider's notice (about 2 minutes on AWS, about 30 seconds on GCP
   and Azure). A grace period over 90 seconds gives a kill window over 30
   seconds, longer than a GCP or Azure notice, so workers on preemptible
   instances need a shorter grace period than workers on on-demand instances.
@@ -508,39 +513,43 @@ Keep in mind:
   notice would be missed.
 - An instance reclaimed with no notice, or a power cut, needs nothing new: the
   heartbeat sweep takes the worker offline and reclaims its tasks.
+- An AWS notice whose action is `stop` or `hibernate` is not treated as a
+  reclaim: the instance keeps its disk, so its worker ID and credential come
+  back with it. The worker shuts down as the operating system stops it, like a
+  restart, and stays a member. It must be running again within the group's
+  `boot_timeout_seconds` ([above](#worker-shutdown-and-drain)), or it is deleted
+  and its credential revoked.
 
 ## Wiring an autoscaler
 
 > **Documentation-derived: not run against a real cloud.** The AWS, GCP, Azure
 > and KEDA sections below are written from the providers' documentation and
-> sqi's own behaviour. sqi's CI uses no cloud account, so none of this wiring has
-> been executed against a real Auto Scaling group, instance group, scale set or
-> cluster. Treat the snippets as a starting point and check them against the
+> sqi's own behaviour. None of this wiring has been executed against a real Auto
+> Scaling group, instance group, scale set or cluster. Treat the snippets as a starting point and check them against the
 > provider's current documentation.
 
 The pattern is the same everywhere:
 
-1. **Scale out to `desired_machines`.** Read `sqi_capacity_desired_machines`
+1. Scale out to `desired_machines`. Read `sqi_capacity_desired_machines`
    (or `status.desired_machines`) and set the group's total capacity to it.
-2. **Enrol launches with the group token** in the launch template, with
+2. Enrol launches with the group token in the launch template, with
    `worker.preemption.watch` set for spot capacity.
-3. **Protect instances from scale-in by default**, and take a machine out only by
+3. Protect instances from scale-in by default, and take a machine out only by
    name from `retire_candidates`. sqi cannot map a worker to a cloud instance for
-   you in this release (a worker reports its hostname, not its cloud instance
+   you (a worker reports its hostname, not its cloud instance
    ID), so the mapping is yours, for example by naming workers after instances
    through `worker.name`.
-4. **Stop the worker service from the termination lifecycle hook**, so the
+4. Stop the worker service from the termination lifecycle hook, so the
    machine drains instead of dying, with `shutdown_grace_period` and the hook
    timeout set as above.
 
-**There is no server-side retirement check in this release.** `retire_candidates`
-is advisory: a candidate was idle when it was evaluated, and may be leased work
+There is no server-side retirement check. `retire_candidates` is advisory: a candidate was idle when it was evaluated, and may be leased work
 before your actuator reaches it. Draining protects that work as long as the
 grace period and hook timeout cover the longest task. If you cannot guarantee
 that, retire only candidates that are still idle when you act (re-read the
 status, or disable the worker first and check it holds no task).
 
-**A failover or restart forgets machines still booting.** The in-memory record of
+A failover or restart forgets machines still booting. The in-memory record of
 a recent step-up is lost, so for up to `boot_timeout_seconds` the target can read
 lower than before the failover, and an actuator that sets capacity to it could
 cancel machines that are still starting. Protect booting instances from scale-in
@@ -564,8 +573,8 @@ Documentation-derived: not run against a real cloud.
    target of `1` (a metric-math expression in the policy's customized metric
    specification) also makes capacity follow `desired_machines`, because target
    tracking moves capacity in proportion to metric over target and
-   `desired_machines` already counts the machines you have. **It does not work
-   for a group that can scale to zero** (`min_machines: 0`, as in the example
+   `desired_machines` already counts the machines you have. It does not work
+   for a group that can scale to zero (`min_machines: 0`, as in the example
    above): with no instance in service the ratio has no value and the policy
    cannot scale out. Use `set-desired-capacity`, or step scaling on
    `DesiredMachines`, for such a group. `GroupInServiceInstances` is published
@@ -683,25 +692,23 @@ be chosen and will drain (up to the grace period) before it exits.
 
 ## Limits and known gaps
 
-- **Signal only.** sqi launches, wakes, sleeps and terminates nothing in this
-  release. There is no wake-on-LAN, no script provider and no first-party cloud
-  SDK.
-- **No degraded state.** A group whose image never registers is bounded by
+- Signal only. sqi launches, wakes, sleeps and terminates nothing. There is no
+  wake-on-LAN, no script provider and no first-party cloud SDK.
+- No degraded state. A group whose image never registers is bounded by
   `max_machines`, `max_step_up` and the cooldown but is not backed off; the
   mismatch list and your cloud's own failed-launch metrics are how you notice.
-  A degraded state with backoff is planned for the second part (H8b).
-- **Sized groups need REST authentication when broker authentication is on**
+- Sized groups need REST authentication when broker authentication is on
   ([above](#sized-groups-with-broker-authentication-on)).
-- **A removed ephemeral member rejoins** at its next registration unless its
-  credential is revoked ([above](#sized-groups-with-broker-authentication-off)).
-- **No retirement check.** `retire_candidates` is advisory
+- An ephemeral member cannot be removed from its group, only retired
+  with the worker itself ([above](#sized-groups-with-broker-authentication-off)).
+- No retirement check. `retire_candidates` is advisory
   ([above](#wiring-an-autoscaler)).
-- **No instance IDs.** A worker does not report its cloud instance ID, so mapping
+- No instance IDs. A worker does not report its cloud instance ID, so mapping
   a retire candidate to an instance is up to you.
-- **Multi-queue workers.** A worker configured with two or more `queue_ids`
+- Multi-queue workers. A worker configured with two or more `queue_ids`
   registers with no single queue affinity, and the server offers it work from
   any queue. The signal reads queue affinity the same way the lease path does,
   so it neither over- nor under-counts against that behaviour, but a group with
   a `queue_ids` allow-list may have members that take work from other queues.
-- **Idle and pacing state is in memory** and restarts with the server or on a
+- Idle and pacing state is in memory and restarts with the server or on a
   failover ([above](#retire-candidates)).

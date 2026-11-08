@@ -188,7 +188,12 @@ func (w *Watcher) do(ctx context.Context, method, path string, headers map[strin
 }
 
 // checkAWS reads the IMDSv2 spot instance-action document: 200 is a notice,
-// 404 means none is pending.
+// 404 means none is pending. A notice whose action is stop or hibernate is not
+// a reclaim: the instance keeps its disk, worker ID and credential and comes
+// back, so the worker shuts down as the operating system stops it, as for a
+// restart, rather than leaving as preempted (which deletes an ephemeral
+// member and revokes its credential). Any other action, or a document that
+// does not parse, is treated as a termination.
 func (w *Watcher) checkAWS(ctx context.Context) (bool, error) {
 	status, body, err := w.do(ctx, http.MethodPut, "/latest/api/token",
 		map[string]string{"X-aws-ec2-metadata-token-ttl-seconds": awsTokenTTL})
@@ -199,13 +204,20 @@ func (w *Watcher) checkAWS(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("aws token: unexpected status %d", status)
 	}
 
-	status, _, err = w.do(ctx, http.MethodGet, "/latest/meta-data/spot/instance-action",
+	status, body, err = w.do(ctx, http.MethodGet, "/latest/meta-data/spot/instance-action",
 		map[string]string{"X-aws-ec2-metadata-token": strings.TrimSpace(string(body))})
 	if err != nil {
 		return false, fmt.Errorf("aws instance-action: %w", err)
 	}
 	switch status {
 	case http.StatusOK:
+		var doc struct {
+			Action string `json:"action"`
+		}
+		if json.Unmarshal(body, &doc) == nil && (doc.Action == "stop" || doc.Action == "hibernate") {
+			w.logger.DebugContext(ctx, "preempt: aws spot notice is a "+doc.Action+", not a reclaim")
+			return false, nil
+		}
 		return true, nil
 	case http.StatusNotFound:
 		return false, nil

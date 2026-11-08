@@ -256,7 +256,7 @@ func TestPGRace_LeaseEnforcesTheCapUnderTheLock(t *testing.T) {
 // between the lease's scope read and its job lock must not be leased against
 // the old queue. The move here is from an uncapped queue to one whose cap is
 // already full, so a lease that kept the queue it read first would anchor and
-// count nothing and land past the new queue's cap (I5).
+// count nothing and land past the new queue's cap.
 func TestPGRace_LeaseRefusesAJobMovedBeforeItsLock(t *testing.T) {
 	st, p := pgRace(t)
 	w := seedWorld(t, st, 1, "w1")
@@ -692,8 +692,8 @@ func appendLateLog(t *testing.T, st *postgres.Store, task, attempt string) error
 
 // assertLogHeldOff checks how a log append that raced a job's delete cascade
 // ended: it waited on a lock, failed on its foreign key once the delete
-// committed, left no line behind, and the delete ran no more than once (no
-// transaction retried since before).
+// committed, left no line behind, and the delete ran only once (the store's
+// transaction retry count is unchanged).
 func assertLogHeldOff(t *testing.T, st *postgres.Store, before int64, waited bool, lerr error, attempt string) {
 	t.Helper()
 	if !waited {

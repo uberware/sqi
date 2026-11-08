@@ -5,7 +5,7 @@ package scheduler
 // lease.go implements worker-requested task leasing: a worker asks for work,
 // the scheduler selects a priority-ordered batch of ready tasks the worker is
 // eligible for that fits its free CPU cores, atomically leases them, and returns
-// the assignment payloads. Replaces the eager dispatch loop.
+// the assignment payloads.
 
 import (
 	"context"
@@ -56,11 +56,11 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 	var req leaseRequest
 	if err := json.Unmarshal(data, &req); err != nil || req.WorkerID == "" {
 		// Two cases, both refused the same way: a body this server cannot
-		// decode at all, and one that decodes but carries no identity to
-		// check against the subject. In neither is there anything to
-		// authorize, so the subject ID is all that is left to log.
-		// Debug, not warn: an unauthenticated broker lets anything publish here,
-		// so a warn would be a log-flood vector.
+		// decode, and one that decodes but carries no identity to check
+		// against the subject. Neither has anything to authorize, so the
+		// subject ID is all there is to log. The level is Debug because an
+		// unauthenticated broker lets anything publish here, and a warn would
+		// let it flood the log.
 		s.logger.DebugContext(
 			ctx, "scheduler: malformed lease request",
 			slog.String("subject_worker_id", workerID),
@@ -70,8 +70,8 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 
 	// The subject is authoritative. A payload that names a different worker
 	// is either a stale client or an attempt to have tasks assigned to
-	// another worker while this connection receives the job code. No
-	// req.WorkerID == "" guard here: that case already returned above.
+	// another worker while this connection receives the job code. An empty
+	// req.WorkerID has already returned above.
 	if req.WorkerID != workerID {
 		s.logger.WarnContext(
 			ctx, "scheduler: lease request whose payload identity differs from its subject — refusing",
@@ -103,8 +103,7 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 	if err != nil {
 		// A store error part way through a batch still delivers what was leased
 		// before it: those tasks are committed as assigned, and dropping them
-		// would strand them with nobody running them until the assigned-task
-		// timeout.
+		// would strand them until the assigned-task timeout.
 		if !s.stopIfFenced(ctx, err) {
 			s.logLeaseSelectionFailure(ctx, workerID, len(batch), err)
 		}
@@ -114,9 +113,9 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 		return marshalLeaseReply(batch)
 	}
 
-	// Park until work appears or the hold elapses, then try exactly once more.
-	// The park happens OUTSIDE the per-worker lock; only the selection below is
-	// serialized, so a re-woken request reads the up-to-date committed cores.
+	// Park until work appears or the hold elapses, then try once more. The park
+	// happens outside the per-worker lock; only the selection is serialized, so
+	// a re-woken request reads the up-to-date committed cores.
 	s.logger.DebugContext(ctx, "scheduler: no work for the lease request; parking it",
 		slog.String("worker_id", workerID), slog.String("queue_id", queueID),
 		slog.Duration("hold", s.leaseHoldTimeout))
@@ -170,9 +169,9 @@ func (s *Scheduler) refuseLeaseAfterDelay(ctx context.Context) []byte {
 // that went offline while its request was parked (a graceful deregister, or
 // the heartbeat sweep) has usually gone, and a task leased to it would wait in
 // a dead inbox until the stale-assignment reaper took it back. At the front, a
-// live worker the sweep took offline would be refused for good, since
-// heartbeats never bring a worker back online; here it is refused once, and
-// its next request is served (the offline-worker known gap in
+// live worker the sweep took offline would be refused indefinitely, since
+// heartbeats never bring a worker back online; here it is refused once and its
+// next request is served (the offline-worker known gap in
 // docs/architecture.md).
 func (s *Scheduler) leaseAfterPark(ctx context.Context, workerID, instanceID string) [][]byte {
 	if s.deposed() {
@@ -214,7 +213,7 @@ func (s *Scheduler) logLeaseSelectionFailure(ctx context.Context, workerID strin
 // held for leaseRefusalDelay (see [Scheduler.refuseLeaseAfterDelay]); the one
 // after a park is not, since the park already waited. An empty ID on either
 // side (a worker that sends none, or a row no ID-sending process has
-// registered yet) proves nothing, and the request is served as before.
+// registered yet) proves nothing, and the request is served.
 func (s *Scheduler) leaseFromUnregisteredInstance(ctx context.Context, w store.Worker, instanceID string) bool {
 	if w.InstanceID == "" || instanceID == "" || w.InstanceID == instanceID {
 		return false
@@ -252,8 +251,8 @@ type instanceRefusal struct {
 // (a store error on every redelivery, or the message aged out of the stream),
 // or a second live process registered under the same worker ID. Counting per
 // process rather than per worker keeps the second case visible while the other
-// process is served. It is rate-limited, and only a worker the store knows
-// reaches it, so an unauthenticated broker cannot flood the log through it.
+// process is served. The warning is rate-limited, and only a worker the store
+// knows reaches it, so an unauthenticated broker cannot flood the log.
 func (s *Scheduler) noteInstanceRefusal(ctx context.Context, w store.Worker, instanceID string) {
 	v, _ := s.instanceRefusals.LoadOrStore(instanceRefusalKey{w.ID, instanceID}, &instanceRefusal{})
 	r := v.(*instanceRefusal) //nolint:errcheck,forcetypeassert // value type is always *instanceRefusal
@@ -341,10 +340,8 @@ func (s *Scheduler) selectLeaseBatch(ctx context.Context, worker store.Worker) (
 		return nil, fmt.Errorf("lease: list ready tasks: %w", err)
 	}
 
-	// Hoisted out of the candidate loop: this worker's EXPR shortfall depends
-	// only on the worker and this server's configuration, so it is constant for
-	// the whole batch, and on a misconfigured farm computing it per candidate
-	// would rebuild the same four-sentence reason 50 times.
+	// This worker's EXPR shortfall depends only on the worker and this
+	// server's configuration, so it is computed once for the whole batch.
 	exprShortfall := s.workerExprShortfall(worker)
 
 	var batch [][]byte
@@ -387,16 +384,15 @@ func (s *Scheduler) leaseGatesPass(
 		return d, false, nil // paused/terminal job: skip (defends the ready-list→lease window)
 	}
 
-	// Cross-binary EXPR limits: never hand an EXPR job to a worker whose
+	// Cross-binary EXPR limits: an EXPR job is never handed to a worker whose
 	// advertised caps are tighter than the ones this template was accepted
 	// under. Skipping leaves the task ready for a capable worker; if none
-	// exists, the unschedulable sweep writes the same reason onto the task --
-	// but only while that sweep is enabled (Config.UnschedulableGrace > 0, the
-	// default; <= 0 is a legitimate "off" setting, and with it off such a task
-	// waits with nothing written on it). See exprcaps.go for why this is a skip
-	// and not a submit-time rejection. Worker-enforced extensions
-	// (SQI_LOG_CHECKS) are gated the same way: a job declaring one never goes to
-	// a worker that did not advertise enforcing it (extcaps.go).
+	// exists, the unschedulable sweep writes the same reason onto the task, but
+	// only while that sweep is enabled (Config.UnschedulableGrace > 0; with it
+	// off, such a task waits with nothing written on it). See exprcaps.go for
+	// why this is a skip and not a submit-time rejection. Worker-enforced
+	// extensions (SQI_LOG_CHECKS) are gated the same way: a job declaring one
+	// never goes to a worker that did not advertise enforcing it (extcaps.go).
 	if workerCompatBlock(exprShortfall, worker, job) != "" {
 		return d, false, nil
 	}
@@ -451,9 +447,9 @@ func (s *Scheduler) tryLeaseTask(
 	free int,
 	exprShortfall string,
 ) (payload []byte, cost int, ok bool, err error) {
-	// Log once when a task's declared core requirement exceeds the worker's total
-	// capacity — it can never run here regardless of current load. Best-effort
-	// observability only; does not change scheduling behavior.
+	// Log when a task's declared core requirement exceeds the worker's total
+	// capacity: it can never run here regardless of current load. This does
+	// not change scheduling.
 	if task.RequiredCores != nil && *task.RequiredCores > worker.CPUCount {
 		s.logger.InfoContext(ctx, "scheduler: task may be unschedulable on this worker",
 			slog.String("task_id", task.ID),
@@ -505,8 +501,7 @@ func (s *Scheduler) tryLeaseTask(
 	}
 	attempt := res.Attempt
 	// The scheduler already knows both fields the log-ingest path needs, so
-	// populate the cache now rather than waiting for the first log chunk to
-	// pay for a store read.
+	// the cache is filled here and the first log chunk needs no store read.
 	s.attemptCache.put(attempt.ID, attempt.WorkerID, attempt.TaskID)
 
 	payload, err = buildAssignPayload(ctx, task, worker, gd.job, gd.step, gd.queue, attempt.ID, s.store)
@@ -520,8 +515,8 @@ func (s *Scheduler) tryLeaseTask(
 // Every refusal is a skip, never an error: another lease took the task or it
 // stopped being leasable (LeaseLost), or a cap filled between the gates and the
 // lease (LeaseQueueFull, LeaseFarmFull, LeasePoolFull). Only a full usage pool is
-// logged, because the policy gate and the lost-race skip have always been silent
-// and a pool name is the one thing an operator can act on.
+// logged, because a pool name is the one thing an operator can act on; the
+// policy gate and a lost race are silent.
 func (s *Scheduler) logLeaseRefused(ctx context.Context, taskID string, res store.LeaseResult) {
 	if res.Outcome != store.LeasePoolFull {
 		return

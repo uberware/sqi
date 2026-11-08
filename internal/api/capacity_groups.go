@@ -28,15 +28,12 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"slices"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"github.com/uberware/sqi/internal/auth"
-	"github.com/uberware/sqi/internal/auth/jointoken"
 	"github.com/uberware/sqi/internal/auth/policy"
 	"github.com/uberware/sqi/internal/capacity"
 	"github.com/uberware/sqi/internal/store"
@@ -66,6 +63,16 @@ const maxCapacityDurationSeconds = 365 * 24 * 3600
 
 // capacityBodyLimit bounds a request body.
 const capacityBodyLimit = 1 << 20
+
+// errEphemeralMemberRemoval is the 409 detail for removing an ephemeral member
+// from its group.
+const errEphemeralMemberRemoval = "an ephemeral member rejoins its group at its next registration, " +
+	"so it cannot be removed from it; stop the worker and remove it (DELETE /api/v1/workers/{id}), " +
+	"which also revokes its credential"
+
+// errCapacityGroupNameTaken is the 409 detail for a create or rename onto a
+// name another group holds.
+const errCapacityGroupNameTaken = "a capacity group with that name already exists"
 
 // errGroupTokensNeedBrokerAuth is the 409 detail for minting a group token on a
 // farm whose broker does not authenticate workers.
@@ -272,7 +279,7 @@ func secondsToDuration(field string, seconds int64) (d time.Duration, problem st
 
 // decodeCapacityGroupInput reads the request body. Unknown fields are refused:
 // a misspelled setting (idle_timeout for idle_timeout_seconds) would otherwise
-// fall back to its default without a word.
+// fall back to its default silently.
 func decodeCapacityGroupInput(r *http.Request) (in capacityGroupInput, problem string) {
 	dec := json.NewDecoder(io.LimitReader(r.Body, capacityBodyLimit))
 	dec.DisallowUnknownFields()
@@ -286,8 +293,9 @@ func decodeCapacityGroupInput(r *http.Request) (in capacityGroupInput, problem s
 	return in, ""
 }
 
-// groupFromInput applies the defaults and the unit conversions and returns the
-// group, without its identity. The second result is a 400 detail, or "".
+// groupFromInput applies the defaults and the unit conversions, validates the
+// result with [validateGroup] and returns the group, without its identity.
+// The second result is a 400 detail, or "".
 func groupFromInput(in capacityGroupInput) (g store.CapacityGroup, problem string) {
 	g = store.CapacityGroup{
 		FarmID: in.FarmID, Name: in.Name, Kind: in.Kind, Provider: in.Provider,
@@ -326,17 +334,17 @@ func groupFromInput(in capacityGroupInput) (g store.CapacityGroup, problem strin
 	if g.BootTimeout, problem = secondsToDuration("boot_timeout_seconds", boot); problem != "" {
 		return g, problem
 	}
-	return g, ""
+	return g, validateGroup(g)
 }
 
-// validateGroup checks g against the shared rules and against this release's
-// provider support. The second result is a 400 detail, or "".
+// validateGroup checks g against the shared rules and against the providers
+// the API accepts. The result is a 400 detail, or "".
 func validateGroup(g store.CapacityGroup) string {
 	if err := g.Validate(); err != nil {
 		return err.Error()
 	}
-	// The record and its validation already admit every provider; later
-	// releases lift this refusal.
+	// The record and its validation admit every provider; the API accepts
+	// only the external one.
 	if g.Provider != store.CapacityProviderExternal {
 		return fmt.Sprintf("provider %q is not available yet", g.Provider)
 	}
@@ -420,9 +428,6 @@ func (h *capacityGroupHandler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	g, problem := groupFromInput(in)
-	if problem == "" {
-		problem = validateGroup(g)
-	}
 	if problem != "" {
 		writeProblem(w, r, http.StatusBadRequest, problem)
 		return
@@ -444,7 +449,7 @@ func (h *capacityGroupHandler) create(w http.ResponseWriter, r *http.Request) {
 	created, err := h.store.CreateCapacityGroup(ctx, g)
 	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
-			writeProblem(w, r, http.StatusConflict, "a capacity group with that name already exists")
+			writeProblem(w, r, http.StatusConflict, errCapacityGroupNameTaken)
 			return
 		}
 		h.logger.ErrorContext(ctx, "capacity-groups: create failed", slog.Any("error", err))
@@ -488,9 +493,6 @@ func (h *capacityGroupHandler) update(w http.ResponseWriter, r *http.Request) {
 	}
 	in.FarmID = existing.FarmID
 	g, problem := groupFromInput(in)
-	if problem == "" {
-		problem = validateGroup(g)
-	}
 	if problem != "" {
 		writeProblem(w, r, http.StatusBadRequest, problem)
 		return
@@ -518,7 +520,7 @@ func (h *capacityGroupHandler) update(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, store.ErrNotFound):
 			writeProblem(w, r, http.StatusNotFound, "capacity group not found")
 		case errors.Is(err, store.ErrConflict):
-			writeProblem(w, r, http.StatusConflict, "a capacity group with that name already exists")
+			writeProblem(w, r, http.StatusConflict, errCapacityGroupNameTaken)
 		default:
 			h.logger.ErrorContext(ctx, "capacity-groups: update failed", slog.String("id", existing.ID), slog.Any("error", err))
 			writeProblem(w, r, http.StatusInternalServerError, "failed to update capacity group")
@@ -637,6 +639,13 @@ func (h *capacityGroupHandler) removeMember(w http.ResponseWriter, r *http.Reque
 		writeProblem(w, r, http.StatusNotFound, "the worker is not a member of this capacity group")
 		return
 	}
+	// An ephemeral member's membership comes back from its credential or its
+	// configuration at its next registration, so clearing it here would last
+	// only until the worker reconnects.
+	if wk.Ephemeral {
+		writeProblem(w, r, http.StatusConflict, errEphemeralMemberRemoval)
+		return
+	}
 	if _, err := h.store.SetWorkerCapacityGroup(ctx, workerID, "", false); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeProblem(w, r, http.StatusNotFound, "worker not found")
@@ -701,17 +710,8 @@ func (h *capacityGroupHandler) createToken(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	var req capacityTokenRequest
-	body, err := io.ReadAll(io.LimitReader(r.Body, capacityBodyLimit))
-	if err != nil {
-		writeProblem(w, r, http.StatusBadRequest, "failed to read request body")
+	if !readOptionalJSON(w, r, capacityBodyLimit, &req) {
 		return
-	}
-	// The body is optional: only malformed JSON is an error.
-	if len(body) > 0 {
-		if err := json.Unmarshal(body, &req); err != nil {
-			writeProblem(w, r, http.StatusBadRequest, "invalid JSON body")
-			return
-		}
 	}
 	ttl, problem := parseGroupTokenTTL(strings.TrimSpace(req.ExpiresIn))
 	if problem != "" {
@@ -728,49 +728,26 @@ func (h *capacityGroupHandler) createToken(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	rawToken, hash, prefix, err := jointoken.Generate()
-	if err != nil {
-		h.logger.ErrorContext(ctx, "capacity-groups: generate token failed", slog.Any("error", err))
-		writeProblem(w, r, http.StatusInternalServerError, "failed to create group token")
-		return
-	}
-	now := time.Now().UTC()
-	createdBy := ""
-	if p, ok := auth.FromContext(ctx); ok {
-		createdBy = p.Subject
-	}
-	created, err := h.store.CreateWorkerJoinToken(ctx, store.WorkerJoinToken{
-		ID: uuid.NewString(), TokenHash: hash, Prefix: prefix, Name: strings.TrimSpace(req.Name),
-		ExpiresAt: now.Add(ttl), CreatedBy: createdBy, CreatedAt: now, CapacityGroupID: g.ID,
-	})
+	raw, created, err := mintJoinToken(ctx, h.store,
+		store.WorkerJoinToken{Name: strings.TrimSpace(req.Name), CapacityGroupID: g.ID}, ttl)
 	if err != nil {
 		h.logger.ErrorContext(ctx, "capacity-groups: create token failed", slog.String("id", g.ID), slog.Any("error", err))
 		writeProblem(w, r, http.StatusInternalServerError, "failed to create group token")
 		return
 	}
 	writeJSON(w, http.StatusCreated, capacityTokenCreatedResponse{
-		ID: created.ID, Token: rawToken, Prefix: created.Prefix, Name: created.Name,
+		ID: created.ID, Token: raw, Prefix: created.Prefix, Name: created.Name,
 		ExpiresAt: created.ExpiresAt, CreatedAt: created.CreatedAt,
 	})
 }
 
-// revokeToken revokes one of the group's tokens. It refuses a token that is
-// not this group's, so the route cannot revoke an ordinary join token or
-// another group's.
+// revokeToken revokes one of the group's tokens. The store refuses a token
+// that is not this group's, so the route cannot revoke an ordinary join token
+// or another group's.
 func (h *capacityGroupHandler) revokeToken(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	groupID, tokenID := chi.URLParam(r, "id"), chi.URLParam(r, "tokenID")
-	tokens, err := h.store.ListCapacityGroupTokens(ctx, groupID)
-	if err != nil {
-		h.logger.ErrorContext(ctx, "capacity-groups: list tokens failed", slog.String("id", groupID), slog.Any("error", err))
-		writeProblem(w, r, http.StatusInternalServerError, "failed to revoke group token")
-		return
-	}
-	if !slices.ContainsFunc(tokens, func(t store.WorkerJoinToken) bool { return t.ID == tokenID }) {
-		writeProblem(w, r, http.StatusNotFound, "group token not found")
-		return
-	}
-	if err := h.store.RevokeWorkerJoinToken(ctx, tokenID, time.Now().UTC()); err != nil {
+	if err := h.store.RevokeCapacityGroupToken(ctx, groupID, tokenID, time.Now().UTC()); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeProblem(w, r, http.StatusNotFound, "group token not found")
 			return

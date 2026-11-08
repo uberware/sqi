@@ -38,24 +38,22 @@ const (
 
 	sqlListCapacityGroupTokens = `SELECT ` + workerJoinTokenCols + ` FROM worker_join_tokens WHERE capacity_group_id = ? ORDER BY created_at DESC, id`
 
-	// sqlRevokeWorkerJoinToken keeps the first revocation time, so revoking a
+	// sqlRevokeCapacityGroupToken keeps the first revocation time, so revoking a
 	// revoked token matches its row and changes nothing.
-	sqlRevokeWorkerJoinToken = `UPDATE worker_join_tokens SET revoked_at = COALESCE(revoked_at, ?) WHERE id = ?`
+	sqlRevokeCapacityGroupToken = `UPDATE worker_join_tokens SET revoked_at = COALESCE(revoked_at, ?) WHERE id = ? AND capacity_group_id = ?`
 
 	sqlMarkWorkerJoinTokenUsed = `UPDATE worker_join_tokens SET used_at = ? WHERE id = ?`
 
-	// sqlConsumeWorkerJoinToken claims a single-use token in ONE statement:
+	// sqlConsumeWorkerJoinToken claims a single-use token in one statement:
 	// the used_at IS NULL and expires_at > ? predicates are the validity
 	// check (a revoked token is refused like a used one), and the SET is the
-	// claim. Two concurrent enrollments presenting
-	// the same token therefore cannot both succeed — the second matches no
-	// row and gets store.ErrNotFound, indistinguishable from an unknown
-	// token, which is what the unauthenticated enroll endpoint needs. Used
-	// only inside RedeemWorkerJoinToken's transaction (raw text via tx, not
-	// a prepared statement — see that method's doc comment), never on its
-	// own: a token claimed here has to be followed by successfully creating
-	// the credential it authorizes, in the same transaction, or the claim
-	// itself must roll back.
+	// claim. Two concurrent enrollments presenting the same token cannot both
+	// succeed: the second matches no row and gets store.ErrNotFound,
+	// indistinguishable from an unknown token, as the unauthenticated enroll
+	// endpoint requires. Used only inside RedeemWorkerJoinToken's transaction
+	// (raw text via tx, not a prepared statement; see that method's doc
+	// comment), never on its own: the credential it authorizes must be created
+	// in the same transaction, or the claim rolls back.
 	sqlConsumeWorkerJoinToken = `UPDATE worker_join_tokens SET used_at = ? WHERE token_hash = ? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ? RETURNING ` + workerJoinTokenCols
 )
 
@@ -184,9 +182,9 @@ func (s *Store) ListCapacityGroupTokens(ctx context.Context, groupID string) ([]
 	return out, mapErr(rows.Err())
 }
 
-// RevokeWorkerJoinToken implements [store.WorkerCredentialStore].
-func (s *Store) RevokeWorkerJoinToken(ctx context.Context, id string, at time.Time) error {
-	res, err := s.execStmt(ctx, "revoke worker join token", s.stmtRevokeWorkerJoinToken, TimeText(at), id)
+// RevokeCapacityGroupToken implements [store.WorkerCredentialStore].
+func (s *Store) RevokeCapacityGroupToken(ctx context.Context, groupID, id string, at time.Time) error {
+	res, err := s.execStmt(ctx, "revoke capacity group token", s.stmtRevokeCapacityGroupToken, TimeText(at), id, groupID)
 	if err != nil {
 		return mapErr(err)
 	}
@@ -206,11 +204,10 @@ func (s *Store) RevokeWorkerJoinToken(ctx context.Context, id string, at time.Ti
 // outcome. If that claim fails, the transaction is rolled back and
 // [store.ErrNotFound] is returned with the token untouched.
 //
-// The credential insert happens inside the SAME transaction, so a conflict
-// there — a worker ID already bound to an active credential, or a public
-// key already enrolled anywhere — rolls back the token claim too: the token
-// is NOT consumed, and remains redeemable by a later, non-conflicting
-// request.
+// The credential insert happens inside the same transaction, so a conflict
+// there (a worker ID already bound to an active credential, or a public key
+// already enrolled anywhere) rolls back the token claim too: the token is not
+// consumed, and remains redeemable by a later, non-conflicting request.
 func (s *Store) RedeemWorkerJoinToken(ctx context.Context, hash string, now time.Time, cred store.WorkerCredential) (store.WorkerCredential, error) {
 	return inTxValue(ctx, s, "redeem worker join token", func(tx *dbTx) (store.WorkerCredential, txOutcome, error) {
 		nowText := TimeText(now)

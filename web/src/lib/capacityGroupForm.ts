@@ -3,33 +3,6 @@
 import type { CapacityGroupInput } from '@/api/mutations'
 import type { CapacityGroup, CapacityGroupKind, MachineProfile } from '@/api/types'
 
-/** Every control of the capacity-group form that can carry its own error message. */
-export type FieldKey =
-  | 'farm'
-  | 'kind'
-  | 'name'
-  | 'provider'
-  | 'queueIds'
-  | 'minMachines'
-  | 'maxMachines'
-  | 'priority'
-  | 'maxStepUp'
-  | 'cooldown'
-  | 'idle'
-  | 'boot'
-  | 'retireAction'
-  | 'cpuCount'
-  | 'ramMb'
-  | 'gpuCount'
-  | 'gpuMemoryMb'
-  | 'os'
-  | 'arch'
-  | 'computeLocation'
-  | 'tags'
-  | 'extensions'
-
-export type FieldErrors = Partial<Record<FieldKey, string>>
-
 /** The form's state: every field is the text the person typed. */
 export interface FormValues {
   farmId: string
@@ -56,6 +29,14 @@ export interface FormValues {
   tags: string
   extensions: string
 }
+
+/** Every control of the capacity-group form that can carry its own error message. */
+export type FieldKey = Exclude<keyof FormValues, 'enabled'>
+
+export type FieldErrors = Partial<Record<FieldKey, string>>
+
+/** A field held as text, which the number tables below read as a whole number. */
+type NumericField = { [K in FieldKey]: FormValues[K] extends string ? K : never }[FieldKey]
 
 export function defaultValues(farmId: string): FormValues {
   return {
@@ -130,7 +111,7 @@ export function formatTags(tags: Record<string, string> | undefined): string {
     .join('\n')
 }
 
-/** Parses one `key=value` per line. A malformed line is reported, not guessed at. */
+/** Parses one `key=value` per line. A malformed line is returned as an error. */
 export function parseTags(s: string): { tags: Record<string, string>; error?: string } {
   const tags: Record<string, string> = {}
   for (const raw of s.split('\n')) {
@@ -150,19 +131,19 @@ export function parseList(s: string): string[] {
     .filter((x) => x !== '')
 }
 
-const REQUIRED_NUMBERS: Array<[FieldKey, keyof FormValues, string, number]> = [
-  ['minMachines', 'minMachines', 'Min machines', 0],
-  ['maxMachines', 'maxMachines', 'Max machines', 1],
-  ['maxStepUp', 'maxStepUp', 'Max step up', 1],
-  ['cooldown', 'cooldown', 'Scale-up cooldown', 0],
-  ['idle', 'idle', 'Idle timeout', 0],
-  ['boot', 'boot', 'Boot timeout', 0],
+const REQUIRED_NUMBERS: Array<[NumericField, string, number]> = [
+  ['minMachines', 'Min machines', 0],
+  ['maxMachines', 'Max machines', 1],
+  ['maxStepUp', 'Max step up', 1],
+  ['cooldown', 'Scale-up cooldown', 0],
+  ['idle', 'Idle timeout', 0],
+  ['boot', 'Boot timeout', 0],
 ]
 
-const OPTIONAL_NUMBERS: Array<[FieldKey, keyof FormValues, string]> = [
-  ['ramMb', 'ramMb', 'RAM'],
-  ['gpuCount', 'gpuCount', 'GPU count'],
-  ['gpuMemoryMb', 'gpuMemoryMb', 'GPU memory'],
+const OPTIONAL_NUMBERS: Array<[NumericField, string]> = [
+  ['ramMb', 'RAM'],
+  ['gpuCount', 'GPU count'],
+  ['gpuMemoryMb', 'GPU memory'],
 ]
 
 /**
@@ -173,12 +154,12 @@ const OPTIONAL_NUMBERS: Array<[FieldKey, keyof FormValues, string]> = [
  */
 export function validateValues(v: FormValues): FieldErrors {
   const errors: FieldErrors = {}
-  if (v.farmId === '') errors.farm = 'Choose a farm.'
+  if (v.farmId === '') errors.farmId = 'Choose a farm.'
   if (v.name.trim() === '') errors.name = 'Enter a name.'
-  for (const [key, field, label, min] of REQUIRED_NUMBERS) {
-    const n = wholeNumber(String(v[field]))
+  for (const [field, label, min] of REQUIRED_NUMBERS) {
+    const n = wholeNumber(v[field])
     if (n === undefined || n < min)
-      errors[key] = `${label} must be a whole number of at least ${min}.`
+      errors[field] = `${label} must be a whole number of at least ${min}.`
   }
   const priority = wholeNumber(v.priority)
   if (priority === undefined) errors.priority = 'Priority must be a whole number.'
@@ -186,10 +167,11 @@ export function validateValues(v: FormValues): FieldErrors {
     const cpu = wholeNumber(v.cpuCount)
     if (cpu === undefined || cpu < 1)
       errors.cpuCount = 'A sized group needs a CPU count of at least 1.'
-    for (const [key, field, label] of OPTIONAL_NUMBERS) {
-      const raw = String(v[field]).trim()
+    for (const [field, label] of OPTIONAL_NUMBERS) {
+      const raw = v[field].trim()
       const n = wholeNumber(raw)
-      if (raw !== '' && (n === undefined || n < 0)) errors[key] = `${label} must be a whole number.`
+      if (raw !== '' && (n === undefined || n < 0))
+        errors[field] = `${label} must be a whole number.`
     }
     const { error } = parseTags(v.tags)
     if (error !== undefined) errors.tags = error
@@ -201,15 +183,12 @@ export function validateValues(v: FormValues): FieldErrors {
  * Builds the request body. `PUT` replaces every setting on the server, so an
  * edit sends every field this form manages (an omitted `enabled` would become
  * true and an omitted `queue_ids` would become "all queues"), and keeps the
- * parts of the profile the form does not edit.
+ * parts of the profile the form does not edit. Without `original` it is a
+ * create, which also names the farm.
  */
-export function buildInput(
-  v: FormValues,
-  mode: 'create' | 'edit',
-  original?: CapacityGroup,
-): CapacityGroupInput {
+export function buildInput(v: FormValues, original?: CapacityGroup): CapacityGroupInput {
   return {
-    ...(mode === 'create' ? { farm_id: v.farmId } : {}),
+    ...(original === undefined ? { farm_id: v.farmId } : {}),
     name: v.name.trim(),
     kind: v.kind,
     provider: v.provider,
@@ -268,7 +247,7 @@ const SERVER_MESSAGE_FIELDS: Array<[RegExp, FieldKey]> = [
   [/^retire_action\b/, 'retireAction'],
   [/^a sized group's profile must declare cpu_count/, 'cpuCount'],
   [/^queue(_ids\b| ")/, 'queueIds'],
-  [/^farm/, 'farm'],
+  [/^farm/, 'farmId'],
 ]
 
 /**

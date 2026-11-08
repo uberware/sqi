@@ -116,7 +116,7 @@ func createCapacityGroup(t *testing.T, ts *testServer, body map[string]any) capa
 	return g
 }
 
-// sizedCloudGroup is the body of the sized group "cloud" both tests create:
+// sizedCloudGroup is the body of the sized group "cloud" these tests create:
 // four-CPU machines tagged special=yes, serving queueID, up to four machines
 // added two at a time.
 func sizedCloudGroup(farmID, queueID string) map[string]any {
@@ -332,7 +332,7 @@ func newFakeIMDS(t *testing.T) *fakeIMDS {
 	return f
 }
 
-// ── Test 1: the signal, an ephemeral member, a preemption ────────────────────
+// ── The signal, an ephemeral member, a preemption ────────────────────────────
 
 // TestCapacityGroup_SignalAndEphemeralLifecycle runs a sized group through its
 // life with authentication off:
@@ -502,7 +502,7 @@ func TestCapacityGroup_SignalAndEphemeralLifecycle(t *testing.T) {
 	}
 }
 
-// ── Test 2: joining by group token, with authentication on ───────────────────
+// ── Joining by group token, with authentication on ───────────────────────────
 
 // sessionTransport sends every request with a session cookie and a
 // same-origin Origin header, which the CSRF guard requires of a
@@ -583,7 +583,7 @@ func newPublicKey(t *testing.T) string {
 	return pub
 }
 
-// TestCapacityGroup_GroupTokenEnrollment proves joining a sized group by its
+// TestCapacityGroup_GroupTokenEnrollment checks joining a sized group by its
 // token with REST and broker authentication both on: a real worker enrolled
 // with a group token registers as an ephemeral member; the token is reusable
 // until revoked and refused after; and a worker enrolled with an ordinary join

@@ -4,7 +4,6 @@ package sqlstore
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -20,10 +19,7 @@ const sqlCapacityGroupColumns = `id, farm_id, name, kind, provider, enabled, que
 
 const (
 	sqlInsertCapacityGroup = `
-INSERT INTO capacity_groups (id, farm_id, name, kind, provider, enabled, queue_ids,
-       min_machines, max_machines, priority, max_step_up,
-       scale_up_cooldown_ms, idle_timeout_ms, boot_timeout_ms,
-       retire_action, profile, created_at, updated_at)
+INSERT INTO capacity_groups (` + sqlCapacityGroupColumns + `)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING ` + sqlCapacityGroupColumns
 
@@ -65,13 +61,14 @@ func scanCapacityGroup(row scanner) (store.CapacityGroup, error) {
 	g.ScaleUpCooldown = time.Duration(cooldownMs) * time.Millisecond
 	g.IdleTimeout = time.Duration(idleMs) * time.Millisecond
 	g.BootTimeout = time.Duration(bootMs) * time.Millisecond
-	if err := json.Unmarshal([]byte(queueIDs), &g.QueueIDs); err != nil {
+	var err error
+	if g.QueueIDs, err = unmarshalJSON[[]string](queueIDs, nil); err != nil {
 		return store.CapacityGroup{}, fmt.Errorf("capacity group %s queue_ids: %w", g.ID, err)
 	}
 	if len(g.QueueIDs) == 0 {
 		g.QueueIDs = nil
 	}
-	if err := json.Unmarshal([]byte(profile), &g.Profile); err != nil {
+	if g.Profile, err = unmarshalJSON(profile, store.MachineProfile{}); err != nil {
 		return store.CapacityGroup{}, fmt.Errorf("capacity group %s profile: %w", g.ID, err)
 	}
 	g.CreatedAt = mustTime(createdAt)
@@ -85,15 +82,13 @@ func capacityGroupJSON(g store.CapacityGroup) (queueIDs, profile string, err err
 	if ids == nil {
 		ids = []string{}
 	}
-	q, err := json.Marshal(ids)
-	if err != nil {
+	if queueIDs, err = marshalJSON(ids); err != nil {
 		return "", "", fmt.Errorf("encode queue_ids: %w", err)
 	}
-	p, err := json.Marshal(g.Profile)
-	if err != nil {
+	if profile, err = marshalJSON(g.Profile); err != nil {
 		return "", "", fmt.Errorf("encode profile: %w", err)
 	}
-	return string(q), string(p), nil
+	return queueIDs, profile, nil
 }
 
 // CreateCapacityGroup implements [store.CapacityGroupStore].

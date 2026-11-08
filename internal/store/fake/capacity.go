@@ -139,7 +139,7 @@ func (s *Store) UpdateCapacityGroup(ctx context.Context, g store.CapacityGroup) 
 }
 
 // DeleteCapacityGroup removes a group by ID. Returns [store.ErrNotFound] if it
-// does not exist.
+// does not exist, or [store.ErrConflict] while any worker belongs to it.
 func (s *Store) DeleteCapacityGroup(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -150,8 +150,8 @@ func (s *Store) DeleteCapacityGroup(ctx context.Context, id string) error {
 	if _, ok := s.capacityGroups[id]; !ok {
 		return store.ErrNotFound
 	}
-	// A worker that belongs to the group makes the SQL stores refuse with
-	// [store.ErrConflict] through the foreign key.
+	// The SQL stores refuse with [store.ErrConflict] through the foreign key
+	// while a worker belongs to the group.
 	for _, w := range s.workers {
 		if w.CapacityGroupID == id {
 			return store.ErrConflict

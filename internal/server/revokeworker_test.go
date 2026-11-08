@@ -19,19 +19,17 @@ import (
 	"github.com/uberware/sqi/internal/store/storetest"
 )
 
-// Unit tests for [Server.RevokeWorker] — the method that turns DELETE
-// /api/v1/workers/{id}/credential into a synchronous disconnect, as opposed
-// to "sqi-server worker revoke", which only ever writes the store from a
-// separate process holding no broker handle.
+// Unit tests for [Server.RevokeWorker], which turns DELETE
+// /api/v1/workers/{id}/credential into a synchronous disconnect. The
+// "sqi-server worker revoke" command, by contrast, only writes the store from
+// a separate process that holds no broker handle.
 //
-// These exercise RevokeWorker directly against a *Server built by hand
-// (store + a real embedded broker whose auth callout reads that store, no
-// HTTP layer, no scheduler) so the store-write-then-disconnect ordering and
-// its failure mode are pinned at the unit level. The full
-// HTTP-to-disconnect-to-reclaim path is covered by
-// test/integration's broker-auth suite, which also proves the existing
-// heartbeat-sweep/reclaim path — not anything reimplemented here — is what
-// returns a revoked worker's task to ready.
+// These tests call RevokeWorker on a *Server built by hand (a store and a real
+// embedded broker whose auth callout reads that store, with no HTTP layer and
+// no scheduler), which pins the store-write-then-disconnect ordering and its
+// failure mode. The full HTTP-to-disconnect-to-reclaim path is covered by
+// test/integration's broker-auth suite, in which the heartbeat-sweep reclaim
+// path returns a revoked worker's task to ready.
 
 // freeLoopbackAddr asks the OS for an available loopback TCP port and
 // returns "127.0.0.1:<port>", releasing it immediately so the broker under
@@ -113,9 +111,9 @@ func nkeyOption(t *testing.T, seed []byte, pub string) nats.Option {
 }
 
 // connectAsWorker dials b as the given nkey credential, with NoReconnect and
-// a ClosedHandler feeding the returned channel — the same pattern
-// internal/bus's own revocation tests use, so the disconnect assertion is
-// not coupled to nats.go's reconnect/backoff timing.
+// a ClosedHandler feeding the returned channel, as internal/bus's revocation
+// tests do, so the disconnect assertion does not depend on nats.go's
+// reconnect and backoff timing.
 func connectAsWorker(t *testing.T, b *bus.Embedded, seed []byte, pub string) (*nats.Conn, <-chan struct{}) {
 	t.Helper()
 	closedCh := make(chan struct{})
@@ -158,10 +156,9 @@ func TestRevokeWorker_NATSAuthDisabled_StoreWriteOnly(t *testing.T) {
 }
 
 // TestRevokeWorker_UnknownWorker_ReturnsErrNotFoundWithoutTouchingBroker
-// proves the store write happens FIRST: with no credential for "ghost" in
-// the store, RevokeWorker must fail and return before ever reaching s.broker
-// — which is nil here, so touching it would panic — even though
-// NATSAuthEnabled is true.
+// checks that the store write happens first: with no credential for "ghost"
+// in the store, RevokeWorker must fail before reaching s.broker, which is nil
+// here so touching it would panic, even though NATSAuthEnabled is true.
 func TestRevokeWorker_UnknownWorker_ReturnsErrNotFoundWithoutTouchingBroker(t *testing.T) {
 	st := fake.New()
 	s := &Server{cfg: brokerAuthConfig(true), store: st, logger: testLogger()}
@@ -258,10 +255,8 @@ func TestRevokeWorker_BrokerFailure_StoreStaysRevoked(t *testing.T) {
 		t.Errorf("broker.Revoke calls = %d for %q, want 1 for %q", stub.calls, stub.workerID, ref.WorkerID)
 	}
 
-	// The store write must stand regardless: rolling it back on a broker
-	// failure would leave a credential the operator explicitly revoked
-	// silently trusted again, which is worse than a disconnect that has not
-	// happened yet.
+	// The store write must stand: rolling it back on a broker failure would
+	// leave a credential the operator revoked trusted again.
 	if _, err := storetest.ActiveWorkerCredential(context.Background(), st, ref.WorkerID); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("credential still active after a broker failure: %v, want store.ErrNotFound", err)
 	}

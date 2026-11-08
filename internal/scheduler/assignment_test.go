@@ -4,13 +4,13 @@ package scheduler
 
 // Tests for the assignment helpers shared by the lease path in lease.go:
 // the lease's building blocks (buildUsageContext, buildUsageClaims) and the
-// instrumentation gauges. Attempt numbering belongs to store.LeaseTask now and
-// is tested there.
+// instrumentation gauges. Attempt numbering belongs to store.LeaseTask and is
+// tested there.
 //
 // These are white-box tests in package scheduler. A fake store (fake.New)
-// drives all store-backed paths; a recording bus stub satisfies busClient
-// without a real NATS broker. A real metrics.New() is used because the gauge
-// helpers touch s.metrics directly.
+// drives all store-backed paths; a stub bus satisfies busClient without a real
+// NATS broker. A real metrics.New() is used because the gauge helpers touch
+// s.metrics directly.
 
 import (
 	"context"
@@ -33,8 +33,7 @@ import (
 
 // ── recording bus ─────────────────────────────────────────────────────────────
 
-// recordBus is a no-op busClient used by the metrics/gauge tests. It satisfies
-// the interface without a real NATS broker.
+// recordBus is a no-op busClient used by the metrics and gauge tests.
 type recordBus struct{}
 
 func (*recordBus) ConsumeWorker(_ context.Context, _ jetstream.MessageHandler) (jetstream.ConsumeContext, error) {
@@ -148,7 +147,7 @@ func TestBuildUsageContext_NoRequirements(t *testing.T) {
 }
 
 func TestBuildUsageContext_WithPool(t *testing.T) {
-	st := fake.New() // deliberately seeds an I3 violation; see counts["maya"] (a claim on attempt "a1", which has no row)
+	st := fake.New() // not the checked fake: counts["maya"] is a claim on attempt "a1", which has no row
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	poolID := uuid.NewString()
@@ -204,12 +203,12 @@ func TestBuildUsageClaims(t *testing.T) {
 // ── gauges run without error against a seeded store ────────────────────────────
 
 func TestRefreshGauges_Smoke(t *testing.T) {
-	st := fake.New() // deliberately seeds an I3 violation; see refreshUsageClaimGauge (a claim on attempt "a1", which has no row)
+	st := fake.New() // not the checked fake: the usage claim below is on attempt "a1", which has no row
 	s := newMetricsScheduler(st, &recordBus{}, "farm-1")
 	seedAssignFixture(t, st, nil)
 
-	// Seed a usage pool with an active claim so refreshUsageClaimGauge
-	// iterates its pool/count loop body.
+	// A usage pool with an active claim makes refreshUsageClaimGauge run its
+	// pool/count loop body.
 	poolID := uuid.NewString()
 	if _, err := st.CreateUsagePool(t.Context(), store.UsagePool{ID: poolID, Name: "maya", MaxConcurrent: 2}); err != nil {
 		t.Fatalf("CreateUsagePool: %v", err)
@@ -234,8 +233,8 @@ func gaugeValue(t *testing.T, g prometheus.Gauge) float64 {
 }
 
 // A queue whose last ready task is leased must read 0, not the last depth it
-// had: the capacity scaling signal reads this gauge, and a series that keeps
-// its old value never falls.
+// had: the capacity scaling signal reads this gauge, and a series that kept
+// its old value would never fall.
 func TestRefreshQueueDepthGauge_ResetsADrainedQueue(t *testing.T) {
 	ctx := t.Context()
 	st := newCheckedFake(t)

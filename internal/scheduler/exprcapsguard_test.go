@@ -13,37 +13,35 @@ import (
 	"testing"
 )
 
-// TestDispatchHasOneGatedPath is the completeness guard behind exprCapsBlock:
-// the EXPR cap gate lives in leaseGatesPass, which
-// protects exactly one path to a worker — tryLeaseTask -> buildAssignPayload.
-// A second dispatch path added later would hand out EXPR assignments without
-// ever consulting a worker's advertised caps, and every test in exprcaps_test.go
-// would stay green because they all drive the existing path.
+// TestDispatchHasOneGatedPath is the completeness guard behind exprCapsBlock.
+// The EXPR cap gate lives in leaseGatesPass, which protects exactly one path to
+// a worker: tryLeaseTask -> buildAssignPayload. A second dispatch path would hand
+// out EXPR assignments without consulting a worker's advertised caps, and every
+// test in exprcaps_test.go would still pass because they all drive the first path.
 //
-// It asserts two things and refuses to pass vacuously (an empty result fails):
+// It asserts two things and fails on an empty result:
 //
 //  1. buildAssignPayload, the only production function that marshals a
-//     protocol.AssignMsg, is called from exactly one production function; and
-//  2. that function is tryLeaseTask, which calls leaseGatesPass.
+//     protocol.AssignMsg, is called from exactly two production functions; and
+//  2. one of them is tryLeaseTask, which calls leaseGatesPass.
 //
-// If a new dispatch path is genuinely wanted, the fix is to gate it too and
-// then extend this test — not to delete it.
+// A new dispatch path must pass the same gate, and this test is then extended to
+// name it.
 func TestDispatchHasOneGatedPath(t *testing.T) {
 	callers := productionCallersOf(t, "buildAssignPayload")
 	if len(callers) == 0 {
 		t.Fatal("found no production caller of buildAssignPayload: this guard has stopped " +
 			"guarding anything (renamed function? changed package layout?)")
 	}
-	// BuildAssignPayload is internal/scheduler/seam.go's pure-delegation export
-	// for the preset test harness (internal/presettest) to call the real production path.
-	// It is not a second dispatch path; tryLeaseTask remains the only production entry.
+	// BuildAssignPayload is seam.go's pure-delegation export, which lets the preset
+	// test harness (internal/presettest) call the production path. It is not a
+	// second dispatch path; tryLeaseTask is the only production entry.
 	if len(callers) != 2 || !slices.Contains(callers, "tryLeaseTask") || !slices.Contains(callers, "BuildAssignPayload") {
 		t.Fatalf("buildAssignPayload is called from %v; want exactly [tryLeaseTask BuildAssignPayload].\n"+
 			"tryLeaseTask is the production dispatch path, and BuildAssignPayload (seam.go) is its\n"+
 			"test harness export. Every path that hands an assignment to a worker must first pass the EXPR "+
 			"capability gate in leaseGatesPass (exprcaps.go), or a worker whose advertised "+
-			"EXPR caps are below this server's will be given work it cannot run — the "+
-			"accepted-then-failed-per-task incident.", callers)
+			"EXPR caps are below this server's is given work it cannot run", callers)
 	}
 
 	gates := productionCallersOf(t, "leaseGatesPass")
@@ -52,11 +50,11 @@ func TestDispatchHasOneGatedPath(t *testing.T) {
 			"function that builds the payload, so the gate cannot be bypassed", gates)
 	}
 
-	// The operator-visible half: the sweep must consult the same gates, or a
-	// task no worker may be given sits ready with nothing said about it. Both
-	// cross-binary gates -- the EXPR caps (exprcaps.go) and the worker-enforced
-	// extensions (extcaps.go) -- are reached only through workerCompatBlock, so
-	// the bound and the explanation cannot consult different sets.
+	// The unschedulable sweep must consult the same gates, or a task no worker
+	// may be given sits ready with nothing said about it. Both cross-binary gates,
+	// the EXPR caps (exprcaps.go) and the worker-enforced extensions (extcaps.go),
+	// are reached only through workerCompatBlock, so the bound and the explanation
+	// consult the same set.
 	for _, gate := range []string{"exprCapsBlock", "workerExtensionBlock"} {
 		if blocked := productionCallersOf(t, gate); len(blocked) != 1 || blocked[0] != "workerCompatBlock" {
 			t.Fatalf("%s is called from %v; want exactly [workerCompatBlock], which runs every "+
@@ -66,7 +64,7 @@ func TestDispatchHasOneGatedPath(t *testing.T) {
 	// couldRun (couldrun.go) is the third caller: a load-independent capability
 	// check for capacity demand. It hands nothing to a worker, so it is not a
 	// dispatch path, but it must agree with the lease path on what a worker's
-	// binary can run, which is why it reaches the gates through the same function.
+	// binary can run, so it reaches the gates through the same function.
 	if blocked := productionCallersOf(t, "workerCompatBlock"); len(blocked) != 3 ||
 		!slices.Contains(blocked, "leaseGatesPass") || !slices.Contains(blocked, "evaluateSchedulability") ||
 		!slices.Contains(blocked, "couldRun") {
@@ -75,20 +73,17 @@ func TestDispatchHasOneGatedPath(t *testing.T) {
 			"operator sees, the third is the capacity-demand capability check", blocked)
 	}
 
-	// exprCapShortfall is the single implementation of the comparisons. The
-	// lease path hoists it out of the candidate loop, so the two gate call
-	// sites reach it by different routes -- selectLeaseBatch computes it once
-	// per batch and passes it down, evaluateSchedulability computes it per
-	// worker. warnOnExprCapShortfall is the third caller: it
-	// computes a shortfall for its diagnostic warning only, not as a bound.
-	// All three must go through this accessor.
-	// couldRun is the fourth caller, passing the result to workerCompatBlock.
+	// exprCapShortfall is the single implementation of the comparisons, reached
+	// through workerExprShortfall. selectLeaseBatch computes it once per batch and
+	// passes it down, evaluateSchedulability computes it per worker,
+	// warnOnExprCapShortfall computes it for a diagnostic warning only, and couldRun
+	// passes the result to workerCompatBlock. All four go through this accessor.
 	if short := productionCallersOf(t, "workerExprShortfall"); len(short) != 4 ||
 		!slices.Contains(short, "selectLeaseBatch") || !slices.Contains(short, "evaluateSchedulability") ||
 		!slices.Contains(short, "warnOnExprCapShortfall") || !slices.Contains(short, "couldRun") {
 		t.Fatalf("workerExprShortfall is called from %v; want exactly [selectLeaseBatch "+
 			"evaluateSchedulability warnOnExprCapShortfall couldRun] -- a call site that computes its own "+
-			"comparison instead is a second implementation waiting to drift", short)
+			"comparison instead is a second implementation that can drift", short)
 	}
 	if raw := productionCallersOf(t, "exprCapShortfall"); len(raw) != 1 ||
 		!slices.Contains(raw, "workerExprShortfall") {
@@ -110,8 +105,8 @@ func productionCallersOf(t *testing.T, name string) []string {
 	var callers []string
 	seen := map[string]bool{}
 	for _, e := range entries {
-		// The "._" prefix skip is for macOS AppleDouble sidecar files, which
-		// live beside the sources on some volumes and are not Go at all.
+		// Skip "._" files: macOS AppleDouble sidecars sit beside the sources on
+		// some volumes and are not Go.
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") ||
 			strings.HasSuffix(e.Name(), "_test.go") || strings.HasPrefix(e.Name(), ".") {
 			continue

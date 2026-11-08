@@ -315,9 +315,8 @@ func (s *Store) RetryTasks(ctx context.Context, jobID string, taskIDs []string, 
 
 // revivedStatusLocked is the status a retried task of stepID is revived into:
 // ready when its step is still ready, as SQLite's CASE does, and pending
-// otherwise. The legacy running step status counts as ready, for rows written
-// outside the store operations (no store operation writes it). Caller must
-// hold s.mu.
+// otherwise. A step in the running status counts as ready, for rows written
+// outside the store operations (none writes it). Caller must hold s.mu.
 func (s *Store) revivedStatusLocked(stepID string) store.TaskStatus {
 	if st, ok := s.steps[stepID]; ok && (st.Status == store.StepStatusReady || st.Status == store.StepStatusRunning) {
 		return store.TaskStatusReady
@@ -554,7 +553,7 @@ func (s *Store) ListWorkerCommitments(_ context.Context, farmID string) (map[str
 
 // RecordTaskFailure implements [store.TaskStore]. Under the store lock it
 // closes the attempt as failed and increments the task's and job's
-// FailedAttempts counters ONLY when the attempt is still running (the first
+// FailedAttempts counters only when the attempt is still running (the first
 // delivery of the failure). A redelivery — whose attempt is already terminal,
 // or whose attempt is unknown — does not re-count; it returns the current
 // counters so the caller's retry/park decision is stable across redeliveries.

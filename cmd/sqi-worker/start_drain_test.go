@@ -80,7 +80,7 @@ func TestShutdownSequence_HeartbeatsUntilDrainEnds(t *testing.T) {
 	type result struct{ completed, killed int }
 	done := make(chan result, 1)
 	go func() {
-		c, k := shutdownSequence(rec, rec, rec, grace, "")
+		c, k := shutdownSequence(rec, rec.Stop, rec, grace, "")
 		done <- result{c, k}
 	}()
 
@@ -132,7 +132,7 @@ func TestShutdownSequence_HeartbeatsUntilDrainEnds(t *testing.T) {
 func TestShutdownSequence_PassesKindToDeregister(t *testing.T) {
 	rec := newShutdownRecorder()
 	close(rec.release)
-	shutdownSequence(rec, rec, rec, 0, protocol.DeregisterPreempted)
+	shutdownSequence(rec, rec.Stop, rec, 0, protocol.DeregisterPreempted)
 	if rec.kind != protocol.DeregisterPreempted {
 		t.Errorf("deregister kind = %q, want %q", rec.kind, protocol.DeregisterPreempted)
 	}

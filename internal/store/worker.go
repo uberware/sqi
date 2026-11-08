@@ -55,46 +55,40 @@ type GPUInfo struct {
 // Expressions in an EXPR template are metered twice: against the server's
 // openjd.expr_* limits when the template is submitted, and again against the
 // worker's expr.* limits when a task runs. If a worker's cap is tighter than
-// the server's, a job is accepted, created and persisted and then every task of
-// it fails on that host, after submission, naming a budget the submitter never
-// saw (measured with the server at 10,000 positions and the worker at 5,000).
-// Both sides are operator configuration, so the relation "worker cap >= server
-// cap" can be broken by a YAML file; these fields are what let the server see
-// it.
+// the server's, the job is accepted and persisted and then every task of it
+// fails on that host, naming a budget the submitter never saw. Both sides are
+// operator configuration, so "worker cap >= server cap" can be broken by a YAML
+// file; these fields let the server see it.
 //
-// Every value is self-reported, like CPUCount, RAMMb and Tags. It is a
-// statement of what that worker will enforce, not a promise the server can
-// verify.
+// Every value is self-reported, like CPUCount, RAMMb and Tags. It states what
+// that worker will enforce, not a promise the server can verify.
 //
-// A zero field means "not advertised": a current worker always reports a real
-// value (its config layer rejects 0), so silence means an older binary. The
-// scheduler reads that as the compiled-in defaults, which is exact for a binary
-// with no expr.* configuration and a documented guess for one that had the
-// configuration but did not advertise it — see internal/scheduler's
-// legacyWorkerExprCaps.
+// A zero field means "not advertised". A worker that reports limits always
+// reports a real value (its config layer rejects 0), so a zero comes from a
+// worker binary that does not advertise them. The scheduler reads it as the
+// compiled-in defaults; see internal/scheduler's legacyWorkerExprCaps.
 //
 // All five of the worker's expr.* keys are carried. The server has no
-// per-table counterpart to compare LetRetainedBytes against, but leaving it
-// out is reachable through legal configuration: a worker at that key's floor
-// rejects, once per task, a let: block the server accepted under a raised
-// openjd.expr_template_retained_bytes. The server does bound the same values
-// at a wider scope, and a wider scope is a valid upper bound; see
+// per-table counterpart to compare LetRetainedBytes against, but a worker at
+// that key's floor rejects, once per task, a let: block the server accepted
+// under a raised openjd.expr_template_retained_bytes. The server bounds the
+// same values at a wider scope, which is a valid upper bound; see
 // internal/scheduler's exprCapShortfall for the comparison and for what it
-// still cannot promise.
+// cannot promise.
 type WorkerExprLimits struct {
-	// OperationLimit is the worker's §1.3.10 operation budget for ONE
+	// OperationLimit is the worker's §1.3.10 operation budget for one
 	// expression evaluation (expr.operation_limit).
 	OperationLimit int64 `json:"operation_limit,omitempty"`
-	// MemoryLimit is the worker's §1.3.9 live-byte budget for ONE expression
+	// MemoryLimit is the worker's §1.3.9 live-byte budget for one expression
 	// evaluation (expr.memory_limit).
 	MemoryLimit int64 `json:"memory_limit,omitempty"`
 	// AssignmentPositions is how many expression positions the worker will
-	// resolve for ONE assignment (expr.assignment_positions).
+	// resolve for one assignment (expr.assignment_positions).
 	AssignmentPositions int64 `json:"assignment_positions,omitempty"`
 	// AssignmentRetainedBytes is how many bytes let: bindings may retain
 	// across one assignment (expr.assignment_retained_bytes).
 	AssignmentRetainedBytes int64 `json:"assignment_retained_bytes,omitempty"`
-	// LetRetainedBytes is how many bytes ONE phase-3 symbol table may hold
+	// LetRetainedBytes is how many bytes one phase-3 symbol table may hold
 	// live (expr.let_retained_bytes), measured across the whole table rather
 	// than only its let-bound names.
 	LetRetainedBytes int64 `json:"let_retained_bytes,omitempty"`
@@ -109,8 +103,8 @@ type Worker struct {
 	QueueID string // empty = no queue affinity
 	// Name is the worker's human-readable display label (the worker.name
 	// config field, default the hostname). Distinguishes multiple workers
-	// running on one host in the UI; may be empty for workers registered
-	// before this field existed, in which case callers fall back to Hostname.
+	// running on one host in the UI; may be empty, in which case callers fall
+	// back to Hostname.
 	Name            string
 	Hostname        string
 	IPAddress       string
@@ -120,18 +114,16 @@ type Worker struct {
 	// Arch is the worker's CPU architecture as the worker reports it, which is
 	// runtime.GOARCH ("amd64", "arm64", ...). It backs the reserved OpenJD
 	// attr.worker.cpu.arch host requirement, whose accepted values are the
-	// SPECIFICATION's tokens ("x86_64", "arm64") rather than Go's — see
-	// scheduler.cpuArch for the translation, which is the same shape as the
+	// specification's tokens ("x86_64", "arm64") rather than Go's; see
+	// scheduler.cpuArch for the translation, which has the same shape as the
 	// os.family darwin/macos one.
 	//
-	// Empty for workers registered before this field existed, and for any
-	// worker running an older binary that does not send it. An empty value can
-	// never satisfy an attr.worker.cpu.arch requirement; such a worker starts
-	// reporting its architecture as soon as it restarts and re-registers.
+	// Empty when the worker did not send it. An empty value never satisfies an
+	// attr.worker.cpu.arch requirement.
 	Arch string
 	// Version is the sqi-worker build version the worker self-reports at
-	// registration (the worker binary's internal/version.Version). May be empty
-	// for workers registered before this field existed.
+	// registration (the worker binary's internal/version.Version). May be
+	// empty.
 	Version string
 	// InstanceID identifies the worker process that last registered. It
 	// changes when the worker restarts and is empty for a worker that does not
@@ -154,14 +146,13 @@ type Worker struct {
 	GPUInfo           GPUInfo
 	Tags              map[string]string // arbitrary capability tags
 	// ExprLimits holds the worker's self-reported OpenJD EXPR evaluation caps.
-	// Zero-valued for workers registered before this field existed; see
-	// [WorkerExprLimits] for what the server does with them.
+	// Zero-valued when the worker advertised none; see [WorkerExprLimits] for
+	// what the server does with them.
 	ExprLimits WorkerExprLimits
 	// Extensions lists the worker-enforced OpenJD extensions (see
 	// openjd.WorkerEnforcedExtensions) the worker advertised at registration.
-	// Empty for a worker row that predates the column or a worker binary that
-	// enforces none; the scheduler withholds a job declaring one from such a
-	// worker (internal/scheduler's workerExtensionBlock).
+	// Empty for a worker that enforces none; the scheduler withholds a job
+	// declaring one from such a worker (internal/scheduler's workerExtensionBlock).
 	Extensions []string
 	// Status is the worker's liveness: [WorkerStatusOnline] or
 	// [WorkerStatusOffline]. See [WorkerStatus].
@@ -204,15 +195,15 @@ func (w Worker) EffectiveStatus() WorkerStatus {
 
 // Removable reports whether the worker may be hard-deleted. This is the one
 // statement of the removability rule: a worker is removable when it is offline,
-// disabled or not. A disabled worker that is still online is a paused machine,
-// not a gone one, and is not removable.
+// disabled or not. A disabled worker that is still online is a paused machine
+// and is not removable.
 //
 // [WorkerStore.DeleteWorkerIfRemovable] applies this rule inside its write; the
-// SQLite statement restates it in SQL, which cannot call Go, so a change here
-// must be made there too. The API's pre-check and the fake call this method.
-// The store adds one condition a Worker value alone cannot see: no task may be
-// assigned to or running on the worker, so a true here does not
-// guarantee the delete succeeds.
+// SQL statement restates it, since SQL cannot call Go, so a change here must be
+// made there too. The API's pre-check and the fake call this method. The store
+// adds one condition a Worker value alone cannot see: no task may be assigned
+// to or running on the worker, so a true here does not guarantee the delete
+// succeeds.
 func (w Worker) Removable() bool {
 	return w.Status == WorkerStatusOffline
 }
@@ -391,11 +382,12 @@ type WorkerStore interface {
 	// DeleteOfflineWorkersBefore hard-deletes every enabled worker in
 	// [WorkerStatusOffline] whose LastHeartbeatAt is strictly before cutoff,
 	// and returns the deleted records. Online workers and disabled ones are
-	// never touched: a disabled worker stays until an operator removes it. A
-	// member of a capacity group that is not ephemeral (a named machine) is
-	// kept too; ephemeral members and workers in no group are deleted as any
-	// other. Used by the scheduler's offline-retention sweep to bound the growth of
-	// the worker table.
+	// never touched: a disabled worker stays until an operator removes it.
+	// Members of a capacity group are kept too: a named machine stays until
+	// an operator removes it, and an ephemeral member is the capacity sweep's
+	// to delete, since that deletion also revokes its credential and this one
+	// does not. Used by the scheduler's offline-retention sweep to bound the
+	// growth of the worker table.
 	DeleteOfflineWorkersBefore(ctx context.Context, cutoff time.Time) ([]Worker, error)
 }
 

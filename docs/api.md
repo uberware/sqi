@@ -766,7 +766,7 @@ PUT    /api/v1/capacity-groups/{id}                     # replace the settings
 DELETE /api/v1/capacity-groups/{id}                     # 409 while any worker is a member
 GET    /api/v1/capacity-groups/{id}/members             # the group's workers, as GET /workers returns them
 PUT    /api/v1/capacity-groups/{id}/members/{workerID}  # add a worker to a named group
-DELETE /api/v1/capacity-groups/{id}/members/{workerID}  # remove a worker
+DELETE /api/v1/capacity-groups/{id}/members/{workerID}  # remove a worker (409 for an ephemeral member)
 GET    /api/v1/capacity-groups/{id}/tokens              # the group's tokens (never the secret)
 POST   /api/v1/capacity-groups/{id}/tokens              # mint a reusable token for a sized group
 DELETE /api/v1/capacity-groups/{id}/tokens/{tokenID}    # revoke a token
@@ -775,7 +775,7 @@ DELETE /api/v1/capacity-groups/{id}/tokens/{tokenID}    # revoke a token
 Durations are in seconds (`scale_up_cooldown_seconds`, `idle_timeout_seconds`,
 `boot_timeout_seconds`), unknown request fields are refused with `400`, and only
 `provider: external` is accepted. A group's `status` carries `demand_cores`,
-`desired_machines` (the **total** the group should have, retire candidates
+`desired_machines` (the total the group should have, retire candidates
 included), `online_members`, `offline_members`, `retire_candidates`,
 `mismatches` and `evaluated_at`. Under high availability only the leader
 evaluates groups: a standby answers `503` on these routes, as on every route

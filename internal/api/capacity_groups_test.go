@@ -674,6 +674,26 @@ func TestCapacityGroup_Members(t *testing.T) {
 			t.Error("a refused removal changed the membership")
 		}
 	})
+
+	t.Run("remove: an ephemeral member is 409 and keeps its membership", func(t *testing.T) {
+		e := newCapacityEnv(t, false)
+		id := e.createGroupID(nil)
+		w := e.seedWorkerIn(e.farmID)
+		if _, err := e.st.SetWorkerCapacityGroup(t.Context(), w.ID, id, true); err != nil {
+			t.Fatalf("SetWorkerCapacityGroup: %v", err)
+		}
+		rr := e.do(http.MethodDelete, "/api/v1/capacity-groups/"+id+"/members/"+w.ID, nil)
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("status = %d, want 409 — body: %s", rr.Code, rr.Body)
+		}
+		if !strings.Contains(rr.Body.String(), "/api/v1/workers/{id}") {
+			t.Errorf("the refusal must say how to retire the worker: %s", rr.Body.String())
+		}
+		if stored := e.worker(w.ID); stored.CapacityGroupID != id || !stored.Ephemeral {
+			t.Errorf("membership after a refused removal = (%q, ephemeral=%v), want (%q, true)",
+				stored.CapacityGroupID, stored.Ephemeral, id)
+		}
+	})
 }
 
 func TestCapacityGroup_Tokens(t *testing.T) {

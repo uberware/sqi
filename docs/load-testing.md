@@ -688,12 +688,11 @@ than leaving it out. Common entries:
 ### Gauges that mislead
 
 `sched.queue_depth{queue}` is the server's `sqi_scheduler_queue_depth`. The
-server now sets the gauge of a queue that drains back to `0` on its next sweep,
-so a drained queue no longer keeps its last non-zero value, but only for a queue
-the server has already seen since it started: a queue that was already empty
-when the server started has no series. The report still shows `-` for a queue's
-end depth and no finding reads it, so do not take a queue's end depth from the
-report as proof it is stuck or drained; read the series in `series.csv`.
+server sets the gauge of a queue that drains back to `0` on its next sweep, but
+only for a queue it has seen since it started: a queue that was already empty
+when the server started has no series. The report shows `-` for a queue's end
+depth and no finding reads it, so a queue's end depth in the report does not
+show whether the queue is stuck or drained; read the series in `series.csv`.
 
 ### Comparing runs
 
@@ -991,21 +990,18 @@ cores or less.
 - **Remaining-time inputs read:** `BenchmarkQueueJobTimings` (SQLite, one
   queue of 200 unfinished jobs of 100 tasks each, 50 of each job succeeded
   through real attempts and 2 running, 200 iterations, one `QueueJobTimings`
-  call per iteration) takes 8,815,144 to 8,987,214 ns/op (about 9 ms). It was
-  about 57 ms when the read found every succeeded task's latest attempt on each
-  call; since migration `00045` a task's run time is stored on the task row
-  (`tasks.run_ms`) when it succeeds, and the per-step counts and measured sums
-  come from the `tasks(step_id, status, run_ms)` index alone, so the cost is
-  one index entry per task in the queue's unfinished jobs, with no attempt
-  lookups. The queue read still runs only when a queue list or get call asks
-  for it with `include=timing`: the web Queues page asks once per farm, and
-  the submit forms, the Python SDK by default and the DCC submitters do not.
-  No cache exists.
+  call per iteration) takes 8,815,144 to 8,987,214 ns/op (about 9 ms). A task's run time is stored on the task row (`tasks.run_ms`) when it
+  succeeds, and the per-step counts and measured sums come from the
+  `tasks(step_id, status, run_ms)` index alone, so the cost is one index entry
+  per task in the queue's unfinished jobs, with no attempt lookups. The queue
+  read runs only when a queue list or get call asks for it with
+  `include=timing`: the web Queues page asks once per farm, and the submit
+  forms, the Python SDK by default and the DCC submitters do not. No cache
+  exists.
 - **Remaining-time inputs read, one large job:** `BenchmarkJobTimingsLargeJob`
   (SQLite, one unfinished job of 100,000 tasks, 50,000 succeeded through real
   attempts and 2 running, 200 iterations, one `JobTimings` call per iteration)
-  takes 21,940,955 to 22,888,588 ns/op (about 22 ms), down from about 0.49 s
-  before `00045`. That is about 0.22 microseconds per task, succeeded or not.
+  takes 21,940,955 to 22,888,588 ns/op (about 22 ms). That is about 0.22 microseconds per task, succeeded or not.
   `GET /api/v1/jobs/{id}` always runs this read for an unfinished job, and the
   web job page refetches at most every 5 s while tasks change, so each open
   view of a job this size spends under 0.5% of one read connection.

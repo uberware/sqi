@@ -846,8 +846,7 @@ components:
           description: >-
             Human-readable display label (the worker's worker.name config,
             default the hostname). Distinguishes multiple workers on one host.
-            May be empty for workers registered before this field existed; clients
-            fall back to hostname.
+            May be empty; clients fall back to hostname.
         hostname:
           type: string
         ip_address:
@@ -865,7 +864,7 @@ components:
             CPU architecture as the worker reports it (runtime.GOARCH: "amd64",
             "arm64"). An OpenJD attr.worker.cpu.arch host requirement is spelled
             with the specification's tokens instead ("x86_64", "arm64"); the
-            scheduler translates. Empty for workers that predate the field.
+            scheduler translates. Empty when the worker did not report it.
         version:
           type: string
           description: sqi-worker build version the worker self-reports; empty if unknown.
@@ -974,7 +973,7 @@ components:
           type: string
           description: >-
             The raw join token minted by POST /workers/join-tokens (or
-            `sqi-server worker token issue`). This IS the credential that
+            `sqi-server worker token issue`). This is the credential that
             authorizes the call — there is no other authentication on this
             route.
         worker_id:
@@ -1619,7 +1618,7 @@ components:
                 Long-form documentation in a restricted Markdown subset
                 (paragraphs, lists, fenced code, ATX headings, bold, italic,
                 inline code, links). Rendered on detail pages only. Unlike
-                `description` it is NOT searched, and it is not carried in the
+                `description` it is not searched, and it is not carried in the
                 preset library index.
             template:
               type: string
@@ -1651,7 +1650,7 @@ components:
             Long-form documentation in a restricted Markdown subset
             (paragraphs, lists, fenced code, ATX headings, bold, italic,
             inline code, links). Rendered on detail pages only. Unlike
-            `description` it is NOT searched, and it is not carried in the
+            `description` it is not searched, and it is not carried in the
             preset library index.
         category:
           type: string
@@ -1693,7 +1692,7 @@ components:
             Long-form documentation in a restricted Markdown subset
             (paragraphs, lists, fenced code, ATX headings, bold, italic,
             inline code, links). Rendered on detail pages only. Unlike
-            `description` it is NOT searched, and it is not carried in the
+            `description` it is not searched, and it is not carried in the
             preset library index.
         category:
           type: string
@@ -1728,7 +1727,7 @@ components:
             Long-form documentation in a restricted Markdown subset
             (paragraphs, lists, fenced code, ATX headings, bold, italic,
             inline code, links). Rendered on detail pages only. Unlike
-            `description` it is NOT searched, and it is not carried in the
+            `description` it is not searched, and it is not carried in the
             preset library index.
         category:
           type: string
@@ -2003,7 +2002,7 @@ components:
           type: string
           default: external
           description: >-
-            Only `external` is accepted in this release; `wake_on_lan` and
+            Only `external` is accepted; `wake_on_lan` and
             `script:<name>` are refused with 400.
         enabled:
           type: boolean
@@ -2072,7 +2071,7 @@ components:
         desired_machines:
           type: integer
           description: >-
-            The TOTAL number of machines the group should have, counting the
+            The total number of machines the group should have, counting the
             machines present, retire candidates included. It is a target to
             set capacity to, not an amount to add: an actuator that launches
             machines launches `desired_machines - online_members` (less any
@@ -2440,7 +2439,7 @@ components:
       properties:
         id:
           type: string
-          description: Stable identifier for this provider. Currently always `oidc`.
+          description: Stable identifier for this provider. Always `oidc`.
         label:
           type: string
           description: >-
@@ -2449,7 +2448,7 @@ components:
         login_url:
           type: string
           description: >-
-            Where the browser must NAVIGATE to start the flow. It is a link
+            Where the browser must navigate to start the flow. It is a link
             target, not a fetch target: following it in the background would
             land the provider's login page in a response body instead of in
             front of the user.
@@ -2516,8 +2515,9 @@ components:
 
     TooManyRequests:
       description: |
-        Rate limit exceeded. Every `/api/v1` endpoint is rate-limited per
-        client IP (default token bucket: 20 req/s sustained, burst 40), so
+        Rate limit exceeded. With rate limiting enabled (`http.rate_limit.enabled`,
+        on by default), every `/api/v1` endpoint is rate-limited per
+        client IP (token bucket: 20 req/s sustained, burst 40), so
         this response can occur on any operation — it is referenced from the
         representative `/jobs` operations rather than repeated on every
         path. Back off for at least the `Retry-After` duration before
@@ -2553,7 +2553,7 @@ components:
         The server gave up evaluating the submitted template's expressions
         before finishing (openjd.expr_submission_deadline).
 
-        This is NOT a verdict on the template: the deterministic expression
+        This is not a verdict on the template: the deterministic expression
         budgets decide validity and report it as a 4xx, while this outcome
         depends on how busy this server was, so the same body may well be
         accepted on a retry. Persistent 503s here mean either a genuinely
@@ -2604,7 +2604,8 @@ paths:
           parameter missing).
         - Values are validated against the declared parameter type (`INT`,
           `FLOAT`, `STRING`, `PATH`, `BOOL`, `RANGE_EXPR`, or one of the six
-          `LIST[*]` types — the latter four are the EXPR extension's Extended
+          `LIST[*]` types; `BOOL`, `RANGE_EXPR` and the `LIST[*]` types belong
+          to the EXPR extension, and the `LIST[*]` types are its Extended
           Parameter Types, RFC 0007) and any `minValue`, `maxValue`,
           `minLength`, `maxLength`, `allowedValues`, or `item` constraints
           declared in the template.
@@ -2702,7 +2703,7 @@ paths:
             completes. A dependency ID that does not resolve to a job in the
             same farm, or that already failed/was canceled, is rejected with
             422.
-      # Note: param.<Name>=<value> query parameters are omitted
+      # param.<Name>=<value> query parameters are omitted
       # from this parameters list because OpenAPI 3.x does not support
       # arbitrary-suffix parameters.  Full semantics are documented in the
       # operation description above.
@@ -2739,7 +2740,7 @@ paths:
             The server gave up evaluating the template's expressions before
             finishing (openjd.expr_submission_deadline).
 
-            This is NOT a verdict on the template: the deterministic
+            This is not a verdict on the template: the deterministic
             expression budgets decide validity and report it as 422, while
             this outcome depends on how busy this server was, so the same body
             may well be accepted on a retry. Persistent 503s here mean either
@@ -3276,14 +3277,14 @@ paths:
         is preserved by ID. A removed worker that reconnects
         re-registers.
 
-        Also revokes the worker's broker credential, if it has one, BEFORE
+        Also revokes the worker's broker credential, if it has one, before
         the worker record is deleted, so a decommissioned machine loses
         broker access along with its worker record rather than keeping the
         ability to connect, lease work and execute job code. A worker with
         no credential (broker authentication disabled, or never enrolled) is
-        removed exactly as before. This does not require the
+        removed without a revoke. This does not require the
         `workers.enroll` permission that `DELETE /workers/{id}/credential`
-        needs on its own. If the revoke fails, the worker record is NOT
+        needs on its own. If the revoke fails, the worker record is not
         deleted and this answers `500` — safe to retry, since nothing has
         happened yet.
       responses:
@@ -3365,7 +3366,7 @@ paths:
 
         Mounted only when broker authentication (`nats.auth.enabled`) is on
         and `nats.auth.enrollment_endpoint_enabled` has not been turned off.
-        When not mounted, this does NOT return `404`: the path
+        When not mounted, this does not return `404`: the path
         "/workers/enroll" has the same two-segment shape as
         "/workers/{id}", which is always registered (`GET`, `DELETE`), so
         the request is routed there with `id=enroll` and answers `405
@@ -3425,7 +3426,7 @@ paths:
           description: >-
             The worker ID already has an active credential, or the public
             key is already enrolled to another worker. The join token
-            supplied in the request is NOT consumed by this response: the
+            supplied in the request is not consumed by this response: the
             claim and the credential write happen in one transaction, so a
             conflict here rolls the claim back and the same token remains
             redeemable for a request that does not conflict.
@@ -3490,7 +3491,7 @@ paths:
         return `404` with a body that says so rather than claiming the
         worker does not exist.
 
-        Revocation is **synchronous**: this call writes the revocation to
+        Revocation is synchronous: this call writes the revocation to
         the database and then disconnects the worker's live broker
         connections. Its reconnect goes back through the broker's auth
         callout, which reads the revoked row and refuses it. On the embedded
@@ -4602,8 +4603,8 @@ paths:
       summary: Create a capacity group
       tags: [capacity-groups]
       description: |
-        Requires `infra.manage`. Only the `external` provider is available in
-        this release: `wake_on_lan` and `script:<name>` are refused with 400
+        Requires `infra.manage`. Only the `external` provider is available:
+        `wake_on_lan` and `script:<name>` are refused with 400
         `provider "<name>" is not available yet`. Unknown request fields are
         refused with 400.
       requestBody:
@@ -4747,7 +4748,7 @@ paths:
         changed or was removed concurrently.
       responses:
         "200":
-          description: The worker, now a member.
+          description: The worker, as a member.
           content:
             application/json:
               schema:
@@ -4768,7 +4769,10 @@ paths:
       description: |
         Requires `infra.manage`. Clears the worker's membership; the worker
         itself is kept. 404 when the worker does not exist or is not a member
-        of this group.
+        of this group. 409 for an ephemeral member (one that joined a sized
+        group by token or configuration), which would rejoin at its next
+        registration: retire it with `DELETE /workers/{id}` instead, which
+        also revokes its credential.
       responses:
         "204":
           description: Membership cleared.
@@ -4776,6 +4780,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -4863,8 +4869,8 @@ paths:
       tags: [capacity-groups]
       description: |
         Requires `infra.manage`. The token enrolls no further workers.
-        **Revoking a group token does not revoke credentials already issued
-        from it:** workers that enrolled with it keep their broker
+        Revoking a group token does not revoke credentials already issued
+        from it: workers that enrolled with it keep their broker
         credentials and stay members. Revoke those with
         `DELETE /workers/{id}/credential`. Revoking a revoked token is not an
         error. 404 when the token is not one of this group's.
@@ -5030,7 +5036,7 @@ paths:
         What the login page needs to render itself: whether password login is
         offered, and which SSO buttons to show.
 
-        **Public, by necessity.** The login page is unauthenticated by
+        This endpoint is public. The login page is unauthenticated by
         definition, so an authenticated discovery endpoint would be circular —
         the button that starts a login could never be drawn. What it discloses
         is that SSO is configured and what its button says, both of which are
@@ -5056,12 +5062,12 @@ paths:
         Begins the OAuth2 authorization-code flow with PKCE and redirects the
         browser to the configured identity provider.
 
-        This is a **browser navigation endpoint, not a JSON API call** — it is
+        This is a browser navigation endpoint, not a JSON API call. It is
         meant to be reached by pointing a browser at it (an SSO button that is
         a plain link), and it always answers with a `302`. It is public: no
         session is required, since its purpose is to create one.
 
-        Registered **only when SSO is configured**. When
+        Registered only when SSO is configured. When
         `auth.oidc.enabled` is false the route does not exist and returns 404,
         so a client can use `GET /auth/oidc/login` returning 404 as a signal
         that SSO is unavailable.
@@ -5097,7 +5103,7 @@ paths:
         arrives here from the provider carrying `code` and `state` (or `error`
         and `error_description` if the provider refused).
 
-        Like `/auth/oidc/login` this is a **browser navigation endpoint** that
+        Like `/auth/oidc/login` this is a browser navigation endpoint that
         always answers with a `302`, it is public, and it exists only when SSO
         is configured. It is not intended to be called directly by an API
         client: without the state cookie set by `/auth/oidc/login` it always
@@ -5109,7 +5115,7 @@ paths:
         its role is recomputed from the provider's group claims on every login
         when `auth.oidc.role_source` is `directory`.
 
-        **Every failure is identical**: a `302` to `/?sso_error=1` with no
+        Every failure is identical: a `302` to `/?sso_error=1` with no
         session cookie and no detail whatsoever. A missing or invalid state
         cookie, a mismatched `state`, a provider-reported error, a rejected ID
         token, an identity that maps to no role, a disabled account, and a
@@ -5252,7 +5258,7 @@ paths:
         Returns `409` when auth is disabled, and `409` when the account's
         `auth_source` is not `local` (that is, `ldap` or `oidc`) — an
         externally-authenticated account has no local password to change.
-        That second case is exactly `password_editable: false` on the `User`
+        That second case is `password_editable: false` on the `User`
         schema; both are computed from one server-side predicate, so a client
         can hide this form instead of discovering the `409`.
       tags: [auth]

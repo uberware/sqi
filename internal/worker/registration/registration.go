@@ -14,28 +14,27 @@
 //
 // [Registrar.SetupReconnectHook] installs a NATS reconnect callback that
 // re-publishes the registration message whenever the connection is restored
-// after a drop. This ensures the server always has a current, online record
-// for the worker without requiring a process restart.
+// after a drop, so the server keeps a current, online record for the worker
+// without a process restart.
 //
 // # Acknowledgment
 //
 // Registration is published with a JetStream ack, so [Registrar.Register]
 // returns only once the SQI_WORKER stream has durably stored the message. A
 // plain core-NATS publish would be silently discarded when no stream is behind
-// the subject — which strands the worker permanently, since the server only
-// learns of it via worker.register.<worker> and NAKs the heartbeats of workers it has no
-// record of.
+// the subject, which would strand the worker permanently: the server learns of
+// a worker only via worker.register.<worker> and NAKs the heartbeats of workers
+// it has no record of.
 //
-// That "no stream yet" window is real and routinely hit: a worker started
-// alongside its server (as in a compose stack) connects as soon as the NATS
-// listener opens, which is a few milliseconds before the server finishes
-// provisioning its streams. Register therefore retries while the stream is
-// absent, up to [RetryBudget] or the caller's context deadline, whichever is
-// sooner.
+// A "no stream yet" window occurs when a worker is started alongside its
+// server (as in a compose stack): it connects as soon as the NATS listener
+// opens, a few milliseconds before the server finishes provisioning its
+// streams. Register therefore retries while the stream is absent, up to
+// [RetryBudget] or the caller's context deadline, whichever is sooner.
 //
 // The server processes worker.register.<worker> via a JetStream push consumer and does
-// not send a reply of its own; the stream ack is the acknowledgment. Explicit
-// application-level accept/reject is a planned protocol enhancement.
+// not send a reply of its own; the stream ack is the acknowledgment. The
+// protocol has no application-level accept or reject.
 //
 // # In-memory capability map
 //
@@ -73,10 +72,10 @@ import (
 // at retryInitial and doubles up to retryMax; RetryBudget caps the total time
 // Register spends waiting for the SQI_WORKER stream to appear.
 //
-// RetryBudget is generous relative to the window it covers (a server provisions
-// its streams milliseconds after opening its NATS listener). It exists to
-// outlast a slow or restarting server, not to be reached: a worker that cannot
-// register is useless, so waiting beats exiting.
+// RetryBudget is long relative to the window it covers (a server provisions
+// its streams milliseconds after opening its NATS listener). It is meant to
+// outlast a slow or restarting server: a worker that cannot register is
+// useless, so it waits rather than exits.
 const (
 	RetryBudget  = 30 * time.Second
 	retryInitial = 100 * time.Millisecond
@@ -88,24 +87,23 @@ const (
 type Registrar struct {
 	nc *nats.Conn
 
-	// js publishes registration with a stream ack. Deregister deliberately
-	// stays on the core-NATS path: it is best-effort by design and runs during
-	// shutdown, where blocking on an ack would delay exit for a message the
-	// heartbeat-timeout sweep makes redundant anyway.
+	// js publishes registration with a stream ack. Deregister stays on the
+	// core-NATS path: it is best-effort and runs during shutdown, where
+	// blocking on an ack would delay exit for a message the heartbeat-timeout
+	// sweep makes redundant anyway.
 	js jetstream.JetStream
 
 	workerID string
 	cfg      workerconfig.WorkerSettings
 
-	// instanceID is sent in every RegisterMsg. It is generated
-	// once in New; a Registrar lives for the whole worker process.
+	// instanceID is sent in every RegisterMsg. It is generated once in New and
+	// lasts for the Registrar's lifetime, the worker process.
 	instanceID string
 
 	// exprLimits are the EXPR evaluation caps this worker enforces, advertised
 	// in every RegisterMsg so the server can refuse to send it work it cannot
 	// run (see [protocol.ExprLimits]). Normalized at construction so a zero
-	// value advertises the defaults it would actually enforce rather than
-	// "unadvertised".
+	// value advertises the defaults it enforces rather than "unadvertised".
 	exprLimits fmtres.ExprLimits
 
 	caps   capabilities.Capabilities
@@ -138,11 +136,11 @@ func WithHost(hostname, ip string) Option {
 // already have manual tags merged in (via
 // [capabilities.Capabilities.MergeManualTags]) before being passed here.
 //
-// exprLimits must be THE SAME value the worker's session manager enforces
+// exprLimits must be the same value the worker's session manager enforces
 // with, not a second mapping of the same configuration: what this worker
-// advertises to the server is what the server assumes it will enforce, and a
-// transposition between the two would make the server's dispatch gate compare
-// against a number no evaluation ever uses. cmd/sqi-worker passes
+// advertises is what the server assumes it enforces, and a transposition
+// between the two would make the server's dispatch gate compare against a
+// number no evaluation uses. cmd/sqi-worker passes
 // exprLimitsFromConfig(cfg.Expr) to both.
 //
 // It returns an error only if a JetStream context cannot be derived from nc.
@@ -277,7 +275,7 @@ func (r *Registrar) hostAddr() (hostname, ip string) {
 // exist yet.
 //
 // Only a missing stream is retried. Every other failure (a closed connection,
-// say) is returned immediately: it will not resolve by waiting.
+// say) is returned immediately, since waiting does not resolve it.
 func (r *Registrar) publishRegister(ctx context.Context, data []byte) error {
 	ctx, cancel := context.WithTimeout(ctx, RetryBudget)
 	defer cancel()
@@ -368,9 +366,9 @@ func (r *Registrar) Deregister(reason string, kind protocol.DeregisterKind) {
 func (r *Registrar) SetupReconnectHook(_ context.Context) {
 	r.nc.SetReconnectHandler(func(conn *nats.Conn) {
 		// Use context.Background() rather than the caller's context: the
-		// reconnect callback fires asynchronously (possibly after the caller's
-		// ctx is already canceled during shutdown) and must not be gated on
-		// the signal-notification context lifetime.
+		// reconnect callback fires asynchronously, possibly after the caller's
+		// ctx is canceled during shutdown, and must not depend on the
+		// signal-notification context's lifetime.
 		ctx := context.Background()
 		r.logger.InfoContext(
 			ctx, "natsclient: reconnected — re-registering worker",
@@ -414,9 +412,9 @@ func (r *Registrar) Capabilities() capabilities.Capabilities {
 // interface would be used to reach an external address.
 // Returns an empty string if the address cannot be determined.
 func outboundIP() string {
-	// Use DialContext with a background context so the noctx linter is
-	// satisfied. No packets are sent — this is a kernel route-table lookup
-	// that tells us which local IP the OS would use to reach an external host.
+	// Use DialContext with a background context to satisfy the noctx linter.
+	// No packets are sent: this is a kernel route-table lookup that returns the
+	// local IP the OS would use to reach an external host.
 	conn, err := (&net.Dialer{}).DialContext(context.Background(), "udp", "8.8.8.8:53")
 	if err != nil {
 		return ""

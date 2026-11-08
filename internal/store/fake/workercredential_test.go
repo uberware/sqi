@@ -17,21 +17,19 @@ import (
 
 // TestWorkerCredential_RevokeActiveAfterRotation exercises
 // RevokeWorkerCredential against a worker that has one revoked row and one
-// active row for the same worker_id — the state a key rotation (revoke, then
-// re-enroll with a new key) leaves behind, and a state that only became
-// legal once worker_id uniqueness was scoped to active rows.
+// active row for the same worker_id: the state a key rotation (revoke, then
+// re-enroll with a new key) leaves behind, legal because worker_id uniqueness
+// is scoped to active rows.
 //
-// Go's map iteration order is randomized. A version of RevokeWorkerCredential
-// that stops at the FIRST row matching the worker ID, rather than scanning
-// for one that is also active, fails non-deterministically here: whenever
-// iteration reaches the already-revoked row before the active one, it
-// returns ErrNotFound for what is otherwise a completely legitimate revoke.
+// Map iteration order is random. A RevokeWorkerCredential that stops at the
+// first row matching the worker ID, rather than scanning for one that is also
+// active, fails non-deterministically here: whenever iteration reaches the
+// already-revoked row before the active one, it returns ErrNotFound for a
+// valid revoke.
 //
-// The test seeds a pile of unrelated "noise" workers so the map has enough
-// entries for order to matter, and repeats the whole scenario across many
-// subtests (fresh store, fresh map, fresh iteration order each time) so a
-// fix that only happens to work by accident of one run's order cannot pass
-// by luck.
+// The test seeds unrelated "noise" workers so the map has enough entries for
+// order to matter, and repeats the scenario across many subtests (fresh
+// store, fresh map, fresh iteration order each time).
 func TestWorkerCredential_RevokeActiveAfterRotation(t *testing.T) {
 	for run := range 50 {
 		t.Run(fmt.Sprintf("run-%d", run), func(t *testing.T) {
@@ -204,9 +202,9 @@ func TestWorkerCredential_TouchOnlyMatchesActiveRow(t *testing.T) {
 
 // TestWorkerCredential_DuplicateWorkerID mirrors
 // sqlite_test.TestWorkerCredential_DuplicateWorkerID: a worker ID with an
-// existing ACTIVE credential cannot be double-enrolled. It exercises
-// CreateWorkerCredential's own conflict logic directly, rather than only
-// indirectly through the rotation tests above.
+// existing active credential cannot be double-enrolled. It exercises
+// CreateWorkerCredential's conflict logic directly rather than through the
+// rotation tests above.
 func TestWorkerCredential_DuplicateWorkerID(t *testing.T) {
 	s := fake.New()
 	defer s.Close()
@@ -249,14 +247,11 @@ func TestWorkerCredential_DuplicatePublicKey(t *testing.T) {
 }
 
 // TestWorkerCredential_RevokedPublicKeyStillUnique mirrors
-// sqlite_test.TestWorkerCredential_RevokedPublicKeyStillUnique. The whole
-// point of leaving public_key globally UNIQUE (not scoped to active rows the
-// way worker_id now is) is that a rotated-away key must never become usable
-// again — this pins that in the fake as well as SQLite, so public_key
-// uniqueness can never silently regress to active-rows-only scoping without
-// a test failing in both backends. If it did regress, a revoked credential's
-// key would become available for reuse, defeating the reason rotation is
-// safe in the first place.
+// sqlite_test.TestWorkerCredential_RevokedPublicKeyStillUnique. public_key is
+// unique across all rows, not only active ones as worker_id is, so a
+// rotated-away key can never be used again. If uniqueness were scoped to
+// active rows, a revoked credential's key would become available for reuse,
+// defeating the point of rotation.
 func TestWorkerCredential_RevokedPublicKeyStillUnique(t *testing.T) {
 	s := fake.New()
 	defer s.Close()
@@ -283,11 +278,9 @@ func TestWorkerCredential_RevokedPublicKeyStillUnique(t *testing.T) {
 // TestWorkerCredential_ListActiveAfterRotationHasExactlyOneRow mirrors
 // sqlite_test.TestWorkerCredential_ListActiveAfterRotationHasExactlyOneRow:
 // after enroll, revoke, re-enroll, ListActiveWorkerCredentials must return
-// exactly one row for the rotated worker — never zero (the rotation
-// silently failing) and never two. Two simultaneously-active rows for one
-// worker_id would mean the store holds both the old and the new key as
-// active for that worker at once, so the broker would accept either, which
-// is not a rotation at all.
+// exactly one row for the rotated worker: never zero (the rotation failed)
+// and never two, which would leave both the old and the new key active so the
+// broker would accept either.
 func TestWorkerCredential_ListActiveAfterRotationHasExactlyOneRow(t *testing.T) {
 	s := fake.New()
 	defer s.Close()

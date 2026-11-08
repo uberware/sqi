@@ -5,6 +5,7 @@ package scheduler
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"maps"
 	"slices"
@@ -219,7 +220,7 @@ func (s *spyStore) ListUsagePools(ctx context.Context) ([]store.UsagePool, error
 }
 
 // With no capacity group the sweep makes one query and changes nothing: no
-// demand query, no log line, no series (anti-goal 7). With only a disabled
+// demand query, no log line, no series. With only a disabled
 // group it also reads that group's members, whose vanished ephemeral machines
 // it must still remove, and nothing else.
 func TestCapacitySweep_NoGroupsDoesNothing(t *testing.T) {
@@ -264,7 +265,7 @@ func TestCapacitySweep_NoGroupsDoesNothing(t *testing.T) {
 			if logs.Len() != 0 {
 				t.Errorf("log output = %q, want none", logs.String())
 			}
-			if sts := s.CapacityStatuses(); len(sts) != 0 {
+			if sts := s.capacityStatuses(); len(sts) != 0 {
 				t.Errorf("CapacityStatuses = %v, want none", sts)
 			}
 		})
@@ -308,7 +309,7 @@ func TestCapacitySweep_ExportsDemandForEligibleWork(t *testing.T) {
 	if v := statusFor(t, s, without.ID); v.demand != 0 || v.desired != 0 {
 		t.Errorf("plain status = %+v, want demand 0, desired 0", v)
 	}
-	all := s.CapacityStatuses()
+	all := s.capacityStatuses()
 	if len(all) != 2 || all[0].GroupID != without.ID || all[1].GroupID != with.ID {
 		t.Errorf("CapacityStatuses = %+v, want plain then houdini", all)
 	}
@@ -411,7 +412,7 @@ func TestCapacitySweep_DeletedGroupSeriesRemoved(t *testing.T) {
 	if n := len(capacitySeries(t, s.metrics)); n != 0 {
 		t.Errorf("series with no enabled group = %d, want 0", n)
 	}
-	if sts := s.CapacityStatuses(); len(sts) != 0 {
+	if sts := s.capacityStatuses(); len(sts) != 0 {
 		t.Errorf("CapacityStatuses with no enabled group = %v, want none", sts)
 	}
 }
@@ -494,5 +495,34 @@ func TestCapacitySweep_ReportsProfileMismatch(t *testing.T) {
 	// A mismatch never removes the member.
 	if st0.OnlineMembers != 3 {
 		t.Errorf("OnlineMembers = %d, want 3", st0.OnlineMembers)
+	}
+}
+
+// TestOnlineWorkers_ReadsPastOnePage pins that the online-worker read the
+// capacity and unschedulable sweeps share sees a farm larger than one page:
+// a worker past the first [store.MaxLimit] would otherwise never absorb
+// demand, and a group would be sized for work it could already run.
+func TestOnlineWorkers_ReadsPastOnePage(t *testing.T) {
+	st, s, _ := newCapacityFixture(t, nil)
+	want := store.MaxLimit + 3
+	for i := range want {
+		w := store.Worker{
+			ID: uuid.NewString(), FarmID: capFarm, Hostname: fmt.Sprintf("host-%05d", i),
+			Status: store.WorkerStatusOnline, CPUCount: 4,
+		}
+		if _, _, err := st.RegisterWorker(t.Context(), w); err != nil {
+			t.Fatalf("RegisterWorker %d: %v", i, err)
+		}
+	}
+	got, err := s.onlineWorkers(t.Context())
+	if err != nil {
+		t.Fatalf("onlineWorkers: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, w := range got {
+		ids[w.ID] = true
+	}
+	if len(got) != want || len(ids) != want {
+		t.Fatalf("onlineWorkers returned %d workers (%d distinct), want %d", len(got), len(ids), want)
 	}
 }

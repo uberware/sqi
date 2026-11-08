@@ -4,8 +4,8 @@ package scheduler
 
 // couldrun.go answers a capability question the lease path does not: could a
 // given machine ever run a step, whatever it is doing now. The lease path asks
-// the load-dependent version (a worker that is online, enabled, within its
-// policy caps and has free cores) and is not changed by anything here.
+// the load-dependent version: a worker that is online, enabled, within its
+// policy caps and has free cores.
 
 import (
 	"github.com/uberware/sqi/internal/store"

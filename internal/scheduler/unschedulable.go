@@ -15,7 +15,7 @@ import (
 // UnschedulableGrace and that no online worker can satisfy, and clears the
 // flag on tasks that have become schedulable (e.g. a matching worker joined,
 // or the job/step's requirements no longer apply). A no-op when
-// UnschedulableGrace <= 0 — that is the "off" setting, not coerced to a
+// UnschedulableGrace <= 0, which is the "off" setting and is not replaced by a
 // default (see [Config.UnschedulableGrace]).
 func (s *Scheduler) sweepUnschedulable(ctx context.Context) {
 	if s.cfg.UnschedulableGrace <= 0 {
@@ -23,12 +23,9 @@ func (s *Scheduler) sweepUnschedulable(ctx context.Context) {
 	}
 	cutoff := time.Now().UTC().Add(-s.cfg.UnschedulableGrace)
 
-	// store.MaxLimit, not 0: ListReadyTasks/[fake and sqlite] both treat a
-	// limit of 0 as "return zero rows", not "unlimited" — confirmed against
-	// sqlListReadyTasks's `LIMIT ?` (SQLite LIMIT 0 = no rows) and the fake
-	// store's `readyTasks[:limit]` slicing. store.MaxLimit mirrors the
-	// "fetch effectively all" convention used elsewhere in this package
-	// (e.g. checkStepCompletion, workers.go's active-task lookup).
+	// store.MaxLimit, not 0: ListReadyTasks treats a limit of 0 as "return zero
+	// rows", not "unlimited". store.MaxLimit is this package's "fetch
+	// effectively all" convention (e.g. checkStepCompletion).
 	ready, err := s.store.ListReadyTasks(ctx, s.cfg.FarmID, time.Now().UTC(), store.MaxLimit)
 	if err != nil {
 		s.logger.WarnContext(ctx, "scheduler: unschedulable sweep: list ready tasks failed", slog.Any("error", err))
@@ -48,15 +45,13 @@ func (s *Scheduler) sweepUnschedulable(ctx context.Context) {
 		if s.deposed() {
 			return
 		}
-		// The grace window only delays the *first* flag on a freshly-ready
-		// task (UnschedulableReason == "") so newly-submitted work isn't
-		// flagged before a worker has had a chance to pick it up. A task
-		// already flagged is re-evaluated on every tick regardless of age so
-		// it clears the moment a matching worker appears — gating the clear
-		// on the same cutoff would re-arm the grace window every time
-		// SetTaskUnschedulableReason bumps UpdatedAt, needlessly prolonging a
-		// stale "unschedulable" annotation well past the point it stopped
-		// being true.
+		// The grace window delays only the first flag on a freshly-ready task
+		// (UnschedulableReason == ""), so newly-submitted work is not flagged
+		// before a worker has had a chance to pick it up. A task already
+		// flagged is re-evaluated on every tick regardless of age, so the flag
+		// clears as soon as a matching worker appears. Gating the clear on the
+		// same cutoff would re-arm the grace window each time
+		// SetTaskUnschedulableReason bumps UpdatedAt.
 		if task.UnschedulableReason == "" && task.UpdatedAt.After(cutoff) {
 			continue // still within grace, not yet flagged
 		}
@@ -100,9 +95,8 @@ func (s *Scheduler) reconcileTaskSchedulability(ctx context.Context, task store.
 
 // evaluateSchedulability returns "" if at least one online worker in workers
 // is eligible to run task, otherwise a human-readable reason suitable for
-// [store.Task.UnschedulableReason]. Store lookup failures resolve to ""
-// (schedulable) rather than flagging the task on what is likely a transient
-// error.
+// [store.Task.UnschedulableReason]. A store lookup failure returns ""
+// (schedulable), so a likely transient error does not flag the task.
 func (s *Scheduler) evaluateSchedulability(ctx context.Context, task store.Task, workers []store.Worker) string {
 	if len(workers) == 0 {
 		return "no online workers"
@@ -123,22 +117,17 @@ func (s *Scheduler) evaluateSchedulability(ctx context.Context, task store.Task,
 
 	var lastReason string
 	for _, w := range workers {
-		// Order matters: ordinary eligibility first.
-		//
 		// Both tests must run: the lease gate refuses to dispatch an EXPR job
-		// to a worker whose advertised EXPR caps are below this server's, and
-		// without the same test here the task would sit ready forever while the
-		// sweep reported it schedulable.
+		// to a worker whose advertised EXPR caps are below this server's, so
+		// the sweep must apply the same test or the task would sit ready while
+		// reported schedulable.
 		//
-		// But a worker that is ineligible for a plain reason -- wrong queue,
-		// wrong compute location, a tag it does not carry -- is ineligible for
-		// that reason, and it is the reason an operator can act on. Testing the
-		// EXPR caps first would make the EXPR text the last reason written for
-		// every worker on a farm whose workers are short, overwriting the real
-		// one on tasks that could never have run there anyway. Only a worker
-		// that would otherwise have been eligible is reported as blocked by
-		// EXPR limits. exprcaps.go's reason is deliberately the operator-facing one
-		// — it names both config keys and both numbers.
+		// Ordinary eligibility is tested first. A worker that is ineligible for
+		// a plain reason (wrong queue, wrong compute location, a tag it does
+		// not carry) is ineligible for that reason, and that is the reason an
+		// operator can act on. Only a worker that would otherwise be eligible
+		// is reported as blocked by EXPR limits. exprcaps.go's reason names
+		// both config keys and both numbers.
 		reason, ok := WorkerEligibleWithReason(w, job, step, pools, activeCounts)
 		if !ok {
 			lastReason = reason
@@ -154,19 +143,33 @@ func (s *Scheduler) evaluateSchedulability(ctx context.Context, task store.Task,
 }
 
 // onlineWorkers returns every online worker the scheduler's farm can dispatch
-// to, including unaffiliated workers (empty FarmID) — the same options used
-// by the assignment path (see [store.ListWorkersOptions.IncludeUnaffiliated])
-// and the "fetch effectively all rows" pagination convention used elsewhere
-// in this package (e.g. checkStepCompletion, workers.go active-task lookup).
+// to, including unaffiliated workers (empty FarmID); the assignment path uses
+// the same options (see [store.ListWorkersOptions.IncludeUnaffiliated]).
+// It reads page after page of [store.MaxLimit], so a farm of any size is read
+// whole. The pages are separate reads, so a worker that changes status between
+// them can move across a page boundary: one seen twice is kept once, and one
+// skipped is seen on the next sweep.
 func (s *Scheduler) onlineWorkers(ctx context.Context) ([]store.Worker, error) {
-	page, err := s.store.ListWorkers(ctx, store.ListWorkersOptions{
-		Status:              store.WorkerStatusOnline,
-		FarmID:              s.cfg.FarmID,
-		IncludeUnaffiliated: true,
-		Pagination:          store.Pagination{Limit: store.MaxLimit, Offset: 0},
-	})
-	if err != nil {
-		return nil, err
+	var out []store.Worker
+	seen := map[string]bool{}
+	for offset := 0; ; offset += store.MaxLimit {
+		page, err := s.store.ListWorkers(ctx, store.ListWorkersOptions{
+			Status:              store.WorkerStatusOnline,
+			FarmID:              s.cfg.FarmID,
+			IncludeUnaffiliated: true,
+			Pagination:          store.Pagination{Limit: store.MaxLimit, Offset: offset},
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, w := range page.Items {
+			if !seen[w.ID] {
+				seen[w.ID] = true
+				out = append(out, w)
+			}
+		}
+		if len(page.Items) < store.MaxLimit {
+			return out, nil
+		}
 	}
-	return page.Items, nil
 }

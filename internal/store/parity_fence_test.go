@@ -313,9 +313,9 @@ func TestParity_Fence_PlainContextIsNeverFenced(t *testing.T) {
 
 // TestParity_Fence_IgnoredWorkerWritesStillFence: the worker writes that can
 // end without changing anything (a stale registration, a heartbeat the broker
-// stamped before the recorded one, a heartbeat for an unknown worker) are fenced like any
-// other, so a deposed leader sees ErrFenced from them on every backend and not
-// the result the current leader would get.
+// stamped before the recorded one, a heartbeat for an unknown worker) are
+// fenced like any other, so a deposed leader gets ErrFenced from them on every
+// backend, not the result the current leader would get.
 func TestParity_Fence_IgnoredWorkerWritesStillFence(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
@@ -989,9 +989,15 @@ var fenceMutators = map[string]fenceMutator{
 		c := mustCreateCredential(t, st, mkCredential(uuid.NewString()))
 		return func(ctx context.Context) error { return st.RevokeWorkerCredential(ctx, c.WorkerID, time.Now().UTC()) }
 	},
-	"RevokeWorkerJoinToken": func(t *testing.T, st store.Store) func(context.Context) error {
-		tok := mustCreateJoinToken(t, st)
-		return func(ctx context.Context) error { return st.RevokeWorkerJoinToken(ctx, tok.ID, time.Now().UTC()) }
+	"RevokeCapacityGroupToken": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := mustCreateCapacityGroup(t, st, mkCapacityGroup(mustCreateFarm(t, st, "main").ID, "alpha"))
+		tok, err := st.CreateWorkerJoinToken(t.Context(), mkGroupToken(g.ID, time.Now().UTC()))
+		if err != nil {
+			t.Fatalf("CreateWorkerJoinToken: %v", err)
+		}
+		return func(ctx context.Context) error {
+			return st.RevokeCapacityGroupToken(ctx, g.ID, tok.ID, time.Now().UTC())
+		}
 	},
 	"SetBrokerIdentity": func(_ *testing.T, st store.Store) func(context.Context) error {
 		return func(ctx context.Context) error { return st.SetBrokerIdentity(ctx, "embedded:SQI", time.Now().UTC()) }

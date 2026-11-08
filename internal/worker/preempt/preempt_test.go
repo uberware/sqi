@@ -400,3 +400,38 @@ func TestNew_DefaultClientIgnoresProxy(t *testing.T) {
 		t.Error("an injected client was replaced")
 	}
 }
+
+// TestWatcher_AWSStopOrHibernateIsNoReclaim pins that a spot notice whose
+// action keeps the instance (stop, hibernate) does not fire, while terminate,
+// an action the watcher does not know and a document that does not parse all
+// do: only a notice known to keep the machine is ignored.
+func TestWatcher_AWSStopOrHibernateIsNoReclaim(t *testing.T) {
+	for _, tc := range []struct {
+		name, doc string
+		want      int
+	}{
+		{"stop", `{"action":"stop","time":"2026-11-08T12:00:00Z"}`, 0},
+		{"hibernate", `{"action":"hibernate","time":"2026-11-08T12:00:00Z"}`, 0},
+		{"terminate", `{"action":"terminate","time":"2026-11-08T12:00:00Z"}`, 1},
+		{"unknown action", `{"action":"evaporate"}`, 1},
+		{"unparsable", `not json`, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/latest/api/token" {
+					reply(w, "tok")
+					return
+				}
+				reply(w, tc.doc)
+			}))
+			defer srv.Close()
+			wait := 300 * time.Millisecond
+			if tc.want > 0 {
+				wait = 5 * time.Second
+			}
+			if got := runWatcher(t, "aws", srv, debugLogger(io.Discard), wait); got != tc.want {
+				t.Fatalf("onNotice calls = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}

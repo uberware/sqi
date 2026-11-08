@@ -1139,7 +1139,7 @@ func TestFenced_NilOnFencedOnlyLogs(t *testing.T) {
 }
 
 // TestFenced_OtherErrorsAreNotAFence pins that only store.ErrFenced counts:
-// any other store error is handled as before and acknowledges as before.
+// any other store error is handled as an ordinary failure.
 func TestFenced_OtherErrorsAreNotAFence(t *testing.T) {
 	st := &registerErrSt{Store: newCheckedFake(t)}
 	s, rec := newFenceScheduler(t, st, "")
@@ -1151,7 +1151,7 @@ func TestFenced_OtherErrorsAreNotAFence(t *testing.T) {
 	s.handleWorkerMessage(msg)
 
 	if !msg.nacked {
-		t.Error("an ordinary store error must still nak for redelivery")
+		t.Error("an ordinary store error must nak for redelivery")
 	}
 	if s.stopIfFenced(t.Context(), store.ErrNotFound) || s.stopIfFenced(t.Context(), nil) {
 		t.Error("stopIfFenced is true for an error that is not store.ErrFenced")

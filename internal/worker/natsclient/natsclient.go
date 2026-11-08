@@ -2,9 +2,9 @@
 
 // Package natsclient provides the NATS client factory for sqi-worker.
 //
-// Unlike the server's internal/bus package — which dials a loopback embedded
-// broker — the worker connects to a remote NATS server hosted by sqi-server.
-// The connection is configured with:
+// The worker connects over the network to the NATS server that sqi-server
+// embeds, or to an operator-run external NATS server. The connection is
+// configured with:
 //
 //   - Exponential backoff reconnection with jitter so a worker
 //     restart storm does not spike load on the server.
@@ -209,10 +209,10 @@ func IsAuthRefusal(err error) bool {
 
 // credentialRejectedError reports whether err is the broker refusing this
 // connection's credential (see [IsAuthRefusal]). When it is, the second
-// return is true and the first is the single crafted message every
-// credential-rejection path uses — the initial dial, a refusal streak that
+// return is true and the first is the single message every
+// credential-rejection path uses: the initial dial, a refusal streak that
 // outlasted the grace, and a closure observed via [nats.Conn.LastError] all
-// call this, so they cannot drift apart.
+// call this, so the wording is the same in each.
 //
 // grace is how long the refusals were retried, and keyed whether the worker
 // presented a key at all; each adds the cause only it makes possible.
@@ -471,9 +471,9 @@ func (lc *lifecycle) onClosed(nc *nats.Conn) {
 // from draining a closed connection are silently ignored.
 //
 // [nats.Conn.Drain] only starts the drain and returns at once, so Drain waits
-// for the connection to reach the closed state itself. Returning earlier lets
-// the worker exit with its last core-NATS publish, the deregister, still in the
-// client's buffer.
+// for the connection to reach the closed state itself. The worker exits right
+// after Drain, and its last core-NATS publish, the deregister, must have left
+// the client's buffer by then.
 func Drain(nc *nats.Conn, gracePeriod time.Duration, logger *slog.Logger) {
 	bg := context.Background()
 	if err := nc.Drain(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
@@ -535,12 +535,11 @@ func buildOptions(
 
 		// ── Lifecycle logging ──────────────────────────────────────────────
 		nats.DisconnectErrHandler(lc.onDisconnect),
-		// ReconnectHandler is intentionally omitted here. The worker's
-		// registration package installs its own reconnect callback via
-		// nc.SetReconnectHandler after the connection is established, which
-		// logs the reconnect and re-publishes the registration message in one
-		// step. Installing a handler here would be overwritten before any
-		// reconnect can occur and would never fire.
+		// No ReconnectHandler is set here. The worker's registration package
+		// installs its own reconnect callback via nc.SetReconnectHandler after
+		// the connection is established, which logs the reconnect and
+		// re-publishes the registration message in one step. A handler set here
+		// would be overwritten before any reconnect can occur.
 		//
 		// ClosedHandler fires when the connection transitions to the CLOSED
 		// state: either MaxReconnects was exhausted or the connection was
@@ -561,9 +560,9 @@ func buildOptions(
 	//
 	// Without this the connection takes nats.go's process-global "_INBOX"
 	// prefix, and the only permission that could then cover a lease reply
-	// is "_INBOX.>" — which covers every OTHER client's reply inbox on the
-	// same broker too, handing any enrolled worker the assignment batches
-	// of work it never leased. See [brokerauth.InboxPrefix].
+	// is "_INBOX.>", which covers every other client's reply inbox on the
+	// same broker too and would hand any enrolled worker the assignment
+	// batches of work it never leased. See [brokerauth.InboxPrefix].
 	//
 	// Applied whether or not a credential is present, so the connect path
 	// does not diverge between the auth-on and auth-off modes. An absent
@@ -592,7 +591,7 @@ func buildOptions(
 	// A non-empty seed authenticates this connection as the worker's
 	// enrolled nkey. An empty seed adds no option at all, which is correct
 	// on a farm that does not require worker authentication — the broker
-	// accepts the anonymous connection exactly as it does today. When the
+	// accepts the anonymous connection. When the
 	// broker does require authentication, connecting with no credential
 	// fails the initial dial with nats.ErrAuthorization at once, and a
 	// refused key fails it once the refusals have lasted authRejectGrace.
