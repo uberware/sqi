@@ -337,6 +337,11 @@ operator cannot realistically get the token onto a machine and boot it; the
 ceiling keeps a token, which mints a worker credential, from becoming a
 long-lived secret. Ignored while `nats.auth.enabled` is `false`.
 
+A [capacity group's token](capacity.md#sized-groups-with-broker-authentication-on)
+has a lifetime of its own, chosen when it is minted (30 days by default, 90 at
+most), and is unaffected by this key. Capacity groups themselves are managed
+through the REST API and the Admin hub and have no server configuration keys.
+
 ```yaml
 nats:
   auth:
@@ -1196,8 +1201,11 @@ How long a worker may remain offline before the retention sweep hard-deletes its
 record, bounding the growth of the worker list on farms with ephemeral nodes
 (e.g. cloud workers that spin up for a burst of work and are then destroyed). The
 sweep runs on the heartbeat-sweep tick and only removes workers in the `offline`
-state; `online` and administratively `disabled` workers are never auto-removed.
-A worker that reconnects after removal re-registers. Set to `0` to disable
+state; `online` and administratively `disabled` workers are never auto-removed,
+and neither is a member of a named [capacity group](capacity.md). An ephemeral
+capacity-group member (a cloud machine that joined by group token) is removed
+much sooner by the capacity sweep, after the group's `boot_timeout_seconds`, with
+its credential revoked. A worker that reconnects after removal re-registers. Set to `0` to disable
 automatic removal (workers can still be removed manually from the web UI).
 
 ```yaml

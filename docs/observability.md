@@ -332,6 +332,32 @@ are visible (component `server`) in Admin → Server log and
 
 ---
 
+## Capacity group metrics
+
+With at least one enabled [capacity group](capacity.md), `sqi-server` exports
+three gauges from the capacity step of its sweep tick (about every 15 seconds,
+on the leader only). The `group` label is the group **name**. With no enabled
+group none of them has a series, and a group's series are removed when it is
+disabled, renamed or deleted.
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `sqi_capacity_demand_cores` | gauge | `group` | Cores of ready work assigned to the group: work one of its machines could run that no idle worker and no higher-priority group took. |
+| `sqi_capacity_desired_machines` | gauge | `group` | Total machines the group should have, counting the machines it already has (not the number to add). |
+| `sqi_capacity_members` | gauge | `group`, `state` | Members of the group by liveness, `state` being `online` or `offline`. A disabled member counts in whichever it is. |
+
+If the server cannot read the store during a tick it keeps the previous values
+rather than zeroing them; the `evaluated_at` of the group's `status` in
+`GET /api/v1/capacity-groups/{id}` shows how old they are. The same figures,
+with the group's retire candidates and profile mismatches, are in that status.
+
+`sqi_scheduler_queue_depth` (the label is the queue **ID**, not its name) is
+set back to `0` when a queue that had ready work drains, so a scaling signal
+built on it falls again. A queue the server has not seen with ready work since
+it started has no series.
+
+---
+
 ## Known gap: server metrics declared but not recorded
 
 `GET /metrics` on `sqi-server` registers five metric families that nothing in

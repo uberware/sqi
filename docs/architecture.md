@@ -1907,6 +1907,7 @@ reads it to see whether a standby reaches the broker, and
 | Worker diagnostic subscription | yes | every server, so a new leader has worker log history |
 | Lease subscription (`work.lease.<queue>`) | yes | leader only |
 | Heartbeat sweep (liveness, reclaim, reap, reconcile) | yes | leader only; its reconnect grace counts from the promotion |
+| Capacity sweep step (evaluation, gauges, vanished-ephemeral cleanup) | yes | leader only; its idle and step-up state starts empty on a new leader |
 | Retry-wake timers | in memory | in the leader's memory; lost on failover, the sweep is the backstop |
 | REST API, WebSocket hub, cancel, retry, revoke | yes | leader only; a standby answers 503 |
 | HTTP listener | yes | every server: probes and metrics on a standby |
@@ -1922,6 +1923,74 @@ last, so a client never reaches a leader that has not finished promoting.
 
 ---
 
+## Capacity groups
+
+A capacity group is a named set of machines the server publishes a scaling
+signal for. This release computes and exports the signal and acts on no
+machine; the operator's guide is [Capacity groups](capacity.md). With no group
+defined the scheduler reads the group list on each tick and does nothing more:
+no member or demand query, no log line and no `sqi_capacity_*` series.
+
+**Schema (migration pair `00046`).** `capacity_groups` holds the group (kind,
+provider, min and max machines, priority, `max_step_up`, the cooldown, idle and
+boot timeouts in milliseconds, `retire_action`, the queue allow-list and the
+machine profile as JSON). `workers` gains `capacity_group_id` (a foreign key
+with `ON DELETE RESTRICT`, so a group cannot be deleted while a worker belongs
+to it) and `ephemeral`. `worker_join_tokens` gains `capacity_group_id` (a token
+goes with its group) and `revoked_at`, and `worker_credentials` gains
+`capacity_group_id`, the group the credential enrolled into, which is
+deliberately not a foreign key, like its `worker_id`. A worker belongs to at
+most one group, and the membership write is a compare-and-set under the worker's
+anchor.
+
+**The capacity sweep step.** `sweepCapacity` is one step of the heartbeat sweep
+tick (`sweepOnce`), after the unschedulable sweep and before the blocked-job
+sweep, so it runs on the leader only and stops when the scheduler is deposed.
+Each tick it:
+
+1. lists the groups of the scheduler's farm; with none, it clears any state and
+   returns;
+2. reads each group's members and deletes the **vanished ephemeral members**
+   (ephemeral, not disabled, offline, last heartbeat older than the group's
+   `boot_timeout`), revoking their credentials, which is the step's only write.
+   It skips this while the liveness sweeps are deferred after a broker outage;
+3. for the enabled groups, reads the per-worker commitments, the other online
+   workers, and the ready work **per step** (`ListReadyStepDemand`, one row per
+   step with leasable ready tasks, then one job and one step read each), so the
+   cost follows the number of steps with ready work, never their tasks;
+4. runs the pure policy in `internal/capacity` (`Evaluate`), whose
+   `couldRun` check is the lease path's static eligibility and nothing that
+   varies with load;
+5. fills each sized group's profile mismatches, and publishes the statuses (read
+   by `GET /api/v1/capacity-groups`) and the `sqi_capacity_*` gauges, deleting
+   the series of groups that are gone, renamed or disabled.
+
+If any read fails the step logs a warning and keeps the previous evaluation and its
+gauges, rather than publishing zeros that would read as "no demand" and scale a
+farm in.
+
+**In-memory state, and why it resets on failover.** The step keeps, per
+process: when each online member was first seen idle, when each group last
+stepped up, each group's last desired size, and which mismatches it has already
+logged. None of it is persisted. A restart or a failover therefore starts it
+empty, which is conservative in one direction and not the other: idle times
+restart, so no machine is offered for retirement sooner than its idle timeout
+after the new leader first sees it idle; but the step-up record is lost too, so
+for up to one `boot_timeout` the desired size can fall below the machines that
+were still booting.
+
+**Membership.** At registration the scheduler touches the worker's broker
+credential and, when the worker may be an ephemeral member, reads its row first
+so a cloned worker ID can be reported. With broker authentication on, only the
+credential's group counts and the worker's own `worker.capacity_group` is
+ignored with a warning; with it off, the worker's setting names a sized group of
+its farm. A deregistration of kind `retired` or `preempted` deletes an
+ephemeral member (offline, no assigned or running task) and revokes its
+credential in one transaction; any other kind keeps the row. The
+offline-worker retention sweep skips members of a named group.
+
+---
+
 ## NATS subjects and streams
 
 | Subject pattern | Transport | Direction | Purpose |
@@ -1932,7 +2001,7 @@ last, so a client never reaches a leader that has not finished promoting.
 | `task.cancel.<worker_id>` | JetStream (`SQI_CANCEL`, MaxAge 5 min) | server → worker | Cancellation signal for a run the worker holds; the worker interrupts the process. Each worker receives its own on one core subscription made before its first lease request, and nothing reads the stream's copy. An `attempt_id` limits it to that attempt (sent for an attempt the server has closed: in answer to a `running` report, or while heartbeats still list it) |
 | `worker.register.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Registration at startup and on reconnect; carries the worker process's `instance_id` (a changed one reclaims the previous process's tasks) (the broker's timestamp for it orders registrations: one stamped earlier than the recorded one is discarded) |
 | `worker.heartbeat.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Liveness heartbeat |
-| `worker.deregister.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Graceful departure; marks the worker offline without waiting for heartbeat timeout (a disabled worker stays disabled) and reclaims its tasks. Ignored when its `instance_id` names a process a later registration replaced |
+| `worker.deregister.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Graceful departure; marks the worker offline without waiting for heartbeat timeout (a disabled worker stays disabled) and reclaims its tasks. Ignored when its `instance_id` names a process a later registration replaced. Its optional `kind` (`retired` or `preempted`) makes the server delete an ephemeral capacity-group member and revoke its credential; with no kind the worker is kept |
 | `worker.diag.<workerID>` | Core NATS (best-effort) | worker → server | Diagnostic log records |
 
 Every worker → server subject carries the publishing worker's ID directly after
@@ -2001,6 +2070,7 @@ The primary tables are:
 | `task_attempts` | One row per execution attempt; holds exit code, timing, session_id |
 | `task_logs` | Persisted task process output |
 | `workers` | Registered workers with capabilities and status |
+| `capacity_groups` | Named or sized sets of machines the server publishes a scaling signal for ([Capacity groups](#capacity-groups)) |
 | `products` | Product/preset catalog above OpenJD (built-in, installed, custom) |
 | `compute_locations` | Named compute-location registry (curated catalog; auto-populated from worker registrations) |
 | `storage_locations` | Named storage locations with per-compute-location root mappings |

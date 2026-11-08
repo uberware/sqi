@@ -667,7 +667,11 @@ Maximum time the worker waits for in-flight tasks to finish after SIGINT,
 SIGTERM or a Windows service stop. Tasks still running at the end of this
 window receive SIGTERM, then SIGKILL a third of this period later, and are
 reported as `failed`. On workers you restart while they are busy, set it to
-your longest expected task duration. Must be `> 0`.
+your longest expected task duration. The worker keeps heartbeating throughout
+the drain, so a long grace period does not cost it its tasks. On machines an
+autoscaler terminates, set the autoscaler's termination hook to at least the
+grace period plus a third of it ([Capacity groups](capacity.md#draining-and-shutdown_grace_period)).
+Must be `> 0`.
 
 ```yaml
 worker:
@@ -730,6 +734,8 @@ The capacity group this worker asks to join when it registers. The server
 honors it only with broker authentication off, and only for a sized group in
 the worker's farm; with authentication on, membership comes from the group
 token the worker enrolled with and this value is ignored.
+See [Capacity groups](capacity.md#joining-a-group), which also explains why an
+image must be built without a worker ID in `worker.data_dir`.
 
 ```yaml
 worker:

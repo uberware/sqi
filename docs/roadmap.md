@@ -1,6 +1,6 @@
 # `sqi` Roadmap and Technical Architecture
 
-> **Status:** v0.3.0 (Phase 3) released — opt-in authentication and multi-user support, including task isolation (run-as-user), plus the official OpenJD `EXPR` extension and expanded ffmpeg and Mistika reference presets. **Phase 4** (production hardening) is in progress: the PostgreSQL state store, backup/restore, external and clustered NATS, scheduler high availability, and a much larger set of reference presets and in-application submitters are implemented, not yet released. Details may change with requests, feedback, and discoveries as development progresses.
+> **Status:** v0.3.0 (Phase 3) released — opt-in authentication and multi-user support, including task isolation (run-as-user), plus the official OpenJD `EXPR` extension and expanded ffmpeg and Mistika reference presets. **Phase 4** (production hardening) is in progress: the PostgreSQL state store, backup/restore, external and clustered NATS, scheduler high availability, the scaling signal of capacity groups, and a much larger set of reference presets and in-application submitters are implemented, not yet released. Details may change with requests, feedback, and discoveries as development progresses.
 
 This document provides technical detail on `sqi`'s architecture, core concepts, and development roadmap. For the vision and feature overview, see [README.md](index.md).
 
@@ -191,6 +191,8 @@ compatible — a product can declare all five):
 
 `sqi` does not manage storage replication or synchronization between locations. Studios are responsible for ensuring data is present in cloud storage before jobs run. `sqi` provides the path translation and staging hooks to integrate with whatever sync solution the studio uses (rclone, AWS DataSync, rsync, etc.).
 
+Making a studio's data available to cloud machines automatically, so that "add some cloud nodes" just works, is not part of capacity groups either; it is recorded as future work (see [Future: turnkey cloud burst](#future-turnkey-cloud-burst)).
+
 ---
 
 ## Compute Locations and Worker Management
@@ -293,7 +295,7 @@ before Phase 3. See [docs/auth.md](auth.md) for the model and setup.
 - Backup, restore and upgrade — **implemented, not yet released**: `sqi-server backup` and `sqi-server restore` on SQLite and PostgreSQL, with restore handing back the tasks the backup recorded in flight; forward-only schema migrations (a binary older than the database refuses to start, and rollback is restoring the pre-upgrade backup); one server per database, enforced by a lock; and reconciliation of tasks a live worker stops reporting. See [Upgrade](operations.md#upgrade), [Rollback](operations.md#rollback) and [Restore](operations.md#restore).
 - Scheduler HA — **implemented, not yet released**: `ha.enabled` runs several `sqi-server`s on one PostgreSQL database and one external NATS account, one leader and warm standbys, with a leader lease kept on the database's clock, every scheduler write fenced by the leader's epoch, and a deposed leader exiting with code 75 for its supervisor to restart as a standby; a standby takes over a crashed leader in about 20 s and a stopped one in about a second, with running tasks untouched. See [Running more than one server (high availability)](operations.md#running-more-than-one-server-high-availability) and [`deploy/docker-compose.ha.yml`](https://github.com/uberware/sqi/blob/main/deploy/docker-compose.ha.yml).
 - External and clustered NATS — **implemented, not yet released**: `nats.mode: external` runs the farm on a NATS server or cluster the operator runs, with configurable stream replicas, worker authentication through the NATS auth callout in both broker modes, one `sqi-server` (or one high-availability group) per broker account, and `sqi-server nats external init` to generate the cluster's accounts configuration. See [Running on an external NATS cluster](operations.md#running-on-an-external-nats-cluster).
-- Worker auto-scaling hooks (AWS, GCP, Azure)
+- Capacity groups (elastic and power-managed workers) — **first part implemented, not yet released**: a capacity group is a named or sized set of machines that sqi publishes a scaling signal for, as `sqi_capacity_*` metrics and a status on the REST API (cores of ready work a group could run, the total machines it should have, and which idle machines are safe to give back), for an AWS Auto Scaling group, a GCP managed instance group, an Azure scale set or KEDA to act on. Machines booted from an image join with a reusable group token; spot and preemptible workers hand their tasks back at once on a provider notice; cloud workers that left for good are removed and their credentials revoked. Planned next, as a second part: on-premises sleep and wake over the LAN (wake-on-LAN) and a generic script provider that runs the operator's own commands to grow and shrink a group. sqi launches and stops no machine yet. See [Capacity groups](capacity.md).
 - Installer packages (Linux, macOS, Windows)
 - Reference presets and submitters — **implemented, not yet released**: 45 presets covering DCC rendering, standalone renderers, transcoding and image processing; seven built-in products, including fan-out `command-sequence`/`python-sequence` and Windows `script-powershell`; in-application submitters for 14 applications; the `SQI_LOG_CHECKS` vendor extension for applications that exit 0 on failure; and a checked record of the validation tier each preset has reached. See [Preset Library](preset-library.md).
 
@@ -311,6 +313,22 @@ before Phase 3. See [docs/auth.md](auth.md) for the model and setup.
 - Full documentation
 - Migration guides
 - Dual licensing finalized (AGPL + commercial)
+
+### Future: turnkey cloud burst
+
+Capacity groups give sqi the signal for growing and shrinking the machines doing work. The small shop's wish, "just add some nodes from the cloud", also needs sqi to launch those machines and to make the studio's data available to them. That is a product-sized program on top of capacity groups, not part of them. It is not scheduled. The storage options recorded for it:
+
+1. **Job attachments** (the AWS Deadline Cloud model): content-addressed upload of a job's inputs to object storage at submission, a local cache on each cloud worker, and outputs synced back. The most automatic option, but every submitter must discover a scene's dependencies (textures, caches, references), which is deep per-application integration.
+2. **Mirroring a storage location**: sync a whole named location, or a subtree, to cloud storage. Simpler, but wasteful.
+3. **Bring-your-own cloud filesystem** (LucidLink, AWS File Cache, Hammerspace and similar): sqi maps a storage-location root to it and guides the setup. Cheap for sqi, but not automatic.
+
+The same program would own:
+
+- **reachability**: a public endpoint, or a tunnel, back to the server;
+- **application licence-server reachability** from the cloud, which is often the real blocker;
+- **cost guardrails**: budgets and caps.
+
+Storage locations and compute locations are its natural foundation.
 
 ---
 

@@ -2270,10 +2270,13 @@ described in [Writing to a file](#writing-to-a-file).
 |---|---|---|---|
 | `sqi_http_requests_total` | counter | `method`, `path`, `status_code` | HTTP requests by method, path, and status |
 | `sqi_http_request_duration_seconds` | histogram | `method`, `path` | HTTP request latency |
-| `sqi_scheduler_queue_depth` | gauge | `queue` | Leasable ready tasks waiting for assignment, by queue (excludes tasks in retry backoff and tasks under paused/parked jobs) |
+| `sqi_scheduler_queue_depth` | gauge | `queue` | Leasable ready tasks waiting for assignment, by queue ID (excludes tasks in retry backoff and tasks under paused/parked jobs); falls back to `0` when a queue drains |
 | `sqi_scheduler_tasks_total` | counter | `queue`, `status` | Tasks processed by final status |
 | `sqi_scheduler_assignment_duration_seconds` | histogram | `result` | Wall-clock time for a single task-assignment attempt, by `result` (`assigned`, `deferred`, `error`) — not queue residency |
 | `sqi_scheduler_idle_workers` | gauge | `farm` | Workers online but not assigned a task |
+| `sqi_capacity_demand_cores` | gauge | `group` | Cores of ready work a [capacity group](capacity.md) could run that no idle worker absorbed; one series per enabled group |
+| `sqi_capacity_desired_machines` | gauge | `group` | Total machines a capacity group should have, counting those it has |
+| `sqi_capacity_members` | gauge | `group`, `state` | A capacity group's members, `state` `online` or `offline` |
 | `sqi_workers_total` | gauge | `status` | Registered workers by status |
 | `sqi_nats_published_total` | counter | `subject` | NATS messages published by subject |
 | `sqi_nats_consumed_total` | counter | `subject` | NATS messages consumed by subject |

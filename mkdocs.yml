@@ -66,6 +66,7 @@ nav:
       - Authentication: auth.md
       - TLS: tls.md
       - Observability: observability.md
+      - Capacity Groups: capacity.md
       - Load Testing: load-testing.md
       - Release Runbook: release-runbook.md
   - Reference:

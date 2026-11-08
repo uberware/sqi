@@ -687,9 +687,13 @@ than leaving it out. Common entries:
 
 ### Gauges that mislead
 
-`sched.queue_depth{queue}` keeps a drained queue's last non-zero value: the
-server never resets a gauge child. Do not read a queue's end depth as proof it
-is stuck or drained. The report shows `-` for it and no finding reads it.
+`sched.queue_depth{queue}` is the server's `sqi_scheduler_queue_depth`. The
+server now sets the gauge of a queue that drains back to `0` on its next sweep,
+so a drained queue no longer keeps its last non-zero value, but only for a queue
+the server has already seen since it started: a queue that was already empty
+when the server started has no series. The report still shows `-` for a queue's
+end depth and no finding reads it, so do not take a queue's end depth from the
+report as proof it is stuck or drained; read the series in `series.csv`.
 
 ### Comparing runs
 

@@ -145,8 +145,8 @@ exception of `POST /api/v1/workers/enroll` noted above (`/healthz`,
 | `GET /workers`, `GET /workers/{id}` | `workers.read` |
 | `POST /workers/{id}/disable`, `POST /workers/{id}/enable`, `DELETE /workers/{id}` | `workers.manage` |
 | `POST /workers/join-tokens`, `DELETE /workers/{id}/credential` | `workers.enroll` |
-| `GET` on farms, queues, storage-locations, compute-locations, usage-pools | `infra.read` |
-| `POST`/`PUT`/`DELETE` on farms, queues, storage-locations, compute-locations, usage-pools | `infra.manage` |
+| `GET` on farms, queues, storage-locations, compute-locations, usage-pools, capacity-groups (including a group's members) | `infra.read` |
+| `POST`/`PUT`/`DELETE` on farms, queues, storage-locations, compute-locations, usage-pools, capacity-groups; adding and removing a capacity group's members; listing, minting and revoking its tokens | `infra.manage` |
 | `GET /products`, `GET /products/{name}`, `GET /products/{name}/parameters`, `GET /presets`, `GET /presets/{name}` | `products.read` |
 | `POST /products`, `PUT /products/{name}`, `DELETE /products/{name}`, `POST /presets/{name}/install` | `products.manage` |
 | `GET /diagnostics/logs`, `GET /servers`, WebSocket subject `diagnostics` | `diagnostics.read` |
@@ -165,7 +165,10 @@ it to gate. `DELETE /workers/{id}` — removing the worker record itself —
 also cascades a credential revoke through the same synchronous path as
 `DELETE /workers/{id}/credential`, before deleting the worker row, so that
 deleting a worker never leaves its broker access live with no permission
-able to cut it.
+able to cut it. Minting a capacity-group token (`POST /capacity-groups/{id}/tokens`)
+attaches compute in the same way and is likewise mounted only when `auth.enabled`
+(a `POST` is otherwise answered `405`), but it is gated on `infra.manage`; see
+[Capacity groups](capacity.md#sized-groups-with-broker-authentication-on).
 
 Object routes (`/jobs/{id}…`, `/tasks/{id}…`) are additionally owner-scoped: a
 principal without `jobs.read.all` sees and acts on only its own jobs — the one
@@ -748,6 +751,40 @@ FARM_ID=$(echo $FARM | jq -r .id)
 curl -s -X POST "$BASE/queues" \
   -H "Content-Type: application/json" \
   -d "{\"farm_id\":\"$FARM_ID\",\"name\":\"renders\",\"priority\":50,\"max_concurrent_tasks\":200}"
+```
+
+### Capacity groups
+
+Capacity groups are the exception to the resource pattern above: they take a
+few more routes. See [Capacity groups](capacity.md) for what the figures mean.
+
+```
+GET    /api/v1/capacity-groups                          # every group, with its last evaluation as "status"
+POST   /api/v1/capacity-groups                          # create
+GET    /api/v1/capacity-groups/{id}                     # one group; "status" is null until evaluated, while disabled, and on a standby
+PUT    /api/v1/capacity-groups/{id}                     # replace the settings
+DELETE /api/v1/capacity-groups/{id}                     # 409 while any worker is a member
+GET    /api/v1/capacity-groups/{id}/members             # the group's workers, as GET /workers returns them
+PUT    /api/v1/capacity-groups/{id}/members/{workerID}  # add a worker to a named group
+DELETE /api/v1/capacity-groups/{id}/members/{workerID}  # remove a worker
+GET    /api/v1/capacity-groups/{id}/tokens              # the group's tokens (never the secret)
+POST   /api/v1/capacity-groups/{id}/tokens              # mint a reusable token for a sized group
+DELETE /api/v1/capacity-groups/{id}/tokens/{tokenID}    # revoke a token
+```
+
+Durations are in seconds (`scale_up_cooldown_seconds`, `idle_timeout_seconds`,
+`boot_timeout_seconds`), unknown request fields are refused with `400`, and only
+`provider: external` is accepted. A group's `status` carries `demand_cores`,
+`desired_machines` (the **total** the group should have, retire candidates
+included), `online_members`, `offline_members`, `retire_candidates`,
+`mismatches` and `evaluated_at`.
+
+```sh
+# What does the farm want from group "cloud-spot"?
+curl -s "$BASE/capacity-groups"   | jq '.[] | select(.name == "cloud-spot") | .status | {desired_machines, online_members, retire_candidates}'
+
+# Mint a group token (auth.enabled and nats.auth.enabled); the secret is shown once
+curl -s -X POST "$BASE/capacity-groups/$GROUP_ID/tokens" -d '{"expires_in":"720h"}' | jq -r .token
 ```
 
 ---
