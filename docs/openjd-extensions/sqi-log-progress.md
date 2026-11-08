@@ -189,6 +189,8 @@ ships.
 
 | Preset | Forms used | Confirmed against |
 |---|---|---|
+| `blender-batch-render` | `frame` (`Rendering frame N`); `framedone` + `frametotal` (Cycles `Sample N/M`, tiled Cycles `Rendered N/M Tiles`, EEVEE `Rendering N / M samples`); status after the `Mem:` field, or after `Fra:` for EEVEE | Blender 5.2.2 (Cycles whole-frame and tiled, EEVEE); not Blender 4.x |
+| `blender-view-layer-render` | the same block as `blender-batch-render` | Blender 5.2.2 (Cycles whole-frame and tiled, EEVEE); not Blender 4.x |
 
 ## Compatibility
 `SQI_LOG_PROGRESS` is an sqi extension. Other OpenJD runtimes reject the

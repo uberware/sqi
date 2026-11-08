@@ -34,6 +34,9 @@ readme: |
   to render up to that many consecutive frames in one Blender launch, trading
   parallelism for fewer scene loads.
 
+  The task's progress bar moves as each frame starts and, within a frame, with
+  the Cycles or EEVEE sample count (or Cycles tile count) Blender prints.
+
   ## Requirements
 
   - Workers tagged `attr.worker.tag.blender = true`
@@ -43,7 +46,7 @@ version: 1.0.0
 template:
   specificationVersion: jobtemplate-2023-09
   name: Blender Batch Render
-  extensions: [TASK_CHUNKING, SQI_CHUNK_BOUNDS]
+  extensions: [TASK_CHUNKING, SQI_CHUNK_BOUNDS, SQI_LOG_PROGRESS]
   parameterDefinitions:
     - name: SceneFile
       type: PATH
@@ -73,6 +76,22 @@ template:
             chunks:
               defaultTaskCount: 1
               rangeConstraint: CONTIGUOUS
+      SQI_LOG_PROGRESS:
+        # From Blender 5.2.2's output (test/integration/testdata/progress):
+        # every line carries a timestamp and a channel before the "|", so
+        # nothing is anchored at the start. Cycles counts "Sample N/M" after
+        # a "Mem:" field; EEVEE prints "Rendering N / M samples" with none.
+        # A tiled Cycles frame prints "Rendered N/M Tiles, Sample ..." with a
+        # per-tile sample count, so the tiles measure it; the sample pattern
+        # needs the "| " before "Sample" and leaves those lines alone.
+        progress:
+          - '\| Rendering frame (?P<frame>-?\d+)'
+          - '\| Rendered (?P<framedone>\d+)/(?P<frametotal>\d+) Tiles'
+          - '\| Sample (?P<framedone>\d+)/(?P<frametotal>\d+)'
+          - '\| Rendering (?P<framedone>\d+) / (?P<frametotal>\d+) samples'
+        status:
+          - '\| Mem: [^|]*\| (?P<status>.+)'
+          - '\| Fra: -?\d+ \| (?P<status>[^|]+)$'
       script:
         actions:
           onRun:

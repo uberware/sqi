@@ -1,0 +1,30 @@
+# Captured verbatim from Blender 5.2.2 on macOS arm64 (stdout and stderr, combined); scratch path replaced by <SCRATCH>.
+# version: Blender 5.2.2 LTS (hash d13f752e3b9c built 2026-09-15 01:49:19)
+# scene:   blender -b --factory-startup --python-exit-code 1 --python testdata/dcc/blender_progress_scene.py -- <SCRATCH>/eevee.blend BLENDER_EEVEE 8 64 36
+# command: blender -b <SCRATCH>/eevee.blend -o <SCRATCH>/out/eevee_#### -s 1 -e 3 -a
+00:00.356  blend            | Read blend: "<SCRATCH>/eevee.blend"
+00:00.360  render           | Rendering animation (frames 1..3)
+00:00.360  render           | Rendering frame 1
+00:00.360  render           | Start rendering: Scene, ViewLayer
+00:00.360  render           | Engine: EEVEE
+00:00.516  render           | Fra: 1 | Rendering 1 / 8 samples
+Blender 5.2.2 LTS (hash d13f752e3b9c built 2026-09-15 01:49:19)
+00:00.597  render           | Fra: 1 | Rendering 8 / 8 samples
+00:00.664  render           | Saved: '<SCRATCH>/out/eevee_0001.png'
+00:00.664  render           | Time: 00:00.30 (Saving: 00:00.06)
+00:00.664  render           | Rendering frame 2
+00:00.664  render           | Start rendering: Scene, ViewLayer
+00:00.664  render           | Engine: EEVEE
+00:00.704  render           | Fra: 2 | Rendering 1 / 8 samples
+00:00.727  render           | Fra: 2 | Rendering 8 / 8 samples
+00:00.730  render           | Saved: '<SCRATCH>/out/eevee_0002.png'
+00:00.730  render           | Time: 00:00.06 (Saving: 00:00.00)
+00:00.730  render           | Rendering frame 3
+00:00.730  render           | Start rendering: Scene, ViewLayer
+00:00.730  render           | Engine: EEVEE
+00:00.770  render           | Fra: 3 | Rendering 1 / 8 samples
+00:00.793  render           | Fra: 3 | Rendering 8 / 8 samples
+00:00.795  render           | Saved: '<SCRATCH>/out/eevee_0003.png'
+00:00.795  render           | Time: 00:00.06 (Saving: 00:00.00)
+
+Blender quit

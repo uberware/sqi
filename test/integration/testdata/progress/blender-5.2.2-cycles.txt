@@ -1,0 +1,152 @@
+# Captured verbatim from Blender 5.2.2 on macOS arm64 (stdout and stderr, combined); scratch path replaced by <SCRATCH>.
+# version: Blender 5.2.2 LTS (hash d13f752e3b9c built 2026-09-15 01:49:19)
+# scene:   blender -b --factory-startup --python-exit-code 1 --python testdata/dcc/blender_progress_scene.py -- <SCRATCH>/cycles.blend CYCLES 8 64 36
+# command: blender -b <SCRATCH>/cycles.blend -o <SCRATCH>/out/cycles_#### -s 1 -e 3 -a
+00:00.357  blend            | Read blend: "<SCRATCH>/cycles.blend"
+00:00.362  render           | Rendering animation (frames 1..3)
+00:00.362  render           | Rendering frame 1
+00:00.362  render           | Start rendering: Scene, ViewLayer
+00:00.362  render           | Engine: Cycles
+00:00.368  render           | Fra: 1 | Mem: 1M | Synchronizing object | Sun
+Blender 5.2.2 LTS (hash d13f752e3b9c built 2026-09-15 01:49:19)
+00:00.368  render           | Fra: 1 | Mem: 1M | Synchronizing object | Sphere
+00:00.368  render           | Fra: 1 | Mem: 1M | Synchronizing object | Cube
+00:00.368  render           | Fra: 1 | Mem: 1M | Initializing
+00:00.368  render           | Fra: 1 | Mem: 1M | Waiting for render to start
+00:00.368  render           | Fra: 1 | Mem: 1M | Updating Scene
+00:00.368  render           | Fra: 1 | Mem: 1M | Updating Shaders
+00:00.368  render           | Fra: 1 | Mem: 1M | Loading render kernels (may take a few minutes the first time)
+00:00.368  render           | Fra: 1 | Mem: 1M | Updating Procedurals
+00:00.368  render           | Fra: 1 | Mem: 1M | Updating Background
+00:00.368  render           | Fra: 1 | Mem: 1M | Updating Scene Attribute
+00:00.368  render           | Fra: 1 | Mem: 1M | Updating Camera
+00:00.368  render           | Fra: 1 | Mem: 1M | Updating Meshes Flags
+00:00.368  render           | Fra: 1 | Mem: 1M | Updating Objects
+00:00.368  render           | Fra: 1 | Mem: 1M | Updating Objects | Copying Transformations to device
+00:00.368  render           | Fra: 1 | Mem: 1M | Updating Particle Systems
+00:00.368  render           | Fra: 1 | Mem: 1M | Updating Particle Systems | Copying Particles to device
+00:00.368  render           | Fra: 1 | Mem: 1M | Updating Meshes
+00:00.368  render           | Fra: 1 | Mem: 1M | Updating Objects | Applying Static Transformations
+00:00.368  render           | Fra: 1 | Mem: 1M | Updating Scene BVH | Building
+00:00.368  render           | Fra: 1 | Mem: 1M | Updating Scene BVH | Building BVH
+00:00.368  render           | Fra: 1 | Mem: 1M | Updating Scene BVH | Building BVH 0%
+00:00.369  render           | Fra: 1 | Mem: 1M | Updating Scene BVH | Copying BVH to device
+00:00.369  render           | Fra: 1 | Mem: 1M | Updating Mesh | Computing attributes
+00:00.369  render           | Fra: 1 | Mem: 1M | Updating Mesh | Copying Attributes to device
+00:00.369  render           | Fra: 1 | Mem: 1M | Updating Mesh | Computing normals
+00:00.369  render           | Fra: 1 | Mem: 1M | Updating Mesh | Copying Mesh to device
+00:00.369  render           | Fra: 1 | Mem: 1M | Updating Objects Flags
+00:00.369  render           | Fra: 1 | Mem: 1M | Updating Primitive Offsets
+00:00.369  render           | Fra: 1 | Mem: 1M | Updating Images
+00:00.369  render           | Fra: 1 | Mem: 1M | Updating Volume
+00:00.369  render           | Fra: 1 | Mem: 1M | Updating Camera Volume
+00:00.369  render           | Fra: 1 | Mem: 1M | Updating Lookup Tables
+00:00.369  render           | Fra: 1 | Mem: 1M | Updating Lights
+00:00.369  render           | Fra: 1 | Mem: 1M | Updating Lights | Computing tree
+00:00.369  render           | Fra: 1 | Mem: 1M | Updating Integrator
+00:00.369  render           | Fra: 1 | Mem: 1M | Updating Film
+00:00.369  render           | Fra: 1 | Mem: 1M | Updating Lookup Tables
+00:00.369  render           | Fra: 1 | Mem: 1M | Updating Baking
+00:00.369  render           | Fra: 1 | Mem: 1M | Updating Device | Writing constant memory
+00:00.369  render           | Fra: 1 | Mem: 1M | Sample 0/8
+00:00.369  render           | Fra: 1 | Remaining: 00:00.00 | Mem: 1M | Sample 1/8
+00:00.371  render           | Fra: 1 | Mem: 1M | Sample 8/8
+00:00.371  render           | Fra: 1 | Mem: 1M | Finished
+00:00.435  render           | Saved: '<SCRATCH>/out/cycles_0001.png'
+00:00.435  render           | Time: 00:00.07 (Saving: 00:00.06)
+00:00.435  render           | Rendering frame 2
+00:00.435  render           | Start rendering: Scene, ViewLayer
+00:00.435  render           | Engine: Cycles
+00:00.436  render           | Fra: 2 | Mem: 1M | Synchronizing object | Sphere
+00:00.436  render           | Fra: 2 | Mem: 1M | Synchronizing object | Cube
+00:00.436  render           | Fra: 2 | Mem: 1M | Initializing
+00:00.436  render           | Fra: 2 | Mem: 1M | Waiting for render to start
+00:00.436  render           | Fra: 2 | Mem: 1M | Updating Scene
+00:00.436  render           | Fra: 2 | Mem: 1M | Updating Shaders
+00:00.436  render           | Fra: 2 | Mem: 1M | Loading render kernels (may take a few minutes the first time)
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Procedurals
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Background
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Scene Attribute
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Camera
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Meshes Flags
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Objects
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Objects | Copying Transformations to device
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Particle Systems
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Particle Systems | Copying Particles to device
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Meshes
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Objects | Applying Static Transformations
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Scene BVH | Building
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Scene BVH | Building BVH
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Scene BVH | Copying BVH to device
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Mesh | Computing attributes
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Mesh | Copying Attributes to device
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Mesh | Computing normals
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Mesh | Copying Mesh to device
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Objects Flags
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Primitive Offsets
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Images
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Volume
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Camera Volume
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Lookup Tables
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Lights
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Lights | Computing tree
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Integrator
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Film
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Lookup Tables
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Baking
+00:00.437  render           | Fra: 2 | Mem: 1M | Updating Device | Writing constant memory
+00:00.437  render           | Fra: 2 | Mem: 1M | Sample 0/8
+00:00.437  render           | Fra: 2 | Remaining: 00:00.00 | Mem: 1M | Sample 1/8
+00:00.439  render           | Fra: 2 | Mem: 1M | Sample 8/8
+00:00.439  render           | Fra: 2 | Mem: 1M | Finished
+00:00.441  render           | Saved: '<SCRATCH>/out/cycles_0002.png'
+00:00.441  render           | Time: 00:00.00 (Saving: 00:00.00)
+00:00.441  render           | Rendering frame 3
+00:00.441  render           | Start rendering: Scene, ViewLayer
+00:00.441  render           | Engine: Cycles
+00:00.441  render           | Fra: 3 | Mem: 1M | Synchronizing object | Sphere
+00:00.441  render           | Fra: 3 | Mem: 1M | Synchronizing object | Cube
+00:00.442  render           | Fra: 3 | Mem: 1M | Initializing
+00:00.442  render           | Fra: 3 | Mem: 1M | Waiting for render to start
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Scene
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Shaders
+00:00.442  render           | Fra: 3 | Mem: 1M | Loading render kernels (may take a few minutes the first time)
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Procedurals
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Background
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Scene Attribute
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Camera
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Meshes Flags
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Objects
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Objects | Copying Transformations to device
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Particle Systems
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Particle Systems | Copying Particles to device
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Meshes
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Objects | Applying Static Transformations
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Scene BVH | Building
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Scene BVH | Building BVH
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Scene BVH | Copying BVH to device
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Mesh | Computing attributes
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Mesh | Copying Attributes to device
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Mesh | Computing normals
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Mesh | Copying Mesh to device
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Objects Flags
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Primitive Offsets
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Images
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Volume
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Camera Volume
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Lookup Tables
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Lights
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Lights | Computing tree
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Integrator
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Film
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Lookup Tables
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Baking
+00:00.442  render           | Fra: 3 | Mem: 1M | Updating Device | Writing constant memory
+00:00.442  render           | Fra: 3 | Mem: 1M | Sample 0/8
+00:00.442  render           | Fra: 3 | Remaining: 00:00.00 | Mem: 1M | Sample 1/8
+00:00.444  render           | Fra: 3 | Mem: 1M | Sample 8/8
+00:00.445  render           | Fra: 3 | Mem: 1M | Finished
+00:00.445  render           | Saved: '<SCRATCH>/out/cycles_0003.png'
+00:00.445  render           | Time: 00:00.00 (Saving: 00:00.00)
+
+Blender quit

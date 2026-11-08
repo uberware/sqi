@@ -32,7 +32,15 @@ presets:
         number, and that a stepped range renders exactly its frames. Not
         shown: Blender 4.x (the argv is derived from its documentation), a
         supplied path that already carries an extension, or any output format
-        but multilayer EXR.
+        but multilayer EXR. The SQI_LOG_PROGRESS patterns were confirmed
+        against Blender 5.2.2 output captured with Cycles (whole-frame and
+        tiled) and EEVEE (testdata/progress, checked by
+        TestPresetProgress_Fixtures), and Tier 2 shows the task's progress
+        moving through a four-frame chunk under a real 5.2.2 worker. They were
+        not confirmed against Blender 4.x, whose lines carry no timestamp and
+        use another layout ("Fra:1 Mem:9.24M ..." with no "Rendering frame N"
+        line); a 4.0.1 render matches none of them, so the bar moves only as
+        tasks finish, and the Tier-2 progress subtest skips below 5.2.
     tier2:
       case: TestPresetDCC_Blender_BatchRender
       requires_app: blender
@@ -63,7 +71,15 @@ presets:
         a non-zero status before -a renders, naming the missing layer and
         leaving no output; and that a name containing quotes arrives intact.
         Not shown: what -S does when the scene does not exist, Blender 4.x, and
-        the #### caveats of blender-batch-render beyond padding.
+        the #### caveats of blender-batch-render beyond padding. The
+        SQI_LOG_PROGRESS patterns, shared with blender-batch-render, were
+        confirmed against Blender 5.2.2 output captured with Cycles
+        (whole-frame and tiled) and EEVEE (testdata/progress, checked by
+        TestPresetProgress_Fixtures), and Tier 2 shows the task's progress
+        moving through a four-frame chunk of an untiled Cycles render under a
+        real 5.2.2 worker. They were not confirmed against Blender 4.x, whose
+        lines carry no timestamp and use another layout, so there the bar
+        moves only as tasks finish.
     tier2:
       case: TestPresetDCC_Blender_ViewLayerRender
       requires_app: blender

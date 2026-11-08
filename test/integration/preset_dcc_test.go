@@ -53,6 +53,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/uberware/sqi/internal/presettest"
 	"github.com/uberware/sqi/internal/worker/capabilities"
 )
 
@@ -301,6 +302,100 @@ func TestPresetDCC_Blender_BatchRender(t *testing.T) {
 		assertTaskCount(t, ts, job, 2)
 		assertExactFiles(t, out, frameNames("nopad%04d.exr", 1, 4))
 	})
+
+	t.Run("progress moves within a chunk", func(t *testing.T) {
+		requireBlenderProgressVersion(t, exe)
+		// Tiled, so the tile pattern is what moves the bar within a frame.
+		slow := blenderProgressScene(t, exe, "640", "64")
+		out := t.TempDir()
+		assertBlenderChunkProgress(t, ts, farmID, queueID, "blender-batch-render", map[string]string{
+			"SceneFile": slow, "Frames": "1-4", "OutputPath": filepath.ToSlash(filepath.Join(out, "prog_####")),
+		})
+		assertExactFiles(t, out, frameNames("prog_%04d.png", 1, 2, 3, 4))
+	})
+}
+
+// blenderVersionLine matches the version Blender prints first for --version.
+var blenderVersionLine = regexp.MustCompile(`(?m)^Blender (\d+)\.(\d+)\.\d+`)
+
+// requireBlenderProgressVersion skips unless exe is Blender 5.2 or later. The
+// presets' SQI_LOG_PROGRESS patterns were written against Blender 5.2.2's
+// output; Blender 4.x prints its render lines in another layout ("Fra:1
+// Mem:9.24M ..." with no "Rendering frame N" line), which the patterns do not
+// match, so on 4.x the bar moves only as tasks finish.
+func requireBlenderProgressVersion(t *testing.T, exe string) {
+	t.Helper()
+	m := blenderVersionLine.FindStringSubmatch(runDCC(t, exe, "--version"))
+	if m == nil {
+		t.Fatalf("%s --version printed no Blender version line", exe)
+	}
+	major, errMajor := strconv.Atoi(m[1])
+	minor, errMinor := strconv.Atoi(m[2])
+	if errMajor != nil || errMinor != nil {
+		t.Fatalf("unreadable Blender version %s.%s", m[1], m[2])
+	}
+	if major < 5 || (major == 5 && minor < 2) {
+		t.Skipf("%s is Blender %s.%s; the progress patterns are confirmed against Blender 5.2 only", exe, m[1], m[2])
+	}
+}
+
+// blenderProgressScene builds the progress test scene (two objects, Cycles at
+// 320x180) with the given sample count and tile size ("0" for Blender's
+// default, which renders the frame as one tile) and returns the .blend path.
+// The sample counts the callers pass make each frame take a few seconds, longer
+// than the worker's 2 s progress throttle.
+func blenderProgressScene(t *testing.T, exe, samples, tileSize string) string {
+	t.Helper()
+	out := runDCC(t, exe, "-b", "--factory-startup", "--python-exit-code", "1",
+		"--python", dccTestdata(t, "blender_progress_scene.py"), "--",
+		filepath.Join(t.TempDir(), "progress.blend"), "CYCLES", samples, "320", "180", tileSize)
+	return savedPath(t, out)
+}
+
+// assertBlenderChunkProgress runs preset with four frames per task (the
+// multi-frame-chunk case's patch) over a single task and checks that its
+// SQI_LOG_PROGRESS block moved the task's progress through at least two values
+// above 0 while it ran, and that it left status text on the task.
+func assertBlenderChunkProgress(t *testing.T, ts *testServer, farmID, queueID, preset string, params map[string]string) {
+	t.Helper()
+	tmpl, err := presettest.PresetTemplate(presettest.SourcePresets, preset)
+	if err != nil {
+		t.Fatalf("PresetTemplate: %v", err)
+	}
+	tmpl, err = presettest.ApplyChunkPatch(tmpl, presettest.ChunkPatch{Step: "Render", ChunksDefaultTaskCount: 4})
+	if err != nil {
+		t.Fatalf("ApplyChunkPatch: %v", err)
+	}
+	job := submitPresetJob(t, ts, farmID, queueID, tmpl, params)
+	var tasks struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	mustDoJSON(t, http.MethodGet, apiURL(ts, "/api/v1/jobs/"+job+"/tasks"), nil, "", http.StatusOK, &tasks)
+	if len(tasks.Items) != 1 {
+		t.Fatalf("job ran %d tasks, want 1", len(tasks.Items))
+	}
+	taskID := tasks.Items[0].ID
+	seen := watchTaskProgress(t, ts, taskID, dccJobTimeout)
+	if got := pollJobStatus(t, ts, job, []string{"completed", "failed", "canceled"}, dccJobTimeout); got != "completed" {
+		t.Fatalf("job status = %q, want completed%s", got, reportFailedTasks(t, ts, job))
+	}
+	t.Logf("progress seen: %v", seen)
+	above := 0
+	for _, p := range seen {
+		if p > 0 {
+			above++
+		}
+	}
+	if above < 2 {
+		t.Errorf("progress seen = %v, want at least two distinct values above 0", seen)
+	}
+	final := getWatchedTask(t, ts, taskID)
+	if final.StatusText == "" {
+		t.Error("task status_text is empty after the render")
+	}
+	t.Logf("final status_text: %q", final.StatusText)
 }
 
 // runDCCJobExpectingFailure submits a preset and waits for the job to fail,
@@ -351,6 +446,21 @@ func TestPresetDCC_Blender_ViewLayerRender(t *testing.T) {
 			}
 		})
 	}
+
+	// The scene above renders a frame in about a second, one frame per task,
+	// which ends before the worker's 2 s progress throttle lets a second value
+	// out. This one takes a few seconds a frame, four frames in one task, and
+	// renders untiled, so the sample pattern is what moves the bar.
+	t.Run("progress moves within a chunk", func(t *testing.T) {
+		requireBlenderProgressVersion(t, exe)
+		slow := blenderProgressScene(t, exe, "640", "0")
+		out := t.TempDir()
+		assertBlenderChunkProgress(t, ts, farmID, queueID, "blender-view-layer-render", map[string]string{
+			"SceneFile": slow, "Frames": "1-4", "OutputPath": filepath.ToSlash(filepath.Join(out, "vlprog_####")),
+			"Scene": "Scene", "ViewLayer": "ViewLayer",
+		})
+		assertExactFiles(t, out, frameNames("vlprog_%04d.png", 1, 2, 3, 4))
+	})
 
 	// A layer the selected scene lacks must fail the job and render nothing. Fg
 	// exists in Shot but not in Alt, so this also shows -S chose the scene. A
