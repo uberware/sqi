@@ -4,12 +4,11 @@
  * Farm-scoped "Depends on jobs" checkbox list, shared by the raw job Submit
  * form and the product Submit form. Candidates come from the farm-scoped job
  * list (excluding terminal jobs — nothing meaningful to wait on there), and
- * the current selection is cleared whenever the target farm changes, since a
- * dependency in a farm the job is no longer targeting would be rejected by
- * the server (422) if it silently rode along.
+ * the current selection is cleared whenever the target farm changes, since the
+ * server rejects (422) a dependency in a farm other than the job's.
  *
- * Rendered as a scrollable checklist (rather than a native <select multiple>)
- * so every candidate and its checked state is visible at a glance. The list
+ * Rendered as a scrollable checklist rather than a native <select multiple>,
+ * so every candidate and its checked state is visible. The list
  * owns its height via a co-located CSS module; the host page only supplies the
  * field wrapper / label / note classes to match each form's surrounding look.
  */
@@ -20,7 +19,7 @@ import { TERMINAL_JOB_STATUSES } from '@/lib/jobStatus'
 import { filterBySearch } from '@/utils/filterBySearch'
 import styles from './DependsOnField.module.css'
 
-/** Candidate upstream jobs are capped so the picker never silently truncates. */
+/** Maximum number of candidate upstream jobs listed. */
 const CANDIDATE_LIMIT = 200
 
 const LABEL_ID = 'dependsOn-label'
@@ -77,9 +76,8 @@ export default function DependsOnField({
     [onChange, value],
   )
 
-  // Switching to a queue in a different farm invalidates any selected
-  // upstream jobs (dependencies must be in the same farm) — clear them so a
-  // stale, now-hidden selection can't silently ride along on submit.
+  // Dependencies must be in the job's farm, so a farm change clears the
+  // selection.
   const prevFarmIdRef = useRef(farmId)
   useEffect(() => {
     if (prevFarmIdRef.current !== farmId) {

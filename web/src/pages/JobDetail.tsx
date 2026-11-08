@@ -27,7 +27,7 @@ import TaskRunProgress from '@/components/TaskRunProgress'
 import { formatTimespan, formatDuration } from '@/lib/time'
 import { truncateId } from '@/lib/id'
 import { matchesSearch } from '@/utils/filterBySearch'
-import { isJobEvent, isTaskEvent, JOB_REMOVED_STATUS } from '@/ws/events'
+import { isJobEvent, isTaskEvent, JOB_CHANGE_ESTIMATE, JOB_REMOVED_STATUS } from '@/ws/events'
 import { patchTaskFromEvent, isProgressOnly } from '@/ws/taskPatch'
 import type {
   JobDetail as JobDetailType,
@@ -91,7 +91,7 @@ function effectiveRetryText(policy: EffectiveRetryPolicy): string {
 }
 
 /**
- * "attempt N" label for a task that has genuinely failed at least once,
+ * "attempt N" label for a task that has failed at least once,
  * where N is the attempt currently in play (failed_attempts + 1).
  * Undefined when the task has never failed.
  */
@@ -864,6 +864,11 @@ export default function JobDetail() {
     // 'removed' means the job was hard-deleted; skip the optimistic patch and
     // let the query invalidation (triggered by the delete mutation) handle it.
     if (payload.status === JOB_REMOVED_STATUS) return
+    if (payload.change === JOB_CHANGE_ESTIMATE) {
+      // Only the estimate moved; its status may be stale, so refetch instead.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.jobs.detail(jobId) })
+      return
+    }
 
     const { status, updated_at } = payload
     queryClient.setQueriesData<JobDetailType>(
@@ -1078,7 +1083,12 @@ export default function JobDetail() {
         <h2 className={styles.jobName}>{job.name}</h2>
       </div>
 
-      <MetadataCard job={job} canWrite={canWrite} anchorMs={jobUpdatedAt} now={now} />
+      <MetadataCard
+        job={job}
+        canWrite={canWrite}
+        anchorMs={job.received_at ?? jobUpdatedAt}
+        now={now}
+      />
 
       {job.depends_on !== undefined && job.depends_on.length > 0 && (
         <div className={styles.dependsOnSection}>

@@ -93,6 +93,11 @@ export interface Job {
   remaining_basis?: RemainingBasis
   /** Server time (RFC 3339) the remaining figure was computed; the client counts down from here. */
   as_of?: string
+  /**
+   * Client-only: local time (epoch ms) this row arrived from the server. The remaining-time
+   * countdown anchors here so patching a cached row (WebSocket events) cannot restart it.
+   */
+  received_at?: number
 }
 
 /** How a job's remaining time was derived. */

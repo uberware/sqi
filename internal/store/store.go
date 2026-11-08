@@ -15,9 +15,9 @@
 //	// REST handler only needs jobs and queues.
 //	func NewJobHandler(jobs store.JobStore, queues store.QueueStore) *JobHandler
 //
-// The SQLite-backed implementation implements Store in full.
-// The in-memory fake also implements Store in full, used by unit
-// tests that must not touch the filesystem.
+// The SQLite and PostgreSQL implementations implement Store in full. The
+// in-memory fake also implements Store in full, for unit tests that must not
+// touch the filesystem.
 //
 // # JSON columns
 //
@@ -90,8 +90,8 @@ var ErrConflict = errors.New("store: conflict")
 var ErrStaleRegistration = errors.New("store: registration is older than the one recorded")
 
 // ErrLastAdmin is returned when a write would leave the farm with no enabled
-// admin account. The guard is evaluated inside the write itself (invariant
-// I4), so two concurrent demotions cannot both pass it.
+// admin account. The guard is evaluated inside the write itself
+// (invariant I4), so two concurrent demotions cannot both pass it.
 var ErrLastAdmin = errors.New("store: would remove the last admin")
 
 // ErrDependencyUnsatisfiable is returned by [JobStore.CreateJobSubmission]

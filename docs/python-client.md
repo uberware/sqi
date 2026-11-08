@@ -2,9 +2,8 @@
 
 `sqi-sdk` is the pure-Python library for driving a `sqi-server` instance from
 scripts and pipeline tooling — the same operations the web UI performs, over the
-REST API (with an optional WebSocket extra for live events). Per the roadmap
-([`../ROADMAP.md`](roadmap.md)) it is the foundation for the Phase 2 DCC
-submitters and for pipeline automation.
+REST API (with an optional WebSocket extra for live events). It is the
+foundation for the DCC submitters and for pipeline automation.
 
 This is the reference document. For the project overview and install, see
 [`clients/python/README.md`](https://github.com/uberware/sqi/blob/main/clients/python/README.md); the authoritative wire
@@ -152,7 +151,7 @@ Status filters accept either the enum or its wire string:
 `sqi.list_jobs(status=JobStatus.RUNNING)` and `sqi.list_jobs(status="running")`
 are equivalent. `None` filters are omitted from the request entirely.
 
-> **Note:** farms, storage locations, compute locations, usage pools, and
+> Farms, storage locations, compute locations, usage pools, and
 > products are returned by the server as bare arrays (no pagination), so their
 > `list_*` methods return a plain `list[T]`. Only queues, jobs, tasks, and
 > workers are paginated.
@@ -165,7 +164,7 @@ The template may be a `str` (sent verbatim), a `pathlib.Path` (read from disk),
 or a `dict` (serialized to JSON). The `Content-Type` is chosen automatically —
 `application/json` for dicts and JSON-parseable strings/files, `application/x-yaml`
 otherwise (and always for `.yaml`/`.yml` paths). Serializing a dict needs only
-the standard library; the `yaml` extra is **not** required to submit.
+the standard library; the `yaml` extra is not required to submit.
 
 `depends_on` is an optional list of upstream job IDs (same farm) this job must
 wait for; if any is not yet `completed` the returned job's `status` is
@@ -204,7 +203,7 @@ can show it to the artist.
 
 | Method | Description |
 |---|---|
-| `list_jobs(*, status, farm_id, queue_id, owner, project, sort_by, sort_dir, limit, offset) -> Page[Job]` | One page of jobs. |
+| `list_jobs(*, status, farm_id, queue_id, owner, project, sort_by, sort_dir, limit, offset, include_timing=False) -> Page[Job]` | One page of jobs. `include_timing=True` adds each job's `remaining_seconds`, `remaining_basis` and `as_of`; otherwise they are `None`. |
 | `iter_jobs(...) -> Iterator[Job]` | Same filters, auto-paged. |
 | `get_job(job_id) -> Job` | Detailed job with `steps` and `task_counts`; 404 → `NotFoundError`. |
 | `pause_job(job_id) -> Job` / `resume_job(job_id) -> Job` | Pause/resume; returns the updated job. |
@@ -388,7 +387,7 @@ zero-valued on the yielded `LogChunk`; `seq_num` and the content fields are set.
 `wait_for_job(job_id, poll_interval=2.0, timeout=None) -> Job` polls `get_job`
 until the job reaches a terminal status (`completed`, `failed`, `canceled`),
 returning the final `Job`. It raises `SqiTimeoutError` if `timeout` elapses
-first. Note that `paused` is **not** terminal — pass a `timeout` if a job might
+first. `paused` is not terminal — pass a `timeout` if a job might
 be paused indefinitely.
 
 `submit_and_wait(template, *, farm_id, queue_id, owner=None, priority=None, project=None, max_attempts=None, retry_delay_seconds=None, failure_limit=None, depends_on=None, poll_interval=2.0, timeout=None) -> Job`

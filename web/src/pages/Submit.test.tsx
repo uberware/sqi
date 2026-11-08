@@ -170,7 +170,7 @@ function routeFetch(farm: Farm, queues: Queue[], jobs: Job[] = []) {
 // ── Test setup ────────────────────────────────────────────────────────────────
 
 // jsdom uses a null origin by default, which blocks localStorage access.
-// Replace it with a simple in-memory mock so Submit's queue persistence works.
+// Replace it with an in-memory mock so Submit's queue persistence works.
 const localStorageMock = (() => {
   const store = new Map<string, string>()
   return {
@@ -705,7 +705,7 @@ describe('Submit page', () => {
       const queueSelect = screen.getByRole('combobox', { name: /queue/i })
       await user.selectOptions(queueSelect, 'q-b')
 
-      // The now-irrelevant candidate drops out of the picker once its farm's
+      // The candidate drops out of the picker once its farm's
       // jobs are no longer in scope.
       await waitFor(() => {
         expect(screen.queryByRole('checkbox', { name: /Upstream A/ })).not.toBeInTheDocument()
@@ -721,7 +721,7 @@ describe('Submit page', () => {
         (c) => (c[1] as RequestInit | undefined)?.method === 'POST',
       )
       if (!postCall) throw new Error('expected a POST call')
-      // The stale farm-A selection must not silently ride along on the farm-B submission.
+      // The farm-A selection must not ride along on the farm-B submission.
       expect(String(postCall[0])).not.toContain('depends_on')
     })
   })

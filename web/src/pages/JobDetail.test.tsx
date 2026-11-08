@@ -365,6 +365,45 @@ describe('JobDetail', () => {
       expect(screen.getByText('10m 0s')).toBeInTheDocument()
     })
 
+    it('keeps counting down across a jobs event', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      try {
+        fetchMock.mockImplementation((url) => {
+          const u = String(url)
+          if (u.includes('/workers')) return Promise.resolve(okJson(makeWorkerListResponse([])))
+          if (u.includes('/tasks')) return Promise.resolve(okJson(makeTaskListResponse([])))
+          return Promise.resolve(okJson(makeJob({ ...base, remaining_basis: 'measured' })))
+        })
+
+        render(<JobDetail />, { wrapper: Wrapper })
+        await screen.findByText('10m 0s')
+        act(() => wsInstance(0).simulateOpen())
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(3_000)
+        })
+        act(() => {
+          wsInstance(0).simulateMessage({
+            type: 'push',
+            subject: 'jobs',
+            payload: {
+              job_id: 'job-aabbccdd-eeff',
+              status: 'running',
+              updated_at: '2024-01-15T10:10:00Z',
+            },
+            seq: 1,
+          })
+        })
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(1_000)
+        })
+
+        expect(screen.getByText(/^9m 5[4-7]s$/)).toBeInTheDocument()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
     it('edits the estimate when the user can write jobs', async () => {
       fetchMock.mockResolvedValueOnce(okJson(makeJob({ estimated_seconds: 3600 })))
       fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
@@ -969,7 +1008,7 @@ describe('JobDetail', () => {
       resolveRetry(okJson({ task_id: task.id, status: 'ready' }))
     })
 
-    it('does NOT show retry button for a canceled task whose upstream step has not completed', async () => {
+    it('does not show retry button for a canceled task whose upstream step has not completed', async () => {
       // step-2 (ComposeVideo) depends_on step-1 (RenderFrames), and step-1 is
       // 'failed' (not 'completed'), so depsSatisfied = false for step-2.
       const job = makeJob({
@@ -1006,7 +1045,7 @@ describe('JobDetail', () => {
 
       // Wait for table to render (logs link is always present)
       await waitFor(() => screen.getAllByRole('link', { name: /view logs/i }))
-      // The cascade-canceled dep-blocked task must NOT have a retry button.
+      // The cascade-canceled dep-blocked task must not have a retry button.
       expect(screen.queryByLabelText('Retry task task.cascade')).not.toBeInTheDocument()
       // And it must not have a checkbox (not selectable).
       expect(
@@ -1014,7 +1053,7 @@ describe('JobDetail', () => {
       ).not.toBeInTheDocument()
     })
 
-    it('does NOT include dep-blocked canceled tasks in bulk selectedRetryable', async () => {
+    it('does not include dep-blocked canceled tasks in bulk selectedRetryable', async () => {
       // step-1 is failed → step-2's dep (RenderFrames) is not completed.
       const job = makeJob({
         steps: [
@@ -1058,14 +1097,14 @@ describe('JobDetail', () => {
 
       // The running task is cancelable → checkbox present.
       await screen.findByRole('checkbox', { name: 'Select task task.run' })
-      // The blocked task is NOT selectable → no checkbox.
+      // The blocked task is not selectable → no checkbox.
       expect(
         screen.queryByRole('checkbox', { name: 'Select task task.blocked' }),
       ).not.toBeInTheDocument()
     })
 
-    it('shows retry button for a failed task in a step whose deps ARE satisfied', async () => {
-      // step-1 completed → step-2 deps ARE satisfied → retry button visible for failed task.
+    it('shows retry button for a failed task in a step whose deps are satisfied', async () => {
+      // step-1 completed → step-2 deps are satisfied → retry button visible for failed task.
       const job = makeJob({
         steps: [
           {
@@ -1363,6 +1402,44 @@ describe('JobDetail', () => {
       await waitFor(() =>
         expect(screen.getAllByLabelText('Status: Succeeded').length).toBeGreaterThan(0),
       )
+    })
+
+    it('refetches the job on an estimate event instead of applying its status', async () => {
+      fetchMock.mockImplementation((input) =>
+        Promise.resolve(
+          String(input).includes('/tasks')
+            ? okJson(makeTaskListResponse([]))
+            : okJson(makeJob({ status: 'completed' })),
+        ),
+      )
+
+      render(<JobDetail />, { wrapper: Wrapper })
+      await waitFor(() => screen.getAllByLabelText('Status: Completed'))
+      const jobFetches = () =>
+        fetchMock.mock.calls.filter((c) => /\/jobs\/[^/]+$/.test(String(c[0]))).length
+      const before = jobFetches()
+      const completedBefore = screen.getAllByLabelText('Status: Completed').length
+      const runningBefore = screen.queryAllByLabelText('Status: Running').length
+
+      act(() => {
+        wsInstance(0).simulateOpen()
+        wsInstance(0).simulateMessage({
+          type: 'push',
+          subject: 'jobs',
+          payload: {
+            job_id: 'job-aabbccdd-eeff',
+            status: 'running',
+            change: 'estimate',
+            updated_at: '2024-01-15T10:20:00Z',
+          },
+          seq: 1,
+        })
+      })
+
+      await waitFor(() => expect(jobFetches()).toBeGreaterThan(before))
+      // The job header keeps its status; only the refetch may change anything.
+      expect(screen.getAllByLabelText('Status: Completed')).toHaveLength(completedBefore)
+      expect(screen.queryAllByLabelText('Status: Running')).toHaveLength(runningBefore)
     })
 
     it('updates the job header status badge when a JobEvent arrives', async () => {
@@ -1903,7 +1980,7 @@ describe('JobDetail', () => {
   // ── Task attempt indicator and retry countdown ───────────────────────────
 
   describe('task attempt indicator and retry countdown', () => {
-    it('shows an attempt indicator for a task that has genuinely failed before', async () => {
+    it('shows an attempt indicator for a task that has failed before', async () => {
       const task = makeTask({ status: 'ready', failed_attempts: 1 })
       fetchMock.mockResolvedValueOnce(okJson(makeJob()))
       fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))

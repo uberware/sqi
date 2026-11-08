@@ -79,7 +79,7 @@ return a wrapper object:
 }
 ```
 
-Other list endpoints are **not** paginated — including farms, storage
+Other list endpoints are not paginated — including farms, storage
 locations, compute locations, usage pools, products, presets, users, and API
 keys. Those ignore `limit`/`offset` and return a bare JSON array.
 
@@ -87,7 +87,7 @@ keys. Those ignore `limit`/`offset` and return a bare JSON array.
 
 The URL prefix is the API contract version, and every response under
 `/api/v1` carries a matching `X-API-Version: 1` header. This contract major
-is deliberately decoupled from the product release version (e.g. sqi 0.1,
+is decoupled from the product release version (e.g. sqi 0.1,
 0.2, … all serve contract `1`). Additive changes — new endpoints, new
 optional fields, new enum values — do not change it; clients must tolerate
 unknown fields and values.
@@ -110,7 +110,7 @@ Clients should warn when they see a `Deprecation` header or an
 
 ## Authentication
 
-Authentication is **off by default** (`auth.enabled=false`), in which case every
+Authentication is off by default (`auth.enabled=false`), in which case every
 request is an anonymous superuser and no credential is needed — every example
 below works as written. See [`docs/auth.md`](auth.md) for the full model.
 
@@ -156,7 +156,7 @@ exception of `POST /api/v1/workers/enroll` noted above (`/healthz`,
 | `GET /users/{id}/api-keys`, `DELETE /users/{id}/api-keys/{keyId}` | `apikeys.admin` |
 | `POST /auth/logout`, `GET/PATCH /auth/me`, `PUT /auth/password`, `GET /version` | any authenticated principal |
 
-`workers.enroll` is deliberately separate from `workers.manage`: minting a
+`workers.enroll` is separate from `workers.manage`: minting a
 join token or revoking a broker credential attaches or detaches arbitrary
 compute, a different privilege in kind from enabling, disabling or deleting
 a worker record. `POST /workers/join-tokens` is additionally mounted only
@@ -265,9 +265,9 @@ Server gave up evaluating the template's expressions — `503 Service Unavailabl
 }
 ```
 
-This is **not** a verdict on the template: the deterministic expression budgets
-report an invalid template as `422`, while this outcome depends on how busy the
-server was, so the same body may well be accepted on a retry.
+This is not a verdict on the template: the deterministic expression budgets
+report an invalid template as `422`, while this outcome depends on server load,
+so the same body may be accepted on a retry.
 
 ---
 
@@ -311,6 +311,7 @@ Filter parameters (all optional):
 | `sort_dir` | `asc`, `desc` | Sort direction (default: `asc`) |
 | `limit` | 1–1000 | Page size (default: 50) |
 | `offset` | ≥0 | Page offset (default: 0) |
+| `include` | `timing` | Add each job's `remaining_seconds`, `remaining_basis` and `as_of` (comma-separated or repeated; empty values ignored; anything else is a `400`) |
 
 ```sh
 # List running jobs, newest first
@@ -330,10 +331,11 @@ Returns the job with its steps and per-status task counts. The response also
 carries `effective_retry` — the resolved retry policy for this job
 (`max_attempts`, `retry_delay_seconds`, `failure_limit`) after the
 server → farm → queue → job cascade — plus `failed_attempts` and, when the job
-has been auto-parked, a `park_reason`. Job list items and job detail also carry
-`remaining_seconds`, `remaining_basis` and `as_of`, and queue list and get responses carry
-`unfinished_jobs`, `work_remaining_seconds`, `jobs_without_estimate`,
-`running_tasks` and `as_of` only when requested with `?include=timing`; see
+has been auto-parked, a `park_reason`. Job detail also carries
+`remaining_seconds`, `remaining_basis` and `as_of`. Job list items carry those three, and
+queue list and get responses carry `unfinished_jobs`, `work_remaining_seconds`,
+`jobs_without_estimate`, `running_tasks` and `as_of`, only when requested with
+`?include=timing`; see
 [`docs/observability.md`](observability.md#remaining-time-and-eta).
 
 `task_counts.unschedulable` counts `ready` tasks that currently carry a
@@ -415,7 +417,7 @@ The worker that took the task is `assigned_worker_id`. The bare name
 `GET /tasks/{id}/attempts` — but never on this response.
 `unschedulable_reason` is non-empty only while a `ready` task cannot be
 satisfied by any online worker. `failure_reason` is the task-level reason for a
-terminal non-success and is **cleared on retry** — the per-attempt `message`
+terminal non-success and is cleared on retry — the per-attempt `message`
 from `GET /tasks/{id}/attempts` is the durable record. `retry_after`, when set
 and in the future, holds a `ready` task as a retry backoff. `parameters`,
 `assigned_worker_id`, `assigned_at`, `unschedulable_reason`, `failure_reason`,
@@ -725,7 +727,7 @@ Each resource supports `GET /` (list), `POST /` (create), `GET /{id}`,
 #### Storage locations: `type` is derived, not supplied
 
 The `type` field (`filesystem` / `s3` / `mixed`) is computed from the location's
-roots and appears **only in responses**. Supplying `type` in a `POST` or `PUT`
+roots and appears only in responses. Supplying `type` in a `POST` or `PUT`
 body returns `400 Bad Request`. Set the roots; sqi infers the type.
 
 Each `s3://` root is validated as a well-formed `s3://bucket[/prefix]` URI.

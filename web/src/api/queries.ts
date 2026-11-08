@@ -71,6 +71,12 @@ export type ListJobsParams = {
   sort_dir?: 'asc' | 'desc'
   limit?: number
   offset?: number
+  /**
+   * Ask the server for each job's remaining-time figures (`include=timing`).
+   * They cost a read proportional to the page's unfinished jobs' finished
+   * tasks, so request them only where they are shown.
+   */
+  include_timing?: boolean
 }
 
 /** Query parameters accepted by {@link fetchListTasks} / {@link useListTasks}. */
@@ -198,6 +204,7 @@ export function fetchListJobs(params: ListJobsParams): Promise<ListResponse<Job>
       sort_dir: params.sort_dir,
       limit: params.limit,
       offset: params.offset,
+      include: params.include_timing ? 'timing' : undefined,
     })}`,
   )
 }
@@ -415,7 +422,11 @@ export async function fetchFarmsWithQueues(options?: QueueReadOptions): Promise<
 export function useListJobs(params: ListJobsParams, options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: queryKeys.jobs.list(params),
-    queryFn: () => fetchListJobs(params),
+    queryFn: () =>
+      fetchListJobs(params).then((page) => {
+        const receivedAt = Date.now()
+        return { ...page, items: page.items.map((j) => ({ ...j, received_at: receivedAt })) }
+      }),
     enabled: options?.enabled ?? true,
   })
 }
@@ -424,7 +435,7 @@ export function useListJobs(params: ListJobsParams, options?: { enabled?: boolea
 export function useGetJob(id: string) {
   return useQuery({
     queryKey: queryKeys.jobs.detail(id),
-    queryFn: () => fetchGetJob(id),
+    queryFn: () => fetchGetJob(id).then((job) => ({ ...job, received_at: Date.now() })),
   })
 }
 

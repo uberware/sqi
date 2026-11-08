@@ -78,11 +78,9 @@ func TestListJobs_SearchParam(t *testing.T) {
 	}
 	r := newJobRouter(st, &fakeScheduler{})
 
-	// This test exercises the search filter, not owner scoping, so it needs
-	// an explicit unscoped principal (jobs.read.all) rather than relying on
-	// the seeded jobs' Owner happening to be "" — the same as a no-principal
-	// request's fail-closed owner. Without this, the test would pass even if
-	// listJobs silently scoped every request to owner "".
+	// The test targets the search filter, so it uses an explicit unscoped
+	// principal (jobs.read.all) rather than matching the seeded jobs' empty
+	// Owner against a request's fail-closed owner of "".
 	req := newUnscopedJobsReq(t, "/api/v1/jobs?search=alpha")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
@@ -99,7 +97,7 @@ func TestListJobs_SearchParam(t *testing.T) {
 }
 
 // testRetryDefaults is the server-level retry-policy fallback wired into the
-// test router — deliberately non-zero so effective_retry assertions can tell
+// test router. It is non-zero so effective_retry assertions can tell
 // "server default" apart from the clamp floor.
 var testRetryDefaults = scheduler.RetryPolicy{
 	MaxAttempts:  3,
@@ -109,10 +107,9 @@ var testRetryDefaults = scheduler.RetryPolicy{
 
 // newUnscopedJobsReq builds a GET request against target (an /api/v1/jobs
 // list URL) carrying an explicit unscoped principal (jobs.read.all, via the
-// operator role). listJobs owner-scopes any request with no principal in
-// context to "fail closed" (see jobscope.go), so filter/sort/pagination
-// subtests that don't care about scoping need an explicit unscoped principal
-// — otherwise they'd only "pass" by coincidence, if at all.
+// operator role). listJobs owner-scopes a request with no principal to
+// fail closed (see jobscope.go), so filter, sort and pagination subtests
+// need an explicit unscoped principal.
 func newUnscopedJobsReq(t *testing.T, target string) *http.Request {
 	t.Helper()
 	req := newReq(t, http.MethodGet, target, nil)
@@ -409,7 +406,7 @@ func TestSubmitJob_PersistsRetryPolicy(t *testing.T) {
 	}
 }
 
-// TestSubmitJobWakesQueue verifies Fix 2a: a successful submission wakes parked
+// TestSubmitJobWakesQueue verifies that a successful submission wakes parked
 // lease waiters on the created job's queue.
 func TestSubmitJobWakesQueue(t *testing.T) {
 	st := fake.New()
@@ -986,7 +983,7 @@ func TestPatchJob(t *testing.T) {
 			t.Errorf("failed_attempts = %d, want 0 in the response", resp.FailedAttempts)
 		}
 
-		// And the store agrees — the reset is persisted, not just echoed.
+		// The reset is persisted, not only echoed.
 		stored, err := st.GetJob(t.Context(), j.ID)
 		if err != nil {
 			t.Fatalf("GetJob: %v", err)
@@ -1199,10 +1196,10 @@ func (n *recordingJobNotifier) NotifyJob(e ws.JobEvent) { n.events = append(n.ev
 
 // TestJobHandler_DeleteJob_NotifiesWithOwner pins the owner on a delete
 // event: the delete handler deletes the row before emitting the removal event,
-// so the event must carry Owner explicitly (from the job it already loaded)
-// rather than relying on the hub's ownerCache fallback, which would try (and
-// fail) to GetJob a row that no longer exists — dropping the envelope for
-// every owner-scoped subscriber, including the job's own owner.
+// so the event must carry Owner explicitly (from the job it already loaded).
+// The hub's ownerCache fallback would call GetJob on a row that no longer
+// exists and drop the envelope for every owner-scoped subscriber, including
+// the job's own owner.
 func TestJobHandler_DeleteJob_NotifiesWithOwner(t *testing.T) {
 	t.Parallel()
 	st := fake.New()
@@ -1250,9 +1247,9 @@ func TestJobHandler_DeleteJob_NotFound(t *testing.T) {
 
 // TestJobHandler_DeleteJob_ReconcilesDependents verifies that deleting a job
 // calls the scheduler's ReconcileDependents so any jobs blocked on it are
-// canceled immediately rather than waiting for the periodic sweep. The API
-// layer test only exercises the handler's wiring (spy on the interface); the
-// actual cancel-on-reconcile behavior is covered by the scheduler tests.
+// canceled immediately rather than waiting for the periodic sweep. The test
+// covers the handler's wiring (a spy on the interface); the scheduler tests
+// cover the cancel-on-reconcile behavior.
 func TestJobHandler_DeleteJob_ReconcilesDependents(t *testing.T) {
 	t.Parallel()
 	st := fake.New()
@@ -1274,9 +1271,9 @@ func TestJobHandler_DeleteJob_ReconcilesDependents(t *testing.T) {
 // TestJobHandler_CancelJob_ReconcilesDependents verifies that canceling a job
 // calls the scheduler's ReconcileDependents so any jobs blocked on it are
 // canceled immediately rather than waiting for the periodic sweep, mirroring
-// TestJobHandler_DeleteJob_ReconcilesDependents. The API layer test only
-// exercises the handler's wiring (spy on the interface); the actual
-// cancel-on-reconcile behavior is covered by the scheduler tests.
+// TestJobHandler_DeleteJob_ReconcilesDependents. The test covers the
+// handler's wiring (a spy on the interface); the scheduler tests cover the
+// cancel-on-reconcile behavior.
 func TestJobHandler_CancelJob_ReconcilesDependents(t *testing.T) {
 	t.Parallel()
 	st := fake.New()
@@ -1607,10 +1604,9 @@ func TestJobHandler_DeleteJob_CancelFailureReturns500(t *testing.T) {
 }
 
 // TestSubmitJob_RetryOverrideQueryValidation asserts the submit endpoint
-// rejects malformed or out-of-range retry-override query parameters with 400
-// instead of silently submitting with different behavior than intended — and
-// still accepts the legitimate boundary value failure_limit=0 ("disable an
-// inherited limit").
+// rejects malformed or out-of-range retry-override query parameters with 400,
+// and accepts the boundary value failure_limit=0 ("disable an inherited
+// limit").
 func TestSubmitJob_RetryOverrideQueryValidation(t *testing.T) {
 	st := fake.New()
 	ctx := t.Context()
@@ -1653,8 +1649,8 @@ func TestSubmitJob_RetryOverrideQueryValidation(t *testing.T) {
 }
 
 // TestPatchJob_RejectsInvalidRetryOverrides asserts PATCH validates the retry
-// override fields at the boundary instead of storing nonsense that would be
-// echoed to every client and silently clamped at schedule time.
+// override fields at the boundary rather than storing values that would be
+// echoed to clients and clamped at schedule time.
 func TestPatchJob_RejectsInvalidRetryOverrides(t *testing.T) {
 	st := fake.New()
 	r := newJobRouter(st, &fakeScheduler{})
@@ -1688,7 +1684,7 @@ func TestPatchJob_RejectsInvalidRetryOverrides(t *testing.T) {
 }
 
 // TestGetJob_EffectiveRetry asserts the job detail response reports the
-// RESOLVED retry policy after job -> queue -> farm -> server-default
+// resolved retry policy after job -> queue -> farm -> server-default
 // inheritance, alongside the configured nullable overrides.
 func TestGetJob_EffectiveRetry(t *testing.T) {
 	st := fake.New()
@@ -1960,6 +1956,7 @@ func TestSubmitJob_EstimatedSeconds(t *testing.T) {
 		{"zero", "&estimated_seconds=0", http.StatusBadRequest, "estimated_seconds", false},
 		{"negative", "&estimated_seconds=-5", http.StatusBadRequest, "estimated_seconds", false},
 		{"non-integer", "&estimated_seconds=abc", http.StatusBadRequest, "estimated_seconds", false},
+		{"empty", "&estimated_seconds=", http.StatusBadRequest, "estimated_seconds", false},
 		{"overflow", "&estimated_seconds=2147483648", http.StatusBadRequest, "estimated_seconds", false},
 	}
 	for _, tt := range tests {
@@ -2023,6 +2020,8 @@ func TestPatchJob_EstimatedSeconds(t *testing.T) {
 		{"omitted leaves", store.JobStatusPending, &one, `{"priority":60}`, 200, true, 3600},
 		{"zero rejected", store.JobStatusPending, nil, `{"estimated_seconds":0}`, 400, false, 0},
 		{"string rejected", store.JobStatusPending, nil, `{"estimated_seconds":"1h"}`, 400, false, 0},
+		{"fraction rejected", store.JobStatusPending, nil, `{"estimated_seconds":1.5}`, 400, false, 0},
+		{"exponent rejected", store.JobStatusPending, nil, `{"estimated_seconds":1e10}`, 400, false, 0},
 		{"completed", store.JobStatusCompleted, nil, `{"estimated_seconds":7200}`, 409, false, 0},
 	}
 	for _, tt := range tests {
@@ -2036,6 +2035,9 @@ func TestPatchJob_EstimatedSeconds(t *testing.T) {
 			r.ServeHTTP(rr, req)
 			if rr.Code != tt.wantCode {
 				t.Fatalf("code = %d, want %d — body: %s", rr.Code, tt.wantCode, rr.Body)
+			}
+			if tt.wantCode == http.StatusBadRequest && !strings.Contains(rr.Body.String(), "estimated_seconds must be an integer") {
+				t.Errorf("400 body does not name the field: %s", rr.Body)
 			}
 			if tt.wantCode != http.StatusOK {
 				return
@@ -2053,6 +2055,63 @@ func TestPatchJob_EstimatedSeconds(t *testing.T) {
 				}
 			} else if stored.EstimatedSeconds != nil {
 				t.Errorf("stored = %d, want nil", *stored.EstimatedSeconds)
+			}
+		})
+	}
+}
+
+// TestJobHandler_PatchJob_EstimateNotifies pins that a PATCH which changes the
+// estimate tells other sessions (their queue and job lists show the figures
+// derived from it), and that PATCHes which leave it alone stay silent.
+func TestJobHandler_PatchJob_EstimateNotifies(t *testing.T) {
+	t.Parallel()
+	hundred, twoHours := 100, 7200
+	tests := []struct {
+		name       string
+		seed       *int
+		body       string
+		wantEvents int
+	}{
+		{"estimate set", nil, `{"estimated_seconds":7200}`, 1},
+		{"estimate changed", &hundred, `{"estimated_seconds":7200}`, 1},
+		{"estimate cleared", &hundred, `{"estimated_seconds":null}`, 1},
+		{"estimate unchanged", &twoHours, `{"estimated_seconds":7200}`, 0},
+		{"clear when already absent", nil, `{"estimated_seconds":null}`, 0},
+		{"priority only", &hundred, `{"priority":70}`, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			st := fake.New()
+			j := seedJob(t, st, store.JobStatusPending)
+			j.EstimatedSeconds = tt.seed
+			if _, err := st.UpdateJob(t.Context(), j); err != nil {
+				t.Fatalf("seed estimate: %v", err)
+			}
+
+			notifier := &recordingJobNotifier{}
+			h := newJobHandler(st, openjd.NewSubmitter(st), &fakeScheduler{}, notifier,
+				newTestLogger(), testRetryDefaults, false, 0)
+			r := chi.NewRouter()
+			r.Patch("/api/v1/jobs/{id}", h.patchJob)
+
+			req := newReq(t, http.MethodPatch, "/api/v1/jobs/"+j.ID, strings.NewReader(tt.body))
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, req)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("PATCH status = %d, want 200; body=%s", rr.Code, rr.Body)
+			}
+			if len(notifier.events) != tt.wantEvents {
+				t.Fatalf("NotifyJob called %d times, want %d", len(notifier.events), tt.wantEvents)
+			}
+			if tt.wantEvents == 1 {
+				got := notifier.events[0]
+				if got.JobID != j.ID || got.Owner != "alice" || got.Status != string(store.JobStatusPending) {
+					t.Errorf("event = %+v, want job %s owner alice status pending", got, j.ID)
+				}
+				if got.Change != ws.JobChangeEstimate {
+					t.Errorf("event Change = %q, want %q", got.Change, ws.JobChangeEstimate)
+				}
 			}
 		})
 	}

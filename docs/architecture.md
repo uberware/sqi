@@ -518,6 +518,18 @@ a lag after a long outage: a message already waiting out a 30 s delay when
 the store comes back waits the rest of it, so recovery can trail the store by
 up to 30 s.
 
+**Stored run time.** `tasks.run_ms` holds a succeeded task's measured run
+time in milliseconds: its latest attempt's `ended_at − started_at`, set by
+`CompleteTaskAttempt` in the same transaction that marks the task succeeded,
+and NULL when the task is not succeeded, its latest attempt did not succeed,
+has no `ended_at`, or ended before it started (clock skew). The remaining-time
+read sums it per step from the `tasks(step_id, status, run_ms)` index instead
+of finding each succeeded task's latest attempt on every read. Nothing moves a
+task out of `succeeded` or gives it a newer attempt, so the stored value never
+goes stale; migration `00045` backfilled it with the same rule, and the fake
+store derives it from attempts on each read, so the parity tests catch any
+write path that fails to store it.
+
 **Durable failure reason.** Every `task_attempts` row carries a `message`
 column next to `exit_code` — the worker's human-readable reason for that
 attempt, sent in `TaskStatusMsg.Message` on every failure path (pre-exec/

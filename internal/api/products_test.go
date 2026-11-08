@@ -133,7 +133,7 @@ func TestProducts_CreateThenGet(t *testing.T) {
 
 // TestProducts_NamespacedNameRoundTrip checks that a product whose name has a
 // '/' namespace (e.g. an installed preset "testing/render-simulator") is
-// retrievable when the browser URL-encodes the slash as %2F. Regression test:
+// retrievable when the browser URL-encodes the slash as %2F.
 // chi does not decode path params, so the handler must unescape the name.
 func TestProducts_NamespacedNameRoundTrip(t *testing.T) {
 	srv := newProductRouter(fake.New())
@@ -713,5 +713,17 @@ func TestProducts_SubmitRecordsProductAndEstimate(t *testing.T) {
 	srv.ServeHTTP(rec, newReq(t, http.MethodPost, "/api/v1/products/script/jobs", bytes.NewReader(bad.Bytes())))
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "estimated_seconds") {
 		t.Fatalf("zero: code = %d body=%s", rec.Code, rec.Body)
+	}
+
+	// A value that is not an integer at all names the field too, rather than
+	// reporting an unreadable body.
+	for _, raw := range []string{`1.5`, `"1h"`, `1e10`, `true`} {
+		body := `{"farm_id":"` + farmID + `","queue_id":"` + queueID +
+			`","parameters":{"Command":"echo hi"},"estimated_seconds":` + raw + `}`
+		rec = httptest.NewRecorder()
+		srv.ServeHTTP(rec, newReq(t, http.MethodPost, "/api/v1/products/script/jobs", strings.NewReader(body)))
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "estimated_seconds must be an integer") {
+			t.Errorf("%s: code = %d body=%s", raw, rec.Code, rec.Body)
+		}
 	}
 }

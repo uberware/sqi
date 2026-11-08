@@ -133,7 +133,7 @@ func TestListJobs_RemainingSeconds(t *testing.T) {
 	unknown := seedJob(t, st, store.JobStatusPending)
 	done := seedJob(t, st, store.JobStatusCompleted)
 
-	items := itemsByID(t, getJSON(t, newJobRouter(st, &fakeScheduler{}), "/api/v1/jobs"))
+	items := itemsByID(t, getJSON(t, newJobRouter(st, &fakeScheduler{}), "/api/v1/jobs?include=timing"))
 
 	if got := rawInt(t, items[est.ID]["remaining_seconds"]); got != 600 {
 		t.Errorf("estimated job remaining_seconds = %d, want 600", got)
@@ -157,7 +157,7 @@ func TestListJobs_TimingsReadOncePerPage(t *testing.T) {
 	for range 3 {
 		seedJob(t, base, store.JobStatusPending)
 	}
-	getJSON(t, newJobRouter(st, &fakeScheduler{}), "/api/v1/jobs")
+	getJSON(t, newJobRouter(st, &fakeScheduler{}), "/api/v1/jobs?include=timing")
 	if st.jobCalls != 1 {
 		t.Fatalf("JobTimings calls = %d, want 1", st.jobCalls)
 	}
@@ -169,7 +169,7 @@ func TestListJobs_TerminalOnlyPageSkipsTimingRead(t *testing.T) {
 	done := seedJob(t, base, store.JobStatusCompleted)
 	failed := seedJob(t, base, store.JobStatusFailed)
 
-	items := itemsByID(t, getJSON(t, newJobRouter(st, &fakeScheduler{}), "/api/v1/jobs"))
+	items := itemsByID(t, getJSON(t, newJobRouter(st, &fakeScheduler{}), "/api/v1/jobs?include=timing"))
 	if st.jobCalls != 0 {
 		t.Fatalf("JobTimings calls = %d, want 0 for a terminal-only page", st.jobCalls)
 	}
@@ -184,7 +184,7 @@ func TestListJobs_MixedPageReadsOnlyNonTerminal(t *testing.T) {
 	live := seedJob(t, base, store.JobStatusPending)
 	seedJob(t, base, store.JobStatusCompleted)
 
-	getJSON(t, newJobRouter(st, &fakeScheduler{}), "/api/v1/jobs")
+	getJSON(t, newJobRouter(st, &fakeScheduler{}), "/api/v1/jobs?include=timing")
 	if st.jobCalls != 1 || len(st.jobIDs) != 1 || st.jobIDs[0] != live.ID {
 		t.Fatalf("JobTimings calls = %d ids = %v, want one call for [%s]", st.jobCalls, st.jobIDs, live.ID)
 	}
@@ -238,13 +238,73 @@ func TestListJobs_RemainingSeconds_TimingFailure(t *testing.T) {
 	base := fake.New()
 	seedJob(t, base, store.JobStatusPending)
 	st := &timingFailStore{Store: base, failJobs: true}
-	items := itemsByID(t, getJSON(t, newJobRouter(st, &fakeScheduler{}), "/api/v1/jobs"))
+	items := itemsByID(t, getJSON(t, newJobRouter(st, &fakeScheduler{}), "/api/v1/jobs?include=timing"))
 	if len(items) != 1 {
 		t.Fatalf("items = %d, want 1", len(items))
 	}
 	for _, it := range items {
 		if string(it["remaining_seconds"]) != "null" {
 			t.Errorf("remaining_seconds = %s", it["remaining_seconds"])
+		}
+	}
+}
+
+var jobTimingKeys = []string{"remaining_seconds", "remaining_basis", "as_of"}
+
+func TestListJobs_NoIncludeSkipsTiming(t *testing.T) {
+	base := fake.New()
+	live := seedJob(t, base, store.JobStatusPending)
+	withEstimate(t, base, live, 600)
+	done := seedJob(t, base, store.JobStatusCompleted)
+	st := &timingFailStore{Store: base}
+
+	for _, target := range []string{"/api/v1/jobs", "/api/v1/jobs?include="} {
+		st.jobCalls = 0
+		items := itemsByID(t, getJSON(t, newJobRouter(st, &fakeScheduler{}), target))
+		if len(items) != 2 {
+			t.Fatalf("%s: items = %d, want 2", target, len(items))
+		}
+		if st.jobCalls != 0 {
+			t.Errorf("%s: JobTimings calls = %d, want 0", target, st.jobCalls)
+		}
+		for _, id := range []string{live.ID, done.ID} {
+			for _, k := range jobTimingKeys {
+				if _, ok := items[id][k]; ok {
+					t.Errorf("%s: job %s has %s without include=timing", target, id, k)
+				}
+			}
+		}
+	}
+}
+
+func TestListJobs_IncludeTokens(t *testing.T) {
+	base := fake.New()
+	seedJob(t, base, store.JobStatusPending)
+	st := &timingFailStore{Store: base}
+	h := newJobRouter(st, &fakeScheduler{})
+	for _, target := range []string{
+		"/api/v1/jobs?include=timing,timing",
+		"/api/v1/jobs?include=timing&include=timing",
+		"/api/v1/jobs?include=timing,",
+	} {
+		st.jobCalls = 0
+		getJSON(t, h, target)
+		if st.jobCalls != 1 {
+			t.Errorf("%s: JobTimings calls = %d, want 1", target, st.jobCalls)
+		}
+	}
+	for _, target := range []string{"/api/v1/jobs?include=bogus", "/api/v1/jobs?include=timing,bogus"} {
+		st.jobCalls = 0
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, newUnscopedJobsReq(t, target))
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", target, rr.Code)
+		}
+		if !strings.Contains(rr.Body.String(), "include") || !strings.Contains(rr.Body.String(), "timing") {
+			t.Errorf("%s: body %q should name include and timing", target, rr.Body)
+		}
+		if st.jobCalls != 0 {
+			t.Errorf("%s: timing read ran on a rejected request", target)
 		}
 	}
 }
@@ -408,6 +468,7 @@ func TestQueues_IncludeTokens(t *testing.T) {
 		"/api/v1/queues?include=timing,timing",
 		"/api/v1/queues?include=timing&include=timing",
 		"/api/v1/queues/" + a.ID + "?include=timing,timing",
+		"/api/v1/queues?include=timing,",
 	} {
 		st.queueCalls = 0
 		getJSON(t, h, target)

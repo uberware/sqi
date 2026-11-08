@@ -105,6 +105,29 @@ func TestParity_JobTimings(t *testing.T) {
 				Status: store.AttemptStatusSucceeded, StartedAt: t0,
 			})
 
+			// N: one succeeded task whose attempt ended before it started (clock
+			// skew) and one measured normally; the first must not be measured, so
+			// it cannot pull the step's mean down or negative.
+			sn := "sn-" + uuid.NewString()
+			n := storetest.NewJob(uuid.NewString(), farmID, queueID).As(store.JobStatusRunning).
+				Step(sn, store.StepStatusReady).
+				Task("n-skew", sn, store.TaskStatusSucceeded).
+				Task("n-ok", sn, store.TaskStatusSucceeded).
+				Task("n-skew-done", sn, store.TaskStatusReady).
+				Submit(t, st)
+			// The same skew reached through a real completion: the worker's
+			// clock puts the end 30 s before the server-stamped start.
+			ranFor(t, st, "n-skew-done", t0, -30*time.Second)
+			skewEnd, okEnd := t0.Add(-90*time.Second), t0.Add(60*time.Second)
+			storetest.InjectAttempt(t, st, store.TaskAttempt{
+				TaskID: "n-skew", WorkerID: fixtureWorkerID, AttemptNumber: 1,
+				Status: store.AttemptStatusSucceeded, StartedAt: t0, EndedAt: &skewEnd,
+			})
+			storetest.InjectAttempt(t, st, store.TaskAttempt{
+				TaskID: "n-ok", WorkerID: fixtureWorkerID, AttemptNumber: 1,
+				Status: store.AttemptStatusSucceeded, StartedAt: t0, EndedAt: &okEnd,
+			})
+
 			// R: a running task on its second attempt.
 			sr := "sr-" + uuid.NewString()
 			r := storetest.NewJob(uuid.NewString(), farmID, queueID).As(store.JobStatusRunning).
@@ -118,12 +141,12 @@ func TestParity_JobTimings(t *testing.T) {
 			storetest.Running(t, st, store.LeaseRequest{TaskID: "r-run", WorkerID: fixtureWorkerID, Now: t1})
 
 			unknown := uuid.NewString()
-			got, err := st.JobTimings(ctx, []string{j.Sub.Job.ID, k.Job.ID, r.Job.ID, unknown})
+			got, err := st.JobTimings(ctx, []string{j.Sub.Job.ID, k.Job.ID, n.Job.ID, r.Job.ID, unknown})
 			if err != nil {
 				t.Fatalf("JobTimings: %v", err)
 			}
-			if len(got) != 3 {
-				t.Fatalf("got %d jobs %+v, want J, K and R", len(got), got)
+			if len(got) != 4 {
+				t.Fatalf("got %d jobs %+v, want J, K, N and R", len(got), got)
 			}
 			if _, ok := got[unknown]; ok {
 				t.Fatalf("unknown job present")
@@ -161,6 +184,14 @@ func TestParity_JobTimings(t *testing.T) {
 				if len(kt.Running) != 0 {
 					t.Errorf("Running = %+v, want none", kt.Running)
 				}
+			})
+
+			t.Run("succeeded ending before it started", func(t *testing.T) {
+				nt := got[n.Job.ID]
+				if len(nt.Steps) != 1 {
+					t.Fatalf("Steps = %+v, want one", nt.Steps)
+				}
+				checkStepTiming(t, nt.Steps[0], store.StepTiming{StepID: sn, Succeeded: 3, Measured: 1, MeasuredSeconds: 60})
 			})
 
 			t.Run("retried running task", func(t *testing.T) {

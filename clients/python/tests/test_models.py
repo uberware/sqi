@@ -3,7 +3,7 @@
 """Tests for the typed dataclass models and tolerant parsing.
 
 Every model is parsed from a captured wire fixture (``tests/fixtures/``) so the
-assertions track the real server response shapes, not hand-invented ones.
+assertions track the real server response shapes.
 """
 
 from __future__ import annotations
@@ -77,13 +77,13 @@ def test_worker_status_members() -> None:
 
 
 def test_unknown_enum_value_preserved_not_raised() -> None:
-    # A newer server may introduce a status this client predates; parsing must
-    # preserve it verbatim rather than raising.
+    # A status this client does not declare is preserved verbatim rather than
+    # raising.
     status = JobStatus.parse("archived")
     assert isinstance(status, JobStatus)
     # Check ``.value`` before the ``== "archived"`` assertion: mypy < 1.20 narrows
-    # a str-enum to Literal['archived'] after the equality, which would otherwise
-    # make the later ``.value`` access a spurious type error.
+    # a str-enum to Literal['archived'] after the equality, which would make the
+    # later ``.value`` access a type error.
     assert status.value == "archived"
     assert status == "archived"
     # The unknown member is not registered in the canonical member map.
@@ -133,9 +133,8 @@ _ZERO_TIME = datetime(1, 1, 1, tzinfo=timezone.utc)
 
 
 def test_required_timestamp_missing_or_malformed_falls_back_to_zero_time() -> None:
-    # A required timestamp that is absent or unparseable must not raise — it
-    # reads as the zero-time sentinel (matching the Go server's zero time.Time),
-    # keeping parsing crash-free and inside the documented contract.
+    # A required timestamp that is absent or unparseable does not raise; it
+    # reads as the zero-time sentinel (matching the Go server's zero time.Time).
     missing = load("job")
     del missing["created_at"]
     assert Job.from_dict(missing).created_at == _ZERO_TIME
@@ -230,8 +229,7 @@ def test_job_list_level_fields() -> None:
 
 
 def test_job_retry_policy_fields_default_when_absent() -> None:
-    # Back-compat: an older/unpatched server's job response carries none of the
-    # retry-policy fields; parsing must not raise and must default gracefully.
+    # A job response without the retry-policy fields parses with None defaults.
     job = Job.from_dict(load("job"))
     assert job.max_attempts is None
     assert job.retry_delay_seconds is None
@@ -275,8 +273,7 @@ def test_job_failure_summary_parsed_when_present() -> None:
 
 
 def test_job_failure_summary_absent_defaults_to_none() -> None:
-    # Back-compat: an older/unpatched server's job response carries no
-    # failure_summary; parsing must not raise and must default to None.
+    # A job response without failure_summary parses with None.
     assert Job.from_dict(load("job")).failure_summary is None
     assert Job.from_dict(load("job_detail")).failure_summary is None
 
@@ -300,8 +297,7 @@ def test_job_effective_retry_parsed_when_present() -> None:
 
 
 def test_job_effective_retry_absent_defaults_to_none() -> None:
-    # Back-compat: an older/unpatched server's job response carries no
-    # effective_retry; parsing must not raise and must default to None.
+    # A job response without effective_retry parses with None.
     assert Job.from_dict(load("job")).effective_retry is None
     assert Job.from_dict(load("job_detail")).effective_retry is None
 
@@ -388,8 +384,7 @@ def test_task_failure_reason_parsed() -> None:
 
 
 def test_task_failure_reason_absent_defaults_to_none() -> None:
-    # Back-compat: an older/unpatched server's task response carries no
-    # failure_reason; parsing must not raise and must default to None.
+    # A task response without failure_reason parses with None.
     assert Task.from_dict(load("task")).failure_reason is None
 
 

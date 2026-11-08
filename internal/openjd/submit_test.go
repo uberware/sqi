@@ -753,7 +753,7 @@ func TestSubmitter_Submit_ParamInRangeExpr(t *testing.T) {
 // TestSubmitter_Submit_ParamInRangeExpr_ExceedsValueLimit verifies that a
 // parameterized range cannot smuggle past the per-parameter value limit: the
 // limit is skipped at template-validation time because the range still contains
-// {{...}}, so it must be re-checked on the RESOLVED space. Here Start=1,End=2000
+// {{...}}, so it must be re-checked on the resolved space. Here Start=1,End=2000
 // resolves to "1-2000" → 2000 values, exceeding maxTaskParamValues (1024).
 func TestSubmitter_Submit_ParamInRangeExpr_ExceedsValueLimit(t *testing.T) {
 	st := fake.New()
@@ -1072,8 +1072,7 @@ func TestSubmit_DependsOn_Rejections(t *testing.T) {
 // TestSubmitter_Submit_EXPRTemplateRejectedByPhase2Recheck drives a
 // division-by-zero template through the public Submit API and asserts the
 // rejection comes from the submit-time expression re-check with concrete
-// parameters -- Param.N bound to "0", which only phase 2 can see. This proves
-// the phase-2 wiring end to end through the public API.
+// parameters (Param.N bound to "0", which only phase 2 can see).
 func TestSubmitter_Submit_EXPRTemplateRejectedByPhase2Recheck(t *testing.T) {
 	st := fake.New()
 	farmID, queueID := seedSubmitPrereqs(t, st)
@@ -1160,15 +1159,15 @@ func TestSubmitter_Submit_ParamZeroWithoutEXPRUnaffected(t *testing.T) {
 // ── Declared extensions persisted on the job row (migration 00027) ───────────
 
 // TestSubmit_RecordsDeclaredExtensions pins that submission writes the parsed
-// extension list onto the job row. This is the only place in the system where
-// the list is known EXACTLY: internal/openjd has already decoded the document
-// and validated every name against the registry, so a declaration spelled with
-// a JSON escape is the same value here as a plain one.
+// extension list onto the job row. Submission is where the list is known
+// exactly: the document is decoded and every name validated against the
+// registry, so a declaration spelled with a JSON escape is the same value as a
+// plain one.
 //
 // The scheduler reads it per candidate task per lease request to decide whether
 // a job needs a worker capable of phase-3 expression evaluation. Scanning the
-// raw template for the bytes "EXPR" instead would be wrong in both
-// directions, as the escaped and HOUDINI_EXPR_CACHE cases below show.
+// raw template for the bytes "EXPR" would be wrong in both directions, as the
+// escaped and HOUDINI_EXPR_CACHE cases below show.
 func TestSubmit_RecordsDeclaredExtensions(t *testing.T) {
 	tests := []struct {
 		name string

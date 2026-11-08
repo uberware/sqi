@@ -17,9 +17,9 @@ import (
 )
 
 // jobCols is every column scanJob reads, in scan order. declared_extensions is
-// on it deliberately: the scheduler's lease path reads a job's declared OpenJD
-// extensions once per candidate task, and it must ride along on the SELECT that
-// already fetches the row rather than becoming a second query (see
+// included because the scheduler's lease path reads a job's declared OpenJD
+// extensions once per candidate task; it rides on the SELECT that already
+// fetches the row instead of costing a second query (see
 // internal/scheduler/exprcaps.go).
 const jobCols = `
 	id, farm_id, queue_id, name, owner, submitter, priority, status, project,
@@ -42,8 +42,8 @@ RETURNING ` + jobCols
 	// sqlUpdateJob updates only the mutable user-settable fields of a job.
 	// status, started_at, and completed_at are lifecycle columns managed
 	// exclusively by the status operations (FinalizeJob, CancelJobStatus, ...)
-	// and are intentionally excluded here — writing them via UpdateJob would
-	// race with concurrent scheduler status transitions. failed_attempts and
+	// and are excluded here: writing them via UpdateJob would race with
+	// concurrent scheduler status transitions. failed_attempts and
 	// park_reason are likewise lifecycle-managed (by the scheduler's
 	// failure-limit sweep) and are excluded for the same reason; max_attempts,
 	// retry_delay_seconds, and failure_limit are the user-settable retry-policy
@@ -94,7 +94,7 @@ WHERE id = ?
 	// sqlDemoteStalledJob demotes one job if it is still stalled. It runs under
 	// the job's lock, and its predicate is evaluated afresh then, so a lease that
 	// committed in between (it holds the job row shared) is seen. started_at is
-	// intentionally preserved. RETURNING yields the job ID only when a row was
+	// preserved. RETURNING yields the job ID only when a row was
 	// demoted, so the caller can fan out the WS event.
 	sqlDemoteStalledJob = `
 UPDATE jobs SET status = 'pending', updated_at = ?
@@ -153,10 +153,9 @@ WHERE depends_on_job_id = ? ORDER BY job_id`
 	// The trailing NOT EXISTS excludes a candidate that is still referenced as
 	// depends_on_job_id by a non-terminal dependent: purging it would leave
 	// the dependent's reconciler reading a GetJob ErrNotFound for an upstream
-	// that actually succeeded, which the reconciler treats as "missing" and
-	// wrongly cancels the dependent. Manual DELETE (DeleteJob) intentionally
-	// keeps the cancel-dependents behavior — this guard only applies to the
-	// automatic retention sweep.
+	// that succeeded, which the reconciler treats as "missing" and cancels the
+	// dependent. Manual DELETE (DeleteJob) keeps the cancel-dependents
+	// behavior; this guard applies only to the automatic retention sweep.
 	sqlSelectExpiredJobsPrefix = `
 SELECT id, name, farm_id, queue_id FROM jobs
 WHERE status IN (`
@@ -193,7 +192,7 @@ WHERE id = ? AND status = 'paused'`
 
 // encodeDeclaredExtensions renders a job's declared-extension list for the
 // declared_extensions column, preserving the distinction the column exists for:
-// "" means NOT RECORDED (the schema default, and what every row written before
+// "" means not recorded (the schema default, and what every row written before
 // migration 00027 holds), while "[]" means recorded and declaring nothing. A
 // recorded nil slice is normalized to "[]" so the not-recorded sentinel has
 // exactly one spelling in the database.
@@ -437,7 +436,7 @@ func insertStepsTx(ctx context.Context, tx *dbTx, clock *rowClock, steps []store
 // insertTasksTx inserts every task inside tx, stamping each row with its own
 // time from clock, later than every row stamped before it.
 //
-// Tasks within one step must have DISTINCT created_at values, increasing in
+// Tasks within one step must have distinct created_at values, increasing in
 // expansion order:
 //
 //   - sqlListReadyTasks (task.go) ends its ORDER BY with "t.created_at ASC" as

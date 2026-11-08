@@ -544,6 +544,7 @@ class SqiClient:
         sort_dir: str | None = None,
         limit: int = 50,
         offset: int = 0,
+        include_timing: bool = False,
     ) -> Page[Job]:
         """List jobs, returning one page of results.
 
@@ -563,6 +564,10 @@ class SqiClient:
                 ``asc``).
             limit: Page size, 1-1000 (default 50).
             offset: Zero-based offset of the page (default 0).
+            include_timing: Ask the server for each job's remaining-work
+                fields (``remaining_seconds``, ``remaining_basis``,
+                ``as_of``). They cost a server-side read, so they are absent
+                (``None``) unless requested. :meth:`get_job` always has them.
 
         Returns:
             A :class:`Page` of :class:`Job` for the requested window. Use
@@ -581,6 +586,7 @@ class SqiClient:
                 sort_dir=sort_dir,
                 limit=limit,
                 offset=offset,
+                include_timing=include_timing,
             ),
         )
         return parse_page(data, Job.from_dict)
@@ -596,6 +602,7 @@ class SqiClient:
         sort_by: str | None = None,
         sort_dir: str | None = None,
         limit: int = 50,
+        include_timing: bool = False,
     ) -> Iterator[Job]:
         """Iterate every job matching the filters, fetching pages lazily.
 
@@ -618,6 +625,7 @@ class SqiClient:
                 sort_dir=sort_dir,
                 limit=page_limit,
                 offset=page_offset,
+                include_timing=include_timing,
             )
 
         return iter_pages(fetch, limit=limit)
@@ -737,6 +745,7 @@ class SqiClient:
         sort_dir: str | None,
         limit: int,
         offset: int,
+        include_timing: bool = False,
     ) -> dict[str, Any]:
         return {
             "status": _enum_value(status),
@@ -748,6 +757,7 @@ class SqiClient:
             "sort_dir": sort_dir,
             "limit": limit,
             "offset": offset,
+            "include": "timing" if include_timing else None,
         }
 
     # ── Tasks ─────────────────────────────────────────────────────────────────
@@ -1057,8 +1067,8 @@ class SqiClient:
         Returns:
             A :class:`WorkerAction` with the worker's status after the operation
             when the server returns a body, or ``None`` on a bare success status.
-            The server currently always returns a body, so ``None`` is a
-            defensive should-not-happen path.
+            The server always returns a body; ``None`` covers a bare success
+            status.
 
         Raises:
             NotFoundError: No worker with that ID exists (HTTP 404).
@@ -1073,8 +1083,8 @@ class SqiClient:
         Returns:
             A :class:`WorkerAction` with the worker's status after the operation
             when the server returns a body, or ``None`` on a bare success status.
-            The server currently always returns a body, so ``None`` is a
-            defensive should-not-happen path.
+            The server always returns a body; ``None`` covers a bare success
+            status.
 
         Raises:
             NotFoundError: No worker with that ID exists (HTTP 404).
@@ -1545,7 +1555,7 @@ class SqiClient:
                 render markup, such as the Blender addon's tooltip. It is also
                 the field product search matches on.
             readme: Long-form Markdown documentation (max 8000 characters),
-                rendered on the product's detail page in the web UI. It is NOT
+                rendered on the product's detail page in the web UI. It is not
                 searched.
         """
         return self._products.create(
@@ -1633,7 +1643,7 @@ class SqiClient:
                 The wire field is ``name``; this parameter is named ``job_name``
                 to avoid shadowing the positional product ``name`` argument.
             owner: Job owner; see :meth:`submit_job` for the permission rules.
-            submitter: **Ignored — deprecated.** The server derives the
+            submitter: Ignored (deprecated). The server derives the
                 submitter from the authenticated credential and discards any
                 client value. Retained so existing callers keep working; it will
                 be removed in a future major release.
@@ -1729,7 +1739,7 @@ class SqiClient:
                 resume without missing chunks.
 
         Yields:
-            Each :class:`LogChunk` pushed for the task. Note these come from the
+            Each :class:`LogChunk` pushed for the task. These come from the
             live ``TaskLogPush`` payload, which omits ``id``/``nats_seq``/
             ``received_at`` (those are zero-valued); ``seq_num`` and the content
             fields are present.
@@ -1755,7 +1765,7 @@ class SqiClient:
         (``completed``, ``failed``, or ``canceled``), sleeping ``poll_interval``
         seconds between polls.
 
-        Note that ``paused`` is *not* terminal: waiting on a paused job that is
+        ``paused`` is not terminal: waiting on a paused job that is
         never resumed blocks until ``timeout`` (or forever when ``timeout`` is
         ``None``). Pass a ``timeout`` when that is possible. A very small
         ``poll_interval`` polls the server aggressively.
@@ -2039,10 +2049,9 @@ def _product_body(
     category: str | None = None,
     version: str | None = None,
 ) -> dict[str, Any]:
-    # description and readme are both str | None: with positional arguments a
-    # transposition of the two would pass mypy silently and ship a bug, so
-    # every optional field beyond the first three positional ones is
-    # keyword-only.
+    # description and readme are both str | None, so a positional transposition
+    # would pass type checking; every optional field after the first three
+    # arguments is keyword-only.
     body: dict[str, Any] = {"name": name, "template": template, "format": template_format}
     if title is not None:
         body["title"] = title
@@ -2164,7 +2173,7 @@ def _deprecation_link(value: str | None) -> str | None:
 
     Matches the exact formatting sqi-server's middleware emits
     (``<url>; rel="deprecation"``) — not a full RFC 8288 parser; an
-    unrecognized form just yields a less informative warning.
+    unrecognized form yields a less informative warning.
     """
     if not value:
         return None

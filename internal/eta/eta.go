@@ -105,10 +105,17 @@ func fromProgress(t store.JobTiming, now time.Time) (float64, bool) {
 	if t.Status != store.JobStatusRunning || len(t.Running) == 0 {
 		return 0, false
 	}
+	running := 0
 	for _, s := range t.Steps {
 		if s.NotStarted > 0 {
 			return 0, false
 		}
+		running += s.Running
+	}
+	// A running task enters t.Running only through an attempt row; one without
+	// is invisible there, so claiming "only running tasks left" would ignore it.
+	if running != len(t.Running) {
+		return 0, false
 	}
 	sum := 0.0
 	for _, r := range t.Running {
@@ -130,8 +137,11 @@ func stepMean(s store.StepTiming) float64 {
 	return s.MeasuredSeconds / float64(s.Measured)
 }
 
-// fromMeasured applies when every step with unfinished tasks has a succeeded
-// task to take a mean from.
+// fromMeasured applies when every step with unfinished tasks has a measured
+// succeeded task to take a mean from. A succeeded task with no usable duration
+// (no ended_at, an ended_at before its start, or superseded by a later attempt)
+// is not enough: a step with only such tasks has no mean, and pricing its work
+// at zero would report the job as all but done and override its estimate.
 func fromMeasured(t store.JobTiming, now time.Time) (float64, bool) {
 	means := make(map[string]float64, len(t.Steps))
 	unfinished := false
@@ -140,7 +150,7 @@ func fromMeasured(t store.JobTiming, now time.Time) (float64, bool) {
 		if s.NotStarted+s.Running == 0 {
 			continue
 		}
-		if s.Succeeded == 0 {
+		if s.Measured == 0 {
 			return 0, false
 		}
 		unfinished = true

@@ -58,7 +58,7 @@ info:
     two-segment shape as `/workers/{id}` (`GET`/`DELETE /workers/{id}` are
     always registered), so it is routed there with `id=enroll` and answers
     `405 Method Not Allowed` instead — the path matches a registered
-    pattern, just not for `POST`. `POST /workers/join-tokens`, which mints
+    pattern, but not for `POST`. `POST /workers/join-tokens`, which mints
     the tokens this endpoint consumes, is permission-gated as normal
     (`workers.enroll`) but is itself mounted only when `auth.enabled` — with
     auth off, every request is the anonymous superuser described above, and
@@ -303,7 +303,8 @@ components:
             running job whose only unfinished tasks are running, each reporting
             progress after 30 s of running, is extrapolated from that progress
             (`progress`). A job in which every step with unfinished tasks has a
-            succeeded task uses that step's mean measured run time per
+            succeeded task with a measured run time (its latest attempt ended no
+            earlier than it started) uses that step's mean measured run time per
             unfinished task, less elapsed time for running ones (or, for a running
             task with progress of at least 1 and 30 s elapsed, its linear
             projection instead) (`measured`). A
@@ -311,7 +312,9 @@ components:
             remaining fraction of progress (`estimate`; 0 when the job has no
             non-canceled tasks). Otherwise null. Null too when the timing read
             failed or the job is missing from it. Present, possibly null, on job
-            list items and job detail; omitted from the create-job response.
+            detail and on job list items requested with `include=timing`;
+            omitted from other job list reads and from the create-job and
+            update-job (PATCH) responses.
         remaining_basis:
           type: string
           enum: [finished, progress, measured, estimate]
@@ -321,8 +324,8 @@ components:
           type: string
           format: date-time
           description: >-
-            Server time the remaining-time figures were computed. Present on
-            job list items and job detail.
+            Server time the remaining-time figures were computed. Present
+            whenever `remaining_seconds` is.
         failed_attempts:
           type: integer
           description: Cumulative count of genuine task failures for this job.
@@ -1405,7 +1408,7 @@ components:
           nullable: true
           description: >-
             OS user that tasks in this queue execute as. This field
-            deliberately deviates from PUT's usual full-replace semantics:
+            deviates from PUT's usual full-replace semantics:
             omitting the key from the request body preserves the queue's
             currently stored value and requires no permission (so an ordinary
             edit, e.g. changing priority, cannot silently clear it); including
@@ -2146,8 +2149,8 @@ components:
         password:
           type: boolean
           description: >-
-            Whether username/password login is offered. Always true today;
-            reported explicitly so clients never have to infer it.
+            Whether username/password login is offered. Always true;
+            reported explicitly so clients do not have to infer it.
         sso:
           type: array
           description: >-
@@ -2368,8 +2371,8 @@ paths:
             maximum: 2147483647
           description: >-
             The job's estimated total task run time in seconds, summed over
-            tasks (not wall-clock). Omitted means no estimate; a non-integer
-            or out-of-range value is rejected with 400.
+            tasks (not wall-clock). Omitted means no estimate; an empty,
+            non-integer or out-of-range value is rejected with 400.
         - name: depends_on
           in: query
           style: form
@@ -2386,7 +2389,7 @@ paths:
             completes. A dependency ID that does not resolve to a job in the
             same farm, or that already failed/was canceled, is rejected with
             422.
-      # Note: param.<Name>=<value> query parameters are intentionally omitted
+      # Note: param.<Name>=<value> query parameters are omitted
       # from this parameters list because OpenAPI 3.x does not support
       # arbitrary-suffix parameters.  Full semantics are documented in the
       # operation description above.
@@ -2484,6 +2487,22 @@ paths:
         - $ref: "#/components/parameters/sortDir"
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/offset"
+        - name: include
+          in: query
+          required: false
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+              enum: [timing]
+          description: >-
+            Optional extras, comma-separated (a repeated parameter is also
+            accepted; empty values are ignored). `timing` adds
+            `remaining_seconds`, `remaining_basis` and `as_of` to each job;
+            without it they are absent and the server does not compute them.
+            An unknown value is a 400.
       responses:
         "200":
           description: Paginated list of jobs.
@@ -2491,6 +2510,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/JobList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "403":
           $ref: "#/components/responses/Forbidden"
         "429":
@@ -2939,7 +2960,7 @@ paths:
         worker that still holds a task, are rejected with `409`. A disabled
         worker becomes removable once the heartbeat sweep finds it gone and
         marks it offline. Task and attempt history referencing the worker
-        is preserved by ID. A removed worker that reconnects simply
+        is preserved by ID. A removed worker that reconnects
         re-registers.
 
         Also revokes the worker's broker credential, if it has one, BEFORE
@@ -3035,7 +3056,7 @@ paths:
         "/workers/enroll" has the same two-segment shape as
         "/workers/{id}", which is always registered (`GET`, `DELETE`), so
         the request is routed there with `id=enroll` and answers `405
-        Method Not Allowed` instead — the pattern matches, just not for
+        Method Not Allowed` instead — the pattern matches, but not for
         `POST`.
 
         An unknown join token, an expired one, and (when single-use tokens
@@ -3068,8 +3089,8 @@ paths:
           description: >-
             The join token is unknown, expired, or already used — or, when
             single-use tokens are configured, the store failed while
-            claiming the token. That last case is deliberately folded into
-            this same 401 rather than answered as a 500: this route is
+            claiming the token. That last case is folded into
+            this same 401 instead of answered as a 500: this route is
             unauthenticated and reachable from an untrusted network, so
             distinguishing "invalid token" from "transient server-side
             failure" would let a caller probe which is which. A client
@@ -3111,7 +3132,7 @@ paths:
         this response; only its hash is stored, so it cannot be recovered or
         displayed again.
 
-        Requires `workers.enroll`, a permission deliberately separate from
+        Requires `workers.enroll`, a permission separate from
         `workers.manage`: minting a join token attaches arbitrary compute
         that receives and executes job code, a different privilege in kind
         from enabling, disabling, or deleting an existing worker. This route

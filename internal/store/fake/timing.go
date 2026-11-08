@@ -107,7 +107,8 @@ func (s *Store) jobTimingsLocked(jobs []store.Job) []store.JobTiming {
 }
 
 // countTaskTimingLocked counts t into st. A succeeded task is measured when its
-// latest attempt succeeded with an EndedAt. Caller holds s.mu.
+// latest attempt succeeded with an EndedAt no earlier than its StartedAt.
+// Caller holds s.mu.
 func (s *Store) countTaskTimingLocked(st *store.StepTiming, t store.Task) {
 	switch t.Status {
 	case store.TaskStatusPending, store.TaskStatusReady, store.TaskStatusAssigned:
@@ -116,9 +117,10 @@ func (s *Store) countTaskTimingLocked(st *store.StepTiming, t store.Task) {
 		st.Running++
 	case store.TaskStatusSucceeded:
 		st.Succeeded++
-		if a, ok := s.timingAttemptLocked(t.ID); ok && a.Status == store.AttemptStatusSucceeded && a.EndedAt != nil {
+		if a, ok := s.timingAttemptLocked(t.ID); ok && a.Status == store.AttemptStatusSucceeded &&
+			a.EndedAt != nil && !a.EndedAt.Before(a.StartedAt) {
 			st.Measured++
-			st.MeasuredSeconds += a.EndedAt.Sub(a.StartedAt).Seconds()
+			st.MeasuredSeconds += float64(store.RunMs(a.StartedAt, *a.EndedAt)) / 1000
 		}
 	case store.TaskStatusFailed:
 		st.Failed++

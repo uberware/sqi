@@ -75,15 +75,17 @@ const clientSendBuf = 64
 //     status. List subscribers use TaskID to apply task-count deltas to the
 //     parent job row instead of treating it as a job-status change.
 type JobSummaryPush struct {
-	JobID      string    `json:"job_id"`
-	TaskID     string    `json:"task_id,omitempty"`
-	Name       string    `json:"name,omitempty"`
-	Owner      string    `json:"owner,omitempty"`
-	QueueID    string    `json:"queue_id,omitempty"`
-	Status     string    `json:"status"`
-	Progress   *int      `json:"progress,omitempty"`
-	StatusText string    `json:"status_text,omitempty"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	JobID      string `json:"job_id"`
+	TaskID     string `json:"task_id,omitempty"`
+	Name       string `json:"name,omitempty"`
+	Owner      string `json:"owner,omitempty"`
+	QueueID    string `json:"queue_id,omitempty"`
+	Status     string `json:"status"`
+	Progress   *int   `json:"progress,omitempty"`
+	StatusText string `json:"status_text,omitempty"`
+	// Change is [JobEvent.Change]; omitted for a status change.
+	Change    string    `json:"change,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // TaskUpdatePush is the TypePush payload for "jobs/{id}/tasks" subscriptions.
@@ -542,6 +544,7 @@ func (h *Hub) NotifyJob(e JobEvent) {
 		Owner:     e.Owner,
 		QueueID:   e.QueueID,
 		Status:    e.Status,
+		Change:    e.Change,
 		UpdatedAt: now,
 	})
 	if err != nil {

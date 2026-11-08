@@ -216,14 +216,10 @@ var concatAllowed = []string{
 	// timing.go timingByJobs, timingByQueues: "(" + qmarks(len(ids)) + ")",
 	// only ? marks, commas and parentheses.
 	"timingIn",
-	// timing.go readTiming*: timingScope fields, built only by timingByJobs
-	// and timingByQueues from literals and timingIn.
+	// timing.go readTiming*, timing*Query: timingScope fields, built only by
+	// timingByJobs and timingByQueues from literals and timingIn.
 	"sc.jobsWhere",
-	"sc.tasksJoin",
-	"sc.tasksWhere",
-	// timing.go readTimingSteps: Dialect method over a literal column.
-	`s.d.EpochSeconds("a.ended_at")`,
-	`s.d.EpochSeconds("a.started_at")`,
+	"sc.stepsIn",
 }
 
 // sqlKeyword marks a string literal as SQL.

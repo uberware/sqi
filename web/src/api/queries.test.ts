@@ -146,6 +146,22 @@ describe('fetchListJobs', () => {
     expect(url).not.toContain('offset=')
   })
 
+  it('adds include=timing only when asked', async () => {
+    fetchMock.mockResolvedValueOnce(listResponse([]))
+    await fetchListJobs({ limit: 10, include_timing: true })
+    expect(calledUrl()).toBe('/api/v1/jobs?limit=10&include=timing')
+  })
+
+  it('omits include for include_timing: false', async () => {
+    fetchMock.mockResolvedValueOnce(listResponse([]))
+    await fetchListJobs({ limit: 10, include_timing: false })
+    expect(calledUrl()).toBe('/api/v1/jobs?limit=10')
+  })
+
+  it('caches the timing variant under its own key', () => {
+    expect(queryKeys.jobs.list({ include_timing: true })).not.toEqual(queryKeys.jobs.list({}))
+  })
+
   it('includes sort_by and sort_dir when set', async () => {
     fetchMock.mockResolvedValueOnce(listResponse([]))
     await fetchListJobs({ sort_by: 'priority', sort_dir: 'desc' })

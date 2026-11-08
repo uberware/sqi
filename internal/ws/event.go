@@ -67,7 +67,15 @@ type JobEvent struct {
 	QueueID   string
 	Status    string // store.JobStatus value
 	UpdatedAt time.Time
+	// Change is empty for a status change. JobChangeEstimate marks an event
+	// sent because only the job's estimate moved: Status is then the job's
+	// status when the event was built, not a transition, so a subscriber should
+	// refetch the job rather than apply it.
+	Change string
 }
+
+// JobChangeEstimate is the [JobEvent.Change] of an estimate-only event.
+const JobChangeEstimate = "estimate"
 
 // DiagEvent is published when a diagnostic log record is ingested (from the
 // server's own logger or a worker's worker.diag stream).  The Hub fans this out

@@ -88,16 +88,17 @@ type queueItemResponse struct {
 }
 
 // includeTiming is the `include` token that adds the remaining-work fields to
-// a queue read.
+// a queue or job-list read.
 const includeTiming = "timing"
 
-// parseQueueInclude reads the `include` query parameter (comma-separated,
-// repeatable) and reports whether timing was asked for. An unknown token is
-// returned as a problem message.
-func parseQueueInclude(r *http.Request) (timing bool, problem string) {
+// parseInclude reads the `include` query parameter (comma-separated,
+// repeatable) and reports whether timing was asked for. Empty tokens are
+// ignored; an unknown token is returned as a problem message.
+func parseInclude(r *http.Request) (timing bool, problem string) {
 	for _, v := range r.URL.Query()["include"] {
 		for tok := range strings.SplitSeq(v, ",") {
-			switch strings.TrimSpace(tok) {
+			switch tok = strings.TrimSpace(tok); tok {
+			case "":
 			case includeTiming:
 				timing = true
 			default:
@@ -170,10 +171,11 @@ type updateQueueRequest struct {
 	RetryDelaySeconds *int `json:"retry_delay_seconds,omitempty"`
 	FailureLimit      *int `json:"failure_limit,omitempty"`
 	// RunAsUser and RunAsGroup set the queue's OS identity. Setting either
-	// requires the isolation.manage permission (admin only) — see
-	// requireIsolationManage. Applied on update too: an update-only hole
-	// would let an operator add isolation to an existing queue after the
-	// fact, defeating the create-side check.
+	// requires the isolation.manage permission (admin only); see
+	// requireIsolationManage. A key omitted from the body preserves the stored
+	// value; null clears it. The gate applies on update as well as create: an
+	// update-only hole would let an operator add isolation to an existing queue
+	// after the fact, defeating the create-side check.
 	RunAsUser  *string `json:"run_as_user,omitempty"`
 	RunAsGroup *string `json:"run_as_group,omitempty"`
 }
@@ -187,17 +189,14 @@ type queueListResponse struct {
 }
 
 // requireIsolationManage enforces the field-level gate on a queue's OS
-// identity: setting or clearing run_as_user or run_as_group is an escalation
-// surface separate from ordinary queue management (policy.InfraManage, which
-// the operator role holds via the route-level gate in router.go), so it
-// requires policy.IsolationManage (admin only). userSet/groupSet report
-// whether the client's JSON body actually contained the run_as_user /
-// run_as_group key (by any value, including explicit null) — not whether the
-// decoded value is non-nil, since a *string cannot distinguish "key omitted"
-// from "key set to null" and the two must be treated differently by the
-// caller (see decodeQueueBody and the comments on updateQueue). A request
-// that touches neither key is unaffected — this must never turn an ordinary
-// queue write for an operator into a 403. Returns true if the request may
+// identity: setting or clearing run_as_user or run_as_group needs
+// policy.IsolationManage (admin only), separate from ordinary queue management
+// (policy.InfraManage, held by the operator role via the route-level gate in
+// router.go). userSet/groupSet report whether the JSON body contained the
+// run_as_user / run_as_group key (by any value, including null); a *string
+// cannot distinguish an omitted key from null (see decodeQueueBody). A request
+// that touches neither key is unaffected: this gate must never turn an
+// ordinary queue write by an operator into a 403. Returns true if the request may
 // proceed; on false it has already written the 403 response.
 func requireIsolationManage(w http.ResponseWriter, r *http.Request, userSet, groupSet bool) bool {
 	if !userSet && !groupSet {
@@ -214,16 +213,13 @@ func requireIsolationManage(w http.ResponseWriter, r *http.Request, userSet, gro
 
 // validateRunAsIdentity rejects a run_as_group set without a run_as_user:
 // the scheduler only gates isolation on RunAsUser (internal/scheduler/
-// assign.go), so a group with no user selects no OS identity at all and is
-// silently ignored — an operator could set a group, have the API accept and
-// echo it, and get no isolation and no warning. Only meaningful when both
-// values are the actual ones about to be written; on updateQueue that means
-// callers must pass this only when both run_as_user and run_as_group were
-// present in the request body (see decodeQueueBody) — when either is
-// omitted-and-preserved, the resolved value is unknown here, and
-// store.ErrRunAsGroupWithoutUser (checked against the RESOLVED values inside
-// UpdateQueue) is the backstop for that case instead. Returns the problem
-// detail for a 400, or "" when valid.
+// assign.go), so a group with no user selects no OS identity and is ignored.
+// It is meaningful only when both values are the ones about to be written, so
+// updateQueue calls it only when both keys were present in the request body
+// (see decodeQueueBody). When either is omitted and preserved, the resolved
+// value is unknown here and store.ErrRunAsGroupWithoutUser, checked against
+// the resolved values inside UpdateQueue, covers that case. Returns the
+// problem detail for a 400, or "" when valid.
 func validateRunAsIdentity(runAsUser, runAsGroup *string) string {
 	if !store.RunAsComboValid(runAsUser, runAsGroup) {
 		return "run_as_group requires run_as_user to also be set"
@@ -231,15 +227,12 @@ func validateRunAsIdentity(runAsUser, runAsGroup *string) string {
 	return ""
 }
 
-// decodeQueueBody reads r.Body exactly once and decodes it both into req
-// (the typed request struct) and into a map of raw top-level keys, so a
-// handler can tell whether a field was present in the JSON body — including
-// present with an explicit null — versus omitted entirely. That distinction
-// is invisible on the typed struct alone, since a *string field is nil in
-// both cases. The body bytes are read once with io.ReadAll and unmarshaled
-// twice so r.Body (a non-seekable reader) is never consumed more than once.
+// decodeQueueBody reads r.Body once and decodes it into req (the typed request
+// struct) and into a map of raw top-level keys, so a handler can tell a field
+// present with an explicit null from an omitted one; a *string field is nil in
+// both cases. The body is unmarshaled twice because r.Body cannot be re-read.
 func decodeQueueBody[T any](r *http.Request, req *T) (map[string]json.RawMessage, error) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 4<<20)) // 4 MiB cap, matches jobs.go precedent
+	body, err := io.ReadAll(io.LimitReader(r.Body, 4<<20)) // 4 MiB cap, as in jobs.go
 	if err != nil {
 		return nil, err
 	}
@@ -350,7 +343,7 @@ func (h *queueHandler) listQueues(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	q := r.URL.Query()
 
-	withTiming, problem := parseQueueInclude(r)
+	withTiming, problem := parseInclude(r)
 	if problem != "" {
 		writeProblem(w, r, http.StatusBadRequest, problem)
 		return
@@ -413,7 +406,7 @@ func (h *queueHandler) getQueue(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id := chi.URLParam(r, "id")
 
-	withTiming, problem := parseQueueInclude(r)
+	withTiming, problem := parseInclude(r)
 	if problem != "" {
 		writeProblem(w, r, http.StatusBadRequest, problem)
 		return
@@ -468,11 +461,11 @@ func (h *queueHandler) updateQueue(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusBadRequest, problem)
 		return
 	}
-	// Only checked here when BOTH keys were present in this request: an
-	// omitted key means "preserve the stored value" (see decodeQueueBody),
-	// whose resolved value is unknown at the handler — store.UpdateQueue
-	// checks the resolved combo after PreserveRunAsUser/PreserveRunAsGroup
-	// substitution and returns store.ErrRunAsGroupWithoutUser for those cases.
+	// Checked here only when both keys were present: an omitted key preserves
+	// the stored value (see decodeQueueBody), which is unknown at the handler.
+	// store.UpdateQueue checks the resolved combination after
+	// PreserveRunAsUser/PreserveRunAsGroup substitution and returns
+	// store.ErrRunAsGroupWithoutUser.
 	if userSet && groupSet {
 		if problem := validateRunAsIdentity(req.RunAsUser, req.RunAsGroup); problem != "" {
 			writeProblem(w, r, http.StatusBadRequest, problem)
@@ -491,17 +484,13 @@ func (h *queueHandler) updateQueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// PUT is a full replace for every field here EXCEPT run_as_user and
-	// run_as_group, which deliberately deviate from strict replace semantics:
-	// a key omitted from the body means "preserve the stored value", not
-	// "clear it" (see the doc on updateQueueRequest.RunAsUser). That
-	// preservation is expressed via PreserveRunAsUser/PreserveRunAsGroup and
-	// resolved inside the single UpdateQueue statement — see
-	// store.Queue.PreserveRunAsUser — rather than by reading the existing
-	// queue here first: a read-then-write gap between an operator's
-	// isolation-omitting PUT and a concurrent admin PUT that sets the
-	// identity could otherwise let the operator's write silently clobber the
-	// admin's with a stale nil (lost update).
+	// PUT replaces every field here except run_as_user and run_as_group: an
+	// omitted key preserves the stored value (see updateQueueRequest.RunAsUser).
+	// That is expressed via PreserveRunAsUser/PreserveRunAsGroup and resolved
+	// inside the single UpdateQueue statement (see
+	// store.Queue.PreserveRunAsUser), not by reading the queue first, because a
+	// read-then-write gap would let an operator's PUT omitting isolation
+	// overwrite a concurrent admin PUT that sets the identity.
 	queue := store.Queue{
 		ID:                 id,
 		FarmID:             req.FarmID,

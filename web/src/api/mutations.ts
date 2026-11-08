@@ -228,7 +228,7 @@ export function useResumeJob() {
   })
 }
 
-/** Set or clear a job's estimate. Invalidates all job queries on success. */
+/** Set or clear a job's estimate. Invalidates all job queries and the queue timing figures on success. */
 export function useSetJobEstimate() {
   const queryClient = useQueryClient()
   return useMutation({
@@ -236,6 +236,7 @@ export function useSetJobEstimate() {
       fetchSetJobEstimate(id, seconds),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.jobs.all })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.farms.withQueues(true) })
     },
   })
 }

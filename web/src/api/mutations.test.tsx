@@ -22,6 +22,7 @@ import {
   useRemoveWorker,
   useDeleteJob,
   useResumeJob,
+  useSetJobEstimate,
   fetchCreateStorageLocation,
   fetchUpdateStorageLocation,
   fetchDeleteStorageLocation,
@@ -391,6 +392,23 @@ describe('useResumeJob', () => {
     expect(calledUrl()).toBe('/api/v1/jobs/job-1')
     expect(calledInit().method).toBe('PATCH')
     expect(JSON.parse(calledInit().body as string)).toEqual({ action: 'resume' })
+  })
+})
+
+describe('useSetJobEstimate', () => {
+  it('invalidates jobs and the queue timing figures on success', async () => {
+    const client = makeClient()
+    const spy = vi.spyOn(client, 'invalidateQueries')
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'job-1', estimated_seconds: 60 }))
+
+    const { result } = renderHook(() => useSetJobEstimate(), { wrapper: wrapper(client) })
+
+    await act(async () => {
+      await result.current.mutateAsync({ id: 'job-1', seconds: 60 })
+    })
+
+    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.jobs.all })
+    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.farms.withQueues(true) })
   })
 })
 
@@ -839,7 +857,7 @@ describe('useInstallPreset', () => {
 describe('useLogout', () => {
   it('drops every other cached query so the next user never sees the previous one’s data', async () => {
     const client = makeClient()
-    // Data the signed-in user browsed before logging out.
+    // Cached data from the signed-in user.
     client.setQueryData(queryKeys.jobs.all, [{ id: 'job-from-user-a' }])
     client.setQueryData(queryKeys.users.all, [{ id: 'user-a' }])
     fetchMock.mockResolvedValueOnce(makeOkResponse({}))
@@ -854,10 +872,9 @@ describe('useLogout', () => {
   })
 
   it('navigates to the provider end-session URL when the server returns one', async () => {
-    // Under auth.oidc.logout_mode=provider the server hands back the identity
-    // provider's RP-initiated logout URL. Ignoring it would leave the person
-    // signed in at the provider — a logout that looks complete and is not, and
-    // one whose failure is invisible from inside the app.
+    // With auth.oidc.logout_mode=provider the server returns the identity
+    // provider's RP-initiated logout URL; the client must follow it to end the
+    // session at the provider.
     const assign = vi.fn()
     vi.spyOn(window, 'location', 'get').mockReturnValue({
       ...window.location,

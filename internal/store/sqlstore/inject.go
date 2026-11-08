@@ -17,7 +17,9 @@ import (
 // build states production cannot reach, and must never be used to seed a
 // reachable one — seed through CreateJobSubmission and production writes
 // instead (internal/store/storetest). It is not part of store.Store. Foreign
-// keys still apply: the attempt's task must exist.
+// keys still apply: the attempt's task must exist. The task's stored run time
+// (tasks.run_ms) is recomputed after the insert, so a timing fixture built from
+// injected attempts reads as the attempts say.
 func (s *Store) InjectTaskAttempt(ctx context.Context, attempt store.TaskAttempt) (store.TaskAttempt, error) {
 	if attempt.CreatedAt.IsZero() {
 		attempt.CreatedAt = time.Now().UTC()
@@ -33,7 +35,12 @@ func (s *Store) InjectTaskAttempt(ctx context.Context, attempt store.TaskAttempt
 			nullString(attempt.SessionID), attempt.AttemptNumber, string(attempt.Status),
 			exitCode, TimeText(attempt.StartedAt), nullTimeToText(attempt.EndedAt),
 			TimeText(attempt.CreatedAt), attempt.Message))
-		return err
+		if err != nil {
+			return err
+		}
+		// The new attempt may now be its task's latest; keep the task's stored
+		// run time what the attempts say, as a production write would.
+		return refreshTaskRunMs(ctx, w, attempt.TaskID)
 	})
 	return out, mapErr(err)
 }

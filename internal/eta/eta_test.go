@@ -72,6 +72,11 @@ func TestJob(t *testing.T) {
 			Steps:   []store.StepTiming{step("a", 1, 2, 0, 0, 0)},
 			Running: []store.RunningTiming{run("a", 100, new(50)), run("a", 60, new(25))},
 		}, 0, true, ""},
+		{"rule2 running task without an attempt row falls through", store.JobTiming{
+			Status:  store.JobStatusRunning,
+			Steps:   []store.StepTiming{step("a", 0, 3, 0, 0, 0)},
+			Running: []store.RunningTiming{run("a", 100, new(50)), run("a", 60, new(25))},
+		}, 0, true, ""},
 		{"rule2 paused falls through", store.JobTiming{
 			Status:  store.JobStatusPaused,
 			Steps:   []store.StepTiming{step("a", 0, 2, 0, 0, 0)},
@@ -97,10 +102,22 @@ func TestJob(t *testing.T) {
 			Status: store.JobStatusPending,
 			Steps:  []store.StepTiming{step("s1", 4, 0, 1, 1, 10), step("s2", 2, 0, 1, 1, 100)},
 		}, 240, false, BasisMeasured},
-		{"rule3 succeeded but not measured", store.JobTiming{
+		{"rule3 succeeded but not measured, rule5", store.JobTiming{
 			Status: store.JobStatusPending,
 			Steps:  []store.StepTiming{step("a", 3, 0, 1, 0, 0)},
-		}, 0, false, BasisMeasured},
+		}, 0, true, ""},
+		{"rule3 succeeded but not measured, rule4", store.JobTiming{
+			Status: store.JobStatusPending, EstimatedSeconds: new(10000),
+			Steps: []store.StepTiming{step("a", 99, 0, 1, 0, 0)},
+		}, 9900, false, BasisEstimate},
+		{"rule3 one step unmeasured falls through", store.JobTiming{
+			Status: store.JobStatusPending,
+			Steps:  []store.StepTiming{step("s1", 2, 0, 1, 1, 10), step("s2", 2, 0, 1, 0, 0)},
+		}, 0, true, ""},
+		{"rule3 mean ignores unmeasured succeeded", store.JobTiming{
+			Status: store.JobStatusPending,
+			Steps:  []store.StepTiming{step("a", 3, 0, 2, 1, 40)},
+		}, 120, false, BasisMeasured},
 		{"rule3 not applicable, rule4", store.JobTiming{
 			Status: store.JobStatusRunning, EstimatedSeconds: new(1000),
 			Steps: []store.StepTiming{step("s1", 1, 0, 1, 1, 10), step("s2", 2, 0, 0, 0, 0)},

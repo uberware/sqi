@@ -52,13 +52,13 @@ func TestJobStore_ListJobs_OwnerCaseInsensitive(t *testing.T) {
 // jobs.declared_extensions column (migration 00027). Three states must survive
 // a write/read cycle identically on SQLite and on the fake, because the
 // scheduler branches on all three: NOT RECORDED (a row written before the
-// column existed -- fall back to the raw-template byte scan), RECORDED EMPTY
-// (the template declares no extensions -- do NOT fall back), and RECORDED
+// column existed: fall back to the raw-template byte scan), RECORDED EMPTY
+// (the template declares no extensions: do not fall back), and RECORDED
 // NON-EMPTY (use the list).
 //
-// Conflating the first two is the regression this column's ” default exists
-// to prevent: every pre-migration row would read as "declares nothing", and an
-// EXPR job already in the queue would silently lose its worker-caps gate.
+// The column's ” default keeps the first two distinct: otherwise every
+// pre-migration row would read as "declares nothing", and an EXPR job already
+// in the queue would lose its worker-caps gate.
 func TestJobStore_DeclaredExtensionsRoundTrip(t *testing.T) {
 	cases := []struct {
 		id           string
@@ -113,7 +113,7 @@ func TestJobStore_DeclaredExtensionsRoundTrip(t *testing.T) {
 			}
 
 			// ListJobs is the scheduler-adjacent read path that must not lose
-			// the field either -- a job listed but not fetched still answers
+			// the field either: a job listed but not fetched still answers
 			// the same question.
 			page, err := st.ListJobs(ctx, store.ListJobsOptions{})
 			if err != nil {

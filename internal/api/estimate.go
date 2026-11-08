@@ -5,6 +5,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/url"
@@ -19,6 +20,22 @@ const minEstimatedSeconds = 1
 
 var estimatedSecondsProblem = fmt.Sprintf("estimated_seconds must be an integer from %d to %d", minEstimatedSeconds, maxEstimatedSeconds)
 
+// errEstimateNotInteger is returned while decoding a request body whose
+// estimated_seconds is present but not a JSON integer (1.5, "1h", 1e10, true).
+var errEstimateNotInteger = errors.New(estimatedSecondsProblem)
+
+// bodyDecodeProblem is the 400 detail for a failed request-body decode. A
+// malformed estimated_seconds names the field; any other failure is reported
+// as an unreadable body.
+func bodyDecodeProblem(err error) string {
+	var typeErr *json.UnmarshalTypeError
+	if errors.Is(err, errEstimateNotInteger) ||
+		(errors.As(err, &typeErr) && typeErr.Field == "estimated_seconds") {
+		return estimatedSecondsProblem
+	}
+	return "invalid JSON body"
+}
+
 // validateEstimatedSeconds checks a submitter's optional run-time estimate.
 // Nil means "no estimate" and is valid. Returns "" when valid, else the
 // problem detail for a 400 response.
@@ -30,12 +47,13 @@ func validateEstimatedSeconds(v *int) string {
 }
 
 // parseEstimatedSecondsQuery parses the optional estimated_seconds query
-// parameter. A present but malformed or out-of-range value is a client error.
+// parameter. A present but empty, malformed or out-of-range value is a client
+// error.
 func parseEstimatedSecondsQuery(q url.Values) (estimate *int, problem string) {
-	raw := q.Get("estimated_seconds")
-	if raw == "" {
+	if !q.Has("estimated_seconds") {
 		return nil, ""
 	}
+	raw := q.Get("estimated_seconds")
 	n, err := strconv.Atoi(raw)
 	if err != nil {
 		return nil, estimatedSecondsProblem
@@ -47,7 +65,8 @@ func parseEstimatedSecondsQuery(q url.Values) (estimate *int, problem string) {
 }
 
 // optionalInt distinguishes an omitted JSON key (Set false) from an explicit
-// null (Set true, Value nil) and from a value.
+// null (Set true, Value nil) and from a value. It carries estimated_seconds,
+// so a value that is not an integer decodes to [errEstimateNotInteger].
 type optionalInt struct {
 	Set   bool
 	Value *int
@@ -62,7 +81,7 @@ func (o *optionalInt) UnmarshalJSON(b []byte) error {
 	}
 	var n int
 	if err := json.Unmarshal(b, &n); err != nil {
-		return err
+		return errEstimateNotInteger
 	}
 	o.Value = &n
 	return nil

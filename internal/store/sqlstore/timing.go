@@ -10,16 +10,16 @@ import (
 )
 
 // timingScope is the job filter one timing read applies to all three of its
-// queries. jobsWhere filters the jobs table aliased j; tasksJoin and
-// tasksWhere restrict tasks aliased t to the same jobs, the queue form by a
-// join on jobs rather than a second IN list. All are spliced into SQL text, so
-// they must only ever hold "?" marks and literals, never a value: every ID is
-// in args, bound once per query.
+// queries. jobsWhere filters the jobs table aliased j; stepsIn is a subquery
+// selecting the IDs of those jobs' steps. Tasks are reached through stepsIn,
+// so the task queries search the tasks(step_id, status, run_ms) index a step
+// at a time instead of reading every task of a job through tasks(job_id). All
+// are spliced into SQL text, so they must only ever hold "?" marks and
+// literals, never a value: every ID is in args, bound once per query.
 type timingScope struct {
-	jobsWhere  string
-	tasksJoin  string
-	tasksWhere string
-	args       []any
+	jobsWhere string
+	stepsIn   string
+	args      []any
 }
 
 const timingNonTerminal = `j.status NOT IN ('completed', 'failed', 'canceled')`
@@ -27,9 +27,9 @@ const timingNonTerminal = `j.status NOT IN ('completed', 'failed', 'canceled')`
 func timingByJobs(jobIDs []string) timingScope {
 	timingIn := `(` + qmarks(len(jobIDs)) + `)`
 	return timingScope{
-		jobsWhere:  `j.id IN ` + timingIn,
-		tasksWhere: `t.job_id IN ` + timingIn,
-		args:       stringArgs(jobIDs),
+		jobsWhere: `j.id IN ` + timingIn,
+		stepsIn:   `SELECT s.id FROM steps s WHERE s.job_id IN ` + timingIn,
+		args:      stringArgs(jobIDs),
 	}
 }
 
@@ -37,10 +37,9 @@ func timingByQueues(queueIDs []string) timingScope {
 	timingIn := `(` + qmarks(len(queueIDs)) + `)`
 	where := `j.queue_id IN ` + timingIn + ` AND ` + timingNonTerminal
 	return timingScope{
-		jobsWhere:  where,
-		tasksJoin:  `JOIN jobs j ON j.id = t.job_id`,
-		tasksWhere: where,
-		args:       stringArgs(queueIDs),
+		jobsWhere: where,
+		stepsIn:   `SELECT s.id FROM steps s JOIN jobs j ON j.id = s.job_id WHERE ` + where,
+		args:      stringArgs(queueIDs),
 	}
 }
 
@@ -125,24 +124,27 @@ func (s *Store) readTimingJobs(ctx context.Context, sc timingScope) ([]store.Job
 	return jobs, index, mapErr(rows.Err())
 }
 
-// readTimingSteps fills each job's Steps. A succeeded task is measured when its
-// latest attempt succeeded with an ended_at; latestAttemptOf picks one attempt
-// per task, so the counts are of tasks.
-//
-// The counts and the measured sums are one query on purpose: it is driven from
-// the jobs (tasks by job_id), where a separate measured query filtered on
-// t.status = 'succeeded' is planned on SQLite from the tasks status index,
-// reading every succeeded task in the database, finished jobs' included.
+// timingStepsQuery counts each step's tasks by status and sums the stored run
+// times of its measured tasks (tasks.run_ms, set when a task succeeds). It is
+// answered from the tasks(step_id, status, run_ms) index alone, one entry per
+// task with no attempt lookups, then joined to steps for the job of each
+// grouped row.
+func timingStepsQuery(sc timingScope) string {
+	return `
+SELECT s.job_id, g.step_id, g.status, g.n, g.measured, g.ms
+FROM  (SELECT t.step_id, t.status, COUNT(*) AS n, COUNT(t.run_ms) AS measured,
+              CAST(COALESCE(SUM(t.run_ms), 0) AS BIGINT) AS ms
+       FROM   tasks t
+       WHERE  t.step_id IN (` + sc.stepsIn + `)
+       GROUP BY t.step_id, t.status) g
+JOIN   steps s ON s.id = g.step_id
+ORDER BY s.job_id, g.step_id`
+}
+
+// readTimingSteps fills each job's Steps from [timingStepsQuery]. Only a
+// succeeded group's run times count as measured.
 func (s *Store) readTimingSteps(ctx context.Context, sc timingScope, jobs []store.JobTiming, index map[string]int) error {
-	q := `
-SELECT t.job_id, t.step_id, t.status, COUNT(*), COUNT(a.ended_at),
-       CAST(COALESCE(SUM(` + s.d.EpochSeconds("a.ended_at") + ` - ` + s.d.EpochSeconds("a.started_at") + `), 0) AS DOUBLE PRECISION)
-FROM   tasks t ` + sc.tasksJoin + `
-LEFT JOIN task_attempts a ON a.task_id = t.id AND t.status = 'succeeded'
-      AND a.status = 'succeeded' AND a.ended_at IS NOT NULL AND ` + latestAttemptOf + `
-WHERE  ` + sc.tasksWhere + `
-GROUP BY t.job_id, t.step_id, t.status
-ORDER BY t.job_id, t.step_id`
+	q := timingStepsQuery(sc)
 	rows, err := s.r.QueryContext(ctx, q, sc.args...)
 	if err != nil {
 		return mapErr(err)
@@ -151,8 +153,8 @@ ORDER BY t.job_id, t.step_id`
 	for rows.Next() {
 		var jobID, stepID, status string
 		var n, measured int
-		var secs float64
-		if err := rows.Scan(&jobID, &stepID, &status, &n, &measured, &secs); err != nil {
+		var ms int64
+		if err := rows.Scan(&jobID, &stepID, &status, &n, &measured, &ms); err != nil {
 			return mapErr(err)
 		}
 		i, ok := index[jobID]
@@ -165,8 +167,10 @@ ORDER BY t.job_id, t.step_id`
 		}
 		st := &jt.Steps[len(jt.Steps)-1]
 		addStepCount(st, store.TaskStatus(status), n)
-		st.Measured += measured
-		st.MeasuredSeconds += secs
+		if store.TaskStatus(status) == store.TaskStatusSucceeded {
+			st.Measured += measured
+			st.MeasuredSeconds += float64(ms) / 1000
+		}
 	}
 	return mapErr(rows.Err())
 }
@@ -187,15 +191,21 @@ func addStepCount(st *store.StepTiming, status store.TaskStatus, n int) {
 	}
 }
 
-// readTimingRunning fills each job's Running from its running tasks' latest
-// attempts.
-func (s *Store) readTimingRunning(ctx context.Context, sc timingScope, jobs []store.JobTiming, index map[string]int) error {
-	q := `
+// timingRunningQuery reads each running task's latest attempt: an equality
+// search on tasks(step_id, status) per step, then one attempt lookup per
+// running task.
+func timingRunningQuery(sc timingScope) string {
+	return `
 SELECT t.job_id, t.step_id, a.started_at, a.progress
-FROM   tasks t ` + sc.tasksJoin + `
+FROM   tasks t
 JOIN   task_attempts a ON a.task_id = t.id AND ` + latestAttemptOf + `
-WHERE  t.status = 'running' AND ` + sc.tasksWhere + `
+WHERE  t.status = 'running' AND t.step_id IN (` + sc.stepsIn + `)
 ORDER BY a.started_at, t.id`
+}
+
+// readTimingRunning fills each job's Running from [timingRunningQuery].
+func (s *Store) readTimingRunning(ctx context.Context, sc timingScope, jobs []store.JobTiming, index map[string]int) error {
+	q := timingRunningQuery(sc)
 	rows, err := s.r.QueryContext(ctx, q, sc.args...)
 	if err != nil {
 		return mapErr(err)

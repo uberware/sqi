@@ -17,7 +17,8 @@ type StepTiming struct {
 	Failed     int
 	Canceled   int
 	// Measured is how many succeeded tasks have a succeeded attempt with an
-	// ended_at; MeasuredSeconds sums those attempts' ended_at − started_at.
+	// ended_at no earlier than its started_at; MeasuredSeconds sums those
+	// attempts' ended_at − started_at, so it is never negative.
 	// Only a task's latest attempt (highest attempt number, then greatest ID)
 	// is measured, so a task counts at most once. A task left succeeded by an
 	// attempt that a later one superseded counts in Succeeded but not in
@@ -53,4 +54,12 @@ type TimingStore interface {
 	// QueueJobTimings returns the inputs for every non-terminal job in the
 	// given queues. Empty input returns nil without querying.
 	QueueJobTimings(ctx context.Context, queueIDs []string) ([]JobTiming, error)
+}
+
+// RunMs is a succeeded attempt's measured run time from start to end, in
+// whole milliseconds, rounded. Both stores measure with it, the SQL stores
+// when they store tasks.run_ms and the fake on each read, so they agree to the
+// millisecond.
+func RunMs(start, end time.Time) int64 {
+	return end.Sub(start).Round(time.Millisecond).Milliseconds()
 }

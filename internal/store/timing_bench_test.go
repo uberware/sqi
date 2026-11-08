@@ -70,3 +70,52 @@ func BenchmarkQueueJobTimings(b *testing.B) {
 		}
 	}
 }
+
+// The JobTimings benchmark fixture: one unfinished job of benchLargeJobTasks
+// tasks, half of them succeeded through real attempts and benchTimingRunning
+// running. It is the case the per-job read is slowest on: the cost follows
+// the job's succeeded tasks, and GET /jobs/{id} reads it on every call.
+const benchLargeJobTasks = 100_000
+
+// BenchmarkJobTimingsLargeJob measures one JobTimings call on SQLite for the
+// one large job above.
+func BenchmarkJobTimingsLargeJob(b *testing.B) {
+	ctx := context.Background()
+	st, err := sqlite.Open(ctx, b.TempDir()+"/test.db", sqlite.DefaultOptions())
+	if err != nil {
+		b.Fatalf("sqlite.Open: %v", err)
+	}
+	b.Cleanup(func() { _ = st.Close() })
+
+	succeeded := benchLargeJobTasks / 2
+	statuses := make([]store.TaskStatus, benchLargeJobTasks)
+	for i := range statuses {
+		switch {
+		case i < succeeded+benchTimingRunning:
+			statuses[i] = store.TaskStatusRunning // the first `succeeded` complete below
+		default:
+			statuses[i] = store.TaskStatusReady
+		}
+	}
+	g := seedGraph(b, st, graphOpts{jobStatus: store.JobStatusRunning},
+		stepSpec{name: "a", status: store.StepStatusReady, tasks: statuses})
+	end := time.Now().UTC()
+	for _, task := range g.Tasks["a"][:succeeded] {
+		a := g.Attempts[task.ID]
+		res, err := st.CompleteTaskAttempt(ctx, store.AttemptCompletion{
+			AttemptID: a.ID, TaskID: task.ID, TaskStatus: store.TaskStatusSucceeded,
+			AttemptStatus: store.AttemptStatusSucceeded, EndedAt: end,
+		})
+		if err != nil || !res.Applied {
+			b.Fatalf("CompleteTaskAttempt = (%+v, %v)", res, err)
+		}
+	}
+
+	ids := []string{g.Job.ID}
+	for b.Loop() {
+		got, err := st.JobTimings(ctx, ids)
+		if err != nil || len(got) != 1 {
+			b.Fatalf("JobTimings = (%d jobs, %v), want 1", len(got), err)
+		}
+	}
+}

@@ -395,6 +395,12 @@ shows a confirmation dialog before issuing the requests. When adding components
 that display job data from the `jobs` subject, handle the `removed` status to
 avoid stale rows lingering in the UI.
 
+A `jobs` event with `change: "estimate"` is not a status change: the server
+sends it when a job's estimate is edited, so other open pages refresh their
+remaining-time figures. Its `status` is only the status the server read while
+handling the edit and may already be stale, so `JobList` and `JobDetail`
+refetch on it rather than apply it. Handle it the same way in new components.
+
 `JobDetail` also surfaces *why* tasks failed: a job-level failure banner
 (built from the `JobDetail.failure_summary` field — omitted until at least one
 task has failed) above the task list, and a per-task reason string next to
