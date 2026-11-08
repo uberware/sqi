@@ -6,7 +6,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -123,6 +125,34 @@ type CapacityGroupStore interface {
 	// DeleteCapacityGroup removes a group by ID. Returns [ErrNotFound] if it
 	// does not exist, or [ErrConflict] while any worker belongs to it.
 	DeleteCapacityGroup(ctx context.Context, id string) error
+}
+
+// ProfileWorker returns a synthetic worker standing for one machine of g: the
+// group's farm and the hardware, platform, tags, extensions and EXPR limits its
+// profile declares. The worker owns copies of the profile's tags and
+// extensions.
+//
+// QueueID is the group's sole queue when it serves exactly one, and empty
+// otherwise, which is what a real worker registered against several queues
+// carries (no single queue affinity).
+func (g CapacityGroup) ProfileWorker() Worker {
+	p := g.Profile
+	w := Worker{
+		FarmID:          g.FarmID,
+		ComputeLocation: p.ComputeLocation,
+		OS:              p.OS,
+		Arch:            p.Arch,
+		CPUCount:        p.CPUCount,
+		RAMMb:           p.RAMMb,
+		GPUInfo:         GPUInfo{Count: p.GPUCount, VRAMMb: p.GPUMemoryMb},
+		Tags:            maps.Clone(p.Tags),
+		Extensions:      slices.Clone(p.Extensions),
+		ExprLimits:      p.ExprLimits,
+	}
+	if len(g.QueueIDs) == 1 {
+		w.QueueID = g.QueueIDs[0]
+	}
+	return w
 }
 
 var capacityGroupNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`)

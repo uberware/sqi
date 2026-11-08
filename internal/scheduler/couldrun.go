@@ -8,38 +8,8 @@ package scheduler
 // policy caps and has free cores) and is not changed by anything here.
 
 import (
-	"maps"
-	"slices"
-
 	"github.com/uberware/sqi/internal/store"
 )
-
-// profileWorker returns a synthetic worker standing for one machine of g: the
-// group's farm and the hardware, platform, tags, extensions and EXPR limits its
-// profile declares.
-//
-// QueueID is the group's sole queue when it serves exactly one, and empty
-// otherwise, which is what a real worker registered against several queues
-// carries (no single queue affinity).
-func profileWorker(g store.CapacityGroup) store.Worker {
-	p := g.Profile
-	w := store.Worker{
-		FarmID:          g.FarmID,
-		ComputeLocation: p.ComputeLocation,
-		OS:              p.OS,
-		Arch:            p.Arch,
-		CPUCount:        p.CPUCount,
-		RAMMb:           p.RAMMb,
-		GPUInfo:         store.GPUInfo{Count: p.GPUCount, VRAMMb: p.GPUMemoryMb},
-		Tags:            maps.Clone(p.Tags),
-		Extensions:      slices.Clone(p.Extensions),
-		ExprLimits:      p.ExprLimits,
-	}
-	if len(g.QueueIDs) == 1 {
-		w.QueueID = g.QueueIDs[0]
-	}
-	return w
-}
 
 // couldRun reports whether w could ever run a task of step and job needing
 // requiredCores, ignoring everything that varies with load: whether w is

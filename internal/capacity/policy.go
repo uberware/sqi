@@ -28,7 +28,6 @@ package capacity
 
 import (
 	"cmp"
-	"maps"
 	"math"
 	"slices"
 	"time"
@@ -271,7 +270,7 @@ func newGroupPlan(g store.CapacityGroup, members []Member) *groupPlan {
 		}
 		slots = min(slots, int64(len(p.wakeable)))
 	} else {
-		p.profile = profileWorker(g)
+		p.profile = g.ProfileWorker()
 		p.perMachine = max(int64(g.Profile.CPUCount), 1)
 	}
 	p.room = satMul(slots, p.perMachine)
@@ -381,30 +380,6 @@ func sortedMembers(members []Member) []Member {
 	out := slices.Clone(members)
 	slices.SortStableFunc(out, func(a, b Member) int { return cmp.Compare(a.Worker.ID, b.Worker.ID) })
 	return out
-}
-
-// profileWorker returns a synthetic worker standing for one machine of g, as
-// the scheduler's profileWorker builds it: the group's farm and the hardware,
-// platform, tags, extensions and EXPR limits its profile declares, with the
-// group's sole queue as its queue affinity when it serves exactly one.
-func profileWorker(g store.CapacityGroup) store.Worker {
-	pr := g.Profile
-	w := store.Worker{
-		FarmID:          g.FarmID,
-		ComputeLocation: pr.ComputeLocation,
-		OS:              pr.OS,
-		Arch:            pr.Arch,
-		CPUCount:        pr.CPUCount,
-		RAMMb:           pr.RAMMb,
-		GPUInfo:         store.GPUInfo{Count: pr.GPUCount, VRAMMb: pr.GPUMemoryMb},
-		Tags:            maps.Clone(pr.Tags),
-		Extensions:      slices.Clone(pr.Extensions),
-		ExprLimits:      pr.ExprLimits,
-	}
-	if len(g.QueueIDs) == 1 {
-		w.QueueID = g.QueueIDs[0]
-	}
-	return w
 }
 
 // ceilDiv is a/b rounded up, for a >= 0 and b >= 1, without overflow.
