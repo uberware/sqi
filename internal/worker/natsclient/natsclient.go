@@ -469,24 +469,28 @@ func (lc *lifecycle) onClosed(nc *nats.Conn) {
 //
 // Drain is idempotent with respect to an already-closed connection: errors
 // from draining a closed connection are silently ignored.
+//
+// [nats.Conn.Drain] only starts the drain and returns at once, so Drain waits
+// for the connection to reach the closed state itself. Returning earlier lets
+// the worker exit with its last core-NATS publish, the deregister, still in the
+// client's buffer.
 func Drain(nc *nats.Conn, gracePeriod time.Duration, logger *slog.Logger) {
 	bg := context.Background()
-	done := make(chan struct{})
-
-	go func() {
-		defer close(done)
-		if err := nc.Drain(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
-			logger.WarnContext(bg, "natsclient: drain error", slog.Any("error", err))
-		}
-	}()
-
-	select {
-	case <-done:
-		logger.InfoContext(bg, "natsclient: connection drained")
-	case <-time.After(gracePeriod):
-		logger.WarnContext(bg, "natsclient: drain timed out — force closing connection")
-		nc.Close()
+	if err := nc.Drain(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
+		logger.WarnContext(bg, "natsclient: drain error", slog.Any("error", err))
 	}
+
+	const poll = 10 * time.Millisecond
+	deadline := time.Now().Add(gracePeriod)
+	for !nc.IsClosed() {
+		if !time.Now().Before(deadline) {
+			logger.WarnContext(bg, "natsclient: drain timed out — force closing connection")
+			nc.Close()
+			return
+		}
+		time.Sleep(poll)
+	}
+	logger.InfoContext(bg, "natsclient: connection drained")
 }
 
 // buildOptions assembles the nats.Option slice from WorkerNATSConfig.
