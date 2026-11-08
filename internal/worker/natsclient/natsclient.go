@@ -490,6 +490,13 @@ func Drain(nc *nats.Conn, gracePeriod time.Duration, logger *slog.Logger) {
 		}
 		time.Sleep(poll)
 	}
+	// nats.go's own drain timeout closes the connection too, without
+	// flushing what was left.
+	if err := nc.LastError(); errors.Is(err, nats.ErrDrainTimeout) {
+		logger.WarnContext(bg, "natsclient: drain timed out — connection closed with publishes possibly unsent",
+			slog.Any("error", err))
+		return
+	}
 	logger.InfoContext(bg, "natsclient: connection drained")
 }
 

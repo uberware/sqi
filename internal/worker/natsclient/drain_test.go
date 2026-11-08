@@ -3,7 +3,10 @@
 package natsclient
 
 import (
+	"bytes"
 	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -87,4 +90,56 @@ func TestDrain_ReturnsOnlyOnceTheConnectionHasClosed(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the publish made before Drain never reached the server")
 	}
+}
+
+// TestDrain_WarnsWhenNATSDrainTimesOut pins that a drain nats.go itself gave
+// up on (its DrainTimeout closed the connection, possibly with publishes
+// unsent) is logged as a warning, not as a drained connection.
+func TestDrain_WarnsWhenNATSDrainTimesOut(t *testing.T) {
+	url := startDrainTestServer(t)
+	nc, err := nats.Connect(url, nats.DrainTimeout(50*time.Millisecond))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(nc.Close)
+	busy := make(chan struct{})
+	t.Cleanup(func() { close(busy) })
+	if _, err := nc.Subscribe("busy", func(*nats.Msg) { <-busy }); err != nil {
+		t.Fatalf("subscribe busy: %v", err)
+	}
+	if err := nc.Publish("busy", nil); err != nil {
+		t.Fatalf("publish busy: %v", err)
+	}
+	if err := nc.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	var logs syncLog
+	Drain(nc, 5*time.Second, slog.New(slog.NewTextHandler(&logs, nil)))
+
+	out := logs.String()
+	if !strings.Contains(out, "level=WARN") || !strings.Contains(out, "drain timed out") {
+		t.Errorf("Drain logged no drain-timeout warning:\n%s", out)
+	}
+	if strings.Contains(out, "connection drained") {
+		t.Errorf("Drain reported a clean drain after nats.go's timeout:\n%s", out)
+	}
+}
+
+// syncLog is a bytes.Buffer safe for a logger and a test to share.
+type syncLog struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (l *syncLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *syncLog) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
 }
