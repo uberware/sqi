@@ -182,7 +182,7 @@ jobs:
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13.1
-          args: --timeout=5m ./cmd/... ./internal/... ./pkg/... ./test/... ./web
+          args: --timeout=5m ./cmd/... ./internal/... ./pkg/... ./test/... ./deploy/... ./web
 
       # The internal/openjd/expr path-engine differentials compare against
       # python3's pathlib. sqi implements CPython 3.13 path semantics, so
@@ -206,6 +206,24 @@ jobs:
       # install on this job's critical path.
       - name: Test (race detector + coverage gate)
         run: make test-cover TEST_EXCLUDE_PKGS=github.com/uberware/sqi/test/integration
+
+      # deploy/capacity's TestExampleScripts runs the example capacity provider
+      # scripts against stub cloud tools and skips, with the suite still green,
+      # when bash or jq is missing. ubuntu-latest ships both; the install is
+      # explicit so that stays true, and the test is asserted by name because
+      # a skip would otherwise pass unnoticed.
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends jq
+
+      - name: Example capacity provider scripts
+        run: |
+          go test -count=1 -v -run 'TestExampleScripts' ./deploy/capacity/ 2>&1 | tee /tmp/capacity-examples.log
+          for t in TestExampleScripts TestExampleScripts_Layout; do
+            if ! grep -q -- "--- PASS: $t " /tmp/capacity-examples.log; then
+              echo "::error::$t did not pass (or was skipped)"
+              exit 1
+            fi
+          done
 
       # Needs the CODECOV_TOKEN repository secret (setup in
       # docs/development.md). fail_ci_if_error is false so a Codecov outage
