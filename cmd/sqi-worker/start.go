@@ -35,6 +35,7 @@ import (
 	"github.com/uberware/sqi/internal/worker/natsclient"
 	"github.com/uberware/sqi/internal/worker/obs"
 	"github.com/uberware/sqi/internal/worker/openjd"
+	"github.com/uberware/sqi/internal/worker/power"
 	"github.com/uberware/sqi/internal/worker/preempt"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/worker/registration"
@@ -316,7 +317,11 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	// Subscribe returns once the server has the subscription, and it is made
 	// before the lease loop starts, so a cancel for any lease this worker
 	// takes finds it in place.
-	if _, err := cancel.Subscribe(nc, workerID, exec, logger); err != nil {
+	//
+	// The server's sleep, shutdown and wake-relay requests arrive on
+	// worker.control.<workerID>. That subscription is made here too, so a
+	// command is never lost to one made after the lease loop starts.
+	if err := subscribeServerSignals(ctx, nc, workerID, cfg.Worker.Power, exec, reg, logger); err != nil {
 		return err
 	}
 
@@ -416,6 +421,32 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	defer shutdownCancel()
 	obsServer.Shutdown(shutdownCtx)
 	return nil
+}
+
+// subscribeServerSignals opens the core-NATS subscriptions the server sends
+// this worker's cancels (task.cancel.<workerID>) and power commands
+// (worker.control.<workerID>) on, each flushed before it returns. Sleep and
+// shutdown are refused unless worker.power.allow_remote_sleep is set, and by a
+// worker that is running a task.
+func subscribeServerSignals(
+	ctx context.Context, nc *nats.Conn, workerID string, cfg workerconfig.PowerConfig,
+	exec *executor.Executor, reg *registration.Registrar, logger *slog.Logger,
+) error {
+	if _, err := cancel.Subscribe(nc, workerID, exec, logger); err != nil {
+		return err
+	}
+	_, err := power.Subscribe(ctx, nc, power.Config{
+		AllowRemoteSleep: cfg.AllowRemoteSleep,
+		SleepCommand:     cfg.SleepCommand,
+		ShutdownCommand:  cfg.ShutdownCommand,
+	}, power.Deps{
+		WorkerID:   workerID,
+		Busy:       exec.ActiveTaskCount,
+		Deregister: reg.Deregister,
+		Reregister: reg.Register,
+		Logger:     logger,
+	})
+	return err
 }
 
 // registerWorker builds the registrar, wires re-registration into NATS

@@ -860,6 +860,51 @@ Replaces the metadata base URL, for a proxy or a test. Ignored with
 
 ---
 
+### `worker.power.allow_remote_sleep`
+
+| | |
+|---|---|
+| **Type** | `bool` |
+| **Default** | `false` |
+| **Env var** | `SQI_WORKER_POWER_ALLOW_REMOTE_SLEEP` |
+
+Let `sqi-server` order this machine to sleep or shut down when it retires the
+worker from a capacity group. With `false` both are refused. Either is refused
+too while the worker is running a task, whatever this says. A value that is not
+a boolean fails startup naming the variable. Asking a worker to send
+Wake-on-LAN packets for a peer is not governed by this setting. See
+[Power control on the worker](capacity.md#power-control-on-the-worker).
+
+```yaml
+worker:
+  power:
+    allow_remote_sleep: true
+```
+
+---
+
+### `worker.power.sleep_command` and `worker.power.shutdown_command`
+
+| | |
+|---|---|
+| **Type** | `[]string` (program, then arguments; no shell) |
+| **Default** | `[]` (the platform's own command) |
+| **Env var** | none; config file only |
+
+The commands that suspend and power off the machine. Empty uses `systemctl
+suspend` / `systemctl poweroff` on Linux, `pmset sleepnow` / `shutdown -h now`
+on macOS, and a PowerShell suspend call / `shutdown.exe /s /t 0` on Windows.
+There is no default on any other platform, so a request there is refused until
+one is set. The first element must not be blank.
+
+```yaml
+worker:
+  power:
+    sleep_command: ["/usr/local/bin/sleep-now"]
+```
+
+---
+
 ### `worker.queue_ids`
 
 | | |
@@ -1920,6 +1965,9 @@ log_streamer:
 | `worker.preemption.endpoint` | string | `""` | `SQI_WORKER_PREEMPTION_ENDPOINT` | — |
 | `worker.cloud_instance_id.source` | string | `none` | `SQI_WORKER_CLOUD_INSTANCE_ID_SOURCE` | — |
 | `worker.cloud_instance_id.endpoint` | string | `""` | `SQI_WORKER_CLOUD_INSTANCE_ID_ENDPOINT` | — |
+| `worker.power.allow_remote_sleep` | bool | `false` | `SQI_WORKER_POWER_ALLOW_REMOTE_SLEEP` | — |
+| `worker.power.sleep_command` | []string | `[]` | — | — |
+| `worker.power.shutdown_command` | []string | `[]` | — | — |
 | `worker.queue_ids` | []string | `[]` | `SQI_WORKER_QUEUE_IDS` | — |
 | `worker.pull_idle_backoff` | duration | `2s` | `SQI_WORKER_PULL_IDLE_BACKOFF` | — (deprecated, no effect) |
 | `worker.pull_nack_delay` | duration | `5s` | `SQI_WORKER_PULL_NACK_DELAY` | — (deprecated, no effect) |

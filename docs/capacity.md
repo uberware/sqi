@@ -520,6 +520,34 @@ Keep in mind:
   `boot_timeout_seconds` ([above](#worker-shutdown-and-drain)), or it is deleted
   and its credential revoked.
 
+## Power control on the worker
+
+A worker answers power requests the server sends it on `worker.control.<workerID>`.
+
+| Request | Refused when | What the worker does |
+|---|---|---|
+| `sleep`, `shutdown` | it is running a task (`busy`), or `worker.power.allow_remote_sleep` is `false` (the default), or the platform has no command for it | replies, deregisters as `retired`, then runs the command |
+| `wake` | no valid 6-byte MAC address, or no target | sends Wake-on-LAN broadcasts for the addresses to the targets, on the server's behalf |
+
+`wake` has no opt-in because a worker acting as a relay only sends UDP
+broadcasts. `sleep` and `shutdown` do, because they stop the machine, and they
+are refused whatever the setting while the worker runs a task.
+
+`worker.power.sleep_command` and `worker.power.shutdown_command` are argv
+lists, run with no shell, set in the config file only. Left empty they use the
+platform's own: `systemctl suspend` / `systemctl poweroff` on Linux,
+`pmset sleepnow` / `shutdown -h now` on macOS, and a PowerShell suspend call /
+`shutdown.exe /s /t 0` on Windows. Other platforms have none, so a request is
+refused until one is configured. `shutdown -h now` needs root, and the
+Linux commands need permission to suspend or power off, so a worker that is not
+root needs a polkit or sudoers rule or its own command.
+
+A worker that suspends comes back by itself: it registers again when it sees
+the machine wake, and in any case 60 seconds after the command returned. A
+command that fails to start or exits non-zero makes it register again at once.
+After a successful `shutdown` it does nothing, because the operating system ends
+the process.
+
 ## Wiring an autoscaler
 
 > **Documentation-derived: not run against a real cloud.** The AWS, GCP, Azure
