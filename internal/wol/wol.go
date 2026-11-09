@@ -68,6 +68,11 @@ func DirectedBroadcast(cidr string) (net.IP, bool) {
 	return out, true
 }
 
+// SendDefault is [Send] with [DefaultBurst] and [DefaultGap].
+func SendDefault(ctx context.Context, macs []net.HardwareAddr, targets []string) (reached int, err error) {
+	return Send(ctx, macs, targets, DefaultBurst, DefaultGap)
+}
+
 // Send sends burst copies of each MAC's magic packet to each target
 // ("ip:port"), gap apart, over UDP with SO_BROADCAST set, and reports how many
 // targets it reached: those at least one packet write to succeeded. A bad MAC,

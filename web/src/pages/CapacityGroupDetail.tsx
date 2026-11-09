@@ -36,11 +36,10 @@ import type {
   PowerState,
   Worker,
 } from '@/api/types'
+import { EXTERNAL_PROVIDER, WAKE_ON_LAN_PROVIDER } from '@/lib/capacityGroupForm'
 import styles from './CapacityGroupDetail.module.css'
 
 const DEFAULT_TOKEN_TTL = '720h'
-
-const WAKE_ON_LAN = 'wake_on_lan'
 
 const workerName = (w: Worker): string => w.name || w.hostname
 
@@ -151,7 +150,7 @@ function StatusPanel({ group }: { group: CapacityGroup }) {
             for retirement. It is a target to set capacity to, not an amount to add.
           </p>
 
-          {(group.provider !== 'external' || s.last_action !== null) && (
+          {(group.provider !== EXTERNAL_PROVIDER || s.last_action !== null) && (
             <LastAction action={s.last_action} />
           )}
 
@@ -235,7 +234,7 @@ function SettingsPanel({ group }: { group: CapacityGroup }) {
     ['Scale-up cooldown', `${group.scale_up_cooldown_seconds} s`],
     ['Idle timeout', `${group.idle_timeout_seconds} s`],
     ['Boot timeout', `${group.boot_timeout_seconds} s`],
-    ...(group.provider === WAKE_ON_LAN
+    ...(group.provider === WAKE_ON_LAN_PROVIDER
       ? ([['Retire action', group.retire_action]] as Array<[string, string]>)
       : []),
     ['Machine profile', profileSummary(group)],
@@ -315,7 +314,7 @@ function MembersSection({ group, canManage }: { group: CapacityGroup; canManage:
   const named = group.kind === 'named'
   const editable = named && canManage
   const columns = editable ? 5 : 4
-  const wol = group.provider === WAKE_ON_LAN
+  const wol = group.provider === WAKE_ON_LAN_PROVIDER
 
   async function remove(w: Worker) {
     setRemoving(w.id)

@@ -499,9 +499,7 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 		cfg.WakeOnLANPort = wol.DefaultPort
 	}
 	if cfg.SendWakePackets == nil {
-		cfg.SendWakePackets = func(ctx context.Context, macs []net.HardwareAddr, targets []string) (int, error) {
-			return wol.Send(ctx, macs, targets, wol.DefaultBurst, wol.DefaultGap)
-		}
+		cfg.SendWakePackets = wol.SendDefault
 	}
 	n := notifier
 	if n == nil {

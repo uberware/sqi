@@ -41,14 +41,6 @@ import (
 // providerKindScript is a provider configured under capacity.providers.
 const providerKindScript providerKind = "script"
 
-// Script request actions.
-const (
-	scriptWake   = "wake"
-	scriptGrow   = "grow"
-	scriptRetire = "retire"
-	scriptList   = "list"
-)
-
 // maxInstanceIDLen is the longest instance ID a list may return that sqi uses.
 const maxInstanceIDLen = 256
 
@@ -81,20 +73,20 @@ func (s *Scheduler) newScriptProvider(name string, p script.Provider) capacityPr
 
 // wake sends one wake request naming every member; its answer is each one's.
 func (sp *scriptProvider) wake(ctx context.Context, g store.CapacityGroup, members []store.Worker) map[string]actionResult {
-	_, r := sp.call(ctx, g, script.Request{Action: scriptWake, Members: scriptMembers(members)})
+	_, r := sp.call(ctx, g, script.Request{Action: actionWake, Members: scriptMembers(members)})
 	return sameResult(members, r)
 }
 
 // grow asks for desired machines in all; current is the size last asked for.
 func (sp *scriptProvider) grow(ctx context.Context, g store.CapacityGroup, desired, current int) actionResult {
-	_, r := sp.call(ctx, g, script.Request{Action: scriptGrow, Desired: desired, Current: current})
+	_, r := sp.call(ctx, g, script.Request{Action: actionGrow, Desired: desired, Current: current})
 	return r
 }
 
 // retire sends one retire request naming every member; its answer is each
 // one's.
 func (sp *scriptProvider) retire(ctx context.Context, g store.CapacityGroup, members []store.Worker) map[string]actionResult {
-	_, r := sp.call(ctx, g, script.Request{Action: scriptRetire, Members: scriptMembers(members)})
+	_, r := sp.call(ctx, g, script.Request{Action: actionRetire, Members: scriptMembers(members)})
 	return sameResult(members, r)
 }
 
@@ -105,7 +97,7 @@ func (sp *scriptProvider) retireInstances(ctx context.Context, g store.CapacityG
 	for i, id := range instanceIDs {
 		members[i] = script.Member{InstanceID: id}
 	}
-	_, r := sp.call(ctx, g, script.Request{Action: scriptRetire, Members: members})
+	_, r := sp.call(ctx, g, script.Request{Action: actionRetire, Members: members})
 	return r
 }
 
@@ -113,7 +105,7 @@ func (sp *scriptProvider) retireInstances(ctx context.Context, g store.CapacityG
 // [usableInstanceIDs]). The script's own message is replaced by counts, so no
 // ID it returned reaches a log through it.
 func (sp *scriptProvider) list(ctx context.Context, g store.CapacityGroup) ([]string, actionResult) {
-	resp, r := sp.call(ctx, g, script.Request{Action: scriptList})
+	resp, r := sp.call(ctx, g, script.Request{Action: actionList})
 	if r.Result != resultOK {
 		return nil, r
 	}
@@ -220,8 +212,8 @@ type launchRecords struct {
 // sizedScriptGroup reports whether g is a sized group whose provider is a
 // script this server configures.
 func (s *Scheduler) sizedScriptGroup(g store.CapacityGroup) bool {
-	name, ok := strings.CutPrefix(string(g.Provider), "script:")
-	return ok && g.Kind == store.CapacityGroupSized && s.scriptConfigured(name)
+	_, ok := s.configuredScript(g)
+	return ok && g.Kind == store.CapacityGroupSized
 }
 
 // readLaunchRecords reads the group states once, when any of groups is a sized
@@ -706,25 +698,35 @@ func (s *Scheduler) updateLaunchRecord(ctx context.Context, now time.Time, g sto
 }
 
 // finishProviderRetirement completes the retirement of w, which the provider
-// reports it has carried out: a named member becomes asleep and offline, and
-// an ephemeral one is deleted with its credential and its broker connection
-// dropped. A member no longer retiring (its deregistration finished it first)
-// is left as it is.
-func (s *Scheduler) finishProviderRetirement(ctx context.Context, now time.Time, g store.CapacityGroup, w store.Worker) error {
-	done, deleted, ok, err := s.store.FinishRetirement(ctx, w.ID, now)
-	if err != nil || !ok {
-		return err
+// reports it has carried out ([Scheduler.finishRetirement]), and reports
+// whether it did. A member no longer retiring (its deregistration finished it
+// first) is left as it is.
+func (s *Scheduler) finishProviderRetirement(ctx context.Context, now time.Time, g store.CapacityGroup, w store.Worker) (bool, error) {
+	done, deleted, ok, err := s.finishRetirement(ctx, w, now, "scheduler: capacity group member retired by its provider",
+		slog.String("group", g.Name))
+	if ok && !deleted {
+		s.notifyWorkerStatus(done)
 	}
-	s.logger.InfoContext(ctx, "scheduler: capacity group member retired by its provider",
-		slog.String("group", g.Name), slog.String("worker_id", w.ID), slog.Bool("removed", deleted))
+	return ok, err
+}
+
+// finishRetirement finishes the retirement of w in the store: a named member
+// becomes asleep and offline, and an ephemeral one is deleted. When it
+// finished, it logs msg with attrs, and a deleted worker is announced as
+// removed and has its credential and broker connection revoked.
+func (s *Scheduler) finishRetirement(
+	ctx context.Context, w store.Worker, now time.Time, msg string, attrs ...slog.Attr,
+) (done store.Worker, deleted, ok bool, err error) {
+	done, deleted, ok, err = s.store.FinishRetirement(ctx, w.ID, now)
+	if err != nil || !ok {
+		return done, deleted, ok, err
+	}
+	s.logger.LogAttrs(ctx, slog.LevelInfo, msg, append(attrs, slog.String("worker_id", w.ID), slog.Bool("removed", deleted))...)
 	if deleted {
 		s.announceRemovedWorker(done)
 		s.revokeRemovedWorker(ctx, w.ID)
-	} else {
-		s.notifyWorkerStatus(done)
 	}
-	s.refreshWorkerGauge(ctx)
-	return nil
+	return done, deleted, ok, nil
 }
 
 // notifyWorkerStatus fans out w's stored status to WebSocket clients.

@@ -1079,7 +1079,7 @@ func (s *spyStore) MarkWaking(ctx context.Context, groupID string, ids []string,
 	return s.Store.MarkWaking(ctx, groupID, ids, now)
 }
 
-func (s *spyStore) FailWakes(ctx context.Context, groupID string, cutoff, now time.Time, reason string) ([]store.Worker, error) {
+func (s *spyStore) FailWakes(ctx context.Context, groupID string, cutoff, now time.Time, reason string) ([]string, error) {
 	s.count("FailWakes")
 	return s.Store.FailWakes(ctx, groupID, cutoff, now, reason)
 }

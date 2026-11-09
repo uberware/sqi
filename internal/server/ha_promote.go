@@ -113,17 +113,9 @@ func promotionReason(err error) ha.Reason {
 // that fails to start leaves a leader that cannot schedule, which is a loss
 // of authority like any other failed promotion step.
 func (s *Server) runScheduler(lctx context.Context) {
-	schedCtx, cancelSched := context.WithCancel(lctx)
-	s.cancelSched = cancelSched
-	done := make(chan struct{})
-	s.schedDone = done
-	go func() {
-		defer close(done)
-		if err := s.sched.Run(schedCtx); err != nil && !errors.Is(err, context.Canceled) {
-			s.ha.elector.Lose(promotionReason(err), fmt.Errorf("scheduler: %w", err))
-		}
-	}()
-	s.logger.InfoContext(lctx, "scheduler: started")
+	s.launchScheduler(lctx, func(err error) {
+		s.ha.elector.Lose(promotionReason(err), fmt.Errorf("scheduler: %w", err))
+	})
 }
 
 // memberRetention is how long a member row outlives its server's last

@@ -306,7 +306,7 @@ func pickRelay(target store.Worker, addr netip.Addr, candidates []store.Worker) 
 	sorted := slices.SortedFunc(slices.Values(candidates), func(a, b store.Worker) int { return cmp.Compare(a.ID, b.ID) })
 	for _, w := range sorted {
 		if w.ID == target.ID || w.FarmID != target.FarmID || w.Status != store.WorkerStatusOnline || w.Disabled ||
-			(w.PowerState != store.PowerAwake && w.PowerState != "") {
+			w.EffectivePowerState() != store.PowerAwake {
 			continue
 		}
 		for _, iface := range w.Interfaces {

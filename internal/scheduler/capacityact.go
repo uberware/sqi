@@ -34,7 +34,6 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -312,7 +311,7 @@ func (s *Scheduler) notePowerManaged(groups []store.CapacityGroup, members map[s
 			break
 		}
 		for _, w := range members[g.ID] {
-			if w.PowerState != store.PowerAwake && w.PowerState != "" {
+			if w.EffectivePowerState() != store.PowerAwake {
 				managed = true
 				break
 			}
@@ -331,52 +330,68 @@ func (s *Scheduler) expireCapacityTransitions(
 ) bool {
 	for _, g := range groups {
 		cutoff := now.Add(-g.BootTimeout)
-		if overdue(members[g.ID], store.PowerWaking, cutoff) {
-			reason := fmt.Sprintf("did not register within boot_timeout (%s) after a wake request", g.BootTimeout)
-			failed, err := s.store.FailWakes(ctx, g.ID, cutoff, now, reason)
+		for _, t := range s.overdueTransitions(g) {
+			if !overdue(members[g.ID], t.from, cutoff) {
+				continue
+			}
+			moved, err := t.move(ctx, g.ID, cutoff, now, t.reason)
 			if s.stopIfFenced(ctx, err) {
 				return true
 			}
-			s.warnUnlessStopped(ctx, err, "scheduler: capacity sweep: fail overdue wakes failed", slog.String("group", g.Name))
-			for _, w := range failed {
-				s.logger.WarnContext(ctx, "scheduler: capacity group member did not wake",
-					slog.String("group", g.Name), slog.String("worker_id", w.ID), slog.String("reason", reason))
-				replaceMember(members, g.ID, w)
+			s.warnUnlessStopped(ctx, err, "scheduler: capacity sweep: "+t.failMsg, slog.String("group", g.Name))
+			for _, id := range moved {
+				s.logger.WarnContext(ctx, t.logMsg, slog.String("group", g.Name), slog.String("worker_id", id), slog.String("reason", t.reason))
+				setMemberPower(members, g.ID, id, t.to, now, t.reason)
+				if t.to == store.PowerAwake {
+					// A lease request it parked while retiring may take work now.
+					s.WakeWorker(id)
+				}
 			}
-			if len(failed) > 0 {
-				s.countCapacity(g, func() { s.metrics.CapacityBootTimeoutsTotal.WithLabelValues(g.Name).Add(float64(len(failed))) })
+			if len(moved) > 0 {
+				s.countCapacity(g, func() { t.count(float64(len(moved))) })
 				s.recordLastAction(g.ID, capacity.ActionRecord{
-					Action: actionWake, Result: resultExpired, Message: memberMessage(failed[len(failed)-1].ID, reason), At: now,
-				})
-			}
-		}
-		if overdue(members[g.ID], store.PowerRetiring, cutoff) {
-			reason := fmt.Sprintf("retirement did not complete within boot_timeout (%s)", g.BootTimeout)
-			expired, err := s.store.ExpireRetirements(ctx, g.ID, cutoff, now, reason)
-			if s.stopIfFenced(ctx, err) {
-				return true
-			}
-			s.warnUnlessStopped(ctx, err, "scheduler: capacity sweep: expire overdue retirements failed", slog.String("group", g.Name))
-			for _, id := range expired {
-				s.logger.WarnContext(ctx, "scheduler: capacity group member did not retire; it is awake again",
-					slog.String("group", g.Name), slog.String("worker_id", id), slog.String("reason", reason))
-				setMemberPower(members, g.ID, id, store.PowerAwake, now, reason)
-				// A lease request it parked while retiring may take work now.
-				s.WakeWorker(id)
-			}
-			if len(expired) > 0 {
-				s.countCapacity(g, func() {
-					s.metrics.CapacityActionsTotal.WithLabelValues(g.Name, actionRetire, resultExpired).Add(float64(len(expired)))
-				})
-			}
-			if len(expired) > 0 {
-				s.recordLastAction(g.ID, capacity.ActionRecord{
-					Action: actionRetire, Result: resultExpired, Message: memberMessage(expired[len(expired)-1], reason), At: now,
+					Action: t.action, Result: resultExpired, Message: memberMessage(moved[len(moved)-1], t.reason), At: now,
 				})
 			}
 		}
 	}
 	return false
+}
+
+// overdueTransition is a power transition that moves the members of a group
+// left in a state for longer than its boot timeout.
+type overdueTransition struct {
+	from, to store.PowerState
+	reason   string
+	move     func(ctx context.Context, groupID string, cutoff, now time.Time, reason string) ([]string, error)
+	action   string
+	count    func(n float64)
+	failMsg  string
+	logMsg   string
+}
+
+// overdueTransitions are g's two overdue transitions: a wake that did not
+// register fails, and a retirement that did not complete returns to awake.
+func (s *Scheduler) overdueTransitions(g store.CapacityGroup) [2]overdueTransition {
+	return [2]overdueTransition{
+		{
+			from: store.PowerWaking, to: store.PowerWakeFailed,
+			reason: fmt.Sprintf("did not register within boot_timeout (%s) after a wake request", g.BootTimeout),
+			move:   s.store.FailWakes, action: actionWake,
+			count:   func(n float64) { s.metrics.CapacityBootTimeoutsTotal.WithLabelValues(g.Name).Add(n) },
+			failMsg: "fail overdue wakes failed", logMsg: "scheduler: capacity group member did not wake",
+		},
+		{
+			from: store.PowerRetiring, to: store.PowerAwake,
+			reason: fmt.Sprintf("retirement did not complete within boot_timeout (%s)", g.BootTimeout),
+			move:   s.store.ExpireRetirements, action: actionRetire,
+			count: func(n float64) {
+				s.metrics.CapacityActionsTotal.WithLabelValues(g.Name, actionRetire, resultExpired).Add(n)
+			},
+			failMsg: "expire overdue retirements failed",
+			logMsg:  "scheduler: capacity group member did not retire; it is awake again",
+		},
+	}
 }
 
 // overdue reports whether any of members has been in state since before
@@ -388,15 +403,6 @@ func overdue(members []store.Worker, state store.PowerState, cutoff time.Time) b
 		}
 	}
 	return false
-}
-
-// replaceMember replaces the member of groupID with w's ID by w.
-func replaceMember(members map[string][]store.Worker, groupID string, w store.Worker) {
-	for i := range members[groupID] {
-		if members[groupID][i].ID == w.ID {
-			members[groupID][i] = w
-		}
-	}
 }
 
 // setMemberPower records in members that workerID of groupID moved to state
@@ -480,7 +486,7 @@ func (s *Scheduler) countCapacity(g store.CapacityGroup, inc func()) {
 // provider is external, or a script the server's configuration does not
 // define, which is recorded as g's last action and logged once.
 func (s *Scheduler) groupProvider(ctx context.Context, now time.Time, g store.CapacityGroup) (boundProvider, bool) {
-	switch name, isScript := strings.CutPrefix(string(g.Provider), "script:"); {
+	switch name, isScript := g.Provider.ScriptName(); {
 	case g.Provider == store.CapacityProviderWakeOnLAN:
 		return boundProvider{capacityProvider: s.newWOLProvider(), kind: providerKindWakeOnLAN}, true
 	case !isScript:
@@ -498,6 +504,13 @@ func (s *Scheduler) groupProvider(ctx context.Context, now time.Time, g store.Ca
 func (s *Scheduler) scriptConfigured(name string) bool {
 	_, ok := s.cfg.ScriptProviders[name]
 	return ok
+}
+
+// configuredScript returns the script provider g names, and whether g names
+// one this server configures.
+func (s *Scheduler) configuredScript(g store.CapacityGroup) (string, bool) {
+	name, ok := g.Provider.ScriptName()
+	return name, ok && s.scriptConfigured(name)
 }
 
 // noteUnconfiguredScript records that g names the script provider name,
@@ -752,16 +765,9 @@ func (s *Scheduler) applyRetireResults(
 	}
 	members := c.retire
 	if kind == providerKindScript && g.Kind == store.CapacityGroupSized {
-		var retired []string
-		for _, w := range members {
-			if resultFor(results, w.ID).Result == resultOK {
-				retired = append(retired, w.ID)
-			}
-		}
-		if len(retired) > 0 {
-			s.lowerRequested(ctx, now, g, retired)
-		}
+		s.lowerRequestedForRetired(ctx, now, g, members, results)
 	}
+	anyFinished := false
 	for _, w := range members {
 		r := resultFor(results, w.ID)
 		if r.undelivered && c.firstRetire[w.ID] {
@@ -769,11 +775,11 @@ func (s *Scheduler) applyRetireResults(
 		}
 		s.recordAction(ctx, now, g, actionRetire, w.ID, r)
 		var err error
-		var aborted bool
+		var aborted, finished bool
 		open := s.capState.act.gate.do(func() {
 			switch {
 			case r.Result == resultOK:
-				err = s.retireAccepted(ctx, now, kind, g, w)
+				finished, err = s.retireAccepted(ctx, now, kind, g, w)
 			case abortsRetirement(kind, r.Result):
 				aborted, err = s.store.AbortRetirement(ctx, w.ID, now, r.Message)
 			}
@@ -781,12 +787,32 @@ func (s *Scheduler) applyRetireResults(
 		if !open || s.stopIfFenced(ctx, err) {
 			return
 		}
+		anyFinished = anyFinished || finished
 		if aborted {
 			// A lease request it parked while retiring may take work now.
 			s.WakeWorker(w.ID)
 		}
 		s.warnUnlessStopped(ctx, err, "scheduler: capacity provider: apply retire result failed",
 			slog.String("group", g.Name), slog.String("worker_id", w.ID))
+	}
+	if anyFinished {
+		s.capState.act.gate.do(func() { s.refreshWorkerGauge(ctx) })
+	}
+}
+
+// lowerRequestedForRetired lowers a sized script group's requested size by
+// the members of members its provider retired ([Scheduler.lowerRequested]).
+func (s *Scheduler) lowerRequestedForRetired(
+	ctx context.Context, now time.Time, g store.CapacityGroup, members []store.Worker, results map[string]actionResult,
+) {
+	var retired []string
+	for _, w := range members {
+		if resultFor(results, w.ID).Result == resultOK {
+			retired = append(retired, w.ID)
+		}
+	}
+	if len(retired) > 0 {
+		s.lowerRequested(ctx, now, g, retired)
 	}
 }
 
@@ -809,16 +835,15 @@ func abortsRetirement(kind providerKind, result string) bool {
 // and that deregistration finishes its retirement
 // ([Scheduler.handleWorkerDeregister]), so nothing is written for it here. A
 // script has stopped the machine, so its retirement finishes now
-// ([Scheduler.finishProviderRetirement]).
-func (s *Scheduler) retireAccepted(ctx context.Context, now time.Time, kind providerKind, g store.CapacityGroup, w store.Worker) error {
-	switch kind {
-	case providerKindWakeOnLAN:
-		return nil
-	case providerKindScript:
-		return s.finishProviderRetirement(ctx, now, g, w)
-	default:
-		return fmt.Errorf("no rule applies a retirement accepted by a %s provider", kind)
+// ([Scheduler.finishProviderRetirement]). finished reports whether a
+// retirement finished.
+func (s *Scheduler) retireAccepted(
+	ctx context.Context, now time.Time, kind providerKind, g store.CapacityGroup, w store.Worker,
+) (finished bool, err error) {
+	if kind != providerKindScript {
+		return false, nil
 	}
+	return s.finishProviderRetirement(ctx, now, g, w)
 }
 
 // resultFor is results[id], or a failure when the provider gave none.
@@ -832,36 +857,31 @@ func resultFor(results map[string]actionResult, id string) actionResult {
 // recordAction counts one member's action result, records it as g's last
 // action and logs it: a failure at WARN.
 func (s *Scheduler) recordAction(ctx context.Context, now time.Time, g store.CapacityGroup, action, workerID string, r actionResult) {
-	s.countCapacity(g, func() { s.metrics.CapacityActionsTotal.WithLabelValues(g.Name, action, r.Result).Inc() })
-	s.recordLastAction(g.ID, capacity.ActionRecord{
-		Action: action, Result: r.Result, Message: memberMessage(workerID, r.Message), At: now,
-	})
-	s.logAction(ctx, r, slog.String("group", g.Name), slog.String("worker_id", workerID), slog.String("action", action),
-		slog.String("result", r.Result), slog.String("message", r.Message))
+	s.recordResult(ctx, now, g, action, memberMessage(workerID, r.Message), r, slog.String("worker_id", workerID))
 }
 
 // recordGroupAction counts a group-level action result (a grow, a list, an
 // orphan retirement), records it as g's last action and logs it: a failure
 // at WARN.
 func (s *Scheduler) recordGroupAction(ctx context.Context, now time.Time, g store.CapacityGroup, action string, r actionResult) {
-	s.countCapacity(g, func() { s.metrics.CapacityActionsTotal.WithLabelValues(g.Name, action, r.Result).Inc() })
-	s.recordLastAction(g.ID, capacity.ActionRecord{Action: action, Result: r.Result, Message: r.Message, At: now})
-	s.logAction(ctx, r, slog.String("group", g.Name), slog.String("action", action),
-		slog.String("result", r.Result), slog.String("message", r.Message))
+	s.recordResult(ctx, now, g, action, r.Message, r)
 }
 
-// logAction logs a provider action's result r with attrs: ok at INFO, any
-// other result at WARN.
-func (s *Scheduler) logAction(ctx context.Context, r actionResult, attrs ...slog.Attr) {
-	args := make([]any, len(attrs))
-	for i, a := range attrs {
-		args[i] = a
+// recordResult counts the action result r, records it as g's last action with
+// the message recorded, and logs it with extra after the group: ok at INFO,
+// any other result at WARN.
+func (s *Scheduler) recordResult(
+	ctx context.Context, now time.Time, g store.CapacityGroup, action, recorded string, r actionResult, extra ...slog.Attr,
+) {
+	s.countCapacity(g, func() { s.metrics.CapacityActionsTotal.WithLabelValues(g.Name, action, r.Result).Inc() })
+	s.recordLastAction(g.ID, capacity.ActionRecord{Action: action, Result: r.Result, Message: recorded, At: now})
+	level, msg := slog.LevelInfo, "scheduler: capacity provider action done"
+	if r.Result != resultOK {
+		level, msg = slog.LevelWarn, "scheduler: capacity provider action did not succeed"
 	}
-	if r.Result == resultOK {
-		s.logger.InfoContext(ctx, "scheduler: capacity provider action done", args...)
-		return
-	}
-	s.logger.WarnContext(ctx, "scheduler: capacity provider action did not succeed", args...)
+	attrs := append([]slog.Attr{slog.String("group", g.Name)}, extra...)
+	attrs = append(attrs, slog.String("action", action), slog.String("result", r.Result), slog.String("message", r.Message))
+	s.logger.LogAttrs(ctx, level, msg, attrs...)
 }
 
 // memberMessage prefixes msg with the member it concerns.

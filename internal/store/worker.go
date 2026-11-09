@@ -211,6 +211,23 @@ func (w Worker) EffectiveStatus() WorkerStatus {
 	return w.Status
 }
 
+// EffectivePowerState is the worker's power state. An empty one, which no
+// stored row holds, reads as [PowerAwake], the state of every worker no
+// capacity group manages.
+func (w Worker) EffectivePowerState() PowerState {
+	if w.PowerState == "" {
+		return PowerAwake
+	}
+	return w.PowerState
+}
+
+// MayTakeNewWork reports whether the worker may be leased new work: it is not
+// disabled, and not a capacity-group member that is retiring or asleep. The
+// SQL stores' lease guard restates this rule, since SQL cannot call Go.
+func (w Worker) MayTakeNewWork() bool {
+	return !w.Disabled && w.PowerState != PowerRetiring && w.PowerState != PowerAsleep
+}
+
 // Removable reports whether the worker may be hard-deleted. This is the one
 // statement of the removability rule: a worker is removable when it is offline,
 // disabled or not. A disabled worker that is still online is a paused machine

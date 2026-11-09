@@ -284,37 +284,28 @@ func online(w store.Worker) bool { return w.Status == store.WorkerStatusOnline }
 // before it is wakeable again.
 const wakeFailedBackoff = 2
 
-// powerState is w's power state. An empty one, which no stored row holds,
-// reads as awake, the state of every worker the capacity machinery leaves
-// alone.
-func powerState(w store.Worker) store.PowerState {
-	if w.PowerState == "" {
-		return store.PowerAwake
-	}
-	return w.PowerState
-}
-
 // takesWork reports whether w's free cores absorb demand now: online,
 // enabled and awake.
 func takesWork(w store.Worker) bool {
-	return online(w) && !w.Disabled && powerState(w) == store.PowerAwake
+	return online(w) && !w.Disabled && w.EffectivePowerState() == store.PowerAwake
 }
 
-// pending reports whether w is pending capacity: a machine asked to start
+// Pending reports whether w is pending capacity: a machine asked to start
 // that has not registered yet, and is not disabled.
-func pending(w store.Worker) bool {
-	return !online(w) && !w.Disabled && powerState(w) == store.PowerWaking
+func Pending(w store.Worker) bool {
+	return !online(w) && !w.Disabled && w.EffectivePowerState() == store.PowerWaking
 }
 
-// wakeable reports whether w could be woken at now: offline, not disabled,
+// Wakeable reports whether w could be woken at now, bootTimeout being its
+// group's: offline, not disabled,
 // and awake or asleep, or wake_failed for at least wakeFailedBackoff boot
 // timeouts. A wake_failed member with no recorded time is wakeable, and one
 // recorded in the future holds for at most one backoff, as [within] does.
-func wakeable(w store.Worker, bootTimeout time.Duration, now time.Time) bool {
+func Wakeable(w store.Worker, bootTimeout time.Duration, now time.Time) bool {
 	if online(w) || w.Disabled {
 		return false
 	}
-	switch powerState(w) {
+	switch w.EffectivePowerState() {
 	case store.PowerAwake, store.PowerAsleep:
 		return true
 	case store.PowerWakeFailed:
@@ -326,16 +317,6 @@ func wakeable(w store.Worker, bootTimeout time.Duration, now time.Time) bool {
 	default:
 		return false
 	}
-}
-
-// Pending reports whether w is pending capacity: a machine asked to start
-// that has not registered yet, and is not disabled.
-func Pending(w store.Worker) bool { return pending(w) }
-
-// Wakeable reports whether the policy could pick w to wake at now, bootTimeout
-// being its group's.
-func Wakeable(w store.Worker, bootTimeout time.Duration, now time.Time) bool {
-	return wakeable(w, bootTimeout, now)
 }
 
 // machineCores is what one task declaring no cores costs on w, as the lease
@@ -445,11 +426,10 @@ type groupPlan struct {
 	// active is the online members that are not retiring: the ones sizing
 	// counts.
 	active int
-	// pending is a named group's waking members that are not disabled:
-	// machines asked for that have not registered yet. Zero for a sized group,
-	// whose machines asked for are its launch record, not waking members.
-	pending int
-	// pendingMembers are the members pending counts, by worker ID.
+	// pendingMembers are a named group's waking members that are not
+	// disabled, by worker ID: machines asked for that have not registered
+	// yet. None for a sized group, whose machines asked for are its launch
+	// record, not waking members.
 	pendingMembers []store.Worker
 	// byPower counts the members by power state.
 	byPower map[store.PowerState]int
@@ -469,6 +449,10 @@ type groupPlan struct {
 	demand int64
 }
 
+// pending is how many machines a named group has asked for that have not
+// registered yet.
+func (p *groupPlan) pending() int { return len(p.pendingMembers) }
+
 func newGroupPlan(g store.CapacityGroup, members []Member, now time.Time) *groupPlan {
 	p := &groupPlan{g: g, members: sortedMembers(members), byPower: map[store.PowerState]int{}}
 	isNamed := g.Kind == store.CapacityGroupNamed
@@ -476,27 +460,26 @@ func newGroupPlan(g store.CapacityGroup, members []Member, now time.Time) *group
 	for _, m := range p.members {
 		w := m.Worker
 		cores = satAdd(cores, int64(max(w.CPUCount, 0)))
-		p.byPower[powerState(w)]++
+		p.byPower[w.EffectivePowerState()]++
 		switch {
 		case online(w):
 			p.online++
-			if powerState(w) != store.PowerRetiring {
+			if w.EffectivePowerState() != store.PowerRetiring {
 				p.active++
 			}
 		default:
 			p.offline++
-			if isNamed && pending(w) {
-				p.pending++
+			if isNamed && Pending(w) {
 				p.pendingMembers = append(p.pendingMembers, w)
 			}
-			if isNamed && wakeable(w, g.BootTimeout, now) {
+			if isNamed && Wakeable(w, g.BootTimeout, now) {
 				p.wakeable = append(p.wakeable, w)
 			}
 		}
 	}
 	// max_machines caps the machines running, so a retiring member still
 	// online takes a slot until it is gone.
-	slots := int64(max(g.MaxMachines-p.online-p.pending, 0))
+	slots := int64(max(g.MaxMachines-p.online-p.pending(), 0))
 	if isNamed {
 		p.perMachine = 1
 		if n := int64(len(p.members)); n > 0 {
@@ -587,7 +570,7 @@ func (p *groupPlan) wakeCandidates(s Snapshot, desired int) []string {
 	if p.g.Kind != store.CapacityGroupNamed {
 		return nil
 	}
-	room := desired - p.active - p.pending
+	room := desired - p.active - p.pending()
 	if room <= 0 {
 		return nil
 	}
@@ -602,7 +585,7 @@ func (p *groupPlan) wakeCandidates(s Snapshot, desired int) []string {
 	slices.SortStableFunc(capable, wakeOrder)
 	slices.SortStableFunc(others, wakeOrder)
 	fromCapable := min(room, len(capable))
-	short := max(p.g.MinMachines-p.active-p.pending-fromCapable, 0)
+	short := max(p.g.MinMachines-p.active-p.pending()-fromCapable, 0)
 	fromOthers := min(room-fromCapable, short, len(others))
 	var out []string
 	for _, w := range capable[:fromCapable] {
@@ -696,7 +679,7 @@ func (p *groupPlan) desired(s Snapshot, kept int) int {
 	computed := int64(kept)
 	if need := ceilDiv(p.demand, p.perMachine); need > 0 {
 		// Retire candidates are present until retired, so growth counts them.
-		computed = satAdd(int64(p.active+p.pending), need)
+		computed = satAdd(int64(p.active+p.pending()), need)
 	}
 	desired := toInt(min(computed, limit, int64(g.MaxMachines)))
 	desired = max(desired, g.MinMachines)
@@ -717,7 +700,7 @@ func (p *groupPlan) desired(s Snapshot, kept int) int {
 // members, or the size it last asked for while that request is younger than
 // the boot timeout and its machines may still be booting.
 func (p *groupPlan) current(s Snapshot) int {
-	present := p.active + p.pending
+	present := p.active + p.pending()
 	last, stepped := s.LastStepUp[p.g.ID]
 	if !stepped || !within(s.Now.Sub(last), p.g.BootTimeout) {
 		return present

@@ -3,7 +3,6 @@
 package sqlstore
 
 import (
-	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -89,11 +88,6 @@ WHERE id = ? AND power_state = 'retiring'`
 const sqlInIDsReturningID = `)
 RETURNING id`
 
-// sqlInIDsReturningWorker closes the IN list of a transition head and returns
-// the rows it moved.
-const sqlInIDsReturningWorker = `)
-RETURNING ` + workerCols
-
 // lockWorkerAnchorsTx locks the worker rows ids, sorted and without
 // duplicates, in id order, and returns them in that order.
 func lockWorkerAnchorsTx(ctx context.Context, tx *dbTx, ids []string) ([]string, error) {
@@ -106,34 +100,6 @@ func lockWorkerAnchorsTx(ctx context.Context, tx *dbTx, ids []string) ([]string,
 		return nil, err
 	}
 	return ids, nil
-}
-
-// idArgs returns ids as bind arguments, after head.
-func idArgs(ids []string, head ...any) []any {
-	args := make([]any, 0, len(head)+len(ids))
-	args = append(args, head...)
-	for _, id := range ids {
-		args = append(args, id)
-	}
-	return args
-}
-
-// queryIDsTx runs query in tx and returns the single id column of its rows.
-func queryIDsTx(ctx context.Context, tx *dbTx, query string, args ...any) ([]string, error) {
-	rows, err := tx.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, mapErr(err)
-		}
-		ids = append(ids, id)
-	}
-	return ids, mapErr(rows.Err())
 }
 
 // MarkWaking implements [store.CapacityPowerStore].
@@ -152,8 +118,8 @@ func (s *Store) MarkWaking(ctx context.Context, groupID string, workerIDs []stri
 			return nil, txCommit, nil
 		}
 		placeholders := qmarks(len(ids))
-		args := idArgs(ids, at, at, groupID)
-		moved, err := queryIDsTx(ctx, tx, sqlMarkWakingHead+placeholders+sqlInIDsReturningID, args...)
+		args := append([]any{at, at, groupID}, stringArgs(ids)...)
+		moved, err := queryIDs(ctx, &tx.dbConn, sqlMarkWakingHead+placeholders+sqlInIDsReturningID, args...)
 		if err != nil {
 			return nil, txRollback, fmt.Errorf("store: mark workers waking in group %s: %w", groupID, err)
 		}
@@ -165,54 +131,38 @@ func (s *Store) MarkWaking(ctx context.Context, groupID string, workerIDs []stri
 // FailWakes implements [store.CapacityPowerStore].
 //
 // Anchors: each overdue member, in id order.
-func (s *Store) FailWakes(ctx context.Context, groupID string, cutoff, now time.Time, reason string) ([]store.Worker, error) {
-	at, before := TimeText(now.UTC()), TimeText(cutoff.UTC())
-	return inTxValue(ctx, s, "fail wakes", func(tx *dbTx) ([]store.Worker, txOutcome, error) {
-		ids, err := lockOverdueTx(ctx, tx, sqlListOverdueWakes, groupID, before)
-		if err != nil || len(ids) == 0 {
-			return nil, txOutcomeFor(err), err
-		}
-		placeholders := qmarks(len(ids))
-		args := idArgs(ids, at, reason, at, groupID, before)
-		rows, err := tx.QueryContext(ctx, sqlFailWakesHead+placeholders+sqlInIDsReturningWorker, args...)
-		if err != nil {
-			return nil, txRollback, fmt.Errorf("store: fail wakes in group %s: %w", groupID, mapErr(err))
-		}
-		defer rows.Close()
-		var failed []store.Worker
-		for rows.Next() {
-			w, err := scanWorker(rows)
-			if err != nil {
-				return nil, txRollback, mapErr(err)
-			}
-			failed = append(failed, w)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, txRollback, mapErr(err)
-		}
-		slices.SortFunc(failed, func(a, b store.Worker) int { return cmp.Compare(a.ID, b.ID) })
-		return failed, txCommit, nil
-	})
+func (s *Store) FailWakes(ctx context.Context, groupID string, cutoff, now time.Time, reason string) ([]string, error) {
+	return s.moveOverdue(ctx, "fail wakes", sqlListOverdueWakes, sqlFailWakesHead, groupID, cutoff, now, reason)
 }
 
 // ExpireRetirements implements [store.CapacityPowerStore].
 //
 // Anchors: each overdue member, in id order.
 func (s *Store) ExpireRetirements(ctx context.Context, groupID string, cutoff, now time.Time, reason string) ([]string, error) {
+	return s.moveOverdue(ctx, "expire retirements", sqlListOverdueRetirements, sqlExpireRetirementsHead, groupID, cutoff, now, reason)
+}
+
+// moveOverdue locks the members of groupID listQuery lists for cutoff, moves
+// them with head (a transition head binding the time, the reason, updated_at,
+// group and cutoff before its IN list), and returns the IDs moved in
+// ascending order.
+func (s *Store) moveOverdue(
+	ctx context.Context, op, listQuery, head, groupID string, cutoff, now time.Time, reason string,
+) ([]string, error) {
 	at, before := TimeText(now.UTC()), TimeText(cutoff.UTC())
-	return inTxValue(ctx, s, "expire retirements", func(tx *dbTx) ([]string, txOutcome, error) {
-		ids, err := lockOverdueTx(ctx, tx, sqlListOverdueRetirements, groupID, before)
+	return inTxValue(ctx, s, op, func(tx *dbTx) ([]string, txOutcome, error) {
+		ids, err := lockOverdueTx(ctx, tx, listQuery, groupID, before)
 		if err != nil || len(ids) == 0 {
 			return nil, txOutcomeFor(err), err
 		}
+		args := append([]any{at, reason, at, groupID, before}, stringArgs(ids)...)
 		placeholders := qmarks(len(ids))
-		args := idArgs(ids, at, reason, at, groupID, before)
-		expired, err := queryIDsTx(ctx, tx, sqlExpireRetirementsHead+placeholders+sqlInIDsReturningID, args...)
+		moved, err := queryIDs(ctx, &tx.dbConn, head+placeholders+sqlInIDsReturningID, args...)
 		if err != nil {
-			return nil, txRollback, fmt.Errorf("store: expire retirements in group %s: %w", groupID, err)
+			return nil, txRollback, fmt.Errorf("store: %s in group %s: %w", op, groupID, err)
 		}
-		slices.Sort(expired)
-		return expired, txCommit, nil
+		slices.Sort(moved)
+		return moved, txCommit, nil
 	})
 }
 
@@ -220,7 +170,7 @@ func (s *Store) ExpireRetirements(ctx context.Context, groupID string, cutoff, n
 // their rows in id order. The caller's UPDATE re-checks the query's condition
 // under the locks.
 func lockOverdueTx(ctx context.Context, tx *dbTx, query, groupID, cutoff string) ([]string, error) {
-	ids, err := queryIDsTx(ctx, tx, query, groupID, cutoff)
+	ids, err := queryIDs(ctx, &tx.dbConn, query, groupID, cutoff)
 	if err != nil {
 		return nil, fmt.Errorf("store: list overdue members of group %s: %w", groupID, err)
 	}

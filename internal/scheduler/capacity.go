@@ -615,8 +615,8 @@ func (s *Scheduler) providerActs(g store.CapacityGroup) bool {
 	if g.Provider == store.CapacityProviderWakeOnLAN {
 		return true
 	}
-	name, isScript := strings.CutPrefix(string(g.Provider), "script:")
-	return isScript && s.scriptConfigured(name)
+	_, ok := s.configuredScript(g)
+	return ok
 }
 
 // hasWaitable reports whether any group is waitable.

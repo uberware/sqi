@@ -77,7 +77,7 @@ func (s *Store) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.Le
 // (sqlLeaseTaskGuardedOnline). Caller holds s.mu.
 func (s *Store) leaseRefusedForWorkerLocked(req store.LeaseRequest) bool {
 	w, known := s.workers[req.WorkerID]
-	if known && (w.Disabled || w.PowerState == store.PowerRetiring || w.PowerState == store.PowerAsleep) {
+	if known && !w.MayTakeNewWork() {
 		return true
 	}
 	return req.RequireOnline && (!known || w.Status != store.WorkerStatusOnline)

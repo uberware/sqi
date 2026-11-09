@@ -308,8 +308,8 @@ func TestRun_ClosesTheStoreOnlyAfterTheSchedulerStops(t *testing.T) {
 // provider may run, the server waits at most 30 s for the scheduler, and the
 // scheduler's own drains end inside that wait.
 func TestSchedulerStopCeiling_BoundsTheWait(t *testing.T) {
-	if schedulerStopCeiling > 30*time.Second || schedulerStopCeiling > ShutdownTimeout {
-		t.Errorf("schedulerStopCeiling = %v, want at most 30s and inside the %v budget", schedulerStopCeiling, ShutdownTimeout)
+	if scheduler.StopCeiling > 30*time.Second || scheduler.StopCeiling > ShutdownTimeout {
+		t.Errorf("scheduler.StopCeiling = %v, want at most 30s and inside the %v budget", scheduler.StopCeiling, ShutdownTimeout)
 	}
 	cfg := DefaultConfig()
 	cfg.Capacity.Providers = map[string]config.CapacityProviderConfig{

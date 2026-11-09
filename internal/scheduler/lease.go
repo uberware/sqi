@@ -94,7 +94,7 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 	// at once: see holdDisabledLease and refuseLeaseAfterDelay. A worker that
 	// may not take new work is refused without the instance-mismatch check or
 	// its Debug log.
-	if !mayTakeNewWork(worker) {
+	if !worker.MayTakeNewWork() {
 		return marshalLeaseReply(s.holdDisabledLease(ctx, workerID, req.InstanceID))
 	}
 	if s.leaseFromUnregisteredInstance(ctx, worker, req.InstanceID) {
@@ -129,7 +129,7 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 }
 
 // holdDisabledLease answers the lease request of a worker that may not take
-// new work ([mayTakeNewWork]): one disabled, or a capacity-group member that
+// new work ([store.Worker.MayTakeNewWork]): one disabled, or a capacity-group member that
 // is retiring or asleep. A worker re-requests as soon as a reply arrives and
 // can stay that way for days, so the request is parked for leaseHoldTimeout,
 // as an idle worker's is, rather than refused at once (which would spin its
@@ -144,12 +144,6 @@ func (s *Scheduler) holdDisabledLease(ctx context.Context, workerID, instanceID 
 		return s.leaseAfterPark(ctx, workerID, instanceID)
 	}
 	return nil
-}
-
-// mayTakeNewWork reports whether w may be leased new work: it is not disabled,
-// and not a capacity-group member that is retiring or asleep.
-func mayTakeNewWork(w store.Worker) bool {
-	return !w.Disabled && w.PowerState != store.PowerRetiring && w.PowerState != store.PowerAsleep
 }
 
 // refuseLeaseAfterDelay answers a lease request from a worker process whose
@@ -171,7 +165,7 @@ func (s *Scheduler) refuseLeaseAfterDelay(ctx context.Context) []byte {
 
 // leaseAfterPark is the one retry a parked lease request makes once woken: it
 // re-reads the worker and, unless the worker may no longer take new work
-// ([mayTakeNewWork]), was taken offline, or re-registered from another process
+// ([store.Worker.MayTakeNewWork]), was taken offline, or re-registered from another process
 // while the request was parked, selects a batch. A failure to read the worker is an empty batch; a failure part way
 // through selection returns the tasks already leased, which must reach the
 // worker (see [Scheduler.selectLeaseBatch]).
@@ -189,7 +183,7 @@ func (s *Scheduler) leaseAfterPark(ctx context.Context, workerID, instanceID str
 		return nil // fenced while parked: lease nothing
 	}
 	w, err := s.store.GetWorker(ctx, workerID)
-	if err != nil || !mayTakeNewWork(w) || w.Status == store.WorkerStatusOffline ||
+	if err != nil || !w.MayTakeNewWork() || w.Status == store.WorkerStatusOffline ||
 		s.leaseFromUnregisteredInstance(ctx, w, instanceID) {
 		return nil
 	}

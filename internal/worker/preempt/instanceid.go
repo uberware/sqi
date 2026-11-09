@@ -25,27 +25,22 @@ func InstanceID(ctx context.Context, vendor, endpoint string, client *http.Clien
 	if client == nil {
 		client = defaultClient()
 	}
-	base := ""
+	var base string
+	var read func(context.Context, *http.Client, string) (string, error)
 	switch vendor {
-	case VendorAWS, VendorAzure:
-		base = awsAzureBase
+	case VendorAWS:
+		base, read = awsAzureBase, awsInstanceID
 	case VendorGCP:
-		base = gcpBase
+		base, read = gcpBase, gcpInstanceID
+	case VendorAzure:
+		base, read = awsAzureBase, azureInstanceID
 	default:
 		return "", fmt.Errorf("preempt: unknown instance ID vendor %q (want aws, gcp or azure)", vendor)
 	}
 	if endpoint != "" {
 		base = strings.TrimRight(endpoint, "/")
 	}
-
-	switch vendor {
-	case VendorAWS:
-		return awsInstanceID(ctx, client, base)
-	case VendorGCP:
-		return gcpInstanceID(ctx, client, base)
-	default:
-		return azureInstanceID(ctx, client, base)
-	}
+	return read(ctx, client, base)
 }
 
 func awsInstanceID(ctx context.Context, client *http.Client, base string) (string, error) {

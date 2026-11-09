@@ -276,7 +276,7 @@ type Server struct {
 	// to return is measured from here.
 	schedStopAt time.Time
 
-	// schedStopCeiling, when positive, replaces [schedulerStopCeiling];
+	// schedStopCeiling, when positive, replaces [scheduler.StopCeiling];
 	// shutdownTimeout, when positive, replaces [ShutdownTimeout]; and
 	// abandonCalls, when set, replaces the scheduler's AbandonCapacityCalls.
 	// Test seams; production leaves them unset.
@@ -754,17 +754,9 @@ func (s *Server) start(ctx context.Context) error {
 	s.sched = scheduler.New(s.schedulerConfigFor(busClient), s.store, s.busClient, s.metrics, s.logger, s.wsHub, s.diagBuf)
 	// The scheduler runs on its own child context so a failed start can stop
 	// it (see abortStart) without racing Run's own setup of Scheduler.Stop.
-	schedCtx, cancelSched := context.WithCancel(ctx)
-	s.cancelSched = cancelSched
-	done := make(chan struct{})
-	s.schedDone = done
-	go func() {
-		defer close(done)
-		if err := s.sched.Run(schedCtx); err != nil && !errors.Is(err, context.Canceled) {
-			s.logger.ErrorContext(ctx, "scheduler: exited with error", slog.Any("error", err))
-		}
-	}()
-	s.logger.InfoContext(ctx, "scheduler: started")
+	s.launchScheduler(ctx, func(err error) {
+		s.logger.ErrorContext(ctx, "scheduler: exited with error", slog.Any("error", err))
+	})
 
 	// ── HTTP server (chi router) ──────────────────────────────────────────
 	// Chi router with standard middleware mounts all routes. The REST
@@ -1272,7 +1264,7 @@ func (s *Server) shutdown() error {
 	// Stop the scheduler and wait for it to return before the bus and the
 	// store close: its shutdown drains capacity provider calls, which use
 	// both. The wait shares the budget and is capped at
-	// [schedulerStopCeiling]. The bus client drain below then processes any
+	// [scheduler.StopCeiling]. The bus client drain below then processes any
 	// in-flight NATS messages before the connection closes.
 	timedOut := ctx.Err() != nil
 	s.awaitScheduler(start.Add(budget))
@@ -1320,22 +1312,36 @@ func (s *Server) shutdown() error {
 	return errors.Join(errs...)
 }
 
-// schedulerStopCeiling is the longest shutdown waits for the scheduler's Run
-// to return, counted from when the scheduler was first told to stop, so an
-// HA hand-over's wait counts against it. The scheduler caps its own drains to
-// end inside it.
-const schedulerStopCeiling = scheduler.StopCeiling
+// launchScheduler runs the scheduler on a child context of ctx, which
+// [Server.cancelSched] cancels and [Server.schedDone] reports the end of, and
+// passes onErr any error Run returns other than a cancellation.
+func (s *Server) launchScheduler(ctx context.Context, onErr func(error)) {
+	schedCtx, cancelSched := context.WithCancel(ctx)
+	s.cancelSched = cancelSched
+	done := make(chan struct{})
+	s.schedDone = done
+	go func() {
+		defer close(done)
+		if err := s.sched.Run(schedCtx); err != nil && !errors.Is(err, context.Canceled) {
+			onErr(err)
+		}
+	}()
+	s.logger.InfoContext(ctx, "scheduler: started")
+}
 
 // shutdownReserve is the least time the bus drain, the checkpoint wait and
 // the store close get, even when the steps before them used the budget up.
 const shutdownReserve = 5 * time.Second
 
-// stopCeiling is [schedulerStopCeiling], or the test override.
+// stopCeiling is the longest shutdown waits for the scheduler's Run to
+// return, counted from when the scheduler was first told to stop, so an HA
+// hand-over's wait counts against it: [scheduler.StopCeiling], inside which
+// the scheduler caps its own drains, or the test override.
 func (s *Server) stopCeiling() time.Duration {
 	if s.schedStopCeiling > 0 {
 		return s.schedStopCeiling
 	}
-	return schedulerStopCeiling
+	return scheduler.StopCeiling
 }
 
 // awaitScheduler stops the scheduler and waits for its Run to return, until

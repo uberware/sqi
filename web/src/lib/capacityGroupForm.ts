@@ -51,7 +51,7 @@ export function defaultValues(farmId: string): FormValues {
     farmId,
     name: '',
     kind: 'sized',
-    provider: 'external',
+    provider: EXTERNAL_PROVIDER,
     enabled: true,
     queueIds: [],
     minMachines: '0',
@@ -156,6 +156,9 @@ const OPTIONAL_NUMBERS: Array<[NumericField, string]> = [
 
 /** The provider every group may name and the one a new group starts with. */
 export const EXTERNAL_PROVIDER = 'external'
+
+/** The provider that wakes a named group's known machines. */
+export const WAKE_ON_LAN_PROVIDER = 'wake_on_lan'
 
 /** The providers a group of this kind may name, in the order the server listed them. */
 export function providersFor(

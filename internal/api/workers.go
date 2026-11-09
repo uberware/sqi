@@ -463,13 +463,9 @@ func (h *workerHandler) removeWorker(w http.ResponseWriter, r *http.Request) {
 // toWorkerResponse converts a [store.Worker] into the API wire type. Status is
 // the worker's effective status ([store.Worker.EffectiveStatus]), so a
 // disabled worker reads "disabled" whatever its liveness, and Removable is the
-// server-authoritative [store.Worker.Removable]. A row with no power state
-// reads awake, the state of every worker no capacity group manages.
+// server-authoritative [store.Worker.Removable]. PowerState is
+// [store.Worker.EffectivePowerState].
 func toWorkerResponse(wk store.Worker) workerResponse {
-	powerState := wk.PowerState
-	if powerState == "" {
-		powerState = store.PowerAwake
-	}
 	return workerResponse{
 		ID:              wk.ID,
 		FarmID:          wk.FarmID,
@@ -493,7 +489,7 @@ func toWorkerResponse(wk store.Worker) workerResponse {
 		Tags:            wk.Tags,
 		Status:          string(wk.EffectiveStatus()),
 		Removable:       wk.Removable(),
-		PowerState:      string(powerState),
+		PowerState:      string(wk.EffectivePowerState()),
 		PowerStateAt:    wk.PowerStateAt,
 		PowerReason:     wk.PowerReason,
 		CloudInstanceID: wk.CloudInstanceID,

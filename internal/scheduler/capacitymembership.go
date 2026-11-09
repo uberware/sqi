@@ -265,7 +265,12 @@ func (s *Scheduler) deregisteredStatus(ctx context.Context, workerID string) (st
 // leader. A member that still holds a task is left retiring, as the store
 // refuses it, for the boot timeout to settle.
 func (s *Scheduler) finishRetirementOnDeregister(ctx context.Context, w store.Worker) (store.Worker, bool, bool) {
-	done, deleted, ok, err := s.store.FinishRetirement(ctx, w.ID, time.Now().UTC())
+	action := "retired"
+	if g, err := s.store.GetCapacityGroup(ctx, w.CapacityGroupID); err == nil {
+		action = g.RetireAction
+	}
+	done, deleted, ok, err := s.finishRetirement(ctx, w, time.Now().UTC(), "scheduler: capacity group member retired: "+action,
+		slog.String("capacity_group_id", w.CapacityGroupID))
 	if s.stopIfFenced(ctx, err) {
 		return w, false, true
 	}
@@ -274,19 +279,7 @@ func (s *Scheduler) finishRetirementOnDeregister(ctx context.Context, w store.Wo
 			slog.String("worker_id", w.ID))
 		return w, false, false
 	}
-	action := "retired"
-	if g, err := s.store.GetCapacityGroup(ctx, w.CapacityGroupID); err == nil {
-		action = g.RetireAction
-	}
-	s.logger.InfoContext(ctx, "scheduler: capacity group member retired: "+action,
-		slog.String("worker_id", w.ID), slog.String("capacity_group_id", w.CapacityGroupID),
-		slog.Bool("removed", deleted))
-	if deleted {
-		s.announceRemovedWorker(done)
-		s.revokeRemovedWorker(ctx, w.ID)
-		return done, true, false
-	}
-	return done, false, false
+	return done, deleted, false
 }
 
 // removeDepartedEphemeral deletes workerID when kind says it left for good and

@@ -403,13 +403,10 @@ func TestParity_FailWakes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("FailWakes: %v", err)
 			}
-			if len(got) != 1 || got[0].ID != "w-overdue" {
-				t.Fatalf("FailWakes = %+v, want only w-overdue", got)
+			if !slices.Equal(got, []string{"w-overdue"}) {
+				t.Fatalf("FailWakes = %v, want only w-overdue", got)
 			}
-			wantPower(t, got[0], store.PowerWakeFailed, now, reason)
-			if stored := mustWorker(t, st, "w-overdue"); !reflect.DeepEqual(stored, got[0]) {
-				t.Fatalf("stored = %+v, want the row FailWakes returned, %+v", stored, got[0])
-			}
+			wantPower(t, mustWorker(t, st, "w-overdue"), store.PowerWakeFailed, now, reason)
 			unchangedPower(t, st, before)
 		})
 	}

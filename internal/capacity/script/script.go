@@ -112,11 +112,15 @@ type Provider struct {
 // MaxRunTime is the longest one [Run] of p can take: its timeout, and then the wait for a killed
 // script's pipes to close.
 func (p Provider) MaxRunTime() time.Duration {
-	timeout := p.Timeout
-	if timeout <= 0 {
-		timeout = defaultTimeout
+	return p.timeout() + waitDelay
+}
+
+// timeout bounds one run of p: its Timeout, or defaultTimeout when it sets none.
+func (p Provider) timeout() time.Duration {
+	if p.Timeout <= 0 {
+		return defaultTimeout
 	}
-	return timeout + waitDelay
+	return p.Timeout
 }
 
 // GroupRef identifies the capacity group an action concerns.
@@ -171,10 +175,7 @@ func Run(ctx context.Context, p Provider, req Request, logger *slog.Logger) (Res
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
-	timeout := p.Timeout
-	if timeout <= 0 {
-		timeout = defaultTimeout
-	}
+	timeout := p.timeout()
 	body, err := json.Marshal(req)
 	if err != nil {
 		return Response{}, fmt.Errorf("provider %q: encode request: %w", p.Name, err)
@@ -201,17 +202,13 @@ func Run(ctx context.Context, p Provider, req Request, logger *slog.Logger) (Res
 
 	err = cmd.Run()
 	stderr.flush()
-	if err != nil && cmd.Process == nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return Response{}, fmt.Errorf("provider %q: %w", p.Name, ctxErr)
-		}
-		return Response{}, fmt.Errorf("provider %q could not start: %w", p.Name, err)
-	}
-
 	// A parent that ended, or a deadline that hit, matters only when it cut the child short.
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return Response{}, fmt.Errorf("provider %q: %w", p.Name, ctxErr)
+		}
+		if cmd.Process == nil {
+			return Response{}, fmt.Errorf("provider %q could not start: %w", p.Name, err)
 		}
 	}
 	if stdout.overflowed() {

@@ -40,6 +40,16 @@ const (
 	CapacityProviderWakeOnLAN CapacityProvider = "wake_on_lan"
 )
 
+// CapacityProviderScriptPrefix starts the name of a script provider:
+// "script:<name>".
+const CapacityProviderScriptPrefix = "script:"
+
+// ScriptName returns the configured script p names and true, or "" and false
+// when p is not a script provider.
+func (p CapacityProvider) ScriptName() (string, bool) {
+	return strings.CutPrefix(string(p), CapacityProviderScriptPrefix)
+}
+
 // Capacity group retire actions.
 const (
 	CapacityRetireSleep    = "sleep"
@@ -196,8 +206,8 @@ type CapacityPowerStore interface {
 
 	// FailWakes moves every member of groupID in [PowerWaking] whose
 	// PowerStateAt is before cutoff to [PowerWakeFailed] at now with reason,
-	// and returns the rows moved, by ID.
-	FailWakes(ctx context.Context, groupID string, cutoff, now time.Time, reason string) ([]Worker, error)
+	// and returns the IDs it moved in ascending order.
+	FailWakes(ctx context.Context, groupID string, cutoff, now time.Time, reason string) ([]string, error)
 
 	// BeginRetirement moves workerID from [PowerAwake] to [PowerRetiring] at
 	// now, with no reason, only while it is a member of groupID, online, not
@@ -335,6 +345,6 @@ func validCapacityProvider(p CapacityProvider) bool {
 	if p == CapacityProviderExternal || p == CapacityProviderWakeOnLAN {
 		return true
 	}
-	name, ok := strings.CutPrefix(string(p), "script:")
+	name, ok := p.ScriptName()
 	return ok && name != ""
 }

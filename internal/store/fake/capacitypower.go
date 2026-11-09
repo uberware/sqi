@@ -72,7 +72,16 @@ func (s *Store) overdueMembersLocked(groupID string, state store.PowerState, cut
 }
 
 // FailWakes implements [store.CapacityPowerStore].
-func (s *Store) FailWakes(ctx context.Context, groupID string, cutoff, now time.Time, reason string) ([]store.Worker, error) {
+func (s *Store) FailWakes(ctx context.Context, groupID string, cutoff, now time.Time, reason string) ([]string, error) {
+	return s.moveOverdue(ctx, groupID, store.PowerWaking, store.PowerWakeFailed, cutoff, now, reason)
+}
+
+// moveOverdue moves each member of groupID that has been in state from since
+// before cutoff to state to, at now with reason, and returns their IDs in
+// ascending order.
+func (s *Store) moveOverdue(
+	ctx context.Context, groupID string, from, to store.PowerState, cutoff, now time.Time, reason string,
+) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.fenceLocked(ctx); err != nil {
@@ -82,11 +91,12 @@ func (s *Store) FailWakes(ctx context.Context, groupID string, cutoff, now time.
 		return nil, nil
 	}
 
-	var failed []store.Worker
-	for _, w := range s.overdueMembersLocked(groupID, store.PowerWaking, cutoff) {
-		failed = append(failed, cloneWorker(s.setPowerLocked(w, store.PowerWakeFailed, now, reason)))
+	var moved []string
+	for _, w := range s.overdueMembersLocked(groupID, from, cutoff) {
+		s.setPowerLocked(w, to, now, reason)
+		moved = append(moved, w.ID)
 	}
-	return failed, nil
+	return moved, nil
 }
 
 // BeginRetirement implements [store.CapacityPowerStore].
@@ -159,21 +169,7 @@ func (s *Store) AbortRetirement(ctx context.Context, workerID string, now time.T
 
 // ExpireRetirements implements [store.CapacityPowerStore].
 func (s *Store) ExpireRetirements(ctx context.Context, groupID string, cutoff, now time.Time, reason string) ([]string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.fenceLocked(ctx); err != nil {
-		return nil, err
-	}
-	if groupID == "" {
-		return nil, nil
-	}
-
-	var expired []string
-	for _, w := range s.overdueMembersLocked(groupID, store.PowerRetiring, cutoff) {
-		s.setPowerLocked(w, store.PowerAwake, now, reason)
-		expired = append(expired, w.ID)
-	}
-	return expired, nil
+	return s.moveOverdue(ctx, groupID, store.PowerRetiring, store.PowerAwake, cutoff, now, reason)
 }
 
 // storedGroupState copies st as the SQL stores keep it: times in UTC, and no

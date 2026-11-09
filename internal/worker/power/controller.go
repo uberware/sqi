@@ -157,7 +157,7 @@ func newController(ctx context.Context, cfg Config, d Deps) *controller {
 	}
 	if d.SendWake == nil {
 		d.SendWake = func(ctx context.Context, macs []net.HardwareAddr, targets []string) error {
-			_, err := wol.Send(ctx, macs, targets, wol.DefaultBurst, wol.DefaultGap)
+			_, err := wol.SendDefault(ctx, macs, targets)
 			return err
 		}
 	}

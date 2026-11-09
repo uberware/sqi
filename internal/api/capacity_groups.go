@@ -89,10 +89,6 @@ const errWakeOnLANNeedsNamed = `provider "wake_on_lan" needs a named group: it w
 // the provider as the request named it.
 const errScriptProviderNotConfigured = "provider %q is not configured: add it under capacity.providers in the server's configuration file"
 
-// scriptProviderPrefix starts the provider name of a configured script
-// provider: "script:<name>".
-const scriptProviderPrefix = "script:"
-
 // CapacityStatusReader supplies a group's last evaluation. The scheduler
 // satisfies it. The returned status shares its slices with the evaluation that
 // produced it: treat them as read-only.
@@ -314,7 +310,7 @@ func toCapacityStatusResponse(g store.CapacityGroup, s capacity.Status) *capacit
 		r.Mismatches[i] = capacityMismatchResponse{WorkerID: m.WorkerID, Reason: m.Reason}
 	}
 	// Only a sized script group asks its provider for a size.
-	if g.Kind == store.CapacityGroupSized && strings.HasPrefix(string(g.Provider), scriptProviderPrefix) {
+	if _, isScript := g.Provider.ScriptName(); isScript && g.Kind == store.CapacityGroupSized {
 		requested := s.Requested
 		r.RequestedMachines = &requested
 	}
@@ -443,7 +439,7 @@ func validateGroup(g store.CapacityGroup, scripts []string, stored store.Capacit
 	if g.Provider == store.CapacityProviderWakeOnLAN && g.Kind != store.CapacityGroupNamed {
 		return errWakeOnLANNeedsNamed
 	}
-	if name, ok := strings.CutPrefix(string(g.Provider), scriptProviderPrefix); ok && g.Provider != stored {
+	if name, ok := g.Provider.ScriptName(); ok && g.Provider != stored {
 		if _, found := slices.BinarySearch(scripts, name); !found {
 			return fmt.Sprintf(errScriptProviderNotConfigured, g.Provider)
 		}
@@ -500,7 +496,7 @@ func (h *capacityGroupHandler) listProviders(w http.ResponseWriter, _ *http.Requ
 		{Name: string(store.CapacityProviderWakeOnLAN), Kinds: []store.CapacityGroupKind{store.CapacityGroupNamed}},
 	}}
 	for _, name := range h.scripts {
-		resp.Providers = append(resp.Providers, capacityProviderResponse{Name: scriptProviderPrefix + name, Kinds: both})
+		resp.Providers = append(resp.Providers, capacityProviderResponse{Name: store.CapacityProviderScriptPrefix + name, Kinds: both})
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

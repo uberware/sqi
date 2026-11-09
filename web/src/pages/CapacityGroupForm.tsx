@@ -15,6 +15,7 @@ import { useCreateCapacityGroup, useUpdateCapacityGroup } from '@/api/mutations'
 import type { CapacityGroup, CapacityGroupKind, CapacityProvider, Farm } from '@/api/types'
 import {
   DEFAULT_RETIRE_ACTION,
+  WAKE_ON_LAN_PROVIDER,
   buildInput,
   defaultValues,
   mapServerErrors,
@@ -255,8 +256,6 @@ function QueuePicker({ farmId, selected, onChange, error }: QueuePickerProps) {
   )
 }
 
-const WAKE_ON_LAN = 'wake_on_lan'
-
 interface ProviderSelectProps {
   id: string
   kind: CapacityGroupKind
@@ -299,7 +298,7 @@ function ProviderSelect({
     hint = configured
       ? `This provider cannot serve a ${kind} group. Choose another.`
       : 'This provider is no longer configured on the server. Saving keeps it; choose another to change it.'
-  } else if (value === WAKE_ON_LAN) {
+  } else if (value === WAKE_ON_LAN_PROVIDER) {
     hint = 'Wakes the machines the group already holds, by network packet.'
   }
 
@@ -337,7 +336,7 @@ interface InnerProps {
  * nothing hidden is saved.
  */
 function withRetireAction(v: FormValues): FormValues {
-  return v.provider === WAKE_ON_LAN || v.retireAction === DEFAULT_RETIRE_ACTION
+  return v.provider === WAKE_ON_LAN_PROVIDER || v.retireAction === DEFAULT_RETIRE_ACTION
     ? v
     : { ...v, retireAction: DEFAULT_RETIRE_ACTION }
 }
@@ -596,7 +595,7 @@ function CapacityGroupFormInner({ original, farms, defaults }: InnerProps) {
           error={fieldErrors.boot}
         />
 
-        {values.provider === WAKE_ON_LAN && (
+        {values.provider === WAKE_ON_LAN_PROVIDER && (
           <Field
             id="retireAction"
             label="Retire action"
