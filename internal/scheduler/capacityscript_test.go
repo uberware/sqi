@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/capacity/script"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/worker/protocol"
@@ -324,12 +326,13 @@ func TestScriptActuator_DegradesAndBacksOff(t *testing.T) {
 		t.Fatalf("grow calls after the backoff = %+v, want a second grow{2, 0}", grows)
 	}
 
-	// Once the machines asked for register, the degradation clears.
+	// Once the later grow is met, the degradation clears; the lapsed backoff
+	// is left as it was.
 	cloudMember(t, f.st, f.g.ID, "c1", "i-1")
 	cloudMember(t, f.st, f.g.ID, "c2", "i-2")
 	f.sweep(t, d.Add(11*time.Minute))
-	if got := groupState(t, f.st, f.g.ID); got.DegradedReason != "" || got.DegradedAt != nil || got.BackoffUntil != nil {
-		t.Errorf("state after the machines registered = %+v, want the degraded fields cleared", got)
+	if got := groupState(t, f.st, f.g.ID); got.DegradedReason != "" || got.DegradedAt != nil || got.RequestedAt != nil {
+		t.Errorf("state after the machines registered = %+v, want the launch met and the degradation cleared", got)
 	}
 	if st, ok := f.s.CapacityStatus(f.g.ID); !ok || st.Degraded != nil {
 		t.Errorf("status = %+v, want not degraded", st)
@@ -498,9 +501,20 @@ func TestScriptActuator_SeedsPacingAfterFailover(t *testing.T) {
 	submitReady(t, f.st, 10, store.Step{})
 	t0 := time.Now().UTC()
 	putGroupState(t, f.st, store.CapacityGroupState{GroupID: f.g.ID, Requested: 4, RequestedAt: new(t0.Add(-time.Minute))})
+	var seen store.CapacityGroupState
+	f.prov.onCall = func(c providerCall) {
+		if c.action == "grow" {
+			seen = groupState(t, f.st, f.g.ID)
+		}
+	}
 
 	f.sweep(t, t0)
 
+	// The repeat is re-stamped before it is sent, so the machines it starts
+	// get a whole boot timeout.
+	if seen.Requested != 4 || seen.RequestedAt == nil || !seen.RequestedAt.Equal(t0) {
+		t.Errorf("state seen by the repeated grow = %+v, want Requested 4 at %s", seen, t0)
+	}
 	if st, ok := f.s.CapacityStatus(f.g.ID); !ok || st.DesiredMachines != 4 || st.Requested != 4 {
 		t.Fatalf("status = %+v, want DesiredMachines 4 held from the launch record", st)
 	}
@@ -622,6 +636,182 @@ func TestScriptActuator_EndToEndThroughRun(t *testing.T) {
 	}
 	if got := actionsTotal(t, f, "cloud", "grow", "ok"); got != 1 {
 		t.Errorf("actions_total{grow,ok} = %v, want 1", got)
+	}
+}
+
+// ── a met launch ──────────────────────────────────────────────────────────────
+
+// handleDeregister handles a deregistration of workerID of kind, from any
+// goroutine, and reports whether it was acknowledged.
+func handleDeregister(s *Scheduler, workerID string, kind protocol.DeregisterKind) bool {
+	data, err := json.Marshal(map[string]string{"worker_id": workerID, "reason": "test", "kind": string(kind)})
+	if err != nil {
+		return false
+	}
+	msg := &fakeJSMsg{subject: bus.WorkerDeregisterSubject(workerID), data: data}
+	s.handleWorkerMessage(msg)
+	return msg.acked
+}
+
+// A scale-down whose member leaves (its deregistration deleting the row)
+// before the script answers, with a sweep in between, neither degrades the
+// group nor lowers the launch record twice.
+func TestScriptActuator_ScaleDownRowGoneEarlyNoDegradeExactRequested(t *testing.T) {
+	f := newScriptFixture(t, func(g *store.CapacityGroup) { g.MinMachines = 1 })
+	cloudMember(t, f.st, f.g.ID, "c1", "i-1")
+	cloudMember(t, f.st, f.g.ID, "c2", "i-2")
+	t0 := time.Now().UTC()
+	putGroupState(t, f.st, store.CapacityGroupState{GroupID: f.g.ID, Requested: 2, RequestedAt: new(t0.Add(-time.Hour))})
+	acked := true
+	f.prov.onCall = func(c providerCall) {
+		if c.action != "retire" {
+			return
+		}
+		acked = handleDeregister(f.s, c.workerIDs[0], protocol.DeregisterRetired)
+		f.s.sweepCapacityAt(t.Context(), t0.Add(2*time.Minute+15*time.Second))
+	}
+
+	f.sweep(t, t0)
+	f.sweep(t, t0.Add(2*time.Minute))
+
+	if !acked {
+		t.Fatal("the deregistration was not acknowledged")
+	}
+	if retires := f.prov.callsOf("retire"); len(retires) != 1 {
+		t.Fatalf("retire calls = %+v, want one", retires)
+	}
+	got := groupState(t, f.st, f.g.ID)
+	if got.DegradedReason != "" || got.DegradedAt != nil {
+		t.Errorf("state = %+v, want no degradation from a scale-down", got)
+	}
+	if got.Requested != 1 {
+		t.Errorf("Requested = %d, want exactly 1", got.Requested)
+	}
+}
+
+// After a met launch, a preempted member neither degrades the group nor sets
+// off orphan cleanup (which would terminate the backend's replacement): the
+// record follows the members online and a normal grow replaces the machine.
+func TestScriptActuator_PreemptionAfterMetLaunchRegrowsWithoutDegrading(t *testing.T) {
+	f := newScriptFixture(t, nil)
+	f.prov.setList("i-1", "i-2", "i-3", "i-4")
+	for i, id := range []string{"c1", "c2", "c3"} {
+		cloudMember(t, f.st, f.g.ID, id, fmt.Sprintf("i-%d", i+1))
+	}
+	submitReady(t, f.st, 3, store.Step{})
+	t0 := time.Now().UTC()
+	putGroupState(t, f.st, store.CapacityGroupState{GroupID: f.g.ID, Requested: 3, RequestedAt: new(t0.Add(-time.Hour))})
+
+	f.sweep(t, t0)
+	if n := len(f.prov.callsOf("grow")); n != 0 {
+		t.Fatalf("grow calls with the launch met = %d, want 0", n)
+	}
+	if !handleDeregister(f.s, "c3", protocol.DeregisterPreempted) {
+		t.Fatal("the deregistration was not acknowledged")
+	}
+	if _, err := f.st.GetWorker(t.Context(), "c3"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetWorker(c3) = %v, want it deleted", err)
+	}
+	// Long after the launch: the old code read this shortfall as a failed
+	// launch.
+	f.sweep(t, t0.Add(15*time.Second))
+	// The backend's replacement registers within the regrow's boot timeout.
+	cloudMember(t, f.st, f.g.ID, "c4", "i-4")
+	f.sweep(t, t0.Add(10*time.Minute))
+
+	got := groupState(t, f.st, f.g.ID)
+	if got.DegradedReason != "" || got.DegradedAt != nil {
+		t.Errorf("state = %+v, want no degradation from a preemption", got)
+	}
+	if calls := f.prov.callsOf("list"); len(calls) != 0 {
+		t.Errorf("list calls = %d, want none", len(calls))
+	}
+	if calls := f.prov.callsOf("retire_instances"); len(calls) != 0 {
+		t.Errorf("instance retirements = %+v, want none", calls)
+	}
+	grows := f.prov.callsOf("grow")
+	if len(grows) != 1 || grows[0].desired != 3 || grows[0].current != 2 {
+		t.Errorf("grow calls = %+v, want one grow{3, 2} replacing the machine", grows)
+	}
+}
+
+// An offline member registered without a cloud instance ID would have its
+// instance terminated as an orphan: cleanup is skipped, with one warning
+// naming it.
+func TestScriptActuator_OrphansSkippedWhenAnOfflineMemberHasNoInstanceID(t *testing.T) {
+	f := newScriptFixture(t, nil)
+	f.prov.setList("i-1", "i-2")
+	addNamedMember(t, f.st, f.g.ID, store.Worker{ID: "c2", CPUCount: 4, OS: "linux", Arch: "amd64"}, false)
+	d := degradeWith(t, f, "i-1")
+	for i := 1; i <= 3; i++ {
+		f.sweep(t, d.Add(time.Duration(i)*15*time.Second))
+	}
+
+	if retired := f.prov.callsOf("retire_instances"); len(retired) != 0 {
+		t.Fatalf("instance retirements = %+v, want none", retired)
+	}
+	out := f.logs.String()
+	if n := strings.Count(out, "orphan cleanup skipped"); n != 1 {
+		t.Errorf("skip warning logged %d times, want 1:\n%s", n, out)
+	}
+	if !strings.Contains(out, "c2") {
+		t.Errorf("the skip warning does not name c2:\n%s", out)
+	}
+}
+
+// sqi never asked for more than max_machines, so a list naming more
+// unreported instances than max_machines less the members is refused.
+func TestScriptActuator_OrphansBeyondMaxMachinesRefused(t *testing.T) {
+	f := newScriptFixture(t, func(g *store.CapacityGroup) { g.MaxMachines = 4 })
+	f.prov.setList("i-1", "i-2", "i-3", "i-4", "i-5", "i-6")
+	degradeWith(t, f, "i-1")
+
+	if retired := f.prov.callsOf("retire_instances"); len(retired) != 0 {
+		t.Fatalf("instance retirements = %+v, want none", retired)
+	}
+	if n := strings.Count(f.logs.String(), "orphan cleanup refused"); n != 1 {
+		t.Errorf("refusal warning logged %d times, want 1:\n%s", n, f.logs.String())
+	}
+}
+
+// Machines that register after the group degraded clear the degradation at
+// once, but the backoff still runs out before the next grow.
+func TestScriptActuator_LateRegistrationClearsDegradedKeepsBackoff(t *testing.T) {
+	f := newScriptFixture(t, nil)
+	f.prov.set("list", actionResult{Result: resultUnsupported})
+	d := degradeWith(t, f, "i-1")
+	backoff := groupState(t, f.st, f.g.ID).BackoffUntil
+	if backoff == nil {
+		t.Fatal("no backoff recorded")
+	}
+
+	f.sweep(t, d.Add(15*time.Second))
+	if st, ok := f.s.CapacityStatus(f.g.ID); !ok || st.Degraded == nil {
+		t.Fatalf("status = %+v, want still degraded with no late member", st)
+	}
+	cloudMember(t, f.st, f.g.ID, "c2", "i-2")
+	f.sweep(t, d.Add(30*time.Second))
+
+	got := groupState(t, f.st, f.g.ID)
+	if got.DegradedReason != "" || got.DegradedAt != nil {
+		t.Errorf("state = %+v, want the degradation cleared by the late member", got)
+	}
+	if got.BackoffUntil == nil || !got.BackoffUntil.Equal(*backoff) {
+		t.Errorf("BackoffUntil = %v, want %s kept", got.BackoffUntil, backoff)
+	}
+	if st, ok := f.s.CapacityStatus(f.g.ID); !ok || st.Degraded != nil {
+		t.Errorf("status = %+v, want not degraded", st)
+	}
+	if v := metricValue(t, f.s.metrics.CapacityGroupDegraded.WithLabelValues("cloud")); v != 0 {
+		t.Errorf("sqi_capacity_group_degraded = %v, want 0", v)
+	}
+	f.sweep(t, backoff.Add(-time.Second))
+	if n := len(f.prov.callsOf("grow")); n != 1 {
+		t.Errorf("grow calls inside the backoff = %d, want still 1", n)
+	}
+	f.sweep(t, *backoff)
+	if n := len(f.prov.callsOf("grow")); n != 2 {
+		t.Errorf("grow calls once the backoff ran out = %d, want 2", n)
 	}
 }
 

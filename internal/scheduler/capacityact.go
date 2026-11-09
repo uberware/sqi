@@ -139,6 +139,10 @@ type actuatorState struct {
 	// unconfigured is, per group ID, the script provider whose absence from
 	// the configuration was last logged.
 	unconfigured map[string]store.CapacityProvider
+	// launches is each sized script group's launch record as the last sweep
+	// that read it left it, by group ID; a sweep whose read fails reports it
+	// instead.
+	launches map[string]store.CapacityGroupState
 
 	// stateMu serializes the group states' (launch records')
 	// read-modify-write: a sweep holds it from its read of every state to
@@ -374,6 +378,7 @@ func (s *Scheduler) actuateCapacity(
 	act.lastAction = keepGroups(act.lastAction, groups)
 	act.mu.Unlock()
 	act.unconfigured = keepGroups(act.unconfigured, groups)
+	act.launches = keepGroups(act.launches, groups)
 	for i, g := range groups {
 		if p, ok := s.groupProvider(ctx, now, g); ok {
 			if s.actOnGroup(ctx, now, g, p, members[g.ID], &statuses[i], records) {
@@ -629,8 +634,9 @@ func (s *Scheduler) applyWakeResults(
 // ([Scheduler.retireAccepted]), and a failure that the kind says ends the
 // retirement ([abortsRetirement]) by putting the member back to awake at once;
 // any other failure leaves the member retiring for the boot timeout to
-// settle. A sized script group's launch record then drops by the members the
-// script retired. A fenced write stops it, and so does shutdown closing the
+// settle. A sized script group's launch record is lowered for the members the
+// script retired first ([Scheduler.lowerRequested]), before any of them is
+// deleted. A fenced write stops it, and so does shutdown closing the
 // actuator's gate.
 func (s *Scheduler) applyRetireResults(
 	ctx context.Context, now time.Time, g store.CapacityGroup, kind providerKind, members []store.Worker,
@@ -639,13 +645,20 @@ func (s *Scheduler) applyRetireResults(
 	if s.deposed() {
 		return
 	}
-	retired := 0
+	if kind == providerKindScript && g.Kind == store.CapacityGroupSized {
+		var retired []string
+		for _, w := range members {
+			if resultFor(results, w.ID).Result == resultOK {
+				retired = append(retired, w.ID)
+			}
+		}
+		if len(retired) > 0 {
+			s.lowerRequested(ctx, now, g, retired)
+		}
+	}
 	for _, w := range members {
 		r := resultFor(results, w.ID)
 		s.recordAction(ctx, now, g, actionRetire, w.ID, r)
-		if r.Result == resultOK {
-			retired++
-		}
 		var err error
 		open := s.capState.act.gate.do(func() {
 			switch {
@@ -660,9 +673,6 @@ func (s *Scheduler) applyRetireResults(
 		}
 		s.warnUnlessStopped(ctx, err, "scheduler: capacity provider: apply retire result failed",
 			slog.String("group", g.Name), slog.String("worker_id", w.ID))
-	}
-	if kind == providerKindScript && g.Kind == store.CapacityGroupSized && retired > 0 {
-		s.lowerRequested(ctx, now, g, retired)
 	}
 }
 
