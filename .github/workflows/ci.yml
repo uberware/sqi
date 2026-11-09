@@ -1115,6 +1115,7 @@ jobs:
             TestPGRace_LeaseVersusBeginRetirement
             TestPGRace_LeaseVersusBeginRetirement/lease_first
             TestPGRace_LeaseVersusBeginRetirement/retirement_first
+            TestPGRace_PutCapacityGroupStateForAGroupDeletedMeanwhile
             TestSchemaParity
             TestJobStore_CreateJobSubmission_RollsBackEntirely
             TestCreateJobSubmission_ConcurrentObserverSeesWholeJobs
