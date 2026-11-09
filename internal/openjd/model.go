@@ -70,10 +70,10 @@ const (
 	JobParamTypePath JobParamType = "PATH"
 
 	// The types below are added by the EXPR extension (RFC 0007, Extended
-	// Parameter Types) and are accepted ONLY when the template declares
+	// Parameter Types) and are accepted only when the template declares
 	// extensions: [EXPR]. Without it the decoder leaves the author's spelling
-	// verbatim and validation rejects it as an unknown type, exactly as before
-	// this extension existed -- see parseJobParamType and decodeJobParameter.
+	// verbatim and validation rejects it as an unknown type (see
+	// parseJobParamType and decodeJobParameter).
 
 	// JobParamTypeBool is a boolean parameter. Unlike every other type it
 	// forbids allowedValues: restricting a two-valued domain to one value
@@ -194,11 +194,10 @@ type JobParameter struct {
 // It mirrors the type nesting so each level reuses the same property names as
 // the equivalent scalar type: MinLength/MaxLength for string-like items,
 // MinValue/MaxValue for numeric ones (RFC 0007, "Nested Item Constraints",
-// which records that the rejected alternative was flat names like
-// minItemValue — abandoned because LIST[LIST[INT]] would have needed
-// minItemIntValue).
+// which uses nested names rather than flat ones like minItemValue, because
+// LIST[LIST[INT]] would have needed minItemIntValue).
 //
-// Which fields are LEGAL at a given level depends on the element type and is
+// Which fields are legal at a given level depends on the element type and is
 // enforced by validation, not here: the decoder's job is to record what the
 // template said so that an error can name it.
 //
@@ -261,7 +260,7 @@ const (
 	ControlChooseDirectory ControlType = "CHOOSE_DIRECTORY"
 
 	// The controls below are added by the EXPR extension (RFC 0007) for the
-	// list parameter types. LIST[LIST[INT]] deliberately gets none of its own:
+	// list parameter types. LIST[LIST[INT]] gets none of its own:
 	// the RFC identifies its use case as programmatic (graph adjacency lists),
 	// so HIDDEN -- legal on every type -- is all it accepts.
 
@@ -384,6 +383,9 @@ type StepTemplate struct {
 	// LogChecks is the step's parsed SQI_LOG_CHECKS block, or nil when the step
 	// has none.
 	LogChecks *LogChecks
+	// LogProgress is the step's parsed SQI_LOG_PROGRESS block, or nil when the
+	// step has none.
+	LogProgress *LogProgress
 	// UnknownFields is every key the step carried that the step template schema
 	// does not define, sorted. The decoder drops them, which would silently lose
 	// a misspelled setting or disable a check the author asked for; validation
@@ -498,7 +500,7 @@ type TaskParamDefinition struct {
 	// when the template uses range expression syntax (e.g. "1-100:2").
 	// Exactly one of RangeExpr or RangeList is set for each definition.
 	//
-	// Under the EXPR extension, section 1.3.12 extends this field for EVERY
+	// Under the EXPR extension, section 1.3.12 extends this field for every
 	// type (not only INT/CHUNK[INT]): a whole-field `range: "{{ <expr> }}"`
 	// decodes here the same way for any type — parse.go's decoder does not
 	// distinguish by type — so a STRING or FLOAT definition can carry a

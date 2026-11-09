@@ -71,7 +71,8 @@ readme: |
   When the executor reports that it has finished, the script prints
   `SQI_RENDER: OK` if the job succeeded, or `SQI_RENDER: FAILED:` with the
   reason, and then calls `quit_editor()`. A fatal render error ends the task
-  the same way, as Epic's own render-farm plug-in does.
+  the same way, as Epic's own render-farm plug-in does. It prints an
+  `openjd_status` naming the shot when it starts.
 
   Every task starts its own editor, so each shot pays the editor's start-up,
   the project's loading and the map's loading before it renders. A sequence
@@ -127,12 +128,12 @@ readme: |
   ## What has been tested
 
   The preset has rendered a two-shot sequence and a sequence with no shot
-  track with Unreal Engine 5.8 on a Windows worker. That run showed that
-  `update_job_shot_list_from_sequence` lists each shot by its section name
-  (`no shot` without a shot track), that each task renders only its own shot,
-  that a shot the sequence lacks fails the task with the names it has, and
-  that a config without `{shot_name}` gives the warning above and renders.
-  It also showed everything Unreal Movie Render Queue Job Render's readme
+  track with Unreal Engine 5.8 on a Windows worker. In that run
+  `update_job_shot_list_from_sequence` listed each shot by its section name
+  (`no shot` without a shot track), each task rendered only its own shot,
+  a shot the sequence lacked failed the task with the names it had, and
+  a config without `{shot_name}` gave the warning above and rendered.
+  It also covered everything Unreal Movie Render Queue Job Render's readme
   lists as tested.
 
   ## What has not been verified
@@ -263,7 +264,7 @@ template:
               # What the delegates need once main() has returned: the executor
               # (Unreal holds it while it renders; this keeps a reference too),
               # the failures reported so far, and whether a verdict was given.
-              STATE = dict(executor=None, failures=[], done=False)
+              STATE = dict(executor=None, failures=[], done=False, total=0, finished=0)
 
 
               def emit(line, fd=1):
@@ -471,10 +472,17 @@ template:
 
               def on_job_finished(output):
                   try:
+                      job = getattr(output, "job", None)
+                      name = str(getattr(job, "job_name", "") or "?")
                       if not getattr(output, "success", True):
-                          job = getattr(output, "job", None)
-                          name = str(getattr(job, "job_name", "") or "?")
                           STATE["failures"].append("job " + name + " did not succeed")
+                      elif STATE["total"]:
+                          # The share of the queue's jobs done; a job that
+                          # failed reports none. A shot task has no total: it
+                          # renders one job and reports which shot at the start.
+                          STATE["finished"] += 1
+                          emit("openjd_status: finished job " + name)
+                          emit("openjd_progress: %d" % min(100, STATE["finished"] * 100 // STATE["total"]))
                   except Exception as e:
                       crash(e)
 
@@ -496,6 +504,10 @@ template:
                       jobs = build_queue(subsystem, params)
                       if "shot" in params:
                           select_shot(jobs, params)
+                          emit("openjd_status: rendering " + params["shot"])
+                      else:
+                          # A disabled job is never rendered, so it is not counted.
+                          STATE["total"] = sum(1 for j in jobs if getattr(j, "enabled", True))
                       apply_output(jobs, params["output_directory"])
                       executor = unreal.MoviePipelinePIEExecutor()
                       STATE["executor"] = executor

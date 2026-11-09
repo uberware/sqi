@@ -10,6 +10,9 @@ params:
   SceneFile=/mnt/show/seq010/shot0010/usd/shot0010_layout.usd
 
 step "Render" — 3 tasks
+  log progress: frameParameter "Frame"
+  log progress: progress "^Recording time code: (?P<frame>-?\\d+)\\.0+$"
+  log progress: status "^(?P<status>Recording time code: -?\\d+)\\.0+$"
 
 task 1/3  name="Render[Frame=1-1]"
   task params:

@@ -154,8 +154,8 @@ func TestPresetFusion_CommandNamesTheScript(t *testing.T) {
 	}
 }
 
-// TestPresetTier3_FoldsALuaLongBracketScriptPath pins the Tier 3 cross-check's
-// handling of the Fusion preset's -execute argument: the session directory
+// TestPresetTier3_FoldsALuaLongBracketScriptPath pins how the worker-run
+// cross-check handles the Fusion preset's -execute argument: the session directory
 // inside the long-bracketed script path differs between the computed and the
 // observed run, so it must fold to one placeholder in both POSIX and Windows
 // spellings, while an unrelated path is left alone.
@@ -502,5 +502,47 @@ func TestPresetFusion_ScriptDrivesFusion(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestPresetFusion_EmitsStatus pins the one directive render.lua writes to
+// standard output: a status line naming the task's first and last frame, before
+// the Render call. There is no progress line, as Render with Wait blocks and
+// reports nothing between its start and end. Only the stub Fusion has been run;
+// no Fusion has.
+func TestPresetFusion_EmitsStatus(t *testing.T) {
+	lua := findLua(t)
+	snap, err := capturePreset(t, fusionSaverPreset, map[string]string{
+		"SceneFile": "/mnt/show/shot0010.comp", "Frames": "3-7", "Saver": "MainOut", "FramesPerTask": "10",
+	})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	_, stdout := runFusionScript(t, lua, snap.Steps[0].Tasks[0], "ok")
+	assertFusionStatusLines(t, stdout, "openjd_status: rendering frames 3\u20137")
+}
+
+// assertFusionStatusLines checks stdout by line, tolerating the duplicates the
+// script's say helper makes (it writes to standard output and to print, which
+// share standard output under a stock Lua): the status line appears, comes
+// before the first success line, and no line is a progress line.
+func assertFusionStatusLines(t *testing.T, stdout, status string) {
+	t.Helper()
+	statusAt, okAt := -1, -1
+	for i, line := range strings.Split(stdout, "\n") {
+		switch {
+		case line == status && statusAt < 0:
+			statusAt = i
+		case line == "SQI_RENDER: OK" && okAt < 0:
+			okAt = i
+		case strings.HasPrefix(line, "openjd_progress"):
+			t.Errorf("stdout has a progress line %q:\n%s", line, stdout)
+		}
+	}
+	if statusAt < 0 {
+		t.Errorf("stdout lacks the line %q:\n%s", status, stdout)
+	}
+	if okAt < 0 || statusAt > okAt {
+		t.Errorf("the status line (line %d) must come before the success line (line %d):\n%s", statusAt, okAt, stdout)
 	}
 }

@@ -12,10 +12,9 @@ import (
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
-// TestRender_IsStableAcrossRuns is the property that makes a golden reviewable.
-// Two Captures of the same template must render byte-identically: session work
-// dirs, IDs and any other per-run value must be normalized away. A golden that
-// churns is a golden nobody reads.
+// TestRender_IsStableAcrossRuns asserts that two Captures of the same template
+// render byte-identically: session work dirs, IDs and any other per-run value
+// must be normalized away.
 func TestRender_IsStableAcrossRuns(t *testing.T) {
 	const tmpl = `
 specificationVersion: jobtemplate-2023-09
@@ -95,19 +94,18 @@ func TestRender_ShowsEveryArgAndFileBody(t *testing.T) {
 	}
 }
 
-// TestRender_GoldensAreHostNeutral pins the property that lets ONE reviewed
-// golden per case serve every host: a path value that phase 3 rendered in the
-// host's own flavor comes back in the POSIX spelling the goldens are written
-// in, while text that merely happens to contain a backslash does not.
+// TestRender_GoldensAreHostNeutral asserts that one golden per case serves every
+// host: a path value that phase 3 rendered in the host's own flavor comes back
+// in the POSIX spelling the goldens are written in, while text that merely
+// contains a backslash does not.
 //
 // Phase 3 is a host context, so Expression-Language section 1.2.1 gives it the
 // host operating system's path semantics and an EXPR preset resolving
-// "/mnt/show/a.mov" on a Windows worker really does produce "\mnt\show\a.mov".
-// The inputs here are therefore built with filepath.FromSlash, which is what
-// the worker itself applies: on Windows that makes these assertions real, and
-// on POSIX it is the identity, so the same assertions hold for the untouched
-// text. What must NOT hold on either is a blanket separator transform -- the
-// last two cases are the values such a transform would corrupt.
+// "/mnt/show/a.mov" on a Windows worker produces "\mnt\show\a.mov". The
+// inputs are built with filepath.FromSlash, as the worker does: on Windows the
+// assertions exercise the conversion, and on POSIX it is the identity, so they
+// hold for the untouched text. Neither host may apply a blanket separator
+// transform; the last two cases are the values such a transform would corrupt.
 func TestRender_GoldensAreHostNeutral(t *testing.T) {
 	const (
 		dir   = "/mnt/show/seq010/movies"
@@ -155,8 +153,8 @@ func TestRender_GoldensAreHostNeutral(t *testing.T) {
 			t.Errorf("render missing %q:\n%s", want, got)
 		}
 	}
-	// The whole point: no rendered text may carry the host's separator for a
-	// path the goldens spell with "/".
+	// No rendered text may carry the host's separator for a path the goldens
+	// spell with "/".
 	if strings.Contains(got, `\mnt`) {
 		t.Errorf("render leaked a host-flavored path:\n%s", got)
 	}
@@ -312,5 +310,74 @@ func TestRender_SessionPathEndsAtABracketOrBrace(t *testing.T) {
 		if got := presettest.Render(snap); !strings.Contains(got, "    [0]  "+tc.want+"\n") {
 			t.Errorf("render of %q lacks %q:\n%s", tc.arg, tc.want, got)
 		}
+	}
+}
+
+// TestRender_LogProgress pins how a step's SQI_LOG_PROGRESS block reaches a
+// golden: under the step header after any log check lines, quoted with %q.
+func TestRender_LogProgress(t *testing.T) {
+	task := presettest.TaskSnapshot{Name: "Render", Command: "renderer"}
+	snap := presettest.Snapshot{
+		Preset: "demo",
+		Case:   "default",
+		Steps: []presettest.StepSnapshot{{
+			Name:      "Render",
+			LogChecks: &protocol.LogChecks{FailOn: []string{"ERR"}},
+			LogProgress: &protocol.LogProgress{
+				FrameParameter: "Frames",
+				Progress:       []string{`Frame (?P<frame>\d+)`},
+				Status:         []string{`(?P<status>.*)`},
+			},
+			Tasks: []presettest.TaskSnapshot{task},
+		}},
+	}
+	got := presettest.Render(snap)
+	want := "  log checks: failOn \"ERR\"\n" +
+		"  log progress: frameParameter \"Frames\"\n" +
+		"  log progress: progress \"Frame (?P<frame>\\\\d+)\"\n" +
+		"  log progress: status \"(?P<status>.*)\"\n" +
+		"\ntask 1/1"
+	if !strings.Contains(got, want) {
+		t.Errorf("render missing the log progress block:\nwant substring:\n%s\ngot:\n%s", want, got)
+	}
+
+	snap.Steps[0].LogProgress = nil
+	if got := presettest.Render(snap); strings.Contains(got, "log progress") {
+		t.Errorf("nil block rendered a log progress line:\n%s", got)
+	}
+}
+
+// TestCapture_CarriesLogProgress asserts the snapshot takes the block from the
+// real assignment.
+func TestCapture_CarriesLogProgress(t *testing.T) {
+	const tmpl = `
+specificationVersion: jobtemplate-2023-09
+extensions: [TASK_CHUNKING, SQI_LOG_PROGRESS]
+name: Progress Job
+steps:
+  - name: Render
+    SQI_LOG_PROGRESS:
+      progress: ['Frame (?P<frame>[0-9]+)']
+    parameterSpace:
+      taskParameterDefinitions:
+        - {name: Frames, type: 'CHUNK[INT]', range: '1-10', chunks: {defaultTaskCount: 2, rangeConstraint: CONTIGUOUS}}
+    script:
+      actions:
+        onRun:
+          command: renderer
+`
+	snap, err := presettest.Capture(t.Context(), tmpl, presettest.Options{Format: store.TemplateFormatYAML})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	if len(snap.Steps) != 1 || snap.Steps[0].LogProgress == nil {
+		t.Fatalf("snapshot carries no log progress: %+v", snap.Steps)
+	}
+	lp := snap.Steps[0].LogProgress
+	if lp.FrameParameter != "Frames" || len(lp.Progress) != 1 {
+		t.Errorf("LogProgress = %+v", lp)
+	}
+	if got := presettest.Render(snap); !strings.Contains(got, `  log progress: frameParameter "Frames"`) {
+		t.Errorf("render missing the frameParameter line:\n%s", got)
 	}
 }

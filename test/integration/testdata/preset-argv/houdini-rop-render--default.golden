@@ -17,6 +17,7 @@ task 1/3  name="Render[Frames=1-8]"
     [2]  /out/mantra_beauty
     [3]  1-8
   embedded file "render_chunk" (render_chunk.py):
+    import os
     import re
     import sys
     import hou
@@ -42,8 +43,26 @@ task 1/3  name="Render[Frames=1-8]"
             last[1] = hi
         else:
             ranges.append([lo, hi, step])
-    for lo, hi, step in ranges:
-        rop.render(frame_range=(lo, hi, step))
+    # A PostFrame event marks each finished frame. The directives
+    # go to file descriptor 1, where the worker reads them, and
+    # the frame named is the chunk's next one in order.
+    frame_list = [f for lo, hi, step in ranges for f in range(lo, hi + 1, step)]
+    done = [0]
+    
+    def on_render_event(node, event_type, time):
+        if event_type != hou.ropRenderEventType.PostFrame or done[0] >= len(frame_list):
+            return
+        done[0] += 1
+        k, n = done[0], len(frame_list)
+        os.write(1, ("openjd_progress: %d\nopenjd_status: rendered frame %d (%d of %d)\n"
+                     % (k * 100 // n, frame_list[k - 1], k, n)).encode())
+    
+    rop.addRenderEventCallback(on_render_event)
+    try:
+        for lo, hi, step in ranges:
+            rop.render(frame_range=(lo, hi, step))
+    finally:
+        rop.removeRenderEventCallback(on_render_event)
 
 task 2/3  name="Render[Frames=9-16]"
   task params:
@@ -55,6 +74,7 @@ task 2/3  name="Render[Frames=9-16]"
     [2]  /out/mantra_beauty
     [3]  9-16
   embedded file "render_chunk" (render_chunk.py):
+    import os
     import re
     import sys
     import hou
@@ -80,8 +100,26 @@ task 2/3  name="Render[Frames=9-16]"
             last[1] = hi
         else:
             ranges.append([lo, hi, step])
-    for lo, hi, step in ranges:
-        rop.render(frame_range=(lo, hi, step))
+    # A PostFrame event marks each finished frame. The directives
+    # go to file descriptor 1, where the worker reads them, and
+    # the frame named is the chunk's next one in order.
+    frame_list = [f for lo, hi, step in ranges for f in range(lo, hi + 1, step)]
+    done = [0]
+    
+    def on_render_event(node, event_type, time):
+        if event_type != hou.ropRenderEventType.PostFrame or done[0] >= len(frame_list):
+            return
+        done[0] += 1
+        k, n = done[0], len(frame_list)
+        os.write(1, ("openjd_progress: %d\nopenjd_status: rendered frame %d (%d of %d)\n"
+                     % (k * 100 // n, frame_list[k - 1], k, n)).encode())
+    
+    rop.addRenderEventCallback(on_render_event)
+    try:
+        for lo, hi, step in ranges:
+            rop.render(frame_range=(lo, hi, step))
+    finally:
+        rop.removeRenderEventCallback(on_render_event)
 
 task 3/3  name="Render[Frames=17-24]"
   task params:
@@ -93,6 +131,7 @@ task 3/3  name="Render[Frames=17-24]"
     [2]  /out/mantra_beauty
     [3]  17-24
   embedded file "render_chunk" (render_chunk.py):
+    import os
     import re
     import sys
     import hou
@@ -118,5 +157,23 @@ task 3/3  name="Render[Frames=17-24]"
             last[1] = hi
         else:
             ranges.append([lo, hi, step])
-    for lo, hi, step in ranges:
-        rop.render(frame_range=(lo, hi, step))
+    # A PostFrame event marks each finished frame. The directives
+    # go to file descriptor 1, where the worker reads them, and
+    # the frame named is the chunk's next one in order.
+    frame_list = [f for lo, hi, step in ranges for f in range(lo, hi + 1, step)]
+    done = [0]
+    
+    def on_render_event(node, event_type, time):
+        if event_type != hou.ropRenderEventType.PostFrame or done[0] >= len(frame_list):
+            return
+        done[0] += 1
+        k, n = done[0], len(frame_list)
+        os.write(1, ("openjd_progress: %d\nopenjd_status: rendered frame %d (%d of %d)\n"
+                     % (k * 100 // n, frame_list[k - 1], k, n)).encode())
+    
+    rop.addRenderEventCallback(on_render_event)
+    try:
+        for lo, hi, step in ranges:
+            rop.render(frame_range=(lo, hi, step))
+    finally:
+        rop.removeRenderEventCallback(on_render_event)

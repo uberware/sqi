@@ -6,6 +6,8 @@ params:
   SceneFile=/mnt/show/seq010/shot0010/usd/shot0010_lighting.usd
 
 step "Render" — 1 task
+  log progress: progress "^ALF_PROGRESS (?P<percent>\\d+)%"
+  log progress: status ">>> Render (?:.*[/\\\\])?(?P<status>[^/\\\\]+ \\(\\d+ of \\d+\\)) - \\d+x\\d+ "
 
 task 1/1  name="Render[Frame=1-1]"
   task params:

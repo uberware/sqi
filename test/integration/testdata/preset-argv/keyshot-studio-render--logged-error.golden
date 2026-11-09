@@ -157,15 +157,18 @@ task 1/1  name="Render[Frame=1]"
             size["height"] = params["height"]
         opts = lux.getRenderOptions()
         opts.setAddToQueue(False)
-        for frame in params["frames"]:
+        total = len(params["frames"])
+        for index, frame in enumerate(params["frames"], 1):
             path = expand_output(params["pattern"], frame)
             prepare(path)
+            emit("openjd_status: rendering frame %d (%d of %d)" % (frame, index, total))
             lux.setAnimationFrame(frame)
             done = lux.renderImage(path, opts=opts, format=image_format, **size)
             if done is False:
                 raise RuntimeError("KeyShot did not render frame %d" % frame)
             if not os.path.isfile(path) or os.path.getsize(path) == 0:
                 raise RuntimeError("frame %d was rendered but %s was not written" % (frame, path))
+            emit("openjd_progress: %d" % (index * 100 // total))
     
     
     def main():

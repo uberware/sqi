@@ -14,25 +14,23 @@ const (
 	// OriginOfficial marks an extension defined by the upstream OpenJD spec.
 	OriginOfficial Origin = "official"
 	// OriginVendor marks an extension defined by sqi. Vendor extension names
-	// MUST carry the SQI_ prefix so they can never collide with a future
-	// official OpenJD name; if upstreamed, the prefix is dropped and the entry
-	// flips to OriginOfficial (the "promotion path").
+	// must carry the SQI_ prefix so they cannot collide with a future official
+	// OpenJD name.
 	OriginVendor Origin = "vendor"
 )
 
-// Extension status values. Status is the SECOND half of the registration gate:
+// Extension status values. Status is the second half of the registration gate:
 // validateExtensions accepts an extension only when it is both present in the
-// registry AND marked supported.
+// registry and marked supported.
 //
-// The split exists so that a partially-implemented extension can be present —
-// so the conformance harness can drive it through the real parse and validate
-// path — while production still rejects it, for a stated reason rather than
-// because a map lookup missed.
+// The split lets a partially implemented extension be present, so the
+// conformance harness can drive it through the real parse and validate path,
+// while production rejects it with a stated reason.
 const (
 	// StatusSupported means the extension is fully implemented and accepted.
 	StatusSupported = "supported"
 	// StatusInProgress means the extension is registered for conformance
-	// scoring but is NOT accepted: some required part of it is unimplemented.
+	// scoring but is not accepted: some required part of it is unimplemented.
 	StatusInProgress = "in-progress"
 )
 
@@ -61,9 +59,9 @@ type Extension struct {
 
 // registry is the set of OpenJD extension names sqi knows about, keyed by name
 // (case-sensitive). Presence alone is not enough for validateExtensions to
-// accept a declared extension — the entry's Status must also be
-// StatusSupported; see the Status doc comment for why. validateExtensions
-// rejects any declared extension not present here at all.
+// accept a declared extension: the entry's Status must also be
+// StatusSupported. validateExtensions rejects any declared extension not
+// present here at all.
 //
 //   - TASK_CHUNKING: chunked integer task parameters (CHUNK[INT]); implemented
 //     in expand.go.
@@ -74,11 +72,14 @@ type Extension struct {
 //     submit.go.
 //   - SQI_LOG_CHECKS: a step-level failOn/requireLine block, parsed in
 //     logchecks.go and enforced by the worker's executor.
+//   - SQI_LOG_PROGRESS: a step-level progress/status block, parsed and validated
+//     in logprogress.go and applied by the worker's OpenJD interceptor; not
+//     worker-enforced.
 //   - EXPR: the OpenJD expression language; implemented across internal/openjd
 //     (scope model, checker, resolver), internal/openjd/expr and
 //     internal/worker/fmtres. See that entry's own comment.
 //
-// Read-only after initialisation; never modified at runtime.
+// Read-only after initialisation.
 var registry = map[string]Extension{
 	"TASK_CHUNKING": {
 		Name:    "TASK_CHUNKING",
@@ -117,8 +118,16 @@ var registry = map[string]Extension{
 		StepBlock:      true,
 		WorkerEnforced: true,
 	},
-	// EXPR is the OpenJD expression language extension. It may only be
-	// StatusSupported as a whole: the extension permits no partial
+	ExtensionLogProgress: {
+		Name:      ExtensionLogProgress,
+		Origin:    OriginVendor,
+		Status:    StatusSupported,
+		Summary:   "Step-level log progress: report task progress and status text from log lines.",
+		DocPath:   "docs/openjd-extensions/sqi-log-progress.md",
+		StepBlock: true,
+	},
+	// EXPR is the OpenJD expression language extension. It may be
+	// StatusSupported only as a whole: the extension permits no partial
 	// implementation, and section 1.2.2 makes the BOOL, RANGE_EXPR and
 	// LIST[*] job parameter types part of it alongside the expression
 	// language itself.
@@ -137,15 +146,19 @@ var registry = map[string]Extension{
 // Exported for internal/scheduler, which decides per lease request whether a
 // job needs a worker capable of phase-3 expression evaluation. It compares this
 // name against the extension list [Submitter.Submit] persisted on the job row,
-// so the test is EXACT for every job submitted since migration 00027. Rows
+// so the test is exact for every job submitted since migration 00027. Rows
 // older than that column record no list, and for those alone the scheduler
-// falls back to scanning the raw template for these bytes -- a heuristic whose
-// two error directions are written out in that package's exprcaps.go.
+// falls back to scanning the raw template for these bytes, a heuristic whose
+// two error directions are described in that package's exprcaps.go.
 const ExtensionEXPR = "EXPR"
 
 // ExtensionLogChecks is the registry name of the sqi-defined step-level
 // log-check extension.
 const ExtensionLogChecks = "SQI_LOG_CHECKS"
+
+// ExtensionLogProgress is the registry name of the sqi-defined step-level
+// log-progress extension.
+const ExtensionLogProgress = "SQI_LOG_PROGRESS"
 
 // WorkerEnforcedExtensions returns the sorted names of the registered
 // extensions the worker enforces at run time. Workers advertise the subset they

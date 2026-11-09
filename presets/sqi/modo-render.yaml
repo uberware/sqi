@@ -4,7 +4,7 @@ title: Modo Render
 description: >-
   Renders a frame range of a saved Modo scene headless with modo_cl, one frame
   per task by default, using the scene's own render outputs. Modo is
-  discontinued, and this preset has never run in Modo.
+  discontinued, and no Modo has executed this preset.
 readme: |
   # Modo Render
 
@@ -13,11 +13,11 @@ readme: |
   first read. This preset therefore hands Modo its work with the documented
   `-cmd:` startup switch instead. Whether `modo_cl` runs that command to the
   end before it notices the empty input, or treats the end-of-file as a
-  request to quit, is untested. If it quits first, every task fails: no
+  request to quit, is unverified. If it quits first, every task fails: no
   `SQI_RENDER: OK` line is printed, so no task reports a success. Try one
   single-frame job before any longer one.
 
-  Modo is also discontinued. 17.1 was the last release (Foundry, November
+  Modo is discontinued. 17.1 was the last release (Foundry, November
   2024), the self-service download has ended and downloads now go through a
   Foundry support ticket. The end-of-life license is an RLM `uncounted
   hostid=ANY` key that Modo finds through the `foundry_LICENSE` environment
@@ -60,9 +60,9 @@ readme: |
 
   The script turns on console logging, opens the scene, sets the render item's
   first and last frame to the task's chunk and its step to 1, and runs
-  `render.animation`. It then prints `SQI_RENDER: OK` and quits Modo with
-  `app.quit`. On any error it prints `SQI_RENDER: FAILED:` with the reason and
-  quits.
+  `render.animation`, after an `openjd_status` naming the frames. It then
+  prints `SQI_RENDER: OK` and quits Modo with `app.quit`. On any error it
+  prints `SQI_RENDER: FAILED:` with the reason and quits.
 
   Building `params.json` is metered against the worker's `EXPR` limits and
   grows with the frames in one task; the maximum of 1000 stays well inside the
@@ -75,7 +75,7 @@ readme: |
   `SQI_RENDER: FAILED:`, `failed with` or `Unknown command:`. Modo documents
   no exit status, so it is not relied on. The script writes its two lines
   straight to the process's standard output (file descriptor 1). `failed with`
-  is broad: it matches any line of Modo's output that contains it, for example
+  is broad. It matches any line of Modo's output that contains it, for example
   one reporting that a texture or a plug-in failed to load, so such a line
   fails the task even if the render succeeded.
 
@@ -126,8 +126,7 @@ readme: |
   - Whether Modo exits after `app.quit` in headless mode (see the timeout
     above), and what its exit status is.
   - Whether text written to file descriptor 1 reaches the worker on every OS.
-    If it does not, every task fails for want of `SQI_RENDER: OK`, never the
-    other way round.
+    If it does not, every task fails for want of `SQI_RENDER: OK`.
   - The install folders the detector looks for follow Foundry's documentation
     for 17.1 and 13.2; none is confirmed on an installed copy.
 category: Rendering
@@ -277,6 +276,9 @@ template:
                   # Keyword arguments, so no job value becomes command text.
                   lx.command("scene.open", filename=params["scene"], type="normal")
                   set_range(params["start"], params["stop"])
+                  # One status for the whole chunk: the render command blocks and
+                  # reports nothing between its start and end.
+                  emit(u"openjd_status: rendering frames %d\u2013%d" % (params["start"], params["stop"]))
                   # The group name is a job value, so it goes in as a keyword
                   # argument; the whole-scene form has none, so its command text
                   # is a literal. Whether the two forms are equivalent in Modo

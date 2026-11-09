@@ -142,7 +142,7 @@ var knownTopLevelFields = map[string]struct{}{
 }
 
 // unknownTopLevelFields returns the sorted top-level keys the schema does not
-// define and that do not name a SUPPORTED extension.
+// define and that do not name a supported extension.
 //
 // The status check matches validateExtensions' two-part gate rather than bare
 // registry presence. Presence alone would let a stray top-level key naming a
@@ -245,15 +245,14 @@ func decodeJobParameter(raw map[string]any, exprDeclared bool) (JobParameter, er
 // canonical JSON for a list type (paramjson.go), and the strict scalar reader
 // -- unchanged -- for every other type.
 //
-// exprDeclared is part of the condition, NOT redundant with the type check.
+// exprDeclared is part of the condition, not redundant with the type check.
 // Canonicalization leaves an unrecognized spelling verbatim, and "LIST[STRING]"
-// written in a base-spec template is verbatim ALREADY EQUAL to the
+// written in a base-spec template is verbatim already equal to the
 // JobParamTypeListString constant -- so a type-only dispatch would run the list
 // reader for a template that never declared the extension, turning a parse
 // error into a validation error. The template is rejected either way, but a
-// base-spec template's behavior must be unaffected by EXPR support,
-// diagnostics included. TestListDefault_ListTypeWithoutEXPRStillRejected pins
-// it.
+// base-spec template's behavior, diagnostics included, must not depend on
+// EXPR support. TestListDefault_ListTypeWithoutEXPRStillRejected pins it.
 func decodeJobParamDefault(raw map[string]any, p *JobParameter, exprDeclared bool) error {
 	if exprDeclared && isListParamType(p.Type) {
 		v, ok := raw["default"]
@@ -287,12 +286,10 @@ func decodeJobParamDefault(raw map[string]any, p *JobParameter, exprDeclared boo
 // and label. Reading only the parameter root would never decode a conforming
 // template's filters, leaving every validation rule for them (label required,
 // pattern grammar, count cap) dead code.
-// The parameter root is also accepted, as a deliberate back-compat allowance:
-// older sqi releases required them there, so products already stored by an
-// older sqi carry that shape and would lose their filters otherwise.
-// userInterface wins when both are present. No conformance fixture asserts that
-// root-level filters must be REJECTED, so accepting them costs no conformance;
-// deprecating the root location is a follow-up.
+// The parameter root is also accepted, because products stored by earlier sqi
+// releases carry filters there and would lose them otherwise.
+// userInterface wins when both are present. No conformance fixture requires
+// root-level filters to be rejected.
 func decodeJobParamFileFilters(raw map[string]any, p *JobParameter) error {
 	src := raw
 	if ui, ok := raw["userInterface"].(map[string]any); ok {
@@ -721,6 +718,9 @@ func decodeStepTemplate(raw map[string]any, exprDeclared bool) (StepTemplate, er
 	s.UnknownFields = unknownStepFields(raw)
 	if v, ok := raw[ExtensionLogChecks]; ok {
 		s.LogChecks = decodeLogChecks(v)
+	}
+	if v, ok := raw[ExtensionLogProgress]; ok {
+		s.LogProgress = decodeLogProgress(v)
 	}
 
 	return s, nil

@@ -1,0 +1,7 @@
+# Captured verbatim from hoiiotool, the oiiotool in Houdini 21.0.631 Apprentice on macOS arm64 (stdout and stderr, combined); scratch path replaced by <SCRATCH>.
+# version: OIIO 2.5.18.0 (the last lines of hoiiotool --help)
+# input:   oiiotool --frames 1-3 --pattern constant:color=1,0,0 8x8 3 -o "<SCRATCH>/in dir/in.@@@@.png"
+# command: hoiiotool --frames 1-3 "<SCRATCH>/in dir/in.@@@@.png" -o <SCRATCH>/h/conv.@@@@.jpg --echo "Wrote frame {FRAME_NUMBER}"
+Wrote frame 1
+Wrote frame 2
+Wrote frame 3

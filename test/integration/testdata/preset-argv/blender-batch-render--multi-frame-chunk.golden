@@ -7,6 +7,13 @@ params:
   SceneFile=/mnt/show/seq010/shot0010/scene/shot0010_anim_v007.blend
 
 step "Render" — 2 tasks
+  log progress: frameParameter "Frame"
+  log progress: progress "\\| Rendering frame (?P<frame>-?\\d+)"
+  log progress: progress "\\| Rendered (?P<framedone>\\d+)/(?P<frametotal>\\d+) Tiles"
+  log progress: progress "\\| Sample (?P<framedone>\\d+)/(?P<frametotal>\\d+)"
+  log progress: progress "\\| Rendering (?P<framedone>\\d+) / (?P<frametotal>\\d+) samples"
+  log progress: status "\\| Mem: [^|]*\\| (?P<status>.+)"
+  log progress: status "\\| Fra: -?\\d+ \\| (?P<status>[^|]+)$"
 
 task 1/2  name="Render[Frame=1-5,Frame.End=5,Frame.Start=1]"
   task params:

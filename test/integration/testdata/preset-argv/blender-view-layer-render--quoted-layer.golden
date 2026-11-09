@@ -8,6 +8,13 @@ params:
   ViewLayer=It's "Main" layer
 
 step "Render" — 3 tasks
+  log progress: frameParameter "Frame"
+  log progress: progress "\\| Rendering frame (?P<frame>-?\\d+)"
+  log progress: progress "\\| Rendered (?P<framedone>\\d+)/(?P<frametotal>\\d+) Tiles"
+  log progress: progress "\\| Sample (?P<framedone>\\d+)/(?P<frametotal>\\d+)"
+  log progress: progress "\\| Rendering (?P<framedone>\\d+) / (?P<frametotal>\\d+) samples"
+  log progress: status "\\| Mem: [^|]*\\| (?P<status>.+)"
+  log progress: status "\\| Fra: -?\\d+ \\| (?P<status>[^|]+)$"
 
 task 1/3  name="Render[Frame=1-1,Frame.End=1,Frame.Start=1]"
   task params:

@@ -448,8 +448,10 @@ func TestPresetUnreal_SessionFolderThatBreaksExecCmdsIsRefused(t *testing.T) {
 // names) of the level sequence saved there, or to null for an asset that does
 // not exist; any other path loads as an asset with no jobs and no shots. A
 // queue's job written "name@/Game/Path" keeps the config asset at that path as
-// its preset origin, as a job saved from the Movie Render Queue window does.
-// name_format is every job's output file name format.
+// its preset origin, as a job saved from the Movie Render Queue window does,
+// and one written "!name" is saved disabled: the queue never renders it, so a
+// "job" event naming it is not delivered. name_format is every job's output
+// file name format.
 const unrealRunner = `import json, os, sys, types
 
 locate, events, fail, script, record, elsewhere, bootstrap, assets, name_format = sys.argv[1:10]
@@ -555,8 +557,9 @@ class Config(object):
 
 
 class Job(object):
-    def __init__(self, name="", origin=None):
+    def __init__(self, name="", origin=None, enabled=True):
         object.__setattr__(self, "job_name", name)
+        object.__setattr__(self, "enabled", enabled)
         object.__setattr__(self, "config", Config(self))
         object.__setattr__(self, "shot_info", [Shot("left over")])
         object.__setattr__(self, "origin", origin)
@@ -598,8 +601,9 @@ class Queue(object):
         raising("copy_from")
         self.jobs = []
         for spec in asset.jobs:
-            name, _, origin = spec.partition("@")
-            self.jobs.append(Job(name, Asset(origin, []) if origin else None))
+            enabled = not spec.startswith("!")
+            name, _, origin = spec.lstrip("!").partition("@")
+            self.jobs.append(Job(name, Asset(origin, []) if origin else None, enabled))
 
     def allocate_new_job(self, cls):
         note("allocate_new_job", cls.__name__)
@@ -688,6 +692,8 @@ for event in [e for e in events.split(";") if e]:
     note("event", event)
     kind, _, rest = event.partition(":")
     flag, _, text = rest.partition(":")
+    if kind == "job" and any(j.job_name == text and not j.enabled for j in QUEUE.jobs):
+        continue
     for executor in executors:
         if kind == "job":
             for fn in executor.on_individual_job_work_finished_delegate.callables:
@@ -1198,4 +1204,92 @@ func unrealCallArg(calls, name string) string {
 		}
 	}
 	return ""
+}
+
+// TestPresetUnreal_EmitsJobProgress pins the directives the script writes to
+// file descriptor 1 as the movie pipeline reports back. The job and queue
+// presets print a status naming each finished job and the share of the queue's
+// jobs done, all before the success line; the shot preset, which renders one
+// job per task, prints one status naming its shot when it starts. Only the stub
+// editor has been run; no Unreal has.
+func TestPresetUnreal_EmitsJobProgress(t *testing.T) {
+	python := findPython3(t)
+	if python == "" {
+		t.Skip("no working Python 3 on PATH (tried python3, python)")
+	}
+	const queueA = "/Game/Cinematics/MRQ_HeroQueue"
+	threeJobs := `{"` + queueA + `": ["Hero A", "Hero B", "Hero C"]}`
+	events := "job:1:Hero A;job:1:Hero B;job:1:Hero C;finished:1"
+	queueSnap, err := capturePreset(t, unrealQueue, map[string]string{
+		"SceneFile": `C:\Projects\HeroFilm\HeroFilm.uproject`, "QueueAsset": queueA,
+	})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	queueTask := queueSnap.Steps[0].Tasks[0]
+
+	t.Run("queue", func(t *testing.T) {
+		for _, run := range unrealRuns {
+			_, stdout, _ := runUnrealScript(t, python, queueTask, run, events, "", threeJobs, "")
+			want := "" +
+				"openjd_status: finished job Hero A\nopenjd_progress: 33\n" +
+				"openjd_status: finished job Hero B\nopenjd_progress: 66\n" +
+				"openjd_status: finished job Hero C\nopenjd_progress: 100\n" +
+				"SQI_RENDER: OK\n"
+			if stdout != want {
+				t.Errorf("%s: stdout:\n%s\nwant:\n%s", run, stdout, want)
+			}
+		}
+	})
+	t.Run("job", func(t *testing.T) {
+		snap, err := capturePreset(t, unrealJob, map[string]string{
+			"SceneFile": `C:\Projects\HeroFilm\HeroFilm.uproject`, "LevelSequence": "/Game/Cinematics/Hero/SEQ_Hero",
+			"Map": "/Game/Maps/Hero", "MovieRenderConfig": "/Game/Cinematics/MRQ_Final",
+		})
+		if err != nil {
+			t.Fatalf("Capture: %v", err)
+		}
+		_, stdout, _ := runUnrealScript(t, python, snap.Steps[0].Tasks[0], "import", "job:1:SEQ_Hero;finished:1", "", "", "")
+		want := "openjd_status: finished job SEQ_Hero\nopenjd_progress: 100\nSQI_RENDER: OK\n"
+		if stdout != want {
+			t.Errorf("stdout:\n%s\nwant:\n%s", stdout, want)
+		}
+	})
+	t.Run("a disabled job is not counted", func(t *testing.T) {
+		oneDisabled := `{"` + queueA + `": ["Hero A", "!Hero B", "Hero C"]}`
+		_, stdout, _ := runUnrealScript(t, python, queueTask, "import", events, "", oneDisabled, "")
+		want := "" +
+			"openjd_status: finished job Hero A\nopenjd_progress: 50\n" +
+			"openjd_status: finished job Hero C\nopenjd_progress: 100\n" +
+			"SQI_RENDER: OK\n"
+		if stdout != want {
+			t.Errorf("stdout:\n%s\nwant:\n%s", stdout, want)
+		}
+	})
+	t.Run("a failed job reports no progress", func(t *testing.T) {
+		_, stdout, _ := runUnrealScript(t, python, queueTask, "import", "job:1:Hero A;job:0:Hero B;finished:1", "", threeJobs, "")
+		if !strings.HasPrefix(stdout, "openjd_status: finished job Hero A\nopenjd_progress: 33\n") ||
+			strings.Contains(stdout, "finished job Hero B") || strings.Contains(stdout, "openjd_progress: 66") ||
+			strings.Contains(stdout, "SQI_RENDER: OK") {
+			t.Errorf("stdout:\n%s", stdout)
+		}
+	})
+	t.Run("shot", func(t *testing.T) {
+		params := map[string]string{
+			"SceneFile": `C:\Projects\HeroFilm\HeroFilm.uproject`, "LevelSequence": "/Game/Cinematics/Hero/SEQ_Hero",
+			"Map": "/Game/Maps/Hero", "MovieRenderConfig": "/Game/Cinematics/MRQ_Final",
+			"Shots": unrealShots(t, "sh010"),
+		}
+		snap, err := capturePreset(t, unrealShot, params)
+		if err != nil {
+			t.Fatalf("Capture: %v", err)
+		}
+		seqObject := unrealObjectPath("/Game/Cinematics/Hero/SEQ_Hero")
+		assets := string(mustMarshal(t, map[string]json.RawMessage{seqObject: json.RawMessage(unrealShots(t, "sh010", "sh020"))}))
+		_, stdout, _ := runUnrealScript(t, python, snap.Steps[0].Tasks[0], "import", "job:1:SEQ_Hero;finished:1", "", assets, unrealShotNameFormat)
+		want := "openjd_status: rendering sh010\nSQI_RENDER: OK\n"
+		if stdout != want {
+			t.Errorf("stdout:\n%s\nwant:\n%s", stdout, want)
+		}
+	})
 }

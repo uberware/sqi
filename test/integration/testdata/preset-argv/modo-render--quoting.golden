@@ -108,6 +108,9 @@ task 1/1  name="Render[Frame=1-2]"
         # Keyword arguments, so no job value becomes command text.
         lx.command("scene.open", filename=params["scene"], type="normal")
         set_range(params["start"], params["stop"])
+        # One status for the whole chunk: the render command blocks and
+        # reports nothing between its start and end.
+        emit(u"openjd_status: rendering frames %d\u2013%d" % (params["start"], params["stop"]))
         # The group name is a job value, so it goes in as a keyword
         # argument; the whole-scene form has none, so its command text
         # is a literal. Whether the two forms are equivalent in Modo

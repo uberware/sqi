@@ -3,9 +3,8 @@
 // Package logpattern compiles an SQI_LOG_CHECKS pattern under the size bound
 // that both the server (submission validation, internal/openjd) and the worker
 // (the checker it runs against every output line, internal/worker/executor)
-// enforce. It is a stdlib-only leaf so that the worker, which must never import
-// internal/openjd, shares the bound with it instead of keeping a copy that could
-// drift.
+// enforce. It is a stdlib-only leaf because the worker must not import
+// internal/openjd, and both sides need the same bound.
 package logpattern
 
 import (
@@ -20,11 +19,20 @@ import (
 // RE2 matching is linear in the length of the line, but the constant is the
 // size of the compiled program: Go bounds nested repetition at 1000 but not
 // concatenation, so the 905-byte pattern strings.Repeat(".{0,999}", 113)+"x"
-// compiles to ~226,000 instructions and takes seconds to match one 4 KiB line,
-// on the reader goroutine that a canceled task waits for. Realistic patterns
+// compiles to ~226,000 instructions and takes seconds to match one 4 KiB line. Realistic patterns
 // compile to 10 to 100 instructions; 2000 leaves room for a long alternation of
 // literals.
 const MaxProgramInsts = 2000
+
+// Limits on one pattern list, shared by every step-block extension that carries
+// patterns (SQI_LOG_CHECKS, SQI_LOG_PROGRESS) so the server never accepts a list
+// the worker refuses.
+const (
+	// MaxPatterns is the most patterns one list may hold.
+	MaxPatterns = 32
+	// MaxPatternBytes is the longest a single pattern may be.
+	MaxPatternBytes = 1024
+)
 
 // EstimateCeiling is the estimate above which Compile rejects a pattern without
 // compiling it. Measuring a program means building it, at a cost proportional to

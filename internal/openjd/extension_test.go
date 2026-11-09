@@ -5,6 +5,7 @@ package openjd
 import (
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -79,6 +80,25 @@ func TestRegistry_LogChecksVendor(t *testing.T) {
 	}
 }
 
+func TestRegistry_LogProgressVendor(t *testing.T) {
+	ext, ok := LookupExtension("SQI_LOG_PROGRESS")
+	if !ok {
+		t.Fatal("SQI_LOG_PROGRESS not registered")
+	}
+	if ext.Origin != OriginVendor || ext.Status != StatusSupported {
+		t.Errorf("Origin = %q, Status = %q, want vendor and supported", ext.Origin, ext.Status)
+	}
+	if !ext.StepBlock || ext.WorkerEnforced {
+		t.Errorf("StepBlock = %v, WorkerEnforced = %v, want true and false", ext.StepBlock, ext.WorkerEnforced)
+	}
+	if ext.DocPath != "docs/openjd-extensions/sqi-log-progress.md" {
+		t.Errorf("DocPath = %q", ext.DocPath)
+	}
+	if slices.Contains(WorkerEnforcedExtensions(), "SQI_LOG_PROGRESS") {
+		t.Error("SQI_LOG_PROGRESS must not be in WorkerEnforcedExtensions()")
+	}
+}
+
 func TestRegistry_WorkerEnforcedExtensions(t *testing.T) {
 	got := WorkerEnforcedExtensions()
 	want := []string{"SQI_LOG_CHECKS"}
@@ -127,9 +147,8 @@ func TestRegistryVendorNamespacing(t *testing.T) {
 // what lets the conformance harness reach the real validation path for a
 // partially-implemented extension without production accepting it.
 //
-// The registry has no StatusInProgress entry, but the gate is live production
-// machinery, so the test registers a temporary in-progress entry of its own.
-// That keeps the branch covered for the next partially-implemented extension.
+// The registry has no StatusInProgress entry, so the test registers a
+// temporary one to cover the gate's in-progress branch.
 func TestValidateExtensions_RegisteredButNotSupported(t *testing.T) {
 	const name = "TEST_IN_PROGRESS"
 	registry[name] = Extension{
@@ -159,11 +178,11 @@ func TestValidateExtensions_RegisteredButNotSupported(t *testing.T) {
 	}
 }
 
-// TestValidateExtensions_SupportedStillPass guards the blast radius: the status
-// check runs on the one path every extension flows through.
+// TestValidateExtensions_SupportedStillPass checks that supported extensions
+// still pass the status check, which every extension flows through.
 func TestValidateExtensions_SupportedStillPass(t *testing.T) {
 	for _, name := range []string{
-		"TASK_CHUNKING", "REDACTED_ENV_VARS", "SQI_PATH_TRANSLATION", "SQI_CHUNK_BOUNDS", "EXPR", "SQI_LOG_CHECKS",
+		"TASK_CHUNKING", "REDACTED_ENV_VARS", "SQI_PATH_TRANSLATION", "SQI_CHUNK_BOUNDS", "EXPR", "SQI_LOG_CHECKS", "SQI_LOG_PROGRESS",
 	} {
 		t.Run(name, func(t *testing.T) {
 			tmpl := &JobTemplate{
@@ -178,9 +197,9 @@ func TestValidateExtensions_SupportedStillPass(t *testing.T) {
 	}
 }
 
-// TestRegistry_EverySupportedStatusIsTheConstant stops a typo'd status string
-// silently disabling a shipped extension. Every shipped entry is
-// StatusSupported.
+// TestRegistry_EverySupportedStatusIsTheConstant checks that every shipped
+// entry is StatusSupported, so a mistyped status string cannot disable an
+// extension.
 func TestRegistry_EverySupportedStatusIsTheConstant(t *testing.T) {
 	for name, ext := range registry {
 		if ext.Status != StatusSupported {

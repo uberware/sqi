@@ -31,6 +31,13 @@ readme: |
   consecutive frames into that run's call, so `1-19:2` is one call and
   `1-3,7,8` is two.
 
+  ## Progress
+
+  The script reports each task's progress as its frames finish: after every
+  frame the ROP renders, it prints the share of the task's frames done and a
+  status such as `rendered frame 7 (4 of 5)`, so the bar moves frame by frame
+  within a chunk.
+
   ## Requirements
 
   - Workers tagged `attr.worker.tag.houdini = true`
@@ -77,6 +84,7 @@ template:
             type: TEXT
             filename: render_chunk.py
             data: |
+              import os
               import re
               import sys
               import hou
@@ -102,8 +110,26 @@ template:
                       last[1] = hi
                   else:
                       ranges.append([lo, hi, step])
-              for lo, hi, step in ranges:
-                  rop.render(frame_range=(lo, hi, step))
+              # A PostFrame event marks each finished frame. The directives
+              # go to file descriptor 1, where the worker reads them, and
+              # the frame named is the chunk's next one in order.
+              frame_list = [f for lo, hi, step in ranges for f in range(lo, hi + 1, step)]
+              done = [0]
+
+              def on_render_event(node, event_type, time):
+                  if event_type != hou.ropRenderEventType.PostFrame or done[0] >= len(frame_list):
+                      return
+                  done[0] += 1
+                  k, n = done[0], len(frame_list)
+                  os.write(1, ("openjd_progress: %d\nopenjd_status: rendered frame %d (%d of %d)\n"
+                               % (k * 100 // n, frame_list[k - 1], k, n)).encode())
+
+              rop.addRenderEventCallback(on_render_event)
+              try:
+                  for lo, hi, step in ranges:
+                      rop.render(frame_range=(lo, hi, step))
+              finally:
+                  rop.removeRenderEventCallback(on_render_event)
         actions:
           onRun:
             command: hython

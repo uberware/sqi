@@ -30,26 +30,23 @@ import (
 // ErrTemplateHasEnvironments is returned by [Capture] for a template declaring
 // job or step environments.
 //
-// session.Manager.Create ENTERS environments, which means executing their
-// onEnter actions. For a real preset that action is a vendor command
-// ("setup-maya", a license checkout), and running it inside a unit test on a
-// developer laptop or a CI runner is not something a snapshot should do as a
-// side effect. No shipped template declares environments today; the day one
-// does, that preset needs observed-only verification (Tier 3) and a deliberate
-// decision, not a silent subprocess.
+// session.Manager.Create enters environments, which executes their onEnter
+// actions. For a real preset that action is a vendor command ("setup-maya", a
+// license checkout), which a snapshot must not run as a side effect. A preset
+// that declares environments cannot be captured and needs observed-only
+// verification.
 var ErrTemplateHasEnvironments = errors.New("presettest: template declares environments")
 
 // ChunkPatch raises one step's chunks.defaultTaskCount before submission.
 //
-// It is the ONLY permitted deviation from a shipped preset's bytes, and it
-// exists because chunk size is a template field rather than a job parameter:
-// every SQI_CHUNK_BOUNDS preset ships defaultTaskCount 1, so without this every
-// chunk golden would have Frame.Start == Frame.End and the multi-frame
-// "-s START -e END" substitution those presets exist for would go untested --
-// even though maya-layer-render's README tells operators to raise it.
+// It is the only permitted deviation from a shipped preset's bytes. Chunk size
+// is a template field rather than a job parameter, and every SQI_CHUNK_BOUNDS
+// preset ships defaultTaskCount 1, so without the patch every chunk golden would
+// have Frame.Start == Frame.End and the multi-frame "-s START -e END"
+// substitution would go untested.
 //
 // [ApplyChunkPatch] (patch.go) applies it; [Render] prints it in the golden
-// header, so a patched golden can never be mistaken for the shipped preset.
+// header, so a patched golden is distinguishable from the shipped preset.
 type ChunkPatch struct {
 	Step                   string `yaml:"step"`
 	ChunksDefaultTaskCount int    `yaml:"chunks_default_task_count"`
@@ -93,6 +90,10 @@ type StepSnapshot struct {
 	// carries it, or nil. It is a step property (every task of a step gets the
 	// same block), so it is read from the first task's assignment.
 	LogChecks *protocol.LogChecks
+
+	// LogProgress is the step's SQI_LOG_PROGRESS block as the real assignment
+	// carries it, or nil. Read from the first task's assignment like LogChecks.
+	LogProgress *protocol.LogProgress
 }
 
 // Snapshot is the whole answer for one preset and one case.
@@ -118,8 +119,8 @@ type Snapshot struct {
 //  3. session.Manager.Create + executor.ResolveAssignment — phase-3 resolution
 //     of the command, args and embedded-file bodies.
 //
-// Nothing is reimplemented, so a golden built from this is a statement about
-// the server and the worker rather than about the harness.
+// Nothing is reimplemented, so a golden built from this reflects the server and
+// the worker.
 func Capture(ctx context.Context, rawTemplate string, opts Options) (Snapshot, error) {
 	st, queueID, result, err := submit(ctx, rawTemplate, opts)
 	if err != nil {
@@ -139,12 +140,13 @@ func Capture(ctx context.Context, rawTemplate string, opts Options) (Snapshot, e
 			if task.StepID != step.ID {
 				continue
 			}
-			ts, checks, terr := captureTask(ctx, st, mgr, result, step, task, queueID)
+			ts, msg, terr := captureTask(ctx, st, mgr, result, step, task, queueID)
 			if terr != nil {
 				return Snapshot{}, terr
 			}
 			if len(ss.Tasks) == 0 {
-				ss.LogChecks = checks
+				ss.LogChecks = msg.LogChecks
+				ss.LogProgress = msg.LogProgress
 			}
 			ss.Tasks = append(ss.Tasks, ts)
 		}
@@ -175,7 +177,7 @@ func refuseEnvironments(rawTemplate string, format store.TemplateFormat) error {
 	return nil
 }
 
-// Submit runs step 1 of Capture alone: the template submitted under
+// Submit runs the first stage of Capture alone: the template submitted under
 // opts.Params to a fresh in-memory store, returning the jobs, steps and tasks
 // it created. A test that needs only the expansion uses it to skip resolving
 // every task.
@@ -230,11 +232,10 @@ func seedPrereqs(ctx context.Context, st *fake.Store) (farmID, queueID string, e
 // newSessionManager returns a session manager rooted in a temp directory and the
 // function that removes it.
 //
-// isolation.NewFake(nil) is the right provider precisely because it knows no
-// accounts: no shipped preset's assignment carries an IsolationSpec here (the
-// queue below has no run_as_user), so the provider is never asked to resolve
-// one, and a future change that starts asking will fail loudly instead of
-// attempting a real setuid inside a test.
+// isolation.NewFake(nil) knows no accounts. No assignment here carries an
+// IsolationSpec (the queue below has no run_as_user), so the provider is never
+// asked to resolve one; if that changes, the fake fails instead of attempting a
+// real setuid inside a test.
 func newSessionManager() (*session.Manager, func(), error) {
 	root, err := os.MkdirTemp("", "presettest-sessions-*")
 	if err != nil {
@@ -248,7 +249,9 @@ func newSessionManager() (*session.Manager, func(), error) {
 	return mgr, func() { _ = os.RemoveAll(root) }, nil
 }
 
-// captureTask builds one task's assignment and resolves it.
+// captureTask builds one task's assignment and resolves it. It also returns the
+// decoded assignment, which carries the step-level blocks (LogChecks,
+// LogProgress) Capture reads from a step's first task.
 func captureTask(
 	ctx context.Context,
 	st *fake.Store,
@@ -257,7 +260,7 @@ func captureTask(
 	step store.Step,
 	task store.Task,
 	queueID string,
-) (TaskSnapshot, *protocol.LogChecks, error) {
+) (TaskSnapshot, *protocol.AssignMsg, error) {
 	worker := store.Worker{
 		ID:              uuid.NewString(),
 		FarmID:          result.Job.FarmID,
@@ -299,11 +302,11 @@ func captureTask(
 		ts.Files = append(ts.Files, FileSnapshot{Name: f.Name, Filename: f.Filename, Data: f.Data})
 	}
 	sort.Slice(ts.Files, func(i, j int) bool { return ts.Files[i].Name < ts.Files[j].Name })
-	return ts, msg.LogChecks, nil
+	return ts, &msg, nil
 }
 
 // sortedCopy returns a copy of m. Maps render in sorted key order (see
-// render.go), so this exists only to avoid aliasing the store's row.
+// render.go), so this only avoids aliasing the store's row.
 func sortedCopy(m map[string]string) map[string]string {
 	out := make(map[string]string, len(m))
 	maps.Copy(out, m)

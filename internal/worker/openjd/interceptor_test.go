@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/bus"
+	"github.com/uberware/sqi/internal/openjd/logprogress"
 	"github.com/uberware/sqi/internal/worker/openjd"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
@@ -400,6 +401,64 @@ func TestFinishProgress_StopsTrailingSend(t *testing.T) {
 		line("openjd_progress: 3")
 		time.Sleep(5 * time.Second)
 		synctest.Wait()
+		if got := len(nc.snapshot()); got != 2 {
+			t.Errorf("got %d messages, want 2 (leading send and the flush)", got)
+		}
+	})
+}
+
+// TestFinishProgress_FlushesPendingChange verifies that a change still waiting
+// for its trailing send is published, once and with the final values, before
+// FinishProgress returns.
+func TestFinishProgress_FlushesPendingChange(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		i, _, nc, ctx, _ := setup(t)
+		line := func(l string) { i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", "stdout", l) }
+		line("openjd_progress: 40")
+		time.Sleep(500 * time.Millisecond)
+		line("openjd_status: last frame")
+		line("openjd_progress: 100")
+		if got := len(nc.snapshot()); got != 1 {
+			t.Fatalf("before finish: got %d messages, want 1", got)
+		}
+
+		p := i.FinishProgress("attempt-1")
+		if p == nil || *p != 100 {
+			t.Fatalf("FinishProgress = %v, want &100", p)
+		}
+		msgs := nc.snapshot()
+		if len(msgs) != 2 {
+			t.Fatalf("after finish: got %d messages, want 2", len(msgs))
+		}
+		if want := bus.TaskStatusSubject("test-worker", "job-1"); msgs[1].subject != want {
+			t.Errorf("flush subject = %q, want %q", msgs[1].subject, want)
+		}
+		m := decodeStatus(t, msgs[1].data)
+		if m.Status != "running" || m.Message != "last frame" || m.LastProgress == nil || *m.LastProgress != 100 {
+			t.Errorf("flush = %+v, want running, Message last frame, LastProgress 100", m)
+		}
+
+		i.FinishProgress("attempt-1")
+		time.Sleep(5 * time.Second)
+		synctest.Wait()
+		if got := len(nc.snapshot()); got != 2 {
+			t.Errorf("after quiet period: got %d messages, want 2", got)
+		}
+	})
+}
+
+// TestFinishProgress_NothingPendingDoesNotPublish verifies that FinishProgress
+// sends nothing when every change has already been published.
+func TestFinishProgress_NothingPendingDoesNotPublish(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		i, _, nc, ctx, _ := setup(t)
+		i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", "stdout", "openjd_progress: 7")
+		time.Sleep(3 * time.Second)
+		synctest.Wait()
+		if p := i.FinishProgress("attempt-1"); p == nil || *p != 7 {
+			t.Fatalf("FinishProgress = %v, want &7", p)
+		}
+		synctest.Wait()
 		if got := len(nc.snapshot()); got != 1 {
 			t.Errorf("got %d messages, want 1", got)
 		}
@@ -742,4 +801,246 @@ func TestConcurrentHandleLine(t *testing.T) {
 	for idx := range N {
 		i.Deregister(fmt.Sprintf("attempt-%d", idx))
 	}
+}
+
+// ── SQI_LOG_PROGRESS pattern tests ────────────────────────────────────────────
+
+// mustMatcher compiles a logprogress matcher or fails the test.
+func mustMatcher(t *testing.T, progress, status []string, frames string) *logprogress.Matcher {
+	t.Helper()
+	m, err := logprogress.Compile(progress, status, frames, protocol.SanitizeStatusText)
+	if err != nil {
+		t.Fatalf("logprogress.Compile: %v", err)
+	}
+	return m
+}
+
+func TestInterceptor_PatternSetsProgressAndStatus(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		i, downstream, nc, ctx, _ := setup(t)
+		i.SetLogProgress("attempt-1", mustMatcher(t,
+			[]string{`progress (?P<percent>\d+)`}, []string{`^phase: (?P<status>.+)$`}, ""))
+
+		i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", "stdout", "progress 25")
+		synctest.Wait()
+		time.Sleep(2 * time.Second)
+		i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", "stderr", "phase: shading")
+		synctest.Wait()
+
+		msgs := nc.snapshot()
+		if len(msgs) != 2 {
+			t.Fatalf("got %d snapshots, want 2", len(msgs))
+		}
+		first := decodeStatus(t, msgs[0].data)
+		if first.Status != "running" || first.LastProgress == nil || *first.LastProgress != 25 || first.Message != "" {
+			t.Errorf("first snapshot = %+v, want running, progress 25, no message", first)
+		}
+		second := decodeStatus(t, msgs[1].data)
+		if second.LastProgress == nil || *second.LastProgress != 25 || second.Message != "shading" {
+			t.Errorf("second snapshot = %+v, want progress 25, message shading", second)
+		}
+
+		want := []capturedLine{
+			{"task-1", "attempt-1", "sess-1", "stdout", "progress 25"},
+			{"task-1", "attempt-1", "sess-1", "stderr", "phase: shading"},
+		}
+		got := downstream.snapshot()
+		if len(got) != len(want) {
+			t.Fatalf("downstream got %d lines, want %d: %+v", len(got), len(want), got)
+		}
+		for k := range want {
+			if got[k] != want[k] {
+				t.Errorf("downstream[%d] = %+v, want %+v", k, got[k], want[k])
+			}
+		}
+	})
+}
+
+// A status pattern with no status group takes the whole line, which is then
+// sanitized as an openjd_status text is.
+func TestInterceptor_PatternStatusWholeLineSanitized(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		i, _, nc, ctx, _ := setup(t)
+		i.SetLogProgress("attempt-1", mustMatcher(t, nil, []string{`Rendering`}, ""))
+		i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", "stdout", "  Rendering\x1b tile\t3  ")
+		synctest.Wait()
+		msgs := nc.snapshot()
+		if len(msgs) != 1 {
+			t.Fatalf("got %d snapshots, want 1", len(msgs))
+		}
+		if m := decodeStatus(t, msgs[0].data); m.Message != "Rendering tile 3" || m.LastProgress != nil {
+			t.Errorf("snapshot = %+v, want message %q and no progress", m, "Rendering tile 3")
+		}
+	})
+}
+
+func TestInterceptor_DirectivePrecedencePerField(t *testing.T) {
+	// The line matches both a progress and a status pattern.
+	const line = "50% shading"
+	progress := []string{`(?P<percent>\d+)%`}
+	status := []string{`shading`}
+
+	t.Run("openjd_progress suppresses pattern progress only", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			i, _, nc, ctx, _ := setup(t)
+			i.SetLogProgress("attempt-1", mustMatcher(t, progress, status, ""))
+			i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", "stdout", "openjd_progress: 10")
+			i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", "stdout", line)
+			time.Sleep(3 * time.Second)
+			synctest.Wait()
+			if p := i.LastProgress("attempt-1"); p == nil || *p != 10 {
+				t.Errorf("LastProgress = %v, want 10", p)
+			}
+			msgs := nc.snapshot()
+			last := decodeStatus(t, msgs[len(msgs)-1].data)
+			if last.Message != line || last.LastProgress == nil || *last.LastProgress != 10 {
+				t.Errorf("last snapshot = %+v, want message %q, progress 10", last, line)
+			}
+		})
+	})
+
+	t.Run("openjd_status suppresses pattern status only", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			i, _, nc, ctx, _ := setup(t)
+			i.SetLogProgress("attempt-1", mustMatcher(t, progress, status, ""))
+			i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", "stdout", "openjd_status: x")
+			i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", "stdout", line)
+			time.Sleep(3 * time.Second)
+			synctest.Wait()
+			if p := i.LastProgress("attempt-1"); p == nil || *p != 50 {
+				t.Errorf("LastProgress = %v, want 50", p)
+			}
+			msgs := nc.snapshot()
+			last := decodeStatus(t, msgs[len(msgs)-1].data)
+			if last.Message != "x" || last.LastProgress == nil || *last.LastProgress != 50 {
+				t.Errorf("last snapshot = %+v, want message x, progress 50", last)
+			}
+		})
+	})
+
+	t.Run("pattern before directive is overridden by it", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			i, _, _, ctx, _ := setup(t)
+			i.SetLogProgress("attempt-1", mustMatcher(t, progress, status, ""))
+			i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", "stdout", line)
+			i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", "stdout", "openjd_progress: 5")
+			i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", "stdout", "70% shading")
+			if p := i.LastProgress("attempt-1"); p == nil || *p != 5 {
+				t.Errorf("LastProgress = %v, want 5", p)
+			}
+			i.Deregister("attempt-1")
+		})
+	})
+}
+
+func TestInterceptor_PatternSkipsRedactedEnvDirective(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		i, downstream, nc, ctx, _ := setup(t)
+		i.SetLogProgress("attempt-1", mustMatcher(t,
+			[]string{`(?P<percent>\d+)`}, []string{`SECRET`}, ""))
+		for _, l := range []string{"openjd_redacted_env: SECRET=42", "  openjd_redacted_env: SECRET=42"} {
+			i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", "stdout", l)
+			i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", "stderr", l)
+		}
+		time.Sleep(3 * time.Second)
+		synctest.Wait()
+		if got := len(nc.snapshot()); got != 0 {
+			t.Errorf("got %d snapshots, want 0", got)
+		}
+		if p := i.LastProgress("attempt-1"); p != nil {
+			t.Errorf("LastProgress = %v, want nil", *p)
+		}
+		if got := len(downstream.snapshot()); got != 4 {
+			t.Errorf("downstream got %d lines, want 4 (the lines still pass through)", got)
+		}
+	})
+}
+
+func TestInterceptor_PatternThrottled(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		i, _, nc, ctx, _ := setup(t)
+		i.SetLogProgress("attempt-1", mustMatcher(t, []string{`pct (?P<percent>\d+)`}, nil, ""))
+		for v := 1; v <= 10; v++ {
+			i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", "stdout", fmt.Sprintf("pct %d", v))
+			time.Sleep(100 * time.Millisecond)
+		}
+		if got := len(nc.snapshot()); got != 1 {
+			t.Fatalf("within window: got %d snapshots, want 1", got)
+		}
+		time.Sleep(5 * time.Second)
+		synctest.Wait()
+		msgs := nc.snapshot()
+		if len(msgs) != 2 {
+			t.Fatalf("got %d snapshots, want 2 (leading and trailing)", len(msgs))
+		}
+		if m := decodeStatus(t, msgs[0].data); m.LastProgress == nil || *m.LastProgress != 1 {
+			t.Errorf("leading progress = %v, want 1", m.LastProgress)
+		}
+		if m := decodeStatus(t, msgs[1].data); m.LastProgress == nil || *m.LastProgress != 10 {
+			t.Errorf("trailing progress = %v, want 10", m.LastProgress)
+		}
+	})
+}
+
+// Without SetLogProgress (or with a nil matcher, or for an attempt that was
+// never registered) lines that a pattern would match change nothing.
+func TestInterceptor_NoMatcherNoChange(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		lines := []struct{ stream, line string }{
+			{"stdout", "50% shading"},
+			{"stderr", "75% shading"},
+			{"stdout", "openjd_progress: 20"},
+			{"stdout", "90% done"},
+		}
+		run := func(install func(*openjd.Interceptor)) ([]capturedLine, []capturedMsg, *int) {
+			i, downstream, nc, ctx, _ := setup(t)
+			install(i)
+			for _, l := range lines {
+				i.HandleLine(ctx, "task-1", "attempt-1", "sess-1", l.stream, l.line)
+			}
+			time.Sleep(3 * time.Second)
+			synctest.Wait()
+			p := i.LastProgress("attempt-1")
+			i.Deregister("attempt-1")
+			return downstream.snapshot(), nc.snapshot(), p
+		}
+		baseLines, baseMsgs, baseP := run(func(*openjd.Interceptor) {})
+		for name, install := range map[string]func(*openjd.Interceptor){
+			"nil matcher": func(i *openjd.Interceptor) { i.SetLogProgress("attempt-1", nil) },
+			"other attempt": func(i *openjd.Interceptor) {
+				i.SetLogProgress("attempt-2", mustMatcher(t, []string{`(?P<percent>\d+)%`}, []string{`shading`}, ""))
+			},
+		} {
+			gotLines, gotMsgs, gotP := run(install)
+			if fmt.Sprint(gotLines) != fmt.Sprint(baseLines) {
+				t.Errorf("%s: downstream = %+v, want %+v", name, gotLines, baseLines)
+			}
+			if len(gotMsgs) != len(baseMsgs) {
+				t.Fatalf("%s: %d snapshots, want %d", name, len(gotMsgs), len(baseMsgs))
+			}
+			for k := range baseMsgs {
+				// The runs share one fake clock, so only the timestamps differ.
+				got, want := decodeStatus(t, gotMsgs[k].data), decodeStatus(t, baseMsgs[k].data)
+				got.At, want.At = time.Time{}, time.Time{}
+				gotJSON, _ := json.Marshal(got)   //nolint:errcheck // a decoded message always re-encodes
+				wantJSON, _ := json.Marshal(want) //nolint:errcheck // a decoded message always re-encodes
+				if string(gotJSON) != string(wantJSON) || gotMsgs[k].subject != baseMsgs[k].subject {
+					t.Errorf("%s: snapshot %d = %s, want %s", name, k, gotMsgs[k].data, baseMsgs[k].data)
+				}
+			}
+			if (gotP == nil) != (baseP == nil) || gotP != nil && *gotP != *baseP {
+				t.Errorf("%s: LastProgress = %v, want %v", name, gotP, baseP)
+			}
+		}
+		// Only the directive set progress, and no line set status.
+		if baseP == nil || *baseP != 20 {
+			t.Errorf("LastProgress = %v, want 20", baseP)
+		}
+		if len(baseMsgs) != 1 {
+			t.Fatalf("got %d snapshots, want 1", len(baseMsgs))
+		}
+		if m := decodeStatus(t, baseMsgs[0].data); m.Message != "" {
+			t.Errorf("Message = %q, want empty", m.Message)
+		}
+	})
 }
