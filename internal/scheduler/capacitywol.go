@@ -131,6 +131,12 @@ func (*wolProvider) grow(context.Context, store.CapacityGroup, int, int) actionR
 	return actionResult{Result: resultUnsupported, Message: "wake_on_lan wakes named members; it has no grow"}
 }
 
+// retireInstances is unsupported: a wake_on_lan group has no instances that
+// never registered.
+func (*wolProvider) retireInstances(context.Context, store.CapacityGroup, []string) actionResult {
+	return actionResult{Result: resultUnsupported, Message: "wake_on_lan retires named members only"}
+}
+
 // list is unsupported: a wake_on_lan group's machines are its members.
 func (*wolProvider) list(context.Context, store.CapacityGroup) ([]string, actionResult) {
 	return nil, actionResult{Result: resultUnsupported, Message: "wake_on_lan has no list"}

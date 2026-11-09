@@ -661,13 +661,16 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	// Stop any backoff-wake timers still pending so they don't outlive Run.
 	s.stopRetryWakeTimers()
 
+	// Capacity provider calls first: one that finishes a retirement starts a
+	// broker revocation, which the wait below then covers.
+	s.closeCapacityCalls(ctx)
+
 	// Let broker revocations of removed workers finish, briefly, so none
 	// outlives the broker the server closes next.
 	if !s.revokes.Close(revokeDrainTimeout) {
 		s.logger.WarnContext(ctx, "scheduler: a removed worker's broker revocation was still running at shutdown",
 			slog.Duration("waited", revokeDrainTimeout))
 	}
-	s.closeCapacityCalls(ctx)
 
 	s.logger.InfoContext(ctx, "scheduler: stopped")
 	return nil
@@ -1916,11 +1919,13 @@ func (s *Scheduler) WakeQueue(queueID string) {
 	}
 }
 
-// WakeWorker wakes the lease requests a disabled worker has parked, so a worker
-// that has just been enabled is leased work at once rather than after the rest
-// of its leaseHoldTimeout. Called by the API's enable handler after the write. A
-// woken request re-reads the worker, so a wake for a worker that is still
-// disabled leases nothing.
+// WakeWorker wakes the lease requests a worker that may not take new work
+// (disabled, retiring or asleep) has parked, so a worker that has just become
+// able to is leased work at once rather than after the rest of its
+// leaseHoldTimeout. Called by the API's enable handler after the write, and
+// when a woken capacity-group member registers ([Scheduler.noteMemberWoke]). A
+// woken request re-reads the worker, so a wake for a worker that still may not
+// take work leases nothing.
 func (s *Scheduler) WakeWorker(workerID string) {
 	s.disabledWaiters.notify(workerID)
 }

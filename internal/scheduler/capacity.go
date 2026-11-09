@@ -116,6 +116,7 @@ func (s *Scheduler) sweepCapacityAt(ctx context.Context, now time.Time) {
 		return
 	}
 	farmGroups := s.farmCapacityGroups(all)
+	s.pruneCapacitySeries(farmGroups)
 	if len(farmGroups) == 0 {
 		s.capState.powerManaged.Store(false)
 		s.clearCapacity()
@@ -143,11 +144,15 @@ func (s *Scheduler) sweepCapacityAt(ctx context.Context, now time.Time) {
 		s.clearCapacity()
 		return
 	}
-	statuses, ok := s.evaluateCapacity(ctx, now, groups, members)
+	// Held to the end of the sweep, so a provider call's result cannot
+	// rewrite a launch record between this read and the sweep's writes.
+	records, release := s.readLaunchRecords(ctx, groups)
+	defer release()
+	statuses, ok := s.evaluateCapacity(ctx, now, groups, members, records)
 	if !ok {
 		return
 	}
-	if s.actuateCapacity(ctx, now, groups, members, statuses) {
+	if s.actuateCapacity(ctx, now, groups, members, statuses, records) {
 		return // fenced
 	}
 	s.publishCapacity(groups, statuses)
@@ -268,10 +273,12 @@ func (s *Scheduler) clearCapacity() {
 }
 
 // evaluateCapacity evaluates groups, whose members workers holds by group ID,
-// and returns one status per group, in order. A failed read returns false,
+// and returns one status per group, in order. The policy's pacing is first
+// seeded from records ([Scheduler.seedPacing]). A failed read returns false,
 // and the last evaluation stands.
 func (s *Scheduler) evaluateCapacity(
 	ctx context.Context, now time.Time, groups []store.CapacityGroup, workers map[string][]store.Worker,
+	records launchRecords,
 ) ([]capacity.Status, bool) {
 	in, err := s.capacityInputs(ctx, now, groups, workers)
 	if err != nil {
@@ -285,6 +292,7 @@ func (s *Scheduler) evaluateCapacity(
 	cs.idleSince = in.idleSince
 	cs.lastStepUp = keepGroups(cs.lastStepUp, groups)
 	cs.lastDesired = keepGroups(cs.lastDesired, groups)
+	s.seedPacing(now, groups, records)
 
 	statuses := capacity.Evaluate(capacity.Snapshot{
 		Now:     now,

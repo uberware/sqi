@@ -260,6 +260,39 @@ func TestRun_TimeoutKills(t *testing.T) {
 	}
 }
 
+// MaxRunTime is the timeout, two minutes when unset, plus the wait for a killed
+// script's pipes to close.
+func TestProvider_MaxRunTime(t *testing.T) {
+	tests := []struct {
+		name    string
+		timeout time.Duration
+		want    time.Duration
+	}{
+		{"unset", 0, 2*time.Minute + 5*time.Second},
+		{"negative", -time.Second, 2*time.Minute + 5*time.Second},
+		{"set", 30 * time.Second, 35 * time.Second},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := (Provider{Timeout: tc.timeout}).MaxRunTime(); got != tc.want {
+				t.Errorf("MaxRunTime = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// An orphan retirement names only an instance ID: a member without a worker
+// ID carries no worker_id key.
+func TestMember_WorkerIDOmittedWhenEmpty(t *testing.T) {
+	b, err := json.Marshal(Member{InstanceID: "i-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(b); got != `{"instance_id":"i-1"}` {
+		t.Errorf("member = %s, want only the instance_id", got)
+	}
+}
+
 func TestRun_ParentCancelReturnsContextError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(200*time.Millisecond, cancel)

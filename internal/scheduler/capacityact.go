@@ -25,17 +25,21 @@ package scheduler
 // Every request is absolute (wake this machine, sleep that one), so a repeat
 // is harmless.
 //
-// It never acts on a count: only on the named candidates the policy returned.
+// It wakes and retires only the named candidates the policy returned, never a
+// count. The one count it acts on is a sized group's size, which it raises
+// through the group's launch record (capacityscript.go).
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/uberware/sqi/internal/capacity"
+	"github.com/uberware/sqi/internal/capacity/script"
 	"github.com/uberware/sqi/internal/store"
 )
 
@@ -56,7 +60,9 @@ const (
 // Provider actions, as ActionRecord.Action and the action label carry them.
 const (
 	actionWake      = "wake"
+	actionGrow      = "grow"
 	actionRetire    = "retire"
+	actionList      = "list"
 	actionConfigure = "configure"
 )
 
@@ -76,6 +82,9 @@ type capacityProvider interface {
 	// retire stops each of members, and returns each one's result by worker
 	// ID.
 	retire(ctx context.Context, g store.CapacityGroup, members []store.Worker) map[string]actionResult
+	// retireInstances stops each of a sized group's instances that never
+	// registered, named by instance ID alone.
+	retireInstances(ctx context.Context, g store.CapacityGroup, instanceIDs []string) actionResult
 	// list returns the provider's machine instance IDs for the group.
 	list(ctx context.Context, g store.CapacityGroup) ([]string, actionResult)
 }
@@ -94,12 +103,27 @@ type boundProvider struct {
 	kind providerKind
 }
 
-// intentKey identifies one recorded member intent: a member in a power state
-// recorded at a time. A new transition makes a new key.
+// intentKey identifies one recorded intent: a member in a power state
+// recorded at a time, or a group-level request (a sized group's grow, or its
+// orphan cleanup after a degradation) recorded at a time. A new transition or
+// record makes a new key.
 type intentKey struct {
-	workerID string
-	state    store.PowerState
-	stateAt  int64 // PowerStateAt as Unix nanoseconds; 0 when unset
+	// subject is "worker:<id>" or "group:<id>".
+	subject string
+	// intent is the member's power state, or the group-level request.
+	intent string
+	at     int64 // the recorded time as Unix nanoseconds; 0 when unset
+}
+
+// Group-level intents.
+const (
+	intentGrow    = "grow"
+	intentOrphans = "orphans"
+)
+
+// groupIntent is the key of groupID's intent recorded at at.
+func groupIntent(groupID, intent string, at time.Time) intentKey {
+	return intentKey{subject: "group:" + groupID, intent: intent, at: at.UnixNano()}
 }
 
 // actuatorState is what the actuator keeps between ticks. It lives in memory
@@ -116,26 +140,107 @@ type actuatorState struct {
 	// the configuration was last logged.
 	unconfigured map[string]store.CapacityProvider
 
-	// mu guards inFlight and lastAction, which provider calls update from
-	// their own goroutines. It is a leaf: nothing is locked while it is
-	// held. The publishing sweep takes it inside capacityState.mu, so the
-	// order is sweepMu, then capacityState.mu, then mu; a provider call takes
-	// mu and capacityState.mu one at a time, never both.
+	// stateMu serializes the group states' (launch records')
+	// read-modify-write: a sweep holds it from its read of every state to
+	// the end of its writes, and a provider call holds it around each fresh
+	// read and write of its own (capacityscript.go). It is held across store
+	// calls. The order is sweepMu, then stateMu, then capacityState.mu, then
+	// mu; a provider call takes gate (shared), then stateMu, and never
+	// sweepMu.
+	stateMu sync.Mutex
+
+	// mu guards inFlight, lastAction, liveGroups and seriesGroups, which
+	// provider calls use from their own goroutines. It is a leaf: nothing is
+	// locked while it is held. The publishing sweep takes it inside
+	// capacityState.mu, so the order is sweepMu, then capacityState.mu, then
+	// mu; a provider call takes mu and capacityState.mu one at a time, never
+	// both.
 	mu sync.Mutex
 	// inFlight holds the groups, by ID, with a provider call running.
 	inFlight map[string]bool
 	// lastAction is each group's latest provider action, by group ID.
 	lastAction map[string]capacity.ActionRecord
+	// liveGroups is each group of the farm, by ID, with its name, as the
+	// last sweep listed them. A counter is added to only for a group here
+	// under that name, so a call finishing after its group was deleted or
+	// renamed makes no series that nothing would delete.
+	liveGroups map[string]string
+	// seriesGroups are the group names that have had a counter added to.
+	// Each sweep deletes the series of those no longer in the farm.
+	seriesGroups map[string]struct{}
 
+	// gate lets provider calls write to the store until shutdown closes it.
+	gate writeGate
 	// calls runs the provider calls. [Scheduler.Run] closes it at shutdown
-	// and waits, briefly, for the calls still running.
+	// and waits, for at most [Scheduler.capacityDrainTimeout], for the calls
+	// still running.
 	calls backgroundCalls
+
+	// newScriptProvider, when set, stands in for the script provider; tests
+	// set it.
+	newScriptProvider func(script.Provider) capacityProvider
+	// drainTimeout, when positive, replaces [Scheduler.capacityDrainTimeout];
+	// tests shorten it.
+	drainTimeout time.Duration
 }
 
-// capacityCallDrainTimeout bounds how long [Scheduler.Run] waits at shutdown
-// for provider calls still running: the longest a wake_on_lan call takes,
-// plus a little.
-const capacityCallDrainTimeout = controlRequestTimeout + time.Second
+// wolCallBound bounds one wake_on_lan call: a wake waiting out a relay that
+// does not answer and then sending the packets itself, followed by a retire
+// waiting out its reply. The second control timeout covers the direct send
+// with room to spare.
+const wolCallBound = relayRequestTimeout + 2*controlRequestTimeout
+
+// capacityDrainMargin is added to the longest provider call at shutdown.
+const capacityDrainMargin = time.Second
+
+// capacityDrainTimeout bounds how long [Scheduler.Run] waits at shutdown for
+// provider calls still running: the longest one provider action can take (a
+// wake_on_lan call, or the longest-running configured script, killed at its
+// timeout), plus a margin. A script call that chains actions (a list and then
+// a retire of what it found) can outlast it; it is then cut off between
+// actions and its later results are not applied.
+func (s *Scheduler) capacityDrainTimeout() time.Duration {
+	if d := s.capState.act.drainTimeout; d > 0 {
+		return d
+	}
+	longest := wolCallBound
+	for _, p := range s.cfg.ScriptProviders {
+		longest = max(longest, p.MaxRunTime())
+	}
+	return longest + capacityDrainMargin
+}
+
+// writeGate lets provider calls write to the store until it is closed.
+// Closing it waits for a write already under way, so once close returns no
+// provider call writes again.
+type writeGate struct {
+	mu     sync.RWMutex
+	closed bool
+}
+
+// do runs f, which writes to the store, and reports true, or runs nothing and
+// reports false once the gate is closed. f must not call do.
+func (g *writeGate) do(f func()) bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	if g.closed {
+		return false
+	}
+	f()
+	return true
+}
+
+func (g *writeGate) close() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.closed = true
+}
+
+func (g *writeGate) isClosed() bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.closed
+}
 
 // powerManaged reports whether the farm's capacity groups may have moved a
 // worker's power state, as the last sweep found: a group whose provider acts,
@@ -189,7 +294,7 @@ func (s *Scheduler) expireCapacityTransitions(
 				replaceMember(members, g.ID, w)
 			}
 			if len(failed) > 0 {
-				s.metrics.CapacityBootTimeoutsTotal.WithLabelValues(g.Name).Add(float64(len(failed)))
+				s.countCapacity(g, func() { s.metrics.CapacityBootTimeoutsTotal.WithLabelValues(g.Name).Add(float64(len(failed))) })
 				s.recordLastAction(g.ID, capacity.ActionRecord{
 					Action: actionWake, Result: resultExpired, Message: memberMessage(failed[len(failed)-1].ID, reason), At: now,
 				})
@@ -206,7 +311,11 @@ func (s *Scheduler) expireCapacityTransitions(
 				s.logger.WarnContext(ctx, "scheduler: capacity group member did not retire; it is awake again",
 					slog.String("group", g.Name), slog.String("worker_id", id), slog.String("reason", reason))
 				setMemberPower(members, g.ID, id, store.PowerAwake, now, reason)
-				s.metrics.CapacityActionsTotal.WithLabelValues(g.Name, actionRetire, resultExpired).Inc()
+			}
+			if len(expired) > 0 {
+				s.countCapacity(g, func() {
+					s.metrics.CapacityActionsTotal.WithLabelValues(g.Name, actionRetire, resultExpired).Add(float64(len(expired)))
+				})
 			}
 			if len(expired) > 0 {
 				s.recordLastAction(g.ID, capacity.ActionRecord{
@@ -251,12 +360,14 @@ func setMemberPower(members map[string][]store.Worker, groupID, workerID string,
 
 // actuateCapacity acts on the evaluation of groups, the enabled groups, in
 // statuses order, with sweepMu held. members holds every group's members by
-// group ID. Each status's LastAction is filled when it is published
-// ([Scheduler.publishCapacity]), so a call that finishes meanwhile is not
-// lost. It returns true when a write was fenced, and the sweep stops.
+// group ID, and records the launch records read for the sweep. A sized script
+// group's status gets its Requested and Degraded here; each status's
+// LastAction is filled when it is published ([Scheduler.publishCapacity]), so
+// a call that finishes meanwhile is not lost. It returns true when a write was
+// fenced, and the sweep stops.
 func (s *Scheduler) actuateCapacity(
 	ctx context.Context, now time.Time, groups []store.CapacityGroup, members map[string][]store.Worker,
-	statuses []capacity.Status,
+	statuses []capacity.Status, records launchRecords,
 ) bool {
 	act := &s.capState.act
 	act.mu.Lock()
@@ -265,12 +376,51 @@ func (s *Scheduler) actuateCapacity(
 	act.unconfigured = keepGroups(act.unconfigured, groups)
 	for i, g := range groups {
 		if p, ok := s.groupProvider(ctx, now, g); ok {
-			if s.actOnGroup(ctx, now, g, p, members[g.ID], statuses[i]) {
+			if s.actOnGroup(ctx, now, g, p, members[g.ID], &statuses[i], records) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// pruneCapacitySeries records groups, the farm's, as the groups a counter may
+// be added to, and deletes every series of a group name that had a counter
+// and is no longer among them: a group deleted or renamed, whether or not it
+// was ever evaluated.
+func (s *Scheduler) pruneCapacitySeries(groups []store.CapacityGroup) {
+	act := &s.capState.act
+	act.mu.Lock()
+	defer act.mu.Unlock()
+	live := make(map[string]string, len(groups))
+	names := make(map[string]bool, len(groups))
+	for _, g := range groups {
+		live[g.ID] = g.Name
+		names[g.Name] = true
+	}
+	act.liveGroups = live
+	for name := range act.seriesGroups {
+		if !names[name] {
+			s.deleteCapacitySeries(name)
+			delete(act.seriesGroups, name)
+		}
+	}
+}
+
+// countCapacity runs inc, which adds to one of g's counters, unless g is no
+// longer in the farm under g.Name (see actuatorState.liveGroups).
+func (s *Scheduler) countCapacity(g store.CapacityGroup, inc func()) {
+	act := &s.capState.act
+	act.mu.Lock()
+	defer act.mu.Unlock()
+	if name, ok := act.liveGroups[g.ID]; !ok || name != g.Name {
+		return
+	}
+	if act.seriesGroups == nil {
+		act.seriesGroups = map[string]struct{}{}
+	}
+	act.seriesGroups[g.Name] = struct{}{}
+	inc()
 }
 
 // groupProvider returns g's provider, or false when g does not act: its
@@ -286,9 +436,7 @@ func (s *Scheduler) groupProvider(ctx context.Context, now time.Time, g store.Ca
 		s.noteUnconfiguredScript(ctx, now, g, name)
 		return boundProvider{}, false
 	default:
-		// A configured script provider is not implemented yet: it does not
-		// act.
-		return boundProvider{}, false
+		return boundProvider{capacityProvider: s.newScriptProvider(name, s.cfg.ScriptProviders[name]), kind: providerKindScript}, true
 	}
 }
 
@@ -319,10 +467,12 @@ func (s *Scheduler) noteUnconfiguredScript(ctx context.Context, now time.Time, g
 }
 
 // actOnGroup records g's wake and retire candidates as waking and retiring,
+// applies a sized script group's launch record (see [Scheduler.planLaunches]),
 // then sends the provider every intent of g this process has not sent. It
 // returns true when a write was fenced.
 func (s *Scheduler) actOnGroup(
-	ctx context.Context, now time.Time, g store.CapacityGroup, p boundProvider, members []store.Worker, st capacity.Status,
+	ctx context.Context, now time.Time, g store.CapacityGroup, p boundProvider, members []store.Worker, st *capacity.Status,
+	records launchRecords,
 ) bool {
 	moved := false
 	if len(st.WakeCandidates) > 0 {
@@ -361,22 +511,37 @@ func (s *Scheduler) actOnGroup(
 		}
 		members = fresh
 	}
-	s.dispatchIntents(ctx, now, g, p, members)
+	var gc groupCall
+	if p.kind == providerKindScript && g.Kind == store.CapacityGroupSized {
+		var fenced bool
+		if gc, fenced = s.planLaunches(ctx, now, g, st, records); fenced {
+			return true
+		}
+	}
+	s.dispatchIntents(ctx, now, g, p, members, gc)
 	return false
 }
 
+// capacityCall is everything one provider call for a group does, in order.
+type capacityCall struct {
+	wake, retire []store.Worker
+	group        groupCall
+}
+
 // dispatchIntents starts one provider call for g, unless one is running, with
-// every waking or retiring member whose intent this process has not sent. A
-// disabled member is never sent anything, and a retiring one only while it
-// is online to answer. Each intent is recorded before the call starts.
+// every waking or retiring member whose intent this process has not sent and
+// the group-level requests gc carries. A disabled member is never sent
+// anything, and a retiring one only while it is online to answer. Each intent
+// is recorded before the call starts.
 func (s *Scheduler) dispatchIntents(
-	ctx context.Context, now time.Time, g store.CapacityGroup, p boundProvider, members []store.Worker,
+	ctx context.Context, now time.Time, g store.CapacityGroup, p boundProvider, members []store.Worker, gc groupCall,
 ) {
 	act := &s.capState.act
 	if act.isInFlight(g.ID) {
 		return
 	}
-	var wake, retire []store.Worker
+	c := capacityCall{group: gc}
+	keys := slices.Clone(gc.keys)
 	for _, w := range members {
 		if w.Disabled {
 			continue
@@ -387,19 +552,22 @@ func (s *Scheduler) dispatchIntents(
 		}
 		switch {
 		case w.PowerState == store.PowerWaking:
-			wake = append(wake, w)
+			c.wake = append(c.wake, w)
 		case w.PowerState == store.PowerRetiring && w.Status == store.WorkerStatusOnline:
-			retire = append(retire, w)
+			c.retire = append(c.retire, w)
 		default:
 			continue
 		}
-		if act.dispatched == nil {
-			act.dispatched = map[intentKey]struct{}{}
-		}
-		act.dispatched[key] = struct{}{}
+		keys = append(keys, key)
 	}
-	if len(wake) == 0 && len(retire) == 0 {
+	if len(keys) == 0 {
 		return
+	}
+	if act.dispatched == nil {
+		act.dispatched = map[intentKey]struct{}{}
+	}
+	for _, k := range keys {
+		act.dispatched[k] = struct{}{}
 	}
 	act.setInFlight(g.ID, true)
 	// The call keeps ctx's values, the leader epoch among them, so its
@@ -407,7 +575,7 @@ func (s *Scheduler) dispatchIntents(
 	callCtx := context.WithoutCancel(ctx)
 	if !act.calls.Go(func() {
 		defer act.setInFlight(g.ID, false)
-		s.runCapacityCall(callCtx, now, g, p, wake, retire)
+		s.runCapacityCall(callCtx, now, g, p, c)
 	}) {
 		act.setInFlight(g.ID, false)
 	}
@@ -415,29 +583,30 @@ func (s *Scheduler) dispatchIntents(
 
 // memberIntent is w's current intent key.
 func memberIntent(w store.Worker) intentKey {
-	k := intentKey{workerID: w.ID, state: w.PowerState}
+	k := intentKey{subject: "worker:" + w.ID, intent: string(w.PowerState)}
 	if w.PowerStateAt != nil {
-		k.stateAt = w.PowerStateAt.UnixNano()
+		k.at = w.PowerStateAt.UnixNano()
 	}
 	return k
 }
 
-// runCapacityCall calls p to wake and to retire members of g, on a goroutine
-// of its own, and applies the results. now is the tick that dispatched it,
-// which stamps every record and write it makes.
-func (s *Scheduler) runCapacityCall(
-	ctx context.Context, now time.Time, g store.CapacityGroup, p boundProvider, wake, retire []store.Worker,
-) {
-	if len(wake) > 0 {
+// runCapacityCall calls p for c, on a goroutine of its own, and applies the
+// results: the wakes, the retirements, then the group-level requests. A call
+// stops between steps once this server is deposed or shutdown has cut it off.
+// now is the tick that dispatched it, which stamps every record and write it
+// makes.
+func (s *Scheduler) runCapacityCall(ctx context.Context, now time.Time, g store.CapacityGroup, p boundProvider, c capacityCall) {
+	if len(c.wake) > 0 {
 		s.logger.InfoContext(ctx, "scheduler: capacity provider waking members",
-			slog.String("group", g.Name), slog.Any("worker_ids", workerIDs(wake)))
-		s.applyWakeResults(ctx, now, g, wake, p.wake(ctx, g, wake))
+			slog.String("group", g.Name), slog.Any("worker_ids", workerIDs(c.wake)))
+		s.applyWakeResults(ctx, now, g, c.wake, p.wake(ctx, g, c.wake))
 	}
-	if len(retire) > 0 {
+	if len(c.retire) > 0 && s.mayActOn() {
 		s.logger.InfoContext(ctx, "scheduler: capacity provider retiring members",
-			slog.String("group", g.Name), slog.String("action", g.RetireAction), slog.Any("worker_ids", workerIDs(retire)))
-		s.applyRetireResults(ctx, now, g, p.kind, retire, p.retire(ctx, g, retire))
+			slog.String("group", g.Name), slog.String("action", g.RetireAction), slog.Any("worker_ids", workerIDs(c.retire)))
+		s.applyRetireResults(ctx, now, g, p.kind, c.retire, p.retire(ctx, g, c.retire))
 	}
+	s.runGroupCall(ctx, now, g, p, c.group)
 }
 
 // applyWakeResults records each wake result. A woken member is already
@@ -456,10 +625,13 @@ func (s *Scheduler) applyWakeResults(
 }
 
 // applyRetireResults records each retire result and applies it through a
-// fenced write: a refusal or a timeout puts the member back to awake at once;
-// success is applied as the provider's kind says ([Scheduler.retireAccepted]);
+// fenced write: success as the provider's kind says
+// ([Scheduler.retireAccepted]), and a failure that the kind says ends the
+// retirement ([abortsRetirement]) by putting the member back to awake at once;
 // any other failure leaves the member retiring for the boot timeout to
-// settle. A fenced write stops it.
+// settle. A sized script group's launch record then drops by the members the
+// script retired. A fenced write stops it, and so does shutdown closing the
+// actuator's gate.
 func (s *Scheduler) applyRetireResults(
 	ctx context.Context, now time.Time, g store.CapacityGroup, kind providerKind, members []store.Worker,
 	results map[string]actionResult,
@@ -467,32 +639,59 @@ func (s *Scheduler) applyRetireResults(
 	if s.deposed() {
 		return
 	}
+	retired := 0
 	for _, w := range members {
 		r := resultFor(results, w.ID)
 		s.recordAction(ctx, now, g, actionRetire, w.ID, r)
-		var err error
-		switch r.Result {
-		case resultOK:
-			err = s.retireAccepted(ctx, now, kind, g, w)
-		case resultRefused, resultTimeout:
-			_, err = s.store.AbortRetirement(ctx, w.ID, now, r.Message)
+		if r.Result == resultOK {
+			retired++
 		}
-		if s.stopIfFenced(ctx, err) {
+		var err error
+		open := s.capState.act.gate.do(func() {
+			switch {
+			case r.Result == resultOK:
+				err = s.retireAccepted(ctx, now, kind, g, w)
+			case abortsRetirement(kind, r.Result):
+				_, err = s.store.AbortRetirement(ctx, w.ID, now, r.Message)
+			}
+		})
+		if !open || s.stopIfFenced(ctx, err) {
 			return
 		}
 		s.warnUnlessStopped(ctx, err, "scheduler: capacity provider: apply retire result failed",
 			slog.String("group", g.Name), slog.String("worker_id", w.ID))
 	}
+	if kind == providerKindScript && g.Kind == store.CapacityGroupSized && retired > 0 {
+		s.lowerRequested(ctx, now, g, retired)
+	}
+}
+
+// abortsRetirement reports whether a retire result of a provider of kind puts
+// the member back to awake at once. A worker refusing or not answering a
+// wake_on_lan sleep keeps running, but a failure to deliver the command (no
+// responders, an unreadable reply) may mean it already left, so that waits
+// for the boot timeout, and for a deregistration that finishes the retirement
+// meanwhile. A script that did not carry out a retire has left the machine
+// running, whatever the reason.
+func abortsRetirement(kind providerKind, result string) bool {
+	if kind == providerKindScript {
+		return result != resultOK
+	}
+	return result == resultRefused || result == resultTimeout
 }
 
 // retireAccepted applies a provider's success at retiring w, by provider
 // kind. A wake_on_lan member deregisters as it goes to sleep or shuts down,
 // and that deregistration finishes its retirement
-// ([Scheduler.handleWorkerDeregister]), so nothing is written for it here.
-func (*Scheduler) retireAccepted(_ context.Context, _ time.Time, kind providerKind, _ store.CapacityGroup, _ store.Worker) error {
+// ([Scheduler.handleWorkerDeregister]), so nothing is written for it here. A
+// script has stopped the machine, so its retirement finishes now
+// ([Scheduler.finishProviderRetirement]).
+func (s *Scheduler) retireAccepted(ctx context.Context, now time.Time, kind providerKind, g store.CapacityGroup, w store.Worker) error {
 	switch kind {
 	case providerKindWakeOnLAN:
 		return nil
+	case providerKindScript:
+		return s.finishProviderRetirement(ctx, now, g, w)
 	default:
 		return fmt.Errorf("no rule applies a retirement accepted by a %s provider", kind)
 	}
@@ -509,19 +708,36 @@ func resultFor(results map[string]actionResult, id string) actionResult {
 // recordAction counts one member's action result, records it as g's last
 // action and logs it: a failure at WARN.
 func (s *Scheduler) recordAction(ctx context.Context, now time.Time, g store.CapacityGroup, action, workerID string, r actionResult) {
-	s.metrics.CapacityActionsTotal.WithLabelValues(g.Name, action, r.Result).Inc()
+	s.countCapacity(g, func() { s.metrics.CapacityActionsTotal.WithLabelValues(g.Name, action, r.Result).Inc() })
 	s.recordLastAction(g.ID, capacity.ActionRecord{
 		Action: action, Result: r.Result, Message: memberMessage(workerID, r.Message), At: now,
 	})
-	attrs := []any{
-		slog.String("group", g.Name), slog.String("worker_id", workerID), slog.String("action", action),
-		slog.String("result", r.Result), slog.String("message", r.Message),
+	s.logAction(ctx, r, slog.String("group", g.Name), slog.String("worker_id", workerID), slog.String("action", action),
+		slog.String("result", r.Result), slog.String("message", r.Message))
+}
+
+// recordGroupAction counts a group-level action result (a grow, a list, an
+// orphan retirement), records it as g's last action and logs it: a failure
+// at WARN.
+func (s *Scheduler) recordGroupAction(ctx context.Context, now time.Time, g store.CapacityGroup, action string, r actionResult) {
+	s.countCapacity(g, func() { s.metrics.CapacityActionsTotal.WithLabelValues(g.Name, action, r.Result).Inc() })
+	s.recordLastAction(g.ID, capacity.ActionRecord{Action: action, Result: r.Result, Message: r.Message, At: now})
+	s.logAction(ctx, r, slog.String("group", g.Name), slog.String("action", action),
+		slog.String("result", r.Result), slog.String("message", r.Message))
+}
+
+// logAction logs a provider action's result r with attrs: ok at INFO, any
+// other result at WARN.
+func (s *Scheduler) logAction(ctx context.Context, r actionResult, attrs ...slog.Attr) {
+	args := make([]any, len(attrs))
+	for i, a := range attrs {
+		args[i] = a
 	}
 	if r.Result == resultOK {
-		s.logger.InfoContext(ctx, "scheduler: capacity provider action done", attrs...)
+		s.logger.InfoContext(ctx, "scheduler: capacity provider action done", args...)
 		return
 	}
-	s.logger.WarnContext(ctx, "scheduler: capacity provider action did not succeed", attrs...)
+	s.logger.WarnContext(ctx, "scheduler: capacity provider action did not succeed", args...)
 }
 
 // memberMessage prefixes msg with the member it concerns.
@@ -590,12 +806,22 @@ func workerIDs(ws []store.Worker) []string {
 	return out
 }
 
-// closeCapacityCalls refuses new provider calls and waits, briefly, for those
-// running, at shutdown.
+// closeCapacityCalls refuses new provider calls, waits for those running for
+// at most [Scheduler.capacityDrainTimeout], and then closes the actuator's
+// write gate, which waits for a write already under way. After it returns no
+// provider call writes to the store, so none can reach a store the server
+// closes next: a call still running is logged once here and goes on writing
+// nothing and starting no further provider action. Its request was recorded
+// before it was made, so the next leader repeats it, or the boot timeout
+// settles what it left.
 func (s *Scheduler) closeCapacityCalls(ctx context.Context) {
-	if !s.capState.act.calls.Close(capacityCallDrainTimeout) {
+	act := &s.capState.act
+	wait := s.capacityDrainTimeout()
+	finished := act.calls.Close(wait)
+	act.gate.close()
+	if !finished {
 		s.logger.WarnContext(ctx, "scheduler: a capacity provider call was still running at shutdown; "+
-			"its member is settled by the next leader's boot timeout",
-			slog.Duration("waited", capacityCallDrainTimeout))
+			"its result is not applied, and the next leader repeats the request it recorded",
+			slog.Duration("waited", wait))
 	}
 }

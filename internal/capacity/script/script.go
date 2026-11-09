@@ -12,8 +12,14 @@
 //
 //   - `wake`: the `members` to power on. Each member names its `worker_id` and, when known, its
 //     `hostname`, `ip_address`, `instance_id` and `interfaces` (`name`, `mac`, `addrs`).
-//   - `grow`: `desired` and `current`, the member counts the policy wants and the group has.
-//   - `retire`: the `members` to remove.
+//   - `grow`: `desired`, the total number of machines the group should have, and `current`, the
+//     size sqi last asked for (or its registered members, when more). The request is absolute:
+//     set the backend's desired size to `desired`. A request repeated after a failover carries
+//     `current` equal to `desired`.
+//   - `retire`: the `members` to remove. A member that never registered (an orphaned instance) is
+//     named by its `instance_id` alone, with no `worker_id`. A script for a sized group must also
+//     lower the backend's desired size by the members it removes (AWS:
+//     `--should-decrement-desired-capacity`), or the backend starts replacements.
 //   - `list`: nothing further. The script reports the instances the group's backend currently runs.
 //
 // A response carries `result`, `message` and, for `list`, `instance_ids`. `result` is one of:
@@ -103,6 +109,16 @@ type Provider struct {
 	Timeout time.Duration
 }
 
+// MaxRunTime is the longest one [Run] of p can take: its timeout, and then the wait for a killed
+// script's pipes to close.
+func (p Provider) MaxRunTime() time.Duration {
+	timeout := p.Timeout
+	if timeout <= 0 {
+		timeout = defaultTimeout
+	}
+	return timeout + waitDelay
+}
+
 // GroupRef identifies the capacity group an action concerns.
 type GroupRef struct {
 	ID   string `json:"id"`
@@ -110,9 +126,10 @@ type GroupRef struct {
 	Kind string `json:"kind"`
 }
 
-// Member is a group member as a script sees it.
+// Member is a group member as a script sees it. A retire of an instance that never registered
+// names only its InstanceID.
 type Member struct {
-	WorkerID   string         `json:"worker_id"`
+	WorkerID   string         `json:"worker_id,omitempty"`
 	Hostname   string         `json:"hostname,omitempty"`
 	IPAddress  string         `json:"ip_address,omitempty"`
 	InstanceID string         `json:"instance_id,omitempty"`
