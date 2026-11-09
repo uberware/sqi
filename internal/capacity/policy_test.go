@@ -31,11 +31,31 @@ func canRun(w store.Worker, item DemandItem) bool {
 }
 
 func worker(id string, cpus int, tags ...string) store.Worker {
-	w := store.Worker{ID: id, CPUCount: cpus, Status: store.WorkerStatusOnline, Tags: map[string]string{}}
+	w := store.Worker{
+		ID: id, CPUCount: cpus, Status: store.WorkerStatusOnline, PowerState: store.PowerAwake,
+		Tags: map[string]string{},
+	}
 	for _, t := range tags {
 		w.Tags[t] = "1"
 	}
 	return w
+}
+
+// power puts w in the given power state, entered ago before now.
+func power(w store.Worker, state store.PowerState, ago time.Duration) store.Worker {
+	at := now.Add(-ago)
+	w.PowerState, w.PowerStateAt = state, &at
+	return w
+}
+
+// sleeper is an offline member asleep since ago before now.
+func sleeper(w store.Worker, ago time.Duration) Member {
+	return Member{Worker: power(offline(w), store.PowerAsleep, ago)}
+}
+
+// waking is an offline member woken ago before now.
+func waking(w store.Worker, ago time.Duration) Member {
+	return Member{Worker: power(offline(w), store.PowerWaking, ago)}
 }
 
 func offline(w store.Worker) store.Worker {
@@ -1053,5 +1073,392 @@ func TestEvaluate_BrokenImageGrowthIsBoundedByMax(t *testing.T) {
 	}
 	if len(members) != 20 {
 		t.Errorf("%d machines arrived, want the group to stop at max 20", len(members))
+	}
+}
+
+// assertWake checks a Status's wake candidates, in order.
+func assertWake(t *testing.T, st Status, want ...string) {
+	t.Helper()
+	if !slices.Equal(st.WakeCandidates, want) {
+		t.Errorf("%s: wake candidates %v, want %v", st.GroupName, st.WakeCandidates, want)
+	}
+}
+
+func TestEvaluate_WakingIsPendingCapacity(t *testing.T) {
+	fourWaking := []Member{
+		waking(worker("w1", 8), time.Minute), waking(worker("w2", 8), time.Minute),
+		waking(worker("w3", 8), time.Minute), waking(worker("w4", 8), time.Minute),
+		sleeper(worker("s1", 8), time.Hour), sleeper(worker("s2", 8), time.Hour),
+		sleeper(worker("s3", 8), time.Hour), sleeper(worker("s4", 8), time.Hour),
+	}
+	tests := []struct {
+		name       string
+		members    []Member
+		demand     DemandItem
+		wantDemand int
+		wantWake   []string
+	}{
+		{"four waking members cover the demand", fourWaking, item("r", "q1", 8, 4, ""), 0, nil},
+		{"the rest wakes beside them", fourWaking, item("r", "q1", 8, 6, ""), 16, []string{"s1", "s2"}},
+		{
+			"a waking member absorbs only what it can run",
+			[]Member{waking(worker("w1", 8), time.Minute), sleeper(worker("s1", 8, "houdini"), time.Hour)},
+			item("r", "q1", 8, 1, "houdini"), 8,
+			[]string{"s1"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := named("onprem", 10, 0, 10, 10)
+			st := Evaluate(snapshot([]store.CapacityGroup{g}, map[string][]Member{"onprem": tc.members}, nil, tc.demand))[0]
+			if st.DemandCores != tc.wantDemand {
+				t.Errorf("demand %d, want %d", st.DemandCores, tc.wantDemand)
+			}
+			assertWake(t, st, tc.wantWake...)
+		})
+	}
+
+	t.Run("counts by power state", func(t *testing.T) {
+		g := named("onprem", 10, 0, 10, 10)
+		st := Evaluate(snapshot([]store.CapacityGroup{g}, map[string][]Member{"onprem": fourWaking}, nil))[0]
+		if st.Waking != 4 || st.Asleep != 4 || st.Retiring != 0 || st.WakeFailed != 0 {
+			t.Errorf("waking/asleep/retiring/wake_failed = %d/%d/%d/%d, want 4/4/0/0",
+				st.Waking, st.Asleep, st.Retiring, st.WakeFailed)
+		}
+		if st.OnlineMembers != 0 || st.OfflineMembers != 8 {
+			t.Errorf("online/offline = %d/%d, want 0/8", st.OnlineMembers, st.OfflineMembers)
+		}
+	})
+}
+
+func TestEvaluate_WakeCandidatesOnlyCapable(t *testing.T) {
+	members := []Member{
+		sleeper(worker("a", 8), time.Hour),
+		sleeper(worker("b", 8, "houdini"), time.Hour),
+		sleeper(worker("c", 8, "houdini"), time.Hour),
+		busy(worker("m", 8), 8),
+	}
+	tests := []struct {
+		name   string
+		demand []DemandItem
+		want   brief
+		wake   []string
+	}{
+		{"one machine's worth", []DemandItem{item("r", "q1", 8, 1, "houdini")}, brief{8, 2, nil}, []string{"b"}},
+		{"more than the capable members", []DemandItem{item("r", "q1", 8, 5, "houdini")}, brief{16, 3, nil}, []string{"b", "c"}},
+		{
+			// Each step alone fits the two capable members, so together they
+			// ask for three machines; the third is never a member that can
+			// run neither step.
+			"two steps overcounting the capable members",
+			[]DemandItem{item("r1", "q1", 8, 2, "houdini"), item("r2", "q1", 8, 2, "houdini")},
+			brief{24, 4, nil},
+			[]string{"b", "c"},
+		},
+		{"demand no member can run", []DemandItem{item("r", "q1", 8, 1, "nuke")}, brief{0, 1, nil}, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := named("onprem", 10, 0, 10, 10)
+			st := Evaluate(snapshot([]store.CapacityGroup{g}, map[string][]Member{"onprem": members}, nil, tc.demand...))
+			assertBriefs(t, st, tc.want)
+			assertWake(t, st[0], tc.wake...)
+		})
+	}
+}
+
+func TestEvaluate_WakeCandidatesBestFitThenLongestDown(t *testing.T) {
+	heartbeat := func(w store.Worker, ago time.Duration) store.Worker {
+		at := now.Add(-ago)
+		w.LastHeartbeatAt = &at
+		return w
+	}
+	// The mean member is 11 cores: one new machine's worth.
+	members := []Member{
+		sleeper(worker("big", 32), 10*time.Hour),
+		sleeper(worker("b", 8), time.Hour),
+		sleeper(worker("c", 8), 3*time.Hour),
+		{Worker: offline(worker("d", 8))}, // no time down on record
+		sleeper(heartbeat(worker("e", 8), 5*time.Hour), 30*time.Minute),
+		sleeper(worker("f", 8), time.Hour),
+		{Worker: heartbeat(offline(worker("g", 8)), 2*time.Hour)},
+	}
+	all := []string{"d", "e", "c", "g", "b", "f", "big"}
+	tests := []struct {
+		name   string
+		demand DemandItem
+		want   []string
+	}{
+		{"all of them", item("r", "q1", 8, 10, ""), all},
+		{"the first two", item("r", "q1", 8, 2, ""), []string{"d", "e"}},
+		{"only the big machine fits", item("r", "q1", 10, 1, ""), []string{"big"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := named("onprem", 10, 0, 10, 10)
+			st := Evaluate(snapshot([]store.CapacityGroup{g}, map[string][]Member{"onprem": members}, nil, tc.demand))
+			assertWake(t, st[0], tc.want...)
+		})
+	}
+
+	t.Run("input order does not matter", func(t *testing.T) {
+		g := named("onprem", 10, 0, 10, 10)
+		reversed := slices.Clone(members)
+		slices.Reverse(reversed)
+		st := Evaluate(snapshot([]store.CapacityGroup{g}, map[string][]Member{"onprem": reversed}, nil, item("r", "q1", 8, 10, "")))
+		assertWake(t, st[0], all...)
+	})
+}
+
+func TestEvaluate_WakeFailedBackoff(t *testing.T) {
+	tests := []struct {
+		name string
+		ago  time.Duration // since the wake failed; BootTimeout is 10m
+		want []string
+	}{
+		{"just inside the backoff", 20*time.Minute - time.Second, nil},
+		{"exactly at the backoff", 20 * time.Minute, []string{"m"}},
+		{"just past the backoff", 20*time.Minute + time.Second, []string{"m"}},
+		{"a clock that went backwards holds", -time.Minute, nil},
+		{"a clock far behind holds no longer than the backoff", -time.Hour, []string{"m"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := named("onprem", 10, 0, 10, 10)
+			members := []Member{{Worker: power(offline(worker("m", 8)), store.PowerWakeFailed, tc.ago)}}
+			st := Evaluate(snapshot([]store.CapacityGroup{g}, map[string][]Member{"onprem": members}, nil,
+				item("r", "q1", 8, 1, "")))[0]
+			assertWake(t, st, tc.want...)
+			if st.DemandCores != 8*len(tc.want) {
+				t.Errorf("demand %d, want %d", st.DemandCores, 8*len(tc.want))
+			}
+			if st.WakeFailed != 1 {
+				t.Errorf("wake_failed count %d, want 1", st.WakeFailed)
+			}
+		})
+	}
+}
+
+func TestEvaluate_RetiringNeitherAbsorbsNorCounts(t *testing.T) {
+	retiringIdle := func(id string) Member {
+		return idle(power(worker(id, 8), store.PowerRetiring, time.Minute), time.Hour)
+	}
+	tests := []struct {
+		name         string
+		group        store.CapacityGroup
+		members      []Member
+		demand       []DemandItem
+		want         brief
+		wake         []string
+		wantRetiring int
+	}{
+		{
+			name:         "sized: a retiring member's free cores take nothing",
+			group:        sized("cloud", 1, 8, 0, 10, 10),
+			members:      []Member{retiringIdle("r"), busy(worker("m", 8), 8)},
+			demand:       []DemandItem{item("a", "q1", 8, 1, "")},
+			want:         brief{8, 2, nil},
+			wantRetiring: 1,
+		},
+		{
+			name:  "named: a retiring member is neither capacity nor wakeable",
+			group: named("onprem", 10, 0, 10, 10),
+			members: []Member{
+				retiringIdle("r"), busy(worker("m", 8), 8), sleeper(worker("s", 8), time.Hour),
+				{Worker: power(offline(worker("o", 8)), store.PowerRetiring, time.Minute)},
+			},
+			demand:       []DemandItem{item("a", "q1", 8, 1, "")},
+			want:         brief{8, 2, nil},
+			wake:         []string{"s"},
+			wantRetiring: 2,
+		},
+		{
+			name:         "a retiring member is not kept",
+			group:        sized("cloud", 1, 8, 0, 10, 10),
+			members:      []Member{retiringIdle("r"), idle(worker("a", 8), time.Hour)},
+			want:         brief{0, 0, []string{"a"}},
+			wantRetiring: 1,
+		},
+		{
+			name:         "a retiring member does not count toward min",
+			group:        sized("cloud", 1, 8, 1, 10, 10),
+			members:      []Member{retiringIdle("r"), idle(worker("a", 8), time.Hour)},
+			want:         brief{0, 1, nil},
+			wantRetiring: 1,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := snapshot([]store.CapacityGroup{tc.group}, map[string][]Member{tc.group.ID: tc.members}, nil, tc.demand...)
+			st := Evaluate(s)
+			assertBriefs(t, st, tc.want)
+			assertWake(t, st[0], tc.wake...)
+			if st[0].Retiring != tc.wantRetiring {
+				t.Errorf("retiring count %d, want %d", st[0].Retiring, tc.wantRetiring)
+			}
+			live := 0
+			for _, m := range tc.members {
+				if online(m.Worker) {
+					live++
+				}
+			}
+			if st[0].OnlineMembers != live {
+				t.Errorf("online members %d, want %d: liveness counts retiring members", st[0].OnlineMembers, live)
+			}
+		})
+	}
+}
+
+func TestEvaluate_RetireCandidatesAwakeOnly(t *testing.T) {
+	idleIn := func(id string, state store.PowerState) Member {
+		return idle(power(worker(id, 8), state, time.Minute), time.Hour)
+	}
+	members := []Member{
+		idleIn("a", store.PowerAwake), idleIn("b", store.PowerAsleep), idleIn("c", store.PowerWakeFailed),
+		idleIn("d", store.PowerWaking), idleIn("e", store.PowerRetiring),
+	}
+	for _, g := range []store.CapacityGroup{sized("cloud", 1, 8, 0, 10, 10), named("onprem", 1, 0, 10, 10)} {
+		t.Run(string(g.Kind), func(t *testing.T) {
+			st := Evaluate(snapshot([]store.CapacityGroup{g}, map[string][]Member{g.ID: members}, nil))
+			// Five online, one retiring: four active, of which only a can go.
+			assertBriefs(t, st, brief{0, 3, []string{"a"}})
+		})
+	}
+}
+
+func TestEvaluate_WakesThatNeverRegisterCostOneStep(t *testing.T) {
+	g := named("onprem", 10, 0, 20, 5)
+	members := make([]Member, 10)
+	for i := range members {
+		members[i] = sleeper(worker(fmt.Sprintf("n%d", i), 8), time.Hour)
+	}
+	s := snapshot([]store.CapacityGroup{g}, map[string][]Member{"onprem": members}, nil, item("r", "q1", 8, 10, ""))
+	st := Evaluate(s)[0]
+	assertWake(t, st, "n0", "n1", "n2", "n3", "n4")
+	if st.DesiredMachines != 5 {
+		t.Fatalf("first evaluation desired %d, want 5", st.DesiredMachines)
+	}
+
+	// The actuator marks them waking; none ever registers.
+	for i := range 5 {
+		members[i].Worker = power(members[i].Worker, store.PowerWaking, 0)
+	}
+	for _, d := range []time.Duration{time.Minute, 9 * time.Minute, 11 * time.Minute, 19 * time.Minute} {
+		s.Now = now.Add(d)
+		st := Evaluate(s)[0]
+		if len(st.WakeCandidates) != 0 || st.DesiredMachines != 5 || st.Waking != 5 {
+			t.Fatalf("at +%v: candidates %v desired %d waking %d, want none, 5, 5",
+				d, st.WakeCandidates, st.DesiredMachines, st.Waking)
+		}
+	}
+
+	// Expiry marks them failed at +20m; the next step wakes the others.
+	for i := range 5 {
+		members[i].Worker = power(members[i].Worker, store.PowerWakeFailed, -20*time.Minute)
+	}
+	s.Now = now.Add(21 * time.Minute)
+	st = Evaluate(s)[0]
+	assertWake(t, st, "n5", "n6", "n7", "n8", "n9")
+	if st.DesiredMachines != 5 {
+		t.Errorf("after the failures desired %d, want 5", st.DesiredMachines)
+	}
+}
+
+func TestEvaluate_DisabledMemberNeverAWakeCandidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		members []Member
+		demand  DemandItem
+		want    []string
+	}{
+		{
+			name: "a disabled sleeper, though the best fit",
+			members: []Member{
+				{Worker: disabled(power(offline(worker("d", 4, "houdini")), store.PowerAsleep, 5*time.Hour))},
+				sleeper(worker("m", 8, "houdini"), time.Hour),
+			},
+			demand: item("r", "q1", 4, 1, "houdini"),
+			want:   []string{"m"},
+		},
+		{
+			name: "a disabled waking member is not pending capacity",
+			members: []Member{
+				{Worker: disabled(power(offline(worker("d", 8, "houdini")), store.PowerWaking, time.Minute))},
+				sleeper(worker("m", 8, "houdini"), time.Hour),
+			},
+			demand: item("r", "q1", 8, 1, "houdini"),
+			want:   []string{"m"},
+		},
+		{
+			name: "only disabled members",
+			members: []Member{
+				{Worker: disabled(power(offline(worker("d", 8, "houdini")), store.PowerAsleep, time.Hour))},
+			},
+			demand: item("r", "q1", 8, 1, "houdini"),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := named("onprem", 10, 0, 10, 10)
+			st := Evaluate(snapshot([]store.CapacityGroup{g}, map[string][]Member{"onprem": tc.members}, nil, tc.demand))
+			assertWake(t, st[0], tc.want...)
+		})
+	}
+}
+
+func TestEvaluate_MinWakesAnyWakeableMember(t *testing.T) {
+	tests := []struct {
+		name    string
+		group   store.CapacityGroup
+		members []Member
+		demand  []DemandItem
+		want    brief
+		wake    []string
+	}{
+		{
+			name:  "no demand",
+			group: named("onprem", 10, 2, 10, 10),
+			members: []Member{
+				sleeper(worker("a", 8), time.Hour), sleeper(worker("b", 8, "houdini"), time.Hour),
+				{Worker: disabled(power(offline(worker("c", 8)), store.PowerAsleep, 5*time.Hour))},
+			},
+			want: brief{0, 2, nil},
+			wake: []string{"a", "b"},
+		},
+		{
+			name:  "capable members first, then any for min",
+			group: named("onprem", 10, 3, 10, 10),
+			members: []Member{
+				sleeper(worker("a", 8), 5*time.Hour),
+				sleeper(worker("b", 8, "houdini"), time.Hour), sleeper(worker("c", 8, "houdini"), time.Hour),
+			},
+			demand: []DemandItem{item("r", "q1", 8, 1, "houdini")},
+			want:   brief{8, 3, nil},
+			wake:   []string{"b", "c", "a"},
+		},
+		{
+			name:  "min already met by waking members",
+			group: named("onprem", 10, 2, 10, 10),
+			members: []Member{
+				waking(worker("w1", 8), time.Minute), waking(worker("w2", 8), time.Minute),
+				sleeper(worker("a", 8), time.Hour),
+			},
+			want: brief{0, 2, nil},
+		},
+		{
+			name:    "a sized group has none",
+			group:   sized("cloud", 1, 8, 2, 10, 10),
+			members: []Member{sleeper(worker("a", 8), time.Hour)},
+			demand:  []DemandItem{item("r", "q1", 8, 1, "")},
+			want:    brief{8, 2, nil},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := snapshot([]store.CapacityGroup{tc.group}, map[string][]Member{tc.group.ID: tc.members}, nil, tc.demand...)
+			st := Evaluate(s)
+			assertBriefs(t, st, tc.want)
+			assertWake(t, st[0], tc.wake...)
+		})
 	}
 }
