@@ -443,39 +443,48 @@ func awsCases() []tc {
 			wantResp: `{"result":"error","message":"desired must be a whole number from 0 to 100000"}`,
 		},
 		{
-			name: "retire a member and skip a foreign instance", script: s, env: env, responses: describe(3),
+			// R27: sqi finishes every member an ok names, so a batch naming an instance of another
+			// group must terminate nothing and answer an error, not skip it.
+			name: "retire a member beside a foreign instance terminates nothing", script: s, env: env, responses: describe(3),
 			request:   request("retire", `"members":[`+member(awsA)+`,`+member(awsForeign)+`]`),
-			wantResp:  `{"result":"ok","message":"terminated 1; 1 not a member, skipped"}`,
-			wantCalls: []string{awsDescribeCall, terminate(awsA)},
+			wantResp:  `{"result":"error","message":"instance ` + awsForeign + ` is not a member of render-asg; nothing was terminated"}`,
+			wantCalls: []string{awsDescribeCall},
+		},
+		{
+			name: "retire a foreign instance named first terminates nothing", script: s, env: env, responses: describe(3),
+			request:   request("retire", `"members":[`+member(awsForeign)+`,`+member(awsA)+`]`),
+			wantResp:  `{"result":"error","message":"instance ` + awsForeign + ` is not a member of render-asg; nothing was terminated"}`,
+			wantCalls: []string{awsDescribeCall},
 		},
 		{
 			name: "retire two members", script: s, env: env, responses: describe(3),
 			request:   request("retire", `"members":[`+member(awsA)+`,`+member(awsB)+`]`),
-			wantResp:  `{"result":"ok","message":"terminated 2; 0 not a member, skipped"}`,
+			wantResp:  `{"result":"ok","message":"terminated 2; 0 already terminating"}`,
 			wantCalls: []string{awsDescribeCall, terminate(awsA), terminate(awsB)},
 		},
 		{
 			name: "retire an orphan named by instance ID alone", script: s, env: env, responses: describe(3),
 			request:   request("retire", `"members":[{"instance_id":"`+awsC+`"}]`),
-			wantResp:  `{"result":"ok","message":"terminated 1; 0 not a member, skipped"}`,
+			wantResp:  `{"result":"ok","message":"terminated 1; 0 already terminating"}`,
 			wantCalls: []string{awsDescribeCall, terminate(awsC)},
 		},
 		{
 			name: "retire a non-member terminates nothing", script: s, env: env, responses: describe(3),
 			request:   request("retire", `"members":[{"instance_id":"`+awsForeign+`"}]`),
-			wantResp:  `{"result":"ok","message":"terminated 0; 1 not a member, skipped"}`,
+			wantResp:  `{"result":"error","message":"instance ` + awsForeign + ` is not a member of render-asg; nothing was terminated"}`,
 			wantCalls: []string{awsDescribeCall},
 		},
 		{
-			name: "retire skips an instance already terminating", script: s, env: env, responses: describe(3),
-			request:   request("retire", `"members":[{"instance_id":"`+awsGone+`"}]`),
-			wantResp:  `{"result":"ok","message":"terminated 0; 1 not a member, skipped"}`,
-			wantCalls: []string{awsDescribeCall},
+			// A re-issued retire finds the instance it terminated before: that is done, not foreign.
+			name: "retire counts an instance already terminating as done", script: s, env: env, responses: describe(3),
+			request:   request("retire", `"members":[`+member(awsA)+`,{"instance_id":"`+awsGone+`"}]`),
+			wantResp:  `{"result":"ok","message":"terminated 1; 1 already terminating"}`,
+			wantCalls: []string{awsDescribeCall, terminate(awsA)},
 		},
 		{
 			name: "retire a duplicate once", script: s, env: env, responses: describe(3),
 			request:   request("retire", `"members":[`+member(awsA)+`,{"instance_id":"`+awsA+`"}]`),
-			wantResp:  `{"result":"ok","message":"terminated 1; 0 not a member, skipped"}`,
+			wantResp:  `{"result":"ok","message":"terminated 1; 0 already terminating"}`,
 			wantCalls: []string{awsDescribeCall, terminate(awsA)},
 		},
 		{
@@ -663,21 +672,29 @@ func gcpCases() []tc {
 			},
 		},
 		{
-			name: "retire members and skip a foreign instance", script: s, env: env, responses: resp("2"),
-			request:   request("retire", `"members":[{"worker_id":"w-1","instance_id":"render-a1b2"},{"instance_id":"other-vm-zzzz"},{"instance_id":"render-c3d4"}]`),
-			wantResp:  `{"result":"ok","message":"deleted 2; 1 not a member, skipped"}`,
+			name: "retire members", script: s, env: env, responses: resp("2"),
+			request:   request("retire", `"members":[{"worker_id":"w-1","instance_id":"render-a1b2"},{"instance_id":"render-c3d4"}]`),
+			wantResp:  `{"result":"ok","message":"deleted 2; 0 already being deleted"}`,
 			wantCalls: []string{list, base + "delete-instances render-mig --instances=render-a1b2,render-c3d4 --zone us-central1-a --quiet"},
+		},
+		{
+			// R27: sqi finishes every member an ok names, so a batch naming an instance of another
+			// group must delete nothing and answer an error, not skip it.
+			name: "retire members beside a foreign instance deletes nothing", script: s, env: env, responses: resp("2"),
+			request:   request("retire", `"members":[{"worker_id":"w-1","instance_id":"render-a1b2"},{"instance_id":"other-vm-zzzz"},{"instance_id":"render-c3d4"}]`),
+			wantResp:  `{"result":"error","message":"instance other-vm-zzzz is not a member of render-mig; nothing was terminated"}`,
+			wantCalls: []string{list},
 		},
 		{
 			name: "retire a non-member deletes nothing", script: s, env: env, responses: resp("2"),
 			request:   request("retire", `"members":[{"instance_id":"other-vm-zzzz"}]`),
-			wantResp:  `{"result":"ok","message":"deleted 0; 1 not a member, skipped"}`,
+			wantResp:  `{"result":"error","message":"instance other-vm-zzzz is not a member of render-mig; nothing was terminated"}`,
 			wantCalls: []string{list},
 		},
 		{
-			name: "retire skips an instance already being deleted", script: s, env: env, responses: resp("2"),
+			name: "retire counts an instance already being deleted as done", script: s, env: env, responses: resp("2"),
 			request:   request("retire", `"members":[{"instance_id":"render-gone"}]`),
-			wantResp:  `{"result":"ok","message":"deleted 0; 1 not a member, skipped"}`,
+			wantResp:  `{"result":"ok","message":"deleted 0; 1 already being deleted"}`,
 			wantCalls: []string{list},
 		},
 		{
@@ -839,20 +856,28 @@ func azureCases() []tc {
 		},
 		{
 			name: "retire by scale-set instance ID", script: s, env: env, responses: resp("2"),
-			request:   request("retire", `"members":[{"worker_id":"w-1","instance_id":"0"},{"instance_id":"1"},{"instance_id":"7"}]`),
-			wantResp:  `{"result":"ok","message":"deleted 2; 1 not a member, skipped"}`,
+			request:   request("retire", `"members":[{"worker_id":"w-1","instance_id":"0"},{"instance_id":"1"},{"instance_id":"3"}]`),
+			wantResp:  `{"result":"ok","message":"deleted 2; 1 already being deleted"}`,
 			wantCalls: []string{list, "az vmss delete-instances" + rg + " --instance-ids 0 1 --only-show-errors"},
+		},
+		{
+			// R27: sqi finishes every member an ok names, so a batch naming an instance the set does
+			// not list must delete nothing and answer an error, not skip it.
+			name: "retire members beside a non-member deletes nothing", script: s, env: env, responses: resp("2"),
+			request:   request("retire", `"members":[{"worker_id":"w-1","instance_id":"0"},{"instance_id":"1"},{"instance_id":"7"}]`),
+			wantResp:  `{"result":"error","message":"instance 7 is not a member of render-vmss; nothing was terminated"}`,
+			wantCalls: []string{list},
 		},
 		{
 			name: "retire a non-member deletes nothing", script: s, env: env, responses: resp("2"),
 			request:   request("retire", `"members":[{"instance_id":"7"}]`),
-			wantResp:  `{"result":"ok","message":"deleted 0; 1 not a member, skipped"}`,
+			wantResp:  `{"result":"error","message":"instance 7 is not a member of render-vmss; nothing was terminated"}`,
 			wantCalls: []string{list},
 		},
 		{
-			name: "retire skips an instance already being deleted", script: s, env: env, responses: resp("2"),
+			name: "retire counts an instance already being deleted as done", script: s, env: env, responses: resp("2"),
 			request:   request("retire", `"members":[{"instance_id":"3"}]`),
-			wantResp:  `{"result":"ok","message":"deleted 0; 1 not a member, skipped"}`,
+			wantResp:  `{"result":"ok","message":"deleted 0; 1 already being deleted"}`,
 			wantCalls: []string{list},
 		},
 		{

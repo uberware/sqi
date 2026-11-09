@@ -29,10 +29,13 @@
 #           "no change: desired <= current size", and changes nothing. A size it cannot read, or
 #           one that is not a whole number, ends the script with a non-zero status and no change.
 #   retire  Deletes each instance named by `members[].instance_id` with `az vmss delete-instances`,
-#           which also lowers the set's capacity by the instances it removes. An instance that is
-#           not in the set (or is already being deleted) is skipped, never deleted. It lowers
-#           nothing else. Every member needs an instance_id: one without makes the whole request
-#           refused.
+#           which also lowers the set's capacity by the instances it removes. It lowers nothing
+#           else. sqi applies the one answer to every member the request names, and an ok finishes
+#           them all (an ephemeral member's record is deleted), so the script checks every ID
+#           first: one the set does not list at all (an instance of another set, or one long gone)
+#           makes it delete nothing and answer an error naming it. One the set lists as being
+#           deleted counts as done. Every member needs an instance_id: one without makes the whole
+#           request refused.
 #   list    Answers the scale-set instance IDs of the instances that are not being deleted.
 #
 # Any other action (wake) is answered "unsupported".
@@ -96,11 +99,12 @@ if [[ -n ${AZURE_SUBSCRIPTION:-} ]]; then
 fi
 
 # list_group fills $live_json with the scale-set instance IDs of the instances that are not being
-# deleted.
+# deleted, and $all_json with those of all of them.
 list_group() {
   local listed
   listed=$(az vmss list-instances "${target[@]}" --output json "${tail_args[@]}")
   live_json=$(jq -c '[.[]? | select((.provisioningState // "") != "Deleting") | (.instanceId // (.id | split("/") | last))]' <<<"$listed")
+  all_json=$(jq -c '[.[]? | (.instanceId // (.id | split("/") | last))]' <<<"$listed")
 }
 
 # group_size fills $actual, and $live_json, with the larger of the set's capacity and the number of
@@ -143,22 +147,25 @@ case $action in
       [[ $id =~ ^[0-9]{1,10}$ ]] || die "invalid or missing instance_id in members"
     done
     list_group
+    # Every ID is checked before anything is deleted: the answer covers them all.
     doomed=()
-    skipped=0
+    gone=0
     declare -A seen=()
     for id in "${requested[@]}"; do
       [[ -z ${seen[$id]:-} ]] || continue
       seen[$id]=1
       if jq -e --arg id "$id" 'index($id) != null' <<<"$live_json" >/dev/null; then
         doomed+=("$id")
+      elif jq -e --arg id "$id" 'index($id) != null' <<<"$all_json" >/dev/null; then
+        gone=$((gone + 1))
       else
-        skipped=$((skipped + 1))
+        die "instance $id is not a member of $vmss; nothing was terminated"
       fi
     done
     if ((${#doomed[@]} > 0)); then
       az vmss delete-instances "${target[@]}" --instance-ids "${doomed[@]}" "${tail_args[@]}" >&2
     fi
-    emit ok "deleted ${#doomed[@]}; $skipped not a member, skipped"
+    emit ok "deleted ${#doomed[@]}; $gone already being deleted"
     ;;
 
   list)

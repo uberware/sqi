@@ -23,9 +23,12 @@
 #           A size it cannot read, or one that is not a whole number, ends the script with a
 #           non-zero status and no change.
 #   retire  Terminates each instance named by `members[].instance_id`, with
-#           --should-decrement-desired-capacity so the group does not launch a replacement. An
-#           instance that is not in the group (or is already terminating) is skipped, never
-#           terminated. It lowers nothing else. Every member needs an instance_id: one without
+#           --should-decrement-desired-capacity so the group does not launch a replacement. It
+#           lowers nothing else. sqi applies the one answer to every member the request names, and
+#           an ok finishes them all (an ephemeral member's record is deleted), so the script checks
+#           every ID first: one the group does not list at all (an instance of another group, or
+#           one long gone) makes it terminate nothing and answer an error naming it. One the group
+#           lists as terminating counts as done. Every member needs an instance_id: one without
 #           makes the whole request refused.
 #   list    Answers the group's instance IDs that are not terminating. They are EC2 instance IDs
 #           ("i-0123456789abcdef0"), the same value the worker reports as its cloud_instance_id.
@@ -82,11 +85,12 @@ asg=${AWS_ASG_NAME:-}
 [[ -n $asg && $asg != -* ]] || die "AWS_ASG_NAME must be set and must not start with a dash"
 
 # load_group reads the group into $desc and fills $live_json with the IDs of its instances that are
-# not terminating.
+# not terminating, and $all_json with the IDs of all its instances.
 load_group() {
   desc=$(aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$asg" --output json --no-cli-pager)
   jq -e '(.AutoScalingGroups | length) == 1' <<<"$desc" >/dev/null || die "auto scaling group not found"
   live_json=$(jq -c '[.AutoScalingGroups[0].Instances // [] | .[] | select((.LifecycleState // "") | test("^Terminat") | not) | .InstanceId]' <<<"$desc")
+  all_json=$(jq -c '[.AutoScalingGroups[0].Instances // [] | .[] | .InstanceId]' <<<"$desc")
 }
 
 # group_size fills $actual, after load_group, with the larger of the group's desired capacity and
@@ -128,20 +132,25 @@ case $action in
       [[ $id =~ ^i-[0-9a-f]{8}([0-9a-f]{9})?$ ]] || die "invalid or missing instance_id in members"
     done
     load_group
-    terminated=0
-    skipped=0
+    # Every ID is checked before anything is terminated: the answer covers them all.
+    doomed=()
+    gone=0
     declare -A seen=()
     for id in "${requested[@]}"; do
       [[ -z ${seen[$id]:-} ]] || continue
       seen[$id]=1
       if jq -e --arg id "$id" 'index($id) != null' <<<"$live_json" >/dev/null; then
-        aws autoscaling terminate-instance-in-auto-scaling-group --instance-id "$id" --should-decrement-desired-capacity --no-cli-pager >&2
-        terminated=$((terminated + 1))
+        doomed+=("$id")
+      elif jq -e --arg id "$id" 'index($id) != null' <<<"$all_json" >/dev/null; then
+        gone=$((gone + 1))
       else
-        skipped=$((skipped + 1))
+        die "instance $id is not a member of $asg; nothing was terminated"
       fi
     done
-    emit ok "terminated $terminated; $skipped not a member, skipped"
+    for id in "${doomed[@]}"; do
+      aws autoscaling terminate-instance-in-auto-scaling-group --instance-id "$id" --should-decrement-desired-capacity --no-cli-pager >&2
+    done
+    emit ok "terminated ${#doomed[@]}; $gone already terminating"
     ;;
 
   list)

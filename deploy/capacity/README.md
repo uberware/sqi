@@ -71,8 +71,15 @@ The authoritative description is the package comment in `internal/capacity/scrip
   removes (AWS `--should-decrement-desired-capacity`; `delete-instances` on GCP and Azure does it
   implicitly), or the cloud group starts replacements and sqi pays for machines it just retired.
 - **`retire` acts only on the instance IDs it is given.** It never lowers anything else, and before
-  terminating an instance it checks that the instance belongs to the configured group, answering ok
-  with a "not a member, skipped" count rather than touching a foreign instance.
+  terminating anything it checks that every instance belongs to the configured group.
+- **One answer covers the whole `retire` batch.** A request may name several members, and sqi
+  applies its one answer to every member it names: `ok` finishes them all, deleting an ephemeral
+  member's record and revoking its credential. So answer `ok` only when every named member was
+  stopped or is already gone (terminating, being deleted). If any could not be removed (its instance
+  is not in the group, say), remove nothing and answer `error`, so sqi puts the whole batch back to
+  awake. The sized examples answer
+  `{"result":"error","message":"instance <id> is not a member of <group>; nothing was terminated"}`;
+  an `ok` there would make sqi forget an instance that keeps running outside its view.
 - **Every member of a sized group needs a `cloud_instance_id`.** `retire` names members by it, and a
   script that finds a member without one (or with one it cannot validate) refuses the **whole**
   retire batch rather than guess, which blocks scale-in until it is fixed. Set

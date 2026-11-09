@@ -26,9 +26,12 @@
 #           one that is not a whole number, ends the script with a non-zero status and no change.
 #   retire  Deletes each instance named by `members[].instance_id` with `delete-instances`, which
 #           also lowers the group's target size by the instances it removes, so no replacement is
-#           started. An instance that is not in the group (or is already being deleted) is skipped,
-#           never deleted. It lowers nothing else. Every member needs an instance_id: one without
-#           makes the whole request refused.
+#           started. It lowers nothing else. sqi applies the one answer to every member the request
+#           names, and an ok finishes them all (an ephemeral member's record is deleted), so the
+#           script checks every name first: one the group does not list at all (an instance of
+#           another group, or one long gone) makes it delete nothing and answer an error naming it.
+#           One the group lists as being deleted counts as done. Every member needs an
+#           instance_id: one without makes the whole request refused.
 #   list    Answers the names of the group's instances that are not being deleted. The instance
 #           name is the same value the worker reports as its cloud_instance_id.
 #
@@ -102,11 +105,13 @@ fi
 # --quiet makes gcloud answer its prompts instead of waiting for a terminal that is not there.
 scope+=(--quiet)
 
-# list_group fills $live_json with the names of the group's instances that are not being deleted.
+# list_group fills $live_json with the names of the group's instances that are not being deleted,
+# and $all_json with the names of all its instances.
 list_group() {
   local listed
   listed=$(gcloud compute instance-groups managed list-instances "$mig" --format=json "${scope[@]}")
   live_json=$(jq -c '[.[]? | select(.instance != null and (.currentAction // "") != "DELETING") | .instance | split("/") | last]' <<<"$listed")
+  all_json=$(jq -c '[.[]? | select(.instance != null) | .instance | split("/") | last]' <<<"$listed")
 }
 
 # group_size fills $actual, and $live_json, with the larger of the group's target size and the
@@ -149,16 +154,19 @@ case $action in
       [[ $id =~ $name_re ]] || die "invalid or missing instance_id in members"
     done
     list_group
+    # Every name is checked before anything is deleted: the answer covers them all.
     doomed=()
-    skipped=0
+    gone=0
     declare -A seen=()
     for id in "${requested[@]}"; do
       [[ -z ${seen[$id]:-} ]] || continue
       seen[$id]=1
       if jq -e --arg id "$id" 'index($id) != null' <<<"$live_json" >/dev/null; then
         doomed+=("$id")
+      elif jq -e --arg id "$id" 'index($id) != null' <<<"$all_json" >/dev/null; then
+        gone=$((gone + 1))
       else
-        skipped=$((skipped + 1))
+        die "instance $id is not a member of $mig; nothing was terminated"
       fi
     done
     if ((${#doomed[@]} > 0)); then
@@ -168,7 +176,7 @@ case $action in
       )
       gcloud compute instance-groups managed delete-instances "$mig" "--instances=$names" "${scope[@]}" >&2
     fi
-    emit ok "deleted ${#doomed[@]}; $skipped not a member, skipped"
+    emit ok "deleted ${#doomed[@]}; $gone already being deleted"
     ;;
 
   list)
