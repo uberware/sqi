@@ -1092,31 +1092,39 @@ func TestEvaluate_WakingIsPendingCapacity(t *testing.T) {
 		sleeper(worker("s3", 8), time.Hour), sleeper(worker("s4", 8), time.Hour),
 	}
 	tests := []struct {
-		name       string
-		members    []Member
-		demand     DemandItem
-		wantDemand int
-		wantWake   []string
+		name     string
+		members  []Member
+		demand   DemandItem
+		want     brief
+		wantWake []string
 	}{
-		{"four waking members cover the demand", fourWaking, item("r", "q1", 8, 4, ""), 0, nil},
-		{"the rest wakes beside them", fourWaking, item("r", "q1", 8, 6, ""), 16, []string{"s1", "s2"}},
+		// With no machines left to add, desired is the members kept, which
+		// leaves the waking members out: it dips while they boot.
+		{"four waking members cover the demand", fourWaking, item("r", "q1", 8, 4, ""), brief{0, 0, nil}, nil},
+		{"the rest wakes beside them", fourWaking, item("r", "q1", 8, 6, ""), brief{16, 4 + 2, nil}, []string{"s1", "s2"}},
 		{
 			"a waking member absorbs only what it can run",
 			[]Member{waking(worker("w1", 8), time.Minute), sleeper(worker("s1", 8, "houdini"), time.Hour)},
-			item("r", "q1", 8, 1, "houdini"), 8,
+			item("r", "q1", 8, 1, "houdini"),
+			brief{8, 1 + 1, nil},
 			[]string{"s1"},
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			g := named("onprem", 10, 0, 10, 10)
-			st := Evaluate(snapshot([]store.CapacityGroup{g}, map[string][]Member{"onprem": tc.members}, nil, tc.demand))[0]
-			if st.DemandCores != tc.wantDemand {
-				t.Errorf("demand %d, want %d", st.DemandCores, tc.wantDemand)
-			}
-			assertWake(t, st, tc.wantWake...)
+			st := Evaluate(snapshot([]store.CapacityGroup{g}, map[string][]Member{"onprem": tc.members}, nil, tc.demand))
+			assertBriefs(t, st, tc.want)
+			assertWake(t, st[0], tc.wantWake...)
 		})
 	}
+
+	t.Run("a sized group's waking member absorbs nothing", func(t *testing.T) {
+		g := sized("cloud", 1, 8, 0, 10, 10)
+		members := []Member{waking(worker("w1", 8), time.Minute)}
+		st := Evaluate(snapshot([]store.CapacityGroup{g}, map[string][]Member{"cloud": members}, nil, item("r", "q1", 8, 1, "")))
+		assertBriefs(t, st, brief{8, 1, nil})
+	})
 
 	t.Run("counts by power state", func(t *testing.T) {
 		g := named("onprem", 10, 0, 10, 10)
@@ -1200,6 +1208,15 @@ func TestEvaluate_WakeCandidatesBestFitThenLongestDown(t *testing.T) {
 			assertWake(t, st[0], tc.want...)
 		})
 	}
+
+	t.Run("a member reporting no cores goes last", func(t *testing.T) {
+		g := named("onprem", 10, 0, 10, 10)
+		members := []Member{
+			sleeper(worker("z", 0), 10*time.Hour), sleeper(worker("a", 8), time.Hour), sleeper(worker("b", 8), time.Hour),
+		}
+		st := Evaluate(snapshot([]store.CapacityGroup{g}, map[string][]Member{"onprem": members}, nil, item("r", "q1", 0, 3, "")))
+		assertWake(t, st[0], "a", "b", "z")
+	})
 
 	t.Run("input order does not matter", func(t *testing.T) {
 		g := named("onprem", 10, 0, 10, 10)
@@ -1304,6 +1321,81 @@ func TestEvaluate_RetiringNeitherAbsorbsNorCounts(t *testing.T) {
 			}
 			if st[0].OnlineMembers != live {
 				t.Errorf("online members %d, want %d: liveness counts retiring members", st[0].OnlineMembers, live)
+			}
+		})
+	}
+}
+
+func TestEvaluate_MaxCountsRetiringMembers(t *testing.T) {
+	nineBusy := func() []Member {
+		out := make([]Member, 9)
+		for i := range out {
+			out[i] = busy(worker(fmt.Sprintf("c%d", i), 8), 8)
+		}
+		return out
+	}
+	retiring := busy(power(worker("r", 8), store.PowerRetiring, time.Minute), 8)
+	retired := Member{Worker: power(offline(worker("r", 8)), store.PowerAsleep, 0)}
+	sleepers := []Member{sleeper(worker("s1", 8), time.Hour), sleeper(worker("s2", 8), time.Hour)}
+	tests := []struct {
+		name       string
+		group      store.CapacityGroup
+		members    []Member
+		want       brief
+		wake       []string
+		wantActive int
+	}{
+		{
+			name:       "sized: at max with one retiring, no growth",
+			group:      sized("cloud", 1, 8, 0, 10, 10),
+			members:    append(nineBusy(), retiring),
+			want:       brief{0, 9, nil},
+			wantActive: 9,
+		},
+		{
+			name:       "sized: growth resumes once the retiring member is gone",
+			group:      sized("cloud", 1, 8, 0, 10, 10),
+			members:    nineBusy(),
+			want:       brief{8, 10, nil},
+			wantActive: 9,
+		},
+		{
+			name:       "sized: min does not push past max while one retires",
+			group:      sized("cloud", 1, 8, 10, 10, 10),
+			members:    append(nineBusy(), retiring),
+			want:       brief{0, 9, nil},
+			wantActive: 9,
+		},
+		{
+			name:       "named: at max with one retiring, no wake candidates",
+			group:      named("onprem", 10, 0, 10, 10),
+			members:    append(append(nineBusy(), retiring), sleepers...),
+			want:       brief{0, 9, nil},
+			wantActive: 9,
+		},
+		{
+			name:       "named: a wake resumes once the retiring member is asleep",
+			group:      named("onprem", 10, 0, 10, 10),
+			members:    append(append(nineBusy(), retired), sleepers...),
+			want:       brief{8, 10, nil},
+			wake:       []string{"s1"},
+			wantActive: 9,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := snapshot([]store.CapacityGroup{tc.group}, map[string][]Member{tc.group.ID: tc.members}, nil,
+				item("a", "q1", 8, 5, ""))
+			st := Evaluate(s)
+			assertBriefs(t, st, tc.want)
+			assertWake(t, st[0], tc.wake...)
+			if st[0].ActiveMembers != tc.wantActive {
+				t.Errorf("active members %d, want %d", st[0].ActiveMembers, tc.wantActive)
+			}
+			running := st[0].DesiredMachines + st[0].OnlineMembers - st[0].ActiveMembers
+			if running > tc.group.MaxMachines {
+				t.Errorf("desired %d plus %d retiring online exceeds max %d",
+					st[0].DesiredMachines, st[0].OnlineMembers-st[0].ActiveMembers, tc.group.MaxMachines)
 			}
 		})
 	}

@@ -9,10 +9,10 @@
 //
 //  1. Absorb. Ready work that online, enabled, awake workers already have free
 //     cores for is taken off the demand first: workers in no group, then each
-//     group's online members, in group order. After them, each group's waking
-//     members (asked to start, not registered yet, not disabled) absorb with
-//     all their cores, as pending capacity. Each worker's cores are spent once
-//     across all demand, and a retiring member absorbs nothing.
+//     group's online members, in group order. After them, each named group's
+//     waking members (asked to start, not registered yet, not disabled)
+//     absorb with all their cores, as pending capacity. Each worker's cores
+//     are spent once across all demand, and a retiring member absorbs nothing.
 //  2. Assign. What is left goes to the groups in priority order, each taking
 //     only work it could run, from queues it serves, up to the machines it
 //     could still add: a sized group's free slots, a named group's wakeable
@@ -28,18 +28,20 @@
 //     add machines for, the active members (retire candidates included), the
 //     pending ones and those machines; with none, the members kept. Growth is
 //     limited per evaluation by max_step_up and the scale-up cooldown, and the
-//     result is clamped to [min, max]. Machines asked for that have not
-//     registered yet are held, so the size does not fall back while they
-//     boot: a step-up for one boot timeout, a named group's waking members
-//     until they register or their wake fails. New growth is measured from
-//     active members only, so machines that never register cost at most one
-//     step.
+//     result is clamped to [min, max]. max_machines caps the machines running,
+//     so a retiring member still online counts toward it, and that cap wins
+//     over min_machines. Machines asked for that have not registered yet are
+//     held, so the size does not fall back while they boot: a step-up for one
+//     boot timeout, a named group's waking members until they register or
+//     their wake fails. New growth is measured from active members only, so
+//     machines that never register cost at most one step.
 //  5. Wake. A named group's wake candidates are its wakeable members (offline,
 //     not disabled, and awake, asleep, or wake_failed for at least twice the
 //     boot timeout) that could run work the group took, the smallest machine
-//     first, then the one down longest, as many as the desired size has room
-//     for beside the active and pending members. When min_machines asks for
-//     more than that work does, any wakeable member makes up the rest.
+//     first (one reporting no cores last), then the one down longest, as many
+//     as the desired size has room for beside the active and pending members.
+//     When min_machines asks for more than that work does, any wakeable member
+//     makes up the rest.
 //
 // All demand arithmetic is on task counts per step, never per task, so a step
 // with a million ready tasks costs the same as one with a single task.
@@ -110,13 +112,18 @@ type Status struct {
 	// machines present. While its demand calls for machines it is the active
 	// members, retire candidates included, and a named group's pending
 	// members, plus those machines; otherwise it is the members it keeps.
-	// Either way at least min_machines, at most max_machines. See [Evaluate]
-	// for how an actuator reads it.
+	// Either way at least min_machines and at most max_machines less the
+	// retiring members still online, which count toward max_machines until
+	// they are gone; that cap wins over min_machines. See [Evaluate] for how an
+	// actuator reads it.
 	DesiredMachines int
 	// OnlineMembers and OfflineMembers count the group's members by liveness;
 	// a disabled member counts in whichever it is. A retiring member online
 	// counts as online, though sizing does not count it.
 	OnlineMembers, OfflineMembers int
+	// ActiveMembers is the online members that are not retiring: the members
+	// sizing counts, and the ones a grow is measured from.
+	ActiveMembers int
 	// Waking, Retiring, Asleep and WakeFailed count the group's members by
 	// power state, whatever their liveness and disabled flag.
 	Waking, Retiring, Asleep, WakeFailed int
@@ -152,9 +159,8 @@ type Mismatch struct {
 // two independent instructions:
 //
 //   - Grow: a named group wakes the WakeCandidates, by name. A sized group
-//     adds DesiredMachines less its active members (online, not retiring)
-//     machines, less the machines it has already launched that have not
-//     registered yet, when that is positive.
+//     adds DesiredMachines − ActiveMembers machines, less the machines it has
+//     already launched that have not registered yet, when that is positive.
 //   - Shrink: retire the RetireCandidates, by name.
 //
 // It never subtracts the candidates as well: they are already counted in
@@ -191,9 +197,12 @@ type Mismatch struct {
 //   - inside the cooldown, at most current.
 //
 // Falling demand lowers the desired size below both. min_machines and
-// max_machines apply last. A recorded time up to one window (cooldown or boot
-// timeout) in the future, as after the wall clock steps back, counts as
-// inside that window.
+// max_machines apply last, max_machines less the retiring members still
+// online, since max_machines caps the machines running; that cap wins over
+// min_machines. The free slots demand may fill are likewise max_machines less
+// the online and pending members, retiring ones included. A recorded time up
+// to one window (cooldown or boot timeout) in the future, as after the wall
+// clock steps back, counts as inside that window.
 //
 // It writes two entries per group g and nothing else:
 //
@@ -316,7 +325,7 @@ type absorber struct {
 
 // absorbers lists the workers that can take demand, in absorption order: the
 // online, enabled, awake workers (s.Others by ID, then each group's online
-// members by ID in group order) with their free cores, then each group's
+// members by ID in group order) with their free cores, then each named group's
 // pending members by ID in group order with all their cores. A worker listed
 // more than once appears once, where first seen.
 func absorbers(s Snapshot, plans []*groupPlan) []*absorber {
@@ -345,10 +354,8 @@ func absorbers(s Snapshot, plans []*groupPlan) []*absorber {
 		}
 	}
 	for _, p := range plans {
-		for _, m := range p.members {
-			if pending(m.Worker) {
-				add(m.Worker, machineCores(m.Worker))
-			}
+		for _, w := range p.pendingMembers {
+			add(w, machineCores(w))
 		}
 	}
 	return out
@@ -405,8 +412,11 @@ type groupPlan struct {
 	// counts.
 	active int
 	// pending is a named group's waking members that are not disabled:
-	// machines asked for that have not registered yet. Zero for a sized group.
+	// machines asked for that have not registered yet. Zero for a sized group,
+	// whose machines asked for are its launch record, not waking members.
 	pending int
+	// pendingMembers are the members pending counts, by worker ID.
+	pendingMembers []store.Worker
 	// byPower counts the members by power state.
 	byPower map[store.PowerState]int
 	// wakeable are a named group's members that could be woken now: the
@@ -443,13 +453,16 @@ func newGroupPlan(g store.CapacityGroup, members []Member, now time.Time) *group
 			p.offline++
 			if isNamed && pending(w) {
 				p.pending++
+				p.pendingMembers = append(p.pendingMembers, w)
 			}
 			if isNamed && wakeable(w, g.BootTimeout, now) {
 				p.wakeable = append(p.wakeable, w)
 			}
 		}
 	}
-	slots := int64(max(g.MaxMachines-p.active-p.pending, 0))
+	// max_machines caps the machines running, so a retiring member still
+	// online takes a slot until it is gone.
+	slots := int64(max(g.MaxMachines-p.online-p.pending, 0))
 	if isNamed {
 		p.perMachine = 1
 		if n := int64(len(p.members)); n > 0 {
@@ -516,6 +529,7 @@ func (p *groupPlan) status(s Snapshot, absorbed map[string]bool) Status {
 		DesiredMachines: desired,
 		OnlineMembers:   p.online,
 		OfflineMembers:  p.offline,
+		ActiveMembers:   p.active,
 		Waking:          p.byPower[store.PowerWaking],
 		Retiring:        p.byPower[store.PowerRetiring],
 		Asleep:          p.byPower[store.PowerAsleep],
@@ -566,11 +580,18 @@ func (p *groupPlan) wakeCandidates(s Snapshot, desired int) []string {
 	return out
 }
 
-// wakeOrder orders wakeable members: the smallest machine first, then the one
-// down longest (see [downSince]), then by worker ID.
+// wakeOrder orders wakeable members: the smallest machine first, one that
+// reports no cores last, then the one down longest (see [downSince]), then by
+// worker ID.
 func wakeOrder(a, b store.Worker) int {
+	cores := func(w store.Worker) int {
+		if w.CPUCount <= 0 {
+			return math.MaxInt
+		}
+		return w.CPUCount
+	}
 	return cmp.Or(
-		cmp.Compare(a.CPUCount, b.CPUCount),
+		cmp.Compare(cores(a), cores(b)),
 		compareDown(downSince(a), downSince(b)),
 		cmp.Compare(a.ID, b.ID),
 	)
@@ -645,6 +666,9 @@ func (p *groupPlan) desired(s Snapshot, kept int) int {
 	}
 	desired := toInt(min(computed, limit, int64(g.MaxMachines)))
 	desired = max(desired, g.MinMachines)
+	// max_machines caps the machines running: a retiring member still online
+	// counts toward it, even against min_machines.
+	desired = min(desired, max(g.MaxMachines-(p.online-p.active), 0))
 
 	if desired > current && !cooling && s.LastStepUp != nil {
 		s.LastStepUp[g.ID] = s.Now
