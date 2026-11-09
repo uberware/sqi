@@ -1365,7 +1365,7 @@ func (s *Server) awaitScheduler(budgetEnd time.Time) {
 	}
 	s.logger.WarnContext(context.Background(),
 		"scheduler: still stopping at the end of its shutdown bound; abandoning its capacity provider calls and closing the bus and the store without it",
-		slog.Duration("waited", time.Since(s.schedStopAt)), slog.Duration("limit", deadline.Sub(s.schedStopAt)))
+		slog.Duration("waited", time.Since(s.schedStopAt)), slog.Duration("limit", max(deadline.Sub(s.schedStopAt), 0)))
 	s.abandonCapacityCalls()
 }
 

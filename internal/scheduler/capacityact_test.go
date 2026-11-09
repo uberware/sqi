@@ -5,6 +5,7 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"maps"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	nats "github.com/nats-io/nats.go"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
@@ -94,13 +96,16 @@ type packetSend struct {
 	macs, targets []string
 }
 
-// packetRecorder stands in for Config.SendWakePackets.
+// packetRecorder stands in for Config.SendWakePackets. It reports every
+// target reached unless fail is set, which returns the targets reached and
+// the error instead.
 type packetRecorder struct {
 	mu    sync.Mutex
 	sends []packetSend
+	fail  func(targets []string) (int, error)
 }
 
-func (r *packetRecorder) send(_ context.Context, macs []net.HardwareAddr, targets []string) error {
+func (r *packetRecorder) send(_ context.Context, macs []net.HardwareAddr, targets []string) (int, error) {
 	ps := packetSend{targets: slices.Clone(targets)}
 	for _, m := range macs {
 		ps.macs = append(ps.macs, m.String())
@@ -108,7 +113,10 @@ func (r *packetRecorder) send(_ context.Context, macs []net.HardwareAddr, target
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sends = append(r.sends, ps)
-	return nil
+	if r.fail != nil {
+		return r.fail(targets)
+	}
+	return len(targets), nil
 }
 
 func (r *packetRecorder) all() []packetSend {
@@ -331,7 +339,7 @@ func TestActuator_RetireSendsRetireActionAndFinishesOnDeregister(t *testing.T) {
 func TestActuator_RetireRefusedAbortsToAwake(t *testing.T) {
 	f := newActFixture(t, nil)
 	f.bus.setAnswer(func(string, protocol.ControlMsg) ([]byte, error) {
-		return controlReply(false, "worker.power.allow_remote_sleep is false"), nil
+		return controlReply(false, protocol.ControlRefusalNotAllowed), nil
 	})
 	g := createGroup(t, f.st, wolGroup("lan", nil))
 	addNamedMember(t, f.st, g.ID, lanWorker("m1", "192.168.1.21", "aa:bb:cc:dd:ee:01"), true)
@@ -385,6 +393,147 @@ func TestActuator_RetireNoReplyAborts(t *testing.T) {
 	}
 	if got := actionsTotal(t, f, "lan", "retire", "timeout"); got != 1 {
 		t.Errorf("actions_total{retire,timeout} = %v, want 1", got)
+	}
+}
+
+// A retirement this process began whose sleep reaches no one (the worker is
+// online but not listening on its control subject) aborts at once: no command
+// was delivered, and waiting would hold the member out of work for a boot
+// timeout on every idle timeout.
+func TestActuator_RetireNoRespondersOnFirstSendAborts(t *testing.T) {
+	f := newActFixture(t, nil)
+	f.bus.setAnswer(func(string, protocol.ControlMsg) ([]byte, error) { return nil, nats.ErrNoResponders })
+	g := createGroup(t, f.st, wolGroup("lan", nil))
+	addNamedMember(t, f.st, g.ID, lanWorker("m1", "192.168.1.21", "aa:bb:cc:dd:ee:01"), true)
+	t0 := time.Now().UTC()
+
+	f.sweep(t, t0)
+	f.sweep(t, t0.Add(2*time.Minute))
+
+	if n := len(f.bus.sentCommand(protocol.ControlSleep)); n != 1 {
+		t.Fatalf("sleep requests = %d, want 1", n)
+	}
+	w := f.worker(t, "m1")
+	if w.PowerState != store.PowerAwake {
+		t.Fatalf("m1 = %s, want awake", w.PowerState)
+	}
+	if want := "worker is not listening on its control subject"; w.PowerReason != want {
+		t.Errorf("PowerReason = %q, want %q", w.PowerReason, want)
+	}
+	if got := actionsTotal(t, f, "lan", "retire", "refused"); got != 1 {
+		t.Errorf("actions_total{retire,refused} = %v, want 1", got)
+	}
+}
+
+// A retirement recorded before this process started (re-sent after a restart
+// or a failover) keeps waiting on no responders: the worker may have carried
+// out the first request and left already, and its deregistration, or the
+// boot timeout, settles it.
+func TestActuator_RetireNoRespondersOnReissueStaysRetiring(t *testing.T) {
+	f := newActFixture(t, nil)
+	f.bus.setAnswer(func(string, protocol.ControlMsg) ([]byte, error) { return nil, nats.ErrNoResponders })
+	g := createGroup(t, f.st, wolGroup("lan", nil))
+	addNamedMember(t, f.st, g.ID, lanWorker("m1", "192.168.1.21", "aa:bb:cc:dd:ee:01"), true)
+	t0 := time.Now().UTC()
+	if _, ok, err := f.st.BeginRetirement(t.Context(), g.ID, "m1", t0); err != nil || !ok {
+		t.Fatalf("BeginRetirement = %v, %v", ok, err)
+	}
+
+	f.sweep(t, t0.Add(15*time.Second))
+
+	if n := len(f.bus.sentCommand(protocol.ControlSleep)); n != 1 {
+		t.Fatalf("sleep requests = %d, want the recorded one re-sent once", n)
+	}
+	if got := f.worker(t, "m1").PowerState; got != store.PowerRetiring {
+		t.Errorf("m1 = %s, want still retiring", got)
+	}
+	if got := actionsTotal(t, f, "lan", "retire", "failed"); got != 1 {
+		t.Errorf("actions_total{retire,failed} = %v, want 1", got)
+	}
+}
+
+// parkLease parks a lease request of workerID through the disabled-worker
+// hold, as a retiring worker's request is, and returns the task IDs it is
+// eventually answered with.
+func parkLease(t *testing.T, s *Scheduler, workerID string) <-chan []string {
+	t.Helper()
+	done := make(chan []string, 1)
+	go func() {
+		var ids []string
+		for _, raw := range s.holdDisabledLease(s.ctx, workerID, "") {
+			var m protocol.AssignMsg
+			if err := json.Unmarshal(raw, &m); err == nil {
+				ids = append(ids, m.TaskID)
+			}
+		}
+		done <- ids
+	}()
+	waitParkedDisabled(t, s, workerID)
+	return done
+}
+
+// A retirement that ends with the member awake again, aborted on a refusal or
+// expired after the boot timeout, releases the lease request the member parked
+// while it was retiring at once, instead of leaving it to wait out the hold.
+func TestActuator_SettledRetirementReleasesParkedLease(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T, f *actFixture, groupID string, t0 time.Time) <-chan []string
+	}{
+		{"aborted", func(t *testing.T, f *actFixture, _ string, t0 time.Time) <-chan []string {
+			asked, release := make(chan struct{}, 1), make(chan struct{})
+			f.bus.setAnswer(func(string, protocol.ControlMsg) ([]byte, error) {
+				asked <- struct{}{}
+				<-release
+				return controlReply(false, protocol.ControlRefusalBusy), nil
+			})
+			f.sweep(t, t0)
+			f.s.sweepCapacityAt(t.Context(), t0.Add(2*time.Minute))
+			select {
+			case <-asked:
+			case <-time.After(5 * time.Second):
+				t.Fatal("no sleep was requested")
+			}
+			done := parkLease(t, f.s, "m1")
+			close(release)
+			f.s.capState.act.calls.Wait()
+			return done
+		}},
+		{"expired", func(t *testing.T, f *actFixture, groupID string, t0 time.Time) <-chan []string {
+			if _, ok, err := f.st.BeginRetirement(t.Context(), groupID, "m1", t0); err != nil || !ok {
+				t.Fatalf("BeginRetirement = %v, %v", ok, err)
+			}
+			// The recorded intent is this process's own, so nothing is re-sent.
+			f.s.capState.act.dispatched = map[intentKey]struct{}{memberIntent(f.worker(t, "m1")): {}}
+			done := parkLease(t, f.s, "m1")
+			f.sweep(t, t0.Add(5*time.Minute+time.Second))
+			return done
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newActFixture(t, func(st *fake.Store) store.Store { return demandBlind{st} })
+			f.s.ctx = t.Context()
+			f.s.leaseHoldTimeout = 30 * time.Second // only a wake answers within the test
+			g := createGroup(t, f.st, wolGroup("lan", nil))
+			addNamedMember(t, f.st, g.ID, lanWorker("m1", "192.168.1.21", "aa:bb:cc:dd:ee:01"), true)
+			tasks := submitReady(t, f.st, 1, store.Step{})
+			t0 := time.Now().UTC()
+
+			done := tc.run(t, f, g.ID, t0)
+
+			if got := f.worker(t, "m1").PowerState; got != store.PowerAwake {
+				t.Fatalf("m1 = %s, want awake", got)
+			}
+			select {
+			case ids := <-done:
+				if len(ids) != 1 || ids[0] != tasks[0].ID {
+					t.Errorf("released lease = %v, want [%s]", ids, tasks[0].ID)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("the parked lease was not released when the retirement settled")
+			}
+		})
 	}
 }
 
@@ -607,6 +756,53 @@ func TestActuator_FailoverRepeatsAbsoluteRequestOnly(t *testing.T) {
 	if w := b.worker(t, "m1"); w.PowerState != store.PowerRetiring {
 		t.Errorf("m1 = %s, want still retiring until it deregisters", w.PowerState)
 	}
+
+	// The deposed leader, still sweeping, acts on nothing: past the boot
+	// timeout it would otherwise expire m1's retirement and retire it again,
+	// and with work waiting it would wake m2.
+	submitReady(t, st, 1, store.Step{})
+	for i := range 2 {
+		a.sweepCtx(ctxA, t0.Add(2*time.Minute+g.BootTimeout+time.Duration(i+1)*15*time.Second))
+	}
+	if calls := busA.sent(); len(calls) != 1 {
+		t.Errorf("deposed leader A sent %+v, want only its first sleep", calls)
+	}
+	if sends := a.packets.all(); len(sends) != 0 {
+		t.Errorf("deposed leader A sent packets %+v, want none", sends)
+	}
+	if w := a.worker(t, "m1"); w.PowerState != store.PowerRetiring {
+		t.Errorf("m1 = %s, want still retiring: the deposed leader must not expire it", w.PowerState)
+	}
+}
+
+// retireConflictStore refuses every FinishRetirement as the store refuses one
+// for a retiring member that still holds a task.
+type retireConflictStore struct{ store.Store }
+
+func (retireConflictStore) FinishRetirement(_ context.Context, workerID string, _ time.Time) (store.Worker, bool, bool, error) {
+	return store.Worker{}, false, false, fmt.Errorf("store: finish retirement of worker %s, which holds a task: %w",
+		workerID, store.ErrConflict)
+}
+
+// A deregistration of a retiring member whose retirement the store refuses to
+// finish (it still holds a task) is acknowledged, leaves the member retiring
+// for the boot timeout to settle, and is logged.
+func TestDeregister_RetiringMemberHoldingATaskStaysRetiring(t *testing.T) {
+	f := newActFixture(t, func(st *fake.Store) store.Store { return retireConflictStore{st} })
+	g := createGroup(t, f.st, wolGroup("lan", nil))
+	addNamedMember(t, f.st, g.ID, lanWorker("m1", "192.168.1.21", "aa:bb:cc:dd:ee:01"), true)
+	if _, ok, err := f.st.BeginRetirement(t.Context(), g.ID, "m1", time.Now().UTC()); err != nil || !ok {
+		t.Fatalf("BeginRetirement = %v, %v", ok, err)
+	}
+
+	deregisterAs(t, f.s, "m1", protocol.DeregisterRetired)
+
+	if w := f.worker(t, "m1"); w.PowerState != store.PowerRetiring {
+		t.Errorf("m1 = %s, want still retiring", w.PowerState)
+	}
+	if out := f.logs.String(); !strings.Contains(out, "finish capacity retirement on deregister failed") {
+		t.Errorf("the refused finish is not logged:\n%s", out)
+	}
 }
 
 // A deposed leader applies nothing: a refusal arriving after it lost the
@@ -621,7 +817,7 @@ func TestActuator_DeposedLeaderLateResultWritesNothing(t *testing.T) {
 	f.bus.setAnswer(func(string, protocol.ControlMsg) ([]byte, error) {
 		asked <- struct{}{}
 		<-release
-		return controlReply(false, "busy"), nil
+		return controlReply(false, protocol.ControlRefusalBusy), nil
 	})
 	t0 := time.Now().UTC()
 

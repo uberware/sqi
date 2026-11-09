@@ -6,7 +6,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
+	"net/netip"
 	"net/url"
 	"path/filepath"
 	"slices"
@@ -1018,6 +1020,16 @@ func validateCapacityProvider(name string, p CapacityProviderConfig) []Validatio
 				MinCapacityProviderTimeout, MaxCapacityProviderTimeout, p.Timeout),
 		})
 	}
+	// A key the environment cannot hold would fail every call of the script.
+	keys := slices.Sorted(maps.Keys(p.Env))
+	for _, k := range keys {
+		if k == "" || strings.ContainsAny(k, "=\x00") {
+			errs = append(errs, ValidationError{
+				Field:   prefix + ".env",
+				Message: fmt.Sprintf("variable name %q must be non-empty and contain no '=' or NUL character", k),
+			})
+		}
+	}
 	return errs
 }
 
@@ -1040,15 +1052,19 @@ func validateWakeOnLAN(cfg WakeOnLANConfig) []ValidationError {
 	return errs
 }
 
-// validateIPPort checks that s is "ip:port" with an IP literal host (no name
-// resolution) and a port of 1-65535.
+// validateIPPort checks that s is "ip:port" with an IPv4 literal host (no name
+// resolution; magic packets go out over IPv4 only) and a port of 1-65535.
 func validateIPPort(s string) error {
 	host, port, err := net.SplitHostPort(s)
 	if err != nil {
-		return errors.New("must be an IP literal and port, as ip:port (IPv6 as [ip]:port)")
+		return errors.New("must be an IPv4 literal and port, as ip:port")
 	}
-	if net.ParseIP(host) == nil {
-		return errors.New("must use an IP literal for the host, not a name")
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return errors.New("must use an IPv4 literal for the host, not a name")
+	}
+	if !addr.Is4() {
+		return errors.New("must use an IPv4 literal for the host: magic packets are sent over IPv4 only")
 	}
 	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
 		return errors.New("must use a port between 1 and 65535")

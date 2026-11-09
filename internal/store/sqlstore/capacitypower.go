@@ -383,34 +383,42 @@ func (s *Store) ListCapacityGroupStates(ctx context.Context) (map[string]store.C
 }
 
 // PutCapacityGroupState implements [store.CapacityPowerStore]. An unknown
-// group is found by a read before the write, so a leadership context's fence
-// check still runs for it. A group deleted between the read and the write is
-// refused by the foreign key, which is reported as the group not existing too.
+// group is found by a read before the write, in the same transaction, so a
+// leadership context's fence check still runs for it. A group deleted between
+// the read and the write makes the foreign key refuse the write; a conflict is
+// reported as the group not existing only when a fresh read confirms it is
+// gone, and as the conflict it is otherwise.
 func (s *Store) PutCapacityGroupState(ctx context.Context, st store.CapacityGroupState) error {
 	updated := st.UpdatedAt
 	if updated.IsZero() {
 		updated = time.Now()
 	}
-	var unknown bool
-	err := s.write(ctx, "put capacity group state", func(w writer) error {
-		unknown = false
+	unknown, err := inTxValue(ctx, s, "put capacity group state", func(tx *dbTx) (bool, txOutcome, error) {
 		var one int
-		switch err := w.QueryRowContext(ctx, sqlGetCapacityGroupExists, st.GroupID).Scan(&one); {
+		switch err := tx.QueryRowContext(ctx, sqlGetCapacityGroupExists, st.GroupID).Scan(&one); {
 		case errors.Is(err, sql.ErrNoRows):
-			unknown = true
-			return nil
+			return true, txCommit, nil // the commit runs the fence check
 		case err != nil:
-			return mapErr(err)
+			return false, txRollback, mapErr(err)
 		}
-		_, err := w.ExecContext(ctx, sqlPutCapacityGroupState,
+		_, err := tx.ExecContext(ctx, sqlPutCapacityGroupState,
 			st.GroupID, st.Requested, nullTimeToText(st.RequestedAt), st.DegradedReason,
 			nullTimeToText(st.DegradedAt), nullTimeToText(st.BackoffUntil), TimeText(updated))
-		return mapErr(err)
+		if err != nil {
+			return false, txRollback, mapErr(err)
+		}
+		return false, txCommit, nil
 	})
+	if errors.Is(err, store.ErrConflict) {
+		var one int
+		if rerr := s.r.QueryRowContext(ctx, sqlGetCapacityGroupExists, st.GroupID).Scan(&one); errors.Is(rerr, sql.ErrNoRows) {
+			unknown, err = true, nil
+		}
+	}
 	switch {
-	case err != nil && !errors.Is(err, store.ErrConflict):
+	case err != nil:
 		return err
-	case err != nil || unknown:
+	case unknown:
 		return fmt.Errorf("store: put state of capacity group %s: %w", st.GroupID, store.ErrNotFound)
 	}
 	return nil

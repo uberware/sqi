@@ -273,11 +273,18 @@ func bounded(parent context.Context, d time.Duration, f func(ctx context.Context
 const releaseTimeout = 5 * time.Second
 
 // stopScheduler stops a running scheduler and waits for it until ctx ends. It
-// reports whether the scheduler has returned (or never ran).
+// reports whether the scheduler has returned (or never ran). One that had
+// already returned is reported so even when ctx has already ended, as it has
+// when the earlier shutdown steps used the whole budget.
 func (s *Server) stopScheduler(ctx context.Context) bool {
 	s.markSchedulerStopping()
 	if s.schedDone == nil {
 		return true
+	}
+	select {
+	case <-s.schedDone:
+		return true
+	default:
 	}
 	select {
 	case <-s.schedDone:

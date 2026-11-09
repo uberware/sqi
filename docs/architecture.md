@@ -1925,7 +1925,10 @@ The power transitions the leader makes (`MarkWaking`, `FailWakes`,
 `BeginRetirement`, `FinishRetirement`, `AbortRetirement`, `ExpireRetirements`)
 are each one guarded `UPDATE` under the anchors of the workers it may move (see
 [Anchor rows](#anchor-rows)), fenced like every leader write; a transition that
-no longer applies writes nothing and is reported, not an error.
+no longer applies writes nothing and is reported, not an error. The one
+exception is `FinishRetirement` on a retiring member that still holds a task:
+it returns `ErrConflict` and leaves the member retiring, for a later attempt or
+the boot timeout to settle.
 
 **The capacity sweep step.** `sweepCapacity` is one step of the heartbeat sweep
 tick (`sweepOnce`), after the unschedulable sweep and before the blocked-job

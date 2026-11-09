@@ -280,7 +280,7 @@ func TestScriptActuator_GrowRequestIsAbsolute(t *testing.T) {
 }
 
 // Machines that do not register within the boot timeout degrade the group:
-// the launch record falls back to the members online, the degraded gauge is
+// the launch record falls back to the member rows, the degraded gauge is
 // set, and no grow is made before the backoff ends.
 func TestScriptActuator_DegradesAndBacksOff(t *testing.T) {
 	f := newScriptFixture(t, nil)
@@ -499,6 +499,104 @@ func TestScriptActuator_RetireFailedAborts(t *testing.T) {
 	}
 }
 
+// A sized script group's member that reports no cloud instance ID is never
+// retired: the script could not name its instance, so the request would fail
+// and the member go back to awake on every idle timeout. It is warned about
+// once.
+func TestScriptActuator_MemberWithoutInstanceIDNeverRetired(t *testing.T) {
+	f := newScriptFixture(t, nil)
+	cloudMember(t, f.st, f.g.ID, "c1", "")
+	cloudMember(t, f.st, f.g.ID, "c2", "i-2")
+	t0 := time.Now().UTC()
+
+	for i := range 6 {
+		f.sweep(t, t0.Add(time.Duration(i)*time.Minute))
+	}
+
+	retires := f.prov.callsOf("retire")
+	if len(retires) != 1 || !slices.Equal(retires[0].workerIDs, []string{"c2"}) {
+		t.Fatalf("retire calls = %+v, want one, for c2 only", retires)
+	}
+	if w := f.worker(t, "c1"); w.PowerState != store.PowerAwake || w.Status != store.WorkerStatusOnline {
+		t.Errorf("c1 = %s/%s, want awake and online", w.PowerState, w.Status)
+	}
+	out := f.logs.String()
+	if n := strings.Count(out, "member reports no cloud instance ID"); n != 1 {
+		t.Errorf("warning logged %d times, want 1:\n%s", n, out)
+	}
+	if !strings.Contains(out, "worker_id=c1") || !strings.Contains(out, "worker.cloud_instance_id.source") {
+		t.Errorf("the warning does not name c1 and the configuration key:\n%s", out)
+	}
+}
+
+// A retirement that begins and then aborts leaves a degradation in place: the
+// member that came back is not a machine that registered late. One that
+// really does still clears it.
+func TestScriptActuator_AbortedRetirementKeepsDegradation(t *testing.T) {
+	f := newScriptFixture(t, func(g *store.CapacityGroup) { g.MinMachines = 1 })
+	f.prov.set("list", actionResult{Result: resultUnsupported})
+	f.prov.set("retire", actionResult{Result: resultFailed, Message: "api said no"})
+	cloudMember(t, f.st, f.g.ID, "c1", "i-1")
+	cloudMember(t, f.st, f.g.ID, "c2", "i-2")
+	t0 := time.Now().UTC()
+	putGroupState(t, f.st, store.CapacityGroupState{GroupID: f.g.ID, Requested: 3, RequestedAt: new(t0.Add(-6 * time.Minute))})
+
+	f.sweep(t, t0)
+	if got := groupState(t, f.st, f.g.ID); got.DegradedReason == "" || got.Requested != 2 {
+		t.Fatalf("state = %+v, want degraded at Requested 2", got)
+	}
+
+	// A sweep runs while the script works on the retirement, and sees the
+	// member retiring.
+	f.prov.onCall = func(c providerCall) {
+		if c.action == "retire" {
+			f.s.sweepCapacityAt(t.Context(), t0.Add(2*time.Minute+15*time.Second))
+		}
+	}
+	f.sweep(t, t0.Add(2*time.Minute))
+	if n := len(f.prov.callsOf("retire")); n != 1 {
+		t.Fatalf("retire calls = %d, want 1", n)
+	}
+	f.prov.mu.Lock()
+	f.prov.onCall = nil
+	f.prov.mu.Unlock()
+	f.sweep(t, t0.Add(2*time.Minute+30*time.Second))
+	if got := groupState(t, f.st, f.g.ID); got.DegradedReason == "" {
+		t.Fatalf("state = %+v, want still degraded: the aborted member is no late registrant", got)
+	}
+
+	cloudMember(t, f.st, f.g.ID, "c3", "i-3")
+	f.sweep(t, t0.Add(2*time.Minute+45*time.Second))
+	if got := groupState(t, f.st, f.g.ID); got.DegradedReason != "" || got.DegradedAt != nil {
+		t.Errorf("state = %+v, want the degradation cleared by the late member", got)
+	}
+}
+
+// A new leader that finds an unmet launch while retirements recorded before
+// it are still under way repeats the launch at the member rows, which then
+// outnumber the record: an absolute grow below them would shrink the group.
+func TestScriptActuator_FailoverRepeatAtRowsAboveRequested(t *testing.T) {
+	f := newScriptFixture(t, nil)
+	f.prov.set("retire", actionResult{Result: resultFailed, Message: "api said no"})
+	for i, id := range []string{"c1", "c2", "c3", "c4"} {
+		cloudMember(t, f.st, f.g.ID, id, fmt.Sprintf("i-%d", i+1))
+	}
+	t0 := time.Now().UTC()
+	for _, id := range []string{"c3", "c4"} {
+		if _, ok, err := f.st.BeginRetirement(t.Context(), f.g.ID, id, t0.Add(-time.Second)); err != nil || !ok {
+			t.Fatalf("BeginRetirement %s = %v, %v", id, ok, err)
+		}
+	}
+	putGroupState(t, f.st, store.CapacityGroupState{GroupID: f.g.ID, Requested: 3, RequestedAt: new(t0.Add(-time.Minute))})
+
+	f.sweep(t, t0)
+
+	grows := f.prov.callsOf("grow")
+	if len(grows) != 1 || grows[0].desired != 4 || grows[0].current != 4 {
+		t.Fatalf("grow calls = %+v, want the recorded launch repeated once as grow{4, 4}", grows)
+	}
+}
+
 // A new leader seeds the policy's pacing from the launch record, so it holds
 // the machines already asked for rather than asking again from zero, and
 // repeats the recorded request once.
@@ -697,7 +795,7 @@ func TestScriptActuator_ScaleDownRowGoneEarlyNoDegradeExactRequested(t *testing.
 
 // After a met launch, a preempted member neither degrades the group nor sets
 // off orphan cleanup (which would terminate the backend's replacement): the
-// record follows the members online and a normal grow replaces the machine.
+// record follows the member rows and a normal grow replaces the machine.
 func TestScriptActuator_PreemptionAfterMetLaunchRegrowsWithoutDegrading(t *testing.T) {
 	f := newScriptFixture(t, nil)
 	f.prov.setList("i-1", "i-2", "i-3", "i-4")
@@ -1060,7 +1158,7 @@ func TestActuator_ShutdownPastDrainWritesNothing(t *testing.T) {
 	f.bus.setAnswer(func(string, protocol.ControlMsg) ([]byte, error) {
 		asked <- struct{}{}
 		<-release
-		return controlReply(false, "busy"), nil
+		return controlReply(false, protocol.ControlRefusalBusy), nil
 	})
 	f.s.capState.act.drainTimeout = 20 * time.Millisecond
 	t0 := time.Now().UTC()
@@ -1095,7 +1193,7 @@ func TestActuator_AbandonedCallsWriteNothing(t *testing.T) {
 	f.bus.setAnswer(func(string, protocol.ControlMsg) ([]byte, error) {
 		asked <- struct{}{}
 		<-release
-		return controlReply(false, "busy"), nil
+		return controlReply(false, protocol.ControlRefusalBusy), nil
 	})
 	t0 := time.Now().UTC()
 
@@ -1157,7 +1255,7 @@ func TestActuator_LateResultForVanishedGroupMakesNoSeries(t *testing.T) {
 	f.bus.setAnswer(func(string, protocol.ControlMsg) ([]byte, error) {
 		asked <- struct{}{}
 		<-release
-		return controlReply(false, "busy"), nil
+		return controlReply(false, protocol.ControlRefusalBusy), nil
 	})
 	t0 := time.Now().UTC()
 

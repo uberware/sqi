@@ -272,8 +272,10 @@ type Config struct {
 	WakeOnLANSendTo []string
 
 	// SendWakePackets sends magic packets for macs to each of targets
-	// ("ip:port"). Nil means [wol.Send] with its default burst and gap.
-	SendWakePackets func(ctx context.Context, macs []net.HardwareAddr, targets []string) error
+	// ("ip:port") and reports how many targets it reached, with an error
+	// joining every failure. Nil means [wol.Send] with its default burst and
+	// gap.
+	SendWakePackets func(ctx context.Context, macs []net.HardwareAddr, targets []string) (int, error)
 
 	// OnFenced is called once, with the error, the first time a store write
 	// made under the context [Scheduler.Run] was given fails with
@@ -497,7 +499,7 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 		cfg.WakeOnLANPort = wol.DefaultPort
 	}
 	if cfg.SendWakePackets == nil {
-		cfg.SendWakePackets = func(ctx context.Context, macs []net.HardwareAddr, targets []string) error {
+		cfg.SendWakePackets = func(ctx context.Context, macs []net.HardwareAddr, targets []string) (int, error) {
 			return wol.Send(ctx, macs, targets, wol.DefaultBurst, wol.DefaultGap)
 		}
 	}

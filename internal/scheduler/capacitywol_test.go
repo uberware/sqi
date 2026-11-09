@@ -97,6 +97,46 @@ func TestActuator_WakeFallsBackToDirectWhenRelayRefuses(t *testing.T) {
 	}
 }
 
+// A wake from the server counts as sent when at least one of its targets was
+// reached, and fails only when none was; the targets that failed are logged.
+func TestActuator_WakeFromServerCountsAPartialSend(t *testing.T) {
+	sendErr := errors.New("wol: send to 10.0.0.255:9: network is unreachable")
+	tests := []struct {
+		name        string
+		reached     int
+		wantResult  string
+		wantMessage string
+	}{
+		{"one of three reached", 1, resultOK, "magic packets sent from the server to 1 of 3 targets"},
+		{"none reached", 0, resultFailed, "send magic packets: none of the 3 targets could be reached"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newActFixture(t, nil)
+			f.packets.fail = func([]string) (int, error) { return tc.reached, sendErr }
+			g := createGroup(t, f.st, wolGroup("lan", nil))
+			addNamedMember(t, f.st, g.ID, lanWorker("m1", "192.168.1.21", "aa:bb:cc:dd:ee:01"), false)
+			submitReady(t, f.st, 1, store.Step{})
+
+			f.sweep(t, time.Now().UTC())
+
+			if n := len(f.packets.all()); n != 1 {
+				t.Fatalf("direct sends = %d, want 1", n)
+			}
+			if got := actionsTotal(t, f, "lan", "wake", tc.wantResult); got != 1 {
+				t.Errorf("actions_total{wake,%s} = %v, want 1", tc.wantResult, got)
+			}
+			if la := lastAction(t, f.s, g.ID); la.Result != tc.wantResult || !strings.Contains(la.Message, tc.wantMessage) {
+				t.Errorf("LastAction = %+v, want %s containing %q", la, tc.wantResult, tc.wantMessage)
+			}
+			logs := f.logs.String()
+			if !strings.Contains(logs, "level=WARN") || !strings.Contains(logs, "network is unreachable") {
+				t.Errorf("the failed target is not logged at WARN:\n%s", logs)
+			}
+		})
+	}
+}
+
 // A member that never registered an interface with a MAC and an IPv4 address
 // cannot be woken: the wake fails visibly and the member stays waking, for
 // the boot timeout to settle.
@@ -310,8 +350,8 @@ func TestWakeOnLAN_RetireReplies(t *testing.T) {
 		wantMessage string
 	}{
 		{"accepted", controlReply(true, ""), nil, resultOK, "sleep accepted"},
-		{"already retiring", controlReply(false, "already retiring"), nil, resultOK, "sleep already under way"},
-		{"refused", controlReply(false, "busy"), nil, resultRefused, "worker refused: busy"},
+		{"already retiring", controlReply(false, protocol.ControlRefusalAlreadyRetiring), nil, resultOK, "sleep already under way"},
+		{"refused", controlReply(false, protocol.ControlRefusalBusy), nil, resultRefused, "worker refused: busy"},
 		{"deadline", nil, context.DeadlineExceeded, resultTimeout, "no reply to the sleep request within 10s"},
 		{"nats timeout", nil, nats.ErrTimeout, resultTimeout, "no reply to the sleep request within 10s"},
 		{"no responders", nil, nats.ErrNoResponders, resultFailed, "sleep request failed"},

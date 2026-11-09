@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/netip"
 	"slices"
@@ -39,11 +40,6 @@ const (
 	relayRequestTimeout = 5 * time.Second
 	// limitedBroadcast is the IPv4 limited broadcast address.
 	limitedBroadcast = "255.255.255.255"
-	// workerAlreadyRetiring is the reason a worker refuses a sleep or
-	// shutdown with while it is already carrying one out (see
-	// internal/worker/power). The request is absolute, so that refusal means
-	// the command is under way: a repeat after a failover is answered so.
-	workerAlreadyRetiring = "already retiring"
 )
 
 // noWakeAddress is the result message for a member with nothing to address a
@@ -54,13 +50,16 @@ const noWakeAddress = "no wake-on-LAN address recorded; the worker must register
 type wolProvider struct {
 	port   int
 	sendTo []string
-	// send sends magic packets from the server.
-	send func(ctx context.Context, macs []net.HardwareAddr, targets []string) error
+	// send sends magic packets from the server and reports how many targets
+	// it reached.
+	send func(ctx context.Context, macs []net.HardwareAddr, targets []string) (int, error)
 	// request sends a control request to a worker and returns its reply.
 	request func(ctx context.Context, workerID string, data []byte) ([]byte, error)
 	// relays returns the workers that may relay a wake: the online workers
 	// the scheduler sees. pickRelay applies the rest of the rule.
 	relays func(ctx context.Context) ([]store.Worker, error)
+	// logger receives the targets a send from the server could not reach.
+	logger *slog.Logger
 }
 
 // newWOLProvider returns the wake_on_lan provider over the scheduler's
@@ -72,6 +71,7 @@ func (s *Scheduler) newWOLProvider() *wolProvider {
 		send:    s.cfg.SendWakePackets,
 		request: s.bus.RequestWorkerControl,
 		relays:  s.onlineWorkers,
+		logger:  s.logger,
 	}
 }
 
@@ -106,10 +106,29 @@ func (p *wolProvider) wakeOne(ctx context.Context, w store.Worker, relays []stor
 	}
 
 	targets := append(nonEmpty(limited, directed), p.sendTo...)
-	if err := p.send(ctx, macs, targets); err != nil {
-		return actionResult{Result: resultFailed, Message: "send magic packets: " + err.Error()}
+	reached, err := p.send(ctx, macs, targets)
+	if err != nil && p.logger != nil {
+		p.logger.WarnContext(ctx, "scheduler: wake-on-LAN: magic packets could not be sent to some targets",
+			slog.String("worker_id", w.ID), slog.Int("reached", reached), slog.Int("targets", len(targets)),
+			slog.Any("error", err))
 	}
-	return actionResult{Result: resultOK, Message: "magic packets sent from the server"}
+	// A sleeping NIC needs one packet to arrive, so one target reached is a
+	// wake sent: a host with no route for the limited broadcast, say, still
+	// reaches the directed broadcast or a send_to relay.
+	switch {
+	case reached == 0:
+		return actionResult{
+			Result:  resultFailed,
+			Message: fmt.Sprintf("send magic packets: none of the %d targets could be reached", len(targets)),
+		}
+	case reached < len(targets):
+		return actionResult{
+			Result:  resultOK,
+			Message: fmt.Sprintf("magic packets sent from the server to %d of %d targets", reached, len(targets)),
+		}
+	default:
+		return actionResult{Result: resultOK, Message: "magic packets sent from the server"}
+	}
 }
 
 // relayWake asks relayID to send magic packets for macs to targets and
@@ -162,11 +181,20 @@ func retireResult(cmd protocol.ControlCommand, reply protocol.ControlReplyMsg, e
 		return actionResult{Result: resultTimeout, Message: fmt.Sprintf("no reply to the %s request within %s", cmd, controlRequestTimeout)}
 	case errors.As(err, &garbled):
 		return actionResult{Result: resultFailed, Message: err.Error()}
+	case errors.Is(err, nats.ErrNoResponders):
+		// No worker is subscribed to the control subject, so nothing was
+		// delivered. Whether that ends the retirement depends on whether it
+		// was the first request (see Scheduler.applyRetireResults).
+		return actionResult{
+			Result: resultFailed, Message: fmt.Sprintf("%s request failed: %v", cmd, err), undelivered: true,
+		}
 	case err != nil:
 		return actionResult{Result: resultFailed, Message: fmt.Sprintf("%s request failed: %v", cmd, err)}
 	case reply.Accepted:
 		return actionResult{Result: resultOK, Message: string(cmd) + " accepted"}
-	case reply.Reason == workerAlreadyRetiring:
+	case reply.Reason == protocol.ControlRefusalAlreadyRetiring:
+		// The request is absolute, so this refusal means the command is under
+		// way: a repeat after a failover is answered so.
 		return actionResult{Result: resultOK, Message: string(cmd) + " already under way"}
 	default:
 		return actionResult{Result: resultRefused, Message: "worker refused: " + reply.Reason}

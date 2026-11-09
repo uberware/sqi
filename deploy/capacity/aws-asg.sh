@@ -105,8 +105,9 @@ case $action in
   grow)
     want=$(jq -r '(.desired // 0) | if type == "number" and . >= 0 and . <= 100000 and . == floor then tostring else "bad" end' <<<"$req")
     [[ $want =~ ^[0-9]+$ ]] || die "desired must be a whole number from 0 to 100000"
-    have=$(jq -r '(.current // 0) | if type == "number" and . >= 0 and . <= 100000 and . == floor then tostring else "bad" end' <<<"$req")
-    [[ $have =~ ^[0-9]+$ ]] || die "current must be a whole number from 0 to 100000"
+    # current is only checked: the group's own size decides, not sqi's record of it (see grow above).
+    [[ $(jq -r '(.current // 0) | if type == "number" and . >= 0 and . <= 100000 and . == floor then tostring else "bad" end' <<<"$req") =~ ^[0-9]+$ ]] ||
+      die "current must be a whole number from 0 to 100000"
     load_group
     group_size
     if ((want <= actual)); then

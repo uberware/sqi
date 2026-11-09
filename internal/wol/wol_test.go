@@ -119,8 +119,9 @@ func TestSend_DeliversBurstToEachTarget(t *testing.T) {
 	a, b := listen(t), listen(t)
 	targets := []string{a.LocalAddr().String(), b.LocalAddr().String()}
 
-	if err := wol.Send(context.Background(), macs, targets, 3, time.Millisecond); err != nil {
-		t.Fatalf("Send: %v", err)
+	reached, err := wol.Send(context.Background(), macs, targets, 3, time.Millisecond)
+	if err != nil || reached != 2 {
+		t.Fatalf("Send = %d, %v; want 2 targets reached, no error", reached, err)
 	}
 
 	for _, conn := range []*net.UDPConn{a, b} {
@@ -158,20 +159,49 @@ func TestSend_ContinuesPastABadTarget(t *testing.T) {
 	good := listen(t)
 	targets := []string{"not a target", good.LocalAddr().String()}
 
-	err := wol.Send(context.Background(), macs, targets, 2, time.Millisecond)
+	reached, err := wol.Send(context.Background(), macs, targets, 2, time.Millisecond)
 	if err == nil {
 		t.Fatal("Send returned nil, want the bad target's error")
+	}
+	if reached != 1 {
+		t.Errorf("reached = %d, want 1: the good target", reached)
 	}
 	if got := drain(t, good, 2); len(got) != 2 {
 		t.Errorf("good target received %d packets, want 2", len(got))
 	}
 }
 
+// Send reports how many targets it reached, so a caller can count a wake
+// sent when at least one was.
+func TestSend_CountsTargetsReached(t *testing.T) {
+	macs := []net.HardwareAddr{mustMAC(t, "01:02:03:04:05:06")}
+	good := listen(t)
+	tests := []struct {
+		name    string
+		targets []string
+		reached int
+		wantErr bool
+	}{
+		{"all reached", []string{good.LocalAddr().String()}, 1, false},
+		{"one of two reached", []string{"not a target", good.LocalAddr().String()}, 1, true},
+		{"none reached", []string{"not a target", "[::1]:9"}, 0, true},
+		{"no targets", nil, 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reached, err := wol.Send(context.Background(), macs, tt.targets, 1, 0)
+			if reached != tt.reached || (err != nil) != tt.wantErr {
+				t.Errorf("Send = %d, %v; want %d reached, error %v", reached, err, tt.reached, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestSend_BadMACIsAnError(t *testing.T) {
 	good := listen(t)
-	err := wol.Send(context.Background(), []net.HardwareAddr{{1, 2, 3}}, []string{good.LocalAddr().String()}, 1, 0)
-	if err == nil {
-		t.Fatal("Send with a 3-byte MAC returned nil")
+	reached, err := wol.Send(context.Background(), []net.HardwareAddr{{1, 2, 3}}, []string{good.LocalAddr().String()}, 1, 0)
+	if err == nil || reached != 0 {
+		t.Fatalf("Send with a 3-byte MAC = %d, %v; want 0 targets reached and an error", reached, err)
 	}
 }
 
@@ -182,7 +212,7 @@ func TestSend_StopsOnCanceledContext(t *testing.T) {
 	cancel()
 
 	start := time.Now()
-	err := wol.Send(ctx, macs, []string{good.LocalAddr().String()}, 3, time.Hour)
+	_, err := wol.Send(ctx, macs, []string{good.LocalAddr().String()}, 3, time.Hour)
 	if err == nil {
 		t.Error("Send on a canceled context returned nil")
 	}

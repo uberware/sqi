@@ -261,6 +261,14 @@ type NetInterface struct {
 	Addrs []string `json:"addrs,omitempty"`
 }
 
+// The most of [RegisterMsg.Interfaces] that counts: a worker reports at most
+// MaxInterfaces interfaces, each with at most MaxAddrsPerInterface addresses,
+// and the server drops anything beyond.
+const (
+	MaxInterfaces        = 32
+	MaxAddrsPerInterface = 16
+)
+
 // ControlCommand names a power command the server sends a worker.
 type ControlCommand string
 
@@ -299,6 +307,19 @@ type ControlReplyMsg struct {
 	// Reason says why the worker refused. Set only when Accepted is false.
 	Reason string `json:"reason,omitempty"`
 }
+
+// The reasons a worker refuses a sleep or shutdown with, as
+// [ControlReplyMsg.Reason] carries them. The server reads them.
+const (
+	// ControlRefusalBusy: the worker is running a task.
+	ControlRefusalBusy = "busy"
+	// ControlRefusalNotAllowed: the operator has not allowed remote sleep.
+	ControlRefusalNotAllowed = "worker.power.allow_remote_sleep is false"
+	// ControlRefusalAlreadyRetiring: the worker is already carrying out a
+	// sleep or shutdown. The command is under way, so a server repeating it
+	// reads this as accepted.
+	ControlRefusalAlreadyRetiring = "already retiring"
+)
 
 // ExtensionLogChecks is the name of the sqi-defined step-level log-check
 // extension, as a worker advertises it in [RegisterMsg.Extensions].

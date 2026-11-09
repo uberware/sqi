@@ -1212,3 +1212,40 @@ func assertOneWinner(t *testing.T, st store.Store, taskID, workerID string) {
 		t.Fatalf("task %s is %s, want ready after the lost lease", taskID, task.Status)
 	}
 }
+
+// TestPGRace_PutCapacityGroupStateForAGroupDeletedMeanwhile: a group deleted
+// between the state write's check that it exists and the write itself makes
+// the foreign key refuse the write, which reads as the group not existing,
+// the answer the check would have given a moment later.
+func TestPGRace_PutCapacityGroupStateForAGroupDeletedMeanwhile(t *testing.T) {
+	st, p := pgRace(t)
+	farmID, _ := seedFarmQueueRace(t, st)
+	g, err := st.CreateCapacityGroup(t.Context(), store.CapacityGroup{
+		ID: "cg-" + uuid.NewString()[:8], FarmID: farmID, Name: "g-" + uuid.NewString()[:8],
+		Kind: store.CapacityGroupNamed, Provider: store.CapacityProviderWakeOnLAN, Enabled: true,
+		MaxMachines: 1, MaxStepUp: 1, IdleTimeout: time.Minute, BootTimeout: time.Minute,
+		RetireAction: store.CapacityRetireSleep,
+	})
+	if err != nil {
+		t.Fatalf("CreateCapacityGroup: %v", err)
+	}
+	p.atStatement(sqlstore.SQLPutCapacityGroupState) // the group was found, nothing written yet
+
+	errc := make(chan error, 1)
+	go func() {
+		errc <- st.PutCapacityGroupState(t.Context(), store.CapacityGroupState{GroupID: g.ID, Requested: 2, UpdatedAt: time.Now().UTC()})
+	}()
+	select {
+	case <-p.hit:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the state write never reached its upsert")
+	}
+	if err := st.DeleteCapacityGroup(t.Context(), g.ID); err != nil {
+		t.Fatalf("DeleteCapacityGroup: %v", err)
+	}
+	p.resume()
+	if err := <-errc; !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("PutCapacityGroupState = %v, want ErrNotFound", err)
+	}
+	assertPausedAt(t, p, sqlstore.SQLPutCapacityGroupState)
+}

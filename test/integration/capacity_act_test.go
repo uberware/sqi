@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -167,27 +168,6 @@ func actWorker(t *testing.T, ts *testServer, id string) (actWorkerWire, int) {
 	return w, code
 }
 
-// actTask is the subset of a task these tests read.
-type actTask struct {
-	ID                  string `json:"id"`
-	Status              string `json:"status"`
-	AssignedWorkerID    string `json:"assigned_worker_id"`
-	FailedAttempts      int    `json:"failed_attempts"`
-	UnschedulableReason string `json:"unschedulable_reason"`
-}
-
-// actJobTasks returns every task of jobID.
-func actJobTasks(t *testing.T, ts *testServer, jobID string) []actTask {
-	t.Helper()
-	var resp struct {
-		Items []actTask `json:"items"`
-	}
-	if code := getActJSON(t, ts, "/api/v1/jobs/"+jobID+"/tasks?limit=1000", &resp); code != http.StatusOK {
-		t.Fatalf("GET /jobs/%s/tasks: HTTP %d", jobID, code)
-	}
-	return resp.Items
-}
-
 // submitActJob submits yamlBody to queueID in farmID through ts's client and
 // returns the job's ID. With authentication on the job's owner is the session's
 // user; off, it is "capacity-test".
@@ -332,10 +312,11 @@ func (w *actWorkerProc) kill() {
 
 // stop asks the worker to shut down gracefully and waits for it, killing it
 // when it cannot be asked or has not exited within actStopWait. It reports
-// whether it exited on the request.
+// whether it exited on the request: a worker that had already exited was not
+// stopped gracefully.
 func (w *actWorkerProc) stop() (graceful bool, err error) {
 	if w.exited() {
-		return true, nil
+		return false, nil
 	}
 	if err := interruptProcess(w.cmd.Process); err != nil {
 		w.kill()
@@ -575,6 +556,14 @@ func testWOLSleepAndWake(t *testing.T) {
 	if err := os.WriteFile(gate, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// Only a packet the job causes counts.
+	for drained := false; !drained; {
+		select {
+		case <-f.packets:
+		default:
+			drained = true
+		}
+	}
 	submitted := time.Now()
 	jobID := submitActJob(t, f.ts, f.farmID, f.queueID, actJobYAML("Wake On LAN Test", 1, f.testBin, gate, false), false)
 	deadline := time.After(30 * time.Second)
@@ -598,7 +587,7 @@ func testWOLSleepAndWake(t *testing.T) {
 	t.Logf("magic packet for %s received %s after the job was submitted", woken, time.Since(submitted).Round(time.Millisecond))
 
 	// The task names the group it waits for.
-	tasks := actJobTasks(t, f.ts, jobID)
+	tasks := capacityJobTasks(t, f.ts, jobID)
 	if len(tasks) != 1 {
 		t.Fatalf("job %s has %d tasks, want 1", jobID, len(tasks))
 	}
@@ -642,7 +631,7 @@ func testWOLSleepAndWake(t *testing.T) {
 
 func testWOLRefused(t *testing.T) {
 	f := newWOLFarm(t, false)
-	f.startWorker(t)
+	worker := f.startWorker(t)
 	workerID := pollForOnlineWorker(t, f.ts, f.farmID, 60*time.Second)
 	group := f.joinWOLGroup(t, workerID)
 	joined := time.Now()
@@ -673,21 +662,15 @@ func testWOLRefused(t *testing.T) {
 	if _, err := os.Stat(f.marker); err == nil {
 		t.Error("the sleep command ran although remote sleep is not allowed")
 	}
-}
-
-// actTaskDetail is the subset of GET /tasks/{id} these tests read.
-type actTaskDetail struct {
-	ID                  string `json:"id"`
-	Status              string `json:"status"`
-	AssignedWorkerID    string `json:"assigned_worker_id"`
-	FailedAttempts      int    `json:"failed_attempts"`
-	UnschedulableReason string `json:"unschedulable_reason"`
+	if worker.exited() {
+		t.Error("the worker process exited although its retirement was refused")
+	}
 }
 
 // getTaskDetailAct reads task id.
-func getTaskDetailAct(t *testing.T, ts *testServer, id string) actTaskDetail {
+func getTaskDetailAct(t *testing.T, ts *testServer, id string) capacityTask {
 	t.Helper()
-	var task actTaskDetail
+	var task capacityTask
 	if code := getActJSON(t, ts, "/api/v1/tasks/"+id, &task); code != http.StatusOK {
 		t.Fatalf("GET /tasks/%s: HTTP %d", id, code)
 	}
@@ -741,7 +724,22 @@ func newScriptProvider(t *testing.T) *scriptProvider {
 	return p
 }
 
+// instanceIDPath is the GCP metadata path a worker reads its instance name
+// from, under the endpoint the provider gives each worker it starts.
+const instanceIDPath = "/computeMetadata/v1/instance/name"
+
 func (p *scriptProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// A worker this provider started reads its cloud instance ID here: a
+	// sized script group retires only members that report one.
+	if id, ok := strings.CutPrefix(r.URL.Path, "/metadata/"); ok && r.Method == http.MethodGet {
+		workerID, found := strings.CutSuffix(id, instanceIDPath)
+		if !found || workerID == "" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = io.WriteString(w, "inst-"+workerID) //nolint:errcheck // a failed reply fails the worker's read, which the test sees
+		return
+	}
 	var req script.Request
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		p.fail(fmt.Errorf("decode a provider request: %w", err))
@@ -792,6 +790,8 @@ func (p *scriptProvider) grow(n int) error {
 			"SQI_WORKER_NATS_SERVER_URL=http://" + p.ts.HTTPAddr,
 			"SQI_WORKER_NATS_JOIN_TOKEN=" + p.groupToken,
 			"SQI_WORKER_CAPABILITY_TAGS=special=yes",
+			"SQI_WORKER_CLOUD_INSTANCE_ID_SOURCE=gcp",
+			"SQI_WORKER_CLOUD_INSTANCE_ID_ENDPOINT=" + p.srv.URL + "/metadata/" + id,
 		})
 		if err != nil {
 			return err
@@ -998,7 +998,7 @@ func TestCapacityGroup_ScriptGrowAndRetire(t *testing.T) {
 
 	// Both members hold a task before any is released.
 	waitUntil(t, 60*time.Second, "a task running on each member", func() (bool, string) {
-		tasks := actJobTasks(t, ts, jobID)
+		tasks := capacityJobTasks(t, ts, jobID)
 		var on []string
 		for _, task := range tasks {
 			if task.Status == "running" && !slices.Contains(on, task.AssignedWorkerID) {
@@ -1010,10 +1010,13 @@ func TestCapacityGroup_ScriptGrowAndRetire(t *testing.T) {
 
 	// Release the work just after a sweep, so both members finish inside one
 	// sweep interval (see scriptSweepInterval).
-	before := actGroup(t, ts, group.ID).Status.EvaluatedAt
+	var before time.Time
+	if s := actGroup(t, ts, group.ID).Status; s != nil {
+		before = s.EvaluatedAt
+	}
 	waitUntil(t, 2*scriptSweepInterval+5*time.Second, "a sweep to release the work after", func() (bool, string) {
 		s := actGroup(t, ts, group.ID).Status
-		return s.EvaluatedAt.After(before), describeStatus(s)
+		return s != nil && s.EvaluatedAt.After(before), describeStatus(s)
 	})
 	if err := os.WriteFile(gate, nil, 0o600); err != nil {
 		t.Fatalf("release the tasks: %v", err)
@@ -1023,7 +1026,7 @@ func TestCapacityGroup_ScriptGrowAndRetire(t *testing.T) {
 		t.Fatalf("job %s ended %q, want completed", jobID, final)
 	}
 	t.Logf("job completed %s after the release", time.Since(released).Round(time.Millisecond))
-	for _, task := range actJobTasks(t, ts, jobID) {
+	for _, task := range capacityJobTasks(t, ts, jobID) {
 		attempts := taskAttempts(t, ts, task.ID)
 		if task.Status != "succeeded" || task.FailedAttempts != 0 || len(attempts) != 1 || attempts[0].Status != "succeeded" {
 			t.Errorf("task %s: %s, failed_attempts %d, attempts %+v; want succeeded at its one attempt",
@@ -1076,6 +1079,9 @@ func TestCapacityGroup_ScriptGrowAndRetire(t *testing.T) {
 	if len(retires) == 1 {
 		for _, m := range retires[0].Members {
 			named = append(named, m.WorkerID)
+			if m.InstanceID != "inst-"+m.WorkerID {
+				t.Errorf("retire names %s with instance ID %q, want the one it reported, %q", m.WorkerID, m.InstanceID, "inst-"+m.WorkerID)
+			}
 		}
 	}
 	if len(retires) != 1 || !sameIDs(named, members) {

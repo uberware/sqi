@@ -207,7 +207,7 @@ func TestController_SleepNotOptedInRefused(t *testing.T) {
 			h.sendCmd(cmd)
 			h.wait()
 			r := h.lastReply()
-			if r.Accepted || !strings.Contains(r.Reason, "worker.power.allow_remote_sleep is false") {
+			if r.Accepted || r.Reason != protocol.ControlRefusalNotAllowed {
 				t.Fatalf("reply = %+v, want a refusal naming worker.power.allow_remote_sleep", r)
 			}
 			if got := h.snapshot(); !slices.Equal(got, []string{"reply:accepted=false"}) {
@@ -227,7 +227,7 @@ func TestController_BusyWorkerRefusesSleep(t *testing.T) {
 			h.sendCmd(cmd)
 			h.wait()
 			r := h.lastReply()
-			if r.Accepted || r.Reason != "busy" {
+			if r.Accepted || r.Reason != protocol.ControlRefusalBusy {
 				t.Fatalf("reply = %+v, want a refusal with reason busy", r)
 			}
 			if got := h.snapshot(); !slices.Equal(got, []string{"reply:accepted=false"}) {
@@ -277,22 +277,36 @@ func TestController_SleepDeregistersRetiredThenRuns(t *testing.T) {
 	}
 }
 
-func TestController_ShutdownRunsAndDoesNothingAfter(t *testing.T) {
+// A shutdown that succeeds ends the process before anything else happens. One
+// whose command exited 0 but left the machine running must not leave the
+// worker deregistered for good: like a sleep, it re-registers once 60 s have
+// passed.
+func TestController_ShutdownThatDoesNotPowerOffReregistersAfterFallback(t *testing.T) {
 	h := newHarness(t, optedIn())
+	h.clock.step = 20 * time.Second
+	start := h.clock.peek()
 	h.sendCmd(protocol.ControlShutdown)
 	h.wait()
 	want := []string{
 		"reply:accepted=true",
 		"deregister:capacity group retirement: shutdown:retired",
 		"run:my-off",
+		"reregister",
 	}
 	if got := h.snapshot(); !slices.Equal(got, want) {
 		t.Fatalf("events = %v, want %v", got, want)
+	}
+	h.mu.Lock()
+	regAt := h.regTimes[0]
+	h.mu.Unlock()
+	if regAt.Sub(start) < resumeFallback {
+		t.Errorf("re-registered %s after the start, before the %s fallback", regAt.Sub(start), resumeFallback)
 	}
 }
 
 func TestController_DefaultCommandUsedWhenNoneConfigured(t *testing.T) {
 	h := newHarness(t, Config{AllowRemoteSleep: true})
+	h.clock.step = 20 * time.Second // the test machine keeps running: the fallback ends the wait
 	h.sendCmd(protocol.ControlShutdown)
 	h.wait()
 	if got := h.snapshot(); !slices.Contains(got, "run:default-off") {
@@ -412,7 +426,7 @@ func TestController_SecondSleepRefused(t *testing.T) {
 
 	for _, cmd := range []protocol.ControlCommand{protocol.ControlSleep, protocol.ControlShutdown} {
 		h.sendCmd(cmd)
-		if r := h.lastReply(); r.Accepted || r.Reason != "already retiring" {
+		if r := h.lastReply(); r.Accepted || r.Reason != protocol.ControlRefusalAlreadyRetiring {
 			t.Fatalf("second %s: reply = %+v, want refusal already retiring", cmd, r)
 		}
 	}

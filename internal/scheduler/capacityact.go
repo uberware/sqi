@@ -67,7 +67,13 @@ const (
 )
 
 // actionResult is what a provider reports for one action.
-type actionResult struct{ Result, Message string }
+type actionResult struct {
+	Result, Message string
+	// undelivered marks a wake_on_lan retire request that reached no one: no
+	// worker was subscribed to the member's control subject. See
+	// [Scheduler.applyRetireResults] for what it means.
+	undelivered bool
+}
 
 // capacityProvider is a mechanism that starts and stops a group's machines.
 // Each method blocks until the provider has answered and reports the result;
@@ -129,13 +135,18 @@ func groupIntent(groupID, intent string, at time.Time) intentKey {
 // actuatorState is what the actuator keeps between ticks. It lives in memory
 // only (see the file comment).
 type actuatorState struct {
-	// dispatched and unconfigured are touched only with the capacity
+	// dispatched, begun and unconfigured are touched only with the capacity
 	// sweep's sweepMu held.
 	//
 	// dispatched holds every intent this process has sent; it is never
 	// pruned, so each intent is sent at most once per process. Each entry
 	// is a few words, one per transition the server has made.
 	dispatched map[intentKey]struct{}
+	// begun holds the retirements this process began (its own
+	// BeginRetirement moved the member to retiring) and has not yet sent, so
+	// the dispatch can tell a first request from one re-sent after a restart
+	// or a failover. An entry goes when its intent is dispatched.
+	begun map[intentKey]struct{}
 	// unconfigured is, per group ID, the script provider whose absence from
 	// the configuration was last logged.
 	unconfigured map[string]store.CapacityProvider
@@ -350,6 +361,8 @@ func (s *Scheduler) expireCapacityTransitions(
 				s.logger.WarnContext(ctx, "scheduler: capacity group member did not retire; it is awake again",
 					slog.String("group", g.Name), slog.String("worker_id", id), slog.String("reason", reason))
 				setMemberPower(members, g.ID, id, store.PowerAwake, now, reason)
+				// A lease request it parked while retiring may take work now.
+				s.WakeWorker(id)
 			}
 			if len(expired) > 0 {
 				s.countCapacity(g, func() {
@@ -527,8 +540,11 @@ func (s *Scheduler) actOnGroup(
 				slog.String("group", g.Name), slog.Any("worker_ids", ids))
 		}
 	}
+	if p.kind == providerKindScript && g.Kind == store.CapacityGroupSized {
+		st.RetireCandidates = s.retirableByInstance(ctx, g, members, st.RetireCandidates)
+	}
 	for _, id := range st.RetireCandidates {
-		_, ok, err := s.store.BeginRetirement(ctx, g.ID, id, now)
+		w, ok, err := s.store.BeginRetirement(ctx, g.ID, id, now)
 		if s.stopIfFenced(ctx, err) {
 			return true
 		}
@@ -536,6 +552,7 @@ func (s *Scheduler) actOnGroup(
 			slog.String("group", g.Name), slog.String("worker_id", id))
 		if ok {
 			moved = true
+			s.capState.act.noteBegun(w)
 			s.logger.InfoContext(ctx, "scheduler: capacity group retiring an idle member",
 				slog.String("group", g.Name), slog.String("worker_id", id), slog.String("action", g.RetireAction))
 		}
@@ -562,10 +579,46 @@ func (s *Scheduler) actOnGroup(
 	return false
 }
 
+// retirableByInstance returns the candidates of g, a sized script group, that
+// report a cloud instance ID among members. A script retires a sized group's
+// member by its instance, so one with none could not be retired: the request
+// would fail and put it back to awake, once every idle timeout, for good. Each
+// one left out is warned about once per process.
+func (s *Scheduler) retirableByInstance(
+	ctx context.Context, g store.CapacityGroup, members []store.Worker, candidates []string,
+) []string {
+	var out []string
+	for _, id := range candidates {
+		i := slices.IndexFunc(members, func(w store.Worker) bool { return w.ID == id })
+		if i < 0 || members[i].CloudInstanceID != "" {
+			out = append(out, id)
+			continue
+		}
+		s.warnCapacityOnce(ctx, id, "retire", g.ID,
+			"scheduler: capacity group member not retired: the member reports no cloud instance ID, "+
+				"so its provider cannot name its instance",
+			slog.String("group", g.Name),
+			slog.String("remediation", "set worker.cloud_instance_id.source on the group's machines"))
+	}
+	return out
+}
+
 // capacityCall is everything one provider call for a group does, in order.
 type capacityCall struct {
 	wake, retire []store.Worker
-	group        groupCall
+	// firstRetire holds the IDs of the retire members whose retirement this
+	// process began, as opposed to one it found recorded and re-sends.
+	firstRetire map[string]bool
+	group       groupCall
+}
+
+// noteBegun records that this process moved w to retiring (see
+// actuatorState.begun). It is called with the capacity sweep's sweepMu held.
+func (a *actuatorState) noteBegun(w store.Worker) {
+	if a.begun == nil {
+		a.begun = map[intentKey]struct{}{}
+	}
+	a.begun[memberIntent(w)] = struct{}{}
 }
 
 // dispatchIntents starts one provider call for g, unless one is running, with
@@ -595,6 +648,12 @@ func (s *Scheduler) dispatchIntents(
 			c.wake = append(c.wake, w)
 		case w.PowerState == store.PowerRetiring && w.Status == store.WorkerStatusOnline:
 			c.retire = append(c.retire, w)
+			if _, first := act.begun[key]; first {
+				if c.firstRetire == nil {
+					c.firstRetire = map[string]bool{}
+				}
+				c.firstRetire[w.ID] = true
+			}
 		default:
 			continue
 		}
@@ -608,6 +667,7 @@ func (s *Scheduler) dispatchIntents(
 	}
 	for _, k := range keys {
 		act.dispatched[k] = struct{}{}
+		delete(act.begun, k)
 	}
 	act.setInFlight(g.ID, true)
 	// The call keeps ctx's values, the leader epoch among them, so its
@@ -644,7 +704,7 @@ func (s *Scheduler) runCapacityCall(ctx context.Context, now time.Time, g store.
 	if len(c.retire) > 0 && s.mayActOn() {
 		s.logger.InfoContext(ctx, "scheduler: capacity provider retiring members",
 			slog.String("group", g.Name), slog.String("action", g.RetireAction), slog.Any("worker_ids", workerIDs(c.retire)))
-		s.applyRetireResults(ctx, now, g, p.kind, c.retire, p.retire(ctx, g, c.retire))
+		s.applyRetireResults(ctx, now, g, p.kind, c, p.retire(ctx, g, c.retire))
 	}
 	s.runGroupCall(ctx, now, g, p, c.group)
 }
@@ -664,22 +724,33 @@ func (s *Scheduler) applyWakeResults(
 	}
 }
 
-// applyRetireResults records each retire result and applies it through a
-// fenced write: success as the provider's kind says
+// applyRetireResults records each retire result of c's members and applies it
+// through a fenced write: success as the provider's kind says
 // ([Scheduler.retireAccepted]), and a failure that the kind says ends the
-// retirement ([abortsRetirement]) by putting the member back to awake at once;
-// any other failure leaves the member retiring for the boot timeout to
-// settle. A sized script group's launch record is lowered for the members the
-// script retired first ([Scheduler.lowerRequested]), before any of them is
-// deleted. A fenced write stops it, and so does shutdown closing the
-// actuator's gate.
+// retirement ([abortsRetirement]) by putting the member back to awake at once,
+// which also releases a lease request it parked meanwhile; any other failure
+// leaves the member retiring for the boot timeout to settle. A sized script
+// group's launch record is lowered for the members the script retired first
+// ([Scheduler.lowerRequested]), before any of them is deleted. A fenced write
+// stops it, and so does shutdown closing the actuator's gate.
+//
+// A wake_on_lan request that reached no one ([actionResult.undelivered]) is
+// read by who began the retirement. When this process did, the request was
+// its first: the worker is online but not listening on its control subject,
+// nothing was delivered, and the retirement is refused, so the member goes
+// back to awake rather than being held out of work for a boot timeout on
+// every idle timeout. A request re-sent for a retirement recorded before this
+// process (after a restart or a failover) keeps the failure: the worker may
+// have carried out the first request and left already, and its queued
+// deregistration finishes the retirement, or the boot timeout settles it.
 func (s *Scheduler) applyRetireResults(
-	ctx context.Context, now time.Time, g store.CapacityGroup, kind providerKind, members []store.Worker,
+	ctx context.Context, now time.Time, g store.CapacityGroup, kind providerKind, c capacityCall,
 	results map[string]actionResult,
 ) {
 	if s.deposed() {
 		return
 	}
+	members := c.retire
 	if kind == providerKindScript && g.Kind == store.CapacityGroupSized {
 		var retired []string
 		for _, w := range members {
@@ -693,18 +764,26 @@ func (s *Scheduler) applyRetireResults(
 	}
 	for _, w := range members {
 		r := resultFor(results, w.ID)
+		if r.undelivered && c.firstRetire[w.ID] {
+			r = actionResult{Result: resultRefused, Message: "worker is not listening on its control subject"}
+		}
 		s.recordAction(ctx, now, g, actionRetire, w.ID, r)
 		var err error
+		var aborted bool
 		open := s.capState.act.gate.do(func() {
 			switch {
 			case r.Result == resultOK:
 				err = s.retireAccepted(ctx, now, kind, g, w)
 			case abortsRetirement(kind, r.Result):
-				_, err = s.store.AbortRetirement(ctx, w.ID, now, r.Message)
+				aborted, err = s.store.AbortRetirement(ctx, w.ID, now, r.Message)
 			}
 		})
 		if !open || s.stopIfFenced(ctx, err) {
 			return
+		}
+		if aborted {
+			// A lease request it parked while retiring may take work now.
+			s.WakeWorker(w.ID)
 		}
 		s.warnUnlessStopped(ctx, err, "scheduler: capacity provider: apply retire result failed",
 			slog.String("group", g.Name), slog.String("worker_id", w.ID))
@@ -713,11 +792,11 @@ func (s *Scheduler) applyRetireResults(
 
 // abortsRetirement reports whether a retire result of a provider of kind puts
 // the member back to awake at once. A worker refusing or not answering a
-// wake_on_lan sleep keeps running, but a failure to deliver the command (no
-// responders, an unreadable reply) may mean it already left, so that waits
-// for the boot timeout, and for a deregistration that finishes the retirement
-// meanwhile. A script that did not carry out a retire has left the machine
-// running, whatever the reason.
+// wake_on_lan sleep keeps running, but any other failure (an unreadable reply,
+// or no responders to a re-sent request, see [Scheduler.applyRetireResults])
+// may mean it already left, so that waits for the boot timeout, and for a
+// deregistration that finishes the retirement meanwhile. A script that did not
+// carry out a retire has left the machine running, whatever the reason.
 func abortsRetirement(kind providerKind, result string) bool {
 	if kind == providerKindScript {
 		return result != resultOK

@@ -17,6 +17,10 @@ import (
 // The store lock stands in for the SQL stores' worker-row anchors: each
 // transition decides and writes under it, as each SQL transition does under the
 // rows it locks.
+//
+// An empty group ID names no group, as it matches no row in SQL, so the
+// group-scoped transitions return before they look at a worker: a worker in
+// no group has an empty CapacityGroupID too.
 
 // setPowerLocked moves worker w to state at now with reason and stores it.
 // Caller holds s.mu.
@@ -34,6 +38,9 @@ func (s *Store) MarkWaking(ctx context.Context, groupID string, workerIDs []stri
 	defer s.mu.Unlock()
 	if err := s.fenceLocked(ctx); err != nil {
 		return nil, err
+	}
+	if groupID == "" {
+		return nil, nil
 	}
 
 	var moved []string
@@ -71,6 +78,9 @@ func (s *Store) FailWakes(ctx context.Context, groupID string, cutoff, now time.
 	if err := s.fenceLocked(ctx); err != nil {
 		return nil, err
 	}
+	if groupID == "" {
+		return nil, nil
+	}
 
 	var failed []store.Worker
 	for _, w := range s.overdueMembersLocked(groupID, store.PowerWaking, cutoff) {
@@ -88,7 +98,7 @@ func (s *Store) BeginRetirement(ctx context.Context, groupID, workerID string, n
 	}
 
 	w, ok := s.workers[workerID]
-	if !ok || w.CapacityGroupID != groupID || w.Status != store.WorkerStatusOnline || w.Disabled ||
+	if !ok || groupID == "" || w.CapacityGroupID != groupID || w.Status != store.WorkerStatusOnline || w.Disabled ||
 		w.PowerState != store.PowerAwake || s.hasWorkInFlightLocked(workerID) {
 		return store.Worker{}, false, nil
 	}
@@ -115,12 +125,19 @@ func (s *Store) FinishRetirement(
 		return store.Worker{}, false, false, fmt.Errorf("store: finish retirement of worker %s, which holds a task: %w",
 			workerID, store.ErrConflict)
 	}
+	prior := current
 	current.Status = store.WorkerStatusOffline
 	asleep := s.setPowerLocked(current, store.PowerAsleep, now, "")
 	if !asleep.Ephemeral {
 		return cloneWorker(asleep), false, true, nil
 	}
-	gone, _ := s.deleteEphemeralWorkerLocked(workerID, now, func(store.Worker) bool { return true })
+	gone, deleted := s.deleteEphemeralWorkerLocked(workerID, now, func(store.Worker) bool { return true })
+	if !deleted {
+		// The SQL stores roll the whole transition back.
+		s.workers[workerID] = prior
+		return store.Worker{}, false, false, fmt.Errorf("store: retired ephemeral worker %s was not deleted: %w",
+			workerID, store.ErrConflict)
+	}
 	return gone, true, true, nil
 }
 
@@ -146,6 +163,9 @@ func (s *Store) ExpireRetirements(ctx context.Context, groupID string, cutoff, n
 	defer s.mu.Unlock()
 	if err := s.fenceLocked(ctx); err != nil {
 		return nil, err
+	}
+	if groupID == "" {
+		return nil, nil
 	}
 
 	var expired []string

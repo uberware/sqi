@@ -528,6 +528,6 @@ capacity:
     port: 9
 
     # Extra ip:port targets for machines the server's own broadcast does not
-    # reach, e.g. a router's directed broadcast. IP literals only.
+    # reach, e.g. a router's directed broadcast. IPv4 literals only.
     # Type: list of strings
     # send_to: ["192.168.1.255:9"]

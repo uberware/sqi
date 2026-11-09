@@ -343,6 +343,41 @@ func TestParity_MarkWaking(t *testing.T) {
 	}
 }
 
+// TestParity_EmptyGroupIDMatchesNoWorker: an empty group ID names no group, so
+// none of the group-scoped transitions touches a worker that is in no group,
+// whatever its state.
+func TestParity_EmptyGroupIDMatchesNoWorker(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			f := newPowerFixture(t, st)
+			old := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+			capacityWorker(t, st, f.farm.ID, "w-off", "w-off", store.WorkerStatusOffline, time.Now())
+			capacityWorker(t, st, f.farm.ID, "w-on", "w-on", store.WorkerStatusOnline, time.Now())
+			capacityWorker(t, st, f.farm.ID, "w-waking", "w-waking", store.WorkerStatusOffline, time.Now())
+			capacityWorker(t, st, f.farm.ID, "w-retiring", "w-retiring", store.WorkerStatusOnline, time.Now())
+			injectPower(t, st, "w-waking", store.PowerWaking, old)
+			injectPower(t, st, "w-retiring", store.PowerRetiring, old)
+			before := powerSnapshot(t, st, "w-off", "w-on", "w-waking", "w-retiring")
+			now := time.Now().UTC().Truncate(time.Microsecond)
+
+			if got, err := st.MarkWaking(ctx, "", []string{"w-off"}, now); err != nil || len(got) != 0 {
+				t.Errorf("MarkWaking = (%v, %v), want nothing moved", got, err)
+			}
+			if got, err := st.FailWakes(ctx, "", now, now, "x"); err != nil || len(got) != 0 {
+				t.Errorf("FailWakes = (%v, %v), want nothing failed", got, err)
+			}
+			if got, err := st.ExpireRetirements(ctx, "", now, now, "x"); err != nil || len(got) != 0 {
+				t.Errorf("ExpireRetirements = (%v, %v), want nothing expired", got, err)
+			}
+			if w, ok, err := st.BeginRetirement(ctx, "", "w-on", now); err != nil || ok || w.ID != "" {
+				t.Errorf("BeginRetirement = (%+v, %v, %v), want (zero, false, nil)", w, ok, err)
+			}
+			unchangedPower(t, st, before)
+		})
+	}
+}
+
 // TestParity_FailWakes: a waking member of the group whose wake began before
 // the cutoff becomes wake-failed with the reason; one that began at or after
 // it, a waking member of another group and a member in another state are kept.

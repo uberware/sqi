@@ -186,7 +186,10 @@ func TestShutdown_HAHandOverCountsAgainstTheCeiling(t *testing.T) {
 	if err := s.shutdown(); err != nil {
 		t.Fatalf("shutdown = %v", err)
 	}
-	if took := time.Since(start); took < demoteTimeout || took > ceiling+time.Second {
+	// The wait runs on real timers, so the upper bound has slack for a loaded
+	// machine: as much as it can take and still fail a stop that waits the
+	// hand-over plus a whole ceiling, which takes demoteTimeout longer.
+	if took := time.Since(start); took < demoteTimeout || took > ceiling+demoteTimeout-250*time.Millisecond {
 		t.Errorf("shutdown took %v, want about the %v ceiling", took, ceiling)
 	}
 	if !st.closed.Load() || !st.afterAbandoned.Load() {
@@ -316,5 +319,66 @@ func TestSchedulerStopCeiling_BoundsTheWait(t *testing.T) {
 	s.sched = scheduler.New(s.schedulerConfigFor(nil), fake.New(), nil, metrics.New(), testLogger(), nil, nil)
 	if got := s.sched.StopTimeout(); got >= s.stopCeiling() {
 		t.Errorf("scheduler StopTimeout() = %v with a 10m provider, want below the server's %v ceiling", got, s.stopCeiling())
+	}
+}
+
+// TestAwaitScheduler_AlreadyStoppedIsNeverReportedUnstopped: a scheduler that
+// had already returned is not logged or abandoned as one still stopping, even
+// when the earlier shutdown steps used the whole budget and the wait has no
+// time left at all.
+func TestAwaitScheduler_AlreadyStoppedIsNeverReportedUnstopped(t *testing.T) {
+	for range 50 {
+		warns := &warnCounter{}
+		s, st := observedServer(t, 0, warns)
+		s.cancelSched()
+		<-s.schedDone
+
+		s.awaitScheduler(time.Now().Add(-time.Second))
+
+		if got := warns.count(); got != 0 {
+			t.Fatalf("warnings = %d (%v), want none for a stopped scheduler", got, warns.warns)
+		}
+		if st.abandoned.Load() {
+			t.Fatal("the capacity calls of a stopped scheduler were abandoned")
+		}
+	}
+}
+
+// limitRecorder records the limit attribute of each Warn record.
+type limitRecorder struct {
+	mu     sync.Mutex
+	limits []time.Duration
+}
+
+func (*limitRecorder) Enabled(context.Context, slog.Level) bool { return true }
+
+func (l *limitRecorder) Handle(_ context.Context, r slog.Record) error {
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == "limit" {
+			l.mu.Lock()
+			l.limits = append(l.limits, a.Value.Duration())
+			l.mu.Unlock()
+		}
+		return true
+	})
+	return nil
+}
+
+func (l *limitRecorder) WithAttrs([]slog.Attr) slog.Handler { return l }
+func (l *limitRecorder) WithGroup(string) slog.Handler      { return l }
+
+// TestAwaitScheduler_WarnLimitIsNeverNegative: a budget that ran out before the
+// scheduler was told to stop logs a limit of zero, not a negative one.
+func TestAwaitScheduler_WarnLimitIsNeverNegative(t *testing.T) {
+	s, _ := observedServer(t, -1, &warnCounter{})
+	rec := &limitRecorder{}
+	s.logger = slog.New(rec)
+
+	s.awaitScheduler(time.Now().Add(-time.Second))
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.limits) != 1 || rec.limits[0] < 0 {
+		t.Errorf("logged limits = %v, want one, not negative", rec.limits)
 	}
 }

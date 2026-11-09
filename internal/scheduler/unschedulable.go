@@ -107,17 +107,24 @@ func (s *Scheduler) evaluateSchedulability(ctx context.Context, task store.Task,
 		return "no online workers"
 	}
 
+	// A read that fails reports the task schedulable, which leaves it alone,
+	// except with no worker online: that reason needs no read, and reporting
+	// it keeps a passing store error from clearing it.
+	unread := ""
+	if len(workers) == 0 {
+		unread = "no online workers"
+	}
 	job, err := s.store.GetJob(ctx, task.JobID)
 	if err != nil {
-		return ""
+		return unread
 	}
 	step, err := s.store.GetStep(ctx, task.StepID)
 	if err != nil {
-		return ""
+		return unread
 	}
 	pools, activeCounts, err := s.buildUsageContext(ctx, step)
 	if err != nil {
-		return ""
+		return unread
 	}
 
 	requiredCores := 0

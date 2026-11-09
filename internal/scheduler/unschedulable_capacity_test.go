@@ -9,6 +9,8 @@ package scheduler
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -169,9 +171,43 @@ func TestUnschedulable_IncapableGroupKeepsOldReason(t *testing.T) {
 		t.Fatalf("onlineWorkers: %v", err)
 	}
 	got := f.s.evaluateSchedulability(t.Context(), tasks[0], online)
-	if len(got) < len("no eligible online worker: ") || got[:len("no eligible online worker: ")] != "no eligible online worker: " {
+	if !strings.HasPrefix(got, "no eligible online worker: ") {
 		t.Errorf("reason with an ineligible worker = %q, want the no eligible online worker reason", got)
 	}
+}
+
+// With no online worker, a read the capacity wait needs that fails keeps the
+// reason the task would have had without acting groups, rather than reading
+// as schedulable and clearing it, so a passing store error does not flip it.
+func TestUnschedulable_NoOnlineWorkersWhenAReadFails(t *testing.T) {
+	failing := false
+	f := newActFixture(t, func(st *fake.Store) store.Store {
+		return readSwitch{Store: st, failing: &failing}
+	})
+	g := createGroup(t, f.st, wolGroup("lan", nil))
+	addNamedMember(t, f.st, g.ID, lanWorker("m1", "192.168.1.21", "aa:bb:cc:dd:ee:01"), false)
+	tasks := submitReady(t, f.st, 1, store.Step{})
+	f.sweep(t, time.Now().UTC())
+
+	failing = true
+	if got := f.s.evaluateSchedulability(t.Context(), tasks[0], nil); got != reasonNoOnline {
+		t.Errorf("reason with a failed read = %q, want %q", got, reasonNoOnline)
+	}
+}
+
+// readSwitch fails job reads while *failing is set, as a store that cannot be
+// reached does.
+type readSwitch struct {
+	store.Store
+
+	failing *bool
+}
+
+func (r readSwitch) GetJob(ctx context.Context, id string) (store.Job, error) {
+	if *r.failing {
+		return store.Job{}, errors.New("store unavailable")
+	}
+	return r.Store.GetJob(ctx, id)
 }
 
 // A group whose provider does not act (external, or a script this server does

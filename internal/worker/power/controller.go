@@ -18,8 +18,9 @@
 // the worker re-registers at once. After a sleep that succeeded it
 // re-registers when [WatchResume] sees the machine wake, or 60 seconds after
 // the command returned, whichever is first, so a sleep that never took effect
-// cannot leave the worker out of the farm. After a successful shutdown it does
-// nothing; the operating system ends the process.
+// cannot leave the worker out of the farm. A shutdown that succeeds ends the
+// process; one whose command returned success but left the machine running
+// re-registers 60 seconds after the command returned, as a sleep does.
 package power
 
 import (
@@ -45,8 +46,9 @@ import (
 )
 
 const (
-	// resumeFallback is how long after a successful sleep command returned the
-	// worker re-registers when it has seen no resume.
+	// resumeFallback is how long after a successful sleep or shutdown command
+	// returned the worker re-registers when it has seen no resume, or is
+	// still running.
 	resumeFallback = 60 * time.Second
 	// resumeSampleInterval is how often the resume watcher samples the clocks.
 	resumeSampleInterval = 2 * time.Second
@@ -54,13 +56,6 @@ const (
 	fallbackPoll = time.Second
 	// maxCommandOutput bounds the command output kept for an error message.
 	maxCommandOutput = 2048
-)
-
-// Refusal reasons the server reads.
-const (
-	reasonBusy          = "busy"
-	reasonNotAllowed    = "worker.power.allow_remote_sleep is false"
-	reasonAlreadyActing = "already retiring"
 )
 
 // Deps are the worker's parts the controller drives. Busy, Deregister and
@@ -162,7 +157,8 @@ func newController(ctx context.Context, cfg Config, d Deps) *controller {
 	}
 	if d.SendWake == nil {
 		d.SendWake = func(ctx context.Context, macs []net.HardwareAddr, targets []string) error {
-			return wol.Send(ctx, macs, targets, wol.DefaultBurst, wol.DefaultGap)
+			_, err := wol.Send(ctx, macs, targets, wol.DefaultBurst, wol.DefaultGap)
+			return err
 		}
 	}
 	if d.Now == nil {
@@ -250,17 +246,17 @@ func (c *controller) decidePower(cmd protocol.ControlCommand) plan {
 	// Busy comes first and is not an opt-in matter: taking the machine down
 	// kills whatever it is running.
 	if c.d.Busy() > 0 {
-		return refuse(reasonBusy)
+		return refuse(protocol.ControlRefusalBusy)
 	}
 	if !c.cfg.AllowRemoteSleep {
-		return refuse(reasonNotAllowed)
+		return refuse(protocol.ControlRefusalNotAllowed)
 	}
 	argv := c.command(cmd)
 	if len(argv) == 0 {
 		return refuse("no default %s command on %s", cmd, runtime.GOOS)
 	}
 	if !c.retiring.CompareAndSwap(false, true) {
-		return refuse(reasonAlreadyActing)
+		return refuse(protocol.ControlRefusalAlreadyRetiring)
 	}
 	return plan{
 		reply:   protocol.ControlReplyMsg{Accepted: true},
@@ -285,7 +281,8 @@ func (c *controller) command(cmd protocol.ControlCommand) []string {
 }
 
 // retire is the work after an accepted sleep or shutdown: leave the farm, run
-// the command, and for a sleep come back.
+// the command, and come back once the machine resumed, or when it is still
+// running after resumeFallback.
 func (c *controller) retire(cmd protocol.ControlCommand, argv []string) {
 	ctx := c.ctx
 
@@ -324,20 +321,19 @@ func (c *controller) retire(cmd protocol.ControlCommand, argv []string) {
 		c.comeBack(ctx)
 		return
 	}
-	if cmd == protocol.ControlShutdown {
-		// The operating system stops the process.
-		return
-	}
-
-	if c.awaitResume(ctx, resumeCh) {
+	// After a shutdown the operating system stops the process during the
+	// wait, which never sees a resume: only a shutdown that did not take
+	// effect reaches its end.
+	if c.awaitResume(ctx, cmd, resumeCh) {
 		c.comeBack(ctx)
 	}
 }
 
-// awaitResume waits until the machine resumed or resumeFallback has passed on
-// the wall clock since now. It reports false when ctx ended first, in which
-// case the worker is shutting down and registering again would be wrong.
-func (c *controller) awaitResume(ctx context.Context, resumed <-chan struct{}) bool {
+// awaitResume waits, after cmd returned success, until the machine resumed or
+// resumeFallback has passed on the wall clock since now. It reports false when
+// ctx ended first, in which case the worker is shutting down and registering
+// again would be wrong.
+func (c *controller) awaitResume(ctx context.Context, cmd protocol.ControlCommand, resumed <-chan struct{}) bool {
 	// Round(0) compares wall clocks: the monotonic reading stops during a
 	// suspend, and the fallback must not stop with it.
 	deadline := c.d.Now().Round(0).Add(resumeFallback)
@@ -350,8 +346,11 @@ func (c *controller) awaitResume(ctx context.Context, resumed <-chan struct{}) b
 			return false
 		case <-time.After(c.pollEvery):
 			if !c.d.Now().Round(0).Before(deadline) {
-				c.log.WarnContext(ctx, "power: no resume seen after the sleep command; re-registering",
-					slog.Duration("after", resumeFallback))
+				msg := "power: no resume seen after the sleep command; re-registering"
+				if cmd == protocol.ControlShutdown {
+					msg = "power: the machine is still running after the shutdown command; re-registering"
+				}
+				c.log.WarnContext(ctx, msg, slog.Duration("after", resumeFallback))
 				return true
 			}
 		}

@@ -1113,6 +1113,8 @@ jobs:
             TestPGRace_G11_LateReportCannotEndATaskReLeasedMeanwhile
             TestPGRace_G12_ReaperAndCompletionDoNotDeadlock
             TestPGRace_LeaseVersusBeginRetirement
+            TestPGRace_LeaseVersusBeginRetirement/lease_first
+            TestPGRace_LeaseVersusBeginRetirement/retirement_first
             TestSchemaParity
             TestJobStore_CreateJobSubmission_RollsBackEntirely
             TestCreateJobSubmission_ConcurrentObserverSeesWholeJobs

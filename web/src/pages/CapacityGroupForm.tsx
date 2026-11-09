@@ -14,6 +14,7 @@ import {
 import { useCreateCapacityGroup, useUpdateCapacityGroup } from '@/api/mutations'
 import type { CapacityGroup, CapacityGroupKind, CapacityProvider, Farm } from '@/api/types'
 import {
+  DEFAULT_RETIRE_ACTION,
   buildInput,
   defaultValues,
   mapServerErrors,
@@ -330,6 +331,17 @@ interface InnerProps {
   defaults: FormValues
 }
 
+/**
+ * Only wake_on_lan offers a retire action, so a provider other than it puts
+ * the choice back to its default: a later switch back starts from there, and
+ * nothing hidden is saved.
+ */
+function withRetireAction(v: FormValues): FormValues {
+  return v.provider === WAKE_ON_LAN || v.retireAction === DEFAULT_RETIRE_ACTION
+    ? v
+    : { ...v, retireAction: DEFAULT_RETIRE_ACTION }
+}
+
 function CapacityGroupFormInner({ original, farms, defaults }: InnerProps) {
   const navigate = useNavigate()
   const { showToast } = useToast()
@@ -351,7 +363,7 @@ function CapacityGroupFormInner({ original, farms, defaults }: InnerProps) {
   const isEdit = original !== undefined
 
   function change(key: keyof FormValues, value: string | boolean | string[]) {
-    setValues((v) => ({ ...v, [key]: value }))
+    setValues((v) => withRetireAction({ ...v, [key]: value }))
     if (key === 'enabled') return
     setServerFields((prev) =>
       prev[key] === undefined
@@ -361,7 +373,9 @@ function CapacityGroupFormInner({ original, farms, defaults }: InnerProps) {
   }
 
   function changeKind(kind: CapacityGroupKind) {
-    setValues((v) => ({ ...v, kind, provider: providerForKind(v.provider, kind, providers) }))
+    setValues((v) =>
+      withRetireAction({ ...v, kind, provider: providerForKind(v.provider, kind, providers) }),
+    )
     // What the server said about the old kind or provider no longer applies.
     setServerFields(
       (prev) =>

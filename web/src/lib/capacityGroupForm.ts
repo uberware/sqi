@@ -43,6 +43,9 @@ export type FieldErrors = Partial<Record<FieldKey, string>>
 /** A field held as text, which the number tables below read as a whole number. */
 type NumericField = { [K in FieldKey]: FormValues[K] extends string ? K : never }[FieldKey]
 
+/** The retire action a group gets until it names wake_on_lan and picks another. */
+export const DEFAULT_RETIRE_ACTION: FormValues['retireAction'] = 'sleep'
+
 export function defaultValues(farmId: string): FormValues {
   return {
     farmId,
@@ -58,7 +61,7 @@ export function defaultValues(farmId: string): FormValues {
     cooldown: '60',
     idle: '600',
     boot: '600',
-    retireAction: 'sleep',
+    retireAction: DEFAULT_RETIRE_ACTION,
     cpuCount: '',
     ramMb: '',
     gpuCount: '',

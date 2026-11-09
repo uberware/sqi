@@ -49,6 +49,7 @@ const (
 	SQLReclaimTaskSet         = sqlReclaimTaskSet
 	SQLInsertTasksHead        = sqlInsertTasksHead
 	SQLBeginRetirement        = sqlBeginRetirement
+	SQLPutCapacityGroupState  = sqlPutCapacityGroupState
 )
 
 var (

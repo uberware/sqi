@@ -141,6 +141,32 @@ describe('CapacityGroupForm (create)', () => {
     expect(screen.queryByLabelText(/retire action/i)).not.toBeInTheDocument()
   })
 
+  it('resets the retire action to sleep when the provider changes away from wake_on_lan', async () => {
+    const fetchMock = stubApi({
+      ...BASE_ROUTES,
+      'POST /capacity-groups': { status: 201, body: group({ kind: 'named' }) },
+    })
+    renderAt('/capacity-groups/new')
+    await waitFor(() => expect(screen.getByLabelText(/^provider$/i)).toBeEnabled())
+    fireEvent.change(screen.getByLabelText(/^kind$/i), { target: { value: 'named' } })
+    fireEvent.change(screen.getByLabelText(/^provider$/i), { target: { value: 'wake_on_lan' } })
+    fireEvent.change(screen.getByLabelText(/retire action/i), { target: { value: 'shutdown' } })
+    fireEvent.change(screen.getByLabelText(/^provider$/i), { target: { value: 'external' } })
+    fireEvent.change(screen.getByLabelText(/^provider$/i), { target: { value: 'wake_on_lan' } })
+    expect(screen.getByLabelText(/retire action/i)).toHaveValue('sleep')
+
+    fireEvent.change(screen.getByLabelText(/retire action/i), { target: { value: 'shutdown' } })
+    fireEvent.change(screen.getByLabelText(/^provider$/i), { target: { value: 'external' } })
+    fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: 'boxes' } })
+    fireEvent.change(screen.getByLabelText(/^max machines$/i), { target: { value: '2' } })
+    fireEvent.click(screen.getByRole('button', { name: /create capacity group/i }))
+    await waitFor(() => expect(screen.getByText('group list')).toBeInTheDocument())
+    expect(bodyOf(fetchMock, 'POST /capacity-groups')).toMatchObject({
+      provider: 'external',
+      retire_action: 'sleep',
+    })
+  })
+
   it('disables the provider choice if the list fails to load, and keeps external usable', async () => {
     stubApi({
       ...BASE_ROUTES,

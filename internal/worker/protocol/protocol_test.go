@@ -382,3 +382,27 @@ func TestControlReplyMsg_RoundTrip(t *testing.T) {
 		t.Errorf("json = %s", data)
 	}
 }
+
+// The refusal reasons are wire values: the server matches a worker's reply
+// against them, so a change here changes what older peers understand.
+func TestControlRefusalReasons(t *testing.T) {
+	tests := []struct{ got, want string }{
+		{protocol.ControlRefusalBusy, "busy"},
+		{protocol.ControlRefusalNotAllowed, "worker.power.allow_remote_sleep is false"},
+		{protocol.ControlRefusalAlreadyRetiring, "already retiring"},
+	}
+	for _, tt := range tests {
+		if tt.got != tt.want {
+			t.Errorf("refusal reason = %q, want %q", tt.got, tt.want)
+		}
+	}
+}
+
+// The registration caps are what the worker sends at most and the server
+// keeps at most.
+func TestRegistrationInterfaceCaps(t *testing.T) {
+	if protocol.MaxInterfaces != 32 || protocol.MaxAddrsPerInterface != 16 {
+		t.Errorf("caps = %d interfaces, %d addresses each; want 32, 16",
+			protocol.MaxInterfaces, protocol.MaxAddrsPerInterface)
+	}
+}

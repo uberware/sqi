@@ -27,7 +27,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"slices"
+	"net"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -414,14 +415,30 @@ func (b *backgroundCalls) Wait() {
 }
 
 // storeInterfaces converts the interfaces a worker reported at registration to
-// the store's form, which carries the same fields.
+// the store's form, which carries the same fields. What a wake cannot use is
+// dropped: an interface whose MAC is not a 6-byte hardware address, and an
+// address that is not an IP prefix. What is left is capped as the worker caps
+// it ([protocol.MaxInterfaces], [protocol.MaxAddrsPerInterface]), so a worker
+// that sends more cannot make the server store more.
 func storeInterfaces(in []protocol.NetInterface) []store.NetInterface {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]store.NetInterface, len(in))
-	for i, n := range in {
-		out[i] = store.NetInterface{Name: n.Name, MAC: n.MAC, Addrs: slices.Clone(n.Addrs)}
+	var out []store.NetInterface
+	for _, n := range in {
+		if len(out) == protocol.MaxInterfaces {
+			break
+		}
+		if mac, err := net.ParseMAC(n.MAC); err != nil || len(mac) != 6 {
+			continue
+		}
+		var addrs []string
+		for _, a := range n.Addrs {
+			if len(addrs) == protocol.MaxAddrsPerInterface {
+				break
+			}
+			if _, err := netip.ParsePrefix(a); err == nil {
+				addrs = append(addrs, a)
+			}
+		}
+		out = append(out, store.NetInterface{Name: n.Name, MAC: n.MAC, Addrs: addrs})
 	}
 	return out
 }

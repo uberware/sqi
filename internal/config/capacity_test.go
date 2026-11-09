@@ -67,7 +67,7 @@ func TestLoad_CapacityProviders(t *testing.T) {
       command: [`+yamlQuote(cool)+`]
   wake_on_lan:
     port: 7
-    send_to: ["192.168.1.255:9", "[fe80::1]:7"]
+    send_to: ["192.168.1.255:9", "10.0.0.255:7"]
 `)
 	cfg, err := config.Load(f, config.FlagOverrides{})
 	if err != nil {
@@ -86,7 +86,7 @@ func TestLoad_CapacityProviders(t *testing.T) {
 			// timeout omitted: the 2m default.
 			"plain": {Command: []string{cool}, Timeout: 2 * time.Minute},
 		},
-		WakeOnLAN: config.WakeOnLANConfig{Port: 7, SendTo: []string{"192.168.1.255:9", "[fe80::1]:7"}},
+		WakeOnLAN: config.WakeOnLANConfig{Port: 7, SendTo: []string{"192.168.1.255:9", "10.0.0.255:7"}},
 	}
 	if !reflect.DeepEqual(cfg.Capacity, want) {
 		t.Errorf("capacity = %+v\nwant     %+v", cfg.Capacity, want)
@@ -149,9 +149,25 @@ func TestLoad_CapacityProviderInvalid(t *testing.T) {
 		{"second send_to entry bad", func(c *config.Config) {
 			c.Capacity.WakeOnLAN.SendTo = []string{"10.0.0.255:9", "nope:9"}
 		}, "capacity.wake_on_lan.send_to[1]"},
-		{"send_to IPv4 and IPv6 literals", func(c *config.Config) {
-			c.Capacity.WakeOnLAN.SendTo = []string{"10.0.0.255:9", "[ff02::1]:9"}
+		{"send_to IPv4 literals", func(c *config.Config) {
+			c.Capacity.WakeOnLAN.SendTo = []string{"10.0.0.255:9", "192.168.7.1:7"}
 		}, ""},
+		// Magic packets go out over IPv4 only, so an IPv6 entry could never be
+		// sent to.
+		{"send_to an IPv6 literal", func(c *config.Config) {
+			c.Capacity.WakeOnLAN.SendTo = []string{"10.0.0.255:9", "[ff02::1]:9"}
+		}, "capacity.wake_on_lan.send_to[1]"},
+		{"send_to an IPv4-mapped IPv6 literal", func(c *config.Config) {
+			c.Capacity.WakeOnLAN.SendTo = []string{"[::ffff:10.0.0.255]:9"}
+		}, "capacity.wake_on_lan.send_to[0]"},
+		{"send_to port 65535", func(c *config.Config) { c.Capacity.WakeOnLAN.SendTo = []string{"10.0.0.255:65535"} }, ""},
+		{"send_to port 65536", func(c *config.Config) { c.Capacity.WakeOnLAN.SendTo = []string{"10.0.0.255:65536"} }, "capacity.wake_on_lan.send_to[0]"},
+		{"env key with =", with("p", func(p *config.CapacityProviderConfig) { p.Env = map[string]string{"A=B": "x"} }), "capacity.providers.p.env"},
+		{"empty env key", with("p", func(p *config.CapacityProviderConfig) { p.Env = map[string]string{"": "x"} }), "capacity.providers.p.env"},
+		{"env key with NUL", with("p", func(p *config.CapacityProviderConfig) { p.Env = map[string]string{"A\x00B": "x"} }), "capacity.providers.p.env"},
+		{"env keys valid", with("p", func(p *config.CapacityProviderConfig) {
+			p.Env = map[string]string{"API_TOKEN": "s3cret", "region": "", "lower.dotted-key": "v"}
+		}), ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

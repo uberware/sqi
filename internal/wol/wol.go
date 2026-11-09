@@ -69,11 +69,13 @@ func DirectedBroadcast(cidr string) (net.IP, bool) {
 }
 
 // Send sends burst copies of each MAC's magic packet to each target
-// ("ip:port"), gap apart, over UDP with SO_BROADCAST set. A bad MAC, an
-// unresolvable target or a failed write is recorded and Send keeps going; the
-// returned error joins every one of them. A canceled ctx stops Send early and
-// its error is joined in too.
-func Send(ctx context.Context, macs []net.HardwareAddr, targets []string, burst int, gap time.Duration) error {
+// ("ip:port"), gap apart, over UDP with SO_BROADCAST set, and reports how many
+// targets it reached: those at least one packet write to succeeded. A bad MAC,
+// an unresolvable target or a failed write is recorded and Send keeps going;
+// the returned error joins every one of them, so a caller can count a send
+// that reached some targets as done and still log the rest. A canceled ctx
+// stops Send early and its error is joined in too.
+func Send(ctx context.Context, macs []net.HardwareAddr, targets []string, burst int, gap time.Duration) (reached int, err error) {
 	if burst < 1 {
 		burst = 1
 	}
@@ -81,35 +83,47 @@ func Send(ctx context.Context, macs []net.HardwareAddr, targets []string, burst 
 	addrs, targetErrs := resolveTargets(targets)
 	errs = append(errs, targetErrs...)
 	if len(packets) == 0 || len(addrs) == 0 {
-		return errors.Join(errs...)
+		return 0, errors.Join(errs...)
 	}
 
 	if err := ctx.Err(); err != nil {
-		return errors.Join(append(errs, err)...)
+		return 0, errors.Join(append(errs, err)...)
 	}
 
 	lc := net.ListenConfig{Control: setBroadcast}
 	pc, err := lc.ListenPacket(ctx, "udp4", ":0")
 	if err != nil {
-		return errors.Join(append(errs, fmt.Errorf("wol: open socket: %w", err))...)
+		return 0, errors.Join(append(errs, fmt.Errorf("wol: open socket: %w", err))...)
 	}
 	defer pc.Close()
 
+	ok := make([]bool, len(addrs))
+	count := func() int {
+		n := 0
+		for _, o := range ok {
+			if o {
+				n++
+			}
+		}
+		return n
+	}
 	for i := range burst {
 		if i > 0 {
 			if err := sleep(ctx, gap); err != nil {
-				return errors.Join(append(errs, err)...)
+				return count(), errors.Join(append(errs, err)...)
 			}
 		}
-		for _, addr := range addrs {
+		for j, addr := range addrs {
 			for _, pkt := range packets {
 				if _, err := pc.WriteTo(pkt, addr); err != nil {
 					errs = append(errs, fmt.Errorf("wol: send to %s: %w", addr, err))
+					continue
 				}
+				ok[j] = true
 			}
 		}
 	}
-	return errors.Join(errs...)
+	return count(), errors.Join(errs...)
 }
 
 // sleep waits for d or until ctx is done, returning ctx's error in that case.

@@ -14,12 +14,12 @@ package scheduler
 // is absolute (a total, never a delta), so repeating it is harmless.
 //
 // When the machines asked for have not all registered within the group's boot
-// timeout, the group degrades: the record falls back to the members online,
-// further growth waits two boot timeouts, and the instances that booted but
-// never registered (they still bill) are retired by instance ID when the
-// provider can list them. sqi never shrinks a sized group by lowering its
-// size: it retires named members, and the script's retire lowers the cloud
-// group's desired size as it removes them.
+// timeout, the group degrades: the record falls back to the member rows that
+// are not retiring, further growth waits two boot timeouts, and the instances
+// that booted but never registered (they still bill) are retired by instance
+// ID when the provider can list them. sqi never shrinks a sized group by
+// lowering its size: it retires named members, and the script's retire lowers
+// the cloud group's desired size as it removes them.
 
 import (
 	"context"
@@ -303,7 +303,7 @@ func (s *Scheduler) planLaunches(
 	}
 	present, rows := launchCounts(*st)
 	var call groupCall
-	if s.settleLaunch(ctx, now, g, &rec, present) {
+	if s.settleLaunch(ctx, now, g, &rec, present, rows) {
 		return groupCall{}, true
 	}
 	if !act.isInFlight(g.ID) {
@@ -333,13 +333,22 @@ func (s *Scheduler) planLaunches(
 // (see [Scheduler.removeVanishedEphemerals]). A retiring member is not
 // present: its retirement lowers the record before its row is deleted
 // ([Scheduler.lowerRequested]), so counting it would count it twice.
+//
+// Counting rows masks two things, both in the direction that never shrinks
+// the group. A row whose machine vanished silently is still counted until it
+// is deleted, up to a boot timeout later, and meanwhile can stand in for one
+// launched machine that never registered: the launch reads as met, so that
+// machine is neither reported nor cleaned up as an orphan, and with a script
+// that reads a grow as a delta from current it keeps running (and billing)
+// for good. And a member that is not ephemeral keeps its row while offline,
+// so in a sized group it overstates a grow's current by one.
 func launchCounts(st capacity.Status) (present, rows int) {
 	rows = st.OnlineMembers + st.OfflineMembers
 	return max(rows-st.Retiring, 0), rows
 }
 
 // settleLaunch brings g's launch record up to date with the machines present
-// (see [launchCounts]).
+// and the member rows (see [launchCounts]).
 //
 // A launch is unmet while RequestedAt is set. Once as many machines are
 // present as were asked for, it is met: RequestedAt is cleared, and a
@@ -351,10 +360,16 @@ func launchCounts(st capacity.Status) (present, rows int) {
 //
 // With no launch unmet, Requested follows the machines present, so a machine
 // lost later (retired, preempted, vanished) is replaced by a normal grow and
-// never reads as a launch that failed; and machines present beyond the record
-// (that registered late) clear a degradation at once. It returns true when the
-// write was fenced.
-func (s *Scheduler) settleLaunch(ctx context.Context, now time.Time, g store.CapacityGroup, rec *store.CapacityGroupState, present int) bool {
+// never reads as a launch that failed. While the group is degraded it follows
+// only the rows down instead, so it keeps what was present at the
+// degradation, less the machines since gone: a member retiring is still
+// counted, and one whose retirement aborts does not come back as a machine
+// that registered late. Machines present beyond the record (that did register
+// late) clear the degradation at once. It returns true when the write was
+// fenced.
+func (s *Scheduler) settleLaunch(
+	ctx context.Context, now time.Time, g store.CapacityGroup, rec *store.CapacityGroupState, present, rows int,
+) bool {
 	next := *rec
 	var warn, recovered bool
 	switch {
@@ -368,8 +383,17 @@ func (s *Scheduler) settleLaunch(ctx context.Context, now time.Time, g store.Cap
 		next.DegradedAt = new(now)
 		next.BackoffUntil = new(now.Add(2 * g.BootTimeout))
 		warn = true
+	case rec.RequestedAt == nil && rec.DegradedReason != "":
+		// Requested holds what was present at the degradation. Only a row that
+		// is gone lowers it, not a member retiring: a retirement that then
+		// aborts would bring that member back as present and read as a late
+		// registration.
+		recovered = present > rec.Requested
+		next.Requested = min(rec.Requested, rows)
+		if recovered {
+			next.Requested = present
+		}
 	case rec.RequestedAt == nil:
-		recovered = rec.DegradedReason != "" && present > rec.Requested
 		next.Requested = present
 	}
 	if recovered {
