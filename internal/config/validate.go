@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/uberware/sqi/internal/auth/oidc"
@@ -48,6 +50,7 @@ func Validate(cfg Config) []ValidationError {
 	errs = append(errs, validateOpenJD(cfg.OpenJD)...)
 	errs = append(errs, validateAuth(cfg.Auth)...)
 	errs = append(errs, validateHA(cfg)...)
+	errs = append(errs, validateCapacity(cfg.Capacity)...)
 	return errs
 }
 
@@ -969,4 +972,86 @@ func validateHA(cfg Config) []ValidationError {
 		})
 	}
 	return errs
+}
+
+// validateCapacity checks the capacity block. Providers are checked in name
+// order so the errors come out in a stable order.
+func validateCapacity(cfg CapacityConfig) []ValidationError {
+	var errs []ValidationError
+	names := make([]string, 0, len(cfg.Providers))
+	for name := range cfg.Providers {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		errs = append(errs, validateCapacityProvider(name, cfg.Providers[name])...)
+	}
+	errs = append(errs, validateWakeOnLAN(cfg.WakeOnLAN)...)
+	return errs
+}
+
+func validateCapacityProvider(name string, p CapacityProviderConfig) []ValidationError {
+	prefix := "capacity.providers." + name
+	var errs []ValidationError
+	if !ValidCapacityName(name) {
+		errs = append(errs, ValidationError{
+			Field:   prefix,
+			Message: fmt.Sprintf("provider name %q must be 1-63 characters: letters, digits, '.', '_' or '-', starting with a letter or digit", name),
+		})
+	}
+	switch {
+	case len(p.Command) == 0:
+		errs = append(errs, ValidationError{
+			Field:   prefix + ".command",
+			Message: "must name the program to run: a list whose first element is its absolute path",
+		})
+	case !filepath.IsAbs(p.Command[0]):
+		errs = append(errs, ValidationError{
+			Field:   prefix + ".command[0]",
+			Message: fmt.Sprintf("%q must be an absolute path, so no PATH lookup decides which program the server runs", p.Command[0]),
+		})
+	}
+	if p.Timeout < MinCapacityProviderTimeout || p.Timeout > MaxCapacityProviderTimeout {
+		errs = append(errs, ValidationError{
+			Field: prefix + ".timeout",
+			Message: fmt.Sprintf("must be between %s and %s, got %s",
+				MinCapacityProviderTimeout, MaxCapacityProviderTimeout, p.Timeout),
+		})
+	}
+	return errs
+}
+
+func validateWakeOnLAN(cfg WakeOnLANConfig) []ValidationError {
+	var errs []ValidationError
+	if cfg.Port < 1 || cfg.Port > 65535 {
+		errs = append(errs, ValidationError{
+			Field:   "capacity.wake_on_lan.port",
+			Message: fmt.Sprintf("must be between 1 and 65535, got %d", cfg.Port),
+		})
+	}
+	for i, target := range cfg.SendTo {
+		if err := validateIPPort(target); err != nil {
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("capacity.wake_on_lan.send_to[%d]", i),
+				Message: fmt.Sprintf("%q %s", target, err),
+			})
+		}
+	}
+	return errs
+}
+
+// validateIPPort checks that s is "ip:port" with an IP literal host (no name
+// resolution) and a port of 1-65535.
+func validateIPPort(s string) error {
+	host, port, err := net.SplitHostPort(s)
+	if err != nil {
+		return errors.New("must be an IP literal and port, as ip:port (IPv6 as [ip]:port)")
+	}
+	if net.ParseIP(host) == nil {
+		return errors.New("must use an IP literal for the host, not a name")
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		return errors.New("must use a port between 1 and 65535")
+	}
+	return nil
 }

@@ -294,6 +294,18 @@ type fileConfig struct {
 		InstanceName *string       `yaml:"instance_name"`
 	} `yaml:"ha"`
 
+	Capacity *struct {
+		Providers map[string]*struct {
+			Command *[]string          `yaml:"command"`
+			Env     *map[string]string `yaml:"env"`
+			Timeout *fileDuration      `yaml:"timeout"`
+		} `yaml:"providers"`
+		WakeOnLAN *struct {
+			Port   *int      `yaml:"port"`
+			SendTo *[]string `yaml:"send_to"`
+		} `yaml:"wake_on_lan"`
+	} `yaml:"capacity"`
+
 	OpenJD *struct {
 		EnforceLimits             *bool         `yaml:"enforce_limits"`
 		ExprOperationLimit        *int64        `yaml:"expr_operation_limit"`
@@ -423,6 +435,7 @@ func mergeFileConfig(cfg *Config, fc fileConfig) {
 	mergeSchedulerFile(cfg, fc)
 	mergeDiscoveryFile(cfg, fc)
 	mergeHAFile(cfg, fc)
+	mergeCapacityFile(cfg, fc)
 	mergeOpenJDFile(cfg, fc)
 	mergeDiagnosticsFile(cfg, fc)
 	mergePresetLibraryFile(cfg, fc)
@@ -645,6 +658,39 @@ func mergeHAFile(cfg *Config, fc fileConfig) {
 	setIfNotNilDuration(&cfg.HA.LeaseTTL, fc.HA.LeaseTTL)
 	if fc.HA.InstanceName != nil {
 		cfg.HA.InstanceName = *fc.HA.InstanceName
+	}
+}
+
+// mergeCapacityFile overlays the capacity block. A provider the file names is
+// built whole: a key it leaves out takes the default (timeout) or stays empty
+// (command, env), never a value from another provider.
+func mergeCapacityFile(cfg *Config, fc fileConfig) {
+	if fc.Capacity == nil {
+		return
+	}
+	if len(fc.Capacity.Providers) > 0 {
+		cfg.Capacity.Providers = make(map[string]CapacityProviderConfig, len(fc.Capacity.Providers))
+	}
+	for name, p := range fc.Capacity.Providers {
+		out := CapacityProviderConfig{Timeout: DefaultCapacityProviderTimeout}
+		if p != nil {
+			if p.Command != nil {
+				out.Command = *p.Command
+			}
+			if p.Env != nil {
+				out.Env = *p.Env
+			}
+			setIfNotNilDuration(&out.Timeout, p.Timeout)
+		}
+		cfg.Capacity.Providers[name] = out
+	}
+	if w := fc.Capacity.WakeOnLAN; w != nil {
+		if w.Port != nil {
+			cfg.Capacity.WakeOnLAN.Port = *w.Port
+		}
+		if w.SendTo != nil {
+			cfg.Capacity.WakeOnLAN.SendTo = *w.SendTo
+		}
 	}
 }
 

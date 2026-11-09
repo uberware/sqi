@@ -503,3 +503,31 @@ ha:
   # Name shown in logs, /readyz and the servers list. Empty uses the host name.
   # Type: string   Env: SQI_HA_INSTANCE_NAME
   instance_name: ""
+
+# ── Capacity providers ────────────────────────────────────────────────────────
+# How capacity groups reach machines. Providers are defined here only: there is
+# no environment overlay for capacity.*, because a provider is a program plus
+# the secrets it needs. A group selects one with `provider: script:<name>`.
+capacity:
+  # External provider programs, by name (1-63 characters: letters, digits,
+  # '.', '_' or '-'). command[0] must be an absolute path; no PATH lookup
+  # decides which program the server runs. env values are redacted in
+  # `sqi-server config print`. timeout is 5s to 30m, default 2m.
+  #
+  # providers:
+  #   cloud:
+  #     command: ["/opt/sqi/providers/cloud.sh", "--region", "eu-west-1"]
+  #     env:
+  #       CLOUD_API_TOKEN: "replace-me"
+  #     timeout: 2m
+
+  # The built-in wake-on-LAN provider.
+  wake_on_lan:
+    # UDP port for magic packets, 1-65535.
+    # Type: int
+    port: 9
+
+    # Extra ip:port targets for machines the server's own broadcast does not
+    # reach, e.g. a router's directed broadcast. IP literals only.
+    # Type: list of strings
+    # send_to: ["192.168.1.255:9"]

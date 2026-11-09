@@ -2045,6 +2045,91 @@ ha:
 
 ---
 
+## `capacity` — Capacity providers
+
+How [capacity groups](capacity.md) reach the machines they power on and
+off. The block defines the external provider programs a group can name
+(`provider: script:<name>`) and the settings of the built-in wake-on-LAN
+provider. Nothing here is required; a group can only name a provider that is
+defined here.
+
+**There is no environment variable for any `capacity.*` key.** A provider is a
+program plus the secrets it needs, and a list of commands does not fit a
+variable, so providers are defined in the config file only. Capacity groups
+themselves are not configuration; they live in the store and are managed
+through the API.
+
+### `capacity.providers.<name>`
+
+| | |
+|---|---|
+| **Type** | map of provider name to provider |
+| **Default** | none |
+| **Env var** | none |
+
+Each provider has three keys:
+
+| Key | Type | Default | Rule |
+|---|---|---|---|
+| `command` | list of strings | none (required) | The program and its arguments. `command[0]` must be an absolute path, so no `PATH` lookup decides which program the server runs. |
+| `env` | map of string to string | none | Added to the program's environment. Every value is shown as `<redacted>` by `sqi-server config print`; the names stay visible. |
+| `timeout` | duration | `2m` | Time limit for one invocation. Between `5s` and `30m`. |
+
+The provider's name follows the capacity group name rule: 1 to 63 characters,
+letters, digits, `.`, `_` or `-`, starting with a letter or digit. Each
+violation fails config validation with an error on the offending key, for
+example `capacity.providers.cloud.command[0]`. A key the server does not know
+is an error that names its path.
+
+```yaml
+capacity:
+  providers:
+    cloud:
+      command: ["/opt/sqi/providers/cloud.sh", "--region", "eu-west-1"]
+      env:
+        CLOUD_API_TOKEN: "replace-me"
+      timeout: 2m
+```
+
+On Windows write an absolute path with a drive letter, for example
+`'C:\sqi\providers\cloud.cmd'` in single quotes; `/opt/...` is not absolute
+there.
+
+---
+
+### `capacity.wake_on_lan.port`
+
+| | |
+|---|---|
+| **Type** | `int` |
+| **Default** | `9` |
+| **Env var** | none |
+
+UDP port the wake-on-LAN provider sends magic packets to. Between `1` and
+`65535`.
+
+### `capacity.wake_on_lan.send_to`
+
+| | |
+|---|---|
+| **Type** | list of `ip:port` strings |
+| **Default** | `[]` |
+| **Env var** | none |
+
+Extra targets for machines the server's own broadcast does not reach, such as
+a router's directed broadcast address. Each entry is an IP literal and a port
+between `1` and `65535` (IPv6 as `[ip]:port`); a host name is rejected, so
+nothing is resolved at send time.
+
+```yaml
+capacity:
+  wake_on_lan:
+    port: 9
+    send_to: ["192.168.1.255:9"]
+```
+
+---
+
 ## `auth` — Authentication (opt-in)
 
 ### `auth.enabled`
@@ -2674,6 +2759,11 @@ for the detector schema reference.
 | `ha.enabled` | bool | `false` | `SQI_HA_ENABLED` | — |
 | `ha.lease_ttl` | duration | `15s` | `SQI_HA_LEASE_TTL` | — |
 | `ha.instance_name` | string | `""` (host name) | `SQI_HA_INSTANCE_NAME` | — |
+| `capacity.providers.<name>.command` | []string | *(none — required)* | — | — |
+| `capacity.providers.<name>.env` | map | `{}` | — | — |
+| `capacity.providers.<name>.timeout` | duration | `2m` | — | — |
+| `capacity.wake_on_lan.port` | int | `9` | — | — |
+| `capacity.wake_on_lan.send_to` | []string | `[]` | — | — |
 | `auth.enabled` | bool | `false` | `SQI_AUTH_ENABLED` | `--auth-enabled` |
 | `auth.validate_job_owner` | bool | `true` | `SQI_AUTH_VALIDATE_JOB_OWNER` | `--auth-validate-job-owner` |
 | `auth.session.ttl` | duration | `168h` | `SQI_AUTH_SESSION_TTL` | — |
@@ -2752,7 +2842,7 @@ discovery:
 
 - [`config/sqi-server.example.yaml`](https://github.com/uberware/sqi/blob/main/config/sqi-server.example.yaml) —
   Commented example covering the HTTP, NATS, store, log, scheduler, discovery,
-  OpenJD, diagnostics and preset-library sections. The `http.cors_origins` key
+  OpenJD, diagnostics, preset-library, high-availability and capacity sections. The `http.cors_origins` key
   and the whole `auth` block are documented in this reference only.
 - [`docs/architecture.md`](architecture.md) — Component layout and how configuration values are consumed.
 - [`docs/operations.md`](operations.md) — Install, upgrade, rollback, backup, restore, moving to PostgreSQL, and log rotation.

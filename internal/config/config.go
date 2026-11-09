@@ -24,6 +24,7 @@ package config
 
 import (
 	"os"
+	"regexp"
 	"time"
 
 	"github.com/uberware/sqi/internal/auth/oidc"
@@ -46,6 +47,7 @@ type Config struct {
 	PresetLibrary PresetLibraryConfig `yaml:"preset_library"`
 	Auth          AuthConfig          `yaml:"auth"`
 	HA            HAConfig            `yaml:"ha"`
+	Capacity      CapacityConfig      `yaml:"capacity"`
 }
 
 // HTTPConfig controls the REST and WebSocket listener.
@@ -554,6 +556,94 @@ func (c HAConfig) Name() string {
 	}
 	return haFallbackName
 }
+
+// CapacityConfig configures how capacity groups reach machines: the external
+// provider programs they may name (`provider: script:<name>`) and the
+// wake-on-LAN sender.
+//
+// There is no environment overlay for capacity.*: a provider is a program plus
+// the secrets it needs, and a list of commands does not fit one variable, so
+// providers are defined in the config file only. Group rows themselves live in
+// the store and are managed through the API.
+type CapacityConfig struct {
+	// Providers are the external provider programs, by name. A capacity group
+	// selects one with `provider: script:<name>`.
+	Providers map[string]CapacityProviderConfig `yaml:"providers"`
+
+	// WakeOnLAN configures the built-in wake-on-LAN provider.
+	WakeOnLAN WakeOnLANConfig `yaml:"wake_on_lan"`
+}
+
+// CapacityProviderConfig is one external provider program.
+type CapacityProviderConfig struct {
+	// Command is the program and its arguments. Command[0] must be an
+	// absolute path: no PATH lookup decides which program the server runs.
+	Command []string `yaml:"command"`
+
+	// Env is added to the program's environment. Every value is redacted by
+	// [CapacityProviderConfig.MarshalYAML] (`config print`).
+	Env map[string]string `yaml:"env"`
+
+	// Timeout bounds one invocation. 5s to 30m, default 2m.
+	Timeout time.Duration `yaml:"timeout"`
+}
+
+// MarshalYAML redacts every Env value so a provider's credentials never appear
+// in YAML output (e.g. `sqi-server config print`); the names stay visible. It
+// does not affect unmarshaling or the loaded value. Round-tripping a redacted
+// dump is intentionally not supported — redaction wins.
+func (p CapacityProviderConfig) MarshalYAML() (any, error) {
+	type plain CapacityProviderConfig
+	out := plain(p)
+	if p.Env != nil {
+		out.Env = make(map[string]string, len(p.Env))
+		for k := range p.Env {
+			out.Env[k] = redactedPassword
+		}
+	}
+	return out, nil
+}
+
+// WakeOnLANConfig configures the built-in wake-on-LAN provider.
+type WakeOnLANConfig struct {
+	// Port is the UDP port magic packets are sent to. 1–65535, default 9.
+	Port int `yaml:"port"`
+
+	// SendTo lists extra "ip:port" targets, each an IP literal, such as a
+	// router's directed broadcast address, for machines the server's own
+	// broadcast does not reach.
+	SendTo []string `yaml:"send_to"`
+}
+
+const (
+	// DefaultCapacityProviderTimeout is a provider invocation's time limit
+	// when capacity.providers.<name>.timeout is unset.
+	DefaultCapacityProviderTimeout = 2 * time.Minute
+
+	// MinCapacityProviderTimeout is the floor: a shorter limit kills a
+	// provider that is merely starting.
+	MinCapacityProviderTimeout = 5 * time.Second
+
+	// MaxCapacityProviderTimeout is the ceiling: a longer limit lets a hung
+	// program hold a group's capacity decision for half an hour.
+	MaxCapacityProviderTimeout = 30 * time.Minute
+
+	// DefaultWakeOnLANPort is the discard port, the conventional magic-packet
+	// target.
+	DefaultWakeOnLANPort = 9
+)
+
+// capacityNameRE is the name rule for a capacity group, and so for a provider
+// a group names as `script:<name>`. It duplicates internal/store's pattern
+// because internal/config must not import internal/store (a cross-import
+// between same-level internal packages). TestCapacityNameMatchesStore in
+// internal/server, which may import both, fails if the two differ.
+var capacityNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`)
+
+// ValidCapacityName reports whether name is a valid capacity group or
+// provider name: 1-63 characters, letters, digits, '.', '_' or '-', starting
+// with a letter or digit.
+func ValidCapacityName(name string) bool { return capacityNameRE.MatchString(name) }
 
 // AuthConfig controls the opt-in authentication gate.
 type AuthConfig struct {
@@ -1126,6 +1216,9 @@ func DefaultConfig() Config {
 		HA: HAConfig{
 			Enabled:  false,
 			LeaseTTL: DefaultHALeaseTTL,
+		},
+		Capacity: CapacityConfig{
+			WakeOnLAN: WakeOnLANConfig{Port: DefaultWakeOnLANPort},
 		},
 		Auth: AuthConfig{
 			Enabled:          false,
