@@ -97,8 +97,13 @@ func (s *Scheduler) reconcileTaskSchedulability(ctx context.Context, task store.
 // is eligible to run task, otherwise a human-readable reason suitable for
 // [store.Task.UnschedulableReason]. A store lookup failure returns ""
 // (schedulable), so a likely transient error does not flag the task.
+//
+// Where no worker is eligible, the reason is that the task waits for a
+// capacity group when one that acts could bring a machine that runs it
+// ([Scheduler.capacityWaitReason]). That view is in memory, so a farm with no
+// such group makes the same store calls as before.
 func (s *Scheduler) evaluateSchedulability(ctx context.Context, task store.Task, workers []store.Worker) string {
-	if len(workers) == 0 {
+	if len(workers) == 0 && !s.hasWaitable() {
 		return "no online workers"
 	}
 
@@ -113,6 +118,20 @@ func (s *Scheduler) evaluateSchedulability(ctx context.Context, task store.Task,
 	pools, activeCounts, err := s.buildUsageContext(ctx, step)
 	if err != nil {
 		return ""
+	}
+
+	requiredCores := 0
+	if task.RequiredCores != nil {
+		requiredCores = *task.RequiredCores
+	}
+	wait := func(reason string) string {
+		if r := s.capacityWaitReason(job, step, requiredCores, pools); r != "" {
+			return r
+		}
+		return reason
+	}
+	if len(workers) == 0 {
+		return wait("no online workers")
 	}
 
 	var lastReason string
@@ -139,7 +158,7 @@ func (s *Scheduler) evaluateSchedulability(ctx context.Context, task store.Task,
 		}
 		return "" // at least one eligible worker — schedulable
 	}
-	return "no eligible online worker: " + lastReason
+	return wait("no eligible online worker: " + lastReason)
 }
 
 // onlineWorkers returns every online worker the scheduler's farm can dispatch

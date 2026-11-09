@@ -69,6 +69,9 @@ type capacityState struct {
 	// statuses are the last evaluation's, in group order. Their group names
 	// are the ones the gauges hold series for.
 	statuses []capacity.Status
+	// waitable are the groups the last sweep found acting, in group order, for
+	// the unschedulable sweep ([Scheduler.capacityWaitReason]).
+	waitable []waitableGroup
 }
 
 // CapacityStatus returns the last evaluation of the enabled group groupID,
@@ -156,6 +159,7 @@ func (s *Scheduler) sweepCapacityAt(ctx context.Context, now time.Time) {
 		return // fenced
 	}
 	s.publishCapacity(groups, statuses)
+	s.noteWaitable(now, groups, members, statuses)
 }
 
 // farmCapacityGroups keeps the groups of the scheduler's farm (of every farm
@@ -268,7 +272,7 @@ func (s *Scheduler) clearCapacity() {
 	}
 	cs.idleSince, cs.lastStepUp, cs.lastDesired, cs.warned = nil, nil, nil, nil
 	cs.mu.Lock()
-	cs.statuses = nil
+	cs.statuses, cs.waitable = nil, nil
 	cs.mu.Unlock()
 }
 
@@ -539,6 +543,112 @@ func (s *Scheduler) publishCapacity(groups []store.CapacityGroup, statuses []cap
 	}
 	cs.statuses = statuses
 	cs.mu.Unlock()
+}
+
+// waitKind is what a waitable group does to bring capacity.
+type waitKind int
+
+const (
+	// waitWake wakes a machine that is a member already (a named group).
+	waitWake waitKind = iota
+	// waitLaunch launches a machine from the group's profile (a sized group).
+	waitLaunch
+)
+
+// waitableGroup is an enabled group whose provider acts, as the last capacity
+// sweep left it: what a task that no online worker can run may be waiting for.
+type waitableGroup struct {
+	name string
+	kind waitKind
+	// profile is one machine of a sized group (store.CapacityGroup.ProfileWorker).
+	profile store.Worker
+	// waking and wakeable are a named group's members: those asked to start
+	// that have not registered, and those the policy could pick to wake.
+	waking, wakeable []store.Worker
+}
+
+// noteWaitable records, for [Scheduler.capacityWaitReason], the groups that
+// will bring capacity: each whose provider acts, with the machines it is
+// waking or could wake (named), or its profile (sized). A sized group that is
+// degraded and backing off is left out, as is a named group with no member to
+// wake. members is as the sweep read it, before it moved candidates to waking,
+// so a machine woken this tick is among the wakeable ones. groups and statuses
+// are in the same order.
+func (s *Scheduler) noteWaitable(
+	now time.Time, groups []store.CapacityGroup, members map[string][]store.Worker, statuses []capacity.Status,
+) {
+	var out []waitableGroup
+	for i, g := range groups {
+		if !s.providerActs(g) {
+			continue
+		}
+		w := waitableGroup{name: g.Name}
+		if g.Kind == store.CapacityGroupSized {
+			if d := statuses[i].Degraded; d != nil && now.Before(d.BackoffUntil) {
+				continue
+			}
+			w.kind, w.profile = waitLaunch, g.ProfileWorker()
+		} else {
+			for _, m := range members[g.ID] {
+				switch {
+				case capacity.Pending(m):
+					w.waking = append(w.waking, m)
+				case capacity.Wakeable(m, g.BootTimeout, now):
+					w.wakeable = append(w.wakeable, m)
+				}
+			}
+			if len(w.waking)+len(w.wakeable) == 0 {
+				continue
+			}
+		}
+		out = append(out, w)
+	}
+	cs := &s.capState
+	cs.mu.Lock()
+	cs.waitable = out
+	cs.mu.Unlock()
+}
+
+// providerActs reports whether g's provider acts: wake_on_lan, or a script
+// this server configures. It has no side effect, unlike groupProvider.
+func (s *Scheduler) providerActs(g store.CapacityGroup) bool {
+	if g.Provider == store.CapacityProviderWakeOnLAN {
+		return true
+	}
+	name, isScript := strings.CutPrefix(string(g.Provider), "script:")
+	return isScript && s.scriptConfigured(name)
+}
+
+// hasWaitable reports whether any group is waitable.
+func (s *Scheduler) hasWaitable() bool {
+	cs := &s.capState
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	return len(cs.waitable) > 0
+}
+
+// capacityWaitReason returns the unschedulable reason for a task of step and
+// job needing requiredCores: that it waits for the first waitable group, in
+// the sweep's order (priority descending, then name), with a machine that
+// could run it ([Scheduler.couldRun], with pools), or "" when none has. It
+// reads memory only.
+func (s *Scheduler) capacityWaitReason(job store.Job, step store.Step, requiredCores int, pools map[string]store.UsagePool) string {
+	cs := &s.capState
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	for _, g := range cs.waitable {
+		var machines []store.Worker
+		verb := "wake"
+		if g.kind == waitLaunch {
+			machines, verb = []store.Worker{g.profile}, "launch"
+		} else {
+			machines = slices.Concat(g.waking, g.wakeable)
+		}
+		if slices.ContainsFunc(machines, func(w store.Worker) bool { return s.couldRun(w, job, step, requiredCores, pools) }) {
+			return fmt.Sprintf("waiting for capacity group %s to %s a machine", g.name, verb)
+		}
+	}
+	return ""
 }
 
 // publishPowerGauges sets an acting group's members by power state and its

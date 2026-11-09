@@ -328,6 +328,16 @@ func wakeable(w store.Worker, bootTimeout time.Duration, now time.Time) bool {
 	}
 }
 
+// Pending reports whether w is pending capacity: a machine asked to start
+// that has not registered yet, and is not disabled.
+func Pending(w store.Worker) bool { return pending(w) }
+
+// Wakeable reports whether the policy could pick w to wake at now, bootTimeout
+// being its group's.
+func Wakeable(w store.Worker, bootTimeout time.Duration, now time.Time) bool {
+	return wakeable(w, bootTimeout, now)
+}
+
 // machineCores is what one task declaring no cores costs on w, as the lease
 // path's fullMachineCost: the whole machine, or 1 for a worker that reports
 // no cores.
