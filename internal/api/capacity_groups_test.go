@@ -39,8 +39,16 @@ type capacityEnv struct {
 }
 
 // newCapacityEnv wires the handler to a fake store holding one farm. natsAuth
-// is whether the broker requires credentials.
+// is whether the broker requires credentials. No script provider is
+// configured.
 func newCapacityEnv(t *testing.T, natsAuth bool) *capacityEnv {
+	t.Helper()
+	return newCapacityEnvWith(t, natsAuth, nil)
+}
+
+// newCapacityEnvWith is [newCapacityEnv] with scripts, the configured script
+// provider names (without "script:").
+func newCapacityEnvWith(t *testing.T, natsAuth bool, scripts []string) *capacityEnv {
 	t.Helper()
 	st := fake.New()
 	t.Cleanup(func() { st.Close() })
@@ -49,7 +57,7 @@ func newCapacityEnv(t *testing.T, natsAuth bool) *capacityEnv {
 		t.Fatalf("CreateFarm: %v", err)
 	}
 	env := &capacityEnv{t: t, st: st, status: fakeCapacityStatus{}, farmID: farm.ID}
-	h := newCapacityGroupHandler(st, env.status, natsAuth, newTestLogger())
+	h := newCapacityGroupHandler(st, env.status, natsAuth, scripts, newTestLogger())
 	r := chi.NewRouter()
 	r.Get("/api/v1/capacity-groups", h.list)
 	r.Post("/api/v1/capacity-groups", h.create)
@@ -265,8 +273,8 @@ func TestCapacityGroup_Create(t *testing.T) {
 		{name: "negative cooldown", mutate: func(b map[string]any) { b["scale_up_cooldown_seconds"] = -1 }, want: 400, detail: "scale_up_cooldown_seconds"},
 		{name: "absurd timeout", mutate: func(b map[string]any) { b["boot_timeout_seconds"] = int64(1) << 60 }, want: 400, detail: "boot_timeout_seconds"},
 		{name: "bad retire action", mutate: func(b map[string]any) { b["retire_action"] = "explode" }, want: 400, detail: "retire_action"},
-		{name: "wake_on_lan not available", mutate: func(b map[string]any) { b["provider"] = "wake_on_lan" }, want: 400, detail: `provider "wake_on_lan" is not available yet`},
-		{name: "script provider not available", mutate: func(b map[string]any) { b["provider"] = "script:aws" }, want: 400, detail: `provider "script:aws" is not available yet`},
+		{name: "wake_on_lan on a sized group", mutate: func(b map[string]any) { b["provider"] = "wake_on_lan" }, want: 400, detail: errWakeOnLANSized},
+		{name: "script provider not configured", mutate: func(b map[string]any) { b["provider"] = "script:aws" }, want: 400, detail: errScriptAWSNotConfigured},
 		{name: "unknown provider", mutate: func(b map[string]any) { b["provider"] = "magic" }, want: 400, detail: "provider"},
 		{name: "unknown queue", mutate: func(b map[string]any) { b["queue_ids"] = []string{"nope"} }, want: 400, detail: "queue"},
 		{name: "too many queues", mutate: func(b map[string]any) { b["queue_ids"] = tooMany }, want: 400, detail: "queue_ids"},
@@ -391,7 +399,7 @@ func TestCapacityGroup_ListAndGet(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		h := newCapacityGroupHandler(st, nil, false, newTestLogger())
+		h := newCapacityGroupHandler(st, nil, false, nil, newTestLogger())
 		r := chi.NewRouter()
 		r.Get("/api/v1/capacity-groups/{id}", h.get)
 		rr := httptest.NewRecorder()
@@ -485,7 +493,8 @@ func TestCapacityGroup_Update(t *testing.T) {
 	}{
 		{name: "invalid json", raw: "{bad", want: 400, detail: "invalid JSON"},
 		{name: "validation failure", mutate: func(b map[string]any) { b["max_machines"] = 0 }, want: 400, detail: "max_machines"},
-		{name: "provider not available", mutate: func(b map[string]any) { b["provider"] = "script:x" }, want: 400, detail: "is not available yet"},
+		{name: "script provider not configured", mutate: func(b map[string]any) { b["provider"] = "script:x" }, want: 400, detail: "is not configured: add it under capacity.providers"},
+		{name: "wake_on_lan on a sized group", mutate: func(b map[string]any) { b["provider"] = "wake_on_lan" }, want: 400, detail: "needs a named group"},
 		{name: "farm cannot change", mutate: func(b map[string]any) { b["farm_id"] = "other" }, want: 400, detail: "farm_id"},
 		{name: "unknown queue", mutate: func(b map[string]any) { b["queue_ids"] = []string{"nope"} }, want: 400, detail: "queue"},
 	}
@@ -915,6 +924,8 @@ func TestCapacityGroup_PermissionGate(t *testing.T) {
 		{"operator can create", "operator", http.MethodPost, base, map[string]any{}, http.StatusBadRequest},
 		{"operator can list tokens", "operator", http.MethodGet, base + "/g1/tokens", nil, http.StatusNotFound},
 		{"admin can mint a token", "admin", http.MethodPost, base + "/g1/tokens", map[string]any{}, http.StatusNotFound},
+		{"user lists providers", "user", http.MethodGet, "/api/v1/capacity-providers", nil, http.StatusOK},
+		{"read-only lists providers", "read-only", http.MethodGet, "/api/v1/capacity-providers", nil, http.StatusOK},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -950,5 +961,238 @@ func TestCapacityGroup_TokenMintingNeedsRESTAuth(t *testing.T) {
 	r.ServeHTTP(rr, newReq(t, http.MethodGet, "/api/v1/capacity-groups", nil))
 	if rr.Code != http.StatusOK {
 		t.Errorf("list = %d", rr.Code)
+	}
+}
+
+// The exact refusal details for the two acting providers a group cannot use.
+const (
+	errWakeOnLANSized         = `provider "wake_on_lan" needs a named group: it wakes machines it already knows`
+	errScriptAWSNotConfigured = `provider "script:aws" is not configured: add it under capacity.providers in the server's configuration file`
+)
+
+// TestCapacityGroup_ProviderRefusalDetails pins the two provider refusals word
+// for word, on create and on update.
+func TestCapacityGroup_ProviderRefusalDetails(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+		want   string
+	}{
+		{"wake_on_lan on a sized group", func(b map[string]any) { b["provider"] = "wake_on_lan" }, errWakeOnLANSized},
+		{"unconfigured script provider", func(b map[string]any) { b["provider"] = "script:aws" }, errScriptAWSNotConfigured},
+		{"unconfigured script provider on a named group", func(b map[string]any) {
+			b["kind"] = "named"
+			b["provider"] = "script:aws"
+		}, errScriptAWSNotConfigured},
+	}
+	for _, tc := range tests {
+		for _, method := range []string{http.MethodPost, http.MethodPut} {
+			t.Run(tc.name+" "+method, func(t *testing.T) {
+				e := newCapacityEnvWith(t, false, []string{"gcp"})
+				path := "/api/v1/capacity-groups"
+				if method == http.MethodPut {
+					path += "/" + e.createGroupID(nil)
+				}
+				rr := e.do(method, path, e.groupBody(tc.mutate))
+				if rr.Code != http.StatusBadRequest {
+					t.Fatalf("status = %d, want 400: %s", rr.Code, rr.Body.String())
+				}
+				if d := strOf(t, decodeMap(t, rr), "detail"); d != tc.want {
+					t.Errorf("detail = %q\nwant     %q", d, tc.want)
+				}
+			})
+		}
+	}
+}
+
+// TestCapacityGroup_AcceptsActingProviders: wake_on_lan on a named group, and a
+// configured script provider on either kind, are accepted on create and on
+// update.
+func TestCapacityGroup_AcceptsActingProviders(t *testing.T) {
+	tests := []struct {
+		name, kind, provider string
+	}{
+		{"wake_on_lan named", "named", "wake_on_lan"},
+		{"configured script sized", "sized", "script:aws"},
+		{"configured script named", "named", "script:aws"},
+		{"second configured script", "sized", "script:gcp"},
+		{"external still accepted", "sized", "external"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newCapacityEnvWith(t, false, []string{"aws", "gcp"})
+			mutate := func(b map[string]any) { b["kind"] = tc.kind; b["provider"] = tc.provider }
+			g := e.createGroup(mutate)
+			if g["provider"] != tc.provider || g["kind"] != tc.kind {
+				t.Fatalf("created = %v", g)
+			}
+
+			// An external group switched to the provider on update.
+			id := e.createGroupID(func(b map[string]any) { b["kind"] = tc.kind; b["name"] = "switched" })
+			rr := e.do(http.MethodPut, "/api/v1/capacity-groups/"+id, e.groupBody(func(b map[string]any) {
+				mutate(b)
+				b["name"] = "switched"
+			}))
+			if rr.Code != http.StatusOK || decodeMap(t, rr)["provider"] != tc.provider {
+				t.Fatalf("update: %d %s", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+// TestCapacityGroup_RemovedScriptProviderStaysReadable: a group whose script
+// provider is no longer configured stays stored and readable; the scheduler,
+// not the API, reports it as not configured.
+func TestCapacityGroup_RemovedScriptProviderStaysReadable(t *testing.T) {
+	e := newCapacityEnv(t, false)
+	g, err := e.st.CreateCapacityGroup(t.Context(), store.CapacityGroup{
+		ID: "g-gone", FarmID: e.farmID, Name: "gone", Kind: store.CapacityGroupSized, Provider: "script:gone",
+		Enabled: true, MaxMachines: 1, MaxStepUp: 1, IdleTimeout: time.Minute, BootTimeout: time.Minute,
+		RetireAction: store.CapacityRetireSleep, Profile: store.MachineProfile{CPUCount: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/api/v1/capacity-groups", "/api/v1/capacity-groups/" + g.ID} {
+		rr := e.do(http.MethodGet, path, nil)
+		if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"provider":"script:gone"`) {
+			t.Errorf("GET %s: %d %s", path, rr.Code, rr.Body.String())
+		}
+	}
+}
+
+// TestCapacityGroup_StatusActingFields covers the power-state counts, wake
+// candidates, requested machines, degradation and last action, and their
+// null cases.
+func TestCapacityGroup_StatusActingFields(t *testing.T) {
+	since := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	until := since.Add(20 * time.Minute)
+	at := since.Add(time.Minute)
+
+	t.Run("a sized script group reports every field", func(t *testing.T) {
+		e := newCapacityEnvWith(t, false, []string{"aws"})
+		id := e.createGroupID(func(b map[string]any) { b["provider"] = "script:aws" })
+		e.status[id] = capacity.Status{
+			GroupID: id, Waking: 1, Retiring: 2, Asleep: 3, WakeFailed: 4,
+			Requested:   5,
+			Degraded:    &capacity.Degraded{Reason: "launched 2 of 5", Since: since, BackoffUntil: until},
+			LastAction:  &capacity.ActionRecord{Action: "grow", Result: "failed", Message: "exit status 1", At: at},
+			EvaluatedAt: since,
+		}
+		st := statusOf(t, e, id)
+		for k, want := range map[string]any{
+			"waking": float64(1), "retiring": float64(2), "asleep": float64(3), "wake_failed": float64(4),
+			"requested_machines": float64(5),
+		} {
+			if st[k] != want {
+				t.Errorf("%s = %v, want %v", k, st[k], want)
+			}
+		}
+		if wc, ok := st["wake_candidates"].([]any); !ok || len(wc) != 0 {
+			t.Errorf("wake_candidates = %v, want []", st["wake_candidates"])
+		}
+		deg, ok := st["degraded"].(map[string]any)
+		if !ok || deg["reason"] != "launched 2 of 5" || deg["since"] != since.Format(time.RFC3339) ||
+			deg["backoff_until"] != until.Format(time.RFC3339) || len(deg) != 3 {
+			t.Errorf("degraded = %v", st["degraded"])
+		}
+		la, ok := st["last_action"].(map[string]any)
+		if !ok || la["action"] != "grow" || la["result"] != "failed" || la["message"] != "exit status 1" ||
+			la["at"] != at.Format(time.RFC3339) || len(la) != 4 {
+			t.Errorf("last_action = %v", st["last_action"])
+		}
+	})
+
+	t.Run("a sized script group that asked for nothing reports zero, not null", func(t *testing.T) {
+		e := newCapacityEnvWith(t, false, []string{"aws"})
+		id := e.createGroupID(func(b map[string]any) { b["provider"] = "script:aws" })
+		e.status[id] = capacity.Status{GroupID: id, EvaluatedAt: since}
+		if got := statusOf(t, e, id)["requested_machines"]; got != float64(0) {
+			t.Errorf("requested_machines = %v, want 0", got)
+		}
+	})
+
+	t.Run("a named wake_on_lan group lists its wake candidates and has no requested size", func(t *testing.T) {
+		e := newCapacityEnv(t, false)
+		id := e.createGroupID(func(b map[string]any) { b["kind"] = "named"; b["provider"] = "wake_on_lan" })
+		e.status[id] = capacity.Status{GroupID: id, WakeCandidates: []string{"w1", "w2"}, EvaluatedAt: since}
+		st := statusOf(t, e, id)
+		if wc, ok := st["wake_candidates"].([]any); !ok || len(wc) != 2 || wc[0] != "w1" || wc[1] != "w2" {
+			t.Errorf("wake_candidates = %v", st["wake_candidates"])
+		}
+		assertNullKeys(t, st, "requested_machines", "degraded", "last_action")
+	})
+
+	t.Run("an external group has null acting fields and zero counts", func(t *testing.T) {
+		e := newCapacityEnv(t, false)
+		id := e.createGroupID(nil)
+		e.status[id] = capacity.Status{GroupID: id, EvaluatedAt: since}
+		rr := e.do(http.MethodGet, "/api/v1/capacity-groups/"+id, nil)
+		for _, frag := range []string{
+			`"requested_machines":null`, `"degraded":null`, `"last_action":null`, `"wake_candidates":[]`,
+			`"waking":0`, `"retiring":0`, `"asleep":0`, `"wake_failed":0`,
+		} {
+			if !strings.Contains(rr.Body.String(), frag) {
+				t.Errorf("body lacks %s: %s", frag, rr.Body.String())
+			}
+		}
+	})
+}
+
+// statusOf returns the status object of group id, failing when it is null.
+func statusOf(t *testing.T, e *capacityEnv, id string) map[string]any {
+	t.Helper()
+	rr := e.do(http.MethodGet, "/api/v1/capacity-groups/"+id, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get: %d %s", rr.Code, rr.Body.String())
+	}
+	st, ok := decodeMap(t, rr)["status"].(map[string]any)
+	if !ok {
+		t.Fatalf("status = %s", rr.Body.String())
+	}
+	return st
+}
+
+// assertNullKeys fails unless each key is present in m with a null value.
+func assertNullKeys(t *testing.T, m map[string]any, keys ...string) {
+	t.Helper()
+	for _, k := range keys {
+		v, present := m[k]
+		if !present || v != nil {
+			t.Errorf("%s = %v (present %v), want null", k, v, present)
+		}
+	}
+}
+
+// TestCapacityProviders_List: the built-in providers first, then each
+// configured script provider by name, each with the kinds it serves, and
+// nothing else.
+func TestCapacityProviders_List(t *testing.T) {
+	const builtins = `{"name":"external","kinds":["named","sized"]},{"name":"wake_on_lan","kinds":["named"]}`
+	tests := []struct {
+		name    string
+		scripts []string
+		want    string
+	}{
+		{"no script providers", nil, `{"providers":[` + builtins + `]}`},
+		{"script providers sorted", []string{"zeta", "aws"}, `{"providers":[` + builtins +
+			`,{"name":"script:aws","kinds":["named","sized"]},{"name":"script:zeta","kinds":["named","sized"]}]}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			st := fake.New()
+			t.Cleanup(func() { st.Close() })
+			r := NewRouter(Config{DisableRateLimit: true},
+				Deps{Store: st, WorkerRevoker: storeRevoker{store: st}, CapacityProviderNames: tc.scripts},
+				newTestLogger(), metrics.New(), health.NewRegistry())
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, newReq(t, http.MethodGet, "/api/v1/capacity-providers", nil))
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d: %s", rr.Code, rr.Body.String())
+			}
+			if got := strings.TrimSpace(rr.Body.String()); got != tc.want {
+				t.Errorf("body = %s\nwant   %s", got, tc.want)
+			}
+		})
 	}
 }

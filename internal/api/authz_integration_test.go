@@ -179,6 +179,7 @@ var expectedRoutes = []routeExpectation{
 	{method: http.MethodGet, pattern: "/api/v1/capacity-groups", perm: policy.InfraRead},
 	{method: http.MethodGet, pattern: "/api/v1/capacity-groups/{id}", perm: policy.InfraRead},
 	{method: http.MethodGet, pattern: "/api/v1/capacity-groups/{id}/members", perm: policy.InfraRead},
+	{method: http.MethodGet, pattern: "/api/v1/capacity-providers", perm: policy.InfraRead},
 	{method: http.MethodPost, pattern: "/api/v1/farms", perm: policy.InfraManage},
 	{method: http.MethodPut, pattern: "/api/v1/farms/{id}", perm: policy.InfraManage},
 	{method: http.MethodDelete, pattern: "/api/v1/farms/{id}", perm: policy.InfraManage},

@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -896,4 +897,94 @@ func TestWorkerResponse_Removable(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestWorkerResponse_PowerAndInterfaces covers the capacity fields of a
+// worker: power_state is always present (awake when the row holds none), the
+// optional fields are left out when empty, and interfaces is an array, its
+// addrs included, never null.
+func TestWorkerResponse_PowerAndInterfaces(t *testing.T) {
+	at := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name   string
+		worker store.Worker
+		want   map[string]any
+		absent []string
+	}{
+		{
+			name:   "an unmanaged worker",
+			worker: store.Worker{ID: "w1"},
+			want:   map[string]any{"power_state": "awake", "interfaces": []any{}},
+			absent: []string{"power_state_at", "power_reason", "cloud_instance_id"},
+		},
+		{
+			name: "a retiring cloud member",
+			worker: store.Worker{
+				ID: "w2", PowerState: store.PowerRetiring, PowerStateAt: &at, PowerReason: "idle for 10m0s",
+				CloudInstanceID: "i-0abc",
+				Interfaces: []store.NetInterface{
+					{Name: "eth0", MAC: "aa:bb:cc:dd:ee:ff", Addrs: []string{"10.0.0.5/24"}},
+					{Name: "eth1", MAC: "aa:bb:cc:dd:ee:00"},
+				},
+			},
+			want: map[string]any{
+				"power_state": "retiring", "power_state_at": at.Format(time.RFC3339),
+				"power_reason": "idle for 10m0s", "cloud_instance_id": "i-0abc",
+				"interfaces": []any{
+					map[string]any{"name": "eth0", "mac": "aa:bb:cc:dd:ee:ff", "addrs": []any{"10.0.0.5/24"}},
+					map[string]any{"name": "eth1", "mac": "aa:bb:cc:dd:ee:00", "addrs": []any{}},
+				},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(toWorkerResponse(tc.worker))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(raw, &got); err != nil {
+				t.Fatal(err)
+			}
+			for k, want := range tc.want {
+				if g, w := mustJSON(t, got[k]), mustJSON(t, want); g != w {
+					t.Errorf("%s = %s, want %s", k, g, w)
+				}
+			}
+			for _, k := range tc.absent {
+				if v, present := got[k]; present {
+					t.Errorf("%s = %v, want it left out", k, v)
+				}
+			}
+		})
+	}
+}
+
+// TestGetWorker_ReportsPowerState: the detail and list responses of a stored
+// worker carry its power state.
+func TestGetWorker_ReportsPowerState(t *testing.T) {
+	st := fake.New()
+	w := seedWorker(t, st, store.WorkerStatusOnline)
+	r := newWorkerRouter(st)
+	for _, path := range []string{"/api/v1/workers/" + w.ID, "/api/v1/workers"} {
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, newReq(t, http.MethodGet, path, nil))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("GET %s: %d", path, rr.Code)
+		}
+		body := rr.Body.String()
+		if !strings.Contains(body, `"power_state":"awake"`) || !strings.Contains(body, `"interfaces":[]`) {
+			t.Errorf("GET %s lacks power_state or interfaces: %s", path, body)
+		}
+	}
+}
+
+func mustJSON(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }

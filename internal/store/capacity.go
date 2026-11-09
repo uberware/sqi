@@ -32,9 +32,11 @@ const (
 	// CapacityProviderExternal leaves starting and stopping to something
 	// outside sqi.
 	CapacityProviderExternal CapacityProvider = "external"
-	// CapacityProviderWakeOnLAN ("wake_on_lan") and "script:<name>" pass
-	// [CapacityGroup.Validate], but no provider implements them and the API
-	// accepts only [CapacityProviderExternal].
+	// CapacityProviderWakeOnLAN ("wake_on_lan") wakes a named group's known
+	// machines. "script:<name>" names a provider program from the server's
+	// configuration. [CapacityGroup.Validate] admits both on either kind; the
+	// API refuses wake_on_lan on a sized group and a script provider that is
+	// not configured.
 	CapacityProviderWakeOnLAN CapacityProvider = "wake_on_lan"
 )
 

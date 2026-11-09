@@ -202,6 +202,12 @@ type Config struct {
 	// Default true.
 	SeedDefaults bool
 
+	// Capacity mirrors config.CapacityConfig: the script capacity providers
+	// and the wake-on-LAN sender. The scheduler runs the providers and sends
+	// the packets ([schedulerConfig]); the API learns only the providers'
+	// names ([Server.apiDeps]).
+	Capacity config.CapacityConfig
+
 	// HA mirrors config.HAConfig. With HA.Enabled the server joins a
 	// high-availability group: it starts as a warm standby and leads only
 	// while it holds the leader lease (see ha.go). The zero value, as without
@@ -806,6 +812,9 @@ func (s *Server) apiDeps() api.Deps {
 		SessionTTL:    s.cfg.AuthSessionTTL,
 		CookieName:    s.cfg.AuthCookieName,
 		CookieSecure:  s.cfg.AuthCookieSecure,
+		// Names only: a provider's command and environment stay with the
+		// scheduler.
+		CapacityProviderNames: capacityProviderNames(s.cfg.Capacity),
 	}
 	natsAuthDeps(s.cfg, &deps)
 	// The scheduler is the capacity-group status source. Assign it only when it

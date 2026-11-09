@@ -110,9 +110,25 @@ type workerResponse struct {
 	Tags            map[string]string `json:"tags,omitempty"`
 	Status          string            `json:"status"`
 	Removable       bool              `json:"removable"`
-	LastHeartbeatAt *time.Time        `json:"last_heartbeat_at,omitempty"`
-	RegisteredAt    time.Time         `json:"registered_at"`
-	UpdatedAt       time.Time         `json:"updated_at"`
+	// PowerState is always present: awake for every worker no capacity
+	// group has moved. The power and machine fields below follow the same
+	// visibility as the rest of the response, as IPAddress does.
+	PowerState      string                 `json:"power_state"`
+	PowerStateAt    *time.Time             `json:"power_state_at,omitempty"`
+	PowerReason     string                 `json:"power_reason,omitempty"`
+	CloudInstanceID string                 `json:"cloud_instance_id,omitempty"`
+	Interfaces      []netInterfaceResponse `json:"interfaces"`
+	LastHeartbeatAt *time.Time             `json:"last_heartbeat_at,omitempty"`
+	RegisteredAt    time.Time              `json:"registered_at"`
+	UpdatedAt       time.Time              `json:"updated_at"`
+}
+
+// netInterfaceResponse is one network interface a worker reported: what a
+// wake-on-LAN packet is addressed with. Addrs is an array, never null.
+type netInterfaceResponse struct {
+	Name  string   `json:"name"`
+	MAC   string   `json:"mac"`
+	Addrs []string `json:"addrs"`
 }
 
 // workerDetailResponse extends [workerResponse] with the active-task detail
@@ -447,8 +463,13 @@ func (h *workerHandler) removeWorker(w http.ResponseWriter, r *http.Request) {
 // toWorkerResponse converts a [store.Worker] into the API wire type. Status is
 // the worker's effective status ([store.Worker.EffectiveStatus]), so a
 // disabled worker reads "disabled" whatever its liveness, and Removable is the
-// server-authoritative [store.Worker.Removable].
+// server-authoritative [store.Worker.Removable]. A row with no power state
+// reads awake, the state of every worker no capacity group manages.
 func toWorkerResponse(wk store.Worker) workerResponse {
+	powerState := wk.PowerState
+	if powerState == "" {
+		powerState = store.PowerAwake
+	}
 	return workerResponse{
 		ID:              wk.ID,
 		FarmID:          wk.FarmID,
@@ -472,10 +493,27 @@ func toWorkerResponse(wk store.Worker) workerResponse {
 		Tags:            wk.Tags,
 		Status:          string(wk.EffectiveStatus()),
 		Removable:       wk.Removable(),
+		PowerState:      string(powerState),
+		PowerStateAt:    wk.PowerStateAt,
+		PowerReason:     wk.PowerReason,
+		CloudInstanceID: wk.CloudInstanceID,
+		Interfaces:      toNetInterfaceResponses(wk.Interfaces),
 		LastHeartbeatAt: wk.LastHeartbeatAt,
 		RegisteredAt:    wk.RegisteredAt,
 		UpdatedAt:       wk.UpdatedAt,
 	}
+}
+
+// toNetInterfaceResponses converts a worker's interfaces, copying them so the
+// response shares nothing with the record.
+func toNetInterfaceResponses(ifs []store.NetInterface) []netInterfaceResponse {
+	out := make([]netInterfaceResponse, len(ifs))
+	for i, nic := range ifs {
+		addrs := make([]string, len(nic.Addrs))
+		copy(addrs, nic.Addrs)
+		out[i] = netInterfaceResponse{Name: nic.Name, MAC: nic.MAC, Addrs: addrs}
+	}
+	return out
 }
 
 // ── Sort helpers ──────────────────────────────────────────────────────────────

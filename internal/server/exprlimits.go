@@ -3,9 +3,12 @@
 package server
 
 import (
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/uberware/sqi/internal/bus"
+	"github.com/uberware/sqi/internal/capacity/script"
 	"github.com/uberware/sqi/internal/config"
 	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/scheduler"
@@ -58,7 +61,31 @@ func schedulerConfig(cfg Config, client *bus.Client) scheduler.Config {
 	if sched.BusReconnectGrace <= 0 {
 		sched.BusReconnectGrace = busReconnectGrace(sched.WorkerTimeout)
 	}
+	applyCapacityConfig(&sched, cfg.Capacity)
 	return sched
+}
+
+// applyCapacityConfig sets the scheduler's capacity providers from the
+// server's capacity block: each script provider keyed by its bare name (a
+// group's "script:aws" is "aws" here), and the wake-on-LAN sender. A block
+// with no providers leaves ScriptProviders nil.
+func applyCapacityConfig(sched *scheduler.Config, c config.CapacityConfig) {
+	if len(c.Providers) > 0 {
+		sched.ScriptProviders = make(map[string]script.Provider, len(c.Providers))
+		for name, p := range c.Providers {
+			sched.ScriptProviders[name] = script.Provider{
+				Name: name, Command: slices.Clone(p.Command), Env: maps.Clone(p.Env), Timeout: p.Timeout,
+			}
+		}
+	}
+	sched.WakeOnLANPort = c.WakeOnLAN.Port
+	sched.WakeOnLANSendTo = slices.Clone(c.WakeOnLAN.SendTo)
+}
+
+// capacityProviderNames returns the configured script provider names, bare
+// and sorted: what the API checks a group's "script:<name>" against and lists.
+func capacityProviderNames(c config.CapacityConfig) []string {
+	return slices.Sorted(maps.Keys(c.Providers))
 }
 
 // schedulerConfigFor is [schedulerConfig] for this server, with the

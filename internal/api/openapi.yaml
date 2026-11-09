@@ -95,8 +95,8 @@ tags:
   - name: capacity-groups
     description: >-
       Capacity groups: sets of machines the server follows demand with,
-      their members and join tokens, and the scaling signal (`infra.read` /
-      `infra.manage`)
+      their members and join tokens, the scaling signal, and the providers a
+      group may name (`infra.read` / `infra.manage`)
   - name: auth
     description: Local account login, logout, and current-principal lookup
   - name: users
@@ -833,7 +833,7 @@ components:
 
     Worker:
       type: object
-      required: [id, farm_id, hostname, gpu, status, removable, registered_at, updated_at]
+      required: [id, farm_id, hostname, gpu, status, removable, power_state, interfaces, registered_at, updated_at]
       properties:
         id:
           type: string
@@ -896,6 +896,43 @@ components:
             finds it gone). Online workers, disabled or not, are never
             removable. The flag cannot see tasks: a worker that still has a
             task assigned or running is refused with 409 even when it is true.
+        power_state:
+          type: string
+          enum: [awake, waking, retiring, asleep, wake_failed]
+          description: >-
+            Where the worker is in its capacity group's power cycle, separate
+            from its liveness (`status`) and from the disabled flag. `awake`
+            for every worker no capacity group has moved. `waking`: the server
+            asked the machine to start and it has not registered yet.
+            `retiring`: told to sleep or shut down, it takes no new work while
+            it finishes what it holds. `asleep`: deregistered and suspended or
+            off. `wake_failed`: it did not register within its group's boot
+            timeout.
+        power_state_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When `power_state` last changed; left out when it has not changed since the worker was created.
+        power_reason:
+          type: string
+          description: >-
+            Why the power state is what it is, when that is worth saying: why
+            a wake failed, or what idle period retired the worker. Left out
+            when empty.
+        cloud_instance_id:
+          type: string
+          description: >-
+            The cloud provider's identifier for the worker's machine, as the
+            worker reported it at registration. Left out when it reported
+            none.
+        interfaces:
+          type: array
+          items:
+            $ref: "#/components/schemas/NetInterface"
+          description: >-
+            The network interfaces the worker reported at registration, at
+            most 32: what a wake-on-LAN packet is addressed with. Empty when it
+            reported none.
         last_heartbeat_at:
           type: string
           format: date-time
@@ -906,6 +943,23 @@ components:
         updated_at:
           type: string
           format: date-time
+
+    NetInterface:
+      type: object
+      required: [name, mac, addrs]
+      description: One network interface of a worker's machine.
+      properties:
+        name:
+          type: string
+        mac:
+          type: string
+          description: The hardware address, such as "aa:bb:cc:dd:ee:ff".
+        addrs:
+          type: array
+          maxItems: 16
+          items:
+            type: string
+          description: The interface's addresses in CIDR form, such as "10.0.0.5/24"; empty when it has none.
 
     CurrentTask:
       type: object
@@ -2002,8 +2056,15 @@ components:
           type: string
           default: external
           description: >-
-            Only `external` is accepted; `wake_on_lan` and
-            `script:<name>` are refused with 400.
+            What starts and stops the group's machines: `external` (something
+            outside sqi), `wake_on_lan` (named groups only) or
+            `script:<name>`, where `<name>` is a provider defined under
+            `capacity.providers` in the server's configuration file.
+            `GET /capacity-providers` lists them. A sized group naming
+            `wake_on_lan` is refused with 400
+            `provider "wake_on_lan" needs a named group: it wakes machines it already knows`,
+            and an unconfigured script provider with 400
+            `provider "script:<name>" is not configured: add it under capacity.providers in the server's configuration file`.
         enabled:
           type: boolean
           default: true
@@ -2054,13 +2115,15 @@ components:
           type: string
           enum: [sleep, shutdown]
           default: sleep
+          description: What a `wake_on_lan` group's idle member is told to do when it is retired.
         machine_profile:
           $ref: "#/components/schemas/MachineProfile"
 
     CapacityGroupStatus:
       type: object
       required:
-        [demand_cores, desired_machines, online_members, offline_members, retire_candidates, mismatches, evaluated_at]
+        [demand_cores, desired_machines, online_members, offline_members, waking, retiring, asleep, wake_failed,
+         wake_candidates, retire_candidates, mismatches, requested_machines, degraded, last_action, evaluated_at]
       description: The scheduler's last evaluation of a group.
       properties:
         demand_cores:
@@ -2082,6 +2145,25 @@ components:
           type: integer
         offline_members:
           type: integer
+        waking:
+          type: integer
+          description: Members in power state `waking`, whatever their liveness and disabled flag.
+        retiring:
+          type: integer
+          description: Members in power state `retiring`.
+        asleep:
+          type: integer
+          description: Members in power state `asleep`.
+        wake_failed:
+          type: integer
+          description: Members in power state `wake_failed`.
+        wake_candidates:
+          type: array
+          items:
+            type: string
+          description: >-
+            A named group's members to wake now, by worker ID, in order.
+            Empty for a sized group.
         retire_candidates:
           type: array
           items:
@@ -2099,9 +2181,72 @@ components:
                 type: string
                 description: Every way the member's registration falls short of the profile, joined by "; ".
           description: A sized group's online members that fall short of its machine profile.
+        requested_machines:
+          type: integer
+          nullable: true
+          description: >-
+            The size a sized `script` group last asked its provider for. Null
+            for every other group.
+        degraded:
+          nullable: true
+          description: Why the group stopped growing, and until when; null while it is not degraded.
+          allOf: [{ $ref: "#/components/schemas/CapacityGroupDegraded" }]
+        last_action:
+          nullable: true
+          description: The group's latest provider action; null before its first.
+          allOf: [{ $ref: "#/components/schemas/CapacityGroupAction" }]
         evaluated_at:
           type: string
           format: date-time
+
+    CapacityGroupDegraded:
+      type: object
+      required: [reason, since, backoff_until]
+      properties:
+        reason:
+          type: string
+        since:
+          type: string
+          format: date-time
+        backoff_until:
+          type: string
+          format: date-time
+          description: The group asks its provider for no more machines before this time.
+
+    CapacityGroupAction:
+      type: object
+      required: [action, result, message, at]
+      properties:
+        action:
+          type: string
+          enum: [wake, grow, retire, list, configure]
+        result:
+          type: string
+          enum: [ok, failed, refused, unsupported, timeout, expired]
+        message:
+          type: string
+          description: What the provider or the server said about the result; may be empty.
+        at:
+          type: string
+          format: date-time
+
+    CapacityProvider:
+      type: object
+      required: [name, kinds]
+      description: >-
+        A provider a capacity group may name. Only the name is given: a
+        script provider's command, environment and timeout stay in the
+        server's configuration file.
+      properties:
+        name:
+          type: string
+          description: '`external`, `wake_on_lan`, or `script:<name>` for each provider under `capacity.providers`.'
+        kinds:
+          type: array
+          items:
+            type: string
+            enum: [named, sized]
+          description: The group kinds that may name the provider.
 
     CapacityGroup:
       type: object
@@ -4603,10 +4748,10 @@ paths:
       summary: Create a capacity group
       tags: [capacity-groups]
       description: |
-        Requires `infra.manage`. Only the `external` provider is available:
-        `wake_on_lan` and `script:<name>` are refused with 400
-        `provider "<name>" is not available yet`. Unknown request fields are
-        refused with 400.
+        Requires `infra.manage`. `provider` must be one
+        `GET /capacity-providers` lists for the group's kind: `wake_on_lan`
+        takes a named group only, and `script:<name>` a provider the server's
+        configuration defines. Unknown request fields are refused with 400.
       requestBody:
         required: true
         content:
@@ -4881,6 +5026,35 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /capacity-providers:
+    get:
+      operationId: listCapacityProviders
+      summary: List the providers a capacity group may name
+      tags: [capacity-groups]
+      description: |
+        Requires `infra.read`. `external` and `wake_on_lan` first, then one
+        `script:<name>` per provider under `capacity.providers` in the
+        server's configuration file, sorted by name. Each carries the group
+        kinds that may name it. Nothing of a script provider's configuration
+        beyond its name is returned.
+      responses:
+        "200":
+          description: The providers.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [providers]
+                properties:
+                  providers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/CapacityProvider"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
