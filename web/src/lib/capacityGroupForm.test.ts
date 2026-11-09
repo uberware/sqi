@@ -8,10 +8,13 @@ import {
   mapServerErrors,
   parseList,
   parseTags,
+  providerForKind,
+  providersFor,
   validateValues,
   valuesFromGroup,
   wholeNumber,
 } from './capacityGroupForm'
+import type { CapacityProvider } from '@/api/types'
 import { group } from '@/test/capacityGroups'
 
 describe('wholeNumber', () => {
@@ -77,6 +80,80 @@ describe('validateValues', () => {
   })
 })
 
+const PROVIDERS: CapacityProvider[] = [
+  { name: 'external', kinds: ['named', 'sized'] },
+  { name: 'wake_on_lan', kinds: ['named'] },
+  { name: 'script:burst', kinds: ['sized'] },
+  { name: 'script:both', kinds: ['named', 'sized'] },
+]
+
+describe('providersFor', () => {
+  it.each([
+    ['named', ['external', 'wake_on_lan', 'script:both']],
+    ['sized', ['external', 'script:burst', 'script:both']],
+  ] as const)('offers %s groups %j', (kind, want) => {
+    expect(providersFor(kind, PROVIDERS).map((p) => p.name)).toEqual(want)
+  })
+})
+
+describe('providerForKind', () => {
+  it.each([
+    ['wake_on_lan', 'sized', 'external'],
+    ['script:burst', 'named', 'external'],
+    ['script:both', 'named', 'script:both'],
+    ['external', 'named', 'external'],
+    ['script:gone', 'sized', 'external'],
+  ] as const)('keeps %s only if a %s group may name it', (provider, kind, want) => {
+    expect(providerForKind(provider, kind, PROVIDERS)).toBe(want)
+  })
+
+  it('falls back to external for anything but external while the list is unknown', () => {
+    expect(providerForKind('wake_on_lan', 'named', undefined)).toBe('external')
+    expect(providerForKind('external', 'sized', undefined)).toBe('external')
+  })
+})
+
+describe('validateValues provider', () => {
+  const valid = { ...defaultValues('farm-1'), name: 'x', cpuCount: '4' }
+
+  it.each(['external', 'script:burst', 'script:both'])(
+    'accepts %s for a sized group',
+    (provider) => {
+      expect(
+        validateValues({ ...valid, provider }, { providers: PROVIDERS }).provider,
+      ).toBeUndefined()
+    },
+  )
+
+  it.each(['script:nope', 'wake_on_lan'])('refuses %s for a sized group', (provider) => {
+    const message = validateValues({ ...valid, provider }, { providers: PROVIDERS }).provider
+    expect(message).toContain(provider)
+  })
+
+  it('accepts the provider the group already has even when it is no longer offered', () => {
+    const errors = validateValues(
+      { ...valid, provider: 'script:gone' },
+      { providers: PROVIDERS, original: 'script:gone' },
+    )
+    expect(errors.provider).toBeUndefined()
+  })
+
+  it('accepts only external or the original while the list is unknown', () => {
+    expect(
+      validateValues({ ...valid, provider: 'external' }, { providers: undefined }).provider,
+    ).toBeUndefined()
+    expect(
+      validateValues({ ...valid, provider: 'script:burst' }, { providers: undefined }).provider,
+    ).toBeDefined()
+    expect(
+      validateValues(
+        { ...valid, provider: 'script:burst' },
+        { providers: undefined, original: 'script:burst' },
+      ).provider,
+    ).toBeUndefined()
+  })
+})
+
 describe('buildInput', () => {
   it('carries farm_id on create and not on edit', () => {
     const v = { ...defaultValues('farm-1'), name: ' x ', cpuCount: '4' }
@@ -116,7 +193,7 @@ describe('mapServerErrors', () => {
         "a sized group's profile must declare cpu_count of at least 1",
         'queue "q" not found',
         'farm not found',
-        'provider "wake_on_lan" is not available yet',
+        'provider "script:burst" is not configured: add it under capacity.providers in the server\'s configuration file',
         'invalid JSON body: json: unknown field "x"',
       ].join('\n'),
     )

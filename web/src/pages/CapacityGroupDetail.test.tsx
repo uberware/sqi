@@ -152,6 +152,231 @@ describe('status panel', () => {
   })
 })
 
+describe('provider status', () => {
+  it('shows the power-state counts and the size a script group last asked for', async () => {
+    stubApi({
+      ...SIZED,
+      'GET /capacity-groups/cg-1': {
+        body: group({
+          provider: 'script:burst',
+          status: status({
+            waking: 2,
+            retiring: 3,
+            asleep: 4,
+            wake_failed: 5,
+            requested_machines: 7,
+          }),
+        }),
+      },
+    })
+    renderPage()
+    const panel = await screen.findByRole('region', { name: /^status$/i })
+    const stat = (label: string) => within(panel).getByText(label).closest('div')
+    expect(stat('Waking')).toHaveTextContent('2')
+    expect(stat('Retiring')).toHaveTextContent('3')
+    expect(stat('Asleep')).toHaveTextContent('4')
+    expect(stat('Wake failed')).toHaveTextContent('5')
+    expect(stat('Requested machines')).toHaveTextContent('7')
+  })
+
+  it('leaves out requested machines for a group that has none', async () => {
+    stubApi(SIZED)
+    renderPage()
+    const panel = await screen.findByRole('region', { name: /^status$/i })
+    expect(within(panel).queryByText('Requested machines')).not.toBeInTheDocument()
+  })
+
+  it('shows a degraded banner with the reason, when it began and when the backoff ends', async () => {
+    stubApi({
+      ...SIZED,
+      'GET /capacity-groups/cg-1': {
+        body: group({
+          provider: 'script:burst',
+          status: status({
+            degraded: {
+              reason: 'provider refused: quota exceeded',
+              since: '2026-11-07T11:00:00Z',
+              backoff_until: '2999-01-01T00:00:00Z',
+            },
+          }),
+        }),
+      },
+    })
+    renderPage()
+    const banner = await screen.findByRole('status', { name: /degraded/i })
+    expect(banner).toHaveTextContent(/degraded/i)
+    expect(banner).toHaveTextContent('provider refused: quota exceeded')
+    expect(banner).toHaveTextContent(/since/i)
+    expect(banner).toHaveTextContent(/no more machines are requested until/i)
+    expect(banner.querySelectorAll('time')).toHaveLength(2)
+  })
+
+  it('shows no degraded banner while the group is healthy', async () => {
+    stubApi(SIZED)
+    renderPage()
+    await screen.findByRole('region', { name: /^status$/i })
+    expect(screen.queryByRole('status', { name: /degraded/i })).not.toBeInTheDocument()
+  })
+
+  it('shows the last provider action with its result and message', async () => {
+    stubApi({
+      ...SIZED,
+      'GET /capacity-groups/cg-1': {
+        body: group({
+          provider: 'script:burst',
+          status: status({
+            last_action: {
+              action: 'grow',
+              result: 'failed',
+              message: 'exit status 3: no capacity',
+              at: '2026-11-07T11:30:00Z',
+            },
+          }),
+        }),
+      },
+    })
+    renderPage()
+    const panel = await screen.findByRole('region', { name: /^status$/i })
+    const last = within(panel).getByRole('group', { name: /last provider action/i })
+    expect(last).toHaveTextContent('grow')
+    expect(last).toHaveTextContent('failed')
+    expect(last).toHaveTextContent('exit status 3: no capacity')
+    expect(last.querySelector('time')).not.toBeNull()
+  })
+
+  it('says a provider group has not acted yet, and leaves the section out for external', async () => {
+    stubApi({
+      ...SIZED,
+      'GET /capacity-groups/cg-1': { body: group({ provider: 'wake_on_lan', kind: 'named' }) },
+      'GET /capacity-groups/cg-1/members': { body: [] },
+    })
+    const { unmount } = renderPage()
+    const panel = await screen.findByRole('region', { name: /^status$/i })
+    expect(within(panel).getByText(/no provider action yet/i)).toBeInTheDocument()
+    unmount()
+
+    stubApi(SIZED)
+    renderPage()
+    const panel2 = await screen.findByRole('region', { name: /^status$/i })
+    expect(within(panel2).queryByText(/last provider action/i)).not.toBeInTheDocument()
+  })
+
+  it('shows the retire action in settings only for wake_on_lan', async () => {
+    stubApi({
+      ...SIZED,
+      'GET /capacity-groups/cg-1': {
+        body: group({ provider: 'wake_on_lan', kind: 'named', retire_action: 'shutdown' }),
+      },
+      'GET /capacity-groups/cg-1/members': { body: [] },
+    })
+    const { unmount } = renderPage()
+    const settings = await screen.findByRole('region', { name: /^settings$/i })
+    expect(within(settings).getByText('Retire action')).toBeInTheDocument()
+    expect(within(settings).getByText('shutdown')).toBeInTheDocument()
+    unmount()
+
+    stubApi(SIZED)
+    renderPage()
+    const settings2 = await screen.findByRole('region', { name: /^settings$/i })
+    expect(within(settings2).queryByText('Retire action')).not.toBeInTheDocument()
+  })
+})
+
+describe('members power state', () => {
+  const MEMBERS = [
+    worker({ id: 'w-1', hostname: 'render01', name: 'render01' }),
+    worker({
+      id: 'w-2',
+      hostname: 'render02',
+      name: 'render02',
+      status: 'offline',
+      power_state: 'wake_failed',
+      power_state_at: '2026-11-07T11:00:00Z',
+      power_reason: 'did not register within 10m0s',
+      cloud_instance_id: 'i-0abc123',
+    }),
+    worker({
+      id: 'w-3',
+      hostname: 'render03',
+      name: 'render03',
+      status: 'offline',
+      power_state: 'asleep',
+      power_state_at: '2026-11-07T10:00:00Z',
+      interfaces: [{ name: 'eth0', mac: 'aa:bb:cc:dd:ee:ff', addrs: ['10.0.0.3/24'] }],
+    }),
+  ]
+
+  it('shows each member with its power state as text, the reason under it and the instance ID', async () => {
+    stubApi({
+      ...SIZED,
+      'GET /capacity-groups/cg-1': { body: group({ provider: 'script:burst' }) },
+      'GET /capacity-groups/cg-1/members': { body: MEMBERS },
+    })
+    renderPage()
+    const table = await screen.findByRole('table', { name: /members/i })
+    await within(table).findByText('render03')
+    expect(within(table).getByRole('columnheader', { name: /power/i })).toBeInTheDocument()
+    expect(within(table).getByRole('columnheader', { name: /instance/i })).toBeInTheDocument()
+
+    const awake = within(table).getByRole('row', { name: /render01/ })
+    expect(within(awake).getByText('Awake')).toBeInTheDocument()
+
+    const failed = within(table).getByRole('row', { name: /render02/ })
+    expect(within(failed).getByText('Wake failed')).toBeInTheDocument()
+    // The reason is visible text, not only a tooltip.
+    expect(within(failed).getByText('did not register within 10m0s')).toBeVisible()
+    expect(within(failed).getByText('i-0abc123')).toBeInTheDocument()
+    expect(failed.querySelector('time')).not.toBeNull()
+
+    const asleep = within(table).getByRole('row', { name: /render03/ })
+    expect(within(asleep).getByText('Asleep')).toBeInTheDocument()
+  })
+
+  it('hints at a missing wake-on-LAN address only for a wake_on_lan group', async () => {
+    stubApi({
+      ...NAMED,
+      'GET /capacity-groups/cg-1': {
+        body: group({ kind: 'named', provider: 'wake_on_lan', machine_profile: {} }),
+      },
+      'GET /capacity-groups/cg-1/members': { body: MEMBERS },
+    })
+    const { unmount } = renderPage()
+    const table = await screen.findByRole('table', { name: /members/i })
+    // render01 and render02 report no interface; render03 has a MAC.
+    await within(table).findByText('render03')
+    expect(within(table).getAllByText(/no wake-on-lan address yet/i)).toHaveLength(2)
+    expect(
+      within(within(table).getByRole('row', { name: /render03/ })).queryByText(
+        /no wake-on-lan address yet/i,
+      ),
+    ).not.toBeInTheDocument()
+    unmount()
+
+    stubApi({
+      ...SIZED,
+      'GET /capacity-groups/cg-1/members': { body: MEMBERS },
+    })
+    renderPage()
+    const sized = await screen.findByRole('table', { name: /members/i })
+    await within(sized).findByText('render03')
+    expect(within(sized).queryByText(/no wake-on-lan address yet/i)).not.toBeInTheDocument()
+  })
+
+  it('does not count an interface with an empty MAC as an address', async () => {
+    stubApi({
+      ...NAMED,
+      'GET /capacity-groups/cg-1': {
+        body: group({ kind: 'named', provider: 'wake_on_lan', machine_profile: {} }),
+      },
+      'GET /capacity-groups/cg-1/members': {
+        body: [worker({ interfaces: [{ name: 'lo', mac: '', addrs: ['127.0.0.1/8'] }] })],
+      },
+    })
+    renderPage()
+    expect(await screen.findByText(/no wake-on-lan address yet/i)).toBeInTheDocument()
+  })
+})
+
 describe('members of a named group', () => {
   it('lists members and removes one through DELETE', async () => {
     const fetchMock = stubApi({

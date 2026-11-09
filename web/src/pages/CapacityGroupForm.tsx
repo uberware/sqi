@@ -5,13 +5,20 @@ import type { ReactNode } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import PageHeader from '@/components/PageHeader'
 import { useToast } from '@/components/Toast'
-import { useGetCapacityGroup, useListAllFarmQueues, useListFarms } from '@/api/queries'
+import {
+  useCapacityProviders,
+  useGetCapacityGroup,
+  useListAllFarmQueues,
+  useListFarms,
+} from '@/api/queries'
 import { useCreateCapacityGroup, useUpdateCapacityGroup } from '@/api/mutations'
-import type { CapacityGroup, Farm } from '@/api/types'
+import type { CapacityGroup, CapacityGroupKind, CapacityProvider, Farm } from '@/api/types'
 import {
   buildInput,
   defaultValues,
   mapServerErrors,
+  providerForKind,
+  providersFor,
   validateValues,
   valuesFromGroup,
 } from '@/lib/capacityGroupForm'
@@ -247,6 +254,75 @@ function QueuePicker({ farmId, selected, onChange, error }: QueuePickerProps) {
   )
 }
 
+const WAKE_ON_LAN = 'wake_on_lan'
+
+interface ProviderSelectProps {
+  id: string
+  kind: CapacityGroupKind
+  value: string
+  /** The server's provider list; undefined while it loads or when it failed. */
+  providers: CapacityProvider[] | undefined
+  failed: boolean
+  error?: string | undefined
+  onChange: (provider: string) => void
+}
+
+/**
+ * The provider choice: the providers the server offers for the group's kind.
+ * A provider the group already has stays visible when the server no longer
+ * offers it, so opening the form does not change it.
+ */
+function ProviderSelect({
+  id,
+  kind,
+  value,
+  providers,
+  failed,
+  error,
+  onChange,
+}: ProviderSelectProps) {
+  const offered = providers === undefined ? [] : providersFor(kind, providers).map((p) => p.name)
+  const options = offered.map((name) => ({ value: name, label: name }))
+  let hint: string | undefined
+  if (providers === undefined) {
+    options.push({ value, label: value })
+    hint = failed
+      ? 'Could not load the provider list, so the provider cannot be changed here.'
+      : 'Loading providers…'
+  } else if (!offered.includes(value)) {
+    const configured = providers.some((p) => p.name === value)
+    options.push({
+      value,
+      label: `${value} (${configured ? `not available for a ${kind} group` : 'not configured'})`,
+    })
+    hint = configured
+      ? `This provider cannot serve a ${kind} group. Choose another.`
+      : 'This provider is no longer configured on the server. Saving keeps it; choose another to change it.'
+  } else if (value === WAKE_ON_LAN) {
+    hint = 'Wakes the machines the group already holds, by network packet.'
+  }
+
+  return (
+    <Field id={id} label="Provider" error={error} {...(hint !== undefined ? { hint } : {})}>
+      {(a11y) => (
+        <select
+          {...a11y}
+          className={styles.select}
+          value={value}
+          disabled={providers === undefined}
+          onChange={(e) => onChange(e.target.value)}
+        >
+          {options.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      )}
+    </Field>
+  )
+}
+
 interface InnerProps {
   /** The group being edited; absent on create. */
   original?: CapacityGroup
@@ -259,12 +335,17 @@ function CapacityGroupFormInner({ original, farms, defaults }: InnerProps) {
   const { showToast } = useToast()
   const createGroup = useCreateCapacityGroup()
   const updateGroup = useUpdateCapacityGroup()
+  const providersQuery = useCapacityProviders()
+  const providers = providersQuery.data
 
   const [values, setValues] = useState<FormValues>(defaults)
   const [serverFields, setServerFields] = useState<FieldErrors>({})
   const [serverForm, setServerForm] = useState<string[]>([])
 
-  const clientErrors = validateValues(values)
+  const clientErrors = validateValues(values, {
+    providers,
+    ...(original !== undefined ? { original: original.provider } : {}),
+  })
   const isPending = createGroup.isPending || updateGroup.isPending
   const canSubmit = Object.keys(clientErrors).length === 0 && !isPending
   const isEdit = original !== undefined
@@ -276,6 +357,17 @@ function CapacityGroupFormInner({ original, farms, defaults }: InnerProps) {
       prev[key] === undefined
         ? prev
         : (Object.fromEntries(Object.entries(prev).filter(([k]) => k !== key)) as FieldErrors),
+    )
+  }
+
+  function changeKind(kind: CapacityGroupKind) {
+    setValues((v) => ({ ...v, kind, provider: providerForKind(v.provider, kind, providers) }))
+    // What the server said about the old kind or provider no longer applies.
+    setServerFields(
+      (prev) =>
+        Object.fromEntries(
+          Object.entries(prev).filter(([k]) => k !== 'kind' && k !== 'provider'),
+        ) as FieldErrors,
     )
   }
 
@@ -308,6 +400,7 @@ function CapacityGroupFormInner({ original, farms, defaults }: InnerProps) {
 
   const fieldErrors: FieldErrors = {
     ...(clientErrors.tags ? { tags: clientErrors.tags } : {}),
+    ...(clientErrors.provider ? { provider: clientErrors.provider } : {}),
     ...serverFields,
   }
   const hasServerError = serverForm.length > 0 || Object.keys(serverFields).length > 0
@@ -379,7 +472,7 @@ function CapacityGroupFormInner({ original, farms, defaults }: InnerProps) {
               {...a11y}
               className={styles.select}
               value={values.kind}
-              onChange={(e) => change('kind', e.target.value)}
+              onChange={(e) => changeKind(e.target.value as CapacityGroupKind)}
               disabled={isEdit}
             >
               <option value="sized">sized</option>
@@ -388,18 +481,15 @@ function CapacityGroupFormInner({ original, farms, defaults }: InnerProps) {
           )}
         </Field>
 
-        <Field id="provider" label="Provider" error={fieldErrors.provider}>
-          {(a11y) => (
-            <select
-              {...a11y}
-              className={styles.select}
-              value={values.provider}
-              onChange={(e) => change('provider', e.target.value)}
-            >
-              <option value="external">external</option>
-            </select>
-          )}
-        </Field>
+        <ProviderSelect
+          id="provider"
+          kind={values.kind}
+          value={values.provider}
+          providers={providers}
+          failed={providersQuery.isError}
+          error={fieldErrors.provider}
+          onChange={(p) => change('provider', p)}
+        />
 
         <label className={styles.checkRow}>
           <input
@@ -492,19 +582,26 @@ function CapacityGroupFormInner({ original, farms, defaults }: InnerProps) {
           error={fieldErrors.boot}
         />
 
-        <Field id="retireAction" label="Retire action" error={fieldErrors.retireAction}>
-          {(a11y) => (
-            <select
-              {...a11y}
-              className={styles.select}
-              value={values.retireAction}
-              onChange={(e) => change('retireAction', e.target.value)}
-            >
-              <option value="sleep">sleep</option>
-              <option value="shutdown">shutdown</option>
-            </select>
-          )}
-        </Field>
+        {values.provider === WAKE_ON_LAN && (
+          <Field
+            id="retireAction"
+            label="Retire action"
+            error={fieldErrors.retireAction}
+            hint="What an idle machine is told to do when it is retired: suspend, or power off."
+          >
+            {(a11y) => (
+              <select
+                {...a11y}
+                className={styles.select}
+                value={values.retireAction}
+                onChange={(e) => change('retireAction', e.target.value)}
+              >
+                <option value="sleep">sleep</option>
+                <option value="shutdown">shutdown</option>
+              </select>
+            )}
+          </Field>
+        )}
 
         {values.kind === 'sized' ? (
           <ProfileFields values={values} errors={fieldErrors} change={change} />

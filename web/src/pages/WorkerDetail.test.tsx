@@ -146,6 +146,8 @@ function makeWorker(overrides: Partial<WorkerDetailType> = {}): WorkerDetailType
     hostname: 'render-node-01',
     status: 'online',
     removable: false,
+    power_state: 'awake',
+    interfaces: [],
     gpu: {},
     registered_at: BASE_REGISTERED_AT,
     updated_at: '2024-01-01T10:00:00Z',

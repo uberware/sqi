@@ -33,6 +33,14 @@ function StatusCells({ group }: { group: CapacityGroup }) {
       </td>
       <td className={styles.num}>
         {s.desired_machines} desired / {s.online_members} online
+        {s.degraded !== null && (
+          <>
+            {' '}
+            <span className={styles.degraded} title={s.degraded.reason}>
+              degraded
+            </span>
+          </>
+        )}
       </td>
     </>
   )

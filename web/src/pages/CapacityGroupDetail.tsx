@@ -29,15 +29,36 @@ import { useAuth } from '@/auth/context'
 import { can } from '@/auth/policy'
 import type {
   CapacityGroup,
+  CapacityGroupAction,
+  CapacityGroupDegraded,
   CapacityGroupStatus,
   CapacityGroupTokenCreated,
+  PowerState,
   Worker,
 } from '@/api/types'
 import styles from './CapacityGroupDetail.module.css'
 
 const DEFAULT_TOKEN_TTL = '720h'
 
+const WAKE_ON_LAN = 'wake_on_lan'
+
 const workerName = (w: Worker): string => w.name || w.hostname
+
+const POWER_LABELS: Record<PowerState, string> = {
+  awake: 'Awake',
+  waking: 'Waking',
+  retiring: 'Retiring',
+  asleep: 'Asleep',
+  wake_failed: 'Wake failed',
+}
+
+/** A worker's power state as a text label; the colour only reinforces it. */
+function PowerBadge({ state }: { state: PowerState }) {
+  return <span className={`${styles.power} ${styles[state] ?? ''}`}>{POWER_LABELS[state]}</span>
+}
+
+/** True when the worker reported a network interface a wake-on-LAN packet can be addressed with. */
+const hasMac = (w: Worker): boolean => w.interfaces.some((i) => i.mac !== '')
 
 /** A grid of label/value pairs. `live` announces changed values to screen readers. */
 function StatGrid({ rows, live }: { rows: Array<[string, ReactNode]>; live?: boolean }) {
@@ -55,6 +76,43 @@ function StatGrid({ rows, live }: { rows: Array<[string, ReactNode]>; live?: boo
 
 // ── Status ────────────────────────────────────────────────────────────────────
 
+/** The group has stopped growing: a polite status, so a poll that finds it is announced. */
+function DegradedBanner({ degraded }: { degraded: CapacityGroupDegraded }) {
+  return (
+    <div className={styles.degraded} role="status" aria-label="Degraded">
+      <p className={styles.degradedTitle}>Degraded: {degraded.reason}</p>
+      <p className={styles.degradedLine}>
+        Since <RelativeTime timestamp={degraded.since} />. No more machines are requested until{' '}
+        <RelativeTime timestamp={degraded.backoff_until} />.
+      </p>
+    </div>
+  )
+}
+
+function LastAction({ action }: { action: CapacityGroupAction | null }) {
+  return (
+    <>
+      <h3 id="cg-last-action" className={styles.subTitle}>
+        Last provider action
+      </h3>
+      {action === null ? (
+        <p className={styles.muted}>No provider action yet.</p>
+      ) : (
+        <div role="group" aria-labelledby="cg-last-action">
+          <StatGrid
+            rows={[
+              ['Action', action.action],
+              ['Result', action.result],
+              ['Message', action.message === '' ? '—' : action.message],
+              ['When', <RelativeTime key="at" timestamp={action.at} />],
+            ]}
+          />
+        </div>
+      )}
+    </>
+  )
+}
+
 function StatusPanel({ group }: { group: CapacityGroup }) {
   const s: CapacityGroupStatus | null = group.status
   return (
@@ -70,6 +128,7 @@ function StatusPanel({ group }: { group: CapacityGroup }) {
         </p>
       ) : (
         <>
+          {s.degraded !== null && <DegradedBanner degraded={s.degraded} />}
           <StatGrid
             live
             rows={[
@@ -77,6 +136,13 @@ function StatusPanel({ group }: { group: CapacityGroup }) {
               ['Desired machines', s.desired_machines],
               ['Online members', s.online_members],
               ['Offline members', s.offline_members],
+              ['Waking', s.waking],
+              ['Retiring', s.retiring],
+              ['Asleep', s.asleep],
+              ['Wake failed', s.wake_failed],
+              ...(s.requested_machines !== null
+                ? ([['Requested machines', s.requested_machines]] as Array<[string, ReactNode]>)
+                : []),
               ['Evaluated', <RelativeTime key="evaluated" timestamp={s.evaluated_at} />],
             ]}
           />
@@ -84,6 +150,10 @@ function StatusPanel({ group }: { group: CapacityGroup }) {
             Desired is the total number of machines the group should have, including machines marked
             for retirement. It is a target to set capacity to, not an amount to add.
           </p>
+
+          {(group.provider !== 'external' || s.last_action !== null) && (
+            <LastAction action={s.last_action} />
+          )}
 
           <h3 className={styles.subTitle}>Retire candidates</h3>
           {s.retire_candidates.length === 0 ? (
@@ -152,6 +222,7 @@ function profileSummary(g: CapacityGroup): string {
 
 function SettingsPanel({ group }: { group: CapacityGroup }) {
   const rows: Array<[string, string]> = [
+    ['Provider', group.provider],
     ['Enabled', group.enabled ? 'yes' : 'no'],
     [
       'Queues',
@@ -164,7 +235,9 @@ function SettingsPanel({ group }: { group: CapacityGroup }) {
     ['Scale-up cooldown', `${group.scale_up_cooldown_seconds} s`],
     ['Idle timeout', `${group.idle_timeout_seconds} s`],
     ['Boot timeout', `${group.boot_timeout_seconds} s`],
-    ['Retire action', group.retire_action],
+    ...(group.provider === WAKE_ON_LAN
+      ? ([['Retire action', group.retire_action]] as Array<[string, string]>)
+      : []),
     ['Machine profile', profileSummary(group)],
   ]
   return (
@@ -241,6 +314,8 @@ function MembersSection({ group, canManage }: { group: CapacityGroup; canManage:
   const members = data ?? []
   const named = group.kind === 'named'
   const editable = named && canManage
+  const columns = editable ? 5 : 4
+  const wol = group.provider === WAKE_ON_LAN
 
   async function remove(w: Worker) {
     setRemoving(w.id)
@@ -275,20 +350,22 @@ function MembersSection({ group, canManage }: { group: CapacityGroup; canManage:
           <tr>
             <th>Worker</th>
             <th>Status</th>
+            <th>Power</th>
+            <th>Instance</th>
             {editable && <th aria-label="Actions" />}
           </tr>
         </thead>
         <tbody>
           {isLoading && (
             <tr>
-              <td colSpan={editable ? 3 : 2} className={styles.muted}>
+              <td colSpan={columns} className={styles.muted}>
                 Loading…
               </td>
             </tr>
           )}
           {!isLoading && members.length === 0 && (
             <tr>
-              <td colSpan={editable ? 3 : 2} className={styles.muted}>
+              <td colSpan={columns} className={styles.muted}>
                 No members yet.
               </td>
             </tr>
@@ -299,10 +376,26 @@ function MembersSection({ group, canManage }: { group: CapacityGroup; canManage:
                 <Link to={`/workers/${w.id}`} className={styles.link}>
                   {workerName(w)}
                 </Link>
+                {wol && !hasMac(w) && <p className={styles.cellNote}>no wake-on-LAN address yet</p>}
               </td>
               <td>
                 <StatusBadge status={w.status} />
               </td>
+              <td>
+                <PowerBadge state={w.power_state} />
+                {w.power_state_at !== undefined && w.power_state !== 'awake' && (
+                  <>
+                    {' '}
+                    <span className={styles.cellNote}>
+                      since <RelativeTime timestamp={w.power_state_at} />
+                    </span>
+                  </>
+                )}
+                {w.power_reason !== undefined && w.power_reason !== '' && (
+                  <p className={styles.cellNote}>{w.power_reason}</p>
+                )}
+              </td>
+              <td className={styles.mono}>{w.cloud_instance_id ?? '—'}</td>
               {editable && (
                 <td>
                   <IconButton

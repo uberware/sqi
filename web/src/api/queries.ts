@@ -6,6 +6,7 @@ import type {
   ApiKey,
   CapacityGroup,
   CapacityGroupToken,
+  CapacityProvider,
   AuthProviders,
   ComputeLocation,
   Farm,
@@ -157,6 +158,7 @@ export const queryKeys = {
     members: (id: string) => ['capacity-groups', 'members', id] as const,
     tokens: (id: string) => ['capacity-groups', 'tokens', id] as const,
   },
+  capacityProviders: ['capacity-providers'] as const,
   storageLocations: {
     all: ['storage-locations'] as const,
     detail: (id: string) => ['storage-locations', 'detail', id] as const,
@@ -347,6 +349,12 @@ export function fetchCapacityGroupMembers(id: string): Promise<Worker[]> {
 /** Fetch a group's join tokens (no secrets) from `GET /capacity-groups/{id}/tokens`. */
 export function fetchCapacityGroupTokens(id: string): Promise<CapacityGroupToken[]> {
   return apiFetch(`/capacity-groups/${encodeURIComponent(id)}/tokens`)
+}
+
+/** Fetch the providers a capacity group may name from `GET /capacity-providers`. */
+export async function fetchCapacityProviders(): Promise<CapacityProvider[]> {
+  const body = await apiFetch<{ providers: CapacityProvider[] }>('/capacity-providers')
+  return body.providers
 }
 
 /** Fetch all storage locations from `GET /storage-locations` (bare array, no pagination). */
@@ -629,6 +637,17 @@ export function useCapacityGroupTokens(id: string, options?: { enabled?: boolean
     queryKey: queryKeys.capacityGroups.tokens(id),
     queryFn: () => fetchCapacityGroupTokens(id),
     enabled: id !== '' && (options?.enabled ?? true),
+  })
+}
+
+/**
+ * List the providers a capacity group may name. The set changes only when the
+ * server's configuration file does, so it is not polled.
+ */
+export function useCapacityProviders() {
+  return useQuery({
+    queryKey: queryKeys.capacityProviders,
+    queryFn: fetchCapacityProviders,
   })
 }
 

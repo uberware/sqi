@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { CapacityGroupInput } from '@/api/mutations'
-import type { CapacityGroup, CapacityGroupKind, MachineProfile } from '@/api/types'
+import type {
+  CapacityGroup,
+  CapacityGroupKind,
+  CapacityProvider,
+  MachineProfile,
+} from '@/api/types'
 
 /** The form's state: every field is the text the person typed. */
 export interface FormValues {
@@ -146,14 +151,66 @@ const OPTIONAL_NUMBERS: Array<[NumericField, string]> = [
   ['gpuMemoryMb', 'GPU memory'],
 ]
 
+/** The provider every group may name and the one a new group starts with. */
+export const EXTERNAL_PROVIDER = 'external'
+
+/** The providers a group of this kind may name, in the order the server listed them. */
+export function providersFor(
+  kind: CapacityGroupKind,
+  providers: CapacityProvider[],
+): CapacityProvider[] {
+  return providers.filter((p) => p.kinds.includes(kind))
+}
+
+/**
+ * The provider a group keeps when its kind changes: the same one if a group of
+ * the new kind may name it, `external` otherwise. While the provider list is
+ * unknown only `external` is known to suit either kind.
+ */
+export function providerForKind(
+  provider: string,
+  kind: CapacityGroupKind,
+  providers: CapacityProvider[] | undefined,
+): string {
+  if (provider === EXTERNAL_PROVIDER || providers === undefined) return EXTERNAL_PROVIDER
+  return providersFor(kind, providers).some((p) => p.name === provider)
+    ? provider
+    : EXTERNAL_PROVIDER
+}
+
+/** What the provider check needs beyond the form's own values. */
+export interface ProviderContext {
+  /** The server's provider list; undefined while it is loading or failed to load. */
+  providers: CapacityProvider[] | undefined
+  /** The provider the group already has. The server accepts it unchanged even if no longer offered. */
+  original?: string
+}
+
+function checkProvider(v: FormValues, ctx: ProviderContext): string | undefined {
+  if (v.provider === EXTERNAL_PROVIDER || v.provider === ctx.original) return undefined
+  if (ctx.providers === undefined) {
+    return `Provider "${v.provider}" cannot be checked until the provider list loads.`
+  }
+  const known = ctx.providers.find((p) => p.name === v.provider)
+  if (known === undefined) return `Provider "${v.provider}" is not configured on the server.`
+  if (!known.kinds.includes(v.kind))
+    return `Provider "${v.provider}" cannot serve a ${v.kind} group.`
+  return undefined
+}
+
 /**
  * Checks what can be checked without the server: required text, whole numbers,
- * the CPU count of a sized group and the tag syntax. The server's own rules
+ * the CPU count of a sized group, the tag syntax and, when given the provider
+ * context, that the provider is one the server offers. The server's own rules
  * (name pattern, timeout floors, min against max) are left to it and come back
  * through {@link mapServerErrors}.
  */
-export function validateValues(v: FormValues): FieldErrors {
+export function validateValues(v: FormValues, providers?: ProviderContext): FieldErrors {
   const errors: FieldErrors = {}
+  if (providers !== undefined) {
+    const err = checkProvider(v, providers)
+    if (err !== undefined) errors.provider = err
+  }
   if (v.farmId === '') errors.farmId = 'Choose a farm.'
   if (v.name.trim() === '') errors.name = 'Enter a name.'
   for (const [field, label, min] of REQUIRED_NUMBERS) {
