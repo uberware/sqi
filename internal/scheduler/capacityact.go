@@ -214,6 +214,16 @@ func (s *Scheduler) capacityDrainTimeout() time.Duration {
 	return longest + capacityDrainMargin
 }
 
+// StopTimeout bounds how long [Scheduler.Run] waits, once its context ends,
+// for the calls it drains before returning: capacity provider calls (see
+// [Scheduler.capacityDrainTimeout]) and then broker revocations of removed
+// workers. Its own goroutines' exit comes on top. A caller that closes the
+// store or the bus after Run should wait at least this long for it to
+// return, or a provider call may still be writing.
+func (s *Scheduler) StopTimeout() time.Duration {
+	return s.capacityDrainTimeout() + revokeDrainTimeout
+}
+
 // writeGate lets provider calls write to the store until it is closed.
 // Closing it waits for a write already under way, so once close returns no
 // provider call writes again.

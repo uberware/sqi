@@ -268,6 +268,15 @@ type Server struct {
 	// cancelSched stops the scheduler's Run; set once it is started.
 	cancelSched context.CancelFunc
 
+	// schedDone closes when the scheduler's Run returns; nil until it runs.
+	schedDone chan struct{}
+
+	// schedStopTimeout, when positive, replaces [Server.schedulerStopTimeout],
+	// and shutdownTimeout, when positive, replaces [ShutdownTimeout]. Test
+	// seams; production leaves both zero.
+	schedStopTimeout time.Duration
+	shutdownTimeout  time.Duration
+
 	// wrapBroker, when set, wraps the broker newBroker built before it is
 	// started. It is a test seam, set only by tests that observe start's
 	// order through the broker; production leaves it nil.
@@ -740,7 +749,10 @@ func (s *Server) start(ctx context.Context) error {
 	// it (see abortStart) without racing Run's own setup of Scheduler.Stop.
 	schedCtx, cancelSched := context.WithCancel(ctx)
 	s.cancelSched = cancelSched
+	done := make(chan struct{})
+	s.schedDone = done
 	go func() {
+		defer close(done)
 		if err := s.sched.Run(schedCtx); err != nil && !errors.Is(err, context.Canceled) {
 			s.logger.ErrorContext(ctx, "scheduler: exited with error", slog.Any("error", err))
 		}
@@ -1212,9 +1224,15 @@ func (s *Server) abortStart() {
 }
 
 // shutdown stops all running components in reverse dependency order within
-// a [ShutdownTimeout] deadline.
+// a [ShutdownTimeout] deadline. The wait for the scheduler to stop is not
+// taken from it (see [Server.awaitScheduler]).
 func (s *Server) shutdown() error {
-	ctx, cancel := context.WithTimeout(context.Background(), ShutdownTimeout)
+	budget := ShutdownTimeout
+	if s.shutdownTimeout > 0 {
+		budget = s.shutdownTimeout
+	}
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 
 	var errs []error
@@ -1243,12 +1261,16 @@ func (s *Server) shutdown() error {
 	}
 
 	// ── Scheduler ─────────────────────────────────────────────────────────
-	// Signal the scheduler to stop. Its goroutines exit when their context is
-	// canceled; the bus client drain below ensures any in-flight NATS messages
-	// are processed before the connection closes.
-	if s.sched != nil {
-		s.sched.Stop()
-	}
+	// Stop the scheduler and wait for it to return before the bus and the
+	// store close: its shutdown drains capacity provider calls, which use
+	// both. The bus client drain below then processes any in-flight NATS
+	// messages before the connection closes. The wait can outlast the budget
+	// (a script provider may run for its whole timeout), so the steps after it
+	// get the budget's deadline moved on by the time it took.
+	timedOut := ctx.Err() != nil
+	waited := s.awaitScheduler()
+	ctx, cancelRest := context.WithDeadline(context.Background(), start.Add(budget+waited))
+	defer cancelRest()
 
 	// ── Message bus ───────────────────────────────────────────────────────
 	// Drain the typed client first — stops push consumers,
@@ -1279,8 +1301,8 @@ func (s *Server) shutdown() error {
 		}
 	}
 
-	if ctx.Err() != nil {
-		errs = append(errs, fmt.Errorf("graceful shutdown timed out after %s", ShutdownTimeout))
+	if timedOut || ctx.Err() != nil {
+		errs = append(errs, fmt.Errorf("graceful shutdown timed out after %s", budget))
 	}
 
 	if len(errs) == 0 {
@@ -1289,6 +1311,42 @@ func (s *Server) shutdown() error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// awaitScheduler stops the scheduler and waits for its Run to return, for at
+// most [Server.schedulerStopTimeout], and returns how long it waited. Once Run
+// has returned no capacity provider call writes to the store again (the
+// scheduler closes their write gate on its way out). A scheduler that
+// outlasts the wait is logged once and left behind, and shutdown goes on.
+func (s *Server) awaitScheduler() time.Duration {
+	if s.sched != nil {
+		s.sched.Stop()
+	}
+	start := time.Now()
+	limit := s.schedulerStopTimeout()
+	var stopped bool
+	bounded(context.Background(), limit, func(ctx context.Context) { stopped = s.stopScheduler(ctx) })
+	if !stopped {
+		s.logger.WarnContext(context.Background(), "scheduler: still stopping at the end of its shutdown bound; closing the bus and the store without it",
+			slog.Duration("waited", limit))
+	}
+	return time.Since(start)
+}
+
+// schedulerStopMargin is added to the scheduler's own drain bound
+// ([scheduler.Scheduler.StopTimeout]) for its goroutines to exit first.
+const schedulerStopMargin = 10 * time.Second
+
+// schedulerStopTimeout is how long shutdown waits for the scheduler's Run to
+// return before it closes the bus and the store under it.
+func (s *Server) schedulerStopTimeout() time.Duration {
+	if s.schedStopTimeout > 0 {
+		return s.schedStopTimeout
+	}
+	if s.sched == nil {
+		return schedulerStopMargin
+	}
+	return s.sched.StopTimeout() + schedulerStopMargin
 }
 
 // waitCheckpoint waits for the SQLite checkpointer's final TRUNCATE, if there

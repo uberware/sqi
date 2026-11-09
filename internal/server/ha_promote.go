@@ -116,7 +116,7 @@ func (s *Server) runScheduler(lctx context.Context) {
 	schedCtx, cancelSched := context.WithCancel(lctx)
 	s.cancelSched = cancelSched
 	done := make(chan struct{})
-	s.ha.schedDone = done
+	s.schedDone = done
 	go func() {
 		defer close(done)
 		if err := s.sched.Run(schedCtx); err != nil && !errors.Is(err, context.Canceled) {
@@ -199,7 +199,11 @@ func (s *Server) demote(lost error) error {
 			s.logger.WarnContext(bg, "http: close after a demotion", slog.Any("error", err))
 		}
 	}
-	bounded(bg, demoteTimeout, s.stopScheduler)
+	bounded(bg, demoteTimeout, func(ctx context.Context) {
+		if !s.stopScheduler(ctx) {
+			s.logger.WarnContext(ctx, "scheduler: still stopping; carrying on without it")
+		}
+	})
 	if s.busClient != nil {
 		bounded(bg, demoteTimeout, func(ctx context.Context) {
 			if err := s.busClient.Drain(ctx); err != nil {
@@ -234,8 +238,11 @@ func (s *Server) handOver(ctx context.Context) error {
 	s.markNotLeading()
 	// Each step has its own bound: neither may spend the whole shutdown
 	// budget, nor depend on what is left of it, since a release that fails
-	// leaves the standby waiting a full lease.
-	bounded(context.WithoutCancel(ctx), demoteTimeout, s.stopScheduler)
+	// leaves the standby waiting a full lease. A scheduler still draining
+	// capacity provider calls when the bound ends is waited for again, for
+	// as long as its drain takes, before the store closes ([Server.shutdown]);
+	// the release does not wait for it, and its later writes are fenced.
+	bounded(context.WithoutCancel(ctx), demoteTimeout, func(ctx context.Context) { s.stopScheduler(ctx) })
 	if s.ha.elector == nil {
 		return nil
 	}
@@ -261,17 +268,19 @@ func bounded(parent context.Context, d time.Duration, f func(ctx context.Context
 // releaseTimeout bounds releasing the lease on a graceful stop.
 const releaseTimeout = 5 * time.Second
 
-// stopScheduler stops a running scheduler and waits for it until ctx ends.
-func (s *Server) stopScheduler(ctx context.Context) {
+// stopScheduler stops a running scheduler and waits for it until ctx ends. It
+// reports whether the scheduler has returned (or never ran).
+func (s *Server) stopScheduler(ctx context.Context) bool {
 	if s.cancelSched != nil {
 		s.cancelSched()
 	}
-	if s.ha.schedDone == nil {
-		return
+	if s.schedDone == nil {
+		return true
 	}
 	select {
-	case <-s.ha.schedDone:
+	case <-s.schedDone:
+		return true
 	case <-ctx.Done():
-		s.logger.WarnContext(ctx, "scheduler: still stopping; carrying on without it")
+		return false
 	}
 }

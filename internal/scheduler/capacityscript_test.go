@@ -1045,6 +1045,11 @@ func TestCapacityDrainTimeout_CoversLongestCall(t *testing.T) {
 			if got := s.capacityDrainTimeout(); got != tc.want {
 				t.Errorf("capacityDrainTimeout = %s, want %s", got, tc.want)
 			}
+			// What the server waits for at shutdown covers this drain and
+			// the revocation drain after it.
+			if got, want := s.StopTimeout(), tc.want+revokeDrainTimeout; got != want {
+				t.Errorf("StopTimeout = %s, want %s", got, want)
+			}
 		})
 	}
 }

@@ -80,9 +80,6 @@ type haState struct {
 	cancel context.CancelFunc
 	loops  sync.WaitGroup
 
-	// schedDone closes when scheduler.Run returns; nil until it runs.
-	schedDone chan struct{}
-
 	// warned holds the version and grants pairs already warned about. Only
 	// the group observer's goroutine touches it.
 	warned map[string]bool
