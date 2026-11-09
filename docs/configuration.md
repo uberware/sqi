@@ -2072,7 +2072,7 @@ Each provider has three keys:
 | Key | Type | Default | Rule |
 |---|---|---|---|
 | `command` | list of strings | none (required) | The program and its arguments. `command[0]` must be an absolute path, so no `PATH` lookup decides which program the server runs. |
-| `env` | map of string to string | none | Added to the program's environment. Every value is shown as `<redacted>` by `sqi-server config print`; the names stay visible. |
+| `env` | map of string to string | none | Added to the program's environment. Each name must be non-empty and hold no `=` or NUL character. Every value is shown as `<redacted>` by `sqi-server config print`; the names stay visible. |
 | `timeout` | duration | `2m` | Time limit for one invocation. Between `5s` and `30m`. |
 
 The provider's name follows the capacity group name rule: 1 to 63 characters,
@@ -2126,11 +2126,12 @@ through a relaying worker. Between `1` and `65535`.
 | **Env var** | none |
 
 Extra targets for machines the server's own broadcast does not reach, such as
-a router's directed broadcast address. Each entry is an IP literal and a port
-between `1` and `65535`; a host name is rejected, so nothing is resolved at send
-time. Use IPv4 addresses: the packets are sent over IPv4, and an IPv6 entry
-(`[ip]:port`), which validation accepts, makes every wake sent from the server read `failed`.
-See [How a wake reaches a machine](capacity.md#how-a-wake-reaches-a-machine).
+a router's directed broadcast address. Each entry is an IPv4 literal and a port
+between `1` and `65535`, as `ip:port`. The packets are sent over IPv4, so
+validation rejects an IPv6 entry, and a host name, so nothing is resolved at
+send time. A wake sent from the server counts as sent when at least one of its
+targets was reached. See
+[How a wake reaches a machine](capacity.md#how-a-wake-reaches-a-machine).
 
 ```yaml
 capacity:

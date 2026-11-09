@@ -299,13 +299,13 @@ retirement was refused or ran out of time is retried at most once per
 
 A named group also lists **wake candidates**, which a `wake_on_lan` or script
 group wakes and which are advice under `external`, like the retire candidates.
-They are its members that are offline, not disabled, and awake, asleep, or `wake_failed` for at least
-twice `boot_timeout_seconds`. Members that could run the work the group took
-come first: the smallest machine first (one reporting no cores last), then the
-one down longest. sqi wakes as many as `desired_machines` leaves room for beside
-the active and waking members. After them, other wakeable members are woken only
-to make up `min_machines`: demand never wakes a machine that could run none of
-it.
+They are its members that are offline, not disabled, and awake, asleep, or
+`wake_failed` for at least twice `boot_timeout_seconds`. Members that could run
+the work the group took come first: the smallest machine first (one reporting
+no cores last), then the one down longest. sqi wakes as many as
+`desired_machines` leaves room for beside the active and waking members. After
+them, other wakeable members are woken only to make up `min_machines`: demand
+never wakes a machine that could run none of it.
 
 ## Reading the signal
 
@@ -391,10 +391,15 @@ authentication.
 | `sqi_capacity_boot_timeouts_total` | `group` | counter of woken machines that did not register within the group's boot timeout |
 | `sqi_capacity_group_degraded` | `group` | `1` while the group is [degraded](#degraded-groups), `0` otherwise |
 
-A group's series disappear when it is disabled, renamed or deleted, the counters
-included. The power-state and degraded gauges are not exported for an
-`external` group, and are removed when a group is switched to `external`. See
-also [Observability](observability.md).
+The power-state and degraded gauges exist only for a group whose provider acts,
+which includes a group naming a script provider this server does not configure.
+They are removed when a group is switched to `external`. A group's gauges
+disappear when it is disabled, renamed or deleted. The two counters go with
+them, and stay when a group is switched to `external`. Only a rename or a
+deletion keeps them gone: a disabled group, or one switched to `external`, can
+still count a wake or retirement that the boot timeout settles, or that a
+provider call still running finishes, so its counters carry on, or come back
+after a disable. See also [Observability](observability.md).
 
 `sqi_scheduler_queue_depth{queue}` (the label is the queue ID) falls back to `0`
 when a queue drains, so a scaling signal built on it falls too. Only a queue the
@@ -736,15 +741,15 @@ a member stuck.
 
 ### Shutdown and failover
 
-When `sqi-server` stops, or a leader hands over, it waits for the provider calls
-still running for as long as the longest one could take, plus a second, and
-never more than 20 s, inside the server's 30 s shutdown budget (see
+When `sqi-server` stops, or a leader hands over, it waits up to 20 s for the
+provider calls still running, inside the server's 30 s shutdown budget (see
 [Graceful shutdown](operations.md#graceful-shutdown)). A call still running then
 is cut off: its results are not written, and it starts no further action.
 Nothing is lost by that. Its request was recorded before it was made, so the
-next leader sends it again, or the boot timeout settles it. A script whose
-`timeout` is longer than 20 s can therefore be cut off at shutdown, and must
-cope with being run again.
+next leader sends it again, or the boot timeout settles it. A call that runs
+longer than 20 s (any script on the default 2-minute timeout can, as can a call
+that chains a list and a retire) can therefore be cut off at shutdown, and the
+script must cope with being run again.
 
 ## Wake-on-LAN
 
@@ -803,19 +808,24 @@ order:
 
 No worker needs to be awake for the second way: on a flat network the server's
 own broadcast reaches the machine. For machines on a routed network the server
-is not on, and that may have no awake worker to relay, add a `send_to` entry: the
-router's directed broadcast address for that network (`192.168.20.255:9`), if
-the router forwards directed broadcasts, or a host there that forwards the
-packets. Use IPv4 entries: packets are sent over IPv4, and an IPv6 entry, which
-the configuration accepts, makes every wake sent from the server read `failed`. Each packet
-is sent three times, 100 ms apart.
+is not on, and that may have no awake worker to relay, add a `send_to` entry:
+the router's directed broadcast address for that network (`192.168.20.255:9`),
+if the router forwards directed broadcasts, or a host there that forwards the
+packets. `send_to` takes IPv4 entries only, as packets are sent over IPv4; the
+configuration refuses anything else. Each packet is sent three times, 100 ms
+apart. A target on a `/31` or `/32` network has no directed broadcast address,
+so for one of those only `255.255.255.255` and `send_to` are tried.
 
 A wake reported sent is not a machine that woke. sqi counts a machine as awake
 only when its worker registers, and one that has not within
-`boot_timeout_seconds` becomes `wake_failed`. If any send from the server fails
-(one unreachable `send_to` entry is enough), the wake is recorded as `failed`
-even though the other packets went out; the member stays `waking`, and wakes
-normally if a packet reached it.
+`boot_timeout_seconds` becomes `wake_failed`. A wake from the server counts as
+sent when at least one of its targets could be sent to; the targets that could
+not are logged at Warn. It is recorded as `failed` only when every send failed,
+and the member then stays `waking` for the boot timeout to settle.
+
+A relay accepts a wake before it sends anything, so a send that then fails on
+the relay is only logged there, in the relay worker's own log: the server has
+already recorded the wake as sent.
 
 ### Power control on the worker
 
@@ -823,7 +833,7 @@ A worker answers power requests the server sends it on `worker.control.<workerID
 
 | Request | Refused when | What the worker does |
 |---|---|---|
-| `sleep`, `shutdown` | it is running a task (`busy`), or `worker.power.allow_remote_sleep` is `false` (the default), or the platform has no command for it | replies, deregisters as `retired`, then runs the command |
+| `sleep`, `shutdown` | it is running a task (`busy`), or `worker.power.allow_remote_sleep` is `false` (the default), or the platform has no command for it, or it is carrying out one already (`already retiring`) | replies, deregisters as `retired`, then runs the command |
 | `wake` | no valid 6-byte MAC address, or no target | sends Wake-on-LAN broadcasts for the addresses to the targets, on the server's behalf |
 
 `wake` has no opt-in because a worker acting as a relay only sends UDP
@@ -831,10 +841,28 @@ broadcasts. `sleep` and `shutdown` do, because they stop the machine, and they
 are refused whatever the setting while the worker runs a task. A refusal names
 its reason (`busy`, `worker.power.allow_remote_sleep is false`, or the missing
 command), which becomes the group's last action, and the member is `awake`
-again at once, as it is when no reply comes within 10 s. A request that cannot
-be delivered at all (the worker is not connected) leaves the member `retiring`:
-it may already be on its way down, so sqi waits for its deregistration or the
-boot timeout.
+again at once, as it is when no reply comes within 10 s. `already retiring` is
+the exception: the command is under way, so sqi takes it as accepted.
+
+A request that reaches no one (no worker listens on the member's control
+subject) is read by who began the retirement. When this server began it, the
+request was its first: nothing was delivered, so the retirement is refused with
+`worker is not listening on its control subject` and the member is `awake`
+again at once. A request this server only repeats, for a retirement recorded
+before it started (after a restart or a failover), leaves the member `retiring`
+instead: the worker may have carried out the first request and be on its way
+down, so sqi waits for its deregistration or the boot timeout.
+
+A member put back to `awake`, by a refusal or by the boot timeout, takes work
+again at once: a lease request it made while it was retiring is answered then,
+not left to wait out its hold.
+
+A disable that lands in the few seconds between sqi moving a member to
+`retiring` and sending the request does not stop the request, so the command
+can still reach a member just disabled. A worker process that restarts while
+its member is `retiring` registers as a new process, and the member keeps the
+state: the request already sent is not sent again, so the member stays idle
+until the boot timeout puts it back to `awake`.
 
 `worker.power.sleep_command` and `worker.power.shutdown_command` are argv
 lists, run with no shell, set in the config file only. Left empty they use the
@@ -843,14 +871,17 @@ platform's own: `systemctl suspend` / `systemctl poweroff` on Linux,
 `shutdown.exe /s /t 0` on Windows. Other platforms have none, so a request is
 refused until one is configured. `shutdown -h now` needs root, and the
 Linux commands need permission to suspend or power off, so a worker that is not
-root needs a polkit or sudoers rule or its own command (see the
-[setup checklist](#setup-checklist)).
+root needs a polkit rule or its own command (see the
+[setup checklist](#setup-checklist)). A sudoers rule does not work under the
+[example unit](worker-deployment.md#linux--systemd): its `NoNewPrivileges=yes`
+stops `sudo` from gaining privileges.
 
 A worker that suspends comes back by itself: it registers again when it sees
 the machine wake, and in any case 60 seconds after the command returned. A
 command that fails to start or exits non-zero makes it register again at once.
-After a successful `shutdown` it does nothing, because the operating system ends
-the process.
+A `shutdown` that works ends the process with the machine. One whose command
+exits 0 but leaves the machine running is treated like a sleep that did not
+take: the worker registers again 60 seconds after the command returned.
 
 ### Setup checklist
 
@@ -877,6 +908,11 @@ Do this on each machine before adding it to a `wake_on_lan` group.
      WakeOnLan=magic
      ```
 
+     A `.link` file takes effect only when udev next processes the card: reboot,
+     or run `sudo udevadm trigger --action=add /sys/class/net/<nic>`. On a host
+     configured with netplan, netplan's own generated link file wins over
+     yours, so set `wakeonlan: true` on the interface in the netplan
+     configuration instead and run `sudo netplan apply`.
    - or, on a machine whose network NetworkManager manages:
      `sudo nmcli connection modify <connection> 802-3-ethernet.wake-on-lan magic`.
 3. **Windows.** In Device Manager, open the network adapter's properties. On the
@@ -909,14 +945,35 @@ Do this on each machine before adding it to a `wake_on_lan` group.
        if (subject.user == "sqiworker" &&
            (action.id == "org.freedesktop.login1.suspend" ||
             action.id == "org.freedesktop.login1.suspend-multiple-sessions" ||
+            action.id == "org.freedesktop.login1.suspend-ignore-inhibit" ||
             action.id == "org.freedesktop.login1.power-off" ||
-            action.id == "org.freedesktop.login1.power-off-multiple-sessions")) {
+            action.id == "org.freedesktop.login1.power-off-multiple-sessions" ||
+            action.id == "org.freedesktop.login1.power-off-ignore-inhibit")) {
            return polkit.Result.YES;
        }
    });
    ```
 
-   Check it with `sudo -u sqiworker systemctl suspend`.
+   The two `-ignore-inhibit` actions matter on a machine with a desktop
+   session: a session's inhibitor (a screen lock, a media player) makes
+   `systemctl suspend` and `systemctl poweroff` fail unless the rule allows
+   them too. A minimal server install may not have polkit at all: install
+   `polkitd` (the `polkit` package on older releases). JavaScript rules need
+   polkit 0.106 or later; Ubuntu 22.04 and Debian 11 ship 0.105, which reads
+   `.pkla` files instead:
+
+   ```ini
+   # /etc/polkit-1/localauthority/50-local.d/50-sqi-worker-power.pkla
+   [sqi worker power]
+   Identity=unix-user:sqiworker
+   Action=org.freedesktop.login1.suspend;org.freedesktop.login1.suspend-multiple-sessions;org.freedesktop.login1.suspend-ignore-inhibit;org.freedesktop.login1.power-off;org.freedesktop.login1.power-off-multiple-sessions;org.freedesktop.login1.power-off-ignore-inhibit
+   ResultAny=yes
+   ResultInactive=yes
+   ResultActive=yes
+   ```
+
+   Check it with `sudo -u sqiworker systemctl suspend`. That really suspends
+   the machine, so run it where you can wake the machine again.
 6. **Register once while awake.** Start the worker with its network up and let
    it register, so the server records its MAC address. `GET /api/v1/workers/{id}`
    should list an interface with a `mac` and an IPv4 address in `addrs`.
@@ -1009,6 +1066,9 @@ The rules the server applies:
 - Empty standard output with exit status 0 is `ok`.
 - A non-zero exit status is an error, carrying the status and the last line of
   standard error, whatever standard output held.
+- A `retire` request may name several members, and its one answer applies to
+  every member it names: `ok` finishes the retirement of each of them (see
+  [Retiring](#retiring)).
 - Standard output that is not one JSON object, or whose `result` is none of the
   three, is an error. So is more than 1 MiB of it: the script is killed.
 - Standard error is the script's log: logged at Info line by line, up to 64 KiB
@@ -1022,7 +1082,8 @@ The rules the server applies:
   `wake` or `grow` is settled by the boot timeout like any wake or launch whose
   machines do not register.
 - Instance IDs from `list` are used only when each is 1 to 256 bytes of UTF-8
-  with no space or control character; others are ignored, and duplicates
+  with no space, control or Unicode format character (such as a zero-width
+  space or a bidirectional override); others are ignored, and duplicates
   dropped.
 
 ### How the server runs it
@@ -1036,10 +1097,12 @@ The rules the server applies:
 - **Secrets go in `env`.** Each `env` value of four bytes or more is replaced by
   `<redacted>` wherever the script's output carries it: logged standard-error
   lines, the line quoted in a failure, and the response `message`. `env` values
-  are also redacted by `sqi-server config print`. The command's arguments are
-  not redacted anywhere, and show in the process list, so never put a secret on
-  the command line. Do not `set -x` either: it writes every command to standard
-  error, which the server logs.
+  are also redacted by `sqi-server config print`. A standard-error line longer
+  than 8 KiB is read in 8 KiB pieces, and a value split across two of them is
+  not redacted, so keep secrets out of very long lines. The command's
+  arguments are not redacted anywhere, and show in the process list, so never
+  put a secret on the command line. Do not `set -x` either: it writes every
+  command to standard error, which the server logs.
 - **Timeout.** Each run is bounded by the provider's `timeout` (2 minutes by
   default, 5 s to 30 minutes); a script still running then is killed, and the
   action is recorded as `timeout`.
@@ -1055,7 +1118,8 @@ sqi grows a sized group by asking for a total, never by adding: when the policy
 wants more machines than sqi last asked for, and more than the group has member
 rows, it records the new size and sends `grow` with `desired` set to it. It
 never sends a `grow` below `current`, and it never shrinks a group by lowering
-its size: it retires named members, one `retire` at a time.
+its size: it retires named members. One `retire` request may name several
+members, and its one answer applies to every member it names.
 
 > **`grow` must never lower the cloud group's size.** sqi's `current` is its
 > own record and can be below the cloud group's real size: a group that replaces
@@ -1074,15 +1138,27 @@ and offline, and an ephemeral member is deleted and its credential revoked.
 Any other answer puts the member back to `awake`,
 and it is tried again after another `idle_timeout_seconds`.
 
+The answer covers every member the request names, so a script must answer `ok`
+only when each named member was stopped or is already gone. If any could not be
+removed (its instance is not in the group, say), it must answer `error`, so the
+whole batch goes back to `awake`; an `ok` would make sqi delete the record of
+an instance that keeps running outside its view.
+
+In a sized script group, a member that reports no
+[cloud instance ID](#cloud-instance-ids) is never a retire candidate: the
+script could not name its instance. sqi logs one warning per member per server
+process naming `worker.cloud_instance_id.source`, and the member stays `awake`.
+
 For a sized group the script must also:
 
 - **lower the cloud group's desired size** by the instances it removes (AWS
   `terminate-instance-in-auto-scaling-group --should-decrement-desired-capacity`;
   `delete-instances` on GCP and Azure does it already), or the cloud group
   starts replacements;
-- **act only on the instance IDs it is given**, and check that each belongs to
-  the configured group before removing it. Orphan cleanup sends `retire` with
-  members that carry an `instance_id` only.
+- **act only on the instance IDs it is given**, and check that every one
+  belongs to the configured group before removing any. One that does not makes
+  the whole request an `error` with nothing removed. Orphan cleanup sends
+  `retire` with members that carry an `instance_id` only.
 
 The group's `retire_action` is not sent to a script: what retiring means
 (power off, terminate, suspend) is the script's decision.
@@ -1111,9 +1187,14 @@ repeats.
   retired or preempted member's row is deleted when it deregisters, and an
   ephemeral member that vanished without a word is deleted after
   `boot_timeout_seconds`.
-- The degraded state clears when machines that registered late lift the group
-  above the size recorded at degradation, or when a later launch is met. The
-  backoff runs out on its own.
+- While the group is degraded, `requested_machines` holds what was present at
+  the degradation and follows only the member rows down: a member being retired
+  still counts, so one whose retirement aborts does not read as a machine that
+  registered late, while a row that is deleted lowers it.
+- The degraded state clears when machines that registered late lift the
+  group's member rows that are not being retired above the current
+  `requested_machines`, or when a later launch is met. The backoff runs out on
+  its own.
 
 ### Orphan cleanup
 
@@ -1146,9 +1227,34 @@ Known limits of the cleanup:
   only.
 - Every member of a sized group needs a cloud instance ID (set
   `worker.cloud_instance_id.source`). Without one orphan cleanup is skipped, and
-  the example scripts refuse any `retire` batch that holds a member without one.
+  that member is never retired ([Retiring](#retiring)).
 - A degradation that late registrations clear before its cleanup runs is not
   cleaned up at all.
+- A group switched to another provider within a boot timeout of a degradation
+  has its orphans cleaned up with the new provider's `list` and `retire`.
+- A worker-side network partition can terminate the whole fleet (below).
+
+#### A worker-side partition
+
+If the workers of a sized group lose the broker while the server keeps its own
+connection, and the partition outlasts roughly twice `boot_timeout_seconds`,
+orphan cleanup retires the whole group:
+
+1. The members miss their heartbeats and go offline.
+2. After `boot_timeout_seconds` offline, their ephemeral rows are deleted as
+   vanished.
+3. The launch record drops with them, and the group's next launch (to replace
+   machines that are in fact still running) does not register within
+   `boot_timeout_seconds`, so the group degrades.
+4. The cleanup's `list` returns every live instance, and no member reports any
+   of them, so every one is retired.
+
+No sqi work is lost: the tasks were reclaimed and run elsewhere when the
+members went offline. But the fleet is terminated and launched again.
+`boot_timeout_seconds` is the knob: a longer one rides out a longer partition.
+The server's
+[reconnect grace](architecture.md#after-a-broker-outage-the-reconnect-grace)
+covers only an outage on the server's side.
 
 ### Example scripts
 
@@ -1198,8 +1304,8 @@ script itself, and does the retirement check described below for you.
 > **Documentation-derived: not run against a real cloud.** The AWS, GCP, Azure
 > and KEDA sections below are written from the providers' documentation and
 > sqi's own behaviour. None of this wiring has been executed against a real Auto
-> Scaling group, instance group, scale set or cluster. Treat the snippets as a starting point and check them against the
-> provider's current documentation.
+> Scaling group, instance group, scale set or cluster. Treat the snippets as a
+> starting point and check them against the provider's current documentation.
 
 The pattern is the same everywhere:
 
@@ -1385,9 +1491,9 @@ be chosen and will drain (up to the grace period) before it exits.
   not backed off; the mismatch list and your cloud's own failed-launch metrics
   are how you notice. With `external` there is also no retirement check:
   `retire_candidates` is advisory ([above](#wiring-an-autoscaler)).
-- Orphan cleanup has known blind spots ([Orphan cleanup](#orphan-cleanup)).
-- A failed send from the server fails the whole wake-on-LAN wake, even when
-  other packets went out ([How a wake reaches a machine](#how-a-wake-reaches-a-machine)).
+- Orphan cleanup has known blind spots, and a long worker-side network
+  partition can end in it retiring a whole sized group
+  ([Orphan cleanup](#orphan-cleanup)).
 - Sized groups need REST authentication when broker authentication is on
   ([above](#sized-groups-with-broker-authentication-on)).
 - An ephemeral member cannot be removed from its group, only retired

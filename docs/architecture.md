@@ -1994,11 +1994,16 @@ retiring answers `already retiring`, which the provider treats as success. A
 retirement finishes when the worker deregisters (any kind;
 `FinishRetirement` makes a named member `asleep` and offline and deletes an
 ephemeral one with its credential, refusing either while the member still holds
-a task) or, for a script, when the script answers `ok`. At shutdown,
-`Scheduler.Run` waits for provider calls for the longest one could take plus a
-second, capped at 20 s so it returns inside `scheduler.StopCeiling` (30 s), then
-closes the gate; a call cut off writes nothing more, and the next leader repeats
-its recorded request.
+a task) or, for a script, when the script answers `ok`. The actuator also
+remembers which retirements it began itself: a `wake_on_lan` sleep or shutdown
+that finds no responders on the member's control subject aborts the retirement
+to `awake` when this process began it (nothing was delivered), and leaves it
+`retiring` when it is a re-sent request (the worker may already have left).
+A retirement put back to `awake`, aborted or expired, wakes the member's parked
+lease request through `Scheduler.WakeWorker`. At shutdown, `Scheduler.Run`
+waits up to 20 s for provider calls still running, so it returns inside
+`scheduler.StopCeiling` (30 s), then closes the gate; a call cut off writes
+nothing more, and the next leader repeats its recorded request.
 
 **In-memory state, and why it resets on failover.** The step keeps, per
 process: when each online member was first seen idle, when each group last

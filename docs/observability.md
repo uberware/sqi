@@ -349,8 +349,15 @@ disabled, renamed or deleted.
 | `sqi_capacity_members` | gauge | `group`, `state` | Members of the group by liveness, `state` being `online` or `offline`. A disabled member counts in whichever it is. |
 
 A group whose provider acts (`wake_on_lan` or a script, not `external`) also
-has four more families. They exist only for such groups, are deleted with the
-group's other series, and an `external` group has none:
+has four more families. The two gauges, `sqi_capacity_machines` and
+`sqi_capacity_group_degraded`, exist only for such groups (a group naming a
+script provider this server does not configure included); they go when the
+group is disabled, renamed, deleted or switched to `external`. The two counters
+go with the group's other series when it is disabled, renamed or deleted, and
+stay when it is switched to `external`. Only a rename or a deletion keeps them
+gone: a disabled group, or one switched to `external`, can still count a wake
+or retirement the boot timeout settles, or one a provider call still running
+finishes, so its counters carry on, or come back after a disable.
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|

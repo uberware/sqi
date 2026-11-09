@@ -922,7 +922,9 @@ The Windows sleep command is
 `[System.Windows.Forms.Application]::SetSuspendState('Suspend', $false, $false)`:
 sleep, not hibernate. After a successful sleep command the worker registers
 again when it sees the machine resume, or 60 seconds after the command
-returned, whichever is first.
+returned, whichever is first. A shutdown command that returns success but
+leaves the machine running is handled like a sleep that did not take: the
+worker registers again 60 seconds after it returned.
 
 ```yaml
 worker:

@@ -21,6 +21,9 @@ They need `bash` **4.4 or later** and [`jq`](https://jqlang.github.io/jq/), plus
 cloud they drive (`aws`, `gcloud`, `az`) or `ipmitool`, on the server's `PATH`. Each script checks
 `BASH_VERSINFO` first and, on an older bash (the stock macOS `/bin/bash` is 3.2), exits non-zero
 with a message on standard error instead of running; put a newer bash first on the server's `PATH`.
+`aws-asg.sh` needs AWS CLI version 2, for `--no-cli-pager`. `azure-vmss.sh` supports scale sets in
+uniform orchestration only, and the instance ID its `retire` takes is the bare numeric scale-set
+instance ID (`3`), never a resource ID.
 
 ## Configuring a provider
 
@@ -80,11 +83,11 @@ The authoritative description is the package comment in `internal/capacity/scrip
   awake. The sized examples answer
   `{"result":"error","message":"instance <id> is not a member of <group>; nothing was terminated"}`;
   an `ok` there would make sqi forget an instance that keeps running outside its view.
-- **Every member of a sized group needs a `cloud_instance_id`.** `retire` names members by it, and a
-  script that finds a member without one (or with one it cannot validate) refuses the **whole**
-  retire batch rather than guess, which blocks scale-in until it is fixed. Set
-  `worker.cloud_instance_id.source` (`aws`, `gcp` or `azure`) in each worker's configuration so it
-  reports the ID when it registers.
+- **Every member of a sized group needs a `cloud_instance_id`.** `retire` names members by it. sqi
+  never makes a member without one a retire candidate (it logs one warning per member instead),
+  and a script that still finds a member without one (or with one it cannot validate) refuses the
+  **whole** retire batch rather than guess. Set `worker.cloud_instance_id.source` (`aws`, `gcp` or
+  `azure`) in each worker's configuration so it reports the ID when it registers.
 - **A size that cannot be read ends the script with a non-zero exit.** `grow` compares the request
   with the size the cloud reports; a CLI failure, or a size that is not a whole number, makes the
   script exit non-zero (reason on standard error) and change nothing, never fall through to a
@@ -102,3 +105,14 @@ The authoritative description is the package comment in `internal/capacity/scrip
   `IPMI_PASSWORD` through the environment (`ipmitool -E`).
 - **Do not `set -x`** (or run the script under `bash -x`): it writes every command, and any secret
   in it, to standard error, which the server logs.
+
+## A worker-side network partition
+
+If the workers of a sized group lose the broker while the server keeps its own connection, and the
+partition outlasts roughly twice the group's `boot_timeout_seconds`, sqi's orphan cleanup retires
+the whole group: the members go offline, their ephemeral rows are deleted after
+`boot_timeout_seconds`, the group degrades when the launch that follows does not register, and
+`list` then returns every live instance while no member reports any of them. No sqi work is lost (the tasks were reclaimed and
+run elsewhere), but the fleet is terminated and launched again. `boot_timeout_seconds` is the knob;
+the server's reconnect grace covers only an outage on the server's side. See
+[Orphan cleanup](../../docs/capacity.md#orphan-cleanup).
