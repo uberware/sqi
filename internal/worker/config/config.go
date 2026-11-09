@@ -261,6 +261,28 @@ type PreemptionConfig struct {
 	Endpoint string `yaml:"endpoint"`
 }
 
+// CloudInstanceIDSourceNone is the worker.cloud_instance_id.source value that
+// reads nothing. The vendor values are [preempt.VendorAWS], [preempt.VendorGCP]
+// and [preempt.VendorAzure].
+const CloudInstanceIDSourceNone = "none"
+
+// CloudInstanceIDConfig controls reading the cloud provider's identifier for
+// the instance the worker runs on, so the server can find that instance when it
+// powers a worker off or scales a group down. The worker reads it once at
+// startup and reports it when it registers.
+type CloudInstanceIDConfig struct {
+	// Source selects the provider whose metadata service is read: "none" (the
+	// default, in which case no network request is made), "aws", "gcp" or
+	// "azure".
+	// Env: SQI_WORKER_CLOUD_INSTANCE_ID_SOURCE
+	Source string `yaml:"source"`
+
+	// Endpoint, when set, replaces the provider's metadata base URL, for a
+	// proxy or a test. Empty uses the provider's well-known address.
+	// Env: SQI_WORKER_CLOUD_INSTANCE_ID_ENDPOINT
+	Endpoint string `yaml:"endpoint"`
+}
+
 // DiagnosticsConfig controls the diagnostic-log sink that ships the worker's
 // own slog output to sqi-server over core NATS (worker.diag.<workerID>), where
 // it is surfaced in the web UI.
@@ -540,6 +562,10 @@ type WorkerSettings struct {
 	// a spot or preemptible reclaim notice. Off by default.
 	Preemption PreemptionConfig `yaml:"preemption"`
 
+	// CloudInstanceID configures reading this machine's cloud instance ID from
+	// the provider's metadata service. Off by default.
+	CloudInstanceID CloudInstanceIDConfig `yaml:"cloud_instance_id"`
+
 	// QueueIDs restricts this worker to serving the listed queue IDs. An empty
 	// list means the worker accepts assignments from all queues (it requests
 	// leases on the wildcard queue token). Set this when running a
@@ -684,6 +710,7 @@ func Default() WorkerConfig {
 				Watch:        PreemptionWatchNone,
 				PollInterval: 5 * time.Second,
 			},
+			CloudInstanceID: CloudInstanceIDConfig{Source: CloudInstanceIDSourceNone},
 		},
 		Log: LogConfig{
 			Level:      "info",
@@ -803,11 +830,13 @@ func LoadWithSources(configFile string, flags FlagOverrides) (WorkerConfig, Sour
 		cfg.NATS.InsecureSkipVerify = true
 	}
 
-	// A watcher that cannot be built fails here rather than waiting for
-	// [Validate]: an unrecognized vendor or an out-of-range interval is
-	// reported naming the key, so no caller of Load can run with a misspelled
-	// watch silently off.
-	if errs := validatePreemption(cfg.Worker.Preemption); len(errs) > 0 {
+	// A watcher or instance-ID read that cannot be built fails here rather than
+	// waiting for [Validate]: an unrecognized vendor or an out-of-range interval
+	// is reported naming the key, so no caller of Load can run with a misspelled
+	// vendor silently off.
+	errs := validatePreemption(cfg.Worker.Preemption)
+	errs = append(errs, validateCloudInstanceID(cfg.Worker.CloudInstanceID)...)
+	if len(errs) > 0 {
 		joined := make([]error, len(errs))
 		for i, e := range errs {
 			joined[i] = e
@@ -942,6 +971,8 @@ func applyWorkerEnv(c *WorkerSettings, collect func(error)) {
 	envvar.String(&c.Preemption.Watch, "SQI_WORKER_PREEMPTION_WATCH")
 	collect(envvar.Duration(&c.Preemption.PollInterval, "SQI_WORKER_PREEMPTION_POLL_INTERVAL"))
 	envvar.String(&c.Preemption.Endpoint, "SQI_WORKER_PREEMPTION_ENDPOINT")
+	envvar.String(&c.CloudInstanceID.Source, "SQI_WORKER_CLOUD_INSTANCE_ID_SOURCE")
+	envvar.String(&c.CloudInstanceID.Endpoint, "SQI_WORKER_CLOUD_INSTANCE_ID_ENDPOINT")
 	if v := os.Getenv("SQI_WORKER_QUEUE_IDS"); v != "" {
 		// splitCSV, not envvar.StringSlice: a blank queue ID must reach Validate.
 		c.QueueIDs = splitCSV(v)
@@ -1073,6 +1104,7 @@ func Validate(cfg WorkerConfig) []ValidationError {
 
 	errs = append(errs, validateIsolation(cfg)...)
 	errs = append(errs, validatePreemption(cfg.Worker.Preemption)...)
+	errs = append(errs, validateCloudInstanceID(cfg.Worker.CloudInstanceID)...)
 	errs = append(errs, validateExpr(cfg.Expr)...)
 	errs = append(errs, validateQueueIDs(cfg.Worker.QueueIDs)...)
 	errs = append(errs, validateCommands(cfg.Worker.Commands)...)
@@ -1102,6 +1134,19 @@ func validatePreemption(p PreemptionConfig) []ValidationError {
 		})
 	}
 	return errs
+}
+
+// validateCloudInstanceID validates worker.cloud_instance_id: the source is one
+// of the known vendors or none.
+func validateCloudInstanceID(c CloudInstanceIDConfig) []ValidationError {
+	switch c.Source {
+	case CloudInstanceIDSourceNone, preempt.VendorAWS, preempt.VendorGCP, preempt.VendorAzure:
+		return nil
+	}
+	return []ValidationError{{
+		Field:   "worker.cloud_instance_id.source",
+		Message: fmt.Sprintf("unrecognized value %q; must be none, aws, gcp, or azure", c.Source),
+	}}
 }
 
 // validateCommands rejects a worker.commands entry that could never resolve,

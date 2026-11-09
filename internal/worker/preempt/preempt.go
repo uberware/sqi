@@ -166,16 +166,24 @@ func (w *Watcher) logFailure(ctx context.Context, failures int, err error) {
 // do sends one request with the per-request timeout and returns the status and
 // the (bounded) body.
 func (w *Watcher) do(ctx context.Context, method, path string, headers map[string]string) (status int, body []byte, err error) {
+	return request(ctx, w.client, w.base, method, path, headers)
+}
+
+// request sends one request to base+path with the per-request timeout and
+// returns the status and the (bounded) body.
+func request(
+	ctx context.Context, client *http.Client, base, method, path string, headers map[string]string,
+) (status int, body []byte, err error) {
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, method, w.base+path, http.NoBody)
+	req, err := http.NewRequestWithContext(ctx, method, base+path, http.NoBody)
 	if err != nil {
 		return 0, nil, err
 	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := w.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -187,6 +195,19 @@ func (w *Watcher) do(ctx context.Context, method, path string, headers map[strin
 	return resp.StatusCode, body, nil
 }
 
+// awsToken fetches an IMDSv2 session token from the metadata service at base.
+func awsToken(ctx context.Context, client *http.Client, base string) (string, error) {
+	status, body, err := request(ctx, client, base, http.MethodPut, "/latest/api/token",
+		map[string]string{"X-aws-ec2-metadata-token-ttl-seconds": awsTokenTTL})
+	if err != nil {
+		return "", fmt.Errorf("aws token: %w", err)
+	}
+	if status != http.StatusOK {
+		return "", fmt.Errorf("aws token: unexpected status %d", status)
+	}
+	return strings.TrimSpace(string(body)), nil
+}
+
 // checkAWS reads the IMDSv2 spot instance-action document: 200 is a notice,
 // 404 means none is pending. A notice whose action is stop or hibernate is not
 // a reclaim: the instance keeps its disk, worker ID and credential and comes
@@ -195,17 +216,13 @@ func (w *Watcher) do(ctx context.Context, method, path string, headers map[strin
 // member and revokes its credential). Any other action, or a document that
 // does not parse, is treated as a termination.
 func (w *Watcher) checkAWS(ctx context.Context) (bool, error) {
-	status, body, err := w.do(ctx, http.MethodPut, "/latest/api/token",
-		map[string]string{"X-aws-ec2-metadata-token-ttl-seconds": awsTokenTTL})
+	token, err := awsToken(ctx, w.client, w.base)
 	if err != nil {
-		return false, fmt.Errorf("aws token: %w", err)
-	}
-	if status != http.StatusOK {
-		return false, fmt.Errorf("aws token: unexpected status %d", status)
+		return false, err
 	}
 
-	status, body, err = w.do(ctx, http.MethodGet, "/latest/meta-data/spot/instance-action",
-		map[string]string{"X-aws-ec2-metadata-token": strings.TrimSpace(string(body))})
+	status, body, err := w.do(ctx, http.MethodGet, "/latest/meta-data/spot/instance-action",
+		map[string]string{"X-aws-ec2-metadata-token": token})
 	if err != nil {
 		return false, fmt.Errorf("aws instance-action: %w", err)
 	}

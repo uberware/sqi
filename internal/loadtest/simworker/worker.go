@@ -401,7 +401,7 @@ func (w *Worker) registrar(nc *nats.Conn) (*registration.Registrar, error) {
 	}
 	settings := workerconfig.WorkerSettings{FarmID: s.FarmID, QueueIDs: g.Queues, Name: s.Hostname}
 	caps := capabilities.Capabilities{OS: osName, Arch: simArch, CPUCount: g.CPU, RAMMb: g.RAMMb, Tags: g.Tags}
-	reg, err := registration.New(nc, s.ID, settings, fmtres.DefaultExprLimits(), caps, w.logger, registration.WithHost(s.Hostname, ""))
+	reg, err := registration.New(nc, s.ID, settings, fmtres.DefaultExprLimits(), caps, w.logger, registration.WithHost(s.Hostname, ""), registration.WithInterfaces(nil))
 	if err != nil {
 		return nil, fmt.Errorf("simworker: %w", err)
 	}

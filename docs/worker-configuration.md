@@ -811,6 +811,55 @@ Ignored with `watch: none`.
 
 ---
 
+### `worker.cloud_instance_id.source`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `"none"` |
+| **Env var** | `SQI_WORKER_CLOUD_INSTANCE_ID_SOURCE` |
+
+Read this machine's cloud instance ID from the provider's metadata service once
+at startup, and report it when the worker registers. One of `none`, `aws`, `gcp`
+or `azure`; any other value fails startup naming the key. With `none` nothing is
+read and no network request is made.
+
+| Value | Request | The ID is |
+|---|---|---|
+| `aws` | IMDSv2 token `PUT /latest/api/token`, then `GET /latest/meta-data/instance-id` on `169.254.169.254` | the EC2 instance ID, `i-...` |
+| `gcp` | `GET /computeMetadata/v1/instance/name` with `Metadata-Flavor: Google` on `metadata.google.internal` | the instance name, which `gcloud ... delete-instances` takes |
+| `azure` | `GET /metadata/instance/compute/resourceId?api-version=2021-02-01&format=text` with `Metadata: true` on `169.254.169.254` | the last path segment of the resource ID, the scale-set instance ID |
+
+> **Documentation-derived: not run against a real cloud.** The requests above are
+> written from each provider's documentation and are exercised only against a
+> stand-in metadata server.
+
+Each request has a 2 s timeout and goes to the metadata service directly, never
+through a proxy named by `HTTP_PROXY` or `HTTPS_PROXY`. The read is made once and
+never retried: a metadata service that does not answer is one warning in the
+log, and the worker registers without an ID.
+
+```yaml
+worker:
+  cloud_instance_id:
+    source: gcp
+```
+
+---
+
+### `worker.cloud_instance_id.endpoint`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` (the provider's well-known address) |
+| **Env var** | `SQI_WORKER_CLOUD_INSTANCE_ID_ENDPOINT` |
+
+Replaces the metadata base URL, for a proxy or a test. Ignored with
+`source: none`.
+
+---
+
 ### `worker.queue_ids`
 
 | | |
@@ -1869,6 +1918,8 @@ log_streamer:
 | `worker.preemption.watch` | string | `none` | `SQI_WORKER_PREEMPTION_WATCH` | — |
 | `worker.preemption.poll_interval` | duration | `5s` | `SQI_WORKER_PREEMPTION_POLL_INTERVAL` | — |
 | `worker.preemption.endpoint` | string | `""` | `SQI_WORKER_PREEMPTION_ENDPOINT` | — |
+| `worker.cloud_instance_id.source` | string | `none` | `SQI_WORKER_CLOUD_INSTANCE_ID_SOURCE` | — |
+| `worker.cloud_instance_id.endpoint` | string | `""` | `SQI_WORKER_CLOUD_INSTANCE_ID_ENDPOINT` | — |
 | `worker.queue_ids` | []string | `[]` | `SQI_WORKER_QUEUE_IDS` | — |
 | `worker.pull_idle_backoff` | duration | `2s` | `SQI_WORKER_PULL_IDLE_BACKOFF` | — (deprecated, no effect) |
 | `worker.pull_nack_delay` | duration | `5s` | `SQI_WORKER_PULL_NACK_DELAY` | — (deprecated, no effect) |

@@ -245,7 +245,8 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	// Build the registrar with the merged capability set. Register() is called
 	// once at boot; SetupReconnectHook() re-sends the registration on every
 	// later NATS reconnect so the server keeps a live record.
-	reg, err := registerWorker(ctx, nc, workerID, cfg, caps, logger)
+	cloudID := readCloudInstanceID(ctx, cfg.Worker.CloudInstanceID, logger)
+	reg, err := registerWorker(ctx, nc, workerID, cfg, caps, cloudID, logger)
 	if err != nil {
 		return err
 	}
@@ -425,12 +426,14 @@ func registerWorker(
 	workerID string,
 	cfg workerconfig.WorkerConfig,
 	caps capabilities.Capabilities,
+	cloudInstanceID string,
 	logger *slog.Logger,
 ) (*registration.Registrar, error) {
 	// This is the same exprLimitsFromConfig call the session manager is built
 	// with (see newSessionManager): what this worker advertises must be what it
 	// enforces.
-	reg, err := registration.New(nc, workerID, cfg.Worker, exprLimitsFromConfig(cfg.Expr), caps, logger)
+	reg, err := registration.New(nc, workerID, cfg.Worker, exprLimitsFromConfig(cfg.Expr), caps, logger,
+		registration.WithCloudInstanceID(cloudInstanceID))
 	if err != nil {
 		return nil, fmt.Errorf("build registrar: %w", err)
 	}
@@ -450,6 +453,25 @@ func registerWorker(
 		return nil, fmt.Errorf("worker registration: %w", err)
 	}
 	return reg, nil
+}
+
+// readCloudInstanceID reads the cloud instance ID once, before the worker
+// registers, when worker.cloud_instance_id.source names a provider. It never
+// fails startup and never retries: a metadata service that does not answer is
+// one warning, and the worker registers without an ID.
+func readCloudInstanceID(ctx context.Context, cfg workerconfig.CloudInstanceIDConfig, logger *slog.Logger) string {
+	if cfg.Source == "" || cfg.Source == workerconfig.CloudInstanceIDSourceNone {
+		return ""
+	}
+	id, err := preempt.InstanceID(ctx, cfg.Source, cfg.Endpoint, nil)
+	if err != nil {
+		logger.WarnContext(ctx, "sqi-worker could not read its cloud instance ID; registering without one",
+			slog.String("source", cfg.Source), slog.Any("error", err))
+		return ""
+	}
+	logger.InfoContext(ctx, "sqi-worker read its cloud instance ID",
+		slog.String("source", cfg.Source), slog.String("instance_id", id))
+	return id
 }
 
 // drainer is the part of *executor.Executor the shutdown sequence uses.
