@@ -4,6 +4,7 @@ package protocol_test
 
 import (
 	"encoding/json"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -261,8 +262,8 @@ func TestHeartbeatMsg_AttemptFieldsWireKeys(t *testing.T) {
 }
 
 func TestAssignMsg_LogProgressRoundTrip(t *testing.T) {
-	if protocol.ProtocolVersion != "5" { // adding an omitempty field does not change it
-		t.Errorf("ProtocolVersion = %q, want 5", protocol.ProtocolVersion)
+	if protocol.ProtocolVersion != "6" { // adding an omitempty field does not change it
+		t.Errorf("ProtocolVersion = %q, want 6", protocol.ProtocolVersion)
 	}
 	in := protocol.AssignMsg{LogProgress: &protocol.LogProgress{
 		FrameParameter: "Frames",
@@ -292,5 +293,92 @@ func TestAssignMsg_LogProgressRoundTrip(t *testing.T) {
 	}
 	if strings.Contains(string(data), "log_progress") {
 		t.Errorf("empty message carries log_progress: %s", data)
+	}
+}
+
+func TestControlMsg_RoundTrip(t *testing.T) {
+	tests := []struct {
+		name string
+		in   protocol.ControlMsg
+		want string
+	}{
+		{
+			"sleep",
+			protocol.ControlMsg{Version: protocol.ProtocolVersion, Type: protocol.TypeControl, Command: protocol.ControlSleep},
+			`{"version":"6","type":"control","command":"sleep"}`,
+		},
+		{
+			"wake",
+			protocol.ControlMsg{
+				Version: protocol.ProtocolVersion, Type: protocol.TypeControl, Command: protocol.ControlWake,
+				MACs: []string{"aa:bb:cc:dd:ee:ff"}, Targets: []string{"192.168.1.255:9"},
+			},
+			`{"version":"6","type":"control","command":"wake","macs":["aa:bb:cc:dd:ee:ff"],"targets":["192.168.1.255:9"]}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := json.Marshal(tt.in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(data) != tt.want {
+				t.Errorf("json = %s, want %s", data, tt.want)
+			}
+			var out protocol.ControlMsg
+			if err := json.Unmarshal(data, &out); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(out, tt.in) {
+				t.Errorf("round trip = %+v, want %+v", out, tt.in)
+			}
+		})
+	}
+	if protocol.ControlSleep != "sleep" || protocol.ControlShutdown != "shutdown" || protocol.ControlWake != "wake" {
+		t.Error("control command strings changed")
+	}
+}
+
+func TestRegisterMsg_InterfacesAndCloudInstanceID(t *testing.T) {
+	empty, err := json.Marshal(protocol.RegisterMsg{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"interfaces", "cloud_instance_id"} {
+		if strings.Contains(string(empty), key) {
+			t.Errorf("empty RegisterMsg %s contains %q, want it omitted", empty, key)
+		}
+	}
+	in := protocol.RegisterMsg{
+		Interfaces:      []protocol.NetInterface{{Name: "eth0", MAC: "aa:bb:cc:dd:ee:ff", Addrs: []string{"192.168.1.20/24"}}},
+		CloudInstanceID: "i-0abc",
+	}
+	data, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out protocol.RegisterMsg
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(out.Interfaces, in.Interfaces) || out.CloudInstanceID != in.CloudInstanceID {
+		t.Errorf("round trip = %+v, want %+v", out, in)
+	}
+}
+
+func TestControlReplyMsg_RoundTrip(t *testing.T) {
+	data, err := json.Marshal(protocol.ControlReplyMsg{Accepted: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != `{"accepted":true}` {
+		t.Errorf("json = %s", data)
+	}
+	data, err = json.Marshal(protocol.ControlReplyMsg{Reason: "busy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != `{"accepted":false,"reason":"busy"}` {
+		t.Errorf("json = %s", data)
 	}
 }

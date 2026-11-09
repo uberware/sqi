@@ -43,8 +43,8 @@ func TestUserPermissions_OfWorkerPermissions(t *testing.T) {
 			if len(jwtForm.Pub.Deny) != 0 || len(jwtForm.Sub.Deny) != 0 {
 				t.Errorf("deny lists must be empty, got pub=%v sub=%v", jwtForm.Pub.Deny, jwtForm.Sub.Deny)
 			}
-			if jwtForm.Resp != nil {
-				t.Errorf("Resp must be nil, got %+v", jwtForm.Resp)
+			if jwtForm.Resp == nil || jwtForm.Resp.MaxMsgs != legacy.Response.MaxMsgs || jwtForm.Resp.Expires != legacy.Response.Expires {
+				t.Errorf("Resp = %+v, want the response grant %+v", jwtForm.Resp, legacy.Response)
 			}
 		})
 	}

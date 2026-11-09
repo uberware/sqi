@@ -769,18 +769,19 @@ func TestHandleWorkerRegister_EveryWireFieldReachesTheStore(t *testing.T) {
 		})
 	}
 
-	// protocol.RegisterMsg carries four fields the server does not persist:
+	// protocol.RegisterMsg carries six fields the server does not persist:
 	// Version and Type (the envelope, read by the version gate and the subject
 	// respectively), MaxConcurrentTasks, because the worker enforces its own
-	// concurrency locally, and CapacityGroup, a request to join a group that the
+	// concurrency locally, CapacityGroup, a request to join a group that the
 	// handler acts on rather than copies (capacity_membership_test.go covers
-	// it). The two counts below make a new protocol field visible here. They are
+	// it), and Interfaces and CloudInstanceID, which the power-control work
+	// reads and does not yet persist. The two counts below make a new protocol field visible here. They are
 	// separate: the first catches a field added to the wire and never
 	// persisted, the second catches one added to both and left out of the
 	// table above, which satisfies the first and would otherwise leave the new
 	// field unchecked.
 	t.Run("field counts", func(t *testing.T) {
-		const unpersisted = 4 // version, type, max_concurrent_tasks, capacity_group
+		const unpersisted = 6 // version, type, max_concurrent_tasks, capacity_group, interfaces, cloud_instance_id
 		sentFields := reflect.TypeFor[protocol.RegisterMsg]().NumField()
 		if want := len(persistedRegisterFields) + unpersisted; sentFields != want {
 			t.Fatalf("protocol.RegisterMsg has %d fields; this test accounts for %d persisted "+

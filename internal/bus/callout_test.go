@@ -196,8 +196,15 @@ func TestResponder_AllowsEnrolledKey(t *testing.T) {
 		t.Errorf("Name = %q, want %q", uc.Name, workerID)
 	}
 	want := brokerauth.UserPermissions(brokerauth.WorkerPermissions(workerID))
+	// Resp is a pointer, which fmt.Sprint prints as an address; compare what
+	// it points at, then the rest.
+	gotResp, wantResp := uc.Resp, want.Resp
+	uc.Resp, want.Resp = nil, nil
 	if fmt.Sprint(uc.Permissions) != fmt.Sprint(want) {
 		t.Errorf("Permissions = %+v, want %+v", uc.Permissions, want)
+	}
+	if gotResp == nil || wantResp == nil || *gotResp != *wantResp {
+		t.Errorf("Permissions.Resp = %+v, want %+v", gotResp, wantResp)
 	}
 	if uc.Expires != g.now.Add(testTTL).Unix() {
 		t.Errorf("Expires = %d, want %d", uc.Expires, g.now.Add(testTTL).Unix())

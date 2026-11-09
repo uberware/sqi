@@ -4,6 +4,7 @@ package brokerauth
 
 import (
 	"strings"
+	"time"
 
 	"github.com/nats-io/jwt/v2"
 	natsserver "github.com/nats-io/nats-server/v2/server"
@@ -96,8 +97,28 @@ func WorkerPermissions(workerID string) *natsserver.Permissions {
 
 				// This worker's own cancel signals, and no other worker's.
 				"task.cancel." + workerID,
+
+				// This worker's own power commands, and no other worker's.
+				"worker.control." + workerID,
 			},
 		},
+
+		// A control command is a core-NATS request, so answering it means
+		// publishing to the requester's reply subject, which no static
+		// publish pattern can name. This grant lets the worker publish one
+		// message, within a minute, to the reply subject of a request it
+		// received, and nothing else; it opens no subject by itself.
+		//
+		// The only messages that reach a worker are the ones on the
+		// subscriptions above: lease replies on its own inbox, and the
+		// subjects task.cancel.<workerID> and worker.control.<workerID>. A
+		// lease reply carries no reply subject. The control request carries
+		// the requester's. A cancel is published through JetStream, so it
+		// carries the publisher's ack inbox, which the worker could answer
+		// once; that reaches only the publish of that worker's own cancel.
+		// No message addressed to another worker is ever delivered to this
+		// one, so there is no other reply subject for the grant to reach.
+		Response: &natsserver.ResponsePermission{MaxMsgs: 1, Expires: time.Minute},
 	}
 }
 
