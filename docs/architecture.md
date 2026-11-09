@@ -1157,7 +1157,7 @@ The anchors each operation takes:
 
 | Operation | Anchor rows, in lock order | Notes |
 |---|---|---|
-| `LeaseTask` | the requesting worker's row (shared), the task's job row (shared), the queue row (only if it has a cap), the farm row (only if it has a cap), then each requested usage-pool row, sorted by id; the queue, farm and pool rows `FOR NO KEY UPDATE` | A scope read before the locks names the anchors and says which caps exist. Under the locks the lease refuses a worker that is now disabled, and re-reads the job's queue and farm and their caps: if the job moved to another queue or farm meanwhile the lease is `Lost` (its anchors and counts would be for the old rows), and otherwise the caps it enforces are the re-read ones. See [Lock order](#lock-order) for why the worker and job rows are shared. |
+| `LeaseTask` | the requesting worker's row (shared), the task's job row (shared), the queue row (only if it has a cap), the farm row (only if it has a cap), then each requested usage-pool row, sorted by id; the queue, farm and pool rows `FOR NO KEY UPDATE` | A scope read before the locks names the anchors and says which caps exist. Under the locks the lease refuses a worker that is now disabled, retiring or asleep, and re-reads the job's queue and farm and their caps: if the job moved to another queue or farm meanwhile the lease is `Lost` (its anchors and counts would be for the old rows), and otherwise the caps it enforces are the re-read ones. See [Lock order](#lock-order) for why the worker and job rows are shared. |
 | `CompleteTaskAttempt`, `RecordTaskFailure` | the task's job row | |
 | `StartTaskAttempt`, `ReclaimTaskAttempt` | the task's job row | No task-row lock is needed for the latest-attempt check: a lease holds the job row shared, so no lease commits between the check and the write. `ReclaimTaskAttempt` takes no worker row: it neither reads nor writes one. |
 | `RequeueTaskForRetry` | the task's job row | As above: the guarded `UPDATE`'s latest-attempt check runs under it. |
@@ -1173,6 +1173,10 @@ The anchors each operation takes:
 | `DemoteStalledJobs` | each candidate's job row, one job per transaction, in id order | The candidates are read unlocked; each job is demoted only if the stalled predicate, re-run under its lock, still holds. A lease in flight holds the job row shared, so it is waited for and the task it assigned is seen. On an error the result lists the jobs already demoted. |
 | `OfflineStaleWorker`, `OfflineWorker` | the worker row, then the job row of each of the worker's assigned or running tasks, sorted by id | A lease holds the worker row shared, so the offline transition waits for a lease in flight and reclaims what it committed. |
 | `RegisterWorker` | the worker row, then, only when the registration is from a new process, the job row of each of the worker's assigned or running tasks, sorted by id | `offlineWorker`'s order. |
+| `BeginRetirement` | the worker row | A lease holds the worker row shared and re-checks the power state under it, so the two serialize: a lease that committed first holds a task the in-flight condition sees, and one that waits sees the worker `retiring` and is `Lost`. Pinned in both orders by `TestPGRace_LeaseVersusBeginRetirement`. |
+| `FinishRetirement`, `AbortRetirement` | the worker row | `FinishRetirement` puts the member to sleep and offline, then deletes an ephemeral one with the same statement and credential revoke as `DeleteEphemeralWorker`, in the same transaction. |
+| `MarkWaking` | each named worker row, sorted by id | |
+| `FailWakes`, `ExpireRetirements` | each candidate's worker row, sorted by id | The candidates are read unlocked; the `UPDATE` re-checks the group, the power state and the cutoff under the locks, so a candidate that changed meanwhile is skipped. |
 | `UpdateUserKeepingAdmin`, `DeleteUser` (last-admin guard) | every enabled admin's user row, sorted by id | The admin set is read before the locks; the guard in the statement re-counts the enabled admins after them. An account promoted to admin in between is not locked, but a promotion only adds admins, so it cannot make the guard pass wrongly. |
 
 ### Lock order
@@ -1903,7 +1907,8 @@ anchor.
 **Power state (migration pair `00047`).** `workers` gains `power_state`
 (`awake`, `waking`, `retiring`, `asleep` or `wake_failed`; never empty),
 `power_state_at`, `power_reason`, `interfaces` (JSON, what a wake-on-LAN packet
-is addressed with) and `cloud_instance_id`; a registration writes the last two.
+is addressed with) and `cloud_instance_id`; a registration writes the last two,
+except that an empty report keeps the stored value.
 The same upsert moves a `waking`, `asleep` or `wake_failed` worker to `awake`
 and keeps a `retiring` one retiring, and leaving a group resets the state to
 `awake`. The lease guard (`sqlLeaseTaskGuarded`) refuses a `retiring` or
@@ -1912,7 +1917,12 @@ leases until its machine suspends. A heartbeat writes only `last_heartbeat_at`,
 so it cannot change the power state. `capacity_group_state` holds what the
 server decides about a group at run time (machines requested, degraded reason,
 backoff); it is a table of its own so that replacing an operator's fields in
-`UpdateCapacityGroup` cannot overwrite it.
+`UpdateCapacityGroup` cannot overwrite it, and it is deleted with its group.
+The power transitions the leader makes (`MarkWaking`, `FailWakes`,
+`BeginRetirement`, `FinishRetirement`, `AbortRetirement`, `ExpireRetirements`)
+are each one guarded `UPDATE` under the anchors of the workers it may move (see
+[Anchor rows](#anchor-rows)), fenced like every leader write; a transition that
+no longer applies writes nothing and is reported, not an error.
 
 **The capacity sweep step.** `sweepCapacity` is one step of the heartbeat sweep
 tick (`sweepOnce`), after the unschedulable sweep and before the blocked-job

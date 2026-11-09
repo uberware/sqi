@@ -159,6 +159,84 @@ type CapacityGroupStore interface {
 	DeleteCapacityGroup(ctx context.Context, id string) error
 }
 
+// CapacityGroupState is what the server has decided about a group at run
+// time, kept apart from the operator's [CapacityGroup] fields so that
+// replacing those can never overwrite it.
+type CapacityGroupState struct {
+	GroupID string
+	// Requested is how many machines the server last asked the group's
+	// provider for, and RequestedAt when.
+	Requested   int
+	RequestedAt *time.Time
+	// DegradedReason says why the group is degraded, empty when it is not;
+	// DegradedAt is when it became so.
+	DegradedReason string
+	DegradedAt     *time.Time
+	// BackoffUntil is the earliest time the server asks for more machines
+	// again, or nil.
+	BackoffUntil *time.Time
+	UpdatedAt    time.Time
+}
+
+// CapacityPowerStore holds the capacity machinery's power transitions of group
+// members and each group's [CapacityGroupState]. Every write is made by the
+// leader and fenced, and each one that touches a worker locks that worker's
+// row first, so a transition and a lease to the same worker are ordered.
+//
+// A transition that does not apply (the worker is unknown, or not in the state
+// or condition it requires) is not an error: the methods report what moved.
+type CapacityPowerStore interface {
+	// MarkWaking moves each of workerIDs that is a member of groupID, offline,
+	// not disabled and in [PowerAwake], [PowerAsleep] or [PowerWakeFailed] to
+	// [PowerWaking] at now, with no reason, and returns the IDs it moved in
+	// ascending order.
+	MarkWaking(ctx context.Context, groupID string, workerIDs []string, now time.Time) ([]string, error)
+
+	// FailWakes moves every member of groupID in [PowerWaking] whose
+	// PowerStateAt is before cutoff to [PowerWakeFailed] at now with reason,
+	// and returns the rows moved, by ID.
+	FailWakes(ctx context.Context, groupID string, cutoff, now time.Time, reason string) ([]Worker, error)
+
+	// BeginRetirement moves workerID from [PowerAwake] to [PowerRetiring] at
+	// now, with no reason, only while it is a member of groupID, online, not
+	// disabled and holds no assigned or running task (the predicate
+	// [WorkerStore.DeleteEphemeralWorker] uses). ok is false, with no error,
+	// when any condition fails. It is decided under the worker's row lock, so
+	// a lease to the worker either committed first and is seen, or waits and
+	// is refused ([TaskStore.LeaseTask] refuses a retiring worker).
+	BeginRetirement(ctx context.Context, groupID, workerID string, now time.Time) (w Worker, ok bool, err error)
+
+	// FinishRetirement completes the retirement of workerID, which must be in
+	// [PowerRetiring]. A named member becomes [PowerAsleep] and offline at now,
+	// with no reason, and is returned. An ephemeral member is deleted and its
+	// active credential revoked at now, as [WorkerStore.DeleteEphemeralWorker]
+	// does, and returned as it was last stored (deleted = true). ok is false,
+	// with no error, when the worker is unknown or not retiring. A retiring
+	// member holding an assigned or running task, which BeginRetirement and
+	// the lease guard leave no way to reach, is refused with [ErrConflict] and
+	// left retiring, rather than put to sleep or deleted under its task.
+	FinishRetirement(ctx context.Context, workerID string, now time.Time) (w Worker, deleted, ok bool, err error)
+
+	// AbortRetirement moves workerID from [PowerRetiring] back to [PowerAwake]
+	// at now with reason; ok is false, with no error, when it is not retiring.
+	AbortRetirement(ctx context.Context, workerID string, now time.Time, reason string) (bool, error)
+
+	// ExpireRetirements aborts, as AbortRetirement does, every member of
+	// groupID in [PowerRetiring] whose PowerStateAt is before cutoff, and
+	// returns their IDs in ascending order.
+	ExpireRetirements(ctx context.Context, groupID string, cutoff, now time.Time, reason string) ([]string, error)
+
+	// ListCapacityGroupStates returns every recorded state by group ID; a
+	// group with none is absent.
+	ListCapacityGroupStates(ctx context.Context) (map[string]CapacityGroupState, error)
+
+	// PutCapacityGroupState stores s as its group's state, replacing any
+	// earlier one whole. A zero UpdatedAt is stamped with the current time.
+	// It returns [ErrNotFound] when the group does not exist. A group's state
+	// is deleted with the group.
+	PutCapacityGroupState(ctx context.Context, s CapacityGroupState) error
+}
+
 // ProfileWorker returns a synthetic worker standing for one machine of g: the
 // group's farm and the hardware, platform, tags, extensions and EXPR limits its
 // profile declares. The worker owns copies of the profile's tags and

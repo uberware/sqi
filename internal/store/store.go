@@ -52,6 +52,7 @@ type Store interface {
 	ProductStore
 	UsagePoolStore
 	CapacityGroupStore
+	CapacityPowerStore
 	UsageClaimStore
 	WorkerStore
 	JobStore

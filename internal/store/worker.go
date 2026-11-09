@@ -250,7 +250,9 @@ type WorkerStore interface {
 	// Ephemeral, PowerReason and PowerStateAt are never written from the
 	// worker: a disabled worker stays disabled, a new one is enabled, and a
 	// worker keeps its group membership. Interfaces and CloudInstanceID are
-	// written from the registration. PowerState is decided by the store, in the
+	// written from the registration, except that an empty one keeps the stored
+	// value, so a failed read on the worker never erases them. PowerState is
+	// decided by the store, in the
 	// same statement: a waking, asleep or wake-failed worker becomes awake
 	// (PowerStateAt is now and PowerReason is cleared), a retiring worker stays
 	// retiring, and a new worker is awake. When the stored

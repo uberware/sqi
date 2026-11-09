@@ -48,6 +48,7 @@ const (
 	SQLFinalizeJob            = sqlFinalizeJob
 	SQLReclaimTaskSet         = sqlReclaimTaskSet
 	SQLInsertTasksHead        = sqlInsertTasksHead
+	SQLBeginRetirement        = sqlBeginRetirement
 )
 
 var (

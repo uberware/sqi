@@ -499,7 +499,7 @@ var fenceReadOnly = []string{
 	"CountTasksByJob", "CountUnschedulableTasksByJob", "CountUsers",
 	"GetAPIKeyUserByTokenHash", "GetActiveWorkerCredentialByPublicKey", "GetBrokerIdentity",
 	"GetCapacityGroup", "GetCapacityGroupByName", "ListCapacityGroups", "ListCapacityGroupMembers",
-	"ListCapacityGroupTokens",
+	"ListCapacityGroupTokens", "ListCapacityGroupStates",
 	"GetComputeLocation", "GetComputeLocationByName", "GetFarm", "GetJob", "GetProductByName", "GetQueue",
 	"GetSessionByTokenHash", "GetSessionUserByTokenHash", "GetStep", "GetStorageLocation",
 	"GetStorageLocationByName", "GetTask", "GetTaskAttempt", "GetUsagePool", "GetUser",
@@ -1158,6 +1158,97 @@ var fenceMutators = map[string]fenceMutator{
 			return st.UpdateWorkerHeartbeat(ctx, w.ID, now, &now)
 		}
 	},
+	// The capacity power writes: each moves a group member of its own from one
+	// power state to another, or writes a group's state.
+	"MarkWaking": func(t *testing.T, st store.Store) func(context.Context) error {
+		g, id := fenceMember(t, st, store.WorkerStatusOffline, false, store.PowerAsleep)
+		return func(ctx context.Context) error {
+			moved, err := st.MarkWaking(ctx, g.ID, []string{id}, time.Now().UTC())
+			if err == nil && len(moved) != 1 {
+				return errors.New("MarkWaking moved nothing")
+			}
+			return err
+		}
+	},
+	"FailWakes": func(t *testing.T, st store.Store) func(context.Context) error {
+		g, _ := fenceMember(t, st, store.WorkerStatusOffline, false, store.PowerWaking)
+		return func(ctx context.Context) error {
+			now := time.Now().UTC()
+			failed, err := st.FailWakes(ctx, g.ID, now.Add(time.Minute), now, "fenced")
+			if err == nil && len(failed) != 1 {
+				return errors.New("FailWakes failed nothing")
+			}
+			return err
+		}
+	},
+	"BeginRetirement": func(t *testing.T, st store.Store) func(context.Context) error {
+		g, id := fenceMember(t, st, store.WorkerStatusOnline, false, store.PowerAwake)
+		return func(ctx context.Context) error {
+			_, ok, err := st.BeginRetirement(ctx, g.ID, id, time.Now().UTC())
+			if err == nil && !ok {
+				return errors.New("BeginRetirement began nothing")
+			}
+			return err
+		}
+	},
+	"FinishRetirement": func(t *testing.T, st store.Store) func(context.Context) error {
+		_, id := fenceMember(t, st, store.WorkerStatusOnline, true, store.PowerRetiring)
+		return func(ctx context.Context) error {
+			_, deleted, ok, err := st.FinishRetirement(ctx, id, time.Now().UTC())
+			if err == nil && (!ok || !deleted) {
+				return errors.New("FinishRetirement finished nothing")
+			}
+			return err
+		}
+	},
+	"AbortRetirement": func(t *testing.T, st store.Store) func(context.Context) error {
+		_, id := fenceMember(t, st, store.WorkerStatusOnline, false, store.PowerRetiring)
+		return func(ctx context.Context) error {
+			ok, err := st.AbortRetirement(ctx, id, time.Now().UTC(), "fenced")
+			if err == nil && !ok {
+				return errors.New("AbortRetirement aborted nothing")
+			}
+			return err
+		}
+	},
+	"ExpireRetirements": func(t *testing.T, st store.Store) func(context.Context) error {
+		g, _ := fenceMember(t, st, store.WorkerStatusOnline, false, store.PowerRetiring)
+		return func(ctx context.Context) error {
+			now := time.Now().UTC()
+			expired, err := st.ExpireRetirements(ctx, g.ID, now.Add(time.Minute), now, "fenced")
+			if err == nil && len(expired) != 1 {
+				return errors.New("ExpireRetirements expired nothing")
+			}
+			return err
+		}
+	},
+	"PutCapacityGroupState": func(t *testing.T, st store.Store) func(context.Context) error {
+		g := mustCreateCapacityGroup(t, st, mkCapacityGroup(fenceFarm(t, st).ID, uuid.NewString()))
+		return func(ctx context.Context) error {
+			return st.PutCapacityGroupState(ctx, store.CapacityGroupState{GroupID: g.ID, Requested: 3, UpdatedAt: time.Now().UTC()})
+		}
+	},
+}
+
+// fenceMember creates a capacity group of its own and a worker in it, with the
+// given liveness, membership and power state (stamped an hour ago).
+func fenceMember(
+	t *testing.T, st store.Store, status store.WorkerStatus, ephemeral bool, state store.PowerState,
+) (store.CapacityGroup, string) {
+	t.Helper()
+	w := fenceWorker(t, st, status, time.Now())
+	g := mustCreateCapacityGroup(t, st, mkCapacityGroup(w.FarmID, uuid.NewString()))
+	if _, err := st.SetWorkerCapacityGroup(t.Context(), w.ID, g.ID, ephemeral); err != nil {
+		t.Fatalf("SetWorkerCapacityGroup: %v", err)
+	}
+	if state != store.PowerAwake {
+		if err := storetest.InjectorFor(t, st).InjectWorkerPowerState(
+			t.Context(), w.ID, state, time.Now().UTC().Add(-time.Hour), "",
+		); err != nil {
+			t.Fatalf("InjectWorkerPowerState: %v", err)
+		}
+	}
+	return g, w.ID
 }
 
 // fenceFarm creates a farm of its own.

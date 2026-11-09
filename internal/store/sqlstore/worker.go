@@ -44,8 +44,11 @@ const (
 	// are not in the column list, so a new worker is enabled, in no group and
 	// awake, and a re-registration never changes the first three.
 	//
-	// interfaces and cloud_instance_id are written from the registration. The
-	// power state is decided here, in the same statement: a waking, asleep or
+	// interfaces and cloud_instance_id are written from the registration, except
+	// that an empty report ('[]', '') keeps the stored value: a failed interface
+	// or metadata read on one start must not erase the only record of the
+	// machine's wake address and instance. The power state is decided here, in
+	// the same statement: a waking, asleep or
 	// wake-failed worker has registered, so it is awake as of now with no
 	// reason; a retiring worker is kept retiring (its machine is still going to
 	// sleep); an awake one is unchanged.
@@ -78,8 +81,9 @@ ON CONFLICT (id) DO UPDATE SET
 	updated_at        = excluded.updated_at,
 	instance_id       = CASE WHEN excluded.instance_id = '' THEN workers.instance_id ELSE excluded.instance_id END,
 	registration_broker_at = COALESCE(excluded.registration_broker_at, workers.registration_broker_at),
-	interfaces        = excluded.interfaces,
-	cloud_instance_id = excluded.cloud_instance_id,
+	interfaces        = CASE WHEN excluded.interfaces = '[]' THEN workers.interfaces ELSE excluded.interfaces END,
+	cloud_instance_id = CASE WHEN excluded.cloud_instance_id = '' THEN workers.cloud_instance_id
+	                         ELSE excluded.cloud_instance_id END,
 	power_state_at    = CASE WHEN workers.power_state IN ('waking', 'asleep', 'wake_failed')
 	                         THEN excluded.updated_at ELSE workers.power_state_at END,
 	power_reason      = CASE WHEN workers.power_state IN ('waking', 'asleep', 'wake_failed')
@@ -680,19 +684,34 @@ func (s *Store) deleteEphemeralWorker(
 		if err := tx.lockAnchors(ctx, workerAnchor(id)); err != nil {
 			return result{}, txRollback, err
 		}
-		w, err := scanWorker(tx.QueryRowContext(ctx, query, args...))
-		if errors.Is(err, sql.ErrNoRows) {
-			// Nothing matched. Committing runs the fence check, so a deposed
-			// leader still gets ErrFenced here.
-			return result{}, txCommit, nil
-		}
+		w, deleted, err := deleteEphemeralWorkerTx(ctx, tx, id, now, query, args...)
 		if err != nil {
-			return result{}, txRollback, mapErr(err)
+			return result{}, txRollback, err
 		}
-		if _, err := tx.ExecContext(ctx, sqlRevokeWorkerCredential, TimeText(now.UTC()), id); err != nil {
-			return result{}, txRollback, fmt.Errorf("store: revoke credential of worker %s: %w", id, mapErr(err))
-		}
-		return result{worker: w, deleted: true}, txCommit, nil
+		// Nothing matched is not an error. Committing runs the fence check, so
+		// a deposed leader still gets ErrFenced here.
+		return result{worker: w, deleted: deleted}, txCommit, nil
 	})
 	return r.worker, r.deleted, err
+}
+
+// deleteEphemeralWorkerTx runs query, a DELETE of worker id returning its row,
+// in tx, which holds the worker's anchor, and revokes the worker's credential
+// at now when it deleted the row. deleted is false, with no error, when the
+// DELETE matched nothing. [Store.FinishRetirement] shares it with the deletes
+// above.
+func deleteEphemeralWorkerTx(
+	ctx context.Context, tx *dbTx, id string, now time.Time, query string, args ...any,
+) (w store.Worker, deleted bool, err error) {
+	w, err = scanWorker(tx.QueryRowContext(ctx, query, args...))
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.Worker{}, false, nil
+	}
+	if err != nil {
+		return store.Worker{}, false, mapErr(err)
+	}
+	if _, err := tx.ExecContext(ctx, sqlRevokeWorkerCredential, TimeText(now.UTC()), id); err != nil {
+		return store.Worker{}, false, fmt.Errorf("store: revoke credential of worker %s: %w", id, mapErr(err))
+	}
+	return w, true, nil
 }

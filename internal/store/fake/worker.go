@@ -16,7 +16,8 @@ import (
 // stored one and Disabled, CapacityGroupID and Ephemeral are never taken from
 // the registration: a new worker is enabled and in no group, and an existing
 // one keeps them, as the SQL upsert leaves those columns alone. Interfaces and
-// CloudInstanceID are taken from it. The power state is decided as the SQL
+// CloudInstanceID are taken from it unless empty, when the stored ones are
+// kept. The power state is decided as the SQL
 // upsert decides it: a waking, asleep or wake-failed worker becomes awake (its
 // time is now and its reason is cleared), a retiring one stays retiring, and a
 // new worker is awake. A nil
@@ -49,6 +50,12 @@ func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.
 		worker.RegisteredAt = existing.RegisteredAt
 		if worker.RegistrationBrokerAt == nil {
 			worker.RegistrationBrokerAt = existing.RegistrationBrokerAt
+		}
+		if len(worker.Interfaces) == 0 {
+			worker.Interfaces = cloneWorker(existing).Interfaces
+		}
+		if worker.CloudInstanceID == "" {
+			worker.CloudInstanceID = existing.CloudInstanceID
 		}
 		if worker.InstanceID == "" {
 			worker.InstanceID = existing.InstanceID
@@ -221,10 +228,16 @@ func (s *Store) deleteEphemeralWorker(
 	if err := s.fenceLocked(ctx); err != nil {
 		return store.Worker{}, false, err
 	}
+	w, deleted := s.deleteEphemeralWorkerLocked(id, now, also)
+	return w, deleted, nil
+}
 
+// deleteEphemeralWorkerLocked is deleteEphemeralWorker under s.mu, which
+// FinishRetirement shares. Caller holds s.mu.
+func (s *Store) deleteEphemeralWorkerLocked(id string, now time.Time, also func(store.Worker) bool) (store.Worker, bool) {
 	w, ok := s.workers[id]
 	if !ok || !w.Ephemeral || w.Status != store.WorkerStatusOffline || !also(w) || s.hasWorkInFlightLocked(id) {
-		return store.Worker{}, false, nil
+		return store.Worker{}, false
 	}
 	delete(s.workers, id)
 	for credID, c := range s.workerCredentials {
@@ -234,7 +247,7 @@ func (s *Store) deleteEphemeralWorker(
 			s.workerCredentials[credID] = c
 		}
 	}
-	return cloneWorker(w), true, nil
+	return cloneWorker(w), true
 }
 
 // UpdateWorkerHeartbeat records the most recent heartbeat time for the given

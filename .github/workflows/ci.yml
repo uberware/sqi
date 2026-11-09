@@ -1093,6 +1093,7 @@ jobs:
             TestPGRace_G10_TwoAdminDeletionsLeaveOneAdmin
             TestPGRace_G11_LateReportCannotEndATaskReLeasedMeanwhile
             TestPGRace_G12_ReaperAndCompletionDoNotDeadlock
+            TestPGRace_LeaseVersusBeginRetirement
             TestSchemaParity
             TestJobStore_CreateJobSubmission_RollsBackEntirely
             TestCreateJobSubmission_ConcurrentObserverSeesWholeJobs
