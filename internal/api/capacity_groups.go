@@ -381,9 +381,12 @@ func decodeCapacityGroupInput(r *http.Request) (in capacityGroupInput, problem s
 
 // groupFromInput applies the defaults and the unit conversions, validates the
 // result with [validateGroup] against scripts, the configured script
-// providers, and returns the group, without its identity. The second result
-// is a 400 detail, or "".
-func groupFromInput(in capacityGroupInput, scripts []string) (g store.CapacityGroup, problem string) {
+// providers, and stored, the provider the group already has ("" on create),
+// and returns the group, without its identity. The second result is a 400
+// detail, or "".
+func groupFromInput(
+	in capacityGroupInput, scripts []string, stored store.CapacityProvider,
+) (g store.CapacityGroup, problem string) {
 	g = store.CapacityGroup{
 		FarmID: in.FarmID, Name: in.Name, Kind: in.Kind, Provider: in.Provider,
 		Enabled: true, QueueIDs: in.QueueIDs,
@@ -421,24 +424,26 @@ func groupFromInput(in capacityGroupInput, scripts []string) (g store.CapacityGr
 	if g.BootTimeout, problem = secondsToDuration("boot_timeout_seconds", boot); problem != "" {
 		return g, problem
 	}
-	return g, validateGroup(g, scripts)
+	return g, validateGroup(g, scripts, stored)
 }
 
 // validateGroup checks g against the shared rules and against the providers
 // the API accepts: wake_on_lan for a named group only, since it wakes
 // machines it already knows, and a script provider only when scripts, the
-// configured ones (sorted, by bare name), hold it. The check runs on create
-// and update only: a group whose script provider is later removed from the
-// configuration stays stored, and the scheduler reports it unconfigured. The
-// result is a 400 detail, or "".
-func validateGroup(g store.CapacityGroup, scripts []string) string {
+// configured ones (sorted, by bare name), hold it. A group whose script
+// provider was removed from the configuration stays stored, and the
+// scheduler reports it unconfigured, so an update that keeps stored, the
+// provider the group already has, is not refused for it: a PUT re-sends the
+// whole group, and disabling such a group must work. Switching to an
+// unconfigured provider is refused. The result is a 400 detail, or "".
+func validateGroup(g store.CapacityGroup, scripts []string, stored store.CapacityProvider) string {
 	if err := g.Validate(); err != nil {
 		return err.Error()
 	}
 	if g.Provider == store.CapacityProviderWakeOnLAN && g.Kind != store.CapacityGroupNamed {
 		return errWakeOnLANNeedsNamed
 	}
-	if name, ok := strings.CutPrefix(string(g.Provider), scriptProviderPrefix); ok {
+	if name, ok := strings.CutPrefix(string(g.Provider), scriptProviderPrefix); ok && g.Provider != stored {
 		if _, found := slices.BinarySearch(scripts, name); !found {
 			return fmt.Sprintf(errScriptProviderNotConfigured, g.Provider)
 		}
@@ -539,7 +544,7 @@ func (h *capacityGroupHandler) create(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusBadRequest, "farm_id is required")
 		return
 	}
-	g, problem := groupFromInput(in, h.scripts)
+	g, problem := groupFromInput(in, h.scripts, "")
 	if problem != "" {
 		writeProblem(w, r, http.StatusBadRequest, problem)
 		return
@@ -604,7 +609,7 @@ func (h *capacityGroupHandler) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in.FarmID = existing.FarmID
-	g, problem := groupFromInput(in, h.scripts)
+	g, problem := groupFromInput(in, h.scripts, existing.Provider)
 	if problem != "" {
 		writeProblem(w, r, http.StatusBadRequest, problem)
 		return

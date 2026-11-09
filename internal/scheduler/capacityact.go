@@ -197,12 +197,30 @@ const wolCallBound = relayRequestTimeout + 2*controlRequestTimeout
 // capacityDrainMargin is added to the longest provider call at shutdown.
 const capacityDrainMargin = time.Second
 
+// StopCeiling is the longest a server waits for [Scheduler.Run] to return
+// once it has stopped it, before it closes the bus and the store. It sits
+// inside the server's 30 s shutdown budget, which the service managers'
+// stop timeouts are sized for. Run's own drains are capped to finish inside
+// it ([maxCapacityDrain]).
+const StopCeiling = 30 * time.Second
+
+// stopCeilingMargin is what [maxCapacityDrain] leaves of [StopCeiling], after
+// the revocation drain, for Run's goroutines to exit.
+const stopCeilingMargin = 5 * time.Second
+
+// maxCapacityDrain caps [Scheduler.capacityDrainTimeout], so Run closes the
+// provider calls' write gate and returns inside [StopCeiling]. A call still
+// running when it ends is logged and cut off: its request was recorded before
+// it was made, so the next leader repeats it.
+const maxCapacityDrain = StopCeiling - revokeDrainTimeout - stopCeilingMargin
+
 // capacityDrainTimeout bounds how long [Scheduler.Run] waits at shutdown for
 // provider calls still running: the longest one provider action can take (a
 // wake_on_lan call, or the longest-running configured script, killed at its
-// timeout), plus a margin. A script call that chains actions (a list and then
-// a retire of what it found) can outlast it; it is then cut off between
-// actions and its later results are not applied.
+// timeout), plus a margin, and never more than [maxCapacityDrain]. A call that
+// outlasts it (a long script, or one that chains actions, such as a list and
+// then a retire of what it found) is cut off and its later results are not
+// applied.
 func (s *Scheduler) capacityDrainTimeout() time.Duration {
 	if d := s.capState.act.drainTimeout; d > 0 {
 		return d
@@ -211,17 +229,24 @@ func (s *Scheduler) capacityDrainTimeout() time.Duration {
 	for _, p := range s.cfg.ScriptProviders {
 		longest = max(longest, p.MaxRunTime())
 	}
-	return longest + capacityDrainMargin
+	return min(longest+capacityDrainMargin, maxCapacityDrain)
 }
 
 // StopTimeout bounds how long [Scheduler.Run] waits, once its context ends,
 // for the calls it drains before returning: capacity provider calls (see
 // [Scheduler.capacityDrainTimeout]) and then broker revocations of removed
-// workers. Its own goroutines' exit comes on top. A caller that closes the
-// store or the bus after Run should wait at least this long for it to
-// return, or a provider call may still be writing.
+// workers. It stays below [StopCeiling] whatever the providers' timeouts.
 func (s *Scheduler) StopTimeout() time.Duration {
 	return s.capacityDrainTimeout() + revokeDrainTimeout
+}
+
+// AbandonCapacityCalls closes the provider calls' write gate, waiting only for
+// a write already under way. A server that stops waiting for [Scheduler.Run]
+// calls it before it closes the store, so no provider call still running
+// writes to a closed store. Calling it again, or after Run has returned, does
+// nothing more.
+func (s *Scheduler) AbandonCapacityCalls() {
+	s.capState.act.gate.close()
 }
 
 // writeGate lets provider calls write to the store until it is closed.

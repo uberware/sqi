@@ -202,6 +202,9 @@ func (s *Server) demote(lost error) error {
 	bounded(bg, demoteTimeout, func(ctx context.Context) {
 		if !s.stopScheduler(ctx) {
 			s.logger.WarnContext(ctx, "scheduler: still stopping; carrying on without it")
+			// The epoch fence already refuses its writes; closing the gate
+			// also keeps them off the store about to close.
+			s.abandonCapacityCalls()
 		}
 	})
 	if s.busClient != nil {
@@ -239,9 +242,10 @@ func (s *Server) handOver(ctx context.Context) error {
 	// Each step has its own bound: neither may spend the whole shutdown
 	// budget, nor depend on what is left of it, since a release that fails
 	// leaves the standby waiting a full lease. A scheduler still draining
-	// capacity provider calls when the bound ends is waited for again, for
-	// as long as its drain takes, before the store closes ([Server.shutdown]);
-	// the release does not wait for it, and its later writes are fenced.
+	// capacity provider calls when the bound ends is waited for again before
+	// the store closes ([Server.awaitScheduler]), within the same ceiling,
+	// counted from here; the release does not wait for it, and its later
+	// writes are fenced.
 	bounded(context.WithoutCancel(ctx), demoteTimeout, func(ctx context.Context) { s.stopScheduler(ctx) })
 	if s.ha.elector == nil {
 		return nil
@@ -271,9 +275,7 @@ const releaseTimeout = 5 * time.Second
 // stopScheduler stops a running scheduler and waits for it until ctx ends. It
 // reports whether the scheduler has returned (or never ran).
 func (s *Server) stopScheduler(ctx context.Context) bool {
-	if s.cancelSched != nil {
-		s.cancelSched()
-	}
+	s.markSchedulerStopping()
 	if s.schedDone == nil {
 		return true
 	}

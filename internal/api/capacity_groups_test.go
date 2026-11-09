@@ -1059,6 +1059,28 @@ func TestCapacityGroup_RemovedScriptProviderStaysReadable(t *testing.T) {
 			t.Errorf("GET %s: %d %s", path, rr.Code, rr.Body.String())
 		}
 	}
+
+	// A PUT re-sends the whole group: one that keeps the removed provider
+	// (here, disabling the group) is accepted.
+	rr := e.do(http.MethodPut, "/api/v1/capacity-groups/"+g.ID, e.groupBody(func(b map[string]any) {
+		b["name"] = "gone"
+		b["max_machines"] = 1
+		b["machine_profile"] = map[string]any{"cpu_count": 1}
+		b["provider"] = "script:gone"
+		b["enabled"] = false
+	}))
+	if rr.Code != http.StatusOK || decodeMap(t, rr)["enabled"] != false {
+		t.Fatalf("disable with the removed provider kept: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// Switching to another unconfigured provider is still refused.
+	rr = e.do(http.MethodPut, "/api/v1/capacity-groups/"+g.ID, e.groupBody(func(b map[string]any) {
+		b["name"] = "gone"
+		b["provider"] = "script:other"
+	}))
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "is not configured") {
+		t.Errorf("switch to an unconfigured provider: %d %s", rr.Code, rr.Body.String())
+	}
 }
 
 // TestCapacityGroup_StatusActingFields covers the power-state counts, wake

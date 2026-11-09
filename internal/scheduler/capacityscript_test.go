@@ -1021,21 +1021,17 @@ func TestCapacityDrainTimeout_CoversLongestCall(t *testing.T) {
 		providers map[string]script.Provider
 		want      time.Duration
 	}{
-		{"wake_on_lan only", nil, relayRequestTimeout + 2*controlRequestTimeout + capacityDrainMargin},
+		{"wake_on_lan only", nil, min(relayRequestTimeout+2*controlRequestTimeout+capacityDrainMargin, maxCapacityDrain)},
 		{
 			"short script",
 			map[string]script.Provider{"a": {Timeout: 5 * time.Second}},
-			relayRequestTimeout + 2*controlRequestTimeout + capacityDrainMargin,
+			min(relayRequestTimeout+2*controlRequestTimeout+capacityDrainMargin, maxCapacityDrain),
 		},
+		{"default script timeout, capped", map[string]script.Provider{"a": {}}, maxCapacityDrain},
 		{
-			"default script timeout",
-			map[string]script.Provider{"a": {}},
-			script.Provider{}.MaxRunTime() + capacityDrainMargin,
-		},
-		{
-			"longest of several",
+			"longest of several, capped",
 			map[string]script.Provider{"a": {Timeout: time.Minute}, "b": {Timeout: 10 * time.Minute}},
-			script.Provider{Timeout: 10 * time.Minute}.MaxRunTime() + capacityDrainMargin,
+			maxCapacityDrain,
 		},
 	}
 	for _, tc := range tests {
@@ -1045,10 +1041,9 @@ func TestCapacityDrainTimeout_CoversLongestCall(t *testing.T) {
 			if got := s.capacityDrainTimeout(); got != tc.want {
 				t.Errorf("capacityDrainTimeout = %s, want %s", got, tc.want)
 			}
-			// What the server waits for at shutdown covers this drain and
-			// the revocation drain after it.
-			if got, want := s.StopTimeout(), tc.want+revokeDrainTimeout; got != want {
-				t.Errorf("StopTimeout = %s, want %s", got, want)
+			// Run's drains end inside the server's wait for it.
+			if got, want := s.StopTimeout(), tc.want+revokeDrainTimeout; got != want || got >= StopCeiling {
+				t.Errorf("StopTimeout = %s, want %s, below StopCeiling %s", got, want, StopCeiling)
 			}
 		})
 	}
@@ -1086,6 +1081,38 @@ func TestActuator_ShutdownPastDrainWritesNothing(t *testing.T) {
 	}
 	if n := strings.Count(f.logs.String(), "still running at shutdown"); n != 1 {
 		t.Errorf("shutdown warning logged %d times, want 1:\n%s", n, f.logs.String())
+	}
+}
+
+// A server that stops waiting for Run abandons the provider calls: a result
+// arriving afterwards writes nothing, and a second abandon is harmless.
+func TestActuator_AbandonedCallsWriteNothing(t *testing.T) {
+	f := newActFixture(t, nil)
+	g := createGroup(t, f.st, wolGroup("lan", nil))
+	addNamedMember(t, f.st, g.ID, lanWorker("m1", "192.168.1.21", "aa:bb:cc:dd:ee:01"), true)
+	release := make(chan struct{})
+	asked := make(chan struct{}, 1)
+	f.bus.setAnswer(func(string, protocol.ControlMsg) ([]byte, error) {
+		asked <- struct{}{}
+		<-release
+		return controlReply(false, "busy"), nil
+	})
+	t0 := time.Now().UTC()
+
+	f.s.sweepCapacityAt(t.Context(), t0)
+	f.s.sweepCapacityAt(t.Context(), t0.Add(2*time.Minute))
+	select {
+	case <-asked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no sleep was requested")
+	}
+	f.s.AbandonCapacityCalls()
+	f.s.AbandonCapacityCalls()
+	close(release)
+	f.s.capState.act.calls.Wait()
+
+	if got := f.worker(t, "m1").PowerState; got != store.PowerRetiring {
+		t.Errorf("m1 = %s, want retiring: a result after the abandon must not write", got)
 	}
 }
 

@@ -21,13 +21,15 @@ import (
 )
 
 // closeObservingStore records, as it is closed, whether the scheduler had
-// returned by then.
+// returned by then, and whether its capacity calls had been abandoned.
 type closeObservingStore struct {
 	store.Store
 
-	schedDone <-chan struct{}
-	closed    atomic.Bool
-	afterRun  atomic.Bool
+	schedDone      <-chan struct{}
+	abandoned      atomic.Bool // set by the server's abandonCalls seam
+	closed         atomic.Bool
+	afterRun       atomic.Bool
+	afterAbandoned atomic.Bool
 }
 
 func (c *closeObservingStore) Close() error {
@@ -36,8 +38,25 @@ func (c *closeObservingStore) Close() error {
 		c.afterRun.Store(true)
 	default:
 	}
+	c.afterAbandoned.Store(c.abandoned.Load())
 	c.closed.Store(true)
 	return c.Store.Close()
+}
+
+// observedServer is a server with no component but a store that observes its
+// close and a scheduler stand-in returning delay after it is stopped (never,
+// when delay is negative).
+func observedServer(t *testing.T, delay time.Duration, warns *warnCounter) (*Server, *closeObservingStore) {
+	t.Helper()
+	cancel, done := stoppingScheduler(delay)
+	t.Cleanup(cancel)
+	st := &closeObservingStore{Store: fake.New(), schedDone: done}
+	s := &Server{
+		logger: slog.New(warns), store: st, metrics: metrics.New(),
+		cancelSched: cancel, schedDone: done,
+		abandonCalls: func() { st.abandoned.Store(true) },
+	}
+	return s, st
 }
 
 // warnCounter counts the Warn records logged through it.
@@ -84,35 +103,31 @@ func stoppingScheduler(delay time.Duration) (context.CancelFunc, chan struct{}) 
 // TestShutdown_WaitsForTheSchedulerBeforeClosingTheStore: the scheduler's
 // shutdown drains capacity provider calls, which write to the store, so the
 // store must not close until scheduler.Run has returned. A scheduler that
-// outlasts its bound is logged once and the shutdown goes on.
+// outlasts the ceiling is logged once, its capacity calls are abandoned
+// before the store closes, and the shutdown goes on.
 func TestShutdown_WaitsForTheSchedulerBeforeClosingTheStore(t *testing.T) {
 	tests := []struct {
-		name       string
-		delay      time.Duration // how long Run takes to return once canceled; <0 never
-		bound      time.Duration
-		wantAfter  bool
-		wantWarns  int
-		maxElapsed time.Duration
+		name          string
+		delay         time.Duration // how long Run takes to return once canceled; <0 never
+		ceiling       time.Duration
+		wantAfter     bool
+		wantAbandoned bool
+		wantWarns     int
 	}{
-		{"a scheduler that stops in time", 300 * time.Millisecond, 10 * time.Second, true, 0, 5 * time.Second},
-		{"a scheduler that outlasts its bound", -1, 200 * time.Millisecond, false, 1, 5 * time.Second},
+		{"a scheduler that stops in time", 300 * time.Millisecond, 10 * time.Second, true, false, 0},
+		{"a scheduler that outlasts the ceiling", -1, 200 * time.Millisecond, false, true, 1},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			cancel, done := stoppingScheduler(tc.delay)
-			defer cancel()
-			st := &closeObservingStore{Store: fake.New(), schedDone: done}
 			warns := &warnCounter{}
-			s := &Server{
-				logger: slog.New(warns), store: st,
-				cancelSched: cancel, schedDone: done, schedStopTimeout: tc.bound,
-			}
+			s, st := observedServer(t, tc.delay, warns)
+			s.schedStopCeiling = tc.ceiling
 
 			start := time.Now()
 			if err := s.shutdown(); err != nil {
 				t.Fatalf("shutdown = %v", err)
 			}
-			if took := time.Since(start); took > tc.maxElapsed {
+			if took := time.Since(start); took > 5*time.Second {
 				t.Errorf("shutdown took %v", took)
 			}
 			if !st.closed.Load() {
@@ -121,6 +136,9 @@ func TestShutdown_WaitsForTheSchedulerBeforeClosingTheStore(t *testing.T) {
 			if got := st.afterRun.Load(); got != tc.wantAfter {
 				t.Errorf("store closed after the scheduler returned = %v, want %v", got, tc.wantAfter)
 			}
+			if got := st.afterAbandoned.Load(); got != tc.wantAbandoned {
+				t.Errorf("capacity calls abandoned before the store closed = %v, want %v", got, tc.wantAbandoned)
+			}
 			if got := warns.count(); got != tc.wantWarns {
 				t.Errorf("warnings = %d (%v), want %d", got, warns.warns, tc.wantWarns)
 			}
@@ -128,20 +146,54 @@ func TestShutdown_WaitsForTheSchedulerBeforeClosingTheStore(t *testing.T) {
 	}
 }
 
-// TestShutdown_SchedulerWaitIsOutsideTheBudget: the time spent waiting for
-// the scheduler does not come out of the shutdown budget the bus drain and
-// the store close run under, so a long capacity drain does not report a
-// timed-out shutdown.
-func TestShutdown_SchedulerWaitIsOutsideTheBudget(t *testing.T) {
-	cancel, done := stoppingScheduler(300 * time.Millisecond)
-	defer cancel()
-	s := &Server{
-		logger: testLogger(), store: fake.New(),
-		cancelSched: cancel, schedDone: done, schedStopTimeout: time.Minute,
-		shutdownTimeout: 200 * time.Millisecond,
-	}
+// TestShutdown_SchedulerWaitSharesTheBudget: the wait for the scheduler comes
+// out of the shutdown budget, so a scheduler that does not stop cannot hold
+// the stop past it, and the store still closes in the reserve after it.
+func TestShutdown_SchedulerWaitSharesTheBudget(t *testing.T) {
+	warns := &warnCounter{}
+	s, st := observedServer(t, -1, warns)
+	s.shutdownTimeout = 300 * time.Millisecond
+
+	start := time.Now()
 	if err := s.shutdown(); err != nil {
-		t.Fatalf("shutdown = %v, want nil: the scheduler wait must not spend the budget", err)
+		t.Fatalf("shutdown = %v", err)
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Errorf("shutdown took %v, want about the 300ms budget", took)
+	}
+	if !st.closed.Load() || !st.afterAbandoned.Load() {
+		t.Errorf("store closed = %v, after the calls were abandoned = %v; want both", st.closed.Load(), st.afterAbandoned.Load())
+	}
+	if got := warns.count(); got != 1 {
+		t.Errorf("warnings = %d (%v), want 1", got, warns.warns)
+	}
+}
+
+// TestShutdown_HAHandOverCountsAgainstTheCeiling: on an HA leader the
+// hand-over waits for the scheduler first (demoteTimeout), and the shutdown's
+// own wait continues within the same ceiling, counted from the hand-over: the
+// whole stop waits about one ceiling, not the hand-over plus a ceiling, and
+// logs one warning.
+func TestShutdown_HAHandOverCountsAgainstTheCeiling(t *testing.T) {
+	warns := &warnCounter{}
+	s, st := observedServer(t, -1, warns)
+	s.ha = newHAState(store.ServerMember{Name: "self"})
+	s.ha.role.promote("self", 1)
+	ceiling := demoteTimeout + 500*time.Millisecond
+	s.schedStopCeiling = ceiling
+
+	start := time.Now()
+	if err := s.shutdown(); err != nil {
+		t.Fatalf("shutdown = %v", err)
+	}
+	if took := time.Since(start); took < demoteTimeout || took > ceiling+time.Second {
+		t.Errorf("shutdown took %v, want about the %v ceiling", took, ceiling)
+	}
+	if !st.closed.Load() || !st.afterAbandoned.Load() {
+		t.Errorf("store closed = %v, after the calls were abandoned = %v; want both", st.closed.Load(), st.afterAbandoned.Load())
+	}
+	if got := warns.count(); got != 1 {
+		t.Errorf("warnings = %d (%v), want exactly 1 across the hand-over and the shutdown", got, warns.warns)
 	}
 }
 
@@ -196,10 +248,12 @@ func (b orderedCloseBackend) Close() error {
 	return b.Backend.Close()
 }
 
-// TestRun_ClosesTheStoreOnlyAfterTheSchedulerStops drives a real single
-// server (embedded broker, SQLite) through start and a graceful stop: start
-// records when the scheduler's Run returns, and it has returned before the
-// store closes. An idle scheduler returns quickly, so the wait itself is
+// TestRun_ClosesTheStoreOnlyAfterTheSchedulerStops is a wiring smoke test: it
+// drives a real single server (embedded broker, SQLite) through start and a
+// graceful stop, and checks that start records when the scheduler's Run
+// returns and that it has returned before the store closes. It cannot tell
+// the old ordering from the new one: an idle scheduler returns faster than
+// the bus drain, so it passed when shutdown did not wait at all. The wait is
 // pinned by TestShutdown_WaitsForTheSchedulerBeforeClosingTheStore.
 func TestRun_ClosesTheStoreOnlyAfterTheSchedulerStops(t *testing.T) {
 	tmp := t.TempDir()
@@ -247,12 +301,12 @@ func TestRun_ClosesTheStoreOnlyAfterTheSchedulerStops(t *testing.T) {
 	}
 }
 
-// TestSchedulerStopTimeout_CoversTheSchedulersDrain: the server waits at
-// least as long as the scheduler's own drain, which a configured script
-// provider's timeout lengthens.
-func TestSchedulerStopTimeout_CoversTheSchedulersDrain(t *testing.T) {
-	if got := (&Server{}).schedulerStopTimeout(); got < schedulerStopMargin {
-		t.Errorf("schedulerStopTimeout() = %v with no scheduler, want at least the margin %v", got, schedulerStopMargin)
+// TestSchedulerStopCeiling_BoundsTheWait: however long a configured script
+// provider may run, the server waits at most 30 s for the scheduler, and the
+// scheduler's own drains end inside that wait.
+func TestSchedulerStopCeiling_BoundsTheWait(t *testing.T) {
+	if schedulerStopCeiling > 30*time.Second || schedulerStopCeiling > ShutdownTimeout {
+		t.Errorf("schedulerStopCeiling = %v, want at most 30s and inside the %v budget", schedulerStopCeiling, ShutdownTimeout)
 	}
 	cfg := DefaultConfig()
 	cfg.Capacity.Providers = map[string]config.CapacityProviderConfig{
@@ -260,10 +314,7 @@ func TestSchedulerStopTimeout_CoversTheSchedulersDrain(t *testing.T) {
 	}
 	s := &Server{cfg: cfg, logger: testLogger()}
 	s.sched = scheduler.New(s.schedulerConfigFor(nil), fake.New(), nil, metrics.New(), testLogger(), nil, nil)
-	if got, want := s.schedulerStopTimeout(), s.sched.StopTimeout()+schedulerStopMargin; got != want {
-		t.Errorf("schedulerStopTimeout() = %v, want the scheduler's %v plus the margin", got, want)
-	}
-	if got := s.sched.StopTimeout(); got < 10*time.Minute {
-		t.Errorf("scheduler StopTimeout() = %v, want at least the script provider's 10m timeout", got)
+	if got := s.sched.StopTimeout(); got >= s.stopCeiling() {
+		t.Errorf("scheduler StopTimeout() = %v with a 10m provider, want below the server's %v ceiling", got, s.stopCeiling())
 	}
 }
